@@ -347,7 +347,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			_ = client.ReleaseSessionAPILog(sessionID)
 		}
 	}()
-	resolvedProfile, selectedModels, err := resolveLiveModelProfileValidated(client, profile, sessionID, llm.AdapterTimeout{Connect: 10 * time.Second, StreamRead: idleTimeout})
+	resolvedProfile, selectedModels, err := resolveStartupModelProfile(client, profile, sessionID, llm.AdapterTimeout{Connect: 10 * time.Second, StreamRead: idleTimeout}, cfg.StartupModelListing)
 	if err != nil {
 		return nil, err
 	}
@@ -761,10 +761,13 @@ type RestoreSessionConfig struct {
 	DisableMemory   bool
 	// parentMemoryProjectID is a delegate's binding (spawn names its parent):
 	// the live parent's, replacing whatever the delegate saved.
-	parentMemoryProjectID   string
-	StateDir                string
-	Project                 identifier.Project
-	ResolveProfile          func(ref string) (*provider.Profile, error)
+	parentMemoryProjectID string
+	StateDir              string
+	Project               identifier.Project
+	ResolveProfile        func(ref string) (*provider.Profile, error)
+	// StartupModelListing reuses a listing the launcher already fetched for
+	// this session's model instance instead of fetching it again.
+	StartupModelListing     *StartupModelListing
 	AcquireSessionOwnership func(sessionID string) error
 	// OwnershipAlreadyAcquired keeps a host reservation alive across restore
 	// failure while still carrying AcquireSessionOwnership into the session.
@@ -1199,7 +1202,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// s.id is already known (meta.ID, set above), unlike a fresh NewSession
 	// call: attribute this listing's canonical API-log attempt to it instead
 	// of letting it fall into the shared unattributed bucket.
-	profile, selectedModels := resolveLiveModelProfileWithEnumerationTimeout(client, profile, s.id, *s.providerAdapterTimeout())
+	profile, selectedModels := resolveStartupModelProfileWithReuse(client, profile, s.id, *s.providerAdapterTimeout(), restoreCfg.StartupModelListing)
 	s.profile = profile
 	s.captureModelAvailability(selectedModels)
 	closeDelegateStoreOnError := true

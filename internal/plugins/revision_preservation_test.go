@@ -209,9 +209,14 @@ func TestPublishedRevisionSurvivesPublicationFailure(t *testing.T) {
 				}
 				f.assertIntact(t)
 				f.assertRegistryTarget(t, target)
-				staging, globErr := filepath.Glob(filepath.Join(filepath.Dir(f.entry.InstallPath), ".staging-*"))
-				if globErr != nil || len(staging) != 0 {
-					t.Fatalf("owned staging remains after failed publication: %v, %v", staging, globErr)
+				for _, parent := range []string{
+					filepath.Dir(f.entry.InstallPath),
+					f.manager.publishingDir("acme", "widget"),
+				} {
+					staging, globErr := filepath.Glob(filepath.Join(parent, ".staging-*"))
+					if globErr != nil || len(staging) != 0 {
+						t.Fatalf("owned staging remains after failed publication in %s: %v, %v", parent, staging, globErr)
+					}
 				}
 				if fault.name != "registry ENOSPC" {
 					dirs, readErr := os.ReadDir(filepath.Dir(f.entry.InstallPath))

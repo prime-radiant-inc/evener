@@ -338,7 +338,7 @@ func serveTestClient(t *testing.T) *llm.Client {
 // a custom instance name (e.g. "work" defined in providers.toml) to a profile
 // whose ID matches the instance name, not the provider id behind it.
 func TestBuildInitialProfile_ConfigPath(t *testing.T) {
-	profile, err := buildInitialProfile(serveTestClient(t), cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "")
+	profile, _, err := buildInitialProfile(context.Background(), serveTestClient(t), cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "")
 	if err != nil {
 		t.Fatalf("buildInitialProfile: %v", err)
 	}
@@ -350,7 +350,7 @@ func TestBuildInitialProfile_ConfigPath(t *testing.T) {
 // TestBuildInitialProfile_ConfigPathInvalidOutputSchema verifies that an invalid
 // --output-schema returns an error.
 func TestBuildInitialProfile_ConfigPathInvalidOutputSchema(t *testing.T) {
-	_, err := buildInitialProfile(serveTestClient(t), cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "{not json")
+	_, _, err := buildInitialProfile(context.Background(), serveTestClient(t), cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "{not json")
 	if err == nil {
 		t.Fatal("expected error for invalid --output-schema JSON")
 	}
@@ -362,7 +362,7 @@ func TestBuildInitialProfile_ConfigPathInvalidOutputSchema(t *testing.T) {
 // TestBuildInitialProfile_UnknownInstanceError verifies that an unknown
 // instance name returns the expected error.
 func TestBuildInitialProfile_UnknownInstanceError(t *testing.T) {
-	_, err := buildInitialProfile(serveTestClient(t), cmdutil.ModelRef{Provider: "unknown", Model: "gpt-4o"}, "")
+	_, _, err := buildInitialProfile(context.Background(), serveTestClient(t), cmdutil.ModelRef{Provider: "unknown", Model: "gpt-4o"}, "")
 	if err == nil {
 		t.Fatal("expected error for unknown instance name")
 	}
@@ -374,7 +374,7 @@ func TestBuildInitialProfile_UnknownInstanceError(t *testing.T) {
 // TestBuildInitialProfile_CuratedInstance verifies that a curated implicit id
 // resolves the same way a configured instance does.
 func TestBuildInitialProfile_CuratedInstance(t *testing.T) {
-	profile, err := buildInitialProfile(serveTestClient(t), cmdutil.ModelRef{Provider: "openai", Model: "gpt-5"}, "")
+	profile, _, err := buildInitialProfile(context.Background(), serveTestClient(t), cmdutil.ModelRef{Provider: "openai", Model: "gpt-5"}, "")
 	if err != nil {
 		t.Fatalf("buildInitialProfile: %v", err)
 	}

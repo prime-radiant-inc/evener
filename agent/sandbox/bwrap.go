@@ -254,7 +254,7 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 			// removal of Evener's config mask, its .git is as readable as the
 			// file tools say (Masks), and the tree is bound as it is.
 			ok = true
-			if rp.MasksWrite(r) || rp.MasksWrite(resolved) {
+			if (rp.MasksWrite(r) || rp.MasksWrite(resolved)) && !rp.ManagedWalkExempt(resolved) {
 				var gitDirs []string
 				gitDirs, ok = gitDirsUnder(resolved, gitWalkBudget)
 				if ok {
