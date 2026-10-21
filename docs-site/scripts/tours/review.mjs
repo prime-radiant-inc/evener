@@ -3,9 +3,16 @@ import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { fullMatrix, gitEnvironment, rejectSymlinks, repositoryRoot, validateCandidate } from './artifacts.mjs';
+import { CandidateValidationError, fullMatrix, gitEnvironment, rejectSymlinks, repositoryRoot, validateCandidate } from './artifacts.mjs';
 
 const canonical = 'docs/assets/tutorials';
+class ReviewFailure extends Error {
+ constructor(code) { super('Candidate review failed'); this.code = code; }
+}
+async function reviewStep(code, operation) {
+ try { return await operation(); }
+ catch (error) { throw new ReviewFailure(error instanceof CandidateValidationError ? error.code : code); }
+}
 function contains(parent, child) {
  const path = relative(resolve(parent),resolve(child));
  return path === '' || (!isAbsolute(path) && path !== '..' && !path.startsWith(`..${sep}`));
@@ -19,36 +26,36 @@ async function bytes(root, paths) {
 
 // Only the disposable Git tree is mutated. The patch is a proposal, not approval.
 export async function reviewCandidate({candidate, published=join(repositoryRoot,canonical), sourceRoot=repositoryRoot, out}) {
- if (!out || !isAbsolute(out)) throw Error('An absolute new review directory is required');
- for (const root of [candidate,published,sourceRoot,out]) {
-  if (!root) throw Error('Missing input directory');
-  await rejectSymlinks(root);
- }
- for (const input of [candidate,published,sourceRoot]) {
-  if (contains(input,out) || contains(out,input)) throw Error('Review output must not overlap an input');
- }
- const fresh = await validateCandidate(candidate,fullMatrix,{sourceRoot});
- const previous = await validateCandidate(published,fullMatrix,{sourceRoot,historicalProvenance:true});
+ await reviewStep('unsafe-path',async()=>{
+  if (!out || !isAbsolute(out)) throw Error('An absolute new review directory is required');
+  for (const root of [candidate,published,sourceRoot,out]) {
+   if (!root) throw Error('Missing input directory');
+   await rejectSymlinks(root);
+  }
+  for (const input of [candidate,published,sourceRoot]) {
+   if (contains(input,out) || contains(out,input)) throw Error('Review output must not overlap an input');
+  }
+ });
+ const fresh = await reviewStep('invalid-candidate',()=>validateCandidate(candidate,fullMatrix,{sourceRoot}));
+ const previous = await reviewStep('invalid-published',()=>validateCandidate(published,fullMatrix,{sourceRoot,historicalProvenance:true}));
  const paths = files(fresh);
  const before = await bytes(published,paths), after = await bytes(candidate,paths);
  const sourceChanged = fresh.sourceTreeDigest !== previous.sourceTreeDigest;
  const {sourceRevision: freshRevision, ...freshContent} = fresh;
  const {sourceRevision: previousRevision, ...previousContent} = previous;
  const manifestContentChanged = JSON.stringify(freshContent) !== JSON.stringify(previousContent);
- const manifestBytesChanged = !before.get('manifest.json').equals(after.get('manifest.json'));
  const changed = paths.filter(path => path === 'manifest.json'
   ? manifestContentChanged
   : !before.get(path).equals(after.get(path)));
  // A revision-only capture keeps the published set, including its provenance.
  // Otherwise the proposed manifest is byte-for-byte the validated candidate.
- if (changed.length && !manifestContentChanged && manifestBytesChanged) changed.push('manifest.json');
  const summary = {status:changed.length ? 'review-required' : 'unchanged',sourceChanged,changedFiles:changed.map(path=>`${canonical}/${path}`).sort()};
- await mkdir(out,{mode:0o700});
+ await reviewStep('output-unavailable',()=>mkdir(out,{mode:0o700}));
  const scratch = await mkdtemp(join(tmpdir(),'evener-tour-review-'));
  try {
   const tree = join(scratch,'tree'), template = join(scratch,'template');
   await mkdir(tree);await mkdir(template);
-  const git = (...args) => execFileSync('git',['-C',tree,...args],{env:gitEnvironment(tree),maxBuffer:64*1024*1024});
+  const git = (...args) => execFileSync('git',['-C',tree,...args],{env:gitEnvironment(tree),stdio:'pipe',maxBuffer:64*1024*1024});
   git('init','-q',`--template=${template}`);
   for (const path of paths) {
    const destination=join(tree,canonical,path);await mkdir(dirname(destination),{recursive:true});await writeFile(destination,before.get(path));
@@ -66,13 +73,16 @@ async function main(args) {
  const options={};
  while(args.length) {
   const key=args.shift(),value=args.shift();
-  if(!['--candidate','--published','--source-root','--out'].includes(key)||!value||options[key])throw Error('Invalid review arguments');
+  if(!['--candidate','--published','--source-root','--out'].includes(key)||!value||options[key])throw new ReviewFailure('invalid-arguments');
   options[key]=value;
  }
- if(!options['--candidate']||!options['--out'])throw Error('Use --candidate /ABS/CANDIDATE --out /ABS/NEW-REVIEW');
+ if(!options['--candidate']||!options['--out'])throw new ReviewFailure('invalid-arguments');
  const sourceRoot=options['--source-root']||repositoryRoot;
  console.log(JSON.stringify(await reviewCandidate({candidate:options['--candidate'],published:options['--published']||join(sourceRoot,canonical),sourceRoot,out:options['--out']})));
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href) {
- try {await main(process.argv.slice(2));}catch {console.error('Candidate review failed; inputs were not published.');process.exitCode=1;}
+ try {await main(process.argv.slice(2));}catch(error) {
+  // Only fixed categories cross the CLI boundary, never caught error messages.
+  console.error(JSON.stringify({status:'failed',code:error instanceof ReviewFailure?error.code:'review-failed'}));process.exitCode=1;
+ }
 }

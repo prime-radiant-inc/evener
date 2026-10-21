@@ -381,30 +381,19 @@ func runConfigWeb(t *testing.T, out string) {
 	awaitThread(ctx, t, observer, oldRef, "original session active", active)
 	checkpoint(t, "entry", []tourEvidence{{"original unlimited effective session", true}}, driver.capture(t, out, "entry"))
 	configure := func(work string, n int) {
-		driver.id++
-		if err := driver.encode.Encode(map[string]any{"id": driver.id, "action": "configure", "args": map[string]any{"scope": "project", "field": "max_rounds", "value": n, "workspace": work}}); err != nil {
-			t.Fatal(err)
+		data := driver.act(t, "configure", map[string]any{"scope": "project", "field": "max_rounds", "value": n, "workspace": work})
+		var result struct {
+			Events []struct {
+				Kind    string `json:"kind"`
+				Trusted bool   `json:"trusted"`
+				Visible bool   `json:"visible"`
+			} `json:"events"`
 		}
-		var reply struct {
-			ID   int  `json:"id"`
-			OK   bool `json:"ok"`
-			Data struct {
-				Error  string `json:"error"`
-				Events []struct {
-					Kind    string `json:"kind"`
-					Trusted bool   `json:"trusted"`
-					Visible bool   `json:"visible"`
-				} `json:"events"`
-			} `json:"data"`
-		}
-		if err := driver.decode.Decode(&reply); err != nil {
-			t.Fatal(err)
-		}
-		if reply.ID != driver.id || !reply.OK {
-			t.Fatal("configuration driver failed:", reply.Data.Error)
+		if err := json.Unmarshal(data, &result); err != nil {
+			t.Fatal("invalid configuration driver data")
 		}
 		var kinds []string
-		for _, event := range reply.Data.Events {
+		for _, event := range result.Events {
 			if !event.Trusted || !event.Visible {
 				t.Fatal("configuration navigation event was not a visible browser activation")
 			}

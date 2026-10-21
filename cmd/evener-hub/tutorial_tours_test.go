@@ -304,24 +304,31 @@ func openTutorialDriver(ctx context.Context, t *testing.T, args map[string]any) 
 	d.act(t, "open", args)
 	return d
 }
-func (d *tutorialDriver) act(t *testing.T, action string, args any) {
+func (d *tutorialDriver) act(t *testing.T, action string, args any) json.RawMessage {
 	t.Helper()
 	d.id++
 	if err := d.encode.Encode(map[string]any{"id": d.id, "action": action, "args": args}); err != nil {
 		t.Fatal("driver input:", err)
 	}
 	var reply struct {
-		ID   int  `json:"id"`
-		OK   bool `json:"ok"`
-		Data struct {
-			Error string `json:"error"`
-		} `json:"data"`
+		ID   int             `json:"id"`
+		OK   bool            `json:"ok"`
+		Data json.RawMessage `json:"data"`
 	}
 	if err := d.decode.Decode(&reply); err != nil {
 		t.Fatal("driver reply:", err)
 	}
-	if reply.ID != d.id || !reply.OK {
-		t.Fatalf("web driver %s failed: %s", action, reply.Data.Error)
+	if reply.ID != d.id {
+		t.Fatalf("web driver %s reply ID mismatch", action)
+	}
+	if !reply.OK {
+		var failure struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(reply.Data, &failure); err != nil {
+			t.Fatal("invalid driver failure reply")
+		}
+		t.Fatalf("web driver %s failed: %s", action, failure.Error)
 	}
 	if action == "close" {
 		_ = d.input.Close()
@@ -331,6 +338,7 @@ func (d *tutorialDriver) act(t *testing.T, action string, args any) {
 			t.Fatal("tutorial driver exit:", err)
 		}
 	}
+	return reply.Data
 }
 func (d *tutorialDriver) capture(t *testing.T, out, id string) func() error {
 	return func() error {

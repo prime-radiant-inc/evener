@@ -113,6 +113,20 @@ or `review-required`. Matching relevant source and artifact content need no
 replacement merely because the capture revision changed. A changed source
 digest or evidence requires review even if the pixels match.
 
+Failures exit 1 and write JSON to stderr with `status: "failed"` and a fixed
+`code`. Diagnostics never include input values, paths, or caught error messages.
+
+| Code | What to check |
+| --- | --- |
+| `invalid-arguments` | Required, unknown, missing-value, or duplicate CLI options. |
+| `unsafe-path` | Output must be absolute, outside every input, and free of symlinks. Check input paths for symlinks too. |
+| `output-unavailable` | Choose a new output directory with an existing writable parent. |
+| `stale-source` | Candidate revision or source digest no longer matches. Capture fresh evidence. |
+| `private-data` | Candidate or published metadata/text contains private data. Inspect locally, never paste it into a report. |
+| `invalid-candidate` | Candidate files, manifest, or source repository failed validation. |
+| `invalid-published` | Published files or manifest failed historical validation. |
+| `review-failed` | Review preparation or output writing failed after validation. Check local Git and storage. |
+
 Check `summary.json` first. If its status is `unchanged`, stop without applying:
 the patch is empty and no replacement is needed. For `review-required`, inspect
 all 24 images and 12 selectable transcripts, not just changed files.

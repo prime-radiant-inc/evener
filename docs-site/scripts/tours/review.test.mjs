@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cp, mkdir, readFile, readdir, writeFile, rm, symlink } from 'node:fs/promises';
+import { cp, mkdir, readFile, readdir, readlink, writeFile, rm, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { candidateFixture, independentPNG, chunk } from './artifact-test-support.mjs';
 import { fileURLToPath } from 'node:url';
 import { reviewCandidate } from './review.mjs';
@@ -13,7 +13,8 @@ const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 async function snapshot(root) {
  const result = {};
  for (const entry of await readdir(root,{withFileTypes:true})) {
-  result[entry.name] = entry.isDirectory() ? await snapshot(join(root,entry.name)) : hash(await readFile(join(root,entry.name)));
+  const path=join(root,entry.name);
+  result[entry.name] = entry.isSymbolicLink() ? {link:await readlink(path)} : entry.isDirectory() ? await snapshot(path) : hash(await readFile(path));
  }
  return result;
 }
@@ -26,6 +27,17 @@ async function fixture(t) {
 async function review(f) {
  return reviewCandidate({candidate:f.root,published:f.published,sourceRoot:f.repo,out:f.out});
 }
+async function refusesCLI(f,code,extra=[]) {
+ const before=await snapshot(f.base);
+ const script=fileURLToPath(new URL('./review.mjs',import.meta.url));
+ const result=spawnSync(process.execPath,[script,'--candidate',f.root,'--published',f.published,'--source-root',f.repo,'--out',f.out,...extra],{cwd:f.base,encoding:'utf8'});
+ assert.equal(result.error,undefined);
+ assert.equal(result.status,1);
+ assert.equal(result.stdout,'');
+ assert.deepEqual(await snapshot(f.base),before);
+ for(const privateValue of [f.base,'credential-canary','/Users/private/path','not-a-repository-canary'])assert.equal(result.stderr.includes(privateValue),false);
+ assert.deepEqual(JSON.parse(result.stderr),{status:'failed',code});
+}
 test('CLI writes only review outputs and rejects duplicate options without leaking inputs',async t=>{
  const f=await fixture(t);const before=await snapshot(f.base);
  const script=fileURLToPath(new URL('./review.mjs',import.meta.url));
@@ -33,15 +45,12 @@ test('CLI writes only review outputs and rejects duplicate options without leaki
  const result=execFileSync(process.execPath,args,{encoding:'utf8'});
  assert.deepEqual(JSON.parse(result),{status:'unchanged',sourceChanged:false,changedFiles:[]});
  const after=await snapshot(f.base);delete after.review;assert.deepEqual(after,before);
- let failure;
- try {execFileSync(process.execPath,[...args,'--out','credential-canary'],{stdio:'pipe'});}catch(error){failure=error;}
- assert.equal(failure.status,1);assert.equal(failure.stdout.length,0);
- assert.equal(failure.stderr.includes('credential-canary'),false);
+ await refusesCLI(f,'invalid-arguments',['--out','credential-canary']);
 });
 test('review rejects private published data rather than placing it in a deletion patch',async t=>{
  const f=await fixture(t);const path=join(f.published,'manifest.json');
  const manifest=JSON.parse(await readFile(path));manifest.note='credential-canary';await writeFile(path,JSON.stringify(manifest));
- await assert.rejects(review(f));await assert.rejects(readFile(join(f.out,'refresh.patch')));
+ await refusesCLI(f,'private-data');await assert.rejects(readFile(join(f.out,'refresh.patch')));
 });
 test('revision-only and unrelated documentation commits need no replacement',async t=>{
  const f=await fixture(t);
@@ -98,7 +107,7 @@ for(const mode of ['existing','source-child','candidate-child','published-child'
   const key=({'symlink-output':'out','symlink-candidate':'root','symlink-published':'published','symlink-source':'repo'})[mode];
   const link=join(f.base,'alias');await symlink(key==='out'?f.base:f[key],link,'dir');f[key]=key==='out'?join(link,'review'):link;
  }
- await assert.rejects(review(f));
+ await refusesCLI(f,mode==='existing'?'output-unavailable':'unsafe-path');
  if(mode==='existing')assert.equal(await readFile(join(f.out,'keep'),'utf8'),'sentinel');
 });
 for(const mode of ['revision','source','failed','incomplete','malformed','private-text','private-manifest','extra','traversal','image-symlink']) test(`review rejects invalid candidate before output: ${mode}`,async t=>{
@@ -113,5 +122,17 @@ for(const mode of ['revision','source','failed','incomplete','malformed','privat
  if(mode==='extra')await writeFile(join(f.root,'raw.log'),'private');
  if(mode==='traversal')row.file='../escape.png';
  if(mode==='image-symlink'){await rm(join(f.root,row.file));await symlink(join(f.published,row.file),join(f.root,row.file));}
- await f.save();await assert.rejects(review(f));await assert.rejects(readFile(join(f.out,'refresh.patch')));
+ await f.save();
+ const code=['revision','source'].includes(mode)?'stale-source':mode.startsWith('private-')?'private-data':'invalid-candidate';
+ await refusesCLI(f,code);await assert.rejects(readFile(join(f.out,'refresh.patch')));
+});
+test('review distinguishes invalid published evidence',async t=>{
+ const f=await fixture(t);
+ await writeFile(join(f.published,'manifest.json'),'{invalid');
+ await refusesCLI(f,'invalid-published');
+});
+test('review contains Git diagnostics from an invalid source root',async t=>{
+ const f=await fixture(t);
+ f.repo=join(f.base,'not-a-repository-canary');await mkdir(f.repo);
+ await refusesCLI(f,'invalid-candidate');
 });
