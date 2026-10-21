@@ -2597,6 +2597,24 @@ function getMutationRuntime(): MutationRuntime | null {
     if (settled) noteHandledMutation(clientMutationId);
     return settled;
   };
+  const transferToRecovery = storage.transferToRecovery.bind(storage);
+  storage.transferToRecovery = async (clientMutationId, recoveryKind, recoveryReason) => {
+    const transferred = await transferToRecovery(clientMutationId, recoveryKind, recoveryReason);
+    submittedTailBaselines.delete(clientMutationId);
+    return transferred;
+  };
+  const discardCanceled = storage.discardCanceled.bind(storage);
+  storage.discardCanceled = async (targetRef) => {
+    const discarded = await discardCanceled(targetRef);
+    for (const clientMutationId of discarded) submittedTailBaselines.delete(clientMutationId);
+    return discarded;
+  };
+  const discardCanceledOfInstance = storage.discardCanceledOfInstance.bind(storage);
+  storage.discardCanceledOfInstance = async (targetRef, supersededInstanceId) => {
+    const discarded = await discardCanceledOfInstance(targetRef, supersededInstanceId);
+    for (const clientMutationId of discarded) submittedTailBaselines.delete(clientMutationId);
+    return discarded;
+  };
   storage.setSettledListener((targetRef) => noteMutationStateChange(targetRef));
   // §6's note-row supersede discard commits fire-and-forget AFTER the settle
   // that spawned it has already notified — the dispatcher's post-settlement
@@ -3902,17 +3920,14 @@ const COMPOSER_ROUTE_METHODS: Record<ComposerMutationRoute, string> = {
 // the committed clientMutationId. A reflected receipt may only open Retry's
 // observation marker when the model still names the tail that was latest when
 // this submission began; a turn that is already observed is not stale.
-const SUBMITTED_TAIL_LIMIT = 256;
+// Page-lifetime only: entries leave when their row settles or is transferred,
+// never on a count bound. A live submission's baseline must not be evicted by
+// unrelated later submissions.
 const submittedTailBaselines = new Map<string, string>();
 
 function rememberSubmittedTail(clientMutationId: string, tail: string | undefined): void {
   if (tail === undefined) return;
   submittedTailBaselines.set(clientMutationId, tail);
-  while (submittedTailBaselines.size > SUBMITTED_TAIL_LIMIT) {
-    const oldest = submittedTailBaselines.keys().next().value;
-    if (oldest === undefined) break;
-    submittedTailBaselines.delete(oldest);
-  }
 }
 
 interface SendMutationOptions {
@@ -8650,6 +8665,7 @@ export function resetThreadsStoreForTests(): void {
   currentAppliedSequences.clear();
   currentThreadIds.clear();
   currentRefsByThreadId.clear();
+  submittedTailBaselines.clear();
   userIntentStopGenerations.clear();
   userIntentStopSequence = 0;
   activeStops.clear();

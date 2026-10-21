@@ -683,6 +683,78 @@ test("a read that publishes the new failed turn before the receipt creates no ma
   }
 });
 
+test("a live submission's baseline survives hundreds of later submissions", async () => {
+  const turn = failedTurn();
+  const { fake, storage } = await loadThread("ref_a", [turn]);
+  let releaseA!: () => void;
+  fake.on("turn/start", ({ clientMutationId, ref }) => {
+    if (ref !== "ref_a") return new Promise<never>(() => undefined);
+    return new Promise<MethodTypes["turn/start"]["result"]>((resolve) => {
+      releaseA = () =>
+        resolve({
+          receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
+          turn: { id: "held_turn", status: "inProgress", itemsView: "" },
+        });
+    });
+  });
+  fake.on("thread/read", () => new Promise<never>(() => undefined));
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+
+    let sendA!: Promise<void>;
+    await act(async () => {
+      sendA = submitWithPendingTracking(
+        { ref: "ref_a", text: "held follow-up", skillNames: [], onFailure: () => {} },
+        () => threadsStore.getState().send("ref_a", "held follow-up"),
+      );
+    });
+    await waitFor(() =>
+      expect(
+        fake.calls.filter((call) => call.method === "turn/start" && (call.params as { ref?: string }).ref === "ref_a"),
+      ).toHaveLength(1),
+    );
+
+    // More submissions than the old fixed bound held elsewhere in the page.
+    act(() => {
+      const model = threadsStore.getState().threads.get("ref_a");
+      if (!model) throw new Error("thread went away");
+      const threads = new Map(threadsStore.getState().threads);
+      for (let index = 0; index < 257; index += 1) {
+        threads.set(`b${index}`, {
+          ...model,
+          ref: `b${index}`,
+          turns: [{ id: "b-latest", status: "completed" as const, items: [] }],
+        });
+      }
+      threadsStore.setState({ threads });
+      for (let index = 0; index < 257; index += 1) {
+        void submitWithPendingTracking(
+          { ref: `b${index}`, text: `later ${index}`, skillNames: [], onFailure: () => {} },
+          () => threadsStore.getState().send(`b${index}`, `later ${index}`),
+        );
+      }
+    });
+    await waitFor(
+      () => expect(fake.calls.filter((call) => call.method === "turn/start").length).toBeGreaterThanOrEqual(258),
+      {
+        timeout: 15000,
+      },
+    );
+
+    await act(async () => {
+      releaseA();
+      await sendA;
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(retryReflectionForTests("ref_a")?.failedTurnId).toBe(turn.id);
+    await waitFor(() => expect(retryButton()?.disabled).toBe(true));
+  } finally {
+    storage.close();
+  }
+});
+
 test("a conversation advanced while Retry's durable write is paused creates no Retry row", async () => {
   const turn = failedTurn();
   vi.stubGlobal("indexedDB", new IDBFactory());
