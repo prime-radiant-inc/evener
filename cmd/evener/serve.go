@@ -177,7 +177,7 @@ type serveDeps struct {
 	resolveMeta      func(string, string, bool) (schema.SessionMeta, error)
 	newClient        func(string, io.Writer) (*llm.Client, func() error, error)
 	attachAPILogger  func(*llm.Client, string, io.Writer, bool) (func(string) error, func() error, error)
-	buildProfile     func(*llm.Client, cmdutil.ModelRef, string) (*provider.Profile, error)
+	buildProfile     func(context.Context, *llm.Client, cmdutil.ModelRef, string) (*provider.Profile, *agent.StartupModelListing, error)
 	applyCheap       func(*provider.Profile, string, *llm.Client) (*provider.Profile, error)
 	newSession       func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error)
 	restoreSession   func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, agent.RestoreSessionConfig) (*agent.Session, error)
@@ -635,7 +635,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return err
 		}
 	}
-	profile, err := deps.buildProfile(client, modelRef, *outputSchema)
+	profileCtx := ctx
+	if resuming {
+		profileCtx = llm.WithAPILogContext(ctx, resumedMeta.ID)
+	}
+	profile, startupListing, err := deps.buildProfile(profileCtx, client, modelRef, *outputSchema)
 	if err != nil {
 		return err
 	}
@@ -697,6 +701,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,
 		ProviderIdleTimeout:         *providerIdleTimeout,
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
+		StartupModelListing:         startupListing,
 	}
 	if *maxSubagentDepth >= 0 {
 		sessionCfg.MaxSubagentDepth = *maxSubagentDepth
@@ -742,6 +747,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			StateDir:                    sd,
 			Project:                     project,
 			ResolveProfile:              sessionCfg.ResolveProfile,
+			StartupModelListing:         startupListing,
 			AcquireSessionOwnership:     reserveSession,
 			OwnershipAlreadyAcquired:    true,
 			ModelFallbacks:              sessionCfg.ModelFallbacks,
@@ -2102,20 +2108,49 @@ func printServeEnvVars(w io.Writer) {
 // same facts. outputSchemaJSON and EVENER_ALLOWED_DECISIONS are applied in
 // this app layer so callers see the same communicate-tool schema regardless of
 // model.
-func buildInitialProfile(client *llm.Client, modelRef cmdutil.ModelRef, outputSchemaJSON string) (*provider.Profile, error) {
-	raw, err := cmdutil.ResolveProfile(client, modelRef.Qualified())
+func buildInitialProfile(ctx context.Context, client *llm.Client, modelRef cmdutil.ModelRef, outputSchemaJSON string) (*provider.Profile, *agent.StartupModelListing, error) {
+	raw, startupListing, err := resolveInitialProfile(ctx, client, modelRef)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var outputSchema map[string]any
 	if trimmed := strings.TrimSpace(outputSchemaJSON); trimmed != "" {
 		if jsonErr := json.Unmarshal([]byte(trimmed), &outputSchema); jsonErr != nil {
-			return nil, fmt.Errorf("invalid --output-schema: %w", jsonErr)
+			return nil, nil, fmt.Errorf("invalid --output-schema: %w", jsonErr)
 		}
 	}
 	p := provider.WithCommunicateOutputSchema(raw, outputSchema)
 	allowedDecisions := cmdutil.ParseAllowedDecisions(envvars.EVENERAllowedDecisions.Getenv())
-	return provider.WithAllowedDecisions(p, allowedDecisions), nil
+	return provider.WithAllowedDecisions(p, allowedDecisions), startupListing, nil
+}
+
+// resolveInitialProfile resolves modelRef on the client's registry. The Codex
+// transport rejects an id absent from its roster instead of synthesizing a
+// row, and the bundled roster lags the models the backend serves. A session
+// restarted after selecting such a model (or a fresh launch with a model the
+// picker just listed) resolves before any listing exists in this process, so
+// the catalog-only gate would reject a model the provider itself advertises.
+// On exactly that rejection, consult the instance's live listing once and
+// resolve again; every other failure is returned unchanged.
+func resolveInitialProfile(ctx context.Context, client *llm.Client, modelRef cmdutil.ModelRef) (*provider.Profile, *agent.StartupModelListing, error) {
+	raw, err := cmdutil.ResolveProfile(client, modelRef.Qualified())
+	if err == nil || !errors.Is(err, registry.ErrCodexModelNotListed) {
+		return raw, nil, err
+	}
+	listCtx, cancel := context.WithTimeout(ctx, llm.LiveModelListTimeout)
+	defer cancel()
+	listing, listErr := client.Models(listCtx, modelRef.Provider)
+	if listErr != nil {
+		return nil, nil, fmt.Errorf("%w; the provider's live model list could not be read: %w", err, listErr)
+	}
+	profile, err := cmdutil.ResolveProfile(client, modelRef.Qualified())
+	if err != nil {
+		return nil, nil, err
+	}
+	if !listing.Usable {
+		return profile, nil, nil
+	}
+	return profile, &agent.StartupModelListing{Instance: modelRef.Provider, Listing: listing}, nil
 }
 
 // errFastCheapProviderUnavailable identifies a --fast-cheap-model provider the

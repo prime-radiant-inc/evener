@@ -573,8 +573,8 @@ func (h *daemonRetirementProcessHelper) deps() serveDeps {
 		client.Register(&daemonRetirementProcessAdapter{h: h})
 		return client, func() error { return nil }, nil
 	}
-	deps.buildProfile = func(*llm.Client, cmdutil.ModelRef, string) (*provider.Profile, error) {
-		return provider.NewOpenAIProfile("gpt-test"), nil
+	deps.buildProfile = func(context.Context, *llm.Client, cmdutil.ModelRef, string) (*provider.Profile, *agent.StartupModelListing, error) {
+		return provider.NewOpenAIProfile("gpt-test"), nil, nil
 	}
 	deps.retirementClock = h.clock
 	deps.retirementObserve = func(event, rootID string) {

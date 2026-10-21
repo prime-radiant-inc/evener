@@ -742,6 +742,36 @@ func (r *Registry) ResolveGateCredential(instance, model string) (Resolved, erro
 	return Resolved{Instance: rec.name, Transport: t, Credential: cred, Warnings: warnings}, nil
 }
 
+// ResolveGateCredentialCandidate is ResolveGateCredential for an id the Codex
+// gate would reject as synthesized: it replays the model's matching rows and
+// globs at transport depth with the candidate allowed, so a matching glob's
+// auth override is honored, while still executing no credential command. It
+// is the spawn gate's fallback for a live-listed model the bundled roster
+// lacks.
+func (r *Registry) ResolveGateCredentialCandidate(instance, model string) (Resolved, error) {
+	name := strings.ToLower(strings.TrimSpace(instance))
+	rec, ok := r.recordFor(name)
+	if !ok {
+		return Resolved{}, fmt.Errorf("%w %q", ErrUnknownInstance, name)
+	}
+	if ref := ParseRef(strings.TrimSpace(model)); strings.EqualFold(ref.Instance, name) {
+		model = ref.Model
+	}
+	transport := r.listingTransport(rec)
+	if model != "" {
+		res, err := r.resolveLayersModeLive(rec, Ref{Model: model}, nil, resolveTransport, true, true)
+		if err != nil {
+			return Resolved{}, err
+		}
+		if BoolValue(res.Model.Disabled) {
+			return Resolved{}, fmt.Errorf("%s/%s: %w", rec.name, model, ErrModelDisabled)
+		}
+		transport = res.Transport
+	}
+	cred, warnings := r.credential(rec, transport)
+	return Resolved{Instance: rec.name, Transport: transport, Credential: cred, Warnings: warnings}, nil
+}
+
 // authHeaderName is the header the auth scheme of the transport a launch
 // resolves writes the credential to: the author's auth_header for header
 // auth, Authorization for every other scheme — the same choice the
