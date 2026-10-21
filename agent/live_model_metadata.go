@@ -18,6 +18,16 @@ type liveModelEnumeration struct {
 	err     error
 }
 
+// StartupModelListing is the live listing a launcher already fetched for the
+// session's model instance. NewSession and restore reuse it instead of asking
+// the provider a second time: a transient empty second response would clear
+// the live rows the initial resolve applied and reject a model the provider
+// serves. Runtime-only; never persisted.
+type StartupModelListing struct {
+	Instance string
+	Listing  llm.ModelListing
+}
+
 // resolveLiveModelProfileWithEnumerationTimeout lists the profile's instance
 // under a fixed timeout. sessionID attributes the canonical API-log attempt
 // this listing produces (llm.WithAPILogContext) when the caller already has
@@ -88,6 +98,36 @@ func resolveLiveModelProfileValidated(client *llm.Client, profile *provider.Prof
 		}
 	}
 	return filled, enumeration, nil
+}
+
+// resolveStartupModelProfile is NewSession's and restore's seam: when the
+// launcher already listed this instance, reuse that listing for the metadata
+// fill and the membership check instead of fetching again.
+func resolveStartupModelProfile(client *llm.Client, profile *provider.Profile, sessionID string, timeout llm.AdapterTimeout, primed *StartupModelListing) (*provider.Profile, liveModelEnumeration, error) {
+	if primed == nil || primed.Instance != profile.ID() || !primed.Listing.Usable {
+		return resolveLiveModelProfileValidated(client, profile, sessionID, timeout)
+	}
+	if res, err := client.Resolve(profile.ID() + "/" + profile.Model()); err == nil {
+		profile = profile.WithResolved(res)
+	}
+	enumeration := liveModelEnumeration{listing: primed.Listing}
+	if err := validateModelSwitchMembership(client, profile, primed.Listing); err != nil {
+		return profile, enumeration, err
+	}
+	return profile, enumeration, nil
+}
+
+// resolveStartupModelProfileWithReuse is the restore path's fail-open form:
+// it reuses a launcher listing when one is present and otherwise fetches,
+// without adding a membership rejection restore did not already make.
+func resolveStartupModelProfileWithReuse(client *llm.Client, profile *provider.Profile, sessionID string, timeout llm.AdapterTimeout, primed *StartupModelListing) (*provider.Profile, liveModelEnumeration) {
+	if primed == nil || primed.Instance != profile.ID() || !primed.Listing.Usable {
+		return resolveLiveModelProfileWithEnumerationTimeout(client, profile, sessionID, timeout)
+	}
+	if res, err := client.Resolve(profile.ID() + "/" + profile.Model()); err == nil {
+		profile = profile.WithResolved(res)
+	}
+	return profile, liveModelEnumeration{listing: primed.Listing}
 }
 
 // liveModelFor finds model among the listed rows: exact id first, then the

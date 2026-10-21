@@ -398,13 +398,27 @@ model, and the hook scripts of installed plugins it runs. So in every mode
 carved out of the mask, and so do spawned processes. The rest of `~/.config/evener` stays masked: hub configuration,
 credentials, and the plugin store's metadata (`known_marketplaces.json`, the
 registries and the marketplace clones), which records marketplace URLs that may
-carry a token. Inside the carve-out any `.git` stays masked too (in any letter
-case): a plugin installed by cloning keeps its remote URL, which may carry a
-token, in its installed copy's `.git/config`, and skills and hooks never need
-it. Seatbelt denies `.git` there by pattern; bubblewrap masks the `.git` entries it finds, at any depth, at each spawn,
-so a copy cloned during a running command is masked from the next spawn on, and
-a carve-out it cannot inspect fully at spawn (over 50,000 entries, or with a
-directory it cannot list) stays masked for spawned processes. The
+carry a token. Updated installers prepare managed plugins in private staging,
+remove Git metadata, and audit content before publishing it. Legacy metadata
+moves to a private archive while plugin content keeps its paths.
+
+At policy resolution, the probe samples the managed store's completed audit.
+When it records clean content, both backends grant `cache` and `bundled`
+without walking them at spawn. Publication is the authority for those roots.
+File tools still refuse any `.git` component by name, in any letter case, and
+Seatbelt keeps its path-free `.git` name rule. A managed root matches its
+lexical, resolved, or recorded on-disk spelling, so an APFS case or Unicode
+normalization does not restart the walk. All plugin-writing hubs and CLI
+executables must be updated before migration. An unsupported writer or external
+edit does not invalidate a clean marker automatically; existing policies do
+not re-read it per command. Same-user edits to managed content are outside this
+guarantee.
+
+When the sampled state is absent or unverified, both backends keep the existing
+walk. The user skills directory is always walked. For walked roots, bubblewrap
+masks the `.git` entries it finds at any depth on each spawn. A carve-out it
+cannot inspect fully (over 50,000 entries, or with a directory it cannot list)
+stays masked for spawned processes. The
 carve-out never writes and never touches the pseudo-filesystem floor. It is cut
 only from Evener's own config mask, and a directory is left masked when it
 contains a masked path or sits under another one (so your own denylist entries,
