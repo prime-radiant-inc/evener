@@ -635,7 +635,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return err
 		}
 	}
-	profile, startupListing, err := deps.buildProfile(ctx, client, modelRef, *outputSchema)
+	profileCtx := ctx
+	if resuming {
+		profileCtx = llm.WithAPILogContext(ctx, resumedMeta.ID)
+	}
+	profile, startupListing, err := deps.buildProfile(profileCtx, client, modelRef, *outputSchema)
 	if err != nil {
 		return err
 	}

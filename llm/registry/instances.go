@@ -742,22 +742,33 @@ func (r *Registry) ResolveGateCredential(instance, model string) (Resolved, erro
 	return Resolved{Instance: rec.name, Transport: t, Credential: cred, Warnings: warnings}, nil
 }
 
-// ResolveGateCredentialInstance judges a bare instance name at the provider's
-// own shape: the transport a synthesized row inherits, with the listing's
-// structural credential presence and no command execution. It is the gate's
-// fallback for a model the bundled roster cannot resolve. That model has no
-// row, so the default row's transport does not describe it; a default-row
-// override of none must not pass a launch that still authenticates the
-// provider's way.
-func (r *Registry) ResolveGateCredentialInstance(instance string) (Resolved, error) {
+// ResolveGateCredentialCandidate is ResolveGateCredential for an id the Codex
+// gate would reject as synthesized: it replays the model's matching rows and
+// globs at transport depth with the candidate allowed, so a matching glob's
+// auth override is honored, while still executing no credential command. It
+// is the spawn gate's fallback for a live-listed model the bundled roster
+// lacks.
+func (r *Registry) ResolveGateCredentialCandidate(instance, model string) (Resolved, error) {
 	name := strings.ToLower(strings.TrimSpace(instance))
 	rec, ok := r.recordFor(name)
 	if !ok {
 		return Resolved{}, fmt.Errorf("%w %q", ErrUnknownInstance, name)
 	}
-	transport, _, warnings := r.buildTransport(rec, Model{}, rec.head.Protocol)
-	cred, cw := r.credential(rec, transport)
-	warnings = append(warnings, cw...)
+	if ref := ParseRef(strings.TrimSpace(model)); strings.EqualFold(ref.Instance, name) {
+		model = ref.Model
+	}
+	transport := r.listingTransport(rec)
+	if model != "" {
+		res, err := r.resolveLayersModeLive(rec, Ref{Model: model}, nil, resolveTransport, true, true)
+		if err != nil {
+			return Resolved{}, err
+		}
+		if BoolValue(res.Model.Disabled) {
+			return Resolved{}, fmt.Errorf("%s/%s: %w", rec.name, model, ErrModelDisabled)
+		}
+		transport = res.Transport
+	}
+	cred, warnings := r.credential(rec, transport)
 	return Resolved{Instance: rec.name, Transport: transport, Credential: cred, Warnings: warnings}, nil
 }
 

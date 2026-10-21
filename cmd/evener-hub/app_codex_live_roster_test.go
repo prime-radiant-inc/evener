@@ -85,3 +85,30 @@ func TestCredentialGateIgnoresDefaultRowOverrideForUnlistedCodexModel(t *testing
 		t.Fatal("the resume gate judged an unlisted Codex model by its default row's auth override")
 	}
 }
+
+// TestCredentialGateHonorsGlobOverrideForUnlistedCodexModel pins the other
+// side: an unlisted model's matching glob does describe it, so a glob that
+// sets auth to none makes the launch credentialless even without an OAuth
+// record. The fallback must replay the glob at transport depth.
+func TestCredentialGateHonorsGlobOverrideForUnlistedCodexModel(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	clearProviderKeysFromEnvironment(t)
+
+	dir := t.TempDir()
+	store, err := credentials.LoadStore(dir + "/credentials.toml")
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	reg := newProbeRegistry(t, t.TempDir(), store, nil, map[string]registry.Provider{
+		"work": {
+			Base: "openai-codex",
+			Models: map[string]registry.Model{
+				"gpt-reserve*": {Transport: &registry.Transport{Auth: registry.AuthNone}},
+			},
+		},
+	})
+
+	if err := validateProviderCredentials("work", "gpt-reserve", reg); err != nil {
+		t.Fatalf("the resume gate ignored a matching glob's auth override: %v", err)
+	}
+}
