@@ -1043,6 +1043,45 @@ test("the reflection marker opens only after the enqueue await, not inside the c
   }
 });
 
+test("a storage-refused continuation uses the direct fallback and still opens the marker", async () => {
+  const turn = failedTurn();
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  const storage = new MutationOutboxIndexedDB({
+    beforeCommit: (operation) => {
+      if (operation === "enqueueIntent") throw new DOMException("full", "QuotaExceededError");
+    },
+  });
+  const { fake } = await loadThread("ref_a", [turn], {}, storage);
+  // The direct fallback does not create a pending row and no notification
+  // proves the new turn. The marker alone keeps the old failure inactive.
+  fake.on("thread/read", () => new Promise<never>(() => undefined));
+  fake.on("turn/start", ({ clientMutationId }) => ({
+    receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
+    turn: { id: "turn_continued", status: "inProgress", itemsView: "" },
+  }));
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+    fireEvent.click(retryButton() as HTMLButtonElement);
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
+    await flushPendingTurnsProjectionForTests();
+
+    expect(await storage.listOutbox("ref_a")).toEqual([]);
+    const marker = retryReflectionForTests("ref_a");
+    expect(marker?.failedTurnId).toBe(turn.id);
+    expect(marker?.clientMutationId).toBeUndefined();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(true));
+    await act(async () => {
+      await threadsStore.getState().continueTurn("ref_a", turn.id);
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+  } finally {
+    storage.close();
+  }
+});
+
 test("a superseded reflection read cannot reopen the old Retry", async () => {
   const turn = failedTurn();
   const { fake, storage } = await loadThread("ref_a", [turn]);
