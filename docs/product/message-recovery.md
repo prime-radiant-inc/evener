@@ -54,6 +54,63 @@ is missing. The Send press captures its Stop barrier before asynchronous draft
 persistence, so a newer Stop leaves the fresh row canceled rather than dispatching
 it. Storage failure retains recoverable content and reports the failure.
 
+## Native controls and recovery
+
+The transcript ghosts and Queue sheet share the same eligible local messages,
+including offline waiting messages and messages held by Stop. Edit appends to
+current work; Remove deletes only the selected durable identity. Local Edit
+waits for a loaded, saved, non-submitting draft and completed image encoding.
+Remove does not require an empty or ready composer. Queue-sheet Edit closes the
+sheet before returning to the composer. The three-row transcript limit and More
+count include local queue entries, not delivery-uncertain recovery.
+
+The native screen passes the complete composition through online, offline and
+command submission: text, image bytes and names, selections, mentions and exact
+recovery source IDs. Image-only and selection-only work can be sent. Existing
+slash-command attachment routing is unchanged. Accepted daemon queue editing
+remains text-only; delivery-uncertain Discard and rejected recovery keep their
+separate controls and restrictions.
+
+Drafts and mutations live in separate SQLite databases. An Edit first claims the
+source as durable editing recovery, then saves its ID beside the draft. Reopening
+the screen reacquires any unowned editing sources, including a claim interrupted
+before draft save. A source is hidden only when saved draft ownership represents
+that exact ID. Failed saves retain the source; Retry saving and restored image
+capacity allow recovery to finish. Recovery never sends automatically.
+
+```mermaid
+flowchart LR
+  Source[Retained editing source] --> Capture[Draft captures source IDs]
+  Capture -->|Explicit Send| Receipt[Mutation transaction consumes exact sources and records receipt]
+  Receipt --> Confirm[Draft confirms captured work and persists acknowledgment marker]
+  Confirm --> Ack[Mutation store acknowledges receipt]
+  Ack --> Clear[Draft removes acknowledgment marker]
+```
+
+`queuedMessageControls.ts` reconciles these checkpoints after admission, reopen
+and storage repair. Receipt proof must match the captured IDs; a missing outbox
+row alone proves nothing. Unconsumed captured work returns beside newer typing
+for an explicit Send. Failed acknowledgment exposes Retry without sending again.
+
+For offline screen recreation, `screens.tsx` stores only the last observed
+matching-ref, connected/open `{threadId, instanceId}` in existing device Storage
+under `queued-message-identity:v1:` plus the composite hub/ref key. Reads, writes
+and null-client registration belong to effects. A current matching conversation
+supersedes this cache. The cache is local Edit/Remove authority only: it does not
+restore a conversation, enable Send, acquire transport or grant capabilities.
+Invalid or failed storage remains visible through Retry; a failed write is not
+durable success. No selected outbox row supplies this identity.
+
+Older native records may retain wire image bytes but lack their original composer
+image-reference associations. Edit preserves their stored prose, including literal
+and gapped `[image N]` references, and assigns attachments noncolliding markers.
+The existing toast asks the user to check references before sending. It cannot
+reconstruct an association that was never stored.
+
+Broader [C05 convergence](friction.md) and C06 rejected-image recovery remain
+deferred. These controls do not establish the cause of a reported screenshot
+duplicate; only a reproduced identity/projection case can establish that cause.
+
 ## Owners and checks
 
 - Shared policy and composition: `appwire-client/typescript/state/mutation` and
@@ -67,10 +124,22 @@ it. Storage failure retains recoverable content and reports the failure.
 - End-to-end component checks: `composer/Composer.queuedMessages.test.tsx`, using
   the real composer, stores and IndexedDB adapter with external transport and
   browser-platform seams.
+- Native integration and cached local identity: `mobile-native/src/screens.tsx`.
+- Native mutation authority: `nativeMutationRuntime.ts` and
+  `mutationOutboxStorage.ts`; draft ownership and bytes: `draftDocument.ts` and
+  `draftRepository.ts`; separate-store coordination: `queuedMessageControls.ts`.
+- Native acquisition and projections: `useNativeMutationRecovery.ts`,
+  `MutationRecoveryPanel.tsx` and `session/ghosts.ts`; surfaces:
+  `session/GhostRows.tsx` and `QueueSheet.tsx`.
+- Native checks: `queuedMessageControls.render.test.tsx` renders the production
+  screen and persisted component journeys; `useNativeMutationRecovery.render.test.tsx`
+  checks effect-only acquisition/registration. Other native paths in this list
+  are relative to `mobile-native/src/`.
 
 Paths beginning with `composer/` are under
-`cmd/evener-hub/frontend/src/panes/session/`. Native UI controls are a separate
-implementation step; this guide's control behavior describes the browser.
+`cmd/evener-hub/frontend/src/panes/session/`. Browser recovery consolidates one
+durable owner; native drafts retain exact source IDs across separate stores.
 
-See [S11](subsystems.md), the [web guide](../web-ui/README.md) and the historical
+See [S03 and S11](subsystems.md), the [native guide](../../mobile-native/README.md),
+the [web guide](../web-ui/README.md) and the historical
 [Stop/outbox design](../design/stop-cancellation-outbox.md).

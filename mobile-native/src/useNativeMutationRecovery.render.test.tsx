@@ -39,6 +39,7 @@ const navigationState = vi.hoisted(() => ({
 const recorder = vi.hoisted(() => ({
 	inRenderPass: true,
 	opens: [] as { database: string; phase: "render" | "effect" }[],
+	identityReads: [] as { key: string; phase: "render" | "effect" }[],
 }));
 const harness = vi.hoisted(() => ({
 	connection: {
@@ -132,7 +133,15 @@ vi.mock("expo-sqlite", async () => {
 	};
 });
 vi.mock("expo-sqlite/kv-store", () => ({
-	Storage: { getItemSync: () => null, setItemSync: () => {} },
+	Storage: {
+		getItemSync: (key: string) => {
+			if (!key.startsWith("queued-message-identity:v1:")) return null;
+			recorder.identityReads.push({ key, phase: recorder.inRenderPass ? "render" : "effect" });
+			return JSON.stringify({ threadId: "cached-thread", instanceId: "cached-instance" });
+		},
+		setItemSync: () => {},
+		removeItemSync: () => {},
+	},
 }));
 vi.mock("expo-file-system", () => ({
 	File: class File {
@@ -281,6 +290,20 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 	);
 	const firstKey = nativeMutationTargetKey("hub-1", "ref-1");
 	await seedRecoveryRow(runtime, firstKey);
+	const registrations: { phase: string; args: unknown[] }[] = [];
+	let released = 0;
+	const register = NativeMutationRuntime.prototype.registerTarget;
+	const registrationProbe = vi.spyOn(NativeMutationRuntime.prototype, "registerTarget").mockImplementation(function (
+		this: NativeMutationRuntime,
+		...args
+	) {
+		registrations.push({ phase: recorder.inRenderPass ? "render" : "effect", args });
+		const release = register.apply(this, args);
+		return () => {
+			released++;
+			release();
+		};
+	});
 
 	const hubId = "hub-1";
 	let targetRef = "ref-1";
@@ -327,6 +350,10 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 	// The recovery surface really enumerated the seeded durable row through
 	// the real runtime's read pipeline, inside the real screen's tree.
 	await settle();
+	expect(registrations).toEqual([
+		{ phase: "effect", args: ["hub-1", "ref-1", null, { threadId: "cached-thread", instanceId: "cached-instance" }] },
+	]);
+	expect(recorder.identityReads).toEqual([{ key: `queued-message-identity:v1:${firstKey}`, phase: "effect" }]);
 	expect(latestProjection?.loading).toBe(false);
 	expect(latestProjection?.snapshot?.recovery.map((row) => row.clientMutationId)).toEqual(["render-1"]);
 	// The screen rendered its actual content, not a stub: the composer's
@@ -351,6 +378,11 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 	expect(readsAfter).toHaveLength(2);
 	expect(readsAfter[1].args).toEqual([nativeMutationTargetKey("hub-1", "ref-2")]);
 	expect(subscriptionLifetime.added - subscriptionLifetime.removed).toBe(1);
+	expect(released).toBe(1);
+	expect(registrations.at(-1)).toEqual({
+		phase: "effect",
+		args: ["hub-1", "ref-2", null, { threadId: "cached-thread", instanceId: "cached-instance" }],
+	});
 
 	// A storage change for the OLD route's key never re-reads the new
 	// generation, even though both generations shared this runtime.
@@ -380,6 +412,10 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 	expect(recorder.opens.filter((open) => open.database === "evener-mutations.db")).toEqual([
 		{ database: "evener-mutations.db", phase: "effect" },
 	]);
+	expect(recorder.identityReads.every((call) => call.phase === "effect")).toBe(true);
+	act(() => renderer.unmount());
+	expect(released).toBe(2);
+	registrationProbe.mockRestore();
 });
 
 it("classifies a deliberate render-time runtime call as render-pass, proving the detector is armed", () => {
