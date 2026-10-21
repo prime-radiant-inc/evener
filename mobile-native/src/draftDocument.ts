@@ -1,4 +1,10 @@
-import { insertMarker, markerText, MAX_ATTACHMENTS, stripMarker } from "@evener/appwire-client";
+import {
+	insertMarker,
+	markerText,
+	MAX_ATTACHMENTS,
+	nextComposerImageMarker,
+	stripMarker,
+} from "@evener/appwire-client";
 import type { InputAttachment } from "@evener/appwire-client";
 import type { DraftImage, DraftImageData } from "./draftImages";
 import { restoreUnconfirmedDraft } from "./draftRecovery";
@@ -139,19 +145,34 @@ export class DraftDocument {
 		const images = record.images ?? [];
 		if (
 			images.length >= MAX_ATTACHMENTS ||
-			images.some((item) => item.marker === image.marker) ||
 			[...images, ...(record.unconfirmedImages ?? [])].some((item) => item.id === image.id)
 		)
 			throw new Error("This image cannot be added to the draft.");
+		const attachments = [...images, ...(record.unconfirmedImages ?? [])];
+		const marker =
+			attachments.some((item) => item.marker === image.marker) || record.draft.includes(markerText(image.marker))
+				? nextComposerImageMarker(record.draft, attachments, image.marker)
+				: image.marker;
 		const position = Math.max(0, Math.min(cursor ?? record.draft.length, record.draft.length));
-		const text = insertMarker(record.draft, position, position, markerText(image.marker)).value;
-		this.unsavedImages.set(image.id, image);
+		const markerValue = markerText(marker);
+		const text = insertMarker(record.draft, position, position, markerValue).value;
+		const composer = record.composer?.mentions
+			? {
+					...record.composer,
+					mentions: record.composer.mentions.map((mention) => ({
+						...mention,
+						offset: mention.offset >= position ? mention.offset + markerValue.length : mention.offset,
+					})),
+				}
+			: record.composer;
+		this.unsavedImages.set(image.id, { ...image, marker });
 		try {
 			this.persist(
 				{
 					...record,
 					draft: text,
-					images: [...(record.images ?? []), reference],
+					images: [...(record.images ?? []), { ...reference, marker }],
+					...(composer === undefined ? {} : { composer }),
 				},
 				true,
 			);
@@ -166,12 +187,30 @@ export class DraftDocument {
 		const image = record.images?.find((item) => item.id === id);
 		if (!image) return;
 		const images = record.images?.filter((item) => item.id !== id);
+		const marker = markerText(image.marker);
+		const markerOffset = record.draft.indexOf(marker);
+		const composer =
+			record.composer?.mentions && markerOffset >= 0
+				? {
+						...record.composer,
+						mentions: record.composer.mentions.map((mention) => ({
+							...mention,
+							offset:
+								mention.offset >= markerOffset + marker.length
+									? mention.offset - marker.length
+									: mention.offset > markerOffset
+										? markerOffset
+										: mention.offset,
+						})),
+					}
+				: record.composer;
 		try {
 			this.persist(
 				{
 					...record,
 					draft: stripMarker(record.draft, undefined, image.marker).value,
 					images: images?.length ? images : undefined,
+					...(composer === undefined ? {} : { composer }),
 				},
 				true,
 			);
