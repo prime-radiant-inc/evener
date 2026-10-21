@@ -630,20 +630,25 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			//
 			// The optimistic table has the same unique index and the same risk, so
 			// it moves the same way.
+			//
+			// The OUTBOX move is restricted to `ids` - exactly the rows this method
+			// rewrites below. Moving a canceled row here would give it the new target
+			// while its payload still named the retired identity, and its "Send now"
+			// action would release a request addressing a session that no longer
+			// exists. A canceled row left on the old ref can never dispatch, which is
+			// the safe resting place for it.
 			const destinationEpoch = this.stopEpochOf(to.ref);
-			for (const table of [TABLES.outbox, TABLES.optimistic]) {
-				const moving = this.db.getAllSync<{ client_mutation_id: string }>(
-					`SELECT client_mutation_id FROM ${table} WHERE target_ref = ? ORDER BY intent_sequence`,
-					ref,
+			const optimistic = this.db.getAllSync<{ client_mutation_id: string }>(
+				`SELECT client_mutation_id FROM ${TABLES.optimistic} WHERE target_ref = ? ORDER BY intent_sequence`,
+				ref,
+			);
+			for (const row of optimistic) {
+				this.db.runSync(
+					`UPDATE ${TABLES.optimistic} SET target_ref = ?, intent_sequence = ? WHERE client_mutation_id = ?`,
+					to.ref,
+					this.allocateSequence(to.ref),
+					row.client_mutation_id,
 				);
-				for (const row of moving) {
-					this.db.runSync(
-						`UPDATE ${table} SET target_ref = ?, intent_sequence = ? WHERE client_mutation_id = ?`,
-						to.ref,
-						this.allocateSequence(to.ref),
-						row.client_mutation_id,
-					);
-				}
 			}
 			// Recovery rows carry no unique sequence index and no wire fence, so they
 			// move as a set.
@@ -668,9 +673,10 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 				if (fence !== undefined) payload.expectedInstanceId = fence;
 				this.db.runSync(
 					`UPDATE ${TABLES.outbox}
-					 SET payload = ?, intent_sequence = ?, stop_epoch_at_enqueue = ?,
+					 SET target_ref = ?, payload = ?, intent_sequence = ?, stop_epoch_at_enqueue = ?,
 					     thread_id = COALESCE(?, thread_id), instance_id = COALESCE(?, instance_id)
 					 WHERE client_mutation_id = ?`,
+					to.ref,
 					JSON.stringify(payload),
 					this.allocateSequence(to.ref),
 					destinationEpoch,

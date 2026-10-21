@@ -26,8 +26,20 @@ export function sendAction(
 	// unreflected queues behind it: two parked turn/starts would race for the
 	// same active turn once recovery lands, and the daemon rejects the loser as
 	// already active instead of running it.
+	//
+	// The queue answer still obeys the same rules any other queue does - a
+	// restart-required daemon offers nothing, and a harness that cannot queue
+	// must not be offered (or, offline, made to persist) a queue request.
 	if (conversation.resumeRequired) {
-		if (ownPendingSend(pendingMutations)) return "queue";
+		if (conversation.status.type === "restartRequired") return "none";
+		if (ownPendingSend(pendingMutations)) {
+			const canQueue = deriveSendQueueAvailability({
+				statusType: conversation.status.type,
+				capabilities: conversation.capabilities,
+				hasPendingSend: true,
+			}).canQueue;
+			return canQueue ? "queue" : "none";
+		}
 		return resumeOrNone(conversation);
 	}
 	if (!connected) return offlineAction(conversation, ownPendingSend(pendingMutations));
