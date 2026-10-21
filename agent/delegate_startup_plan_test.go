@@ -131,6 +131,14 @@ func TestRestoreDoesNotRepeatPersistedPlanSteering(t *testing.T) {
 	}}, nil); err != nil {
 		t.Fatalf("seed child task file: %v", err)
 	}
+	// A spawn also persists its steering, which restore reloads. Without it the
+	// restore would be the crash-window case, not the resumed-child case.
+	if err := saveQueues(fixture.stateDir, fixture.childID, []steeringMessage{{
+		Kind: events.SteeringKindTaskList,
+		Text: "<SYSTEM-REMINDER>\nTask list:\n  [in_progress] #1: Restored committed workflow\n    prompt: Resume the committed workflow.\n</SYSTEM-REMINDER>",
+	}}, nil); err != nil {
+		t.Fatalf("persist child plan steering: %v", err)
+	}
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
 		t.Fatalf("restore root: %v", err)
@@ -157,8 +165,60 @@ func TestRestoreDoesNotRepeatPersistedPlanSteering(t *testing.T) {
 		_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
 	}()
 
-	if got := countPlanSteering(sub.sess); got != 0 {
-		t.Fatalf("restore queued %d plan messages for a child whose tasks survived, want 0", got)
+	// The persisted plan is reloaded, so one is expected. A second copy would
+	// mean restore announced again over steering that was already queued.
+	if got := countPlanSteering(sub.sess); got != 1 {
+		t.Fatalf("restore queued %d plan messages for a resumed child, want exactly the reloaded one", got)
+	}
+}
+
+// A crash can land between the task store write and the steering write. The
+// tasks survive, nothing is queued, and nothing was delivered; restore must
+// announce the plan rather than treating the tasks as proof.
+func TestRestoreAnnouncesAPlanThatWasNeverDelivered(t *testing.T) {
+	t.Parallel()
+	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+		descriptor.TaskTemplates = []taskpkg.TaskTemplate{{
+			Title:  "Crash-window workflow",
+			Prompt: "CRASH_WINDOW_PROMPT",
+		}}
+	})
+	// The tasks exist (the store write happened); the steering write did not.
+	childStore := taskpkg.NewTaskStore(fixture.stateDir, fixture.childID)
+	if err := childStore.PopulateFromTemplates([]taskpkg.TaskTemplate{{
+		Title:  "Crash-window workflow",
+		Prompt: "CRASH_WINDOW_PROMPT",
+	}}, nil); err != nil {
+		t.Fatalf("seed child task file: %v", err)
+	}
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+
+	reservation, err := root.delegateController.ReserveStart(rootDelegateActor(root.id), fixture.delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart: %v", err)
+	}
+	started, err := root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	sub, restored, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	if err != nil {
+		t.Fatalf("restoreIdle: %v", err)
+	}
+	if !restored {
+		t.Fatal("restoreIdle unexpectedly reused a resident child")
+	}
+	defer func() {
+		sub.sess.discardRestoredCandidate()
+		_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
+	}()
+
+	if got := countPlanSteering(sub.sess); got != 1 {
+		t.Fatalf("restore queued %d plan messages for an undelivered plan, want 1", got)
 	}
 }
 

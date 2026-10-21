@@ -2875,7 +2875,11 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 					return nil, false, err
 				}
 			}
-		} else if seeded {
+		} else if seeded || !child.hasTaskListAnnouncement() {
+			// Tasks present is not proof the plan was announced: the store is
+			// written before the steering, so a crash between them leaves tasks
+			// with nothing queued and nothing delivered. The transcript is the
+			// durable record of delivery, so announce when it shows no plan.
 			if err := steerDelegatePlan(child, childStore); err != nil {
 				child.discardRestoredCandidate()
 				return nil, false, err

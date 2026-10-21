@@ -79,7 +79,7 @@ func renderTaskListReminder(tasks []taskpkg.Task, withPrompts bool) string {
 		b.WriteString("\n")
 		if withPrompts {
 			if prompt := strings.TrimSpace(t.Prompt); prompt != "" {
-				for _, line := range strings.Split(prompt, "\n") {
+				for line := range strings.SplitSeq(prompt, "\n") {
 					fmt.Fprintf(b, "    prompt: %s\n", line)
 				}
 			}
@@ -143,6 +143,39 @@ func withCurrentStep(plan string, current taskpkg.Task) string {
 	fmt.Fprintf(&b, "\nWork #%d first: %s\n", current.ID, current.Description)
 	b.WriteString(closing)
 	return b.String()
+}
+
+// hasTaskListAnnouncement reports whether this session has already been given a
+// task-list announcement, from either durable record: a delivery recorded in
+// its transcript, or steering still waiting in its queue. A crash can land
+// between the task store write and the steering write, so a non-empty store
+// alone does not prove the delegate was ever told its plan.
+func (s *Session) hasTaskListAnnouncement() bool {
+	s.mu.Lock()
+	for _, message := range s.steeringQueue {
+		if message.Kind == events.SteeringKindTaskList {
+			s.mu.Unlock()
+			return true
+		}
+	}
+	s.mu.Unlock()
+
+	if s.stateDir == "" || s.id == "" {
+		return false
+	}
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id), s.id)
+	if err != nil {
+		// An unreadable transcript cannot prove delivery. Announcing again is
+		// the safer error: a repeated plan wastes context, a lost one costs the
+		// delegate its plan.
+		return false
+	}
+	for _, entry := range data.Entries {
+		if entry.Turn.SteeringKind == events.SteeringKindTaskList {
+			return true
+		}
+	}
+	return false
 }
 
 // taskReminderAllDone signals that the agent has completed all tasks on its
