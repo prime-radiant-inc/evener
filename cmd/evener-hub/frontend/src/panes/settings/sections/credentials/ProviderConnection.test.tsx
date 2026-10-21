@@ -1815,6 +1815,20 @@ test("saving the endpoint row edits with the row's fingerprint and clears the te
   expect(screen.getByText("https://moved.example/v1")).toBeTruthy();
 });
 
+test("saving an unchanged endpoint sends no edit", async () => {
+  const { user, client } = setup(savedList());
+  await choose(user);
+  await user.click(screen.getByRole("button", { name: "Edit" }));
+  expect(screen.getByLabelText("Endpoint URL")).toHaveProperty("value", "https://anthropic.example/v1");
+
+  // The editor was seeded from the sanitized listing. Saving it unchanged must
+  // close the row rather than write that display value back, which would delete
+  // the query parameters and userinfo the listing never showed.
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(screen.queryByLabelText("Endpoint URL")).toBeNull());
+  expect(client.calls.filter((call) => call.method === "evener/instance/edit")).toHaveLength(0);
+});
+
 test("All connection settings saves protocol, surface, API key env and credential header through one edit", async () => {
   const { user, client } = setup(savedList());
   const edited: InstanceEntry = {
@@ -1852,6 +1866,38 @@ test("All connection settings saves protocol, surface, API key env and credentia
     originClientId: "test-tab",
   });
   await waitFor(() => expect(screen.queryByLabelText("Protocol")).toBeNull());
+});
+
+test("saving settings clears a typed draft when the destination moved under it", async () => {
+  const { user, client } = setup(savedList());
+  await choose(user);
+  await user.click(screen.getByRole("button", { name: "Replace" }));
+  await enterText(user, screen.getByLabelText("API key"), "typed-for-anthropic");
+
+  // The edit answers with the row it wrote, then another client repoints the
+  // connection before the card's confirming read: the settings save adopts the
+  // replacement row while the draft was typed for the old destination.
+  const moved: InstanceEntry = {
+    ...savedList().instances[0]!,
+    baseUrl: "https://moved.example/v1",
+    endpointFingerprint: "fp-moved",
+  };
+  client.on("evener/instance/edit", () => structuredClone(savedList()));
+  client.on("evener/instance/list", () => ({
+    instances: [moved],
+    availableProviders: structuredClone(catalogue),
+  }));
+
+  await user.click(screen.getByText("All connection settings"));
+  await user.click(screen.getByRole("button", { name: "Save settings" }));
+
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/instance/edit")).toBe(true));
+  expect(await alertReason()).toBe("endpoint-changed");
+  // The draft belongs to the endpoint it was typed for, so it is gone before a
+  // later Save can pass the destination comparison and send it to the move.
+  expect(screen.getByLabelText("API key")).toHaveProperty("value", "");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
 });
 
 test("the add card creates with the typed name and base URL, then writes the key and tests", async () => {
@@ -1917,6 +1963,60 @@ test("the add card creates with the typed name and base URL, then writes the key
   });
 });
 
+test("a created endpoint with a query is confirmed by fingerprint, not by its sanitized URL", async () => {
+  const { user, client } = setup();
+  await choose(user, "Azure");
+  const row: InstanceEntry = {
+    name: "query-team",
+    providerId: "azure",
+    base: "azure",
+    // The listing sanitizes the authored destination's query away. The
+    // fingerprint is the immutable identity of the endpoint the create wrote.
+    baseUrl: "https://team.azure.example/v1",
+    endpointFingerprint: "fp-query-team",
+    protocol: "openai-chat",
+    auth: "api-key",
+    authModes: ["apiKey"],
+    implicit: false,
+    isDefault: false,
+    activeSource: "none",
+    hasStoredOAuth: false,
+    credentialRequired: true,
+  };
+  client.on("evener/instance/create", () => {
+    const listing = { instances: [row], availableProviders: structuredClone(catalogue) };
+    client.on("evener/instance/list", () => structuredClone(listing));
+    return structuredClone(listing);
+  });
+  client.on("evener/auth/apiKey/set", () => {
+    row.activeSource = "store";
+    row.hasStoredFile = true;
+    return { ...saved, provider: "query-team" };
+  });
+  client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+
+  await enterName(user, "query-team");
+  await enterText(user, screen.getByLabelText("Endpoint URL"), "https://team.azure.example/v1?tenant=a");
+  await enterText(user, screen.getByLabelText("API key"), "query-secret");
+  await user.click(screen.getByRole("button", { name: "Save and test" }));
+  await checkConfirmed();
+
+  // The authored endpoint is the create's own row: its sanitized display URL
+  // differs from what was typed (the query is stripped) but its fingerprint
+  // proves the destination, so the key is written without a review detour.
+  expect(screen.queryByTestId("access-review")).toBeNull();
+  expect(client.calls.find((call) => call.method === "evener/auth/apiKey/set")?.params).toEqual({
+    provider: "query-team",
+    value: "query-secret",
+    expectedEndpointFingerprint: "fp-query-team",
+    originClientId: "test-tab",
+  });
+  expect(client.calls.find((call) => call.method === "evener/auth/test")?.params).toEqual({
+    provider: "query-team",
+    expectedEndpointFingerprint: "fp-query-team",
+  });
+});
+
 test.each([
   {
     state: "an endpoint conflict",
@@ -1955,51 +2055,6 @@ test.each([
   expect(await alertReason()).toBe(reason);
   expect(document.querySelector('[role="status"][data-state="success"]')).toBeNull();
   expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
-});
-
-test("a create reconciled onto a different endpoint sends no credential and requires review", async () => {
-  const { user, client } = setup();
-  await choose(user, "Azure");
-  await enterName(user, "raced-team");
-  await enterText(user, screen.getByLabelText("Endpoint URL"), "https://authored.example/v1");
-  await enterText(user, screen.getByLabelText("API key"), "authored-key");
-  // Another client repoints the name before this create's confirmation read:
-  // the create answers with the row that now resolves to the other endpoint.
-  const repointed: InstanceEntry = {
-    ...catalogue[0]!.setup!,
-    name: "raced-team",
-    providerId: "azure",
-    implicit: false,
-    baseUrl: "https://repointed.example/v1",
-    endpointFingerprint: "fp-repointed",
-    activeSource: "none",
-  };
-  const listing: InstanceListResponse = {
-    instances: [repointed],
-    availableProviders: structuredClone(catalogue),
-  };
-  client.on("evener/instance/create", () => {
-    client.on("evener/instance/list", () => structuredClone(listing));
-    return structuredClone(listing);
-  });
-  client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
-
-  await user.click(screen.getByRole("button", { name: "Save and test" }));
-
-  // The card reviewed the destination before writing the key for it.
-  const review = await screen.findByTestId("access-review");
-  expect(review.textContent).toContain("https://authored.example/v1");
-  expect(review.textContent).toContain("https://repointed.example/v1");
-  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
-  expect(client.calls.some((call) => call.method === "evener/auth/test")).toBe(false);
-
-  await user.click(screen.getByRole("button", { name: "Use reviewed access and test" }));
-  await checkConfirmed();
-  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
-  expect(client.calls.find((call) => call.method === "evener/auth/test")?.params).toEqual({
-    provider: "raced-team",
-    expectedEndpointFingerprint: "fp-repointed",
-  });
 });
 
 test("dismissing during the free-name read does not create the connection", async () => {
@@ -2170,6 +2225,34 @@ test("Enter in the endpoint editor saves that row's draft", async () => {
     save.resolve(savedList("anthropic", { baseUrl: "https://moved.example/v1" }));
     await save.promise;
   });
+});
+
+test("Enter in a connection setting saves the settings instead of testing the connection", async () => {
+  const { user, client } = setup(savedList());
+  await choose(user);
+  await user.click(screen.getByText("All connection settings"));
+  const edited = { ...savedList().instances[0]!, apiKeyEnv: "TEAM_KEY" };
+  client.on("evener/instance/edit", () => {
+    const listing: InstanceListResponse = {
+      instances: [edited],
+      availableProviders: structuredClone(catalogue),
+    };
+    client.on("evener/instance/list", () => structuredClone(listing));
+    return structuredClone(listing);
+  });
+  const env = screen.getByLabelText("API key env");
+  await enterText(user, env, "TEAM_KEY");
+
+  await user.keyboard("{Enter}");
+
+  // Enter belongs to the editor that has focus: it issues the settings edit
+  // instead of testing the configuration still on the wire.
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/instance/edit")).toBe(true));
+  expect(client.calls.find((call) => call.method === "evener/instance/edit")?.params).toMatchObject({
+    name: "anthropic",
+    apiKeyEnv: "TEAM_KEY",
+  });
+  expect(client.calls.some((call) => call.method === "evener/auth/test")).toBe(false);
 });
 
 test("Enter in the add card creates the connection", async () => {

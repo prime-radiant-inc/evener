@@ -378,6 +378,10 @@ function SelectedConnection({
   const [newName, setNewName] = useState(provider.setup?.name ?? provider.id);
   const [newBaseUrl, setNewBaseUrl] = useState("");
   const [endpointDraft, setEndpointDraft] = useState("");
+  // The sanitized value the endpoint editor was opened with. The listing strips
+  // query parameters and userinfo, so saving the seed back unchanged would
+  // delete configuration the editor never displayed.
+  const [endpointSeed, setEndpointSeed] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsDraft, setSettingsDraft] = useState<SettingsDraft>(() => settingsOf(row));
   const [settingsBaseline, setSettingsBaseline] = useState<SettingsDraft>(() => settingsOf(row));
@@ -479,6 +483,19 @@ function SelectedConnection({
     setReview(null);
     setPhase("idle");
     setError(null);
+  }
+
+  /** adoptBaseline makes next the card's new baseline. A destination that
+   * moved under a typed credential draft invalidates that draft: it was typed
+   * for the endpoint the user saw, and a later Save that compared the row with
+   * the adopted baseline would otherwise pass the destination check and send
+   * the draft to the replacement. The card clears it and says what changed. */
+  function adoptBaseline(next: InstanceEntry | undefined, previous: InstanceEntry | undefined) {
+    if (next && previous && destination(next) !== destination(previous) && value.trim()) {
+      changeValue("");
+      setError({ reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR });
+    }
+    setBaseline(next);
   }
 
   async function check(token: number, target: InstanceEntry) {
@@ -735,19 +752,14 @@ function SelectedConnection({
       return;
     }
     const typedKey = value.trim();
-    if (!needsConfiguration(created) && created.baseUrl !== trimmedBaseUrl) {
-      // The name resolved to a different destination than this card authored.
-      // The draft belongs to the authored endpoint, so it is dropped; the
-      // reviewed row is contacted only after the user accepts the move.
-      changeValue("");
-      setBaseline({ ...created, baseUrl: trimmedBaseUrl });
-      setReview(created);
-      setPhase("review");
-      return;
-    }
     setBaseline(created);
     // The key typed in the add state belongs to the endpoint just created, so
-    // it is written against that row and tested with it.
+    // it is written against that row and tested with it. The authored row is
+    // identified by the fingerprint its create captured under the hub's write
+    // lock, never by the listing's display URL: sanitization strips query
+    // parameters and userinfo, so equal-looking URLs can name different
+    // endpoints and a query-bearing endpoint's own URL is not what the listing
+    // shows.
     if (storedMode && typedKey) {
       if (!applied || authoredFingerprint === undefined || created.endpointFingerprint !== authoredFingerprint) {
         // The create's own listing was superseded, or the reconciled row is a
@@ -799,10 +811,19 @@ function SelectedConnection({
   // Saving the endpoint row rewrites the destination the card shows and drops
   // the test result, which was taken against the old one.
   async function saveEndpoint() {
+    if (busy) return;
     const next = endpointDraft.trim();
     if (!row) return;
     if (!next) {
       setError({ reason: "endpoint-required", message: ENDPOINT_REQUIRED_ERROR });
+      return;
+    }
+    if (next === endpointSeed.trim()) {
+      // Nothing the editor can see changed. Close it without writing the
+      // sanitized display value back over the endpoint's hidden parts.
+      setEndpointDraft("");
+      setEditing(null);
+      setError(null);
       return;
     }
     const token = ++operation.current;
@@ -819,7 +840,7 @@ function SelectedConnection({
       await credentialsStore.getState().fetchSelf();
       if (!current(token)) return;
       const updated = findSetup(name);
-      setBaseline(updated);
+      adoptBaseline(updated, row);
       setEndpointDraft("");
       setEditing(null);
       setResult(null);
@@ -840,6 +861,7 @@ function SelectedConnection({
   // The full editor is this card's own disclosure. Saving it is one edit with
   // every field, so the row the listing returns is the only source of truth.
   async function saveSettings() {
+    if (busy) return;
     if (!row) return;
     const token = ++operation.current;
     setPhase("saving");
@@ -871,7 +893,7 @@ function SelectedConnection({
       if (!current(token)) return;
       await credentialsStore.getState().fetchSelf();
       if (!current(token)) return;
-      setBaseline(findSetup(name));
+      adoptBaseline(findSetup(name), row);
       setSettingsOpen(false);
       setResult(null);
       setPhase("idle");
@@ -1035,8 +1057,18 @@ function SelectedConnection({
         onKeyDown={(event) => {
           if (event.key !== "Enter" || event.target instanceof HTMLButtonElement) return;
           event.preventDefault();
-          if (editing === "endpoint") void saveEndpoint();
-          else void submit();
+          if (editing === "endpoint") {
+            void saveEndpoint();
+            return;
+          }
+          // Enter belongs to the editor that has focus. A settings field must
+          // save the settings it was typed into, not submit a check of the
+          // configuration still on the wire.
+          if (event.target instanceof HTMLElement && event.target.closest("[data-settings-editor]")) {
+            void saveSettings();
+            return;
+          }
+          void submit();
         }}
       >
         <div className={styles.cardHead}>
@@ -1101,9 +1133,9 @@ function SelectedConnection({
                   />
                   <span className={styles.rowHelp}>Optional. Leave it empty to use the key this host resolves.</span>
                   {missingCredential && (
-                    <span className={styles.rowError} id="provider-credential-error" role="alert">
+                    <InlineNotice tone="danger" id="provider-credential-error">
                       Enter a credential, or use this host's access.
-                    </span>
+                    </InlineNotice>
                   )}
                 </div>
               </div>
@@ -1143,6 +1175,7 @@ function SelectedConnection({
                       size="xs"
                       disabled={busy}
                       onClick={() => {
+                        setEndpointSeed(row?.baseUrl ?? "");
                         setEndpointDraft(row?.baseUrl ?? "");
                         setEditing("endpoint");
                         setError(null);
@@ -1205,9 +1238,9 @@ function SelectedConnection({
                       </span>
                     )}
                     {missingCredential && (
-                      <span className={styles.rowError} id="provider-credential-error" role="alert">
+                      <InlineNotice tone="danger" id="provider-credential-error">
                         Enter a credential, or use this host's access.
-                      </span>
+                      </InlineNotice>
                     )}
                   </div>
                   <div className={styles.rowActions}>
@@ -1357,7 +1390,7 @@ function SelectedConnection({
             }}
             summary="All connection settings"
           >
-            <div className={styles.settings}>
+            <div className={styles.settings} data-settings-editor>
               {row?.vars && Object.keys(row.vars).length > 0 && (
                 <p className={styles.note}>{Object.keys(row.vars).sort(byCodePoint).join(", ")}</p>
               )}

@@ -139,11 +139,11 @@ try {
   await button("Connect provider");
   await button("OpenAI");
   await fill("#provider-credential", "onboarding-fixture-key-not-a-secret");
-  await button("Save and check");
-  await wait(hasButton("Retry check"), "failed model listing offers retry");
+  await button("Save and test");
+  await wait(hasButton("Test again"), "failed model listing offers retry");
   await checkpoint(1);
   await pause(3000);
-  await button("Retry check");
+  await button("Test again");
   await button("Choose model");
   await wait(`document.querySelectorAll('[role="option"]').length > 0`, "provider scoped catalogue");
   await pause(3000);

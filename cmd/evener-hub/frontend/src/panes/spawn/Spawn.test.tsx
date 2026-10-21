@@ -1525,7 +1525,7 @@ test("connection handoff shows the actual instance models and preserves draft un
   await user.click(await screen.findByText("Show all providers"));
   await user.click(screen.getByRole("button", { name: "Team local" }));
   await user.type(screen.getByLabelText("API key"), "fixture-only-key");
-  fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save and test" }));
   await settled();
   await user.click(await screen.findByRole("button", { name: "Choose model" }));
   // The completed connection hands off to the picker, which reopens scoped to
@@ -1614,7 +1614,7 @@ test("fresh guided connection waits for a successful check and explicit model ch
   });
   await user.click(await screen.findByRole("button", { name: "OpenAI" }));
   await user.type(screen.getByLabelText("API key"), "fixture-only-key");
-  fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save and test" }));
   await settled();
   const next = await screen.findByRole("button", { name: "Choose model" });
   expect(screen.queryByRole("option", { name: /Server choice/ })).toBeNull();
@@ -1699,7 +1699,7 @@ test("closing the handoff without choosing requires an explicit model before Sta
   });
   await user.click(await screen.findByRole("button", { name: "OpenAI" }));
   await user.type(screen.getByLabelText("API key"), "fixture-only-key");
-  fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save and test" }));
   await settled();
   await user.click(await screen.findByRole("button", { name: "Choose model" }));
   await screen.findByRole("option", { name: /Server choice/ });
@@ -1863,7 +1863,7 @@ test("successful keyless testing refreshes availability without an auth notifica
   });
   await user.click(await screen.findByText("Show all providers"));
   await user.click(screen.getByRole("button", { name: "Local endpoint" }));
-  const testConnection = await screen.findByRole("button", { name: "Check connection" });
+  const testConnection = await screen.findByRole("button", { name: "Test connection" });
   available = true;
   await user.click(testConnection);
   await user.click(await screen.findByRole("button", { name: "Choose model" }));
@@ -4478,7 +4478,7 @@ test("an Advanced-options model override after onboarding satisfies the requirem
   });
   await user.click(await screen.findByRole("button", { name: "OpenAI" }));
   await user.type(screen.getByLabelText("API key"), "fixture-only-key");
-  fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save and test" }));
   await settled();
   await user.click(await screen.findByRole("button", { name: "Choose model" }));
   await screen.findByRole("option", { name: /Server choice/ });
