@@ -618,9 +618,32 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			);
 			if (rows.length === 0) return [];
 			const ids = rows.map((row) => row.client_mutation_id);
-			for (const table of [TABLES.outbox, TABLES.optimistic, TABLES.recovery]) {
+			// Only the rows this move knows how to finish. A canceled row left
+			// behind is harmless - it can never dispatch - while one carried over
+			// without the rewrite below would reopen under the new target still
+			// naming the retired identity.
+			for (const id of ids) {
+				this.db.runSync(
+					`UPDATE ${TABLES.outbox} SET target_ref = ?
+					 WHERE client_mutation_id = ? AND state IN ('submitting', 'blockedUnknown')`,
+					to.ref,
+					id,
+				);
+			}
+			// Optimistic displays and recovery rows describe the same messages and
+			// move with them; neither carries a wire fence of its own.
+			for (const table of [TABLES.optimistic, TABLES.recovery]) {
 				this.db.runSync(`UPDATE ${table} SET target_ref = ? WHERE target_ref = ?`, to.ref, ref);
 			}
+			// The destination's stop counter is its own. A row carrying the source's
+			// epoch would be compared against an unrelated counter - falsely canceled
+			// by a lower one, or un-fenced by a higher one. Starting at the
+			// destination's current epoch keeps every existing stop effective.
+			const destinationEpoch = this.stopEpochOf(to.ref);
+			// A resume that names no instance still changed identity: the daemon's
+			// fence token is then the thread id, the same fused rule every other
+			// caller derives it by.
+			const fence = to.instanceId ?? to.threadId;
 			for (const row of rows) {
 				// The dispatcher sends the payload verbatim as the RPC params, so the
 				// row's own wire ref and instance fence must move with it: a payload
@@ -629,16 +652,17 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 				// send cannot take a lower number and overtake a moved row.
 				const payload = JSON.parse(row.payload) as Record<string, unknown>;
 				if (typeof payload.ref === "string") payload.ref = to.wireRef;
-				if (to.instanceId !== undefined) payload.expectedInstanceId = to.instanceId;
+				if (fence !== undefined) payload.expectedInstanceId = fence;
 				this.db.runSync(
 					`UPDATE ${TABLES.outbox}
-					 SET payload = ?, intent_sequence = ?,
+					 SET payload = ?, intent_sequence = ?, stop_epoch_at_enqueue = ?,
 					     thread_id = COALESCE(?, thread_id), instance_id = COALESCE(?, instance_id)
 					 WHERE client_mutation_id = ?`,
 					JSON.stringify(payload),
 					this.allocateSequence(to.ref),
+					destinationEpoch,
 					to.threadId ?? null,
-					to.instanceId ?? null,
+					fence ?? null,
 					row.client_mutation_id,
 				);
 			}

@@ -246,6 +246,15 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		// A stopped runtime serves nothing, so the registrations it made for its
 		// own work end here. A later start that needs the identity registers it
 		// again; leaving them held would pin the targets to this attempt's client.
+		//
+		// KNOWN LIMITATION: the process-lifetime runtime does not stop on an
+		// ordinary connection replacement, so a registration made for a resumed
+		// identity can hold its target until the app restarts. A flush on the
+		// replacement client then sees the target as owned by another client and
+		// skips it. Releasing it from the settle is what strands the very dispatch
+		// it exists for; the fix is a registration lifetime that follows the
+		// connection rather than the runtime, which this change does not have.
+		// Tracked in the PR rather than guessed at here.
 		for (const release of this.#retireWithSettle.splice(0)) release();
 	}
 
@@ -511,6 +520,11 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 				return "retry";
 			}
 			if (!mayResume) return "blocked";
+			// The predicate reads storage, so it is an await of its own: a newer
+			// read can clear the fence and start healthy work inside it. Acting on
+			// this older answer then would recycle the transport out from under that
+			// work, so the lease is checked again here, not only before.
+			if (!this.#isCurrentRead(lease)) return "stale";
 			// A refused resume leaves the row parked and the next settle retries.
 			const resumed = await client.resumeThread(targetRef).catch(() => undefined);
 			if (!resumed) return "blocked";
@@ -535,40 +549,51 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 				// The resumed identity needs its own registration: the dispatcher
 				// reaches a client only through the key it names, so without this the
 				// moved rows would sit under a key nothing can serve. The original
-				// registration still belongs to its owner and is left alone. This one
-				// belongs to nothing that will ever release it - its owner is this
-				// settle - so it is retired with the settle's own result rather than
-				// outliving it pinned to a client the next connection replaces.
+				// registration still belongs to its owner and is left alone.
+				//
+				// The one created here is scoped to this settle: it exists so the rows
+				// can dispatch, and holding it longer would pin the target to this
+				// connection's client - a later flush would then find the target
+				// "owned" and skip it, stranding whatever moved later.
 				const releaseResolved = this.registerTarget(hubId, resolvedRef, client);
 				this.#retireWithSettle.push(releaseResolved);
 				// Subscribers match the composite key, so a bare ref reaches none of
 				// them and both projections would keep showing rows that moved.
 				this.#notifyStorageChange([targetKey, resolvedKey]);
 			}
-			// The resume cleared the fence, so read once more and reconcile in this
-			// same settle. A flush with no screen on the target lets go after a
-			// "blocked" answer and is woken by storage writes only, and the resume
-			// writes none - so leaving the row for "the next settle" would strand it.
-			//
-			// The resume recycles its transport, so the registration this read
-			// started under may be gone by now: a lease whose registration
-			// vanished reconciles as "stale". Reconcile what this tab can still
-			// prove, and let the caller's own retry own the rest - the flush
-			// looks again after its backoff on any answer that is not settled.
-			const afterLease = this.beginAuthoritativeRead(hubId, resolvedRef, client);
-			if (!afterLease) return "resumed";
-			let after: ThreadReadResponse;
 			try {
-				after = await client.request("thread/read", {
-					ref: resolvedRef,
-					includeTurns: true,
-					itemsView: "fragment",
-					itemLimit: READ_ITEM_LIMIT,
-				});
-			} catch {
-				return "resumed";
+				// The resume cleared the fence, so read once more and reconcile in
+				// this same settle. A flush with no screen on the target lets go after
+				// a "blocked" answer and is woken by storage writes only, and the
+				// resume writes none - so leaving the row for "the next settle" would
+				// strand it.
+				//
+				// The resume recycles its transport, so the registration this read
+				// started under may be gone by now: a lease whose registration
+				// vanished reconciles as "stale". Reconcile what this tab can still
+				// prove, and let the caller's own retry own the rest.
+				const afterLease = this.beginAuthoritativeRead(hubId, resolvedRef, client);
+				if (!afterLease) return "resumed";
+				let after: ThreadReadResponse;
+				try {
+					after = await client.request("thread/read", {
+						ref: resolvedRef,
+						includeTurns: true,
+						itemsView: "fragment",
+						itemLimit: READ_ITEM_LIMIT,
+					});
+				} catch {
+					return "resumed";
+				}
+				return await this.reconcileAuthoritativeRead(afterLease, after);
+			} finally {
+				// Deliberately NOT released here. The dispatch this registration
+				// enables runs asynchronously and reads storage several awaits deep,
+				// so any release timed from this settle either strands the dispatch
+				// (too early, which a test caught) or holds the target claimed by
+				// this connection (too late). Its lifetime is the runtime's, released
+				// in stop(); see the KNOWN LIMITATION note there.
 			}
-			return this.reconcileAuthoritativeRead(afterLease, after);
 		}
 		return this.reconcileAuthoritativeRead(lease, response);
 	}

@@ -2583,7 +2583,18 @@ export function ConversationScreen({
 				const answered = await getNativeMutationRuntime()
 					.settleTarget(target.hubId, target.ref, client, { mayResumeFenced: async () => true })
 					.catch(() => undefined);
-				if (answered === "reconciled" || answered === "open") return true;
+				if (answered === "reconciled" || answered === "open") {
+					// The store's conversation can still read resumeRequired: a
+					// reconnect's hydration may have landed before the resume's
+					// acknowledgement, and status notifications never clear that field.
+					// A stale fence would send every later message down this path
+					// instead of queueing behind the turn this one starts.
+					await store
+						.getState()
+						.rehydrate(through, activitySink)
+						.catch(() => undefined);
+					return true;
+				}
 				showToast({ text: "Your message is saved and will send once the session resumes." });
 				return true;
 			}
