@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
@@ -157,6 +158,67 @@ func TestClientStreamsThroughTheProtocol(t *testing.T) {
 	}
 	if reqs := seen(); len(reqs) != 1 || reqs[0].Path != "/chat/completions" || reqs[0].Auth != "Bearer work-key" {
 		t.Fatalf("stream wire: %+v", reqs)
+	}
+}
+
+// TestRetryStreamRetriesGatewayErrorFrame pins the whole path a lunaroute
+// empty-stream failure takes: the gateway answers 200 with a bare error frame,
+// the Responses decoder reports it as a retryable provider error, and the
+// retry chain reissues the request instead of failing the turn. Reading that
+// frame as an endpoint mismatch (permanent) skipped the retry entirely.
+func TestRetryStreamRetriesGatewayErrorFrame(t *testing.T) {
+	const errorFrame = "data: {\"error\":{\"code\":null,\"message\":\"upstream returned status 400\",\"type\":\"server_error\"}}\n\n"
+	const successFrame = "event: response.created\n" +
+		"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"status\":\"in_progress\",\"model\":\"gpt-5.5\"}}\n\n" +
+		"event: response.output_text.delta\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"delta\":\"recovered\"}\n\n" +
+		"event: response.completed\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"model\":\"gpt-5.5\",\"output\":[{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"recovered\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n"
+
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if calls == 1 {
+			_, _ = w.Write([]byte(errorFrame))
+			return
+		}
+		_, _ = w.Write([]byte(successFrame))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := llm.NewClient(llm.WithRegistry(fixtureRegistry(t, srv.URL, nil)))
+	var text strings.Builder
+	err := llm.RetryStream(context.Background(), llm.RetryStreamOptions{
+		Policy:            llm.RetryPolicy{MaxRetries: 2},
+		Sleep:             func(context.Context, time.Duration) error { return nil },
+		RetryAfterPartial: true,
+	}, func(ctx context.Context) (llm.AttemptReport, error) {
+		st, err := c.Stream(ctx, userRequest("openai", "gpt-5.5"))
+		if err != nil {
+			return llm.AttemptReport{Phase: llm.PhaseOpen}, err
+		}
+		defer func() { _ = st.Close() }()
+		text.Reset()
+		var attemptErr error
+		for ev := range st.Events() {
+			switch ev.Type {
+			case llm.StreamEventTextDelta:
+				text.WriteString(ev.Delta)
+			case llm.StreamEventError:
+				attemptErr = ev.Err
+			}
+		}
+		return llm.AttemptReport{Phase: llm.PhaseFastReject}, attemptErr
+	})
+	if err != nil {
+		t.Fatalf("RetryStream: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("wire calls = %d, want 2 — the error frame must earn a retry", calls)
+	}
+	if text.String() != "recovered" {
+		t.Fatalf("final text = %q, want the retried attempt's output", text.String())
 	}
 }
 

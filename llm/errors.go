@@ -23,6 +23,13 @@ type Error interface {
 	Raw() any
 }
 
+// IsImageNormalizationError reports a definite image-normalization rejection.
+// It does not admit arbitrary invalid requests or failures after uncertain delivery.
+func IsImageNormalizationError(err error) bool {
+	var imageError interface{ imageNormalizationFailure() bool }
+	return Kind(err) == KindInvalidRequest && errors.As(err, &imageError) && imageError.imageNormalizationFailure()
+}
+
 // ErrNoCredential is the sentinel a missing-credential ConfigurationError
 // carries (missingCredential in authenticators.go): it lets a caller classify
 // the failure without parsing the message, whose text is remediation prose
@@ -175,6 +182,11 @@ func (e *httpBaseError) Hint() string { return e.hint }
 
 // StatusCode returns the HTTP status code that produced the error.
 func (e *httpBaseError) StatusCode() int { return e.statusCode }
+
+func (e *httpBaseError) imageNormalizationFailure() bool {
+	return (e.statusCode == http.StatusBadRequest || e.statusCode == http.StatusUnprocessableEntity) &&
+		strings.Contains(strings.ToLower(e.message), "image normalization failed")
+}
 
 // ErrorCode returns the provider-specific error code extracted from the response
 // body, or the empty string if none was found.

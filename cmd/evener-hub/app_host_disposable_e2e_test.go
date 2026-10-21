@@ -94,7 +94,7 @@ func hostTargetBinaryPath(t *testing.T, goos, goarch string) string {
 // testing.T: it runs inside a single-flight once that another test's caller may
 // be waiting on, so it reports failure through the returned error rather than
 // failing a test out from under whichever goroutine owns it.
-func buildHostTargetBinary(goos, goarch, key string) (string, error) {
+func buildHostTargetBinary(goos, goarch, key string, ldflags ...string) (string, error) {
 	repoRoot, err := filepath.Abs("../..")
 	if err != nil {
 		return "", fmt.Errorf("abs repo root: %w", err)
@@ -104,7 +104,7 @@ func buildHostTargetBinary(goos, goarch, key string) (string, error) {
 		return "", fmt.Errorf("create %s: %w", dir, err)
 	}
 	out := filepath.Join(dir, "evener")
-	build := exec.Command("go", "build", "-o", out, "./cmd/evener/")
+	build := exec.Command("go", "build", "-ldflags", strings.Join(ldflags, " "), "-o", out, "./cmd/evener/")
 	build.Dir = repoRoot
 	build.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+goos, "GOARCH="+goarch)
 	if combined, err := build.CombinedOutput(); err != nil {

@@ -128,14 +128,21 @@ func TestRestartHubPinsSnapshotBuildFromBuildChannel(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	newManager := func(body string) *Manager {
 		fr, _ := supervisorRestartRunner(nil, func(int) ([]byte, error) { return []byte(body), nil })
+		run := fr.runFn
+		fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+			if strings.Contains(strings.Join(argv, " "), "launch-check") {
+				return launchContract("newsha"), nil
+			}
+			return run(ctx, argv, stdin)
+		}
 		return newTestManager(t, testRegistry(t, host), fr, Options{
 			controllerVersionOverride: "newsha",
 			sleep:                     func(context.Context, time.Duration) error { return nil },
 		})
 	}
 
-	err := newManager(`{"version":"newsha","backend_git_sha":"othersha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`).
-		restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{})
+	_, err := newManager(`{"version":"newsha","backend_git_sha":"othersha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`).
+		RestartForOperation(context.Background(), host, Preflight{OS: "linux"}, nil)
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart (the version matched but the commit did not)", err)
 	}
@@ -143,22 +150,14 @@ func TestRestartHubPinsSnapshotBuildFromBuildChannel(t *testing.T) {
 		t.Fatalf("error does not name the mismatched build identity: %v", err)
 	}
 
-	if err := newManager(`{"version":"newsha","backend_git_sha":"expectedsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`).
-		restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{}); err != nil {
+	if _, err := newManager(`{"version":"newsha","backend_git_sha":"expectedsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`).
+		RestartForOperation(context.Background(), host, Preflight{OS: "linux"}, nil); err != nil {
 		t.Fatalf("restartHub: %v (a matching snapshot commit must verify)", err)
 	}
 }
 
-// TestFirstAttachBootstrapPinsSnapshotBuild proves the START path carries the
-// snapshot pin too. A cold bootstrap (a stopped host, or a deploy that found no
-// hub present) launches the on-disk binary and, before this, verified it by
-// version alone; for a snapshot channel a version cannot tell two builds apart,
-// so a start could attach to a commit this controller never installed. The start
-// now takes the same pin as the restart: a mismatched or absent backend_git_sha
-// is not yet healthy (ErrRestart), and the controller's commit verifies. The
-// start path's own facts make it reachable — the binary it launches is the one
-// on disk, but "on disk" was accepted by the version-equality rule, which is
-// exactly what a snapshot version cannot prove.
+// A deployment onto a stopped host must verify its requested snapshot commit
+// during bootstrap, even though an ordinary start accepts the installed build.
 func TestFirstAttachBootstrapPinsSnapshotBuild(t *testing.T) {
 	savedChannel, savedSHA := buildinfo.Channel, buildinfo.GitSHA
 	t.Cleanup(func() { buildinfo.Channel, buildinfo.GitSHA = savedChannel, savedSHA })
@@ -187,8 +186,8 @@ func TestFirstAttachBootstrapPinsSnapshotBuild(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			launched := false
-			fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+			launched, deployed := false, false
+			fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 				joined := strings.Join(argv, " ")
 				switch {
 				case strings.HasSuffix(joined, "uname -s"):
@@ -200,7 +199,16 @@ func TestFirstAttachBootstrapPinsSnapshotBuild(t *testing.T) {
 				case strings.Contains(joined, "XDG_STATE_HOME"):
 					return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 				case strings.Contains(joined, "launch-check"):
+					if !deployed {
+						return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":[]}`), nil
+					}
 					return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+				case strings.Contains(joined, "cat >"):
+					_, _ = io.Copy(io.Discard, stdin)
+					deployed = true
+					return nil, nil
+				case strings.Contains(joined, "test -d /opt/evener/bin"):
+					return nil, nil
 				case strings.Contains(joined, "api/health"):
 					if !launched {
 						return nil, errors.New("curl: (7) Failed to connect")
@@ -221,10 +229,15 @@ func TestFirstAttachBootstrapPinsSnapshotBuild(t *testing.T) {
 			}, startFn: goodStartFn(t)}
 			m := newTestManager(t, testRegistry(t, host), fr, Options{
 				controllerVersionOverride: "newsha",
+				BuildBinary:               writeStageBinary,
 				sleep:                     func(context.Context, time.Duration) error { return nil },
 			})
+			testDeployRecorder(t, m)
 
 			ch, err := m.Ensure(context.Background(), "alpha")
+			if !deployed || !launched {
+				t.Fatalf("deploy=%v launch=%v", deployed, launched)
+			}
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("Ensure = %v, wantErr %v", err, tc.wantErr)
 			}

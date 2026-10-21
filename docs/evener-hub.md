@@ -330,10 +330,34 @@ daemon and resume the saved session to move it to the new build.
 
 ### Deploying to remote hosts
 
-Attaching a remote host can overwrite its Evener installation and restart its
-hub. By default, the controller deploys its own executable when the host needs
-a build or reports a different build. Choose the deployment policy before
-attaching; use `--no-deploy` to prohibit both pushes and installer fallback.
+Connect first verifies the running remote hub's AppWire handshake. A compatible
+hub stays on its existing build and process, even when the controller has a
+different version, is a development or dirty build, or cannot supply an artifact
+for the host's platform. Optional capabilities control the features available on
+that connection; their absence does not trigger deployment.
+
+```mermaid
+flowchart TD
+    A[Connect] --> B{Running hub handshake}
+    B -->|Compatible| C[Use existing channel and build]
+    B -->|Proven incompatible| D[Install suitable build and verify replacement]
+    B -->|Authentication, transport or malformed response| E[Report connection failure]
+    B -->|No hub listening| F{Installed launch contract usable}
+    F -->|Yes| G[Start installed build and verify connection]
+    F -->|Verified missing or incompatible| D
+    F -->|Malformed or unknown| E
+```
+
+Connect can still install software on a fresh or incompatible host. A stopped
+compatible installation is started without replacement on an explicit Connect;
+background reconnect does not start a stopped hub. An unclassified handshake
+failure is a connection error, not permission to overwrite the installation.
+The same rule applies to malformed or incomplete cold-start launch metadata.
+Use `--no-deploy` to prohibit both pushes and installer fallback. Explicit Deploy
+retains its plan, confirmation and requested-build checks.
+
+The source rules below apply **when installation is required**, not on every
+Connect:
 
 | Hub invocation or condition | Binary source | Overwrite or refusal behavior |
 |---|---|---|
@@ -342,13 +366,21 @@ attaching; use `--no-deploy` to prohibit both pushes and installer fallback.
 | `evener hub --deploy-binary <path>` | Named pre-built Evener executable | Needs no Go toolchain or source. Refuses a non-Evener binary or wrong OS/architecture before pushing. A dirty controller refuses this source. After installation, a build mismatch refuses attachment. |
 | `evener hub --build-source <path>` | Cross-compiled checkout on the controller | Needs Go, the Evener module root, and a built web UI. A stamped controller requires the same commit, a clean checkout, and no ignored untracked Go files. A dirty controller refuses this source. An unstamped dev controller skips revision checks. |
 | `evener hub --no-deploy` | None | Writes no build, including through the installer. Keeps an existing compatible host build; refuses a host that needs installation or a protocol/launch-contract upgrade. |
-| No flags, but the controller cannot adopt its executable as an Evener binary | Published artifact if available | Uses the release/snapshot installer when possible. Otherwise keeps a compatible host build and logs the difference; refuses a host that needs a build. |
+| No flags, but the controller cannot adopt its executable as an Evener binary | Published artifact if available | Uses the release/snapshot installer when installation is required; refuses if no suitable artifact is available. |
 
 `--no-deploy` wins over both source flags; `--deploy-binary` wins over
 `--build-source`. Named paths are still validated at startup even when another
 flag takes precedence. The startup log records the effective source and any
-ignored flags. Read attach failures in the host's Settings row; when attachment
-keeps a different compatible build, the hub log records that difference.
+ignored flags. Read attach failures and the connected host's build in host
+details in the web or native client. The live handshake's optional
+`serverInfo.buildVersion` reports that remote process's build; absent metadata
+stays unknown. `serverInfo.version` is the protocol package version and is not a
+substitute for the remote build. Launch-check describes the installed executable,
+which can differ from the process still running.
+An executable launch-check failure that can be distinguished from a transport
+failure does not block a usable live connection or already-authorized deployment
+repair. Startup and post-install verification still require a valid launch
+contract; SSH and environment failures remain connection errors.
 
 **Installation target.** Deployment uses the host entry's `evener_path`, then
 the running host hub's executable, then `command -v evener`, then
@@ -357,6 +389,11 @@ stages a temporary file, verifies its length, and renames it atomically over the
 target. A failed transfer does not leave a partial executable. The installer
 preserves the existing installation location and layout. A configured target
 must name the `evener` runtime, not another program.
+While an effect is pending, default-path discovery cannot replace its selected
+target, even when a concurrent plan refresh began discovery before the deployment
+recorded that target. If that executable disappears or loses its execute bit, an
+authorized deployment repairs the selected installation rather than switching to
+another one.
 
 **Build verification.** A source build carries the controller's build identity;
 a named artifact carries its own. After deployment, the controller re-reads the
@@ -365,6 +402,77 @@ installation is not proof of successful attachment. In particular, installer
 verification happens **after the binary is written**: a moved snapshot channel
 can replace the host binary and then fail the version check. Prefer a push source
 when the published snapshot has moved beyond the controller's commit.
+
+**Interrupted deployment.** A compatible connection cannot settle an unfinished
+build replacement or restart. Recovery retains the requested build identity and
+the predecessor process identity before the first remote write, including writes
+whose acknowledgement is lost. Reconnect verifies the installed build and finishes
+the recorded replacement even if the original attempt failed before choosing a
+restart command. A confirmed deploy-only operation remains deploy-only on retry.
+Explicit Restart authorizes starting or replacing that installation even when
+its acknowledged write already matches the requested build and needs no rewrite.
+An unacknowledged write is retried before recovery can settle, since equal build
+labels such as `dev` do not prove the requested executable was installed.
+Even an acknowledged deploy-only write remains pending until its build and startup
+contract are verified, preserving its repair authority for a later Restart.
+Before stopping the live hub, Restart re-reads the selected executable's startup
+contract and uses those fresh facts to reconcile any pending deployment. An
+already-authorized deployment can repair an invalid contract or a changed build;
+its requested build must be verified before restart. If the SSH channel has
+dropped, Restart performs this recovery under its persisted operation gate before
+requiring attachment. It then reattaches and independently verifies the requested
+build and replacement process without issuing a second restart. Recovery rechecks
+the operation-bound host entry before each remote mutation. Pending effects retain
+that check across installation, command recording, worker completion and channel
+loss; a reconnect attempt cannot replace it with a new settings snapshot. An entry
+edit during installation refuses replacement while retaining the verified
+installation. Restoring the entry permits a later retry. A fresh explicit Restart
+can instead accept the changed entry after admission and validation, retaining the
+original requested build, target and process proof. Replaying the same operation
+ID does not renew this authorization. A new confirmed Deploy supersedes old intent
+only when its first authorized write begins; source refusal leaves it untouched.
+An already-completed effect can settle through independent read-only verification
+despite later entry drift. None of these paths transfers pending work to a different
+host registration or silently reloads its target. These reads do not atomically
+exclude external edits after the check. Ordinary Restart
+without pending deployment authority still attaches first. Without that repair, an
+incompatible protocol, missing required flag or unreadable contract refuses the
+restart and preserves the live connection. Fix the executable, then retry Restart.
+Connect and reconnect also validate the executable before retrying
+a pending restart, whether the predecessor is still running or has stopped.
+Refusal retains the pending intent so recovery can finish after the repair.
+A pending standalone start or Restart retains its original build and predecessor;
+enabling automatic deployment does not authorize replacing that intent with a
+controller-build installation. A known different executable build refuses another
+start or restart until the requested executable is restored. An already-completed
+expected process can still settle without another command despite later disk drift,
+including an incompatible protocol or missing launch flag. Recovery verifies the
+recorded build and process before requiring the executable to support another
+launch. An unverified effect remains pending, and another launch still requires a
+valid startup contract.
+A verified restart retires the predecessor's bridge before reattaching and
+checking the replacement, even if the old SSH connection has not reported EOF.
+If the first health probe missed the predecessor, a later probe can identify it
+before the first restart command runs; an issued command retains its original
+predecessor identity across retries.
+If a supervisorless predecessor exits before a restart command is recorded,
+recovery proves the port is free and starts the saved target with the deployment's
+build expectations. An occupied or unprobeable port leaves the recovery pending.
+The same startup proof applies when a dormant systemd, systemd user, or launchd
+unit starts on a proven-free port; a live supervisor remains a replacement.
+When the predecessor is unknown, the public operation independently verifies the
+actual startup process after reattachment. A known predecessor still requires a
+different process start time. Retrying a recorded startup completes that effect
+without requesting another replacement.
+Source refusals before a write leave no recovery intent. Recovery does not
+reinterpret the operation from a newly observed executable or hide its failure.
+
+**Stable installation paths.** Keep executable symlinks and their parent
+directories unchanged until pending deployment recovery finishes. Host-entry
+validation does not freeze remote filesystem path resolution: redirecting a
+configured `evener_path` symlink between attempts can send a retried write to its
+new destination. Destination-drift handling is deferred in
+[#4802](https://github.com/prime-radiant-inc/evener/issues/4802).
 
 **Own-executable limit.** The default reads the executable file at deploy time,
 not a copy of the running process. Replacing that file while the controller runs

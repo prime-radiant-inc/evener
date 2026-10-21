@@ -70,6 +70,9 @@ export interface MutationIntent<A extends MutationAttachmentRef = MutationAttach
   // records all carry them in the one record they already persist.
   composerText?: string;
   composerMentions?: readonly ComposerMention[];
+  // A transcript action did not consume the composer. Refusal recovery stays
+  // explicit rather than replacing even an empty draft. Local only, not RPC.
+  preserveComposer?: boolean;
 }
 
 export interface MutationRecord<A extends MutationAttachmentRef = MutationAttachmentRef> extends MutationIntent<A> {

@@ -521,6 +521,34 @@ EVENER_SSH_E2E=1 EVENER_SSH_E2E_DEPLOY=1 EVENER_SSH_E2E_CONTAINER=1 \
   go test ./cmd/evener-hub/ -run 'TestHostDeployPipelineContainerE2E' -count=1 -v
 ~~~
 
+### Compatible-host Connect — container-only preservation check
+
+`TestHostCompatibleConnectContainerE2E` runs a real controller and remote hub
+with different build stamps and the same AppWire protocol. Default deployment
+stays enabled. It drives Add, Connect, remote path discovery, repeated Connect,
+channel retirement through guarded remove/re-add, and reconnect. Attach/list and
+the production capability adapter must report the remote build. A remote-only
+entry proves forwarding provenance; a local read must not find it. Binary SHA256
+and process start identity must remain unchanged after each connection, with no
+deployment operation created.
+
+The test requires all three opt-ins below and **never uses
+`EVENER_SSH_E2E_HOST`**. It creates its own Docker container and checks its
+effective isolation before Connect: private process namespace, unprivileged,
+no host network/IPC, no mounts or host sockets. Its SSH shim supplies only the
+test-owned configuration to real OpenSSH. Cleanup removes only test-owned
+resources. Docker execution proves the Linux journey; deterministic target
+fixtures cover Darwin/arm64 decisions, not execution on macOS.
+
+~~~sh
+EVENER_SSH_E2E=1 EVENER_SSH_E2E_DEPLOY=1 EVENER_SSH_E2E_CONTAINER=1 \
+  go test ./cmd/evener-hub -run '^TestHostCompatibleConnectContainerE2E$' -count=1 -v
+~~~
+
+A skip leaves the journey unverified. Run the existing container deployment
+pipeline above from a clean checkout too, with no external-host override, to
+verify fresh provisioning and explicit deployment remain usable.
+
 ### `EVENER_SSH_E2E_PUSH=1` — the live credential push to a disposable host
 
 The credential push's criterion (component 07c,
