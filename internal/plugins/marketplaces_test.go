@@ -2674,6 +2674,29 @@ func TestAddMarketplace_RefMatchingATrackedPathIsRejected(t *testing.T) {
 	}
 }
 
+// A tag named origin/plugins must not stand in for a remote branch of that
+// name: the target plugins still only matches a path and must be rejected.
+func TestAddMarketplace_RefMatchingATrackedPathAndAnOriginTagIsRejected(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "pathandtag")
+	if err := os.MkdirAll(filepath.Join(repo, "plugins"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "plugins", "marker"), []byte("tracked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "add", "plugins")
+	gitIn(t, repo, "commit", "-qm", "track a path named like a ref")
+	gitIn(t, repo, "tag", "origin/plugins")
+
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "plugins"}); err == nil {
+		t.Fatal("a tag named origin/plugins let a path-only ref through")
+	}
+}
+
 // The plugin store's own directories are its to rewrite: a fetch clears
 // .staging, a swap deletes .old, the marketplaces dir holds every other
 // marketplace's clone, and the cache holds materialized plugins. A directory

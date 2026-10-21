@@ -90,10 +90,17 @@ func guardGitArg(name, val string) error {
 // that matches a tracked file or directory would leave the clone on its
 // default branch while the caller records the ref as checked out.
 func checkoutRevision(ctx context.Context, dir, target string) error {
-	// A branch other than the remote's default exists only as origin/<name> in
-	// a fresh clone; git checkout creates the local branch from it.
+	// A branch other than the remote's default exists only as a
+	// remote-tracking ref in a fresh clone; git checkout creates the local
+	// branch from it. Name each namespace explicitly so a tag cannot stand in
+	// for a remote branch.
 	resolved := false
-	for _, rev := range []string{target, "origin/" + target} {
+	for _, rev := range []string{
+		"refs/heads/" + target,
+		"refs/tags/" + target,
+		"refs/remotes/origin/" + target,
+		target,
+	} {
 		if _, err := gitRun(ctx, dir, "rev-parse", "--verify", "--quiet", rev+"^{commit}"); err == nil {
 			resolved = true
 			break
