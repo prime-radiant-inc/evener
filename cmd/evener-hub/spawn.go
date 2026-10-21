@@ -912,10 +912,12 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 		// The listing says the instance exists; the judgment is the gate's
 		// own view of the launch — ResolveGateCredential handles the
 		// provider-qualified model form, judges the model's transport, and
-		// executes no command expression. A named model the child refuses
-		// — disabled, or one that does not resolve — is refused here too,
-		// before the spawn, with the model's own verdict rather than a
-		// credential message for a launch that never happens.
+		// executes no command expression. A named model with a catalog row
+		// the child refuses — disabled, or one that does not resolve — is
+		// refused here too, before the spawn, with the model's own verdict
+		// rather than a credential message for a launch that never happens.
+		// An unlisted Codex id has no row to judge: the child owns that
+		// verdict against the instance's live roster.
 		res, err := r.ResolveGateCredential(name, model)
 		if err != nil && model != "" && errors.Is(err, registry.ErrCodexModelNotListed) {
 			// The bundled Codex roster lags the backend. The child applies the
@@ -950,9 +952,10 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 		// command. Not the provider's model-less shape: a row override
 		// that flips the scheme flips the remedy with it, or the gate
 		// points at a credential the launch never reads. A named model
-		// the child refuses is the preflight's own refusal, before the
-		// spawn — not a bare-launch scheme to offer a credential remedy
-		// against.
+		// with a catalog row the child refuses is the preflight's own
+		// refusal, before the spawn — not a bare-launch scheme to offer a
+		// credential remedy against. An unlisted Codex id is left to the
+		// child's live-roster resolution.
 		res, err := r.ResolveGateCredential(name, model)
 		if err != nil && model != "" && errors.Is(err, registry.ErrCodexModelNotListed) {
 			// Same deferral as the instance branch: the child resolves the

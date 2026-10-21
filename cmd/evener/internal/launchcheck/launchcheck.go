@@ -337,6 +337,11 @@ func validateLaunchCheckModel(ref cmdutil.ModelRef) error {
 		}
 	}
 	if resolveErr != nil {
+		// The listing has been applied, so resolving again describes what the
+		// instance actually advertises in the refusal's valid-model list.
+		if _, err := client.Resolve(ref.Qualified()); err != nil {
+			return err
+		}
 		return resolveErr
 	}
 	return fmt.Errorf("model %s is not available from provider %s", ref.Qualified(), ref.Provider)
