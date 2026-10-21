@@ -26,6 +26,7 @@ const RICH_SOURCE =
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 function passage(range = FIRST, selectedRenderedText = "same"): CapturedPassage {
@@ -219,14 +220,21 @@ describe("captured context", () => {
     // scanning each intermediate window, which is quadratic work a
     // selection must not stall the reader on.
     const repeated = "repeat\n\n".repeat(80000);
-    const started = performance.now();
+    // Count the calculation's whole-source searches instead of timing it:
+    // each candidate window costs two indexOf scans, so this bound is
+    // deterministic work that CPU contention cannot perturb. The binary
+    // expansion examines about log2(80,001) windows, while one-at-a-time
+    // expansion would examine one per paragraph.
+    const searches = vi.spyOn(String.prototype, "indexOf");
     const context = contextForRange(repeated, { start: 0, end: 6 });
-    const elapsed = performance.now() - started;
+    const examined = searches.mock.calls.length;
+    searches.mockRestore();
     // The distinguishing window ends at the last paragraph: the trailing
     // separator has nothing after it to repeat, so the window that ends
     // there is already unique.
     expect(context).toEqual({ before: "", after: repeated.slice(6, repeated.length - 2) });
-    expect(elapsed).toBeLessThan(2000);
+    expect(examined).toBeGreaterThan(0);
+    expect(examined).toBeLessThanOrEqual(40);
   }, 60_000);
 });
 
