@@ -153,6 +153,27 @@ func (f *credentialProbeFakeClient) callCount() int {
 	return f.calls
 }
 
+// assertGenericConflict fails unless err is an appwire.WireError carrying the
+// generic Conflict discriminant. The shared assertConflict checks only the
+// numeric code, which EndpointConflict also uses; a same-destination
+// credential replacement is not an endpoint move, and clients route the two
+// discriminants differently.
+func assertGenericConflict(t *testing.T, err error) {
+	t.Helper()
+	assertConflict(t, err)
+	wireErr, ok := errors.AsType[appwire.WireError](err)
+	if !ok {
+		t.Fatalf("error = %v (%T), want appwire.WireError", err, err)
+	}
+	data, ok := wireErr.Data.(appwire.ErrorData)
+	if !ok {
+		t.Fatalf("error data = %#v, want appwire.ErrorData", wireErr.Data)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorConflict {
+		t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorConflict)
+	}
+}
+
 // clearProviderKeysFromEnvironment unsets every credential variable the
 // envvars registry declares, for the duration of the test. The credentials
 // store's Layers reads the ambient environment, so a test asserting an
@@ -494,7 +515,7 @@ func TestAuthTestCredentialsSupersededByStoredWrite(t *testing.T) {
 		release()
 
 		for i, got := range []outcome{<-first, <-second} {
-			assertConflict(t, got.err)
+			assertGenericConflict(t, got.err)
 			if got.resp.Status != "" {
 				t.Fatalf("caller %d returned status %q (%q); a superseded probe must not report a verdict", i, got.resp.Status, got.resp.Message)
 			}
@@ -536,7 +557,7 @@ func TestAuthTestCredentialsSupersededByStoredWrite(t *testing.T) {
 		release()
 
 		got := <-first
-		assertConflict(t, got.err)
+		assertGenericConflict(t, got.err)
 		if got.resp.Status == appwire.AuthTestStatusAuthRejected {
 			t.Fatalf("status=%q, want a conflict: the old key's rejection is not a verdict about its replacement", got.resp.Status)
 		}
