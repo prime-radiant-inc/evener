@@ -23,6 +23,7 @@ import {
   activitySummary,
 } from "../../stores/sessionActivityTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
+import { openAttentionSession } from "../attentionHistory";
 import { captureAttentionPlacement, presentAttentionTarget, restoreAttentionPlacement } from "../attentionPlacement";
 import { chromeStore, resetChromeStoreForTests } from "../chromeStore";
 import { ClientProvider } from "../clientContext";
@@ -53,6 +54,26 @@ test("ordinary mobile Back skips attention parked records", async () => {
     expect(restoreAttentionPlacement(origin)).toBe(true);
   });
   expect(workspaceStore.getState().focusedPaneId).toBe(origin.pane.id);
+  host.unmount();
+});
+
+test("ordinary focus after an attention hop publishes its own session URL", async () => {
+  window.history.replaceState({}, "", "/s/local%3Aa");
+  const origin = workspaceStore.getState().openPane("session", { ref: "local:a" });
+  const independent = workspaceStore.getState().openPane("session", { ref: "local:x" }, { slot: "secondary" });
+  const host = await act(async () => render(<StackHost />));
+  await act(async () => workspaceStore.getState().focusPane(origin));
+  await act(async () => {
+    openAttentionSession("local:b");
+  });
+  const destination = workspaceStore.getState().mainPane()?.id;
+  if (!destination) throw new Error("attention hop did not place its destination");
+  expect(workspaceStore.getState().focusedPaneId).toBe(destination);
+  expect(window.location.pathname).toBe("/s/local%3Ab");
+
+  await act(async () => workspaceStore.getState().focusPane(independent));
+
+  expect(window.location.pathname).toBe("/s/local%3Ax");
   host.unmount();
 });
 

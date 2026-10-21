@@ -2087,6 +2087,47 @@ test("Mod+J cycles from the focused needs-you session to the next one, wrapping"
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:ny1" }));
 });
 
+test("Mod+J history Back and Forward restore the exact routed readers", async () => {
+  const user = userEvent.setup();
+  installNeedsYouRows();
+  window.history.replaceState({}, "", "/s/local%3Aorigin");
+  installLocationForRoute("local:origin");
+  render(<AppShell client={navClient()} />);
+  await screen.findByText(/loading transcript/i);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:origin" }));
+  const origin = workspaceStore.getState().mainPane();
+  if (!origin) throw new Error("missing routed origin reader");
+  const originLifetime = conversationPaneLifetime(origin);
+  const initialHistoryLength = window.history.length;
+
+  await user.keyboard("{Meta>}j{/Meta}");
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:ny1" }));
+  const destination = workspaceStore.getState().mainPane();
+  if (!destination) throw new Error("missing needs-you destination reader");
+  const destinationLifetime = conversationPaneLifetime(destination);
+  expect(window.history.length).toBe(initialHistoryLength + 1);
+
+  const back = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+  await act(async () => {
+    window.history.back();
+    await back;
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(origin.id));
+  expect(workspaceStore.getState().panes).toContain(origin);
+  expect(conversationPaneLifetime(origin)).toBe(originLifetime);
+  expect(originLifetime.alive).toBe(true);
+
+  const forward = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+  await act(async () => {
+    window.history.forward();
+    await forward;
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(destination.id));
+  expect(workspaceStore.getState().panes).toContain(destination);
+  expect(conversationPaneLifetime(destination)).toBe(destinationLifetime);
+  expect(destinationLifetime.alive).toBe(true);
+});
+
 test("v1 Mod+J cold-demand requests page zero once and opens its first ref", async () => {
   render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByText("No session open");
@@ -5549,13 +5590,19 @@ test("Alt+Shift+ArrowRight/Left navigate across the rail's live sessions, wrappi
 
   await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
   expect(window.location.pathname).toBe("/s/local%3Alive-b");
+  expect((window.history.state as Record<string, unknown> | null)?.__evenerAttention).toBeUndefined();
+  expect(workspaceStore.getState().panes.some((pane) => pane.slot === "parked")).toBe(false);
 
   // Wrap: the last live session's next is the first.
   await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
   expect(window.location.pathname).toBe("/s/local%3Alive-a");
+  expect((window.history.state as Record<string, unknown> | null)?.__evenerAttention).toBeUndefined();
+  expect(workspaceStore.getState().panes.some((pane) => pane.slot === "parked")).toBe(false);
 
   await user.keyboard("{Alt>}{Shift>}{ArrowLeft}{/Shift}{/Alt}");
   expect(window.location.pathname).toBe("/s/local%3Alive-b");
+  expect((window.history.state as Record<string, unknown> | null)?.__evenerAttention).toBeUndefined();
+  expect(workspaceStore.getState().panes.some((pane) => pane.slot === "parked")).toBe(false);
 });
 
 test("Alt+Shift+Arrow live-session navigation is suppressed from an editable target", async () => {

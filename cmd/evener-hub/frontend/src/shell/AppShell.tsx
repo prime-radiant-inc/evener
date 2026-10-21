@@ -29,6 +29,7 @@ import { navigationStore, useNavigationStore } from "../stores/navigation/store"
 import { syncSettingsHostToRoute } from "../stores/settingsHost";
 import { initTranscriptDisplay } from "../stores/transcriptDisplay";
 import { ActivitySidebar } from "./activitybar/ActivitySidebar";
+import { currentAttentionEntryToken, restoreCurrentAttentionEntry } from "./attentionHistory";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { CheatsheetOverlay } from "./cheatsheet/CheatsheetOverlay";
 import { ToastRegion } from "./chrome/ToastRegion";
@@ -44,7 +45,7 @@ import { openPalette, paletteStore } from "./palette/paletteController";
 import { RailHost } from "./rail";
 import { adjacentLiveSessionRef } from "./rail/liveSessionCycle";
 import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "./rail/needsYouCycle";
-import { navigate, refParam, urlToPane } from "./routing";
+import { navigate, observeRouteHistory, openSessionRoute, refParam, urlToPane } from "./routing";
 import { cycleSessionPane } from "./sessionCycle";
 import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
 import { isSinglePaneRoute } from "./singlePane";
@@ -165,8 +166,9 @@ function readPathname(): string {
   return window.location.pathname;
 }
 
-function usePathname(): string {
+function usePathname(): readonly [string, number] {
   const [pathname, setPathname] = useState(readPathname);
+  const [historyRevision, bumpHistoryRevision] = useReducer((revision: number) => revision + 1, 0);
   useEffect(() => {
     const onPopState = () => {
       const nextPathname = readPathname();
@@ -179,11 +181,16 @@ function usePathname(): string {
       // the browser's Back/Forward comes through (M1, round 6).
       syncSettingsHostToRoute(window.location.pathname, window.location.search);
       setPathname(nextPathname);
+      bumpHistoryRevision();
     };
     window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
+    const unobserve = observeRouteHistory(() => bumpHistoryRevision());
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+      unobserve();
+    };
   }, []);
-  return pathname;
+  return [pathname, historyRevision];
 }
 
 function sameRouteParams(a: unknown, b: unknown): boolean {
@@ -222,7 +229,7 @@ function routePlacementIsApplied(
     return source ? { ...pane, ...source } : pane;
   };
   const main = routeRole(mainRecord);
-  const panes = workspace.panes.map(routeRole);
+  const panes = workspace.panes.filter((pane) => pane.slot !== "parked").map(routeRole);
 
   if (route.type === "settings" || route.type === "spawn") {
     if (workspace.focusedPaneId !== main.id) return false;
@@ -406,7 +413,7 @@ function openRouteAsPane(
       // read place by confirmed ownership.
       const held = workspaceStore
         .getState()
-        .panes.find((pane) => pane.type === "session" && refParam(pane.params) === ref);
+        .panes.find((pane) => pane.slot !== "parked" && pane.type === "session" && refParam(pane.params) === ref);
       const heldParent = held === undefined ? undefined : conversationOpenParentRef(held);
       if (held !== undefined && heldParent !== undefined && heldParent !== ref) {
         workspaceStore.getState().focusPane(held.id);
@@ -662,7 +669,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
   }, []);
 
   const connectionState = useConnectionStore((s) => s.state);
-  const pathname = usePathname();
+  const [pathname, historyRevision] = usePathname();
   const route = urlToPane(pathname);
   const sessionRouteRef = route?.type === "session" ? refParam(route.params) : null;
   const restoredSessionRef = route?.type === "welcome" ? refParam(workspaceStore.getState().mainPane()?.params) : null;
@@ -787,7 +794,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
     // focus must survive a boot placement), so the chord refocuses whatever
     // the placement left in main itself.
     const openLiveSession = (ref: string): void => {
-      openNeedsYouSession(ref);
+      openSessionRoute(ref);
       const workspace = workspaceStore.getState();
       const main = workspace.mainPane();
       if (main === null || main.type !== "session" || refParam(main.params) !== ref) {
@@ -1017,11 +1024,14 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
   const routePlacementInProgressRef = useRef(false);
   const routePlacementPathnameRef = useRef<string | null>(null);
   const placedPathnameRef = useRef<string | null>(null);
+  const restoredAttentionTokenRef = useRef<string | null>(null);
   const deferredDocumentRef = useRef<OpenPaneRecord | null>(null);
   const initialPathnameRef = useRef(pathname);
   if (!dockHostHasMountedRef.current && openedForPathnameRef.current !== pathname) {
     openedForPathnameRef.current = pathname;
-    openRouteAsPane(pathname, location, locationTerminal, locationGone, pendingSessionRef);
+    if (currentAttentionEntryToken() === null) {
+      openRouteAsPane(pathname, location, locationTerminal, locationGone, pendingSessionRef);
+    }
   }
   if (route !== null) dockHostHasMountedRef.current = true;
 
@@ -1048,6 +1058,30 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
           placedPathnameRef.current = pathname;
           return;
         }
+      }
+      // Exact runtime entries outrank generic location reconciliation. A stale
+      // location read must not rebuild a retained secondary as main.
+      const attentionToken = currentAttentionEntryToken();
+      if (attentionToken === null) restoredAttentionTokenRef.current = null;
+      if (
+        route?.type === "session" &&
+        attentionToken !== null &&
+        restoredAttentionTokenRef.current === attentionToken
+      ) {
+        pendingSessionRef.current = null;
+        placedPathnameRef.current = pathname;
+        return;
+      }
+      if (
+        route?.type === "session" &&
+        attentionToken !== null &&
+        restoredAttentionTokenRef.current !== attentionToken &&
+        restoreCurrentAttentionEntry()
+      ) {
+        restoredAttentionTokenRef.current = attentionToken;
+        pendingSessionRef.current = null;
+        placedPathnameRef.current = pathname;
+        return;
       }
       const allowFocusedCompanion =
         pendingSessionRef.current === null &&
@@ -1110,7 +1144,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
     if (openedForPathnameRef.current === pathname && pendingSessionRef.current === null) return; // already opened above, this render
     openedForPathnameRef.current = pathname;
     openRouteAsPane(pathname, location, locationTerminal, locationGone, pendingSessionRef);
-  }, [pathname, route?.type, location, locationTerminal, locationGone, workspacePanesVersion]);
+  }, [pathname, historyRevision, route?.type, location, locationTerminal, locationGone, workspacePanesVersion]);
 
   return (
     <ClientProvider client={client}>

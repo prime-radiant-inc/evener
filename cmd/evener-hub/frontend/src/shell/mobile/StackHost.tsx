@@ -38,9 +38,11 @@
 // sync effect below), the same as any other fresh navigation - there is no
 // separate "last mobile screen" memory to restore independently of that.
 import { type ReactNode, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { parseZoomParams } from "../../panes/zoom/intent";
 import { Chevron, IconButton } from "../../widgets";
 import { ActivitySidebar } from "../activitybar/ActivitySidebar";
 import { useActivitySidebarStore } from "../activitybar/activitySidebarStore";
+import { attentionEntryOwnsReader, goBackInAttentionHistory } from "../attentionHistory";
 import { useChromeStore } from "../chromeStore";
 import { paneFor } from "../paneRegistry";
 import { PaneVisibilityContext } from "../paneVisibility";
@@ -262,11 +264,20 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     if (prev !== focusedPaneId) {
       const realBrowserNav = lastPopstateWasTrusted;
       lastPopstateWasTrusted = false;
-      if (!wentBackRef.current && !realBrowserNav && prev !== null) backStackRef.current.push(prev);
+      const attentionRef =
+        focusedPane?.type === "session"
+          ? (focusedPane.params as { ref?: unknown }).ref
+          : focusedPane?.type === "sessionZoom"
+            ? parseZoomParams(focusedPane.params)?.ref
+            : null;
+      const attentionRestore =
+        typeof attentionRef === "string" && attentionEntryOwnsReader(focusedPane?.id ?? "", attentionRef);
+      if (!wentBackRef.current && !realBrowserNav && !attentionRestore && prev !== null)
+        backStackRef.current.push(prev);
       wentBackRef.current = false;
       prevFocusedIdRef.current = focusedPaneId;
     }
-  }, [focusedPaneId]);
+  }, [focusedPane, focusedPaneId]);
 
   // URL sync (requirement 2): unlike desktop, exactly one pane is ever
   // visible at a time here, so it's meaningful (and, per this task's
@@ -293,6 +304,13 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   useEffect(() => {
     if (routeDeferred) return;
     if (!focusedPane) return;
+    const attentionRef =
+      focusedPane.type === "session"
+        ? (focusedPane.params as { ref?: unknown }).ref
+        : focusedPane.type === "sessionZoom"
+          ? parseZoomParams(focusedPane.params)?.ref
+          : null;
+    if (typeof attentionRef === "string" && attentionEntryOwnsReader(focusedPane.id, attentionRef)) return;
     if (singlePaneRouteNames(window.location.pathname, focusedPane)) return;
     const url = paneToURL(focusedPane.type, focusedPane.params);
     if (url) navigate(url);
@@ -342,6 +360,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         return;
       }
     }
+    if ((focusedPane?.type === "session" || focusedPane?.type === "sessionZoom") && goBackInAttentionHistory()) return;
     let target = popValidBackTarget(backStackRef.current, panes, focusedPaneId);
     if (!target && focusedPane?.type === "transcript") {
       const params = focusedPane.params as { ref?: unknown; parentRef?: unknown };
