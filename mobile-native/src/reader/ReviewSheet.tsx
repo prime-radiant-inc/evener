@@ -85,14 +85,8 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 				now.target,
 				now.action === "queue" ? "queue" : "send",
 				reviewMessage(path, verdict, comments, note),
+				now.action === "resume",
 			);
-			// A fenced session parks the review durably, then resumes: the
-			// resume's read is what releases the parked message, so the release
-			// runs again after it.
-			if (now.action === "resume") {
-				await client.resumeThread?.(sessionRef);
-				await runtime.settleTarget(hubId, sessionRef, client).catch(() => "blocked" as const);
-			}
 		} catch (error) {
 			setFailure(error instanceof Error ? error.message : String(error));
 			setSending(false);

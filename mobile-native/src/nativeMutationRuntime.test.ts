@@ -600,6 +600,45 @@ test("resume-required reads hold even never-attempted work until a later valid r
 	await runtime.stop();
 });
 
+// An offline Send to a fenced session parks and the reconnect flush releases
+// it. Only the flush asks for the resume; an ordinary read must never resume a
+// session the person has not sent to.
+test("a fenced settle resumes the target, an ordinary read does not", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+	});
+	const client = new FakeClient("ready");
+	// The session is fenced until a resume clears it, exactly as the hub's own
+	// fence behaves.
+	let fenced = true;
+	client.on("thread/read", () => readResponse("ref-1", fenced ? { resumeRequired: true } : {}));
+	client.on("thread/resume", () => {
+		fenced = false;
+		return readResponse("ref-1");
+	});
+	client.on("turn/start", appliedReceipt);
+	await registerAndStart(runtime, client);
+	await runtime.submit(request("send"));
+
+	// The ordinary read path: fenced work stays held, and nothing resumes.
+	const heldLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	expect(await runtime.reconcileAuthoritativeRead(heldLease!, readResponse("ref-1", { resumeRequired: true }))).toBe(
+		"blocked",
+	);
+	expect(client.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+	expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+
+	// The flush's settle: same fenced read, but it resumes the target.
+	expect(await runtime.settleTarget("hub-1", "ref-1", client, { resumeFenced: true })).toBe("blocked");
+	expect(client.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+
+	// The resume's read is unfenced, so the parked send follows.
+	const releasedLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	expect(await runtime.reconcileAuthoritativeRead(releasedLease!, readResponse("ref-1"))).toBe("reconciled");
+	await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
+	await runtime.stop();
+});
+
 test("restart-required reads hold even never-attempted work until a later valid read", async () => {
 	const runtime = new NativeMutationRuntime(openDatabase(), {
 		createMutationId: () => "mutation-1",

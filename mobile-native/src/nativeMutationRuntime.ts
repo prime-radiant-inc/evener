@@ -450,6 +450,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		hubId: string,
 		targetRef: string,
 		client: AppwireClientLike,
+		options: { resumeFenced?: boolean } = {},
 	): Promise<"open" | "reconciled" | "blocked" | "stale" | "unregistered"> {
 		const targetKey = nativeMutationTargetKey(hubId, targetRef);
 		if (!this.#targets.has(targetKey)) return "unregistered";
@@ -465,6 +466,21 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 				itemLimit: READ_ITEM_LIMIT,
 			});
 		} catch {
+			return "blocked";
+		}
+		// A fenced target that still holds a waiting message resumes here, so an
+		// offline send is not stranded: the resume's own read is what releases the
+		// parked row, and the next settle finishes it. Off by default - an
+		// ordinary read must never resume a session the person has not sent to.
+		if (
+			options.resumeFenced === true &&
+			response.thread.evener.resumeRequired === true &&
+			// A daemon that needs restarting refuses a resume; that shape stays with
+			// the person, whose older process must be stopped first.
+			response.thread.status.type !== "restartRequired"
+		) {
+			// A refused resume leaves the row parked and the next settle retries.
+			await client.resumeThread(targetRef).catch(() => undefined);
 			return "blocked";
 		}
 		return this.reconcileAuthoritativeRead(lease, response);

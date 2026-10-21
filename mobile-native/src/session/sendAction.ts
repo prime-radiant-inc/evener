@@ -38,12 +38,16 @@ export function sendAction(
 	return "none";
 }
 
-// A fenced session answers "resume" wherever its harness can take the send at
-// all, online or offline: the row parks durably either way and the resume runs
-// behind it once the connection and the fence allow.
+// A fenced session answers "resume" online or offline: the row parks durably
+// either way and the resume runs behind it once the connection and the fence
+// allow. The gate is the fence alone, never the send capability -
+// applyThreadResumeRequirement CLEARS send as it sets resumeRequired, so a
+// capability check here would refuse every fence the hub actually sends. The
+// one shape that keeps no action is a restartRequired daemon, whose older
+// process must be stopped first.
 function resumeOrNone(conversation: SendSource): SendAction {
 	if (conversation.status.type === "restartRequired") return "none";
-	return conversation.capabilities.send ? "resume" : "none";
+	return "resume";
 }
 
 /** Offline, a message waits in the phone's outbox (spec 8.5, phase 6

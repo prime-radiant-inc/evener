@@ -31,7 +31,12 @@ export interface FlushRuntime {
 	start(): Promise<void>;
 	targetClient(hubId: string, targetRef: string): AppwireClientLike | undefined;
 	registerTarget(hubId: string, targetRef: string, client: AppwireClientLike | null): () => void;
-	settleTarget(hubId: string, targetRef: string, client: AppwireClientLike): Promise<SettleResult>;
+	settleTarget(
+		hubId: string,
+		targetRef: string,
+		client: AppwireClientLike,
+		options?: { resumeFenced?: boolean },
+	): Promise<SettleResult>;
 	subscribeStorage(listener: (targetRefs: readonly string[]) => void): () => void;
 }
 
@@ -183,7 +188,7 @@ export class OutboxFlush {
 			const mark = Symbol(key);
 			this.settlingForScreens.set(key, mark);
 			try {
-				if (await this.waiting(runtime, key)) await runtime.settleTarget(hubId, ref, client);
+				if (await this.waiting(runtime, key)) await runtime.settleTarget(hubId, ref, client, { resumeFenced: true });
 			} catch {
 				// Storage failed: nothing else looks again for a screen's target
 				// (changed() leaves it to the screen), so retry on the backoff, as
@@ -204,7 +209,7 @@ export class OutboxFlush {
 			// that connection's claims go, and the runtime answers a read for a
 			// registration that is gone or replaced with "stale", before it
 			// reconciles or dispatches anything (isCurrentRead).
-			const answer = await runtime.settleTarget(hubId, ref, client);
+			const answer = await runtime.settleTarget(hubId, ref, client, { resumeFenced: true });
 			settled = answer === "reconciled" || answer === "open";
 		} catch {
 			// A read or storage failure: let go, as for a read that failed.

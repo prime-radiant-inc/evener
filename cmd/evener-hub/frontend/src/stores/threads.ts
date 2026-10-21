@@ -2733,6 +2733,10 @@ function markStopping(ref: string, stopping: boolean): void {
     else stoppingRefs.delete(ref);
     return { stoppingRefs };
   });
+  // A drain that just ended settles everything waiting on it. Reading the
+  // store rather than `stopping` here is deliberate: a concurrent Stop for the
+  // same ref can leave the flag set, and those waiters must keep waiting.
+  if (!threadsStore.getState().stoppingRefs.has(ref)) settleDrainWaiters(ref);
 }
 
 // The refcounted group of Force stops this module has in flight for a ref.
@@ -2919,24 +2923,28 @@ let resumeFailureSeq = 0;
 // hydration, and publication instead of starting a second resumeThread.
 const inFlightResumes = new Map<string, Promise<void>>();
 
-// Resolves once no Stop this page started is still draining for ref. A Stop
-// presses and finishes within one store lifetime, so one subscription is
-// enough: the predicate is re-read on every state change and the promise
-// settles on the first change that clears it (or immediately when it already
-// has). The caller re-reads the drain state, not a timer, because the hub's
-// admission turns on the drain itself.
+// Waiters parked on a ref's Stop drain, settled by markStopping when the drain
+// ends. A resolver is not a store subscription: the only write that can end a
+// drain is markStopping's, so the waiters belong to that writer instead of
+// riding every unrelated store change for the drain's whole length.
+const drainWaiters = new Map<string, Set<() => void>>();
+
+function settleDrainWaiters(ref: string): void {
+  const waiters = drainWaiters.get(ref);
+  if (waiters === undefined) return;
+  drainWaiters.delete(ref);
+  for (const resolve of waiters) resolve();
+}
+
+// Resolves once no Stop this page started is still draining for ref. The
+// caller re-reads the drain state rather than trusting a timer, because the
+// hub's admission turns on the drain itself.
 function waitForStopDrain(ref: string): Promise<void> {
   if (!threadsStore.getState().stoppingRefs.has(ref)) return Promise.resolve();
   return new Promise((resolve) => {
-    const unsubscribe = threadsStore.subscribe((state) => {
-      if (state.stoppingRefs.has(ref)) return;
-      unsubscribe();
-      resolve();
-    });
-    if (!threadsStore.getState().stoppingRefs.has(ref)) {
-      unsubscribe();
-      resolve();
-    }
+    const waiters = drainWaiters.get(ref);
+    if (waiters === undefined) drainWaiters.set(ref, new Set([resolve]));
+    else waiters.add(resolve);
   });
 }
 
