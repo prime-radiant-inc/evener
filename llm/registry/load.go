@@ -581,6 +581,7 @@ func cloneCaps(c Caps) Caps {
 	out.Reasoning = clonePointer(c.Reasoning)
 	out.ReasoningControls = slices.Clone(c.ReasoningControls)
 	out.EffortValues = slices.Clone(c.EffortValues)
+	out.EffortParameterUnsupported = clonePointer(c.EffortParameterUnsupported)
 	out.DefaultEffort = clonePointer(c.DefaultEffort)
 	out.InputModalities = slices.Clone(c.InputModalities)
 	out.KnowledgeCutoff = clonePointer(c.KnowledgeCutoff)
