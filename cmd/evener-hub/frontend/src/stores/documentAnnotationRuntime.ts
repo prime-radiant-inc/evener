@@ -224,18 +224,20 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
     return startPass(reason);
   };
   // Settlement bookkeeping for one direct handoff. Only the last outstanding
-  // handoff can spend the retained trigger: a pending one has already called
-  // needRetry(), and one settling success never cancels the refusal another
-  // queued handoff has still to record. At the moment this schedules, no other
-  // handoff is in flight or queued and this handoff's own chain entry has
-  // settled, so the pass waits only on settled work.
+  // handoff can spend the retained trigger, and it spends it on the work still
+  // pending rather than on its own answer: an earlier handoff in the set can
+  // have refused while the last one applied, and retryNeeded is the only place
+  // that refusal left a trace. A need an earlier pass could not prove is just
+  // as valid to sweep on a retained storage-recovered trigger. At the moment
+  // this schedules, no other handoff is in flight or queued and this handoff's
+  // own chain entry has settled, so the pass waits only on settled work.
   const settleHandoff = (leftPending: boolean): void => {
     outstandingHandoffs -= 1;
     if (outstandingHandoffs > 0) return;
     const retained = handoffRecoveryTriggered;
     handoffRecoveryTriggered = false;
-    if (!alive || !retained || !leftPending) return;
-    void retryPending("storage-recovered");
+    if (!alive || !retained) return;
+    if (leftPending || retryNeeded) void retryPending("storage-recovered");
   };
   return {
     save,

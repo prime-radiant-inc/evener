@@ -330,3 +330,68 @@ test("a storage success during a direct handoff's preparation recovers the refus
   fixture.repository.close();
   fixture.drafts.close();
 });
+
+// One retained trigger covers the whole outstanding set, so spending it must
+// read the work still pending, not the last handoff's own answer. The first
+// handoff refuses and the second - a different destination identity, so the
+// first's pending receipt cannot FIFO-block it - applies: a spend condition
+// that only saw the successful last settlement would clear the trigger and
+// strand the refused annotation exactly as review 43466 describes, one
+// ordering deeper.
+test("a storage success during two direct handoffs recovers the first refusal after the second applies", async () => {
+  let markFirstPreparing: () => void = () => undefined;
+  const firstPreparing = new Promise<void>((resolve) => {
+    markFirstPreparing = resolve;
+  });
+  let releaseFirst: () => void = () => undefined;
+  const firstReleased = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let preparations = 0;
+  let fixture: Fixture | undefined;
+  fixture = await openFixture(async () => {
+    preparations += 1;
+    // Hold the first handoff's preparation open, so the second handoff is
+    // queued and still outstanding when the composer's storage commits land.
+    if (preparations === 1) {
+      markFirstPreparing();
+      await firstReleased;
+      return null;
+    }
+    // A fresh preparation for each later append: a committed append advances
+    // the draft's session token, so the retained trigger's pass prepares again.
+    const loaded = fixture === undefined ? null : await fixture.drafts.load(fixture.key);
+    return loaded ? { key: loaded.key, token: loaded.token, backing: { kind: "draft" }, localGeneration: 0 } : null;
+  });
+  const destination = fixture.operation.destination;
+  if (destination.kind !== "browser-origin") throw new Error(`unexpected destination: ${destination.kind}`);
+  const secondOperation: PreparedAnnotation = {
+    ...fixture.operation,
+    operationId: "operation-2",
+    destination: { ...destination, paneId: "pane-2" },
+  };
+  await fixture.repository.saveAnnotation(secondOperation);
+  const runtime = createDocumentAnnotationRuntime(fixture.repository);
+
+  const first = runtime.handoff(fixture.document, fixture.operation.operationId);
+  const second = runtime.handoff(fixture.document, secondOperation.operationId);
+  await firstPreparing;
+  runtime.storageSucceeded();
+  releaseFirst();
+
+  expect(await first).toEqual({ state: "pending", reason: "owner-unavailable" });
+  expect(await second).toMatchObject({ state: "applied" });
+  // No further external trigger: the retained storage success must start the
+  // pass that completes the first handoff's refused preparation.
+  await runtime.whenIdle();
+  const views = await fixture.repository.listAnnotations(fixture.document);
+  expect(views.find((view) => view.operation.operationId === fixture.operation.operationId)?.handoff.state).toBe(
+    "already-applied",
+  );
+  // One refused preparation, one for the applied second handoff, and one for
+  // the pass that completes the refusal.
+  expect(preparations).toBe(3);
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
