@@ -292,11 +292,8 @@ func gitRefNamesBranch(ctx context.Context, dir, name string) (bool, error) {
 		return false, err
 	}
 	ref := name
-	if !strings.HasPrefix(ref, "refs/") {
-		ref = "refs/heads/" + ref
-	}
 	if !strings.HasPrefix(ref, "refs/heads/") {
-		return false, nil
+		ref = "refs/heads/" + ref
 	}
 	return gitRefExists(ctx, dir, ref)
 }
@@ -375,9 +372,17 @@ func gitRemoteHead(ctx context.Context, url, ref string) (string, error) {
 			shas[name] = sha
 		}
 	}
-	// A short name is looked up as a tag, then a branch; a full refname (or
-	// HEAD) matches itself. Either way a peeled line beats the tag object.
-	for _, name := range []string{"refs/tags/" + ref + "^{}", "refs/tags/" + ref, "refs/heads/" + ref, ref + "^{}", ref} {
+	// An explicit fully qualified ref wins over shorthand expansion. A short
+	// name is looked up as a tag, then a branch; a full refname (or HEAD)
+	// matches itself. Either way a peeled line beats the tag object.
+	lookup := []string{"refs/tags/" + ref + "^{}", "refs/tags/" + ref, "refs/heads/" + ref, ref + "^{}", ref}
+	if strings.HasPrefix(ref, "refs/") {
+		lookup = []string{ref}
+		if strings.HasPrefix(ref, "refs/tags/") {
+			lookup = []string{ref + "^{}", ref}
+		}
+	}
+	for _, name := range lookup {
 		if sha := shas[name]; sha != "" {
 			return sha, nil
 		}

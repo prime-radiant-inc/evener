@@ -2765,6 +2765,33 @@ func TestRefreshMarketplace_AQualifiedBranchFollowsItsTip(t *testing.T) {
 	}
 }
 
+// A branch whose name itself starts with refs/ is still shorthand for a local
+// branch under refs/heads/, so refresh must follow it.
+func TestRefreshMarketplace_ABranchNameStartingWithRefsFollowsItsTip(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "refsbranch")
+	gitIn(t, repo, "checkout", "--quiet", "-b", "refs/releases/v2")
+	advanceGitRepo(t, repo, "README.md", "v2")
+	gitIn(t, repo, "checkout", "--quiet", "-")
+	m := NewManager(t.TempDir())
+	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "refs/releases/v2"})
+	if err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	gitIn(t, repo, "checkout", "--quiet", "refs/releases/v2")
+	advanceGitRepo(t, repo, "README.md", "v3")
+	nextTip := gitIn(t, repo, "rev-parse", "HEAD")
+	gitIn(t, repo, "checkout", "--quiet", "-")
+	if err := m.RefreshMarketplace(context.Background(), "refsbranch"); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != nextTip {
+		t.Fatalf("HEAD after refresh = %s, want the moved branch tip %s", got, nextTip)
+	}
+}
+
 // A branch and a tracked path can share a name. Checkout guessing must not
 // decide which one wins: the recorded ref selects the branch even when git is
 // configured not to guess a branch for an ambiguous name.

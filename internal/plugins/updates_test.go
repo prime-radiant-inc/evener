@@ -337,6 +337,7 @@ func TestGitRemoteHead_ResolvesTheCommitACheckoutOfRefLandsOn(t *testing.T) {
 	gitIn(t, repo, "tag", "-a", "v1", "-m", "release")
 	gitIn(t, repo, "branch", "feature")
 	head := advanceRepo(t, repo)
+	gitIn(t, repo, "tag", "refs/heads/feature")
 
 	for _, tc := range []struct{ ref, want string }{
 		{"", head},
