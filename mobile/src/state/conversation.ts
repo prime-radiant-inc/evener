@@ -2109,7 +2109,16 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				boundService = service;
 				boundSink = sink;
 				try {
-					const { conversation, activity, hasEarlierItems, hasLaterItems } = await service.readProjection(ref);
+					// Retaining older pages also requires their changes since this
+					// snapshot, not just another bounded latest-window projection.
+					const heldHistory = get().conversation?.history;
+					const heldSnapshot = heldHistory?.incarnation
+						? { incarnation: heldHistory.incarnation, length: heldHistory.length }
+						: undefined;
+					const { conversation, activity, changes, hasEarlierItems, hasLaterItems } = await service.readProjection(
+						ref,
+						heldSnapshot,
+					);
 					// I1: Suppress stale work — if the binding epoch changed, the store
 					// switched to a different service/sink/ref. Do not commit.
 					if (entryEpoch !== bindingEpoch) return;
@@ -2143,9 +2152,9 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// The snapshot is authoritative for every row it carries (the
 					// response-cut note by applyThreadNotification): a frame this store
 					// folded while the read was in flight is already in it. The one
-					// thing the snapshot cannot know about is older history this client
-					// paged in — and D23d keeps that in the model itself, so the merge
-					// below carries it and the rows re-project from the merged model.
+					// thing the bounded window omits is older history this client paged
+					// in. Merge its requested changes into those retained pages too,
+					// then re-project the rows from the merged model.
 					const currentConvForMerge = currentSnapshot.conversation;
 					const sameInstance =
 						currentConvForMerge !== null && currentConvForMerge.instanceId === conversation.instanceId;
@@ -2171,7 +2180,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// withLiveActiveTurn).
 					const appliedModel =
 						sameInstance && currentConvForMerge !== null
-							? applyReadModel(currentConvForMerge, conversation)
+							? applyReadModel(currentConvForMerge, conversation, changes)
 							: conversation;
 					// applyReadModel returns the held model BY REFERENCE, completely
 					// unchanged, when the read's own wire identity disposition is
