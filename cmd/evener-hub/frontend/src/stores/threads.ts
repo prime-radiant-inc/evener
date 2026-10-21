@@ -48,6 +48,7 @@ import {
   issueLatestWindowRead,
   isTranscriptHistoryFailedError,
   isTranscriptIndexRebuildingError,
+  latestTurnId,
   mergeOlderItemPage,
   mergeTailTurns,
   mutationErrorData,
@@ -314,6 +315,13 @@ export interface ThreadsStoreState {
    * before a claim captures its lease; that record must not block a cold read.
    * Verification clears only shell/anchor, never the lease or suppression. */
   cacheLifetimes: Map<string, CacheLifetime>;
+  /** Refs currently displaying a cache-seeded conversation whose recorded
+   * history has not been verified against an authoritative read in this
+   * lifetime. Retry cannot authorize a cached latest failure: its neutral
+   * model can name a turn the server has already superseded. Set when the
+   * cache route seeds/opens, cleared when an authoritative publication adopts
+   * the route and when the route is retired. */
+  cacheUnverified: ReadonlySet<string>;
   /** The epoch this tab's in-flight clear armed (spec, "The
    * clear-cached-sessions setting"): while set, the write seam refuses every
    * open lease whose captured epoch predates it. The clear's arm lives here,
@@ -1044,6 +1052,7 @@ async function openCachedEntryTranscript(ref: string, generation: number): Promi
       route.clearEpoch = authorities.clearEpoch;
       route.historyGeneration = authorities.historyGeneration;
       route.cachedUnverified = true;
+      setCacheUnverified(ref, true);
       route.lifetime += 1;
       installed = createEntryTranscriptRepository(route, {
         threadId: header.threadId,
@@ -1371,6 +1380,7 @@ async function acceptEntryTranscriptHydration(
   }
   const repository = fixture.repository;
   fixture.cachedUnverified = false;
+  setCacheUnverified(ref, false);
   fixture.unsubscribeRepository ??= repository.subscribe(() => publishEntryTranscriptModel(ref));
   if (productionRoute && heldCountsAtStore(ref) && !fixture.reader) fixture.reader = repository.attachReader();
   if (productionRoute && authorities && lifetime?.freshForegroundLifetime) settleCacheLifetimeAfterHydration(ref);
@@ -1397,6 +1407,21 @@ function retireEntryTranscriptRoute(fixture: EntryTranscriptRoute): void {
   fixture.unsubscribeRepository = undefined;
   fixture.repository?.dispose();
   fixture.repository = undefined;
+  setCacheUnverified(fixture.ref, false);
+}
+
+export function isCacheUnverified(ref: string): boolean {
+  return threadsStore.getState().cacheUnverified.has(ref);
+}
+
+function setCacheUnverified(ref: string, unverified: boolean): void {
+  threadsStore.setState((state) => {
+    if (state.cacheUnverified.has(ref) === unverified) return state;
+    const next = new Set(state.cacheUnverified);
+    if (unverified) next.add(ref);
+    else next.delete(ref);
+    return { cacheUnverified: next };
+  });
 }
 
 // Read the durable Clear epoch and deletion generation under the existing
@@ -2539,6 +2564,19 @@ function getMutationRuntime(): MutationRuntime | null {
   // ref's in-flight reads (see noteMutationStateChange).
   const settleReceipt = storage.settleReceipt.bind(storage);
   storage.settleReceipt = async (clientMutationId, projectionState) => {
+    // A reflected receipt removes this row from the pending projection before
+    // the new turn is observed. Open the same observation marker Retry uses,
+    // for ANY own turn submission, so the obsolete failure is not actionable
+    // in that window. The mark is idempotent for the same identity.
+    if (projectionState === "reflected") {
+      const record = await storage.getOutbox(clientMutationId);
+      if (record !== undefined && (record.method === "turn/start" || record.method === "turn/queue")) {
+        const latest = latestTurnId(threadsStore.getState().threads.get(record.targetRef));
+        if (latest !== undefined) {
+          retryPendingProjection?.markSubmitted(record.targetRef, latest, clientMutationId);
+        }
+      }
+    }
     const settled = await settleReceipt(clientMutationId, projectionState);
     if (settled) noteHandledMutation(clientMutationId);
     return settled;
@@ -4131,6 +4169,7 @@ function assertRetrySourceCurrent(ref: string, failedTurnId: string): void {
 // send or queue of this client's all refuse.
 function retryAdmissionCurrent(ref: string, failedTurnId: string): boolean {
   if (!latestRetryModel(ref, failedTurnId)) return false;
+  if (threadsStore.getState().cacheUnverified.has(ref)) return false;
   if (retryPendingProjection === null || !retryPendingProjection.isLoaded(ref)) return false;
   if (retryPendingProjection.isSubmitting(ref)) return false;
   if (retryPendingProjection.awaitingReflection(ref, failedTurnId)) return false;
@@ -6937,6 +6976,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   deletedRefs: new Set(),
   repairingRefs: new Set(),
   cacheLifetimes: new Map(),
+  cacheUnverified: new Set(),
   clearInFlight: undefined,
 
   clearResumedIdentity(ref) {
@@ -8693,6 +8733,7 @@ export function resetThreadsStoreForTests(): void {
       deletedRefs: new Set(),
       repairingRefs: new Set(),
       cacheLifetimes: new Map(),
+      cacheUnverified: new Set(),
       clearInFlight: undefined,
     },
     true,

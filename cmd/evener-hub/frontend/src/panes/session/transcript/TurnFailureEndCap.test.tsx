@@ -480,6 +480,75 @@ test("an unresolved ordinary send blocks Retry before its durable row exists", a
   }
 });
 
+test("a cache-unverified conversation cannot authorize Retry", async () => {
+  const turn = failedTurn();
+  const { fake, storage } = await loadThread("ref_a", [turn]);
+  fake.on("turn/start", ({ clientMutationId }) => ({
+    receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "pending" },
+    turn: { id: "turn_continued", status: "inProgress", itemsView: "" },
+  }));
+  act(() => {
+    threadsStore.setState({ cacheUnverified: new Set(["ref_a"]) });
+  });
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    // A cached latest failure looks current but is not authoritative.
+    await waitFor(() => expect(retryButton()?.disabled).toBe(true));
+    await act(async () => {
+      await threadsStore.getState().continueTurn("ref_a", turn.id);
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+
+    // An authoritative adoption of the same still-latest failure clears it.
+    act(() => {
+      threadsStore.setState({ cacheUnverified: new Set() });
+    });
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+    await act(async () => {
+      await threadsStore.getState().continueTurn("ref_a", turn.id);
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+  } finally {
+    storage.close();
+  }
+});
+
+test("a reflected ordinary send keeps Retry closed until its new turn is observed", async () => {
+  const turn = failedTurn();
+  const { fake, storage } = await loadThread("ref_a", [turn]);
+  fake.on("thread/read", () => new Promise<never>(() => undefined));
+  fake.on("turn/start", ({ clientMutationId }) => ({
+    receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
+    turn: { id: "turn_new", status: "inProgress", itemsView: "" },
+  }));
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+    await act(async () => {
+      await submitWithPendingTracking(
+        { ref: "ref_a", text: "ordinary follow-up", skillNames: [], onFailure: () => {} },
+        () => threadsStore.getState().send("ref_a", "ordinary follow-up"),
+      );
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    // The ordinary row settled and its new turn is not observed: the old
+    // failure must not become actionable again.
+    await waitFor(() => expect(retryButton()?.disabled).toBe(true));
+    await act(async () => {
+      await threadsStore.getState().continueTurn("ref_a", turn.id);
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+  } finally {
+    storage.close();
+  }
+});
+
 test("a conversation advanced while Retry's durable write is paused creates no Retry row", async () => {
   const turn = failedTurn();
   vi.stubGlobal("indexedDB", new IDBFactory());
@@ -1141,7 +1210,7 @@ test("a superseded reflection read cannot reopen the old Retry", async () => {
   }
 });
 
-test("a winning reflection read that still names the latest failure restores Retry", async () => {
+test("a winning reflection read that still names the latest failure keeps Retry closed", async () => {
   const turn = failedTurn();
   const { fake, storage } = await loadThread("ref_a", [turn]);
   const reads: ((response: ReturnType<typeof readResponse>) => void)[] = [];
@@ -1160,8 +1229,8 @@ test("a winning reflection read that still names the latest failure restores Ret
     await flushPendingTurnsProjectionForTests();
     await waitFor(() => expect(reads).toHaveLength(1));
     expect(retryButton()?.disabled).toBe(true);
-    // The authoritative current-owner read names the same failure as the
-    // tail: the ordinary eligibility rule may act again without a remount.
+    // The read still names the same failure: the accepted continuation is not
+    // observed yet, so the marker stays and Retry remains closed.
     await act(async () => {
       reads[0]?.(
         readResponse("ref_a", {
@@ -1171,8 +1240,35 @@ test("a winning reflection read that still names the latest failure restores Ret
       );
     });
     await flushPendingTurnsProjectionForTests();
-    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+    expect(retryReflectionForTests("ref_a")?.failedTurnId).toBe(turn.id);
+    expect(retryButton()?.disabled).toBe(true);
+    await act(async () => {
+      await threadsStore.getState().continueTurn("ref_a", turn.id);
+    });
+    await flushPendingTurnsProjectionForTests();
     expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+
+    // The continuation turn finally arrives: the old failure is no longer the
+    // tail and its action is gone.
+    const model = threadsStore.getState().threads.get("ref_a");
+    if (!model) throw new Error("thread went away");
+    act(() => {
+      threadsStore.setState({
+        threads: new Map([
+          [
+            "ref_a",
+            {
+              ...model,
+              runningTurnId: "continued",
+              status: { type: "active" as const },
+              turns: [...model.turns, { id: "continued", status: "inProgress" as const, items: [] }],
+            },
+          ],
+        ]),
+      });
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(retryButton()).toBeNull();
   } finally {
     storage.close();
   }
@@ -1248,18 +1344,20 @@ test("a transport-failed reflection read is retried by the owner and settles the
     await waitFor(() => expect(retries).toHaveLength(1));
     // The failed read proves nothing, so the marker stays.
     expect(retryButton()?.disabled).toBe(true);
-    fake.on("thread/read", () =>
-      readResponse("ref_a", {
+    fake.on("thread/read", () => {
+      const response = readResponse("ref_a", {
         status: { type: "idle" },
-        turns: [{ id: turn.id, status: "failed", itemsView: "full", items: [], error: { message: "boom" } }],
-      }),
-    );
+        turns: [{ id: "continued", status: "inProgress", itemsView: "full", items: [] }],
+      });
+      delete response.thread.evener.activeTurnId;
+      return response;
+    });
     // The owner's own retry publishes; the test never calls refreshThread.
     await act(async () => {
       retries[0]?.();
     });
     await flushPendingTurnsProjectionForTests();
-    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+    await waitFor(() => expect(retryButton()).toBeNull());
     expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
   } finally {
     restoreScheduler();
@@ -1308,8 +1406,30 @@ test("a remount after a failed reflection read asks the owner again", async () =
       );
     });
     await flushPendingTurnsProjectionForTests();
-    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+    // The same failed tail proves the accepted continuation is still
+    // unobserved; the remount probe keeps the marker open.
+    expect(retryButton()?.disabled).toBe(true);
     expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    if (!model) throw new Error("thread went away");
+    act(() => {
+      threadsStore.setState({
+        threads: new Map([
+          [
+            "ref_a",
+            {
+              ...model,
+              runningTurnId: "continued",
+              status: { type: "active" as const },
+              turns: [...model.turns, { id: "continued", status: "inProgress" as const, items: [] }],
+            },
+          ],
+        ]),
+      });
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(retryButton()).toBeNull();
   } finally {
     restoreScheduler();
     storage.close();
