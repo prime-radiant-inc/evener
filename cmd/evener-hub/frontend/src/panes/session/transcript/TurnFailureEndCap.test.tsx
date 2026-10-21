@@ -108,7 +108,7 @@ class OneShotDelayedEnqueueStorage extends MutationOutboxIndexedDB {
   private releaseGate: (() => void) | undefined;
   private gate: Promise<void> = Promise.resolve();
   private armed = false;
-  private reachedResolve: (() => void) | undefined;
+  protected reachedResolve: (() => void) | undefined;
   reached: Promise<void> = Promise.resolve();
 
   holdNextEnqueue(): void {
@@ -185,9 +185,9 @@ class ClearCleanupFailureStorage extends MutationOutboxIndexedDB {
 }
 
 class GatedAcceptedCopyStorage extends MutationOutboxIndexedDB {
-  private releaseWrite: (() => void) | undefined;
+  protected releaseWrite: (() => void) | undefined;
   private writeGate: Promise<void> = Promise.resolve();
-  private reachedResolve: (() => void) | undefined;
+  protected reachedResolve: (() => void) | undefined;
   reached: Promise<void> = Promise.resolve();
 
   holdNextCopy(): void {
@@ -211,6 +211,17 @@ class GatedAcceptedCopyStorage extends MutationOutboxIndexedDB {
   releaseCopy(): void {
     this.releaseWrite?.();
     this.releaseWrite = undefined;
+  }
+}
+
+class RejectingAcceptedCopyStorage extends GatedAcceptedCopyStorage {
+  override async recordAcceptedCopy(): ReturnType<MutationOutboxIndexedDB["recordAcceptedCopy"]> {
+    this.reachedResolve?.();
+    this.reachedResolve = undefined;
+    await new Promise<void>((resolve) => {
+      this.releaseWrite = resolve;
+    });
+    throw new DOMException("full", "QuotaExceededError");
   }
 }
 
@@ -950,12 +961,14 @@ test("a same-tail authoritative read without the copy's identity settles it", as
     expect(await storage.listOptimistic("ref_a")).toHaveLength(1);
     await waitFor(() => expect(retryButton()?.disabled).toBe(true));
 
-    fake.on("thread/read", () =>
-      readResponse("ref_a", {
+    fake.on("thread/read", () => {
+      const response = readResponse("ref_a", {
         status: { type: "idle" },
         turns: [{ id: turn.id, status: "failed", itemsView: "full", items: [], error: { message: "boom" } }],
-      }),
-    );
+      });
+      delete response.thread.evener.activeTurnId;
+      return response;
+    });
     await act(async () => {
       await threadsStore.getState().refreshThread("ref_a");
     });
@@ -1080,8 +1093,8 @@ test("an authoritative settlement of the accepted Retry clears its marker withou
 
     // The read settles the accepted mutation by identity; the original failure
     // is still the latest turn, so no tail advance can clear the marker.
-    fake.on("thread/read", () =>
-      readResponse("ref_a", {
+    fake.on("thread/read", () => {
+      const response = readResponse("ref_a", {
         status: { type: "idle" },
         turns: [
           {
@@ -1100,8 +1113,10 @@ test("an authoritative settlement of the accepted Retry clears its marker withou
             error: { message: "boom" },
           },
         ],
-      }),
-    );
+      });
+      delete response.thread.evener.activeTurnId;
+      return response;
+    });
     await act(async () => {
       await threadsStore.getState().refreshThread("ref_a");
     });
@@ -1327,12 +1342,14 @@ test("an intervening failure cannot settle an unobserved reflected continuation"
       });
     });
     await flushPendingTurnsProjectionForTests();
-    fake.on("thread/read", () =>
-      readResponse("ref_a", {
+    fake.on("thread/read", () => {
+      const response = readResponse("ref_a", {
         status: { type: "idle" },
         turns: [{ id: turnB.id, status: "failed", itemsView: "full", items: [], error: { message: "boom b" } }],
-      }),
-    );
+      });
+      delete response.thread.evener.activeTurnId;
+      return response;
+    });
     storage.release(0);
     await act(async () => {
       await send;
@@ -2290,8 +2307,8 @@ test("a direct fallback from an empty conversation keeps its accepted copy until
     const bRetry = within(bView.container).getByRole("button", { name: "Retry" }) as HTMLButtonElement;
     await waitFor(() => expect(bRetry.disabled).toBe(true));
 
-    fake.on("thread/read", () =>
-      readResponse("ref_a", {
+    fake.on("thread/read", () => {
+      const response = readResponse("ref_a", {
         status: { type: "idle" },
         turns: [
           { id: "turn_b", status: "failed", itemsView: "full", items: [], error: { message: "boom b" } },
@@ -2311,8 +2328,10 @@ test("a direct fallback from an empty conversation keeps its accepted copy until
             error: { message: "boom c" },
           },
         ],
-      }),
-    );
+      });
+      delete response.thread.evener.activeTurnId;
+      return response;
+    });
     await act(async () => {
       await threadsStore.getState().refreshThread("ref_a");
     });
@@ -2390,6 +2409,103 @@ test("a direct send keeps its accepted-input owner until the copy write settles"
     await flushPendingTurnsProjectionForTests();
     await waitFor(async () => expect(await storage.listOptimistic("ref_a")).toHaveLength(1));
     expect(bRetry.disabled).toBe(true);
+  } finally {
+    storage.close();
+  }
+});
+
+test("a rejected direct copy does not mark its own accepted failed turn", async () => {
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  const storage = new RejectingAcceptedCopyStorage({
+    beforeCommit: (operation) => {
+      if (operation === "enqueueIntent") throw new DOMException("full", "QuotaExceededError");
+    },
+  });
+  const { fake } = await loadThread("ref_a", [], {}, storage);
+  fake.on("thread/read", () => new Promise<never>(() => undefined));
+  fake.on("turn/start", ({ clientMutationId }) => ({
+    receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
+    turn: { id: "turn_c", status: "inProgress", itemsView: "" },
+  }));
+  try {
+    storage.holdNextCopy();
+    const send = threadsStore.getState().send("ref_a", "direct to failed c");
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
+    await send;
+    await storage.reached;
+    const first = fake.calls.find((call) => call.method === "turn/start");
+    if (!first) throw new Error("the direct send never reached transport");
+    const id = (first.params as { clientMutationId: string }).clientMutationId;
+
+    // C is observed as failed with its own mutation identity while the copy
+    // write is still held.
+    const model = threadsStore.getState().threads.get("ref_a");
+    if (!model) throw new Error("thread went away");
+    act(() => {
+      threadsStore.setState({
+        threads: new Map([
+          [
+            "ref_a",
+            {
+              ...model,
+              runningTurnId: undefined,
+              status: { type: "idle" as const },
+              turns: [
+                {
+                  id: "turn_c",
+                  status: "failed" as const,
+                  items: [
+                    {
+                      id: "item_c",
+                      turnId: "turn_c",
+                      type: "userMessage",
+                      text: "direct to failed c",
+                      clientMutationId: id,
+                    },
+                  ],
+                  error: { message: "boom c" },
+                },
+              ],
+            },
+          ],
+        ]),
+      });
+    });
+    storage.releaseCopy();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryReflectionForTests("ref_a")).toBeUndefined());
+
+    fake.on("thread/read", () => {
+      const response = readResponse("ref_a", {
+        status: { type: "idle" },
+        turns: [
+          {
+            id: "turn_c",
+            status: "failed",
+            itemsView: "full",
+            items: [
+              { id: "item_c", turnId: "turn_c", type: "userMessage", text: "direct to failed c", clientMutationId: id },
+            ],
+            error: { message: "boom c" },
+          },
+        ],
+      });
+      delete response.thread.evener.activeTurnId;
+      return response;
+    });
+    await act(async () => {
+      await threadsStore.getState().refreshThread("ref_a");
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(retryReflectionForTests("ref_a")).toBeUndefined();
+    expect(threadsStore.getState().threads.get("ref_a")?.turns.at(-1)?.id).toBe("turn_c");
+    expect(threadsStore.getState().threads.get("ref_a")?.runningTurnId).toBeUndefined();
+    render(<TurnFailureEndCap error={{ message: "boom c" }} sessionRef="ref_a" turnId="turn_c" />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
   } finally {
     storage.close();
   }

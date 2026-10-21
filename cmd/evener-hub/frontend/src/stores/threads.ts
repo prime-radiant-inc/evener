@@ -4061,9 +4061,11 @@ async function recordDirectAccepted(
         .catch(() => {
           // No durable copy: keep the page bridge on whatever failure is
           // current, so the accepted input cannot be retried as a second one.
+          // If the current tail IS the accepted turn, that turn is observed:
+          // marking it would wrongly close its own Retry.
           const model = threadsStore.getState().threads.get(ref);
           const tail = latestTurnId(model);
-          if (tail !== undefined) markStaleRetryTail(ref, tail, clientMutationId);
+          if (tail !== undefined && tail !== acceptedTurnId) markStaleRetryTail(ref, tail, clientMutationId);
         })
         .finally(endCopyOwner);
     }
