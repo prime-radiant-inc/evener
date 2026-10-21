@@ -119,14 +119,32 @@ func TestRepositoryFileIsReportedAsAuditOnly(t *testing.T) {
 	}
 }
 
-// A repository file that root tests read by relative path is attributed to the
-// package that reads it, not dismissed as audit-only.
-func TestReferencedRepositoryFileSelectsItsReader(t *testing.T) {
+// A file read only by the repo-root package is audit-only: the root package is
+// never selected, so the file must still be reported rather than disappearing.
+// docs/developing-evener/testing.md is named by root audit tests.
+func TestRootOnlyReaderIsAuditOnly(t *testing.T) {
 	g := loadTestGraph(t)
 	res := selectPackages(g, []string{"docs/developing-evener/testing.md"}, testModules)
 
-	if reasonForPath(res, "primeradiant.com/evener") == "" {
-		t.Errorf("selected %v, want the root package that reads this file", selectedPaths(res))
+	if len(res.Selected) != 0 {
+		t.Errorf("selected %v, want nothing: only the root package reads this", selectedPaths(res))
+	}
+	if len(res.AuditOnly) != 1 {
+		t.Errorf("AuditOnly = %v, want the one file", res.AuditOnly)
+	}
+}
+
+// README.md sits in the root package's directory and is named by a root test
+// literal. It must be reported as audit-only, not silently dropped.
+func TestRootLevelReadmeIsAuditOnly(t *testing.T) {
+	g := loadTestGraph(t)
+	res := selectPackages(g, []string{"README.md"}, testModules)
+
+	if len(res.Selected) != 0 {
+		t.Errorf("selected %v, want nothing for a root-only file", selectedPaths(res))
+	}
+	if len(res.AuditOnly) != 1 || res.AuditOnly[0] != "README.md" {
+		t.Errorf("AuditOnly = %v, want [README.md]", res.AuditOnly)
 	}
 }
 

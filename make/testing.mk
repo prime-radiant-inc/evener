@@ -241,6 +241,7 @@ test-short:
 test-changed:
 	@set -eu; \
 		. scripts/lib/gate-surface-lib.sh; \
+		. scripts/lib/private-go-home.sh; \
 		go run ./internal/devtool/testchanged \
 			-base "$(or $(BASE),main)" \
 			-race "$(or $(RACE),0)" \

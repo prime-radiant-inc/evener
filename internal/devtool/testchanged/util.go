@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -12,12 +13,38 @@ import (
 	"time"
 )
 
+// goEnvValues reports the ambient values of the Go settings that would
+// otherwise be re-derived from the private HOME. Without pinning them, swapping
+// HOME gives the run an empty build cache, an empty module cache that must
+// re-download every dependency, and no `go env -w` settings (GOPROXY,
+// GOPRIVATE, GOFLAGS). scripts/lib/private-go-home.sh exists to resolve the
+// same three defaults for `make test`; this is the Go-side equivalent.
+func goEnvValues() map[string]string {
+	out := map[string]string{}
+	cmd, cancel := command(context.Background(), "go", "env", "-json", "GOCACHE", "GOMODCACHE", "GOPATH", "GOENV")
+	defer cancel()
+	body, err := cmd.Output()
+	if err != nil {
+		return out
+	}
+	var values map[string]string
+	if err := json.Unmarshal(body, &values); err != nil {
+		return out
+	}
+	for name, value := range values {
+		if value != "" && value != "off" {
+			out[name] = value
+		}
+	}
+	return out
+}
+
 // privateTestEnv returns the environment for one module's test run: the
 // developer's own variables, with HOME, the XDG roots and TMPDIR pointed at
-// privateRoot. That mirrors what `make test` gives each module, so a test that
-// reads user configuration sees an empty directory rather than the developer's
-// real state. GOCACHE, GOMODCACHE and GOPATH are left alone so the run reuses
-// the existing build cache instead of rebuilding cold.
+// privateRoot, and the ambient Go cache and env paths pinned so the run reuses
+// the existing build and module caches. That mirrors what `make test` gives
+// each module, so a test that reads user configuration sees an empty directory
+// rather than the developer's real state.
 func privateTestEnv(privateRoot string) ([]string, error) {
 	dirs := map[string]string{
 		"HOME":            filepath.Join(privateRoot, "home"),
@@ -26,16 +53,22 @@ func privateTestEnv(privateRoot string) ([]string, error) {
 		"XDG_STATE_HOME":  filepath.Join(privateRoot, "xdg-state"),
 		"TMPDIR":          filepath.Join(privateRoot, "tmp"),
 	}
+	// GOENV names a file, not a directory; the rest are directories the run
+	// needs to exist before go test starts.
+	goEnv := goEnvValues()
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, err
 		}
 	}
-	env := make([]string, 0, len(os.Environ())+len(dirs))
+	env := make([]string, 0, len(os.Environ())+len(dirs)+len(goEnv))
 	for _, entry := range os.Environ() {
 		name, _, ok := strings.Cut(entry, "=")
 		if ok {
 			if _, replace := dirs[name]; replace {
+				continue
+			}
+			if _, replace := goEnv[name]; replace {
 				continue
 			}
 		}
@@ -43,6 +76,9 @@ func privateTestEnv(privateRoot string) ([]string, error) {
 	}
 	for name, dir := range dirs {
 		env = append(env, name+"="+dir)
+	}
+	for name, value := range goEnv {
+		env = append(env, name+"="+value)
 	}
 	sort.Strings(env)
 	return env, nil

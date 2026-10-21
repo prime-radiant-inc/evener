@@ -214,7 +214,7 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 				// must come before the audit-only fallback: install.sh and the
 				// gate scripts are read by non-root packages, so calling them
 				// audit-only let those edits report a clean run.
-				if readers := g.packagesReading(filepath.Join(g.root, filepath.FromSlash(rel))); len(readers) > 0 {
+				if readers := g.nonRootReaders(filepath.Join(g.root, filepath.FromSlash(rel))); len(readers) > 0 {
 					for _, reader := range readers {
 						packageOnly[reader] = joinReason(packageOnly[reader], "repository file "+rel)
 					}
@@ -255,11 +255,8 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 				// be read by another package's tests; attribute those readers
 				// first, and only then fall back to audit-only.
 				abs := filepath.Join(g.root, filepath.FromSlash(rel))
-				readers := g.packagesReading(abs)
+				readers := g.nonRootReaders(abs)
 				for _, reader := range readers {
-					if reader == rootPkg {
-						continue
-					}
 					packageOnly[reader] = joinReason(packageOnly[reader], "repository file "+rel)
 				}
 				if len(readers) > 0 {

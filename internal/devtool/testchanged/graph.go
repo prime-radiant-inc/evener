@@ -52,6 +52,12 @@ type graph struct {
 	pkgs        map[string]*pkgInfo        // import path -> package
 	byDir       map[string]string          // absolute dir -> import path
 	deps        map[string]map[string]bool // import path -> test-inclusive deps
+
+	// readers maps a resolved absolute file path to the packages whose test
+	// sources name it. Built once on first use: rescanning every test file per
+	// lookup made the tool's own tests five times slower.
+	readers     map[string][]string
+	readersOnce sync.Once
 }
 
 // loadGraph runs `go list -e -deps -test -json ./...` once per module, in
@@ -355,6 +361,22 @@ func (g *graph) importedAnywhere(importPath string) bool {
 	return false
 }
 
+// nonRootReaders returns the packages other than the repo-root package whose
+// tests name absFile. The root package is excluded everywhere, not just in one
+// branch: selecting it would run the ~40s root suite that test-changed
+// documents as out of scope, and a caller that filtered it inconsistently both
+// ran it and, in the other branch, silently dropped the file.
+func (g *graph) nonRootReaders(absFile string) []string {
+	rootPkg, _ := g.packageAt(g.root)
+	var out []string
+	for _, ip := range g.packagesReading(absFile) {
+		if ip != rootPkg {
+			out = append(out, ip)
+		}
+	}
+	return out
+}
+
 // packagesReading returns every package whose test sources name absFile by a
 // path that resolves to it. A repository file outside any package tree is
 // often read from a package's tests by a relative path (`../../install.sh`,
@@ -368,27 +390,33 @@ func (g *graph) importedAnywhere(importPath string) bool {
 // from the package's directory and compared with the changed file, so a path
 // that is merely discussed in a comment does not select anything.
 func (g *graph) packagesReading(absFile string) []string {
-	absFile = filepath.Clean(absFile)
-	var out []string
-	for ip, info := range g.pkgs {
-		for _, src := range info.TestGoFiles {
-			body, err := os.ReadFile(src)
-			if err != nil {
-				continue
-			}
-			if literalsNameFile(string(body), info.Dir, absFile) {
-				out = append(out, ip)
-				break
+	g.readersOnce.Do(func() {
+		g.readers = map[string][]string{}
+		for ip, info := range g.pkgs {
+			for _, src := range info.TestGoFiles {
+				body, err := os.ReadFile(src)
+				if err != nil {
+					continue
+				}
+				for _, target := range literalsIn(string(body), info.Dir) {
+					if !slices.Contains(g.readers[target], ip) {
+						g.readers[target] = append(g.readers[target], ip)
+					}
+				}
 			}
 		}
-	}
-	sort.Strings(out)
-	return out
+		for target := range g.readers {
+			sort.Strings(g.readers[target])
+		}
+	})
+	return g.readers[filepath.Clean(absFile)]
 }
 
-// literalsNameFile reports whether any double-quoted string literal in src
-// resolves, relative to pkgDir, to absFile.
-func literalsNameFile(src, pkgDir, absFile string) bool {
+// literalsIn returns the absolute paths every double-quoted string literal in
+// src resolves to, relative to pkgDir. Only literals that look like file paths
+// are resolved, so an ordinary message string cannot attribute a package.
+func literalsIn(src, pkgDir string) []string {
+	var out []string
 	for i := 0; i < len(src); i++ {
 		if src[i] != '"' {
 			continue
@@ -406,7 +434,7 @@ func literalsNameFile(src, pkgDir, absFile string) bool {
 			}
 		}
 		if j >= len(src) {
-			return false
+			return out
 		}
 		literal := src[start:j]
 		i = j
@@ -414,11 +442,9 @@ func literalsNameFile(src, pkgDir, absFile string) bool {
 			continue
 		}
 		candidate := filepath.Clean(filepath.Join(pkgDir, filepath.FromSlash(literal)))
-		if candidate == absFile {
-			return true
-		}
+		out = append(out, candidate)
 	}
-	return false
+	return out
 }
 
 // nearestPackageAncestor returns the closest package directory above dir,
