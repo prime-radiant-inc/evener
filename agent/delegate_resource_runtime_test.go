@@ -144,16 +144,11 @@ func TestRestoredDelegatePostStartPopulationEmitsTaskCorrection(t *testing.T) {
 	sub.sess.mu.Unlock()
 	var plan string
 	for _, text := range queued {
-		if strings.Contains(text, "Task list:") {
+		if len(parseCurrentTaskElements(text)) > 0 {
 			plan = text
 		}
 	}
-	if !strings.Contains(plan, "Restored committed workflow") || !strings.Contains(plan, "Resume the committed workflow.") {
-		t.Fatalf("restored child plan steering = %q, want the whole seeded plan", plan)
-	}
-	if !strings.Contains(plan, "Work #1 first: Restored committed workflow") {
-		t.Fatalf("restored child plan steering = %q, want the step to work first", plan)
-	}
+	assertCurrentTaskElement(t, plan, 1, "Resume the committed workflow.")
 }
 
 func TestDelegateResourceRuntime_RunningSendDoesNotStartSuccessor(t *testing.T) {

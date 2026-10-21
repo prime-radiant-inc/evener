@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -55,7 +56,7 @@ func TestDelegateStartupWithoutTasksHasNoPlanReminder(t *testing.T) {
 	if !strings.Contains(first, "BRIEF_ONLY") {
 		t.Fatalf("first child request is missing its brief:\n%s", first)
 	}
-	if strings.Contains(first, "Task list:") {
+	if countCurrentTaskElements(first) > 0 {
 		t.Fatalf("a delegate with no tasks received a plan reminder:\n%s", first)
 	}
 }
@@ -87,10 +88,9 @@ func TestDelegatePlanIsOneQueuedMessage(t *testing.T) {
 	if queued[0].Kind != events.SteeringKindTaskList {
 		t.Fatalf("startup steering kind = %q, want %q", queued[0].Kind, events.SteeringKindTaskList)
 	}
-	for _, want := range []string{"PROMPT_FIRST", "PROMPT_SECOND", "Work #1 first: First step"} {
-		if !strings.Contains(queued[0].Text, want) {
-			t.Fatalf("startup steering is missing %q:\n%s", want, queued[0].Text)
-		}
+	assertCurrentTaskElement(t, queued[0].Text, 1, "PROMPT_FIRST")
+	if !strings.Contains(queued[0].Text, "PROMPT_SECOND") {
+		t.Fatalf("startup steering omits a later step's prompt:\n%s", queued[0].Text)
 	}
 }
 
@@ -119,11 +119,9 @@ func TestDelegatePlanNamesTheInProgressStep(t *testing.T) {
 	}
 
 	first := messagesText(adapter.waitFirstRequest(t).Messages)
-	if !strings.Contains(first, "Work #1 first: Role intro") {
-		t.Fatalf("plan does not name the in-progress role step:\n%s", first)
-	}
-	if strings.Contains(first, "Work #2 first") {
-		t.Fatalf("plan names an open step as the one to work:\n%s", first)
+	assertCurrentTaskElement(t, first, 1, "ROLE_INTRO")
+	if got := countCurrentTaskElements(first); got != 1 {
+		t.Fatalf("plan names %d current steps, want one:\n%s", got, first)
 	}
 }
 
@@ -327,6 +325,71 @@ func countPlanSteering(sess *Session) int {
 		}
 	}
 	return count
+}
+
+// currentTaskElement is the parsed CURRENT-TASK block a reminder carries.
+type currentTaskElement struct {
+	id     int
+	title  string
+	prompt string
+}
+
+// parseCurrentTaskElements parses every CURRENT-TASK block in text. Tests assert
+// on these elements rather than on prose, so a wording change does not break
+// them.
+func parseCurrentTaskElements(text string) []currentTaskElement {
+	var elements []currentTaskElement
+	remaining := text
+	for {
+		start := strings.Index(remaining, "<CURRENT-TASK ")
+		if start < 0 {
+			return elements
+		}
+		block := remaining[start:]
+		end := strings.Index(block, "</CURRENT-TASK>")
+		if end < 0 {
+			return elements
+		}
+		self := block[:end]
+		block = block[:end]
+		remaining = remaining[start+len(self):]
+
+		idText, rest, ok := strings.Cut(block, ">")
+		if !ok {
+			continue
+		}
+		idText = strings.TrimPrefix(idText, "<CURRENT-TASK ")
+		id, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(idText, "id=\""), "\""))
+		if err != nil {
+			continue
+		}
+		element := currentTaskElement{id: id}
+		if title, after, ok := strings.Cut(rest, "</TITLE>"); ok {
+			element.title = strings.TrimPrefix(title, "\n<TITLE>")
+			if instructions, _, ok := strings.Cut(after, "</INSTRUCTIONS>"); ok {
+				element.prompt = strings.TrimSpace(strings.TrimPrefix(instructions, "\n<INSTRUCTIONS>\n"))
+			}
+		}
+		elements = append(elements, element)
+	}
+}
+
+// countCurrentTaskElements reports how many CURRENT-TASK blocks text carries.
+func countCurrentTaskElements(text string) int {
+	return len(parseCurrentTaskElements(text))
+}
+
+// assertCurrentTaskElement requires exactly one CURRENT-TASK block naming id,
+// carrying prompt, and titled with its task's description.
+func assertCurrentTaskElement(t *testing.T, text string, id int, prompt string) {
+	t.Helper()
+	elements := parseCurrentTaskElements(text)
+	if len(elements) != 1 {
+		t.Fatalf("CURRENT-TASK elements = %d, want one:\n%s", len(elements), text)
+	}
+	if elements[0].id != id || elements[0].prompt != prompt || elements[0].title == "" {
+		t.Fatalf("CURRENT-TASK element = %+v, want id %d with prompt %q", elements[0], id, prompt)
+	}
 }
 
 // newDelegateStartupFixture builds a delegate-capable session whose scripted

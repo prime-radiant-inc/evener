@@ -23,6 +23,16 @@ const (
 // bookkeeping. A session without it is told to say when the step is complete.
 func formatCurrentTaskSteering(task taskpkg.Task, canUseTaskList bool) string {
 	b := systemReminderBlockBuilder()
+	writeCurrentTaskBlock(b, task)
+	if !canUseTaskList {
+		fmt.Fprintf(b, "Work task %d now, and say so when this step is complete.\n", task.ID)
+	}
+	return finishSystemReminderBlock(b)
+}
+
+// writeCurrentTaskBlock renders one task as the CURRENT-TASK element that both
+// the standalone reminder and the combined startup plan carry.
+func writeCurrentTaskBlock(b *strings.Builder, task taskpkg.Task) {
 	fmt.Fprintf(b, "<CURRENT-TASK id=\"%d\">\n", task.ID)
 	fmt.Fprintf(b, "<TITLE>%s</TITLE>\n", task.Description)
 	if task.Prompt != "" {
@@ -31,10 +41,6 @@ func formatCurrentTaskSteering(task taskpkg.Task, canUseTaskList bool) string {
 		b.WriteString("\n</INSTRUCTIONS>\n")
 	}
 	b.WriteString("</CURRENT-TASK>\n")
-	if !canUseTaskList {
-		fmt.Fprintf(b, "Work task %d now, and say so when this step is complete.\n", task.ID)
-	}
-	return finishSystemReminderBlock(b)
 }
 
 // taskReminderFull generates the full task list for post-compaction injection,
@@ -140,7 +146,8 @@ func withCurrentStep(plan string, current taskpkg.Task) string {
 	body := strings.TrimSuffix(plan, closing)
 	var b strings.Builder
 	b.WriteString(body)
-	fmt.Fprintf(&b, "\nWork #%d first: %s\n", current.ID, current.Description)
+	b.WriteString("\n")
+	writeCurrentTaskBlock(&b, current)
 	b.WriteString(closing)
 	return b.String()
 }
