@@ -60,6 +60,24 @@ test('workspace labels include only exact temporary path aliases', () => {
  }
 });
 
+test('project navigation probe records browser activations, not synthetic clicks or route changes',async()=>{
+ const browser=await chromium.launch({headless:true});
+ try {
+  const page=await browser.newPage();
+  await page.setContent('<button aria-label="Actions for fixture">Menu</button><button role="menuitem">Project settings</button><input type="number" aria-label="Max rounds">');
+  await page.evaluate(web.installProjectNavigationProbe,'fixture');
+  await page.evaluate(()=>document.querySelector('button').click());
+  assert.deepEqual(await page.evaluate(()=>window.__evenerProjectNavigation.events),[{kind:'menu',trusted:false,visible:true}]);
+  await page.evaluate(web.installProjectNavigationProbe,'fixture');
+  await page.getByRole('button',{name:'Actions for fixture'}).click();
+  await page.getByRole('menuitem',{name:'Project settings'}).click();
+  await page.getByRole('spinbutton').fill('7');
+  assert.deepEqual(await page.evaluate(()=>window.__evenerProjectNavigation.events),['menu','project','edit'].map(kind=>({kind,trusted:true,visible:true})));
+  await page.goto('about:blank');
+  assert.deepEqual(await page.evaluate(()=>window.__evenerProjectNavigation?.events??[]),[]);
+ } finally {await browser.close();}
+});
+
 test('path-validation diagnostics retain only allowlisted fields and path equality', () => {
  assert.equal(typeof web.pathValidationTrace,'function');
  const trace=web.pathValidationTrace(['/tmp/private-path-canary']);
