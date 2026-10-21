@@ -2751,9 +2751,13 @@ function failedTurn(ref: string, message: string, resumeRequired = false): Threa
 	return served;
 }
 
-it("resumes a paused session from its error", async () => {
+// Send is the single recovery action: a fenced session's error row offers no
+// Resume of its own, and the composer's Send carries that resume.
+it("resumes a paused session from Send, not from its error row", async () => {
 	const { tree, hub } = await mount(failedTurn("ref-error-resume", "go test exited 1", true));
-	await press(tree, "Resume");
+	expect(pressable(tree, "Resume")).toBeUndefined();
+	act(() => field(tree)?.props.onChangeText("carry on"));
+	await press(tree, "Send and resume");
 	expect(
 		hub.requests.filter((request) => request.method === "resumeThread").map((request) => request.params.ref),
 	).toEqual(["ref-error-resume"]);
@@ -2938,13 +2942,14 @@ describe("a session that can't take a message yet (ruling 20)", () => {
 		expect(hasTestID(tree, "session-notice-error")).toBe(true);
 	});
 
-	it("offers Resume in the composer's place for a paused session", async () => {
+	it("keeps the composer for a paused session, so Send is how it resumes", async () => {
 		const served = thread("ref-paused", "idle");
 		(served as unknown as { evener: Record<string, unknown> }).evener.resumeRequired = true;
 		const { tree, hub } = await mount(served);
-		expect(markers(tree, "session-notice")).toEqual(["paused"]);
-		expect(field(tree)).toBeUndefined();
-		await press(tree, "Resume");
+		expect(markers(tree, "session-notice")).toEqual([]);
+		expect(field(tree)).toBeDefined();
+		act(() => field(tree)?.props.onChangeText("carry on"));
+		await press(tree, "Send and resume");
 		expect(
 			hub.requests.filter((request) => request.method === "resumeThread").map((request) => request.params.ref),
 		).toEqual(["ref-paused"]);

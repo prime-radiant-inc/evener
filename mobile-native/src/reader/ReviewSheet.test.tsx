@@ -168,6 +168,12 @@ beforeEach(async () => {
 	resumeRequired = false;
 	client = new FakeClient("ready");
 	client.on("thread/read", read);
+	// A resume clears the session's fence, so the read that follows it is the
+	// one that releases a parked review.
+	client.resumeThread = async () => {
+		resumeRequired = false;
+		return read();
+	};
 	client.on("turn/start", applied);
 	client.on("turn/queue", applied);
 	harness.connection = { state: "ready", client };
@@ -351,16 +357,24 @@ it("resumes a shut-down session with the review", async () => {
 	expect(mutations()).toEqual(["turn/start"]);
 });
 
-it.each([
-	["needs a restart", "restartRequired", false],
-	["is paused", "idle", true],
-])("can't send to a session that %s, and says so", async (_name, next, paused) => {
-	status = next;
-	resumeRequired = paused;
+it("can't send to a session that needs a restart, and says so", async () => {
+	status = "restartRequired";
 	const tree = await mount();
 	choose(tree, "Approve");
 	expect(sendDisabled(tree)).toBe(true);
 	expect(markers(tree, "review-held")).toEqual(["unavailable"]);
+});
+
+// A recovery-fenced session takes the review the way it takes any message:
+// Send parks it durably and the resume behind it releases the message.
+it("sends a review to a paused session by resuming it", async () => {
+	status = "idle";
+	resumeRequired = true;
+	const tree = await mount();
+	choose(tree, "Approve");
+	expect(sendDisabled(tree)).toBe(false);
+	await send(tree);
+	expect(mutations()).toEqual(["turn/start"]);
 });
 
 it("waits for the connection, and reads again when it returns", async () => {

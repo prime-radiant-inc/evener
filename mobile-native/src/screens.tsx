@@ -1896,8 +1896,8 @@ export function ConversationScreen({
 	// every affordance and submission below reads it, never a raw capability.
 	const permitted = conversation ? conversationControls(conversation) : null;
 	const canCompose =
-		(!conversation || (!conversation.resumeRequired && conversation.status.type !== "restartRequired")) &&
-		(!conversation || canComposeFor(conversation));
+		(!conversation || conversation.status.type !== "restartRequired") &&
+		(!conversation || canComposeFor(conversation) || conversation.resumeRequired === true);
 	const goalCommand = goalObjective(draft.record.draft, draft.record.images?.length);
 	const command = composerCommand(draft.record.draft, draft.record.images?.length);
 	// The draft's whole shape, said once: how many images it holds. The composer
@@ -2352,9 +2352,9 @@ export function ConversationScreen({
 		if (controls) knownCatalog.current = catalog;
 	}, [controls, catalog]);
 	// What takes the composer's place when the session can't take a message
-	// yet (ruling 20).
-	const notice =
-		conversation?.status.type === "restartRequired" ? "restartNeeded" : conversation?.resumeRequired ? "paused" : null;
+	// yet (ruling 20). A recovery-fenced session keeps the composer: Send is
+	// how it resumes, so it shows no Resume notice of its own.
+	const notice = conversation?.status.type === "restartRequired" ? "restartNeeded" : null;
 	const restart = useSessionRestart(controls, snapshot.status);
 	const notesPreview = conversation ? notesBarPreview(conversation) : null;
 	const [stopping, setStopping] = useState(false);
@@ -2528,11 +2528,11 @@ export function ConversationScreen({
 			if (document.getSnapshot().record.draft === text) document.edit("");
 		}
 	}
-	// Whether a message can go out right now, and whether it sends or queues:
-	// routed on what is true at the press, the way the web composer re-derives
-	// at submit, since a turn may have started or ended since render. Send and
-	// an error row's Retry both ask.
-	const liveSendKind = useCallback((): "send" | "queue" | null => {
+	// Whether a message can go out right now, and whether it sends, queues or
+	// resumes: routed on what is true at the press, the way the web composer
+	// re-derives at submit, since a turn may have started or ended since render.
+	// Send and an error row's Retry both ask.
+	const liveSendKind = useCallback((): "send" | "queue" | "resume" | null => {
 		const live = store.getState();
 		if (
 			!service ||
@@ -2547,17 +2547,31 @@ export function ConversationScreen({
 			return null;
 		const liveAction = sendAction(live.conversation, live.pendingMutations, connectionReady.current);
 		if (liveAction === "none") return null;
-		return liveAction === "queue" ? "queue" : "send";
+		return liveAction;
 	}, [service, ready, controls, unconfirmedSend, store]);
 	// Sends or queues one message the way Send does, and says whether the hub
 	// took it.
 	const deliver = useCallback(
 		async (
 			through: NonNullable<typeof service>,
-			kind: "send" | "queue",
+			kind: "send" | "queue" | "resume",
 			text: string,
 			images: Parameters<typeof buildComposerInput>[1],
 		) => {
+			// A fenced session takes the message durably first, with the same
+			// request an offline send writes, and only then resumes: the resume's
+			// read is what opens the dispatch gate, and the parked row follows it.
+			// The store's own send() refuses here - the fence clears its send
+			// capability - so this path must not go through it.
+			if (kind === "resume") {
+				const live = store.getState();
+				const target = mutationTarget(live);
+				if (target === null) return false;
+				await getNativeMutationRuntime().submit(offlineRequest(target, "resume", buildComposerInput(text, images)));
+				haptic("light");
+				const resumed = await controls?.resume();
+				return resumed === true;
+			}
 			const previous = store.getState().lastAcceptedMutation;
 			await store.getState()[kind](through, buildComposerInput(text, images));
 			const accepted = store.getState().lastAcceptedMutation;
@@ -2566,7 +2580,9 @@ export function ConversationScreen({
 			if (admitted) haptic("light");
 			return admitted;
 		},
-		[store],
+		// `controls` belongs here: the resume it drives must be the live instance,
+		// not one a re-render already disposed.
+		[store, controls],
 	);
 	// Continuation uses Send's routing without consuming the current draft.
 	const retryFailedTurn = useCallback(async () => {
@@ -2582,13 +2598,12 @@ export function ConversationScreen({
 
 	const runErrorAction = useCallback(
 		(errorAction: ErrorAction) => {
-			if (errorAction === "resume") void controls?.resume();
-			else if (errorAction === "signIn")
+			if (errorAction === "signIn")
 				// The error doesn't name the provider, so the Hub opens at Providers.
 				openProviders(navigation, route.params.hubId);
 			else void retryFailedTurn();
 		},
-		[controls, navigation, route.params.hubId, retryFailedTurn],
+		[navigation, route.params.hubId, retryFailedTurn],
 	);
 	function openCommands() {
 		Keyboard.dismiss();
@@ -3483,13 +3498,10 @@ export function ConversationScreen({
 						) : notice ? (
 							<SessionNotice
 								kind={notice}
-								busy={restart.busy || controlsState?.pending === "forceStop" || controlsState?.pending === "resume"}
+								busy={restart.busy || controlsState?.pending === "forceStop"}
 								disabled={!controls}
-								error={notice === "restartNeeded" ? restart.error : null}
-								onPress={() => {
-									if (notice === "paused") void controls?.resume();
-									else void restart.restart();
-								}}
+								error={restart.error}
+								onPress={() => void restart.restart()}
 							/>
 						) : null}
 					</BarFrame>

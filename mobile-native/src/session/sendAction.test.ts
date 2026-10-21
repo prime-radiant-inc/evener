@@ -62,8 +62,14 @@ describe("what Send does (spec 8.5)", () => {
 		expect(sendAction(session("idle"), [pendingSend({ fromThisClient: false })], true)).toBe("send");
 	});
 
-	it("does nothing while paused, or where the harness can't take it", () => {
-		expect(sendAction(session("idle", { resumeRequired: true }), [], true)).toBe("none");
+	it("resumes a fenced session instead of asking for a Resume press", () => {
+		// Send is the single recovery action on the phone too: a
+		// recovery-fenced session takes the message, resumes, then sends it.
+		expect(sendAction(session("idle", { resumeRequired: true }), [], true)).toBe("resume");
+		expect(sendAction(session("notLoaded", { resumeRequired: true }), [], true)).toBe("resume");
+	});
+
+	it("does nothing where the harness can't take it", () => {
 		expect(sendAction(session("active", { capabilities: caps({ queue: false }) }), [], true)).toBe("none");
 		expect(sendAction(session("ended", { capabilities: caps({ send: false }) }), [], true)).toBe("none");
 		expect(sendAction(session("idle", { capabilities: caps({ send: false }) }), [], true)).toBe("none");
@@ -103,10 +109,12 @@ describe("Send while offline (phase 6)", () => {
 		expect(sendAction(session("idle"), [pendingSend()], false)).toBe("queue");
 	});
 
-	it("waits for the connection where the harness can't queue, and while paused", () => {
+	it("waits for the connection where the harness can't queue", () => {
 		expect(sendAction(session("idle", { capabilities: caps({ queue: false }) }), [], false)).toBe("none");
 		expect(sendAction(session("active", { capabilities: caps({ queue: false }) }), [], false)).toBe("none");
-		expect(sendAction(session("idle", { resumeRequired: true }), [], false)).toBe("none");
+		// Offline, a fenced session's message parks in the outbox like any other
+		// and the resume runs when the connection returns.
+		expect(sendAction(session("idle", { resumeRequired: true }), [], false)).toBe("resume");
 		expect(sendAction(session("ended", { capabilities: caps({ send: false }) }), [], false)).toBe("none");
 	});
 

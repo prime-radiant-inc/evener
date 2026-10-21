@@ -3,7 +3,8 @@
 // Composer.tsx, availabilityFor):
 // - the package's send/queue table, with this client's own unreflected send
 //   as its tier 6;
-// - a paused session sends nothing until it is resumed;
+// - a recovery-fenced session sends, and so resumes, exactly as a shut-down
+//   one does: Send is the recovery action, never a separate Resume press;
 // - a shut-down session sends, and so resumes, when the hub says it can.
 import { deriveSendQueueAvailability, SHUT_DOWN_STATUSES, type ThreadModel } from "@evener/appwire-client";
 import { ownPendingSend, type PendingTurnEntry } from "@evener/appwire-client/state/mutation";
@@ -17,7 +18,10 @@ export function sendAction(
 	pendingMutations: readonly PendingTurnEntry[] | null | undefined,
 	connected: boolean,
 ): SendAction {
-	if (conversation.resumeRequired) return "none";
+	// A fenced session takes the message and resumes before it sends. Its only
+	// unrunnable shape is a restartRequired daemon, which the table answers
+	// "none" for below: its older process must be stopped first.
+	if (conversation.resumeRequired) return resumeOrNone(conversation);
 	if (!connected) return offlineAction(conversation, ownPendingSend(pendingMutations));
 	const status = conversation.status.type;
 	const availability = deriveSendQueueAvailability({
@@ -32,6 +36,14 @@ export function sendAction(
 	// hub's send capability whatever the status.
 	if (conversation.capabilities.send && (availability.canSend || ended)) return ended ? "resume" : "send";
 	return "none";
+}
+
+// A fenced session answers "resume" wherever its harness can take the send at
+// all, online or offline: the row parks durably either way and the resume runs
+// behind it once the connection and the fence allow.
+function resumeOrNone(conversation: SendSource): SendAction {
+	if (conversation.status.type === "restartRequired") return "none";
+	return conversation.capabilities.send ? "resume" : "none";
 }
 
 /** Offline, a message waits in the phone's outbox (spec 8.5, phase 6

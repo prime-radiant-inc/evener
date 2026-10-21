@@ -17,8 +17,7 @@ const failure = (detail: string, turnId = "turn_2", title = "The turn failed") =
 
 describe("an error's one action (spec 8.2, ruling 26)", () => {
 	it.each([
-		["a paused session resumes", failure("go test exited 1"), session(true), true, "resume"],
-		["a paused session resumes before it signs in", failure("Sign-in expired"), session(true), true, "resume"],
+		["a fenced session's failure retries through Send", failure("go test exited 1"), session(true), true, "retry"],
 		["an expired sign-in signs in", failure("Sign-in expired"), session(), true, "signIn"],
 		["a 401 signs in", failure("401 Unauthorized"), session(), true, "signIn"],
 		["expired credentials sign in", failure("Invalid credentials expired"), session(), true, "signIn"],
