@@ -423,7 +423,8 @@ func (cm *Manager) LastInputTokens() int {
 	return cm.lastInputTokens
 }
 
-// Pressure returns the current context pressure as a fraction (0.0–1.0).
+// Pressure returns the current context pressure as a fraction of the window.
+// It may exceed 1.0 when the estimated usage is larger than the window.
 func (cm *Manager) Pressure(history []schema.Turn, sysPromptChars int) float64 {
 	return cm.estimatePressure(history, sysPromptChars)
 }
@@ -455,7 +456,8 @@ func (cm *Manager) pressureFromSnapshot(prof *provider.Profile, lastTokens, meas
 	if cw <= 0 {
 		return 0
 	}
-	return float64(cm.estimateUsedTokensFor(prof, lastTokens, measuredLen, history, sysPromptChars)) / float64(cw)
+	used := cm.estimateUsedTokensFor(prof, lastTokens, measuredLen, history, sysPromptChars)
+	return pressureOf(used, cw)
 }
 
 // contextWindowOf returns the profile's context window, or 0 when the manager
@@ -554,20 +556,40 @@ func (cm *Manager) EstimatePressure(history []schema.Turn, sysPromptChars int) f
 	return cm.estimatePressure(history, sysPromptChars)
 }
 
+// EstimateStatus returns the estimated context usage and pressure from one
+// (profile, measurement) snapshot and one pass over history.
+func (cm *Manager) EstimateStatus(history []schema.Turn, sysPromptChars int) (schema.ContextMetrics, float64) {
+	prof, lastTokens, measuredLen := cm.profileSnapshot()
+	window, assumed := effectiveWindowOf(prof)
+	if window <= 0 {
+		return schema.ContextMetrics{}, 0
+	}
+	used := cm.estimateUsedTokensFor(prof, lastTokens, measuredLen, history, sysPromptChars)
+	return schema.ContextMetrics{
+		Used:      used,
+		Window:    window,
+		Remaining: max(window-used, 0),
+		Assumed:   assumed,
+	}, pressureOf(used, window)
+}
+
+// pressureOf reports used as a fraction of window. A zero or negative window
+// has no fraction to report. The result may exceed 1.0 when used exceeds
+// window.
+func pressureOf(used, window int) float64 {
+	if window <= 0 {
+		return 0
+	}
+	return float64(used) / float64(window)
+}
+
 // EstimateUsage returns the estimated used, total, and remaining context
 // tokens, with Assumed marking a Window that is the unknown-window assumption
-// rather than a size anything vouches for. Like estimatePressure, one profile
-// snapshot covers the window, the measurement, and the estimate.
+// rather than a size anything vouches for. It delegates to EstimateStatus, so
+// the window, the measurement, and the estimate come from one snapshot.
 func (cm *Manager) EstimateUsage(history []schema.Turn, sysPromptChars int) schema.ContextMetrics {
-	prof, lastTokens, measuredLen := cm.profileSnapshot()
-	cw, assumed := effectiveWindowOf(prof)
-	if cw <= 0 {
-		return schema.ContextMetrics{}
-	}
-
-	used := cm.estimateUsedTokensFor(prof, lastTokens, measuredLen, history, sysPromptChars)
-	remaining := max(cw-used, 0)
-	return schema.ContextMetrics{Used: used, Window: cw, Remaining: remaining, Assumed: assumed}
+	metrics, _ := cm.EstimateStatus(history, sysPromptChars)
+	return metrics
 }
 
 // ApplyThresholdScale scales all compaction thresholds on cm by the given
