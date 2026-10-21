@@ -3,7 +3,6 @@ package sshconn
 import (
 	"context"
 	"fmt"
-	"path"
 	"strconv"
 	"strings"
 
@@ -53,13 +52,9 @@ func (m *Manager) selectedServicePID(ctx context.Context, host hostreg.Host, rep
 			if !ok {
 				return "", errOwnerEvidence
 			}
-			formatted, _, ok = strings.Cut(formatted, " ; ")
+			_, _, ok = strings.Cut(formatted, " ; ")
 			if !ok {
 				return "", errOwnerEvidence
-			}
-			preliminary := strings.Fields(formatted)
-			if config, ok := ownerConfigFlag(preliminary); ok && path.IsAbs(config) && config != report.ConfigPath {
-				continue
 			}
 			argv, err := m.recoverHubArgv(ctx, host, pid)
 			if err != nil {

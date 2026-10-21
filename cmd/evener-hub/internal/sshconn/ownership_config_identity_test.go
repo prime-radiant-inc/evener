@@ -19,7 +19,8 @@ import (
 // SSH alone is replaced by a local shell. The generated commands execute the
 // real hub endpoint entrypoint in separate processes, with real TOML and kernel
 // path lookup. No hub is started and no live SSH server is used.
-func TestOwnerConfigFileIdentity(t *testing.T) {
+func buildConfigIdentityResolver(t *testing.T) string {
+	t.Helper()
 	build := t.TempDir()
 	source := filepath.Join(build, "main.go")
 	if err := os.WriteFile(source, []byte(`package main
@@ -40,6 +41,11 @@ func main() {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build real endpoint resolver: %v\n%s", err, out)
 	}
+	return resolver
+}
+
+func TestOwnerConfigFileIdentity(t *testing.T) {
+	resolver := buildConfigIdentityResolver(t)
 	root := t.TempDir()
 	state := filepath.Join(root, "state")
 	if err := os.MkdirAll(filepath.Join(root, "physical", "inner"), 0700); err != nil {
@@ -152,5 +158,97 @@ func main() {
 				})
 			}
 		})
+	}
+}
+
+func TestSystemdConfigFileIdentity(t *testing.T) {
+	resolver := buildConfigIdentityResolver(t)
+	root := t.TempDir()
+	config := filepath.Join(root, "hub.toml")
+	for _, file := range []string{config, filepath.Join(root, "other.toml")} {
+		if err := os.WriteFile(file, fmt.Appendf(nil, "addr = \"127.0.0.1:0\"\nhub_state_root = %q\n", filepath.Join(root, "state")), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	alias := filepath.Join(root, "alias.toml")
+	if err := os.Symlink(config, alias); err != nil {
+		t.Fatal(err)
+	}
+	for _, live := range []bool{false, true} {
+		for _, selector := range []string{alias, filepath.Join(root, "other.toml")} {
+			t.Run(fmt.Sprintf("live=%t/%s", live, filepath.Base(selector)), func(t *testing.T) {
+				fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+					return nil, fmt.Errorf("unexpected remote command: %v", argv)
+				}}
+				fixture := modelSelectedProcess(t, fr, resolver, "", "")
+				fixture.stopped = !live
+				base := fr.runFn
+				serviceStarts, adHocStarts := 0, 0
+				stop := errors.New("intercepted selected service start")
+				fr.runFn = func(ctx context.Context, argv []string, in io.Reader) ([]byte, error) {
+					remote := strings.Join(argv[12:], " ")
+					switch {
+					case remote == "systemctl start evener-hub.service":
+						serviceStarts++
+						return nil, stop
+					case strings.Contains(remote, "nohup "):
+						adHocStarts++
+						return nil, stop
+					case remote == supervisorShowRemote(supervisor{kind: supervisorSystemd, label: "evener-hub.service"}):
+						pid := "0"
+						if live {
+							pid = "4242"
+						}
+						return fmt.Appendf(nil, "Id=evener-hub.service\nMainPID=%s\nUser=dev\nExecStart={ path=%s ; argv[]=%s hub --config %s ; ignore_errors=no ; }\nWorkingDirectory=%s\n", pid, resolver, resolver, selector, root), nil
+					case remote == hubArgvRemote("4242"):
+						return []byte(resolver + "\x00hub\x00--config\x00" + selector + "\x00"), nil
+					case remote == "readlink /proc/4242/cwd", remote == "getent passwd dev | cut -d: -f6", remote == "pwd":
+						return []byte(root + "\n"), nil
+					case remote == freshOwnerEnvironmentRemote:
+						return []byte("HOME=" + root + "\x00"), nil
+					case strings.Contains(remote, " hub endpoint --json"), strings.Contains(remote, "evener_resolve"):
+						cmd := exec.CommandContext(ctx, "/bin/sh", "-c", remote)
+						cmd.Dir = root
+						cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + root}
+						out, err := cmd.Output()
+						if err != nil {
+							return out, fmt.Errorf("%s: %w", remote, err)
+						}
+						return out, nil
+					}
+					return base(ctx, argv, in)
+				}
+				host := hostreg.Host{Name: "fixture", SSH: "dev@fixture.invalid", EvenerPath: resolver, ConfigPath: config}
+				m := newTestManager(t, testRegistry(t, host), fr, Options{})
+				report, err := m.resolveHostEndpoint(t.Context(), host, selectedRestartFacts())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if live {
+					pid, err := m.selectedServicePID(t.Context(), host, report)
+					if selector == alias && (err != nil || pid != "4242") {
+						t.Fatalf("same file skipped: pid=%q err=%v", pid, err)
+					}
+					if selector != alias && err == nil {
+						t.Fatal("unrelated service selected")
+					}
+					return
+				}
+				owner, err := m.resolveStoppedOwner(t.Context(), host, selectedRestartFacts(), report)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if selector != alias {
+					if owner.supervisor.kind != supervisorNone {
+						t.Fatalf("unrelated service selected: %+v", owner)
+					}
+					return
+				}
+				err = m.bootstrapHub(t.Context(), host, selectedRestartFacts(), "", "")
+				if !errors.Is(err, stop) || serviceStarts != 1 || adHocStarts != 0 || owner.supervisor.kind != supervisorSystemd {
+					t.Fatalf("bootstrap: err=%v service=%d adhoc=%d owner=%+v", err, serviceStarts, adHocStarts, owner)
+				}
+			})
+		}
 	}
 }

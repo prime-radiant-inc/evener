@@ -119,9 +119,6 @@ func (m *Manager) resolveStoppedOwner(ctx context.Context, host hostreg.Host, fa
 			if fields["Id"] != label {
 				return selectedOwner{}, errOwnerEvidence
 			}
-			if config, ok := ownerConfigFlag(argv); ok && path.IsAbs(config) && config != report.ConfigPath {
-				continue
-			}
 			if err := m.hubExecutableMatches(ctx, host, argv[0]); err != nil {
 				if errors.Is(err, errOwnerSelectionMismatch) {
 					continue

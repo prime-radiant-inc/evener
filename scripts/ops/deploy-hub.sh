@@ -141,6 +141,30 @@ function json(raw) {
     return value;
 }
 function absolute(value, cwd) { need(string(value), 'missing path evidence'); return path.resolve(cwd, value); }
+// Filesystem lookup must precede lexical cleaning, especially for symlink/...
+// Positional arguments carry selectors, no captured input is evaluated as shell.
+const configIdentityScript = `
+config_path() {
+    p=$1
+    n=0
+    while [ -L "$p" ]; do
+        n=$((n+1)); [ "$n" -le 40 ] || return 1
+        link=$(readlink "$p") || return 1
+        case "$link" in
+            /*) p=$link ;;
+            *) p=$(dirname "$p")/$link ;;
+        esac
+    done
+    [ -f "$p" ] || return 1
+    parent=$(CDPATH='' cd -P -- "$(dirname "$p")" && pwd -P) || return 1
+    printf '%s/%s\\n' "$parent" "\${p##*/}"
+}
+config_path "$1"`;
+async function configMatches(selector, canonical, options) {
+    need(string(selector) && string(canonical), 'missing config path evidence');
+    if (selector === canonical) return true;
+    return await text('bash', ['-c', configIdentityScript, 'config-identity', selector], options) === canonical;
+}
 function definition(raw) {
     const def = {pid: 0, cwd: '/', argv: [], env: {}};
     const seen = new Set();
@@ -222,12 +246,12 @@ async function endpoint(def, ms = inspectMS) {
         string(report.configured_listen_addr) && ['flag', 'env', 'config', 'default'].includes(report.listen_source), 'invalid endpoint report schema or selection');
     report.config_path = absolute(report.config_path, def.cwd);
     const selected = selectors(def), configIndex = selected.indexOf('--config');
-    if (configIndex >= 0) need(report.config_path === absolute(selected[configIndex+1], def.cwd), 'endpoint config differs from service selector');
-    if (explicitConfig) need(report.config_path === absolute(explicitConfig, invocationCwd), 'explicit config differs from selected service');
+    if (configIndex >= 0) need(await configMatches(selected[configIndex+1], report.config_path, {cwd: def.cwd, env, ms}), 'endpoint config differs from service selector');
+    if (explicitConfig) need(await configMatches(explicitConfig, report.config_path, {cwd: invocationCwd, ms}), 'explicit config differs from selected service');
     if (report.state === 'running') {
         const r = report.running;
         need(object(r) && r.schema_version === 1 && Number.isSafeInteger(r.pid) && r.pid > 0 && r.pid === def.pid &&
-            string(r.boot_id) && string(r.started_at) && absolute(r.config_path, def.cwd) === report.config_path &&
+            string(r.boot_id) && string(r.started_at) && await configMatches(r.config_path, report.config_path, {cwd: def.cwd, env, ms}) &&
             r.hub_state_root === report.hub_state_root && string(r.bound_addr) && string(r.local_url) &&
             string(r.requested_listen_addr) && ['flag', 'env', 'config', 'default'].includes(r.listen_source) && string(r.version),
             'running endpoint identity differs from selected service');

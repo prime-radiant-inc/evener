@@ -494,7 +494,10 @@ type pendingRestartState struct {
 	// reconciled, including the interval before a restart command is known.
 	deployment        bool
 	writeAcknowledged bool
-	restart           bool
+	// installTarget is the canonical destination recorded before the write,
+	// distinct from selected.host.EvenerPath, which may be a launch symlink.
+	installTarget string
+	restart       bool
 	// start records that this command STARTS a hub where none was serving (the
 	// bootstrap path, which refuses to run while a listener holds the address)
 	// rather than replacing a process. A recovered start has no predecessor to
@@ -3533,6 +3536,7 @@ func (m *Manager) recordDeployment(name string, intent pendingRestartState, targ
 		intent.start = previous.start
 	}
 	intent.writeAcknowledged = false
+	intent.installTarget = target
 	m.resolvedTargets[name] = target
 	m.pendingRestarts[name] = intent
 }

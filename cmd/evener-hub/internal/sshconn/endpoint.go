@@ -83,13 +83,27 @@ func (m *Manager) readHostEndpoint(ctx context.Context, host hostreg.Host, facts
 		if !path.IsAbs(p) || p == report.ConfigPath {
 			continue
 		}
-		resolved, err := m.resolveRemotePath(ctx, host, p)
+		matches, err := m.configPathMatches(ctx, host, p, report.ConfigPath, "")
 		if ctx.Err() != nil {
 			return hubendpoint.Report{}, ctx.Err()
 		}
-		if err != nil || resolved != report.ConfigPath {
+		if err != nil || !matches {
 			return hubendpoint.Report{}, fmt.Errorf("%w: host %q endpoint config does not match selected config", ErrPreflightDecode, host.Name)
 		}
 	}
 	return report, nil
+}
+
+// canonical is a resolver report, not an invocation spelling. Resolve aliases
+// on the remote filesystem without lexical cleaning of symlink/.. segments.
+// prefix selects the owner's cwd and narrow environment when that is known.
+func (m *Manager) configPathMatches(ctx context.Context, host hostreg.Host, selector, canonical, prefix string) (bool, error) {
+	if selector == canonical {
+		return true, nil
+	}
+	out, err := m.ownerRead(ctx, host, prefix+resolveDeployCommand(selector))
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(out)) == canonical, nil
 }

@@ -1124,8 +1124,14 @@ func (m *Manager) recordedTargetUnusable(ctx context.Context, host hostreg.Host)
 func (m *Manager) reinstallRetainedTarget(ctx context.Context, host hostreg.Host, facts Preflight, pending pendingRestartState, recorders ...func(string) error) (string, error) {
 	prior := *pending.selected
 	check := func(target string) error {
-		if target != host.EvenerPath || target != prior.host.EvenerPath || pending.expectedVersion != m.opts.controllerVersion() || !hostreg.SameRegistration(host, prior.host) || host.PresenceEpoch != prior.host.PresenceEpoch {
+		if pending.installTarget == "" || target != pending.installTarget || host.EvenerPath != prior.host.EvenerPath || pending.expectedVersion != m.opts.controllerVersion() || !hostreg.SameRegistration(host, prior.host) || host.PresenceEpoch != prior.host.PresenceEpoch {
 			return errOwnerSelectionMismatch
+		}
+		if host.EvenerPath != pending.installTarget {
+			resolved, err := m.resolveDeployTarget(ctx, host, host.EvenerPath)
+			if err != nil || resolved != pending.installTarget {
+				return errOwnerSelectionMismatch
+			}
 		}
 		current, ok := m.reg.Get(host.Name)
 		m.applyResolvedTarget(&current)
@@ -1210,7 +1216,7 @@ func (m *Manager) reinstallRetainedTarget(ctx context.Context, host hostreg.Host
 		}
 		return nil
 	}
-	if err := check(host.EvenerPath); err != nil {
+	if err := check(pending.installTarget); err != nil {
 		return "", err
 	}
 	target, err := m.deploy(ctx, host, facts, func(target string) error {

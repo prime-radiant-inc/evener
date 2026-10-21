@@ -72,15 +72,18 @@ def refuse():
     (p/'violation').write_text(json.dumps([cmd,args]))
     sys.exit(97)
 def save(): (p/'state.json').write_text(json.dumps(s))
+def service_cwd(): return p/'service' if f.get('service_cwd') else p/'repo'
+def config_selector():
+    return {'alias':str(p/'alias.toml'),'relative':'../alias.toml','dotdot':'../link/../../selected.toml','different':'../link/../selected.toml'}.get(f.get('config_selector'),str(p/'selected.toml'))
 def argv():
-    flags=[] if f.get('default_config') else ['--config='+str(p/'selected.toml')]
+    flags=[] if f.get('default_config') else ['--config='+config_selector()]
     if not f.get('env_listener') and not f.get('toml_listener'): flags+=['--addr='+f.get('listener','[::]:0')]
     if f.get('separate_flags'):
         flags=[x for word in flags for x in [word.split('=',1)[0],word.split('=',1)[1]]]
     if f.get('subcommand'): flags=['endpoint','--json']
     return [str(p/'repo/evener'),'hub']+flags
 def endpoint_args():
-    flags=[] if f.get('default_config') else ['--config',str(p/'selected.toml')]
+    flags=[] if f.get('default_config') else ['--config',config_selector()]
     if not f.get('env_listener') and not f.get('toml_listener'): flags+=['--addr',f.get('listener','[::]:0')]
     return ['hub','endpoint','--json']+flags
 if cmd == 'launchctl':
@@ -92,7 +95,7 @@ if cmd == 'launchctl':
         if f.get('pid_change_before_build') and s.get('reports'): s['pid']=404; save()
         program=str(p/'repo/evener')
         if f.get('wrong_program'): program=str(p/'other/evener')
-        print('gui/test = {\n\tprogram = '+program+'\n\tworking directory = '+str(p/'repo'))
+        print('gui/test = {\n\tprogram = '+program+'\n\tworking directory = '+str(service_cwd()))
         print('\targuments = {')
         for arg in argv(): print('\t\t'+arg)
         print('\t}\n\tinherited environment = {\n\t\tHOME => '+str(p/'home')+'\n\t\tXDG_CONFIG_HOME => '+str(p/'config')+'\n\t\tXDG_STATE_HOME => '+str(p/'state')+'\n\t}')
@@ -139,7 +142,7 @@ elif cmd == 'ps':
     elif args==['-p',pid,'-ww','-o','command=']: print(' '.join(argv())+(' unexpected' if f.get('wrong_argv') else ''))
     else: refuse()
 elif cmd == 'lsof':
-    if args==['-a','-p',str(s['pid']),'-d','cwd','-Fn']: print('p'+str(s['pid'])+'\nn'+str(p/'other' if f.get('wrong_cwd') else p/'repo'))
+    if args==['-a','-p',str(s['pid']),'-d','cwd','-Fn']: print('p'+str(s['pid'])+'\nn'+str(p/'other' if f.get('wrong_cwd') else service_cwd()))
     elif args[:4]==['-a','-p',str(s['pid']),'-Fn'] and args[4:] in [[str(p/'state/evener/hub.lock')],[str(p/'other-state/evener/hub.lock')],[str(p/'custom-root/hub.lock')]]:
         lock=p/'custom-root/hub.lock' if f.get('custom_root') else p/'state/evener/hub.lock'
         if f.get('missing_root_evidence') or args[4]!=str(lock): sys.exit(1)
@@ -185,7 +188,7 @@ elif cmd == 'evener':
             s['reports']=s.get('reports',0)+1; save()
             port=19472+s['reports'] if new else 19471
             local='http://[::1]:'+str(port) if f.get('listener','[::]:0').startswith('[') else 'http://127.0.0.1:'+str(port)
-            report['running']={'schema_version':1,'pid':pid,'boot_id':boot,'started_at':'2026-10-16T08:00:00Z','config_path':str(config),'hub_state_root':str(root),'requested_listen_addr':f.get('listener','[::]:0'),'listen_source':source,'bound_addr':'[::]:'+str(port),'local_url':local,'loopback_url':local,'version':f['version'] if new else 'old','backend_git_sha':f['sha'] if new else 'old'}
+            report['running']={'schema_version':1,'pid':pid,'boot_id':boot,'started_at':'2026-10-16T08:00:00Z','config_path':str(p/'alias.toml') if f.get('running_alias') else ('../alias.toml' if f.get('running_relative') else str(config)),'hub_state_root':str(root),'requested_listen_addr':f.get('listener','[::]:0'),'listen_source':source,'bound_addr':'[::]:'+str(port),'local_url':local,'loopback_url':local,'version':f['version'] if new else 'old','backend_git_sha':f['sha'] if new else 'old'}
             if new and f.get('stale'): report['running'].update(pid=101,boot_id='old-boot')
             if new and f.get('wrong_build'): report['running']['version']='wrong'
             if new and f.get('wrong_sha'): report['running']['backend_git_sha']='wrong'
@@ -212,6 +215,14 @@ else: refuse()
 # Last column: (build calls, selected kickstart calls).
 cases=[
  ('selected_endpoint',{},[],True,(1,1)),
+ ('service_config_symlink',{'config_selector':'alias'},[],True,(1,1)),
+ ('explicit_config_symlink',{},['--config','@alias'],True,(1,1)),
+ ('running_config_symlink',{'running_alias':True},[],True,(1,1)),
+ ('relative_service_config',{'config_selector':'relative','service_cwd':True},[],True,(1,1)),
+ ('relative_explicit_config',{'service_cwd':True},['--config','../alias.toml'],True,(1,1)),
+ ('relative_running_config',{'running_relative':True,'service_cwd':True},[],True,(1,1)),
+ ('symlink_dotdot_same',{'config_selector':'dotdot','service_cwd':True},[],True,(1,1)),
+ ('symlink_dotdot_different',{'config_selector':'different','service_cwd':True},[],False,(0,0)),
  ('two_labels_shared_executable',{},[],True,(1,1)),
  ('dirty_worktree',{'dirty':True},[],True,(1,1)),
  ('custom_state_root',{'custom_root':True,'unavailable':True},[],True,(1,1)),
@@ -306,13 +317,20 @@ with tempfile.TemporaryDirectory(prefix='task7c-', dir=os.environ.get('EVENER_SC
         original='addr = "[::]:0"\npublic_url = "https://publication.invalid"\n'
         if facts.get('custom_root'): original+='hub_state_root = "'+str(p/'custom-root')+'"\n'
         (p/'selected.toml').write_text(original); (p/'config/evener/hub.toml').write_text(original); (p/'other.toml').write_text('addr = "127.0.0.1:9180"\n')
+        (p/'alias.toml').symlink_to(p/'selected.toml')
+        (p/'service').mkdir(); (p/'physical/inner').mkdir(parents=True)
+        (p/'physical/selected.toml').write_text(original)
+        (p/'link').symlink_to(p/'physical/inner')
+        assert os.path.samefile(p/'alias.toml',p/'selected.toml')
+        assert os.path.samefile(str(p)+'/link/../../selected.toml',p/'selected.toml')
+        assert not os.path.samefile(str(p)+'/link/../selected.toml',p/'selected.toml')
         (p/'state/evener/sentinel').write_text('keep'); (p/'other-state/evener/sentinel').write_text('other-keep')
         (p/'custom-root').mkdir(); (p/'custom-root/sentinel').write_text('custom-keep')
         dispatch=p/'dispatch'; dispatch.write_text(fixture); dispatch.chmod(0o755)
         for tool in ['launchctl','make','curl','ps','lsof']:
             (p/'bin'/tool).symlink_to(dispatch)
         (p/'repo/evener').symlink_to(dispatch)
-        for tool in ['bash','python3','node','npm','git','id','awk','grep','sed','jq','stat','date','sleep','head','wc','cat','mktemp','rm','dirname']:
+        for tool in ['bash','python3','node','npm','git','id','awk','grep','sed','jq','stat','date','sleep','head','wc','cat','mktemp','rm','dirname','readlink']:
             executable=shutil.which(tool)
             if executable and not (tool=='node' and facts.get('no_node')) and not (tool=='npm' and facts.get('no_npm')): (p/'bin'/tool).symlink_to(executable)
         env={'PATH':str(p/'bin'),'HOME':str(p/'home'),'FIXTURE':str(p),'TMPDIR':str(p),'LC_ALL':'C','EVENER_HUB_LISTEN_ADDR':'AMBIENT_MUST_NOT_WIN','EVENER_HUB_ADDR':'REMOVED_MUST_NOT_LEAK','EVENER_HUB_URL':'https://ambient.invalid','EVENER_PROVIDERS_CONFIG':'SECRET_DO_NOT_PRINT','PRIVATE_SENTINEL':'SECRET_DO_NOT_PRINT','XDG_CONFIG_HOME':str(p/'wrong-config'),'XDG_STATE_HOME':str(p/'wrong-state')}
@@ -335,7 +353,7 @@ with tempfile.TemporaryDirectory(prefix='task7c-', dir=os.environ.get('EVENER_SC
         if '@raw' in args: args=[a for a in args if a!='@raw']; base=[]
         elif '@auto' in args: args=[]; base=['--timeout',budget]
         elif '@help' in args: args=['--help']; base=[]
-        substitutions={'@config':str(p/'selected.toml'),'@default':str(p/'config/evener/hub.toml'),'@other':str(p/'other.toml')}
+        substitutions={'@alias':str(p/'alias.toml'),'@config':str(p/'selected.toml'),'@default':str(p/'config/evener/hub.toml'),'@other':str(p/'other.toml')}
         argv=['bash',str(script)]+base+[substitutions.get(a,a) for a in args]
         returncode,out,err,timed_out,leaks=invoke(argv,p,env)
         if facts.get('retry_stopped'):
@@ -366,7 +384,7 @@ with tempfile.TemporaryDirectory(prefix='task7c-', dir=os.environ.get('EVENER_SC
                 if facts.get('empty_listener'): expected_env['EVENER_HUB_LISTEN_ADDR']=''
                 if facts.get('definition_change') and call['env'].get('XDG_STATE_HOME')==str(p/'other-state'): expected_env['XDG_STATE_HOME']=str(p/'other-state')
                 assert call['env']==expected_env, 'ambient/environment contamination: '+str(call['env'])
-                assert call['cwd']==str(p/'repo'), 'wrong service working directory'
+                assert call['cwd']==str(p/'service' if facts.get('service_cwd') else p/'repo'), 'wrong service working directory'
             assert b'SECRET_DO_NOT_PRINT' not in out+err, 'secret disclosed'
             markers=[facts[key].encode() for key in ['build_stdout_marker','build_stderr_marker','build_private_marker']]
             assert all(marker not in out+err for marker in markers), 'raw build output disclosed'

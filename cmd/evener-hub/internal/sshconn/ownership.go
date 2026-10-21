@@ -327,11 +327,11 @@ func (m *Manager) checkOwnerConfigUsing(ctx context.Context, host hostreg.Host, 
 		if path.IsAbs(config) && config != selected.ConfigPath {
 			// Retain the argv sanity check even if the process resolver reports
 			// the selection. Compare actual files, not absolute path spellings.
-			out, err := m.ownerRead(ctx, host, ownerContext(cwd, env)+resolveDeployCommand(config))
+			matches, err := m.configPathMatches(ctx, host, config, selected.ConfigPath, ownerContext(cwd, env))
 			if err != nil {
 				return err
 			}
-			if strings.TrimSpace(string(out)) != selected.ConfigPath {
+			if !matches {
 				return fmt.Errorf("%w: process config disagrees with selection", errOwnerSelectionMismatch)
 			}
 		}
