@@ -377,6 +377,10 @@ details in the web or native client. The live handshake's optional
 stays unknown. `serverInfo.version` is the protocol package version and is not a
 substitute for the remote build. Launch-check describes the installed executable,
 which can differ from the process still running.
+An executable launch-check failure that can be distinguished from a transport
+failure does not block a usable live connection or already-authorized deployment
+repair. Startup and post-install verification still require a valid launch
+contract; SSH and environment failures remain connection errors.
 
 **Installation target.** Deployment uses the host entry's `evener_path`, then
 the running host hub's executable, then `command -v evener`, then
@@ -385,6 +389,9 @@ stages a temporary file, verifies its length, and renames it atomically over the
 target. A failed transfer does not leave a partial executable. The installer
 preserves the existing installation location and layout. A configured target
 must name the `evener` runtime, not another program.
+While an effect is pending, default-path discovery cannot replace its selected
+target. If that executable disappears or loses its execute bit, an authorized
+deployment repairs the selected installation rather than switching to another one.
 
 **Build verification.** A source build carries the controller's build identity;
 a named artifact carries its own. After deployment, the controller re-reads the

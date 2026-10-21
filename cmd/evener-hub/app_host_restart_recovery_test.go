@@ -1233,7 +1233,11 @@ func TestHostDeployRestartAfterFreshProvisioningDoesNotRepush(t *testing.T) {
 
 func publicRecoveryHub(t *testing.T, runner *restartRecoveryRunner, artifact string) (*hubHostManager, *sshconn.Manager, *hostops.Store, hostreg.Host, <-chan sshconn.EventKind) {
 	t.Helper()
-	host := deployTestHost()
+	return publicRecoveryHubForHost(t, runner, runner, artifact, deployTestHost())
+}
+
+func publicRecoveryHubForHost(t *testing.T, runner *restartRecoveryRunner, remote sshconn.Runner, artifact string, host hostreg.Host) (*hubHostManager, *sshconn.Manager, *hostops.Store, hostreg.Host, <-chan sshconn.EventKind) {
+	t.Helper()
 	registry, err := hostreg.New([]hostreg.Host{host})
 	if err != nil {
 		t.Fatal(err)
@@ -1244,7 +1248,7 @@ func publicRecoveryHub(t *testing.T, runner *restartRecoveryRunner, artifact str
 		t.Fatal(err)
 	}
 	events := make(chan sshconn.EventKind, 32)
-	manager := sshconn.New(registry, sshconn.Options{Runner: runner, Stderr: io.Discard, BackoffBase: 10 * time.Millisecond,
+	manager := sshconn.New(registry, sshconn.Options{Runner: remote, Stderr: io.Discard, BackoffBase: 10 * time.Millisecond,
 		OnEvent: func(event sshconn.Event) {
 			if event.Kind == sshconn.EventAttached || event.Kind == sshconn.EventFailed {
 				events <- event.Kind
@@ -1326,6 +1330,8 @@ type restartRecoveryRunner struct {
 	startedAt                     string
 	probeVersion, probeStart      string
 	launchResponse                []byte
+	launchError                   error
+	keepLaunchError               bool
 	delayBridgeExit               bool
 	writes, restarts, afterProbes int
 	builds, starts                int
@@ -1376,6 +1382,9 @@ func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.R
 	case strings.HasSuffix(command, "id -u"):
 		return []byte("1000\n"), nil
 	case strings.Contains(command, "launch-check"):
+		if r.launchError != nil {
+			return nil, r.launchError
+		}
 		if r.missing {
 			return nil, r.missingError
 		}
@@ -1521,6 +1530,9 @@ func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.R
 		}
 		r.diskVersion = string(data)
 		r.missing, r.launchResponse = false, nil
+		if !r.keepLaunchError {
+			r.launchError = nil
+		}
 		if r.writes == 1 {
 			r.launchResponse = r.firstWriteContract
 		}

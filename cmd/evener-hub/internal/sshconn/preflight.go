@@ -262,7 +262,9 @@ func (m *Manager) collectPreflight(ctx context.Context, host hostreg.Host) (pref
 	probeHost := host
 	m.applyResolvedTarget(&probeHost)
 	lc, err := m.probeLaunchCheck(ctx, probeHost)
-	if errors.Is(err, errExecutableMissing) {
+	// An unfinished effect owns its selected installation. Its absence must not
+	// redirect recovery into a second installation discovered at the default.
+	if errors.Is(err, errExecutableMissing) && !m.pendingRestart(host.Name).active() {
 		if target, ok := m.probeInstallerDefaultExecutable(ctx, host); ok {
 			// Discovery proves the bridge exists even if launch-check refuses.
 			m.setResolvedTarget(host.Name, target)
@@ -286,7 +288,7 @@ func (m *Manager) collectPreflight(ctx context.Context, host hostreg.Host) (pref
 		if pf.ExecutableMissing {
 			err = fmt.Errorf("%w: %s", err, m.deployHelp())
 		}
-		if pf.ExecutableMissing || errors.Is(err, ErrProtocolIncompatible) || errors.Is(err, ErrPreflightDecode) {
+		if pf.ExecutableMissing || errors.Is(err, ErrProtocolIncompatible) || errors.Is(err, ErrPreflightDecode) || errors.Is(err, errLaunchCheckFailed) {
 			return preflightResult{facts: pf, launchErr: err}, nil
 		}
 		return preflightResult{facts: pf}, err
@@ -307,13 +309,25 @@ func (m *Manager) probeLaunchCheck(ctx context.Context, host hostreg.Host) (laun
 		if isProtocolMismatchOutput(out) {
 			return launchCheck{}, fmt.Errorf("%w: host %q refused protocol %s: %s", ErrProtocolIncompatible, host.Name, appwire.ProtocolVersion, tail(out))
 		}
-		if m.verifiedExecutableMissing(ctx, host) {
+		missing, present := m.probeExecutablePresence(ctx, host)
+		if missing {
 			return launchCheck{}, fmt.Errorf("%w: host %q launch-check: %s", errExecutableMissing, host.Name, tail(out))
 		}
-		return launchCheck{}, sshRunFailure(host.Name, "launch-check", err, tail(out))
+		failure := sshRunFailure(host.Name, "launch-check", err, tail(out))
+		var exit *exec.ExitError
+		if present && ctx.Err() == nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) &&
+			errors.As(err, &exit) && exit.ExitCode() > 0 && exit.ExitCode() != 255 {
+			// SSH reserves 255 for its own failures. A different completed exit,
+			// plus a successful presence probe, is an unusable disk contract, not
+			// evidence against a live compatible hub or permission to install.
+			return launchCheck{}, fmt.Errorf("%w: %w", errLaunchCheckFailed, failure)
+		}
+		return launchCheck{}, failure
 	}
 	return parseLaunchCheck(out)
 }
+
+var errLaunchCheckFailed = errors.New("sshconn: executable launch-check command failed")
 
 // errExecutableMissing marks the verified absence of the evener executable at the
 // host's resolved run target: the dedicated executable probe proved it (its own
@@ -333,8 +347,8 @@ var errExecutableMissing = errors.New("sshconn: evener executable not found on t
 // (appwire.HubLaunchError) rather than a generic internal error.
 var ErrExecutableMissing = errExecutableMissing
 
-// verifiedExecutableMissing reports whether the dedicated executable probe
-// proves there is no evener executable at the command launch-check just tried.
+// probeExecutablePresence reports independently verified absence or presence at
+// the command launch-check just tried. Neither is true for a failed probe.
 //
 // It reads the probe's exit status alone and never its output: ssh writes its
 // own diagnostics and the remote command's stderr to one merged stream, so the
@@ -347,10 +361,10 @@ var ErrExecutableMissing = errExecutableMissing
 // transport failure as a missing executable (spec 04, §"Preflight", "Missing
 // executable"; §"Error handling", "Arbitrary SSH failures must not trigger
 // installation").
-func (m *Manager) verifiedExecutableMissing(ctx context.Context, host hostreg.Host) bool {
+func (m *Manager) probeExecutablePresence(ctx context.Context, host hostreg.Host) (missing, present bool) {
 	_, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, executableProbeRemote(evenerCommand(host.EvenerPath))), nil)
 	var exit *exec.ExitError
-	return errors.As(err, &exit) && exit.ExitCode() == 1
+	return errors.As(err, &exit) && exit.ExitCode() == 1, err == nil
 }
 
 // executableProbeRemote builds the dedicated executable-presence probe for the
