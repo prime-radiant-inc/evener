@@ -84,7 +84,7 @@ func (f *darwinBootstrapFixture) runner(t *testing.T, host hostreg.Host) *fakeRu
 				program = "/other/evener"
 			}
 			return []byte("program = " + program + "\nworking directory = /candidate\narguments = {\n" + program + "\nhub\n--config\n/srv/selected.toml\n}\nHOME => /home/dev\n"), nil
-		case "pwd":
+		case "pwd", "CDPATH='' cd -P -- /srv && pwd -P":
 			return []byte("/srv\n"), nil
 		case freshOwnerEnvironmentRemote, darwinEnvironmentRemote("4343"):
 			return []byte("HOME=/home/dev\x00"), nil

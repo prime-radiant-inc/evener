@@ -26,17 +26,18 @@ var errOwnerSelectionMismatch = fmt.Errorf("%w: different selected owner", errOw
 // Call revalidateOwnedEndpoint immediately before consuming it for mutation.
 // Stopped pending replacements require a separate retained launch/service intent.
 type selectedOwner struct {
-	host       hostreg.Host
-	pid        string
-	supervisor supervisor
-	generation string
-	argv       []string
-	cwd        string
-	report     hubendpoint.Report
-	env        []string
-	definition string
-	logPath    string
-	domainUID  string
+	host        hostreg.Host
+	pid         string
+	supervisor  supervisor
+	generation  string
+	argv        []string
+	cwd         string
+	cwdIdentity string
+	report      hubendpoint.Report
+	env         []string
+	definition  string
+	logPath     string
+	domainUID   string
 }
 
 func (o selectedOwner) clone() selectedOwner {
@@ -123,7 +124,7 @@ func (m *Manager) resolveLinuxOwner(ctx context.Context, host hostreg.Host, repo
 	if err != nil {
 		return selectedOwner{}, err
 	}
-	owner := selectedOwner{host: host, pid: pid, supervisor: sup, generation: before, argv: argv, cwd: cwd, env: env, report: report}
+	owner := selectedOwner{host: host, pid: pid, supervisor: sup, generation: before, argv: argv, cwd: cwd, cwdIdentity: cwd, env: env, report: report}
 	if sup.kind != supervisorNone {
 		owner.definition, err = m.serviceDefinition(ctx, host, sup)
 		if err != nil {
@@ -202,7 +203,7 @@ func sameProcess(now, prior selectedOwner) bool {
 }
 
 func sameLaunch(now, prior selectedOwner) bool {
-	return now.supervisor == prior.supervisor && now.domainUID == prior.domainUID && now.cwd == prior.cwd && slices.Equal(now.argv, prior.argv) && slices.Equal(now.env, prior.env) && now.definition == prior.definition && now.report.ConfigPath == prior.report.ConfigPath && now.report.HubStateRoot == prior.report.HubStateRoot
+	return now.supervisor == prior.supervisor && now.domainUID == prior.domainUID && now.cwdIdentity == prior.cwdIdentity && slices.Equal(now.argv, prior.argv) && slices.Equal(now.env, prior.env) && now.definition == prior.definition && now.report.ConfigPath == prior.report.ConfigPath && now.report.HubStateRoot == prior.report.HubStateRoot
 }
 
 func (m *Manager) hasOwnerWitness(owner selectedOwner) bool {
@@ -640,7 +641,15 @@ func (m *Manager) supervisorForOwner(ctx context.Context, host hostreg.Host, pid
 				workingDirectory = strings.TrimSpace(string(out))
 			}
 		}
-		if definitionUser != user || workingDirectory != cwd || !strings.HasPrefix(fields["ExecStart"], prefix) || !strings.HasSuffix(fields["ExecStart"], " }") {
+		userMatches, err := m.sameUser(ctx, host, definitionUser, user)
+		if err != nil {
+			return supervisor{}, err
+		}
+		directoryMatches, err := m.sameDirectory(ctx, host, workingDirectory, cwd)
+		if err != nil {
+			return supervisor{}, err
+		}
+		if !userMatches || !directoryMatches || !strings.HasPrefix(fields["ExecStart"], prefix) || !strings.HasSuffix(fields["ExecStart"], " }") {
 			return supervisor{}, fmt.Errorf("%w: service definition disagrees with selected process", errOwnerEvidence)
 		}
 		if chosen.kind != supervisorNone {

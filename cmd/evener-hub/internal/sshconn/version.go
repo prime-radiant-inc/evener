@@ -722,7 +722,11 @@ func (m *Manager) checkHubOwner(ctx context.Context, host hostreg.Host, pid stri
 	if owner == "" {
 		return fmt.Errorf("%w: host %q pid %s reported no owning user; refusing to restart a process whose owner cannot be read", ErrRestart, host.Name, pid)
 	}
-	if owner != user {
+	matches, err := m.sameUser(ctx, host, owner, user)
+	if err != nil {
+		return fmt.Errorf("%w: host %q could not resolve owner identity: %w", ErrRestart, host.Name, err)
+	}
+	if !matches {
 		return fmt.Errorf("%w: host %q pid %s is owned by user %q, not the host's effective SSH user %q; refusing to restart it",
 			ErrRestart, host.Name, pid, owner, user)
 	}

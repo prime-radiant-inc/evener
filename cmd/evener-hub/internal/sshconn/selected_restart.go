@@ -259,7 +259,11 @@ func (m *Manager) freshSelectedOwner(ctx context.Context, host hostreg.Host, rep
 		return selectedOwner{}, err
 	}
 	argv := hubBootstrapArgv(m.opts, host, target)
-	owner := selectedOwner{host: host, pid: "0", report: report, cwd: cwd, env: env, argv: argv}
+	physicalCwd, err := m.directoryIdentity(ctx, host, cwd)
+	if err != nil {
+		return selectedOwner{}, err
+	}
+	owner := selectedOwner{host: host, pid: "0", report: report, cwd: cwd, cwdIdentity: physicalCwd, env: env, argv: argv}
 	if err := m.checkOwnerConfig(ctx, host, argv, cwd, env, report); err != nil {
 		return selectedOwner{}, err
 	}

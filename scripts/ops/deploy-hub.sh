@@ -165,6 +165,12 @@ async function configMatches(selector, canonical, options) {
     if (selector === canonical) return true;
     return await text('bash', ['-c', configIdentityScript, 'config-identity', selector], options) === canonical;
 }
+function sameFile(a, b) {
+    try {
+        const left = fs.statSync(a, {bigint: true}), right = fs.statSync(b, {bigint: true});
+        return left.dev === right.dev && left.ino === right.ino;
+    } catch (_) { return false; }
+}
 function definition(raw) {
     const def = {pid: 0, cwd: '/', argv: [], env: {}};
     const seen = new Set();
@@ -201,8 +207,8 @@ function definition(raw) {
             }
         }
     }
-    need(depth === 0 && def.program === binary && path.isAbsolute(def.cwd) &&
-        def.argv.length >= 2 && def.argv[0] === binary && def.argv[1] === 'hub' &&
+    need(depth === 0 && sameFile(def.program, binary) && path.isAbsolute(def.cwd) &&
+        def.argv.length >= 2 && def.argv[0] === def.program && def.argv[1] === 'hub' &&
         (def.argv.length === 2 || def.argv[2].startsWith('-')) &&
         Number.isSafeInteger(def.pid), 'selected service executable or argv is not this worktree hub');
     def.env = {...inherited, ...environment};
@@ -234,7 +240,7 @@ async function processIdentity(def, ms = inspectMS) {
     need(string(birth), 'selected process birth unavailable');
     need(await text('ps', ['-p', pid, '-ww', '-o', 'command='], {ms}) === def.argv.join(' '), 'selected process argv differs');
     const cwd = (await text('lsof', ['-a', '-p', pid, '-d', 'cwd', '-Fn'], {ms})).split('\n').filter(s => s.startsWith('n/'));
-    need(cwd.length === 1 && cwd[0].slice(1) === def.cwd, 'selected process working directory differs');
+    need(cwd.length === 1 && sameFile(cwd[0].slice(1), def.cwd), 'selected process working directory differs');
     need(await text('ps', ['-p', pid, '-o', 'lstart='], {ms}) === birth, 'selected process changed during inspection');
     return birth;
 }

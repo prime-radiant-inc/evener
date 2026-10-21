@@ -25,7 +25,7 @@ func identityOwnerCommands(t *testing.T, platform string, stopped bool) []ownerC
 	raw := mustOwnerJSON(t, report)
 	if platform == "darwin" {
 		darwin := darwinOwnerCommands(t, false, false)
-		return []ownerCommand{{base[0].command, raw}, {"launchctl list", "-\t0\tcom.example.evener-hub\n"}, {darwin[2].command, strings.ReplaceAll(darwin[2].output, "pid = 4242", "pid = 0")}, darwin[3], darwin[4], {base[9].command, raw}}
+		return []ownerCommand{{base[0].command, raw}, {"launchctl list", "-\t0\tcom.example.evener-hub\n"}, {darwin[2].command, strings.ReplaceAll(darwin[2].output, "pid = 4242", "pid = 0")}, darwin[3], darwin[4], {base[9].command, raw}, {"CDPATH='' cd -P -- /srv && pwd -P", "/srv\n"}}
 	}
 	return []ownerCommand{
 		{base[0].command, raw},
@@ -35,7 +35,7 @@ func identityOwnerCommands(t *testing.T, platform string, stopped bool) []ownerC
 		{"getent passwd dev | cut -d: -f6", "/home/dev\n"},
 		{"systemctl show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment -- evener-hub-selected.service", "EnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\n"},
 		{"values=$(systemctl show --property=Environment --value -- evener-hub-selected.service) || exit; printf '%s\\n' \"$values\" | " + narrowEnvironmentFilter, ""},
-		{base[9].command, raw}, base[15], {systemctlListUnitsUser, ""},
+		{base[9].command, raw}, base[15], {"CDPATH='' cd -P -- /srv && pwd -P", "/srv\n"}, {systemctlListUnitsUser, ""},
 	}
 }
 
@@ -99,7 +99,7 @@ func TestRemoteRestartIdentityResolvedTarget(t *testing.T) {
 						if platform == "darwin" {
 							commands = append(commands, first[0], first[5], first[1], first[2], first[0])
 						} else {
-							commands = append(commands, first[0], first[8], first[1], first[10], first[2], first[9], first[0])
+							commands = append(commands, first[0], first[8], first[1], first[11], first[2], first[9], first[0])
 						}
 						commands = append(commands, mutation)
 					}

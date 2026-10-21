@@ -196,6 +196,14 @@ func TestRemoteOwnerRejectsWrongAssociation(t *testing.T) {
 			if tc.name == "wrong config" {
 				commands = append(commands[:9], ownerCommand{ownerContext("/srv", []string{"HOME=/home/dev"}) + resolveDeployCommand("/srv/other.toml"), "/srv/other.toml\n"})
 			}
+			switch tc.name {
+			case "wrong effective user":
+				commands = append(commands[:4], ownerCommand{"id -u other", "1001\n"}, ownerCommand{"id -u dev", "1000\n"})
+			case "wrong service user":
+				commands = append(commands[:14], ownerCommand{"id -u other", "1001\n"}, ownerCommand{"id -u dev", "1000\n"})
+			case "wrong service cwd":
+				commands = append(commands[:14], ownerCommand{"CDPATH='' cd -P -- /other && pwd -P", "/other\n"}, ownerCommand{"CDPATH='' cd -P -- /srv && pwd -P", "/srv\n"})
+			}
 			fr, _ := ownerRunner(t, commands)
 			m := newTestManager(t, testRegistry(t, host), fr, Options{})
 			_, err := m.resolveOwnedEndpoint(t.Context(), host, Preflight{OS: "linux", LaunchCheckKnown: true, HubEndpointSchema: 1})

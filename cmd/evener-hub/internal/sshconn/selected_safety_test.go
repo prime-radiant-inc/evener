@@ -99,7 +99,7 @@ func TestSelectedRestartRefusesProbedLoginUserMismatch(t *testing.T) {
 	host, base := ownerCommands(t)
 	host.SSH = "remote"
 	commands := append([]ownerCommand{}, base[:3]...)
-	commands = append(commands, ownerCommand{"id -un", "dev\n"}, ownerCommand{"ps -o user= -p 4242", "other\n"})
+	commands = append(commands, ownerCommand{"id -un", "dev\n"}, ownerCommand{"ps -o user= -p 4242", "other\n"}, ownerCommand{"id -u other", "1001\n"}, ownerCommand{"id -u dev", "1000\n"})
 	fr, index := ownerRunner(t, commands)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{})
 	if _, err := m.RestartForOperation(t.Context(), host, selectedRestartFacts(), nil); !errors.Is(err, ErrRestart) {

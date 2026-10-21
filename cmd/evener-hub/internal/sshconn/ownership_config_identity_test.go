@@ -206,7 +206,7 @@ func TestSystemdConfigFileIdentity(t *testing.T) {
 						return []byte(root + "\n"), nil
 					case remote == freshOwnerEnvironmentRemote:
 						return []byte("HOME=" + root + "\x00"), nil
-					case strings.Contains(remote, " hub endpoint --json"), strings.Contains(remote, "evener_resolve"):
+					case strings.Contains(remote, " hub endpoint --json"), strings.Contains(remote, "evener_resolve"), strings.HasSuffix(remote, " && pwd -P"):
 						cmd := exec.CommandContext(ctx, "/bin/sh", "-c", remote)
 						cmd.Dir = root
 						cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + root}

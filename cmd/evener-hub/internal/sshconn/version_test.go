@@ -955,6 +955,10 @@ func TestRestartBareRefusesListenerOwnedByAnotherUser(t *testing.T) {
 			return []byte("/opt/evener/bin/evener hub -addr 0.0.0.0:9180\n"), nil
 		case strings.Contains(joined, "ps -o user= -p 4242"):
 			return []byte("root\n"), nil
+		case strings.HasSuffix(joined, "id -u root"):
+			return []byte("0\n"), nil
+		case strings.HasSuffix(joined, "id -u dev"):
+			return []byte("1000\n"), nil
 		case strings.Contains(joined, "command -v evener"):
 			return []byte("/opt/evener/bin/evener\n"), nil
 		case strings.Contains(joined, "evener_resolve"):
@@ -1004,6 +1008,10 @@ func TestRestartBareRefusesWhenListenerOwnerIsNotTheProbedLoginUser(t *testing.T
 			return []byte("/opt/evener/bin/evener hub -addr 0.0.0.0:9180\n"), nil
 		case strings.Contains(joined, "ps -o user= -p 4242"):
 			return []byte("root\n"), nil
+		case strings.HasSuffix(joined, "id -u root"):
+			return []byte("0\n"), nil
+		case strings.HasSuffix(joined, "id -u dev"):
+			return []byte("1000\n"), nil
 		case strings.Contains(joined, "command -v evener"):
 			return []byte("/opt/evener/bin/evener\n"), nil
 		case strings.Contains(joined, "evener_resolve"):

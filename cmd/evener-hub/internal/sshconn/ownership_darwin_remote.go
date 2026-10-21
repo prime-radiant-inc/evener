@@ -219,8 +219,17 @@ func (m *Manager) resolveDarwinOwner(ctx context.Context, host hostreg.Host, fac
 			actualCwd = strings.TrimPrefix(line, "n")
 		}
 	}
-	if !path.IsAbs(actualCwd) || (sup.kind != supervisorNone && actualCwd != def.cwd) {
+	if !path.IsAbs(actualCwd) {
 		return selectedOwner{}, fmt.Errorf("%w: Darwin process cwd disagrees", errOwnerEvidence)
+	}
+	if sup.kind != supervisorNone {
+		matches, err := m.sameDirectory(ctx, host, actualCwd, def.cwd)
+		if err != nil {
+			return selectedOwner{}, err
+		}
+		if !matches {
+			return selectedOwner{}, fmt.Errorf("%w: Darwin process cwd disagrees", errOwnerEvidence)
+		}
 	}
 	if sup.kind == supervisorNone {
 		def.cwd = actualCwd
@@ -238,7 +247,7 @@ func (m *Manager) resolveDarwinOwner(ctx context.Context, host hostreg.Host, fac
 	} else if !equalStrings(argv, def.argv) {
 		return selectedOwner{}, errOwnerEvidence
 	}
-	owner := selectedOwner{host: host, pid: pid, supervisor: sup, generation: generation, argv: argv, cwd: def.cwd, env: def.env, report: report}
+	owner := selectedOwner{host: host, pid: pid, supervisor: sup, generation: generation, argv: argv, cwd: def.cwd, cwdIdentity: actualCwd, env: def.env, report: report}
 	// Ad-hoc launch identity is argv, cwd and environment, just as for a fresh
 	// start. Domain and service definition identify launchd ownership only.
 	if sup.kind != supervisorNone {

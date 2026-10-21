@@ -81,7 +81,11 @@ func (m *Manager) resolveStoppedOwner(ctx context.Context, host hostreg.Host, fa
 			if chosen != nil {
 				return selectedOwner{}, errOwnerEvidence
 			}
-			o := selectedOwner{host: host, pid: "0", supervisor: sup, argv: def.argv, cwd: def.cwd, env: def.env, report: report, definition: launchdIntent(def), domainUID: facts.UID}
+			physicalCwd, err := m.directoryIdentity(ctx, host, def.cwd)
+			if err != nil {
+				return selectedOwner{}, err
+			}
+			o := selectedOwner{host: host, pid: "0", supervisor: sup, argv: def.argv, cwd: def.cwd, cwdIdentity: physicalCwd, env: def.env, report: report, definition: launchdIntent(def), domainUID: facts.UID}
 			chosen = &o
 		}
 		if chosen == nil {
@@ -140,7 +144,11 @@ func (m *Manager) resolveStoppedOwner(ctx context.Context, host hostreg.Host, fa
 					serviceUser = user
 				}
 			}
-			if serviceUser != user {
+			userMatches, err := m.sameUser(ctx, host, serviceUser, user)
+			if err != nil {
+				return selectedOwner{}, err
+			}
+			if !userMatches {
 				continue
 			}
 			env, err := m.stoppedServiceEnvironment(ctx, host, sup, user)
@@ -174,7 +182,11 @@ func (m *Manager) resolveStoppedOwner(ctx context.Context, host hostreg.Host, fa
 			if chosen != nil {
 				return selectedOwner{}, fmt.Errorf("%w: multiple stopped selected services", errOwnerEvidence)
 			}
-			o := selectedOwner{host: host, pid: "0", supervisor: sup, argv: argv, cwd: cwd, env: env, report: report, definition: definition}
+			physicalCwd, err := m.directoryIdentity(ctx, host, cwd)
+			if err != nil {
+				return selectedOwner{}, err
+			}
+			o := selectedOwner{host: host, pid: "0", supervisor: sup, argv: argv, cwd: cwd, cwdIdentity: physicalCwd, env: env, report: report, definition: definition}
 			chosen = &o
 		}
 	}

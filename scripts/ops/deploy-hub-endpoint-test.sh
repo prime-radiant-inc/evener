@@ -72,16 +72,17 @@ def refuse():
     (p/'violation').write_text(json.dumps([cmd,args]))
     sys.exit(97)
 def save(): (p/'state.json').write_text(json.dumps(s))
-def service_cwd(): return p/'service' if f.get('service_cwd') else p/'repo'
+def service_cwd(): return p/'service-alias' if f.get('cwd_alias') else (p/'service' if f.get('service_cwd') else p/'repo')
 def config_selector():
     return {'alias':str(p/'alias.toml'),'relative':'../alias.toml','dotdot':'../link/../../selected.toml','different':'../link/../selected.toml'}.get(f.get('config_selector'),str(p/'selected.toml'))
+def program(): return str(p/'alias-bin/evener' if f.get('program_alias') else (p/'other/evener' if f.get('different_program') else p/'repo/evener'))
 def argv():
     flags=[] if f.get('default_config') else ['--config='+config_selector()]
     if not f.get('env_listener') and not f.get('toml_listener'): flags+=['--addr='+f.get('listener','[::]:0')]
     if f.get('separate_flags'):
         flags=[x for word in flags for x in [word.split('=',1)[0],word.split('=',1)[1]]]
     if f.get('subcommand'): flags=['endpoint','--json']
-    return [str(p/'repo/evener'),'hub']+flags
+    return [program(),'hub']+flags
 def endpoint_args():
     flags=[] if f.get('default_config') else ['--config',config_selector()]
     if not f.get('env_listener') and not f.get('toml_listener'): flags+=['--addr',f.get('listener','[::]:0')]
@@ -93,9 +94,9 @@ if cmd == 'launchctl':
     elif args == ['print', 'gui/'+str(os.getuid())+'/com.test.evener-selected']:
         if s['built'] and f.get('vanished'): sys.exit(1)
         if f.get('pid_change_before_build') and s.get('reports'): s['pid']=404; save()
-        program=str(p/'repo/evener')
-        if f.get('wrong_program'): program=str(p/'other/evener')
-        print('gui/test = {\n\tprogram = '+program+'\n\tworking directory = '+str(service_cwd()))
+        executable=program()
+        if f.get('wrong_program'): executable=str(p/'other/evener')
+        print('gui/test = {\n\tprogram = '+executable+'\n\tworking directory = '+str(service_cwd()))
         print('\targuments = {')
         for arg in argv(): print('\t\t'+arg)
         print('\t}\n\tinherited environment = {\n\t\tHOME => '+str(p/'home')+'\n\t\tXDG_CONFIG_HOME => '+str(p/'config')+'\n\t\tXDG_STATE_HOME => '+str(p/'state')+'\n\t}')
@@ -142,7 +143,7 @@ elif cmd == 'ps':
     elif args==['-p',pid,'-ww','-o','command=']: print(' '.join(argv())+(' unexpected' if f.get('wrong_argv') else ''))
     else: refuse()
 elif cmd == 'lsof':
-    if args==['-a','-p',str(s['pid']),'-d','cwd','-Fn']: print('p'+str(s['pid'])+'\nn'+str(p/'other' if f.get('wrong_cwd') else service_cwd()))
+    if args==['-a','-p',str(s['pid']),'-d','cwd','-Fn']: print('p'+str(s['pid'])+'\nn'+str(p/'other' if f.get('wrong_cwd') else service_cwd().resolve()))
     elif args[:4]==['-a','-p',str(s['pid']),'-Fn'] and args[4:] in [[str(p/'state/evener/hub.lock')],[str(p/'other-state/evener/hub.lock')],[str(p/'custom-root/hub.lock')]]:
         lock=p/'custom-root/hub.lock' if f.get('custom_root') else p/'state/evener/hub.lock'
         if f.get('missing_root_evidence') or args[4]!=str(lock): sys.exit(1)
@@ -226,6 +227,11 @@ else: refuse()
 # Last column: (build calls, selected kickstart calls).
 cases=[
  ('selected_endpoint',{},[],True,(1,1)),
+ ('live_cwd_symlink',{'cwd_alias':True},[],True,(1,1)),
+ ('stopped_cwd_symlink',{'cwd_alias':True,'stopped':True},[],True,(1,1)),
+ ('different_cwd_symlink',{'cwd_alias':True,'wrong_cwd':True},[],False,(0,0)),
+ ('program_symlink',{'program_alias':True},[],True,(1,1)),
+ ('different_program_inode',{'different_program':True},[],False,(0,0)),
  ('service_config_symlink',{'config_selector':'alias'},[],True,(1,1)),
  ('explicit_config_symlink',{},['--config','@alias'],True,(1,1)),
  ('running_config_symlink',{'running_alias':True},[],True,(1,1)),
@@ -329,7 +335,10 @@ with tempfile.TemporaryDirectory(prefix='task7c-', dir=os.environ.get('EVENER_SC
         if facts.get('custom_root'): original+='hub_state_root = "'+str(p/'custom-root')+'"\n'
         (p/'selected.toml').write_text(original); (p/'config/evener/hub.toml').write_text(original); (p/'other.toml').write_text('addr = "127.0.0.1:9180"\n')
         (p/'alias.toml').symlink_to(p/'selected.toml')
-        (p/'service').mkdir(); (p/'physical/inner').mkdir(parents=True)
+        (p/'service').mkdir(); (p/'physical/inner').mkdir(parents=True); (p/'other').mkdir()
+        (p/'service-alias').symlink_to(p/'repo',target_is_directory=True)
+        assert os.path.samefile(p/'service-alias',p/'repo')
+        assert not os.path.samefile(p/'service-alias',p/'other')
         (p/'physical/selected.toml').write_text(original)
         (p/'link').symlink_to(p/'physical/inner')
         assert os.path.samefile(p/'alias.toml',p/'selected.toml')
@@ -338,9 +347,13 @@ with tempfile.TemporaryDirectory(prefix='task7c-', dir=os.environ.get('EVENER_SC
         (p/'state/evener/sentinel').write_text('keep'); (p/'other-state/evener/sentinel').write_text('other-keep')
         (p/'custom-root').mkdir(); (p/'custom-root/sentinel').write_text('custom-keep')
         dispatch=p/'dispatch'; dispatch.write_text(fixture); dispatch.chmod(0o755)
+        (p/'alias-bin').mkdir(); (p/'alias-bin/evener').symlink_to(p/'repo/evener')
+        (p/'other/evener').write_text(fixture); (p/'other/evener').chmod(0o755)
         for tool in ['launchctl','make','curl','ps','lsof']:
             (p/'bin'/tool).symlink_to(dispatch)
         (p/'repo/evener').symlink_to(dispatch)
+        assert os.path.samefile(p/'alias-bin/evener',p/'repo/evener')
+        assert not os.path.samefile(p/'other/evener',p/'repo/evener')
         for tool in ['bash','python3','node','npm','git','id','awk','grep','sed','jq','stat','date','sleep','head','wc','cat','mktemp','rm','dirname','readlink']:
             executable=shutil.which(tool)
             if executable and not (tool=='node' and facts.get('no_node')) and not (tool=='npm' and facts.get('no_npm')): (p/'bin'/tool).symlink_to(executable)

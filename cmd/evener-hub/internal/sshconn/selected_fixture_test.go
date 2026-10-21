@@ -104,7 +104,7 @@ func modelSelectedProcess(t *testing.T, fr *fakeRunner, exe, before, after strin
 			return []byte("/home/dev\n"), nil
 		case ownerEnvironmentRemote(pid):
 			return []byte("HOME=/home/dev\x00"), nil
-		case "pwd":
+		case "pwd", "CDPATH='' cd -P -- /home/dev && pwd -P":
 			return []byte("/home/dev\n"), nil
 		case freshOwnerEnvironmentRemote:
 			return []byte("HOME=/home/dev\x00"), nil

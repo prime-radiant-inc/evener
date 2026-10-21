@@ -15,7 +15,7 @@ func TestRemoteRestartDarwinStoppedAdHocRejectsNewService(t *testing.T) {
 	commands := []ownerCommand{{linux[0].command, raw}, {linux[9].command, raw}, darwin[1], darwin[2], darwin[3], darwin[4], {linux[9].command, raw}}
 	fr, index := ownerRunner(t, commands)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{})
-	prior := selectedOwner{host: host, pid: "4242", generation: "prior-birth", argv: []string{"/opt/evener", "hub", "--config=/srv/selected.toml", "--addr=[::]:0"}, cwd: "/srv", env: []string{"HOME=/home/dev"}, report: stopped, domainUID: "1000"}
+	prior := selectedOwner{host: host, pid: "4242", generation: "prior-birth", argv: []string{"/opt/evener", "hub", "--config=/srv/selected.toml", "--addr=[::]:0"}, cwd: "/srv", cwdIdentity: "/srv", env: []string{"HOME=/home/dev"}, report: stopped, domainUID: "1000"}
 	m.setSelectedRestart(host, prior, selectedRelaunch(prior), "release-selected", "")
 	facts := selectedRestartFacts()
 	facts.OS, facts.UID = "darwin", "1000"
