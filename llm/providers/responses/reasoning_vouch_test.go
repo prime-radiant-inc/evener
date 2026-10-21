@@ -77,3 +77,37 @@ func TestBuildBody_UnvouchedEffortKeepsConfiguredSummary(t *testing.T) {
 		t.Fatalf("summary-only object must not carry an unvouched effort: %v", r)
 	}
 }
+
+// A toggle-only row still reasons — it just takes no effort parameter. Its
+// configured summary and the encrypted-reasoning include must survive: both
+// are requests about the reasoning that happens, not about a level this row
+// cannot accept. Gating them on effort capability would silently drop replay
+// on every subsequent turn.
+func TestBuildBody_ToggleOnlyRowKeepsReasoningPreservation(t *testing.T) {
+	high := "high"
+	req := userReq("hi")
+	req.ReasoningEffort = &high
+	res := resolved(func(c *registry.Caps) {
+		c.Reasoning = new(true)
+		c.ReasoningControls = []string{"toggle"}
+		c.ReasoningSummary = new("auto")
+	})
+	body := build(t, req, res)
+	r, _ := body["reasoning"].(map[string]any)
+	if r == nil || r["summary"] != "auto" {
+		t.Fatalf("reasoning = %v, want the configured summary", body["reasoning"])
+	}
+	if _, has := r["effort"]; has {
+		t.Fatalf("a toggle-only row must send no effort: %v", r)
+	}
+	inc, _ := body["include"].([]string)
+	found := false
+	for _, v := range inc {
+		if v == "reasoning.encrypted_content" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("include = %v, want reasoning.encrypted_content", inc)
+	}
+}

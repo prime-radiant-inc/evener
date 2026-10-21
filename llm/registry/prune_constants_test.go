@@ -45,7 +45,7 @@ func TestApplyBodyConstantsSurvivesPrune(t *testing.T) {
 	// the ordering contract must hold for any row).
 	caps := Caps{Fields: map[string]bool{"metadata": false}}
 	body := map[string]any{"metadata": map[string]any{"a": "b"}}
-	Prune(body, caps)
+	Prune(body, caps, ProtocolOpenAIChat)
 	ApplyBodyConstants(body, map[string]any{"metadata.trace": "on"})
 	if got := body["metadata"]; !reflect.DeepEqual(got, map[string]any{"trace": "on"}) {
 		t.Fatalf("metadata = %#v", got)

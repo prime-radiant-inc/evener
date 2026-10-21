@@ -136,8 +136,10 @@ type threadEnvelope struct {
 // agent.EnvelopeSampling, so a new value has to be declared there, where the
 // rule is written and where agent's own suite proves it.
 type ThreadEnvelopeSource interface {
-	ContextPressure() float64
-	ContextMetrics() ContextMetrics
+	// ContextStatus returns the context pair from one shared history snapshot
+	// and one profile/measurement snapshot, not a globally atomic session
+	// instant.
+	ContextStatus() (ContextMetrics, float64)
 	DetailedStatus() DetailedStatus
 	ClientMutationProjection() (appwire.QueueState, []appwire.PendingMutation)
 	TaskAggregate() *appwire.TaskAggregate
@@ -376,8 +378,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 
 	var next threadEnvelope
 	if facets&facetContext != 0 {
-		next.ContextPressure = src.ContextPressure()
-		next.ContextMetrics = src.ContextMetrics()
+		next.ContextMetrics, next.ContextPressure = src.ContextStatus()
 	}
 	if facets&facetDiagnostics != 0 {
 		detailed := src.DetailedStatus()
