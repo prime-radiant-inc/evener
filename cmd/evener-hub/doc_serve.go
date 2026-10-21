@@ -54,25 +54,39 @@ const docRevisionMaxBytes = 16 * 1024 * 1024
 // path is returned so the read opens through that same root.
 func (s *WebServer) resolveLocalDocTarget(w http.ResponseWriter, r *http.Request, session, rel string) (string, string, bool) {
 	cwd, err := s.localSessionCWD(r.Context(), session)
+	var cwdResolveErr error
+	if err == nil {
+		if resolved, resolveErr := fspaths.ResolveInRoot(cwd, rel); resolveErr == nil {
+			return cwd, resolved, true
+		} else if !filepath.IsAbs(strings.TrimSpace(rel)) {
+			// A relative path can only mean the working directory, so a cwd
+			// failure is the whole answer for it.
+			if errors.Is(resolveErr, fspaths.ErrPathEscapesRoot) {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return "", "", false
+			}
+			http.NotFound(w, r)
+			return "", "", false
+		} else {
+			cwdResolveErr = resolveErr
+		}
+	}
+	// A retained artifact lives under the session's state directory, which
+	// outlives the working directory: that is why it is tried for an absolute
+	// path even when the cwd itself cannot be resolved at all (a removed
+	// worktree, or a session whose live source is momentarily unavailable).
+	if filepath.IsAbs(strings.TrimSpace(rel)) {
+		if root, resolved, ok := s.resolveArtifactsDocTarget(r.Context(), session, rel); ok {
+			return root, resolved, true
+		}
+	}
 	if err != nil {
 		serveSessionRootError(w, r, err)
 		return "", "", false
 	}
-	abs, err := fspaths.ResolveInRoot(cwd, rel)
-	if err == nil {
-		return cwd, abs, true
-	}
-	// A retained artifact lives under the session's state directory, which
-	// outlives the working directory. That makes the artifacts root the answer
-	// both for a path outside cwd and for a cwd that no longer exists (worktree
-	// cleanup resolved it away), so it is tried before the cwd failure becomes
-	// a refusal. A relative path never reaches it.
-	if filepath.IsAbs(strings.TrimSpace(rel)) {
-		if root, abs, ok := s.resolveArtifactsDocTarget(r.Context(), session, rel); ok {
-			return root, abs, true
-		}
-	}
-	if errors.Is(err, fspaths.ErrPathEscapesRoot) {
+	// The cwd refused this absolute path as an escape and no served root
+	// accepted it, so the refusal stands rather than softening to a miss.
+	if errors.Is(cwdResolveErr, fspaths.ErrPathEscapesRoot) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return "", "", false
 	}
@@ -350,25 +364,36 @@ func sessionDocumentFromHub(ctx context.Context, cfg hubcore.WebConfig, sources 
 	}
 	session := canonicalRouteID(params.SessionID)
 	cwd, err := sessionCWD(ctx, cfg, sources, session)
-	if err != nil {
-		return appwire.SessionDocumentResponse{}, err
+	cwdErr := err
+	var doc docFileRead
+	absolute := filepath.IsAbs(strings.TrimSpace(params.Path))
+	if err == nil {
+		doc, err = readSessionDocument(cwd, params.Path)
 	}
-	doc, err := readSessionDocument(cwd, params.Path)
 	// The same rule the HTTP routes carry: an absolute path may also name a
 	// file in the retained artifacts directory, including after a worktree
-	// cleanup removed the working directory. A relative name keeps its one
-	// meaning, so an escaping symlink in cwd is refused rather than silently
-	// served from an unrelated artifacts file of the same name.
-	if filepath.IsAbs(strings.TrimSpace(params.Path)) {
+	// cleanup removed the working directory or its live source cannot be
+	// resolved right now. A relative name keeps its one meaning, so an
+	// escaping symlink in cwd is refused rather than silently served from an
+	// unrelated artifacts file of the same name.
+	if absolute {
 		if root := sessionArtifactsRoot(ctx, cfg, session); root != "" {
 			// The artifacts attempt may fail for its own reason (no such file
 			// under that root). The refusal must still name the escape, so the
 			// original error stays unless the second root actually served it.
 			if artifactsDoc, artifactsErr := readSessionDocument(root, params.Path); artifactsErr == nil {
 				doc = artifactsDoc
-				err = nil
+				err, cwdErr = nil, nil
 			}
 		}
+	}
+	// A cwd that could not be resolved at all is reported as itself, not as a
+	// missing document, once the artifacts root has had its chance.
+	if err == nil {
+		err = cwdErr
+	}
+	if cwdErr != nil && !errors.Is(err, fspaths.ErrPathEscapesRoot) {
+		return appwire.SessionDocumentResponse{}, cwdErr
 	}
 	if errors.Is(err, fspaths.ErrPathEscapesRoot) {
 		return appwire.SessionDocumentResponse{}, appwire.PathOutsideSession("path must resolve inside the session's working directory")

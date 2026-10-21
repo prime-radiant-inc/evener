@@ -960,3 +960,37 @@ func TestHubSessionDocumentServesArtifactsAfterWorkingDirectoryRemoved(t *testin
 		t.Fatalf("after cwd removal: %q, %v; want the retained report", resp.Data, err)
 	}
 }
+
+// A live session keeps the stable workspace ref it launched under across
+// Clear. A document request naming that ref must reach the current session's
+// retained artifacts, on both routes: the roster keys live entries by the
+// current id, and no saved entry exists under the stable one.
+func TestDocFile_Raw_ServesArtifactsForAStableRef(t *testing.T) {
+	const stableRef = "local:02wMz5Txv1C3Hut0M8GCeI"
+	const session = "02wMz5Txv1C3Hut0M8GCeJ"
+	stateDir := t.TempDir()
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:     rendezvous.Entry{SessionID: session, WorkspaceRef: stableRef, StateDir: stateDir, StartedAt: time.Now().UTC()},
+		SessionID: session,
+	})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: roster, StateDir: stateDir})
+	dir, err := schema.SessionArtifactsDir(stateDir, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("retained report")
+	target := filepath.Join(dir, "report.md")
+	if err := os.WriteFile(target, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRawRequest(t, web, stableRef, target)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stable-ref read = %d body=%q, want the retained report", rec.Code, rec.Body.String())
+	}
+	if !bytes.Equal(rec.Body.Bytes(), content) {
+		t.Fatalf("body=%q, want %q", rec.Body.Bytes(), content)
+	}
+}

@@ -177,9 +177,13 @@ export default function DocPane({ params, paneId, focused }: PaneProps<DocParams
     if (cwd && cwd !== retained.reference.cwd) reference = rebindFileReference(retained.reference, cwd);
     else reference = retained.reference;
   } else if (params.root === "artifacts") {
-    // A restored artifacts document: params.path is relative to the session's
-    // retained artifacts directory, which the thread snapshot names.
-    reference = artifactsDir === undefined ? undefined : bindArtifactPath(params.path, artifactsDir);
+    // A restored artifacts document: bind the concrete target this pane
+    // opened, not the filename, so a stable ref that now names a replacement
+    // session cannot substitute a different file of the same name.
+    reference =
+      artifactsDir === undefined || params.artifactTarget === undefined
+        ? undefined
+        : bindArtifactPath(params.artifactTarget, artifactsDir);
   } else if (cwd) reference = bindFilePath(params.path, cwd);
   useLayoutEffect(() => {
     if (!pane || !reference || retained?.reference === reference) return;

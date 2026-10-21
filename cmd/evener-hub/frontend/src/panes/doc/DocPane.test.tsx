@@ -516,7 +516,13 @@ test("a restored artifacts document reads the same retained file again", async (
   }));
   respond("retained report body");
   const relativePath = "docs-quality-repairs.md";
-  workspaceStore.getState().openPane("doc", { session: ref, path: relativePath, root: "artifacts", kind: "file" });
+  workspaceStore.getState().openPane("doc", {
+    session: ref,
+    path: relativePath,
+    root: "artifacts",
+    artifactTarget: `${artifactsDir}/${relativePath}`,
+    kind: "file",
+  });
   const pane = workspaceStore.getState().panes.find((candidate) => candidate.type === "doc");
   if (!pane) throw new Error("expected a document pane");
   render(
@@ -527,4 +533,38 @@ test("a restored artifacts document reads the same retained file again", async (
   await screen.findByText("retained report body");
   const read = requests.map((url) => url.searchParams.get("path"));
   expect(read).toEqual([`${artifactsDir}/${relativePath}`]);
+});
+
+// A saved artifacts pane records the concrete file it opened. A stable ref can
+// outlive the session it named (Clear moves the ref to a new session), and
+// that session may hold a different report of the same name. Restoring must
+// read the recorded target or refuse, never silently show the replacement.
+test("a restored artifacts document does not adopt a replacement session's same-named file", async () => {
+  const oldDir = "/state/projects/example/sessions/sess_owner/artifacts";
+  const newDir = "/state/projects/example/sessions/sess_replacement/artifacts";
+  client.on("thread/read", (params) => ({
+    thread: { ...thread(cwd), evener: { ...thread(cwd).evener, artifactsDir: newDir } },
+    requestGeneration: params.requestGeneration,
+  }));
+  respond("replacement report body");
+  workspaceStore.getState().openPane("doc", {
+    session: ref,
+    path: "report.md",
+    root: "artifacts",
+    artifactTarget: `${oldDir}/report.md`,
+    kind: "file",
+  });
+  const pane = workspaceStore.getState().panes.find((candidate) => candidate.type === "doc");
+  if (!pane) throw new Error("expected a document pane");
+  render(
+    <PaneVisibilityContext value={true}>
+      <DocPane params={pane.params as DocParams} paneId={pane.id} focused={false} />
+    </PaneVisibilityContext>,
+  );
+  // No read may be issued for the replacement session's report.md.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+  expect(requests.map((url) => url.searchParams.get("path"))).not.toContain(`${newDir}/report.md`);
+  expect(screen.queryByText("replacement report body")).toBeNull();
 });

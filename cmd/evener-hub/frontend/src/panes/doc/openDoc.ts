@@ -26,6 +26,14 @@ export interface DocParams {
    * rebuilds it from params alone), so `path` and `root` together are what
    * let the pane read the same file again after a reload. */
   root?: "artifacts";
+  /** The exact retained file this pane opened, as an absolute path. `path` is
+   * relative to `root`, and a stable session ref can outlive the session it
+   * named (Clear moves the ref to a new session), so a restored pane needs
+   * the concrete target: binding `path` against the replacement session's
+   * directory would quietly show a different file of the same name. The pane
+   * refuses instead when the target is no longer inside the directory the
+   * ref now names. */
+  artifactTarget?: string;
   kind: "file" | "image";
 }
 
@@ -71,7 +79,7 @@ export function openDocBeside(request: DocumentOpenRequest): void {
     // records the same path the reference does and the shell's companion
     // check compares like with like.
     path: reference.path,
-    ...(artifacts ? { root: "artifacts" as const } : {}),
+    ...(artifacts ? { root: "artifacts" as const, artifactTarget: reference.readTarget } : {}),
     kind: isImagePath(reference.path) ? "image" : "file",
   };
   const workspace = workspaceStore.getState();
