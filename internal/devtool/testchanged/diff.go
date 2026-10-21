@@ -48,7 +48,8 @@ func changedFiles(root, base string) ([]string, error) {
 }
 
 func gitOutput(root string, args ...string) (string, error) {
-	cmd := command(context.Background(), "git", args...)
+	cmd, cancel := command(context.Background(), "git", args...)
+	defer cancel()
 	cmd.Dir = root
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

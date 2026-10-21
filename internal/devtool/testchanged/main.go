@@ -22,6 +22,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 )
 
@@ -101,7 +102,10 @@ func run(root, base string, modules []string, race bool) int {
 			args = append(args, packageArg(g, s))
 		}
 		fmt.Printf("test-changed: module %s: go %s (in %s)\n", m, strings.Join(args, " "), g.moduleDir(m))
-		cmd := command(context.Background(), "go", args...)
+		// The test run is deliberately unbounded: a package may legitimately
+		// take minutes, so it takes the caller's context rather than the
+		// inspection deadline the git and go list calls use.
+		cmd := exec.CommandContext(context.Background(), "go", args...)
 		cmd.Dir = g.moduleDir(m)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr

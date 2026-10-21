@@ -248,24 +248,37 @@ func TestDeletedUnimportedFileIsReportedNotFailed(t *testing.T) {
 		modulePath = "example.com/mod"
 	)
 	root := t.TempDir()
+	// An ancestor package exists, as it does at a repo root that holds a
+	// test-only package. The removed check must still win: otherwise a deleted
+	// file is tagged as a fixture of the ancestor and every package importing
+	// that ancestor is selected, which is close to the whole workspace.
+	ancestorDir := filepath.Join(root, "sub")
+	if err := os.MkdirAll(ancestorDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
 	g := &graph{
 		root:        root,
 		moduleRoots: []string{moduleRoot},
 		moduleDirs:  map[string]string{moduleRoot: root},
 		modulePaths: map[string]string{moduleRoot: modulePath},
 		runnable:    map[string]bool{moduleRoot: true},
-		pkgs:        map[string]*pkgInfo{},
-		byDir:       map[string]string{},
-		deps:        map[string]map[string]bool{},
+		pkgs: map[string]*pkgInfo{
+			modulePath: {ImportPath: modulePath, ModuleRoot: moduleRoot, Dir: root},
+		},
+		byDir: map[string]string{root: modulePath},
+		deps:  map[string]map[string]bool{},
 	}
 
-	res := selectPackages(g, []string{"dead/dead.go"}, []string{moduleRoot})
+	res := selectPackages(g, []string{"sub/dead/dead.go"}, []string{moduleRoot})
 
-	if len(res.Removed) != 1 || res.Removed[0] != "dead/dead.go" {
-		t.Errorf("Removed = %v, want [dead/dead.go]", res.Removed)
+	if len(res.Removed) != 1 || res.Removed[0] != "sub/dead/dead.go" {
+		t.Errorf("Removed = %v, want [sub/dead/dead.go]", res.Removed)
 	}
 	if res.GoChanged != 0 {
 		t.Errorf("GoChanged = %d, want 0 so the empty-selection guard does not fail the run", res.GoChanged)
+	}
+	if len(res.Selected) != 0 {
+		t.Errorf("Selected = %v, want nothing: a removed unimported file affects no package", selectedPaths(res))
 	}
 }
 

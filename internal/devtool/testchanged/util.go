@@ -5,12 +5,22 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 )
 
-// command is os/exec's constructor in one place, so the cancellation a wedged
-// git or `go list` needs lives here rather than at each call site.
-func command(ctx context.Context, name string, args ...string) *exec.Cmd {
-	return exec.CommandContext(ctx, name, args...)
+// inspectionTimeout bounds one git or `go list` call. Neither is a long-running
+// job, and a wedged one must fail the run rather than hang a pre-push check
+// nobody is watching.
+const inspectionTimeout = 5 * time.Minute
+
+// command is os/exec's constructor in one place, so every process this tool
+// starts carries the same bound: a deadline, plus WaitDelay for a process that
+// ignores cancellation. The caller cancels the returned context.
+func command(parent context.Context, name string, args ...string) (*exec.Cmd, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(parent, inspectionTimeout)
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = 30 * time.Second
+	return cmd, cancel
 }
 
 // relPath returns target relative to base, both cleaned.

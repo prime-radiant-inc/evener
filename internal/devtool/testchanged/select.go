@@ -124,14 +124,26 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 					continue
 				}
 			}
+			// A path that no longer exists is a deletion. Checked before any
+			// ancestor attribution: a repo root that holds a test-only package
+			// would otherwise claim every deleted file and drag in everything
+			// that imports the root module. Removing a dead package with no
+			// surviving importers is a complete change, so it is reported and
+			// does not fail the run.
+			if !pathExists(filepath.Join(g.root, filepath.FromSlash(rel))) {
+				res.Removed = append(res.Removed, rel)
+				continue
+			}
 			// A Go file under testdata/ is a fixture a nearby package compiles
 			// or drives, not a package itself: `go list ./...` skips it. Blame
-			// the nearest package above it so the fixture's real consumer runs,
-			// instead of failing the run for a legitimate fixture edit.
-			if goFile {
+			// its nearest package so the real consumer runs, instead of failing
+			// the run for a legitimate fixture edit. It stays package-local: a
+			// testdata file is not compiled into the package, so no importer can
+			// observe it.
+			if goFile && isTestdataPath(rel) {
 				if owner, ok := g.nearestPackageAncestor(module, dir); ok {
 					res.GoChanged++
-					propagating[owner] = joinReason(propagating[owner], "fixture "+rel)
+					packageOnly[owner] = joinReason(packageOnly[owner], "testdata fixture "+rel)
 					continue
 				}
 			}
@@ -144,14 +156,6 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 					packageOnly[owner] = joinReason(packageOnly[owner], "testdata fixture "+rel)
 					continue
 				}
-			}
-			// A file that no longer exists is a deletion, not a stray file in a
-			// package-less directory: removing a dead package with no surviving
-			// importers is a complete, correct change, so it is reported and
-			// does not fail the run.
-			if !pathExists(filepath.Join(g.root, filepath.FromSlash(rel))) {
-				res.Removed = append(res.Removed, rel)
-				continue
 			}
 			if goFile {
 				res.GoChanged++

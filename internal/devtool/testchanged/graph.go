@@ -119,7 +119,8 @@ func loadGraph(root string, moduleRoots []string) (*graph, error) {
 // a package with a build error in the listing so one broken package cannot
 // erase the rest of the graph.
 func listModule(dir string) ([]pkgEntry, error) {
-	cmd := command(context.Background(), "go", "list", "-e", "-deps", "-test", "-json", "./...")
+	cmd, cancel := command(context.Background(), "go", "list", "-e", "-deps", "-test", "-json", "./...")
+	defer cancel()
 	cmd.Dir = dir
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -348,7 +349,14 @@ func (g *graph) importedAnywhere(importPath string) bool {
 // that owns the directory tree it sits in.
 func (g *graph) nearestPackageAncestor(module, dir string) (string, bool) {
 	moduleDir := filepath.Clean(g.moduleDirs[module])
-	for d := filepath.Dir(filepath.Clean(dir)); ; d = filepath.Dir(d) {
+	start := filepath.Clean(dir)
+	// A file directly in the module root has no package ancestor inside this
+	// module; starting at its parent would attribute it to the parent module's
+	// root package, which is a different module's concern.
+	if start == moduleDir {
+		return "", false
+	}
+	for d := filepath.Dir(start); ; d = filepath.Dir(d) {
 		if owner, found := g.packageAt(d); found {
 			return owner, true
 		}
