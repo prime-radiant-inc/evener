@@ -1257,3 +1257,51 @@ func TestDocFile_ArtifactsRefuseADeletionFencedStableRef(t *testing.T) {
 		t.Fatalf("a stable ref bypassed its current session's deletion fence (status %d)", rec.Code)
 	}
 }
+
+// A working directory can be shaped exactly like a session's artifacts layout,
+// and it can have a symlinked component. It is still an ordinary cwd, so cwd
+// containment decides: artifact traversal applies only to a root the resolver
+// declared, never to a folder that merely looks like one.
+func TestDocFile_ServesALookalikeWorkingDirectoryThroughASymlink(t *testing.T) {
+	web, _, session := docServeTestServer(t)
+	entry, ok := web.cfg.Past.Find(session)
+	if !ok {
+		t.Fatal("fixture session is missing from the past index")
+	}
+	// The real cwd lives elsewhere, and the session's cwd is shaped exactly
+	// like <stateDir>/sessions/<id>/artifacts with its `sessions` component a
+	// link. Cwd containment accepts it; artifact traversal must not apply.
+	realRoot := t.TempDir()
+	realArtifacts := filepath.Join(realRoot, "work", "artifacts")
+	if err := os.MkdirAll(realArtifacts, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("ordinary file behind a linked lookalike")
+	if err := os.WriteFile(filepath.Join(realArtifacts, "notes.md"), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lookalikeParent := t.TempDir()
+	if err := os.Symlink(realRoot, filepath.Join(lookalikeParent, "sessions")); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	lookalike := filepath.Join(lookalikeParent, "sessions", "work", "artifacts")
+	target := filepath.Join(lookalike, "notes.md")
+
+	meta, err := schema.LoadSessionMeta(entry.StateDir, entry.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.EnvInfo.WorkingDir = lookalike
+	if err := schema.SaveSessionMeta(entry.StateDir, meta); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(filepath.Dir(entry.StateDir), "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web.cfg.Past = idx
+	rec := docRawRequest(t, web, session, target)
+	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), content) {
+		t.Fatalf("symlinked lookalike cwd read = %d %q, want the file", rec.Code, rec.Body.String())
+	}
+}

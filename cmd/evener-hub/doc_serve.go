@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
@@ -183,6 +184,7 @@ func sessionArtifactsRoot(ctx context.Context, cfg hubcore.WebConfig, ref string
 	if err != nil {
 		return ""
 	}
+	declareArtifactRoot(root)
 	return root
 }
 
@@ -687,11 +689,14 @@ func readDocFile(root, abs string) (docFileRead, error) {
 // expressed relative to the resolved root. docOpenNonblock keeps the open from
 // waiting on a FIFO; a regular file reads the same.
 func openDocInRoot(root, abs string) (*os.File, error) {
-	// An artifacts path is opened through an anchored traversal of the trusted
+	// An artifacts root is opened through an anchored traversal of the trusted
 	// state directory, so a link planted in place of any component of the
-	// session layout is refused rather than followed. Every consumer of this
-	// seam gets that, which is what makes the check and the open one decision.
-	if stateDir, layout, ok := artifactsLayout(root); ok {
+	// session layout is refused rather than followed. The kind comes from the
+	// resolver that chose this root, not from the pathname: an ordinary working
+	// directory can be shaped like a session layout, and guessing from shape
+	// would apply artifact traversal to a folder that has nothing to do with
+	// one.
+	if stateDir, layout, ok := declaredArtifactsLayout(root); ok {
 		return openArtifactsFile(stateDir, layout, abs, root)
 	}
 	realRoot, err := filepath.EvalSymlinks(root)
@@ -714,10 +719,36 @@ func openDocInRoot(root, abs string) (*os.File, error) {
 	return dir.OpenFile(rel, os.O_RDONLY|docOpenNonblock, 0)
 }
 
+// declaredArtifactRoots records the artifacts roots this process resolved from
+// a session, so the open applies artifact traversal only to one that really is
+// an artifacts root. An ordinary working directory can be shaped exactly like
+// <stateDir>/sessions/<id>/artifacts, and deciding by shape would treat it as
+// one.
+//
+// A root is remembered only after the session resolution that produced it
+// succeeded, which no user-supplied working directory can reach.
+var declaredArtifactRoots sync.Map // cleaned root -> struct{}
+
+// declareArtifactRoot marks root as an artifacts root for a later open.
+func declareArtifactRoot(root string) {
+	if cleaned := filepath.Clean(root); cleaned != "" {
+		declaredArtifactRoots.Store(cleaned, struct{}{})
+	}
+}
+
+// declaredArtifactsLayout answers the artifacts layout for a root the resolver
+// declared, and false for every other directory.
+func declaredArtifactsLayout(root string) (stateDir, layout string, ok bool) {
+	if _, declared := declaredArtifactRoots.Load(filepath.Clean(root)); !declared {
+		return "", "", false
+	}
+	return artifactsLayout(root)
+}
+
 // artifactsLayout expresses artifactsDir as the trusted state directory it
 // hangs off and the layout path beneath it: <stateDir> and
 // sessions/<id>/artifacts. It answers false for any directory that is not that
-// shape, which is every working-directory root.
+// shape.
 func artifactsLayout(artifactsDir string) (stateDir, layout string, ok bool) {
 	sessionDir := filepath.Dir(artifactsDir)
 	sessionsDir := filepath.Dir(sessionDir)
