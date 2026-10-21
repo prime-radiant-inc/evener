@@ -308,6 +308,8 @@ stateDiagram-v2
 
 ## Model-facing tools
 
+**Jump to:** [Shell](#existing-shellbash-tool) · [`delegate`](#delegate) · [`delegate_send`](#delegate_send) · [`job_watch`](#job_watch) · [`job_status`](#job_status) · [`job_list`](#job_list) · [`job_stop`](#job_stop).
+
 ### Existing shell/bash tool
 
 The existing shell/bash tool becomes job-capable. It is the shell job creation surface; there is no separate `shell_job` tool.

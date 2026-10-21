@@ -301,27 +301,33 @@ Requirements are the same as `make test`. `ROOT_FULL=1` enables no provider and
 no fuzz search. Any root or module failure is nonzero, and live tests stay
 explicitly skipped unless their own opt-in is set.
 
-### `EVENER_LIVE_TESTS=1` and the per-provider live suites
+### Opt-in MCP and provider smoke tests
 
-Real MCP and provider wire/API behaviour, credentials, and model/provider
-contracts. `EVENER_LIVE_TESTS=1` is the umbrella opt-in that enables the
-applicable live suites together; each suite also has its own:
+The maintained live selectors are MCP's `TestRealMCP_` in
+`agent/internal/mcp` and `TestIntegration_` in the `llm` module root. Check that
+each selector lists tests before opting in; an empty list proves nothing:
 
 ~~~sh
+go list ./agent/internal/mcp
+go test ./agent/internal/mcp -list 'TestRealMCP_'
+go list ./llm
+go test ./llm -list 'TestIntegration_'
+
+# Run only with the corresponding tool or provider credentials and network:
 EVENER_MCP_E2E=1 go test ./agent/internal/mcp -run 'TestRealMCP_' -count=1 -v
-EVENER_OPENAI_CODEX_E2E=1 go test ./llm/providers/openai -run 'TestAdapter_E2E_Codex' -count=1 -v
-EVENER_ANTHROPIC_E2E=1 go test ./llm/providers/anthropic -run 'TestAdapter_E2E_Anthropic' -count=1 -v
+EVENER_LIVE_TESTS=1 go test ./llm -run 'TestIntegration_' -count=1 -v
 ~~~
 
-These are an explicit manual or nightly opt-in and never run in default CI.
-Each needs its named opt-in plus the corresponding tool, credentials, model
-access, and network; a provider key on its own enables nothing. Without the
-opt-in the tests skip explicitly. With it, a configuration or API failure is
-nonzero, and an unavailable optional tool or credential must be reported as a
-skip or a limitation, never as a pass. What each suite covers is described in
-[MCP Server E2E](#mcp-server-e2e), [OpenAI Codex Backend
-E2E](#openai-codex-backend-e2e), and [Anthropic Messages API
-E2E](#anthropic-messages-api-e2e) below.
+MCP requires `npx` and may fetch `@modelcontextprotocol/server-everything`;
+it accepts `EVENER_MCP_E2E=1` or `EVENER_LIVE_TESTS=1`. The `llm` smoke tests
+require `EVENER_LIVE_TESTS=1`, network and at least one applicable credential:
+`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`/`GOOGLE_API_KEY`, or
+`MINIMAX_API_KEY` for text; image cases also accept `OPENROUTER_API_KEY`.
+The tests run every configured provider, not just one selected by the command.
+A key alone never enables live requests. Without the opt-in they skip; without
+credentials an opted-in smoke run also skips rather than proving an API works.
+See [MCP Server E2E](#mcp-server-e2e) and the declarations in
+`llm/integration_smoke_test.go` for the individual cases.
 
 ### `EVENER_TMPDIR_PRIVDROP_E2E=1` — a host privilege-drop check
 
@@ -862,10 +868,10 @@ make test TEST_SCOPE=root) and `tests / nonroot` (TEST_SCOPE=nonroot, every
 other module) on separate runners, with the required `tests` job passing only
 when both do. WEB=0 keeps frontend tests from being duplicated.
 
-Three packages run as cost-balanced shards: the agent module through
-`evener dev agent-shards`, and cmd/evener-hub and cmd/evener, beside the rest
-of the root module, through `evener dev hub-shards` and `evener dev
-cli-shards` (cmd/evener-dev/agentshards.go; the gate's `ROOT_SHARDED` table).
+`make test` runs three packages as cost-balanced shards: the agent module,
+`cmd/evener-hub`, and `cmd/evener`. Its test runner invokes the development
+tooling's `agent-shards`, `hub-shards`, and `cli-shards` commands
+(`cmd/evener-dev/agentshards.go`; the gate's `ROOT_SHARDED` table).
 Each is one binary of hundreds to thousands of mostly serial tests, so
 splitting it across processes is what bounds its wall time (hub: ~80s serial,
 ~13s as eight shards). A shard's `-test.run` arrives through `EVENER_SHARD_RUN_FILE`, which
@@ -1909,45 +1915,15 @@ When adding a runtime env var:
 - Keep live-test opt-in gates explicit; a provider credential alone must not
   make a default test issue network requests.
 
-## OpenAI Codex Backend E2E
+## Historical provider observations
 
-The OpenAI adapter has opt-in live tests for the ChatGPT/Codex Responses backend.
-They are intentionally not part of normal CI because they require stored OpenAI
-OAuth credentials and make live requests to `https://chatgpt.com/backend-api/codex/responses`.
+These observations describe live requests made on May 21, 2026, not maintained
+E2E suites or current provider behavior. The old `TestAdapter_E2E_Codex` and
+`TestAdapter_E2E_Anthropic` selectors have no declarations in this tree; the
+`llm/providers/openai` package no longer exists. Use the maintained smoke
+selectors above for a new live check.
 
-Run:
-
-```sh
-EVENER_OPENAI_CODEX_E2E=1 go test ./llm/providers/openai -run 'TestAdapter_E2E_Codex' -count=1 -v
-```
-
-Optional model override:
-
-```sh
-EVENER_OPENAI_CODEX_E2E=1 EVENER_OPENAI_CODEX_E2E_MODEL=gpt-5.4 go test ./llm/providers/openai -run 'TestAdapter_E2E_Codex' -count=1 -v
-```
-
-Prerequisites:
-
-- `evener openai login` has completed and stored OAuth credentials.
-- The active account can use the Codex backend.
-- Network access to `chatgpt.com` is available.
-
-The suite currently checks:
-
-- OpenAI env resolution uses the stored OAuth/Codex transport.
-- Requests hit `/backend-api/codex/responses`.
-- Codex session metadata fields can be sent:
-  - `prompt_cache_key`
-  - `session-id`
-  - `thread-id`
-  - `x-client-request-id`
-  - `client_metadata` installation ID
-- Reasoning requests ask for `reasoning.encrypted_content`.
-- Tool-call replay with preserved assistant messages still works.
-- Selected public Responses API controls are accepted or explicitly reported as unsupported by the Codex backend.
-
-Observed live result on 2026-05-21:
+### Codex backend, May 21, 2026
 
 - The Codex backend accepted the transport/session metadata path.
 - The Codex backend accepted explicit `store:false`.
@@ -1958,58 +1934,16 @@ Observed live result on 2026-05-21:
   - `max_tool_calls`
   - `background`
 - The Codex backend rejected `service_tier:auto` with `Unsupported service_tier: auto`.
-- For low-effort `gpt-5.4` prompts tested, responses contained `reasoning.effort` in the raw response but did not include an output `reasoning.encrypted_content` item. The adapter still supports encrypted reasoning round-trip when the backend returns that item, covered by unit tests.
+- For low-effort `gpt-5.4` prompts tested, responses contained `reasoning.effort` in the raw response but no output `reasoning.encrypted_content` item.
 
-If sandboxed DNS/network blocks the live run, rerun with command escalation for network access.
-
-## Anthropic Messages API E2E
-
-The Anthropic adapter has opt-in live tests for the Anthropic Messages API. They
-are intentionally not part of normal CI because they require `ANTHROPIC_API_KEY`
-and make live requests to `https://api.anthropic.com/v1/messages`.
-
-Run:
-
-```sh
-EVENER_ANTHROPIC_E2E=1 go test ./llm/providers/anthropic -run 'TestAdapter_E2E_Anthropic' -count=1 -v
-```
-
-Optional model override:
-
-```sh
-EVENER_ANTHROPIC_E2E=1 EVENER_ANTHROPIC_E2E_MODEL=claude-sonnet-4-5-20250929 go test ./llm/providers/anthropic -run 'TestAdapter_E2E_Anthropic' -count=1 -v
-```
-
-Prerequisites:
-
-- `ANTHROPIC_API_KEY` is set.
-- The active account can use the selected model.
-- Network access to `api.anthropic.com` is available.
-
-The suite currently checks:
-
-- Requests hit `/v1/messages`.
-- `service_tier: "standard_only"` is serialized and accepted.
-- Automatic prompt caching request shape remains enabled through top-level `cache_control`.
-- Extended thinking requests work when the selected model emits thinking blocks; returned thinking is replayed into the next request.
-- Tool use and tool-result replay work across turns.
-
-Docs-backed behaviors covered by unit tests and this live suite:
-
-- Anthropic documents `service_tier` values `auto` and `standard_only`, and reports the assigned tier in `usage.service_tier`.
-- Anthropic documents automatic prompt caching through top-level `cache_control`.
-- Anthropic documents `thinking` and `redacted_thinking` blocks, including signatures/data that must be preserved when round-tripping tool-use conversations.
-
-Observed live result on 2026-05-21:
+### Anthropic Messages API, May 21, 2026
 
 - `service_tier: "standard_only"` was accepted.
 - The live transport/service-tier/cache-shape test passed against `api.anthropic.com`.
 - The live extended-thinking replay test passed against the default e2e model.
 - The live tool-use/tool-result replay test passed against the default e2e model.
-- Short prompts may not report cache write/read activity because they do not cross cache thresholds; the test logs this instead of failing.
-- Some prompts/models may not emit visible thinking blocks even when reasoning is requested; the test logs this instead of failing. Unit tests cover thinking/signature and redacted-thinking round-trip shapes.
-
-If sandboxed DNS/network blocks the live run, rerun with command escalation for network access.
+- The run treated absent cache write/read activity as nonfatal for short prompts.
+- The run treated absent visible thinking blocks as nonfatal when requesting reasoning.
 
 ## Targets
 
