@@ -10,6 +10,7 @@ package hub
 // ~/.config/evener/plugins the caller deliberately contained.
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -73,6 +74,34 @@ func TestHubBackgroundMaintenanceUsesTheServersPluginManager(t *testing.T) {
 	escapedFile := filepath.Join(plugins.DefaultRoot(), "known_marketplaces.json")
 	if _, err := os.Stat(escapedFile); err == nil {
 		t.Fatalf("background maintenance wrote the default plugin root %s instead of the server's store", escapedFile)
+	}
+}
+
+func TestHubStartupPluginGcPreservesPublishedRevision(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	root := t.TempDir()
+	revision := filepath.Join(root, "cache", "acme", "widget", "historical")
+	clone := filepath.Join(root, "marketplaces", "leftover")
+	for _, dir := range []string{revision, clone} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	companion := filepath.Join(revision, "companion.bin")
+	data := []byte("session selected")
+	if err := os.WriteFile(companion, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{PluginRoot: root})
+	startHubPluginMaintenance(context.Background(), Config{}, web, func(func()) {
+		t.Fatal("disabled auto-upgrade started")
+	})
+	got, err := os.ReadFile(companion)
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("startup GC changed selected companion: %q, %v", got, err)
+	}
+	if _, err := os.Stat(clone); !os.IsNotExist(err) {
+		t.Fatalf("startup GC did not remove leftover clone: %v", err)
 	}
 }
 

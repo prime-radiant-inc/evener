@@ -1,7 +1,7 @@
 // useNarrowComposer gates the composer's narrow layout (Jesse's 2026-09-28
 // design ruling on the #1339 phone-width verb wrap): the control row that
 // used to wrap a three-verb cluster below the phone-width boundary holds
-// Send alone there, with Stop and Steer riding in the session menu instead.
+// one Stop/Send slot there, with Steer riding in the session menu instead.
 // The boundary is the one the retired wrap rule measured (promptcard.module.css,
 // issue #1339), so a docked pane squeezed to phone width inside a desktop
 // viewport answers exactly like the phone does - the same invariant
