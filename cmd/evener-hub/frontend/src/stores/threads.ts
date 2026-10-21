@@ -1495,6 +1495,9 @@ type PendingTranscriptUpdate = ReceivedTranscriptUpdate & {
 type PendingThreadHydration = {
   client: AppwireClientLike;
   epoch: number;
+  // When this latest-window read issued. Accepted copies created later are not
+  // judged by its omission.
+  startedAt: number;
   notifications: PendingTranscriptUpdate[];
   backgroundBytes: number;
   backgroundInvalidated?: boolean;
@@ -2196,6 +2199,13 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
   // best-effort - a failed write keeps the rows and publishes anyway - and
   // retryBlockedMutation's press-time refusal is what closes that residue.
   await discardCanceledMutations(targetRef);
+  // The replacement conversation cannot have accepted any of the old ref's
+  // turn inputs, so their retained copies retire with the instance.
+  const runtime = getMutationRuntime();
+  if (runtime) {
+    const retired = await runtime.storage.retireAcceptedCopies(targetRef);
+    if (retired.length > 0) notifyMutationPersistence([targetRef]);
+  }
   const now = Date.now();
   const model = hydrateThread({ thread: response.thread }, targetRef, now);
   // The session-content clear's cache hook: the cleared model is a bare
@@ -2402,7 +2412,10 @@ async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterabl
       pinMutationRef(targetRef);
       continue;
     }
-    if (optimistic.length > 0) {
+    // A retained accepted copy is settled by an authoritative read, not by
+    // dispatch, so it does not hold the model resident. Reopening the ref
+    // reads the copy from storage when Retry is rendered.
+    if (optimistic.some((record) => record.retainAcceptedCopyUntilObserved !== true)) {
       pinMutationRef(targetRef);
       // An optimistic row is accepted (settled), never undelivered work - the
       // empty outbox above already says so in the ids.
@@ -2441,7 +2454,7 @@ async function refreshMutationPinAfterRemoval(runtime: MutationRuntime, targetRe
     targetRef,
     outbox.filter((record) => record.state !== "canceled").map((record) => record.clientMutationId),
   );
-  if (outbox.length > 0 || optimistic.length > 0) {
+  if (outbox.length > 0 || optimistic.some((record) => record.retainAcceptedCopyUntilObserved !== true)) {
     pinMutationRef(targetRef);
     return;
   }
@@ -2620,7 +2633,13 @@ function getMutationRuntime(): MutationRuntime | null {
     for (const clientMutationId of discarded) submittedTailBaselines.delete(clientMutationId);
     return discarded;
   };
-  storage.setSettledListener((targetRef) => noteMutationStateChange(targetRef));
+  storage.setSettledListener((targetRef) => {
+    noteMutationStateChange(targetRef);
+    // A settle can be the moment a retained accepted copy stops pinning, or
+    // the last outbox row leaves. Re-read the ref's pins so a background model
+    // with no durable work retires instead of waiting for an unrelated scan.
+    if (runtime) void refreshMutationPins(runtime, [targetRef]).catch(() => undefined);
+  });
   // §6's note-row supersede discard commits fire-and-forget AFTER the settle
   // that spawned it has already notified — the dispatcher's post-settlement
   // refresh may have completed before the cleanup's write does, and a
@@ -3973,6 +3992,33 @@ function noteDirectSubmission(
   }
 }
 
+// A direct fallback has no outbox row, so the success path records the same
+// accepted optimistic copy a reflected receipt keeps. The durable copy is the
+// owner across reload; the marker below remains the immediate page bridge.
+async function recordDirectAccepted(
+  ref: string,
+  intent: MutationIntent,
+  baselineTail: string | undefined,
+  clientMutationId: string,
+): Promise<void> {
+  if (intent.method === "turn/start" || intent.method === "turn/queue") {
+    const runtime = getMutationRuntime();
+    if (runtime) {
+      await runtime.storage.recordAcceptedCopy(
+        {
+          ...intent,
+          submissionBaselineTail: intent.submissionBaselineTail ?? baselineTail,
+          retainAcceptedCopyUntilObserved: true,
+        },
+        clientMutationId,
+      );
+      noteMutationStateChange(ref);
+      notifyMutationPersistence([ref]);
+    }
+  }
+  noteDirectSubmission(ref, intent.method, baselineTail, clientMutationId);
+}
+
 // Overlapping direct sends share a ref: each press owns one count, and the
 // reactive set drops the ref only when the last one settles. A Set alone lost
 // the second owner when the first failed or completed.
@@ -4802,8 +4848,8 @@ async function enqueueMutationIntent(
     // window therefore cannot be honoured for it; the composer's draft is
     // untouched (it lives in localStorage), and a send is retryable by hand -
     // the trade the fallback makes against failing closed.
-    await dispatchMutationDirectly(dispatchClient, intent, (clientMutationId) =>
-      noteDirectSubmission(ref, intent.method, baselineTail, clientMutationId),
+    await dispatchMutationDirectly(dispatchClient, durableIntent, (clientMutationId) =>
+      recordDirectAccepted(ref, durableIntent, baselineTail, clientMutationId),
     );
     return undefined;
   }
@@ -4947,7 +4993,7 @@ const MUTATION_FALLBACK_SEND_READY_WAIT_MS = 10_000;
 async function dispatchMutationDirectly(
   client: AppwireClientLike,
   intent: MutationIntent,
-  onSent?: (clientMutationId: string) => void,
+  onSent?: (clientMutationId: string) => void | Promise<void>,
 ): Promise<void> {
   const clientMutationId = createSecureUUID();
   let target = client;
@@ -4961,7 +5007,7 @@ async function dispatchMutationDirectly(
         params: Record<string, unknown>,
       ) => Promise<unknown>;
       await request.call(target, intent.method, { ...intent.payload, clientMutationId });
-      onSent?.(clientMutationId);
+      await onSent?.(clientMutationId);
       return;
     } catch (err) {
       if (err instanceof WireError || attempt >= MUTATION_FALLBACK_SEND_ATTEMPTS) throw mapConflict(err);
@@ -5375,6 +5421,7 @@ function beginThreadHydration(
   const pending = {
     client,
     epoch,
+    startedAt: Date.now(),
     notifications: [],
     backgroundBytes: 0,
     routing: pendingHydrationRouting(ref, baseModel ?? model),
@@ -5419,6 +5466,7 @@ function beginWatchedHydration(
   const pending = {
     client,
     epoch,
+    startedAt: Date.now(),
     notifications: [],
     backgroundBytes: 0,
     routing: pendingHydrationRouting(ref, baseModel ?? model),
@@ -5658,6 +5706,19 @@ async function publishAndReconcileThreadHydration(
         if (!current()) return;
         const authoritativeIds = collectAuthoritativeMutationIds(hydration.response);
         const mutationStateAuthoritative = hydration.response.thread.evener.mutationStateAuthoritative === true;
+        // A latest-window read that is complete and names none of a retained
+        // accepted copy's identities proves the input is no longer pending,
+        // even when its turn has fallen out of the bounded window. Older-page
+        // reads are prependOlderTurns and never reach this publication.
+        const settledAbsent = await runtime.storage.settleAbsentAcceptedCopies(
+          ref,
+          authoritativeIds,
+          pending.startedAt,
+        );
+        if (settledAbsent.length > 0) {
+          noteMutationStateChange(ref);
+          notifyMutationPersistence([ref]);
+        }
         await runtime.dispatcher.reconcileIdentities(authoritativeIds);
         if (!current()) return;
         // A bounded transcript or a clear can omit an accepted mutation from

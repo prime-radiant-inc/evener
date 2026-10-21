@@ -29,6 +29,9 @@ type MutationOutboxOperation =
   | "updateRecoveryInput"
   | "discardRecovery"
   | "resendRecovery"
+  | "recordAcceptedCopy"
+  | "settleAbsentAcceptedCopies"
+  | "retireAcceptedCopies"
   | "retargetOutbox";
 
 // What retargetOutbox moved to the resumed ref, by store: the caller drives its
@@ -511,7 +514,11 @@ export class MutationOutboxIndexedDB {
 
   async listTargetRefs(): Promise<string[]> {
     const [outbox, optimistic] = await Promise.all([this.listOutbox(), this.listOptimistic()]);
-    return [...new Set([...outbox, ...optimistic].map((record) => record.targetRef))].sort();
+    // A retained accepted copy is settled by an authoritative read, not by
+    // dispatch. It must not pin a background-owned model resident forever;
+    // reopening the ref reads the copy from storage when Retry is rendered.
+    const pinningOptimistic = optimistic.filter((record) => record.retainAcceptedCopyUntilObserved !== true);
+    return [...new Set([...outbox, ...pinningOptimistic].map((record) => record.targetRef))].sort();
   }
 
   // R09: a store-driven resume can return a different identity, and the rows
@@ -632,6 +639,69 @@ export class MutationOutboxIndexedDB {
       return records
         .filter((record) => targetRef === undefined || record.targetRef === targetRef)
         .sort((left, right) => left.intentSequence - right.intentSequence);
+    });
+  }
+
+  // A successful direct-fallback send has no outbox row, but it is still an
+  // accepted own turn input until an authoritative read observes it. Record
+  // the same optimistic accepted copy a reflected receipt keeps.
+  async recordAcceptedCopy(intent: MutationIntent, clientMutationId: string): Promise<MutationOptimisticRecord> {
+    return this.#write([OPTIMISTIC_STORE, SEQUENCE_STORE], "recordAcceptedCopy", async (transaction) => {
+      const intentSequence = await this.#allocateSequence(transaction, intent.targetRef);
+      const record = acceptedRecord({
+        ...intent,
+        version: 1,
+        clientMutationId,
+        originClientId: ownClientId(),
+        intentSequence,
+        createdAt: this.#now(),
+      });
+      await requestResult(transaction.objectStore(OPTIMISTIC_STORE).put(record));
+      return record;
+    });
+  }
+
+  // A complete latest-window authoritative read that names no identity for a
+  // retained accepted copy proves the input is no longer pending, even when a
+  // bounded window no longer contains its turn. Copies created after the read
+  // issued are not judged by it. Older-page reads never call this.
+  async settleAbsentAcceptedCopies(
+    targetRef: string,
+    authoritativeIds: ReadonlySet<string>,
+    observedBefore: number,
+  ): Promise<string[]> {
+    return this.#write([OPTIMISTIC_STORE], "settleAbsentAcceptedCopies", async (transaction) => {
+      const store = transaction.objectStore(OPTIMISTIC_STORE);
+      const records = await requestResult<MutationOptimisticRecord[]>(store.getAll());
+      const settled: string[] = [];
+      for (const record of records) {
+        if (
+          record.targetRef === targetRef &&
+          record.retainAcceptedCopyUntilObserved === true &&
+          record.createdAt <= observedBefore &&
+          !authoritativeIds.has(record.clientMutationId)
+        ) {
+          await requestResult(store.delete(record.clientMutationId));
+          settled.push(record.clientMutationId);
+        }
+      }
+      return settled;
+    });
+  }
+
+  // Clear or an instance replacement retires every accepted copy for the ref:
+  // none of them describes the replacement conversation.
+  async retireAcceptedCopies(targetRef: string): Promise<string[]> {
+    return this.#write([OPTIMISTIC_STORE], "retireAcceptedCopies", async (transaction) => {
+      const store = transaction.objectStore(OPTIMISTIC_STORE);
+      const records = await requestResult<MutationOptimisticRecord[]>(store.getAll());
+      const retired: string[] = [];
+      for (const record of records) {
+        if (record.targetRef !== targetRef) continue;
+        await requestResult(store.delete(record.clientMutationId));
+        retired.push(record.clientMutationId);
+      }
+      return retired;
     });
   }
 
