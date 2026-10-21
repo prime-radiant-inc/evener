@@ -28,7 +28,7 @@ import {
   serializeNamespace,
   serializeSessionKey,
 } from "./compositionRevision";
-import { IDBConnection, requestResult, runBoundedTransaction, tryAbortTransaction } from "./idbConnection";
+import { IDBConnection, requestResult, runBoundedTransaction } from "./idbConnection";
 import {
   ANNOTATION_EVIDENCE_STORE,
   ANNOTATION_EXPIRY_STORE,
@@ -50,6 +50,7 @@ import {
   MUTATION_RECOVERY_STORE,
   registerLocalCompositionSchema,
   sameHandoffDestination,
+  terminalOperationRow,
 } from "./localCompositionSchema";
 import type { MutationRecoveryRecord } from "./mutationOutbox";
 import { applyRecoveryInput } from "./recoveryInput";
@@ -191,8 +192,6 @@ export interface AppendAnnotationInput {
   // FIFO. Absent when the caller holds no expiry knowledge.
   epochConfirmedExpired?: (candidate: { documentKey: string; namespaceIncarnation: string; epoch: string }) => boolean;
   onAppendReadsIssued?: () => void;
-  beforeFinalGuard?: () => void;
-  beforeAbortableCompletion?: () => void;
 }
 
 export type AppendAnnotationResult =
@@ -704,28 +703,20 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         );
         if (currentOperation?.state !== "pending") return { state: "cancelled" };
         // Every asynchronous prerequisite and construction precedes this guard.
-        input.beforeFinalGuard?.();
         if (!input.documentStillEligible()) return { state: "cancelled" };
         if (!input.stillOwnsEdit()) return { state: "pending", reason: "owner-unavailable" };
         const writes: Promise<unknown>[] = [requestResult(putSessionRow(transaction, nextRow))];
         if (nextRecovery) {
           writes.push(requestResult(transaction.objectStore(MUTATION_RECOVERY_STORE).put(nextRecovery)));
         }
-        const { destination: _destination, payloadKey: _payloadKey, ...terminal } = operation;
         writes.push(
           requestResult(
-            operations.put({ ...terminal, state: "applied", draftRevision: nextRow.token.sessionRevision }),
+            operations.put(
+              terminalOperationRow(operation, "applied", { draftRevision: nextRow.token.sessionRevision }),
+            ),
           ),
         );
-        const written = Promise.all(writes);
-        try {
-          input.beforeAbortableCompletion?.();
-        } catch (error) {
-          tryAbortTransaction(transaction);
-          await written.catch(() => undefined);
-          throw error;
-        }
-        await written;
+        await Promise.all(writes);
         changed.push(preparation.key);
         return {
           state: "applied",

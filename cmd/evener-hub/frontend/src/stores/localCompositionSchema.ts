@@ -90,6 +90,31 @@ export interface AnnotationExpiryRow {
   receipt: ExpiryReceipt;
 }
 
+// The terminal receipt of one pending operation. The destination and payload
+// reference describe work the row no longer owns, so both leave with the
+// terminal state; "applied" carries the draft revision the append landed at.
+export function terminalOperationRow(
+  row: Extract<AnnotationOperationRow, { state: "pending" }>,
+  state: "cancelled" | "unclaimed",
+): AnnotationOperationRow;
+export function terminalOperationRow(
+  row: Extract<AnnotationOperationRow, { state: "pending" }>,
+  state: "applied",
+  extra: { draftRevision: number },
+): AnnotationOperationRow;
+export function terminalOperationRow(
+  row: Extract<AnnotationOperationRow, { state: "pending" }>,
+  state: "cancelled" | "unclaimed" | "applied",
+  extra?: { draftRevision: number },
+): AnnotationOperationRow {
+  const { destination: _destination, payloadKey: _payloadKey, ...terminal } = row;
+  if (state === "applied") {
+    if (extra === undefined) throw new Error("an applied receipt carries its draft revision");
+    return { ...terminal, state, draftRevision: extra.draftRevision };
+  }
+  return { ...terminal, state };
+}
+
 function namespaceId(namespace: DocumentKey["namespace"]): string {
   return namespace.kind === "browser" ? namespace.origin : namespace.hubId;
 }

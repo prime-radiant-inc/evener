@@ -60,6 +60,7 @@ import {
   LOCAL_COMPOSITION_DATABASE_NAME,
   LOCAL_COMPOSITION_DATABASE_VERSION,
   registerLocalCompositionSchema,
+  terminalOperationRow,
 } from "./localCompositionSchema";
 import { createSecureUUID } from "./secureUUID";
 import { createVersionedChannel, makeSourceId, type VersionedChannelMessage } from "./versionedChannel";
@@ -70,26 +71,13 @@ export { annotationDocumentKey, annotationExpiryKey, annotationOperationKey } fr
 // that only read do not depend on the rest of the repository surface.
 export type AnnotationReadRepository = Pick<DocumentAnnotationRepository, "beginRead" | "acceptRead">;
 
-export type AnnotationReadBoundary =
-  | { phase: "begin-read-issued"; key: DocumentKey }
-  | { phase: "ticket-remembered"; ticket: ReadTicket };
-
 export interface DocumentAnnotationOptions {
   indexedDB?: IDBFactory;
   databaseName?: string;
-  // Key-range constructor for the compound document+epoch index queries.
-  // Browsers always provide IDBKeyRange; jsdom does not, so tests wiring the
-  // production ports without the annotation fixture leave it undefined and the
-  // adapter's queries fall back to a full scan.
-  keyRange?: typeof IDBKeyRange;
   drafts: BrowserDraftRepository;
   targetFor(destination: PreparedAnnotation["destination"], key: DocumentKey): ComposerSourceState | null;
   beforeCommit?: (operation: "acceptRead" | "save" | "expiry" | "deleteExpiry" | "reset" | "discard") => void;
-  beforeFinalGuard?: () => void;
-  beforeAbortableCompletion?: () => void;
-  afterCommit?: () => void;
   onAppendReadsIssued?: () => void;
-  onReadBoundary?: (event: AnnotationReadBoundary) => void;
   beforeExpiryFence?: (ticket: ReadTicket) => Promise<void>;
   onStorageSuccess?: () => void;
   // Observational, outside every transaction: a failed expiry fence retained
@@ -244,8 +232,7 @@ function putTerminalOperation(
   row: Extract<AnnotationOperationRow, { state: "pending" }>,
   state: "cancelled" | "unclaimed",
 ): IDBRequest<IDBValidKey> {
-  const { destination: _destination, payloadKey: _payloadKey, ...terminal } = row;
-  return transaction.objectStore(ANNOTATION_OPERATIONS_STORE).put({ ...terminal, state });
+  return transaction.objectStore(ANNOTATION_OPERATIONS_STORE).put(terminalOperationRow(row, state));
 }
 
 const STORAGE_WAIT_MS = 10_000;
@@ -516,7 +503,9 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const indexedDB = options.indexedDB ?? globalThis.indexedDB;
     if (!indexedDB) throw new Error("IndexedDB is unavailable");
     this.#options = options;
-    this.#keyRange = options.keyRange ?? globalThis.IDBKeyRange;
+    // Browsers always provide IDBKeyRange; jsdom may not, so every compound
+    // index query falls back to a full scan when it is absent.
+    this.#keyRange = globalThis.IDBKeyRange;
     this.#channel = createVersionedChannel<AnnotationWakeMessage>({
       name: `evener-annotation:${options.databaseName ?? LOCAL_COMPOSITION_DATABASE_NAME}`,
       getSourceId: () => this.#channelSourceId,
@@ -673,7 +662,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // pass and must never fire inside one. Confirmed entries are never released
   // here: a proven change (or a committed reset) keeps its suppression until
   // its expiry's deletion completes.
-  #releaseUnconfirmed(owned: readonly { identity: string; requestId?: string | null }[]): boolean {
+  #releaseUnconfirmed(owned: readonly { identity: string; requestId?: string | null }[]): void {
     let released = false;
     for (const candidate of owned) {
       const entry = this.#suppressedEpochs.get(candidate.identity);
@@ -683,7 +672,6 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       released = true;
     }
     if (released) this.#settleTransition({ signal: true });
-    return released;
   }
 
   async beginRead(key: DocumentKey): Promise<ReadTicket> {
@@ -696,7 +684,6 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       const headRequest = requestResult<AnnotationHeadRow | undefined>(
         transaction.objectStore(ANNOTATION_HEADS_STORE).get(documentKey),
       );
-      this.#options.onReadBoundary?.({ phase: "begin-read-issued", key });
       const [namespaceRow, head] = await Promise.all([namespaceRequest, headRequest]);
       const incarnation = namespaceRow?.incarnation ?? (await this.#createNamespace(transaction, namespace));
       // Durably record issuance: a later beginRead in ANY adapter advances
@@ -734,7 +721,6 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     // carrying the prior completed accepted source for the full document key.
     const prior = this.#readStates.get(documentKey);
     this.#readStates.set(documentKey, { ticket, accepted: prior?.accepted, observations: prior?.observations ?? [] });
-    this.#options.onReadBoundary?.({ phase: "ticket-remembered", ticket });
     this.#settleTransition({ signal: true });
     return ticket;
   }
@@ -1349,9 +1335,9 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const outcome = await this.#discardPendingOperationState(record.key, record.operationId);
     if (outcome === "applied") return outcome;
     if (outcome === "absent" && !dropAbsent) return outcome;
-    const namespace = record.key.namespace;
-    if (namespace.kind !== "browser") return outcome;
-    const operationKey = annotationOperationKey(namespace, record.operationId);
+    // Every record is browser-kind by construction: #fenceCancelledDiscard
+    // refuses any other namespace.
+    const operationKey = annotationOperationKey(record.key.namespace, record.operationId);
     if (this.#pendingCancelledDiscards.get(operationKey) === record) {
       this.#pendingCancelledDiscards.delete(operationKey);
     }
@@ -2086,8 +2072,6 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
             epochIdentityOf(candidate.documentKey, candidate.namespaceIncarnation, candidate.epoch),
           )?.confirmed === true,
         onAppendReadsIssued: this.#options.onAppendReadsIssued,
-        beforeFinalGuard: this.#options.beforeFinalGuard,
-        beforeAbortableCompletion: this.#options.beforeAbortableCompletion,
       });
     } catch {
       // A thrown append is an outcome this call could not observe: the
@@ -2104,7 +2088,6 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     }
     if (refused()) return { state: "pending", reason: "owner-unavailable" };
     if (result.state === "applied") {
-      invokeObserver(() => this.#options.afterCommit?.());
       // A dismissal that lost the commit race still owns the composer delivery.
       // The flip found the applied row and kept the fence, by design - committed
       // work cannot be aborted - so the durable state is honestly applied and
