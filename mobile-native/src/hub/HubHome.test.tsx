@@ -411,6 +411,16 @@ it("shows the on-disk build and its probe error", async () => {
 	expect(renderedText(failed.tree)).toContain("probe failed");
 });
 
+it("shows a dirty running build in the pending and confirm text", async () => {
+	const { tree, press } = await mount({
+		check: { ...INSTALLED, currentVersion: "abc1234-dirty" },
+	});
+	expect(renderedText(tree)).toContain("running abc1234-dirty");
+
+	press("Restart hub");
+	expect(alertRequests[0]?.message).toContain("running abc1234-dirty");
+});
+
 it("shows a failed check as a line, with nothing to press", async () => {
 	const { tree } = await mount({ check: new Error("socket hung up") });
 	expect(renderedText(tree)).toMatch(/\S/);

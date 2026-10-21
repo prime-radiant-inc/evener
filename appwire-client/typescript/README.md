@@ -120,8 +120,11 @@ with the restart wait as a port: each app says how it notices the new hub.
 `install()` writes the channel's verified artifact and re-checks;
 `restart()` execs the binary already on disk. `awaitRestart` receives
 `{ version, incarnation }` and resolves true when a different process answers,
-which is what makes a same-version rebuild visible. The deprecated `apply()`
-still calls the combined `evener/update/apply` RPC for older hubs.
+which is what makes a same-version rebuild visible. `currentIncarnation()`
+captures the process immediately before the restart so a lost response still
+has a fresh baseline; a host without a health read may return null and fall
+back to the check. The deprecated `apply()` still calls the combined
+`evener/update/apply` RPC for older hubs.
 
 The slash-completion module is ported from Beautiful UI's prompt-bar
 completion affordance and ships its MIT attribution at

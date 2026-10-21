@@ -52,7 +52,7 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 	const confirmRestart = () =>
 		Alert.alert(
 			`Restart ${hubName}?`,
-			`Restart into ${check?.onDiskCommit ?? "the binary on disk"} (running ${check?.currentCommit ?? "the current build"}). The app reconnects on its own; running sessions keep going.`,
+			`Restart into ${check?.onDiskCommit ?? "the binary on disk"} (running ${check?.currentVersion ?? "the current build"}). The app reconnects on its own; running sessions keep going.`,
 			[
 				{ text: "Cancel", style: "cancel" },
 				{ text: "Restart", onPress: whenReady(canUseConnection, () => void updates.restart()) },
@@ -202,7 +202,7 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 			) : null}
 			{check?.restartPending ? (
 				<GroupFooter testID="hub-update-pending">
-					{`Installed ${check.onDiskCommit ?? "a new build"}, running ${check.currentCommit}. Restart to apply.`}
+					{`Installed ${check.onDiskCommit ?? "a new build"}, running ${check.currentVersion}. Restart to apply.`}
 				</GroupFooter>
 			) : null}
 			{update.restarting ? <GroupFooter testID="hub-update-restarting">Restarting the hub…</GroupFooter> : null}

@@ -272,8 +272,8 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] launch path: %v\n", hubLaunchEntrypointErr)
 	} else {
 		_, _, hubLaunchShareBinDir = hubInstallDirs()
-		if pin, err := pinInstalledBinary(hubLaunchEntrypoint); err == nil {
-			hubLaunchBinarySHA256 = pin.sha256Hex
+		if digest, err := launchBinaryDigest(hubLaunchEntrypoint); err == nil {
+			hubLaunchBinarySHA256 = digest
 		}
 	}
 

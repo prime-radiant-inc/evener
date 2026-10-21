@@ -56,6 +56,7 @@ function scripted(options: { noClient?: boolean } = {}) {
           new Promise((resolve, reject) => pending.push({ method, params, opts, resolve, reject }))) as never,
       };
     },
+    currentIncarnation: async () => "2026-10-21T10:00:00Z",
     awaitRestart: (previous) =>
       new Promise<boolean>((resolve) => {
         restarts.push({ previous, resolve });
@@ -258,6 +259,7 @@ describe("apply", () => {
         request: (async (method: string) =>
           method === "evener/update/apply" ? { restarting: true } : WAITING) as never,
       }),
+      currentIncarnation: async () => null,
       awaitRestart: async () => {
         throw new Error("the wait broke");
       },
@@ -312,6 +314,7 @@ describe("apply", () => {
         if (!connected) throw new Error("hubUpdate: no connected client");
         return { request: (async () => WAITING) as never };
       },
+      currentIncarnation: async () => null,
       awaitRestart: async (previous) => {
         restarts.push(previous);
         return true;
@@ -416,6 +419,7 @@ describe("restart", () => {
   test("sends evener/hub/restart and waits for a new incarnation, even at the same version", async () => {
     const hub = await checked(WAITING);
     const restarting = hub.controller.restart();
+    await settle();
     const request = hub.take("evener/hub/restart");
     expect(request.params).toEqual({});
     expect(request.opts).toEqual({ timeoutMs: RESTART_REQUEST_TIMEOUT_MS });
@@ -433,6 +437,7 @@ describe("restart", () => {
     const hub = scripted();
     const restarting = hub.controller.restart();
     hub.take("evener/update/check").resolve({ ...WAITING, restartSupported: true });
+    await settle();
     await settle();
     const request = hub.take("evener/hub/restart");
     request.resolve({ restarting: true });
@@ -452,6 +457,7 @@ describe("restart", () => {
   test("keeps a server refusal an error and waits for nothing", async () => {
     const hub = await checked(WAITING);
     const restarting = hub.controller.restart();
+    await settle();
     hub.take("evener/hub/restart").reject(new WireError("no launch path", -32000));
     await restarting;
     expect(hub.controller.getState()).toMatchObject({ restarting: false, restartError: "no launch path" });
@@ -461,9 +467,11 @@ describe("restart", () => {
   test("waits when the response was lost, and times out when the hub does not return", async () => {
     const hub = await checked(WAITING);
     const restarting = hub.controller.restart();
+    await settle();
     hub.take("evener/hub/restart").reject(new Error("socket hung up"));
     await settle();
     expect(hub.controller.getState()).toMatchObject({ restarting: true, restartError: null });
+    expect(hub.restarts[0]?.previous.incarnation).toBe("2026-10-21T10:00:00Z");
     hub.restarts[0]?.resolve(false);
     await restarting;
     expect(hub.controller.getState()).toMatchObject({ restarting: false, restartTimedOut: true });
@@ -479,6 +487,7 @@ describe("an app's own state store", () => {
     const controller = createHubUpdateController(
       {
         client: () => ({ request: (async () => ({ ...WAITING, channel: "snapshot" })) as never }),
+        currentIncarnation: async () => null,
         awaitRestart: async () => true,
       },
       store,

@@ -3,11 +3,14 @@ package hub
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"primeradiant.com/evener/appwire"
@@ -21,6 +24,12 @@ var hubLaunchEntrypoint string
 var hubLaunchEntrypointErr error
 var hubLaunchShareBinDir string
 var hubLaunchBinarySHA256 string
+
+var (
+	launchDigestMu  sync.Mutex
+	launchDigestKey string
+	launchDigest    string
+)
 
 var errHubRestartLaunchPath = errors.New("hub launch path is unavailable")
 var errHubProbeTimeout = errors.New("version probe timed out")
@@ -58,6 +67,9 @@ func hubRestart(ctx context.Context, _ appwire.HubRestartParams) (appwire.HubRes
 	}
 	if hubLaunchEntrypoint == "" {
 		return appwire.HubRestartResponse{}, errHubRestartLaunchPath
+	}
+	if _, err := regularLaunchTarget(hubLaunchEntrypoint); err != nil {
+		return appwire.HubRestartResponse{}, err
 	}
 	pin, err := pinInstalledBinary(hubLaunchEntrypoint)
 	if err != nil {
@@ -98,6 +110,12 @@ func resolveLaunchEntrypoint(args []string, executable func() (string, error)) (
 	if err != nil {
 		return "", fmt.Errorf("launch path: %w", err)
 	}
+	if !entryInfo.Mode().IsRegular() {
+		return "", errors.New("launch path is not a regular file")
+	}
+	if entryInfo.Mode().Perm()&0o111 == 0 {
+		return "", errors.New("launch path is not executable")
+	}
 	exe, err := executable()
 	if err != nil {
 		return "", fmt.Errorf("running executable: %w", err)
@@ -115,6 +133,46 @@ func resolveLaunchEntrypoint(args []string, executable func() (string, error)) (
 	return entry, nil
 }
 
+// regularLaunchTarget refuses a path that is no longer a regular executable
+// before any read or exec. A FIFO or device swapped in after startup must not
+// block a check or a restart.
+func regularLaunchTarget(path string) (os.FileInfo, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("launch path: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("launch path is not a regular file")
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		return nil, errors.New("launch path is not executable")
+	}
+	return info, nil
+}
+
+// launchBinaryDigest hashes the launch path once per unchanged file. The check
+// runs on every Settings load; reading and hashing a large binary each time is
+// avoidable when its size and mtime have not moved.
+func launchBinaryDigest(path string) (string, error) {
+	info, err := regularLaunchTarget(path)
+	if err != nil {
+		return "", err
+	}
+	key := fmt.Sprintf("%s:%d:%d", path, info.Size(), info.ModTime().UnixNano())
+	launchDigestMu.Lock()
+	defer launchDigestMu.Unlock()
+	if key == launchDigestKey {
+		return launchDigest, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	launchDigestKey, launchDigest = key, hex.EncodeToString(sum[:])
+	return launchDigest, nil
+}
+
 // probeHubBinary runs the target's --version with a deadline, a closed stdin,
 // and a bounded combined output, and returns the short commit token. A target
 // that does not identify itself as Evener is refused: the hub must not exec an
@@ -124,6 +182,10 @@ func probeHubBinary(path string) (string, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, "--version")
 	cmd.Stdin = nil
+	// A target that forks a child inheriting stdout keeps the copy pipe open
+	// after the command is killed. WaitDelay closes it so the probe honors its
+	// deadline instead of waiting for the child.
+	cmd.WaitDelay = 250 * time.Millisecond
 	stdout := &cappedBuffer{limit: hubProbeOutputLimit}
 	stderr := &cappedBuffer{limit: hubProbeOutputLimit}
 	cmd.Stdout = stdout

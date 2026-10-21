@@ -59,6 +59,9 @@ func setBuild(t *testing.T, sha, channel string) {
 	hubLaunchEntrypointErr = nil
 	hubLaunchShareBinDir = ""
 	hubLaunchBinarySHA256 = ""
+	launchDigestMu.Lock()
+	launchDigestKey, launchDigest = "", ""
+	launchDigestMu.Unlock()
 	// Default the check seam to an offline "update available" stub so
 	// hubUpdateApply's pre-install guard never hits live GitHub (AGENTS.md
 	// forbids network in default tests). Tests that need a specific check

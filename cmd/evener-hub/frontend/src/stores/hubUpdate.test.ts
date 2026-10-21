@@ -587,7 +587,10 @@ describe("restart", () => {
   test("polls started_at, so a same-version restart still reloads", async () => {
     vi.useFakeTimers();
     const reload = vi.fn();
-    const fetchImpl = healthIdentityFetch([{ version: "be70029", started_at: "2026-10-21T12:00:01Z" }]);
+    const fetchImpl = healthIdentityFetch([
+      { version: "be70029", started_at: "2026-10-21T12:00:00Z" },
+      { version: "be70029", started_at: "2026-10-21T12:00:01Z" },
+    ]);
     resetHubUpdateStoreForTests({ fetchImpl, reload });
     const fake = connectFakeClient();
     fake.on("evener/update/check", () => ({

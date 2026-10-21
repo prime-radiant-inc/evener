@@ -108,7 +108,17 @@ export const hubUpdateStore = createStore<HubUpdateStoreState>(() => ({
 }));
 
 function createController(): HubUpdateController {
-  return createHubUpdateController({ client: requireClient, awaitRestart: waitForNewHub }, hubUpdateStore);
+  return createHubUpdateController(
+    {
+      client: requireClient,
+      awaitRestart: waitForNewHub,
+      currentIncarnation: async () => {
+        const identity = await healthIdentity(RESTART_TIMEOUT_MS);
+        return identity?.startedAt ?? null;
+      },
+    },
+    hubUpdateStore,
+  );
 }
 
 controller = createController();

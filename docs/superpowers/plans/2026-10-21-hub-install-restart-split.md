@@ -112,8 +112,9 @@ against the old signature fails to compile rather than silently comparing a
 timestamp as a version. `apply()` stays as a deprecated wrapper around the
 retained `evener/update/apply` RPC, preserving the old behavior against older
 hubs; the web and phone stop calling it. `restart()` uses the restart
-response's incarnation when it arrives and falls back to the check after a
-lost response.
+response's incarnation when it arrives, captures `currentIncarnation()` before
+the request, and falls back to the check after a lost response when the host
+has no health read.
 
 `evener hub restart` reuses `attach`'s config, loopback, and token resolution,
 captures `started_at`, sends the RPC, and waits for the new incarnation. It

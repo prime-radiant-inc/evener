@@ -117,8 +117,8 @@ func hubUpdateCheck(ctx context.Context, params appwire.UpdateCheckParams) (appw
 	resp.RestartSupported = hubRestartUsable() && onDiskErr == nil
 	binaryChanged := false
 	if hubLaunchBinarySHA256 != "" {
-		if pin, err := pinInstalledBinary(hubLaunchEntrypoint); err == nil {
-			binaryChanged = pin.sha256Hex != hubLaunchBinarySHA256
+		if digest, err := launchBinaryDigest(hubLaunchEntrypoint); err == nil {
+			binaryChanged = digest != hubLaunchBinarySHA256
 		}
 	}
 	resp.RestartPending = onDiskCommit != "" && (onDiskCommit != resp.CurrentVersion || binaryChanged)
@@ -155,6 +155,9 @@ func probeLaunchBuild() (string, error) {
 	}
 	if hubLaunchEntrypoint == "" {
 		return "", errHubRestartLaunchPath
+	}
+	if _, err := regularLaunchTarget(hubLaunchEntrypoint); err != nil {
+		return "", err
 	}
 	return probeHubBinary(hubLaunchEntrypoint)
 }

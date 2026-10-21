@@ -67,6 +67,10 @@ export interface HubUpdatePorts {
   /** The connected client. Throws when there is none, so a request that was
    * never sent reports as an error. */
   client(): Pick<AppwireClientLike, "request">;
+  /** The current process incarnation, captured immediately before a restart
+   * so a lost response can still be judged against the process it replaced.
+   * Hosts without a health read may return null and fall back to the check. */
+  currentIncarnation(): Promise<string | null>;
   /** Runs once the hub answered that it is restarting, or its answer was
    * lost on the way. Resolves true once a different process is up, false when
    * it didn't come back. */
@@ -229,6 +233,13 @@ export function createHubUpdateController(
       return;
     }
     set({ restarting: true, restartError: null, restartTimedOut: false });
+    let capturedIncarnation: string | null = null;
+    try {
+      capturedIncarnation = await ports.currentIncarnation();
+    } catch {
+      capturedIncarnation = null;
+    }
+    if (disposed) return;
     let client: Pick<AppwireClientLike, "request">;
     try {
       client = ports.client();
@@ -253,7 +264,7 @@ export function createHubUpdateController(
     // check.
     const previous: RestartBaseline = {
       version: check.currentVersion,
-      incarnation: responseIncarnation ?? check.started_at ?? null,
+      incarnation: responseIncarnation ?? capturedIncarnation ?? check.started_at ?? null,
     };
     await waitForRestart(previous);
   }

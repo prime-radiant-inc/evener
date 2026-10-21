@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/selfupdate"
 )
 
 func TestHubRestartRefusesUnsupportedPlatform(t *testing.T) {
@@ -257,6 +258,50 @@ func TestHubRestartOnlyUsesManagedInstallLock(t *testing.T) {
 	}
 }
 
+func TestHubRestartOnlyHoldsManagedInstallLockAcrossExec(t *testing.T) {
+	previousDelay := hubRestartDelay
+	hubRestartDelay = 0
+	t.Cleanup(func() { hubRestartDelay = previousDelay })
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	previousExec := execHubBinary
+	execHubBinary = func(string, []string) error {
+		close(entered)
+		<-release
+		return errors.New("exec failed")
+	}
+	t.Cleanup(func() { execHubBinary = previousExec })
+
+	stderr := newSyncWriter("restart failed")
+	previousStderr := hubUpdateStderr
+	hubUpdateStderr = stderr
+	t.Cleanup(func() { hubUpdateStderr = previousStderr })
+
+	hubUpdateMu = sync.Mutex{}
+	hubUpdateMu.Lock()
+	t.Cleanup(func() { hubUpdateMu = sync.Mutex{} })
+
+	path := writeProbeScript(t, "echo 'evener abc1234 (2026-10-21T00:00:00Z)'")
+	pin, err := pinInstalledBinary(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin.shareBinDir = t.TempDir()
+	scheduleHubRestartOnlyAfterResponse(context.Background(), pin, path, []string{"hub"})
+	<-entered
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	if _, err := selfupdate.AcquireInstallLockForVerify(ctx, pin.shareBinDir); err == nil {
+		cancel()
+		close(release)
+		t.Fatal("installer acquired the lock while the restart was between verify and exec")
+	}
+	cancel()
+	close(release)
+	<-stderr.done
+}
+
 func TestHubRestartOnlyAbortsWhenBinarySwapped(t *testing.T) {
 	previousDelay := hubRestartDelay
 	hubRestartDelay = 0
@@ -339,6 +384,27 @@ func TestProbeHubBinaryAcceptsVersionWithStderrDiagnostics(t *testing.T) {
 	}
 	if got != "abc1234" {
 		t.Fatalf("probeHubBinary = %q, want abc1234", got)
+	}
+}
+
+func TestProbeHubBinaryBoundsForkedChild(t *testing.T) {
+	path := writeProbeScript(t, "(sleep 5) & sleep 5")
+	previousTimeout := hubProbeTimeout
+	hubProbeTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { hubProbeTimeout = previousTimeout })
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := probeHubBinary(path)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, errHubProbeTimeout) {
+			t.Fatalf("probe error = %v, want the timeout", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("probe waited for a forked child holding stdout")
 	}
 }
 
