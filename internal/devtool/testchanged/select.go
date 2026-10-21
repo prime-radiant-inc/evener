@@ -94,6 +94,15 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 		}
 		dir := filepath.Join(g.root, filepath.FromSlash(filepath.Dir(rel)))
 
+		// The repo-root package's audit tests read repository-wide state: one
+		// walks every tracked file, another every *_test.go, others the Makefile
+		// fragments and docs. No import edge reaches them, so pair the root
+		// package with every change in a module test-changed runs. It is
+		// package-only, so nothing spreads to importers.
+		if g.runnableModule(module) {
+			rootPackageReadsFile(g, packageOnly, "", rel)
+		}
+
 		// Only a manifest at a module's own root speaks for that module. A
 		// go.mod deeper down belongs to a nested fixture module, which is
 		// outside GO_MODULES and reported as such below.
@@ -233,11 +242,9 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 			// else in the directory is a test-only asset and stays local.
 			if embedsFile(dir, filepath.Join(g.root, filepath.FromSlash(rel))) {
 				propagating[ip] = joinReason(propagating[ip], "embedded asset "+rel)
-				rootPackageReadsFile(g, packageOnly, ip, rel)
 				continue
 			}
 			packageOnly[ip] = joinReason(packageOnly[ip], "changed file "+rel)
-			rootPackageReadsFile(g, packageOnly, ip, rel)
 			continue
 		}
 		propagating[ip] = joinReason(propagating[ip], "changed file "+rel)
@@ -317,11 +324,12 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 	return res
 }
 
-// rootPackageReadsFile adds the repo-root package whenever a non-Go file is
-// attributed to some other package. The root audit tests read repository files
-// by path even when those files live inside another package's directory tree
-// (test/scenarios/*.md, docs/examples/**), so attributing only to the nearest
-// package would skip them and let a broken scenario card report PASS.
+// rootPackageReadsFile adds the repo-root package alongside whatever package
+// owns a change. The root audit tests read repository-wide state — every
+// tracked file, every *_test.go, the Makefile fragments and the docs — so no
+// import edge reaches them, and attributing only to the nearest package would
+// let a broken audit report PASS. The owner is passed so a change that already
+// resolves to the root package is not counted twice.
 func rootPackageReadsFile(g *graph, packageOnly map[string]string, owner, rel string) {
 	rootPkg, ok := g.packageAt(g.root)
 	if !ok || rootPkg == owner {

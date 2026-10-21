@@ -152,6 +152,21 @@ func TestScenarioCardSelectsOwningAndRootPackage(t *testing.T) {
 	}
 }
 
+// The root audits read every tracked file and every *_test.go, so a change
+// anywhere in a runnable module must also select the root package. No import
+// edge reaches it: cmd/evener-hub is not imported by the root package.
+func TestChangeInAnotherModuleAlsoSelectsRootPackage(t *testing.T) {
+	g := loadTestGraph(t)
+	res := selectPackages(g, []string{"cmd/evener-hub/app_threadread_forward_compat_test.go"}, testModules)
+
+	if reasonForPath(res, "primeradiant.com/evener") == "" {
+		t.Errorf("selected %v, want the repo-root audit package as well", selectedPaths(res))
+	}
+	if reasonForPath(res, "primeradiant.com/evener/cmd/evener-hub") == "" {
+		t.Error("the changed package itself must still be selected")
+	}
+}
+
 // In go.work mode every module shares one MVS build list, so a go.mod bump in
 // any module changes what every module compiles against, not only the module
 // that owns the file. go.sum stays scoped to its own module.
@@ -349,8 +364,12 @@ func TestDeletedUnimportedFileIsReportedNotFailed(t *testing.T) {
 	if res.GoChanged != 0 {
 		t.Errorf("GoChanged = %d, want 0 so the empty-selection guard does not fail the run", res.GoChanged)
 	}
-	if len(res.Selected) != 0 {
-		t.Errorf("Selected = %v, want nothing: a removed unimported file affects no package", selectedPaths(res))
+	// The root audit package comes along (its audits walk tracked files, and a
+	// deletion is a tracked-file change), but nothing else should.
+	for _, p := range selectedPaths(res) {
+		if p != modulePath {
+			t.Errorf("Selected = %v, want only the root package %s", selectedPaths(res), modulePath)
+		}
 	}
 }
 
