@@ -319,7 +319,7 @@ var errDeployUnstamped = errors.New("sshconn: deployed build is not stamped by t
 // run target. Both are non-empty on success, so the restart, health re-probe, and
 // attach paths address the binary that was actually installed instead of a bare
 // `evener` a fresh host's non-interactive PATH may not carry.
-func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight, beforeWrite func(string) error) (string, error) {
+func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight, beforeWrite func(string) error, retainedTarget ...string) (string, error) {
 	// Deploying turned off wins over every deploy source: a hub started with
 	// -no-deploy installs nothing on a host, not even through the installer
 	// fallback a release or snapshot controller would otherwise use. The attach
@@ -374,7 +374,7 @@ func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight
 	// the push — -build-source cross-compiles, and an explicitly named artifact
 	// keeps its own terminal mismatch refusal, which names the flag to fix.
 	if m.canBuild() && !m.ownExecutableCannotServe(facts) {
-		return m.deployPush(ctx, host, facts, beforeWrite)
+		return m.deployPush(ctx, host, facts, beforeWrite, retainedTarget...)
 	}
 	if m.ownExecutableCannotServe(facts) {
 		// The only source is the own executable, the host runs another target, and
@@ -436,8 +436,16 @@ func (m *Manager) ownExecutableCannotServe(facts Preflight) bool {
 // on a fresh host that target is the installer default ~/.local/bin/evener, and
 // discarding it left the manager probing the literal `evener`, which the
 // non-interactive PATH cannot resolve.
-func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Preflight, beforeWrite func(string) error) (string, error) {
-	target, err := m.deployTarget(ctx, host, facts)
+func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Preflight, beforeWrite func(string) error, retainedTarget ...string) (string, error) {
+	var target string
+	var err error
+	if len(retainedTarget) != 0 {
+		// Retained recovery has already resolved and checked this destination.
+		// Its beforeWrite callback repeats that proof after staging the binary.
+		target, err = m.resolveDeployOrCreateTarget(ctx, host, retainedTarget[0])
+	} else {
+		target, err = m.deployTarget(ctx, host, facts)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -669,7 +677,7 @@ const pathValueScript = `evener_path_value() {
 evener_directory() { CDPATH='' cd -P -- "$1" 2>/dev/null && pwd -P; }
 `
 
-const resolvePathScript = pathValueScript + `evener_resolve() {
+const resolvePathPrefix = pathValueScript + `evener_resolve() {
   p=$1
   n=0
   while [ -L "$p" ]; do
@@ -683,17 +691,28 @@ const resolvePathScript = pathValueScript + `evener_resolve() {
       *) p=$d/$t ;;
     esac
   done
-  [ -f "$p" ] || return 1
-  d=$(evener_path_value dirname "$p") || return 1
+`
+
+const resolvePathSuffix = `  d=$(evener_path_value dirname "$p") || return 1
   d=$(evener_path_value evener_directory "$d") || return 1
   printf '%s\n' "$d/${p##*/}"
 }
 evener_resolve `
 
+const resolvePathScript = resolvePathPrefix + "  [ -f \"$p\" ] || return 1\n" + resolvePathSuffix
+
 // resolveDeployCommand builds the remote command that prints the real path p
 // names.
 func resolveDeployCommand(p string) string {
 	return resolvePathScript + shellquote.RemoteWord(p)
+}
+
+// Only retained recovery may resolve an absent final file. The caller must
+// compare the result with its recorded installTarget before every write.
+// Parent directories must exist, directories are refused, and the same bounded
+// symlink traversal and byte-preserving pathname framing apply as above.
+func resolveRetainedDeployCommand(p string) string {
+	return resolvePathPrefix + "  [ -f \"$p\" ] || [ ! -e \"$p\" ] || return 1\n" + resolvePathSuffix + shellquote.RemoteWord(p)
 }
 
 // resolveDeployTarget resolves p to the real file it names, so the atomic mv
@@ -1158,7 +1177,11 @@ func (m *Manager) reinstallRetainedTarget(ctx context.Context, host hostreg.Host
 			return errOwnerSelectionMismatch
 		}
 		if host.EvenerPath != pending.installTarget {
-			resolved, err := m.resolveDeployTarget(ctx, host, host.EvenerPath)
+			out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, resolveRetainedDeployCommand(host.EvenerPath)), nil)
+			if err != nil {
+				return errOwnerSelectionMismatch
+			}
+			resolved, err := ownerPathOutput(out)
 			if err != nil || resolved != pending.installTarget {
 				return errOwnerSelectionMismatch
 			}
@@ -1266,7 +1289,7 @@ func (m *Manager) reinstallRetainedTarget(ctx context.Context, host hostreg.Host
 			}
 		}
 		return nil
-	})
+	}, pending.installTarget)
 	if err != nil {
 		return "", err
 	}

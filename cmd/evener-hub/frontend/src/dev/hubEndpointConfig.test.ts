@@ -103,16 +103,26 @@ describe("Vite hub endpoint configuration", () => {
     expect(result.shutdownForced).toBe(true);
     expectClosed(result);
   }, 12_000);
-  it("bounds the outer probe and kills its live Vite child", () => {
-    let failure: unknown;
-    try {
-      observe("proxy-outer-stall", noOldSetting, 3_000);
-    } catch (error) {
-      failure = error;
-    }
-    const timed = failure as { code?: string; stdout?: string };
-    expect(timed.code).toBe("ETIMEDOUT");
-    const result = JSON.parse(timed.stdout as string) as { vitePid: number; backendPort: number; vitePort: number };
-    expectClosed(result);
-  }, 8_000);
+  it.each([0, 3_500])(
+    "bounds the outer probe and kills its live Vite child after %ims startup delay",
+    (startupDelay) => {
+      const result = observe(
+        "outer-stall",
+        { ...noOldSetting, EVENER_PROBE_STARTUP_DELAY: String(startupDelay) },
+        45_000,
+      ) as {
+        timedOut: boolean;
+        code: number;
+        signal: string | null;
+        vitePid: number;
+        backendPort: number;
+        vitePort: number;
+      };
+      expect(result.timedOut).toBe(true);
+      expect(result.code).toBe(1);
+      expect(result.signal).toBeNull();
+      expectClosed(result);
+    },
+    50_000,
+  );
 });

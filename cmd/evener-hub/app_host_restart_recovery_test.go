@@ -1179,7 +1179,7 @@ func TestHostRestartRenewsStoppedReplacementCommand(t *testing.T) {
 				defer runner.mu.Unlock()
 				wantCommand := "systemctl restart evener-hub.service"
 				if mode == "bare" {
-					wantCommand = "cd /home/ops || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/ops; nohup /opt/evener/bin/evener hub -addr 127.0.0.1:9180 -config /srv/recovered.toml >>/srv/recovered.log 2>&1 </dev/null &"
+					wantCommand = "CDPATH='' cd -P -- /home/ops || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/ops; nohup /opt/evener/bin/evener hub -addr 127.0.0.1:9180 -config /srv/recovered.toml >>/srv/recovered.log 2>&1 </dev/null &"
 				}
 				if runner.kills != wantKills || runner.starts != 1 || len(runner.launchCommands) != 1 || runner.launchCommands[0] != wantCommand {
 					t.Fatalf("saved replacement replay: kills=%d starts=%d commands=%q", runner.kills, runner.starts, runner.launchCommands)
@@ -1617,7 +1617,9 @@ func (r *restartRecoveryRunner) selectedEvidenceLocked(command string) ([]byte, 
 		if startedAt == "" && r.runningVersion == "dev" {
 			startedAt = restartStartA
 		}
-		if r.starts > 0 && r.runningVersion != "" && !strings.HasPrefix(command, "cd ") {
+		// Config-context endpoint probes do not consume the final identity fault.
+		// Count only the selected endpoint observations, first readiness then identity.
+		if r.starts > 0 && r.runningVersion != "" && !strings.HasPrefix(command, "CDPATH='' cd -P -- ") {
 			r.healthAfterStart++
 			if r.healthAfterStart >= 2 {
 				switch r.startupIdentityFault {

@@ -192,7 +192,7 @@ func TestRetainedTargetReinstallEvidence(t *testing.T) {
 							pid = otherPID
 						}
 						return run("readlink /proc/" + pid + "/cwd")
-					case strings.HasSuffix(remote, " && pwd -P"), strings.HasPrefix(remote, "test -d "), remote == resolveDeployCommand(alias), remote == resolveDeployCommand(target), remote == createTargetCommand(target):
+					case strings.HasSuffix(remote, " && pwd -P"), strings.HasPrefix(remote, "test -d "), remote == resolveDeployCommand(alias), remote == resolveRetainedDeployCommand(alias), remote == resolveDeployCommand(target), remote == createTargetCommand(target):
 						return run(remote)
 					case strings.Contains(remote, "cat >") && repair:
 						writes++

@@ -185,6 +185,51 @@ process.stdin.on("end", () => vite.close());`;
   return { timeout: failure, backendPort, vitePort, vitePid: child.pid };
 }
 
+async function outerStall() {
+  const script = `await new Promise(resolve => setTimeout(resolve, ${Number(process.env.EVENER_PROBE_STARTUP_DELAY)}));
+process.argv[2] = "proxy-outer-stall";
+await import(${JSON.stringify(import.meta.url)});`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], { env: process.env });
+  const closed = once(child, "close");
+  const lines = createInterface({ input: child.stdout });
+  let stderr = "";
+  child.stderr.setEncoding("utf8").on("data", (chunk) => {
+    stderr += chunk;
+  });
+  let timer;
+  let timedOut = false;
+  try {
+    const [line] = await within(
+      Promise.race([
+        once(lines, "line"),
+        closed.then(() => {
+          throw new Error(`probe exited before readiness: ${stderr}`);
+        }),
+      ]),
+      "outerReady",
+      25_000,
+    );
+    // The probe emits this JSON line only after Vite, HTTP and WS are ready.
+    // Startup has its own bound, the stall timeout must not include it.
+    timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, 3_000);
+    const [code, signal] = await within(closed, "outerTerminate", 6_000);
+    return { timedOut, code, signal, ...JSON.parse(line) };
+  } finally {
+    clearTimeout(timer);
+    lines.close();
+    child.kill("SIGTERM");
+    try {
+      await within(closed, "outerClose", 3_000);
+    } catch {
+      child.kill("SIGKILL");
+      await within(closed, "outerKill", 3_000);
+    }
+  }
+}
+
 async function cleanup() {
   async function available(port) {
     const server = createHTTPServer();
@@ -211,6 +256,8 @@ async function cleanup() {
 let result;
 if (process.argv[2] === "cleanup") {
   result = await cleanup();
+} else if (process.argv[2] === "outer-stall") {
+  result = await outerStall();
 } else if (process.argv[2].startsWith("proxy")) {
   result = await proxy();
 } else {

@@ -16,9 +16,11 @@ import (
 )
 
 func TestRetainedDiscoveredSymlinkDeployment(t *testing.T) {
-	for _, mode := range []string{"interrupted-write", "lost-reply", "changed-registration", "retained-reinstall-restart"} {
+	for _, mode := range []string{"interrupted-write", "lost-reply", "changed-registration", "retained-reinstall-restart", "dangling-target", "dangling-other-target", "dangling-cycle", "dangling-retarget-at-write"} {
 		t.Run(mode, func(t *testing.T) {
-			restart := mode == "retained-reinstall-restart"
+			dangling := strings.HasPrefix(mode, "dangling-")
+			restart := mode == "retained-reinstall-restart" || dangling
+			refuseDangling := mode == "dangling-other-target" || mode == "dangling-cycle" || mode == "dangling-retarget-at-write"
 			root := t.TempDir()
 			target, alias := filepath.Join(root, "installed", "evener"), filepath.Join(root, "bin", "evener")
 			for _, dir := range []string{filepath.Dir(target), filepath.Dir(alias)} {
@@ -31,6 +33,19 @@ func TestRetainedDiscoveredSymlinkDeployment(t *testing.T) {
 			}
 			if err := os.Symlink(target, alias); err != nil {
 				t.Fatal(err)
+			}
+			linkTarget := target
+			if dangling {
+				if err := os.Remove(alias); err != nil {
+					t.Fatal(err)
+				}
+				linkTarget = "../installed/launch"
+				if err := os.Symlink(linkTarget, alias); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink("evener", filepath.Join(root, "installed", "launch")); err != nil {
+					t.Fatal(err)
+				}
 			}
 			host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 			writes, discoveries, guardCalls, starts, procReads := 0, 0, 0, 0, 0
@@ -65,7 +80,7 @@ func TestRetainedDiscoveredSymlinkDeployment(t *testing.T) {
 				case "command -v evener || echo " + evenerPathMissingMarker:
 					discoveries++
 					return []byte(alias + "\n"), nil
-				case resolveDeployCommand(alias), resolveDeployCommand(target), createTargetCommand(target), "test -d " + shellquote.RemoteWord(filepath.Dir(alias)), "test -d " + shellquote.RemoteWord(filepath.Dir(target)):
+				case resolveDeployCommand(alias), resolveRetainedDeployCommand(alias), resolveDeployCommand(target), createTargetCommand(target), "test -d " + shellquote.RemoteWord(filepath.Dir(alias)), "test -d " + shellquote.RemoteWord(filepath.Dir(target)):
 					return run(in)
 				case "if test -x " + shellquote.RemoteWord(alias) + "; then exit 0; else exit 1; fi", "if test -x " + shellquote.RemoteWord(target) + "; then exit 0; else exit 1; fi":
 					return run(in)
@@ -96,7 +111,19 @@ func TestRetainedDiscoveredSymlinkDeployment(t *testing.T) {
 				}
 				return base(ctx, argv, in)
 			}
-			m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "newsha", BuildBinary: writeStageBinary})
+			build := func(ctx context.Context, goos, goarch, out string) error {
+				if mode == "dangling-retarget-at-write" && selected.executableAbsent {
+					chain := filepath.Join(root, "installed", "launch")
+					if err := os.Remove(chain); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink("other-evener", chain); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return writeStageBinary(ctx, goos, goarch, out)
+			}
+			m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "newsha", BuildBinary: build})
 			host, _ = m.reg.Get(host.Name)
 			guard := func() error { guardCalls++; return nil }
 			facts, err := m.preflight(t.Context(), host)
@@ -136,14 +163,35 @@ func TestRetainedDiscoveredSymlinkDeployment(t *testing.T) {
 				if err := os.Chmod(target, 0o644); err != nil {
 					t.Fatal(err)
 				}
+				if dangling {
+					if err := os.Remove(target); err != nil {
+						t.Fatal(err)
+					}
+					if refuseDangling && mode != "dangling-retarget-at-write" {
+						chain := filepath.Join(root, "installed", "launch")
+						if err := os.Remove(chain); err != nil {
+							t.Fatal(err)
+						}
+						other := "other-evener"
+						if mode == "dangling-cycle" {
+							other = "../bin/evener"
+						}
+						if err := os.Symlink(other, chain); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
 				selected.executableAbsent = true
 				facts.ExecutableMissing = true
 			}
 			discoveredBeforeRetry := discoveries
 			launch, after, err := m.DeployForOperation(t.Context(), host, facts, restart, guard)
-			if mode == "changed-registration" {
+			if mode == "changed-registration" || refuseDangling {
 				if err == nil || writes != 1 || !reflect.DeepEqual(retained, m.pendingRestart(host.Name)) {
 					t.Fatalf("changed registration replayed write or lost intent: err=%v writes=%d pending=%+v", err, writes, m.pendingRestart(host.Name))
+				}
+				if refuseDangling && !errors.Is(err, errOwnerSelectionMismatch) {
+					t.Fatalf("dangling chain refused for the wrong reason: %v", err)
 				}
 			} else if restart {
 				if err != nil || writes != 2 || procReads < 2 || after.Version != "newsha" || after.HubEndpointSchema != 1 {
@@ -170,10 +218,23 @@ func TestRetainedDiscoveredSymlinkDeployment(t *testing.T) {
 				want = "predecessor"
 			}
 			wantStarts := 0
-			if restart {
+			if restart && !refuseDangling {
 				wantStarts = 1
 			}
-			if readErr != nil || string(data) != want || linkErr != nil || link != target || starts != wantStarts || len(fr.recordedStarts()) != 0 || discoveries != discoveredBeforeRetry {
+			if refuseDangling {
+				if !errors.Is(readErr, os.ErrNotExist) {
+					t.Fatalf("refused chain created recorded target: data=%q err=%v", data, readErr)
+				}
+				if _, err := os.Lstat(filepath.Join(root, "installed", "other-evener")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("refused chain wrote a different target: %v", err)
+				}
+				if mode == "dangling-retarget-at-write" && procReads == 0 {
+					t.Fatal("retarget-at-write did not reach staging after the first owner check")
+				}
+			} else if readErr != nil || string(data) != want {
+				t.Fatalf("recovery target: data=%q err=%v want=%q", data, readErr, want)
+			}
+			if linkErr != nil || link != linkTarget || starts != wantStarts || len(fr.recordedStarts()) != 0 || discoveries != discoveredBeforeRetry {
 				t.Fatalf("recovery effects: data=%q err=%v link=%q err=%v starts=%d discoveries=%d/%d", data, readErr, link, linkErr, starts, discoveries, discoveredBeforeRetry)
 			}
 		})
