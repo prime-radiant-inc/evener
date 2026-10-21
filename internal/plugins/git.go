@@ -99,19 +99,19 @@ func checkoutRevision(ctx context.Context, dir, target string) error {
 	// check out the resolved shape: a local branch stays attached, a remote
 	// branch gets a tracking branch without relying on checkout.guess, and a
 	// tag or commit detaches.
-	ref, kind, err := resolveRef(ctx, dir, target)
+	resolved, err := resolveRef(ctx, dir, target)
 	if err != nil {
 		return err
 	}
-	switch kind {
+	switch resolved.kind {
 	case refLocalBranch:
-		_, err = gitRun(ctx, dir, "checkout", "--quiet", target)
+		_, err = gitRun(ctx, dir, "checkout", "--quiet", resolved.name)
 	case refTag:
-		_, err = gitRun(ctx, dir, "checkout", "--quiet", "--detach", ref)
+		_, err = gitRun(ctx, dir, "checkout", "--quiet", "--detach", resolved.ref)
 	case refRemoteBranch:
-		_, err = gitRun(ctx, dir, "checkout", "--quiet", "-b", target, "--track", ref)
+		_, err = gitRun(ctx, dir, "checkout", "--quiet", "-b", resolved.name, "--track", resolved.ref)
 	default:
-		_, err = gitRun(ctx, dir, "checkout", "--quiet", "--detach", ref)
+		_, err = gitRun(ctx, dir, "checkout", "--quiet", "--detach", resolved.ref)
 	}
 	return err
 }
@@ -125,24 +125,41 @@ const (
 	refRevision
 )
 
+type resolvedRef struct {
+	ref  string
+	name string
+	kind refKind
+}
+
 // resolveRef classifies target against the namespaces checkout may use and
 // answers the ref to check out or compare. Checkout and pin verification share
 // it so a target one accepts is not read as broken by the other.
-func resolveRef(ctx context.Context, dir, target string) (string, refKind, error) {
+func resolveRef(ctx context.Context, dir, target string) (resolvedRef, error) {
 	if target == "HEAD" {
-		return "HEAD", refRevision, nil
+		return resolvedRef{ref: "HEAD", name: "HEAD", kind: refRevision}, nil
+	}
+	// An explicit fully qualified ref wins over shorthand expansion. Without
+	// this, refs/heads/main could resolve to a tag named refs/heads/main.
+	if strings.HasPrefix(target, "refs/") && exactRefNamesCommit(ctx, dir, target) {
+		if branch, ok := strings.CutPrefix(target, "refs/heads/"); ok {
+			return resolvedRef{ref: target, name: branch, kind: refLocalBranch}, nil
+		}
+		if strings.HasPrefix(target, "refs/tags/") {
+			return resolvedRef{ref: target, name: target, kind: refTag}, nil
+		}
+		return resolvedRef{ref: target, name: target, kind: refRevision}, nil
 	}
 	switch {
 	case exactRefNamesCommit(ctx, dir, "refs/heads/"+target):
-		return "refs/heads/" + target, refLocalBranch, nil
+		return resolvedRef{ref: "refs/heads/" + target, name: target, kind: refLocalBranch}, nil
 	case exactRefNamesCommit(ctx, dir, "refs/tags/"+target):
-		return "refs/tags/" + target, refTag, nil
+		return resolvedRef{ref: "refs/tags/" + target, name: target, kind: refTag}, nil
 	case exactRefNamesCommit(ctx, dir, "refs/remotes/origin/"+target):
-		return "refs/remotes/origin/" + target, refRemoteBranch, nil
+		return resolvedRef{ref: "refs/remotes/origin/" + target, name: target, kind: refRemoteBranch}, nil
 	case revNamesCommit(ctx, dir, target):
-		return target, refRevision, nil
+		return resolvedRef{ref: target, name: target, kind: refRevision}, nil
 	default:
-		return "", 0, fmt.Errorf("refusing to check out %q: it does not name a branch, tag, or commit", target)
+		return resolvedRef{}, fmt.Errorf("refusing to check out %q: it does not name a branch, tag, or commit", target)
 	}
 }
 
@@ -289,11 +306,11 @@ func gitResolveCommit(ctx context.Context, dir, rev string) (string, error) {
 	if err := guardGitArg("ref", rev); err != nil {
 		return "", err
 	}
-	ref, _, err := resolveRef(ctx, dir, rev)
+	resolved, err := resolveRef(ctx, dir, rev)
 	if err != nil {
 		return "", err
 	}
-	out, err := gitRun(ctx, dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	out, err := gitRun(ctx, dir, "rev-parse", "--verify", "--quiet", resolved.ref+"^{commit}")
 	if err != nil {
 		return "", err
 	}

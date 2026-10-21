@@ -2720,6 +2720,29 @@ func TestAddMarketplace_RefMatchingATrackedPathAndANamespaceTagIsRejected(t *tes
 	}
 }
 
+// An explicitly qualified ref wins over namespace expansion: a tag named
+// refs/heads/main must not replace the branch the caller named.
+func TestAddMarketplace_QualifiedRefWinsOverNamespaceExpansion(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "qualified")
+	mainTip := gitIn(t, repo, "rev-parse", "HEAD")
+	gitIn(t, repo, "checkout", "--quiet", "-b", "other")
+	advanceGitRepo(t, repo, "README.md", "other branch")
+	gitIn(t, repo, "tag", "refs/heads/main")
+	gitIn(t, repo, "checkout", "--quiet", "-")
+
+	m := NewManager(t.TempDir())
+	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "refs/heads/main"})
+	if err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != mainTip {
+		t.Fatalf("HEAD = %s, want the explicitly named main tip %s", got, mainTip)
+	}
+}
+
 // A branch and a tracked path can share a name. Checkout guessing must not
 // decide which one wins: the recorded ref selects the branch even when git is
 // configured not to guess a branch for an ambiguous name.
