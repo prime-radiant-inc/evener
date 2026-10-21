@@ -572,7 +572,7 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
 
   async appendAnnotation(input: AppendAnnotationInput): Promise<AppendAnnotationResult> {
     const preparation = input.preparation;
-    return this.#transaction(
+    const result = await this.#transaction(
       APPEND_STORES,
       "readwrite",
       undefined,
@@ -733,6 +733,12 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         };
       },
     );
+    // A committed append writes the session row (and, for a recovery backing,
+    // its record), so it is the same drafts commit every other write
+    // publishes. A non-applied outcome wrote nothing: a replay of an applied
+    // row, a refusal, or a cancellation changed no draft state.
+    if (result.state === "applied") this.#publish([preparation.key]);
+    return result;
   }
 
   // The ordinary session row carries the committed token for BOTH backings: a

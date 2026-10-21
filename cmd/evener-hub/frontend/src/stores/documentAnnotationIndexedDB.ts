@@ -580,6 +580,28 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     this.#recoveryNotificationReleases.add(unsubscribe);
   }
 
+  // Release the unconfirmed suppression entries a caller still owns and signal
+  // the storage-success boundary exactly once iff anything was released. A
+  // release RESTORES an epoch's eligibility that an overlapping handoff may
+  // have refused against, and it is the only observation of that restored
+  // state, so the release itself - not each caller - owns the emission.
+  // Callers run after their transaction settled: the signal can start a retry
+  // pass and must never fire inside one. Confirmed entries are never released
+  // here: a proven change (or a committed reset) keeps its suppression until
+  // its expiry's deletion completes.
+  #releaseUnconfirmed(owned: readonly { identity: string; requestId?: string | null }[]): boolean {
+    let released = false;
+    for (const candidate of owned) {
+      const entry = this.#suppressedEpochs.get(candidate.identity);
+      if (!entry || entry.confirmed) continue;
+      if (candidate.requestId !== undefined && entry.requestId !== candidate.requestId) continue;
+      this.#suppressedEpochs.delete(candidate.identity);
+      released = true;
+    }
+    if (released) this.#notifyStorageSuccess();
+    return released;
+  }
+
   async beginRead(key: DocumentKey): Promise<ReadTicket> {
     if (key.namespace.kind !== "browser") throw new Error("browser annotations require a browser namespace");
     const namespace = key.namespace;
@@ -657,21 +679,18 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         }
       }
     }
-    // Confirm or remove ONLY this invocation's still-owned provisional entry, from
-    // the real durable validation result, never a caller-supplied boolean.
-    // Returns true when it actually released an unconfirmed entry: that release
-    // is an observation boundary the retry runtime must hear about.
-    const finishValidation = (current: boolean): boolean => {
-      if (!provisional) return false;
+    // Confirm or release ONLY this invocation's still-owned provisional entry,
+    // from the real durable validation result, never a caller-supplied
+    // boolean. The release helper signals the boundary.
+    const finishValidation = (current: boolean): void => {
+      if (!provisional) return;
       const entry = this.#suppressedEpochs.get(provisional);
-      if (entry?.requestId !== ticket.requestId) return false;
+      if (entry?.requestId !== ticket.requestId) return;
       if (current) {
         entry.confirmed = true;
-        return false;
+        return;
       }
-      if (entry.confirmed) return false;
-      this.#suppressedEpochs.delete(provisional);
-      return true;
+      this.#releaseUnconfirmed([{ identity: provisional, requestId: ticket.requestId }]);
     };
     // A stale or unchanged validation releases the provisional restriction a
     // concurrent handoff may have refused against. That refusal only records
@@ -680,9 +699,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     // already subscribes to. Without it the annotation stays pending until
     // unrelated activity starts a pass. Called after the validation transaction
     // settled, never inside it, so the pass the runtime may start is serviceable.
-    const releaseProvisional = (): void => {
-      if (finishValidation(false)) this.#notifyStorageSuccess();
-    };
+    const releaseProvisional = (): void => finishValidation(false);
     try {
       // Validation commits before the fence: the durable identity of this ticket
       // is settled here, and the fence below is a separate transaction so a fence
@@ -1462,19 +1479,10 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     // RESTORES the old epoch's eligibility: a handoff that refused pending while
     // the reset ran can append again, and this release is the only observation
     // of that restored state. Both callers below run after the reset
-    // transaction settled, so the storage-success signal they fire cannot start
-    // a pass inside a transaction. Returns true when it actually released an
-    // unconfirmed entry.
-    const releaseProvisioned = (): boolean => {
-      let released = false;
-      for (const identity of provisioned) {
-        const entry = this.#suppressedEpochs.get(identity);
-        if (entry && !entry.confirmed) {
-          this.#suppressedEpochs.delete(identity);
-          released = true;
-        }
-      }
-      return released;
+    // transaction settled, so the storage-success signal the release helper
+    // fires cannot start a pass inside a transaction.
+    const releaseProvisioned = (): void => {
+      this.#releaseUnconfirmed(provisioned.map((identity) => ({ identity })));
     };
     const newIncarnation = createSecureUUID();
     let result: { committed: boolean; incarnation: string };
@@ -1531,7 +1539,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     } catch (error) {
       // The transaction settled by rolling back; the release is an observation
       // boundary outside it.
-      if (releaseProvisioned()) this.#notifyStorageSuccess();
+      releaseProvisioned();
       throw error;
     }
     if (result.committed) {
@@ -1550,7 +1558,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // A stale expected incarnation rotated nothing: the transaction settled
       // without the reset these entries were provisioned for, so their release
       // restores eligibility exactly as a rollback does.
-      if (releaseProvisioned()) this.#notifyStorageSuccess();
+      releaseProvisioned();
     }
     return result;
   }
@@ -1763,6 +1771,14 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     }
     const { token, value } = backing;
     invokeObserver(() => retained.source.acknowledgeAnnotation(retained.preparation, token, value));
+    // The acknowledgment is the moment the committed backing makes the
+    // composer current again: a handoff that refused against the pre-append
+    // token can now append. Signal storage success here, outside every
+    // transaction, so the runtime can start the pass that revisits it - safe
+    // in-pass because the runtime retains a trigger arriving while its work is
+    // outstanding. "none" and "unreconcilable" restore no eligibility (the
+    // annotation is durably applied and listed) and stay silent.
+    this.#notifyStorageSuccess();
     return "reconciled";
   }
 
