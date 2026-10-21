@@ -4033,6 +4033,10 @@ async function recordDirectAccepted(
   if (persistCopy && isTurnSubmissionMethod(intent.method)) {
     const runtime = getMutationRuntime();
     if (runtime) {
+      // Hold the accepted-input owner until the copy is published. The public
+      // send may return now, but Retry must not act on a stale failure in the
+      // window where the RPC is accepted and the projection has no copy yet.
+      const endCopyOwner = beginTurnSubmission(ref);
       // Best-effort durable owner, after the accepted RPC: a slow or failing
       // copy write must not delay or fail the send. The page bridge above owns
       // Retry admission in the meantime.
@@ -4054,7 +4058,14 @@ async function recordDirectAccepted(
           noteMutationStateChange(ref);
           notifyMutationPersistence([ref]);
         })
-        .catch(() => undefined);
+        .catch(() => {
+          // No durable copy: keep the page bridge on whatever failure is
+          // current, so the accepted input cannot be retried as a second one.
+          const model = threadsStore.getState().threads.get(ref);
+          const tail = latestTurnId(model);
+          if (tail !== undefined) markStaleRetryTail(ref, tail, clientMutationId);
+        })
+        .finally(endCopyOwner);
     }
   }
 }

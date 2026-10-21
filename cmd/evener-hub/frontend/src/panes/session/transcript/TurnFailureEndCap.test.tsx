@@ -184,6 +184,36 @@ class ClearCleanupFailureStorage extends MutationOutboxIndexedDB {
   }
 }
 
+class GatedAcceptedCopyStorage extends MutationOutboxIndexedDB {
+  private releaseWrite: (() => void) | undefined;
+  private writeGate: Promise<void> = Promise.resolve();
+  private reachedResolve: (() => void) | undefined;
+  reached: Promise<void> = Promise.resolve();
+
+  holdNextCopy(): void {
+    this.writeGate = new Promise<void>((resolve) => {
+      this.releaseWrite = resolve;
+    });
+    this.reached = new Promise<void>((resolve) => {
+      this.reachedResolve = resolve;
+    });
+  }
+
+  override async recordAcceptedCopy(
+    ...args: Parameters<MutationOutboxIndexedDB["recordAcceptedCopy"]>
+  ): ReturnType<MutationOutboxIndexedDB["recordAcceptedCopy"]> {
+    this.reachedResolve?.();
+    this.reachedResolve = undefined;
+    await this.writeGate;
+    return super.recordAcceptedCopy(...args);
+  }
+
+  releaseCopy(): void {
+    this.releaseWrite?.();
+    this.releaseWrite = undefined;
+  }
+}
+
 // The hint disclosure's toggle, or null when the end-cap has no hint.
 function hintSummary(): HTMLElement | null {
   return screen.getByTestId("turn-failure").querySelector("summary");
@@ -2288,6 +2318,78 @@ test("a direct fallback from an empty conversation keeps its accepted copy until
     });
     await flushPendingTurnsProjectionForTests();
     await waitFor(async () => expect(await storage.listOptimistic("ref_a")).toHaveLength(0));
+  } finally {
+    storage.close();
+  }
+});
+
+test("a direct send keeps its accepted-input owner until the copy write settles", async () => {
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  const storage = new GatedAcceptedCopyStorage({
+    beforeCommit: (operation) => {
+      if (operation === "enqueueIntent") throw new DOMException("full", "QuotaExceededError");
+    },
+  });
+  const { fake } = await loadThread("ref_a", [], {}, storage);
+  fake.on("thread/read", () => new Promise<never>(() => undefined));
+  let acceptRpc!: () => void;
+  let firstCall = true;
+  fake.on("turn/start", ({ clientMutationId }) => {
+    const response = {
+      receipt: {
+        clientMutationId,
+        disposition: "applied" as const,
+        threadId: "thr_ref_a",
+        projectionState: "reflected",
+      },
+      turn: { id: firstCall ? "turn_c" : "turn_dup", status: "inProgress", itemsView: "" },
+    };
+    if (!firstCall) return Promise.resolve(response);
+    firstCall = false;
+    return new Promise((resolve) => {
+      acceptRpc = () => resolve(response);
+    });
+  });
+  try {
+    const send = threadsStore.getState().send("ref_a", "direct while copy is slow");
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
+    // The RPC is accepted while its copy transaction's completion is held.
+    storage.holdNextCopy();
+    acceptRpc();
+    await send;
+    await storage.reached;
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    if (!model) throw new Error("thread went away");
+    act(() => {
+      threadsStore.setState({
+        threads: new Map([
+          [
+            "ref_a",
+            {
+              ...model,
+              runningTurnId: undefined,
+              status: { type: "idle" as const },
+              turns: [{ id: "turn_b", status: "failed" as const, items: [], error: { message: "boom b" } }],
+            },
+          ],
+        ]),
+      });
+    });
+    const bView = render(<TurnFailureEndCap error={{ message: "boom b" }} sessionRef="ref_a" turnId="turn_b" />);
+    await flushPendingTurnsProjectionForTests();
+    const bRetry = within(bView.container).getByRole("button", { name: "Retry" }) as HTMLButtonElement;
+    await waitFor(() => expect(bRetry.disabled).toBe(true));
+    await act(async () => {
+      await threadsStore.getState().continueTurn("ref_a", "turn_b");
+    });
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+
+    // The committed copy publishes; the projection now owns the guard.
+    storage.releaseCopy();
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(async () => expect(await storage.listOptimistic("ref_a")).toHaveLength(1));
+    expect(bRetry.disabled).toBe(true);
   } finally {
     storage.close();
   }
