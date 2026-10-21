@@ -19,6 +19,7 @@ import {
 	ErrorMarketplaceRemoveApplied,
 	WireError,
 	type MarketplaceEntry,
+	type MarketplaceAddParams,
 	type PluginEntry,
 } from "@evener/appwire-client";
 import { HubWriteBusyError, MARKETPLACE_REFETCH_DEBOUNCE_MS } from "@evener/appwire-client/state/extensions";
@@ -106,17 +107,17 @@ function cloneLitterError(applied: unknown, includeApplied = true): WireError {
 function marketplaceClient(options: {
 	list?: () => Promise<{ marketplaces: MarketplaceEntry[] }>;
 	remove?: () => Promise<unknown>;
-	add?: () => Promise<{ marketplaces: MarketplaceEntry[] }>;
+	add?: (params: MarketplaceAddParams) => Promise<{ marketplaces: MarketplaceEntry[] }>;
 }) {
 	const methods: string[] = [];
 	const listeners = new Set<(notification: AnyNotification) => void>();
 	const client = Object.assign(new FakeClient("ready"), {
-		request: async (method: string) => {
+		request: async (method: string, params: MarketplaceAddParams) => {
 			methods.push(method);
 			if (method === "evener/marketplace/list") return options.list?.() ?? { marketplaces: [marketplace] };
 			if (method === "evener/marketplace/browse") return { name: marketplace.name, plugins: [] };
 			if (method === "evener/marketplace/remove") return options.remove?.();
-			if (method === "evener/marketplace/add") return options.add?.() ?? { marketplaces: [marketplace] };
+			if (method === "evener/marketplace/add") return options.add?.(params) ?? { marketplaces: [marketplace] };
 			if (method === "evener/plugin/list") return { plugins: [] };
 			return { marketplaces: [marketplace] };
 		},
@@ -130,6 +131,71 @@ function marketplaceClient(options: {
 	};
 	return { client, methods, notify };
 }
+
+/** Opens the Marketplaces segment, fills the Add sheet for one git kind, and
+ * submits it with a branch or tag. */
+async function addFromSheet(
+	tree: ReturnType<typeof render>,
+	options: { kindLabel?: string; source: string; ref: string },
+) {
+	await act(async () => {});
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Marketplaces" }).props.onPress();
+	});
+	await act(async () => {});
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Add marketplace" }).props.onPress();
+	});
+	if (options.kindLabel !== undefined) {
+		await act(async () => {
+			tree.root.findByProps({ accessibilityLabel: options.kindLabel }).props.onPress();
+		});
+	}
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Marketplace source" }).props.onChangeText(options.source);
+	});
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Branch or tag" }).props.onChangeText(options.ref);
+	});
+	const submit = tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Add" });
+	await act(async () => {
+		submit.props.onPress();
+		await Promise.resolve();
+	});
+	await act(async () => {});
+}
+
+async function addRequestFrom(options: {
+	kindLabel?: string;
+	source: string;
+	ref: string;
+}): Promise<MarketplaceAddParams> {
+	const seen: MarketplaceAddParams[] = [];
+	const hub = marketplaceClient({
+		add: (params) => {
+			seen.push(params);
+			return Promise.resolve({ marketplaces: [marketplace] });
+		},
+	});
+	harness.connection = readyConnection(hub.client);
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof PluginsPage>;
+	const tree = render(<PluginsStack {...props} />);
+	await addFromSheet(tree, options);
+	expect(seen).toHaveLength(1);
+	return seen[0];
+}
+
+it("sends a branch or tag with a github add request", async () => {
+	const params = await addRequestFrom({ kindLabel: "GitHub", source: "acme/plugins", ref: "release/next" });
+	expect(params.source).toEqual({ kind: "github", repo: "acme/plugins", ref: "release/next" });
+});
+
+it("sends a branch or tag with a git url add request", async () => {
+	const params = await addRequestFrom({ source: "https://example.com/plugins.git", ref: "v2" });
+	expect(params.source).toEqual({ kind: "url", url: "https://example.com/plugins.git", ref: "v2" });
+});
 
 /** The hub says its marketplaces changed, as it does to every client after
  * any change: the page's store reads the list again once its debounce

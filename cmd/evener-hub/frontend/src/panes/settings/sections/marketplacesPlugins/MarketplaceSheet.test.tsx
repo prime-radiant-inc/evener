@@ -214,6 +214,11 @@ test("prefills the name, the source kind, and its field; shows install location 
   expect(screen.queryByTestId("marketplace-refetch-note")).toBeNull();
 });
 
+test("shows the branch or tag a marketplace is pinned to", () => {
+  renderSheet({ ...ACME, source: { kind: "github", repo: "acme/plugins", ref: "release/next" } });
+  expect(screen.getByTestId("marketplace-pinned-to").textContent).toBe("release/next");
+});
+
 test("Save is disabled until something changes, and a rename alone promises no re-fetch", async () => {
   renderSheet(ACME);
   expect(saveButton().disabled).toBe(true);

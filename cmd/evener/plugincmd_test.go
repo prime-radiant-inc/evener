@@ -66,6 +66,80 @@ func TestPluginMarketplaceAdd_RequiresConfirmation(t *testing.T) {
 	}
 }
 
+// marketplaceAddCapture records the source the add command hands the manager.
+// The embedded interface supplies the methods this path never calls.
+type marketplaceAddCapture struct {
+	pluginManager
+	src   plugins.Source
+	calls int
+}
+
+func (m *marketplaceAddCapture) SeedDefaultMarketplaces(context.Context) (bool, error) {
+	return false, nil
+}
+
+func (m *marketplaceAddCapture) AddMarketplace(_ context.Context, _ string, src plugins.Source) (plugins.MarketplaceRef, error) {
+	m.calls++
+	m.src = src
+	return plugins.MarketplaceRef{InstallLocation: "/tmp/marketplace"}, nil
+}
+
+func TestPluginMarketplaceAdd_RefFlag(t *testing.T) {
+	cases := []struct {
+		name string
+		arg  string
+		want plugins.Source
+	}{
+		{
+			name: "github shorthand",
+			arg:  "acme/plugins",
+			want: plugins.Source{Kind: plugins.SourceGitHub, Repo: "acme/plugins", Ref: "release/next"},
+		},
+		{
+			name: "git url",
+			arg:  "https://example.com/plugins.git",
+			want: plugins.Source{Kind: plugins.SourceURL, URL: "https://example.com/plugins.git", Ref: "release/next"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			m := &marketplaceAddCapture{}
+			oldManager := newPluginManager
+			newPluginManager = func() pluginManager { return m }
+			t.Cleanup(func() { newPluginManager = oldManager })
+
+			var out, errb bytes.Buffer
+			if err := runPlugin([]string{"marketplace", "add", "--ref", "release/next", "--yes", tc.arg}, nil, &out, &errb); err != nil {
+				t.Fatalf("marketplace add --ref: %v\n%s", err, errb.String())
+			}
+			if m.calls != 1 {
+				t.Fatalf("AddMarketplace called %d times, want 1", m.calls)
+			}
+			if m.src != tc.want {
+				t.Errorf("AddMarketplace source = %+v, want %+v", m.src, tc.want)
+			}
+		})
+	}
+}
+
+func TestPluginMarketplaceAdd_RefFlagRejectsDirectorySource(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	m := &marketplaceAddCapture{}
+	oldManager := newPluginManager
+	newPluginManager = func() pluginManager { return m }
+	t.Cleanup(func() { newPluginManager = oldManager })
+
+	var out, errb bytes.Buffer
+	err := runPlugin([]string{"marketplace", "add", "--ref", "main", "--yes", t.TempDir()}, nil, &out, &errb)
+	if err == nil {
+		t.Fatal("marketplace add --ref with a local directory should fail")
+	}
+	if m.calls != 0 {
+		t.Fatalf("AddMarketplace called %d times for a rejected directory source, want 0", m.calls)
+	}
+}
+
 func TestPluginMarketplaceRemove(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	m := plugins.NewManager("")

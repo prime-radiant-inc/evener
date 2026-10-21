@@ -109,15 +109,22 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 		fs := flag.NewFlagSet("marketplace add", flag.ContinueOnError)
 		fs.SetOutput(stderr)
 		yes := fs.Bool("yes", false, "skip the trust confirmation")
+		gitRef := fs.String("ref", "", "git branch or tag to check out")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
 		if fs.NArg() < 1 {
-			return errors.New("usage: evener plugin marketplace add <url|owner/repo|path> [--yes]")
+			return errors.New("usage: evener plugin marketplace add <url|owner/repo|path> [--ref <branch|tag>] [--yes]")
 		}
 		src, err := parsePluginMarketplaceSource(fs.Arg(0))
 		if err != nil {
 			return err
+		}
+		if *gitRef != "" {
+			if src.Kind == plugins.SourceDirectory {
+				return errors.New("--ref applies only to git sources, not a local directory")
+			}
+			src.Ref = *gitRef
 		}
 		if !*yes {
 			_, _ = fmt.Fprintf(stderr, "Add marketplace from %s? Marketplaces are arbitrary code repositories.\nPass --yes to confirm.\n", fs.Arg(0))

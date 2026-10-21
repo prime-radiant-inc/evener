@@ -6,16 +6,23 @@
 // watchRows' sourceLabel, which names a watch's source ("this session").
 import type { MarketplaceSourceInput } from "./types.gen";
 
+/** Appends the commit pin, when there is one, in git's own `url@ref` form.
+ * A sha wins over a ref: it is the commit the clone actually holds. */
+function pinned(label: string, source: MarketplaceSourceInput): string {
+  const pin = source.sha || source.ref;
+  return pin ? `${label}@${pin}` : label;
+}
+
 export function marketplaceSourceLabel(source: MarketplaceSourceInput): string {
   switch (source.kind) {
     case "github":
-      return `github: ${source.repo ?? ""}`;
+      return pinned(`github: ${source.repo ?? ""}`, source);
     case "url":
-      return source.url ?? "";
+      return pinned(source.url ?? "", source);
     case "directory":
       return source.path ?? "";
     case "git-subdir":
-      return `${source.url ?? ""} (${source.path ?? ""})`;
+      return `${pinned(source.url ?? "", source)} (${source.path ?? ""})`;
     default:
       return source.kind;
   }

@@ -20,6 +20,27 @@ test("git-subdir: shows the url followed by the path in parens", () => {
   );
 });
 
+test("a ref pins the label to a branch or tag", () => {
+  expect(marketplaceSourceLabel({ kind: "github", repo: "acme/plugins", ref: "release/next" })).toBe(
+    "github: acme/plugins@release/next",
+  );
+  expect(marketplaceSourceLabel({ kind: "url", url: "https://example.com/x.git", ref: "v2" })).toBe(
+    "https://example.com/x.git@v2",
+  );
+  expect(
+    marketplaceSourceLabel({ kind: "git-subdir", url: "https://example.com/x.git", path: "sub/dir", ref: "v2" }),
+  ).toBe("https://example.com/x.git@v2 (sub/dir)");
+});
+
+test("a sha is the pin shown when the source carries both", () => {
+  expect(marketplaceSourceLabel({ kind: "github", repo: "acme/plugins", sha: "abc1234" })).toBe(
+    "github: acme/plugins@abc1234",
+  );
+  expect(marketplaceSourceLabel({ kind: "github", repo: "acme/plugins", ref: "main", sha: "abc1234" })).toBe(
+    "github: acme/plugins@abc1234",
+  );
+});
+
 test("a missing optional field renders as empty rather than 'undefined'", () => {
   expect(marketplaceSourceLabel({ kind: "github" })).toBe("github: ");
   expect(marketplaceSourceLabel({ kind: "git-subdir", url: "https://example.com/x.git" })).toBe(

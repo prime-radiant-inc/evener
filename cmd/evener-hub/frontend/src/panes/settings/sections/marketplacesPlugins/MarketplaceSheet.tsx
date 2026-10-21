@@ -472,6 +472,17 @@ export function MarketplaceSheet({
                     ),
                     mono: true,
                   },
+                  ...(entry.source.ref || entry.source.sha
+                    ? [
+                        {
+                          label: "Pinned to",
+                          value: (
+                            <span data-testid="marketplace-pinned-to">{entry.source.sha || entry.source.ref}</span>
+                          ),
+                          mono: true,
+                        },
+                      ]
+                    : []),
                   {
                     label: "Last updated",
                     value: (

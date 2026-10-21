@@ -665,6 +665,7 @@ export function AddMarketplace({
 	const scale = useTextScale();
 	const [kind, setKind] = useState<MarketplaceKind>("url");
 	const [source, setSource] = useState("");
+	const [ref, setRef] = useState("");
 	const [name, setName] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useFormError();
@@ -686,15 +687,16 @@ export function AddMarketplace({
 		setBusy(true);
 		setError(null);
 		const value = source.trim();
+		const gitRef = ref.trim();
 		const outcome = await runGatedMutation(canUseConnection, () =>
 			onAdd({
 				name: name.trim(),
 				source:
 					kind === "github"
-						? { kind, repo: value }
+						? { kind, repo: value, ...(gitRef ? { ref: gitRef } : {}) }
 						: kind === "directory"
 							? { kind, path: value }
-							: { kind, url: value },
+							: { kind, url: value, ...(gitRef ? { ref: gitRef } : {}) },
 			}),
 		);
 		if (!alive.current) return;
@@ -719,7 +721,7 @@ export function AddMarketplace({
 	}
 	// Cancel and a swipe down wait out an add in flight, and ask before a
 	// typed source or name goes (spec 6).
-	const leave = () => guardLeave({ busy, dirty: !!(source.trim() || name.trim()) }, onClose);
+	const leave = () => guardLeave({ busy, dirty: !!(source.trim() || ref.trim() || name.trim()) }, onClose);
 	const add = whenReady(canUseConnection, () => {
 		void submit();
 	});
@@ -767,6 +769,7 @@ export function AddMarketplace({
 						if (value === kind) return;
 						setKind(value);
 						setSource("");
+						setRef("");
 					}}
 				/>
 				{kind === "directory" ? (
@@ -796,6 +799,22 @@ export function AddMarketplace({
 							onSubmitEditing={() => nameInput.current?.focus()}
 						/>
 					</Group>
+				)}
+				{kind !== "directory" && (
+					<>
+						<Group label="Branch or tag">
+							<TextFieldRow
+								label="Branch or tag"
+								placeholder="main"
+								value={ref}
+								onChangeText={setRef}
+								disabled={busy}
+								returnKeyType="next"
+								onSubmitEditing={() => nameInput.current?.focus()}
+							/>
+						</Group>
+						<GroupFooter>Optional. Defaults to the repository's default branch.</GroupFooter>
+					</>
 				)}
 				<Group label="Name">
 					<TextFieldRow
