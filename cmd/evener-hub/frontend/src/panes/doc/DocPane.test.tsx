@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
-import { bindFilePath, DOC_FILE_MAX_BYTES } from "@evener/appwire-client/docContent";
+import { bindArtifactPath, bindFilePath, DOC_FILE_MAX_BYTES } from "@evener/appwire-client/docContent";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -561,10 +561,37 @@ test("a restored artifacts document does not adopt a replacement session's same-
       <DocPane params={pane.params as DocParams} paneId={pane.id} focused={false} />
     </PaneVisibilityContext>,
   );
-  // No read may be issued for the replacement session's report.md.
+  // No read may be issued for the replacement session's report.md, and the
+  // pane must say the file is unavailable rather than sit on a skeleton: the
+  // snapshot has arrived and does not contain the recorded target.
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
   });
   expect(requests.map((url) => url.searchParams.get("path"))).not.toContain(`${newDir}/report.md`);
   expect(screen.queryByText("replacement report body")).toBeNull();
+  expect(screen.getByText("File not available")).toBeTruthy();
+  expect(document.querySelector('[data-testid="skeleton"]')).toBeNull();
+});
+
+// Two same-named reports in different sessions are different documents. The
+// document identity includes the concrete target, so opening the second must
+// not match (and overwrite) the first pane's saved reference.
+test("same-named reports in different artifact directories are different documents", () => {
+  const sourcePaneId = workspaceStore.getState().openPane("session", { ref });
+  const first = bindArtifactPath("/state/a/sessions/s1/artifacts/report.md", "/state/a/sessions/s1/artifacts");
+  const second = bindArtifactPath("/state/b/sessions/s2/artifacts/report.md", "/state/b/sessions/s2/artifacts");
+  if (!first || !second) throw new Error("expected artifact references");
+  act(() => openDocBeside({ session: ref, sourcePaneId, reference: first }));
+  const firstDocument = workspaceStore.getState().panes.find((candidate) => candidate.type === "doc");
+  if (!firstDocument) throw new Error("expected the first document");
+  act(() => openDocBeside({ session: ref, sourcePaneId, reference: second }));
+  // The first pane keeps the document it opened. Matching on session, name and
+  // root alone would have reused that pane and overwritten its saved target.
+  expect((firstDocument.params as DocParams).artifactTarget).toBe("/state/a/sessions/s1/artifacts/report.md");
+  expect(documentPaneState(firstDocument)?.reference.readTarget).toBe("/state/a/sessions/s1/artifacts/report.md");
+  const targets = workspaceStore
+    .getState()
+    .panes.filter((candidate) => candidate.type === "doc")
+    .map((document) => (document.params as DocParams).artifactTarget);
+  expect(targets).toEqual(["/state/a/sessions/s1/artifacts/report.md", "/state/b/sessions/s2/artifacts/report.md"]);
 });

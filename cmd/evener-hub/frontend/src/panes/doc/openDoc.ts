@@ -59,7 +59,11 @@ function isRequestedDocument(pane: OpenPaneRecord, params: DocParams): boolean {
     candidate.session === params.session &&
     candidate.path === params.path &&
     candidate.kind === params.kind &&
-    (candidate.root ?? undefined) === (params.root ?? undefined)
+    (candidate.root ?? undefined) === (params.root ?? undefined) &&
+    // The target is part of what a document is, not decoration: two reports
+    // with the same name in different sessions are different documents, and
+    // matching them would let one pane overwrite the other's saved target.
+    (candidate.artifactTarget ?? undefined) === (params.artifactTarget ?? undefined)
   );
 }
 

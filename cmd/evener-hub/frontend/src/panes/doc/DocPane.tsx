@@ -190,6 +190,20 @@ export default function DocPane({ params, paneId, focused }: PaneProps<DocParams
     recordDocumentPaneState(pane, { reference, origin: retained?.origin, reopen: retained?.reopen ?? 0 });
   }, [pane, reference, retained]);
 
+  // A restored artifacts document whose recorded target the loaded snapshot
+  // rejects (Clear moved the ref to another session) is unavailable for good,
+  // not still loading: the snapshot has arrived and does not contain it.
+  const targetRejected =
+    !retained && params.root === "artifacts" && artifactsDir !== undefined && params.artifactTarget !== undefined;
+  if (targetRejected && !reference)
+    return (
+      <PaneScaffold title={filenameOf(params.path)} paneId={paneId} focused={focused}>
+        <EmptyState
+          title="File not available"
+          hint="This report belonged to an earlier session and is not in this one."
+        />
+      </PaneScaffold>
+    );
   if (!reference)
     return (
       <PaneScaffold title={filenameOf(params.path)} paneId={paneId} focused={focused}>
