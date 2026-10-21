@@ -266,9 +266,9 @@ func (m *Manager) collectPreflight(ctx context.Context, host hostreg.Host) (pref
 	// redirect recovery into a second installation discovered at the default.
 	if errors.Is(err, errExecutableMissing) && !m.pendingRestart(host.Name).active() {
 		if target, ok := m.probeInstallerDefaultExecutable(ctx, host); ok {
-			// Discovery proves the bridge exists even if launch-check refuses.
-			m.setResolvedTarget(host.Name, target)
-			probeHost.EvenerPath = target
+			// Deployment may have claimed a target while discovery was in flight.
+			// Probe the selected installation, not an unowned discovery's facts.
+			probeHost.EvenerPath = m.publishDiscoveredTarget(host, target)
 			lc, err = m.probeLaunchCheck(ctx, probeHost)
 		}
 	}

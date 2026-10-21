@@ -3499,7 +3499,7 @@ func (m *Manager) resolvedTarget(name string) string {
 // configured evener_path always wins. ensureOnce applies it twice for one
 // reason: preflight can discover and record the installer-default binary during
 // the very attempt that needs to address it (probeInstallerDefaultExecutable →
-// setResolvedTarget), and a host.EvenerPath that stays empty there makes
+// publishDiscoveredTarget), and a host.EvenerPath that stays empty there makes
 // channelArgv build the bridge from the bare word `evener`, which a
 // non-interactive PATH need not carry.
 func (m *Manager) applyResolvedTarget(host *hostreg.Host) {
@@ -3526,6 +3526,25 @@ func (m *Manager) setResolvedTarget(name, target string) {
 		m.resolvedTargets = map[string]string{}
 	}
 	m.resolvedTargets[name] = target
+}
+
+// publishDiscoveredTarget selects the installation to probe after discovery.
+// Ownership and publication share deploymentRecorder's lock, so a delayed probe
+// cannot overwrite a newly owned target or return facts from another installation.
+func (m *Manager) publishDiscoveredTarget(host hostreg.Host, target string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.pendingRestarts[host.Name].active() {
+		if strings.TrimSpace(host.EvenerPath) != "" {
+			return host.EvenerPath
+		}
+		return m.resolvedTargets[host.Name]
+	}
+	if m.resolvedTargets == nil {
+		m.resolvedTargets = map[string]string{}
+	}
+	m.resolvedTargets[host.Name] = target
+	return target
 }
 
 // pendingRestart returns the restart a failed or unverified restart recorded, or

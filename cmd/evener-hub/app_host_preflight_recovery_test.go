@@ -217,7 +217,7 @@ func (r *twoInstallRecoveryRunner) Run(ctx context.Context, argv []string, stdin
 	switch {
 	case strings.Contains(command, `"${HOME-}/.local/bin/evener"`):
 		return []byte(recoveryDefaultExecutable + "\n"), nil
-	case strings.Contains(command, "if test -x"):
+	case strings.Contains(command, "if test -x"), strings.Contains(command, "if command -v"):
 		return nil, exec.CommandContext(ctx, "sh", "-c", `test -x "$1"`, "probe", r.files[target]).Run()
 	case strings.Contains(command, "launch-check"):
 		if err := exec.CommandContext(ctx, "sh", "-c", `test -x "$1"`, "probe", r.files[target]).Run(); err != nil {

@@ -390,8 +390,10 @@ target. A failed transfer does not leave a partial executable. The installer
 preserves the existing installation location and layout. A configured target
 must name the `evener` runtime, not another program.
 While an effect is pending, default-path discovery cannot replace its selected
-target. If that executable disappears or loses its execute bit, an authorized
-deployment repairs the selected installation rather than switching to another one.
+target, even when a concurrent plan refresh began discovery before the deployment
+recorded that target. If that executable disappears or loses its execute bit, an
+authorized deployment repairs the selected installation rather than switching to
+another one.
 
 **Build verification.** A source build carries the controller's build identity;
 a named artifact carries its own. After deployment, the controller re-reads the
