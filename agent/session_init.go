@@ -399,6 +399,9 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	} else if err := identifier.ValidateSessionID(sessionID); err != nil {
 		return nil, fmt.Errorf("reserved child session ID: %w", err)
 	}
+	if cfg.spawn.parentSessionID == "" && cfg.WorkspaceID == "" {
+		cfg.WorkspaceID = sessionID
+	}
 	if cfg.spawn.parentSessionID == "" {
 		nameRootScratch(env, sessionID, sessionID)
 	}
@@ -903,6 +906,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}()
 
 	cfg := configFromSnapshot(meta.Config)
+	// Older metadata did not carry a separate workspace identity. Match the
+	// restart reference by adopting this saved session's own ID, never history.
+	workspaceIdentityWasMissing := meta.WorkspaceID == ""
+	if workspaceIdentityWasMissing {
+		meta.WorkspaceID = meta.ID
+	}
+	cfg.WorkspaceID = meta.WorkspaceID
 	cfg.MemoryStateRoot = restoreCfg.MemoryStateRoot
 	cfg.DisableMemory = cfg.DisableMemory || restoreCfg.DisableMemory
 	if restoreCfg.spawn.parentSessionID != "" {
@@ -1588,6 +1598,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// Settle before the session start announces the state.
 	if !restoreCfg.deferRestoreSideEffects {
 		s.recomputeRestoredState(divergenceTurn, attemptStarts)
+	}
+	// Persist the legacy fallback through the session metadata owner before
+	// emitting the restored runtime identity to the caller.
+	if workspaceIdentityWasMissing {
+		if err := s.autoSaveMeta(); err != nil {
+			return nil, fmt.Errorf("persist restored workspace identity: %w", err)
+		}
 	}
 
 	s.emitSessionStartEnvelope(events.SessionStartData{

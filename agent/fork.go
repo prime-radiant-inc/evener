@@ -344,6 +344,7 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 	}
 	childMeta := schema.SessionMeta{
 		ID:                 childID,
+		WorkspaceID:        childID,
 		ProfileID:          parentMeta.ProfileID,
 		Model:              parentMeta.Model,
 		CheapModel:         parentMeta.CheapModel,

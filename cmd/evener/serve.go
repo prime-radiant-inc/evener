@@ -822,7 +822,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// history/updated extends. Preparation is the only fallible half; a
 	// transcript that belongs to another session is one this daemon must not
 	// serve.
-	workspaceRef := appwire.Ref{SourceID: "local", ThreadID: sess.ID()}.String()
+	workspaceRef := appwire.Ref{SourceID: "local", ThreadID: sess.WorkspaceID()}.String()
 	prepared, err := deps.prepareAppIdentity("local", sess.ID(), workspaceRef, sess.TranscriptPath())
 	if err != nil {
 		sess.Close()
@@ -1612,6 +1612,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		oldEnv := currentEnv
 		currentMu.RUnlock()
 		clearCfg := sessionCfg
+		clearCfg.WorkspaceID = oldSess.WorkspaceID()
 		// The launch picked the first session's ID into sessionCfg; the cleared
 		// session is a new session and picks its own.
 		clearCfg.SessionID = ""
