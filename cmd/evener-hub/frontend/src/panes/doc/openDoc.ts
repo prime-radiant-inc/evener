@@ -57,7 +57,12 @@ function isRequestedDocument(pane: OpenPaneRecord, params: DocParams): boolean {
 
 export function openDocBeside(request: DocumentOpenRequest): void {
   const path = request.reference.provenance === "absolute" ? request.reference.readTarget : request.reference.path;
-  const reference = bindFilePath(path, request.reference.cwd);
+  const bound = bindFilePath(path, request.reference.cwd);
+  // The recorded reference must keep saying which root it came from. DocPane
+  // rebinds against the session cwd once the thread's cwd differs from an
+  // artifacts dir, so a reference that lost the marker would be re-recorded
+  // pointing into the working tree.
+  const reference = bound && request.reference.root === "artifacts" ? { ...bound, root: "artifacts" as const } : bound;
   if (!reference) return;
   const artifacts = request.reference.root === "artifacts";
   const params: DocParams = {

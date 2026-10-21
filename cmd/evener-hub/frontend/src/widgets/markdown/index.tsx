@@ -178,6 +178,13 @@ const SANITIZE_CONFIG = {
   // document-pane requests. Everything absent here stays refused exactly as
   // before - javascript:, data:, and every other scheme DOMPurify's default
   // already rejected are still stripped, which the widget's own tests pin.
+  //
+  // The scheme is allowed for every consumer of this widget, but only the
+  // transcript resolves it. Elsewhere a file:// anchor is a destination the
+  // browser will not follow from an http(s) page, which is honest - it shows
+  // where the link goes - where a stripped href showed nothing. Scoping the
+  // scheme to the transcript needs a caller-supplied link policy on this
+  // widget, which the design system makes Jesse's call, not a local edit.
   ALLOWED_URI_REGEXP:
     /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix|file):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i,
 };

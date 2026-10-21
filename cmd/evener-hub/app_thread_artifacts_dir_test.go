@@ -71,14 +71,17 @@ func TestHubArtifactsDirStaysEmptyForRefsThisHubDoesNotServe(t *testing.T) {
 	}
 }
 
-// A remote thread's EvenerThread may carry whatever the remote host chose; the
-// hub never stamps a local path over it, because that path does not name the
-// remote's files.
+// A remote thread's artifacts live on its own host, so this hub advertises no
+// local path for one: it clears whatever value the thread arrived with rather
+// than letting a path this hub served stand in for the remote's files.
 func TestThreadReadLeavesRemoteArtifactsDirUnset(t *testing.T) {
 	web, _, session := docServeTestServer(t)
-	thread := appwire.Thread{ID: session, SessionID: session, Evener: appwire.EvenerThread{Ref: "remote:" + session}}
+	thread := appwire.Thread{
+		ID: session, SessionID: session,
+		Evener: appwire.EvenerThread{Ref: "remote:" + session, ArtifactsDir: "/remote/host/artifacts"},
+	}
 	if got := applyHubCapabilities(web.cfg, thread).Evener.ArtifactsDir; got != "" {
-		t.Fatalf("remote thread advertised a local path: %q", got)
+		t.Fatalf("remote thread advertised %q, want no local path", got)
 	}
 }
 

@@ -662,3 +662,20 @@ test("a file URL inside the session artifacts has the standard open-beside affor
     { type: "doc", params: { session: thread.ref, path: reportParamPath, root: "artifacts", kind: "file" } },
   ]);
 });
+
+// The reference recorded by a live open must say which root it came from, or
+// DocPane rebinds it against the session's working directory once the thread's
+// cwd differs from the artifacts dir, and every later consumer of that
+// reference points into the working tree instead.
+test("opening an artifacts link records a reference that keeps the artifacts root", () => {
+  render(message(`[Full report and retained evidence](file://${reportPath})`, false, artifactsThread));
+  fireEvent.click(screen.getByRole("link", { name: "Full report and retained evidence" }));
+  const pane = workspaceStore.getState().panes.find((candidate) => candidate.type === "doc");
+  if (!pane) throw new Error("expected a document pane");
+  expect(documentPaneState(pane)?.reference).toMatchObject({
+    root: "artifacts",
+    cwd: artifactsDir,
+    path: "docs-quality-repairs.md",
+    readTarget: reportPath,
+  });
+});
