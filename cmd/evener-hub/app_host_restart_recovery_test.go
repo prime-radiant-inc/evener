@@ -1399,7 +1399,7 @@ type restartRecoveryRunner struct {
 	streams                       []*probeFakeStdio
 }
 
-func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+func (r *restartRecoveryRunner) Run(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	command := strings.Join(argv, " ")
@@ -1417,8 +1417,8 @@ func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.R
 			return []byte("arm64\n"), nil
 		}
 		return []byte("x86_64\n"), nil
-	case strings.Join(argv[12:], " ") == `printf '%s\n' "HOME=${HOME-}" "XDG_STATE_HOME=${XDG_STATE_HOME-}" "XDG_CONFIG_HOME=${XDG_CONFIG_HOME-}"`:
-		return []byte("HOME=/home/ops\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+	case strings.Join(argv[12:], " ") == hostFixtureEnvironmentProbe:
+		return runHostFixtureEnvironmentProbe(ctx, strings.Join(argv[12:], " "), []string{"HOME=/home/ops", "XDG_STATE_HOME=", "XDG_CONFIG_HOME="})
 	case strings.HasSuffix(command, "id -u"):
 		return []byte("1000\n"), nil
 	case strings.Contains(command, "launch-check"):
@@ -1670,7 +1670,7 @@ func (r *restartRecoveryRunner) selectedEvidenceLocked(command string) ([]byte, 
 			args = append(args, "-addr", "127.0.0.1:9180", "-config", config)
 		}
 		return []byte(strings.Join(args, "\x00") + "\x00"), true, nil
-	case command == "readlink /proc/"+pid+"/cwd", command == "pwd":
+	case command == "readlink /proc/"+pid+"/cwd", command == "pwd", command == "CDPATH='' cd -P -- /home/ops && pwd -P":
 		return []byte("/home/ops\n"), true, nil
 	case strings.HasPrefix(command, "(exec 3< /proc/"+pid+"/environ"), strings.HasPrefix(command, `if [ "${HOME+x}" = x ];`), strings.HasPrefix(command, "values=$(systemctl --user show-environment)"):
 		return []byte("HOME=/home/ops\x00"), true, nil

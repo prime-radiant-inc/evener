@@ -1120,19 +1120,19 @@ func (s *attachedUpdateStdio) Wait() error {
 }
 
 // attachedUpdateRunner answers the normal preflight as an already-healthy dev
-// hub, then serves initialize over an in-memory stream. It never starts a real
-// process or opens a network listener.
+// hub, then serves initialize over an in-memory stream. Only the environment
+// probe runs a local shell, no SSH process or network listener is started.
 type attachedUpdateRunner struct{}
 
-func (*attachedUpdateRunner) Run(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+func (*attachedUpdateRunner) Run(ctx context.Context, argv []string, _ io.Reader) ([]byte, error) {
 	joined := strings.Join(argv[12:], " ")
 	switch joined {
 	case "uname -s":
 		return []byte("Linux\n"), nil
 	case "uname -m":
 		return []byte("x86_64\n"), nil
-	case `printf '%s\n' "HOME=${HOME-}" "XDG_STATE_HOME=${XDG_STATE_HOME-}" "XDG_CONFIG_HOME=${XDG_CONFIG_HOME-}"`:
-		return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+	case hostFixtureEnvironmentProbe:
+		return runHostFixtureEnvironmentProbe(ctx, joined, []string{"HOME=/home/dev", "XDG_STATE_HOME=", "XDG_CONFIG_HOME="})
 	case "id -u":
 		return []byte("1000\n"), nil
 	case "evener launch-check --json":
