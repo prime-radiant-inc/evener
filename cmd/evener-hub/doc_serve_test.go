@@ -703,7 +703,11 @@ func artifactsDirOf(t *testing.T, web *WebServer, session string) string {
 	if !ok {
 		t.Fatalf("fixture session %q is missing from the past index", session)
 	}
-	return filepath.Join(entry.StateDir, "sessions", session, "artifacts")
+	dir, err := schema.SessionArtifactsDir(entry.StateDir, session)
+	if err != nil {
+		t.Fatalf("fixture artifacts dir: %v", err)
+	}
+	return dir
 }
 
 func TestDocFile_Raw_ServesSessionArtifacts(t *testing.T) {
@@ -755,12 +759,14 @@ func TestDocFile_ArtifactsRootDoesNotWidenCwdContainment(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	other := filepath.Join(filepath.Dir(dir), "..", "delegates.jsonl")
-	secret := filepath.Join(filepath.Dir(filepath.Dir(dir)), "delegates.jsonl")
+	// The session's own state directory holds its transcript and job store;
+	// a retained document must not reach them just because artifacts is a
+	// sibling.
+	secret := filepath.Join(filepath.Dir(dir), "delegates.jsonl")
 	if err := os.WriteFile(secret, []byte("SESSION SECRET"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{secret, other, filepath.Join(cwd, "..", "secret.txt")} {
+	for _, path := range []string{secret, filepath.Join(cwd, "..", "secret.txt")} {
 		rec := docRawRequest(t, web, session, path)
 		if rec.Code == http.StatusOK {
 			t.Fatalf("path %q outside both roots must be refused, got 200", path)
@@ -796,17 +802,16 @@ func TestDocFile_RelativePathNeverResolvesAgainstArtifacts(t *testing.T) {
 }
 
 func TestDocFile_ArtifactsUnknownSession404(t *testing.T) {
-	web, _, session := docServeTestServer(t)
-	dir := artifactsDirOf(t, web, session)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	web, _, _ := docServeTestServer(t)
+	// A path under a session that does not exist never resolves, even though
+	// its shape is the same one a real session's artifacts would hold.
+	target := filepath.Join(t.TempDir(), "01NOPE", "artifacts", "report.md")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	target := filepath.Join(dir, "report.md")
 	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// A path under a session that does not exist never resolves, whatever the
-	// artifacts root of the real fixture session holds.
 	rec := docRawRequest(t, web, "01NOPE", target)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown session should 404, got %d body=%q", rec.Code, rec.Body.String())

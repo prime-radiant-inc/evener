@@ -5,6 +5,7 @@ import {
   findFileReferences as exportedFindFileReferences,
   parseFileReference as exportedParseFileReference,
   rebindFileReference as exportedRebindFileReference,
+  resolveFileLink,
 } from "./docContent";
 import {
   bindArtifactPath,
@@ -568,5 +569,37 @@ describe("rebindFileReference on an artifacts reference", () => {
     );
     expect(reference).toBeDefined();
     expect(rebindFileReference(reference as FileReference, "/work/b")).toBe(reference);
+  });
+});
+
+describe("resolveFileLink", () => {
+  const artifactsDir = "/state/projects/p/sessions/s1/artifacts";
+
+  it("binds a plain markdown path against the working directory", () => {
+    expect(resolveFileLink("docs/plan.md", cwd, artifactsDir)).toMatchObject({ path: "docs/plan.md", cwd });
+  });
+
+  it("binds a file URL against whichever served root contains its path", () => {
+    expect(resolveFileLink(`file:///work/a/docs/plan.md`, cwd, artifactsDir)).toMatchObject({
+      path: "docs/plan.md",
+      cwd,
+    });
+    expect(resolveFileLink(`file://${artifactsDir}/report.md`, cwd, artifactsDir)).toMatchObject({
+      path: "report.md",
+      cwd: artifactsDir,
+      root: "artifacts",
+    });
+  });
+
+  it("names nothing for a destination outside both roots, a non-file scheme, or a malformed file URL", () => {
+    for (const href of [
+      "file:///etc/passwd",
+      "file://server/share/report.md",
+      "file:///state/projects/p/sessions/s1/artifacts/bad%zz.md",
+      "https://example.com/docs/plan.md",
+      "javascript:alert(1)",
+    ]) {
+      expect(resolveFileLink(href, cwd, artifactsDir)).toBeUndefined();
+    }
   });
 });

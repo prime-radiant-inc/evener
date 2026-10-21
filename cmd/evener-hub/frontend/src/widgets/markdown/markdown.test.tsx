@@ -459,6 +459,14 @@ test("keeps a file: link destination instead of leaving a bare anchor", () => {
   expect(link.getAttribute("rel")).toBe("noopener noreferrer");
 });
 
+// The scheme list is DOMPurify's own default plus `file`, so a scheme the
+// library already allowed must keep working: matrix: is the one that was
+// dropped once when the list was copied by hand.
+test("keeps a matrix: link, which DOMPurify's default already allowed", () => {
+  render(<Markdown source="[chat](matrix:u/room?action=chat)" />);
+  expect(screen.getByRole("link", { name: "chat" }).getAttribute("href")).toBe("matrix:u/room?action=chat");
+});
+
 test.each(["vbscript:msgbox(1)", "data:text/html,<p>x</p>", "blob:https://x/y", "filex:/a"])(
   "still refuses the %s scheme",
   (href) => {

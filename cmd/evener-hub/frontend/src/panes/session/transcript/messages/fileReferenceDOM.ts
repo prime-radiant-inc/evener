@@ -1,13 +1,11 @@
 import { isValidTranscriptRef } from "@evener/appwire-client";
 import {
-  bindServedPath,
   docFileRawURL,
   docImageURL,
-  type FileReference,
-  fileURLToPath,
   findFileReferences,
   isImagePath,
   parseFileReference,
+  resolveFileLink,
 } from "@evener/appwire-client/docContent";
 import { MERMAID_DIAGRAM_ATTR } from "../../../../widgets/mermaid/markers";
 import { browserDocPort } from "../../../doc/browserDocPort";
@@ -17,22 +15,9 @@ const EXCLUDED = `a, pre, script, style, [data-entity-host], [data-file-action],
 const BLOCKS = "p, h1, h2, h3, h4, h5, h6, li, td, th, blockquote, div, ul, ol, table, tr, hr, br";
 const epochs = new WeakMap<HTMLElement, object>();
 
-/** resolveAnchorReference names the served file an anchor points at, if any.
- * A markdown link is already a path, which binds against the working
- * directory; a file:// link carries a scheme the path parser refuses, so its
- * destination is decoded and bound against the working directory and then the
- * session's retained artifacts directory. A destination outside both roots
- * names nothing this hub can serve, and stays an ordinary link. */
-export function resolveAnchorReference(
-  href: string,
-  cwd: string,
-  artifactsDir: string | undefined,
-): FileReference | undefined {
-  const reference = parseFileReference(href, "link", cwd);
-  if (reference !== undefined) return reference;
-  const filePath = fileURLToPath(href);
-  return filePath === "" ? undefined : bindServedPath(filePath, cwd, artifactsDir);
-}
+/** resolveAnchorReference is the transcript's name for the shared resolver, so
+ * both anchor passes here and the phone ask one function what a link names. */
+export const resolveAnchorReference = resolveFileLink;
 
 interface TextOffset {
   node: Text;

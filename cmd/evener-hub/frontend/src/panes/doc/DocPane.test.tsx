@@ -505,8 +505,8 @@ test("unbound restored read waits for ready before one owning lease and releases
 
 // A workspace restored from a saved layout rebuilds a document pane from its
 // params alone, with no in-memory reference. An artifacts document must still
-// name the file it read, so the params carry its absolute path and the root it
-// came from, and the pane rebinds against the artifacts directory the thread
+// name the file it read: its path relative to the artifacts root, plus the
+// root it came from, and the pane rebinds against the directory the thread
 // snapshot advertises.
 test("a restored artifacts document reads the same retained file again", async () => {
   const artifactsDir = "/state/projects/example/sessions/sess_owner/artifacts";
@@ -515,8 +515,8 @@ test("a restored artifacts document reads the same retained file again", async (
     requestGeneration: params.requestGeneration,
   }));
   respond("retained report body");
-  const retainedPath = `${artifactsDir}/docs-quality-repairs.md`;
-  workspaceStore.getState().openPane("doc", { session: ref, path: retainedPath, root: "artifacts", kind: "file" });
+  const relativePath = "docs-quality-repairs.md";
+  workspaceStore.getState().openPane("doc", { session: ref, path: relativePath, root: "artifacts", kind: "file" });
   const pane = workspaceStore.getState().panes.find((candidate) => candidate.type === "doc");
   if (!pane) throw new Error("expected a document pane");
   render(
@@ -526,5 +526,5 @@ test("a restored artifacts document reads the same retained file again", async (
   );
   await screen.findByText("retained report body");
   const read = requests.map((url) => url.searchParams.get("path"));
-  expect(read).toEqual([retainedPath]);
+  expect(read).toEqual([`${artifactsDir}/${relativePath}`]);
 });

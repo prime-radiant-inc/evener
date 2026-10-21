@@ -178,7 +178,8 @@ const SANITIZE_CONFIG = {
   // document-pane requests. Everything absent here stays refused exactly as
   // before - javascript:, data:, and every other scheme DOMPurify's default
   // already rejected are still stripped, which the widget's own tests pin.
-  ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|file):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i,
+  ALLOWED_URI_REGEXP:
+    /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix|file):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i,
 };
 
 // One prose slice of a segmented message: the same parse+sanitize pipeline as
@@ -284,9 +285,10 @@ export function Markdown({ source, live = false, ref }: MarkdownProps) {
   // override escapes raw source HTML to text before it's ever markup,
   // every custom renderer escapes its own string interpolations, and
   // DOMPurify.sanitize() re-checks the generated output against a fixed
-  // allowlist as a second, independent layer (its default safe-URI-scheme
-  // filtering for href/src is untouched - SANITIZE_CONFIG never sets
-  // ALLOWED_URI_REGEXP). See this file's own comments above for the rest.
+  // allowlist as a second, independent layer. Its safe-URI-scheme filtering
+  // for href/src still applies: SANITIZE_CONFIG widens that scheme list by
+  // exactly one entry, `file`, and refuses everything else it refused
+  // before. See this file's own comments above for the rest.
   if (!segmented) {
     // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized via DOMPurify + escaped renderer overrides, see above
     return <div ref={ref} className={CLASS.root} dangerouslySetInnerHTML={{ __html: html }} />;

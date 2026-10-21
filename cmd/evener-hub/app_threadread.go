@@ -20,7 +20,6 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/envvars/userdirs"
-	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/apptranscript"
@@ -841,38 +840,14 @@ func applyHubCapabilities(cfg hubcore.WebConfig, thread appwire.Thread) appwire.
 	return thread
 }
 
-// hubArtifactsDir is the session's retained artifacts directory,
-// <stateDir>/sessions/<sessionID>/artifacts — the same path the doc routes
-// serve and the same one agent.delegateArtifactsDir creates for a delegate.
-// Clients resolve a file:// link to a document-pane path by checking it
-// against this directory, so announcing it is what turns an agent's
-// retained-report link into something the transcript can open.
-//
-// Only a local ref names a path on this hub. A remote thread's artifacts live
-// on its own host, and an unparseable ref names nothing, so both stay empty.
+// hubArtifactsDir is the session's retained artifacts directory, announced on
+// the thread so a client can tell an openable file:// link from one this hub
+// would refuse. It answers from sessionArtifactsRoot (doc_serve.go), the same
+// resolver the doc routes serve from, so the advertised directory and the
+// served one cannot drift apart. A remote or unparseable ref names nothing on
+// this hub and stays empty.
 func hubArtifactsDir(cfg hubcore.WebConfig, ref string) string {
-	parsed, err := appwire.ParseRef(ref)
-	if err != nil || parsed.SourceID != "local" || parsed.ThreadID == "" {
-		return ""
-	}
-	if identifier.ValidateSessionID(parsed.ThreadID) != nil {
-		return ""
-	}
-	stateDir := ""
-	if cfg.Past != nil {
-		if entry, ok := cfg.Past.Find(parsed.ThreadID); ok {
-			stateDir = strings.TrimSpace(entry.StateDir)
-		}
-	}
-	if stateDir == "" && cfg.Roster != nil {
-		if live, ok := cfg.Roster.Find(parsed.ThreadID); ok && !live.Crashed {
-			stateDir = strings.TrimSpace(live.StateDir)
-		}
-	}
-	if stateDir == "" {
-		return ""
-	}
-	return filepath.Join(stateDir, "sessions", parsed.ThreadID, artifactsSubdir)
+	return sessionArtifactsRoot(context.Background(), cfg, ref)
 }
 
 // hubPagesBefore is the hub's answer to ThreadCapabilities.PageBefore: whether

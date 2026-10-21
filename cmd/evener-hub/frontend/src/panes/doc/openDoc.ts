@@ -19,12 +19,12 @@ import "./index";
 export interface DocParams {
   session: string;
   path: string;
-  /** Which root `path` is read from, for a document the session's working
+  /** Which root `path` is relative to, for a document the session's working
    * directory does not contain. Absent means the working directory, the only
    * root a document pane knew before retained artifacts were linkable. The
    * params outlive the pane's in-memory reference (a restored workspace
-   * rebuilds it from params alone), so this is what lets the pane read the
-   * same file again after a reload. */
+   * rebuilds it from params alone), so `path` and `root` together are what
+   * let the pane read the same file again after a reload. */
   root?: "artifacts";
   kind: "file" | "image";
 }
@@ -62,10 +62,10 @@ export function openDocBeside(request: DocumentOpenRequest): void {
   const artifacts = request.reference.root === "artifacts";
   const params: DocParams = {
     session: request.session,
-    // An artifacts document keeps its absolute path: the pane needs it to
-    // rebind against the artifacts root after a reload, when the thread may
-    // not have hydrated yet.
-    path: artifacts ? request.reference.readTarget : reference.path,
+    // Both roots store the path relative to their own root, so a document
+    // records the same path the reference does and the shell's companion
+    // check compares like with like.
+    path: reference.path,
     ...(artifacts ? { root: "artifacts" as const } : {}),
     kind: isImagePath(reference.path) ? "image" : "file",
   };

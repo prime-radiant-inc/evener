@@ -578,6 +578,7 @@ test("remote generated images retain source binding and the existing image href 
 const artifactsDir = "/var/state/projects/example/sessions/034MXwo6BpPH0QQCgdICSf/artifacts";
 const artifactsThread: ThreadModel = { ...thread, artifactsDir };
 const reportPath = `${artifactsDir}/docs-quality-repairs.md`;
+const reportParamPath = "docs-quality-repairs.md";
 
 test.each([false, true])("a file URL inside the session artifacts opens as a document (live=%s)", (live) => {
   render(message(`[Full report and retained evidence](file://${reportPath})`, live, artifactsThread));
@@ -589,7 +590,7 @@ test.each([false, true])("a file URL inside the session artifacts opens as a doc
   expect(url.searchParams.get("format")).toBe("raw");
   expect(fireEvent.click(link)).toBe(false);
   expect(workspaceStore.getState().panes).toMatchObject([
-    { type: "doc", params: { session: thread.ref, path: reportPath, kind: "file" } },
+    { type: "doc", params: { session: thread.ref, path: reportParamPath, root: "artifacts", kind: "file" } },
   ]);
 });
 
@@ -658,6 +659,6 @@ test("a file URL inside the session artifacts has the standard open-beside affor
   const open = screen.getByRole("button", { name: "Open beside: docs-quality-repairs.md" });
   fireEvent.click(open);
   expect(workspaceStore.getState().panes).toMatchObject([
-    { type: "doc", params: { session: thread.ref, path: reportPath, root: "artifacts", kind: "file" } },
+    { type: "doc", params: { session: thread.ref, path: reportParamPath, root: "artifacts", kind: "file" } },
   ]);
 });
