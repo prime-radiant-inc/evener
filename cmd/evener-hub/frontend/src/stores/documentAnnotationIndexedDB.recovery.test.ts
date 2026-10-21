@@ -467,3 +467,62 @@ test("a drafts write whose completion was lost publishes its commit to subscribe
   fixture.repository.close();
   fixture.drafts.close();
 });
+
+// Teardown past the save transaction's abort boundary lets the write commit.
+// The catch threw SaveCancelledError without publishing, while the success
+// path's teardown branch publishes the commit it found. For an OWNERLESS
+// destination no later handoff supplies the missing publication either: the
+// only re-observation is #settleUnclaimed, which is deliberately silent
+// because a pending-to-unclaimed settle changes no reader's listing. The
+// committed row is the save's evidence, so the catch announces it.
+test("a save that commits past abort during teardown announces its ownerless row", async () => {
+  const origin = "https://recovery.example";
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-recovery",
+    origin,
+    runtime: true,
+    destination: { kind: "browser-readonly-session", sourcePaneId: "pane-1" },
+  });
+  const operation: PreparedAnnotation = {
+    ...fixture.operation,
+    operationId: "operation-2",
+    destination: { kind: "browser-readonly-session", sourcePaneId: "pane-1" },
+  };
+  const listener = vi.fn();
+  fixture.repository.subscribe(fixture.document, listener);
+  fixture.storageSuccess.mockClear();
+
+  // The save transaction commits, but its completion event is held: teardown
+  // lands past the point where the abort could roll it back.
+  const hold = holdNextWriteTransaction(SAVE_STORES);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let reached = false;
+  void hold.reached.then(() => {
+    reached = true;
+  });
+  const save = fixture.runtime.save(operation);
+  await pollUntil(() => reached, 50);
+  expect(reached).toBe(true);
+  fixture.runtime.dispose();
+  await vi.advanceTimersByTimeAsync(10_001);
+  expect(await save).toBeNull();
+  hold.release();
+  vi.useRealTimers();
+
+  expect(listener).toHaveBeenCalled();
+  expect(fixture.storageSuccess).toHaveBeenCalled();
+
+  // The trace: the ownerless destination's later handoff re-observes the row
+  // only through the deliberately silent unclaimed settle.
+  listener.mockClear();
+  fixture.storageSuccess.mockClear();
+  expect(await fixture.repository.handoff(fixture.document, operation.operationId)).toEqual({
+    state: "pending",
+    reason: "owner-unavailable",
+  });
+  expect(listener).not.toHaveBeenCalled();
+  expect(fixture.storageSuccess).not.toHaveBeenCalled();
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});

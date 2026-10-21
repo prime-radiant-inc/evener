@@ -1241,6 +1241,14 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       if (cancellation?.cancelled) {
         releaseCancellationFence?.();
         if (cancellation.reason === "dismissal") await this.#discardCancelledSave(captured);
+        else {
+          // Teardown reached the save past its abort boundary, so the
+          // transaction may have committed a row no completion will announce.
+          // An ownerless destination has no later handoff that could publish
+          // it (its unclaimed settle changes no listing and is deliberately
+          // silent), so the catch publishes the commit it may have left.
+          this.#settleTransition({ signal: true, documentKey });
+        }
         throw new SaveCancelledError();
       }
       releaseCancellationFence?.();
