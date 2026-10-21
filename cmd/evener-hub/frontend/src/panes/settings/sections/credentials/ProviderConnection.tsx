@@ -138,6 +138,15 @@ function destination(row: InstanceEntry | undefined): string {
 function needsConfiguration(row: InstanceEntry | undefined): boolean {
   return !row || !!row.hidden || !row.baseUrl || /[{}]/.test(row.baseUrl);
 }
+/** The refusal every write and check reports the same way: either the
+ * connection was replaced under the flow, or its endpoint moved. */
+function destinationChangeError(err: unknown): FormError<ConnectionErrorReason> | null {
+  const replaced = isStaleListingRefusal(err);
+  if (!isEndpointConflict(err) && !replaced) return null;
+  return replaced
+    ? { reason: "connection-replaced", message: CONNECTION_REPLACED_ERROR }
+    : { reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR };
+}
 
 /** The key row's value in the card's own vocabulary: where the credential
  * comes from, short enough to sit in a row. activeSourceLabel is the full
@@ -152,7 +161,7 @@ function credentialValue(row: InstanceEntry | undefined): string {
     case "credential_headers":
       return "Credential header";
     case "store":
-      return row?.hasStoredFile ? "Saved" : "Saved";
+      return "Saved";
     case "oauth":
       return row?.storedEmail ? `Signed in as ${row.storedEmail}` : "Signed in";
     case "adc":
@@ -489,13 +498,9 @@ function SelectedConnection({
       if (response.status !== "success") setError({ reason: "check-failed", message: response.message });
     } catch (err) {
       if (!current(token)) return;
-      const replaced = isStaleListingRefusal(err);
-      if (isEndpointConflict(err) || replaced) {
-        await recoverChangedEndpoint(
-          replaced
-            ? { reason: "connection-replaced", message: CONNECTION_REPLACED_ERROR }
-            : { reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR },
-        );
+      const changed = destinationChangeError(err);
+      if (changed) {
+        await recoverChangedEndpoint(changed);
         return;
       }
       const response = safeCredentialTestResult(target.name, {
@@ -614,13 +619,9 @@ function SelectedConnection({
         setEditing(null);
       } catch (err) {
         if (!current(token)) return;
-        const replaced = isStaleListingRefusal(err);
-        if (isEndpointConflict(err) || replaced) {
-          await recoverChangedEndpoint(
-            replaced
-              ? { reason: "connection-replaced", message: CONNECTION_REPLACED_ERROR }
-              : { reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR },
-          );
+        const changed = destinationChangeError(err);
+        if (changed) {
+          await recoverChangedEndpoint(changed);
           return;
         }
         setPhase("idle");
@@ -719,13 +720,9 @@ function SelectedConnection({
         setStoredAccess(true);
       } catch (err) {
         if (!current(token)) return;
-        if (isEndpointConflict(err) || isStaleListingRefusal(err)) {
-          await recoverChangedEndpoint(
-            isStaleListingRefusal(err)
-              ? { reason: "connection-replaced", message: CONNECTION_REPLACED_ERROR }
-              : { reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR },
-            trimmedName,
-          );
+        const changed = destinationChangeError(err);
+        if (changed) {
+          await recoverChangedEndpoint(changed, trimmedName);
           return;
         }
         setPhase("idle");
@@ -763,8 +760,7 @@ function SelectedConnection({
       setError({ reason: "endpoint-required", message: ENDPOINT_REQUIRED_ERROR });
       return;
     }
-    operation.current += 1;
-    const token = operation.current;
+    const token = ++operation.current;
     setPhase("saving");
     setError(null);
     selfMutation.current = true;
@@ -785,13 +781,9 @@ function SelectedConnection({
     } catch (err) {
       selfMutation.current = false;
       if (!current(token)) return;
-      const replaced = isStaleListingRefusal(err);
-      if (isEndpointConflict(err) || replaced) {
-        await recoverChangedEndpoint(
-          replaced
-            ? { reason: "connection-replaced", message: CONNECTION_REPLACED_ERROR }
-            : { reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR },
-        );
+      const changed = destinationChangeError(err);
+      if (changed) {
+        await recoverChangedEndpoint(changed);
         return;
       }
       setPhase("idle");
@@ -803,8 +795,7 @@ function SelectedConnection({
   // every field, so the row the listing returns is the only source of truth.
   async function saveSettings() {
     if (!row) return;
-    operation.current += 1;
-    const token = operation.current;
+    const token = ++operation.current;
     setPhase("saving");
     setError(null);
     selfMutation.current = true;
@@ -933,21 +924,17 @@ function SelectedConnection({
       />
     );
 
-  const primaryLabel = busy
-    ? phase === "saving"
-      ? adding
-        ? "Creating…"
-        : "Saving…"
-      : phase === "refreshing"
-        ? "Reading providers…"
-        : "Testing…"
-    : adding
-      ? "Save and test"
-      : result || saved
-        ? "Test again"
-        : storedMode && !host && (required || value.trim())
-          ? "Save and test"
-          : "Test connection";
+  function primaryActionLabel(): string {
+    if (busy) {
+      if (phase === "saving") return adding ? "Creating…" : "Saving…";
+      return phase === "refreshing" ? "Reading providers…" : "Testing…";
+    }
+    if (adding) return "Save and test";
+    if (result || saved) return "Test again";
+    if (storedMode && !host && (required || value.trim())) return "Save and test";
+    return "Test connection";
+  }
+  const primaryLabel = primaryActionLabel();
 
   return (
     <Dialog
