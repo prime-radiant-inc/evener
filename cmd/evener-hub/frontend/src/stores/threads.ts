@@ -48,6 +48,7 @@ import {
   issueLatestWindowRead,
   isTranscriptHistoryFailedError,
   isTranscriptIndexRebuildingError,
+  latestTurnId,
   mergeOlderItemPage,
   mergeTailTurns,
   mutationErrorData,
@@ -1409,10 +1410,6 @@ function retireEntryTranscriptRoute(fixture: EntryTranscriptRoute): void {
   setCacheUnverified(fixture.ref, false);
 }
 
-export function isCacheUnverified(ref: string): boolean {
-  return threadsStore.getState().cacheUnverified.has(ref);
-}
-
 function setCacheUnverified(ref: string, unverified: boolean): void {
   threadsStore.setState((state) => {
     if (state.cacheUnverified.has(ref) === unverified) return state;
@@ -2572,22 +2569,31 @@ function getMutationRuntime(): MutationRuntime | null {
       if (record !== undefined && (record.method === "turn/start" || record.method === "turn/queue")) {
         const model = threadsStore.getState().threads.get(record.targetRef);
         const latest = model === undefined ? undefined : model.turns[model.turns.length - 1];
+        const baseline = submittedTailBaselines.get(clientMutationId);
         // Only a failed tail offers Retry. If the ordinary send's new turn is
-        // already the tail (running or completed), there is no stale failure
-        // to keep closed; opening a marker keyed to that turn would block a
-        // later failure of the same turn.
-        if (latest?.status === "failed" && latest.error !== undefined) {
+        // already the tail (running, completed or failed), there is no stale
+        // failure to keep closed; opening a marker keyed to that turn would
+        // block a later failure of the same turn. The tail must still be the
+        // one that was latest when this submission began.
+        if (
+          baseline !== undefined &&
+          latestTurnId(model) === baseline &&
+          latest?.status === "failed" &&
+          latest.error !== undefined
+        ) {
           retryPendingProjection?.markSubmitted(record.targetRef, latest.id, clientMutationId);
         }
       }
     }
     const settled = await settleReceipt(clientMutationId, projectionState);
+    submittedTailBaselines.delete(clientMutationId);
     if (settled) noteHandledMutation(clientMutationId);
     return settled;
   };
   const settleApplied = storage.settleApplied.bind(storage);
   storage.settleApplied = async (clientMutationId) => {
     const settled = await settleApplied(clientMutationId);
+    submittedTailBaselines.delete(clientMutationId);
     if (settled) noteHandledMutation(clientMutationId);
     return settled;
   };
@@ -3892,6 +3898,23 @@ const COMPOSER_ROUTE_METHODS: Record<ComposerMutationRoute, string> = {
   drain: "turn/drainAsSteer",
 };
 
+// Page-lifetime baseline of each submitted turn's conversation tail, keyed by
+// the committed clientMutationId. A reflected receipt may only open Retry's
+// observation marker when the model still names the tail that was latest when
+// this submission began; a turn that is already observed is not stale.
+const SUBMITTED_TAIL_LIMIT = 256;
+const submittedTailBaselines = new Map<string, string>();
+
+function rememberSubmittedTail(clientMutationId: string, tail: string | undefined): void {
+  if (tail === undefined) return;
+  submittedTailBaselines.set(clientMutationId, tail);
+  while (submittedTailBaselines.size > SUBMITTED_TAIL_LIMIT) {
+    const oldest = submittedTailBaselines.keys().next().value;
+    if (oldest === undefined) break;
+    submittedTailBaselines.delete(oldest);
+  }
+}
+
 interface SendMutationOptions {
   beforeDurableWrite?: () => void;
   onCommitted?: (record: MutationOutboxRecord) => void;
@@ -4701,6 +4724,9 @@ async function enqueueMutationIntent(
   // gate closed.
   if (committedUndelivered && dispatchReplayGateOpen(ref)) {
     dispatchableMutationRefs.add(ref);
+  }
+  if (record.method === "turn/start" || record.method === "turn/queue") {
+    rememberSubmittedTail(record.clientMutationId, latestTurnId(threadsStore.getState().threads.get(ref)));
   }
   notifyMutationPersistence([ref], { record });
   return record;

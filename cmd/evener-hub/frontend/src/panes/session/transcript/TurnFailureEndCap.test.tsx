@@ -622,6 +622,67 @@ test("a reflected ordinary send whose new turn is already the tail creates no ma
   }
 });
 
+test("a read that publishes the new failed turn before the receipt creates no marker", async () => {
+  const turn = failedTurn();
+  const { fake, storage } = await loadThread("ref_a", [turn]);
+  let releaseReceipt!: () => void;
+  fake.on(
+    "turn/start",
+    ({ clientMutationId }) =>
+      new Promise<MethodTypes["turn/start"]["result"]>((resolve) => {
+        releaseReceipt = () =>
+          resolve({
+            receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
+            turn: { id: "new_failed", status: "failed", itemsView: "" },
+          });
+      }),
+  );
+  fake.on("thread/read", () => {
+    const response = readResponse("ref_a", {
+      status: { type: "idle" },
+      turns: [
+        { id: turn.id, status: "failed", itemsView: "full", items: [], error: { message: "boom" } },
+        { id: "new_failed", status: "failed", itemsView: "full", items: [], error: { message: "boom new" } },
+      ],
+    });
+    delete response.thread.evener.activeTurnId;
+    return response;
+  });
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+
+    let send!: Promise<void>;
+    await act(async () => {
+      send = submitWithPendingTracking(
+        { ref: "ref_a", text: "ordinary follow-up", skillNames: [], onFailure: () => {} },
+        () => threadsStore.getState().send("ref_a", "ordinary follow-up"),
+      );
+    });
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
+    // A real authoritative read observes the send's new failed turn while the
+    // reflected receipt is still held.
+    await act(async () => {
+      await threadsStore.getState().refreshThread("ref_a");
+    });
+    expect(threadsStore.getState().threads.get("ref_a")?.turns.at(-1)?.id).toBe("new_failed");
+
+    await act(async () => {
+      releaseReceipt();
+      await send;
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(retryReflectionForTests("ref_a")).toBeUndefined();
+
+    const view = render(<TurnFailureEndCap error={{ message: "boom new" }} sessionRef="ref_a" turnId="new_failed" />);
+    const newRetry = within(view.container).getByRole("button", { name: "Retry" }) as HTMLButtonElement;
+    await waitFor(() => expect(newRetry.disabled).toBe(false));
+  } finally {
+    storage.close();
+  }
+});
+
 test("a conversation advanced while Retry's durable write is paused creates no Retry row", async () => {
   const turn = failedTurn();
   vi.stubGlobal("indexedDB", new IDBFactory());

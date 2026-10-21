@@ -14,6 +14,7 @@ import { IDBFactory, IDBIndex, IDBKeyRange, IDBObjectStore } from "fake-indexedd
 import { createElement, createRef } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useStore } from "zustand";
+import { refreshPendingTurnsProjection } from "../panes/session/composer/queue/pendingTurnsStore";
 import { useTranscriptViewRegistration } from "../panes/session/transcript/flow/useTranscriptScroll";
 import { installTranscriptGeometry } from "../panes/session/transcript/transcriptReadingGeometryTestUtils";
 import { deleteSession } from "../shell/rail/actions";
@@ -3489,4 +3490,70 @@ it("an aborted Clear resumes a parked background end read without an unhandled r
   pendingEnd.resolve({ ...readOf([recorded("obsolete-end")], 41), overlay: [], requestGeneration: 2 });
   await settleEntryTranscriptForTests(ref);
   await owner.release();
+});
+
+it("a cached reopen marks the conversation unverified until an authoritative read adopts it", async () => {
+  const storage = cache();
+  const ref = "local:a";
+  const clientId = location.origin;
+  const resolvedIdentity = { ...identity, clientId };
+  const key = entryHistoryKey(resolvedIdentity);
+  const failedTurn = {
+    id: "cached-failed",
+    status: "failed" as const,
+    items: [],
+    error: { message: "boom" },
+  };
+  const committed = await storage.commitBatch({
+    historyKey: key,
+    clearEpoch: 0,
+    items: [
+      {
+        historyKey: key,
+        transcriptKey: "cached-failed",
+        position: { entry: 1, item: 0 },
+        version: 1,
+        item: {
+          id: "cached-failed",
+          transcriptKey: "cached-failed",
+          turnId: "cached-failed",
+          version: 1,
+          type: "userMessage",
+          text: "cached prompt",
+          position: { entry: 1, item: 0 },
+        },
+      },
+    ],
+    turns: [failedTurn],
+    sessionMetadata: {
+      historyKey: key,
+      requestedRefs: [{ clientId, ref }],
+      resolvedIdentity,
+      savedAt: Date.now(),
+      accessedAt: Date.now(),
+      formatVersion: 1,
+    },
+  });
+  expect(committed.outcome).toBe("committed");
+
+  let releaseRead!: () => void;
+  const readPending = new Promise<ThreadReadResponse>((resolve) => {
+    releaseRead = () => resolve(response(ref, [turn("authoritative")]));
+  });
+  const client = new FakeClient("ready");
+  client.on("thread/read", () => readPending);
+  client.on("thread/unsubscribe", () => ({}));
+  connectionStore.getState().connect(client);
+
+  const opening = threadsStore.getState().ensureThread(ref);
+  await vi.waitFor(() => expect(threadsStore.getState().cacheUnverified.has(ref)).toBe(true));
+  await vi.waitFor(() => expect(threadsStore.getState().threads.get(ref)?.turns.at(-1)?.id).toBe("cached-failed"));
+  await refreshPendingTurnsProjection(ref);
+  await threadsStore.getState().continueTurn(ref, "cached-failed");
+  expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+
+  releaseRead();
+  await opening;
+  await settleEntryTranscriptForTests(ref);
+  expect(threadsStore.getState().cacheUnverified.has(ref)).toBe(false);
 });
