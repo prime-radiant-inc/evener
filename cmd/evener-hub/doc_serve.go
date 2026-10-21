@@ -80,7 +80,7 @@ func (s *WebServer) resolveLocalDocTarget(w http.ResponseWriter, r *http.Request
 	// A deletion refusal is not one of those cases: it says this session's
 	// files must not be served, so it stands before anything is tried.
 	if absolute && !isTargetDeletedError(err) {
-		if root, resolved, contained, ok := s.artifactsDocTarget(r.Context(), session, rel); ok {
+		if root, resolved, contained, ok := artifactsDocTarget(r.Context(), s.cfg, session, rel); ok {
 			return root, resolved, true
 		} else if contained {
 			// The path belongs to the artifacts root but names no readable
@@ -114,30 +114,32 @@ func (s *WebServer) resolveLocalDocTarget(w http.ResponseWriter, r *http.Request
 // use that to answer a contained miss with not-found instead of turning it
 // into the cwd's escape refusal, which would call a missing report forbidden.
 func (s *WebServer) resolveArtifactsDocTarget(ctx context.Context, session, rel string) (string, string, bool) {
-	root, abs, _, ok := s.artifactsDocTarget(ctx, session, rel)
+	root, abs, _, ok := artifactsDocTarget(ctx, s.cfg, session, rel)
 	return root, abs, ok
 }
 
 // artifactsDocTarget answers the containment question resolveArtifactsDocTarget
 // cannot: whether a refused path was inside the artifacts root.
-func (s *WebServer) artifactsDocTarget(ctx context.Context, session, rel string) (root, abs string, contained, ok bool) {
+func artifactsDocTarget(ctx context.Context, cfg hubcore.WebConfig, session, rel string) (root, abs string, contained, ok bool) {
 	if !filepath.IsAbs(strings.TrimSpace(rel)) {
 		return "", "", false, false
 	}
 	// A session fenced for deletion must not serve retained files through this
 	// root either. The cwd path gets this from sessionCWD's deletion check;
 	// artifacts resolve from the roster or the past index, which do not.
-	if err := deletionFenceError(s.cfg, appRefFromRouteID(session), canonicalRouteID(session), ""); err != nil {
+	if err := deletionFenceError(cfg, appRefFromRouteID(session), canonicalRouteID(session), ""); err != nil {
 		return "", "", false, false
 	}
-	root = sessionArtifactsRoot(ctx, s.cfg, session)
+	root = sessionArtifactsRoot(ctx, cfg, session)
 	if root == "" {
 		return "", "", false, false
 	}
-	// A root that does not exist yet contains nothing, so every path is
-	// outside it. ResolveInRoot would otherwise fail while resolving the root
-	// itself, which is indistinguishable from a contained miss.
-	if _, err := os.Stat(root); err != nil {
+	// The artifacts root sits at a fixed place beneath the session's state
+	// directory, so each component of that place must be a real directory. A
+	// symlink planted where a session's artifacts directory belongs would
+	// otherwise redirect this session's reads into another session's files,
+	// which is the isolation this root exists to keep.
+	if !artifactsRootIsReal(root) {
 		return "", "", false, false
 	}
 	// ResolveInRoot rejects an escaping path with ErrPathEscapesRoot and every
@@ -148,6 +150,24 @@ func (s *WebServer) artifactsDocTarget(ctx context.Context, session, rel string)
 		return root, "", !errors.Is(err, fspaths.ErrPathEscapesRoot), false
 	}
 	return root, abs, true, true
+}
+
+// artifactsRootIsReal reports whether dir exists and every component beneath
+// the session state directory that owns it is a real directory rather than a
+// symlink. The check refuses on any doubt, so a planted link cannot redirect a
+// read.
+func artifactsRootIsReal(dir string) bool {
+	// The session's own directory (<stateDir>/sessions/<id>) and the artifacts
+	// directory beneath it are the components a link can occupy. Everything
+	// above them is Evener-created state layout.
+	sessionDir := filepath.Dir(dir)
+	for _, component := range []string{sessionDir, dir} {
+		info, err := os.Lstat(component)
+		if err != nil || !info.IsDir() {
+			return false
+		}
+	}
+	return true
 }
 
 // sessionArtifactsRoot is the local session's retained artifacts directory, or
@@ -415,17 +435,18 @@ func sessionDocumentFromHub(ctx context.Context, cfg hubcore.WebConfig, sources 
 	// not a cwd failure the artifacts root may work around.
 	deleted := isTargetDeletedError(cwdErr)
 	if absolute && !deleted {
-		if root := sessionArtifactsRoot(ctx, cfg, session); root != "" {
-			// The artifacts root carries the same deletion fence the cwd path
-			// does; it reads the roster and past index, which do not.
-			if fenceErr := deletionFenceError(cfg, appRefFromRouteID(session), session, ""); fenceErr == nil {
-				// The artifacts attempt may fail for its own reason (no such file
-				// under that root). The refusal must still name the escape, so the
-				// original error stays unless the second root actually served it.
-				if artifactsDoc, artifactsErr := readSessionDocument(root, params.Path); artifactsErr == nil {
-					doc = artifactsDoc
-					err, cwdErr = nil, nil
-				}
+		if root, _, contained, _ := artifactsDocTarget(ctx, cfg, session, params.Path); root != "" {
+			// The artifacts attempt may fail for its own reason (no such file
+			// under that root). The refusal must still name the escape, so the
+			// original error stays unless the second root actually served it.
+			artifactsDoc, artifactsErr := readSessionDocument(root, params.Path)
+			if artifactsErr == nil {
+				doc = artifactsDoc
+				err, cwdErr = nil, nil
+			} else if contained {
+				// The path belongs to the artifacts root and is simply not
+				// there. That is a missing document, not an escape.
+				return appwire.SessionDocumentResponse{}, appwire.ResourceNotFound("document not found")
 			}
 		}
 	}

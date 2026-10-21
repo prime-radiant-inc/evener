@@ -1046,3 +1046,78 @@ func TestDocFile_MissingArtifactIsNotFoundNotEmptyForbidden(t *testing.T) {
 		t.Fatalf("outside-both-roots path = %d, want 403", rec.Code)
 	}
 }
+
+// A symlink planted where a session's artifacts directory belongs must not
+// redirect that session's reads into another session's files. The layout
+// beneath the state directory is fixed, so every component of it is checked as
+// a real directory rather than followed.
+func TestDocFile_ArtifactsRefuseASymlinkedRootIntoAnotherSession(t *testing.T) {
+	web, _, session := docServeTestServer(t)
+	entry, ok := web.cfg.Past.Find(session)
+	if !ok {
+		t.Fatal("fixture session is missing from the past index")
+	}
+	const other = "02wMz5Txv1C3Hut0M8GCeK"
+	otherDir, err := schema.SessionArtifactsDir(entry.StateDir, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(otherDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(otherDir, "secret.md")
+	if err := os.WriteFile(secret, []byte("OTHER SESSION"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// This session's own artifacts directory is a symlink to the other one.
+	dir := artifactsDirOf(t, web, session)
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(otherDir, dir); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	rec := docRawRequest(t, web, session, filepath.Join(dir, "secret.md"))
+	if rec.Code == http.StatusOK || strings.Contains(rec.Body.String(), "OTHER SESSION") {
+		t.Fatalf("a symlinked artifacts root served another session's file (status %d)", rec.Code)
+	}
+}
+
+// The AppWire read draws the same containment/existence line as the local
+// route: a missing file inside an existing artifacts root is not found, not
+// outside the session.
+func TestHubSessionDocumentMissingArtifactIsNotFound(t *testing.T) {
+	cwd := docTestRoot(t)
+	const session = "02wMz5Txv1C3Hut0M8GCeL"
+	stateDir := t.TempDir()
+	proj := filepath.Join(stateDir, "projects", "project-doc-2222222222")
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID: session, UpdatedAt: time.Now(), OriginalPrompt: "doc session",
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: cwd},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := schema.SessionArtifactsDir(proj, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(stateDir, "projects", "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	srv, _ := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: idx})
+	t.Cleanup(srv.Close)
+	_, err = requestSessionDocument(t, srv, appwire.SessionDocumentParams{SessionID: session, Path: filepath.Join(dir, "never.md")})
+	if err == nil {
+		t.Fatal("a missing artifact was served")
+	}
+	if got := sessionImageErrorInfo(t, err); got != string(appwire.ErrorResourceNotFound) {
+		t.Fatalf("refusal = %q, want %q", got, appwire.ErrorResourceNotFound)
+	}
+}
