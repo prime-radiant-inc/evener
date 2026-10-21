@@ -1277,9 +1277,32 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	} else {
 		l.Providers[name] = p
 	}
+	// An access-affecting edit replaces the access a credential probe is about
+	// even when the public credential-configuration revision cannot show it:
+	// that revision deliberately omits the credential-header values, and a
+	// probe of this instance must not have its old answer accepted for the
+	// replacement. The authored access fields are compared rather than the
+	// resolved secret: re-authoring the same values is no change, while an
+	// endpoint, protocol, credential-header, api_key_env or vars edit is. This
+	// is the same per-instance fence a hub credential write advances
+	// (forgetCredentialRejection), so unrelated instances and the registry's
+	// global generation stay out of it. A rename is not this case: its name,
+	// and so the revision identity, moves, and moveCredentials already retires
+	// the old and new names when it lands.
+	accessChanged := false
+	if !renaming {
+		beforeProvider, beforeAuthored := before.Providers[name]
+		accessChanged = !beforeAuthored || !reflect.DeepEqual(beforeProvider, p)
+	}
 	// writeAndReload restores before when the reload fails (see #711
 	// on its comment); a rename continues below on success.
 	if err := c.writeAndReload(before, l, name, "edit"); err != nil {
+		// A write that landed although its rollback could not run is standing:
+		// retire the probes of the access it replaced. A clean rollback leaves
+		// the old access in place, and its probes remain current.
+		if accessChanged && c.applied.peekApplied() {
+			c.auth.forgetCredentialRejection(name)
+		}
 		// A rename whose reload failed and whose rollback write also failed
 		// is an applied write: providers.toml carries the new name, so the
 		// rename is as persisted as one that ended cleanly and gets the same
@@ -1292,6 +1315,11 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 			return renamePersistedError{err}
 		}
 		return err
+	}
+	if accessChanged {
+		// The replacement stands: void probes that dialed the old access and
+		// drop a rejection recorded for the configuration the edit replaced.
+		c.auth.forgetCredentialRejection(name)
 	}
 	if renaming {
 		moveErr := c.moveCredentials(name, newName)

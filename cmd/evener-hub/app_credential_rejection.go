@@ -104,12 +104,18 @@ type credentialRejection struct {
 }
 
 // credentialProbeStart is what a probe captures before it dials: the
-// instance, the configuration revision it is probing, and the instance's
-// write count.
+// instance, the configuration revision it is probing, the instance's write
+// count, and whether an outcome may be recorded as a credential rejection.
 type credentialProbeStart struct {
 	name     string
 	revision string
 	writes   uint64
+	// recordable separates configuration identity from rejection eligibility:
+	// a keyless instance still has an identity to compare (its endpoint or
+	// auth scheme can move while the probe is in flight), but a 401 it receives
+	// is no credential the provider rejected and nothing the user could
+	// replace.
+	recordable bool
 }
 
 // beginCredentialProbe captures name's probe start. A probe begins before
@@ -122,29 +128,34 @@ func (c *hubAuthController) beginCredentialProbe(name string) credentialProbeSta
 	if c == nil {
 		return credentialProbeStart{}
 	}
-	revision := c.currentCredentialRevision(name)
+	revision, recordable := c.currentCredentialRevision(name)
 	c.rejections.mu.Lock()
 	defer c.rejections.mu.Unlock()
-	return credentialProbeStart{name: name, revision: revision, writes: c.rejections.writes[name]}
+	return credentialProbeStart{name: name, revision: revision, writes: c.rejections.writes[name], recordable: recordable}
 }
 
 // currentCredentialRevision is name's credential configuration revision now,
-// the one its status reports, or empty when name sends no credential: a
-// keyless instance's 401 or 403 is no credential the provider rejected, and
-// nothing the user could replace. An empty revision records nothing
-// (settleCredentialProbe). It resolves the fingerprint key, which can repair
-// the key file, so the caller must not hold credMu.
-func (c *hubAuthController) currentCredentialRevision(name string) string {
+// the one its status reports, and whether an outcome may be recorded as a
+// credential rejection. The revision describes a resolved keyless instance
+// too: its endpoint, protocol and auth scheme can all move while a probe is in
+// flight, and the probe's answer is only about the configuration it read. An
+// empty revision means the hub could not establish an identity at all (no
+// registry, no resolution, or no fingerprint key), not that the access is
+// unchanged; it records nothing (settleCredentialProbe). A keyless instance's
+// 401 or 403 is no credential the provider rejected, so recordable is false
+// even though its identity is real. It resolves the fingerprint key, which can
+// repair the key file, so the caller must not hold credMu.
+func (c *hubAuthController) currentCredentialRevision(name string) (revision string, recordable bool) {
 	r := c.registry()
 	if r == nil {
-		return ""
+		return "", false
 	}
 	res, err := r.ResolveInstancePresence(name)
-	if err != nil || res.Credential.Source == "none" {
-		return ""
+	if err != nil {
+		return "", false
 	}
 	key, _ := resolveEndpointFingerprintKey(c.stateDir)
-	return c.credentialConfigRevisionForKey(key, name, res)
+	return c.credentialConfigRevisionForKey(key, name, res), res.Credential.Source != "none"
 }
 
 // settleCredentialProbe records what a probe's model listing says about the
@@ -164,15 +175,20 @@ func (c *hubAuthController) currentCredentialRevision(name string) string {
 // already did. Freshness is not "a rejection was recorded": a keyless probe or
 // an inconclusive one is still a valid answer about the same state.
 //
-// A probe with no revision records nothing: either the instance sent no
-// credential, or the hub could not resolve its fingerprint key and the
-// rejection could not tell the configuration it was about from any other.
+// A probe with no revision records nothing: the hub could not resolve the
+// configuration identity or its fingerprint key, and the rejection could not
+// tell the configuration it was about from any other. A keyless probe has an
+// identity and is compared like any other, but records nothing: it sent no
+// credential to reject.
 func (c *hubAuthController) settleCredentialProbe(start credentialProbeStart, listing llm.ModelListing, err error) bool {
 	if c == nil {
 		return true
 	}
-	if start.revision != "" && c.currentCredentialRevision(start.name) != start.revision {
-		return false
+	if start.revision != "" {
+		current, _ := c.currentCredentialRevision(start.name)
+		if current != start.revision {
+			return false
+		}
 	}
 	status, rejected := credentialRejectionStatus(err)
 	verified := err == nil && listing.Live
@@ -182,7 +198,7 @@ func (c *hubAuthController) settleCredentialProbe(start credentialProbeStart, li
 		r.mu.Unlock()
 		return false
 	}
-	if (!rejected && !verified) || start.revision == "" {
+	if (!rejected && !verified) || start.revision == "" || !start.recordable {
 		r.mu.Unlock()
 		return true
 	}

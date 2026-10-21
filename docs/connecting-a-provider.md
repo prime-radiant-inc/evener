@@ -27,9 +27,14 @@ configured, choose that connection rather than adding it again.
    prove generation access, quota, billing status, or a model's tool capability.
    A transient read failure is retried automatically while the dialog is open,
    without saving the credential again. If another client replaces this
-   connection's credential on the hub while the check is running, the hub
-   refuses that superseded result and the dialog repeats the read and check
-   without rewriting the saved credential.
+   connection's stored credential on the hub while the check is running, the
+   hub refuses that superseded result and the dialog repeats the read and
+   check without rewriting the saved credential. A check is also refused when
+   an in-app edit changes the access it was checking: the endpoint it dials,
+   or the key its credential header selects even when the header name and the
+   visible configuration revision stay equal. The dialog then shows the
+   changed access for review instead of treating the old answer as the new
+   connection's result.
 5. On success the dialog closes by itself and returns to the draft. There is no
    success confirmation, **Continue**, or **Choose model** step. For an untouched
    draft, Evener adopts the connected instance's own configured default model,
