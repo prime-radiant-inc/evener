@@ -95,6 +95,7 @@ const COLUMNS = [
 	"optimistic_display",
 	"composer_text",
 	"composer_mentions",
+	"draft_capture_token",
 	"intent_sequence",
 	"created_at",
 	"state",
@@ -125,6 +126,7 @@ export interface Row {
 	optimistic_display: string;
 	composer_text: string | null;
 	composer_mentions: string | null;
+	draft_capture_token: string | null;
 	intent_sequence: number;
 	created_at: number;
 	state: string;
@@ -150,6 +152,7 @@ export function fromRow<A extends MutationAttachmentRef, T extends MutationRecor
 		optimisticDisplay: optimisticDisplay === null ? undefined : optimisticDisplay,
 		composerText: row.composer_text ?? undefined,
 		composerMentions: row.composer_mentions == null ? undefined : JSON.parse(row.composer_mentions),
+		draftCaptureToken: row.draft_capture_token ?? undefined,
 		intentSequence: row.intent_sequence,
 		createdAt: row.created_at,
 		state: row.state as MutationOutboxState,
@@ -186,7 +189,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			client_mutation_id TEXT PRIMARY KEY, version INTEGER NOT NULL,
 			origin_client_id TEXT, target_ref TEXT NOT NULL, thread_id TEXT, instance_id TEXT, method TEXT NOT NULL,
 			payload TEXT NOT NULL, attachments TEXT NOT NULL, optimistic_display TEXT NOT NULL,
-			composer_text TEXT, composer_mentions TEXT, intent_sequence INTEGER NOT NULL, created_at INTEGER NOT NULL,
+			composer_text TEXT, composer_mentions TEXT, draft_capture_token TEXT, intent_sequence INTEGER NOT NULL, created_at INTEGER NOT NULL,
 			state TEXT NOT NULL, attempted INTEGER NOT NULL DEFAULT 0,
 			unresolved_attempts INTEGER NOT NULL DEFAULT 0,
 			stop_epoch_at_enqueue INTEGER NOT NULL DEFAULT 0,
@@ -238,6 +241,9 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			}
 			if (!columns.some((column) => column.name === "composer_mentions")) {
 				this.db.execSync(`ALTER TABLE ${table} ADD COLUMN composer_mentions TEXT`);
+			}
+			if (!columns.some((column) => column.name === "draft_capture_token")) {
+				this.db.execSync(`ALTER TABLE ${table} ADD COLUMN draft_capture_token TEXT`);
 			}
 		}
 		// #4342: unresolved attempt counts live beside the attempted flag on
@@ -1000,6 +1006,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			JSON.stringify(record.optimisticDisplay ?? null),
 			record.composerText ?? null,
 			record.composerMentions === undefined ? null : JSON.stringify(record.composerMentions),
+			record.draftCaptureToken ?? null,
 			record.intentSequence,
 			record.createdAt,
 			record.state,

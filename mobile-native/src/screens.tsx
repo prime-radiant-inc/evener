@@ -95,7 +95,11 @@ import { documentMemory } from "./reader/nativeDocumentMemory";
 import { documentFreshness, type SessionDocument, sessionDocuments } from "./reader/sessionDocuments";
 import { locateSession, type SessionLocation } from "./navigationReveal";
 import { queueHosts, type QueueHost } from "./QueueSheet";
-import { editQueuedMessageIntoDraft, reconcileEditedResends } from "./queuedMessageControls";
+import {
+	editQueuedMessageIntoDraft,
+	reconcileEditedResends,
+	removeQueuedMessageWithDraftCapture,
+} from "./queuedMessageControls";
 import {
 	composeQuestionAnswers,
 	pendingQuestions,
@@ -1961,7 +1965,7 @@ export function ConversationScreen({
 		(!conversation || (!conversation.resumeRequired && conversation.status.type !== "restartRequired")) &&
 		(!conversation || canComposeFor(conversation));
 	const goalCommand = goalObjective(draft.record.draft, draft.record.images?.length);
-	const command = composerCommand(draft.record.draft, draft.record.images?.length);
+	const command = composerCommand(draft.record.draft, draft.record.images?.length, draft.record.composer);
 	// The draft's whole shape, said once: how many images it holds. The composer
 	// can't see the attachments, so the screen answers both "may it rest" and
 	// "does Stop take the slot" from this.
@@ -2875,7 +2879,12 @@ export function ConversationScreen({
 						};
 					}
 					if (action === "cancel") {
-						const removed = await runtime.removeQueuedMessage(origin.clientMutationId, targetKey);
+						const removed = await removeQueuedMessageWithDraftCapture(
+							runtime,
+							targetKey,
+							origin.clientMutationId,
+							document,
+						);
 						return removed ? null : { text: "This message changed before it could be removed.", kind: "queue:changed" };
 					}
 					const result = await editQueuedMessageIntoDraft(runtime, targetKey, origin.clientMutationId, document);
@@ -3685,6 +3694,7 @@ export function ConversationScreen({
 										canStop,
 										text: draft.record.draft,
 										images: imageCount,
+										hasSelections,
 									})
 										? {
 												onStop: () => {

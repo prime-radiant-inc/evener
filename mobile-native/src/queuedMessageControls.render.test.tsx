@@ -215,12 +215,26 @@ afterAll(() => {
 	for (const handle of sqlite.handles) handle.close();
 	rmSync(sqlite.directory, { recursive: true });
 });
-async function mount(selectionOnly = false, command = false) {
+async function mount(
+	selectionOnly = false,
+	command = false,
+	draftText?: string,
+	selectionKind: "skill" | "command" = "skill",
+) {
 	const ref = `queued-${++serial}`;
 	if (selectionOnly)
 		nativeDrafts().write(
 			{ hubId: "hub-1", sessionRef: ref },
-			{ draft: command ? "/queue body" : "", unconfirmed: null, composer: { skillNames: ["selected-skill"] } },
+			{
+				draft: draftText ?? (command ? "/queue body" : ""),
+				unconfirmed: null,
+				composer:
+					draftText !== undefined && draftText !== ""
+						? { commandNames: ["compact"], mentions: [{ kind: "command" as const, name: "compact", offset: 0 }] }
+						: selectionKind === "skill"
+							? { skillNames: ["selected-skill"] }
+							: { commandNames: ["selected-command"] },
+			},
 		);
 	const thread = {
 		id: `thread-${ref}`,
@@ -328,6 +342,30 @@ it("actual screen enables selection-only Send and forwards offline composition",
 		payload: { input: [{ type: "skill", name: "selected-skill" }] },
 	});
 });
+it.each(["skill", "command"] as const)("actual active screen offers Queue for selection-only %s work", async (kind) => {
+	const f = await mount(false, true);
+	await f.offline();
+	const selection = await enqueueRecoveredSelection(f, kind);
+	await reconnect(f);
+	expect(f.document.getSnapshot().record.composer?.recoveryIds).toEqual([selection.clientMutationId]);
+	expect(f.document.getSnapshot().record.composer).toMatchObject(
+		kind === "skill" ? { skillNames: ["selected-skill"] } : { commandNames: ["selected-command"] },
+	);
+	const send = pressable(f.tree, "Queue message");
+	expect(send?.props.disabled).toBe(false);
+	expect(pressable(f.tree, "Stop")).toBeUndefined();
+	await act(async () => send?.props.onPress());
+	await settle();
+	expect(f.requests.filter((r) => r.method.startsWith("turn/")).map((r) => r.params.input)).toEqual([
+		[kind === "skill" ? { type: "skill", name: "selected-skill" } : { type: "command", name: "selected-command" }],
+	]);
+	expect(await f.runtime.storage.getRecovery(selection.clientMutationId)).toBeUndefined();
+	expect((await f.runtime.read(f.targetKey)).recovery).toEqual([]);
+	expect(f.document.getSnapshot().record.composer?.recoveryIds ?? []).toEqual([]);
+	const sent = f.requests.filter((request) => request.method.startsWith("turn/"));
+	expect(sent).toHaveLength(1);
+	expect(sent[0].params.clientMutationId).not.toBe(selection.clientMutationId);
+});
 it("actual screen projects waiting local records into the QueueSheet host", async () => {
 	const f = await mount();
 	await f.offline();
@@ -361,6 +399,77 @@ it.each([false, true])("actual screen forwards selected composition online, comm
 			: [{ type: "skill", name: "selected-skill" }],
 	]);
 });
+it.each(["skill", "command"] as const)(
+	"actual screen resends selected /compact %s recovery as ordinary composition",
+	async (kind) => {
+		const f = await mount();
+		await f.offline();
+		const selection = await enqueueRecoveredSelection(f, kind, "/compact", "compact");
+		await reconnect(f);
+		expect(f.document.getSnapshot().record.composer?.recoveryIds).toEqual([selection.clientMutationId]);
+		const send = pressable(f.tree, "Send");
+		expect(send?.props.disabled).toBe(false);
+		await act(async () => send?.props.onPress());
+		await settle();
+		expect(f.requests.filter((r) => r.method.startsWith("turn/")).map((r) => r.params.input)).toEqual([
+			[
+				{ type: "text", text: "/compact", mentions: [{ kind, name: "compact", offset: 0 }] },
+				{ type: kind, name: "compact" },
+			],
+		]);
+		const state = await f.runtime.read(f.targetKey);
+		expect(state.recovery).toEqual([]);
+		expect(await f.runtime.storage.getRecovery(selection.clientMutationId)).toBeUndefined();
+		const sent = f.requests.filter((request) => request.method.startsWith("turn/"));
+		expect(sent).toHaveLength(1);
+		expect(sent[0].params.clientMutationId).not.toBe(selection.clientMutationId);
+	},
+);
+async function enqueueRecoveredSelection(
+	f: Awaited<ReturnType<typeof mount>>,
+	kind: "skill" | "command",
+	text = "",
+	name = kind === "skill" ? "selected-skill" : "selected-command",
+) {
+	const mentions = text === "/compact" ? [{ kind, name, offset: 0 }] : undefined;
+	const composer = {
+		text,
+		attachments: [],
+		...(kind === "skill" ? { skillNames: [name] } : { commandNames: [name] }),
+		...(mentions === undefined ? {} : { mentions }),
+	};
+	await act(async () => {
+		await f.runtime.submit({
+			kind: "send",
+			hubId: "hub-1",
+			targetRef: f.ref,
+			threadId: f.thread.id,
+			instanceId: "instance",
+			input: buildComposerInput(text, [], kind === "skill" ? [name] : [], kind === "command" ? [name] : [], mentions),
+			composer,
+		});
+	});
+	await settle();
+	const source = (await f.runtime.read(f.targetKey)).outbox[0];
+	if (!source) throw new Error("missing selected outbox source");
+	const host = queueHosts.get(sheetKey("hub-1", f.ref));
+	const ghost = host?.ghosts.find(
+		(item) => item.origin.kind === "pending" && item.origin.clientMutationId === source.clientMutationId,
+	);
+	if (!host || !ghost) throw new Error("missing selected queue ghost");
+	await act(async () => {
+		await host.act(ghost, "edit");
+	});
+	return source;
+}
+
+async function reconnect(f: Awaited<ReturnType<typeof mount>>) {
+	act(() => f.client.emitStateChange("ready"));
+	harness.connection = { ...harness.connection, state: "ready" };
+	await act(async () => f.tree.update(<ConversationScreen route={f.route} navigation={navigation} />));
+	await settle();
+}
+
 async function enqueue(f: Awaited<ReturnType<typeof mount>>, text = "source") {
 	await act(async () => {
 		await f.runtime.submit({
@@ -403,6 +512,84 @@ it("actual screen edits offline into nonempty work without sending and removes b
 		await next.act(next.ghosts[0], "cancel");
 	});
 	expect(await f.runtime.storage.getOutbox(second.clientMutationId)).toBeUndefined();
+});
+
+it("actual QueueSheet Remove clears only the matching failed-confirmation capture", async () => {
+	const f = await mount();
+	await f.offline();
+	act(() => f.document.edit("ordinary queued message"));
+	const draftDb = sqlite.ports.get("evener-drafts.db") as SqliteSync | undefined;
+	if (!draftDb) throw new Error("missing draft database");
+	draftDb.execSync(`CREATE TRIGGER reject_confirmation BEFORE DELETE ON drafts
+		WHEN OLD.unconfirmed IS NOT NULL
+		BEGIN SELECT RAISE(ABORT, 'draft confirmation rejected'); END`);
+	await act(async () => pressable(f.tree, "Send when you're back online")?.props.onPress());
+	await settle();
+	const [queued] = (await f.runtime.read(f.targetKey)).outbox;
+	expect(queued?.draftCaptureToken).toEqual(expect.any(String));
+	expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: f.ref })).toMatchObject({
+		unconfirmed: "ordinary queued message",
+		unconfirmedCaptureToken: queued?.draftCaptureToken,
+	});
+	draftDb.execSync("DROP TRIGGER reject_confirmation");
+	await act(async () => f.document.retry());
+	await settle();
+	const host = queueHosts.get(sheetKey("hub-1", f.ref));
+	const ghost = host?.ghosts.find(
+		(item) => item.origin.kind === "pending" && item.origin.clientMutationId === queued?.clientMutationId,
+	);
+	if (!host || !ghost) throw new Error("missing failed-confirmation QueueSheet row");
+	await act(async () => {
+		await host.act(ghost, "cancel");
+	});
+	expect(await f.runtime.storage.getOutbox(queued.clientMutationId)).toBeUndefined();
+	expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: f.ref })).toMatchObject({
+		draft: "",
+		unconfirmed: null,
+	});
+	expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: f.ref }).unconfirmedCaptureToken).toBeUndefined();
+});
+
+it("actual screen-strip Remove clears only the matching failed-confirmation capture", async () => {
+	const f = await mount();
+	await f.offline();
+	act(() => f.document.edit("ordinary queued message"));
+	const draftDb = sqlite.ports.get("evener-drafts.db") as SqliteSync | undefined;
+	if (!draftDb) throw new Error("missing draft database");
+	draftDb.execSync(`CREATE TRIGGER reject_confirmation BEFORE DELETE ON drafts
+		WHEN OLD.unconfirmed IS NOT NULL
+		BEGIN SELECT RAISE(ABORT, 'draft confirmation rejected'); END`);
+	await act(async () => pressable(f.tree, "Send when you're back online")?.props.onPress());
+	await settle();
+	const [queued] = (await f.runtime.read(f.targetKey)).outbox;
+	expect(queued?.draftCaptureToken).toEqual(expect.any(String));
+	draftDb.execSync("DROP TRIGGER reject_confirmation");
+	await act(async () => f.document.retry());
+	await settle();
+	const row = f.tree.root.findAllByType(GhostRowView).find((node) => {
+		const ghost = node.props.row.ghost as Ghost | undefined;
+		return ghost?.origin.kind === "pending" && ghost.origin.clientMutationId === queued.clientMutationId;
+	});
+	if (!row) throw new Error("missing inline failed-confirmation queue ghost");
+	const bubble = row.findAll(
+		(node) =>
+			String(node.type) === "Pressable" && String(node.props.accessibilityLabel).startsWith("ordinary queued message."),
+	)[0];
+	if (!bubble) throw new Error("missing inline queue bubble");
+	vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mockClear();
+	await act(async () => bubble.props.onPress());
+	const actionSheet = vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mock.lastCall;
+	if (!actionSheet) throw new Error("inline queue action sheet did not open");
+	const removeIndex = actionSheet[0].options.findIndex((label) => label === "Remove");
+	if (removeIndex < 0) throw new Error("inline queue action sheet has no Remove action");
+	await act(async () => actionSheet[1](removeIndex));
+	await settle();
+	expect(await f.runtime.storage.getOutbox(queued.clientMutationId)).toBeUndefined();
+	expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: f.ref })).toMatchObject({
+		draft: "",
+		unconfirmed: null,
+	});
+	expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: f.ref }).unconfirmedCaptureToken).toBeUndefined();
 });
 
 it("actual screen deselects an edited recovered label before explicit Send and persists it across reopen", async () => {

@@ -509,7 +509,7 @@ it("submitText preserves current edited ownership and acknowledgment housekeepin
 	expect(document.getSnapshot().record).toMatchObject({
 		draft: "",
 		unconfirmed: null,
-		composer: { ...original.composer, mentions: [] },
+		composer: { ...original.composer, skillNames: [], mentions: [] },
 		images: original.images,
 		recoveryResendAcks: ["pending-ack"],
 	});

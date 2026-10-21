@@ -3381,6 +3381,7 @@ export async function updateRecoveryMutation(
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
   consumeRecoveryIds?: readonly string[],
+  localDraftRevisionId?: string,
 ): Promise<boolean> {
   const runtime = requireMutationRuntime();
   await runtime.start;
@@ -3391,6 +3392,7 @@ export async function updateRecoveryMutation(
     text,
     mentions,
     consumeRecoveryIds,
+    localDraftRevisionId,
   );
   if (!record) return false;
   notifyMutationPersistence([targetRef]);

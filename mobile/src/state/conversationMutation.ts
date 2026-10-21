@@ -12,6 +12,8 @@ export interface ConversationComposerSnapshot {
 export interface ConversationMutationContext {
 	readonly composer?: ConversationComposerSnapshot;
 	readonly recoverySourceIds?: readonly string[];
+	/** Local correlation for an unconfirmed draft capture; never sent to the daemon. */
+	readonly draftCaptureToken?: string;
 }
 
 interface ConversationMutationTarget extends ConversationMutationContext {

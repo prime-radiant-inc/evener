@@ -164,6 +164,30 @@ test.each(["put", "delete", "commit"] as const)(
   },
 );
 
+test("recovery draft provenance commits with merged composition and secondary consumption", async () => {
+  const f = fixture();
+  const first = await f.storage.enqueueIntent(queuedIntent());
+  const second = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.transferToRecovery(first.clientMutationId, "rejected");
+  await f.storage.transferToRecovery(second.clientMutationId, "rejected");
+  const saved = await f.storage.updateRecoveryInput(
+    first.clientMutationId,
+    [{ type: "text", text: "combined" }],
+    [],
+    "combined",
+    [],
+    [second.clientMutationId],
+    "draft-revision-7",
+  );
+  expect(saved).toMatchObject({ composerText: "combined", localDraftRevisionId: "draft-revision-7" });
+  expect(await f.storage.getRecovery(second.clientMutationId)).toBeUndefined();
+  const reopened = await f.reopen();
+  expect(await reopened.getRecovery(first.clientMutationId)).toMatchObject({
+    composerText: "combined",
+    localDraftRevisionId: "draft-revision-7",
+  });
+});
+
 test("legacy reopen preserves unknown attempts and editing image bytes", async () => {
   const f = fixture();
   const row = await f.storage.enqueueIntent({

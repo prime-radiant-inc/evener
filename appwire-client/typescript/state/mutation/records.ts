@@ -70,6 +70,9 @@ export interface MutationIntent<A extends MutationAttachmentRef = MutationAttach
   // records all carry them in the one record they already persist.
   composerText?: string;
   composerMentions?: readonly ComposerMention[];
+  // Native local-draft ownership only. Never copied into the RPC payload;
+  // absent on older rows and on hosts that do not use native draft capture.
+  draftCaptureToken?: string;
   // A transcript action did not consume the composer. Refusal recovery stays
   // explicit rather than replacing even an empty draft. Local only, not RPC.
   preserveComposer?: boolean;
@@ -127,6 +130,9 @@ export interface MutationOptimisticRecord<A extends MutationAttachmentRef = Muta
 export interface MutationRecoveryRecord<A extends MutationAttachmentRef = MutationAttachmentRef>
   extends MutationOutboxRecord<A> {
   recoveryKind: MutationRecoveryKind;
+  // Local browser draft snapshot incorporated into this recovery row. Not an
+  // RPC field; absent on older rows and on native recovery records.
+  localDraftRevisionId?: string;
   // Why the daemon refused, in its own words. Without it a recovery row can
   // only say that something did not happen: a Steer or Stop refused with
   // nothing on screen explaining why. Optional because records written before
@@ -168,6 +174,7 @@ export function acceptedRecord<A extends MutationAttachmentRef = MutationAttachm
     payload: source.payload,
     attachments: source.attachments,
     optimisticDisplay: source.optimisticDisplay,
+    draftCaptureToken: source.draftCaptureToken,
     state: "accepted",
   };
 }

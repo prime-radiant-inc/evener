@@ -24,6 +24,7 @@ import { installControlledImageEncoding } from "../testing/imageEncoding";
 import { HeldSteerAnnouncements } from "../transcript/messages/HeldSteerAnnouncements";
 import { HeldSteerStack } from "../transcript/messages/HeldSteerStack";
 import { Composer } from "./Composer";
+import { readComposerDraftRevisionId, readDraft, writeComposerDraft } from "./draft";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 
@@ -78,8 +79,7 @@ const thread: Thread = {
   },
 };
 
-async function setup(offline = true) {
-  const storage = new MutationOutboxIndexedDB();
+async function setup(offline = true, storage = new MutationOutboxIndexedDB()) {
   setMutationStorageForTests(storage);
   const fake = new FakeClient("ready");
   fake.on("thread/read", () => ({
@@ -102,6 +102,366 @@ function mount(fake: FakeClient, source = createTestComposerSource("root")) {
   );
   return { source, ...view };
 }
+
+class CommitThenPauseRecoveryStorage extends MutationOutboxIndexedDB {
+  private pauseNextCommit = true;
+  private committedSignal = deferred<void>();
+  private continuedSignal = deferred<void>();
+  private continuation = deferred<void>();
+
+  get committed(): Promise<void> {
+    return this.committedSignal.promise;
+  }
+
+  get continued(): Promise<void> {
+    return this.continuedSignal.promise;
+  }
+
+  skipNextPause(): void {
+    this.pauseNextCommit = false;
+  }
+
+  armPause(): void {
+    this.pauseNextCommit = true;
+    this.committedSignal = deferred<void>();
+    this.continuedSignal = deferred<void>();
+    this.continuation = deferred<void>();
+  }
+
+  override async updateRecoveryInput(
+    ...args: Parameters<MutationOutboxIndexedDB["updateRecoveryInput"]>
+  ): ReturnType<MutationOutboxIndexedDB["updateRecoveryInput"]> {
+    const result = await super.updateRecoveryInput(...args);
+    if (!this.pauseNextCommit) return result;
+    this.pauseNextCommit = false;
+    this.committedSignal.resolve();
+    await this.continuation.promise;
+    this.continuedSignal.resolve();
+    return result;
+  }
+
+  releaseContinuation(): void {
+    this.continuation.resolve();
+  }
+}
+
+test("committed recovery consolidation does not append the incorporated draft twice after source disposal", async () => {
+  const storage = new CommitThenPauseRecoveryStorage();
+  await setup(false, storage);
+  const queuedRecord = await queued(storage, "B");
+  const source = createTestComposerSource("root");
+  source.editor.write("A", 1);
+  source.persistDraft("A");
+  const revisionId = readComposerDraftRevisionId("root");
+  if (!revisionId) throw new Error("missing persisted draft revision fixture");
+  await editQueuedMutation(queuedRecord.clientMutationId, "root");
+
+  let replacement: ReturnType<typeof createTestComposerSource> | undefined;
+  let reopened: MutationOutboxIndexedDB | undefined;
+  try {
+    const claimedRecovery = await storage.getRecovery(queuedRecord.clientMutationId);
+    if (!claimedRecovery) throw new Error("missing claimed recovery fixture");
+    const activation = source.activateRecovery(claimedRecovery);
+    await storage.committed;
+    expect((await storage.getRecovery(queuedRecord.clientMutationId))?.composerText).toBe("A\n\nB");
+
+    source.dispose();
+    replacement = createTestComposerSource("root");
+    expect(replacement.getSnapshot().text).toBe("A");
+    const committedRecovery = await storage.getRecovery(queuedRecord.clientMutationId);
+    if (!committedRecovery) throw new Error("missing committed recovery fixture");
+    expect(committedRecovery.localDraftRevisionId).toBe(revisionId);
+    storage.releaseContinuation();
+    await storage.continued;
+    await expect(activation).resolves.toBe(false);
+    await expect(replacement.activateRecovery(committedRecovery)).resolves.toBe(true);
+
+    expect(replacement.getSnapshot().text).toBe("A\n\nB");
+    expect(readComposerDraftRevisionId("root")).toBeUndefined();
+    storage.close();
+    reopened = new MutationOutboxIndexedDB();
+    expect((await reopened.getRecovery(queuedRecord.clientMutationId))?.localDraftRevisionId).toBe(revisionId);
+  } finally {
+    storage.releaseContinuation();
+    source.dispose();
+    replacement?.dispose();
+    reopened?.close();
+    if (!reopened) storage.close();
+  }
+});
+
+test("recovery activation keeps newer replacement text selections and attachments", async () => {
+  const storage = new CommitThenPauseRecoveryStorage();
+  await setup(false, storage);
+  const queuedRecord = await queued(storage, "B");
+  const source = createTestComposerSource("root");
+  source.editor.write("A", 1);
+  source.persistDraft("A");
+  await editQueuedMutation(queuedRecord.clientMutationId, "root");
+  const claimed = await storage.getRecovery(queuedRecord.clientMutationId);
+  if (!claimed) throw new Error("missing claimed recovery fixture");
+  const activation = source.activateRecovery(claimed);
+  let replacement: ReturnType<typeof createTestComposerSource> | undefined;
+
+  try {
+    await storage.committed;
+    source.dispose();
+    replacement = createTestComposerSource("root");
+    replacement.editText("New /draft");
+    replacement.editSkillNames(["draft"]);
+    replacement.updateSelectionMeta({
+      text: "New /draft",
+      skillNames: ["draft"],
+      mentions: [{ kind: "skill", name: "draft", offset: 4 }],
+    });
+    replacement.attachments.setState({
+      items: [{ marker: 1, name: "new.png", mediaType: "image/png", data: "AQID", pending: false }],
+    });
+    storage.releaseContinuation();
+    await storage.continued;
+    await activation;
+    const committed = await storage.getRecovery(queuedRecord.clientMutationId);
+    if (!committed) throw new Error("missing committed recovery fixture");
+    await replacement.activateRecovery(committed);
+    expect(replacement.getSnapshot().text).toBe("New /draft\n\nA\n\nB");
+    expect(replacement.getSnapshot().skillNames).toEqual(["draft"]);
+    expect(replacement.getSnapshot().mentions).toEqual([{ kind: "skill", name: "draft", offset: 4 }]);
+    expect(replacement.attachments.getState().items).toEqual([
+      { marker: 1, name: "new.png", mediaType: "image/png", data: "AQID", pending: false },
+    ]);
+  } finally {
+    storage.releaseContinuation();
+    source.dispose();
+    replacement?.dispose();
+    storage.close();
+  }
+});
+
+test("typing and selections during an already-incorporated activation survive its commit", async () => {
+  const storage = new CommitThenPauseRecoveryStorage();
+  await setup(false, storage);
+  const queuedRecord = await queued(storage, "B");
+  const original = createTestComposerSource("root");
+  original.editor.write("A", 1);
+  original.persistDraft("A");
+  const revisionA = readComposerDraftRevisionId("root");
+  if (!revisionA) throw new Error("missing draft A revision");
+  await editQueuedMutation(queuedRecord.clientMutationId, "root");
+  const claimed = await storage.getRecovery(queuedRecord.clientMutationId);
+  if (!claimed) throw new Error("missing claimed recovery fixture");
+  storage.skipNextPause();
+  await storage.updateRecoveryInput(
+    claimed.clientMutationId,
+    [{ type: "text", text: "A\n\nB" }],
+    [],
+    "A\n\nB",
+    [],
+    [],
+    revisionA,
+  );
+  original.dispose();
+  const replacement = createTestComposerSource("root");
+  storage.armPause();
+  const activationRecord = await storage.getRecovery(claimed.clientMutationId);
+  if (!activationRecord) throw new Error("missing activation recovery fixture");
+  const activation = replacement.activateRecovery(activationRecord);
+
+  try {
+    await storage.committed;
+    replacement.editor.write("C /draft", 8);
+    replacement.editSkillNames(["draft"]);
+    replacement.updateSelectionMeta({
+      text: "C /draft",
+      skillNames: ["draft"],
+      mentions: [{ kind: "skill", name: "draft", offset: 2 }],
+    });
+    storage.releaseContinuation();
+    await storage.continued;
+    await activation;
+    expect(replacement.getSnapshot().text).toBe("C /draft\n\nA\n\nB");
+    expect(replacement.getSnapshot().skillNames).toEqual(["draft"]);
+    expect(replacement.getSnapshot().mentions).toEqual([{ kind: "skill", name: "draft", offset: 2 }]);
+  } finally {
+    storage.releaseContinuation();
+    original.dispose();
+    replacement.dispose();
+    storage.close();
+  }
+});
+
+test("a second committed consolidation records C before adapter and source reopen", async () => {
+  const storage = new CommitThenPauseRecoveryStorage();
+  await setup(false, storage);
+  const queuedRecord = await queued(storage, "B");
+  const original = createTestComposerSource("root");
+  original.editor.write("A", 1);
+  original.persistDraft("A");
+  const revisionA = readComposerDraftRevisionId("root");
+  if (!revisionA) throw new Error("missing draft A revision");
+  await editQueuedMutation(queuedRecord.clientMutationId, "root");
+  const claimed = await storage.getRecovery(queuedRecord.clientMutationId);
+  if (!claimed) throw new Error("missing claimed recovery fixture");
+  storage.skipNextPause();
+  await original.activateRecovery(claimed);
+  const firstCommit = await storage.getRecovery(queuedRecord.clientMutationId);
+  if (!firstCommit) throw new Error("missing first recovery commit");
+  expect(firstCommit.composerText).toBe("A\n\nB");
+  expect(firstCommit.localDraftRevisionId).toBe(revisionA);
+  original.dispose();
+
+  const replacement = createTestComposerSource("root");
+  replacement.editor.write("C", 1);
+  replacement.persistDraft("C");
+  const revisionC = readComposerDraftRevisionId("root");
+  if (!revisionC || revisionC === revisionA) throw new Error("missing distinct draft C revision");
+  storage.armPause();
+  const secondActivation = replacement.activateRecovery(firstCommit);
+  let reopened: MutationOutboxIndexedDB | undefined;
+  try {
+    await storage.committed;
+    const secondCommit = await storage.getRecovery(queuedRecord.clientMutationId);
+    if (!secondCommit) throw new Error("missing second recovery commit");
+    expect(secondCommit.composerText).toBe("C\n\nA\n\nB");
+    expect(secondCommit.localDraftRevisionId).toBe(revisionC);
+    replacement.dispose();
+    storage.releaseContinuation();
+    await storage.continued;
+    await expect(secondActivation).resolves.toBe(true);
+
+    storage.close();
+    resetThreadsStoreForTests();
+    reopened = new MutationOutboxIndexedDB();
+    await setup(false, reopened);
+    const afterReload = await reopened.getRecovery(queuedRecord.clientMutationId);
+    if (!afterReload) throw new Error("missing reopened recovery fixture");
+    expect(afterReload.localDraftRevisionId).toBe(revisionC);
+    expect(readComposerDraftRevisionId("root")).toBe(revisionC);
+    const again = createTestComposerSource("root");
+    try {
+      await again.activateRecovery(afterReload);
+      expect(again.getSnapshot().text).toBe("C\n\nA\n\nB");
+      expect(readComposerDraftRevisionId("root")).toBeUndefined();
+    } finally {
+      again.dispose();
+    }
+  } finally {
+    storage.releaseContinuation();
+    original.dispose();
+    replacement.dispose();
+    reopened?.close();
+    if (!reopened) storage.close();
+  }
+});
+
+test("recovery skips its unchanged loaded A while another source retains C", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  await setup(false, storage);
+  const queuedRecord = await queued(storage, "B");
+  const revisionA = writeComposerDraft("root", { text: "A", skillNames: [] });
+  if (!revisionA) throw new Error("missing draft A revision");
+  const sourceA = createTestComposerSource("root");
+  await editQueuedMutation(queuedRecord.clientMutationId, "root");
+  await storage.updateRecoveryInput(
+    queuedRecord.clientMutationId,
+    [{ type: "text", text: "A\n\nB" }],
+    [],
+    "A\n\nB",
+    [],
+    [],
+    revisionA,
+  );
+  const committed = await storage.getRecovery(queuedRecord.clientMutationId);
+  if (!committed) throw new Error("missing committed recovery fixture");
+  expect(committed.composerText).toBe("A\n\nB");
+  expect(committed.localDraftRevisionId).toBe(revisionA);
+
+  const sourceB = createTestComposerSource("root");
+  sourceB.editor.write("C", 1);
+  const revisionC = readComposerDraftRevisionId("root");
+  if (!revisionC || revisionC === revisionA) throw new Error("missing distinct draft C revision");
+  expect(sourceA.getSnapshot().text).toBe("A");
+  expect(sourceA.continuity.draftEditRevisionRef.current).toBe(0);
+
+  try {
+    await expect(sourceA.activateRecovery(committed)).resolves.toBe(true);
+    expect(sourceA.getSnapshot().text).toBe("A\n\nB");
+    await sourceA.queueRecoveryPersistence(queuedRecord.clientMutationId, "A\n\nB", [], []);
+    const consolidated = await storage.getRecovery(queuedRecord.clientMutationId);
+    expect(consolidated?.composerText).toBe("A\n\nB");
+    expect(consolidated?.localDraftRevisionId).toBe(revisionA);
+    expect(sourceB.getSnapshot().text).toBe("C");
+    expect(readDraft("root")).toBe("C");
+    expect(readComposerDraftRevisionId("root")).toBe(revisionC);
+  } finally {
+    sourceA.dispose();
+    sourceB.dispose();
+    storage.close();
+  }
+});
+
+test("detached recovery persistence cannot stamp or clear another source's draft", async () => {
+  const storage = new CommitThenPauseRecoveryStorage();
+  await setup(false, storage);
+  const queuedRecord = await queued(storage, "B");
+  const sourceA = createTestComposerSource("root");
+  sourceA.editor.write("A", 1);
+  sourceA.persistDraft("A");
+  const revisionA = readComposerDraftRevisionId("root");
+  if (!revisionA) throw new Error("missing draft A revision");
+  await editQueuedMutation(queuedRecord.clientMutationId, "root");
+  const claimed = await storage.getRecovery(queuedRecord.clientMutationId);
+  if (!claimed) throw new Error("missing claimed recovery fixture");
+  storage.skipNextPause();
+  const unbind = sourceA.bindEditor({ read: () => sourceA.editor.read(), write: () => {} });
+  await sourceA.activateRecovery(claimed);
+  unbind();
+
+  const sourceB = createTestComposerSource("root");
+  sourceB.editor.write("C", 1);
+  sourceB.persistDraft("C");
+  const revisionC = readComposerDraftRevisionId("root");
+  if (!revisionC || revisionC === revisionA) throw new Error("missing draft C revision");
+  storage.armPause();
+  sourceA.editText("A\n\nB revised by A");
+
+  try {
+    await storage.committed;
+    const committed = await storage.getRecovery(queuedRecord.clientMutationId);
+    if (!committed) throw new Error("missing detached recovery commit");
+    expect(committed.composerText).toBe("A\n\nB revised by A");
+    expect(committed.localDraftRevisionId).not.toBe(revisionC);
+    storage.releaseContinuation();
+    await storage.continued;
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    expect(readDraft("root")).toBe("C");
+    expect(readComposerDraftRevisionId("root")).toBe(revisionC);
+  } finally {
+    storage.releaseContinuation();
+    sourceA.dispose();
+    sourceB.dispose();
+    storage.close();
+  }
+});
+
+test("legacy recovery without draft provenance retains the manual merge behavior", async () => {
+  const { storage } = await setup(false);
+  const queuedRecord = await queued(storage, "B");
+  await editQueuedMutation(queuedRecord.clientMutationId, "root");
+  const legacy = await storage.getRecovery(queuedRecord.clientMutationId);
+  if (!legacy) throw new Error("missing legacy recovery fixture");
+  expect(legacy.localDraftRevisionId).toBeUndefined();
+  const source = createTestComposerSource("root");
+  source.editor.write("A", 1);
+  source.persistDraft("A");
+
+  try {
+    await expect(source.activateRecovery(legacy)).resolves.toBe(true);
+    expect(source.getSnapshot().text).toBe("A\n\nB");
+  } finally {
+    source.dispose();
+    storage.close();
+  }
+});
 
 // Losing the durable Edit claim, merging over the draft, or resending either
 // original identity breaks this journey. Transport is the only scripted owner.
@@ -838,27 +1198,27 @@ test("repeated cleanup failures retry at bounded intervals until storage recover
     expect(vi.getTimerCount()).toBe(1);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(249);
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
     expect(deleteAttempts).toBe(1);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1);
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
     await storage.getRecovery(record.clientMutationId);
     expect(deleteAttempts).toBe(2);
     expect(vi.getTimerCount()).toBe(1);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(500);
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
     await storage.getRecovery(record.clientMutationId);
     expect(deleteAttempts).toBe(3);
     expect(vi.getTimerCount()).toBe(1);
     await act(async () => {
       await vi.runOnlyPendingTimersAsync();
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
     await storage.getRecovery(record.clientMutationId);
     expect(deleteAttempts).toBe(4);
     expect(vi.getTimerCount()).toBe(0);
@@ -894,8 +1254,8 @@ test("typing before cleanup retry preserves newer work and the recovery row", as
     expect(vi.getTimerCount()).toBe(0);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_000);
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
     expect(deleteAttempts).toBe(1);
     expect(source.getSnapshot().text).toBe("newer work");
     expect((await storage.getRecovery(record.clientMutationId))?.composerText).toBe("completed command");
@@ -929,8 +1289,8 @@ test("disposing the source cancels its delayed recovery cleanup retry", async ()
     expect(vi.getTimerCount()).toBe(0);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_000);
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
     expect(deleteAttempts).toBe(1);
     expect((await storage.getRecovery(record.clientMutationId))?.composerText).toBe("completed command");
   } finally {
@@ -963,8 +1323,8 @@ test("replacing the recovery owner cancels the prior owner's cleanup retry", asy
     expect(vi.getTimerCount()).toBe(0);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_000);
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
     expect(deleteAttempts).toBe(1);
     expect((await storage.getRecovery(record.clientMutationId))?.composerText).toBe("completed command");
   } finally {

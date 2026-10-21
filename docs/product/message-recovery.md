@@ -34,6 +34,14 @@ atomically folds both recoveries into one owner before deleting the secondary
 record. A failed consolidation leaves both original records recoverable. Editing
 recovery is discoverable after reload and is not labeled as a rejection.
 
+New structured browser drafts carry a local revision ID. Recovery consolidation
+records the exact incorporated ID in the same IndexedDB transaction as its
+merged composition; reopening skips only that matching snapshot and clears it
+only while the stored ID still matches. Newer edits in a replacement composer
+remain separate. Older recovery rows without an ID keep the existing manual
+merge behavior. This is local ownership metadata, not an RPC field or a
+cross-process writer guarantee.
+
 Text, image bytes and selection metadata travel together. Image markers are
 remapped without colliding with staged images or literal marker references.
 Skill and command selections are restored with their text-owned mentions.
@@ -72,7 +80,11 @@ count include local queue entries, not delivery-uncertain recovery.
 The native screen passes the complete composition through online, offline and
 command submission: text, image bytes and names, selections, mentions and exact
 recovery source IDs. Image-only and selection-only work can be sent. Existing
-slash-command attachment routing is unchanged. Accepted daemon queue editing
+slash-command attachment routing is unchanged. When the leading built-in
+invocation is itself a selected skill or command mention, the complete
+composition routes as a message. A selection elsewhere in the composition does
+not change a leading `/queue` or other built-in command route.
+Accepted daemon queue editing
 remains text-only; delivery-uncertain Discard and rejected recovery keep their
 separate controls and restrictions.
 
@@ -85,6 +97,30 @@ so the retained source stays visible and recoverable. If a later typing save fai
 the last saved draft still owns its source IDs; those sources stay hidden from
 Discard while Retry saving preserves the captured composition. Restored image
 capacity can also complete a pending append. Recovery never sends automatically.
+
+An ordinary native submit stores its full `unconfirmed` composition with a local
+capture token. If enqueue commits but draft confirmation fails, that token also
+remains on the local mutation row, tying the row to that uncertainty copy. Before
+Edit or Remove, the native coordinator proves the exact queued row and current
+target identity. A retained editing row must also match the current thread and
+instance identity before it is cleared or appended. The coordinator clears only
+an `unconfirmed` record with the same token, then uses the existing guarded
+Edit/Remove or appends the retained source to the latest draft. The token proves
+local ownership, not daemon admission. Missing or different tokens, including
+older records without token metadata, stay manual and do not block an unrelated
+valid action. If persisting a matching clear fails, the action is blocked and the
+row remains its owner. Remove does not require an otherwise ready composer. The
+built-in completion marker remains evidence of a successful non-message command,
+not message admission.
+
+```mermaid
+flowchart LR
+  Capture[Store uncertain composition with local token] --> Row[Durable local row carries token]
+  Row --> Proof[Prove exact row and current target identity]
+  Proof --> Clear[Persist clear for matching token only]
+  Clear --> Action[Existing guarded Edit or Remove]
+  Action --> Owner[Retained recovery or removed row]
+```
 
 ```mermaid
 flowchart LR

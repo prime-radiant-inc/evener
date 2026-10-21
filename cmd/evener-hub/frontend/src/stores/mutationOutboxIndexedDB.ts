@@ -942,6 +942,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     composerText?: string,
     composerMentions?: readonly ComposerMention[],
     consumeRecoveryIds?: readonly string[],
+    localDraftRevisionId?: string,
   ): Promise<MutationRecoveryRecord | undefined> {
     return this.#write(RECOVERY_STORE, "updateRecoveryInput", async (transaction) => {
       const store = transaction.objectStore(RECOVERY_STORE);
@@ -961,6 +962,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
             : { method: record.method, input },
         attachments: attachments ?? record.attachments,
         composerText: composerText ?? record.composerText,
+        localDraftRevisionId: localDraftRevisionId ?? record.localDraftRevisionId,
         // Locations belong to composerText. A full replacement can omit them
         // to clear old atoms, while a partial update preserves the pair.
         composerMentions: composerText === undefined ? (composerMentions ?? record.composerMentions) : composerMentions,

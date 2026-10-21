@@ -13,9 +13,11 @@ import {
 } from "./attachments/useAttachments";
 import {
   clearDraft,
-  clearPersistedDraft,
+  clearPersistedDraftIfRevisionMatches,
   markDraftEdited,
   readComposerDraft,
+  readComposerDraftRevisionId,
+  readComposerDraftSnapshot,
   readDraftRevision,
   writeComposerDraft,
 } from "./draft";
@@ -117,7 +119,8 @@ export function restoredSkillNames(value: SkillEditorValue): string[] {
 
 /** Original conversation work belongs to its pane, not to an editor mount. */
 export function createComposerSourceState(ref: string): ComposerSourceState {
-  const initial = readComposerDraft(ref);
+  const initial = readComposerDraftSnapshot(ref);
+  let currentDraftRevisionId = initial.revisionId;
   const state = createStore<ComposerSourceSnapshot>(() => ({
     text: initial.text,
     skillNames: restoredSkillNames(initial),
@@ -254,7 +257,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
   }
   function persistDraft(text: string): void {
     if (disposed) return;
-    writeComposerDraft(ref, {
+    currentDraftRevisionId = writeComposerDraft(ref, {
       text,
       skillNames: skillNamesRef.current,
       ...(selectionMetaRef.current.commandNames.length ? { commandNames: selectionMetaRef.current.commandNames } : {}),
@@ -319,6 +322,10 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
     const version = ++recoveryWriteVersionRef.current;
     const replacementEpoch = recoveryReplacementEpochRef.current;
     const draftRevision = readDraftRevision(ref);
+    const localDraftRevisionId =
+      ownsDraft() && currentDraftRevisionId !== undefined && currentDraftRevisionId === readComposerDraftRevisionId(ref)
+        ? currentDraftRevisionId
+        : undefined;
     const operation = recoveryWrites
       .catch(() => undefined)
       .then(async () => {
@@ -342,7 +349,8 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
               !disposed &&
               recoveryReplacementEpochRef.current === replacementEpoch &&
               activeRecoveryIdRef.current === clientMutationId &&
-              hasEmptyComposition(),
+              hasEmptyComposition() &&
+              (localDraftRevisionId === undefined || readComposerDraftRevisionId(ref) === localDraftRevisionId),
           );
           if (!discarded) return;
           cancelCleanupRetry();
@@ -351,11 +359,12 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
             recoveryReplacementEpochRef.current === replacementEpoch &&
             activeRecoveryIdRef.current === clientMutationId &&
             readDraftRevision(ref) === draftRevision &&
+            (localDraftRevisionId === undefined || readComposerDraftRevisionId(ref) === localDraftRevisionId) &&
             hasEmptyComposition()
           ) {
             recoveryOwnsLocalDraftRef.current = false;
             setActiveRecoveryId(null);
-            clearPersistedDraft(ref);
+            if (localDraftRevisionId) clearPersistedDraftIfRevisionMatches(ref, localDraftRevisionId);
           }
           return;
         }
@@ -367,6 +376,8 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
           nextSkillNames,
           nextCommandNames,
           nextMentions,
+          [],
+          localDraftRevisionId,
         );
         if (
           !disposed &&
@@ -374,10 +385,11 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
           recoveryOwnsLocalDraftRef.current &&
           recoveryWriteVersionRef.current === version &&
           readDraftRevision(ref) === draftRevision &&
+          (localDraftRevisionId === undefined || readComposerDraftRevisionId(ref) === localDraftRevisionId) &&
           activeRecoveryIdRef.current === clientMutationId
         ) {
           recoveryOwnsLocalDraftRef.current = false;
-          clearPersistedDraft(ref);
+          if (localDraftRevisionId) clearPersistedDraftIfRevisionMatches(ref, localDraftRevisionId);
         }
       });
     recoveryWrites = operation;
@@ -401,15 +413,29 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
         // reference provenance by identity, not in enumerable properties.
         const recovered = recoveryComposerDraft(record);
         if (record.recoveryKind === "editing") Object.assign(recovered, materializeSelectionReferences(recovered));
-        const merge = () =>
-          mergeRecoveryComposerDraft(
-            textRef.current,
+        const incorporatedRevisionId = record.localDraftRevisionId;
+        const includedDraftRevisionId =
+          currentDraftRevisionId !== undefined && currentDraftRevisionId === readComposerDraftRevisionId(ref)
+            ? currentDraftRevisionId
+            : undefined;
+        let incorporatedSnapshotCleared = false;
+        // A different source's stored draft does not change this loaded snapshot.
+        // Only cleanup below needs to match the current persisted revision.
+        const incorporatedSnapshotIsCurrent = () =>
+          incorporatedRevisionId !== undefined &&
+          (incorporatedSnapshotCleared ||
+            (incorporatedRevisionId === currentDraftRevisionId && draftEditRevisionRef.current === 0));
+        const merge = () => {
+          const skipLocalDraft = incorporatedSnapshotIsCurrent();
+          return mergeRecoveryComposerDraft(
+            skipLocalDraft ? "" : textRef.current,
             operations.items,
             recovered,
-            skillNamesRef.current,
-            selectionMetaRef.current.commandNames,
-            selectionMetaRef.current.mentions,
+            skipLocalDraft ? [] : skillNamesRef.current,
+            skipLocalDraft ? [] : selectionMetaRef.current.commandNames,
+            skipLocalDraft ? undefined : selectionMetaRef.current.mentions,
           );
+        };
         const merged = merge();
         const ownerId = activeRecoveryIdRef.current ?? record.clientMutationId;
         const replacementEpoch = recoveryReplacementEpochRef.current;
@@ -427,8 +453,12 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
           merged.commandNames,
           merged.mentions,
           ownerId === record.clientMutationId ? [] : [record.clientMutationId],
+          incorporatedSnapshotIsCurrent() ? incorporatedRevisionId : includedDraftRevisionId,
         );
         if (!updated || disposed || recoveryReplacementEpochRef.current !== replacementEpoch) return false;
+        if (incorporatedSnapshotIsCurrent() && incorporatedRevisionId !== undefined) {
+          incorporatedSnapshotCleared = clearPersistedDraftIfRevisionMatches(ref, incorporatedRevisionId);
+        }
         // A commit may finish after new typing or attachment work. Append to
         // that newer draft rather than restoring the press-time snapshot.
         const latest = merge();

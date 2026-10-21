@@ -8,6 +8,7 @@ import {
 	recoverMutationComposition,
 	stripMarker,
 } from "@evener/appwire-client";
+import * as Crypto from "expo-crypto";
 import type { InputAttachment } from "@evener/appwire-client";
 import type { MutationRecoveryRecord } from "@evener/appwire-client/state/mutation";
 import type { ConversationMutationContext } from "../../mobile/src/state/conversationMutation";
@@ -87,6 +88,7 @@ export class DraftDocument {
 		 * across app restarts; production passes the app's own randomUUID. */
 		private createImageId: () => string = () =>
 			`reissue-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+		private createCaptureToken: () => string = Crypto.randomUUID,
 	) {
 		this.retry();
 	}
@@ -381,6 +383,7 @@ export class DraftDocument {
 		// both the references and the bytes, and recovery restores the whole
 		// input instead of text with orphaned markers.
 		const reissuedRecords: DraftImage[] = [];
+		const draftCaptureToken = this.createCaptureToken();
 		if (reissued) {
 			for (const attachment of reissued) {
 				const data: DraftImageData = {
@@ -405,6 +408,7 @@ export class DraftDocument {
 				images: preserveDraft ? record.images : undefined,
 				composer: preserveDraft ? record.composer : undefined,
 				unconfirmedComposer: metadata,
+				unconfirmedCaptureToken: draftCaptureToken,
 				unconfirmedImages: outbound.length ? [...reissuedRecords, ...images] : undefined,
 			},
 			false,
@@ -422,12 +426,14 @@ export class DraftDocument {
 						: { mentions: metadata.mentions.map((mention) => ({ ...mention })) }),
 				},
 				...(metadata?.recoveryIds?.length ? { recoverySourceIds: [...metadata.recoveryIds] } : {}),
+				draftCaptureToken,
 			};
 			if (await operation(text, inputImages, context)) {
 				if (builtinCommand) {
 					const current = this.snapshot.record;
 					if (
 						current.unconfirmed === text &&
+						current.unconfirmedCaptureToken === draftCaptureToken &&
 						(!metadata?.recoveryIds?.length ||
 							sameSources(current.unconfirmedComposer?.recoveryIds, metadata.recoveryIds))
 					) {
@@ -438,24 +444,49 @@ export class DraftDocument {
 								unconfirmed: null,
 								unconfirmedImages: undefined,
 								unconfirmedComposer: undefined,
+								unconfirmedCaptureToken: undefined,
 								completedCommandRecoveryIds: [...new Set([...(current.completedCommandRecoveryIds ?? []), ...ids])],
 							},
 							true,
 						);
 					}
-				} else if (!metadata?.recoveryIds?.length)
+				} else if (!metadata?.recoveryIds?.length && this.snapshot.record.unconfirmedCaptureToken === draftCaptureToken)
 					this.persist(
 						{
 							...this.snapshot.record,
 							unconfirmed: null,
 							unconfirmedImages: undefined,
 							unconfirmedComposer: undefined,
+							unconfirmedCaptureToken: undefined,
 						},
 						true,
 					);
 			}
 		} finally {
 			this.update({ submitting: false });
+		}
+	}
+
+	/** Clear only the unconfirmed composition whose exact submission token a
+	 * durable mutation row proved it owns. Other captures and current draft work
+	 * remain untouched. A failed local write must stop the caller's action. */
+	clearMatchingUnconfirmedCapture(token: string): boolean {
+		const record = this.snapshot.record;
+		if (record.unconfirmed === null || record.unconfirmedCaptureToken !== token) return true;
+		try {
+			this.persist(
+				{
+					...record,
+					unconfirmed: null,
+					unconfirmedImages: undefined,
+					unconfirmedComposer: undefined,
+					unconfirmedCaptureToken: undefined,
+				},
+				false,
+			);
+			return true;
+		} catch {
+			return false;
 		}
 	}
 
@@ -492,6 +523,7 @@ export class DraftDocument {
 					unconfirmed: null,
 					unconfirmedImages: undefined,
 					unconfirmedComposer: undefined,
+					unconfirmedCaptureToken: undefined,
 					recoveryResendAcks: [...new Set([...(record.recoveryResendAcks ?? []), commit.clientMutationId])],
 				},
 				false,
@@ -555,6 +587,7 @@ export class DraftDocument {
 					unconfirmed: null,
 					unconfirmedImages: undefined,
 					unconfirmedComposer: undefined,
+					unconfirmedCaptureToken: undefined,
 				},
 				false,
 			);
@@ -578,6 +611,7 @@ export class DraftDocument {
 					unconfirmed: null,
 					unconfirmedImages: undefined,
 					unconfirmedComposer: undefined,
+					unconfirmedCaptureToken: undefined,
 				},
 				true,
 			);
@@ -608,6 +642,7 @@ export class DraftDocument {
 					composer: record.unconfirmedComposer,
 					unconfirmedImages: undefined,
 					unconfirmedComposer: undefined,
+					unconfirmedCaptureToken: undefined,
 				},
 				true,
 			);

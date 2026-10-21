@@ -111,8 +111,28 @@ interface CommandContext {
 }
 
 /** Attachments follow ordinary message routing, as in the web composer. */
-export function composerCommand(text: string, imageCount = 0) {
-	return imageCount ? null : matchBuiltinInvocation(text, commands);
+export function composerCommand(
+	text: string,
+	imageCount = 0,
+	composer?: {
+		skillNames?: string[];
+		commandNames?: string[];
+		mentions?: { kind: "skill" | "command"; name: string; offset: number }[];
+	},
+) {
+	if (imageCount) return null;
+	const match = matchBuiltinInvocation(text, commands);
+	if (!match) return null;
+	const leadingMention = composer?.mentions?.find(
+		(mention) => mention.offset === 0 && mention.name === match.command.id,
+	);
+	const selectedLeadingMention =
+		leadingMention?.kind === "skill"
+			? composer?.skillNames?.includes(leadingMention.name)
+			: leadingMention?.kind === "command"
+				? composer?.commandNames?.includes(leadingMention.name)
+				: false;
+	return selectedLeadingMention ? null : match;
 }
 
 export async function submitComposerCommand(
@@ -127,7 +147,7 @@ export async function submitComposerCommand(
 	const snapshot = document.getSnapshot();
 	const record = snapshot.record;
 	if (!snapshot.loaded || snapshot.error || snapshot.submitting || record.unconfirmed !== null) return null;
-	const match = composerCommand(record.draft, record.images?.length);
+	const match = composerCommand(record.draft, record.images?.length, record.composer);
 	if (!match || !context.isCurrent()) return null;
 	let operation: () => Promise<unknown>;
 	let afterSubmit = () => {};

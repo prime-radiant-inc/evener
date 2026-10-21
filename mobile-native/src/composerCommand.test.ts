@@ -173,6 +173,57 @@ it.each([
 	expect(composerCommand(text, 1)).toBeNull();
 });
 
+it("keeps explicitly selected leading /compact out of builtin submission", async () => {
+	const { database, port } = openSqliteSyncDouble();
+	try {
+		const destination = { hubId: "hub-1", sessionRef: "ref-1" };
+		const repository = new DraftRepository(port);
+		repository.write(destination, {
+			draft: "/compact",
+			unconfirmed: null,
+			composer: {
+				commandNames: ["compact"],
+				mentions: [{ kind: "command", name: "compact", offset: 0 }],
+				recoveryIds: ["source-compact"],
+			},
+		});
+		const document = new DraftDocument(() => repository, destination);
+		const submitted: Array<{ kind: string; input: InputItem[]; context?: ConversationMutationContext }> = [];
+		const compact = vi.fn(async () => {});
+		await submitComposerCommand(document, { compact } as unknown as Parameters<typeof submitComposerCommand>[1], {
+			isCurrent: () => true,
+			local: async () => {},
+			openAside: () => {},
+			cleared: () => {},
+			turn: () => conversation({ compact: true }),
+			drainQueue: async () => {},
+			drainRefusal: () => null,
+			submit: async (kind, input, context) => {
+				submitted.push({ kind, input, context });
+			},
+			stop: async () => {},
+			reasoning: () => null,
+		});
+		expect(composerCommand("/compact", 0, document.getSnapshot().record.composer)).toBeNull();
+		expect(
+			composerCommand("/compact", 0, {
+				skillNames: ["compact"],
+				mentions: [{ kind: "skill", name: "compact", offset: 0 }],
+			}),
+		).toBeNull();
+		expect(
+			composerCommand("/compact", 0, {
+				skillNames: ["compact"],
+				mentions: [{ kind: "skill", name: "compact", offset: 1 }],
+			}),
+		).toMatchObject({ command: { id: "compact" } });
+		expect(compact).not.toHaveBeenCalled();
+		expect(submitted).toEqual([]);
+	} finally {
+		database.close();
+	}
+});
+
 it.each([
 	"/compact extra",
 	"/shutdown extra",

@@ -136,6 +136,7 @@ function intentFor(request: NativeMutationRequest): MutationIntent {
 					composerText: composer.text,
 					...(composer.mentions === undefined ? {} : { composerMentions: composer.mentions }),
 				}),
+		...(request.draftCaptureToken === undefined ? {} : { draftCaptureToken: request.draftCaptureToken }),
 		optimisticDisplay: request.kind === "interrupt" ? { method } : { method, input },
 	};
 }
@@ -315,9 +316,59 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		return removed;
 	}
 
-	async #queuedMessageSnapshot(id: string, targetKey: string) {
+	/** Fresh guarded row proof for a caller that must transfer local capture
+	 * ownership before Edit/Remove. The eventual action takes its own new proof. */
+	async queuedMessageForAction(
+		id: string,
+		targetKey: string,
+		action: "edit" | "remove",
+	): Promise<MutationOutboxRecord<MutationAttachmentRef> | undefined> {
+		const snapshot = await this.#queuedMessageSnapshot(id, targetKey);
+		if (!snapshot?.isCurrent()) return undefined;
+		return (action === "edit" ? canEditQueuedMessage(snapshot.record) : canRemoveQueuedMessage(snapshot.record))
+			? snapshot.record
+			: undefined;
+	}
+
+	/** Fresh exact-identity proof for an already-claimed editing source. The
+	 * returned currentness check fences a target replacement before draft clear
+	 * and again before append. Cached offline identity remains sufficient. */
+	async retainedRecoveryForAction(
+		id: string,
+		targetKey: string,
+	): Promise<{ record: MutationRecoveryRecord<MutationAttachmentRef>; isCurrent: () => boolean } | undefined> {
+		const target = this.#targetIdentitySnapshot(targetKey);
+		const identity = target.identity;
+		if (!identity) return undefined;
+		const record = (await this.storage.listRecovery(targetKey)).find(
+			(recovery) => recovery.clientMutationId === id && recovery.recoveryKind === "editing",
+		);
+		if (
+			!record ||
+			record.targetRef !== targetKey ||
+			record.threadId !== identity.threadId ||
+			(record.instanceId ?? record.threadId) !== (identity.instanceId ?? identity.threadId) ||
+			!target.isCurrent()
+		)
+			return undefined;
+		return { record, isCurrent: target.isCurrent };
+	}
+
+	#targetIdentitySnapshot(targetKey: string) {
 		const registration = this.#targets.get(targetKey);
 		const identity = this.#targetIdentities.get(targetKey);
+		return {
+			identity,
+			isCurrent: () =>
+				identity !== undefined &&
+				this.#targets.get(targetKey) === registration &&
+				this.#targetIdentities.get(targetKey) === identity,
+		};
+	}
+
+	async #queuedMessageSnapshot(id: string, targetKey: string) {
+		const target = this.#targetIdentitySnapshot(targetKey);
+		const identity = target.identity;
 		const { record, stopEpoch } = await this.storage.getOutboxWithStopEpoch(id);
 		if (!record) return undefined;
 		return {
@@ -328,8 +379,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 			isCurrent: () =>
 				record.targetRef === targetKey &&
 				identity !== undefined &&
-				this.#targets.get(targetKey) === registration &&
-				this.#targetIdentities.get(targetKey) === identity &&
+				target.isCurrent() &&
 				record.threadId === identity.threadId &&
 				(record.instanceId ?? record.threadId) === (identity.instanceId ?? identity.threadId),
 		};

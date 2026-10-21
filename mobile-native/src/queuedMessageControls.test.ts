@@ -7,7 +7,11 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
 import { NativeMutationRuntime, nativeMutationTargetKey, type NativeMutationRequest } from "./nativeMutationRuntime";
-import { editQueuedMessageIntoDraft, reconcileEditedResends } from "./queuedMessageControls";
+import {
+	editQueuedMessageIntoDraft,
+	reconcileEditedResends,
+	removeQueuedMessageWithDraftCapture,
+} from "./queuedMessageControls";
 import { openSqliteSyncDouble } from "./sqliteSync.testkit";
 
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
@@ -47,7 +51,7 @@ function fixture() {
 	const clients = [client];
 	const register = () =>
 		runtime.registerTarget("hub", "session", client, { threadId: "thread", instanceId: "instance" });
-	register();
+	let unregisterTarget = register();
 	const f = {
 		get runtime() {
 			return runtime;
@@ -73,7 +77,10 @@ function fixture() {
 		connect() {
 			client = new FakeClient("ready");
 			clients.push(client);
-			register();
+			unregisterTarget = register();
+		},
+		unregisterTarget() {
+			unregisterTarget();
 		},
 		async reopen() {
 			await runtime.stop();
@@ -85,7 +92,7 @@ function fixture() {
 			runtime = new NativeMutationRuntime(mutations.port, options);
 			repository = new DraftRepository(drafts.port);
 			document = new DraftDocument(() => repository, destination);
-			register();
+			unregisterTarget = register();
 		},
 		reloadDraft() {
 			document.forget();
@@ -112,7 +119,7 @@ test("offline edit and remove distinguish identical messages and restore exact I
 	const b = await f.enqueue();
 	f.document.edit("current");
 	expect(await editQueuedMessageIntoDraft(f.runtime, key, a, f.document)).toBe("restored");
-	expect(await f.runtime.removeQueuedMessage(b, key)).toBe(true);
+	expect(await removeQueuedMessageWithDraftCapture(f.runtime, key, b, f.document)).toBe(true);
 	expect(f.document.getSnapshot().record.draft).toBe("current\n\nsame");
 	expect(f.document.getSnapshot().record.composer?.recoveryIds).toEqual([a]);
 	expect((await f.runtime.read(key)).outbox).toEqual([]);
@@ -864,3 +871,406 @@ test.each(["image", "skill", "command"] as const)(
 		expect(f.calls).toEqual([]);
 	},
 );
+
+test("ordinary enqueue followed by failed draft confirmation and reopen clears duplicate on queued Edit", async () => {
+	const f = fixture();
+	f.document.edit("ordinary queued message");
+	f.drafts.exec(`CREATE TRIGGER reject_confirmation BEFORE DELETE ON drafts
+		WHEN OLD.unconfirmed IS NOT NULL
+		BEGIN SELECT RAISE(ABORT, 'draft confirmation rejected'); END`);
+	await expect(
+		f.document.submit(async (text, _images, context) => {
+			await f.runtime.submit({ ...request({ input: [{ type: "text", text }] }), ...context });
+			return true;
+		}),
+	).rejects.toBeInstanceOf(Error);
+	const [queued] = (await f.runtime.read(key)).outbox;
+	expect(queued).toMatchObject({
+		targetRef: key,
+		payload: { input: [{ type: "text", text: "ordinary queued message" }] },
+	});
+	expect(queued.payload).not.toHaveProperty("draftCaptureToken");
+	expect(f.repository.read(destination)).toMatchObject({ draft: "", unconfirmed: "ordinary queued message" });
+	f.drafts.exec("DROP TRIGGER reject_confirmation");
+
+	await f.reopen();
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, queued.clientMutationId, f.document)).toBe("restored");
+	const [recovery] = (await f.runtime.read(key)).recovery;
+	expect(recovery).toMatchObject({
+		clientMutationId: queued.clientMutationId,
+		recoveryKind: "editing",
+		payload: { input: [{ type: "text", text: "ordinary queued message" }] },
+	});
+	const afterEdit = f.repository.read(destination);
+	expect(afterEdit).toMatchObject({
+		draft: "ordinary queued message",
+		composer: { recoveryIds: [queued.clientMutationId] },
+		unconfirmed: null,
+	});
+	expect(queued.draftCaptureToken).toEqual(expect.any(String));
+	expect(recovery?.draftCaptureToken).toBe(queued.draftCaptureToken);
+	expect(f.calls).toEqual([]);
+});
+
+test("ordinary enqueue followed by failed draft confirmation and reopen clears duplicate on queued Remove", async () => {
+	const f = fixture();
+	f.document.edit("ordinary queued message");
+	f.drafts.exec(`CREATE TRIGGER reject_confirmation BEFORE DELETE ON drafts
+		WHEN OLD.unconfirmed IS NOT NULL
+		BEGIN SELECT RAISE(ABORT, 'draft confirmation rejected'); END`);
+	await expect(
+		f.document.submit(async (text, _images, context) => {
+			await f.runtime.submit({ ...request({ input: [{ type: "text", text }] }), ...context });
+			return true;
+		}),
+	).rejects.toBeInstanceOf(Error);
+	const [queued] = (await f.runtime.read(key)).outbox;
+	expect(queued.draftCaptureToken).toEqual(expect.any(String));
+	expect(f.repository.read(destination)).toMatchObject({
+		draft: "",
+		unconfirmed: "ordinary queued message",
+		unconfirmedCaptureToken: queued.draftCaptureToken,
+	});
+	f.drafts.exec("DROP TRIGGER reject_confirmation");
+
+	await f.reopen();
+	expect(await removeQueuedMessageWithDraftCapture(f.runtime, key, queued.clientMutationId, f.document)).toBe(true);
+	expect((await f.runtime.read(key)).outbox).toEqual([]);
+	expect(f.repository.read(destination)).toMatchObject({ draft: "", unconfirmed: null });
+	expect(f.repository.read(destination).unconfirmedCaptureToken).toBeUndefined();
+	expect(f.calls).toEqual([]);
+});
+
+test("matching capture preclear preserves newer composition and cleanup markers", async () => {
+	const f = fixture();
+	const first = await f.enqueue({ draftCaptureToken: "capture-first" });
+	const sibling = await f.enqueue({ draftCaptureToken: "capture-sibling" });
+	f.repository.write(
+		destination,
+		{
+			draft: "newer typing[image 8]",
+			unconfirmed: "older uncertain composition",
+			images: [{ id: "newer-image", marker: 8, mediaType: "image/png" }],
+			unconfirmedImages: [{ id: "old-image", marker: 9, mediaType: "image/png" }],
+			composer: {
+				skillNames: ["newer-skill"],
+				mentions: [{ kind: "skill", name: "newer-skill", offset: 0 }],
+				recoveryIds: ["newer-recovery"],
+			},
+			unconfirmedComposer: { commandNames: ["older-command"], recoveryIds: ["older-recovery"] },
+			unconfirmedCaptureToken: "capture-first",
+			recoveryResendAcks: ["pending-ack"],
+			completedCommandRecoveryIds: ["completed-command"],
+		},
+		[
+			{ id: "newer-image", marker: 8, mediaType: "image/png", data: "AQID" },
+			{ id: "old-image", marker: 9, mediaType: "image/png", data: "BAUG" },
+		],
+	);
+	f.reloadDraft();
+
+	expect(await removeQueuedMessageWithDraftCapture(f.runtime, key, first, f.document)).toBe(true);
+	expect(f.repository.read(destination)).toMatchObject({
+		draft: "newer typing[image 8]",
+		unconfirmed: null,
+		images: [{ id: "newer-image", marker: 8 }],
+		composer: {
+			skillNames: ["newer-skill"],
+			recoveryIds: ["newer-recovery"],
+		},
+		recoveryResendAcks: ["pending-ack"],
+		completedCommandRecoveryIds: ["completed-command"],
+	});
+	expect(f.repository.read(destination).unconfirmedCaptureToken).toBeUndefined();
+	expect(await f.runtime.storage.getOutbox(first)).toBeUndefined();
+	expect(await f.runtime.storage.getOutbox(sibling)).toMatchObject({ draftCaptureToken: "capture-sibling" });
+});
+
+test("identical queued payloads clear only the capture token owned by the selected ID", async () => {
+	const f = fixture();
+	const first = await f.enqueue({ draftCaptureToken: "capture-first" });
+	const second = await f.enqueue({ draftCaptureToken: "capture-second" });
+	const rows = (await f.runtime.read(key)).outbox;
+	expect(first).not.toBe(second);
+	expect(rows[0].payload.input).toEqual(rows[1].payload.input);
+	f.repository.write(destination, {
+		draft: "newer draft",
+		unconfirmed: "same",
+		unconfirmedCaptureToken: "capture-second",
+	});
+	f.reloadDraft();
+
+	expect(await removeQueuedMessageWithDraftCapture(f.runtime, key, first, f.document)).toBe(true);
+	expect(await f.runtime.storage.getOutbox(first)).toBeUndefined();
+	expect(await f.runtime.storage.getOutbox(second)).toMatchObject({ draftCaptureToken: "capture-second" });
+	expect(f.repository.read(destination)).toMatchObject({
+		draft: "newer draft",
+		unconfirmed: "same",
+		unconfirmedCaptureToken: "capture-second",
+	});
+});
+
+test.each([
+	{ name: "different token", rowToken: "row-capture", currentToken: "newer-capture" },
+	{ name: "legacy missing token", rowToken: undefined, currentToken: undefined },
+])("$name leaves uncertainty untouched without blocking Edit", async ({ rowToken, currentToken }) => {
+	const f = fixture();
+	const id = await f.enqueue({ draftCaptureToken: rowToken });
+	f.repository.write(destination, {
+		draft: "newer draft",
+		unconfirmed: "uncertain copy",
+		...(currentToken === undefined ? {} : { unconfirmedCaptureToken: currentToken }),
+	});
+	f.reloadDraft();
+
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, id, f.document)).toBe("restored");
+	expect(f.repository.read(destination)).toMatchObject({
+		draft: "newer draft\n\nsame",
+		unconfirmed: "uncertain copy",
+		...(currentToken === undefined ? {} : { unconfirmedCaptureToken: currentToken }),
+	});
+});
+
+test.each([
+	{ name: "different token", rowToken: "row-capture", currentToken: "newer-capture" },
+	{ name: "legacy missing token", rowToken: undefined, currentToken: undefined },
+])("$name leaves uncertainty untouched without blocking Remove", async ({ rowToken, currentToken }) => {
+	const f = fixture();
+	const id = await f.enqueue({ draftCaptureToken: rowToken });
+	f.repository.write(destination, {
+		draft: "newer draft",
+		unconfirmed: "uncertain copy",
+		...(currentToken === undefined ? {} : { unconfirmedCaptureToken: currentToken }),
+	});
+	f.reloadDraft();
+
+	expect(await removeQueuedMessageWithDraftCapture(f.runtime, key, id, f.document)).toBe(true);
+	expect(await f.runtime.storage.getOutbox(id)).toBeUndefined();
+	expect(f.repository.read(destination)).toMatchObject({
+		draft: "newer draft",
+		unconfirmed: "uncertain copy",
+		...(currentToken === undefined ? {} : { unconfirmedCaptureToken: currentToken }),
+	});
+});
+
+test("failed matching capture preclear blocks queued Remove and leaves the row owner", async () => {
+	const f = fixture();
+	const id = await f.enqueue({ draftCaptureToken: "capture" });
+	f.repository.write(destination, {
+		draft: "",
+		unconfirmed: "uncertain copy",
+		unconfirmedCaptureToken: "capture",
+	});
+	f.reloadDraft();
+	f.drafts.exec(`CREATE TRIGGER reject_capture_clear BEFORE DELETE ON drafts
+		WHEN OLD.unconfirmed IS NOT NULL
+		BEGIN SELECT RAISE(ABORT, 'capture clear rejected'); END`);
+
+	expect(await removeQueuedMessageWithDraftCapture(f.runtime, key, id, f.document)).toBe(false);
+	expect(await f.runtime.storage.getOutbox(id)).toMatchObject({ draftCaptureToken: "capture" });
+	expect(f.repository.read(destination)).toMatchObject({
+		unconfirmed: "uncertain copy",
+		unconfirmedCaptureToken: "capture",
+	});
+});
+
+test("a crash after matching preclear leaves the durable outbox row as owner", async () => {
+	const f = fixture();
+	const id = await f.enqueue({ draftCaptureToken: "capture" });
+	f.repository.write(destination, {
+		draft: "newer draft",
+		unconfirmed: "uncertain copy",
+		unconfirmedCaptureToken: "capture",
+	});
+	f.reloadDraft();
+	const interruptedClaim = new Error("simulated process cut before claim");
+	vi.spyOn(f.runtime, "editQueuedMessage").mockRejectedValue(interruptedClaim);
+
+	await expect(editQueuedMessageIntoDraft(f.runtime, key, id, f.document)).rejects.toBe(interruptedClaim);
+	expect(f.repository.read(destination)).toMatchObject({ draft: "newer draft", unconfirmed: null });
+	expect(await f.runtime.storage.getOutbox(id)).toMatchObject({ draftCaptureToken: "capture" });
+});
+
+test("a failed Edit append keeps the exact recovery owner across reopen", async () => {
+	const f = fixture();
+	const id = await f.enqueue({ draftCaptureToken: "capture" });
+	f.repository.write(destination, {
+		draft: "",
+		unconfirmed: "same",
+		unconfirmedCaptureToken: "capture",
+	});
+	f.reloadDraft();
+	f.drafts.exec(`CREATE TRIGGER reject_append BEFORE INSERT ON drafts
+		WHEN NEW.draft = 'same' BEGIN SELECT RAISE(ABORT, 'draft append rejected'); END`);
+
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, id, f.document)).toBe("blocked");
+	expect(await f.runtime.storage.getOutbox(id)).toBeUndefined();
+	expect(await f.runtime.storage.getRecovery(id)).toMatchObject({
+		clientMutationId: id,
+		recoveryKind: "editing",
+		draftCaptureToken: "capture",
+	});
+	expect(f.repository.read(destination)).toMatchObject({ draft: "", unconfirmed: null });
+	f.drafts.exec("DROP TRIGGER reject_append");
+
+	await f.reopen();
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, id, f.document)).toBe("restored");
+	expect(f.document.getSnapshot().record).toMatchObject({
+		draft: "same",
+		composer: { recoveryIds: [id] },
+		unconfirmed: null,
+	});
+	expect(await f.runtime.storage.getRecovery(id)).toMatchObject({ draftCaptureToken: "capture" });
+	expect(f.calls).toEqual([]);
+});
+
+test("a missing durable row cannot authorize clearing a matching uncertain capture", async () => {
+	const f = fixture();
+	f.repository.write(destination, {
+		draft: "newer draft",
+		unconfirmed: "uncertain copy",
+		unconfirmedCaptureToken: "capture-without-row",
+	});
+	f.reloadDraft();
+
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, "missing-row", f.document)).toBe("lost");
+	expect(await removeQueuedMessageWithDraftCapture(f.runtime, key, "missing-row", f.document)).toBe(false);
+	expect(f.repository.read(destination)).toMatchObject({
+		draft: "newer draft",
+		unconfirmed: "uncertain copy",
+		unconfirmedCaptureToken: "capture-without-row",
+	});
+});
+
+test("tokenless Remove proceeds during an in-flight submission and preserves its uncertainty", async () => {
+	const f = fixture();
+	const id = await f.enqueue();
+	f.document.edit("new submission");
+	let beginSubmission!: () => void;
+	let finishSubmission!: () => void;
+	const submitting = new Promise<void>((resolve) => (beginSubmission = resolve));
+	const finish = new Promise<void>((resolve) => (finishSubmission = resolve));
+	const pendingSubmit = f.document.submit(async () => {
+		beginSubmission();
+		await finish;
+		return false;
+	});
+	await submitting;
+	expect(f.document.getSnapshot().submitting).toBe(true);
+
+	expect(await removeQueuedMessageWithDraftCapture(f.runtime, key, id, f.document)).toBe(true);
+	expect(await f.runtime.storage.getOutbox(id)).toBeUndefined();
+	expect(f.repository.read(destination)).toMatchObject({
+		unconfirmed: "new submission",
+		unconfirmedCaptureToken: expect.any(String),
+	});
+
+	finishSubmission();
+	await pendingSubmit;
+});
+
+test("different-token Remove proceeds with an errored composer and preserves uncertainty", async () => {
+	const f = fixture();
+	const id = await f.enqueue({ draftCaptureToken: "row-token" });
+	f.repository.write(destination, {
+		draft: "saved draft",
+		unconfirmed: "uncertain composition",
+		unconfirmedCaptureToken: "different-token",
+	});
+	f.reloadDraft();
+	f.drafts.exec(`CREATE TRIGGER reject_unsaved_edit BEFORE INSERT ON drafts
+		WHEN NEW.draft = 'unsaved edit' BEGIN SELECT RAISE(ABORT, 'injected draft failure'); END`);
+	f.document.edit("unsaved edit");
+	expect(f.document.getSnapshot().error).not.toBeNull();
+
+	expect(await removeQueuedMessageWithDraftCapture(f.runtime, key, id, f.document)).toBe(true);
+	expect(await f.runtime.storage.getOutbox(id)).toBeUndefined();
+	expect(f.repository.read(destination)).toMatchObject({
+		unconfirmed: "uncertain composition",
+		unconfirmedCaptureToken: "different-token",
+	});
+});
+
+test("matching capture Remove clears durably from an errored document", async () => {
+	const f = fixture();
+	const id = await f.enqueue({ draftCaptureToken: "matching-token" });
+	f.repository.write(destination, {
+		draft: "saved draft",
+		unconfirmed: "uncertain composition",
+		unconfirmedCaptureToken: "matching-token",
+	});
+	f.reloadDraft();
+	f.drafts.exec(`CREATE TRIGGER reject_unsaved_edit BEFORE INSERT ON drafts
+		WHEN NEW.draft = 'unsaved edit' BEGIN SELECT RAISE(ABORT, 'injected draft failure'); END`);
+	f.document.edit("unsaved edit");
+	expect(f.document.getSnapshot().error).not.toBeNull();
+	f.drafts.exec("DROP TRIGGER reject_unsaved_edit");
+
+	expect(await removeQueuedMessageWithDraftCapture(f.runtime, key, id, f.document)).toBe(true);
+	expect(await f.runtime.storage.getOutbox(id)).toBeUndefined();
+	expect(f.repository.read(destination)).toMatchObject({ draft: "unsaved edit", unconfirmed: null });
+	expect(f.repository.read(destination).unconfirmedCaptureToken).toBeUndefined();
+});
+
+async function retainedEditingCapture(f: ReturnType<typeof fixture>) {
+	const id = await f.enqueue({ draftCaptureToken: "retained-token" });
+	expect(await f.runtime.editQueuedMessage(id, key)).toBeDefined();
+	f.repository.write(destination, {
+		draft: "newer draft",
+		unconfirmed: "uncertain composition",
+		unconfirmedCaptureToken: "retained-token",
+	});
+	f.reloadDraft();
+	return id;
+}
+
+test("retained Edit rejects stale thread identity before preclear or append", async () => {
+	const f = fixture();
+	const id = await retainedEditingCapture(f);
+	f.runtime.registerTarget("hub", "session", new FakeClient("closed"), {
+		threadId: "replacement-thread",
+		instanceId: "instance",
+	});
+
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, id, f.document)).toBe("lost");
+	expect(f.repository.read(destination)).toMatchObject({
+		draft: "newer draft",
+		unconfirmed: "uncertain composition",
+		unconfirmedCaptureToken: "retained-token",
+	});
+	expect(f.document.getSnapshot().record.composer?.recoveryIds).toBeUndefined();
+	expect(await f.runtime.storage.getRecovery(id)).toMatchObject({ recoveryKind: "editing" });
+});
+
+test("retained Edit rejects stale instance identity before preclear or append", async () => {
+	const f = fixture();
+	const id = await retainedEditingCapture(f);
+	f.runtime.registerTarget("hub", "session", new FakeClient("closed"), {
+		threadId: "thread",
+		instanceId: "replacement-instance",
+	});
+
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, id, f.document)).toBe("lost");
+	expect(f.repository.read(destination)).toMatchObject({
+		draft: "newer draft",
+		unconfirmed: "uncertain composition",
+		unconfirmedCaptureToken: "retained-token",
+	});
+	expect(f.document.getSnapshot().record.composer?.recoveryIds).toBeUndefined();
+	expect(await f.runtime.storage.getRecovery(id)).toMatchObject({ recoveryKind: "editing" });
+});
+
+test("retained Edit rejects missing current identity before preclear or append", async () => {
+	const f = fixture();
+	const id = await retainedEditingCapture(f);
+	f.unregisterTarget();
+
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, id, f.document)).toBe("lost");
+	expect(f.repository.read(destination)).toMatchObject({
+		draft: "newer draft",
+		unconfirmed: "uncertain composition",
+		unconfirmedCaptureToken: "retained-token",
+	});
+	expect(f.document.getSnapshot().record.composer?.recoveryIds).toBeUndefined();
+	expect(await f.runtime.storage.getRecovery(id)).toMatchObject({ recoveryKind: "editing" });
+});

@@ -10,7 +10,7 @@ import { getToasts, pushToast, resetToastStoreForTests } from "../../../widgets/
 import { createTestComposerSource } from "../testing/composerSource";
 import { installControlledImageEncoding } from "../testing/imageEncoding";
 import { createAttachmentOperations, useAttachments } from "./attachments/useAttachments";
-import { readComposerDraft, readDraftRevision, writeComposerDraft } from "./draft";
+import { readComposerDraft, readComposerDraftRevisionId, readDraftRevision, writeComposerDraft } from "./draft";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 
 beforeEach(() => {
@@ -120,6 +120,42 @@ test("detached command-only recovery persists instead of being discarded", async
     composerText: "",
     composerMentions: [],
   });
+});
+
+test("failed source draft write cannot acquire another source's revision token", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input: [{ type: "text", text: "recovered" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "recovered" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const sourceA = createTestComposerSource("root");
+  const sourceB = createTestComposerSource("root");
+  sourceB.persistDraft("C");
+  const revisionC = readComposerDraftRevisionId("root");
+  if (!revisionC) throw new Error("missing source B draft revision");
+  const setItem = vi.spyOn(localStorage, "setItem").mockImplementation(() => {
+    throw new DOMException("quota exceeded", "QuotaExceededError");
+  });
+  try {
+    sourceA.persistDraft("A");
+    expect(setItem).toHaveBeenCalledOnce();
+    expect(readComposerDraftRevisionId("root")).toBe(revisionC);
+    expect(readComposerDraft("root").text).toBe("C");
+    setItem.mockRestore();
+    sourceA.setActiveRecoveryId(original.clientMutationId);
+    await sourceA.queueRecoveryPersistence(original.clientMutationId, "A recovery", [], []);
+    expect((await storage.getRecovery(original.clientMutationId))?.localDraftRevisionId).not.toBe(revisionC);
+  } finally {
+    setItem.mockRestore();
+    sourceA.dispose();
+    sourceB.dispose();
+    storage.close();
+  }
 });
 
 // Equal prose/skills do not authorize clearing a different command snapshot.
