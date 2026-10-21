@@ -279,8 +279,9 @@ func TestLocalStoragePreservingMigration(t *testing.T) {
 	if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, selected) {
 		t.Fatalf("startup rewrote config: %v", err)
 	}
+	destination := storageFixtureSnapshot(t, local)
 	for _, name := range []string{"auth-token", "deletions/state.json", "transcript-display/state.json"} {
-		if !reflect.DeepEqual(storageFixtureSnapshot(t, local)[name], before[name]) {
+		if !reflect.DeepEqual(destination[name], before[name]) {
 			t.Fatalf("destination durable file changed: %s", name)
 		}
 	}

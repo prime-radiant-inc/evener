@@ -147,6 +147,46 @@ func TestEndpointResolverConfigLookupCancellation(t *testing.T) {
 	}
 }
 
+func TestEndpointResolverConfigAliasResolutionCount(t *testing.T) {
+	for _, tc := range []struct {
+		name, record string
+		want         []string
+	}{
+		{"identical", "/srv/selected-alias.toml", []string{"/srv/selected-alias.toml"}},
+		{"distinct", "/srv/running-alias.toml", []string{"/srv/selected-alias.toml", "/srv/running-alias.toml"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host := hostreg.Host{Name: "selected", SSH: "remote", ConfigPath: "/srv/selected-alias.toml"}
+			report := remoteEndpointFixture("/srv/hub.toml", "127.0.0.1:19371", "boot-one")
+			report.Running.ConfigPath = tc.record
+			var resolved []string
+			fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+				remote := strings.Join(argv[12:], " ")
+				for _, alias := range []string{"/srv/selected-alias.toml", "/srv/running-alias.toml"} {
+					if remote == resolveDeployCommand(alias) {
+						resolved = append(resolved, alias)
+						return []byte("/srv/hub.toml\n"), nil
+					}
+				}
+				if remote == "evener hub endpoint --json --config /srv/selected-alias.toml" {
+					return json.Marshal(report)
+				}
+				return nil, fmt.Errorf("unexpected remote command: %s", remote)
+			}}
+			m := newTestManager(t, testRegistry(t, host), fr, Options{})
+			for call := range 2 {
+				resolved = nil
+				if _, err := m.resolveHostEndpoint(t.Context(), host, selectedRestartFacts()); err != nil {
+					t.Fatal(err)
+				}
+				if !slices.Equal(resolved, tc.want) {
+					t.Fatalf("call %d resolved=%v, want %v", call, resolved, tc.want)
+				}
+			}
+		})
+	}
+}
+
 func TestEndpointResolverCapabilityAndNoLoopback(t *testing.T) {
 	host := hostreg.Host{Name: "selected", SSH: "remote"}
 	report := remoteEndpointFixture("/srv/hub.toml", "192.0.2.1:19371", "boot-one")

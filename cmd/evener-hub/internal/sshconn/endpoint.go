@@ -76,7 +76,7 @@ func (m *Manager) readHostEndpoint(ctx context.Context, host hostreg.Host, facts
 	// compared here. Relative owner paths require checkOwnerConfig's owner cwd
 	// and environment, not the SSH login directory or the controller's cwd.
 	paths := []string{selector}
-	if report.Running != nil {
+	if report.Running != nil && report.Running.ConfigPath != selector {
 		paths = append(paths, report.Running.ConfigPath)
 	}
 	for _, p := range paths {

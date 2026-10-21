@@ -19,7 +19,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/internal/hubendpoint"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
@@ -55,10 +55,7 @@ func TestEndpointJourneyDefaultConfigRestart(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(project, "sessions"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	id, err := identifier.NewSessionID()
-	if err != nil {
-		t.Fatal(err)
-	}
+	id := hubtest.SessionID(t)
 	const marker = "TASK8_SESSION_72c9"
 	now := time.Unix(1700000000, 0).UTC()
 	if err := schema.SaveSessionMeta(project, schema.SessionMeta{ID: id, Name: marker, ProfileID: "fake", Model: fakellm.ModelID, CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: root}}); err != nil {

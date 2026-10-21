@@ -188,7 +188,10 @@ elif cmd == 'evener':
             s['reports']=s.get('reports',0)+1; save()
             port=19472+s['reports'] if new else 19471
             local='http://'+f.get('local_host','[::1]')+':'+str(port)
-            report['running']={'schema_version':1,'pid':pid,'boot_id':boot,'started_at':'2026-10-16T08:00:00Z','config_path':str(p/'alias.toml') if f.get('running_alias') else ('../alias.toml' if f.get('running_relative') else str(config)),'hub_state_root':str(root),'requested_listen_addr':f.get('listener','[::]:0'),'listen_source':source,'bound_addr':f.get('bound_host','[::]')+':'+str(port),'local_url':local,'loopback_url':local,'version':f['version'] if new else 'old','backend_git_sha':f['sha'] if new else 'old'}
+            running_config=str(config)
+            if f.get('running_alias'): running_config=str(p/'alias.toml')
+            elif f.get('running_relative'): running_config='../alias.toml'
+            report['running']={'schema_version':1,'pid':pid,'boot_id':boot,'started_at':'2026-10-16T08:00:00Z','config_path':running_config,'hub_state_root':str(root),'requested_listen_addr':f.get('listener','[::]:0'),'listen_source':source,'bound_addr':f.get('bound_host','[::]')+':'+str(port),'local_url':local,'loopback_url':local,'version':f['version'] if new else 'old','backend_git_sha':f['sha'] if new else 'old'}
             if new and f.get('stale'): report['running'].update(pid=101,boot_id='old-boot')
             if new and f.get('wrong_build'): report['running']['version']='wrong'
             if new and f.get('wrong_sha'): report['running']['backend_git_sha']='wrong'
