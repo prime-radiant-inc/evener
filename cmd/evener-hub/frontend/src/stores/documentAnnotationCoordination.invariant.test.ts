@@ -1642,6 +1642,7 @@ test("a throwing acknowledgment is retained and retried by a later pass", async 
     origin: "https://coordination.example",
     runtime: true,
     routeStorageSuccessIntoRuntime: true,
+    routeUncertainAppendIntoRuntime: true,
     prepareAnnotation: currentPreparation(() => fixture),
     acknowledgeAnnotation: () => {
       if (acknowledgeFaults > 0) {
@@ -1658,9 +1659,131 @@ test("a throwing acknowledgment is retained and retried by a later pass", async 
   });
   expect(fixture.acknowledge).toHaveBeenCalledTimes(1);
 
-  // No external trigger retries a delivery on its own; the retained work makes
-  // the next pass re-drive it, and the composer eventually receives it.
-  await fixture.runtime.retryPending("storage-recovered");
+  // The retained delivery registers its need before the commit's signal, so
+  // the signal latches and the handoff's own settlement spends it: no
+  // external trigger retries the delivery, and the composer still receives it.
+  await fixture.runtime.whenIdle();
+  expect(fixture.acknowledge).toHaveBeenCalledTimes(2);
+  expect(acknowledgeFaults).toBe(0);
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+// The applied handoff answers applied even though its delivery faulted, so the
+// runtime sees no pending work at settlement. The commit's own signal is the
+// only trigger, and it arrives while the handoff is still outstanding: a
+// retention that does not register the need BEFORE that signal leaves the
+// signal nothing to latch onto, and the record dangles until unrelated work
+// fails. The failed delivery must therefore recover with no external call.
+test("a faulted acknowledgment starts its own recovery pass with no external trigger", async () => {
+  let acknowledgeFaults = 1;
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+    routeUncertainAppendIntoRuntime: true,
+    prepareAnnotation: currentPreparation(() => fixture),
+    acknowledgeAnnotation: () => {
+      if (acknowledgeFaults > 0) {
+        acknowledgeFaults -= 1;
+        throw new Error("acknowledgment fault");
+      }
+    },
+  });
+
+  expect(await fixture.runtime.handoff(fixture.document, fixture.operation.operationId)).toMatchObject({
+    state: "applied",
+  });
+  expect(fixture.acknowledge).toHaveBeenCalledTimes(1);
+
+  // No external call of any kind: the handoff's own settlement spends the
+  // latched trigger, and the pass re-drives the delivery.
+  await fixture.runtime.whenIdle();
+  expect(fixture.acknowledge).toHaveBeenCalledTimes(2);
+  expect(acknowledgeFaults).toBe(0);
+
+  // The completing pass retired the record: a later applied handoff has no
+  // reconciliation work left to deliver.
+  fixture.acknowledge.mockClear();
+  expect(await fixture.repository.handoff(fixture.document, fixture.operation.operationId)).toMatchObject({
+    state: "already-applied",
+  });
+  expect(fixture.acknowledge).not.toHaveBeenCalled();
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+// An uncertain append's receipt is applied, so the direct handoff that finds it
+// answers already-applied and stays signal-free: the handoff's own settlement
+// is the last moment the runtime can act. The composer's storage commit that
+// arrived while the handoff was outstanding is latched, and a faulted delivery
+// leaves nothing pending, so the settle drops that trigger and the reconciliation
+// never runs again without unrelated work.
+test("a direct handoff whose reconciliation delivery faults retries it without an external trigger", async () => {
+  let acknowledgeFaults = 1;
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+    routeUncertainAppendIntoRuntime: true,
+    prepareAnnotation: currentPreparation(() => fixture),
+    acknowledgeAnnotation: () => {
+      if (acknowledgeFaults > 0) {
+        acknowledgeFaults -= 1;
+        throw new Error("acknowledgment fault");
+      }
+    },
+  });
+
+  // The append commits while its completion is held: the receipt is applied and
+  // the uncertain record retained. The repository-direct handoff reports the
+  // recoverable pending outcome without touching the runtime's retry need.
+  const hold = holdNextWriteTransaction(APPEND_STORES);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let reached = false;
+  void hold.reached.then(() => {
+    reached = true;
+  });
+  const append = fixture.repository.handoff(fixture.document, fixture.operation.operationId);
+  await settleRealTasks(() => reached, 50);
+  expect(reached).toBe(true);
+  await vi.advanceTimersByTimeAsync(10_001);
+  expect(await append).toEqual({ state: "pending", reason: "owner-unavailable" });
+  hold.release();
+  vi.useRealTimers();
+
+  // Hold the reconciliation's backing read open so the composer's own storage
+  // commit lands while the direct handoff is outstanding: the runtime retains
+  // that commit's trigger across the handoff.
+  const backingRead = deferred<void>();
+  const releaseBacking = deferred<void>();
+  const readAppendBacking = fixture.drafts.readAppendBacking.bind(fixture.drafts);
+  vi.spyOn(fixture.drafts, "readAppendBacking").mockImplementation(async (preparation) => {
+    backingRead.resolve();
+    await releaseBacking.promise;
+    return readAppendBacking(preparation);
+  });
+
+  const reconcile = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
+  await backingRead.promise;
+  const draft = await fixture.drafts.load(fixture.key);
+  if (!draft) throw new Error("fixture seeded no draft");
+  await fixture.drafts.commitEdit(fixture.key, draft.token, { text: "typing", skillNames: [] }, () => true);
+  releaseBacking.resolve();
+
+  // The receipt is applied, so the handoff answers already-applied while its
+  // delivery faulted; only the retained record names the outstanding work.
+  expect(await reconcile).toMatchObject({ state: "already-applied" });
+  expect(fixture.acknowledge).toHaveBeenCalledTimes(1);
+
+  // No external trigger follows: the handoff's settlement must spend the
+  // latched commit on the pass that delivers the reconciliation.
   await fixture.runtime.whenIdle();
   expect(fixture.acknowledge).toHaveBeenCalledTimes(2);
   expect(acknowledgeFaults).toBe(0);

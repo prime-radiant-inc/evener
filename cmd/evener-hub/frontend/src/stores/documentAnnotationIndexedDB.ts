@@ -89,6 +89,13 @@ export interface DocumentAnnotationOptions {
   // retryable repository work, so the retry runtime registers the need that a
   // later storage-success notification spends.
   onCancelledDiscardRetained?: () => void;
+  // Observational, outside every transaction: an append's committed backing is
+  // retained for a delivery that faulted. The receipt may already be APPLIED,
+  // so no handoff answer shows the outstanding work; the retry runtime
+  // registers the need its own settlement spends. Emission-free by contract:
+  // the fault path fires no signal or wake, because a signal inside a pass
+  // would latch and chain sibling passes for as long as the fault persists.
+  onUncertainAppendRetained?: () => void;
 }
 
 // Operation-scoped cancellation for ONE in-flight save. The runtime owns the
@@ -2103,7 +2110,15 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         // A fault leaves the composer's token un-advanced while the handoff
         // reports applied. Retain the existing uncertain-append record so a
         // later pass re-drives the delivery from the committed backing.
-        if (!delivered) this.#uncertainAppends.set(operationKey, { key, operationId, source, preparation });
+        if (!delivered) {
+          this.#uncertainAppends.set(operationKey, { key, operationId, source, preparation });
+          // The receipt answers applied, so this handoff's own settlement sees
+          // no pending work and would drop the trigger the transition below
+          // latches. Register the retained delivery BEFORE that signal, so the
+          // signal latches on outstanding work and the settlement spends it on
+          // the pass that re-drives the delivery.
+          invokeObserver(() => this.#options.onUncertainAppendRetained?.());
+        }
       }
       // The append committed; wake matching readers (and peers) after commit.
       this.#settleTransition({ signal: true, documentKey: annotationDocumentKey(key) });
@@ -2144,7 +2159,10 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       backing = await this.#options.drafts.readAppendBacking(retained.preparation);
     } catch {
       // A transient read fault keeps the record: the receipt is applied, so
-      // only this reconciliation is still outstanding.
+      // only this reconciliation is still outstanding. The handoff answers
+      // already-applied and stays signal-free, so the retained work registers
+      // the need its own settlement spends.
+      invokeObserver(() => this.#options.onUncertainAppendRetained?.());
       return "faulted";
     }
     if (this.#closed || cancellation?.cancelled === true) return "none";
@@ -2163,7 +2181,10 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const { token, value } = backing;
     if (!attemptDelivery(() => retained.source.acknowledgeAnnotation(retained.preparation, token, value))) {
       // The delivery faulted: the record stays and the next pass attempts it
-      // again. The applied row is already published, so no signal is owed.
+      // again. The applied row is already published, so no signal is owed -
+      // and no signal may be fired here: the retained delivery registers the
+      // need its handoff's settlement spends instead.
+      invokeObserver(() => this.#options.onUncertainAppendRetained?.());
       return "faulted";
     }
     // The acknowledgment is the moment the committed backing makes the

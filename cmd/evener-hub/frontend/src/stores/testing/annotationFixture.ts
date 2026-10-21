@@ -116,6 +116,7 @@ export interface AnnotationStoreOptions {
   onStorageSuccess?: () => void;
   onPendingExpiryRetained?: () => void;
   onCancelledDiscardRetained?: () => void;
+  onUncertainAppendRetained?: () => void;
   // Runs after the factory, drafts repository and key exist and BEFORE the
   // annotation repository subscribes to drafts, so setup work publishes no
   // storage-success notification of its own. Returns the preparation the seeded
@@ -156,6 +157,7 @@ export async function openAnnotationStore(options: AnnotationStoreOptions): Prom
     onStorageSuccess: options.onStorageSuccess,
     onPendingExpiryRetained: options.onPendingExpiryRetained,
     onCancelledDiscardRetained: options.onCancelledDiscardRetained,
+    onUncertainAppendRetained: options.onUncertainAppendRetained,
   });
   return { factory, drafts, repository, key, document, preparation };
 }
@@ -163,7 +165,12 @@ export async function openAnnotationStore(options: AnnotationStoreOptions): Prom
 export interface AnnotationFixtureOptions
   extends Omit<
     AnnotationStoreOptions,
-    "seed" | "targetFor" | "onStorageSuccess" | "onPendingExpiryRetained" | "onCancelledDiscardRetained"
+    | "seed"
+    | "targetFor"
+    | "onStorageSuccess"
+    | "onPendingExpiryRetained"
+    | "onCancelledDiscardRetained"
+    | "onUncertainAppendRetained"
   > {
   // Whether the drafts repository holds the ordinary row a real append needs.
   seedDraft?: boolean;
@@ -184,6 +191,10 @@ export interface AnnotationFixtureOptions
   // Production wiring routes a faulted cancelled-save discard into the
   // runtime's retry need, so a later trigger spends the pass that completes it.
   routeCancelledDiscardIntoRuntime?: boolean;
+  // Production wiring routes a retained delivery (a faulted acknowledgment
+  // over an applied receipt) into the runtime's retry need, so the handoff's
+  // own settlement spends the trigger that pass needs.
+  routeUncertainAppendIntoRuntime?: boolean;
   // The recovery suite drives the runtime the fixture builds; the other suites
   // build their own or use none.
   runtime?: boolean;
@@ -198,6 +209,7 @@ export interface AnnotationFixture extends AnnotationStore {
   storageSuccess: ReturnType<typeof vi.fn>;
   pendingExpiryRetained: ReturnType<typeof vi.fn>;
   cancelledDiscardRetained: ReturnType<typeof vi.fn>;
+  uncertainAppendRetained: ReturnType<typeof vi.fn>;
   listeners: Set<() => void>;
   subscribeCount: () => number;
   // The namespace incarnation the fixture's first read was issued under.
@@ -243,6 +255,9 @@ export async function openAnnotationFixture(options: AnnotationFixtureOptions): 
   const cancelledDiscardRetained = vi.fn(() => {
     if (options.routeCancelledDiscardIntoRuntime === true) runtime?.registerRetryNeed();
   });
+  const uncertainAppendRetained = vi.fn(() => {
+    if (options.routeUncertainAppendIntoRuntime === true) runtime?.registerRetryNeed();
+  });
   const store = await openAnnotationStore({
     databaseName: options.databaseName,
     origin: options.origin,
@@ -256,6 +271,7 @@ export async function openAnnotationFixture(options: AnnotationFixtureOptions): 
     onStorageSuccess: storageSuccess,
     onPendingExpiryRetained: pendingExpiryRetained,
     onCancelledDiscardRetained: cancelledDiscardRetained,
+    onUncertainAppendRetained: uncertainAppendRetained,
     seed:
       options.seedDraft === false
         ? undefined
@@ -299,6 +315,7 @@ export async function openAnnotationFixture(options: AnnotationFixtureOptions): 
     storageSuccess,
     pendingExpiryRetained,
     cancelledDiscardRetained,
+    uncertainAppendRetained,
     listeners,
     subscribeCount: () => subscribeCalls,
     incarnation: ticket.namespaceIncarnation,
