@@ -24,6 +24,10 @@ type pkgEntry struct {
 	Dir        string
 	Name       string
 	Deps       []string
+	Module     *struct {
+		Path string
+		Dir  string
+	}
 }
 
 // pkgInfo is one real (buildable, non-test-variant) package in the workspace.
@@ -169,17 +173,23 @@ func (g *graph) addModule(module string, entries []pkgEntry) {
 		}
 		g.pkgs[self.ImportPath] = &pkgInfo{ImportPath: self.ImportPath, ModuleRoot: module, Dir: dir}
 		g.byDir[dir] = self.ImportPath
-		// The module's own import path is this package's path minus its
-		// directory inside the module. Keeping it lets a deleted package,
-		// which is no longer in the listing, still be named so its
-		// importers can be found.
-		relDir, relErr := filepath.Rel(g.moduleDirs[module], dir)
-		if relErr == nil {
-			relSlash := filepath.ToSlash(relDir)
-			if relSlash == "." {
-				g.modulePaths[module] = self.ImportPath
-			} else {
-				g.modulePaths[module] = strings.TrimSuffix(self.ImportPath, "/"+relSlash)
+		// go list already reports the module each package belongs to. Using
+		// it keeps a deleted package's import path derivable without
+		// inferring a module path from a package path.
+		if self.Module != nil && self.Module.Path != "" {
+			g.modulePaths[module] = self.Module.Path
+		}
+		// The module's own import path lets a deleted package, which is no
+		// longer in the listing, still be named so its importers are found.
+		if _, known := g.modulePaths[module]; !known {
+			relDir, relErr := filepath.Rel(g.moduleDirs[module], dir)
+			if relErr == nil {
+				relSlash := filepath.ToSlash(relDir)
+				if relSlash == "." {
+					g.modulePaths[module] = self.ImportPath
+				} else {
+					g.modulePaths[module] = strings.TrimSuffix(self.ImportPath, "/"+relSlash)
+				}
 			}
 		}
 		deps := map[string]bool{}
@@ -393,11 +403,47 @@ func embedPatterns(src string) []string {
 			continue
 		}
 		rest := strings.TrimPrefix(trimmed, "//go:embed")
-		for _, field := range strings.Fields(rest) {
-			patterns = append(patterns, strings.Trim(field, `"`+"`"))
-		}
+		patterns = append(patterns, splitEmbedPatterns(rest)...)
 	}
 	return patterns
+}
+
+// splitEmbedPatterns splits a directive's argument list on whitespace that is
+// outside a quoted string, so the legal pattern `"x y.txt"` stays one pattern.
+// strings.Fields would split it in two and attribute a file named with a space
+// to nothing. Quoting is stripped; both quote forms the go command accepts are
+// handled here rather than re-using go/build, whose ImportDir applies build
+// constraints and would miss a directive in a file the host does not compile.
+func splitEmbedPatterns(rest string) []string {
+	var (
+		out     []string
+		current strings.Builder
+		quote   rune
+	)
+	flush := func() {
+		if current.Len() > 0 {
+			out = append(out, current.String())
+			current.Reset()
+		}
+	}
+	for _, r := range rest {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+				continue
+			}
+			current.WriteRune(r)
+		case r == '"' || r == '`':
+			quote = r
+		case r == ' ' || r == '\t':
+			flush()
+		default:
+			current.WriteRune(r)
+		}
+	}
+	flush()
+	return out
 }
 
 // embedPatternCovers reports whether one //go:embed pattern selects rel, a

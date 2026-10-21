@@ -221,3 +221,19 @@ func TestWorkspaceModulesParsesCommentsAndQuoting(t *testing.T) {
 		}
 	}
 }
+
+// A quoted embed pattern may legally contain a space; splitting it with
+// strings.Fields turned "x y.txt" into two patterns and attributed a changed
+// file of that name to nothing.
+func TestSplitEmbedPatternsKeepsQuotedSpaces(t *testing.T) {
+	got := splitEmbedPatterns(` assets/*.md "x y.txt" ` + "`back tick.txt`")
+	want := []string{"assets/*.md", "x y.txt", "back tick.txt"}
+	if len(got) != len(want) {
+		t.Fatalf("splitEmbedPatterns = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("splitEmbedPatterns = %q, want %q", got, want)
+		}
+	}
+}
