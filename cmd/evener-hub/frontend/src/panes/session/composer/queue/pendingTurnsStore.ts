@@ -256,6 +256,13 @@ export function useRetryAwaitingReflection(ref: string, turnId: string): boolean
   return useStore(retryReflectionStore, (state) => state.byRef.get(ref) === turnId);
 }
 
+export function retryReflectionForTests(ref: string): { failedTurnId: string; clientMutationId?: string } | undefined {
+  const marker = retryReflections.get(ref);
+  return marker === undefined
+    ? undefined
+    : { failedTurnId: marker.failedTurnId, clientMutationId: marker.clientMutationId };
+}
+
 // A mounted action asks the owner to re-decide a still-open marker, so a
 // remount after a failed reconciliation read gets another authoritative
 // attempt instead of leaving the action permanently inactive.

@@ -6,6 +6,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { accessibleName } from "../../../accessibleNameTestUtils";
 import { connectionStore } from "../../../stores/connection";
+import { MutationOutbox } from "../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { holdNextTransaction, holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import {
@@ -19,6 +20,7 @@ import {
   pendingTurnEntries,
   refreshPendingTurnsProjection,
   resetPendingTurnsStoreForTests,
+  retryReflectionForTests,
   submitWithPendingTracking,
 } from "../composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../composer/queue/testing/flushPendingTurnsProjection";
@@ -986,6 +988,57 @@ test("a reflected acceptance with held turn events cannot reopen the old Retry",
     // The old failure keeps its diagnostic but never regains an action.
     expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(1);
   } finally {
+    storage.close();
+  }
+});
+
+test("the reflection marker opens only after the enqueue await, not inside the commit callback", async () => {
+  const turn = failedTurn();
+  const { fake, storage } = await loadThread("ref_a", [turn]);
+  fake.on("turn/start", ({ clientMutationId }) => ({
+    receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
+    turn: { id: "turn_continued", status: "inProgress", itemsView: "" },
+  }));
+  const original = MutationOutbox.prototype.enqueueIntent;
+  let releaseGate!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releaseGate = resolve;
+  });
+  let observedCommit!: () => void;
+  const commitSeen = new Promise<void>((resolve) => {
+    observedCommit = resolve;
+  });
+  const spy = vi.spyOn(MutationOutbox.prototype, "enqueueIntent").mockImplementation(async function (
+    this: MutationOutbox,
+    ...args: Parameters<typeof original>
+  ) {
+    const record = await original.apply(this, args);
+    // The commit callback has run; hold the await that follows it.
+    observedCommit();
+    await gate;
+    return record;
+  });
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+    let retry!: Promise<void>;
+    await act(async () => {
+      retry = threadsStore.getState().continueTurn("ref_a", turn.id);
+      await commitSeen;
+    });
+    // The commit callback ran, but the enqueue has not returned to continueTurn
+    // and the pending projection has not published the row: opening the marker
+    // here would let an old-tail refresh clear it.
+    expect(retryReflectionForTests("ref_a")).toBeUndefined();
+    await act(async () => {
+      releaseGate();
+      await retry;
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+  } finally {
+    spy.mockRestore();
     storage.close();
   }
 });

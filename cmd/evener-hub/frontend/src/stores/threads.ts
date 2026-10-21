@@ -7594,6 +7594,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // have committed the durable row between the two checks.
       if (!retryAdmissionCurrent(ref, failedTurnId)) return;
       try {
+        let committedId: string | undefined;
         await sendMutationIntent(
           {
             ...composerMutationIntent(ref, "send", TURN_CONTINUATION_TEXT),
@@ -7607,9 +7608,16 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
               },
               rejectIfPendingTurnInput: true,
             },
-            onCommitted: (record) => admission.markSubmitted(ref, failedTurnId, record.clientMutationId),
+            // Capture only. The marker is opened after the enqueue await, when
+            // the commit feed has published this row into the pending
+            // projection; opening it earlier lets a refresh that still shows
+            // the old tail clear it as a newer publication.
+            onCommitted: (record) => {
+              committedId = record.clientMutationId;
+            },
           },
         );
+        admission.markSubmitted(ref, failedTurnId, committedId);
       } catch (error) {
         if (!(error instanceof MutationAdmissionLostError)) throw error;
       }
