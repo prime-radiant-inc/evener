@@ -77,6 +77,7 @@ function RetryAction({
   const awaitingReflection = useRetryAwaitingReflection(sessionRef, turnId);
   const submitting = useComposerSubmitting(sessionRef);
   const cacheUnverified = useThreadsStore((state) => state.cacheUnverified.has(sessionRef));
+  const submissionInFlight = useThreadsStore((state) => state.turnSubmissionRefs.has(sessionRef));
   const pending = ownPendingTurnInput(pendingEntries);
   useEffect(() => {
     if (awaitingReflection) ensureRetryReflectionResolved(sessionRef);
@@ -93,7 +94,15 @@ function RetryAction({
     <Button
       variant="primary"
       size="sm"
-      disabled={!pendingLoaded || pending || admissionInFlight || awaitingReflection || submitting || cacheUnverified}
+      disabled={
+        !pendingLoaded ||
+        pending ||
+        admissionInFlight ||
+        awaitingReflection ||
+        submitting ||
+        cacheUnverified ||
+        submissionInFlight
+      }
       onClick={() => void retry()}
     >
       {recoveryLabel}

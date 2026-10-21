@@ -34,6 +34,7 @@ import {
   readMutationPersistence,
   resendRecoveryMutation,
   retryBlockedMutation,
+  settleObservedTurnSubmission,
   subscribeMutationPersistence,
   threadsStore,
   transientRefusalRetryPending,
@@ -237,7 +238,24 @@ function reconcileRetryReflection(ref: string): void {
     clearRetryReflection(ref);
     return;
   }
-  if (ownPendingTurnInput(pendingTurnsStore.pendingTurnEntries(ref))) return;
+  // A durable row still owns the answer: the submission is unsettled, so a
+  // read proves nothing. A retained optimistic copy of an accepted (reflected)
+  // turn is different: the marker is already closed by it, and a read is the
+  // observation that can settle it. Asking the thread owner is safe there and
+  // is what lets a remount after a failed read make progress.
+  if (
+    pendingTurnsStore
+      .pendingTurnEntries(ref)
+      .some(
+        (entry) =>
+          entry.fromThisClient &&
+          entry.state !== "canceled" &&
+          entry.source !== "optimistic" &&
+          (entry.method === "send" || entry.method === "queue"),
+      )
+  ) {
+    return;
+  }
   // A handed-off marker waits for the winning read's publication. Starting a
   // read here would supersede that winner and discard the only answer in
   // flight; remounting the action explicitly asks again below.
@@ -800,7 +818,17 @@ threadsStore.subscribe((state, previous) => {
   for (const ref of new Set([...state.threads.keys(), ...retryReflections.keys()])) {
     const modelChanged = state.threads.get(ref) !== previous.threads.get(ref);
     const hydrationChanged = state.hydrations.get(ref) !== previous.hydrations.get(ref);
-    if (modelChanged) void refreshPendingTurnsProjection(ref);
+    if (modelChanged) {
+      // An accepted continuation whose new turn has already been published is
+      // observed: settle its kept copy so it cannot block Retry on whatever
+      // failure is current now.
+      for (const [clientMutationId, record] of pendingTurnsStore.getState().optimistic) {
+        if (record.targetRef === ref && (record.method === "turn/start" || record.method === "turn/queue")) {
+          settleObservedTurnSubmission(clientMutationId, ref);
+        }
+      }
+      void refreshPendingTurnsProjection(ref);
+    }
     if ((modelChanged || hydrationChanged) && retryReflections.has(ref)) reconcileRetryReflection(ref);
   }
 });

@@ -625,6 +625,7 @@ test("a reflected ordinary send whose new turn is already the tail creates no ma
     const view = render(
       <TurnFailureEndCap error={{ message: "boom ordinary" }} sessionRef="ref_a" turnId="ordinary_turn" />,
     );
+    await flushPendingTurnsProjectionForTests();
     const ordinaryRetry = within(view.container).getByRole("button", { name: "Retry" }) as HTMLButtonElement;
     await waitFor(() => expect(ordinaryRetry.disabled).toBe(false));
   } finally {
@@ -686,6 +687,7 @@ test("a read that publishes the new failed turn before the receipt creates no ma
     expect(retryReflectionForTests("ref_a")).toBeUndefined();
 
     const view = render(<TurnFailureEndCap error={{ message: "boom new" }} sessionRef="ref_a" turnId="new_failed" />);
+    await flushPendingTurnsProjectionForTests();
     const newRetry = within(view.container).getByRole("button", { name: "Retry" }) as HTMLButtonElement;
     await waitFor(() => expect(newRetry.disabled).toBe(false));
   } finally {
@@ -700,6 +702,111 @@ test("submitted-tail baselines are retained without a cap", () => {
   // The oldest live submission is still present: no count bound evicts it.
   expect(submittedTailBaselineForTests("baseline-0")).toBe("tail-0");
   expect(submittedTailBaselineForTests("baseline-299")).toBe("tail-299");
+});
+
+test("a persisted reflected turn keeps Retry closed across a reload until the turn is observed", async () => {
+  const turn = failedTurn();
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "reflected-before-reload" });
+  const seeded = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thr_ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "continue" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "continue" }] },
+  });
+  await storage.settleReceipt(seeded.clientMutationId, "reflected");
+  const { fake } = await loadThread("ref_a", [turn], {}, storage);
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    // The durable accepted copy is the only owner left after a reload. It must
+    // keep the old failure closed until the conversation proves its turn.
+    expect(await storage.listOptimistic("ref_a")).toHaveLength(1);
+    await waitFor(() => expect(retryButton()?.disabled).toBe(true));
+    await act(async () => {
+      await threadsStore.getState().continueTurn("ref_a", turn.id);
+    });
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+
+    fake.on("thread/read", () => {
+      const response = readResponse("ref_a", {
+        status: { type: "active" },
+        turns: [
+          {
+            id: turn.id,
+            status: "failed",
+            itemsView: "full",
+            items: [],
+            error: { message: "boom" },
+          },
+          {
+            id: "turn_continued",
+            status: "inProgress",
+            itemsView: "full",
+            items: [
+              {
+                id: "item_continued",
+                turnId: "turn_continued",
+                type: "userMessage",
+                text: "continue",
+                clientMutationId: seeded.clientMutationId,
+              },
+            ],
+          },
+        ],
+      });
+      response.thread.evener.activeTurnId = "turn_continued";
+      return response;
+    });
+    await act(async () => {
+      await threadsStore.getState().refreshThread("ref_a");
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(await storage.listOptimistic("ref_a")).toHaveLength(0);
+    expect(retryButton()).toBeNull();
+  } finally {
+    storage.close();
+  }
+});
+
+test("a direct send blocks Retry before its durable row exists", async () => {
+  const turn = failedTurn();
+  const { fake, storage } = await loadThread("ref_a", [turn]);
+  fake.on("turn/start", ({ clientMutationId }) => ({
+    receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
+    turn: { id: "ordinary_turn", status: "inProgress", itemsView: "" },
+  }));
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+
+    // A direct caller (the slash fallthrough) never passes through
+    // submitWithPendingTracking. Its press must still close Retry before the
+    // durable row exists, or a continuation can be enqueued alongside it.
+    const barrier = holdNextTransaction(["sequences"], "readonly");
+    let send!: Promise<void>;
+    await act(async () => {
+      send = threadsStore.getState().send("ref_a", "ordinary follow-up");
+    });
+    await barrier.reached;
+    expect(retryButton()?.disabled).toBe(true);
+    await act(async () => {
+      await threadsStore.getState().continueTurn("ref_a", turn.id);
+    });
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+
+    barrier.release();
+    await act(async () => {
+      await send;
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+  } finally {
+    storage.close();
+  }
 });
 
 test("a turn arriving during the held enqueue cannot become the submission's baseline", async () => {
@@ -1359,7 +1466,9 @@ test("a reflected acceptance with held turn events cannot reopen the old Retry",
     await flushPendingTurnsProjectionForTests();
     expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
     expect(await storage.listOutbox("ref_a")).toHaveLength(0);
-    expect(await storage.listOptimistic("ref_a")).toHaveLength(0);
+    // The accepted reflected continuation is kept until an authoritative read
+    // observes its turn; it is what keeps the old failure closed meanwhile.
+    expect(await storage.listOptimistic("ref_a")).toHaveLength(1);
     // The acceptance is reflected but the client has not observed the new
     // turn: the old failure must not become actionable again.
     const afterAcceptance = retryButton();
@@ -1387,6 +1496,7 @@ test("a reflected acceptance with held turn events cannot reopen the old Retry",
     const laterView = render(
       <TurnFailureEndCap error={{ message: "boom again" }} sessionRef="ref_a" turnId={later.id} />,
     );
+    await flushPendingTurnsProjectionForTests();
     const laterRetry = within(laterView.container).getByRole("button", { name: "Retry" }) as HTMLButtonElement;
     await waitFor(() => expect(laterRetry.disabled).toBe(false));
     // The old failure keeps its diagnostic but never regains an action.

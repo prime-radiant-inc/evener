@@ -322,6 +322,10 @@ export interface ThreadsStoreState {
    * cache route seeds/opens, cleared when an authoritative publication adopts
    * the route and when the route is retired. */
   cacheUnverified: ReadonlySet<string>;
+  /** Refs with a turn/start or turn/queue submission between its synchronous
+   * press and its durable enqueue settling. Covers direct callers that never
+   * pass through the composer's submitWithPendingTracking. */
+  turnSubmissionRefs: ReadonlySet<string>;
   /** The epoch this tab's in-flight clear armed (spec, "The
    * clear-cached-sessions setting"): while set, the write seam refuses every
    * open lease whose captured epoch predates it. The clear's arm lives here,
@@ -2564,9 +2568,11 @@ function getMutationRuntime(): MutationRuntime | null {
     // the new turn is observed. Open the same observation marker Retry uses,
     // for ANY own turn submission, so the obsolete failure is not actionable
     // in that window. The mark is idempotent for the same identity.
+    let reflectedTurnRef: string | undefined;
     if (projectionState === "reflected") {
       const record = await storage.getOutbox(clientMutationId);
       if (record !== undefined && (record.method === "turn/start" || record.method === "turn/queue")) {
+        reflectedTurnRef = record.targetRef;
         const model = threadsStore.getState().threads.get(record.targetRef);
         const latest = model === undefined ? undefined : model.turns[model.turns.length - 1];
         const baseline = submittedTailBaselines.get(clientMutationId);
@@ -2587,7 +2593,27 @@ function getMutationRuntime(): MutationRuntime | null {
       }
     }
     const settled = await settleReceipt(clientMutationId, projectionState);
-    submittedTailBaselines.delete(clientMutationId);
+    const modelAfterReceipt =
+      reflectedTurnRef === undefined ? undefined : threadsStore.getState().threads.get(reflectedTurnRef);
+    const latestAfterReceipt = modelAfterReceipt?.turns.at(-1);
+    const baselineBeforeReceipt = submittedTailBaselines.get(clientMutationId);
+    const keepsAcceptedCopy =
+      settled &&
+      reflectedTurnRef !== undefined &&
+      baselineBeforeReceipt !== undefined &&
+      latestTurnId(modelAfterReceipt) === baselineBeforeReceipt &&
+      latestAfterReceipt?.status === "failed" &&
+      latestAfterReceipt.error !== undefined;
+    // The receipt kept an accepted copy only because the submission had not
+    // been observed. If an authoritative publication already moved the tail
+    // while the receipt was in flight, that copy describes nothing pending and
+    // is settled now rather than blocking the new tail's own Retry.
+    if (settled && reflectedTurnRef !== undefined && !keepsAcceptedCopy) {
+      settleObservedTurnSubmission(clientMutationId, reflectedTurnRef, true);
+    }
+    // A kept copy still needs its baseline for the model subscription's
+    // observed check; it leaves with the copy in settleApplied.
+    if (!keepsAcceptedCopy) submittedTailBaselines.delete(clientMutationId);
     if (settled) noteHandledMutation(clientMutationId);
     return settled;
   };
@@ -3937,6 +3963,40 @@ function rememberSubmittedTail(clientMutationId: string, tail: string | undefine
   submittedTailBaselines.set(clientMutationId, tail);
 }
 
+// An accepted-but-unreflected turn whose conversation has already moved past
+// this submission's baseline no longer describes anything pending: the new
+// tail is observed, so its kept optimistic copy must not keep Retry closed on
+// the current failure. Settle it through the same durable owner a later
+// authoritative read would use; the baseline map is the page-lifetime record
+// of what "moved" means for this id.
+export function settleObservedTurnSubmission(
+  clientMutationId: string,
+  ref: string,
+  // A receipt can prove the pre-submission failure is no longer the tail even
+  // when the new tail is running. A model publication alone cannot: the local
+  // optimistic display also publishes a model, and that is not observation.
+  observedNonFailure = false,
+): void {
+  const baseline = submittedTailBaselines.get(clientMutationId);
+  if (baseline === undefined) return;
+  const model = threadsStore.getState().threads.get(ref);
+  if (model === undefined) return;
+  const latest = model.turns.at(-1);
+  // The kept copy exists only to close a stale failure. While that same failed
+  // tail is still the latest turn, the submission is not observed yet. Any
+  // other tail - a newer turn (running, completed or failed) or a non-failure -
+  // means there is no stale failure left for this copy to protect.
+  const failed = latest?.status === "failed" && latest.error !== undefined;
+  if (!failed) {
+    if (!observedNonFailure) return;
+  } else if (latestTurnId(model) === baseline) {
+    return;
+  }
+  const runtime = getMutationRuntime();
+  if (!runtime) return;
+  void runtime.storage.settleApplied(clientMutationId).catch(() => undefined);
+}
+
 // A direct fallback has no durable row for settleReceipt to observe, so the
 // send itself registers its baseline and opens the same observation marker
 // when the conversation still names the pre-send failed tail.
@@ -3954,6 +4014,21 @@ function noteDirectSubmission(
   if (latestTurnId(model) === baselineTail && latest?.status === "failed" && latest.error !== undefined) {
     retryPendingProjection?.markSubmitted(ref, baselineTail, clientMutationId);
   }
+}
+
+function beginTurnSubmission(ref: string): () => void {
+  threadsStore.setState((state) => {
+    if (state.turnSubmissionRefs.has(ref)) return state;
+    return { turnSubmissionRefs: new Set(state.turnSubmissionRefs).add(ref) };
+  });
+  return () => {
+    threadsStore.setState((state) => {
+      if (!state.turnSubmissionRefs.has(ref)) return state;
+      const next = new Set(state.turnSubmissionRefs);
+      next.delete(ref);
+      return { turnSubmissionRefs: next };
+    });
+  };
 }
 
 interface SendMutationOptions {
@@ -4238,6 +4313,7 @@ function assertRetrySourceCurrent(ref: string, failedTurnId: string): void {
 function retryAdmissionCurrent(ref: string, failedTurnId: string): boolean {
   if (!latestRetryModel(ref, failedTurnId)) return false;
   if (threadsStore.getState().cacheUnverified.has(ref)) return false;
+  if (threadsStore.getState().turnSubmissionRefs.has(ref)) return false;
   if (retryPendingProjection === null || !retryPendingProjection.isLoaded(ref)) return false;
   if (retryPendingProjection.isSubmitting(ref)) return false;
   if (retryPendingProjection.awaitingReflection(ref, failedTurnId)) return false;
@@ -7061,6 +7137,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   repairingRefs: new Set(),
   cacheLifetimes: new Map(),
   cacheUnverified: new Set(),
+  turnSubmissionRefs: new Set(),
   clearInFlight: undefined,
 
   clearResumedIdentity(ref) {
@@ -7693,9 +7770,18 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async send(ref, text, attachments, skillNames, commandNames, mentions) {
-    await sendMutationIntent(
-      composerMutationIntent(ref, "send", text, attachments, skillNames, commandNames, mentions),
-    );
+    // The page-local pre-persistence owner: a direct caller such as the
+    // command palette's slash fallthrough never passes through the composer's
+    // submitWithPendingTracking, so Retry would otherwise see neither a
+    // submitting ref nor a durable row while this send awaits its enqueue.
+    const endSubmission = beginTurnSubmission(ref);
+    try {
+      await sendMutationIntent(
+        composerMutationIntent(ref, "send", text, attachments, skillNames, commandNames, mentions),
+      );
+    } finally {
+      endSubmission();
+    }
   },
 
   async continueTurn(ref, failedTurnId) {
@@ -7761,9 +7847,14 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async queue(ref, text, attachments, skillNames, commandNames, mentions) {
-    await enqueueMutationIntent(
-      composerMutationIntent(ref, "queue", text, attachments, skillNames, commandNames, mentions),
-    );
+    const endSubmission = beginTurnSubmission(ref);
+    try {
+      await enqueueMutationIntent(
+        composerMutationIntent(ref, "queue", text, attachments, skillNames, commandNames, mentions),
+      );
+    } finally {
+      endSubmission();
+    }
   },
 
   async interrupt(ref) {
@@ -8823,6 +8914,7 @@ export function resetThreadsStoreForTests(): void {
       repairingRefs: new Set(),
       cacheLifetimes: new Map(),
       cacheUnverified: new Set(),
+      turnSubmissionRefs: new Set(),
       clearInFlight: undefined,
     },
     true,
