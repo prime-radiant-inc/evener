@@ -105,7 +105,8 @@ func run(stdout, stderr io.Writer, root, base string, modules []string, race boo
 	}
 
 	failed := false
-	for _, m := range orderedModules(res.Selected, modules) {
+	mods := orderedModules(res.Selected, modules)
+	for _, m := range mods {
 		sels := selectionsFor(res.Selected, m)
 		args := []string{"test", "-short", "-count=1"}
 		if race {
@@ -131,7 +132,7 @@ func run(stdout, stderr io.Writer, root, base string, modules []string, race boo
 		fmt.Fprintln(os.Stderr, "test-changed: FAIL: at least one selected module failed")
 		return 1
 	}
-	sayf(stdout, "test-changed: PASS (%d package(s) in %d module(s))\n", len(res.Selected), len(orderedModules(res.Selected, modules)))
+	sayf(stdout, "test-changed: PASS (%d package(s) in %d module(s))\n", len(res.Selected), len(mods))
 	return 0
 }
 

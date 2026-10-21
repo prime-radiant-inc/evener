@@ -56,8 +56,8 @@ func TestDeletedPackageSelectsItsImporters(t *testing.T) {
 		modulePaths: map[string]string{moduleRoot: modulePath},
 		runnable:    map[string]bool{moduleRoot: true},
 		pkgs: map[string]*pkgInfo{
-			dependent: {ImportPath: dependent, ModuleRoot: moduleRoot, Dir: "app"},
-			unrelated: {ImportPath: unrelated, ModuleRoot: moduleRoot, Dir: "other"},
+			dependent: {ModuleRoot: moduleRoot, Dir: "app"},
+			unrelated: {ModuleRoot: moduleRoot, Dir: "other"},
 		},
 		byDir: map[string]string{"app": dependent, "other": unrelated},
 		deps: map[string]map[string]bool{
@@ -266,7 +266,7 @@ func TestDeletedUnimportedFileIsReportedNotFailed(t *testing.T) {
 		modulePaths: map[string]string{moduleRoot: modulePath},
 		runnable:    map[string]bool{moduleRoot: true},
 		pkgs: map[string]*pkgInfo{
-			modulePath: {ImportPath: modulePath, ModuleRoot: moduleRoot, Dir: root},
+			modulePath: {ModuleRoot: moduleRoot, Dir: root},
 		},
 		byDir: map[string]string{root: modulePath},
 		deps:  map[string]map[string]bool{},
@@ -320,7 +320,7 @@ func TestDeletedTestdataFixtureSelectsOwningPackage(t *testing.T) {
 		modulePaths: map[string]string{moduleRoot: modulePath},
 		runnable:    map[string]bool{moduleRoot: true},
 		pkgs: map[string]*pkgInfo{
-			modulePath + "/pkg": {ImportPath: modulePath + "/pkg", ModuleRoot: moduleRoot, Dir: ownerDir},
+			modulePath + "/pkg": {ModuleRoot: moduleRoot, Dir: ownerDir},
 		},
 		byDir: map[string]string{ownerDir: modulePath + "/pkg"},
 		deps:  map[string]map[string]bool{},
@@ -357,7 +357,7 @@ func TestGraphOnlyModuleChangeIsSkippedNotFailed(t *testing.T) {
 		// A real package in the graph-only module is what the per-file path
 		// counts; without one the file never reaches the counting branch.
 		pkgs: map[string]*pkgInfo{
-			"example.com/fuzzmod/x": {ImportPath: "example.com/fuzzmod/x", ModuleRoot: "fuzzmod", Dir: fuzzDir},
+			"example.com/fuzzmod/x": {ModuleRoot: "fuzzmod", Dir: fuzzDir},
 		},
 		byDir: map[string]string{fuzzDir: "example.com/fuzzmod/x"},
 		deps:  map[string]map[string]bool{},

@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -51,7 +52,7 @@ func TestChangedFilesIncludesUntrackedFiles(t *testing.T) {
 		t.Fatalf("resolving base: %v", err)
 	}
 
-	got, err := changedFiles(root, trimNewline(base))
+	got, err := changedFiles(root, strings.TrimRight(base, "\r\n"))
 	if err != nil {
 		t.Fatalf("changedFiles: %v", err)
 	}
@@ -65,13 +66,6 @@ func TestChangedFilesIncludesUntrackedFiles(t *testing.T) {
 	if slices.Contains(got, "ignored.go") {
 		t.Errorf("changedFiles = %v, should not include the ignored file", got)
 	}
-}
-
-func trimNewline(s string) string {
-	for len(s) > 0 && (s[len(s)-1] == '\n' || s[len(s)-1] == '\r') {
-		s = s[:len(s)-1]
-	}
-	return s
 }
 
 func gitIn(t *testing.T, dir string, args ...string) {

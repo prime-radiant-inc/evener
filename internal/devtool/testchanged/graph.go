@@ -33,7 +33,6 @@ type pkgEntry struct {
 
 // pkgInfo is one real (buildable, non-test-variant) package in the workspace.
 type pkgInfo struct {
-	ImportPath string
 	ModuleRoot string // GO_MODULES entry, "." for the root module
 	Dir        string // absolute
 }
@@ -171,7 +170,7 @@ func (g *graph) addModule(module string, entries []pkgEntry) {
 		if self == nil {
 			continue
 		}
-		g.pkgs[self.ImportPath] = &pkgInfo{ImportPath: self.ImportPath, ModuleRoot: module, Dir: dir}
+		g.pkgs[self.ImportPath] = &pkgInfo{ModuleRoot: module, Dir: dir}
 		g.byDir[dir] = self.ImportPath
 		// go list already reports the module each package belongs to. Using
 		// it keeps a deleted package's import path derivable without
