@@ -23,6 +23,7 @@ Health confirms that a hub answers, not that its model credentials work or that 
 | --- | --- | --- |
 | Browser cannot connect | Hub health, tunnel, listener address, selected host | Restore the connection; use the private authorization URL for that hub |
 | Unauthorized after connecting | Correct host capability/cookie, not provider API key | Authorize the browser again, never paste its token into a report |
+| Lost paired phone or leaked hub capability | Owning hub service and effective `hub_state_root` | Follow [shared-token rotation](evener-hub.md#rotate-a-leaked-token-or-revoke-a-lost-device), affecting every client sharing it |
 | Hub says another hub is running | Existing supervisor and listener for the same state root | Use the existing hub or stop the exact process through its supervisor; do not delete `hub.lock` |
 | Provider missing | `providers list`, credential source, required region/resource variables | Connect the instance on the execution host, not only your laptop |
 | Wrong model or setting | Selected host, cwd, launch provenance, explicit default | Fix the layer that wins; see [Configuration](configuration.md) |
@@ -121,12 +122,68 @@ session is idle:
 | `evener doctor turnids` | Reserved-turn-id sweep across every session, when a restore keeps failing. |
 | `evener doctor plugins` | Plugin-store health. Takes no session selector. |
 
-`evener doctor reconstruct` stages a lost transcript from an archive and
-surviving metadata without changing live state; it is a recovery tool for a
-damaged or missing transcript, not a general repair. Read its output before
-copying anything back into the state root.
-
 When an interface disconnects, reconnect to the same session before creating another. Compare the transcript, job status, filesystem changes, and any external service outcome. A shell exit code reports that command's result; it does not by itself prove or disprove the larger task. Follow [Daily work](daily-work.md) to review the result.
+
+## Reconstruct a lost transcript
+
+Use `evener doctor reconstruct` only when an external **AgentsView `sessions.db`**
+archive contains the missing conversation and matching root-session metadata
+survives. The hub's `index.db` is not this archive. Prefer a complete backup and
+the [history restore rehearsal](security.md#rehearse-history-restoration) when
+the original transcript is available.
+
+Prerequisites: the session ID, a consistent private copy of the AgentsView
+database, a copy of that root session's `.meta.json`, and a **nonexistent** output
+directory under a private parent. Stop archive writers or use SQLite's supported
+backup operation before taking the database copy; copying a live main file alone
+can lose WAL contents. Preserve the originals and their checksum manifest. Work
+only on copies. Forked or delegated histories and mismatched metadata are refused.
+
+1. Set `session`, `archive_copy`, and `meta_copy` to those copied inputs. Set
+   `staging` to a new path, not a live state root. Do not create `staging` first:
+   the command creates it privately and refuses to overwrite it.
+2. Stage the reconstruction:
+
+   ```bash
+   evener doctor reconstruct "$session" \
+     --agentsview-db "$archive_copy" --meta "$meta_copy" \
+     --output-dir "$staging" --json
+   ```
+
+   If the matching mutation journal survives, copy it too and add
+   `--mutations "$mutations_copy"`. This recovers client input identities, not
+   a runnable input queue. Stop on a nonzero exit; keep the inputs and diagnose
+   the refused archive rather than editing it until it passes.
+3. Inspect `report.json` in the stage. Compare `recovered_through` with
+   `metadata_updated_at`: metadata can describe later work the archive lacks.
+   Review `missing_tool_outputs`, `historical_attention_records`, and
+   `limitations`. Verify `transcript_sha256` and `source_snapshot_sha256` against
+   the staged files. The latter hashes the normalized `source-snapshot.json`,
+   **not** the original database. Recheck the original and copied input hashes.
+4. Read without launching an agent:
+
+   ```bash
+   evener doctor sessions --state-dir "$staging" --json
+   evener doctor transcript "$session" --state-dir "$staging" --format outline
+   evener doctor transcript "$session" --state-dir "$staging" --range last:10
+   ```
+
+   Require the expected session and recorded work through the reported boundary.
+   Missing tool output is unavailable evidence, not proof of success or failure.
+   Keep the staged transcript separate from the original state.
+
+Reconstruction writes normalized readable history, copied metadata, a source
+snapshot, and a report. It does not recover jobs, delegates, task lists, queues,
+live processes, or runtime attention delivery. It cannot restore media bytes or
+provider replay identifiers/signatures. Historical attention-resolution records
+remain in the source snapshot, not replayable model history. Formatting and
+content-part boundaries may differ from the lost transcript.
+
+Readable staged history is not a full backup or a guarantee of safe resumption.
+Check current files and external effects yourself, then use a reviewed handoff
+for [fresh-root continuation](../UPGRADING.md#before-shutting-down-an-older-session)
+when needed. This procedure does not install the reconstruction over live state
+and does not migrate rejected legacy delegate or watch state.
 
 ## Report a reproducible problem
 
