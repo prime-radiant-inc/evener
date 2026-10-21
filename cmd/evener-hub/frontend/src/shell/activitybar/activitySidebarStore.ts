@@ -9,7 +9,7 @@ import { isRendered } from "../../widgets/focusscope/tabbable";
 import { focusedActivityScopeRef, useFocusedActivityScopeRef } from "../focusedSession";
 import { refParam } from "../routing";
 import type { ActivityTab } from "../statusbar/statusScope";
-import { currentSessionRef, workspaceStore } from "../workspace";
+import { currentSessionRef, presentedPanes, workspaceStore } from "../workspace";
 
 export const ACTIVITY_VIEW_STORAGE_KEY = "evener.activity-sidebar.v1";
 export const ACTIVITY_VIEW_LIMIT = 100;
@@ -167,7 +167,8 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
     },
     openFor: (ref, tab, opener, sourcePaneId) => {
       const workspace = workspaceStore.getState();
-      const source = workspace.panes.find((candidate) => candidate.id === sourcePaneId);
+      const presented = presentedPanes(workspace.panes);
+      const source = presented.find((candidate) => candidate.id === sourcePaneId);
       if (source && source.type === "sessionZoom" && zoomPaneCoversConversation(source, ref)) {
         // An embedded column's open request: the hosting cascade keeps
         // focus — an ordinary pane for the same conversation must not
@@ -178,9 +179,7 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
         get().openWith(tab, opener);
         return;
       }
-      const panes = workspace.panes.filter(
-        (candidate) => candidate.type === "session" && refParam(candidate.params) === ref,
-      );
+      const panes = presented.filter((candidate) => candidate.type === "session" && refParam(candidate.params) === ref);
       const pane = panes.find((candidate) => candidate.id === workspace.focusedPaneId) ?? panes[0];
       if (pane) {
         // A focus-based request releases any held column scope and saves

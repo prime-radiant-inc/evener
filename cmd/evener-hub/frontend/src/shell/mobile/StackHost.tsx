@@ -37,7 +37,7 @@
 // restored anywhere. A reload lands wherever the URL says (see the URL-
 // sync effect below), the same as any other fresh navigation - there is no
 // separate "last mobile screen" memory to restore independently of that.
-import { type ReactNode, Suspense, useEffect, useRef, useState } from "react";
+import { type ReactNode, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Chevron, IconButton } from "../../widgets";
 import { ActivitySidebar } from "../activitybar/ActivitySidebar";
 import { useActivitySidebarStore } from "../activitybar/activitySidebarStore";
@@ -51,6 +51,7 @@ import {
   conversationOpenParentRef,
   documentPaneState,
   type OpenPaneRecord,
+  presentedPanes,
   transcriptOpenOrigin,
   useWorkspaceStore,
   workspaceStore,
@@ -175,7 +176,8 @@ export interface StackHostProps {
 }
 
 export function StackHost({ railSlot, routeDeferred = false, singlePane = false }: StackHostProps = {}) {
-  const panes = useWorkspaceStore((s) => s.panes);
+  const livingPanes = useWorkspaceStore((s) => s.panes);
+  const panes = useMemo(() => presentedPanes(livingPanes), [livingPanes]);
   const focusedPaneId = useWorkspaceStore((s) => s.focusedPaneId);
   // The focused pane's title, published host-agnostically by its
   // PaneScaffold through the chrome store (chromeStore.ts's own comment).
@@ -347,8 +349,9 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         // A host swap discards local history, not the retained parent pane.
         // Focus that exact pane: reopening a session could promote a nested
         // parent into main and discard the real owner and remaining context.
+        const origin = transcriptOpenOrigin(focusedPane);
         let ancestor =
-          transcriptOpenOrigin(focusedPane) ??
+          (origin && panes.includes(origin) ? origin : undefined) ??
           panes.find(
             (pane) =>
               pane.id !== focusedPaneId &&

@@ -23,6 +23,7 @@ import {
   activitySummary,
 } from "../../stores/sessionActivityTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
+import { captureAttentionPlacement, presentAttentionTarget, restoreAttentionPlacement } from "../attentionPlacement";
 import { chromeStore, resetChromeStoreForTests } from "../chromeStore";
 import { ClientProvider } from "../clientContext";
 import { type PaneProps, registerPaneForTests } from "../paneRegistry";
@@ -36,6 +37,24 @@ import {
   workspaceStore,
 } from "../workspace";
 import { StackHost, setLastPopstateWasTrustedForTests } from "./StackHost";
+
+test("ordinary mobile Back skips attention parked records", async () => {
+  const x = workspaceStore.getState().openPane("doc", { ref: "independent" });
+  const host = await act(async () => render(<StackHost routeDeferred />));
+  await act(async () => workspaceStore.getState().openPane("session", { ref: "local:a" }));
+  const origin = captureAttentionPlacement();
+  if (!origin) throw new Error("missing phone origin");
+  await act(async () => presentAttentionTarget("local:b"));
+  expect(origin.pane.slot).toBe("parked");
+  await userEvent.click(screen.getByRole("button", { name: "Back" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(x);
+  expect(workspaceStore.getState().panes).toContain(origin.pane);
+  await act(async () => {
+    expect(restoreAttentionPlacement(origin)).toBe(true);
+  });
+  expect(workspaceStore.getState().focusedPaneId).toBe(origin.pane.id);
+  host.unmount();
+});
 
 // Fixture pane type for the bulk of this file's tests - non-singleton, so
 // "doc"/{ref} with different refs are distinct panes (same dedup rule

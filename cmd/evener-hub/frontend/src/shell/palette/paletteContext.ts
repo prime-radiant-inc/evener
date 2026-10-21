@@ -8,7 +8,7 @@
 
 import type { ThreadModel } from "@evener/appwire-client";
 import { threadsStore } from "../../stores/threads";
-import { workspaceStore } from "../workspace";
+import { presentedPanes, workspaceStore } from "../workspace";
 
 export type OnPage = "home" | "session" | "settings" | "spawn" | "other";
 
@@ -57,7 +57,8 @@ function onPageForType(type: string): OnPage {
 
 export function buildPaletteContext(): PaletteContext {
   const ws = workspaceStore.getState();
-  const focused = ws.panes.find((p) => p.id === ws.focusedPaneId);
+  const panes = presentedPanes(ws.panes);
+  const focused = panes.find((p) => p.id === ws.focusedPaneId);
   if (!focused) return { sessionRef: null, sessionPaneId: null, onPage: "other" };
   const onPage = onPageForType(focused.type);
   const sessionRef = onPage === "session" ? refFromParams(focused.params) : null;
@@ -65,7 +66,7 @@ export function buildPaletteContext(): PaletteContext {
     focused.type === "session" || focused.type === "sessionZoom"
       ? focused.id
       : sessionRef !== null
-        ? (ws.panes.find((p) => p.type === "session" && refFromParams(p.params) === sessionRef)?.id ?? null)
+        ? (panes.find((p) => p.type === "session" && refFromParams(p.params) === sessionRef)?.id ?? null)
         : null;
   return {
     onPage,
