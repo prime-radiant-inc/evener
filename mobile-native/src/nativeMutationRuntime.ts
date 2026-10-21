@@ -247,14 +247,12 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		// own work end here. A later start that needs the identity registers it
 		// again; leaving them held would pin the targets to this attempt's client.
 		//
-		// KNOWN LIMITATION: the process-lifetime runtime does not stop on an
-		// ordinary connection replacement, so a registration made for a resumed
-		// identity can hold its target until the app restarts. A flush on the
-		// replacement client then sees the target as owned by another client and
-		// skips it. Releasing it from the settle is what strands the very dispatch
-		// it exists for; the fix is a registration lifetime that follows the
-		// connection rather than the runtime, which this change does not have.
-		// Tracked in the PR rather than guessed at here.
+		// A registration like that can outlive its client between ordinary
+		// connection replacements, since the process-lifetime runtime never stops.
+		// It is harmless rather than released early: the flush reads a registration
+		// whose client is gone as no holder at all (hasStaleRegistration), so the
+		// replacement claims the target. Releasing it from the settle instead would
+		// strand the very dispatch it exists for.
 		for (const release of this.#retireWithSettle.splice(0)) release();
 	}
 
@@ -367,6 +365,18 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 	 * with; undefined while nobody holds it. */
 	targetClient(hubId: string, targetRef: string): AppwireClientLike | undefined {
 		return this.#targets.get(nativeMutationTargetKey(hubId, targetRef))?.client;
+	}
+
+	/** A registration exists, but nobody live is behind it: its client was
+	 * replaced or closed and no screen rebinds that target any more. The flush
+	 * reads this to tell "another owner is reading this" from "a stale entry is
+	 * holding it", which is what an identity-changing resume leaves behind when
+	 * the runtime outlives a connection. A stale entry is not an owner, so the
+	 * target is claimable. */
+	hasStaleRegistration(hubId: string, targetRef: string): boolean {
+		const target = this.#targets.get(nativeMutationTargetKey(hubId, targetRef));
+		if (target === undefined) return false;
+		return target.client.state !== "ready" && target.client.state !== "reconnecting";
 	}
 
 	beginAuthoritativeRead(

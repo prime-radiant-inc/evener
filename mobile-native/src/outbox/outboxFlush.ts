@@ -30,6 +30,8 @@ export interface FlushRuntime {
 	};
 	start(): Promise<void>;
 	targetClient(hubId: string, targetRef: string): AppwireClientLike | undefined;
+	/** True when the target's registration is held by a client that is gone. */
+	hasStaleRegistration?(hubId: string, targetRef: string): boolean;
 	registerTarget(hubId: string, targetRef: string, client: AppwireClientLike | null): () => void;
 	settleTarget(
 		hubId: string,
@@ -175,7 +177,12 @@ export class OutboxFlush {
 		client: AppwireClientLike,
 	): Promise<void> {
 		const { generation } = this;
-		const holder = runtime.targetClient(hubId, ref);
+		// A registration whose client is gone is not a holder. An
+		// identity-changing resume registers the resolved identity for the
+		// runtime's lifetime, so when the connection is replaced that entry
+		// survives with a dead client; reading it as an owner made the flush skip
+		// this target forever, stranding whatever moved to it.
+		const holder = runtime.hasStaleRegistration?.(hubId, ref) ? undefined : runtime.targetClient(hubId, ref);
 		if (holder !== undefined) {
 			// A session screen holds this target. Under the Reader or a subagent
 			// it doesn't read, so after a reconnect its waiting message would
