@@ -1213,8 +1213,12 @@ test("a superseded reflection read cannot reopen the old Retry", async () => {
 test("a winning reflection read that still names the latest failure keeps Retry closed", async () => {
   const turn = failedTurn();
   const { fake, storage } = await loadThread("ref_a", [turn]);
-  const reads: ((response: ReturnType<typeof readResponse>) => void)[] = [];
-  fake.on("thread/read", () => new Promise((resolve) => reads.push(resolve)));
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      status: { type: "idle" },
+      turns: [{ id: turn.id, status: "failed", itemsView: "full", items: [], error: { message: "boom" } }],
+    }),
+  );
   fake.on("turn/start", ({ clientMutationId }) => ({
     receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
     turn: { id: "continued", status: "inProgress", itemsView: "" },
@@ -1227,18 +1231,12 @@ test("a winning reflection read that still names the latest failure keeps Retry 
       await threadsStore.getState().continueTurn("ref_a", turn.id);
     });
     await flushPendingTurnsProjectionForTests();
-    await waitFor(() => expect(reads).toHaveLength(1));
-    expect(retryButton()?.disabled).toBe(true);
-    // The read still names the same failure: the accepted continuation is not
-    // observed yet, so the marker stays and Retry remains closed.
-    await act(async () => {
-      reads[0]?.(
-        readResponse("ref_a", {
-          status: { type: "idle" },
-          turns: [{ id: turn.id, status: "failed", itemsView: "full", items: [], error: { message: "boom" } }],
-        }),
-      );
-    });
+    // At least one refresh has answered with the same failed tail: the
+    // accepted continuation is not observed yet, so the marker stays and
+    // Retry remains closed.
+    await waitFor(() =>
+      expect(fake.calls.filter((call) => call.method === "thread/read").length).toBeGreaterThanOrEqual(2),
+    );
     await flushPendingTurnsProjectionForTests();
     expect(retryReflectionForTests("ref_a")?.failedTurnId).toBe(turn.id);
     expect(retryButton()?.disabled).toBe(true);
