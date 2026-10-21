@@ -129,21 +129,6 @@ export function serializeSkillDocument(doc: ProseMirrorNode): SkillEditorValue {
   };
 }
 
-/**
- * Append a literal annotation reference after one blank line, keeping every
- * backing field. An explicit mention array stays untouched; an absent array
- * stays absent unless the appended suffix would infer new skill/command atoms,
- * in which case the original inferred locations are pinned so the append never
- * silently selects the reference's prose as a skill.
- */
-export function appendLiteralReference<T extends SkillEditorValue>(current: T, reference: string): T {
-  const next = { ...current, text: current.text.length ? `${current.text}\n\n${reference}` : reference };
-  if (current.mentions !== undefined) return next;
-  const original = skillAtomMentions(parseSkillDocument(current));
-  const inferred = skillAtomMentions(parseSkillDocument(next));
-  return JSON.stringify(original) === JSON.stringify(inferred) ? next : { ...next, mentions: original };
-}
-
 /** Length of the leading run two serialized values share. */
 export function sharedPrefixLength(before: string, after: string): number {
   const limit = Math.min(before.length, after.length);
@@ -242,6 +227,21 @@ export function skillAtomMentions(doc: ProseMirrorNode): ComposerMention[] {
     }
   });
   return mentions;
+}
+
+/**
+ * Append a literal annotation reference after one blank line, keeping every
+ * backing field. An explicit mention array stays untouched; an absent array
+ * stays absent unless the appended suffix would infer new skill/command atoms,
+ * in which case the original inferred locations are pinned so the append never
+ * silently selects the reference's prose as a skill.
+ */
+export function appendLiteralReference<T extends SkillEditorValue>(current: T, reference: string): T {
+  const next = { ...current, text: current.text.length ? `${current.text}\n\n${reference}` : reference };
+  if (current.mentions !== undefined) return next;
+  const original = skillAtomMentions(parseSkillDocument(current));
+  const inferred = skillAtomMentions(parseSkillDocument(next));
+  return JSON.stringify(original) === JSON.stringify(inferred) ? next : { ...next, mentions: original };
 }
 
 /** Map a UTF-16 serialized offset to a flat document position; bias snaps atom interiors. */
