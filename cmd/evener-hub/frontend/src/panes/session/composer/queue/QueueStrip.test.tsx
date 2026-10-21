@@ -2058,26 +2058,27 @@ describe("in-flight row locking", () => {
 describe("optimistic pending queue rows", () => {
   test("an unattempted local queue-method entry renders once with Edit and Remove", async () => {
     const fake = connectFakeClient();
-    await hydrate(fake, "ref_a", {
-      evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0, depth: 0 } },
+    await hydrate(fake, "ref_a");
+    // Seed the durable local entry the submit path commits, rather than racing
+    // its dispatcher. A click-armed dispatch is what advances this row out of
+    // the unattempted state, and this test renders the state before that.
+    const storage = new MutationOutboxIndexedDB();
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "not yet confirmed" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "not yet confirmed" }] },
     });
-    fake.on("turn/queue", (params) => ({
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread_a",
-        projectionState: "reflected",
-      },
-    }));
+    storage.close();
+    await refreshPendingTurnsProjection("ref_a");
     renderStrip(defaultProps());
+    await flushPendingTurnsProjectionForTests();
 
-    await act(async () => {
-      await submitWithPendingTracking({ ref: "ref_a", text: "not yet confirmed", onFailure: () => {} }, () =>
-        threadsStore.getState().queue("ref_a", "not yet confirmed"),
-      );
-    });
-
-    const row = (await screen.findAllByRole("listitem"))[0]!;
+    const rows = await screen.findAllByRole("listitem");
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
     expect(within(row).getByText("not yet confirmed")).toBeTruthy();
     expect(within(row).getByRole("button", { name: "Edit message" })).toBeTruthy();
     expect(within(row).getByRole("button", { name: "Remove from queue" })).toBeTruthy();
