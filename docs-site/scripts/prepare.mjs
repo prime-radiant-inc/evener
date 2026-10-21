@@ -61,8 +61,11 @@ export function headings(tree) {
     ids.add(slugger.slug(text));
   });
   visit(tree, "html", (node) => {
-    for (const match of node.value.matchAll(/\bid=["']([^"']+)["']/g))
-      ids.add(match[1]);
+    const html = load(node.value, {}, false);
+    for (const element of html("[id]").toArray()) {
+      const id = html(element).attr("id");
+      if (id) ids.add(id);
+    }
   });
   return ids;
 }
