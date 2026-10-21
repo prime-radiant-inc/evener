@@ -38,6 +38,7 @@ type graph struct {
 	moduleRoots []string
 	moduleDirs  map[string]string          // module root -> absolute dir
 	modulePaths map[string]string          // module root -> import path
+	runnable    map[string]bool            // module root -> GO_MODULES owns it
 	pkgs        map[string]*pkgInfo        // import path -> package
 	byDir       map[string]string          // absolute dir -> import path
 	deps        map[string]map[string]bool // import path -> test-inclusive deps
@@ -52,27 +53,45 @@ func loadGraph(root string, moduleRoots []string) (*graph, error) {
 	if err != nil {
 		return nil, err
 	}
+	// `go list` reports fully resolved directories, so a checkout reached
+	// through a symlink (/tmp on macOS) would never match a path built from the
+	// unresolved root. Resolve once here and every directory comparison holds.
+	if resolved, err := filepath.EvalSymlinks(absRoot); err == nil {
+		absRoot = resolved
+	}
 	g := &graph{
 		root:        absRoot,
 		moduleRoots: moduleRoots,
 		moduleDirs:  make(map[string]string, len(moduleRoots)),
 		modulePaths: make(map[string]string, len(moduleRoots)),
+		runnable:    make(map[string]bool, len(moduleRoots)),
 		pkgs:        make(map[string]*pkgInfo),
 		byDir:       make(map[string]string),
 		deps:        make(map[string]map[string]bool),
 	}
 	for _, m := range moduleRoots {
 		g.moduleDirs[m] = filepath.Join(absRoot, filepath.FromSlash(m))
+		g.runnable[m] = true
 	}
+	// GO_MODULES names the modules the gates run, but go.work can hold more.
+	// `fuzz` is one: `make test` skips it on purpose, yet root packages' tests
+	// import it, so a change there really does break them. Load those modules'
+	// packages for their import edges, and let selection reach the dependent
+	// packages that GO_MODULES does run.
+	graphOnly := workspaceModules(absRoot, moduleRoots)
+	for _, m := range graphOnly {
+		g.moduleDirs[m] = filepath.Join(absRoot, filepath.FromSlash(m))
+	}
+	loadModules := append(append([]string{}, moduleRoots...), graphOnly...)
 
 	type result struct {
 		module  string
 		entries []pkgEntry
 		err     error
 	}
-	results := make([]result, len(moduleRoots))
+	results := make([]result, len(loadModules))
 	var wg sync.WaitGroup
-	for i, m := range moduleRoots {
+	for i, m := range loadModules {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -201,6 +220,10 @@ func (g *graph) moduleFor(rel string) (string, bool) {
 // moduleDir returns the absolute directory a module's tests run in.
 func (g *graph) moduleDir(module string) string { return g.moduleDirs[module] }
 
+// runnableModule reports whether GO_MODULES owns the module, as opposed to it
+// being loaded only for its import edges.
+func (g *graph) runnableModule(module string) bool { return g.runnable[module] }
+
 // packageAt maps an absolute directory to the real package there.
 func (g *graph) packageAt(dir string) (string, bool) {
 	ip, ok := g.byDir[filepath.Clean(dir)]
@@ -228,6 +251,85 @@ func (g *graph) importPathAt(module, dir string) (string, bool) {
 		return "", false
 	}
 	return base + "/" + relSlash, true
+}
+
+// workspaceModules returns the go.work `use` entries that GO_MODULES does not
+// already list, as repo-relative paths. It reads go.work textually because the
+// `use` block is a simple list; anything it cannot parse yields no extra
+// modules, which only makes selection more conservative, never wrong.
+func workspaceModules(root string, known []string) []string {
+	src, err := os.ReadFile(filepath.Join(root, "go.work"))
+	if err != nil {
+		return nil
+	}
+	inUse := false
+	var extra []string
+	for _, line := range strings.Split(string(src), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "use ("):
+			inUse = true
+			continue
+		case inUse && line == ")":
+			inUse = false
+			continue
+		case strings.HasPrefix(line, "use "):
+			line = strings.TrimSpace(strings.TrimPrefix(line, "use "))
+		case !inUse:
+			continue
+		}
+		line = strings.Trim(line, `"`)
+		if line == "" || strings.HasPrefix(line, "//") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "./")
+		if containsModule(known, line) {
+			continue
+		}
+		extra = append(extra, line)
+	}
+	return extra
+}
+
+func containsModule(modules []string, m string) bool {
+	for _, known := range modules {
+		if known == m {
+			return true
+		}
+	}
+	return false
+}
+
+// importedAnywhere reports whether any package in the graph depends on
+// importPath. It separates a package that was removed (its importers remain and
+// now fail to build) from a Go file that simply lives outside every package.
+func (g *graph) importedAnywhere(importPath string) bool {
+	for _, deps := range g.deps {
+		if deps[importPath] {
+			return true
+		}
+	}
+	return false
+}
+
+// nearestPackageAncestor returns the closest package directory above dir,
+// stopping at the module root. It attributes a file that lives outside any
+// package — a testdata fixture, an asset in a subdirectory — to the package
+// that owns the directory tree it sits in.
+func (g *graph) nearestPackageAncestor(module, dir string) (string, bool) {
+	moduleDir := filepath.Clean(g.moduleDirs[module])
+	for d := filepath.Dir(filepath.Clean(dir)); ; d = filepath.Dir(d) {
+		if owner, found := g.packageAt(d); found {
+			return owner, true
+		}
+		if filepath.Clean(d) == moduleDir {
+			return "", false
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return "", false
+		}
+	}
 }
 
 // embeddedAssetOwner returns the package that embeds the changed file, if any.

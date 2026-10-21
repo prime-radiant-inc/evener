@@ -61,6 +61,16 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 		rel = filepath.ToSlash(rel)
 		goFile := strings.HasSuffix(rel, ".go")
 		module, ok := g.moduleFor(rel)
+		// A module loaded only for its import edges is not a gate module: the
+		// change is real, but reporting it as skipped is the honest answer, and
+		// its importers under GO_MODULES are selected by the closure below.
+		if ok && !g.runnableModule(module) {
+			if goFile {
+				res.GoChanged++
+			}
+			res.Outside = append(res.Outside, rel+" (module "+module+" is not a gate module)")
+			continue
+		}
 		if !ok {
 			if goFile {
 				res.GoChanged++
@@ -100,10 +110,11 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 			// its former importers still name it. Deriving the import path
 			// from the path keeps those importers in the run; without this a
 			// deletion printed PASS while the dependent build was broken.
-			// Only a removed Go file implies a removed package. A non-Go file
-			// under a package subdirectory is usually an asset, not evidence
-			// that anything was deleted, and belongs to the embed check below.
-			if ip, derived := g.importPathAt(module, dir); derived && goFile {
+			// A Go file can name a package that no longer exists. Treat it as a
+			// removal only when some surviving package still imports that path:
+			// otherwise it is a fixture or generated file living outside any
+			// package (testdata), which its nearest package owns.
+			if ip, derived := g.importPathAt(module, dir); derived && goFile && g.importedAnywhere(ip) {
 				res.GoChanged++
 				propagating[ip] = joinReason(propagating[ip], "removed file "+rel)
 				continue
@@ -113,6 +124,17 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 			if !goFile {
 				if owner, embedded := g.embeddedAssetOwner(module, filepath.Join(g.root, filepath.FromSlash(rel))); embedded {
 					propagating[owner] = joinReason(propagating[owner], "embedded asset "+rel)
+					continue
+				}
+			}
+			// A Go file under testdata/ is a fixture a nearby package compiles
+			// or drives, not a package itself: `go list ./...` skips it. Blame
+			// the nearest package above it so the fixture's real consumer runs,
+			// instead of failing the run for a legitimate fixture edit.
+			if goFile {
+				if owner, ok := g.nearestPackageAncestor(module, dir); ok {
+					res.GoChanged++
+					propagating[owner] = joinReason(propagating[owner], "fixture "+rel)
 					continue
 				}
 			}
@@ -182,6 +204,9 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 	for ip, info := range g.pkgs {
 		reason, ok := reasonFor[ip]
 		if !ok {
+			continue
+		}
+		if !g.runnableModule(info.ModuleRoot) {
 			continue
 		}
 		res.Selected = append(res.Selected, selection{

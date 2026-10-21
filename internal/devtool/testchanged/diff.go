@@ -21,20 +21,24 @@ func changedFiles(root, base string) ([]string, error) {
 		if err != nil {
 			return err
 		}
-		for _, line := range strings.Split(out, "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || seen[line] {
+		for _, path := range strings.Split(out, "\x00") {
+			if path == "" || seen[path] {
 				continue
 			}
-			seen[line] = true
-			files = append(files, line)
+			seen[path] = true
+			files = append(files, path)
 		}
 		return nil
 	}
+	// --no-renames makes a rename two records, a deletion of the old path and
+	// an addition of the new one. `--name-only` reports only the new path of a
+	// rename, so the package that lost the file was never selected even though
+	// its own tests stop compiling. -z keeps git from C-quoting a non-ASCII
+	// path, which would otherwise be read as a literal name nobody has.
 	for _, spec := range [][]string{
-		{"diff", "--name-only", base + "...HEAD"},
-		{"diff", "--name-only", "HEAD"},
-		{"ls-files", "--others", "--exclude-standard"},
+		{"diff", "--no-renames", "--name-only", "-z", base + "...HEAD"},
+		{"diff", "--no-renames", "--name-only", "-z", "HEAD"},
+		{"ls-files", "--others", "--exclude-standard", "-z"},
 	} {
 		if err := collect(spec...); err != nil {
 			return nil, err

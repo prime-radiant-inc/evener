@@ -51,6 +51,7 @@ func TestDeletedPackageSelectsItsImporters(t *testing.T) {
 		moduleRoots: []string{moduleRoot},
 		moduleDirs:  map[string]string{moduleRoot: root},
 		modulePaths: map[string]string{moduleRoot: modulePath},
+		runnable:    map[string]bool{moduleRoot: true},
 		pkgs: map[string]*pkgInfo{
 			dependent: {ImportPath: dependent, ModuleRoot: moduleRoot, Dir: "app"},
 			unrelated: {ImportPath: unrelated, ModuleRoot: moduleRoot, Dir: "other"},
