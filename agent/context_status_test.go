@@ -2,23 +2,14 @@ package agent
 
 import (
 	"runtime"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 
-	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
-
-// contextStatusMessageChars is the size of every fixture message text. The
-// local estimator charges text-only messages at len(text)/4 tokens, so these
-// values make the expected token counts exact char/4 arithmetic.
-const contextStatusMessageChars = 1024
-
-func contextStatusText() string { return strings.Repeat("x", contextStatusMessageChars) }
 
 // assertContextStatus checks one fixture-authored expected state plus the
 // invariants every sample must satisfy. The expected metrics are authored in
@@ -112,28 +103,6 @@ func TestContextStatusParityAcrossMutations(t *testing.T) {
 	// A manager with no profile has no window to report.
 	s.contextMgr.SetProfile(nil)
 	assertContextStatus(t, s, 0, 0, false)
-}
-
-// newContextStatusLargeFixture builds a Session directly, without a recorded
-// measurement, so the estimator covers the whole history. That pinned state is
-// what makes the sample allocate one []llm.Message; a measurement at the final
-// history length would leave an empty tail and hide that allocation.
-func newContextStatusLargeFixture(turns int) (*Session, *provider.Profile) {
-	profile := NewOpenAIProfile("gpt-5.2")
-	text := contextStatusText()
-	history := make([]schema.Turn, 0, turns)
-	for i := 0; i < turns; i++ {
-		if i%2 == 0 {
-			history = append(history, schema.NewTurn(schema.TurnUserInput, llm.User(text)))
-		} else {
-			history = append(history, schema.NewTurn(schema.TurnAssistant, llm.Assistant(text)))
-		}
-	}
-	return &Session{
-		profile:    profile,
-		contextMgr: contextmgr.NewManager(profile, nil, nil),
-		history:    history,
-	}, profile
 }
 
 // TestContextStatusAllocationBudget pins the fixture at 10,000 turns with no
