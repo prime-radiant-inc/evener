@@ -62,17 +62,6 @@ test("the seat glyph is ambient context, not content: half opacity in the rail i
   expect(seat).toMatch(/\.seat\s*\{[^}]*color:\s*var\(--ink-mid\)/);
 });
 
-test("ToolRow's failure badge pins to the SEAT's corner, not the slot's edge", () => {
-  // The badge's inset-inline-end re-states the seat's own margin-right: the
-  // seat sits inside its slot with that margin, so a badge pinned to the
-  // slot's edge would hang past the glyph. Two expressions, one number - so
-  // pin them equal and a seat-width change cannot leave the cross adrift.
-  const seatMargin = seat.match(/\.seat\s*\{[^}]*margin-right:\s*([^;}]+);/)?.[1]?.trim();
-  const badgeInset = toolcallitem.match(/\.failureBadge\s*\{[^}]*inset-inline-end:\s*([^;}]+);/)?.[1]?.trim();
-  expect(seatMargin).toBeDefined();
-  expect(badgeInset).toBe(seatMargin);
-});
-
 test("the seat's text lands at the content edge: speaker-gap net of the row's own gap", () => {
   // The consumer row's --space-2 flex gap also lands between the slot and the
   // text that follows, so the slot's margin-right is the speaker-gap MINUS

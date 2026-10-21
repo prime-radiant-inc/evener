@@ -432,16 +432,51 @@ test("a failed call badges the failure glyph on the kind icon's bottom-right cor
   expect(screen.getByRole("img", { name: "Failed" })).toBe(glyph);
 });
 
-test("the failure badge is drawn as an absolute overlay pinned to the slot's bottom-right corner", () => {
+test("the failure badge is an absolute overlay anchored to the icon glyph's box, not the seat's corner", () => {
   const css = rowCss();
   const badgeRule = css.match(/\.failureBadge\s*\{([^}]*)\}/)?.[1] ?? "";
   expect(badgeRule).toContain("position: absolute");
   expect(badgeRule).toContain("inset-block-end");
   expect(badgeRule).toContain("inset-inline-end");
-  // The slot is the badge's positioning context, and it composes the seat's
-  // breakpoint-gated pull so the gutter geometry has one owner.
+  // Anchoring to the SEAT's box instead drew the cross beside the icon at
+  // mid-height (roborev): the seat is an avatar-column square with the 14px
+  // icon centred inside it. The insets therefore subtract the icon's own size,
+  // read from the slot's --tool-row-icon-size custom property.
+  expect(badgeRule).toContain("var(--tool-row-icon-size)");
+  // The ink must land on the corner by arithmetic, without this stylesheet
+  // reaching into FailureGlyph's own DOM: the widget draws a 10px cross inside
+  // its 1lh line box, so the badge takes that box (width only) and shifts by
+  // half the icon/cross difference. Both the seat and the badge are 1lh tall,
+  // so the line-height cancels and the drawn cross meets the icon's edge.
+  expect(badgeRule).toMatch(/width:\s*10px/);
+  expect(badgeRule).not.toMatch(/height:\s*\d/);
+  expect(badgeRule).toMatch(/inset-block-end:\s*calc\(\(10px - var\(--tool-row-icon-size\)\) \/ 2\)/);
+  expect(css).not.toMatch(/\.failureBadge > \[role="img"\]/);
+  // The slot is the badge's positioning context and carries the icon size the
+  // insets read, next to the gutter pull it composes.
   const slotRule = css.match(/\.rowIconSlot\s*\{([^}]*)\}/)?.[1] ?? "";
   expect(slotRule).toContain("position: relative");
+  expect(slotRule).toContain("--tool-row-icon-size:");
+});
+
+test("ToolRow owns the icon size: the widget gets it as a prop and the CSS carries the same number", () => {
+  // The badge's geometry is computed from the icon's box, so the number must be
+  // one ToolRow-owned value: the component passes it to ToolIcon (whose own
+  // default is then irrelevant) and the stylesheet reads its counterpart. Pin
+  // both spellings to ROW_ICON_SIZE, so a resize cannot leave the cross
+  // floating off the corner.
+  const rowSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "ToolRow.tsx"), "utf8");
+  const rowIconSize = rowSource.match(/const ROW_ICON_SIZE = (\d+);/)?.[1];
+  const slotRule = rowCss().match(/\.rowIconSlot\s*\{([^}]*)\}/)?.[1] ?? "";
+  expect(rowIconSize).toBeDefined();
+  expect(slotRule).toContain(`--tool-row-icon-size: ${rowIconSize}px`);
+  // And the rendered glyph is actually that size, rather than silently
+  // relying on ToolIcon's own default coinciding with it.
+  registerToolRenderer({ match: "trg_icon_size", summary: () => "Ran ls", icon: "terminal" });
+  render(<ToolCallItem item={item({ toolName: "trg_icon_size" })} turn={turn} live={false} />);
+  const svg = screen.getByTestId("tool-row-icon").querySelector("svg");
+  expect(svg?.getAttribute("width")).toBe(rowIconSize);
+  expect(svg?.getAttribute("height")).toBe(rowIconSize);
 });
 
 // A descriptor without a kind icon has no corner to badge: the cross keeps the
