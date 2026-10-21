@@ -45,8 +45,8 @@ Keep those references current when changing the behavior they describe.
   categorized, labeled, and ranked: the label vocabulary, the eval-only
   test, and the triage procedure.
 - **[tutorial-tours.md](tutorial-tours.md)** — how the CLI and web tutorial
-  screenshots are executed, validated, and refreshed, and what they do not
-  prove.
+  screenshots are executed, retained, and reviewed as a proposed asset patch.
+  The 24-row matrix excludes native, which remains deferred.
 - **[../../docs-site/README.md](../../docs-site/README.md)** — the publisher for the
   public guide: the publication manifest, link and export rules, and the
   GitHub Pages workflow. Edit chapters in `docs/`, never in `.generated/`.

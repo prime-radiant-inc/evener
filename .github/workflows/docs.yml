@@ -34,7 +34,15 @@ jobs:
         working-directory: docs-site
         run: npx playwright install --with-deps chromium
       - name: Execute all four CLI and web tutorial scenarios
-        run: node docs-site/scripts/tours/refresh.mjs check --surfaces cli,web
+        run: node docs-site/scripts/tours/refresh.mjs check --surfaces cli,web --out "$RUNNER_TEMP/tutorial-candidate"
+      - name: Validate retained tutorial candidate
+        run: node docs-site/scripts/tours/refresh.mjs validate --surfaces cli,web --out "$RUNNER_TEMP/tutorial-candidate"
+      - name: Retain sanitized tutorial candidate for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: tutorial-candidate-cli-web
+          path: ${{ runner.temp }}/tutorial-candidate
+          if-no-files-found: error
       - run: npm --prefix docs-site run build
       - name: Check diagrams, search and navigation in Chromium
         working-directory: docs-site
