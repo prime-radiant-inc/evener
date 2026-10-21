@@ -1817,15 +1817,31 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         return { committed: true, incarnation: newIncarnation };
       });
     } catch (error) {
-      // The transaction settled by rolling back; the release is an observation
-      // boundary outside it.
-      releaseProvisioned();
-      throw error;
+      // The rejection is not proof of a rollback: a watchdog can outlive a
+      // completion, so the reset may have committed. The durable namespace
+      // row's NEW incarnation is the commit's evidence; when it landed, this
+      // arm owns the publication the lost completion skipped. Otherwise the
+      // transaction did roll back and its release is an observation boundary
+      // outside it.
+      if (await this.#resetLanded(namespace, newIncarnation)) {
+        result = { committed: true, incarnation: newIncarnation };
+      } else {
+        releaseProvisioned();
+        throw error;
+      }
     }
     if (result.committed) {
       confirmProvisioned();
       // Reset wakes every registration in its exact namespace, and no other.
       this.#settleTransition({ namespaceKey });
+      // The reset deleted every row these entries named, so no consult path
+      // can match them again. Retire them and the namespace's read states, or
+      // a long-lived adapter retains one inert entry per suppressed epoch and
+      // a later reset re-provisions from reads whose rows are gone.
+      for (const identity of provisioned) this.#suppressedEpochs.delete(identity);
+      for (const documentKey of [...this.#readStates.keys()]) {
+        if (documentKeyNamespace(documentKey) === namespaceKey) this.#readStates.delete(documentKey);
+      }
       for (const [identity, record] of [...this.#pendingExpiries]) {
         if (
           record.namespaceIncarnation === expectedIncarnation &&
@@ -1841,6 +1857,25 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       releaseProvisioned();
     }
     return result;
+  }
+
+  // The durable namespace row's incarnation is the only evidence a rejected
+  // reset commit landed. Reading it opens a fresh connection after the
+  // watchdog retired the stalled one, so a closed adapter refuses here like
+  // every other storage boundary.
+  async #resetLanded(
+    namespace: Extract<DocumentKey["namespace"], { kind: "browser" }>,
+    newIncarnation: string,
+  ): Promise<boolean> {
+    if (this.#closed) return false;
+    try {
+      const row = await this.#readRow<NamespaceRow>(ANNOTATION_NAMESPACES_STORE, annotationNamespaceKey(namespace));
+      return row?.incarnation === newIncarnation;
+    } catch {
+      // The evidence is unreadable now; the original rejection stays
+      // authoritative and the rollback release runs.
+      return false;
+    }
   }
 
   async handoff(

@@ -5,7 +5,7 @@ import { IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ComposerPreparation, ComposerSourceState } from "../panes/session/composer/composerContract";
 import { APPEND_STORES, browserDraftKey } from "./browserDraftRepository";
-import { createDocumentAnnotationRepository, SAVE_STORES } from "./documentAnnotationIndexedDB";
+import { createDocumentAnnotationRepository, RESET_STORES, SAVE_STORES } from "./documentAnnotationIndexedDB";
 import {
   ANNOTATION_EVIDENCE_STORE,
   ANNOTATION_EXPIRY_STORE,
@@ -1486,6 +1486,64 @@ test("a sweep that meets an already-deleted expiry releases the suppression it s
   listener.mockClear();
   await fixture.repository.retryPending("storage-recovered");
   expect(listener).not.toHaveBeenCalled();
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+// A namespace reset commits its rotation and deletes the namespace's rows, but
+// the namespace wake runs only after the await resolves. A watchdog that
+// outlives the completion treated the rejection as a rollback: it released the
+// provisional suppression and rethrew, so readers of the reset namespace kept
+// showing deleted annotations and the provisioned entries / read states were
+// never retired. The durable namespace row's new incarnation is the evidence
+// that the commit landed.
+test("a reset whose completion was lost publishes its namespace wake and retires its provisioning", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+  });
+  const listener = vi.fn();
+  fixture.repository.subscribe(fixture.document, listener);
+
+  // The reset transaction commits, but its completion event is held: the
+  // watchdog rejects a reset whose new incarnation is already durable.
+  const hold = holdNextWriteTransaction(RESET_STORES);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let reached = false;
+  void hold.reached.then(() => {
+    reached = true;
+  });
+  let resetFailure: unknown;
+  let result: { committed: boolean; incarnation: string } | undefined;
+  const reset = fixture.repository
+    .resetOwnedNamespace(fixture.key.namespace, fixture.incarnation)
+    .then((value) => {
+      result = value;
+    })
+    .catch((error: unknown) => {
+      resetFailure = error;
+    });
+  await pollUntil(() => reached, 50);
+  expect(reached).toBe(true);
+  await vi.advanceTimersByTimeAsync(10_001);
+  await reset;
+  hold.release();
+  vi.useRealTimers();
+
+  expect(resetFailure).toBeUndefined();
+  expect(result?.committed).toBe(true);
+  expect(listener).toHaveBeenCalled();
+
+  // Provisioning retired with the commit: a second reset against the OLD
+  // incarnation has no stale read state to provision from, so it publishes no
+  // release signal for entries whose rows are already gone.
+  fixture.storageSuccess.mockClear();
+  expect(await fixture.repository.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation)).toEqual({
+    committed: false,
+    incarnation: result?.incarnation,
+  });
+  expect(fixture.storageSuccess).not.toHaveBeenCalled();
 
   fixture.repository.close();
   fixture.drafts.close();
