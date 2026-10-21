@@ -60,23 +60,37 @@ func TestDelegateStartupWithoutTasksHasNoPlanReminder(t *testing.T) {
 	}
 }
 
-// The plan is one message: it carries every step's prompt and names the step to
-// work first. Splitting those into two queued messages would let a crash leave
+// The production steering path queues ONE message carrying the whole plan and
+// the step to work first. Splitting it into a plan message plus a current-task
+// message would reopen the crash window: a crash between the two writes leaves
 // the plan announced with no step to work.
-func TestDelegatePlanIsOneMessageNamingTheCurrentStep(t *testing.T) {
+func TestDelegatePlanIsOneQueuedMessage(t *testing.T) {
 	t.Parallel()
-	tasks := []taskpkg.Task{
-		{ID: 1, Status: taskpkg.TaskInProgress, Description: "First step", Prompt: "PROMPT_FIRST"},
-		{ID: 2, Status: taskpkg.TaskOpen, Description: "Second step", Prompt: "PROMPT_SECOND"},
+	root, _ := newDelegateStartupFixture(t)
+	store := taskpkg.NewTaskStore(t.TempDir(), "child")
+	if err := store.PopulateFromTemplates([]taskpkg.TaskTemplate{
+		{Title: "First step", Prompt: "PROMPT_FIRST"},
+		{Title: "Second step", Prompt: "PROMPT_SECOND"},
+	}, nil); err != nil {
+		t.Fatal(err)
 	}
-	plan := withCurrentStep(taskReminderFullWithPrompts(tasks), tasks[0])
+	if err := steerDelegatePlan(root, store); err != nil {
+		t.Fatalf("steerDelegatePlan: %v", err)
+	}
+
+	root.mu.Lock()
+	queued := append([]steeringMessage(nil), root.steeringQueue...)
+	root.mu.Unlock()
+	if len(queued) != 1 {
+		t.Fatalf("startup steering = %d messages, want exactly one: %#v", len(queued), queued)
+	}
+	if queued[0].Kind != events.SteeringKindTaskList {
+		t.Fatalf("startup steering kind = %q, want %q", queued[0].Kind, events.SteeringKindTaskList)
+	}
 	for _, want := range []string{"PROMPT_FIRST", "PROMPT_SECOND", "Work #1 first: First step"} {
-		if !strings.Contains(plan, want) {
-			t.Fatalf("plan is missing %q:\n%s", want, plan)
+		if !strings.Contains(queued[0].Text, want) {
+			t.Fatalf("startup steering is missing %q:\n%s", want, queued[0].Text)
 		}
-	}
-	if got := strings.Count(plan, "<SYSTEM-REMINDER>"); got != 1 {
-		t.Fatalf("plan reminder blocks = %d, want one:\n%s", got, plan)
 	}
 }
 
