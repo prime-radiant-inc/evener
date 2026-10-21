@@ -313,12 +313,18 @@ test.each([399, 400])("restored skill-only and command-only drafts keep Send at 
   installComposerWidth(width);
   let fake: FakeClient | undefined;
   for (const kind of ["skill", "command"] as const) {
-    writeComposerDraft("root", {
+    // seedDraft refuses to overwrite an existing row, so each kind seeds its
+    // own empty draft universe: the same factory-and-singleton pairing the
+    // beforeEach uses between tests.
+    globalThis.indexedDB = new IDBFactory();
+    resetBrowserDraftRepositoryForTests();
+    const seeded = await getBrowserDraftRepository().seedDraft(browserDraftKey("root"), {
       text: "/selected",
       skillNames: kind === "skill" ? ["selected"] : [],
       commandNames: kind === "command" ? ["selected"] : [],
       mentions: [{ kind, name: "selected", offset: 0 }],
     });
+    if (seeded.state !== "committed") throw new Error("failed to seed the restored draft");
     const source = createTestComposerSource("root");
     fake = await mountComposer("root", {}, source);
     expect(screen.getByRole("textbox", { name: "Message" }).querySelectorAll(`[data-${kind}-name]`)).toHaveLength(1);

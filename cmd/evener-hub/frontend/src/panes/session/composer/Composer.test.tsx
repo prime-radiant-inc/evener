@@ -3990,7 +3990,12 @@ test.each([false, true])("failed-turn Retry preserves a selected and attached dr
   installCanvasStubs();
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
-  writeComposerDraft("ref_a", { text: "unsent", skillNames: ["draft-skill"], commandNames: ["draft-command"] });
+  const seeded = await getBrowserDraftRepository().seedDraft(browserDraftKey("ref_a"), {
+    text: "unsent",
+    skillNames: ["draft-skill"],
+    commandNames: ["draft-command"],
+  });
+  if (seeded.state !== "committed") throw new Error("failed to seed the selected draft");
   const view = await mountComposerWithHandle("ref_a");
   pastePngInto(textarea(), "draft.png");
   const image = await screen.findByRole("button", { name: "View draft.png" });
