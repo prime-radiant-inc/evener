@@ -20,7 +20,7 @@
 import type { AppwireClientLike } from "@evener/appwire-client";
 import { reconnectDelay } from "../hubConnection";
 
-export type SettleResult = "open" | "reconciled" | "blocked" | "stale" | "unregistered";
+export type SettleResult = "open" | "reconciled" | "blocked" | "resumed" | "stale" | "unregistered";
 
 /** The slice of NativeMutationRuntime the flush uses. */
 export interface FlushRuntime {
@@ -209,8 +209,19 @@ export class OutboxFlush {
 			// that connection's claims go, and the runtime answers a read for a
 			// registration that is gone or replaced with "stale", before it
 			// reconciles or dispatches anything (isCurrentRead).
-			const answer = await runtime.settleTarget(hubId, ref, client, { resumeFenced: true });
+			//
+			// Resume a fenced target only when it holds a message that still needs
+			// sending: a session the person deliberately stopped has no such row,
+			// and reconnecting must not restart it behind their back.
+			const answer = await runtime.settleTarget(hubId, ref, client, {
+				resumeFenced: await this.waiting(runtime, key),
+			});
 			settled = answer === "reconciled" || answer === "open";
+			// A settle that resumed but could not finish (a stale read after the
+			// resume recycled its transport) leaves the row parked with no storage
+			// write to wake this flush, so it owns the next look. A plain "blocked"
+			// is a fence or a failure and waits as it always did.
+			if (answer === "resumed") this.retryTargetSoon(generation);
 		} catch {
 			// A read or storage failure: let go, as for a read that failed.
 		}
@@ -226,6 +237,18 @@ export class OutboxFlush {
 	private letGo(key: string, claim: Claim): void {
 		if (!this.release(key, claim)) return;
 		if (this.touched.delete(key)) void this.flush().catch(() => undefined);
+	}
+
+	/** Looks again shortly for one target whose settle could not finish. A
+	 * fenced settle that resumed has already cleared the fence, so the next
+	 * look dispatches; the delay only keeps a transport that is still being
+	 * recycled from answering the retry with another stale read. */
+	private retryTargetSoon(generation: number): void {
+		const timer = setTimeout(() => {
+			if (generation !== this.generation) return;
+			void this.flush().catch(() => undefined);
+		}, 500);
+		timer.unref?.();
 	}
 
 	/** A target the flush holds may be done; a record for one nobody holds is

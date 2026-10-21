@@ -451,7 +451,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		targetRef: string,
 		client: AppwireClientLike,
 		options: { resumeFenced?: boolean } = {},
-	): Promise<"open" | "reconciled" | "blocked" | "stale" | "unregistered"> {
+	): Promise<"open" | "reconciled" | "blocked" | "resumed" | "stale" | "unregistered"> {
 		const targetKey = nativeMutationTargetKey(hubId, targetRef);
 		if (!this.#targets.has(targetKey)) return "unregistered";
 		if (!this.#blockedTargets.has(targetKey)) return "open";
@@ -489,8 +489,14 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 			// same settle. A flush with no screen on the target lets go after a
 			// "blocked" answer and is woken by storage writes only, and the resume
 			// writes none - so leaving the row for "the next settle" would strand it.
+			//
+			// The resume recycles its transport, so the registration this read
+			// started under may be gone by now: a lease whose registration
+			// vanished reconciles as "stale". Reconcile what this tab can still
+			// prove, and let the caller's own retry own the rest - the flush
+			// looks again after its backoff on any answer that is not settled.
 			const afterLease = this.beginAuthoritativeRead(hubId, targetRef, client);
-			if (!afterLease) return "blocked";
+			if (!afterLease) return "resumed";
 			let after: ThreadReadResponse;
 			try {
 				after = await client.request("thread/read", {
@@ -500,7 +506,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 					itemLimit: READ_ITEM_LIMIT,
 				});
 			} catch {
-				return "blocked";
+				return "resumed";
 			}
 			return this.reconcileAuthoritativeRead(afterLease, after);
 		}

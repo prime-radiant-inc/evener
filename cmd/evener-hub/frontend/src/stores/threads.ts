@@ -2972,6 +2972,11 @@ async function runResumeFencedForSend(ref: string): Promise<void> {
     const client = wiredClient;
     if (client === null || client.state !== "ready")
       throw new Error("Connect to the hub before resuming this session.");
+    // The baseline is taken BEFORE the drain wait: a Stop that lands during the
+    // wait is a person canceling the message this drive would send, and a
+    // baseline captured after it would treat that Stop as already accounted for
+    // and resume anyway.
+    const stopBaseline = resumeStopBaseline();
     // A Stop this page started holds Stopping > 0 and the hub refuses even
     // turn/start for that window, so wait the drain out before resuming. Send
     // stays the single recovery action: the press parks its row and this drive
@@ -2979,7 +2984,6 @@ async function runResumeFencedForSend(ref: string): Promise<void> {
     // Only a drain in progress defers the RPC; with none, the resume starts in
     // this same tick so a Send still issues it on the press's own turn.
     while (threadsStore.getState().stoppingRefs.has(ref)) await waitForStopDrain(ref);
-    const stopBaseline = resumeStopBaseline();
     const { thread } = await client.resumeThread(ref, { beforeRequest: stopBaseline });
     resumedRef = thread.evener.ref;
     // The token the daemon's instance fence compares (appwire_runtime's

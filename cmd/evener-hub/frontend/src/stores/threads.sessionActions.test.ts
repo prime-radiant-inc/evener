@@ -6638,6 +6638,40 @@ test("a recovery-fenced local session's non-send durable admissions refuse at th
 // is exactly what the fence above exists to keep from happening. The obligation
 // must be armed when the drain begins, not when it ends; the two tests above
 // seed the obligation directly and so could not see this gap.
+// A Stop that lands WHILE the drive waits out a drain is a person canceling
+// the message the drive would send, so the baseline must be captured before
+// the wait; captured after it, that Stop would read as already accounted for
+// and the resume would run anyway.
+test("a Stop during the drain wait cancels the pending resume", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  const ref = "local:drain-then-stop";
+  await threadsStore.getState().ensureThread(ref);
+  const stop = deferred<void>();
+  const requested = nextHandledRequest(fake, "evener/thread/forceStop", () => stop.promise);
+  const hold = holdNextWriteTransaction(["outbox", "sequences"]);
+  try {
+    const pending = threadsStore.getState().forceStop(ref);
+    await hold.reached;
+    await threadsStore.getState().send(ref, "text");
+    hold.release();
+    await requested;
+    expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+    // The second Stop lands inside the drive's wait for this drain.
+    await threadsStore.getState().interrupt(ref);
+    stop.resolve();
+    await pending;
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "thread/resume"));
+    expect(fake.calls.filter((call) => call.method === "thread/resume")).toEqual([]);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    await waitFor(() => expect(threadsStore.getState().resumeFailures.get(ref)?.stopCanceled).toBe(true));
+  } finally {
+    hold.release();
+    stop.resolve();
+  }
+});
+
 test("a Send during a Stop drain parks and resumes once the drain settles", async () => {
   let minted = 0;
   const storage = new MutationOutboxIndexedDB({
@@ -6674,12 +6708,6 @@ test("a Send during a Stop drain parks and resumes once the drain settles", asyn
     expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
     expect(fake.calls.filter((call) => call.method === "thread/resume")).toEqual([]);
     expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
-    // Dispatch is fenced for every method while Stopping > 0: turn/interrupt is
-    // exempt at admission but must still never reach the wire here.
-    await threadsStore.getState().interrupt(ref);
-    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/interrupt"));
-    expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toEqual([]);
-    expect((await storage.listOutbox(ref)).map((record) => record.method)).toEqual(["turn/start", "turn/interrupt"]);
     stop.resolve();
     await pending;
     // The drain has settled, so the waiting drive issues the resume it
