@@ -203,16 +203,12 @@ func TestUpdateHostRacesEnsureAtGate(t *testing.T) {
 // executable, or pending restart.
 func TestUpdateHostClearsPerHostCaches(t *testing.T) {
 	m, events := detachHostFixture(t)
-	m.markDevDeployed("alpha")
 	m.setResolvedTarget("alpha", "/home/dev/.local/bin/evener")
-	m.setPendingRestart("alpha", "evener hub --addr 127.0.0.1:9180", hubIdentity{})
+	m.setPendingRestart("alpha", "evener hub --addr 127.0.0.1:9180", "dev", "", hubIdentity{}, nil)
 	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}, nil); err != nil {
 		t.Fatalf("UpdateHost = %v, want nil", err)
 	}
 	waitForEvent(t, events, EventDetached)
-	if m.isDevDeployed("alpha") {
-		t.Fatal("devDeployed survived UpdateHost")
-	}
 	if m.resolvedTarget("alpha") != "" {
 		t.Fatal("resolvedTarget survived UpdateHost")
 	}
@@ -369,7 +365,7 @@ func TestUpdateHostRetireHookNotRunOnRefusal(t *testing.T) {
 // refuses it with ErrUnknownHost before the teardown, before the
 // beforeUpdateHostSwap seam that would have inserted the late entry, and before
 // the swap: the whole update is a no-op rather than a successful swap over an
-// absent capture. The devDeployed sentinel under the empty name is state a
+// absent capture. The resolvedTargets sentinel under the empty name is state a
 // teardown keyed to "" would sweep — and "" is never a host — so its survival,
 // the unfired seam, and the untouched registry together prove the empty name
 // was never a teardown target.
@@ -389,7 +385,7 @@ func TestUpdateHostAppearedEntryIsNotTornDownUnderTheEmptyName(t *testing.T) {
 		},
 	})
 	m.mu.Lock()
-	m.devDeployed[""] = true
+	m.resolvedTargets[""] = "/sentinel"
 	m.mu.Unlock()
 
 	called := 0
@@ -405,7 +401,7 @@ func TestUpdateHostAppearedEntryIsNotTornDownUnderTheEmptyName(t *testing.T) {
 		t.Fatalf("the retire hook ran %d times on a refusal, want 0", called)
 	}
 	m.mu.Lock()
-	_, emptySurvived := m.devDeployed[""]
+	_, emptySurvived := m.resolvedTargets[""]
 	m.mu.Unlock()
 	if !emptySurvived {
 		t.Fatal("the teardown ran under the empty name, want it keyed to the gate key")

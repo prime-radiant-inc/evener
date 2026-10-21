@@ -34,6 +34,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -772,20 +773,27 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 	// refresh compares the new process against: the step-(3) probe for a deploy,
 	// and the worker's own pre-restart probe for a restart.
 	beforeProbe := work.probe
+	// The requested build is separate from that predecessor's identity: a
+	// standalone restart can finish an earlier deployment to another build.
+	targetVersion := work.token.ControllerRevision
+	var startedAt time.Time
+	fingerprint := work.fingerprint
 	if work.record.Kind == hostops.KindDeploy {
+		fingerprint = work.token.HubTOMLFingerprint
 		restartFollows = planRestartFollows(hubcore.HostRuntimeProbe{
 			Version:          work.token.RunningVersion,
 			RunningHealthy:   work.token.RunningHealthy,
 			ProcessStartTime: work.token.ProcessStartTime,
 		}, work.token.ControllerRevision)
 	}
+	beforeMutation := m.operationEntryValidator(work.entry, fingerprint)
 
 	if m.interruptIfShuttingDown(ctx, id) {
 		return
 	}
 	// The irreversible steps, each behind a fresh fingerprint check.
 	if work.record.Kind == hostops.KindDeploy {
-		if err := m.checkOperationFingerprint(work.entry, work.token.HubTOMLFingerprint); err != nil {
+		if err := beforeMutation(); err != nil {
 			fail(err)
 			return
 		}
@@ -799,26 +807,47 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 			return
 		}
 		m.recordProgress(id, "pushing the controller's build")
-		_, afterDeploy, err := m.cfg.deployHost(ctx, work.entry, facts)
+		_, afterDeploy, err := m.cfg.deployHost(ctx, work.entry, facts, restartFollows, beforeMutation)
 		if err != nil {
 			fail(err)
 			return
 		}
 		m.recordProgress(id, "the controller's build is installed and verified")
 		if restartFollows {
-			if err := m.checkOperationFingerprint(work.entry, work.token.HubTOMLFingerprint); err != nil {
+			if err := beforeMutation(); err != nil {
 				fail(err)
 				return
 			}
-			if err := m.runRestartStep(ctx, id, work.entry, afterDeploy); err != nil {
+			if _, err := m.runRestartStep(ctx, id, work.entry, afterDeploy, beforeMutation); err != nil {
 				fail(err)
 				return
 			}
 		}
 	} else {
-		if err := m.checkOperationFingerprint(work.entry, work.fingerprint); err != nil {
+		if err := beforeMutation(); err != nil {
 			fail(err)
 			return
+		}
+		if m.cfg.recoverDeployment != nil {
+			result, err := m.cfg.recoverDeployment(ctx, work.entry, hostops.Holder{Kind: hostops.HolderOperation, OperationID: id}, beforeMutation)
+			if err != nil {
+				fail(err)
+				return
+			}
+			if result != nil {
+				// The pending installation already authorized repair. Recovery has
+				// replaced its original predecessor under this persisted operation,
+				// not attached a predecessor that needs another restart. Keep that
+				// identity for the independent epoch-bearing post-reattach probe.
+				beforeProbe.ProcessStartTime = nil
+				if !result.ReplacedStartedAt.IsZero() {
+					beforeProbe.ProcessStartTime = &result.ReplacedStartedAt
+				}
+				targetVersion = result.TargetVersion
+				startedAt = result.StartedAt
+				restartFollows = true
+				m.recordProgress(id, "the pending deployment was recovered and its replacement verified before attachment")
+			}
 		}
 		// §6's attach-first arm: a restart with no usable attached channel —
 		// the handler saw none, or the link dropped before this worker ran —
@@ -830,39 +859,42 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 		// through fail() before the failure is recorded — the deferred finish
 		// is the backstop for an exit that records no failure — so a failed
 		// probe or restart cannot strand it.
-		if _, attached := m.attachedClient(work.entry); !attached {
-			h, err := m.attachOperationChannel(ctx, id, work.entry,
-				"attach-first: the host had no usable attached channel, so the restart attaches it under the held host gate", true)
-			if h != nil {
-				// A published channel keeps its handoff even when the call
-				// reports a failure, so it is never left unsupervised.
-				handoff = h
+		if !restartFollows {
+			if _, attached := m.attachedClient(work.entry); !attached {
+				h, err := m.attachOperationChannel(ctx, id, work.entry,
+					"attach-first: the host had no usable attached channel, so the restart attaches it under the held host gate", true)
+				if h != nil {
+					// A published channel keeps its handoff even when the call
+					// reports a failure, so it is never left unsupervised.
+					handoff = h
+				}
+				if err != nil {
+					fail(err)
+					return
+				}
 			}
+			// Restart has no pre-operation probe step of its own (no token, no
+			// plan), so the worker takes the "pre-operation probe" value the
+			// post-operation refresh compares against here, under the held gate,
+			// presenting the epoch the record was created with.
+			probe, err := m.probeBeforeRestart(ctx, work)
 			if err != nil {
 				fail(err)
 				return
 			}
+			beforeProbe = probe
+			facts, ok := m.attachedFactsFor(work.entry.Name)
+			if !ok {
+				fail(hostDetachedRefusal(work.entry.Name))
+				return
+			}
+			targetVersion, err = m.runRestartStep(ctx, id, work.entry, facts, beforeMutation)
+			if err != nil {
+				fail(err)
+				return
+			}
+			restartFollows = true
 		}
-		// Restart has no pre-operation probe step of its own (no token, no
-		// plan), so the worker takes the "pre-operation probe" value the
-		// post-operation refresh compares against here, under the held gate,
-		// presenting the epoch the record was created with.
-		probe, err := m.probeBeforeRestart(ctx, work)
-		if err != nil {
-			fail(err)
-			return
-		}
-		beforeProbe = probe
-		facts, ok := m.attachedFactsFor(work.entry.Name)
-		if !ok {
-			fail(hostDetachedRefusal(work.entry.Name))
-			return
-		}
-		if err := m.runRestartStep(ctx, id, work.entry, facts); err != nil {
-			fail(err)
-			return
-		}
-		restartFollows = true
 	}
 	if m.interruptIfShuttingDown(ctx, id) {
 		return
@@ -894,7 +926,7 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 	// §6's post-operation refresh: the verified channel-free preflight, then
 	// the running probe over the attached (reattached) channel, then the
 	// verification.
-	refreshErr := m.refreshOperation(ctx, id, work, beforeProbe, restartFollows)
+	refreshErr := m.refreshOperation(ctx, id, work, beforeProbe, targetVersion, restartFollows, startedAt)
 	// The suppress-supervisor scope ends at verification: hand the channel back
 	// to a supervisor under the still-held gate, whether or not the refresh
 	// verified the outcome — the operation is over either way, and the host
@@ -934,18 +966,26 @@ func (m *hubHostManager) probeBeforeRestart(ctx context.Context, work opWork) (h
 	return probe, nil
 }
 
-// runRestartStep runs the 04b restart path and records the progress line both
-// the standalone and planned-restart callers share.
-func (m *hubHostManager) runRestartStep(ctx context.Context, id string, entry hostreg.Host, facts sshconn.Preflight) error {
+// runRestartStep runs the 04b restart path, returning its selected target build,
+// and records the progress line both standalone and planned restarts share.
+func (m *hubHostManager) runRestartStep(ctx context.Context, id string, entry hostreg.Host, facts sshconn.Preflight, beforeMutation func() error) (string, error) {
 	if m.cfg.restartHost == nil {
-		return errors.New("this hub has no restart step wired, so the operation cannot run")
+		return "", errors.New("this hub has no restart step wired, so the operation cannot run")
 	}
 	m.recordProgress(id, "restarting the host")
-	if err := m.cfg.restartHost(ctx, entry, facts); err != nil {
-		return err
+	target, err := m.cfg.restartHost(ctx, entry, facts, beforeMutation)
+	if err != nil {
+		return "", err
 	}
 	m.recordProgress(id, "restart verified healthy")
-	return nil
+	return target, nil
+}
+
+// The SSH manager may retain this validator after the worker finishes. Capture
+// only a copied entry, its fingerprint and the long-lived hub manager.
+func (m *hubHostManager) operationEntryValidator(entry hostreg.Host, fingerprint string) func() error {
+	entry.Roots = slices.Clone(entry.Roots)
+	return func() error { return m.checkOperationFingerprint(entry, fingerprint) }
 }
 
 // checkOperationFingerprint re-reads the host's own hub.toml entry fingerprint
@@ -962,7 +1002,7 @@ func (m *hubHostManager) checkOperationFingerprint(entry hostreg.Host, bound str
 	}
 	if bound != "" && fingerprint != bound {
 		return appwire.StaleEntry(appwire.StaleEntryBindingHubTOMLFingerprint, fmt.Sprintf(
-			"stale-entry (hub.toml-fingerprint): host %q's hub.toml entry changed since this operation was confirmed; nothing irreversible ran", entry.Name))
+			"stale-entry (hub.toml-fingerprint): host %q's hub.toml entry changed since this operation was confirmed; the next irreversible step was refused", entry.Name))
 	}
 	return nil
 }
@@ -972,7 +1012,7 @@ func (m *hubHostManager) checkOperationFingerprint(entry hostreg.Host, bound str
 // attached channel presenting the operation's persisted fencing epoch. It
 // records the failure verbatim — never a clean success it could not verify —
 // and returns nil only when the refresh verified the outcome.
-func (m *hubHostManager) refreshOperation(ctx context.Context, id string, work opWork, beforeProbe hubcore.HostRuntimeProbe, restarted bool) error {
+func (m *hubHostManager) refreshOperation(ctx context.Context, id string, work opWork, beforeProbe hubcore.HostRuntimeProbe, target string, restarted bool, startedAt time.Time) error {
 	if m.cfg.planFacts == nil {
 		return errors.New("the post-operation preflight is not wired")
 	}
@@ -1001,16 +1041,17 @@ func (m *hubHostManager) refreshOperation(ctx context.Context, id string, work o
 	}
 	m.recordProgress(id, fmt.Sprintf("post-operation probe: build %q healthy=%t", probe.Version, probe.RunningHealthy))
 
-	target := work.token.ControllerRevision
-	if work.record.Kind == hostops.KindRestart {
-		// A restart serves the build the host already had; the pre-operation
-		// probe named it.
-		target = beforeProbe.Version
-	}
 	if !probe.RunningHealthy {
 		return fmt.Errorf("the post-operation probe reports the host unhealthy (build %q), so the operation is not a verified success", probe.Version)
 	}
-	if restarted {
+	if !startedAt.IsZero() {
+		// An owned free-port start can have no predecessor. Its proof is the
+		// actual process sshconn verified, independently observed at this epoch.
+		if probe.ProcessStartTime == nil || !probe.ProcessStartTime.Equal(startedAt) {
+			return errors.New("the post-operation probe did not identify the verified startup process")
+		}
+	}
+	if restarted && (startedAt.IsZero() || beforeProbe.ProcessStartTime != nil) {
 		before := beforeProbe.ProcessStartTime
 		if before == nil || probe.ProcessStartTime == nil {
 			return fmt.Errorf("the post-operation probe cannot prove the new process replaced the old one: a process start time is absent (before=%v, after=%v)",

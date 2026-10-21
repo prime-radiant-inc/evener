@@ -16,6 +16,7 @@ import (
 
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
@@ -1034,9 +1035,10 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	}
 	hubLogf := hubLogfFor(cfg)
 	server := appserver.NewServer(appserver.ServerConfig{
-		ServerName: "evener-hub",
-		Version:    Version,
-		SourceID:   "local",
+		ServerName:   "evener-hub",
+		Version:      Version,
+		BuildVersion: buildinfo.Version(),
+		SourceID:     "local",
 		// The hub's own machine: its system and architecture from the running
 		// binary, and its project roots from hub.toml's top-level `roots`, so a
 		// client showing the hub's own machine beside its SSH hosts has the
