@@ -824,7 +824,7 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
       return { state: "pending" };
     }
     this.#publish(changed);
-    this.#cleanupInspected(inspected);
+    this.#cleanupInspected(inspected, changed);
     return { state: "committed" };
   }
 
@@ -857,14 +857,20 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
     });
   }
 
-  #cleanupInspected(inspected: readonly InspectedDraft[]): void {
+  #cleanupInspected(inspected: readonly InspectedDraft[], imported: readonly BrowserDraftKey[]): void {
     try {
       this.#beforeLegacyCleanup?.();
       // Cleanup only runs after a successful inspection, which requires a
       // legacy store; an absent store has inspected nothing to clean.
       const storage = this.#storage;
       if (storage === undefined) return;
+      // Deletion requires a THIS-SCAN import: a ref the transfer skipped (its
+      // durable row or marker already existed) keeps its legacy bytes, so a
+      // divergent later edit from an older tab always survives even when it is
+      // unchanged across scans.
+      const importedKeys = new Set(imported.map(serializeSessionKey));
       for (const item of inspected) {
+        if (!importedKeys.has(item.draftKey)) continue;
         for (const [legacyKey, bytes] of [
           [item.legacyKeyV2, item.structuredV2],
           [item.legacyKeyV1, item.legacyV1],
