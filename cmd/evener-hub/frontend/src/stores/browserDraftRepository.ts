@@ -28,7 +28,7 @@ import {
   serializeNamespace,
   serializeSessionKey,
 } from "./compositionRevision";
-import { IDBConnection, requestResult, transactionCompletion, tryAbortTransaction } from "./idbConnection";
+import { IDBConnection, requestResult, runBoundedTransaction, tryAbortTransaction } from "./idbConnection";
 import {
   ANNOTATION_EVIDENCE_STORE,
   ANNOTATION_EXPIRY_STORE,
@@ -414,18 +414,17 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
 
   async load(key: BrowserDraftKey): Promise<StoredComposerDraft | null> {
     const changed: BrowserDraftKey[] = [];
-    const draft = await this.#write(DRAFT_STORES, undefined, async (transaction) =>
+    return this.#writeAndPublish(DRAFT_STORES, undefined, changed, (transaction) =>
       this.#readRowWithRetoken(transaction, key, changed),
     );
-    this.#publish(changed);
-    return draft;
   }
 
   async readRecoveryPair(key: BrowserDraftKey, recoveryId: string): Promise<RecoveryPairCapture | null> {
     const changed: BrowserDraftKey[] = [];
-    const capture = await this.#write(
+    return this.#writeAndPublish(
       [COMPOSER_DRAFTS_STORE, ANNOTATION_NAMESPACES_STORE, MUTATION_RECOVERY_STORE],
       undefined,
+      changed,
       async (transaction) => {
         const row = await this.#readRowWithRetoken(transaction, key, changed);
         if (!row) return null;
@@ -439,14 +438,12 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         return { row, record };
       },
     );
-    this.#publish(changed);
-    return capture;
   }
 
   async seedDraft(key: BrowserDraftKey, value: SkillEditorValue): Promise<DraftCommit> {
     try {
       const changed: BrowserDraftKey[] = [];
-      const result = await this.#write(DRAFT_STORES, "seedDraft", async (transaction) => {
+      return await this.#writeAndPublish(DRAFT_STORES, "seedDraft", changed, async (transaction) => {
         const existing = await readSessionRow(transaction, key);
         if (existing) return { state: "conflict", current: publicSessionRow(existing) } as const;
         const incarnation = await this.#currentIncarnation(transaction, key.namespace);
@@ -455,8 +452,6 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         changed.push(key);
         return { state: "committed", draft: publicSessionRow(row) } as const;
       });
-      this.#publish(changed);
-      return result;
     } catch {
       return { state: "unavailable" };
     }
@@ -470,7 +465,7 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
   ): Promise<DraftCommit> {
     try {
       const changed: BrowserDraftKey[] = [];
-      const result = await this.#write(DRAFT_STORES, "commitEdit", async (transaction) => {
+      return await this.#writeAndPublish(DRAFT_STORES, "commitEdit", changed, async (transaction) => {
         const incarnation = await this.#currentIncarnation(transaction, key.namespace);
         const row = await readSessionRow(transaction, key);
         if (!row) return { state: "unavailable" } as const;
@@ -491,8 +486,6 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         changed.push(key);
         return { state: "committed", draft: publicSessionRow(next) } as const;
       });
-      this.#publish(changed);
-      return result;
     } catch {
       return { state: "unavailable" };
     }
@@ -502,7 +495,7 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
     let draftUnchanged = false;
     try {
       const changed: BrowserDraftKey[] = [];
-      const result = await this.#write(DRAFT_STORES, "clearSubmitted", async (transaction) => {
+      return await this.#writeAndPublish(DRAFT_STORES, "clearSubmitted", changed, async (transaction) => {
         const row = await readSessionRow(transaction, key);
         if (!row) return { cleared: false, draftUnchanged: false, persistence: "committed" } as const;
         const incarnation = await this.#currentIncarnation(transaction, key.namespace);
@@ -529,8 +522,6 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         changed.push(key);
         return { cleared: true, draftUnchanged: true, persistence: "committed" } as const;
       });
-      this.#publish(changed);
-      return result;
     } catch {
       return { cleared: false, draftUnchanged, persistence: "pending" };
     }
@@ -550,7 +541,7 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
     if (serializeSessionKey(from) === serializeSessionKey(to)) return;
     try {
       const changed: BrowserDraftKey[] = [];
-      await this.#write(DRAFT_STORES, "carryDraft", async (transaction) => {
+      await this.#writeAndPublish(DRAFT_STORES, "carryDraft", changed, async (transaction) => {
         const source = await readSessionRow(transaction, from);
         // A blank or absent source never moves.
         if (!source || isBlankDraft(source)) return;
@@ -564,7 +555,6 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         await requestResult(putSessionRow(transaction, carried));
         changed.push(to);
       });
-      this.#publish(changed);
     } catch {
       // Best-effort like every draft write: the source copy stays put.
     }
@@ -572,10 +562,11 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
 
   async appendAnnotation(input: AppendAnnotationInput): Promise<AppendAnnotationResult> {
     const preparation = input.preparation;
-    const result = await this.#transaction(
+    const changed: BrowserDraftKey[] = [];
+    return this.#writeAndPublish(
       APPEND_STORES,
-      "readwrite",
       undefined,
+      changed,
       async (transaction): Promise<AppendAnnotationResult> => {
         const operations = transaction.objectStore(ANNOTATION_OPERATIONS_STORE);
         const operation = await requestResult<AnnotationOperationRow | undefined>(operations.get(input.operationKey));
@@ -735,6 +726,7 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
           throw error;
         }
         await written;
+        changed.push(preparation.key);
         return {
           state: "applied",
           draftRevision: nextRow.token.sessionRevision,
@@ -743,12 +735,6 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         };
       },
     );
-    // A committed append writes the session row (and, for a recovery backing,
-    // its record), so it is the same drafts commit every other write
-    // publishes. A non-applied outcome wrote nothing: a replay of an applied
-    // row, a refusal, or a cancellation changed no draft state.
-    if (result.state === "applied") this.#publish([preparation.key]);
-    return result;
   }
 
   // The ordinary session row carries the committed token for BOTH backings: a
@@ -801,7 +787,7 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
     if (inspected.length === 0) return { state: "committed" };
     const changed: BrowserDraftKey[] = [];
     try {
-      await this.#write(TRANSFER_STORES, "transferSupportedDrafts", async (transaction) => {
+      await this.#writeAndPublish(TRANSFER_STORES, "transferSupportedDrafts", changed, async (transaction) => {
         const incarnation = await this.#currentIncarnation(transaction, namespace);
         const drafts = transaction.objectStore(COMPOSER_DRAFTS_STORE);
         const transfers = transaction.objectStore(DRAFT_TRANSFERS_STORE);
@@ -848,7 +834,6 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
     } catch {
       return { state: "pending" };
     }
-    this.#publish(changed);
     this.#cleanupInspected(inspected, changed);
     return { state: "committed" };
   }
@@ -916,12 +901,26 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
     return row.incarnation;
   }
 
-  async #write<T>(
+  // One owner for every drafts write. The caller allocates `changed` and pushes
+  // each key the moment its write is issued; this helper publishes those keys
+  // exactly once when the transaction commits. A watchdog rejection can
+  // outlive a commit, so the runner's late-completion seam publishes the same
+  // keys when that completion lands: a committed write is never silent.
+  async #writeAndPublish<T>(
     stores: readonly string[],
     operation: BrowserDraftOperation | undefined,
+    changed: BrowserDraftKey[],
     body: (transaction: IDBTransaction) => Promise<T>,
   ): Promise<T> {
-    return this.#transaction(stores, "readwrite", operation, body);
+    let published = false;
+    const publish = () => {
+      if (published) return;
+      published = true;
+      this.#publish(changed);
+    };
+    const result = await this.#transaction(stores, "readwrite", operation, body, publish);
+    publish();
+    return result;
   }
 
   async #transaction<T>(
@@ -929,57 +928,30 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
     mode: "readonly" | "readwrite",
     operation: BrowserDraftOperation | undefined,
     body: (transaction: IDBTransaction) => Promise<T>,
+    onLateCompletion?: () => void,
   ): Promise<T> {
     const database = await this.#connection.open();
     const transaction = database.transaction([...stores], mode);
-    const completed = transactionCompletion(transaction);
-    // Observe the completion rejection immediately so a request error that aborts
-    // the transaction before `await body` returns is never an unhandled rejection.
-    // The real failure still propagates through the later `await completed`, and
-    // atomic rollback and `tryAbortTransaction` are unchanged.
-    void completed.catch(() => undefined);
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let timedOut = false;
-    const deadline = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(() => {
-        // Best effort while the transaction can still abort: prove the
-        // rollback. Retiring first would close the database, and a finished
-        // transaction refuses abort().
-        tryAbortTransaction(transaction);
-        this.#connection.retire(database);
-        // Unlike the outbox (whose delivery state machines must not observe a
-        // fabricated mutation outcome), every drafts operation re-reads
-        // durable state on retry: seedDraft reports conflict, commitEdit
-        // unavailable, appendAnnotation already-applied. An unobserved
-        // transaction is therefore honestly reported as a storage fault — the
-        // send path's tolerateStorageFault and each operation's own state
-        // handling take over — instead of leaving the caller pending forever.
-        timedOut = true;
-        reject(new Error("Browser draft repository transaction timed out"));
-      }, STORAGE_WAIT_MS);
-    });
-    try {
-      const work = body(transaction).then((result) => {
+    // Unlike the outbox (whose delivery state machines must not observe a
+    // fabricated mutation outcome), every drafts operation re-reads durable
+    // state on retry: seedDraft reports conflict, commitEdit unavailable,
+    // appendAnnotation already-applied. An unobserved transaction is therefore
+    // honestly reported as a storage fault — the send path's
+    // tolerateStorageFault and each operation's own state handling take over —
+    // instead of leaving the caller pending forever. A commit that lands after
+    // that fault is still published through onLateCompletion.
+    return runBoundedTransaction({
+      transaction,
+      retire: () => this.#connection.retire(database),
+      waitMs: STORAGE_WAIT_MS,
+      timeout: () => new Error("Browser draft repository transaction timed out"),
+      onLateCompletion,
+      run: async () => {
+        const result = await body(transaction);
         if (operation) this.#beforeCommit?.(operation);
         return result;
-      });
-      // Promise.all rejects on either failure without waiting for the other
-      // input. A terminal abort therefore releases even a stalled body, while
-      // success requires both the result and the durable commit event.
-      const [result] = await Promise.race([Promise.all([work, completed]), deadline]);
-      return result;
-    } catch (error) {
-      if (!timedOut) {
-        tryAbortTransaction(transaction);
-        // The rollback wait shares the same deadline the happy path honors:
-        // a stalled abort event must not keep the call pending past the
-        // watchdog.
-        await Promise.race([completed.catch(() => undefined), deadline]).catch(() => undefined);
-      }
-      throw error;
-    } finally {
-      clearTimeout(timer);
-    }
+      },
+    });
   }
 
   #publish(keys: readonly BrowserDraftKey[]): void {

@@ -75,6 +75,11 @@ export interface BoundedTransaction<T> {
   retire: () => void;
   waitMs: number;
   timeout: () => Error;
+  // A watchdog rejection can outlive a commit: the completion event may land
+  // after the caller was already told the transaction failed. The seam runs
+  // once when that late completion resolves, so the caller can publish what
+  // the lost observation would have.
+  onLateCompletion?: () => void;
   run: () => Promise<T>;
 }
 
@@ -109,6 +114,14 @@ export async function runBoundedTransaction<T>(options: BoundedTransaction<T>): 
     if (!timedOut) {
       tryAbortTransaction(options.transaction);
       await Promise.race([completed.catch(() => undefined), deadline]).catch(() => undefined);
+    } else if (options.onLateCompletion !== undefined) {
+      // The transaction may have committed before the deadline. Publish on the
+      // completion's own arrival, once; a real abort resolves this rejection
+      // and the seam stays silent.
+      void completed.then(
+        () => options.onLateCompletion?.(),
+        () => undefined,
+      );
     }
     throw error;
   } finally {

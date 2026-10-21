@@ -10,6 +10,7 @@ import {
   ANNOTATION_EVIDENCE_STORE,
   ANNOTATION_EXPIRY_STORE,
   ANNOTATION_NAMESPACES_STORE,
+  COMPOSER_DRAFTS_STORE,
 } from "./localCompositionSchema";
 import {
   type AnnotationFixtureWithRuntime,
@@ -417,6 +418,50 @@ test("an overlapping handoff completes automatically after an aborted namespace 
   expect(views.find((view) => view.operation.operationId === fixture.operation.operationId)?.handoff.state).toBe(
     "already-applied",
   );
+  expect(fixture.storageSuccess).toHaveBeenCalled();
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+// The drafts repository's write pattern published from its own post-await
+// continuation, so a watchdog that outlived a held completion rejected the
+// write without publishing the commit it actually made. The annotation
+// adapter subscribes to those commits to hear storage progress; a committed
+// draft edit whose completion was lost left that subscription silent. The
+// transaction runner's late-completion seam publishes the same keys once the
+// completion lands.
+test("a drafts write whose completion was lost publishes its commit to subscribers", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-recovery",
+    origin: "https://recovery.example",
+  });
+  const published = vi.fn();
+  fixture.drafts.subscribe(published);
+  fixture.storageSuccess.mockClear();
+  const draft = await fixture.drafts.load(fixture.key);
+  if (!draft) throw new Error("fixture seeded no draft");
+
+  // The edit transaction commits, but its completion event is held: the
+  // watchdog rejects the write while the new text is already durable.
+  const hold = holdNextWriteTransaction([COMPOSER_DRAFTS_STORE, ANNOTATION_NAMESPACES_STORE]);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let reached = false;
+  void hold.reached.then(() => {
+    reached = true;
+  });
+  const edit = fixture.drafts.commitEdit(fixture.key, draft.token, { text: "lost", skillNames: [] }, () => true);
+  await pollUntil(() => reached, 50);
+  expect(reached).toBe(true);
+  await vi.advanceTimersByTimeAsync(10_001);
+  expect(await edit).toEqual({ state: "unavailable" });
+  hold.release();
+  vi.useRealTimers();
+
+  // The late completion is the commit's observation: it publishes the changed
+  // key, and the annotation adapter forwards that storage progress.
+  await pollUntil(() => fixture.storageSuccess.mock.calls.length > 0, 50);
+  expect(published).toHaveBeenCalledWith(expect.objectContaining({ sessionRef: fixture.key.sessionRef }));
   expect(fixture.storageSuccess).toHaveBeenCalled();
 
   fixture.repository.close();
