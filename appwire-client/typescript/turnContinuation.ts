@@ -10,6 +10,11 @@ export const TURN_CONTINUATION_TEXT = "continue";
 // loaded row cannot make a historical failure look like the tail.
 type RetryTurnThread = Pick<ThreadModel, "turns" | "runningTurnId" | "history" | "status">;
 
+/** The conversation's canonical last display turn, by identity only. */
+export function latestTurnId(model: { turns: readonly { id: string }[] } | undefined): string | undefined {
+  return model?.turns[model.turns.length - 1]?.id;
+}
+
 // Whether `failedTurnId` is the conversation's live tail, which is the shared
 // identity half of failed-turn Retry. This is NOT send admission: the caller
 // still establishes that the row is that turn's own failure, applies its
@@ -34,5 +39,5 @@ export function isLatestRetryTurn(thread: RetryTurnThread, failedTurnId: string)
   if (runningTurnId !== undefined && runningTurnId !== failedTurnId) return false;
   if (runningTurnId === undefined && isTurnActive(thread.status.type)) return false;
 
-  return thread.turns[thread.turns.length - 1]?.id === failedTurnId;
+  return latestTurnId(thread) === failedTurnId;
 }

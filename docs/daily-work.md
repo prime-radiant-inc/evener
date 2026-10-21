@@ -82,20 +82,22 @@ The submit button still says **Send** while the agent is busy; it does not becom
 For a queued message, use **Remove from queue** to withdraw it before it runs, **Edit message** to bring it back for revision, or **Steer now** to send it into the current work. These controls appear only when the session supports them and may be disabled during recovery. Confirm that removal succeeded; an error means you must not assume the request was withdrawn. Removing a queued message cannot undo work the agent has already started. If a row says **Delivery uncertain**, let the session recover before submitting a duplicate.
 
 On a failed turn, **Retry** sends a new `continue` message in the same
-conversation in both the browser and native app. It appears only on the
-conversation's latest failed turn: a newer running, successful or failed turn
-removes the older action, while the older failure remains readable. Retry waits
-for its pending state to load, becomes inactive as soon as it is pressed, and
-stays inactive while its continuation is unresolved, including after a lost
-reply, remount or reconnect. Refresh and older-history paging do not grant a
-historical failure a Retry action. The earlier prompt, images, transcript and
-completed work stay in place. Retry leaves your current draft and staged images
-alone, including when delivery is refused; draft text and selected
-skills/commands survive a reload, while staged images do not. A refused
-continuation stays available through the existing message-recovery controls;
-it does not replace an empty draft. Native keeps Resume and Sign in ahead of
-Retry when those actions are needed. Queued-message and delivery-uncertain
-retries keep their own recovery behavior.
+conversation in both the browser and native app. The earlier prompt, images,
+transcript and completed work stay in place. Retry leaves your current draft
+and staged images alone, including when delivery is refused; draft text and
+selected skills/commands survive a browser reload, while staged images do not.
+A refused continuation stays available through the existing message-recovery
+controls; it does not replace an empty draft. Native keeps Resume and Sign in
+ahead of Retry when those actions are needed. Queued-message and
+delivery-uncertain retries keep their own recovery behavior.
+
+In the browser, Retry appears only on the conversation's latest failed turn: a
+newer running, successful or failed turn removes the older action, while the
+older failure remains readable. Retry waits for its pending state to load,
+becomes inactive as soon as it is pressed, and stays inactive while its
+continuation is unresolved, including after a lost reply, remount or reconnect.
+Refresh and older-history paging do not grant a historical failure a Retry
+action.
 
 A useful steering message is specific:
 

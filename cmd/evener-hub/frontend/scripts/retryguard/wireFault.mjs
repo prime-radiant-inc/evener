@@ -53,26 +53,18 @@ export function installRetryWireFault() {
   // With no method arguments every held frame is released. Named methods
   // release only their own frames, so acceptance and the independent history
   // reads/events that would prove the continuation can be observed separately.
-  state.releaseResponses = (...methods) => {
+  const releaseHeld = (heldKey, holdsKey, methods) => {
     const wanted = new Set(methods);
     const keep = [];
-    for (const held of state.heldResponses) {
+    for (const held of state[heldKey]) {
       if (wanted.size === 0 || wanted.has(held.method)) held.listener({ data: held.data });
       else keep.push(held);
     }
-    state.heldResponses = keep;
-    state.responseHolds = wanted.size === 0 ? [] : state.responseHolds.filter((method) => !wanted.has(method));
+    state[heldKey] = keep;
+    state[holdsKey] = wanted.size === 0 ? [] : state[holdsKey].filter((method) => !wanted.has(method));
   };
-  state.releaseNotifications = (...methods) => {
-    const wanted = new Set(methods);
-    const keep = [];
-    for (const held of state.heldNotifications) {
-      if (wanted.size === 0 || wanted.has(held.method)) held.listener({ data: held.data });
-      else keep.push(held);
-    }
-    state.heldNotifications = keep;
-    state.notificationHolds = wanted.size === 0 ? [] : state.notificationHolds.filter((method) => !wanted.has(method));
-  };
+  state.releaseResponses = (...methods) => releaseHeld("heldResponses", "responseHolds", methods);
+  state.releaseNotifications = (...methods) => releaseHeld("heldNotifications", "notificationHolds", methods);
   globalThis.__retryWire = state;
   globalThis.WebSocket = class extends Original {
     constructor(...args) {

@@ -157,8 +157,14 @@ func TestRetryContinuationJourney(t *testing.T) {
 	t.Run("browser/recovery", func(t *testing.T) {
 		runRetryRecoveryJourney(t, ctx, stack, client, provider)
 	})
+	t.Run("browser/running", func(t *testing.T) {
+		runRetryRunningJourney(t, ctx, stack, client, provider)
+	})
 	t.Run("browser/history", func(t *testing.T) {
 		runRetryHistoryJourney(t, ctx, stack, client, provider)
+	})
+	t.Run("browser/remount", func(t *testing.T) {
+		runRetryRemountJourney(t, ctx, stack, client, provider)
 	})
 }
 
@@ -231,14 +237,18 @@ func startRetryJourneyThread(t *testing.T, ctx context.Context, stack hubStack, 
 // retryJourneyDriver runs the production browser bundle against the real hub.
 // The fixture's only scripted dependency stays the external provider; faults
 // are transport holds installed by the driver.
-func retryJourneyDriver(ctx context.Context, stack hubStack, artifactDir, milestonePath, ref, original, mode string) error {
+func retryJourneyDriver(ctx context.Context, stack hubStack, artifactDir, milestonePath, ref, original, mode, otherRef string) error {
+	scenario := map[string]string{"ref": ref, "mode": mode, "original": original}
+	if otherRef != "" {
+		scenario["otherRef"] = otherRef
+	}
 	fixture := map[string]any{
 		"url":           hubedge.AuthURLFor("http://"+stack.addr, stack.token),
 		"origin":        "http://" + stack.addr,
 		"token":         stack.token,
 		"artifactDir":   artifactDir,
 		"milestonePath": milestonePath,
-		"scenarios":     []map[string]string{{"ref": ref, "mode": mode, "original": original}},
+		"scenarios":     []map[string]string{scenario},
 	}
 	data, err := json.Marshal(fixture)
 	if err != nil {
@@ -263,8 +273,8 @@ func waitRetryMilestone(ctx context.Context, t *testing.T, path, name string, dr
 		data, err := os.ReadFile(path)
 		if err == nil {
 			for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-				var record map[string]any
-				if json.Unmarshal([]byte(line), &record) == nil && record["milestone"] == name {
+				var record skillGuardMilestone
+				if json.Unmarshal([]byte(line), &record) == nil && record.Milestone == name {
 					return
 				}
 			}
@@ -277,10 +287,24 @@ func waitRetryMilestone(ctx context.Context, t *testing.T, path, name string, dr
 			t.Fatalf("driver failed before milestone %q: %v", name, err)
 		case <-ctx.Done():
 			t.Fatalf("waiting for driver milestone %q: %v", name, ctx.Err())
-		case <-time.After(50 * time.Millisecond):
+		case <-time.After(250 * time.Millisecond):
 		}
 	}
 	t.Fatalf("driver never reached milestone %q", name)
+}
+
+// retryUserInputCounts is the authoritative transcript count every scenario
+// shares: one map over the thread's own recorded user input.
+func retryUserInputCounts(thread appwire.Thread) map[string]int {
+	counts := map[string]int{}
+	for _, turn := range thread.Turns {
+		for _, item := range turn.Items {
+			if item.Type == "userMessage" {
+				counts[item.Text]++
+			}
+		}
+	}
+	return counts
 }
 
 // retryJourneyCalls fans the real provider requests into one channel so each
@@ -341,7 +365,7 @@ func runRetryEligibilityJourney(t *testing.T, ctx context.Context, stack hubStac
 	calls := retryJourneyCalls(ctx, provider)
 	driverDone := make(chan error, 1)
 	go func() {
-		driverDone <- retryJourneyDriver(ctx, stack, artifactDir, milestonePath, ref, original, "eligibility")
+		driverDone <- retryJourneyDriver(ctx, stack, artifactDir, milestonePath, ref, original, "eligibility", "")
 	}()
 
 	continuation := nextRetryCall(ctx, t, calls, "the first continuation", driverDone)
@@ -354,10 +378,6 @@ func runRetryEligibilityJourney(t *testing.T, ctx context.Context, stack hubStac
 	continuation.RespondToolCall("communicate", communicateArgs("RETRY_DONE_ELIGIBILITY"))
 
 	waitRetryMilestone(ctx, t, milestonePath, "ready-for-newer-turn", driverDone)
-	newer := nextRetryCall(ctx, t, calls, "the newer running turn", driverDone)
-	waitRetryMilestone(ctx, t, milestonePath, "empty-running", driverDone)
-	newer.RespondToolCall("communicate", communicateArgs("RETRY_NEWER_SUCCESS"))
-
 	newerFailure := nextRetryCall(ctx, t, calls, "the newer failing turn", driverDone)
 	newerFailure.RespondHTTPError(http.StatusBadRequest, "retry_fixture_newer")
 
@@ -377,25 +397,56 @@ func runRetryEligibilityJourney(t *testing.T, ctx context.Context, stack hubStac
 	if err != nil {
 		t.Fatal(err)
 	}
-	counts := map[string]int{}
-	for _, turn := range read.Thread.Turns {
-		for _, item := range turn.Items {
-			if item.Type == "userMessage" {
-				counts[item.Text]++
-			}
-		}
-	}
-	if counts[original] != 1 || counts["continue"] != 2 || counts["RETRY_NEWER_RUNNING"] != 1 || counts["RETRY_NEWER_FAIL"] != 1 {
+	counts := retryUserInputCounts(read.Thread)
+	if counts[original] != 1 || counts["continue"] != 2 || counts["RETRY_NEWER_FAIL"] != 1 {
 		t.Fatalf("authoritative user input counts: %v", counts)
 	}
 	if counts["RETRY_DRAFT_ELIGIBILITY"] != 0 {
 		t.Fatalf("draft became authoritative input: %v", counts)
 	}
-	if len(read.Thread.Turns) != 6 {
-		t.Fatalf("expected prelude, failed original, two continuations and two newer turns, got %d turns", len(read.Thread.Turns))
+	if len(read.Thread.Turns) != 5 {
+		t.Fatalf("expected prelude, failed original, two continuations and one newer turn, got %d turns", len(read.Thread.Turns))
 	}
 	if read.Thread.Turns[1].Status != "failed" || read.Thread.Turns[2].Status != "completed" ||
-		read.Thread.Turns[4].Status != "failed" || read.Thread.Turns[5].Status != "completed" {
+		read.Thread.Turns[3].Status != "failed" || read.Thread.Turns[4].Status != "completed" {
+		t.Fatalf("turn outcomes: %v", read.Thread.Turns)
+	}
+}
+
+func runRetryRunningJourney(t *testing.T, ctx context.Context, stack hubStack, client *appwire.Client, provider *fakellm.Server) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	original := "RETRY_ORIGINAL_browser_running"
+	ref, milestonePath := startRetryJourneyThread(t, ctx, stack, client, provider, original)
+	artifactDir := t.TempDir()
+	calls := retryJourneyCalls(ctx, provider)
+	driverDone := make(chan error, 1)
+	go func() {
+		driverDone <- retryJourneyDriver(ctx, stack, artifactDir, milestonePath, ref, original, "running", "")
+	}()
+
+	newer := nextRetryCall(ctx, t, calls, "the newer running turn", driverDone)
+	if texts := newer.Texts(); !slices.Contains(texts, "user: "+original) || !slices.Contains(texts, "user: RETRY_RUNNING_NEW") {
+		t.Fatalf("newer running turn lost its inputs: %v", texts)
+	}
+	// Hold the provider until the page has proved the running identity without
+	// any display item for the newer turn.
+	waitRetryMilestone(ctx, t, milestonePath, "running-empty", driverDone)
+	newer.RespondToolCall("communicate", communicateArgs("RETRY_RUNNING_DONE"))
+
+	if err := <-driverDone; err != nil {
+		t.Fatal(err)
+	}
+	read, err := clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := retryUserInputCounts(read.Thread)
+	if counts[original] != 1 || counts["RETRY_RUNNING_NEW"] != 1 || counts["continue"] != 0 {
+		t.Fatalf("authoritative user input counts: %v", counts)
+	}
+	if len(read.Thread.Turns) != 3 || read.Thread.Turns[1].Status != "failed" || read.Thread.Turns[2].Status != "completed" {
 		t.Fatalf("turn outcomes: %v", read.Thread.Turns)
 	}
 }
@@ -410,7 +461,7 @@ func runRetryRecoveryJourney(t *testing.T, ctx context.Context, stack hubStack, 
 	calls := retryJourneyCalls(ctx, provider)
 	driverDone := make(chan error, 1)
 	go func() {
-		driverDone <- retryJourneyDriver(ctx, stack, artifactDir, milestonePath, ref, original, "recovery")
+		driverDone <- retryJourneyDriver(ctx, stack, artifactDir, milestonePath, ref, original, "recovery", "")
 	}()
 
 	continuation := nextRetryCall(ctx, t, calls, "the lost-reply continuation", driverDone)
@@ -429,14 +480,7 @@ func runRetryRecoveryJourney(t *testing.T, ctx context.Context, stack hubStack, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	counts := map[string]int{}
-	for _, turn := range read.Thread.Turns {
-		for _, item := range turn.Items {
-			if item.Type == "userMessage" {
-				counts[item.Text]++
-			}
-		}
-	}
+	counts := retryUserInputCounts(read.Thread)
 	if counts[original] != 1 || counts["continue"] != 1 {
 		t.Fatalf("authoritative user input counts after lost-reply recovery: %v", counts)
 	}
@@ -477,8 +521,46 @@ func runRetryHistoryJourney(t *testing.T, ctx context.Context, stack hubStack, c
 			return thread.Evener.ActiveTurnID == ""
 		})
 	}
-	if err := retryJourneyDriver(ctx, stack, t.TempDir(), milestonePath, ref, original, "history"); err != nil {
+	if err := retryJourneyDriver(ctx, stack, t.TempDir(), milestonePath, ref, original, "history", ""); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func runRetryRemountJourney(t *testing.T, ctx context.Context, stack hubStack, client *appwire.Client, provider *fakellm.Server) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	original := "RETRY_ORIGINAL_browser_remount"
+	ref, milestonePath := startRetryJourneyThread(t, ctx, stack, client, provider, original)
+	otherRef, _ := startRetryJourneyThread(t, ctx, stack, client, provider, "RETRY_ORIGINAL_browser_remount_other")
+	calls := retryJourneyCalls(ctx, provider)
+	driverDone := make(chan error, 1)
+	go func() {
+		driverDone <- retryJourneyDriver(ctx, stack, t.TempDir(), milestonePath, ref, original, "remount", otherRef)
+	}()
+
+	continuation := nextRetryCall(ctx, t, calls, "the remount continuation", driverDone)
+	if texts := continuation.Texts(); !slices.Contains(texts, "user: "+original) || !slices.Contains(texts, "user: continue") {
+		t.Fatalf("continuation lost the original input: %v", texts)
+	}
+	if texts := continuation.Texts(); slices.Contains(texts, "user: RETRY_REMOUNT_DRAFT") {
+		t.Fatal("the remount draft reached the provider")
+	}
+	continuation.RespondToolCall("communicate", communicateArgs("RETRY_REMOUNT_DONE"))
+
+	if err := <-driverDone; err != nil {
+		t.Fatal(err)
+	}
+	read, err := clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := retryUserInputCounts(read.Thread)
+	if counts[original] != 1 || counts["continue"] != 1 || counts["RETRY_REMOUNT_DRAFT"] != 0 {
+		t.Fatalf("authoritative user input counts after remount: %v", counts)
+	}
+	if len(read.Thread.Turns) != 3 || read.Thread.Turns[1].Status != "failed" || read.Thread.Turns[2].Status != "completed" {
+		t.Fatalf("turn outcomes after remount: %v", read.Thread.Turns)
 	}
 }
 

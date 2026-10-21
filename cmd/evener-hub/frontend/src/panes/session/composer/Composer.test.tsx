@@ -29,6 +29,7 @@ import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
 import { answerActivityRead } from "../../../stores/sessionActivityTestUtils";
 import { holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import {
+  putThreadModel,
   readMutationPersistence,
   resetThreadsStoreForTests,
   setMutationStorageForTests,
@@ -360,13 +361,11 @@ function publishLatestFailure(ref: string, turn: TurnModel): void {
   const model = threadsStore.getState().threads.get(ref);
   if (!model) throw new Error("thread was not loaded");
   act(() => {
-    threadsStore.setState({
-      threads: new Map(threadsStore.getState().threads).set(ref, {
-        ...model,
-        runningTurnId: undefined,
-        status: { type: "idle" },
-        turns: [turn],
-      }),
+    putThreadModel(ref, {
+      ...model,
+      runningTurnId: undefined,
+      status: { type: "idle" },
+      turns: [turn],
     });
   });
 }

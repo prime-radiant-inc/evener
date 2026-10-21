@@ -19,6 +19,7 @@ import {
   pendingTurnEntries,
   refreshPendingTurnsProjection,
   resetPendingTurnsStoreForTests,
+  submitWithPendingTracking,
 } from "../composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../composer/queue/testing/flushPendingTurnsProjection";
 import { readResponse, seedHeld } from "./messages/testing/heldSteerTestUtils";
@@ -396,6 +397,47 @@ test("a loaded unresolved own send keeps Retry inactive", async () => {
     render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
     await flushPendingTurnsProjectionForTests();
     await waitFor(() => expect(retryButton()?.disabled).toBe(true));
+  } finally {
+    storage.close();
+  }
+});
+
+test("an unresolved ordinary send blocks Retry before its durable row exists", async () => {
+  const turn = failedTurn();
+  const { fake, storage } = await loadThread("ref_a", [turn]);
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+
+    // The ordinary send is held at its pre-write stop-barrier read: its
+    // submittingRefs entry exists, but no durable row or wire dispatch does.
+    const barrier = holdNextTransaction(["sequences"], "readonly");
+    let ordinary!: Promise<void>;
+    await act(async () => {
+      ordinary = submitWithPendingTracking(
+        { ref: "ref_a", text: "ordinary follow-up", skillNames: [], onFailure: () => {} },
+        () => threadsStore.getState().send("ref_a", "ordinary follow-up"),
+      );
+      await barrier.reached;
+    });
+    await waitFor(() => expect(retryButton()?.disabled).toBe(true));
+
+    await act(async () => {
+      await threadsStore.getState().continueTurn("ref_a", turn.id);
+      barrier.release();
+      await ordinary;
+    });
+    await flushPendingTurnsProjectionForTests();
+
+    const rows = await storage.listOutbox("ref_a");
+    expect(rows.map((row) => row.composerText)).toEqual(["ordinary follow-up"]);
+    const continueCalls = fake.calls.filter(
+      (call) =>
+        call.method === "turn/start" &&
+        (call.params as MethodTypes["turn/start"]["params"]).input?.some((item) => item.text === "continue"),
+    );
+    expect(continueCalls).toHaveLength(0);
   } finally {
     storage.close();
   }

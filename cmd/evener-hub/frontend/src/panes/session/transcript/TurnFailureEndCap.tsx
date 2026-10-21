@@ -8,6 +8,7 @@ import { Button, Chip, Disclosure, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import {
   ensureRetryReflectionResolved,
+  useComposerSubmitting,
   usePendingTurnEntries,
   usePendingTurnReadiness,
   useRetryAdmissionInFlight,
@@ -74,6 +75,7 @@ function RetryAction({
   const pendingEntries = usePendingTurnEntries(sessionRef);
   const admissionInFlight = useRetryAdmissionInFlight(sessionRef);
   const awaitingReflection = useRetryAwaitingReflection(sessionRef, turnId);
+  const submitting = useComposerSubmitting(sessionRef);
   const pending = ownPendingTurnInput(pendingEntries);
   useEffect(() => {
     if (awaitingReflection) ensureRetryReflectionResolved(sessionRef);
@@ -90,7 +92,7 @@ function RetryAction({
     <Button
       variant="primary"
       size="sm"
-      disabled={!pendingLoaded || pending || admissionInFlight || awaitingReflection}
+      disabled={!pendingLoaded || pending || admissionInFlight || awaitingReflection || submitting}
       onClick={() => void retry()}
     >
       {recoveryLabel}

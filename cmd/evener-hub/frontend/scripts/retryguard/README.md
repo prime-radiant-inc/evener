@@ -12,15 +12,21 @@ The browser journey additionally runs three integrated scenarios. `eligibility`
 holds the acceptance response, authoritative reads and the new turn's
 history/overlay events independently, presses Retry twice in one task, and
 proves one durable mutation identity and no duplicate provider continuation.
-It also proves a newer running turn with no transcript items removes the older
-action, a newer failure offers its own Retry, and a newer success leaves the
-older failure readable without one. `recovery` loses the acceptance reply,
+It also proves a newer failure offers its own Retry while the older failure
+stays readable without one. `recovery` loses the acceptance reply,
 reloads while the durable pending read is held unknown and the first
 authoritative history read fails once, then proves automatic reconciliation,
 one mutation identity, a completed continuation and the documented draft and
 attachment lifetimes. `history` creates more than one newest page of turns,
 pages to an older failure through the real older-history owner, and repeats
 that after a reload.
+
+`running` starts from a still-latest failure whose Retry is enabled, then holds
+history and overlay events while a newer turn's running identity arrives, and
+asserts the action is gone before any transcript item exists. `remount` holds
+the durable outbox write for a Retry continuation, switches the session away
+and back in the same document, releases the write, and asserts one mutation
+identity with no stranded optimistic owner and a preserved draft.
 
 The holds live at external boundaries only: WebSocket frames (including
 independently released RPC responses and notifications) and IndexedDB read

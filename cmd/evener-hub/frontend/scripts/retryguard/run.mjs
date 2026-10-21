@@ -18,7 +18,7 @@ const CONTINUE = "continue";
 // is genuinely unknown rather than merely slow. This is a browser storage
 // boundary, not Evener logic: no record is fabricated or rewritten.
 function installDurableReadHold() {
-  const state = { armed: false, held: [], count: 0 };
+  const state = { armed: false, held: [], count: 0, writeArmed: false, writeReached: 0, heldWrites: [] };
   globalThis.__retryStorage = state;
   try {
     state.armed = globalThis.localStorage?.getItem("__retryStorageArmed") === "1";
@@ -29,6 +29,13 @@ function installDurableReadHold() {
   state.release = () => {
     state.armed = false;
     for (const deliver of state.held.splice(0)) deliver();
+  };
+  state.holdNextOutboxWrite = () => {
+    state.writeArmed = true;
+  };
+  state.releaseWrite = () => {
+    state.writeArmed = false;
+    for (const deliver of state.heldWrites.splice(0)) deliver();
   };
   const originalGetAll = IDBObjectStore.prototype.getAll;
   IDBObjectStore.prototype.getAll = function getAll(...args) {
@@ -46,6 +53,34 @@ function installDurableReadHold() {
                 if (state.armed) state.held.push(() => listener.call(target, event));
                 else listener.call(target, event);
               },
+              options,
+            );
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  };
+  // One-shot: the next readwrite transaction that includes the outbox store
+  // commits, but its completion callback is parked until the driver releases
+  // it. The durable row exists while every caller still awaits the enqueue.
+  const originalTransaction = IDBDatabase.prototype.transaction;
+  IDBDatabase.prototype.transaction = function transaction(storeNames, mode, ...rest) {
+    const tx = originalTransaction.call(this, storeNames, mode, ...rest);
+    if (!state.writeArmed || mode !== "readwrite") return tx;
+    const names = typeof storeNames === "string" ? [storeNames] : Array.from(storeNames);
+    if (!names.includes("outbox")) return tx;
+    state.writeArmed = false;
+    state.writeReached++;
+    return new Proxy(tx, {
+      get(target, property) {
+        if (property === "addEventListener") {
+          return (type, listener, options) => {
+            if (type !== "complete") return target.addEventListener(type, listener, options);
+            return target.addEventListener(
+              "complete",
+              (event) => state.heldWrites.push(() => listener.call(target, event)),
               options,
             );
           };
@@ -74,6 +109,17 @@ function failureCapsExpr() {
   }))`;
 }
 
+// One page expression for every Retry activation: find the latest failure's
+// action, refuse an absent or disabled control, and click it `times` in the
+// same task.
+function retryClickExpr(times) {
+  return `(() => { const buttons = ${retryButtonsExpr()}; const b = buttons[buttons.length - 1];
+    if (!b) return "missing";
+    if (b.disabled) return "disabled";
+    ${Array.from({ length: times }, () => "b.click();").join(" ")}
+    return "clicked"; })()`;
+}
+
 async function waitRetry(driver, count, { enabled = true, label } = {}) {
   await driver.waitPage(
     `(() => { const buttons = ${retryButtonsExpr()};
@@ -86,14 +132,7 @@ async function waitRetry(driver, count, { enabled = true, label } = {}) {
 // the pre-render window: the first click's admission runs synchronously, so
 // the second is a stale activation the owner must refuse.
 async function clickRetry(driver, { times = 1 } = {}) {
-  const result = await evaluate(
-    driver.send,
-    `(() => { const buttons = ${retryButtonsExpr()}; const b = buttons[buttons.length - 1];
-      if (!b) return "missing";
-      if (b.disabled) return "disabled";
-      ${Array.from({ length: times }, () => "b.click();").join(" ")}
-      return "clicked"; })()`,
-  );
+  const result = await evaluate(driver.send, retryClickExpr(times));
   if (result !== "clicked") throw new Error(`clickRetry: ${result}`);
 }
 
@@ -103,14 +142,7 @@ async function clickRetry(driver, { times = 1 } = {}) {
 async function clickRetryWhenReady(driver, { times = 1, timeoutMs = 20000 } = {}) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const result = await evaluate(
-      driver.send,
-      `(() => { const buttons = ${retryButtonsExpr()}; const b = buttons[buttons.length - 1];
-        if (!b) return "missing";
-        if (b.disabled) return "disabled";
-        ${Array.from({ length: times }, () => "b.click();").join(" ")}
-        return "clicked"; })()`,
-    );
+    const result = await evaluate(driver.send, retryClickExpr(times));
     if (result === "clicked") return;
     if (Date.now() > deadline) throw new Error(`clickRetryWhenReady: ${result}`);
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -146,7 +178,7 @@ async function stageAttachment(driver, ref, artifactDir) {
       "base64",
     ),
   );
-  const document = await driver.send("DOM.getDocument", { depth: -1 });
+  const document = await driver.send("DOM.getDocument", { depth: 0 });
   const found = await driver.send("DOM.querySelector", {
     nodeId: document.result.root.nodeId,
     selector: `${driver.composerSelector(ref)} input[type=file]`,
@@ -386,46 +418,8 @@ async function runEligibility(driver, scenario) {
   // The preserved draft is now deliberately edited away by the user (allowed
   // by the contract), so the newer-turn scenarios start from an empty composer.
   await driver.clearComposerDraft(ref);
-  // The newer turn must prove its running identity reaches the page before any
-  // display item does: thread/started stays delivered, history and live
-  // overlays are withheld until the claim is checked.
-  await evaluate(
-    driver.send,
-    `(() => { const wire = window.__retryWire; wire.clearHolds();
-      wire.holdResponses("thread/read");
-      wire.holdNotifications("history/updated", "overlay/upserted", "overlay/delta", "overlay/reset", "overlay/end");
-      return true; })()`,
-  );
-  await evaluate(driver.send, `${driver.editorExpr(ref)}.focus()`);
-  await driver.typeText(ref, "RETRY_NEWER_RUNNING");
-  const newState = await driver.composerState(ref);
-  driver.milestone("ready-for-newer-turn", { text: newState.text });
-  await driver.clickSubmit(ref, { text: newState.text, chips: [], tiles: 0 });
-  // The running identity arrives before display items: history updates are
-  // held while the provider call is still open.
-  await driver.waitPage(
-    `(() => { const state = ${driver.composerStateExpr(ref)};
-      const buttons = ${retryButtonsExpr()};
-      const rows = [...document.querySelectorAll("[data-testid='transcript-virtual-list'] [data-testid='transcript-row']")];
-      return state && state.steerVisible && buttons.length === 0 &&
-        rows.every((row) => !row.textContent.includes("RETRY_NEWER_RUNNING")) ? true : null; })()`,
-    { label: "newer empty running turn hides the older Retry before its items" },
-  );
-  driver.milestone("empty-running", {});
-
-  await evaluate(driver.send, 'window.__retryWire.releaseResponses("thread/read")');
-  await evaluate(driver.send, "window.__retryWire.releaseNotifications()");
-  await waitBodyIncludes(driver, "RETRY_NEWER_RUNNING", { timeoutMs: 30000 });
-  await waitBodyIncludes(driver, "RETRY_NEWER_SUCCESS", { timeoutMs: 30000 });
-  await waitRetry(driver, 0, { label: "newer successful turn leaves the older failure without Retry" });
-  const olderCaps = await evaluate(driver.send, failureCapsExpr());
-  assert.ok(olderCaps.length >= 1, "older failure remains readable");
-  assert.ok(
-    olderCaps.some((cap) => cap.buttons.every((button) => button.label !== "Retry")),
-    `older failure has no Retry: ${JSON.stringify(olderCaps)}`,
-  );
-  driver.milestone("newer-successful", { caps: olderCaps.length });
-
+  await evaluate(driver.send, "window.__retryWire.clearHolds()");
+  driver.milestone("ready-for-newer-turn", {});
   await evaluate(driver.send, `${driver.editorExpr(ref)}.focus()`);
   await driver.typeText(ref, "RETRY_NEWER_FAIL");
   const failing = await driver.composerState(ref);
@@ -532,10 +526,76 @@ async function runRecovery(driver, scenario) {
   assert.ok(after.chips.includes("/pkg:probe"), "structured selection preserved through reconciliation");
   assert.equal(after.tiles, 0, "attachment limit unchanged across reload");
   assert.notEqual(after.submitDisabled, true, "useful operation restored");
+  const settled = await evaluate(driver.send, driver.durableRecordsExpr());
+  const identityRows = ["outbox", "optimistic", "recovery"].flatMap((store) =>
+    (settled[store] ?? []).filter((record) => record.clientMutationId === mutationID),
+  );
+  assert.equal(identityRows.length, 0, "the recovered mutation identity left durable storage");
+  assert.equal(
+    (settled.outbox ?? []).filter((record) => record.targetRef === ref).length,
+    0,
+    "the recovered ref has no unresolved outbox rows",
+  );
+  assert.equal(
+    (settled.optimistic ?? []).filter((record) => record.targetRef === ref).length,
+    0,
+    "the recovered ref has no optimistic rows",
+  );
   const wire = await evaluate(driver.send, "window.__retryWire");
   const identities = wire.requests.map((request) => request.params.clientMutationId);
   for (const identity of identities) assert.equal(identity, mutationID, "recovery reused one mutation identity");
   driver.milestone("recovery-complete", { identities, connections: wire.connections });
+}
+
+// A still-latest failure must lose Retry when a newer turn's running identity
+// arrives, before that turn has produced any transcript item. This scenario is
+// separate from eligibility because the eligibility continuation has already
+// ended the first failure's action; proving the running veto needs the action
+// to be enabled first.
+async function runRunning(driver, scenario) {
+  const ref = scenario.ref;
+  await driver.openSession(ref);
+  await driver.waitPage(`document.querySelector('[data-testid="turn-failure"]') !== null`, {
+    label: "terminal provider failure",
+  });
+  await waitRetry(driver, 1, { enabled: true, label: "latest failure Retry enabled" });
+
+  // thread/started and thread/status/changed stay delivered: the running
+  // identity is exactly what the rule must see. History and live overlays are
+  // withheld so no display item can explain the missing action.
+  await evaluate(
+    driver.send,
+    `(() => { const wire = window.__retryWire; wire.clearHolds();
+      wire.holdResponses("thread/read");
+      wire.holdNotifications("history/updated", "overlay/upserted", "overlay/delta", "overlay/reset", "overlay/end");
+      return true; })()`,
+  );
+  await evaluate(driver.send, `${driver.editorExpr(ref)}.focus()`);
+  await driver.typeText(ref, "RETRY_RUNNING_NEW");
+  const state = await driver.composerState(ref);
+  await driver.clickSubmit(ref, { text: state.text, chips: [], tiles: 0 });
+  await driver.waitPage(
+    `(() => { const composer = ${driver.composerStateExpr(ref)};
+      const buttons = ${retryButtonsExpr()};
+      const rows = [...document.querySelectorAll("[data-testid='transcript-virtual-list'] [data-testid='transcript-row']")];
+      return composer && composer.steerVisible && buttons.length === 0 &&
+        rows.every((row) => !row.textContent.includes("RETRY_RUNNING_NEW")) ? true : null; })()`,
+    { label: "newer running turn hides the older Retry before its items" },
+  );
+  driver.milestone("running-empty", {});
+
+  await evaluate(driver.send, 'window.__retryWire.releaseResponses("thread/read")');
+  await evaluate(driver.send, "window.__retryWire.releaseNotifications()");
+  await waitBodyIncludes(driver, "RETRY_RUNNING_NEW", { timeoutMs: 30000 });
+  await waitBodyIncludes(driver, "RETRY_RUNNING_DONE", { timeoutMs: 30000 });
+  await waitRetry(driver, 0, { label: "completed newer turn leaves the older failure readable without Retry" });
+  const caps = await evaluate(driver.send, failureCapsExpr());
+  assert.ok(caps.length >= 1, "the older failure is still readable");
+  assert.ok(
+    caps.every((cap) => cap.buttons.every((button) => button.label !== "Retry")),
+    `the older failure has no Retry: ${JSON.stringify(caps)}`,
+  );
+  driver.milestone("running-complete", { caps: caps.length });
 }
 
 async function runHistory(driver, scenario) {
@@ -571,6 +631,68 @@ async function runHistory(driver, scenario) {
   driver.milestone("history-refreshed", { pages });
 }
 
+// The durable enqueue is held, the session is switched away and back in the
+// same document (a binding replacement before enqueue returns), then the
+// write is released. One mutation identity must survive the remount and no
+// second uncertainty owner may strand the continuation.
+async function runRemount(driver, scenario) {
+  const ref = scenario.ref;
+  const otherRef = scenario.otherRef;
+  await driver.openSession(ref);
+  await driver.waitPage(`document.querySelector('[data-testid="turn-failure"]') !== null`, {
+    label: "terminal provider failure",
+  });
+  await waitRetry(driver, 1, { enabled: true, label: "latest failure Retry enabled" });
+
+  await evaluate(driver.send, `${driver.editorExpr(ref)}.focus()`);
+  await driver.typeText(ref, "RETRY_REMOUNT_DRAFT");
+  await driver.selectSkillChip(ref);
+  await evaluate(driver.send, "window.__retryStorage.holdNextOutboxWrite()");
+  await clickRetryWhenReady(driver, { times: 1 });
+  await driver.waitPage("window.__retryStorage.writeReached === 1", { label: "durable enqueue held" });
+  assert.equal(
+    (await evaluate(driver.send, "window.__retryWire")).requests.length,
+    0,
+    "no dispatch before enqueue settles",
+  );
+
+  await driver.openSession(otherRef);
+  await driver.openSession(ref);
+  const remounted = await driver.composerState(ref);
+  assert.ok(
+    remounted.text.includes("RETRY_REMOUNT_DRAFT"),
+    `draft survived the switch: ${JSON.stringify(remounted.text)}`,
+  );
+  assert.ok(remounted.chips.includes("/pkg:probe"), "structured selection survived the switch");
+  const buttons = await evaluate(driver.send, `${retryButtonsExpr()}.map((button) => ({ disabled: button.disabled }))`);
+  assert.ok(
+    buttons.every((button) => button.disabled),
+    "Retry is not actionable through the remount",
+  );
+  driver.milestone("remount-window", { text: remounted.text });
+
+  await evaluate(driver.send, "window.__retryStorage.releaseWrite()");
+  await driver.waitPage("window.__retryWire.requests.length === 1", { label: "one continuation dispatched" });
+  await waitBodyIncludes(driver, "RETRY_REMOUNT_DONE", { timeoutMs: 30000 });
+  await waitRetry(driver, 0, { label: "the old failure has no Retry after recovery" });
+  const durable = await evaluate(driver.send, driver.durableRecordsExpr());
+  assert.equal(
+    (durable.outbox ?? []).filter((record) => record.targetRef === ref).length,
+    0,
+    "the held enqueue settled out of the outbox",
+  );
+  assert.equal(
+    (durable.optimistic ?? []).filter((record) => record.targetRef === ref).length,
+    0,
+    "no stranded optimistic row",
+  );
+  const wire = await evaluate(driver.send, "window.__retryWire");
+  const identities = wire.requests.map((request) => request.params.clientMutationId);
+  assert.equal(identities.length, 1, "one continuation dispatch");
+  assert.equal(new Set(identities).size, 1, "one mutation identity");
+  driver.milestone("remount-complete", { identities });
+}
+
 try {
   await driver.start();
   await driver.send("Page.addScriptToEvaluateOnNewDocument", {
@@ -583,7 +705,9 @@ try {
   for (const scenario of fixture.scenarios) {
     if (scenario.mode === "eligibility") await runEligibility(driver, scenario);
     else if (scenario.mode === "recovery") await runRecovery(driver, scenario);
+    else if (scenario.mode === "running") await runRunning(driver, scenario);
     else if (scenario.mode === "history") await runHistory(driver, scenario);
+    else if (scenario.mode === "remount") await runRemount(driver, scenario);
     else await runLegacy(driver, scenario);
   }
 } catch (error) {

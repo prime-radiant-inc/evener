@@ -4073,6 +4073,11 @@ export function installResumeOnlyProjection(projection: ResumeOnlyProjection): v
 interface RetryPendingProjection {
   isLoaded(ref: string): boolean;
   hasOwnPendingTurnInput(ref: string): boolean;
+  // This client has an ordinary send/queue submission that has started but
+  // whose durable row or dispatch is not resolved yet. The composer's own
+  // submission owner is the source; Retry must not act on a stale failure
+  // behind it even though no pending-turn row is visible.
+  isSubmitting(ref: string): boolean;
   // Starts the ref's durable pending read. An activation that finds readiness
   // unknown asks the owner to load it and creates no mutation; the action
   // becomes available when that read publishes an empty state.
@@ -4110,9 +4115,16 @@ class RetryAdmissionLostError extends Error {
 // identity is re-read from the live model after the enqueue funnel's awaited
 // prerequisites (runtime start, the Stop-barrier read, a storage-timeout retry
 // delay) and immediately before the row is written.
-function assertRetrySourceCurrent(ref: string, failedTurnId: string): void {
+function latestRetryModel(ref: string, failedTurnId: string): ThreadModel | undefined {
   const model = threadsStore.getState().threads.get(ref);
-  if (!model || !isLatestRetryTurn(model, failedTurnId)) throw new RetryAdmissionLostError();
+  if (!model || !isLatestRetryTurn(model, failedTurnId)) return undefined;
+  return model;
+}
+
+function assertRetrySourceCurrent(ref: string, failedTurnId: string): void {
+  if (!latestRetryModel(ref, failedTurnId) || retryPendingProjection?.isSubmitting(ref)) {
+    throw new RetryAdmissionLostError();
+  }
 }
 
 // Whether `failedTurnId` may be retried from ref RIGHT NOW, read from the
@@ -4121,9 +4133,9 @@ function assertRetrySourceCurrent(ref: string, failedTurnId: string): void {
 // conversation that has advanced, an unread pending state, and any unresolved
 // send or queue of this client's all refuse.
 function retryAdmissionCurrent(ref: string, failedTurnId: string): boolean {
-  const model = threadsStore.getState().threads.get(ref);
-  if (!model || !isLatestRetryTurn(model, failedTurnId)) return false;
+  if (!latestRetryModel(ref, failedTurnId)) return false;
   if (retryPendingProjection === null || !retryPendingProjection.isLoaded(ref)) return false;
+  if (retryPendingProjection.isSubmitting(ref)) return false;
   if (retryPendingProjection.awaitingReflection(ref, failedTurnId)) return false;
   return !retryPendingProjection.hasOwnPendingTurnInput(ref);
 }

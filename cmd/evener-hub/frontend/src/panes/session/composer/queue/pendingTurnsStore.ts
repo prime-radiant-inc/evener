@@ -1,4 +1,4 @@
-import type { ComposerMention } from "@evener/appwire-client";
+import { type ComposerMention, latestTurnId } from "@evener/appwire-client";
 import {
   awaitingFirstFrameSend,
   createMutationProjectionFence,
@@ -149,10 +149,6 @@ function publishRetryReflections(): void {
   retryReflectionStore.setState({
     byRef: new Map([...retryReflections].map(([ref, marker]) => [ref, marker.failedTurnId])),
   });
-}
-
-function latestTurnId(model: { turns: readonly { id: string }[] } | undefined): string | undefined {
-  return model?.turns[model.turns.length - 1]?.id;
 }
 
 function clearRetryReflection(ref: string): void {
@@ -311,6 +307,7 @@ installResumeOnlyProjection({
 installRetryPendingProjection({
   isLoaded: (ref) => loadedRefs.has(ref),
   hasOwnPendingTurnInput: (ref) => ownPendingTurnInput(pendingTurnsStore.pendingTurnEntries(ref)),
+  isSubmitting: (ref) => pendingTurnsStore.getState().submittingRefs.has(ref),
   load: (ref) => void refreshPendingTurnsProjection(ref),
   begin: beginRetryAdmission,
   end: endRetryAdmission,
@@ -323,13 +320,6 @@ installRetryPendingProjection({
 // resolve a reflection marker. Both subscriptions re-decide from current
 // owner state, so no marker outlives what proves it.
 pendingTurnsStore.subscribe(() => {
-  for (const ref of [...retryReflections.keys()]) reconcileRetryReflection(ref);
-});
-threadsStore.subscribe((state, previous) => {
-  // Publication is two store steps: the model, then the per-ref publication
-  // count. Watch both so a winning read that names the same tail still
-  // settles the marker.
-  if (state.threads === previous.threads && state.hydrations === previous.hydrations) return;
   for (const ref of [...retryReflections.keys()]) reconcileRetryReflection(ref);
 });
 
@@ -795,8 +785,15 @@ export function publishOutboxRecordForTests(record: MutationOutboxRecord): void 
 // Keep the singleton projection warm when an authoritative pendingMutations
 // snapshot changes even if no pending component is currently mounted.
 threadsStore.subscribe((state, previous) => {
-  if (state.threads === previous.threads) return;
-  for (const ref of state.threads.keys()) {
-    if (state.threads.get(ref) !== previous.threads.get(ref)) void refreshPendingTurnsProjection(ref);
+  // Publication is two store steps: the model, then the per-ref publication
+  // count. Watch both, and only the refs whose model or hydration actually
+  // moved - a streaming publication for one session must not reconcile every
+  // open conversation's reflection marker or refresh every projection.
+  if (state.threads === previous.threads && state.hydrations === previous.hydrations) return;
+  for (const ref of new Set([...state.threads.keys(), ...retryReflections.keys()])) {
+    const modelChanged = state.threads.get(ref) !== previous.threads.get(ref);
+    const hydrationChanged = state.hydrations.get(ref) !== previous.hydrations.get(ref);
+    if (modelChanged) void refreshPendingTurnsProjection(ref);
+    if ((modelChanged || hydrationChanged) && retryReflections.has(ref)) reconcileRetryReflection(ref);
   }
 });

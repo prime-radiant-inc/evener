@@ -136,7 +136,7 @@ export function pendingEntryPreview(entry: {
 // not count: Stop wrote its cancellation before dispatch, so no turn can be
 // running because of it.
 export function ownPendingSend(entries: readonly PendingTurnEntry[] | null | undefined): boolean {
-  return (entries ?? []).some((entry) => entry.method === "send" && isOwnUnsettledEntry(entry));
+  return ownUnsettledInput(entries, ["send"]);
 }
 
 // The provenance/state half of "this client has input the session has not
@@ -159,9 +159,14 @@ function isOwnUnsettledEntry(entry: PendingTurnEntry): boolean {
 // the caller loads that state from its owner. ownPendingSend above keeps its
 // narrower send-only meaning for ordinary composer routing.
 export function ownPendingTurnInput(entries: readonly PendingTurnEntry[] | null | undefined): boolean {
-  return (entries ?? []).some(
-    (entry) => (entry.method === "send" || entry.method === "queue") && isOwnUnsettledEntry(entry),
-  );
+  return ownUnsettledInput(entries, ["send", "queue"]);
+}
+
+function ownUnsettledInput(
+  entries: readonly PendingTurnEntry[] | null | undefined,
+  methods: readonly PendingTurnEntry["method"][],
+): boolean {
+  return (entries ?? []).some((entry) => methods.includes(entry.method) && isOwnUnsettledEntry(entry));
 }
 
 const DEFAULT_MAX_DISPLAY_LENGTH = 140;
