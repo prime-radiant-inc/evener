@@ -645,7 +645,11 @@ export class MutationOutboxIndexedDB {
   // A successful direct-fallback send has no outbox row, but it is still an
   // accepted own turn input until an authoritative read observes it. Record
   // the same optimistic accepted copy a reflected receipt keeps.
-  async recordAcceptedCopy(intent: MutationIntent, clientMutationId: string): Promise<MutationOptimisticRecord> {
+  async recordAcceptedCopy(
+    intent: MutationIntent,
+    clientMutationId: string,
+    acceptedTurnId?: string,
+  ): Promise<MutationOptimisticRecord> {
     return this.#write([OPTIMISTIC_STORE, SEQUENCE_STORE], "recordAcceptedCopy", async (transaction) => {
       const intentSequence = await this.#allocateSequence(transaction, intent.targetRef);
       const record = acceptedRecord({
@@ -655,6 +659,8 @@ export class MutationOutboxIndexedDB {
         originClientId: ownClientId(),
         intentSequence,
         createdAt: this.#now(),
+        acceptedAt: this.#now(),
+        submissionAcceptedTurnId: acceptedTurnId,
       });
       await requestResult(transaction.objectStore(OPTIMISTIC_STORE).put(record));
       return record;
@@ -669,16 +675,19 @@ export class MutationOutboxIndexedDB {
     targetRef: string,
     authoritativeIds: ReadonlySet<string>,
     observedBefore: number,
+    observedTurnIds: ReadonlySet<string>,
   ): Promise<string[]> {
     return this.#write([OPTIMISTIC_STORE], "settleAbsentAcceptedCopies", async (transaction) => {
       const store = transaction.objectStore(OPTIMISTIC_STORE);
       const records = await requestResult<MutationOptimisticRecord[]>(store.getAll());
       const settled: string[] = [];
       for (const record of records) {
+        const acceptedTurnObserved =
+          record.submissionAcceptedTurnId !== undefined && observedTurnIds.has(record.submissionAcceptedTurnId);
         if (
           record.targetRef === targetRef &&
           record.retainAcceptedCopyUntilObserved === true &&
-          record.createdAt <= observedBefore &&
+          (acceptedTurnObserved || (record.acceptedAt !== undefined && record.acceptedAt < observedBefore)) &&
           !authoritativeIds.has(record.clientMutationId)
         ) {
           await requestResult(store.delete(record.clientMutationId));
@@ -705,7 +714,7 @@ export class MutationOutboxIndexedDB {
     });
   }
 
-  async settleReceipt(clientMutationId: string, projectionState: string): Promise<boolean> {
+  async settleReceipt(clientMutationId: string, projectionState: string, acceptedTurnId?: string): Promise<boolean> {
     let settledSource: MutationRecord | undefined;
     const settled = await this.#write(
       [OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE],
@@ -751,7 +760,13 @@ export class MutationOutboxIndexedDB {
         if (retainsAcceptedCopy) {
           // The accepted whitelist lives in the package's acceptedRecord so
           // this adapter and native's build the same row.
-          await requestResult(optimistic.put(acceptedRecord(source)));
+          await requestResult(
+            optimistic.put({
+              ...acceptedRecord(source),
+              acceptedAt: this.#now(),
+              submissionAcceptedTurnId: acceptedTurnId,
+            }),
+          );
         } else if (optimisticRecord) {
           await requestResult(optimistic.delete(clientMutationId));
         }

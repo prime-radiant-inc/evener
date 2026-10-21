@@ -810,6 +810,49 @@ describe("MutationOutboxIndexedDB", () => {
   });
 });
 
+test("omission settlement judges acceptance time, not enqueue time", async () => {
+  let now = 100;
+  const factory = new IDBFactory();
+  const store = new MutationOutboxIndexedDB({
+    indexedDB: factory,
+    databaseName: `mutation-outbox-accepted-${crypto.randomUUID()}`,
+    createMutationId: idSequence("accepted"),
+    now: () => now,
+  });
+  const direct = (text: string): MutationIntent => ({
+    ...intent(text),
+    method: "turn/start",
+    retainAcceptedCopyUntilObserved: true,
+  });
+
+  // Accepted before the read issued: omission settles it.
+  const beforeRead = await store.recordAcceptedCopy(direct("before read"), "accepted-before");
+  expect(
+    (await store.settleAbsentAcceptedCopies(TARGET, new Set(), 200, new Set())).includes(beforeRead.clientMutationId),
+  ).toBe(true);
+
+  // Accepted after the read issued: the earlier read cannot judge it.
+  now = 300;
+  const afterRead = await store.recordAcceptedCopy(direct("after read"), "accepted-after");
+  expect(await store.settleAbsentAcceptedCopies(TARGET, new Set(), 200, new Set())).toEqual([]);
+  expect(await store.getOptimistic(afterRead.clientMutationId)).toBeDefined();
+
+  // Same-millisecond acceptance after issue is not strictly before it.
+  expect(await store.settleAbsentAcceptedCopies(TARGET, new Set(), 300, new Set())).toEqual([]);
+  expect(await store.getOptimistic(afterRead.clientMutationId)).toBeDefined();
+
+  // A read issued before acceptance still settles the copy when it observed
+  // the turn the receipt named.
+  now = 400;
+  const acceptedTurn = await store.recordAcceptedCopy(direct("accepted turn"), "accepted-turn", "turn_c");
+  expect(
+    (await store.settleAbsentAcceptedCopies(TARGET, new Set(), 200, new Set(["turn_c"]))).includes(
+      acceptedTurn.clientMutationId,
+    ),
+  ).toBe(true);
+  store.close();
+});
+
 describe("MutationOutbox discovery", () => {
   let indexedDB: IDBFactory;
   let databaseName: string;

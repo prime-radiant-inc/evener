@@ -2576,7 +2576,7 @@ function getMutationRuntime(): MutationRuntime | null {
   // so a settle for a row this tab never registered still invalidates that
   // ref's in-flight reads (see noteMutationStateChange).
   const settleReceipt = storage.settleReceipt.bind(storage);
-  storage.settleReceipt = async (clientMutationId, projectionState) => {
+  storage.settleReceipt = async (clientMutationId, projectionState, acceptedTurnId) => {
     // A reflected receipt removes this row from the pending projection before
     // the new turn is observed. Open the same observation marker Retry uses,
     // for ANY own turn submission, so the obsolete failure is not actionable
@@ -2603,7 +2603,7 @@ function getMutationRuntime(): MutationRuntime | null {
         }
       }
     }
-    const settled = await settleReceipt(clientMutationId, projectionState);
+    const settled = await settleReceipt(clientMutationId, projectionState, acceptedTurnId);
     submittedTailBaselines.delete(clientMutationId);
     if (settled) noteHandledMutation(clientMutationId);
     return settled;
@@ -4000,23 +4000,31 @@ async function recordDirectAccepted(
   intent: MutationIntent,
   baselineTail: string | undefined,
   clientMutationId: string,
+  acceptedTurnId?: string,
 ): Promise<void> {
+  // The page-local bridge opens first and always: a storage failure after a
+  // successful RPC must not leave this accepted input actionable as a Retry.
+  noteDirectSubmission(ref, intent.method, baselineTail, clientMutationId);
   if (intent.method === "turn/start" || intent.method === "turn/queue") {
     const runtime = getMutationRuntime();
     if (runtime) {
-      await runtime.storage.recordAcceptedCopy(
-        {
-          ...intent,
-          submissionBaselineTail: intent.submissionBaselineTail ?? baselineTail,
-          retainAcceptedCopyUntilObserved: true,
-        },
-        clientMutationId,
-      );
-      noteMutationStateChange(ref);
-      notifyMutationPersistence([ref]);
+      try {
+        await runtime.storage.recordAcceptedCopy(
+          {
+            ...intent,
+            submissionBaselineTail: intent.submissionBaselineTail ?? baselineTail,
+            retainAcceptedCopyUntilObserved: true,
+          },
+          clientMutationId,
+          acceptedTurnId,
+        );
+        noteMutationStateChange(ref);
+        notifyMutationPersistence([ref]);
+      } catch {
+        // Best-effort durable owner; the RPC already succeeded.
+      }
     }
   }
-  noteDirectSubmission(ref, intent.method, baselineTail, clientMutationId);
 }
 
 // Overlapping direct sends share a ref: each press owns one count, and the
@@ -4848,8 +4856,8 @@ async function enqueueMutationIntent(
     // window therefore cannot be honoured for it; the composer's draft is
     // untouched (it lives in localStorage), and a send is retryable by hand -
     // the trade the fallback makes against failing closed.
-    await dispatchMutationDirectly(dispatchClient, durableIntent, (clientMutationId) =>
-      recordDirectAccepted(ref, durableIntent, baselineTail, clientMutationId),
+    await dispatchMutationDirectly(dispatchClient, durableIntent, (clientMutationId, acceptedTurnId) =>
+      recordDirectAccepted(ref, durableIntent, baselineTail, clientMutationId, acceptedTurnId),
     );
     return undefined;
   }
@@ -4993,7 +5001,7 @@ const MUTATION_FALLBACK_SEND_READY_WAIT_MS = 10_000;
 async function dispatchMutationDirectly(
   client: AppwireClientLike,
   intent: MutationIntent,
-  onSent?: (clientMutationId: string) => void | Promise<void>,
+  onSent?: (clientMutationId: string, acceptedTurnId?: string) => void | Promise<void>,
 ): Promise<void> {
   const clientMutationId = createSecureUUID();
   let target = client;
@@ -5006,8 +5014,15 @@ async function dispatchMutationDirectly(
         method: string,
         params: Record<string, unknown>,
       ) => Promise<unknown>;
-      await request.call(target, intent.method, { ...intent.payload, clientMutationId });
-      await onSent?.(clientMutationId);
+      const result = await request.call(target, intent.method, { ...intent.payload, clientMutationId });
+      const turn = (result as { turn?: { id?: unknown } } | undefined)?.turn;
+      const acceptedTurnId = typeof turn?.id === "string" ? turn.id : undefined;
+      try {
+        await onSent?.(clientMutationId, acceptedTurnId);
+      } catch {
+        // The accepted RPC succeeded. Post-success bookkeeping is best-effort
+        // and must never replay or fail it.
+      }
       return;
     } catch (err) {
       if (err instanceof WireError || attempt >= MUTATION_FALLBACK_SEND_ATTEMPTS) throw mapConflict(err);
@@ -5706,19 +5721,6 @@ async function publishAndReconcileThreadHydration(
         if (!current()) return;
         const authoritativeIds = collectAuthoritativeMutationIds(hydration.response);
         const mutationStateAuthoritative = hydration.response.thread.evener.mutationStateAuthoritative === true;
-        // A latest-window read that is complete and names none of a retained
-        // accepted copy's identities proves the input is no longer pending,
-        // even when its turn has fallen out of the bounded window. Older-page
-        // reads are prependOlderTurns and never reach this publication.
-        const settledAbsent = await runtime.storage.settleAbsentAcceptedCopies(
-          ref,
-          authoritativeIds,
-          pending.startedAt,
-        );
-        if (settledAbsent.length > 0) {
-          noteMutationStateChange(ref);
-          notifyMutationPersistence([ref]);
-        }
         await runtime.dispatcher.reconcileIdentities(authoritativeIds);
         if (!current()) return;
         // A bounded transcript or a clear can omit an accepted mutation from
@@ -5740,6 +5742,21 @@ async function publishAndReconcileThreadHydration(
           }
           notifyMutationPersistence([ref]);
         } else {
+          // A latest-window read that is complete and names none of a retained
+          // accepted copy's identities proves the input is no longer pending,
+          // even when its turn has fallen out of the bounded window. Only an
+          // authoritative, loadable snapshot can make that claim; older-page
+          // reads are prependOlderTurns and never reach this publication.
+          const settledAbsent = await runtime.storage.settleAbsentAcceptedCopies(
+            ref,
+            authoritativeIds,
+            pending.startedAt,
+            new Set((hydration.response.thread.turns ?? []).map((turn) => turn.id)),
+          );
+          if (settledAbsent.length > 0) {
+            noteMutationStateChange(ref);
+            notifyMutationPersistence([ref]);
+          }
           // restoreProvenAbsent reopens EVERY blockedUnknown row of the ref
           // that this read did not name. A scoped caller must reopen only its
           // own record: every other blocked row joins the set this reopen

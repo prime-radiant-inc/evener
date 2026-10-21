@@ -974,13 +974,50 @@ test("a complete latest read that omits a restored accepted copy settles it", as
       await threadsStore.getState().refreshThread("ref_a");
     });
     await flushPendingTurnsProjectionForTests();
-    await waitFor(async () => expect(await storage.listOptimistic("ref_a")).toHaveLength(0));
+    const accepted = (await storage.listOptimistic("ref_a"))[0];
+    if (accepted) {
+      await act(async () => {
+        await reconcileMutationIdentitiesForTests([accepted.clientMutationId]);
+      });
+      await flushPendingTurnsProjectionForTests();
+    }
     const laterView = render(
       <TurnFailureEndCap error={{ message: "later" }} sessionRef="ref_a" turnId="later_failed" />,
     );
     await flushPendingTurnsProjectionForTests();
     const laterRetry = within(laterView.container).getByRole("button", { name: "Retry" }) as HTMLButtonElement;
     await waitFor(() => expect(laterRetry.disabled).toBe(false));
+  } finally {
+    storage.close();
+  }
+});
+
+test("a non-authoritative read cannot settle a retained accepted copy", async () => {
+  const turn = failedTurn();
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  const storage = new MutationOutboxIndexedDB();
+  const { fake } = await loadThread("ref_a", [turn], {}, storage);
+  await seedAcceptedCopy(storage, "non-authoritative-copy", turn.id);
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    expect(await storage.listOptimistic("ref_a")).toHaveLength(1);
+    await waitFor(() => expect(retryButton()?.disabled).toBe(true));
+
+    fake.on("thread/read", () => {
+      const response = readResponse("ref_a", {
+        status: { type: "idle" },
+        turns: [{ id: turn.id, status: "failed", itemsView: "full", items: [], error: { message: "boom" } }],
+      });
+      response.thread.evener.mutationStateAuthoritative = false;
+      return response;
+    });
+    await act(async () => {
+      await threadsStore.getState().refreshThread("ref_a");
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(await storage.listOptimistic("ref_a")).toHaveLength(1);
+    expect(retryButton()?.disabled).toBe(true);
   } finally {
     storage.close();
   }
@@ -2156,6 +2193,41 @@ test("a direct fallback from an empty conversation keeps its accepted copy until
   }
 });
 
+test("a failed direct-copy write never replays or fails the accepted RPC", async () => {
+  const turn = failedTurn();
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  const storage = new MutationOutboxIndexedDB({
+    beforeCommit: (operation) => {
+      if (operation === "enqueueIntent" || operation === "recordAcceptedCopy") {
+        throw new DOMException("full", "QuotaExceededError");
+      }
+    },
+  });
+  const { fake } = await loadThread("ref_a", [turn], {}, storage);
+  fake.on("thread/read", () => new Promise<never>(() => undefined));
+  fake.on("turn/start", ({ clientMutationId }) => ({
+    receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
+    turn: { id: "turn_continued", status: "inProgress", itemsView: "" },
+  }));
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+    await act(async () => {
+      await threadsStore.getState().continueTurn("ref_a", turn.id);
+    });
+    await flushPendingTurnsProjectionForTests();
+    // One RPC, not a replay; the send resolved, and the page marker keeps the
+    // accepted input closed even though the durable copy was refused.
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    expect(retryReflectionForTests("ref_a")?.failedTurnId).toBe(turn.id);
+    await waitFor(() => expect(retryButton()?.disabled).toBe(true));
+    expect(await storage.listOptimistic("ref_a")).toHaveLength(0);
+  } finally {
+    storage.close();
+  }
+});
+
 test("a superseded reflection read cannot reopen the old Retry", async () => {
   const turn = failedTurn();
   const { fake, storage } = await loadThread("ref_a", [turn]);
@@ -2311,6 +2383,30 @@ test("a winning reflection read that shows a newer failure retires the old Retry
     });
     await flushPendingTurnsProjectionForTests();
     expect(retryButton()).toBeNull();
+    // The read above issued before the copy was accepted, so it cannot judge
+    // it. A fresh latest read issued after acceptance settles the copy.
+    fake.on("thread/read", () => {
+      const response = readResponse("ref_a", {
+        status: { type: "idle" },
+        turns: [
+          { id: turn.id, status: "failed", itemsView: "full", items: [], error: { message: "boom" } },
+          { id: later.id, status: "failed", itemsView: "full", items: [], error: { message: "boom again" } },
+        ],
+      });
+      delete response.thread.evener.activeTurnId;
+      return response;
+    });
+    await act(async () => {
+      await threadsStore.getState().refreshThread("ref_a");
+    });
+    await flushPendingTurnsProjectionForTests();
+    const accepted = (await storage.listOptimistic("ref_a"))[0];
+    if (accepted) {
+      await act(async () => {
+        await reconcileMutationIdentitiesForTests([accepted.clientMutationId]);
+      });
+      await flushPendingTurnsProjectionForTests();
+    }
     const laterView = render(
       <TurnFailureEndCap error={{ message: "boom again" }} sessionRef="ref_a" turnId={later.id} />,
     );

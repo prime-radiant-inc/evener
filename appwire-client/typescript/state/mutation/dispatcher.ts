@@ -215,7 +215,8 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
         const consumed = validConsumedClientMutationIds(receipt.consumedClientMutationIds);
         if (consumed.length > 0) await this.reconcileIdentities(consumed);
       }
-      await this.#storage.settleReceipt(record.clientMutationId, receipt.projectionState);
+      const acceptedTurnId = resultTurnId(result);
+      await this.#storage.settleReceipt(record.clientMutationId, receipt.projectionState, acceptedTurnId);
       this.#onStorageChange([record.targetRef]);
       return "advance";
     } catch (error) {
@@ -373,6 +374,12 @@ function mutationReceipt(result: unknown): MutationReceipt | undefined {
     return undefined;
   }
   return candidate as MutationReceipt;
+}
+
+function resultTurnId(result: unknown): string | undefined {
+  if (!result || typeof result !== "object" || !("turn" in result)) return undefined;
+  const turn = (result as { turn?: { id?: unknown } }).turn;
+  return typeof turn?.id === "string" ? turn.id : undefined;
 }
 
 function clearResponse(result: unknown, targetRef: string): ThreadClearResponse | undefined {

@@ -87,6 +87,14 @@ export interface MutationIntent<A extends MutationAttachmentRef = MutationAttach
   // the outbox row and carried onto the accepted optimistic copy. Never part
   // of the RPC payload.
   retainAcceptedCopyUntilObserved?: true;
+  // When this host accepted the input (receipt/reflection or direct RPC), not
+  // when it was enqueued. Omission settlement may only judge copies accepted
+  // strictly before the authoritative read issued.
+  acceptedAt?: number;
+  // The turn the daemon accepted for this input, when the receipt named one.
+  // A latest read that contains this turn is evidence the accepted input is
+  // observed even if the read issued before the receipt settled locally.
+  submissionAcceptedTurnId?: string;
 }
 
 export interface MutationRecord<A extends MutationAttachmentRef = MutationAttachmentRef> extends MutationIntent<A> {
@@ -184,6 +192,8 @@ export function acceptedRecord<A extends MutationAttachmentRef = MutationAttachm
     optimisticDisplay: source.optimisticDisplay,
     submissionBaselineTail: source.submissionBaselineTail,
     retainAcceptedCopyUntilObserved: source.retainAcceptedCopyUntilObserved,
+    acceptedAt: source.acceptedAt,
+    submissionAcceptedTurnId: source.submissionAcceptedTurnId,
     state: "accepted",
   };
 }
