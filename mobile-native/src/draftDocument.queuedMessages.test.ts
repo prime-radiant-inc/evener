@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { buildComposerInput } from "@evener/appwire-client";
 import type { MutationRecoveryRecord } from "@evener/appwire-client/state/mutation";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
@@ -107,6 +108,78 @@ it("appends complete composition beside current work and deduplicates exact IDs 
 		[2, "AP8H"],
 		[3, "AP8H"],
 	]);
+});
+
+it.each([
+	{ label: "insertion before mentions", text: "please hello /inspect then /inspect", offsets: [13, 27] },
+	{ label: "non-BMP insertion before mentions", text: "😀 please hello /inspect then /inspect", offsets: [16, 30] },
+	{ label: "unchanged text", text: "hello /inspect then /inspect", offsets: [6, 20] },
+	{ label: "deletion before mentions", text: "/inspect then /inspect", offsets: [0, 14] },
+	{ label: "replacement of a label", text: "hello /changed then /inspect", offsets: [20] },
+	{ label: "deletion of a label", text: "hello  then /inspect", offsets: [12] },
+	{ label: "new matching prose", text: "hello /inspect then /inspect /inspect", offsets: [6, 20] },
+])("ordinary typing preserves anchors and ownership: $label", async ({ text, offsets }) => {
+	repository.write(destination, { draft: "", unconfirmed: null, recoveryResendAcks: ["pending-ack"] });
+	reopen();
+	const original = "hello /inspect then /inspect";
+	const mentions = [
+		{ kind: "skill" as const, name: "inspect", offset: 6 },
+		{ kind: "command" as const, name: "inspect", offset: 20 },
+	];
+	expect(
+		document.appendEditedRecovery(
+			recovery("exact-source", {
+				composerText: original,
+				composerMentions: mentions,
+				attachments: [],
+				payload: {
+					input: [
+						{ type: "text", text: original, mentions },
+						{ type: "skill", name: "inspect" },
+						{ type: "command", name: "inspect" },
+					],
+				},
+			}),
+		),
+	).toBe("restored");
+	document.edit(text);
+	reopen();
+	const expectedMentions = offsets.map((offset, index) => ({
+		kind: offsets.length === 1 || index === 1 ? "command" : "skill",
+		name: "inspect",
+		offset,
+	}));
+	expect(document.getSnapshot().record).toMatchObject({
+		draft: text,
+		composer: {
+			skillNames: ["inspect"],
+			commandNames: ["inspect"],
+			mentions: expectedMentions,
+			recoveryIds: ["exact-source"],
+		},
+		recoveryResendAcks: ["pending-ack"],
+	});
+	let submitted = false;
+	await document.submit(async (draft, images, context) => {
+		submitted = true;
+		expect(context.recoverySourceIds).toEqual(["exact-source"]);
+		expect(
+			buildComposerInput(
+				draft,
+				images,
+				context.composer?.skillNames,
+				context.composer?.commandNames,
+				context.composer?.mentions,
+			),
+		).toEqual([
+			{ type: "text", text, mentions: expectedMentions },
+			{ type: "skill", name: "inspect" },
+			{ type: "command", name: "inspect" },
+		]);
+		return false;
+	});
+	expect(submitted).toBe(true);
+	expect(repository.read(destination).recoveryResendAcks).toEqual(["pending-ack"]);
 });
 
 it("keeps legacy prose unbound through collisions and a later merge", () => {
@@ -367,7 +440,7 @@ it.each(["dismiss", "restore"] as const)(
 it("submitText preserves current edited ownership and acknowledgment housekeeping through ordinary uncertainty", async () => {
 	repository.write(destination, { draft: "", unconfirmed: null, recoveryResendAcks: ["pending-ack"] });
 	reopen();
-	document.appendEditedRecovery(recovery());
+	document.appendEditedRecovery(recovery("source-a", { composerText: "[image 9] /recovered-skill" }));
 	const original = repository.read(destination);
 	await document.submitText("independent", async () => false);
 	reopen();
@@ -380,7 +453,7 @@ it("submitText preserves current edited ownership and acknowledgment housekeepin
 	expect(document.getSnapshot().record).toMatchObject({
 		draft: "",
 		unconfirmed: null,
-		composer: original.composer,
+		composer: { ...original.composer, mentions: [] },
 		images: original.images,
 		recoveryResendAcks: ["pending-ack"],
 	});

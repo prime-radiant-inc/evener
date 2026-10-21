@@ -8,6 +8,41 @@ export interface ComposerMention {
   offset: number;
 }
 
+/** Length of the leading UTF-16 run two serialized values share. */
+export function sharedPrefixLength(before: string, after: string): number {
+  const limit = Math.min(before.length, after.length);
+  let index = 0;
+  while (index < limit && before[index] === after[index]) index++;
+  return index;
+}
+
+/** Length of the trailing UTF-16 run two values share, past `prefix`. */
+export function sharedSuffixLength(before: string, after: string, prefix: number): number {
+  const limit = Math.min(before.length, after.length) - prefix;
+  let count = 0;
+  while (count < limit && before[before.length - 1 - count] === after[after.length - 1 - count]) count++;
+  return count;
+}
+
+/** Shift existing identities across a text splice, dropping edited labels, never selecting new prose. */
+export function reconcileComposerMentions(
+  before: string,
+  after: string,
+  mentions: readonly ComposerMention[],
+): ComposerMention[] {
+  const prefix = sharedPrefixLength(before, after);
+  const suffix = sharedSuffixLength(before, after, prefix);
+  const oldEnd = before.length - suffix;
+  const delta = after.length - before.length;
+  return mentions.flatMap((item) =>
+    item.offset + item.name.length + 1 <= prefix
+      ? [item]
+      : item.offset >= oldEnd
+        ? [{ ...item, offset: item.offset + delta }]
+        : [],
+  );
+}
+
 /** Staged image bytes; marker identifies its editing anchor, never a wire field. */
 export interface InputAttachment {
   marker: number;

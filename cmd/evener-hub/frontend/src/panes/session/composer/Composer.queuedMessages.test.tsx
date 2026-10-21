@@ -388,6 +388,51 @@ test("stale session identity cannot edit or remove a queued message", async () =
   expect(await storage.getOutbox(stale.clientMutationId)).toEqual(stale);
 });
 
+test("recorded literal survives Edit beside a current image and Send", async () => {
+  const { storage, fake } = await setup();
+  const record = await queued(storage, "literal [image 1]");
+  const source = createTestComposerSource("root");
+  source.editor.write("current [image 1]", 17);
+  source.persistDraft("current [image 1]");
+  source.attachments.setState({
+    items: [{ marker: 1, name: "current.png", mediaType: "image/png", data: "AQID", pending: false }],
+  });
+  mount(fake, source);
+  await flushPendingTurnsProjectionForTests();
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Edit message" }));
+  await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(record.clientMutationId));
+  const deliveredInputs: InputItem[][] = [];
+  fake.on("turn/start", (params) => {
+    deliveredInputs.push(params.input ?? []);
+    expect(params.clientMutationId).not.toBe(record.clientMutationId);
+    return {
+      turn: { id: "literal-revision", status: "inProgress", itemsView: "full", items: [] },
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread-a",
+        projectionState: "reflected",
+      },
+    };
+  });
+  await act(async () => {
+    fake.emitStateChange("ready");
+    fake.emitReady();
+  });
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(deliveredInputs).toHaveLength(1));
+  expect(deliveredInputs).toEqual([
+    [
+      { type: "text", text: "current (attached image 2: current.png)\n\nliteral [image 1]" },
+      { type: "image", mediaType: "image/png", data: "AQID", name: "current.png" },
+    ],
+  ]);
+  expect(await storage.getRecovery(record.clientMutationId)).toBeUndefined();
+  expect(await storage.getOutbox(record.clientMutationId)).toBeUndefined();
+});
+
 test("encoding blocks Edit before claiming and later images avoid literal marker references", async () => {
   const { storage, fake } = await setup();
   const record = await queued(storage, "literal [image 2]");

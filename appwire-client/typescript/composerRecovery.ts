@@ -122,9 +122,14 @@ export function mergeComposerCompositions<A extends { marker: number }>(
   let currentText = current.text;
   let currentAttachments = [...current.attachments];
   let currentMentions = current.mentions?.map((mention) => ({ ...mention }));
+  const recoveredAttachmentMarkers = new Set(recovered.attachments.map((attachment) => attachment.marker));
+  const literalMarkers = new Set(
+    markerNumbers(recovered.text).filter(
+      (marker) => recovered.imageReferences === "unavailable" || !recoveredAttachmentMarkers.has(marker),
+    ),
+  );
 
-  if (recovered.imageReferences === "unavailable") {
-    const literalMarkers = new Set(markerNumbers(recovered.text));
+  if (literalMarkers.size > 0) {
     const used = new Set([
       ...markerNumbers(currentText),
       ...currentAttachments.map((attachment) => attachment.marker),
@@ -147,11 +152,11 @@ export function mergeComposerCompositions<A extends { marker: number }>(
     }
   }
 
-  const used = new Set([...markerNumbers(currentText), ...currentAttachments.map((attachment) => attachment.marker)]);
-  const recoveredAttachmentMarkers = new Set(recovered.attachments.map((attachment) => attachment.marker));
-  for (const marker of markerNumbers(recovered.text)) {
-    if (recovered.imageReferences === "unavailable" || !recoveredAttachmentMarkers.has(marker)) used.add(marker);
-  }
+  const used = new Set([
+    ...markerNumbers(currentText),
+    ...currentAttachments.map((attachment) => attachment.marker),
+    ...literalMarkers,
+  ]);
 
   const recoveredMapping = new Map<number, number>();
   const recoveredAttachments = recovered.attachments.map((attachment) => {

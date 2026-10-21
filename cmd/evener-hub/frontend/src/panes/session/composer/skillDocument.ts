@@ -1,5 +1,7 @@
-import { type ComposerMention, canonicalSkillNames } from "@evener/appwire-client";
+import { type ComposerMention, canonicalSkillNames, reconcileComposerMentions } from "@evener/appwire-client";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
+
+export { sharedPrefixLength, sharedSuffixLength } from "@evener/appwire-client";
 
 export interface SkillEditorValue {
   text: string;
@@ -129,36 +131,10 @@ export function serializeSkillDocument(doc: ProseMirrorNode): SkillEditorValue {
   };
 }
 
-/** Length of the leading run two serialized values share. */
-export function sharedPrefixLength(before: string, after: string): number {
-  const limit = Math.min(before.length, after.length);
-  let index = 0;
-  while (index < limit && before[index] === after[index]) index++;
-  return index;
-}
-
-/** Length of the trailing run two serialized values share, past `prefix`. */
-export function sharedSuffixLength(before: string, after: string, prefix: number): number {
-  const limit = Math.min(before.length, after.length) - prefix;
-  let count = 0;
-  while (count < limit && before[before.length - 1 - count] === after[after.length - 1 - count]) count++;
-  return count;
-}
-
 /** Shift existing atom identities across a plain-text splice without selecting new prose. */
 export function patchSelectionText(value: SkillEditorValue, text: string): SkillEditorValue {
   if (!value.mentions) return serializeSkillDocument(parseSkillDocument({ ...value, text }));
-  const prefix = sharedPrefixLength(value.text, text);
-  const suffix = sharedSuffixLength(value.text, text, prefix);
-  const oldEnd = value.text.length - suffix;
-  const delta = text.length - value.text.length;
-  const mentions = value.mentions.flatMap((item) =>
-    item.offset + item.name.length + 1 <= prefix
-      ? [item]
-      : item.offset >= oldEnd
-        ? [{ ...item, offset: item.offset + delta }]
-        : [],
-  );
+  const mentions = reconcileComposerMentions(value.text, text, value.mentions);
   return serializeSkillDocument(parseSkillDocument({ ...value, text, mentions }));
 }
 

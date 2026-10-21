@@ -118,6 +118,51 @@ test("compositionRoundTripPreservesAssociations", () => {
   ]);
 });
 
+test("recordedLiteralNeverCapturesCurrentTile", () => {
+  const currentText = "current [image 1] /inspect";
+  const recoveredText =
+    "literal [image 1][image 2][image 3][image 4][image 5][image 6][image 7][image 8][image 9] /inspect";
+  const current: ComposerComposition<InputAttachment> = {
+    text: currentText,
+    attachments: [{ marker: 1, name: "current.png", mediaType: "image/png", data: "CURRENT" }],
+    skillNames: ["inspect"],
+    commandNames: [],
+    mentions: [{ kind: "skill", name: "inspect", offset: currentText.indexOf("/inspect") }],
+  };
+  const recovered = recoverMutationComposition(
+    mutationRecord(
+      [
+        { type: "text", text: recoveredText },
+        { type: "command", name: "inspect" },
+      ],
+      {
+        composerText: recoveredText,
+        composerMentions: [{ kind: "command", name: "inspect", offset: recoveredText.indexOf("/inspect") }],
+      },
+    ),
+  );
+  const merged = mergeComposerCompositions(current, recovered);
+  const wire = buildComposerInput(
+    merged.text,
+    merged.attachments,
+    merged.skillNames,
+    merged.commandNames,
+    merged.mentions,
+  );
+  expect(wire[0]?.text).toBe(`current (attached image 10: current.png) /inspect\n\n${recoveredText}`);
+  expect(merged.text).toBe(`current [image 10] /inspect\n\n${recoveredText}`);
+  expect(merged.attachments).toEqual([{ ...current.attachments[0], marker: 10 }]);
+  expect(merged.mentions).toEqual([
+    { kind: "skill", name: "inspect", offset: merged.text.indexOf("/inspect") },
+    { kind: "command", name: "inspect", offset: merged.text.lastIndexOf("/inspect") },
+  ]);
+  expect(wire[0]?.mentions).toEqual([
+    { kind: "skill", name: "inspect", offset: wire[0]?.text?.indexOf("/inspect") },
+    { kind: "command", name: "inspect", offset: wire[0]?.text?.lastIndexOf("/inspect") },
+  ]);
+  expect(imageData(wire)).toEqual(["CURRENT"]);
+});
+
 test("legacyLiteralNeverCapturesATile", () => {
   const currentImageData = "CURRENT_IMAGE_DATA";
   const legacyImageData = "LEGACY_IMAGE_DATA";

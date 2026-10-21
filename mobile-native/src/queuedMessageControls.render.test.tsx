@@ -668,6 +668,81 @@ it("failed identity write is not durable success, Retry repairs offline recreati
 	expect(f.document.getSnapshot().record.composer?.recoveryIds).toEqual([source.clientMutationId]);
 });
 
+it("actual screen preserves mentions through Edit ordinary typing and Send", async () => {
+	const f = await mount();
+	await f.offline();
+	const text = "/inspect then /inspect";
+	const composer = {
+		text,
+		attachments: [],
+		skillNames: ["inspect"],
+		commandNames: ["inspect"],
+		mentions: [
+			{ kind: "skill" as const, name: "inspect", offset: 0 },
+			{ kind: "command" as const, name: "inspect", offset: 14 },
+		],
+	};
+	// Equal text is not ownership: only the chosen source may be consumed.
+	for (let i = 0; i < 2; i++) {
+		await act(async () => {
+			await f.runtime.submit({
+				kind: "send",
+				hubId: "hub-1",
+				targetRef: f.ref,
+				threadId: f.thread.id,
+				instanceId: "instance",
+				composer,
+				input: buildComposerInput(text, [], composer.skillNames, composer.commandNames, composer.mentions),
+			});
+		});
+	}
+	await settle();
+	const [source, untouched] = (await f.runtime.read(f.targetKey)).outbox;
+	if (!source || !untouched) throw new Error("missing sources");
+	await act(async () => {
+		f.document.edit("current ");
+		f.document.addImage({ id: "current", marker: 3, name: "current.png", mediaType: "image/png", data: "AQID" });
+	});
+	const host = queueHosts.get(sheetKey("hub-1", f.ref));
+	const ghost = host?.ghosts.find(
+		(g) => g.origin.kind === "pending" && g.origin.clientMutationId === source.clientMutationId,
+	);
+	if (!host || !ghost) throw new Error("missing editable ghost");
+	await act(async () => {
+		await host.act(ghost, "edit");
+	});
+	const restored = "current [image 3]\n\n/inspect then /inspect";
+	expect(f.document.getSnapshot().record.draft).toBe(restored);
+	const revised = `😀 please ${restored}`;
+	const input = f.tree.root.findAll((node) => String(node.type) === "TextInput" && node.props.value === restored)[0];
+	if (!input) throw new Error("missing actual composer input");
+	await act(async () => input.props.onChangeText(revised));
+	await act(async () => pressable(f.tree, "Send when you're back online")?.props.onPress());
+	await settle();
+	const state = await f.runtime.read(f.targetKey);
+	const fresh = state.outbox.find((record) => record.clientMutationId !== untouched.clientMutationId);
+	expect(fresh?.clientMutationId).not.toBe(source.clientMutationId);
+	const wireText = "😀 please current (attached image 3: current.png)\n\n/inspect then /inspect";
+	expect(fresh?.payload.input).toEqual([
+		{
+			type: "text",
+			text: wireText,
+			mentions: [
+				{ kind: "skill", name: "inspect", offset: wireText.indexOf("/inspect") },
+				{ kind: "command", name: "inspect", offset: wireText.lastIndexOf("/inspect") },
+			],
+		},
+		{ type: "image", name: "current.png", mediaType: "image/png", data: "AQID" },
+		{ type: "skill", name: "inspect" },
+		{ type: "command", name: "inspect" },
+	]);
+	expect(await f.runtime.storage.getOutbox(untouched.clientMutationId)).toEqual(untouched);
+	expect(await f.runtime.storage.getOutbox(source.clientMutationId)).toBeUndefined();
+	expect(state.recovery).toEqual([]);
+	expect(f.document.getSnapshot().record.composer?.recoveryIds ?? []).toEqual([]);
+	expect(f.document.getSnapshot().record.unconfirmedComposer?.recoveryIds ?? []).toEqual([]);
+});
+
 it.each(["offline", "online", "command"])(
 	"actual screen sends full edited composition through %s with exact source ownership",
 	async (mode) => {

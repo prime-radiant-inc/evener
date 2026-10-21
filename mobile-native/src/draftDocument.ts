@@ -4,6 +4,7 @@ import {
 	MAX_ATTACHMENTS,
 	mergeComposerCompositions,
 	nextComposerImageMarker,
+	reconcileComposerMentions,
 	recoverMutationComposition,
 	stripMarker,
 } from "@evener/appwire-client";
@@ -154,8 +155,23 @@ export class DraftDocument {
 	}
 	edit(text: string) {
 		if (!this.snapshot.loaded) return;
+		const record = this.snapshot.record;
 		try {
-			this.persist({ ...this.snapshot.record, draft: text }, true);
+			this.persist(
+				{
+					...record,
+					draft: text,
+					...(record.composer?.mentions !== undefined
+						? {
+								composer: {
+									...record.composer,
+									mentions: reconcileComposerMentions(record.draft, text, record.composer.mentions),
+								},
+							}
+						: {}),
+				},
+				true,
+			);
 		} catch {
 			/* The snapshot retains unsaved input and its error. */
 		}
