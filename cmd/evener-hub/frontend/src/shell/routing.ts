@@ -10,6 +10,15 @@
 import { isLocalHost, normalizeHost } from "../stores/hostRouting";
 import type { PaneTypeId } from "./paneRegistry";
 
+const ROUTE_ENTRY_KEY = "__evenerRouteEntry";
+
+/** The per-push identity for an app-built history entry, if this state has one. */
+export function routeHistoryEntryId(state: unknown): string | null {
+  if (!state || typeof state !== "object") return null;
+  const id = (state as Record<string, unknown>)[ROUTE_ENTRY_KEY];
+  return typeof id === "string" ? id : null;
+}
+
 /** A non-empty string field of a params bag, or null for anything else - the
  * field reader refParam and the workspace store's pane readings share. */
 export function paramString(value: unknown): string | null {
@@ -240,7 +249,10 @@ export function navigate(
   const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
   if (current === target && !options.attentionEntry) return;
   const priorState = window.history.state && typeof window.history.state === "object" ? window.history.state : {};
-  const state = options.attentionEntry ? { ...priorState, __evenerAttention: options.attentionEntry } : {};
+  const state = {
+    ...(options.attentionEntry ? { ...priorState, __evenerAttention: options.attentionEntry } : {}),
+    [ROUTE_ENTRY_KEY]: crypto.randomUUID(),
+  };
   if (options.replace) window.history.replaceState(state, "", target);
   else window.history.pushState(state, "", target);
   if (!options.replace) {

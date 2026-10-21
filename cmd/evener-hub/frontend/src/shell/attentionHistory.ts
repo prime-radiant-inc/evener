@@ -6,7 +6,7 @@ import {
   releaseUnreferencedAttentionPanes,
   restoreAttentionPlacement,
 } from "./attentionPlacement";
-import { navigate, observeRouteHistory, paneToURL } from "./routing";
+import { navigate, observeRouteHistory, paneToURL, routeHistoryEntryId } from "./routing";
 
 const STATE_KEY = "__evenerAttention";
 const generation = crypto.randomUUID();
@@ -21,6 +21,7 @@ interface HistoryBinding {
 }
 interface BranchEntry {
   token: Token | null;
+  routeEntryId: string | null;
   url: string;
 }
 const entries = new Map<string, HistoryBinding>();
@@ -61,23 +62,30 @@ function retainBranchEntries(): void {
   const panes = new Set([...entries.values()].map((entry) => entry.placement.pane));
   releaseUnreferencedAttentionPanes(panes);
 }
-function branchIndex(token: Token | null, url: string): number {
+function branchIndex(token: Token | null, url: string, routeEntryId: string | null = null): number {
   return branch.findIndex(
-    (entry) => entry.url === url && entry.token?.generation === token?.generation && entry.token?.id === token?.id,
+    (entry) =>
+      entry.url === url &&
+      (token
+        ? entry.token?.generation === token.generation && entry.token.id === token.id
+        : routeEntryId !== null
+          ? entry.routeEntryId === routeEntryId
+          : entry.token === null && entry.routeEntryId === null),
   );
 }
 function onPopState(): void {
-  cursor = branchIndex(tokenAt(history.state), currentURL());
+  cursor = branchIndex(tokenAt(history.state), currentURL(), routeHistoryEntryId(history.state));
 }
 window.addEventListener("popstate", onPopState);
 
 observeRouteHistory((previousState, nextState, previousURL, nextURL) => {
   const previousToken = tokenAt(previousState);
-  const previousIndex = branchIndex(previousToken, previousURL);
+  const previousEntryId = routeHistoryEntryId(previousState);
+  const previousIndex = branchIndex(previousToken, previousURL, previousEntryId);
   if (previousIndex >= 0) {
     cursor = previousIndex;
   } else if (previousToken?.generation === generation && entries.has(key(previousToken))) {
-    branch = [{ token: previousToken, url: previousURL }];
+    branch = [{ token: previousToken, routeEntryId: previousEntryId, url: previousURL }];
     cursor = 0;
   } else {
     branch = [];
@@ -89,7 +97,11 @@ observeRouteHistory((previousState, nextState, previousURL, nextURL) => {
     branch = [];
   }
   const nextToken = tokenAt(nextState);
-  branch.push({ token: nextToken?.generation === generation ? nextToken : null, url: nextURL });
+  branch.push({
+    token: nextToken?.generation === generation ? nextToken : null,
+    routeEntryId: routeHistoryEntryId(nextState),
+    url: nextURL,
+  });
   cursor = branch.length - 1;
   retainBranchEntries();
 });
@@ -115,7 +127,7 @@ export function restoreCurrentAttentionEntry(): boolean {
 /** Request browser Back only when this entry has a known immediate predecessor. */
 export function goBackInAttentionHistory(): boolean {
   const binding = bindingFor(tokenAt(history.state));
-  const index = branchIndex(binding?.token ?? null, currentURL());
+  const index = branchIndex(binding?.token ?? null, currentURL(), routeHistoryEntryId(history.state));
   if (!binding || index <= 0) return false;
   const predecessor = branch[index - 1];
   if (!predecessor?.token || !bindingAt(predecessor.token, predecessor.url)) return false;
@@ -136,9 +148,13 @@ export function openAttentionSession(ref: string): void {
     writeToken(token);
     // Keep a prior branch position when focus or a cascade leaf changed in place.
     if (cursor >= 0) {
-      const index = branchIndex(token, currentURL());
+      const entryId = routeHistoryEntryId(history.state);
+      const index = branchIndex(token, currentURL(), entryId);
+      const currentEntry = branch[cursor];
       if (index >= 0) cursor = index;
-      else if (prior) branch[cursor] = { token, url: currentURL() };
+      else if (currentEntry?.url === currentURL() && currentEntry.token === null) {
+        branch[cursor] = { token, routeEntryId: entryId, url: currentURL() };
+      } else if (prior) branch[cursor] = { token, routeEntryId: entryId, url: currentURL() };
     }
   }
   const targetToken = { generation, id: `entry-${++serial}` };

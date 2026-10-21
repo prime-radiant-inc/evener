@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { navigate, openSessionRoute, paneToURL, urlToPane } from "./routing";
+import { navigate, openSessionRoute, paneToURL, routeHistoryEntryId, urlToPane } from "./routing";
 
 beforeEach(() => {
   window.history.pushState({}, "", "/");
@@ -226,9 +226,21 @@ test("ordinary session routes use navigation without an attention binding", () =
   openSessionRoute("local:route-test");
   expect(history.length).toBe(initialLength + 1);
   expect(window.location.pathname).toBe("/s/local%3Aroute-test");
-  expect(history.state).toEqual({});
+  expect(history.state.__evenerAttention).toBeUndefined();
+  expect(routeHistoryEntryId(history.state)).not.toBeNull();
   openSessionRoute("local:route-test");
   expect(history.length).toBe(initialLength + 1);
+});
+
+test("separate ordinary entries at the same URL have distinct history identities", () => {
+  openSessionRoute("local:first");
+  const first = routeHistoryEntryId(history.state);
+  openSessionRoute("local:middle");
+  openSessionRoute("local:first");
+  const second = routeHistoryEntryId(history.state);
+  expect(first).not.toBeNull();
+  expect(second).not.toBe(first);
+  expect(history.state.__evenerAttention).toBeUndefined();
 });
 
 // Evidence that the finding's literal symptom does not reproduce: the argument
