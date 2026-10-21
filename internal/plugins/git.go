@@ -128,6 +128,26 @@ func exactRefNamesCommit(ctx context.Context, dir, ref string) bool {
 	return err == nil
 }
 
+// checkoutCommit checks out the commit named by sha itself. It resolves the
+// prefix against object names only, so a tag or branch that shares the prefix
+// cannot stand in for the commit.
+func checkoutCommit(ctx context.Context, dir, sha string) error {
+	out, err := gitStdout(ctx, dir, "rev-parse", "--disambiguate="+sha)
+	if err != nil {
+		return fmt.Errorf("refusing to check out %q: it does not name a commit", sha)
+	}
+	ids := strings.Fields(out)
+	if len(ids) != 1 {
+		return fmt.Errorf("refusing to check out %q: it does not name exactly one commit", sha)
+	}
+	kind, err := gitStdout(ctx, dir, "cat-file", "-t", ids[0])
+	if err != nil || strings.TrimSpace(kind) != "commit" {
+		return fmt.Errorf("refusing to check out %q: it does not name a commit", sha)
+	}
+	_, err = gitRun(ctx, dir, "checkout", "--quiet", "--detach", ids[0])
+	return err
+}
+
 func revNamesCommit(ctx context.Context, dir, rev string) bool {
 	_, err := gitRun(ctx, dir, "rev-parse", "--verify", "--quiet", rev+"^{commit}")
 	return err == nil
@@ -157,7 +177,7 @@ func gitClone(ctx context.Context, url, dir, ref, sha string) error {
 		}
 	}
 	if sha != "" {
-		if err := checkoutRevision(ctx, dir, sha); err != nil {
+		if err := checkoutCommit(ctx, dir, sha); err != nil {
 			return err
 		}
 	}
@@ -182,16 +202,14 @@ func gitSparseClone(ctx context.Context, url, dir, subdir, ref, sha string) erro
 	if _, err := gitRun(ctx, dir, "sparse-checkout", "set", "--cone", subdir); err != nil {
 		return err
 	}
-	target := "HEAD"
-	if sha != "" {
-		target = sha
-	} else if ref != "" {
-		target = ref
+	switch {
+	case sha != "":
+		return checkoutCommit(ctx, dir, sha)
+	case ref != "":
+		return checkoutRevision(ctx, dir, ref)
+	default:
+		return checkoutRevision(ctx, dir, "HEAD")
 	}
-	if err := checkoutRevision(ctx, dir, target); err != nil {
-		return err
-	}
-	return nil
 }
 
 func gitPull(ctx context.Context, dir string) error {
