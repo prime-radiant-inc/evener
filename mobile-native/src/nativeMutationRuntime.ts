@@ -42,6 +42,9 @@ type NativeStorage = MutationOutboxStorage<MutationAttachmentRef> & {
 	discardRecovery(clientMutationId: string, targetRef: string): Promise<boolean>;
 	discardUndelivered(clientMutationId: string, targetRef: string): Promise<boolean>;
 	releaseCanceled(clientMutationId: string, targetRef: string, barrier: MutationStopBarrier): Promise<boolean>;
+	/** Moves a resumed session's waiting rows to its resolved identity and
+	 * returns the ids that moved. */
+	retarget(ref: string, to: { ref: string; threadId?: string; instanceId?: string }): string[];
 	pruneUnlistedAccepted(
 		targetRef: string,
 		acceptedBefore: number,
@@ -450,7 +453,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		hubId: string,
 		targetRef: string,
 		client: AppwireClientLike,
-		options: { resumeFenced?: boolean } = {},
+		options: { mayResumeFenced?: () => Promise<boolean> } = {},
 	): Promise<"open" | "reconciled" | "blocked" | "resumed" | "stale" | "unregistered"> {
 		const targetKey = nativeMutationTargetKey(hubId, targetRef);
 		if (!this.#targets.has(targetKey)) return "unregistered";
@@ -473,18 +476,44 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		// parked row, and the next settle finishes it. Off by default - an
 		// ordinary read must never resume a session the person has not sent to.
 		if (
-			options.resumeFenced === true &&
+			options.mayResumeFenced !== undefined &&
+			// Validate before acting: a newer read may already have cleared the
+			// fence and started dispatching, and resuming on this older answer
+			// would recycle the transport out from under that healthy work.
+			this.#isCurrentRead(lease) &&
 			response.thread.evener.resumeRequired === true &&
 			// A daemon that needs restarting refuses a resume; that shape stays with
 			// the person, whose older process must be stopped first.
 			response.thread.status.type !== "restartRequired"
 		) {
+			// Asked only now, on a fence the caller has actually seen: the ordinary
+			// settle path pays no storage read for it. A caller that cannot tell (a
+			// failed read) answers false, which leaves the row exactly where a fence
+			// always left it.
+			if (!(await options.mayResumeFenced().catch(() => false))) return "blocked";
 			// A refused resume leaves the row parked and the next settle retries.
-			const resumed = await client.resumeThread(targetRef).then(
-				() => true,
-				() => false,
-			);
+			const resumed = await client.resumeThread(targetRef).catch(() => undefined);
 			if (!resumed) return "blocked";
+			// A resume can return a different identity. The parked rows still name
+			// the old ref and its instance, so they move to the resumed one before
+			// any read below - otherwise reconciliation sees rows under a ref the
+			// daemon no longer serves, or dispatches them with a stale fence.
+			const resolvedRef = resumed.thread.evener.ref;
+			if (resolvedRef !== targetRef) {
+				// Rows are keyed by the composite hub+ref the intent was built
+				// with, so the move names that same key on both sides.
+				this.storage.retarget(targetKey, {
+					ref: nativeMutationTargetKey(hubId, resolvedRef),
+					threadId: resumed.thread.id,
+					instanceId: resumed.thread.evener.instanceId,
+				});
+				// The resumed identity needs its own registration: the dispatcher
+				// reaches a client only through the key it names, so without this the
+				// moved rows would sit under a key nothing can serve. The original
+				// registration still belongs to its owner and is left alone.
+				this.registerTarget(hubId, resolvedRef, client);
+				this.#notifyStorageChange([targetRef, resolvedRef]);
+			}
 			// The resume cleared the fence, so read once more and reconcile in this
 			// same settle. A flush with no screen on the target lets go after a
 			// "blocked" answer and is woken by storage writes only, and the resume
@@ -495,12 +524,12 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 			// vanished reconciles as "stale". Reconcile what this tab can still
 			// prove, and let the caller's own retry own the rest - the flush
 			// looks again after its backoff on any answer that is not settled.
-			const afterLease = this.beginAuthoritativeRead(hubId, targetRef, client);
+			const afterLease = this.beginAuthoritativeRead(hubId, resolvedRef, client);
 			if (!afterLease) return "resumed";
 			let after: ThreadReadResponse;
 			try {
 				after = await client.request("thread/read", {
-					ref: targetRef,
+					ref: resolvedRef,
 					includeTurns: true,
 					itemsView: "fragment",
 					itemLimit: READ_ITEM_LIMIT,

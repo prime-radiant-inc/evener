@@ -598,6 +598,41 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 
 	// Read methods required by MutationOutboxStorage.
 
+	/** Moves every waiting row from one ref to the ref a resume returned, in
+	 * one savepoint, keeping each clientMutationId (the daemon's reconciliation
+	 * keys on it) and rewriting the thread/instance fence the row dispatches
+	 * with. Returns the ids that moved. A resume that returns a new identity
+	 * makes the old ref useless: a row left there would dispatch against an
+	 * instance the daemon no longer serves. */
+	retarget(ref: string, to: { ref: string; threadId?: string; instanceId?: string }): string[] {
+		if (!to.ref.trim()) throw new Error("retarget ref is required");
+		if (ref === to.ref) return [];
+		return this.transaction("mutation_outbox_retarget", () => {
+			const rows = this.db.getAllSync<{ client_mutation_id: string }>(
+				`SELECT client_mutation_id FROM ${TABLES.outbox}
+				 WHERE target_ref = ? AND state IN ('submitting', 'blockedUnknown')`,
+				ref,
+			);
+			if (rows.length === 0) return [];
+			const ids = rows.map((row) => row.client_mutation_id);
+			for (const table of [TABLES.outbox, TABLES.optimistic, TABLES.recovery]) {
+				this.db.runSync(`UPDATE ${table} SET target_ref = ? WHERE target_ref = ?`, to.ref, ref);
+			}
+			// The payload's own fence travels with the row: the dispatcher sends
+			// payload verbatim, so the old instance id there would be refused as
+			// stale even though the row now lives under the resumed ref.
+			this.db.runSync(
+				`UPDATE ${TABLES.outbox}
+				 SET thread_id = COALESCE(?, thread_id), instance_id = COALESCE(?, instance_id)
+				 WHERE target_ref = ?`,
+				to.threadId ?? null,
+				to.instanceId ?? null,
+				to.ref,
+			);
+			return ids;
+		});
+	}
+
 	async listTargetRefs(): Promise<string[]> {
 		// UNION (not UNION ALL) already removes duplicates, so a DISTINCT under
 		// each arm would only repeat what the merge already guarantees. The

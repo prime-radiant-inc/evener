@@ -26,7 +26,7 @@ export type SettleResult = "open" | "reconciled" | "blocked" | "resumed" | "stal
 export interface FlushRuntime {
 	readonly storage: {
 		listTargetRefs(): Promise<string[]>;
-		listOutbox(targetRef: string): Promise<readonly { state: string }[]>;
+		listOutbox(targetRef: string): Promise<readonly { state: string; method: string }[]>;
 	};
 	start(): Promise<void>;
 	targetClient(hubId: string, targetRef: string): AppwireClientLike | undefined;
@@ -35,7 +35,7 @@ export interface FlushRuntime {
 		hubId: string,
 		targetRef: string,
 		client: AppwireClientLike,
-		options?: { resumeFenced?: boolean },
+		options?: { mayResumeFenced?: () => Promise<boolean> },
 	): Promise<SettleResult>;
 	subscribeStorage(listener: (targetRefs: readonly string[]) => void): () => void;
 }
@@ -188,7 +188,19 @@ export class OutboxFlush {
 			const mark = Symbol(key);
 			this.settlingForScreens.set(key, mark);
 			try {
-				if (await this.waiting(runtime, key)) await runtime.settleTarget(hubId, ref, client, { resumeFenced: true });
+				// Settle only when the target holds a message that still needs
+				// sending; a covered screen with nothing owed needs no read at all.
+				if (await this.waiting(runtime, key)) {
+					// The runtime asks the predicate only when it sees a fence, so a
+					// healthy settle pays no extra storage read.
+					const answer = await runtime.settleTarget(hubId, ref, client, {
+						mayResumeFenced: () => this.waiting(runtime, key),
+					});
+					// The screen is not reading here, and a resume writes nothing, so
+					// this path owns the follow-up for a settle that resumed but could
+					// not finish - the same reason the claim path does.
+					if (answer === "resumed") this.retryTargetSoon(generation);
+				}
 			} catch {
 				// Storage failed: nothing else looks again for a screen's target
 				// (changed() leaves it to the screen), so retry on the backoff, as
@@ -214,7 +226,10 @@ export class OutboxFlush {
 			// sending: a session the person deliberately stopped has no such row,
 			// and reconnecting must not restart it behind their back.
 			const answer = await runtime.settleTarget(hubId, ref, client, {
-				resumeFenced: await this.waiting(runtime, key).catch(() => false),
+				// Asked only when the runtime sees a fence. A failed read answers
+				// "no", which leaves the row where a fence always left it and keeps
+				// the retry cadence this path has always had.
+				mayResumeFenced: () => this.waiting(runtime, key),
 			});
 			settled = answer === "reconciled" || answer === "open";
 			// A settle that resumed but could not finish (a stale read after the
@@ -315,7 +330,10 @@ export class OutboxFlush {
 
 	private async waiting(runtime: FlushRuntime, key: string): Promise<boolean> {
 		const records = await runtime.storage.listOutbox(key);
-		return records.some((record) => record.state === "submitting");
+		// A pending turn/interrupt is not a reason to restart a session: the
+		// person stopped it, and a Stop left across a reconnect must not bring it
+		// back just to deliver the Stop. Only real message work does.
+		return records.some((record) => record.state === "submitting" && record.method !== "turn/interrupt");
 	}
 
 	/** Lets go of this claim, and only this one: a late continuation of an
