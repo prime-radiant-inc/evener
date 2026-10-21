@@ -653,10 +653,11 @@ export function ToolRow({
   // The kind icon sits in the RAIL beside the rationale line (Jesse's review
   // call: pull the tool-use and thought icons into the gutter, at 50%
   // opacity, on the rationale's line - not inline in the text). It is the
-  // row's first flex item: the .rowIcon rules pull it --speaker-gutter to the
-  // left, into the padding the runContent wrapper reserves, and pin it to the
-  // first line (the rationale) at all times. Below the breakpoint the gutter
-  // is gone and the icon simply leads the line inline, at the same 50%.
+  // row's first flex item: the .rowIconSlot rules pull it --speaker-gutter to
+  // the left, into the padding the runContent wrapper reserves (the .rowIcon
+  // seat alone centres and dims the glyph), and pin it to the first line (the
+  // rationale) at all times. Below the breakpoint the gutter is gone and the
+  // icon simply leads the line inline, at the same 50%.
   //
   // The slot is the badge's POSITIONING CONTEXT and the row's flex item. A
   // clean row renders it with only the seat inside, so success costs no extra

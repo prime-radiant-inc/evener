@@ -414,10 +414,11 @@
  * square (--speaker-avatar-size wide, 1lh tall) with the 14px icon centred
  * inside it, so its own corner sits 5px right of and about 1px below the
  * icon's - anchoring there drew the cross beside the icon at mid-height
- * instead of on its corner (roborev on PR review, 2026-10-20). Vertically the
- * seat is the slot's only in-flow content, so the slot's height IS the seat's
- * and the percentage resolves to the glyph's own offset; horizontally the
- * seat's margin-right is part of the slot's width, hence the extra term. */
+ * instead of on its corner (roborev on PR review, 2026-10-20). Each axis
+ * therefore subtracts half the difference between the glyph and the box it is
+ * being pinned to: vertically the icon's 14px box against the 10px cross,
+ * horizontally the avatar column against the icon, plus the seat's
+ * margin-right which is part of the slot's width. */
 .failureBadge {
   position: absolute;
   /* The glyph draws a 10px cross centred in its own 1lh line box, and that
