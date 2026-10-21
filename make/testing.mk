@@ -230,6 +230,9 @@ test-short:
 ##   installed; no provider, network service, or fuzz-family test. BASE=<ref>
 ##   measures the change set from another ref; RACE=1 adds -race. It exits 0
 ##   with an explicit message when the diff selects no Go package.
+##   It does NOT run the repo-root audit suite, which reads repository-wide
+##   state and costs about 40s on its own; a file whose only consumer is that
+##   suite is reported as audit-only. The full gate in CI owns those audits.
 ## fails-when: Any selected package fails, `go list` or git fails, the diff
 ##   contains Go changes but selects no package, or RACE is neither 0 nor 1.
 test-changed:

@@ -84,6 +84,9 @@ func run(stdout, stderr io.Writer, root, base string, modules []string, race boo
 	for _, p := range res.GraphOnly {
 		sayf(stdout, "test-changed: skipped %s\n", p)
 	}
+	for _, f := range res.AuditOnly {
+		sayf(stdout, "test-changed: skipped %s: only the repo-root audit suite reads it, which this target does not run\n", f)
+	}
 	if len(res.Selected) == 0 {
 		// GoChanged already counts only changes test-changed could have run;
 		// out-of-scope files are counted separately in OutOfScope. Subtracting

@@ -27,6 +27,9 @@ type selectionResult struct {
 	NoPackage []string // changed files in a directory with no Go package
 	Removed   []string // deleted files that no surviving package can observe
 	GraphOnly []string // selected packages whose module test-changed does not run
+	// AuditOnly lists repository files no package embeds or reads, whose only
+	// consumer is the repo-root audit suite that this target does not run.
+	AuditOnly []string
 	// OutOfScope counts Go files that belong to a module test-changed does not
 	// run (fuzz). They are a real change and a legitimate skip, so they are not
 	// part of GoChanged and must not trip the loud-failure guard.
@@ -93,15 +96,6 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 			continue
 		}
 		dir := filepath.Join(g.root, filepath.FromSlash(filepath.Dir(rel)))
-
-		// The repo-root package's audit tests read repository-wide state: one
-		// walks every tracked file, another every *_test.go, others the Makefile
-		// fragments and docs. No import edge reaches them, so pair the root
-		// package with every change in a module test-changed runs. It is
-		// package-only, so nothing spreads to importers.
-		if g.runnableModule(module) {
-			rootPackageReadsFile(g, packageOnly, "", rel)
-		}
 
 		// Only a manifest at a module's own root speaks for that module. A
 		// go.mod deeper down belongs to a nested fixture module, which is
@@ -201,26 +195,23 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 					continue
 				}
 			}
-			// The repo-root package's audit tests read repository files directly:
-			// it globs make/*.mk, and checks docs/developing-evener/testing.md
-			// and the workflow files. A non-Go change to one of those is
-			// invisible to `go list` as a package, but it can fail those tests,
-			// so it selects the root package only — no spread to importers.
+			// A file inside a package's directory tree can be read by that
+			// package's tests by relative path (docs/examples/** fixtures), so
+			// blame the nearest package. Package-only: nothing spreads.
+			//
+			// The repo-root package's audit tests also read repository-wide
+			// state, but it is deliberately NOT selected here: `go test .` costs
+			// about 43 seconds on its own, which would swamp every run. Root
+			// audits belong to the full gate in CI; test-changed reports the
+			// boundary instead of paying for it. See docs/developing-evener/
+			// testing.md.
 			if !goFile {
-				// A file inside a package's directory tree can still be read by
-				// that package's tests by relative path (docs/examples/**
-				// fixtures). Attribute it there first: the nearest package is
-				// the one whose tests would notice, and package-only means no
-				// spread. The root package is then an addition, not a
-				// replacement, because the root audit tests also read deep
-				// repository files.
 				if owner, ok := g.nearestPackageAncestor(module, dir); ok {
-					packageOnly[owner] = joinReason(packageOnly[owner], "repository file "+rel)
-				}
-				if owner, ok := g.packageAt(g.root); ok {
 					packageOnly[owner] = joinReason(packageOnly[owner], "repository file "+rel)
 					continue
 				}
+				res.AuditOnly = append(res.AuditOnly, rel)
+				continue
 			}
 			if goFile {
 				countGo(module)
@@ -322,20 +313,6 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 	})
 
 	return res
-}
-
-// rootPackageReadsFile adds the repo-root package alongside whatever package
-// owns a change. The root audit tests read repository-wide state — every
-// tracked file, every *_test.go, the Makefile fragments and the docs — so no
-// import edge reaches them, and attributing only to the nearest package would
-// let a broken audit report PASS. The owner is passed so a change that already
-// resolves to the root package is not counted twice.
-func rootPackageReadsFile(g *graph, packageOnly map[string]string, owner, rel string) {
-	rootPkg, ok := g.packageAt(g.root)
-	if !ok || rootPkg == owner {
-		return
-	}
-	packageOnly[rootPkg] = joinReason(packageOnly[rootPkg], "repository file "+rel)
 }
 
 func joinReason(prev, add string) string {

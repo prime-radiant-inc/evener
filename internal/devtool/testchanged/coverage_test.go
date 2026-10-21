@@ -103,67 +103,68 @@ func TestEmbeddedAssetSelectsItsEmbeddingPackage(t *testing.T) {
 	}
 }
 
-// A repository file that no package embeds still selects the repo-root
-// package, because its audit tests read repository files directly: they glob
-// make/*.mk and check docs/developing-evener/testing.md. It must not spread to
-// importers, which would turn every doc edit into a whole-module run.
-func TestRepositoryFileSelectsRootPackageOnly(t *testing.T) {
+// A repository file that no package embeds or reads is consumed only by the
+// repo-root audit suite, which test-changed does not run (it costs ~43s). The
+// file is reported as audit-only rather than silently ignored, and no package
+// is selected for it.
+func TestRepositoryFileIsReportedAsAuditOnly(t *testing.T) {
 	g := loadTestGraph(t)
 	res := selectPackages(g, []string{"docs/developing-evener/testing.md"}, testModules)
 
-	if got := selectedPaths(res); len(got) != 1 || got[0] != "primeradiant.com/evener" {
-		t.Errorf("selected %v, want only the repo-root package", got)
+	if len(res.Selected) != 0 {
+		t.Errorf("selected %v, want nothing for an audit-only file", selectedPaths(res))
+	}
+	if len(res.AuditOnly) != 1 || res.AuditOnly[0] != "docs/developing-evener/testing.md" {
+		t.Errorf("AuditOnly = %v, want [docs/developing-evener/testing.md]", res.AuditOnly)
 	}
 }
 
-// Deleting a repository file the root audit tests read must select the root
-// package too. The removed shortcut once swallowed it, so `git rm` of a doc
-// reported success while `go test .` failed.
-func TestDeletedRepositoryFileSelectsRootPackage(t *testing.T) {
+// A deleted repository file is audit-only too; it must not be counted as a
+// broken Go selection, and it must not disappear without a word.
+func TestDeletedRepositoryFileIsAuditOnly(t *testing.T) {
 	g := loadTestGraph(t)
 	// A path that is absent from this checkout: the point is the deleted case.
 	res := selectPackages(g, []string{"docs/removed-guide.md"}, testModules)
 
 	if len(res.Removed) != 0 {
-		t.Errorf("Removed = %v, want nothing: a deleted doc is read by root audit tests", res.Removed)
+		t.Errorf("Removed = %v, want nothing: a deleted doc is not a removed Go package", res.Removed)
 	}
-	if reasonForPath(res, "primeradiant.com/evener") == "" {
-		t.Errorf("Selected = %v, want the repo-root package", selectedPaths(res))
+	if len(res.AuditOnly) != 1 || res.AuditOnly[0] != "docs/removed-guide.md" {
+		t.Errorf("AuditOnly = %v, want the deleted doc", res.AuditOnly)
 	}
 	if res.GoChanged != 0 {
 		t.Errorf("GoChanged = %d, want 0 for a deleted non-Go file", res.GoChanged)
 	}
 }
 
-// The root audit tests also read files that live inside another package's
-// directory (test/scenarios/*.md), so such a file must select both that package
-// and the root package.
-func TestScenarioCardSelectsOwningAndRootPackage(t *testing.T) {
+// A scenario card lives inside the test/scenarios package's directory, so that
+// package's tests run. The repo-root audit suite also reads it, but test-changed
+// deliberately leaves root audits to the full gate in CI (they cost ~43s), so
+// the root package is not selected. See docs/developing-evener/testing.md.
+func TestScenarioCardSelectsOwningPackage(t *testing.T) {
 	g := loadTestGraph(t)
 	res := selectPackages(g, []string{"test/scenarios/lazy-transcript-loading.md"}, testModules)
 
-	for _, want := range []string{
-		"primeradiant.com/evener/test/scenarios",
-		"primeradiant.com/evener",
-	} {
-		if reasonForPath(res, want) == "" {
-			t.Errorf("selected %v, want %s", selectedPaths(res), want)
-		}
+	const owner = "primeradiant.com/evener/test/scenarios"
+	if reasonForPath(res, owner) == "" {
+		t.Errorf("selected %v, want %s", selectedPaths(res), owner)
+	}
+	if reasonForPath(res, "primeradiant.com/evener") != "" {
+		t.Error("root audits are out of scope for test-changed; the root package must not be selected")
 	}
 }
 
-// The root audits read every tracked file and every *_test.go, so a change
-// anywhere in a runnable module must also select the root package. No import
-// edge reaches it: cmd/evener-hub is not imported by the root package.
-func TestChangeInAnotherModuleAlsoSelectsRootPackage(t *testing.T) {
+// A test-only change selects its own package and nothing else. The root audit
+// suite would notice it, but root audits belong to the full gate.
+func TestTestOnlyChangeSelectsOnlyItsPackage(t *testing.T) {
 	g := loadTestGraph(t)
 	res := selectPackages(g, []string{"cmd/evener-hub/app_threadread_forward_compat_test.go"}, testModules)
 
-	if reasonForPath(res, "primeradiant.com/evener") == "" {
-		t.Errorf("selected %v, want the repo-root audit package as well", selectedPaths(res))
-	}
 	if reasonForPath(res, "primeradiant.com/evener/cmd/evener-hub") == "" {
-		t.Error("the changed package itself must still be selected")
+		t.Error("the changed package must be selected")
+	}
+	if got := selectedPaths(res); len(got) != 1 {
+		t.Errorf("selected %v, want only the changed package", got)
 	}
 }
 
@@ -216,9 +217,10 @@ func TestFixtureUnderPackageTreeSelectsThatPackage(t *testing.T) {
 	if reasonForPath(res, owner) == "" {
 		t.Errorf("selected %v, want %s for its own fixture", selectedPaths(res), owner)
 	}
-	// The root package still comes along: its audit tests read deep repo files.
-	if reasonForPath(res, "primeradiant.com/evener") == "" {
-		t.Error("the repo-root package should also be selected")
+	// Root audits are out of scope, so the fixture's own package is the whole
+	// selection.
+	if got := selectedPaths(res); len(got) != 1 {
+		t.Errorf("selected %v, want only %s", got, owner)
 	}
 }
 

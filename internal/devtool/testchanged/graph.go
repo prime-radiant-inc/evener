@@ -346,6 +346,11 @@ func (g *graph) importedAnywhere(importPath string) bool {
 // stopping at the module root. It attributes a file that lives outside any
 // package — a testdata fixture, an asset in a subdirectory — to the package
 // that owns the directory tree it sits in.
+//
+// The repo-root package is deliberately not an answer: root audits read
+// repository-wide state and cost about 43 seconds, which test-changed does not
+// pay. A walk that would reach the root reports no owner, so the caller can
+// report the file as audit-only instead.
 func (g *graph) nearestPackageAncestor(module, dir string) (string, bool) {
 	moduleDir := filepath.Clean(g.moduleDirs[module])
 	start := filepath.Clean(dir)
@@ -357,6 +362,9 @@ func (g *graph) nearestPackageAncestor(module, dir string) (string, bool) {
 	}
 	for d := filepath.Dir(start); ; d = filepath.Dir(d) {
 		if owner, found := g.packageAt(d); found {
+			if rootPkg, ok := g.packageAt(g.root); ok && owner == rootPkg {
+				return "", false
+			}
 			return owner, true
 		}
 		if filepath.Clean(d) == moduleDir {
