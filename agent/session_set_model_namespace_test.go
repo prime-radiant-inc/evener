@@ -42,10 +42,7 @@ func TestSetModel_NamespacedModelDoesNotMintAnotherInstance(t *testing.T) {
 		t.Fatalf("registry: %v", err)
 	}
 	client := llm.NewClient(llm.WithRegistry(r))
-	client.Register(&fakeEnumerableAdapter{
-		fakeAdapter: fakeAdapter{name: "openrouter"},
-		models:      []registry.Model{{ID: "anthropic/claude-opus-5"}},
-	})
+	client.Register(newFakeEnumerableAdapter("openrouter", "anthropic/claude-opus-5"))
 	for _, inst := range r.Instances() {
 		if inst.Name != "openrouter" {
 			client.Register(&fakeAdapter{name: inst.Name})
