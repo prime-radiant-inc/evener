@@ -260,13 +260,16 @@ export class MutationOutboxIndexedDB {
       const clientMutationId = this.#createMutationId();
       await this.#assertMutationIdAvailable(transaction, clientMutationId);
       // The caller's final admission, re-decided inside this transaction and
-      // immediately before the row exists. A conversation that advanced while
-      // the stop-epoch/sequence/id waits ran is refused here, and so is any
-      // unresolved turn input another submission committed in that window.
-      admission?.validate?.();
+      // immediately before the row exists. The pending-row scan runs first:
+      // it awaits storage, so eligibility can advance while it runs, and the
+      // post-scan validate is the observation that counts. A conversation
+      // that advanced during the earlier stop-epoch/sequence/id waits or
+      // during this scan is refused, and so is any unresolved turn input
+      // another submission committed in either window.
       if (admission?.rejectIfPendingTurnInput) {
         await this.#rejectPendingTurnInput(transaction, intent.targetRef);
       }
+      admission?.validate?.();
       const record: MutationOutboxRecord = {
         ...intent,
         payload: { ...intent.payload, clientMutationId },

@@ -1,10 +1,11 @@
 // @vitest-environment node
 
-import { IDBFactory } from "fake-indexeddb";
-import { beforeEach, describe, expect, test } from "vitest";
+import { IDBFactory, IDBIndex } from "fake-indexeddb";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import { setMutationClientIdentityForTests } from "./mutationClientIdentity";
 import { MutationAdmissionLostError, type MutationIntent } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 
 // The final admission runs inside the enqueue transaction, so these tests use
 // the real adapter and read the rows back through fresh connections. No
@@ -91,5 +92,41 @@ describe("MutationOutboxIndexedDB enqueue admission", () => {
     // committed row starts at 1.
     const committed = await storage.enqueueIntent(intent("after the refusal"));
     expect(committed.intentSequence).toBe(1);
+  });
+
+  test("eligibility advanced during the pending-row scan is re-decided before add", async () => {
+    const storage = store();
+    const originalGetAll = IDBIndex.prototype.getAll;
+    let held: ReturnType<typeof holdIndexedDBEvent> | undefined;
+    let scanned!: () => void;
+    const scanIssued = new Promise<void>((resolve) => {
+      scanned = resolve;
+    });
+    const spy = vi.spyOn(IDBIndex.prototype, "getAll").mockImplementation(function getAll(this: IDBIndex, ...args) {
+      const request = originalGetAll.apply(this, args);
+      held = holdIndexedDBEvent(request, "success");
+      scanned();
+      return request;
+    });
+    let eligible = true;
+    try {
+      const pending = storage.enqueueIntent(intent("continue"), undefined, {
+        rejectIfPendingTurnInput: true,
+        validate: () => {
+          if (!eligible) throw new MutationAdmissionLostError();
+        },
+      });
+      await scanIssued;
+      if (!held) throw new Error("the pending-row scan never issued");
+      await held.reached;
+      // The scan's storage wait is the window in which the conversation can
+      // advance. Only a validation after the scan can see this.
+      eligible = false;
+      held.release();
+      await expect(pending).rejects.toBeInstanceOf(MutationAdmissionLostError);
+      expect(await storage.listOutbox(TARGET)).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
