@@ -393,7 +393,8 @@ func TestManagedWalkExemptNativeUnicodeSpelling(t *testing.T) {
 	if err := os.MkdirAll(actual, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	variant := filepath.Join(home, ".config", "evener", "plugins", "cafe\u0301")
+	const combiningAcute = string(rune(0x0301))
+	variant := filepath.Join(home, ".config", "evener", "plugins", "cafe"+combiningAcute)
 	if _, err := os.Stat(variant); err != nil {
 		t.Skip("filesystem does not normalize Unicode; APFS spelling not available")
 	}

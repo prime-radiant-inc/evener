@@ -42,6 +42,19 @@ func (m *Manager) migrateManagedGitMetadata() []string {
 			if isUnderMoved(entry, moved) {
 				continue
 			}
+			info, err := os.Lstat(entry)
+			if err != nil {
+				problems = append(problems, "left a .git entry in place at "+rootRelative(root.path, entry)+": "+err.Error())
+				continue
+			}
+			// A directory is moved only when it is provably Git administration.
+			// Anything else named .git may be a marketplace or plugin namespace
+			// (including a retained legacy name that nests one deeper), so it
+			// stays and the store remains unverified.
+			if info.IsDir() && !looksLikeGitAdministration(entry) {
+				problems = append(problems, "left a namespace directory named .git in place at "+rootRelative(root.path, entry))
+				continue
+			}
 			if preservesManagedNamespace(root, entry) {
 				problems = append(problems, "left a namespace directory named .git in place at "+rootRelative(root.path, entry))
 				continue

@@ -100,7 +100,7 @@ func (m *Manager) stagePlugin(ctx context.Context, marketplace, plugin string, r
 	// Preparation happens under the store's private publishing area, never in
 	// the content root: a fetch's Git directory must not exist where a session
 	// can be granted it, even for the moment before publication.
-	parent := filepath.Join(m.publishingDir(marketplace, plugin))
+	parent := m.publishingDir(marketplace, plugin)
 	if err := installMkdirAll(parent, 0o700); err != nil {
 		return "", "", false, err
 	}

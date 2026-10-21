@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -8,12 +9,23 @@ import (
 	"testing"
 )
 
+// writeGitAdministration lays out the minimum a real .git directory holds for
+// looksLikeGitAdministration to classify it as Git administration.
+func writeGitAdministration(t *testing.T, dir string) {
+	t.Helper()
+	writeTestFile(t, filepath.Join(dir, "HEAD"), "ref: refs/heads/main\n")
+	writeTestFile(t, filepath.Join(dir, "config"), "[core]\n\trepositoryformatversion = 0\n")
+	if err := os.MkdirAll(filepath.Join(dir, "objects", "info"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestManagedMetadataMigrationMovesOnlyGitEntries(t *testing.T) {
 	root := t.TempDir()
 	m := NewManager(root)
 	cache := m.cacheDir()
 	rev := filepath.Join(cache, "acme", "widget", "aaa")
-	writeTestFile(t, filepath.Join(rev, ".git", "config"), "git-config-bytes")
+	writeGitAdministration(t, filepath.Join(rev, ".git"))
 	writeTestFile(t, filepath.Join(rev, "README.md"), "plugin")
 	writeTestFile(t, filepath.Join(rev, "docs", "guide.md"), "guide")
 	if err := os.Symlink("docs", filepath.Join(rev, "docs-link")); err != nil {
@@ -43,9 +55,9 @@ func TestManagedMetadataMigrationMovesOnlyGitEntries(t *testing.T) {
 
 	// The inventory covers legacy staging and every bundled slot, not just
 	// registry-named revisions.
-	writeTestFile(t, filepath.Join(cache, "acme", "widget", ".staging.clone", ".git", "config"), "legacy")
-	writeTestFile(t, filepath.Join(m.bundledDir(), ".stage-x", ".git", "config"), "bundled stage")
-	writeTestFile(t, filepath.Join(m.bundledDir(), "name-0123456789abcdef.conflict", ".git", "config"), "conflict")
+	writeGitAdministration(t, filepath.Join(cache, "acme", "widget", ".staging.clone", ".git"))
+	writeGitAdministration(t, filepath.Join(m.bundledDir(), ".stage-x", ".git"))
+	writeGitAdministration(t, filepath.Join(m.bundledDir(), "name-0123456789abcdef.conflict", ".git"))
 
 	m.ensureManagedContentMigrated(context.Background())
 	if m.managedContentClean() {
@@ -54,8 +66,8 @@ func TestManagedMetadataMigrationMovesOnlyGitEntries(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(rev, ".git")); !os.IsNotExist(err) {
 		t.Fatalf("named .git directory survived: %v", err)
 	}
-	archived, err := os.ReadFile(filepath.Join(root, managedGitArchiveDirName, "cache", "acme", "widget", "aaa", ".git", "config"))
-	if err != nil || string(archived) != "git-config-bytes" {
+	archived, err := os.ReadFile(filepath.Join(root, managedGitArchiveDirName, "cache", "acme", "widget", "aaa", ".git", "HEAD"))
+	if err != nil || string(archived) != "ref: refs/heads/main\n" {
 		t.Fatalf("archived metadata = %q, %v", archived, err)
 	}
 	if body, err := os.ReadFile(filepath.Join(external, "private.txt")); err != nil || string(body) != "user data" {
@@ -99,7 +111,7 @@ func TestManagedMetadataMigrationRetriesAfterInterruption(t *testing.T) {
 	root := t.TempDir()
 	m := NewManager(root)
 	for _, rev := range []string{"aaa", "bbb"} {
-		writeTestFile(t, filepath.Join(m.cacheDir(), "acme", "widget", rev, ".git", "config"), rev)
+		writeGitAdministration(t, filepath.Join(m.cacheDir(), "acme", "widget", rev, ".git"))
 	}
 	oldMove := migrationMove
 	t.Cleanup(func() { migrationMove = oldMove })
@@ -191,7 +203,7 @@ func TestManagedMetadataMigrationLeavesAnOversizedPointer(t *testing.T) {
 
 func TestManagedMetadataMigrationCanceledLeavesStoreUsable(t *testing.T) {
 	m := NewManager(t.TempDir())
-	writeTestFile(t, filepath.Join(m.cacheDir(), "acme", "widget", "aaa", ".git", "config"), "token")
+	writeGitAdministration(t, filepath.Join(m.cacheDir(), "acme", "widget", "aaa", ".git"))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	m.ensureManagedContentMigrated(ctx)
@@ -276,4 +288,75 @@ func TestManagedMetadataMigrationPreservesGitNamespaceDirectories(t *testing.T) 
 	if _, err := os.Stat(filepath.Join(m.Root, managedGitArchiveDirName, "cache", ".git")); !os.IsNotExist(err) {
 		t.Fatalf("a cache namespace directory was archived: %v", err)
 	}
+}
+
+func TestManagedMetadataMigrationPreservesNestedGitNamespace(t *testing.T) {
+	t.Run("nested legacy namespace", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		namespace := filepath.Join(m.cacheDir(), "a", "b", ".git")
+		revOne := filepath.Join(namespace, "rev-one")
+		revTwo := filepath.Join(namespace, "rev-two")
+		writeTestFile(t, filepath.Join(revOne, ".claude-plugin", "plugin.json"), `{"name":"widget"}`)
+		writeTestFile(t, filepath.Join(revOne, "companion.bin"), "rev-one companion")
+		writeTestFile(t, filepath.Join(revTwo, ".claude-plugin", "plugin.json"), `{"name":"widget","version":"old"}`)
+		writeTestFile(t, filepath.Join(revTwo, "companion.bin"), "rev-two companion")
+		one := snapshotMigrationTree(t, revOne)
+		two := snapshotMigrationTree(t, revTwo)
+		if err := SaveRegistry(m.registryPath(), Registry{Plugins: map[string][]InstallEntry{
+			"widget@a/b": {{
+				InstallPath: revOne,
+				Version:     "1.0.0",
+				Enabled:     true,
+				Source:      Source{Kind: SourceDirectory, Path: "/source/widget"},
+			}},
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		registryBefore, err := os.ReadFile(m.registryPath())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		m.ensureManagedContentMigrated(context.Background())
+
+		if _, err := os.Stat(namespace); err != nil {
+			t.Fatalf("nested .git namespace was moved: %v", err)
+		}
+		assertMigrationTree(t, one)
+		assertMigrationTree(t, two)
+		reg, err := LoadRegistry(m.registryPath())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := reg.Plugins["widget@a/b"]; len(got) != 1 || got[0].InstallPath != revOne {
+			t.Fatalf("migration changed the recorded install path: %+v", reg)
+		}
+		if after, err := os.ReadFile(m.registryPath()); err != nil || !bytes.Equal(registryBefore, after) {
+			t.Fatalf("migration rewrote the registry: %v", err)
+		}
+		if m.managedContentClean() {
+			t.Fatal("a preserved nested namespace was reported clean")
+		}
+		if _, err := os.Stat(m.managedGitArchiveDir("cache", "a/b/.git")); !os.IsNotExist(err) {
+			t.Fatalf("the nested namespace was archived: %v", err)
+		}
+	})
+
+	t.Run("real git administration", func(t *testing.T) {
+		m := NewManager(t.TempDir())
+		rev := filepath.Join(m.cacheDir(), "acme", "widget", "admin-rev")
+		makeGitRepo(t, rev, "README.md", "x")
+
+		m.ensureManagedContentMigrated(context.Background())
+
+		if _, err := os.Stat(filepath.Join(rev, ".git")); !os.IsNotExist(err) {
+			t.Fatalf("real Git administration was preserved: %v", err)
+		}
+		if _, err := os.Stat(m.managedGitArchiveDir("cache", "acme/widget/admin-rev/.git")); err != nil {
+			t.Fatalf("real Git administration was not archived: %v", err)
+		}
+		if !m.managedContentClean() {
+			t.Fatal("a store with only real administration was not cleaned")
+		}
+	})
 }

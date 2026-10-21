@@ -76,7 +76,8 @@ func TestRestoredSessionKeepsMigratedPluginRevisionAndCleanPolicy(t *testing.T) 
 	if err := os.Remove(filepath.Join(store.Root, "store-format.json")); err != nil {
 		t.Fatal(err)
 	}
-	revisionFile(t, first.InstallPath, ".git/config", []byte("legacy-token"), 0o600)
+	// Real Git administration, which migration can prove and move out.
+	revisionGit(t, first.InstallPath, "init", "-q")
 	if _, err := store.Gc(ctx); err != nil {
 		t.Fatal(err)
 	}

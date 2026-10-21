@@ -297,7 +297,7 @@ func TestManagedPublicationJourneyPreservesOlderSessionPaths(t *testing.T) {
 	if err := os.Remove(filepath.Join(f.manager.Root, storeFormatFileName)); err != nil {
 		t.Fatal(err)
 	}
-	writeTestFile(t, filepath.Join(oldPath, ".git", "config"), "legacy-token")
+	writeGitAdministration(t, filepath.Join(oldPath, ".git"))
 	f.manager.ensureManagedContentMigrated(context.Background())
 	if !f.manager.managedContentClean() {
 		t.Fatal("journey migration did not complete")

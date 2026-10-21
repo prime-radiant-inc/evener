@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -42,8 +43,11 @@ func writeSourceCatalog(t *testing.T, marketRepo, plugin, sourceJSON string) {
 func cacheContains(t *testing.T, root, needle string) bool {
 	t.Helper()
 	found := false
-	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+	walkErr := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
 			return nil
 		}
 		data, readErr := os.ReadFile(path)
@@ -53,6 +57,11 @@ func cacheContains(t *testing.T, root, needle string) bool {
 		}
 		return nil
 	})
+	// An absent root means the refused install never published anything. Any
+	// other error means the scan itself failed, which must not read as absent.
+	if walkErr != nil && !errors.Is(walkErr, fs.ErrNotExist) {
+		t.Fatalf("walking %s: %v", root, walkErr)
+	}
 	return found
 }
 
