@@ -459,3 +459,30 @@ func TestManagedMetadataMigrationRemovesStalePendingMarkers(t *testing.T) {
 		t.Fatal("store with a reclaimed marker was not reported clean")
 	}
 }
+
+func TestManagedMetadataMigrationFindsANumberedArchiveMarker(t *testing.T) {
+	m := NewManager(t.TempDir())
+	source := filepath.Join(m.cacheDir(), "acme", "widget", "aaa", ".git")
+	if err := os.MkdirAll(filepath.Join(source, "objects", "info"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	base := m.managedGitArchiveDir("cache", "acme/widget/aaa/.git")
+	numbered := base + "-1"
+	writeGitAdministration(t, numbered)
+	pending := numbered + ".evener-pending"
+	if err := os.WriteFile(pending, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m.ensureManagedContentMigrated(context.Background())
+
+	if _, err := os.Stat(source); !os.IsNotExist(err) {
+		t.Fatalf("interrupted source metadata survived: %v", err)
+	}
+	if _, err := os.Stat(pending); !os.IsNotExist(err) {
+		t.Fatalf("numbered archive marker survived: %v", err)
+	}
+	if !m.managedContentClean() {
+		t.Fatal("store with a recovered numbered archive was not reported clean")
+	}
+}

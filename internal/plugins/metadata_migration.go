@@ -109,7 +109,8 @@ func (m *Manager) pendingArchiveMarkers(rootName, rel, source string) []string {
 	var markers []string
 	for _, entry := range entries {
 		entryName := entry.Name()
-		if entryName != name+managedGitArchivePendingSuffix && !numberedArchiveName(entryName, name+managedGitArchivePendingSuffix) {
+		stem, ok := strings.CutSuffix(entryName, managedGitArchivePendingSuffix)
+		if !ok || (stem != name && !numberedArchiveName(stem, name)) {
 			continue
 		}
 		path := filepath.Join(parent, entryName)
