@@ -25,12 +25,24 @@ export type MutationOptimisticRecord = PackageMutationOptimisticRecord<MutationA
 export type MutationRecoveryRecord = PackageMutationRecoveryRecord<MutationAttachment>;
 export type MutationCommit = PackageMutationCommit<MutationAttachment>;
 
+// The caller's durable-enqueue admission refused the write. It is not a
+// storage failure: the row was never added, so the transaction aborts and the
+// caller decides whether the refusal is a stale activation (Retry) or a
+// surface error (everyone else).
+export class MutationAdmissionLostError extends Error {
+  constructor() {
+    super("The submission's source is no longer current");
+    this.name = "MutationAdmissionLostError";
+  }
+}
+
 // The class itself is the package's (state/mutation/outbox.ts): discovery over
 // a storage port, with every host-shaped capability an option. This module is
 // the web's side of that — the attachment type with bytes in it (above), and
 // the re-export every importer here already names.
 export type {
   MutationClientLookup,
+  MutationEnqueueAdmission,
   MutationOutboxOptions,
   MutationStopBarrier,
 } from "@evener/appwire-client/state/mutation";

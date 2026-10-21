@@ -3,6 +3,7 @@ import { IDBConnection, requestResult, transactionCompletion, tryAbortTransactio
 import { ownClientId } from "./mutationClientIdentity";
 import type {
   MutationAttachment,
+  MutationEnqueueAdmission,
   MutationIntent,
   MutationOptimisticRecord,
   MutationOutboxRecord,
@@ -11,7 +12,7 @@ import type {
   MutationRecoveryRecord,
   MutationStopBarrier,
 } from "./mutationOutbox";
-import { acceptedRecord, carriesOptimisticInput } from "./mutationOutbox";
+import { acceptedRecord, carriesOptimisticInput, MutationAdmissionLostError } from "./mutationOutbox";
 import { trackProjectionWork } from "./projectionWork";
 import { createSecureUUID } from "./secureUUID";
 
@@ -241,7 +242,11 @@ export class MutationOutboxIndexedDB {
     this.#settledListener = listener;
   }
 
-  async enqueueIntent(intent: MutationIntent, barrier?: MutationStopBarrier): Promise<MutationOutboxRecord> {
+  async enqueueIntent(
+    intent: MutationIntent,
+    barrier?: MutationStopBarrier,
+    admission?: MutationEnqueueAdmission,
+  ): Promise<MutationOutboxRecord> {
     if (!intent.targetRef.trim()) throw new Error("targetRef is required");
     return this.#write(ENQUEUE_STORES, "enqueueIntent", async (transaction) => {
       // §4's stop barrier: a Stop whose cancel transaction committed while
@@ -254,6 +259,14 @@ export class MutationOutboxIndexedDB {
       const intentSequence = await this.#allocateSequence(transaction, intent.targetRef);
       const clientMutationId = this.#createMutationId();
       await this.#assertMutationIdAvailable(transaction, clientMutationId);
+      // The caller's final admission, re-decided inside this transaction and
+      // immediately before the row exists. A conversation that advanced while
+      // the stop-epoch/sequence/id waits ran is refused here, and so is any
+      // unresolved turn input another submission committed in that window.
+      admission?.validate?.();
+      if (admission?.rejectIfPendingTurnInput) {
+        await this.#rejectPendingTurnInput(transaction, intent.targetRef);
+      }
       const record: MutationOutboxRecord = {
         ...intent,
         payload: { ...intent.payload, clientMutationId },
@@ -271,6 +284,25 @@ export class MutationOutboxIndexedDB {
       await requestResult(transaction.objectStore(OUTBOX_STORE).add(record));
       return record;
     });
+  }
+
+  async #rejectPendingTurnInput(transaction: IDBTransaction, targetRef: string): Promise<void> {
+    const index = transaction.objectStore(OUTBOX_STORE).index(TARGET_SEQUENCE_INDEX);
+    const keyRange = globalThis.IDBKeyRange;
+    const rows = await requestResult(
+      index.getAll(keyRange === undefined ? undefined : keyRange.bound([targetRef], [targetRef, []])),
+    );
+    if (
+      rows.some(
+        (record) =>
+          record.targetRef === targetRef &&
+          record.originClientId === ownClientId() &&
+          (record.method === "turn/start" || record.method === "turn/queue") &&
+          record.state !== "canceled",
+      )
+    ) {
+      throw new MutationAdmissionLostError();
+    }
   }
 
   // The click-time half of §4's stop barrier: what an enqueuing tab reads at

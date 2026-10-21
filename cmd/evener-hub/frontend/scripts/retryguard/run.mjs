@@ -162,6 +162,23 @@ async function waitDurable(driver, ref, predicate, label, timeoutMs = 20000) {
   }
 }
 
+// Settlement is an owner read, not the same tick as the output. Wait until the
+// ref has left both the outbox and the optimistic projection, then return the
+// records the observed state was read from.
+async function waitDurableSettled(driver, ref, timeoutMs = 20000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const durable = await evaluate(driver.send, driver.durableRecordsExpr());
+    const unresolved = (durable.outbox ?? []).some((record) => record.targetRef === ref);
+    const optimistic = (durable.optimistic ?? []).some((record) => record.targetRef === ref);
+    if (!unresolved && !optimistic) return durable;
+    if (Date.now() > deadline) {
+      throw new Error(`timeout waiting for ${ref} to settle; durable ${JSON.stringify(durable)}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 async function waitBodyIncludes(driver, text, options = {}) {
   await driver.waitPage(`document.body.innerText.includes(${q(text)}) ? true : null`, {
     label: `body contains ${JSON.stringify(text)}`,
@@ -675,7 +692,7 @@ async function runRemount(driver, scenario) {
   await driver.waitPage("window.__retryWire.requests.length === 1", { label: "one continuation dispatched" });
   await waitBodyIncludes(driver, "RETRY_REMOUNT_DONE", { timeoutMs: 30000 });
   await waitRetry(driver, 0, { label: "the old failure has no Retry after recovery" });
-  const durable = await evaluate(driver.send, driver.durableRecordsExpr());
+  const durable = await waitDurableSettled(driver, ref);
   assert.equal(
     (durable.outbox ?? []).filter((record) => record.targetRef === ref).length,
     0,

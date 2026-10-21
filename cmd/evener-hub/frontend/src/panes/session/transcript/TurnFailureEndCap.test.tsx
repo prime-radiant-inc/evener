@@ -95,6 +95,40 @@ class DelayedPendingReadStorage extends MutationOutboxIndexedDB {
   }
 }
 
+// Parks the first enqueue at the storage boundary, before its transaction
+// body runs, so a test can change the owners while Retry's durable write is
+// genuinely in flight.
+class OneShotDelayedEnqueueStorage extends MutationOutboxIndexedDB {
+  private releaseGate: (() => void) | undefined;
+  private gate: Promise<void> = Promise.resolve();
+  private armed = false;
+  private reachedResolve: (() => void) | undefined;
+  reached: Promise<void> = Promise.resolve();
+
+  holdNextEnqueue(): void {
+    this.armed = true;
+    this.gate = new Promise<void>((resolve) => {
+      this.releaseGate = resolve;
+    });
+    this.reached = new Promise<void>((resolve) => {
+      this.reachedResolve = resolve;
+    });
+  }
+
+  releaseNextEnqueue(): void {
+    this.releaseGate?.();
+  }
+
+  override async enqueueIntent(...args: Parameters<MutationOutboxIndexedDB["enqueueIntent"]>) {
+    if (this.armed) {
+      this.armed = false;
+      this.reachedResolve?.();
+      await this.gate;
+    }
+    return super.enqueueIntent(...args);
+  }
+}
+
 // The hint disclosure's toggle, or null when the end-cap has no hint.
 function hintSummary(): HTMLElement | null {
   return screen.getByTestId("turn-failure").querySelector("summary");
@@ -345,6 +379,7 @@ test("two views and an immediate second press leave one pending mutation", async
 test("a pending continuation keeps Retry inactive after rerender and remount", async () => {
   const turn = failedTurn();
   const { fake, storage } = await loadThread("ref_a", [turn]);
+  fake.on("thread/read", () => new Promise<never>(() => undefined));
   fake.on("turn/start", ({ clientMutationId }) => ({
     receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "pending" },
     turn: { id: "turn_continued", status: "inProgress", itemsView: "" },
@@ -443,6 +478,121 @@ test("an unresolved ordinary send blocks Retry before its durable row exists", a
   }
 });
 
+test("a conversation advanced while Retry's durable write is paused creates no Retry row", async () => {
+  const turn = failedTurn();
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  const storage = new OneShotDelayedEnqueueStorage();
+  const { fake } = await loadThread("ref_a", [turn], {}, storage);
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+
+    storage.holdNextEnqueue();
+    fireEvent.click(retryButton() as HTMLButtonElement);
+    await storage.reached;
+
+    // The conversation advances after the pre-write check but before the row
+    // is added. Only the in-transaction admission can see this.
+    const model = threadsStore.getState().threads.get("ref_a");
+    if (!model) throw new Error("thread went away");
+    act(() => {
+      threadsStore.setState({
+        threads: new Map([
+          [
+            "ref_a",
+            { ...model, turns: [...model.turns, { id: "turn_later", status: "completed" as const, items: [] }] },
+          ],
+        ]),
+      });
+    });
+    storage.releaseNextEnqueue();
+    await flushPendingTurnsProjectionForTests();
+
+    expect(await storage.listOutbox("ref_a")).toHaveLength(0);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+  } finally {
+    storage.close();
+  }
+});
+
+test("an ordinary send committed while Retry's write is paused leaves only that submission", async () => {
+  const turn = failedTurn();
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  const storage = new OneShotDelayedEnqueueStorage();
+  const { fake } = await loadThread("ref_a", [turn], {}, storage);
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+
+    storage.holdNextEnqueue();
+    fireEvent.click(retryButton() as HTMLButtonElement);
+    await storage.reached;
+
+    await act(async () => {
+      await submitWithPendingTracking(
+        { ref: "ref_a", text: "ordinary follow-up", skillNames: [], onFailure: () => {} },
+        () => threadsStore.getState().send("ref_a", "ordinary follow-up"),
+      );
+    });
+    storage.releaseNextEnqueue();
+    await flushPendingTurnsProjectionForTests();
+
+    const rows = await storage.listOutbox("ref_a");
+    expect(rows.map((row) => row.composerText)).toEqual(["ordinary follow-up"]);
+    const continueCalls = fake.calls.filter(
+      (call) =>
+        call.method === "turn/start" &&
+        (call.params as MethodTypes["turn/start"]["params"]).input?.some((item) => item.text === "continue"),
+    );
+    expect(continueCalls).toHaveLength(0);
+  } finally {
+    storage.close();
+  }
+});
+
+test("an unrelated recovery row cannot settle the Retry reflection marker", async () => {
+  const turn = failedTurn();
+  const { fake, storage } = await loadThread("ref_a", [turn]);
+  fake.on("thread/read", () => new Promise<never>(() => undefined));
+  fake.on("turn/start", ({ clientMutationId }) => ({
+    receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
+    turn: { id: "turn_continued", status: "inProgress", itemsView: "" },
+  }));
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+    await act(async () => {
+      await threadsStore.getState().continueTurn("ref_a", turn.id);
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    const afterAcceptance = retryButton();
+    expect(afterAcceptance === null || afterAcceptance.disabled).toBe(true);
+
+    // A refusal of some other submission is not evidence about this one.
+    await act(async () => {
+      const unrelated = await seedHeld("send", "unrelated follow-up", { ref: "ref_a" });
+      await storage.transferToRecovery(unrelated, "rejected");
+      await refreshPendingTurnsProjection("ref_a");
+    });
+    await flushPendingTurnsProjectionForTests();
+    const afterUnrelated = retryButton();
+    expect(afterUnrelated === null || afterUnrelated.disabled).toBe(true);
+
+    await act(async () => {
+      await threadsStore.getState().continueTurn("ref_a", turn.id);
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    expect(await storage.listOutbox("ref_a")).toHaveLength(0);
+  } finally {
+    storage.close();
+  }
+});
+
 test("activation with unknown pending state loads it and sends nothing", async () => {
   const turn = failedTurn();
   vi.stubGlobal("indexedDB", new IDBFactory());
@@ -472,6 +622,7 @@ test("activation with unknown pending state loads it and sends nothing", async (
 test("a lost acceptance reply leaves one continuation identity until the new turn reflects", async () => {
   const turn = failedTurn();
   const { fake, storage } = await loadThread("ref_a", [turn]);
+  fake.on("thread/read", () => new Promise<never>(() => undefined));
   let acknowledge!: (receipt: MethodTypes["turn/start"]["result"]) => void;
   let clientMutationId = "";
   fake.on("turn/start", ({ clientMutationId: id }) => {
@@ -683,6 +834,7 @@ test("a held local enqueue disables Retry in every view and remount before the r
 test("the post-commit record is published before the refresh read settles", async () => {
   const turn = failedTurn();
   const { fake, storage } = await loadThread("ref_a", [turn]);
+  fake.on("thread/read", () => new Promise<never>(() => undefined));
   fake.on("turn/start", ({ clientMutationId }) => ({
     receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "pending" },
     turn: { id: "turn_continued", status: "inProgress", itemsView: "" },
@@ -727,6 +879,12 @@ test("a queued pending turn of this client keeps Retry inactive", async () => {
 test("a definitive refusal restores a usable Retry without duplicating the input", async () => {
   const turn = failedTurn();
   const { fake, storage } = await loadThread("ref_a", [turn]);
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      status: { type: "idle" },
+      turns: [{ id: turn.id, status: "failed", itemsView: "full", items: [], error: { message: "boom" } }],
+    }),
+  );
   let refuse = true;
   fake.on("turn/start", ({ clientMutationId }) => {
     if (refuse) {
@@ -749,12 +907,20 @@ test("a definitive refusal restores a usable Retry without duplicating the input
     await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
     await flushPendingTurnsProjectionForTests();
     expect(await storage.listOutbox("ref_a")).toHaveLength(0);
+    expect(await storage.listOptimistic("ref_a")).toHaveLength(0);
     expect(await storage.listRecovery("ref_a")).toHaveLength(1);
+    const firstRetry = fake.calls.find((call) => call.method === "turn/start");
+    if (!firstRetry) throw new Error("the first Retry never reached transport");
+    const retryID = (firstRetry.params as { clientMutationId: string }).clientMutationId;
+    expect((await storage.listRecovery("ref_a"))[0]?.clientMutationId).toBe(retryID);
+    await flushPendingTurnsProjectionForTests();
     await waitFor(() => expect(retryButton()?.disabled).toBe(false));
 
     refuse = false;
     fireEvent.click(retryButton() as HTMLButtonElement);
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(2));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(2), {
+      timeout: 5000,
+    });
     await flushPendingTurnsProjectionForTests();
     const requests = fake.calls.filter((call) => call.method === "turn/start");
     expect((requests[1]?.params as { input: { text?: string }[] } | undefined)?.input).toEqual([

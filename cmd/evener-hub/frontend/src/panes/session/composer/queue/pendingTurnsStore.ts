@@ -127,6 +127,10 @@ export function useRetryAdmissionInFlight(ref: string): boolean {
 // recovery owners, never a durable Retry record.
 interface RetryReflection {
   failedTurnId: string;
+  // The durable continuation this marker belongs to, from its own commit.
+  // A recovery row with any other id is unrelated and cannot settle it.
+  // Absent only on markers created by a path that had no committed record.
+  clientMutationId?: string;
   // Recovery rows already present when the Retry was submitted: a new one is
   // the existing explicit refusal path, which restores a usable Retry.
   recoveryBaseline: ReadonlySet<string>;
@@ -157,14 +161,17 @@ function clearRetryReflection(ref: string): void {
 }
 
 function hasNewRecovery(ref: string, marker: RetryReflection): boolean {
-  return recoveryEntries(pendingTurnsStore.getState().recovery, ref).some(
-    (record) => !marker.recoveryBaseline.has(record.clientMutationId),
+  return recoveryEntries(pendingTurnsStore.getState().recovery, ref).some((record) =>
+    marker.clientMutationId === undefined
+      ? !marker.recoveryBaseline.has(record.clientMutationId)
+      : record.clientMutationId === marker.clientMutationId,
   );
 }
 
-function markRetrySubmitted(ref: string, failedTurnId: string): void {
+function markRetrySubmitted(ref: string, failedTurnId: string, clientMutationId?: string): void {
   retryReflections.set(ref, {
     failedTurnId,
+    clientMutationId,
     recoveryBaseline: new Set(
       recoveryEntries(pendingTurnsStore.getState().recovery, ref).map((r) => r.clientMutationId),
     ),

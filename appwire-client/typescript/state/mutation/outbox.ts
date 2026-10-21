@@ -74,6 +74,21 @@ export interface MutationStopBarrier {
   stopEpoch: number;
 }
 
+// A caller-owned final admission for one durable enqueue. Hosts that need a
+// submission to be re-decided inside the same transaction that writes its row
+// pass this; hosts with no such rule pass nothing and keep their ordinary
+// behavior.
+export interface MutationEnqueueAdmission {
+  // Re-decides the caller's own eligibility immediately before the row is
+  // added. Throwing refuses the write and aborts its transaction.
+  validate?: () => void;
+  // Refuses when this ref already has an unresolved turn/start or turn/queue
+  // row from this client. The adapter scans its own outbox in the enqueue
+  // transaction, so a row committed by a concurrent submission cannot slip
+  // between the caller's read and this write.
+  rejectIfPendingTurnInput?: boolean;
+}
+
 // The storage this layer needs, as an interface rather than a class: the web's
 // MutationOutboxIndexedDB implements it and stays where it is (it is IndexedDB
 // through and through), and another host implements the same 15 calls over
@@ -98,7 +113,11 @@ export interface MutationOutboxStorage<A extends MutationAttachmentRef = Mutatio
   // any of the three rejects in the same transaction - rolling the record's
   // sequence allocation back with it - and never silently regenerates the id
   // unless a host deliberately chooses that policy.
-  enqueueIntent(intent: MutationIntent<A>, barrier?: MutationStopBarrier): Promise<MutationOutboxRecord<A>>;
+  enqueueIntent(
+    intent: MutationIntent<A>,
+    barrier?: MutationStopBarrier,
+    admission?: MutationEnqueueAdmission,
+  ): Promise<MutationOutboxRecord<A>>;
   // Stop's combined durable write: cancel the ref's non-attempted rows and
   // enqueue the interrupt record in one transaction — both or neither.
   // The generated id obeys enqueueIntent's cross-store uniqueness invariant.
@@ -318,8 +337,9 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
     intent: MutationIntent<A>,
     onCommitted?: (record: MutationOutboxRecord<A>) => void,
     barrier?: MutationStopBarrier,
+    admission?: MutationEnqueueAdmission,
   ): Promise<MutationOutboxRecord<A>> {
-    const record = await this.#storage.enqueueIntent(intent, barrier);
+    const record = await this.#storage.enqueueIntent(intent, barrier, admission);
     this.#announceCommit(record, onCommitted);
     return record;
   }

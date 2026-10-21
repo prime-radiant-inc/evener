@@ -72,8 +72,10 @@ import { entryWriteAdmissionFor } from "./entryWriteAdmission";
 import { acknowledgeHumanNote, canWriteHumanNote, resetHumanNoteDrafts } from "./humanNoteDrafts";
 import { MutationDispatcher } from "./mutationDispatcher";
 import {
+  MutationAdmissionLostError,
   type MutationAttachment,
   type MutationCommit,
+  type MutationEnqueueAdmission,
   type MutationIntent,
   type MutationOptimisticRecord,
   MutationOutbox,
@@ -3848,7 +3850,13 @@ const COMPOSER_ROUTE_METHODS: Record<ComposerMutationRoute, string> = {
   drain: "turn/drainAsSteer",
 };
 
-async function sendMutationIntent(intent: MutationIntent, beforeDurableWrite?: () => void): Promise<void> {
+interface SendMutationOptions {
+  beforeDurableWrite?: () => void;
+  onCommitted?: (record: MutationOutboxRecord) => void;
+  admission?: MutationEnqueueAdmission;
+}
+
+async function sendMutationIntent(intent: MutationIntent, options: SendMutationOptions = {}): Promise<void> {
   // The recovery fence is enforced at the shared admission every durable
   // action funnels through (enqueueMutationIntent's central check), so the
   // alternate send paths - the palette's slash fallthrough, the ask dock's
@@ -3862,7 +3870,7 @@ async function sendMutationIntent(intent: MutationIntent, beforeDurableWrite?: (
   // is read AFTER the write: a hydration that landed while the write was in
   // flight is the snapshot the admission saw, and re-reading here keeps the
   // drive from being skipped (or spuriously started) across that window.
-  await enqueueMutationIntent(intent, undefined, "enqueue", beforeDurableWrite);
+  await enqueueMutationIntent(intent, options.onCommitted, "enqueue", options.beforeDurableWrite, options.admission);
   if (sendResumesLocalModel(intent.targetRef)) void resumeFencedForSend(intent.targetRef);
 }
 
@@ -4091,24 +4099,13 @@ interface RetryPendingProjection {
   // An accepted Retry the client has not yet observed in the conversation.
   // Admission stays closed until the owner's model or an authoritative read
   // establishes the current tail.
-  markSubmitted(ref: string, failedTurnId: string): void;
+  markSubmitted(ref: string, failedTurnId: string, clientMutationId?: string): void;
   awaitingReflection(ref: string, failedTurnId: string): boolean;
 }
 let retryPendingProjection: RetryPendingProjection | null = null;
 
 export function installRetryPendingProjection(projection: RetryPendingProjection): void {
   retryPendingProjection = projection;
-}
-
-// A Retry whose source stopped being the live tail while a prerequisite read
-// or a retry delay was in flight. The enqueue funnel throws it before creating
-// any durable row, and continueTurn swallows it: this is a stale activation,
-// not a failure to report.
-class RetryAdmissionLostError extends Error {
-  constructor() {
-    super("Retry source is no longer the live tail");
-    this.name = "RetryAdmissionLostError";
-  }
 }
 
 // The last safe admission boundary before a durable Retry write: the source
@@ -4122,8 +4119,8 @@ function latestRetryModel(ref: string, failedTurnId: string): ThreadModel | unde
 }
 
 function assertRetrySourceCurrent(ref: string, failedTurnId: string): void {
-  if (!latestRetryModel(ref, failedTurnId) || retryPendingProjection?.isSubmitting(ref)) {
-    throw new RetryAdmissionLostError();
+  if (!retryAdmissionCurrent(ref, failedTurnId)) {
+    throw new MutationAdmissionLostError();
   }
 }
 
@@ -4435,6 +4432,7 @@ async function enqueueMutationIntent(
   onCommitted?: (record: MutationOutboxRecord) => void,
   durableWrite: "enqueue" | "interruptAndCancel" = "enqueue",
   beforeDurableWrite?: () => void,
+  admission?: MutationEnqueueAdmission,
 ): Promise<MutationOutboxRecord | undefined> {
   const ref = intent.targetRef;
   // The recovery fence, enforced at the one funnel every durable action
@@ -4520,7 +4518,15 @@ async function enqueueMutationIntent(
     // The click-time capture, awaited at the write it fences, and the durable
     // enqueue behind it, retried once on a storage timeout (see
     // enqueueDurableMutation).
-    record = await enqueueDurableMutation(runtime, intent, onCommitted, durableWrite, barrierRead, beforeDurableWrite);
+    record = await enqueueDurableMutation(
+      runtime,
+      intent,
+      onCommitted,
+      durableWrite,
+      barrierRead,
+      beforeDurableWrite,
+      admission,
+    );
   } catch (error) {
     // This click's write has settled; only OTHER enqueues remain counted.
     releaseInflightDurableEnqueue(ref);
@@ -4676,6 +4682,7 @@ async function enqueueDurableMutation(
   durableWrite: "enqueue" | "interruptAndCancel",
   barrierRead: Promise<number> | undefined,
   beforeDurableWrite?: () => void,
+  admission?: MutationEnqueueAdmission,
 ): Promise<MutationOutboxRecord> {
   const barrier: MutationStopBarrier | undefined =
     barrierRead === undefined ? undefined : { stopEpoch: await barrierRead };
@@ -4687,7 +4694,7 @@ async function enqueueDurableMutation(
     try {
       return durableWrite === "interruptAndCancel"
         ? await runtime.outbox.enqueueInterruptAndCancel(intent, onCommitted)
-        : await runtime.outbox.enqueueIntent(intent, onCommitted, barrier);
+        : await runtime.outbox.enqueueIntent(intent, onCommitted, barrier, admission);
     } catch (error) {
       if (!isStorageTimeout(error) || attempt >= MUTATION_DURABLE_WRITE_ATTEMPTS) throw error;
       await new Promise((resolve) => setTimeout(resolve, MUTATION_DURABLE_WRITE_RETRY_DELAY_MS));
@@ -7592,11 +7599,19 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             ...composerMutationIntent(ref, "send", TURN_CONTINUATION_TEXT),
             preserveComposer: true,
           },
-          () => assertRetrySourceCurrent(ref, failedTurnId),
+          {
+            beforeDurableWrite: () => assertRetrySourceCurrent(ref, failedTurnId),
+            admission: {
+              validate: () => {
+                if (!retryAdmissionCurrent(ref, failedTurnId)) throw new MutationAdmissionLostError();
+              },
+              rejectIfPendingTurnInput: true,
+            },
+            onCommitted: (record) => admission.markSubmitted(ref, failedTurnId, record.clientMutationId),
+          },
         );
-        admission.markSubmitted(ref, failedTurnId);
       } catch (error) {
-        if (!(error instanceof RetryAdmissionLostError)) throw error;
+        if (!(error instanceof MutationAdmissionLostError)) throw error;
       }
     } finally {
       admission.end(ref);

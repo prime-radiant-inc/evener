@@ -18,6 +18,7 @@ export { MutationDispatcher, RETRY_SAFE_MUTATION_METHODS, validConsumedClientMut
 export type {
   MutationClientLookup,
   MutationDiscoveryReason,
+  MutationEnqueueAdmission,
   MutationLifecycleTarget,
   MutationOutboxChannel,
   MutationOutboxOptions,
