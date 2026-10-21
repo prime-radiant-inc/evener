@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -19,6 +21,46 @@ import (
 
 // Uses the production executable and HTTP guard, not a handler with a substituted token.
 func TestTutorialHubTokenRotationRunbook(t *testing.T) {
+	var callerRequests atomic.Int32
+	caller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callerRequests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[]}`)
+	}))
+	t.Cleanup(caller.Close)
+	t.Setenv("OLLAMA_BASE_URL", caller.URL+"/v1")
+	t.Setenv("OPENAI_BASE_URL", caller.URL+"/v1")
+	t.Setenv("OPENAI_API_KEY", "synthetic-token-rotation-canary")
+	credentialLeaks := 0
+	t.Cleanup(func() {
+		if got := callerRequests.Load(); got != 0 {
+			t.Errorf("caller provider requests = %d, want 0", got)
+		}
+		if credentialLeaks != 0 {
+			t.Errorf("hub generations inheriting caller credential = %d, want 0", credentialLeaks)
+		}
+		t.Logf("caller provider requests=%d, credential inheritance=%d", callerRequests.Load(), credentialLeaks)
+	})
+	// The allowlist removes caller providers and credentials. Ollama is still
+	// discovered without a key, so bind its implicit fallback to our HTTP boundary.
+	discovered := make(chan struct{}, 2)
+	var ownedRequests atomic.Int32
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ownedRequests.Add(1)
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/models" || r.Header.Get("Authorization") != "" {
+			t.Error("unexpected provider discovery request or credential")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[]}`)
+		select {
+		case discovered <- struct{}{}:
+		default:
+		}
+	}))
+	t.Cleanup(func() {
+		provider.Close()
+		t.Logf("owned provider requests=%d", ownedRequests.Load())
+	})
 	home := t.TempDir()
 	root := filepath.Join(home, "custom-hub-state")
 	configDir := filepath.Join(home, "config", "evener")
@@ -45,7 +87,12 @@ func TestTutorialHubTokenRotationRunbook(t *testing.T) {
 			t.Fatal(err)
 		}
 		cmd := exec.Command(binary, "hub", "--config", config, "--addr", "127.0.0.1:0", "--evener", binary)
-		cmd.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, "config"), "XDG_STATE_HOME="+filepath.Join(home, "state"), "XDG_CACHE_HOME="+filepath.Join(home, "cache"))
+		cmd.Env = append(tutorialChildEnvironment(t, home), "OLLAMA_BASE_URL="+provider.URL+"/v1")
+		for _, entry := range cmd.Env {
+			if strings.HasPrefix(entry, "OPENAI_API_KEY=") {
+				credentialLeaks++
+			}
+		}
 		cmd.Stdout, cmd.Stderr = log, log
 		if err := cmd.Start(); err != nil {
 			_ = log.Close()
@@ -75,7 +122,14 @@ func TestTutorialHubTokenRotationRunbook(t *testing.T) {
 			_ = log.Close()
 		}
 		t.Cleanup(stop)
-		return hubStack{addr: awaitHubListening(t, logPath)}, stop
+		stack := hubStack{addr: awaitHubListening(t, logPath)}
+		select {
+		case <-discovered:
+			t.Logf("hub generation %d completed owned provider discovery", generation)
+		case <-time.After(20 * time.Second):
+			t.Fatal("hub did not reach owned provider discovery")
+		}
+		return stack, stop
 	}
 	first, stop := start(1)
 	first.token = oldToken

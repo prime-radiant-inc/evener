@@ -91,7 +91,7 @@ clean:
 ##   lockfile is reused instead of reinstalled.
 ## fails-when: The publisher's tests fail, a manifest entry or link is invalid,
 ##   a published asset or tutorial file is missing, or the build fails. Evidence
-##   captured at an older revision warns rather than fails.
+##   whose relevant source bytes have changed warns rather than fails.
 docs-check:
 	@set -eu; \
 	if [ -L docs-site/node_modules ]; then \
