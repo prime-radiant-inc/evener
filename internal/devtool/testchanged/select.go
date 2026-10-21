@@ -233,9 +233,11 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 			// else in the directory is a test-only asset and stays local.
 			if embedsFile(dir, filepath.Join(g.root, filepath.FromSlash(rel))) {
 				propagating[ip] = joinReason(propagating[ip], "embedded asset "+rel)
+				rootPackageReadsFile(g, packageOnly, ip, rel)
 				continue
 			}
 			packageOnly[ip] = joinReason(packageOnly[ip], "changed file "+rel)
+			rootPackageReadsFile(g, packageOnly, ip, rel)
 			continue
 		}
 		propagating[ip] = joinReason(propagating[ip], "changed file "+rel)
@@ -313,6 +315,19 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 	})
 
 	return res
+}
+
+// rootPackageReadsFile adds the repo-root package whenever a non-Go file is
+// attributed to some other package. The root audit tests read repository files
+// by path even when those files live inside another package's directory tree
+// (test/scenarios/*.md, docs/examples/**), so attributing only to the nearest
+// package would skip them and let a broken scenario card report PASS.
+func rootPackageReadsFile(g *graph, packageOnly map[string]string, owner, rel string) {
+	rootPkg, ok := g.packageAt(g.root)
+	if !ok || rootPkg == owner {
+		return
+	}
+	packageOnly[rootPkg] = joinReason(packageOnly[rootPkg], "repository file "+rel)
 }
 
 func joinReason(prev, add string) string {

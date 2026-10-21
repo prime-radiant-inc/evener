@@ -85,11 +85,11 @@ func run(stdout, stderr io.Writer, root, base string, modules []string, race boo
 		sayf(stdout, "test-changed: skipped %s\n", p)
 	}
 	if len(res.Selected) == 0 {
-		// Only Go changes test-changed could have run count here. A change
-		// confined to a module it does not run is a legitimate skip, reported
-		// below rather than treated as a broken selection.
-		if inScope := res.GoChanged - res.OutOfScope; inScope > 0 {
-			sayf(stderr, "test-changed: FAIL: %d Go file(s) changed but no runnable package was selected; refusing to report a passing run\n", inScope)
+		// GoChanged already counts only changes test-changed could have run;
+		// out-of-scope files are counted separately in OutOfScope. Subtracting
+		// again would let an out-of-scope file cancel a real unrun change.
+		if res.GoChanged > 0 {
+			sayf(stderr, "test-changed: FAIL: %d Go file(s) changed but no runnable package was selected; refusing to report a passing run\n", res.GoChanged)
 			return 2
 		}
 		if res.OutOfScope > 0 {

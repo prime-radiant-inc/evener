@@ -135,6 +135,23 @@ func TestDeletedRepositoryFileSelectsRootPackage(t *testing.T) {
 	}
 }
 
+// The root audit tests also read files that live inside another package's
+// directory (test/scenarios/*.md), so such a file must select both that package
+// and the root package.
+func TestScenarioCardSelectsOwningAndRootPackage(t *testing.T) {
+	g := loadTestGraph(t)
+	res := selectPackages(g, []string{"test/scenarios/lazy-transcript-loading.md"}, testModules)
+
+	for _, want := range []string{
+		"primeradiant.com/evener/test/scenarios",
+		"primeradiant.com/evener",
+	} {
+		if reasonForPath(res, want) == "" {
+			t.Errorf("selected %v, want %s", selectedPaths(res), want)
+		}
+	}
+}
+
 // In go.work mode every module shares one MVS build list, so a go.mod bump in
 // any module changes what every module compiles against, not only the module
 // that owns the file. go.sum stays scoped to its own module.
