@@ -596,6 +596,19 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     this.#channel.postMessage({ namespaceKey });
   }
 
+  // The ONE emission rule every committed-but-unobserved transition settles
+  // through, called only AFTER its transaction has settled and outside every
+  // transaction. A durable transition either re-observes itself and publishes
+  // its invalidation here, or it announces itself here; no arm may publish one
+  // half of the signal/wake pair and skip the other. A wake names a reader's
+  // invalidation, the signal names storage progress the retry runtime spends.
+  #settleTransition(options: { documentKey?: string; namespaceKey?: string; signal?: boolean }): void {
+    if (this.#closed) return;
+    if (options.signal === true) this.#notifyStorageSuccess();
+    if (options.documentKey !== undefined) this.#publishDocumentWake(options.documentKey);
+    if (options.namespaceKey !== undefined) this.#publishNamespaceWake(options.namespaceKey);
+  }
+
   #onPeerWake(message: AnnotationWakeMessage): void {
     if ("documentKey" in message) this.#notifyDocument(message.documentKey);
     else this.#notifyNamespace(message.namespaceKey);
@@ -638,7 +651,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       this.#suppressedEpochs.delete(candidate.identity);
       released = true;
     }
-    if (released) this.#notifyStorageSuccess();
+    if (released) this.#settleTransition({ signal: true });
     return released;
   }
 
@@ -691,7 +704,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const prior = this.#readStates.get(documentKey);
     this.#readStates.set(documentKey, { ticket, accepted: prior?.accepted, observations: prior?.observations ?? [] });
     this.#options.onReadBoundary?.({ phase: "ticket-remembered", ticket });
-    this.#notifyStorageSuccess();
+    this.#settleTransition({ signal: true });
     return ticket;
   }
 
@@ -1046,7 +1059,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     });
     // Both the changed-read fence and the retained-expiry retry land here after
     // the real transaction commits.
-    this.#publishDocumentWake(documentKey);
+    this.#settleTransition({ documentKey });
     return fenced;
   }
 
@@ -1214,15 +1227,13 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         // Teardown reached the save past its abort boundary. The committed row
         // is real pending work for whichever runtime retries after teardown,
         // never a dismissal: publish the commit and leave the row pending.
-        this.#notifyStorageSuccess();
-        this.#publishDocumentWake(documentKey);
+        this.#settleTransition({ signal: true, documentKey });
       }
       throw new SaveCancelledError();
     }
-    this.#notifyStorageSuccess();
     // A newly persisted operation and a replay that confirms an existing one
     // both name a committed state readers may not have observed.
-    this.#publishDocumentWake(documentKey);
+    this.#settleTransition({ signal: true, documentKey });
     return receipt;
   }
 
@@ -1429,7 +1440,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // replacement. Release it so a long-lived adapter does not retain one
       // inert entry per proven source change.
       this.#suppressedEpochs.delete(epochIdentityOf(documentKey, receipt.namespaceIncarnation, receipt.expiredEpoch));
-      this.#publishDocumentWake(documentKey);
+      this.#settleTransition({ documentKey });
     }
   }
 
@@ -1481,10 +1492,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     // the transaction settles, outside it, exactly as every other committed
     // transition does. A no-op over an absent or already-terminal row changed
     // nothing and emits nothing.
-    if (flippedDocumentKey !== undefined) {
-      this.#notifyStorageSuccess();
-      this.#publishDocumentWake(flippedDocumentKey);
-    }
+    if (flippedDocumentKey !== undefined) this.#settleTransition({ signal: true, documentKey: flippedDocumentKey });
     return outcome;
   }
 
@@ -1770,7 +1778,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     if (result.committed) {
       confirmProvisioned();
       // Reset wakes every registration in its exact namespace, and no other.
-      this.#publishNamespaceWake(namespaceKey);
+      this.#settleTransition({ namespaceKey });
       for (const [identity, record] of [...this.#pendingExpiries]) {
         if (
           record.namespaceIncarnation === expectedIncarnation &&
@@ -1973,9 +1981,8 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       if (!this.#pendingCancelledDiscards.has(operationKey)) {
         invokeObserver(() => source.acknowledgeAnnotation(preparation, result.token, result.value));
       }
-      this.#notifyStorageSuccess();
       // The append committed; wake matching readers (and peers) after commit.
-      this.#publishDocumentWake(annotationDocumentKey(key));
+      this.#settleTransition({ signal: true, documentKey: annotationDocumentKey(key) });
       return { state: "applied", draftRevision: result.draftRevision };
     }
     // The append's own last guard can be the first place an overlapping read's
@@ -2019,7 +2026,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     if (this.#closed || cancellation?.cancelled === true) return "none";
     // The fence can land while the backing read is outstanding.
     if (this.#pendingCancelledDiscards.has(operationKey)) return "none";
-    this.#publishDocumentWake(annotationDocumentKey(retained.key));
+    this.#settleTransition({ documentKey: annotationDocumentKey(retained.key) });
     if (
       !backing ||
       backing.token.namespaceIncarnation !== retained.preparation.token.namespaceIncarnation ||
@@ -2038,7 +2045,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     // in-pass because the runtime retains a trigger arriving while its work is
     // outstanding. "none" and "unreconcilable" restore no eligibility (the
     // annotation is durably applied and listed) and stay silent.
-    this.#notifyStorageSuccess();
+    this.#settleTransition({ signal: true });
     return "reconciled";
   }
 
