@@ -163,10 +163,12 @@ test.each(["dialog", "settings"])("%s completes without navigating away from its
   if (surface === "settings") await user.click(await screen.findByRole("button", { name: "Connect provider" }));
   await user.click(await screen.findByRole("button", { name: "Anthropic" }));
   await user.type(screen.getByLabelText("API key"), "sk-guided");
-  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  await user.click(screen.getByRole("button", { name: "Save and test" }));
   await waitFor(() => expect(document.querySelector('[role="status"][data-state="success"]')).not.toBeNull());
-  const completion = document.querySelector('[role="status"][data-state="success"]')?.nextElementSibling;
-  if (!(completion instanceof HTMLButtonElement)) throw new Error("Missing completion action");
+  // The one primary action becomes the caller's completion once the check
+  // succeeds; it lives in the card's footer, not beside the status row. Each
+  // surface names its own completion.
+  const completion = screen.getByRole("button", { name: surface === "dialog" ? "Choose model" : "Done" });
   expect(onConnected).not.toHaveBeenCalled();
   await user.click(completion);
 
