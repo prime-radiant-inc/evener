@@ -7,8 +7,8 @@ import (
 	"os"
 	"testing"
 
-	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/server"
 )
 
