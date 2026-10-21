@@ -162,7 +162,7 @@ func TestRemoteRestartRejectsUnselectedSuccessor(t *testing.T) {
 				next[0].output = strings.ReplaceAll(next[0].output, "release-selected", "unrelated")
 			case "wrong config":
 				next[0].output = strings.ReplaceAll(next[0].output, "/srv/selected.toml", "/srv/other.toml")
-				next = next[:1]
+				next = append(next[:1], ownerCommand{resolveDeployCommand("/srv/selected.toml"), "/srv/selected.toml\n"})
 			}
 			commands := first
 			commands = append(commands, second...)

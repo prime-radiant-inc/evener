@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"strings"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
@@ -56,8 +57,25 @@ func (m *Manager) resolveHostEndpoint(ctx context.Context, host hostreg.Host, fa
 	if err != nil {
 		return hubendpoint.Report{}, fmt.Errorf("%w: host %q endpoint report: %w", ErrPreflightDecode, host.Name, err)
 	}
-	if (selector != "" && report.ConfigPath != selector) || (report.Running != nil && report.Running.ConfigPath != report.ConfigPath) {
-		return hubendpoint.Report{}, fmt.Errorf("%w: host %q endpoint config does not match selected config", ErrPreflightDecode, host.Name)
+	// New reports canonicalize ConfigPath, while old reports and running records
+	// can retain invocation spelling. Only absolute paths can be independently
+	// compared here. Relative owner paths require checkOwnerConfig's owner cwd
+	// and environment, not the SSH login directory or the controller's cwd.
+	paths := []string{selector}
+	if report.Running != nil {
+		paths = append(paths, report.Running.ConfigPath)
+	}
+	for _, p := range paths {
+		if !path.IsAbs(p) || p == report.ConfigPath {
+			continue
+		}
+		resolved, err := m.resolveRemotePath(ctx, host, p)
+		if ctx.Err() != nil {
+			return hubendpoint.Report{}, ctx.Err()
+		}
+		if err != nil || resolved != report.ConfigPath {
+			return hubendpoint.Report{}, fmt.Errorf("%w: host %q endpoint config does not match selected config", ErrPreflightDecode, host.Name)
+		}
 	}
 	return report, nil
 }

@@ -313,7 +313,15 @@ func (m *Manager) checkOwnerConfig(ctx context.Context, host hostreg.Host, argv 
 	args := []string{argv[0], "hub", "endpoint", "--json"}
 	if config, supplied := ownerConfigFlag(argv); supplied {
 		if path.IsAbs(config) && config != selected.ConfigPath {
-			return fmt.Errorf("%w: process config disagrees with selection", errOwnerSelectionMismatch)
+			// Retain the argv sanity check even if the process resolver reports
+			// the selection. Compare actual files, not absolute path spellings.
+			out, err := m.ownerRead(ctx, host, ownerContext(cwd, env)+resolveDeployCommand(config))
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(string(out)) != selected.ConfigPath {
+				return fmt.Errorf("%w: process config disagrees with selection", errOwnerSelectionMismatch)
+			}
 		}
 		args = append(args, "--config", config)
 	} else if hasConfigFlag(argv) {

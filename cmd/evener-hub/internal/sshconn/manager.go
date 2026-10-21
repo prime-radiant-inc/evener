@@ -1945,7 +1945,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		// mutating SSH command"). Both arms refuse when their recorder is
 		// unwired, so there is no restart leg that runs unrecorded by omission.
 		var restartErr error
-		if pending := m.pendingRestart(host.Name); pending.command != "" && !runningKnown {
+		if pending := m.pendingRestart(host.Name); pending.selected != nil && !runningKnown {
 			// A previous restart killed the old hub and left no listener. There is
 			// no hub to kill now, so complete the recorded restart instead.
 			restartErr = m.recoverSelectedRestart(restartCtx, host, facts, pending)
@@ -2016,7 +2016,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	// attached-only) and only when this attempt would otherwise attach to an
 	// acceptable build: the terminal refusals above have already fired for a host
 	// that cannot be upgraded, so there is nothing worth starting.
-	if explicit && !runningKnown && !restart && m.pendingRestart(host.Name).command == "" {
+	if explicit && !runningKnown && !restart && m.pendingRestart(host.Name).selected == nil {
 		m.stateEvent(host.Name, StateRestarting)
 		startCtx, cancelStart := context.WithTimeout(ctx, m.opts.deployLimit())
 		bootErr := m.bootstrapHub(startCtx, host, facts, expected)
@@ -2123,7 +2123,7 @@ func (m *Manager) ensureDecision(name string, facts Preflight, expected, running
 	// covers. A deploy restarts only a hub that is present; with nothing present
 	// there is nothing to replace.
 	runningStale := runningKnown && runningVersion != expected && !versionDiffers
-	restart = (deploy && hubPresent) || (hubPresent && !runningKnown) || runningStale || m.pendingRestart(name).command != ""
+	restart = (deploy && hubPresent) || (hubPresent && !runningKnown) || runningStale || m.pendingRestart(name).selected != nil
 	return deploy, restart
 }
 

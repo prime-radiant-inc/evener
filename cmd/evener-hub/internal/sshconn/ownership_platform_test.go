@@ -148,6 +148,7 @@ func TestRemoteOwnerDarwinRejectsMismatchedSelectedDefinition(t *testing.T) {
 	host, _ := ownerCommands(t)
 	commands := darwinOwnerCommands(t, false, false)[:5]
 	commands[2].output = strings.ReplaceAll(commands[2].output, "/srv/selected.toml", "/srv/other.toml")
+	commands = append(commands, ownerCommand{ownerContext("/srv", []string{"HOME=/home/dev"}) + resolveDeployCommand("/srv/other.toml"), "/srv/other.toml\n"})
 	fr, index := ownerRunner(t, commands)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{})
 	facts := selectedRestartFacts()

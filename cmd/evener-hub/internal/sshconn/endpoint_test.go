@@ -108,6 +108,45 @@ func TestEndpointResolverRejectsInvalidReport(t *testing.T) {
 	}
 }
 
+func TestEndpointResolverConfigSpellingCompatibility(t *testing.T) {
+	for _, tc := range []struct{ name, selector, report, record string }{
+		{"canonical-report-relative-selector-and-record", "hub.toml", "/srv/hub.toml", "hub.toml"},
+		{"old-relative-report", "hub.toml", "hub.toml", "hub.toml"},
+		{"old-absolute-report", "/srv/hub.toml", "/srv/hub.toml", "/srv/hub.toml"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			report := remoteEndpointFixture(tc.report, "127.0.0.1:19371", "boot-one")
+			report.Running.ConfigPath = tc.record
+			host := hostreg.Host{Name: "selected", SSH: "remote", ConfigPath: tc.selector}
+			fr := &fakeRunner{runFn: func(context.Context, []string, io.Reader) ([]byte, error) { return json.Marshal(report) }}
+			m := newTestManager(t, testRegistry(t, host), fr, Options{})
+			got, err := m.resolveHostEndpoint(t.Context(), host, selectedRestartFacts())
+			if err != nil || got.ConfigPath != tc.report || len(fr.recordedRuns()) != 1 {
+				t.Fatalf("compatible report rejected or context-free lookup attempted: report=%+v err=%v", got, err)
+			}
+		})
+	}
+}
+
+func TestEndpointResolverConfigLookupCancellation(t *testing.T) {
+	host := hostreg.Host{Name: "selected", SSH: "remote", ConfigPath: "/srv/alias.toml"}
+	report := remoteEndpointFixture("/srv/hub.toml", "127.0.0.1:19371", "boot-one")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		if strings.Join(argv[12:], " ") == resolveDeployCommand(host.ConfigPath) {
+			cancel()
+			return []byte("/srv/hub.toml\n"), nil
+		}
+		return json.Marshal(report)
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+	_, err := m.resolveHostEndpoint(ctx, host, selectedRestartFacts())
+	if !errors.Is(err, context.Canceled) || len(fr.recordedRuns()) != 2 {
+		t.Fatalf("cancellation lost during config lookup: commands=%d err=%v", len(fr.recordedRuns()), err)
+	}
+}
+
 func TestEndpointResolverCapabilityAndNoLoopback(t *testing.T) {
 	host := hostreg.Host{Name: "selected", SSH: "remote"}
 	report := remoteEndpointFixture("/srv/hub.toml", "192.0.2.1:19371", "boot-one")

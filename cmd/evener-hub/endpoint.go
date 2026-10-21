@@ -75,10 +75,23 @@ func resolveHubEndpoint(ctx context.Context, opts endpointOptions, deps mainDeps
 	if err != nil {
 		return hubendpoint.Report{}, err
 	}
+	configPath := opts.configPath
+	if endpoint.ConfigExists {
+		// Resolve before Abs: cleaning link/.. first would select a different
+		// file from the one the kernel opened in this process's working directory.
+		configPath, err = filepath.EvalSymlinks(configPath)
+		if err != nil {
+			return hubendpoint.Report{}, err
+		}
+	}
+	configPath, err = filepath.Abs(configPath)
+	if err != nil {
+		return hubendpoint.Report{}, err
+	}
 	if err := hostlock.CheckStorage(cfg.HubStateRoot, deps.inspectFilesystem); err != nil {
 		return hubendpoint.Report{}, err
 	}
-	report := hubendpoint.Report{SchemaVersion: hubendpoint.SchemaVersion, ConfigPath: opts.configPath, ConfigExists: endpoint.ConfigExists, HubStateRoot: cfg.HubStateRoot, ConfiguredListenAddr: endpoint.ListenAddr.String(), ListenSource: endpoint.ListenSource, State: "stopped"}
+	report := hubendpoint.Report{SchemaVersion: hubendpoint.SchemaVersion, ConfigPath: configPath, ConfigExists: endpoint.ConfigExists, HubStateRoot: cfg.HubStateRoot, ConfiguredListenAddr: endpoint.ListenAddr.String(), ListenSource: endpoint.ListenSource, State: "stopped"}
 	if endpoint.PublicURL != nil {
 		report.PublicURL = endpoint.PublicURL.String()
 	}

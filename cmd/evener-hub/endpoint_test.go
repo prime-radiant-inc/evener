@@ -67,6 +67,50 @@ func endpointCommand(t *testing.T, path string) hubendpoint.Report {
 	}
 	return report
 }
+
+func TestEndpointConfigFileIdentity(t *testing.T) {
+	root, state := endpointTestRoot(t)
+	config := endpointTestConfig(t, root, state, "127.0.0.1:0")
+	if err := os.MkdirAll(filepath.Join(root, "physical", "inner"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	other := endpointTestConfig(t, filepath.Join(root, "physical"), state, "127.0.0.1:0")
+	if err := os.Symlink(config, filepath.Join(root, "alias.toml")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "physical", "inner"), filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root) // Relative selections belong to the hub process, not its controller.
+	for _, tc := range []struct{ name, selected, want string }{
+		{"absolute", config, config},
+		{"relative", "hub.toml", config},
+		{"symlink", "alias.toml", config},
+		{"dotdot", "physical/../hub.toml", config},
+		{"symlink-dotdot-equivalent", "link/../../hub.toml", config},
+		{"symlink-dotdot-different", "link/../hub.toml", other},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			report := endpointCommand(t, tc.selected)
+			want, err := filepath.EvalSymlinks(tc.want)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.ConfigPath != want || !filepath.IsAbs(report.ConfigPath) || report.SchemaVersion != 1 {
+				t.Fatalf("report config=%q schema=%d, want config=%q schema=1", report.ConfigPath, report.SchemaVersion, want)
+			}
+			selectedFile, err := os.Stat(tc.selected)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reportedFile, err := os.Stat(report.ConfigPath)
+			if err != nil || !os.SameFile(selectedFile, reportedFile) {
+				t.Fatalf("report changed the kernel-selected file: %v", err)
+			}
+		})
+	}
+}
+
 func TestEndpointReadOnly(t *testing.T) {
 	root, state := endpointTestRoot(t)
 	path := endpointTestConfig(t, root, state, "127.0.0.1:0")
