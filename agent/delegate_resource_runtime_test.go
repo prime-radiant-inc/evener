@@ -132,6 +132,32 @@ func TestRestoredDelegatePostStartPopulationEmitsTaskCorrection(t *testing.T) {
 	if update.TaskStoreOwnerSessionID != fixture.childID {
 		t.Fatalf("restored task correction owner = %q, want child %q", update.TaskStoreOwnerSessionID, fixture.childID)
 	}
+
+	// A restored child's first turn must carry the same plan a fresh spawn
+	// carries; seeding alone would leave it on the first-step-only behavior.
+	sub.sess.mu.Lock()
+	var queued []string
+	for _, message := range sub.sess.steeringQueue {
+		queued = append(queued, message.Text)
+	}
+	sub.sess.mu.Unlock()
+	var plan, current string
+	for _, text := range queued {
+		if strings.Contains(text, "Task list:") {
+			plan = text
+		}
+		if strings.Contains(text, "<CURRENT-TASK") {
+			current = text
+		}
+	}
+	// The plan names every step; the current step's prompt rides the
+	// current-task message instead, so the plan does not repeat it.
+	if !strings.Contains(plan, "Restored committed workflow") {
+		t.Fatalf("restored child plan steering = %q, want the whole seeded plan", plan)
+	}
+	if !strings.Contains(current, "Restored committed workflow") || !strings.Contains(current, "Resume the committed workflow.") {
+		t.Fatalf("restored child current-task steering = %q, want the first step and its prompt", current)
+	}
 }
 
 func TestDelegateResourceRuntime_RunningSendDoesNotStartSuccessor(t *testing.T) {

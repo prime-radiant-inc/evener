@@ -41,7 +41,7 @@ func formatCurrentTaskSteering(task taskpkg.Task, canUseTaskList bool) string {
 // wrapped as a SYSTEM-REMINDER so the model treats it as steering rather than
 // conversational content.
 func taskReminderFull(store *taskpkg.TaskStore) string {
-	return renderTaskListReminder(store, false)
+	return renderTaskListReminder(store.View(), false, 0)
 }
 
 // taskReminderFullWithPrompts is the plan a delegate receives at spawn: every
@@ -50,19 +50,21 @@ func taskReminderFull(store *taskpkg.TaskStore) string {
 // first step must build, so a step that sees only its own prompt cannot plan
 // for the rest.
 //
+// skipPromptID is the step whose prompt the current-task reminder delivers in
+// the next message, so the plan does not repeat it.
+//
 // The comparison behind this is recorded in the task-list startup experiment:
 // across 30 runs per arm on one model, delegates given the full plan completed
 // a cross-step fixture 30/30 times, against 22/30 when only their first step
 // was announced, at 12% fewer tokens.
-func taskReminderFullWithPrompts(store *taskpkg.TaskStore) string {
-	return renderTaskListReminder(store, true)
+func taskReminderFullWithPrompts(tasks []taskpkg.Task, skipPromptID int) string {
+	return renderTaskListReminder(tasks, true, skipPromptID)
 }
 
-// renderTaskListReminder renders a store's tasks as steering. withPrompts adds
+// renderTaskListReminder renders tasks as steering. withPrompts adds
 // each task's prompt under its line, which the spawn-time plan needs and the
 // post-compaction reminder does not.
-func renderTaskListReminder(store *taskpkg.TaskStore, withPrompts bool) string {
-	tasks := store.View()
+func renderTaskListReminder(tasks []taskpkg.Task, withPrompts bool, skipPromptID int) string {
 	if len(tasks) == 0 {
 		return ""
 	}
@@ -78,7 +80,7 @@ func renderTaskListReminder(store *taskpkg.TaskStore, withPrompts bool) string {
 			fmt.Fprintf(b, " (depends_on: %v)", t.DependsOn)
 		}
 		b.WriteString("\n")
-		if withPrompts {
+		if withPrompts && t.ID != skipPromptID {
 			if prompt := strings.TrimSpace(t.Prompt); prompt != "" {
 				fmt.Fprintf(b, "    prompt: %s\n", prompt)
 			}
@@ -99,6 +101,33 @@ func taskReminderForInactivity(store *taskpkg.TaskStore, canUseTaskList bool) st
 		return ""
 	}
 	return formatCurrentTaskSteering(current, canUseTaskList)
+}
+
+// steerDelegatePlan announces a delegate's seeded plan, then its current step.
+// A delegate works the list in order, and a later step's prompt often decides
+// what the first one must build; announcing only the first step makes the rest
+// discoverable solely by asking for them. The current step's prompt is left to
+// the current-task reminder rather than repeated in the plan.
+//
+// Spawn and cold restore both call this, so a resumed delegate's first turn
+// matches a fresh spawn's.
+func steerDelegatePlan(sess *Session, store *taskpkg.TaskStore) error {
+	// One snapshot serves both messages; each store read clones every task.
+	tasks := store.View()
+	current := taskpkg.Summarize(tasks).Current
+	skipPromptID := 0
+	if current != nil {
+		skipPromptID = current.ID
+	}
+	if plan := taskReminderFullWithPrompts(tasks, skipPromptID); plan != "" {
+		if err := sess.SteerKind(plan, events.SteeringKindTaskList); err != nil {
+			return err
+		}
+	}
+	if current != nil {
+		return sess.SteerKind(formatCurrentTaskSteering(*current, sess.canInstructTool("task_list")), events.SteeringKindCurrentTask)
+	}
+	return nil
 }
 
 // taskReminderAllDone signals that the agent has completed all tasks on its

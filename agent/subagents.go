@@ -1205,22 +1205,9 @@ func (s *Session) prepareSubagentRunFromSelection(
 			// failure is observable instead of silently swallowed.
 			s.emit(events.EventWarning, warningDataFromError("failed to populate subagent tasks from templates", err))
 		}
-		// Announce the whole plan before the first step. A delegate works the
-		// list in order, and a later step's prompt often decides what the first
-		// one must build; announcing only the first step makes the rest
-		// discoverable solely by asking for them.
-		if plan := taskReminderFullWithPrompts(subStore); plan != "" {
-			if err := subSess.SteerKind(plan, events.SteeringKindTaskList); err != nil {
-				disposeUnadopted()
-				return nil, err
-			}
-		}
-		// Then the first task's prompt, as the current step.
-		if current, ok := subStore.CurrentInProgress(); ok {
-			if err := subSess.SteerKind(formatCurrentTaskSteering(current, subSess.canInstructTool("task_list")), events.SteeringKindCurrentTask); err != nil {
-				disposeUnadopted()
-				return nil, err
-			}
+		if err := steerDelegatePlan(subSess, subStore); err != nil {
+			disposeUnadopted()
+			return nil, err
 		}
 	}
 

@@ -2860,6 +2860,13 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			child.discardRestoredCandidate()
 			return nil, false, fmt.Errorf("restore committed delegate tasks: %w", err)
 		}
+		// A restored delegate's first turn must match a fresh spawn's: announce
+		// the whole plan, then the current step. Seeding alone would leave a
+		// resumed child back on the first-step-only behavior.
+		if err := steerDelegatePlan(child, childStore); err != nil {
+			child.discardRestoredCandidate()
+			return nil, false, err
+		}
 	}
 	now := s.sclock().Now()
 	stableDescriptor := cloneDelegateStartDescriptor(descriptor)
