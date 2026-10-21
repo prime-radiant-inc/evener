@@ -1,0 +1,18 @@
+{
+  "name": "toolrow-failure-badge-corner",
+  "description": "A failed tool call marks its kind icon with a danger cross pinned to the icon glyph's bottom-right corner (Jesse, 2026-10-20) rather than opening a second inline column of ink beside the icon. The badge is a sibling of the seat, not a child: the seat recedes to 50% opacity while the cross must read at full strength, so it must sit outside the seat's box and still hang off the glyph's corner (the seat's avatar-column box is wider and taller than the 14px icon). These are the things jsdom cannot check: that the cross is positioned rather than contributing a flex column, and that the DRAWN cross - not the badge wrapper, whose box is as tall as the seat - meets the icon glyph's bottom-right corner. Each fixture is its own document at its own width, so the desktop gutter-pulled leg and the phone leg each see the media context they claim.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "styles/railseat.module.css",
+    "panes/session/transcript/toolcallitem.module.css",
+    "widgets/failureglyph/failureglyph.module.css"
+  ],
+  "viewport": { "width": 1200, "height": 900, "deviceScaleFactor": 1, "mobile": false },
+  "mutation": {
+    "declaration": "toolcallitem.module.css: .failureBadge { position: absolute; ... } - the position: absolute declaration reverted to static (so the badge becomes a flex column beside the icon again)",
+    "verified": "2026-10-20",
+    "expect": "fail",
+    "note": "Reverting position: absolute to static fails at both widths on every axis: the badge reports static, the cross lands 17px right of and 5.1px above the icon's corner and does not overlap the icon glyph at all, the failed row's rationale starts at 56.0 instead of the clean row's 46.0, and the rationale no longer sits on the row's content edge. Restored before the passing run. Two earlier defects in this case are worth recording: the first version asserted only on the badge WRAPPER's box and passed while the cross was drawn at mid-height beside the icon (roborev), and its 420px leg rendered inside one 1200px document, so it measured the desktop cascade at 'phone' width (adversarial review). The assertions now measure the cross svg and the icon svg, and each width is a separate iframe document whose realized viewport the case checks."
+  }
+}

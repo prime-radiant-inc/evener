@@ -407,17 +407,85 @@ test("statedIntentOf is the one absent-vs-present rule both surfaces share", () 
   expect(statedIntentOf({})).toBeUndefined();
 });
 
-// --- A2: failure is a glyph on the left; success costs no space -----------
+// --- A2: failure badges the kind icon; success costs no space --------------
 
-// The chevron is row CHROME and trails the row (see the grammar), so on a
-// failed row the glyph itself is the first element. What A2 actually promises
-// is that failure leads the CONTENT: nothing a reader would call part of the
-// call itself comes before it.
-test("a failed call leads with the failure glyph", () => {
-  registerToolRenderer({ match: "trg_failed", summary: () => "Ran false" });
+// A failed call marks its kind icon's bottom-right corner (Jesse, 2026-10-20):
+// the cross rides the icon as a badge, so it never opens a second column of
+// failure ink beside the icon the reader is scanning. The badge is a SIBLING
+// of the seat, not a child: the seat recedes to half opacity, and a nested
+// cross would recede with it, when the failure tone is the one signal that
+// must read at full strength.
+test("a failed call badges the failure glyph on the kind icon's bottom-right corner", () => {
+  registerToolRenderer({ match: "trg_failed", summary: () => "Ran false", icon: "terminal" });
   render(<ToolCallItem item={item({ toolName: "trg_failed", error: "boom" })} turn={turn} live={false} />);
-  const row = screen.getByTestId("tool-row");
-  expect(row.firstElementChild).toBe(screen.getByTestId("failure-glyph"));
+  const slot = screen.getByTestId("tool-row-icon-slot");
+  const seat = screen.getByTestId("tool-row-icon");
+  const glyph = screen.getByTestId("failure-glyph");
+  // The slot leads the row, the seat is inside it, and the glyph rides the
+  // slot beside (never inside) the aria-hidden seat.
+  expect(screen.getByTestId("tool-row").firstElementChild).toBe(slot);
+  expect(slot.contains(seat)).toBe(true);
+  expect(slot.contains(glyph)).toBe(true);
+  expect(seat.contains(glyph)).toBe(false);
+  // The badge is still announced: the failure mark is often the row's only
+  // non-visual failure signal, so it must not land under aria-hidden.
+  expect(screen.getByRole("img", { name: "Failed" })).toBe(glyph);
+});
+
+test("the failure badge is an absolute overlay anchored to the icon glyph's box, not the seat's corner", () => {
+  const css = rowCss();
+  const badgeRule = css.match(/\.failureBadge\s*\{([^}]*)\}/)?.[1] ?? "";
+  expect(badgeRule).toContain("position: absolute");
+  expect(badgeRule).toContain("inset-block-end");
+  expect(badgeRule).toContain("inset-inline-end");
+  // Anchoring to the SEAT's box instead drew the cross beside the icon at
+  // mid-height (roborev): the seat is an avatar-column square with the 14px
+  // icon centred inside it. The insets therefore subtract the icon's own size,
+  // read from the slot's --tool-row-icon-size custom property.
+  expect(badgeRule).toContain("var(--tool-row-icon-size)");
+  // The ink must land on the corner by arithmetic, without this stylesheet
+  // reaching into FailureGlyph's own DOM: the widget draws a 10px cross inside
+  // its 1lh line box, so the badge takes that box (width only) and shifts by
+  // half the icon/cross difference. Both the seat and the badge are 1lh tall,
+  // so the line-height cancels and the drawn cross meets the icon's edge.
+  expect(badgeRule).toMatch(/width:\s*10px/);
+  expect(badgeRule).not.toMatch(/height:\s*\d/);
+  expect(badgeRule).toMatch(/inset-block-end:\s*calc\(\(10px - var\(--tool-row-icon-size\)\) \/ 2\)/);
+  expect(css).not.toMatch(/\.failureBadge > \[role="img"\]/);
+  // The slot is the badge's positioning context and carries the icon size the
+  // insets read, next to the gutter pull it composes.
+  const slotRule = css.match(/\.rowIconSlot\s*\{([^}]*)\}/)?.[1] ?? "";
+  expect(slotRule).toContain("position: relative");
+  expect(slotRule).toContain("--tool-row-icon-size:");
+});
+
+test("ToolRow owns the icon size: the widget gets it as a prop and the CSS carries the same number", () => {
+  // The badge's geometry is computed from the icon's box, so the number must be
+  // one ToolRow-owned value: the component passes it to ToolIcon (whose own
+  // default is then irrelevant) and the stylesheet reads its counterpart. Pin
+  // both spellings to ROW_ICON_SIZE, so a resize cannot leave the cross
+  // floating off the corner.
+  const rowSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "ToolRow.tsx"), "utf8");
+  const rowIconSize = rowSource.match(/const ROW_ICON_SIZE = (\d+);/)?.[1];
+  const slotRule = rowCss().match(/\.rowIconSlot\s*\{([^}]*)\}/)?.[1] ?? "";
+  expect(rowIconSize).toBeDefined();
+  expect(slotRule).toContain(`--tool-row-icon-size: ${rowIconSize}px`);
+  // And the rendered glyph is actually that size, rather than silently
+  // relying on ToolIcon's own default coinciding with it.
+  registerToolRenderer({ match: "trg_icon_size", summary: () => "Ran ls", icon: "terminal" });
+  render(<ToolCallItem item={item({ toolName: "trg_icon_size" })} turn={turn} live={false} />);
+  const svg = screen.getByTestId("tool-row-icon").querySelector("svg");
+  expect(svg?.getAttribute("width")).toBe(rowIconSize);
+  expect(svg?.getAttribute("height")).toBe(rowIconSize);
+});
+
+// A descriptor without a kind icon has no corner to badge: the cross keeps the
+// old inline seat so the failure is never unmarked.
+test("a failed call with no kind icon keeps the cross inline - a failure is never unmarked", () => {
+  registerToolRenderer({ match: "trg_failed_no_icon", summary: () => "Ran false" });
+  render(<ToolCallItem item={item({ toolName: "trg_failed_no_icon", error: "boom" })} turn={turn} live={false} />);
+  expect(screen.queryByTestId("tool-row-icon-slot")).toBe(null);
+  expect(screen.getByTestId("tool-row").firstElementChild).toBe(screen.getByTestId("failure-glyph"));
 });
 
 // The other half of A2, and the case where the row has no leading chrome at
@@ -567,7 +635,9 @@ test("a descriptor with an icon puts it in the RAIL as the row's first flex item
   const intent = screen.getByTestId("tool-row-intent");
   const summary = screen.getByTestId("tool-row-summary");
   const icon = screen.getByTestId("tool-row-icon");
-  expect(row.firstElementChild).toBe(icon);
+  const slot = screen.getByTestId("tool-row-icon-slot");
+  expect(row.firstElementChild).toBe(slot);
+  expect(slot.contains(icon)).toBe(true);
   expect(intent.contains(icon)).toBe(false);
   expect(summary.contains(icon)).toBe(false);
 });
@@ -578,7 +648,8 @@ test("a summary-less row (a delegate's intent-only row) also rails the icon besi
   );
   const row = screen.getByTestId("tool-row");
   const icon = screen.getByTestId("tool-row-icon");
-  expect(row.firstElementChild).toBe(icon);
+  expect(row.firstElementChild).toBe(screen.getByTestId("tool-row-icon-slot"));
+  expect(screen.getByTestId("tool-row-icon-slot").contains(icon)).toBe(true);
   expect(screen.getByTestId("tool-row-intent").contains(icon)).toBe(false);
 });
 
@@ -605,13 +676,18 @@ test("the rail icon seats via the shared rail-seat module - composed, not restat
   expect(iconRule).not.toBe(null);
   // The avatar-column slot geometry (50% opacity, --speaker-avatar-size wide,
   // margin-right net of the row's own column-gap so the rationale lands on the
-  // content edge) and the breakpoint-gated gutter pull now live in the shared
-  // icon-rail seat (styles/railseat.module.css), pinned there by
-  // railseat.contract.test.ts. This row composes both and restates no
-  // geometry of its own, so its seat cannot drift from the notification
-  // head's status glyph or the Loader's rail row.
+  // content edge) lives in the shared icon-rail seat
+  // (styles/railseat.module.css), pinned there by
+  // railseat.contract.test.ts. This row composes it and restates no geometry
+  // of its own, so its seat cannot drift from the notification head's status
+  // glyph or the Loader's rail row.
   expect(iconRule?.[1]).toContain('composes: seat from "../../../styles/railseat.module.css"');
-  expect(iconRule?.[1]).toContain('composes: gutterPull from "../../../styles/railseat.module.css"');
+  // The breakpoint-gated gutter pull rides the SLOT (the row's flex item, and
+  // the failure badge's positioning context), so the slot and the seat
+  // together still place the icon: one pull, one owner.
+  const slotRule = css.match(/\.rowIconSlot\s*\{([^}]*)\}/);
+  expect(slotRule).not.toBe(null);
+  expect(slotRule?.[1]).toContain('composes: gutterPull from "../../../styles/railseat.module.css"');
   // The retired inline grammar (the icon inside the summary's text flow) is
   // gone entirely.
   expect(css).not.toContain(".summaryIcon");
