@@ -157,6 +157,8 @@ type deploySeams struct {
 	clientAttached func(name string) (*appwire.Client, bool)
 	deploy         func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight) (string, sshconn.Preflight, error)
 	restart        func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight) error
+	// restartVersion names the scripted restart's target; empty uses facts.Version.
+	restartVersion string
 	remnant        func(name string) (string, bool)
 	// attachUnderGate is the operation-owned attach/reattach seam (§6 seam (d)).
 	// Nil takes a handoff-only stub: no manager owns channels in these tests, so
@@ -239,8 +241,16 @@ func deployTestHub(t *testing.T, configPath string, entries []hostreg.Host, seam
 		HubBootID:                  "test-boot",
 	}
 	m := newHubHostManager(nil, nil, cfg, configPath, registry, func(string, ...any) {})
-	m.cfg.deployHost = deploy
-	m.cfg.restartHost = restart
+	m.cfg.deployHost = func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight, _ bool, _ func() error) (string, sshconn.Preflight, error) {
+		return deploy(ctx, host, facts)
+	}
+	m.cfg.restartHost = func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight, _ func() error) (string, error) {
+		target := seams.restartVersion
+		if target == "" {
+			target = facts.Version
+		}
+		return target, restart(ctx, host, facts)
+	}
 	m.cfg.attachedFacts = attached
 	m.cfg.remnantFence = seams.remnant
 	m.cfg.attachUnderGate = attachUnderGate
@@ -691,7 +701,8 @@ func TestHostRestartRunsTheOperationAndCompletes(t *testing.T) {
 	before := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
 	after := before.Add(time.Minute)
 	m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
-		probe: restartProbeScript(t, "v1.2.3", "v1.2.3", before, after),
+		restartVersion: "v1.2.3",
+		probe:          restartProbeScript(t, "v1.2.3", "v1.2.3", before, after),
 	})
 	response, err := m.Restart(context.Background(), appwire.HostRestartParams{
 		Name: entry.Name, OperationID: "op-1", Generation: 2, IncarnationID: "inc-new",
@@ -723,7 +734,8 @@ func TestHostRestartIncarnationPair(t *testing.T) {
 	before := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
 	after := before.Add(time.Minute)
 	m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
-		probe: restartProbeScript(t, "v1.2.3", "v1.2.3", before, after),
+		restartVersion: "v1.2.3",
+		probe:          restartProbeScript(t, "v1.2.3", "v1.2.3", before, after),
 	})
 
 	// The retained record from before the update: pinned to the superseded pair.
@@ -965,6 +977,7 @@ func TestHostRestartUnattachedAttachFirstsUnderTheHeldGate(t *testing.T) {
 	var m *hubHostManager
 	var store *hostops.Store
 	m, store, _ = deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
+		restartVersion: "dev",
 		probe:          restartProbeScript(t, "dev", "dev", before, after),
 		clientAttached: func(string) (*appwire.Client, bool) { return &appwire.Client{}, attachedState.Load() },
 		attached:       func(string) (sshconn.Preflight, bool) { return deployTestFacts(entry), attachedState.Load() },
@@ -1038,7 +1051,8 @@ func TestHostRestartDroppedChannelAttachFirstsUnderTheHeldGate(t *testing.T) {
 	var m *hubHostManager
 	var store *hostops.Store
 	m, store, _ = deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
-		probe: restartProbeScript(t, "dev", "dev", before, after),
+		restartVersion: "dev",
+		probe:          restartProbeScript(t, "dev", "dev", before, after),
 		clientAttached: func(string) (*appwire.Client, bool) {
 			// The handler's check (the first call) sees the host attached; the
 			// drop lands before the worker's own check, which must attach first.
@@ -1103,6 +1117,7 @@ func TestHostRestartAttachFirstHandsOffWhenTheRestartFails(t *testing.T) {
 	var m *hubHostManager
 	var store *hostops.Store
 	m, store, _ = deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
+		restartVersion: "dev",
 		probe:          restartProbeScript(t, "dev", "dev", before, after),
 		clientAttached: func(string) (*appwire.Client, bool) { return &appwire.Client{}, attachedState.Load() },
 		attached:       func(string) (sshconn.Preflight, bool) { return deployTestFacts(entry), attachedState.Load() },
@@ -1168,6 +1183,7 @@ func TestHostRestartReattachRetriesATransientAttachFailure(t *testing.T) {
 	var m *hubHostManager
 	var store *hostops.Store
 	m, store, _ = deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
+		restartVersion: "dev",
 		probe:          restartProbeScript(t, "dev", "dev", before, after),
 		clientAttached: func(string) (*appwire.Client, bool) { return &appwire.Client{}, true },
 		attached:       func(string) (sshconn.Preflight, bool) { return deployTestFacts(entry), true },
@@ -1224,6 +1240,7 @@ func TestHostRestartReattachFailsFastOnATerminalAttachFailure(t *testing.T) {
 	var m *hubHostManager
 	var store *hostops.Store
 	m, store, _ = deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
+		restartVersion: "dev",
 		probe:          restartProbeScript(t, "dev", "dev", before, after),
 		clientAttached: func(string) (*appwire.Client, bool) { return &appwire.Client{}, true },
 		attached:       func(string) (sshconn.Preflight, bool) { return deployTestFacts(entry), true },
@@ -1270,6 +1287,7 @@ func TestHostRestartReattachReportsAnExhaustedRefreshWindow(t *testing.T) {
 	var m *hubHostManager
 	var store *hostops.Store
 	m, store, _ = deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
+		restartVersion: "dev",
 		probe:          restartProbeScript(t, "dev", "dev", before, after),
 		clientAttached: func(string) (*appwire.Client, bool) { return &appwire.Client{}, true },
 		attached:       func(string) (sshconn.Preflight, bool) { return deployTestFacts(entry), true },
@@ -1406,7 +1424,8 @@ func TestHostRestartRestoresTheHolderAfterANestedEnsureDeploy(t *testing.T) {
 	var m *hubHostManager
 	var store *hostops.Store
 	m, store, _ = deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
-		probe: restartProbeScript(t, "dev", "dev", before, after),
+		restartVersion: "dev",
+		probe:          restartProbeScript(t, "dev", "dev", before, after),
 		attachUnderGate: func(_ context.Context, got hostreg.Host, holder hostops.Holder, explicit bool) (func() bool, error) {
 			if explicit {
 				t.Error("the post-restart reattach ran with explicit=true; a reattach must never bootstrap a hub")
@@ -1463,7 +1482,8 @@ func TestHostRestartRestoresTheOperationHolderBeforeTheAttach(t *testing.T) {
 	var m *hubHostManager
 	var store *hostops.Store
 	m, store, _ = deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
-		probe: restartProbeScript(t, "dev", "dev", before, after),
+		restartVersion: "dev",
+		probe:          restartProbeScript(t, "dev", "dev", before, after),
 		attachUnderGate: func(_ context.Context, _ hostreg.Host, holder hostops.Holder, explicit bool) (func() bool, error) {
 			// The primitive refuses unless the gate carries the presented
 			// holder, so standing that check in here makes a lost promotion
@@ -1539,7 +1559,8 @@ func TestHostRestartKeepsThePublishedChannelsHandoffWhenTheHolderRestoreFails(t 
 	var m *hubHostManager
 	var store *hostops.Store
 	m, store, _ = deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
-		probe: restartProbeScript(t, "dev", "dev", before, after),
+		restartVersion: "dev",
+		probe:          restartProbeScript(t, "dev", "dev", before, after),
 		attachUnderGate: func(_ context.Context, _ hostreg.Host, _ hostops.Holder, explicit bool) (func() bool, error) {
 			if explicit {
 				t.Error("the post-restart reattach ran with explicit=true; a reattach must never bootstrap a hub")
@@ -1583,7 +1604,8 @@ func TestHostRestartWithoutAnAttachSeamPreservesTheNoManagerArm(t *testing.T) {
 	before := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
 	after := before.Add(time.Minute)
 	m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
-		probe: restartProbeScript(t, "dev", "dev", before, after),
+		restartVersion: "dev",
+		probe:          restartProbeScript(t, "dev", "dev", before, after),
 	})
 	m.cfg.attachUnderGate = nil // the manager-less configuration
 
@@ -1618,6 +1640,7 @@ func TestHostRestartAttachFirstProbesTheFreshlyAttachedClient(t *testing.T) {
 	var m *hubHostManager
 	var store *hostops.Store
 	m, store, _ = deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
+		restartVersion: "dev",
 		probe: func(ctx context.Context, host hostreg.Host, client *appwire.Client, epoch appwire.FencingEpoch) (hubcore.HostRuntimeProbe, error) {
 			if client == nil || client != published.Load() {
 				probeSawStaleClient.Store(true)

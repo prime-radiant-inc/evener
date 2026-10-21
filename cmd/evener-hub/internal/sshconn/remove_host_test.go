@@ -77,16 +77,12 @@ func TestRemoveHostUnknown(t *testing.T) {
 // executable, or pending restart.
 func TestRemoveHostClearsPerHostCaches(t *testing.T) {
 	m, events := detachHostFixture(t)
-	m.markDevDeployed("alpha")
 	m.setResolvedTarget("alpha", "/home/dev/.local/bin/evener")
-	m.setPendingRestart("alpha", "evener hub --addr 127.0.0.1:9180", hubIdentity{})
+	m.setPendingRestart("alpha", "evener hub --addr 127.0.0.1:9180", "dev", "", hubIdentity{}, nil)
 	if err := m.RemoveHost("alpha"); err != nil {
 		t.Fatalf("RemoveHost = %v, want nil", err)
 	}
 	waitForEvent(t, events, EventDetached)
-	if m.isDevDeployed("alpha") {
-		t.Fatal("devDeployed survived RemoveHost")
-	}
 	if m.resolvedTarget("alpha") != "" {
 		t.Fatal("resolvedTarget survived RemoveHost")
 	}
@@ -100,16 +96,12 @@ func TestRemoveHostClearsPerHostCaches(t *testing.T) {
 // entry, so it clears them too.
 func TestDetachHostClearsPerHostCaches(t *testing.T) {
 	m, events := detachHostFixture(t)
-	m.markDevDeployed("alpha")
 	m.setResolvedTarget("alpha", "/home/dev/.local/bin/evener")
-	m.setPendingRestart("alpha", "evener hub --addr 127.0.0.1:9180", hubIdentity{})
+	m.setPendingRestart("alpha", "evener hub --addr 127.0.0.1:9180", "dev", "", hubIdentity{}, nil)
 	if err := m.DetachHost("alpha"); err != nil {
 		t.Fatalf("DetachHost = %v, want nil", err)
 	}
 	waitForEvent(t, events, EventDetached)
-	if m.isDevDeployed("alpha") {
-		t.Fatal("devDeployed survived DetachHost")
-	}
 	if m.resolvedTarget("alpha") != "" {
 		t.Fatal("resolvedTarget survived DetachHost")
 	}

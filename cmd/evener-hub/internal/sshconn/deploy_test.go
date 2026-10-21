@@ -85,7 +85,7 @@ func TestDeployBuildsPushesAtomicallyAndCleansStaging(t *testing.T) {
 		},
 	})
 
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	if builtOS != "linux" || builtArch != "amd64" {
@@ -123,7 +123,7 @@ func TestDeployTargetDirectoryMissingFailsClearly(t *testing.T) {
 		BuildBinary: func(context.Context, string, string, string) error { buildCalled = true; return nil },
 	})
 
-	_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"})
+	_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil)
 	if !errors.Is(err, ErrDeploy) {
 		t.Fatalf("err = %v, want ErrDeploy", err)
 	}
@@ -202,12 +202,12 @@ func TestDeployRefusesARunTargetThatCannotServeAHub(t *testing.T) {
 					},
 				})
 
-				_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
+				_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
 				assertRunTargetRefusal(t, err, wants[target]...)
 				// The ordering is the requirement. The first refusal is already
 				// the whole answer, so a supervisor's retry re-runs it with no
 				// install, push, or write to repeat.
-				if _, again := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}); !errors.Is(again, errRunTargetUnservable) {
+				if _, again := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil); !errors.Is(again, errRunTargetUnservable) {
 					t.Fatalf("retry err = %v, want the same terminal run-target refusal", again)
 				}
 				if runs := fr.recordedRuns(); len(runs) != 0 {
@@ -228,7 +228,7 @@ func TestDeployRefusesARunTargetThatCannotServeAHub(t *testing.T) {
 
 				fr := refusingRunner(t)
 				m := newTestManager(t, testRegistry(t, host), fr, Options{})
-				_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
+				_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
 				assertRunTargetRefusal(t, err, wants[target]...)
 				if runs := fr.recordedRuns(); len(runs) != 0 {
 					t.Fatalf("the refused install reached the runner: %v", runs)
@@ -459,6 +459,7 @@ func TestEnsureInstallerFallbackDeploysPinnedRelease(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}, startFn: goodStartFn(t)}
+	requireProtocolUpgrade(t, fr)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
@@ -537,6 +538,7 @@ func TestInstallerFallbackRecordsDefaultRunTarget(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}, startFn: goodStartFn(t)}
+	requireProtocolUpgrade(t, fr)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
@@ -570,11 +572,11 @@ func TestInstallerFallbackRecordsDefaultRunTarget(t *testing.T) {
 		t.Fatal("the snapshot installer was never run")
 	}
 	starts := fr.recordedStarts()
-	if len(starts) != 1 {
-		t.Fatalf("Start calls = %d, want 1", len(starts))
+	if len(starts) != 2 {
+		t.Fatalf("Start calls = %d, want 2 (probe and final attach)", len(starts))
 	}
-	if !strings.Contains(strings.Join(starts[0], " "), "/home/dev/.local/bin/evener") {
-		t.Fatalf("attach did not use the installer's resolved run target: %v", starts[0])
+	if !strings.Contains(strings.Join(starts[1], " "), "/home/dev/.local/bin/evener") {
+		t.Fatalf("attach did not use the installer's resolved run target: %v", starts[1])
 	}
 }
 
@@ -606,7 +608,7 @@ func TestDeployTargetEmptyResolvesRemotePATH(t *testing.T) {
 		},
 	})
 
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	want := pushBinaryRemote("/home/dev/.local/bin/evener", 1)
@@ -650,7 +652,7 @@ func TestDeployQuotesRemotePaths(t *testing.T) {
 		},
 	})
 
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	if dir := path.Dir(target); !strings.Contains(testDirRemote, "test -d "+shellquote.RemoteWord(dir)) {
@@ -694,7 +696,7 @@ func TestDeployResolvesSymlinkTarget(t *testing.T) {
 		},
 	})
 
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	if !strings.Contains(pushRemote, pushBinaryRemote(realPath, 1)) {
@@ -953,7 +955,7 @@ func TestDeployBuildsFromTheConfiguredSource(t *testing.T) {
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{BuildSource: source})
 
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	got, err := os.ReadFile(marker)
@@ -1062,7 +1064,7 @@ func TestDeployDoesNotBuildFromAnUnconfiguredWorkingDirectory(t *testing.T) {
 	// The push path specifically: with no build source configured it must not
 	// build from the working-directory checkout. (deploy would take the installer
 	// fallback here.)
-	_, err := m.deployPush(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"})
+	_, err := m.deployPush(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil)
 	if err == nil {
 		t.Fatal("deploy succeeded with no configured build source")
 	}
@@ -1437,7 +1439,7 @@ func TestDeployInstallerPreservesExistingHubTarget(t *testing.T) {
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "newsha"})
 
-	target, err := m.deployInstaller(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
+	target, err := m.deployInstaller(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
 	if err != nil {
 		t.Fatalf("deployInstaller: %v", err)
 	}
@@ -1482,7 +1484,7 @@ func TestDeployPushCreatesMissingEvenerPathTarget(t *testing.T) {
 		},
 	})
 
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil); err != nil {
 		t.Fatalf("deploy: %v (a not-yet-installed evener_path must be creatable)", err)
 	}
 	if !strings.Contains(pushJoined, pushBinaryRemote("/opt/evener/bin/evener", 1)) {
@@ -1520,7 +1522,7 @@ func TestDeployPushFallsBackToDefaultTargetOnFreshHost(t *testing.T) {
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{BuildBinary: writeStageBinary})
 
-	target, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
+	target, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
 	if err != nil {
 		t.Fatalf("deploy: %v (a fresh host with no evener must be provisionable)", err)
 	}
@@ -1567,7 +1569,7 @@ func TestDeployPrefersTheOperatorArtifactOverTheBuildSource(t *testing.T) {
 		BuildSource: t.TempDir(),
 	})
 
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	if string(pushed) != "artifact-bytes" {
@@ -1608,14 +1610,9 @@ func TestDevControllerWithoutADeployPathAttaches(t *testing.T) {
 	}
 }
 
-// TestDevControllerWithADeployPathForcesTheDeploy pins acceptance criterion 5's
-// second half: with a deploy path configured, an unstamped "dev" controller
-// deploys even when the host reports the very same "dev", because equality on a
-// version that carries no identity proves nothing about the code. It drives both
-// halves of that rule: the decision (ensureDecision's devUnverified branch) and
-// the deploy the decision produces, so a decision that stopped forcing the
-// deploy could not pass on the strength of the helper alone.
-func TestDevControllerWithADeployPathForcesTheDeploy(t *testing.T) {
+// A compatible dev build does not require deployment. An explicit deployment
+// still writes the requested unstamped artifact.
+func TestDevControllerPreservesCompatibleBuildButExplicitDeployWorks(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	facts := Preflight{
 		Host:             host.Name,
@@ -1627,11 +1624,11 @@ func TestDevControllerWithADeployPathForcesTheDeploy(t *testing.T) {
 
 	// No deploy path: there is nothing to install, so no deploy is decided.
 	none := newTestManager(t, testRegistry(t, host), &fakeRunner{}, Options{controllerVersionOverride: "dev"})
-	if none.deployRequired(host.Name, facts, "dev") {
+	if none.deployRequired(facts) {
 		t.Fatal("a dev controller with no deploy path required a deploy it cannot perform")
 	}
 
-	// With a deploy path the equal "dev" on both sides is still not a match.
+	// Having a source does not change ordinary Connect eligibility.
 	builds := 0
 	var pushed []byte
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
@@ -1657,14 +1654,14 @@ func TestDevControllerWithADeployPathForcesTheDeploy(t *testing.T) {
 			return os.WriteFile(out, []byte("dev-build"), 0o755)
 		},
 	})
-	if !m.deployRequired(host.Name, facts, "dev") {
-		t.Fatal("a dev controller with a deploy path did not force the deploy, so it would attach to a build code equality cannot verify")
+	if m.deployRequired(facts) {
+		t.Fatal("a compatible startup contract required deployment")
 	}
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	if builds != 1 {
-		t.Fatalf("cross-compiles = %d, want 1 (the forced deploy must install the controller's own build)", builds)
+		t.Fatalf("cross-compiles = %d, want 1 (the explicit deploy must install the requested build)", builds)
 	}
 	if string(pushed) != "dev-build" {
 		t.Fatalf("pushed bytes = %q, want the controller's own unstamped build", pushed)
@@ -1694,7 +1691,7 @@ func TestDirtyControllerRefusalsNameTheRemedy(t *testing.T) {
 				return nil
 			},
 		})
-		_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
+		_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
 		if !errors.Is(err, errControllerDirty) {
 			t.Fatalf("err = %v, want errControllerDirty", err)
 		}
@@ -1746,7 +1743,7 @@ func postDeployBuildRunner(t *testing.T, postDeploy string) *fakeRunner {
 		case strings.Contains(joined, "launch-check"):
 			launchCalls++
 			if launchCalls == 1 {
-				return []byte(`{"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":[]}`), nil
 			}
 			return []byte(fmt.Sprintf(`{"protocol":"evener-appwire-v7","version":%q,"launch_flags":["api-log"]}`, postDeploy)), nil
 		case strings.Contains(joined, "test -d /opt/evener/bin"):
@@ -1798,6 +1795,7 @@ func TestEnsurePostDeployBuildMismatchRefusesTerminally(t *testing.T) {
 	// bootstrap starts anything.
 	t.Run("a stopped host whose installed artifact reports another build", func(t *testing.T) {
 		fr := postDeployBuildRunner(t, "othersha")
+		requireProtocolUpgrade(t, fr)
 		m := newTestManager(t, testRegistry(t, host), fr, opts)
 		testDeployRecorder(t, m)
 		testRestartRecorder(t, m)
@@ -1830,6 +1828,7 @@ func TestEnsurePostDeployBuildMismatchRefusesTerminally(t *testing.T) {
 				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 			},
 		)
+		requireProtocolUpgrade(t, fr)
 		m := newTestManager(t, testRegistry(t, host), fr, opts)
 		testDeployRecorder(t, m)
 		testRestartRecorder(t, m)
@@ -1851,6 +1850,7 @@ func TestEnsurePostDeployBuildMismatchRefusesTerminally(t *testing.T) {
 				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 			},
 		)
+		requireProtocolUpgrade(t, fr)
 		m := newTestManager(t, testRegistry(t, host), fr, opts)
 		testDeployRecorder(t, m)
 		testRestartRecorder(t, m)
@@ -1862,8 +1862,8 @@ func TestEnsurePostDeployBuildMismatchRefusesTerminally(t *testing.T) {
 		if got := ch.Preflight().Version; got != "newsha" {
 			t.Fatalf("channel version = %q, want newsha (the deployed build)", got)
 		}
-		if starts := fr.recordedStarts(); len(starts) != 1 {
-			t.Fatalf("bridge Start calls = %d, want 1", len(starts))
+		if starts := fr.recordedStarts(); len(starts) != 2 {
+			t.Fatalf("bridge Start calls = %d, want 2 (probe and final attach)", len(starts))
 		}
 	})
 }
@@ -1885,6 +1885,7 @@ func TestDeployArtifactUnusableIsTerminal(t *testing.T) {
 			return nil, errors.New("curl: (7) Failed to connect")
 		},
 	)
+	requireProtocolUpgrade(t, fr)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
@@ -1950,6 +1951,7 @@ func TestEnsureWrongArtifactAgainstRunningHubRefusesBeforeRestart(t *testing.T) 
 			return []byte(`{"version":"othersha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		},
 	)
+	requireProtocolUpgrade(t, fr)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
@@ -2019,21 +2021,19 @@ func requireUnstampedRefusal(t *testing.T, err error) {
 	}
 }
 
-// requireNoAttach asserts no bridge process was started for the host.
+// requireNoAttach allows refused compatibility probes, but no final bridge
+// after deployment or recovery verification failed.
 func requireNoAttach(t *testing.T, fr *fakeRunner) {
 	t.Helper()
-	if starts := fr.recordedStarts(); len(starts) != 0 {
-		t.Fatalf("bridge Start calls = %d, want 0 (never attach to a build the controller did not deploy)", len(starts))
+	fr.mu.Lock()
+	defer fr.mu.Unlock()
+	if len(fr.starts) != fr.protocolRefusals {
+		t.Fatalf("bridge starts = %d, refused protocol probes = %d: attached after artifact refusal", len(fr.starts), fr.protocolRefusals)
 	}
 }
 
-// TestEnsureRestartOnlyMismatchAttachesTheServingBuild covers the restart-only
-// half of the attach rule. A pass that restarts the hub launches the build already
-// on disk, and the bridge attaches to the RUNNING process, which the wait has
-// already made prove it reports the controller's build — here "newsha" after the
-// restart, while the on-disk file re-reads as "othersha" (a binary swapped under
-// the controller, or just a host that keeps its own build). Judging that file
-// refused a host whose serving hub is exactly the build this controller asked for.
+// A recorded restart must verify the serving build. A subsequent disk change
+// is reported separately and cannot replace that running-process evidence.
 func TestEnsureRestartOnlyMismatchAttachesTheServingBuild(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr := deployRunner(t,
@@ -2062,6 +2062,7 @@ func TestEnsureRestartOnlyMismatchAttachesTheServingBuild(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 		BuildBinary:               writeStageBinary,
 	})
+	m.setPendingRestart(host.Name, "systemctl restart evener-hub.service", "newsha", "", hubIdentity{version: "oldsha"}, nil)
 	testRestartRecorder(t, m)
 
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
