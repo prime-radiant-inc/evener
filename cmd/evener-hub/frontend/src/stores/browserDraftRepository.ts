@@ -95,7 +95,9 @@ export interface BrowserDraftRepository {
   // the record in a second transaction would let a peer recovery edit commit
   // between the reads, pairing its newer record content with the row's stale
   // token, which no later persistence can validate. Null when either half is
-  // gone. The row keeps load's lazy re-token contract.
+  // gone, or when the record was retargeted to another session - a retarget
+  // preserves the id while moving the content, so the id alone does not prove
+  // the pair belongs to this key. The row keeps load's lazy re-token contract.
   readRecoveryPair(key: BrowserDraftKey, recoveryId: string): Promise<RecoveryPairCapture | null>;
   // "committed": this transfer imported what it could and recorded its markers
   // (or had nothing to inspect). "pending": the durable transfer write itself
@@ -430,7 +432,10 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         const record = await requestResult<MutationRecoveryRecord | undefined>(
           transaction.objectStore(MUTATION_RECOVERY_STORE).get(recoveryId),
         );
-        if (!record) return null;
+        // A retarget preserves the recovery id while moving the row to another
+        // session, so pairing by id alone could pair this key's token with a
+        // foreign session's text and attachments.
+        if (!record || record.targetRef !== key.sessionRef) return null;
         return { row, record };
       },
     );
@@ -739,8 +744,9 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
   // moved past, and the next persistence under that stale token refuses while
   // the composer and record diverge. No lazy re-token happens here: a rotated
   // incarnation fails the caller's lineage guard either way, so the pair is
-  // read, never written. Null when either half is gone - the caller treats
-  // that append as unreconcilable, never as empty text.
+  // read, never written. Null when either half is gone or the recovery record
+  // was retargeted to another session - the caller treats that append as
+  // unreconcilable, never as empty text.
   async readAppendBacking(preparation: ComposerPreparation): Promise<CommittedAppendBacking | null> {
     const recoveryId = preparation.backing.kind === "recovery" ? preparation.backing.recoveryId : null;
     return this.#transaction(
@@ -758,7 +764,10 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         ]);
         if (!row) return null;
         if (recoveryId === null) return { token: row.token, value: publicSessionRow(row) };
-        if (!record) return null;
+        // A retarget preserves the recovery id while moving the row to another
+        // session, so pairing by id alone could pair this key's token with a
+        // foreign session's text and attachments.
+        if (!record || record.targetRef !== preparation.key.sessionRef) return null;
         return { token: row.token, value: recoveryComposerDraft(record) };
       },
     );
