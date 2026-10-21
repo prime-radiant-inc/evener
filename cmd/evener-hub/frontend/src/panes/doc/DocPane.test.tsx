@@ -595,3 +595,31 @@ test("same-named reports in different artifact directories are different documen
     .map((document) => (document.params as DocParams).artifactTarget);
   expect(targets).toEqual(["/state/a/sessions/s1/artifacts/report.md", "/state/b/sessions/s2/artifacts/report.md"]);
 });
+
+// A completed snapshot may advertise no artifacts root at all, which is a
+// supported answer for a session this hub serves none for. A restored artifacts
+// pane must say the file is unavailable then, not wait on a skeleton for a read
+// that will never run.
+test("a restored artifacts document says unavailable when the snapshot advertises no root", async () => {
+  client.on("thread/read", (params) => ({
+    thread: thread(cwd),
+    requestGeneration: params.requestGeneration,
+  }));
+  respond("should not be read");
+  workspaceStore.getState().openPane("doc", {
+    session: ref,
+    path: "report.md",
+    root: "artifacts",
+    artifactTarget: "/state/a/sessions/s1/artifacts/report.md",
+    kind: "file",
+  });
+  const pane = workspaceStore.getState().panes.find((candidate) => candidate.type === "doc");
+  if (!pane) throw new Error("expected a document pane");
+  render(
+    <PaneVisibilityContext value={true}>
+      <DocPane params={pane.params as DocParams} paneId={pane.id} focused={false} />
+    </PaneVisibilityContext>,
+  );
+  await screen.findByText("File not available");
+  expect(requests.map((url) => url.searchParams.get("path"))).not.toContain("/state/a/sessions/s1/artifacts/report.md");
+});

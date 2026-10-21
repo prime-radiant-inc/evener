@@ -151,8 +151,9 @@ export default function DocPane({ params, paneId, focused }: PaneProps<DocParams
   const panes = useWorkspaceStore((state) => state.panes);
   const pane = panes.find((candidate) => candidate.id === paneId);
   const retained = pane && documentPaneState(pane);
-  const cwd = useThreadsStore((state) => state.threads.get(params.session)?.cwd);
-  const artifactsDir = useThreadsStore((state) => state.threads.get(params.session)?.artifactsDir);
+  const thread = useThreadsStore((state) => state.threads.get(params.session));
+  const cwd = thread?.cwd;
+  const artifactsDir = thread?.artifactsDir;
 
   useEffect(() => {
     let started = false;
@@ -192,9 +193,11 @@ export default function DocPane({ params, paneId, focused }: PaneProps<DocParams
 
   // A restored artifacts document whose recorded target the loaded snapshot
   // rejects (Clear moved the ref to another session) is unavailable for good,
-  // not still loading: the snapshot has arrived and does not contain it.
+  // not still loading: the snapshot has arrived and does not contain it. A
+  // snapshot that advertises no artifacts root at all counts the same way,
+  // which is a supported answer rather than a missing field.
   const targetRejected =
-    !retained && params.root === "artifacts" && artifactsDir !== undefined && params.artifactTarget !== undefined;
+    !retained && params.root === "artifacts" && thread !== undefined && params.artifactTarget !== undefined;
   if (targetRejected && !reference)
     return (
       <PaneScaffold title={filenameOf(params.path)} paneId={paneId} focused={focused}>
