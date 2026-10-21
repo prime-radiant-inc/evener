@@ -81,9 +81,12 @@ registry reload, AppWire and browser UI remain production code. Subtests:
   that reply only after the exchange, the endpoint check and the credential
   write or refusal have run. The browser's AppWire frame tap is passive: it
   records the frames the production client sends and receives and changes
-  neither. The checkpoint then requires no persisted OAuth record and no
-  model-list check, and the browser requires no credential-saved UI, no focus
-  change and the same draft intent. A fresh sign-in then completes and adopts
+  neither. Cancelling retires the dialog's ownership, not the already-running
+  server-side sign-in: for the unchanged destination the checkpoint requires the
+  saved record to match this scripted exchange (provider, access token and
+  identity, never printed), and does not require a model-request count. The
+  browser still requires no credential-saved UI, no focus change, the same draft
+  intent and the retired model state. A fresh sign-in then completes and adopts
   the configured default.
 - `oauth-endpoint-change`: while the poll is held, Go performs a real AppWire
   `evener/instance/edit` that re-points the instance. After the same released

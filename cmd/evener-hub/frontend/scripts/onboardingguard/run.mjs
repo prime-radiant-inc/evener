@@ -409,11 +409,12 @@ try {
         const beforeLate = await read(intent);
         assert.equal(beforeLate.saved, false, "cancel itself saved nothing");
         await checkpoint(undefined, "oauth-cancelled-intent");
-        // Now the held poll answers with a real success. A retired operation
-        // would persist the record, check models or complete the UI here.
+        // Now the held poll answers with a real success. For this unchanged
+        // cancellation destination production saves access; the UI, focus,
+        // model and draft effects must stay retired.
         await checkpoint(undefined, "oauth-release-late-success");
         // The held poll now answers. Production receives the tokens and runs
-        // its persistence/refusal before it writes this RPC reply.
+        // its save/refusal before it writes this RPC reply.
         const retiredReply = await observedResponse(retiredPoll.id, "cancelled sign-in");
         assert.equal(retiredReply?.error, undefined, JSON.stringify(retiredReply));
         assert.equal(retiredReply?.result?.state, "authorized", JSON.stringify(retiredReply));

@@ -40,7 +40,8 @@ type oauthFixture struct {
 	// Late-effect handshake for cancellation and destination change. The
 	// first poll for those flows is observed by the issuer and held until the
 	// driver reports the user's intent; it then answers with a real success so
-	// the retired operation would persist or complete if production allowed it.
+	// the retired operation runs its real save/refusal and its late UI effects
+	// have to stay retired.
 	// Settlement is NOT signalled here: the issuer answering is not production
 	// receiving the tokens. The browser observes the real device-poll RPC reply,
 	// which production writes only after DevicePoll has exchanged, verified and
@@ -294,8 +295,9 @@ func testOnboardingOAuthAt(t *testing.T, scenario string, view onboardingView) {
 	}
 	// The checkpoint is the fixture channel to the real Go owners. It
 	// asserts the pre-Start absence of sessions/generations and, at the
-	// named stage, performs a real instance edit or verifies that a
-	// cancelled/changed flow left no completion behind.
+	// named stage, performs a real instance edit or verifies what a
+	// cancelled/changed flow left behind: saved access for the unchanged
+	// cancellation destination, nothing for the changed one.
 	var stageMu sync.Mutex
 	stages := map[string]bool{}
 	checkpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -362,12 +364,19 @@ func testOnboardingOAuthAt(t *testing.T, scenario string, view onboardingView) {
 				http.Error(w, fmt.Sprintf("released late poll exchanges=%d, want the in-flight request completed once", exchanges), 500)
 				return
 			}
-			if models != 0 {
-				http.Error(w, fmt.Sprintf("cancelled flow checked models: models=%d", models), 500)
+			// Cancel retires the dialog's ownership, not an already-running
+			// server-side sign-in: for an unchanged destination the authorized
+			// operation may save access. Assert the record is this scripted
+			// exchange rather than its absence. No model-request count belongs
+			// here; a later catalog refresh is allowed and its caller is not
+			// established by a count.
+			record, err := openai.LoadAuth(hub.state, "openai-codex")
+			if err != nil {
+				http.Error(w, fmt.Sprintf("cancelled flow saved no usable OAuth record: %v", err), 500)
 				return
 			}
-			if _, err := openai.LoadAuth(hub.state, "openai-codex"); !errors.Is(err, openai.ErrAuthNotFound) {
-				http.Error(w, fmt.Sprintf("cancelled flow persisted access: %v", err), 500)
+			if record.Provider != "openai-codex" || record.AccessToken != fixture.access || record.Email != "onboarding-oauth@example.invalid" {
+				http.Error(w, "cancelled flow saved a record that does not match the scripted exchange", 500)
 				return
 			}
 			stageMu.Lock()
