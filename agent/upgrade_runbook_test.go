@@ -75,6 +75,8 @@ func TestUpgradeRunbookPreservesHistoryAndContinuesInFreshRoot(t *testing.T) {
 	// execute in the session loop and persist their results before ProcessInput returns.
 	completeTask := func(session *Session, filename string) {
 		t.Helper()
+		// TRIPWIRE: scripted loopback requests and local file writes finish in seconds.
+		// provider.Next and done drive completion; 30s only guards against a hang.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		done := make(chan error, 1)

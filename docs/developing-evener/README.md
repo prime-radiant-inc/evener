@@ -85,9 +85,9 @@ page can cite an implementation file without making it public.
 
 ## First contribution
 
-Install the Go version in `go.mod`, Node 22 or newer, npm, and Git. Start in an
-isolated checkout so builds and installs do not disturb another contributor's
-worktree. For example, from an existing clone:
+Install the Go version in `go.mod`, Node 22 or newer, npm, Git, and Python 3
+(`python3` on PATH). Start in an isolated checkout so builds and installs do not
+disturb another contributor's worktree. For example, from an existing clone:
 
 ```sh
 git worktree add -b docs/my-first-change ../evener-docs main
@@ -146,7 +146,7 @@ The tests for both scripts are in `hooks_test.go` (part of `make test`); `EVENER
 <!-- BEGIN GENERATED: make targets. Edit make/repo.mk, then run `make generate`. -->
 | Command | Summary | What it proves | Trigger | Requires | Fails when |
 | --- | --- | --- | --- | --- | --- |
-| `make docs-check` | Build and validate the public documentation site. | Every page in docs-site/publication.json parses with one H1, its local links and fragments resolve, published assets exist, committed tutorial evidence matches its manifest, and VitePress renders the site. Local links across the repository's non-archived Markdown resolve too. | Local pre-merge via make merge-approval-gate; CI's Documentation workflow runs the same check plus tutorial tours and browser checks. | Node 22, npm, the docs-site install, and Playwright Chromium (install with `npm --prefix docs-site ci`, then `(cd docs-site && npx playwright install chromium)`). docs-site/node_modules must not be a symlink to another worktree's install. A real install newer than the lockfile is reused instead of reinstalled. | The publisher's tests fail, a manifest entry or link is invalid, a published asset or tutorial file is missing, or the build fails. Evidence whose relevant source bytes have changed warns rather than fails. |
+| `make docs-check` | Build and validate the public documentation site. | Every page in docs-site/publication.json parses with one H1, its local links and fragments resolve, published assets exist, committed tutorial evidence matches its manifest, and VitePress renders the site. Local links across the repository's non-archived Markdown resolve too. | Local pre-merge via make merge-approval-gate; CI's Documentation workflow runs the same check plus tutorial tours and browser checks. | Node 22, npm, Python 3, the docs-site install, and Playwright Chromium (install with `npm --prefix docs-site ci`, then `(cd docs-site && npx playwright install chromium)`). docs-site/node_modules must not be a symlink to another worktree's install. A real install newer than the lockfile is reused instead of reinstalled. | The publisher's tests fail, a manifest entry or link is invalid, a published asset or tutorial file is missing, or the build fails. Evidence whose relevant source bytes have changed warns rather than fails. |
 
 ### Other targets
 

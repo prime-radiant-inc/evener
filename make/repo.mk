@@ -84,7 +84,7 @@ clean:
 ##   Local links across the repository's non-archived Markdown resolve too.
 ## trigger: Local pre-merge via make merge-approval-gate; CI's Documentation
 ##   workflow runs the same check plus tutorial tours and browser checks.
-## requires: Node 22, npm, the docs-site install, and Playwright Chromium
+## requires: Node 22, npm, Python 3, the docs-site install, and Playwright Chromium
 ##   (install with `npm --prefix docs-site ci`, then `(cd docs-site && npx
 ##   playwright install chromium)`). docs-site/node_modules must not be a
 ##   symlink to another worktree's install. A real install newer than the

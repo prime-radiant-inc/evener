@@ -171,7 +171,7 @@ func TestTutorialHubTokenRotationRunbook(t *testing.T) {
 	}
 	check := func(addr, token string, cookies []*http.Cookie, want int) {
 		t.Helper()
-		req, err := http.NewRequestWithContext(ctx, "GET", "http://"+addr+"/api/debug/subscriptions", nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/api/debug/subscriptions", nil)
 		if err != nil {
 			t.Fatal(err)
 		}

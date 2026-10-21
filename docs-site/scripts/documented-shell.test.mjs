@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 
@@ -11,8 +11,8 @@ const [block, continuation] = blocks;
 const fixtureParent = path.join(process.env.EVENER_SCRATCH_DIR || process.env.TMPDIR || '/tmp', 'task-1-fixtures');
 mkdirSync(fixtureParent, { recursive: true });
 
-function runDailyBlock(t, { collision, failGit = false, resume = false } = {}) {
-  const root = mkdtempSync(path.join(fixtureParent, 'daily-work-'));
+function runDailyBlock(t, { collision, failGit = false, resume = false, parent = fixtureParent } = {}) {
+  const root = realpathSync(mkdtempSync(path.join(parent, 'daily-work-')));
   const caller = path.join(root, 'caller');
   mkdirSync(caller);
   t.after(() => {
@@ -118,6 +118,26 @@ test('fresh workspace runs only inside its new directory', (t) => {
   assert.deepEqual(r.gitRoots, [{ top: r.workspace, gitDir: path.join(r.workspace, '.git') }]);
   assert.equal(r.callerCwd, r.caller);
 });
+
+for (const resume of [false, true]) {
+  test(`documented block uses physical paths from a symlinked fixture parent (resume=${resume})`, (t) => {
+    const outer = mkdtempSync(path.join(fixtureParent, 'aliased-parent-'));
+    t.after(() => rmSync(outer, { recursive: true, force: true }));
+    const physical = path.join(outer, 'physical');
+    const alias = path.join(outer, 'alias');
+    mkdirSync(physical);
+    symlinkSync(physical, alias, 'dir');
+    const r = runDailyBlock(t, { parent: alias, resume });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.callerCwd, r.caller);
+    assert.deepEqual(r.agentCalls, (resume ? ['--resume'] : ['--model', '--list-sessions']).map(firstArg => ({ cwd: r.workspace, firstArg })));
+    assert.deepEqual(r.gitRoots, resume ? [] : [{ top: r.workspace, gitDir: path.join(r.workspace, '.git') }]);
+    if (resume) assert.deepEqual(JSON.parse(r.stdout), {
+      'continued.json': { nonce: 'second', receipts: ['second'] },
+      'initial.json': { nonce: 'first', receipts: ['first'] },
+    });
+  });
+}
 
 for (const collision of ['directory', 'file', 'symlink', 'dangling']) {
   test(`colliding destinations preserve contents and do not launch (${collision})`, (t) => {
