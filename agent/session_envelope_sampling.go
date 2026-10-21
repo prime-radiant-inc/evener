@@ -57,9 +57,15 @@ import (
 // and goal stores') cannot be held across an emit at all, because those packages
 // invoke no caller-supplied callback under them. So constraining this surface
 // closes the direction that was left open.
+//
+// ContextStatus returns one shared history snapshot plus one
+// profile/measurement snapshot. The metrics and pressure are coherent with each
+// other, but the pair is not a globally atomic session instant.
 type EnvelopeSampling interface {
-	ContextPressure() float64
-	ContextMetrics() ContextMetrics
+	// ContextStatus returns the context pair from one shared history snapshot
+	// and one profile/measurement snapshot, not a globally atomic session
+	// instant.
+	ContextStatus() (ContextMetrics, float64)
 	DetailedStatus() DetailedStatus
 	ClientMutationProjection() (appwire.QueueState, []appwire.PendingMutation)
 	TasksWithError() ([]task.Task, error)

@@ -2368,13 +2368,9 @@ type liveThreadEnvelopeSource struct {
 	session func() agent.EnvelopeSampling
 }
 
-func (l liveThreadEnvelopeSource) ContextPressure() float64 {
-	return l.session().ContextPressure()
-}
-
-func (l liveThreadEnvelopeSource) ContextMetrics() server.ContextMetrics {
-	metrics := l.session().ContextMetrics()
-	return server.ContextMetrics{Used: metrics.Used, Window: metrics.Window, Remaining: metrics.Remaining, Assumed: metrics.Assumed}
+func (l liveThreadEnvelopeSource) ContextStatus() (server.ContextMetrics, float64) {
+	metrics, pressure := l.session().ContextStatus()
+	return server.ContextMetrics{Used: metrics.Used, Window: metrics.Window, Remaining: metrics.Remaining, Assumed: metrics.Assumed}, pressure
 }
 
 func (l liveThreadEnvelopeSource) DetailedStatus() server.DetailedStatus {
