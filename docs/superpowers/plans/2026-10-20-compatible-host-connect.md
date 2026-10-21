@@ -152,3 +152,40 @@ Task 1 is independently testable. Tasks 2 and 3 share SSH policy and should run 
 - [ ] **Run the final real journey.** `EVENER_SSH_E2E=1 EVENER_SSH_E2E_DEPLOY=1 EVENER_SSH_E2E_CONTAINER=1 go test ./cmd/evener-hub -run '^TestHostCompatibleConnectContainerE2E$' -count=1 -v`. A skip is unverified, not a pass. Also run the existing container provisioning/explicit-deployment pipeline to verify preservation.
 - [ ] **Update evergreen contracts.** Explain compatible-first Connect, unknown metadata, explicit deployment, and recovery ownership. Remove H05 only after its behavior is verified; do not renumber other friction cases. Document the container-only test command and its isolation.
 - [ ] **Commit and hand off whole-branch review.** Report exact red/green commands, actual tests executed, generated files, and cleanup. Darwin/arm64 decision coverage is deterministic fixture evidence; Linux Docker execution is not actual Darwin verification. Run PAR, required simplify-code, shepherd-pr and CI before merging. Do not deploy the merge to live hosts.
+
+### Recovery amendment: Retain and renew host-entry authorization
+
+**Goal:** Automatic retries retain the original entry validation. A fresh validated
+Restart may renew that validation while preserving the pending deployment's
+requested build and effect state. Deduplicated requests do not renew it.
+
+**Files:** `cmd/evener-hub/{app_host_deploy.go,app_host_manage.go}`,
+`cmd/evener-hub/internal/sshconn/{operations.go,manager.go,version.go,deploy.go}`,
+their focused recovery tests, and the owning host guides.
+
+- [ ] **Review only the affected specification.** Freeze and independently review
+  the host-entry authorization amendment and its lifecycle proof obligations.
+  Preserve the existing failing `attached/entry-reconnect` public regression.
+- [ ] **Prove renewal and automatic refusal red-first.** Extend the public journey
+  through stale-entry refusal, SSH loss, automatic refusal, fresh Restart under the
+  changed entry, and verified original-build recovery. Cover dedup and failed
+  admission without renewal, plus another entry change after successful renewal.
+- [ ] **Carry one effect-owned binding.** Pass the hub's immutable entry validation
+  and original registration into explicit operations. Retain them with pending
+  state, not the worker context or attempt record. Preserve the binding across
+  write acknowledgement, restart promotion, command recording and replay. A fresh
+  admitted Restart validates its new binding before replacing the pending binding;
+  automatic attempts never replace it. A new confirmed Deploy supersedes only
+  when its first validated write begins.
+- [ ] **Guard shared mutation boundaries.** Make the existing pre-write callback
+  able to refuse a write. Cover installation, supervised commands, bare startup,
+  saved replay, and both halves of bare restart. Retain read-only settlement and
+  typed refusal behavior. Release bindings with registration teardown and shutdown.
+- [ ] **Verify the complete lifecycle.** Run public recovery cases with normal and
+  race repetitions, the whole SSH package normally and under race, focused public
+  Deploy/Plan/Restart tests, and scoped lint. Review the resulting diff. After a
+  clean commit, run both disposable OpenSSH journeys without skips. Full gates
+  remain in CI. No live hosts or new client controls are involved.
+- [ ] **Finish one review round.** Update owning documentation, commit intended
+  paths, reconcile the base, push once, and wait once for current-head CI and
+  RoboRev. Preserve the existing merge and cleanup requirements.

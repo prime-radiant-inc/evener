@@ -100,7 +100,7 @@ func TestDeploymentRecoveryRetainsUnverifiedContract(t *testing.T) {
 					case "absent":
 						wantErr = ErrExecutableMissing
 					}
-					if _, _, err := m.DeployForOperation(t.Context(), host, facts, approvedRestart); !errors.Is(err, wantErr) {
+					if _, _, err := m.DeployForOperation(t.Context(), host, facts, approvedRestart, nil); !errors.Is(err, wantErr) {
 						t.Fatalf("initial post-write validation: %v", err)
 					}
 					pending := m.pendingRestart(host.Name)

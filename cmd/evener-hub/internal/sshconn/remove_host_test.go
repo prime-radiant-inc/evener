@@ -78,7 +78,7 @@ func TestRemoveHostUnknown(t *testing.T) {
 func TestRemoveHostClearsPerHostCaches(t *testing.T) {
 	m, events := detachHostFixture(t)
 	m.setResolvedTarget("alpha", "/home/dev/.local/bin/evener")
-	m.setPendingRestart("alpha", "evener hub --addr 127.0.0.1:9180", "dev", "", hubIdentity{})
+	m.setPendingRestart("alpha", "evener hub --addr 127.0.0.1:9180", "dev", "", hubIdentity{}, nil)
 	if err := m.RemoveHost("alpha"); err != nil {
 		t.Fatalf("RemoveHost = %v, want nil", err)
 	}
@@ -97,7 +97,7 @@ func TestRemoveHostClearsPerHostCaches(t *testing.T) {
 func TestDetachHostClearsPerHostCaches(t *testing.T) {
 	m, events := detachHostFixture(t)
 	m.setResolvedTarget("alpha", "/home/dev/.local/bin/evener")
-	m.setPendingRestart("alpha", "evener hub --addr 127.0.0.1:9180", "dev", "", hubIdentity{})
+	m.setPendingRestart("alpha", "evener hub --addr 127.0.0.1:9180", "dev", "", hubIdentity{}, nil)
 	if err := m.DetachHost("alpha"); err != nil {
 		t.Fatalf("DetachHost = %v, want nil", err)
 	}

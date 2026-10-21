@@ -492,6 +492,7 @@ type pendingRestartState struct {
 	replaced        hubIdentity
 	expectedVersion string
 	expectedGitSHA  string
+	binding         *effectBinding
 	// deployment retains a write whose installed build has not yet been
 	// reconciled, including the interval before a restart command is known.
 	deployment        bool
@@ -1265,6 +1266,11 @@ func (m *Manager) Close() error {
 	// terminal. OnEvent runs synchronously, so any event a supervisor still emits
 	// is delivered before this returns.
 	m.supervisorsWG.Wait()
+	// No recovery producer remains. Release validators captured by unfinished
+	// effects, including hosts without a mapped channel at shutdown.
+	m.mu.Lock()
+	clear(m.pendingRestarts)
+	m.mu.Unlock()
 	// Publish the outcome and release every concurrent caller at once. The write
 	// happens-before the close, and each waiter's receive happens-after it, so the
 	// closeErr a waiter reads is ordered without the mutex.
@@ -2035,7 +2041,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 			}
 			return nil, err
 		}
-		if err := m.deployedBuildNotStamped(host.Name, facts, expected); err != nil {
+		if err := m.deployedBuildNotStamped(host.Name, facts, intent.expectedVersion); err != nil {
 			if finishEnsureOp != nil {
 				finishEnsureOp(err)
 			}
@@ -2195,7 +2201,7 @@ func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Pre
 	}
 	if sup.kind != supervisorNone {
 		if remote, ok := sup.startRemote(facts.UID); ok {
-			if err := m.startSupervisedPending(ctx, host, sup, remote, expectedVersion, expectedGitSHA); err != nil {
+			if err := m.startSupervisedPending(ctx, host, sup, remote, expectedVersion, expectedGitSHA, m.pendingRestart(host.Name).binding); err != nil {
 				return err
 			}
 			m.clearPendingRestart(host.Name)
@@ -2208,8 +2214,11 @@ func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Pre
 
 // startSupervisedPending retains a startup on a proven-free port until its
 // caller finishes verification, including an operation's independent identity proof.
-func (m *Manager) startSupervisedPending(ctx context.Context, host hostreg.Host, sup supervisor, remote, expectedVersion, expectedGitSHA string) error {
-	m.setPendingStart(host.Name, remote, expectedVersion, expectedGitSHA)
+func (m *Manager) startSupervisedPending(ctx context.Context, host hostreg.Host, sup supervisor, remote, expectedVersion, expectedGitSHA string, binding *effectBinding) error {
+	if err := m.checkEffectBinding(binding); err != nil {
+		return err
+	}
+	m.setPendingStart(host.Name, remote, expectedVersion, expectedGitSHA, binding)
 	out, runErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
 	if runErr != nil && !sup.restartStatusIsAdvisory() {
 		return fmt.Errorf("%w: host %q %s: %w: %s", ErrRestart, host.Name, remote, runErr, tail(out))
@@ -2221,7 +2230,7 @@ func (m *Manager) startSupervisedPending(ctx context.Context, host hostreg.Host,
 // the port is free and selected a detached launch. There is no predecessor
 // whose argv or log destination can be recovered.
 func (m *Manager) startBareHub(ctx context.Context, host hostreg.Host, expectedVersion, expectedGitSHA string) error {
-	if err := m.startBareHubPending(ctx, host, expectedVersion, expectedGitSHA); err != nil {
+	if err := m.startBareHubPending(ctx, host, expectedVersion, expectedGitSHA, m.pendingRestart(host.Name).binding); err != nil {
 		return err
 	}
 	m.clearPendingRestart(host.Name)
@@ -2230,13 +2239,16 @@ func (m *Manager) startBareHub(ctx context.Context, host hostreg.Host, expectedV
 
 // startBareHubPending retains the owned startup until its caller has finished
 // verifying it. Operation recovery also requires the actual process identity.
-func (m *Manager) startBareHubPending(ctx context.Context, host hostreg.Host, expectedVersion, expectedGitSHA string) error {
+func (m *Manager) startBareHubPending(ctx context.Context, host hostreg.Host, expectedVersion, expectedGitSHA string, binding *effectBinding) error {
 	target, err := m.expectedHubExecutable(ctx, host)
 	if err != nil {
 		return err
 	}
 	relaunch := relaunchCommand(hubBootstrapArgv(m.opts, host, target), "")
-	m.setPendingStart(host.Name, relaunch, expectedVersion, expectedGitSHA)
+	if err := m.checkEffectBinding(binding); err != nil {
+		return err
+	}
+	m.setPendingStart(host.Name, relaunch, expectedVersion, expectedGitSHA, binding)
 	out, runErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, relaunch), nil)
 	if runErr != nil {
 		return fmt.Errorf("%w: host %q bootstrap launch: %w: %s", ErrRestart, host.Name, runErr, tail(out))
@@ -2882,6 +2894,7 @@ func isTerminal(err error) bool {
 		errors.Is(err, errOwnExecutableCannotServe),
 		errors.Is(err, errDeployUnstamped),
 		errors.Is(err, errDeployDisabled),
+		errors.Is(err, errEntryBinding),
 		errors.Is(err, ErrManagerClosed):
 		return true
 	default:
@@ -3565,13 +3578,17 @@ func (m *Manager) deploymentIntent(restart bool, replaced hubIdentity) pendingRe
 
 // Record only once source validation has reached a remote write. Source refusal
 // cannot leave a compatible host waiting for an operation that never began.
-func (m *Manager) deploymentRecorder(name string, intent pendingRestartState) func(string) {
-	return func(target string) {
+func (m *Manager) deploymentRecorder(name string, intent pendingRestartState) func(string) error {
+	return func(target string) error {
+		if err := m.checkEffectBinding(intent.binding); err != nil {
+			return err
+		}
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		intent.writeAcknowledged = false
 		m.resolvedTargets[name] = target
 		m.pendingRestarts[name] = intent
+		return nil
 	}
 }
 
@@ -3597,22 +3614,22 @@ func (m *Manager) authorizeDeploymentRestart(name string) pendingRestartState {
 	return pending
 }
 
-func (m *Manager) setPendingRestart(name, remote, expectedVersion, expectedGitSHA string, replaced hubIdentity) {
+func (m *Manager) setPendingRestart(name, remote, expectedVersion, expectedGitSHA string, replaced hubIdentity, binding *effectBinding) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.pendingRestarts[name] = pendingRestartState{command: remote, expectedVersion: expectedVersion, expectedGitSHA: expectedGitSHA, replaced: replaced}
+	m.pendingRestarts[name] = pendingRestartState{command: remote, expectedVersion: expectedVersion, expectedGitSHA: expectedGitSHA, replaced: replaced, binding: binding}
 }
 
 // setPendingStart records a command that starts a hub where nothing was
 // serving. Recovery need not prove a predecessor's replacement, but a known
 // original identity remains available to the public operation's verification.
-func (m *Manager) setPendingStart(name, remote, expectedVersion, expectedGitSHA string) {
+func (m *Manager) setPendingStart(name, remote, expectedVersion, expectedGitSHA string, binding *effectBinding) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	// Starting a stopped deployment can still retain a known original
 	// predecessor for the public worker's independent verification.
 	replaced := m.pendingRestarts[name].replaced
-	m.pendingRestarts[name] = pendingRestartState{command: remote, expectedVersion: expectedVersion, expectedGitSHA: expectedGitSHA, replaced: replaced, start: true}
+	m.pendingRestarts[name] = pendingRestartState{command: remote, expectedVersion: expectedVersion, expectedGitSHA: expectedGitSHA, replaced: replaced, start: true, binding: binding}
 }
 
 func (m *Manager) clearPendingRestart(name string) {

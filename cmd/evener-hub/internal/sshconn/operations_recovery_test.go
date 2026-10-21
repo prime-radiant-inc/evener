@@ -82,7 +82,7 @@ func TestRecoverDeploymentForRestartRequiresOwnGateAndRegistration(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := m.DeployForOperation(t.Context(), host, facts, false); err == nil || writes != 1 {
+			if _, _, err := m.DeployForOperation(t.Context(), host, facts, false, nil); err == nil || writes != 1 {
 				t.Fatalf("expected failed acknowledged deployment: writes=%d err=%v", writes, err)
 			}
 			holder := attachUnderGateCaller()
@@ -164,12 +164,13 @@ func TestOperationRestartReconcilesFreshDeploymentDrift(t *testing.T) {
 						controllerVersionOverride: requested, BuildBinary: writeStageBinary,
 						sleep: func(context.Context, time.Duration) error { return nil },
 					})
+					host, _ = m.reg.Get(host.Name)
 					recordConnectionOperations(t, m)
 					facts, err := m.preflight(t.Context(), host)
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, _, err := m.DeployForOperation(t.Context(), host, facts, restart); err == nil {
+					if _, _, err := m.DeployForOperation(t.Context(), host, facts, restart, nil); err == nil {
 						t.Fatal("initial deployment unexpectedly verified")
 					}
 					pending := m.pendingRestart(host.Name)
@@ -194,8 +195,9 @@ func TestOperationRestartReconcilesFreshDeploymentDrift(t *testing.T) {
 						badContract = []byte(`{`)
 					}
 					refusal := errors.New("operation entry changed")
+					restored := false
 					guard := func() error {
-						if drift == "guard-before-repair" || drift == "guard-after-repair" && writes == 2 {
+						if !restored && (drift == "guard-before-repair" || drift == "guard-after-repair" && writes == 2) {
 							return refusal
 						}
 						return nil
@@ -204,18 +206,24 @@ func TestOperationRestartReconcilesFreshDeploymentDrift(t *testing.T) {
 					if strings.HasPrefix(drift, "guard-") {
 						after := m.pendingRestart(host.Name)
 						wantWrites, wantAcknowledged := 1, acknowledged
+						wantRestart := pending.restart
 						if drift == "guard-after-repair" {
 							wantWrites, wantAcknowledged = 2, true
+							wantRestart = true
 							if after.replaced.version != "predecessor-build" || after.replaced.startedAt.Format(time.RFC3339) != "2026-01-01T00:00:00Z" {
 								t.Fatalf("guard lost original predecessor: %+v", after)
 							}
 						} else if after.replaced != pending.replaced {
 							t.Fatalf("pre-write guard changed predecessor: before=%+v after=%+v", pending, after)
 						}
-						if !errors.Is(err, refusal) || writes != wantWrites || restarts != 0 || running != "predecessor-build" || started != "2026-01-01T00:00:00Z" || !after.deployment || !after.restart || after.start || after.command != "" || after.writeAcknowledged != wantAcknowledged || after.expectedVersion != pending.expectedVersion || after.expectedGitSHA != pending.expectedGitSHA {
+						if !errors.Is(err, refusal) || writes != wantWrites || restarts != 0 || running != "predecessor-build" || started != "2026-01-01T00:00:00Z" || !after.deployment || after.restart != wantRestart || after.start || after.command != "" || after.writeAcknowledged != wantAcknowledged || after.expectedVersion != pending.expectedVersion || after.expectedGitSHA != pending.expectedGitSHA {
 							t.Fatalf("guard changed owned intent or process: err=%v writes=%d restarts=%d pending=%+v", err, writes, restarts, after)
 						}
+						if drift == "guard-before-repair" && after != pending {
+							t.Fatalf("refused renewal changed pending effect: before=%+v after=%+v", pending, after)
+						}
 						m.opts.controllerVersionOverride = "later-controller"
+						restored = true
 						version, err = m.RestartForOperation(t.Context(), host, facts, nil)
 					}
 					if drift == "repair-write-failure" || drift == "repair-wrong-build" {
@@ -281,7 +289,7 @@ func TestOperationRestartReconcilesDeployment(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, after, err := m.DeployForOperation(t.Context(), host, facts, scenario != "uncertain-deploy-only")
+			_, after, err := m.DeployForOperation(t.Context(), host, facts, scenario != "uncertain-deploy-only", nil)
 			if (err != nil) != (scenario != "predecessor-probe") {
 				t.Fatalf("deploy: err=%v writes=%d", err, writes)
 			}

@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -213,7 +214,11 @@ func TestHostRestartRecoveryChecksFingerprintBetweenPhases(t *testing.T) {
 	sha, dirty, channel := buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel
 	t.Cleanup(func() { buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = sha, dirty, channel })
 	for _, path := range []string{"attached", "disconnected", "disconnected-stopped"} {
-		for _, edit := range []string{"entry", "invalid", "unreadable", "unrelated", "unchanged", "before-write"} {
+		for _, edit := range []string{"entry", "entry-renew", "entry-reconnect", "entry-reconnect-renew", "invalid", "invalid-reconnect", "unreadable", "unreadable-reconnect", "unrelated", "unchanged", "before-write"} {
+			reconnect := strings.Contains(edit, "reconnect")
+			if reconnect && path != "attached" {
+				continue // Only this path still owns the preserved predecessor channel.
+			}
 			t.Run(path+"/"+edit, func(t *testing.T) {
 				synctest.Test(t, func(t *testing.T) {
 					buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = restartBuildB, "", "snapshot"
@@ -255,11 +260,11 @@ func TestHostRestartRecoveryChecksFingerprintBetweenPhases(t *testing.T) {
 					editConfig := func() {
 						entries := []hostreg.Host{host}
 						switch edit {
-						case "entry", "before-write":
+						case "entry", "entry-renew", "entry-reconnect", "entry-reconnect-renew", "before-write":
 							entries[0].SSH = "changed.example"
 						case "unrelated":
 							entries = append(entries, hostreg.Host{Name: "other", SSH: "other.example"})
-						case "unreadable":
+						case "unreadable", "unreadable-reconnect":
 							if err := os.Remove(m.cfg.configPath); err != nil {
 								t.Error(err)
 							}
@@ -269,7 +274,7 @@ func TestHostRestartRecoveryChecksFingerprintBetweenPhases(t *testing.T) {
 							return
 						}
 						contents := []byte(planTestHubTOML(entries))
-						if edit == "invalid" {
+						if edit == "invalid" || edit == "invalid-reconnect" {
 							contents = []byte("[[hosts]\n")
 						}
 						if err := os.WriteFile(m.cfg.configPath, contents, 0o600); err != nil {
@@ -316,7 +321,7 @@ func TestHostRestartRecoveryChecksFingerprintBetweenPhases(t *testing.T) {
 							if workerErr != nil {
 								t.Fatalf("pre-write refusal reached recovery: %v", workerErr)
 							}
-						case "entry":
+						case "entry", "entry-renew", "entry-reconnect", "entry-reconnect-renew":
 							info, data, code := deployWireInfo(t, workerErr)
 							var binding appwire.StaleEntryBinding
 							if err := json.Unmarshal(data["binding"], &binding); err != nil || info != appwire.ErrorStaleEntry || code != appwire.CodeConflict || binding != appwire.StaleEntryBindingHubTOMLFingerprint {
@@ -335,13 +340,41 @@ func TestHostRestartRecoveryChecksFingerprintBetweenPhases(t *testing.T) {
 						if starts != 0 || disk != restartBuildB {
 							t.Fatalf("post-install refusal: starts=%d disk=%s", starts, disk)
 						}
-						if edit == "unreadable" {
+						if reconnect {
+							// Drain the initial attachment, then lose the still-preserved
+							// bridge while the selected config entry remains changed.
+							waitPublicRecoveryEvent(t, events, sshconn.EventAttached)
+							if err := ch.Close(); err != nil {
+								t.Fatal(err)
+							}
+							select {
+							case kind := <-events:
+								synctest.Wait() // The real reconnect producer releases its gate.
+								if kind != sshconn.EventFailed {
+									t.Errorf("stale-entry reconnect outcome=%s, want %s", kind, sshconn.EventFailed)
+								}
+							case <-time.After(5 * time.Second):
+								t.Fatal("post-refusal supervisor attempt did not finish")
+							}
+							runner.mu.Lock()
+							starts = runner.starts
+							runner.mu.Unlock()
+							if starts != 0 {
+								t.Errorf("stale-entry reconnect started hub %d times", starts)
+							}
+							assertPublicRecoveryEffects(t, runner, 2, 2, 0, restartBuildA, restartStartA)
+						}
+						if edit == "unreadable" || edit == "unreadable-reconnect" {
 							if err := os.Remove(m.cfg.configPath); err != nil {
 								t.Fatal(err)
 							}
 						}
-						if err := os.WriteFile(m.cfg.configPath, original, 0o600); err != nil {
-							t.Fatal(err)
+						// A fresh explicit Restart may validate the still-changed entry.
+						// Keep the restored-entry case as an independent recovery control.
+						if !strings.HasSuffix(edit, "-renew") {
+							if err := os.WriteFile(m.cfg.configPath, original, 0o600); err != nil {
+								t.Fatal(err)
+							}
 						}
 						runner.observeMutation, m.cfg.gate = observeMutation, manager
 						// A later controller must not replace the original B intent. A
@@ -370,6 +403,204 @@ func TestHostRestartRecoveryChecksFingerprintBetweenPhases(t *testing.T) {
 				})
 			})
 		}
+	}
+}
+
+func TestHostDeployEntryBindingSupersession(t *testing.T) {
+	sha, dirty, channel := buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel
+	t.Cleanup(func() { buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = sha, dirty, channel })
+	const nextBuild = "cccccccccccccccccccccccccccccccccccccccc"
+	for _, sourceFails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("source-fails=%t", sourceFails), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = restartBuildB, "", "snapshot"
+				runner := &restartRecoveryRunner{diskVersion: restartBuildA, runningVersion: restartBuildA, startedAt: restartStartA,
+					acknowledgeFirstWrite: true, firstWriteContract: []byte(`{`)}
+				m, manager, store, host, events := publicRecoveryHub(t, runner, restartBuildB)
+				ch, err := manager.Ensure(t.Context(), host.Name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				waitPublicRecoveryEvent(t, events, sshconn.EventAttached)
+				deploy := func(id string) appwire.HostDeployResponse {
+					plan, err := m.Plan(t.Context(), appwire.HostPlanParams{Name: host.Name})
+					if err != nil {
+						t.Fatal(err)
+					}
+					record, err := m.Deploy(t.Context(), appwire.HostDeployParams{Name: host.Name, Token: plan.Token, OperationID: id})
+					if err != nil {
+						t.Fatal(err)
+					}
+					m.cfg.opsWG.Wait()
+					return record
+				}
+				first := deploy("unfinished-original")
+				assertRestartRecoveryRecord(t, store, first.ID, hostops.StateFailed)
+				entry := host
+				entry.SSH = "new-confirmed-entry.example"
+				if err := os.WriteFile(m.cfg.configPath, []byte(planTestHubTOML([]hostreg.Host{entry})), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				buildinfo.GitSHA = nextBuild
+				runner.mu.Lock()
+				runner.launchResponse, runner.buildVersion, runner.failRestart = nil, nextBuild, true
+				if sourceFails {
+					runner.buildError = errors.New("compiler source unavailable")
+				}
+				runner.mu.Unlock()
+				second := deploy("new-confirmed-deploy")
+				assertRestartRecoveryRecord(t, store, second.ID, hostops.StateFailed)
+				wantWrites, wantRestarts := 2, 1
+				if sourceFails {
+					wantWrites, wantRestarts = 1, 0
+				}
+				assertPublicRecoveryEffects(t, runner, 2, wantWrites, wantRestarts, restartBuildA, restartStartA)
+				runner.mu.Lock()
+				runner.failRestart, runner.buildError = false, nil
+				runner.mu.Unlock()
+				if err := ch.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if !sourceFails {
+					waitPublicRecoveryEvent(t, events, sshconn.EventAttached)
+					assertPublicRecoveryEffects(t, runner, 2, 2, 2, nextBuild, "2026-01-03T00:00:00Z")
+					return
+				}
+				// No authorized write happened. The old B intent and binding must
+				// still refuse automatic recovery under the edited entry.
+				waitPublicRecoveryEvent(t, events, sshconn.EventFailed)
+				assertPublicRecoveryEffects(t, runner, 2, 1, 0, restartBuildA, restartStartA)
+				restart, err := m.Restart(t.Context(), appwire.HostRestartParams{Name: host.Name, Generation: host.Generation, IncarnationID: host.IncarnationID, OperationID: "renew-original-build"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				m.cfg.opsWG.Wait()
+				assertRestartRecoveryRecord(t, store, restart.ID, hostops.StateComplete)
+				assertPublicRecoveryEffects(t, runner, 2, 1, 1, restartBuildB, restartStartB)
+			})
+		})
+	}
+}
+
+func TestHostRestartEntryBindingAdmissionAndRenewal(t *testing.T) {
+	sha, dirty, channel := buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel
+	t.Cleanup(func() { buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = sha, dirty, channel })
+	for _, scenario := range []string{"dedup", "generation", "busy", "worker-refused", "renew-attached", "renew-disconnected"} {
+		t.Run(scenario, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = restartBuildA, "", "snapshot"
+				runner := &restartRecoveryRunner{diskVersion: restartBuildA, runningVersion: restartBuildA, startedAt: restartStartA, failRestart: true}
+				m, manager, store, host, events := publicRecoveryHub(t, runner, restartBuildB)
+				ch, err := manager.Ensure(t.Context(), host.Name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				waitPublicRecoveryEvent(t, events, sshconn.EventAttached)
+				params := appwire.HostRestartParams{Name: host.Name, Generation: host.Generation, IncarnationID: host.IncarnationID, OperationID: "original-restart"}
+				first, err := m.Restart(t.Context(), params)
+				if err != nil {
+					t.Fatal(err)
+				}
+				m.cfg.opsWG.Wait()
+				assertRestartRecoveryRecord(t, store, first.ID, hostops.StateFailed)
+				assertPublicRecoveryEffects(t, runner, 0, 0, 1, restartBuildA, restartStartA)
+				setEntry := func(ssh string) {
+					entry := host
+					entry.SSH = ssh
+					if err := os.WriteFile(m.cfg.configPath, []byte(planTestHubTOML([]hostreg.Host{entry})), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				setEntry("renewed.example")
+				buildinfo.GitSHA = restartBuildB // Recovery must keep A and its original pin.
+				fresh := params
+				fresh.OperationID = "fresh-restart"
+				switch scenario {
+				case "dedup":
+					replay, err := m.Restart(t.Context(), params)
+					if err != nil || replay.ID != first.ID {
+						t.Fatalf("dedup: record=%+v err=%v", replay, err)
+					}
+				case "generation":
+					stale := fresh
+					stale.Generation++
+					_, err := m.Restart(t.Context(), stale)
+					info, _, code := deployWireInfo(t, err)
+					if info != appwire.ErrorStaleEntry || code != appwire.CodeConflict {
+						t.Fatalf("stale generation: info=%s code=%d", info, code)
+					}
+				case "busy":
+					release, err := manager.TryAcquire(host.Name, hostops.Holder{Kind: hostops.HolderPlan})
+					if err != nil {
+						t.Fatal(err)
+					}
+					_, err = m.Restart(t.Context(), fresh)
+					release()
+					info, _, code := deployWireInfo(t, err)
+					if info != appwire.ErrorHostBusyTransient || code != appwire.CodeConflict {
+						t.Fatalf("busy admission: info=%s code=%d", info, code)
+					}
+				case "worker-refused":
+					m.cfg.gate = &editingGate{inner: manager, onAs: func() { setEntry("changed-after-admission.example") }}
+					record, err := m.Restart(t.Context(), fresh)
+					if err != nil {
+						t.Fatal(err)
+					}
+					m.cfg.opsWG.Wait()
+					assertRestartRecoveryRecord(t, store, record.ID, hostops.StateFailed)
+					m.cfg.gate = manager
+					setEntry("renewed.example")
+				}
+				renew := strings.HasPrefix(scenario, "renew-")
+				if scenario != "renew-attached" {
+					if err := ch.Close(); err != nil {
+						t.Fatal(err)
+					}
+					waitPublicRecoveryEvent(t, events, sshconn.EventFailed)
+					assertPublicRecoveryEffects(t, runner, 0, 0, 1, restartBuildA, restartStartA)
+				}
+				runner.mu.Lock()
+				runner.failRestart = renew
+				runner.mu.Unlock()
+				fresh.OperationID = "validated-renewal"
+				record, err := m.Restart(t.Context(), fresh)
+				if err != nil {
+					t.Fatal(err)
+				}
+				m.cfg.opsWG.Wait()
+				if !renew {
+					assertRestartRecoveryRecord(t, store, record.ID, hostops.StateComplete)
+					assertPublicRecoveryEffects(t, runner, 0, 0, 2, restartBuildA, "2026-01-03T00:00:00Z")
+					return
+				}
+				assertRestartRecoveryRecord(t, store, record.ID, hostops.StateFailed)
+				assertPublicRecoveryEffects(t, runner, 0, 0, 2, restartBuildA, restartStartA)
+				setEntry("changed-again.example")
+				runner.mu.Lock()
+				runner.failRestart = false
+				runner.mu.Unlock()
+				if scenario == "renew-attached" {
+					if err := ch.Close(); err != nil {
+						t.Fatal(err)
+					}
+					waitPublicRecoveryEvent(t, events, sshconn.EventFailed)
+				}
+				_, err = manager.Ensure(t.Context(), host.Name)
+				info, data, code := deployWireInfo(t, err)
+				var binding appwire.StaleEntryBinding
+				if err := json.Unmarshal(data["binding"], &binding); err != nil || info != appwire.ErrorStaleEntry || code != appwire.CodeConflict || binding != appwire.StaleEntryBindingHubTOMLFingerprint {
+					t.Fatalf("second drift refusal: info=%s code=%d binding=%s err=%v", info, code, binding, err)
+				}
+				assertPublicRecoveryEffects(t, runner, 0, 0, 2, restartBuildA, restartStartA)
+				// Restore only the renewed entry, not the original. An automatic
+				// Ensure must now recover A without a new explicit authorization.
+				setEntry("renewed.example")
+				if _, err := manager.Ensure(t.Context(), host.Name); err != nil {
+					t.Fatal(err)
+				}
+				assertPublicRecoveryEffects(t, runner, 0, 0, 3, restartBuildA, "2026-01-04T00:00:00Z")
+			})
+		})
 	}
 }
 
@@ -802,6 +1033,131 @@ func TestHostRestartStartsStoppedDeployOnlyInstallation(t *testing.T) {
 	}
 }
 
+func TestHostRestartRenewsStoppedReplacementCommand(t *testing.T) {
+	// Not parallel: the controller build stamp is process-wide.
+	sha, dirty, channel := buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel
+	t.Cleanup(func() { buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = sha, dirty, channel })
+	var scenarios []string
+	for _, mode := range []string{"bare", "systemd"} {
+		for _, check := range []string{"matching", "occupied-port", "unknown-port", "wrong-pin", "old-process", "wrong-probe-process"} {
+			scenarios = append(scenarios, mode+"/"+check)
+		}
+	}
+	for _, scenario := range scenarios {
+		t.Run(scenario, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				mode, check, _ := strings.Cut(scenario, "/")
+				buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = restartBuildA, "", "snapshot"
+				runner := &restartRecoveryRunner{diskVersion: restartBuildA, runningVersion: restartBuildA, startedAt: restartStartA,
+					noSupervisor: mode == "bare", bareProcess: mode == "bare", supervisor: mode, failRestart: mode == "systemd"}
+				m, manager, store, host, events := publicRecoveryHub(t, runner, restartBuildB)
+				ch, err := manager.Ensure(t.Context(), host.Name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				waitPublicRecoveryEvent(t, events, sshconn.EventAttached)
+				entry := host
+				entry.SSH = "renewed.example"
+				changed := []byte(planTestHubTOML([]hostreg.Host{entry}))
+				runner.afterStop = func() {
+					if err := os.WriteFile(m.cfg.configPath, changed, 0o600); err != nil {
+						t.Error(err)
+					}
+				}
+				params := appwire.HostRestartParams{Name: host.Name, Generation: host.Generation, IncarnationID: host.IncarnationID, OperationID: "stop-before-relaunch"}
+				first, err := m.Restart(t.Context(), params)
+				if err != nil {
+					t.Fatal(err)
+				}
+				m.cfg.opsWG.Wait()
+				assertRestartRecoveryRecord(t, store, first.ID, hostops.StateFailed)
+				wantKills, wantRestarts := 1, 0
+				if mode == "systemd" {
+					wantKills, wantRestarts = 0, 1
+				}
+				assertStopped := func() {
+					t.Helper()
+					assertPublicRecoveryEffects(t, runner, 0, 0, wantRestarts, "", "")
+					runner.mu.Lock()
+					defer runner.mu.Unlock()
+					if runner.kills != wantKills || runner.starts != 0 {
+						t.Fatalf("stopped effect: kills=%d starts=%d", runner.kills, runner.starts)
+					}
+				}
+				assertStopped()
+				if err := ch.Close(); err != nil {
+					t.Fatal(err)
+				}
+				waitPublicRecoveryEvent(t, events, sshconn.EventFailed)
+				assertStopped() // Automatic recovery must retain the original entry binding.
+				buildinfo.GitSHA = restartBuildB
+				runner.mu.Lock()
+				runner.afterStop, runner.failRestart = nil, false
+				switch check {
+				case "occupied-port", "unknown-port":
+					runner.portState = check
+				case "wrong-pin":
+					runner.healthPin = restartBuildB
+				case "old-process":
+					runner.startTime = restartStartA
+				case "wrong-probe-process":
+					runner.probeStart = restartStartA
+				}
+				runner.mu.Unlock()
+				params.OperationID = "renew-saved-replacement"
+				restart, err := m.Restart(t.Context(), params)
+				if err != nil {
+					t.Fatal(err)
+				}
+				m.cfg.opsWG.Wait()
+				if check != "matching" {
+					assertRestartRecoveryRecord(t, store, restart.ID, hostops.StateFailed)
+				}
+				if check == "occupied-port" || check == "unknown-port" {
+					assertStopped()
+				}
+				if check != "matching" && check != "wrong-probe-process" {
+					// Clear only the injected observation. Recovery must retain the
+					// saved command, pin and predecessor, and never stop another hub.
+					runner.mu.Lock()
+					runner.portState, runner.healthPin = "", ""
+					if check == "old-process" {
+						runner.startedAt = restartStartB
+					}
+					runner.mu.Unlock()
+					params.OperationID = "retry-saved-replacement"
+					restart, err = m.Restart(t.Context(), params)
+					if err != nil {
+						t.Fatal(err)
+					}
+					m.cfg.opsWG.Wait()
+				}
+				if check != "wrong-probe-process" {
+					assertRestartRecoveryRecord(t, store, restart.ID, hostops.StateComplete)
+				}
+				assertPublicRecoveryEffects(t, runner, 0, 0, wantRestarts, restartBuildA, restartStartB)
+				contents, err := os.ReadFile(m.cfg.configPath)
+				if err != nil || !bytes.Equal(contents, changed) {
+					t.Fatalf("selected entry was not retained: read error=%v contents=%q", err, contents)
+				}
+				record, _ := store.Record(restart.ID)
+				runner.mu.Lock()
+				defer runner.mu.Unlock()
+				wantCommand := "systemctl restart evener-hub.service"
+				if mode == "bare" {
+					wantCommand = "nohup /opt/evener/bin/evener hub -addr 127.0.0.1:9180 -config /srv/recovered.toml >>/srv/recovered.log 2>&1 </dev/null &"
+				}
+				if runner.kills != wantKills || runner.starts != 1 || len(runner.launchCommands) != 1 || runner.launchCommands[0] != wantCommand {
+					t.Fatalf("saved replacement replay: kills=%d starts=%d commands=%q", runner.kills, runner.starts, runner.launchCommands)
+				}
+				if len(runner.probeEpochs) == 0 || runner.probeEpochs[len(runner.probeEpochs)-1] != epochOf(record) || runner.afterProbes != 1 {
+					t.Fatalf("replacement process proof: epochs=%v probes=%d record=%+v", runner.probeEpochs, runner.afterProbes, record)
+				}
+			})
+		})
+	}
+}
+
 func TestHostRestartDisconnectedWithoutDeploymentDoesNotInstall(t *testing.T) {
 	runner := &restartRecoveryRunner{diskVersion: restartBuildA, runningVersion: restartBuildA, startedAt: restartStartA}
 	m, manager, store, host, _ := publicRecoveryHub(t, runner, restartBuildB)
@@ -900,7 +1256,14 @@ func publicRecoveryHub(t *testing.T, runner *restartRecoveryRunner, artifact str
 		BuildBinary: func(_ context.Context, _, _, out string) error {
 			runner.mu.Lock()
 			runner.builds++
+			version, err := runner.buildVersion, runner.buildError
 			runner.mu.Unlock()
+			if err != nil {
+				return err
+			}
+			if version != "" {
+				return os.WriteFile(out, []byte(version), 0o700)
+			}
 			return os.WriteFile(out, []byte(artifact), 0o700)
 		},
 	})
@@ -966,12 +1329,19 @@ type restartRecoveryRunner struct {
 	delayBridgeExit               bool
 	writes, restarts, afterProbes int
 	builds, starts                int
+	buildVersion                  string
+	buildError                    error
 	acknowledgeFirstWrite         bool
 	firstWriteContract            []byte
 	failRepair                    bool
+	failRestart                   bool
 	missing                       bool
 	missingError                  error
 	noSupervisor                  bool
+	bareProcess                   bool
+	kills                         int
+	afterStop                     func()
+	launchCommands                []string
 	supervisor                    string
 	portState, startVersion       string
 	startTime                     string
@@ -1045,16 +1415,40 @@ func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.R
 		if r.portState == "unknown-port" {
 			return nil, errors.New("port probe interrupted")
 		}
+		if r.bareProcess && r.runningVersion != "" {
+			return []byte("4242\n"), nil
+		}
 		if r.portState == "occupied-port" || r.noSupervisor && r.runningVersion != "" {
 			return []byte(sshconn.ListenerPresentMarker), nil
 		}
 		return []byte(sshconn.NoListenerMarker), nil
+	case r.bareProcess && strings.Contains(command, "/proc/4242/cmdline"):
+		return []byte("/opt/evener/bin/evener\x00hub\x00-addr\x00127.0.0.1:9180\x00-config\x00/srv/recovered.toml\x00"), nil
+	case r.bareProcess && strings.Contains(command, "lsof -nP -p 4242"):
+		return []byte("n127.0.0.1:9180\n"), nil
+	case r.bareProcess && strings.Contains(command, "ps -o user= -p 4242"):
+		return []byte("ops\n"), nil
+	case r.bareProcess && strings.Contains(command, "lsof -p 4242 -a -d 1,2"):
+		return []byte("evener 4242 ops 1w REG 8,1 123 456 /srv/recovered.log\nevener 4242 ops 2w REG 8,1 123 456 /srv/recovered.log\n"), nil
+	case r.bareProcess && strings.Contains(command, "kill -s 0 -- 4242"):
+		return []byte("__sshconn_pid_gone__\n"), nil
+	case r.bareProcess && strings.Contains(command, "kill -- 4242"):
+		if r.observeMutation != nil {
+			r.observeMutation()
+		}
+		r.kills++
+		r.runningVersion, r.startedAt = "", ""
+		if r.afterStop != nil {
+			r.afterStop()
+		}
+		return nil, nil
 	case strings.Contains(command, "nohup"),
 		r.supervisor != "" && r.runningVersion == "" && (strings.Contains(command, "systemctl start") || strings.Contains(command, "systemctl --user start") || strings.Contains(command, "systemctl restart") || strings.Contains(command, "systemctl --user restart") || strings.Contains(command, "launchctl kickstart")):
 		if r.observeMutation != nil {
 			r.observeMutation()
 		}
 		r.starts++
+		r.launchCommands = append(r.launchCommands, argv[len(argv)-1])
 		if r.failStart {
 			return nil, errors.New("startup interrupted")
 		}
@@ -1076,6 +1470,13 @@ func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.R
 			r.observeMutation()
 		}
 		r.restarts++
+		if r.failRestart {
+			if r.afterStop != nil {
+				r.runningVersion, r.startedAt = "", ""
+				r.afterStop()
+			}
+			return nil, errors.New("restart command interrupted")
+		}
 		r.runningVersion, r.startedAt = r.diskVersion, fmt.Sprintf("2026-01-%02dT00:00:00Z", r.restarts+1)
 		// A remote replacement can be confirmed before the local SSH reader
 		// observes EOF. Keep that boundary open to exercise the ordering.

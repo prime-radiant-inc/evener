@@ -34,6 +34,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -785,7 +786,7 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 			ProcessStartTime: work.token.ProcessStartTime,
 		}, work.token.ControllerRevision)
 	}
-	beforeMutation := func() error { return m.checkOperationFingerprint(work.entry, fingerprint) }
+	beforeMutation := m.operationEntryValidator(work.entry, fingerprint)
 
 	if m.interruptIfShuttingDown(ctx, id) {
 		return
@@ -806,7 +807,7 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 			return
 		}
 		m.recordProgress(id, "pushing the controller's build")
-		_, afterDeploy, err := m.cfg.deployHost(ctx, work.entry, facts, restartFollows)
+		_, afterDeploy, err := m.cfg.deployHost(ctx, work.entry, facts, restartFollows, beforeMutation)
 		if err != nil {
 			fail(err)
 			return
@@ -827,7 +828,7 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 			fail(err)
 			return
 		}
-		if _, attached := m.attachedClient(work.entry); !attached && m.cfg.recoverDeployment != nil {
+		if m.cfg.recoverDeployment != nil {
 			result, err := m.cfg.recoverDeployment(ctx, work.entry, hostops.Holder{Kind: hostops.HolderOperation, OperationID: id}, beforeMutation)
 			if err != nil {
 				fail(err)
@@ -978,6 +979,13 @@ func (m *hubHostManager) runRestartStep(ctx context.Context, id string, entry ho
 	}
 	m.recordProgress(id, "restart verified healthy")
 	return target, nil
+}
+
+// The SSH manager may retain this validator after the worker finishes. Capture
+// only a copied entry, its fingerprint and the long-lived hub manager.
+func (m *hubHostManager) operationEntryValidator(entry hostreg.Host, fingerprint string) func() error {
+	entry.Roots = slices.Clone(entry.Roots)
+	return func() error { return m.checkOperationFingerprint(entry, fingerprint) }
 }
 
 // checkOperationFingerprint re-reads the host's own hub.toml entry fingerprint

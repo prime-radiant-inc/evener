@@ -413,10 +413,19 @@ its requested build must be verified before restart. If the SSH channel has
 dropped, Restart performs this recovery under its persisted operation gate before
 requiring attachment. It then reattaches and independently verifies the requested
 build and replacement process without issuing a second restart. Recovery rechecks
-the operation-bound host entry before installation repair and again before starting
-or replacing the process. An entry edit during installation refuses replacement
-while retaining the verified installation for retry after the entry is restored.
-These reads do not atomically exclude external edits after the check. Ordinary Restart
+the operation-bound host entry before each remote mutation. Pending effects retain
+that check across installation, command recording, worker completion and channel
+loss; a reconnect attempt cannot replace it with a new settings snapshot. An entry
+edit during installation refuses replacement while retaining the verified
+installation. Restoring the entry permits a later retry. A fresh explicit Restart
+can instead accept the changed entry after admission and validation, retaining the
+original requested build, target and process proof. Replaying the same operation
+ID does not renew this authorization. A new confirmed Deploy supersedes old intent
+only when its first authorized write begins; source refusal leaves it untouched.
+An already-completed effect can settle through independent read-only verification
+despite later entry drift. None of these paths transfers pending work to a different
+host registration or silently reloads its target. These reads do not atomically
+exclude external edits after the check. Ordinary Restart
 without pending deployment authority still attaches first. Without that repair, an
 incompatible protocol, missing required flag or unreadable contract refuses the
 restart and preserves the live connection. Fix the executable, then retry Restart.

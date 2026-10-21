@@ -91,6 +91,45 @@ deployment guarantees.
 - Do not turn ordinary reconnect into permission to start a deliberately stopped
   host. Preserve the explicit-Connect-only bootstrap rule.
 
+### Host-entry authorization across recovery
+
+Unfinished deployment, start and restart effects retain the host-entry validation
+that authorized them, alongside their requested build, target and process proof.
+An automatic reconnect or retry cannot replace that validation with the settings
+observed by its new attempt. A changed or unreadable selected entry refuses new
+remote mutations while preserving the unfinished work. Unrelated entry changes
+do not block recovery. Restoring the entry permits a later recovery attempt.
+
+Jesse chose a fresh explicit Restart as another way to authorize recovery after
+an entry change. After the existing admission, registration, generation, gate and
+current-entry checks succeed, that new request may renew the pending effect's
+entry validation. It keeps the original requested build, commit pin, installation
+target, write acknowledgement and predecessor/start proof. A deduplicated replay
+returns its existing record without renewing authorization. An automatic attempt
+record is not a fresh Restart request.
+
+A newly confirmed Deploy retains its existing ability to supersede pending
+deployment intent at its first authorized installation write. Source refusal
+before that write preserves the previous intent. Neither renewal path grants
+permission to carry unfinished work into a different host registration or to
+retarget it by silently reloading configuration.
+
+The retained validation must survive installation acknowledgement, promotion to
+restart, command recording, channel loss and worker completion. Check it before
+each mutating recovery boundary, including installation writes, startup, restart
+and recorded command replay. A bare-process restart checks both stopping the
+predecessor and launching its replacement. These checks do not atomically exclude
+external edits after a check. Independent proof that the requested effect already
+completed may settle it without issuing another command, despite later entry
+drift. Existing registration teardown fences and manager shutdown release the
+retained validation with its pending state.
+
+Keep validation in its current owner: the hub reads the selected configuration,
+and the SSH manager retains an in-memory operation binding. Do not add persistent
+state, protocol fields, a configuration parser in the SSH layer, or a new retry
+policy. Ordinary automatic operations without an explicit entry binding retain
+their existing policy.
+
 ## Version reporting and clients
 
 The controller's version and the connected host's version are distinct facts.
@@ -156,6 +195,15 @@ case only after its acceptance behavior is implemented and verified.
 7. Run focused Go and affected client checks locally. Leave full repository gates
    to CI under the repository policy. Tests assert outcomes, structured fields,
    and side effects rather than copy.
+8. Exercise an entry change during repair followed by channel loss: automatic
+   reconnect must preserve the live predecessor and unfinished requested build.
+   Then prove a fresh Restart accepts the changed entry after validation and
+   completes that original build without an unnecessary write. Cover dedup replay,
+   refusal before renewal, a later entry edit after renewal, acknowledged and
+   uncertain writes, saved startup/restart commands, bare kill/relaunch, read-only
+   settlement, and registration/shutdown cleanup. Keep the existing restored-entry
+   recovery case. Test public operation admission and real manager recovery, not
+   just the validation callback in isolation.
 
 ## Non-goals
 

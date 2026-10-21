@@ -311,7 +311,7 @@ func TestEnsureRecoversDeploymentBeforeRestartMarker(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, after, err := m.DeployForOperation(t.Context(), host, facts, !strings.HasPrefix(phase, "deploy-only"))
+			_, after, err := m.DeployForOperation(t.Context(), host, facts, !strings.HasPrefix(phase, "deploy-only"), nil)
 			if phase == "supervisor" && err == nil {
 				_, err = m.RestartForOperation(t.Context(), host, after, nil)
 			}

@@ -109,6 +109,14 @@ Replace these example values with paths and an account on the remote machine. Op
 
 The [hub deployment reference](evener-hub.md#deploying-to-remote-hosts) retains the exact artifact, dirty-build, atomic replacement, identity, and retry rules. After an interrupted deployment, the connection manager reconciles the pending replacement against its captured requested build and predecessor process. A compatible handshake alone cannot settle that operation, and later disk changes cannot redefine its target. Inspect the operation's status when recovery remains unresolved; response loss does not prove the remote write failed.
 
+Automatic recovery retains the host-entry check that authorized the unfinished
+work. If that entry changes, it refuses further writes or restarts while keeping
+the pending work. Restore the entry and retry, or issue a fresh Restart to accept
+the changed entry after validation. Fresh Restart keeps the originally requested
+build and installation target; it does not silently retarget the work. Replaying
+the same operation ID or reconnecting cannot authorize the changed entry. A new
+confirmed Deploy can replace the unfinished request at its first authorized write.
+
 ## Restart and upgrade safely
 
 Record the actual supervisor job, executable, flags, and config paths when provisioning. Keep environment sources private. Restart that exact service rather than killing every process named `evener`; session daemons can share the same executable name.

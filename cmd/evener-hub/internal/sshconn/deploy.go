@@ -317,7 +317,7 @@ var errDeployUnstamped = errors.New("sshconn: deployed build is not stamped by t
 // run target. Both are non-empty on success, so the restart, health re-probe, and
 // attach paths address the binary that was actually installed instead of a bare
 // `evener` a fresh host's non-interactive PATH may not carry.
-func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight, beforeWrite func(string)) (string, error) {
+func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight, beforeWrite func(string) error) (string, error) {
 	// Deploying turned off wins over every deploy source: a hub started with
 	// -no-deploy installs nothing on a host, not even through the installer
 	// fallback a release or snapshot controller would otherwise use. The attach
@@ -434,7 +434,7 @@ func (m *Manager) ownExecutableCannotServe(facts Preflight) bool {
 // on a fresh host that target is the installer default ~/.local/bin/evener, and
 // discarding it left the manager probing the literal `evener`, which the
 // non-interactive PATH cannot resolve.
-func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Preflight, beforeWrite func(string)) (string, error) {
+func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Preflight, beforeWrite func(string) error) (string, error) {
 	target, err := m.deployTarget(ctx, host, facts)
 	if err != nil {
 		return "", err
@@ -477,7 +477,9 @@ func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Prefl
 		return "", fmt.Errorf("%w: host %q stat staged binary: %w", ErrDeploy, host.Name, err)
 	}
 	if beforeWrite != nil {
-		beforeWrite(target)
+		if err := beforeWrite(target); err != nil {
+			return "", err
+		}
 	}
 	if err := m.pushBinary(ctx, host, target, f, info.Size()); err != nil {
 		return "", err
@@ -894,7 +896,7 @@ func DeployRunTargetFor(host hostreg.Host, home string) (string, error) {
 // expected build before any restart or attach. A tag that resolves to a wrong or
 // moved artifact is a failed verification (a terminal ErrVersionMismatch), never
 // a retry of the same pinned ref and never an attach.
-func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts Preflight, beforeWrite func(string)) (string, error) {
+func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts Preflight, beforeWrite func(string) error) (string, error) {
 	ref, err := installerRefFor(buildinfo.BuildChannel(), buildinfo.ReleaseTag, buildinfo.GitDirty, m.installerRemedy())
 	if err != nil {
 		return "", err
@@ -917,7 +919,9 @@ func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts 
 		return "", err
 	}
 	if beforeWrite != nil {
-		beforeWrite(runTarget)
+		if err := beforeWrite(runTarget); err != nil {
+			return "", err
+		}
 	}
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remoteinstall.Command(ref, "", bindir, shareBindir)), bytes.NewReader(remoteinstall.Script))
 	if err != nil {

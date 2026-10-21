@@ -77,7 +77,7 @@ func TestStoppedDeploymentRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := m.DeployForOperation(t.Context(), host, facts, true); !errors.Is(err, interrupted) {
+			if _, _, err := m.DeployForOperation(t.Context(), host, facts, true, nil); !errors.Is(err, interrupted) {
 				t.Fatalf("deployment interruption: %v", err)
 			}
 			if pending := m.pendingRestart(host.Name); !pending.deployment || !pending.restart || pending.command != "" {

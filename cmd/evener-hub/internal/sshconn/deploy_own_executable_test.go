@@ -442,7 +442,7 @@ func TestDirtyControllerOwnExecutableDeployConvergesThroughTheOperation(t *testi
 		BuildBinary:               writeStageBinary,
 	})
 
-	target, after, err := m.DeployForOperation(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH}, true)
+	target, after, err := m.DeployForOperation(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH}, true, nil)
 	if err != nil {
 		t.Fatalf("DeployForOperation: %v", err)
 	}
@@ -508,7 +508,7 @@ func TestDeployDisabledRefusesEveryDeployPath(t *testing.T) {
 	if !strings.Contains(err.Error(), help) {
 		t.Fatalf("refusal does not name the remedy: %v", err)
 	}
-	if _, _, err := m.DeployForOperation(context.Background(), host, facts, true); !errors.Is(err, errDeployDisabled) {
+	if _, _, err := m.DeployForOperation(context.Background(), host, facts, true, nil); !errors.Is(err, errDeployDisabled) {
 		t.Fatalf("DeployForOperation err = %v, want errDeployDisabled", err)
 	}
 	if runs := fr.recordedRuns(); len(runs) != 0 {

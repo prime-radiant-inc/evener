@@ -201,11 +201,11 @@ type hostManagerConfig struct {
 	// production they are the sshconn Manager's DeployForOperation and
 	// RestartForOperation; a nil pair (tests, embedders) fails the operation's
 	// worker with the refusal the missing seam means.
-	deployHost  func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight, restart bool) (string, sshconn.Preflight, error)
+	deployHost  func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight, restart bool, beforeMutation func() error) (string, sshconn.Preflight, error)
 	restartHost func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight, beforeMutation func() error) (string, error)
-	// recoverDeployment repairs an existing deployment before a disconnected
-	// Restart requires attachment. Both execution seams revalidate the worker's
-	// bound entry before each mutation phase. Nil result leaves attach-first intact.
+	// recoverDeployment renews and recovers an unfinished deployment or saved
+	// command before Restart attaches. Execution revalidates the bound entry
+	// before each mutation phase. Nil result leaves ordinary attach-first intact.
 	recoverDeployment func(context.Context, hostreg.Host, hostops.Holder, func() error) (*sshconn.RestartResult, error)
 	// attachedFacts returns the attached channel's captured preflight facts —
 	// the deploy path's facts source, since deploy runs no fresh preflight of
