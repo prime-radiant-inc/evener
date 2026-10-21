@@ -157,6 +157,52 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
   let recoveryWrites: Promise<void> = Promise.resolve();
   let refreshVersion = 0;
   let persistenceScheduled = false;
+  let cleanupRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let cleanupRetryAttempt = 0;
+  let cleanupRetryVersion = 0;
+
+  function cancelCleanupRetry(): void {
+    cleanupRetryVersion += 1;
+    if (cleanupRetryTimer !== null) clearTimeout(cleanupRetryTimer);
+    cleanupRetryTimer = null;
+    cleanupRetryAttempt = 0;
+  }
+
+  function hasEmptyComposition(): boolean {
+    return (
+      textRef.current.trim() === "" &&
+      operations.items.length === 0 &&
+      skillNamesRef.current.length === 0 &&
+      selectionMetaRef.current.commandNames.length === 0 &&
+      (selectionMetaRef.current.mentions?.length ?? 0) === 0
+    );
+  }
+
+  function scheduleCleanupRetry(clientMutationId: string, replacementEpoch: number): void {
+    if (
+      disposed ||
+      activeRecoveryIdRef.current !== clientMutationId ||
+      recoveryReplacementEpochRef.current !== replacementEpoch ||
+      !hasEmptyComposition()
+    )
+      return;
+    if (cleanupRetryTimer !== null) return;
+    cleanupRetryAttempt += 1;
+    const delay = Math.min(250 * 2 ** (cleanupRetryAttempt - 1), 5_000);
+    const retryVersion = cleanupRetryVersion;
+    cleanupRetryTimer = setTimeout(() => {
+      cleanupRetryTimer = null;
+      if (
+        retryVersion !== cleanupRetryVersion ||
+        disposed ||
+        activeRecoveryIdRef.current !== clientMutationId ||
+        recoveryReplacementEpochRef.current !== replacementEpoch ||
+        !hasEmptyComposition()
+      )
+        return;
+      void queueRecoveryPersistence(clientMutationId, "", [], []);
+    }, delay);
+  }
 
   const ownsDraft = () => ownedDraftRevisionRef.current === readDraftRevision(ref);
   function currentDraftText(): string {
@@ -164,17 +210,20 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
   }
   function updateText(text: string): void {
     if (disposed) return;
+    if (text.trim() !== "") cancelCleanupRetry();
     textRef.current = text;
     state.setState({ text });
   }
   function updateSkillNames(skillNames: string[]): void {
     if (disposed) return;
+    if (skillNames.length > 0) cancelCleanupRetry();
     skillNamesRef.current = skillNames;
     state.setState({ skillNames });
   }
   function updateSelectionMeta(value: SkillEditorValue): void {
     if (disposed) return;
     const next = { commandNames: value.commandNames ?? [], mentions: value.mentions };
+    if (next.commandNames.length > 0) cancelCleanupRetry();
     selectionMetaRef.current = next;
     state.setState(next);
   }
@@ -187,16 +236,19 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
   }
   function editText(text: string): void {
     if (disposed) return;
+    cancelCleanupRetry();
     markEdited();
     updateText(text);
   }
   function editSkillNames(names: string[]): void {
     if (disposed) return;
+    cancelCleanupRetry();
     markEdited();
     updateSkillNames(names);
   }
   function setActiveRecoveryId(activeRecoveryId: string | null): void {
     if (disposed) return;
+    if (activeRecoveryIdRef.current !== activeRecoveryId) cancelCleanupRetry();
     activeRecoveryIdRef.current = activeRecoveryId;
     state.setState({ activeRecoveryId });
   }
@@ -257,6 +309,13 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
     nextMentions: readonly ComposerMention[] | undefined = selectionMetaRef.current.mentions,
   ): Promise<void> {
     if (disposed) return Promise.resolve();
+    const isEmptyCleanup =
+      nextText.trim() === "" &&
+      nextAttachments.length === 0 &&
+      nextSkillNames.length === 0 &&
+      nextCommandNames.length === 0 &&
+      (nextMentions?.length ?? 0) === 0;
+    if (!isEmptyCleanup) cancelCleanupRetry();
     const version = ++recoveryWriteVersionRef.current;
     const replacementEpoch = recoveryReplacementEpochRef.current;
     const draftRevision = readDraftRevision(ref);
@@ -273,35 +332,26 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
           nextText.trim() === "" &&
           nextAttachments.length === 0 &&
           nextSkillNames.length === 0 &&
-          nextCommandNames.length === 0
+          nextCommandNames.length === 0 &&
+          (nextMentions?.length ?? 0) === 0
         ) {
-          if (
-            textRef.current.trim() !== "" ||
-            operations.items.length > 0 ||
-            skillNamesRef.current.length > 0 ||
-            selectionMetaRef.current.commandNames.length > 0
-          )
-            return;
-          await discardRecoveryPendingTurn(
+          const discarded = await discardRecoveryPendingTurn(
             clientMutationId,
             ref,
             () =>
               !disposed &&
               recoveryReplacementEpochRef.current === replacementEpoch &&
               activeRecoveryIdRef.current === clientMutationId &&
-              textRef.current.trim() === "" &&
-              operations.items.length === 0 &&
-              skillNamesRef.current.length === 0 &&
-              selectionMetaRef.current.commandNames.length === 0,
+              hasEmptyComposition(),
           );
+          if (!discarded) return;
+          cancelCleanupRetry();
           if (
             !disposed &&
+            recoveryReplacementEpochRef.current === replacementEpoch &&
             activeRecoveryIdRef.current === clientMutationId &&
             readDraftRevision(ref) === draftRevision &&
-            textRef.current.trim() === "" &&
-            operations.items.length === 0 &&
-            skillNamesRef.current.length === 0 &&
-            selectionMetaRef.current.commandNames.length === 0
+            hasEmptyComposition()
           ) {
             recoveryOwnsLocalDraftRef.current = false;
             setActiveRecoveryId(null);
@@ -333,6 +383,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
     recoveryWrites = operation;
     void operation.catch((error) => {
       if (disposed || activeRecoveryIdRef.current !== clientMutationId) return;
+      if (isEmptyCleanup) scheduleCleanupRetry(clientMutationId, replacementEpoch);
       pushToast("error", `Couldn't save recovered message: ${error instanceof Error ? error.message : String(error)}`);
     });
     return operation;
@@ -362,6 +413,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
         const merged = merge();
         const ownerId = activeRecoveryIdRef.current ?? record.clientMutationId;
         const replacementEpoch = recoveryReplacementEpochRef.current;
+        cancelCleanupRetry();
         const updated = await updateRecoveryPendingTurn(
           ownerId,
           ref,
@@ -408,6 +460,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
         const owns = ownsDraft();
         recoveryOwnsLocalDraftRef.current = false;
         recoveryWriteVersionRef.current += 1;
+        cancelCleanupRetry();
         recoveryReplacementEpochRef.current += 1;
         setActiveRecoveryId(null);
         if (
@@ -460,7 +513,10 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
         void queueRecoveryPersistence(id, textRef.current, operations.toInputAttachments(), skillNamesRef.current);
     });
   }
-  const unsubscribeAttachments = attachments.subscribe(persistDetachedRecovery);
+  const unsubscribeAttachments = attachments.subscribe(() => {
+    if (operations.items.length > 0) cancelCleanupRetry();
+    persistDetachedRecovery();
+  });
   const unsubscribeDraft = state.subscribe(persistDetachedRecovery);
 
   return {
@@ -532,6 +588,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
     dispose() {
       if (disposed) return;
       disposed = true;
+      cancelCleanupRetry();
       boundEditor = null;
       recoveryWriteVersionRef.current += 1;
       recoveryReplacementEpochRef.current += 1;

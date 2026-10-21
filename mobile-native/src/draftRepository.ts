@@ -24,6 +24,7 @@ export interface DraftRecord {
 	composer?: DraftComposerMetadata;
 	unconfirmedComposer?: DraftComposerMetadata;
 	recoveryResendAcks?: string[];
+	completedCommandRecoveryIds?: string[];
 }
 
 export interface DraftDestination {
@@ -58,6 +59,7 @@ export class DraftRepository {
 			["composer", "TEXT"],
 			["unconfirmed_composer", "TEXT"],
 			["recovery_resend_acks", "TEXT"],
+			["completed_command_recovery_ids", "TEXT"],
 		] as const) {
 			if (!draftColumns.has(name)) db.execSync(`ALTER TABLE drafts ADD COLUMN ${name} ${type}`);
 		}
@@ -133,8 +135,9 @@ export class DraftRepository {
 			composer: string | null;
 			unconfirmed_composer: string | null;
 			recovery_resend_acks: string | null;
+			completed_command_recovery_ids: string | null;
 		}>(
-			"SELECT draft, unconfirmed, composer, unconfirmed_composer, recovery_resend_acks FROM drafts WHERE hub_id = ? AND session_ref = ?",
+			"SELECT draft, unconfirmed, composer, unconfirmed_composer, recovery_resend_acks, completed_command_recovery_ids FROM drafts WHERE hub_id = ? AND session_ref = ?",
 			destination.hubId,
 			destination.sessionRef,
 		);
@@ -144,6 +147,8 @@ export class DraftRepository {
 			record.unconfirmedComposer = JSON.parse(draftRow.unconfirmed_composer) as DraftComposerMetadata;
 		if (draftRow?.recovery_resend_acks)
 			record.recoveryResendAcks = JSON.parse(draftRow.recovery_resend_acks) as string[];
+		if (draftRow?.completed_command_recovery_ids)
+			record.completedCommandRecoveryIds = JSON.parse(draftRow.completed_command_recovery_ids) as string[];
 		const imageRow = this.db.getFirstSync<{
 			images: string;
 			unconfirmed_images: string;
@@ -249,7 +254,8 @@ export class DraftRepository {
 			record.unconfirmed === null &&
 			!record.composer &&
 			!record.unconfirmedComposer &&
-			!record.recoveryResendAcks?.length
+			!record.recoveryResendAcks?.length &&
+			!record.completedCommandRecoveryIds?.length
 		) {
 			this.db.runSync(
 				"DELETE FROM drafts WHERE hub_id = ? AND session_ref = ?",
@@ -259,12 +265,13 @@ export class DraftRepository {
 			return;
 		}
 		this.db.runSync(
-			`INSERT INTO drafts (hub_id, session_ref, draft, unconfirmed, composer, unconfirmed_composer, recovery_resend_acks)
-	       VALUES (?, ?, ?, ?, ?, ?, ?)
+			`INSERT INTO drafts (hub_id, session_ref, draft, unconfirmed, composer, unconfirmed_composer, recovery_resend_acks, completed_command_recovery_ids)
+		       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (hub_id, session_ref) DO UPDATE SET
 	         draft = excluded.draft, unconfirmed = excluded.unconfirmed,
 	         composer = excluded.composer, unconfirmed_composer = excluded.unconfirmed_composer,
-	         recovery_resend_acks = excluded.recovery_resend_acks`,
+		         recovery_resend_acks = excluded.recovery_resend_acks,
+		         completed_command_recovery_ids = excluded.completed_command_recovery_ids`,
 			destination.hubId,
 			destination.sessionRef,
 			record.draft,
@@ -272,6 +279,7 @@ export class DraftRepository {
 			record.composer ? JSON.stringify(record.composer) : null,
 			record.unconfirmedComposer ? JSON.stringify(record.unconfirmedComposer) : null,
 			record.recoveryResendAcks?.length ? JSON.stringify(record.recoveryResendAcks) : null,
+			record.completedCommandRecoveryIds?.length ? JSON.stringify(record.completedCommandRecoveryIds) : null,
 		);
 	}
 

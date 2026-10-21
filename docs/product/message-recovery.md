@@ -37,6 +37,11 @@ recovery is discoverable after reload and is not labeled as a rejection.
 Text, image bytes and selection metadata travel together. Image markers are
 remapped without colliding with staged images or literal marker references.
 Skill and command selections are restored with their text-owned mentions.
+Deleting or editing the last recorded `/skill` or `/command` label also removes
+that canonical selection, including in older records whose selection may once
+have been independent. A selection with no recorded label remains selected, and
+another surviving label of the same kind and name keeps its selection. Literal
+slash prose does not create or restore a selection.
 Encoding blocks the Edit claim before it can move a row. Typing during a storage
 wait survives, and a completion cannot replace a disposed pane or a newer goal
 draft. Send stays disabled while recovery ownership is being consolidated.
@@ -75,8 +80,11 @@ Drafts and mutations live in separate SQLite databases. An Edit first claims the
 source as durable editing recovery, then saves its ID beside the draft. Reopening
 the screen reacquires any unowned editing sources, including a claim interrupted
 before draft save. A source is hidden only when saved draft ownership represents
-that exact ID. Failed saves retain the source; Retry saving and restored image
-capacity allow recovery to finish. Recovery never sends automatically.
+that exact ID. If the initial append save fails, the prior draft has no source ID,
+so the retained source stays visible and recoverable. If a later typing save fails,
+the last saved draft still owns its source IDs; those sources stay hidden from
+Discard while Retry saving preserves the captured composition. Restored image
+capacity can also complete a pending append. Recovery never sends automatically.
 
 ```mermaid
 flowchart LR
@@ -91,6 +99,27 @@ flowchart LR
 and storage repair. Receipt proof must match the captured IDs; a missing outbox
 row alone proves nothing. Unconsumed captured work returns beside newer typing
 for an explicit Send. Failed acknowledgment exposes Retry without sending again.
+
+Native built-in commands use a separate completion checkpoint. A successful
+non-message command such as `/compact`, `/goal`, `/model`, `/clear`, `/aside`,
+reasoning, shutdown, interrupt, a local command, or an argless queue drain clears
+the edited command and records its exact recovered source IDs before cleanup.
+Cleanup deletes only those IDs and never invokes the command again. Until cleanup
+finishes, the completion marker keeps those rows out of Discard and prevents
+automatic restoration. A cleanup failure stays visible with Retry; newer draft
+text remains usable and is not cleared. A failed command keeps the command and
+its recovered sources. `/steer` and `/queue` carry real message input through the
+ordinary outbox and settle recovery only on the matching resend receipt. Clearing
+the goal with `clear=true` sends `/goal` without consuming the unrelated current
+draft or its recovery ownership.
+
+The browser retries failed empty-source cleanup on its existing serialized
+queue, starting after 250 ms and doubling to a 5-second cap. It cancels retries
+when the source is disposed, replaced, edited, or cleanup succeeds. Native cleanup
+uses the screen's explicit Retry after storage failure. Both clients keep command
+execution separate from cleanup, but neither can promise exactly-once external
+RPC effects if the process or storage is lost before any successful local
+completion evidence can persist.
 
 For offline screen recreation, `screens.tsx` stores only the last observed
 matching-ref, connected/open `{threadId, instanceId}` in existing device Storage
@@ -127,7 +156,9 @@ duplicate; only a reproduced identity/projection case can establish that cause.
 - Native integration and cached local identity: `mobile-native/src/screens.tsx`.
 - Native mutation authority: `nativeMutationRuntime.ts` and
   `mutationOutboxStorage.ts`; draft ownership and bytes: `draftDocument.ts` and
-  `draftRepository.ts`; separate-store coordination: `queuedMessageControls.ts`.
+  `draftRepository.ts`; separate-store coordination: `queuedMessageControls.ts`;
+  successful non-message built-ins use `submitBuiltinCommand` and durable
+  completion markers, while `/steer` and `/queue` retain receipt settlement.
 - Native acquisition and projections: `useNativeMutationRecovery.ts`,
   `MutationRecoveryPanel.tsx` and `session/ghosts.ts`; surfaces:
   `session/GhostRows.tsx` and `QueueSheet.tsx`.

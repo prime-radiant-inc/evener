@@ -730,7 +730,9 @@ export function ConversationScreen({
 						typeof value.instanceId !== "string" ||
 						!value.instanceId
 					)
-						throw new Error("The saved session identity could not be read. Reconnect to refresh it.");
+						throw new Error(
+							"Your saved messages are still available. Retry to check this session identity; Evener will check it again when this session opens.",
+						);
 					identity = { threadId: value.threadId, instanceId: value.instanceId };
 				}
 			}
@@ -2709,11 +2711,15 @@ export function ConversationScreen({
 	// (spec 8.5 and 14). A refused row keeps Edit whenever its record can come
 	// back; whether the composer can take it right now is the bubble's
 	// canEdit, so an occupied composer shows Edit disabled with the reason.
-	// Only durable draft ownership suppresses a retained editing source. Failed
-	// saves leave the source visible and available to the next recovery pass.
-	const representedRecoveryIds = draft.error
-		? []
-		: [...(draft.record.composer?.recoveryIds ?? []), ...(draft.record.unconfirmedComposer?.recoveryIds ?? [])];
+	// Saved ownership remains authoritative when a later edit save fails: the
+	// existing durable draft still references these sources, so Discard must not
+	// expose them. An initial append failure leaves the prior record unchanged
+	// and therefore keeps its unrepresented source visible for recovery.
+	const representedRecoveryIds = [
+		...(draft.record.composer?.recoveryIds ?? []),
+		...(draft.record.unconfirmedComposer?.recoveryIds ?? []),
+		...(draft.record.completedCommandRecoveryIds ?? []),
+	];
 	const recoveryRows = projectNativeMutationRecovery(recovery.targetKey, recovery.snapshot).filter(
 		(row) => row.status !== "editing" || !representedRecoveryIds.includes(row.clientMutationId),
 	);
@@ -2728,6 +2734,7 @@ export function ConversationScreen({
 			.map((row) => row.clientMutationId),
 		captured: draft.record.unconfirmedComposer?.recoveryIds,
 		owned: draft.record.composer?.recoveryIds,
+		completed: draft.record.completedCommandRecoveryIds,
 		acks: draft.record.recoveryResendAcks,
 	});
 	useEffect(() => {

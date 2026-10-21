@@ -84,6 +84,35 @@ test("composition metadata and resend acknowledgments survive reopen and empty t
 	expect(repository.read(destination)).toEqual({ draft: "", unconfirmed: null, recoveryResendAcks: ["mutation-a"] });
 });
 
+test("completed-command cleanup markers survive reopen without becoming draft indicators", () => {
+	const marker = { draft: "", unconfirmed: null, completedCommandRecoveryIds: ["source-a"] };
+	repository.write(destination, marker);
+	database.close();
+	openRepository();
+	expect(repository.read(destination)).toEqual(marker);
+	expect(repository.refsWithDrafts(destination.hubId)).not.toContain(destination.sessionRef);
+});
+
+test("a failed whole-record write preserves prior draft content and completion marker", () => {
+	const prior = {
+		draft: "prior work",
+		unconfirmed: null,
+		completedCommandRecoveryIds: ["already-authorized"],
+	};
+	repository.write(destination, prior);
+	database.exec(
+		"CREATE TRIGGER reject_completion_record BEFORE UPDATE ON drafts BEGIN SELECT RAISE(ABORT, 'write rejected'); END",
+	);
+	expect(() =>
+		repository.write(destination, {
+			draft: "replacement",
+			unconfirmed: "uncertain",
+			completedCommandRecoveryIds: ["new-source"],
+		}),
+	).toThrow();
+	expect(repository.read(destination)).toEqual(prior);
+});
+
 test("adds composition columns to a legacy drafts table and preserves existing prose across reopen", () => {
 	database.exec(`DROP TABLE drafts;
 		CREATE TABLE drafts (hub_id TEXT NOT NULL, session_ref TEXT NOT NULL, draft TEXT NOT NULL, unconfirmed TEXT,

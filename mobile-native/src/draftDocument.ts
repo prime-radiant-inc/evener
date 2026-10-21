@@ -156,16 +156,25 @@ export class DraftDocument {
 	edit(text: string) {
 		if (!this.snapshot.loaded) return;
 		const record = this.snapshot.record;
+		const composer = record.composer;
+		const mentions =
+			composer?.mentions === undefined ? undefined : reconcileComposerMentions(record.draft, text, composer.mentions);
+		const retains = (kind: "skill" | "command", name: string) => {
+			const hadLabel = composer?.mentions?.some((mention) => mention.kind === kind && mention.name === name);
+			return !hadLabel || !!mentions?.some((mention) => mention.kind === kind && mention.name === name);
+		};
 		try {
 			this.persist(
 				{
 					...record,
 					draft: text,
-					...(record.composer?.mentions !== undefined
+					...(composer?.mentions !== undefined
 						? {
 								composer: {
-									...record.composer,
-									mentions: reconcileComposerMentions(record.draft, text, record.composer.mentions),
+									...composer,
+									mentions,
+									skillNames: composer.skillNames?.filter((name) => retains("skill", name)),
+									commandNames: composer.commandNames?.filter((name) => retains("command", name)),
 								},
 							}
 						: {}),
@@ -204,6 +213,7 @@ export class DraftDocument {
 	appendEditedRecovery(source: MutationRecoveryRecord): "restored" | "already-restored" | "blocked" {
 		const { record, loaded, submitting, error } = this.snapshot;
 		if (this.forgotten || !loaded || submitting || error || !this.isEditedSource(source)) return "blocked";
+		if (record.completedCommandRecoveryIds?.includes(source.clientMutationId)) return "already-restored";
 		if (
 			[...(record.composer?.recoveryIds ?? []), ...(record.unconfirmedComposer?.recoveryIds ?? [])].includes(
 				source.clientMutationId,
@@ -329,6 +339,13 @@ export class DraftDocument {
 	) {
 		return this.submitContent(this.snapshot.record.draft, false, operation);
 	}
+	/** Explicit non-message command path. A true result here is command success,
+	 * unlike submit(), whose true result is never proof of message admission. */
+	async submitBuiltinCommand(
+		operation: (text: string, images: InputAttachment[], context: ConversationMutationContext) => Promise<boolean>,
+	) {
+		return this.submitContent(this.snapshot.record.draft, false, operation, undefined, true);
+	}
 	/** Submit composer text without consuming the draft. `reissued` carries the
 	 * attachments of an input being re-sent (a Retry): they travel with the text
 	 * and the guard counts them, so an image-only re-issue can send. */
@@ -344,6 +361,7 @@ export class DraftDocument {
 		preserveDraft: boolean,
 		operation: (text: string, images: InputAttachment[], context: ConversationMutationContext) => Promise<boolean>,
 		reissued?: InputAttachment[],
+		builtinCommand = false,
 	) {
 		const { record, loaded, submitting, error } = this.snapshot;
 		const images = preserveDraft ? [] : (record.images ?? []);
@@ -405,18 +423,53 @@ export class DraftDocument {
 				},
 				...(metadata?.recoveryIds?.length ? { recoverySourceIds: [...metadata.recoveryIds] } : {}),
 			};
-			if ((await operation(text, inputImages, context)) && !metadata?.recoveryIds?.length)
-				this.persist(
-					{
-						...this.snapshot.record,
-						unconfirmed: null,
-						unconfirmedImages: undefined,
-						unconfirmedComposer: undefined,
-					},
-					true,
-				);
+			if (await operation(text, inputImages, context)) {
+				if (builtinCommand) {
+					const current = this.snapshot.record;
+					if (
+						current.unconfirmed === text &&
+						(!metadata?.recoveryIds?.length ||
+							sameSources(current.unconfirmedComposer?.recoveryIds, metadata.recoveryIds))
+					) {
+						const ids = metadata?.recoveryIds ?? [];
+						this.persist(
+							{
+								...current,
+								unconfirmed: null,
+								unconfirmedImages: undefined,
+								unconfirmedComposer: undefined,
+								completedCommandRecoveryIds: [...new Set([...(current.completedCommandRecoveryIds ?? []), ...ids])],
+							},
+							true,
+						);
+					}
+				} else if (!metadata?.recoveryIds?.length)
+					this.persist(
+						{
+							...this.snapshot.record,
+							unconfirmed: null,
+							unconfirmedImages: undefined,
+							unconfirmedComposer: undefined,
+						},
+						true,
+					);
+			}
 		} finally {
 			this.update({ submitting: false });
+		}
+	}
+
+	/** Remove only IDs whose exact-target deletion attempts completed. */
+	finishCompletedCommandRecovery(ids: readonly string[]): boolean {
+		const { record, loaded, error } = this.snapshot;
+		if (this.forgotten || !loaded || error) return false;
+		const remaining = (record.completedCommandRecoveryIds ?? []).filter((id) => !ids.includes(id));
+		if (remaining.length === (record.completedCommandRecoveryIds ?? []).length) return true;
+		try {
+			this.persist({ ...record, completedCommandRecoveryIds: remaining.length ? remaining : undefined }, false);
+			return true;
+		} catch {
+			return false;
 		}
 	}
 

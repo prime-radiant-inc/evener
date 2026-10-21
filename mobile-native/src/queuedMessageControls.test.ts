@@ -123,6 +123,196 @@ test("offline edit and remove distinguish identical messages and restore exact I
 	expect(f.client.calls).toEqual([]);
 });
 
+test("successful built-in completion durably cleans only captured sources without replay", async () => {
+	const f = fixture();
+	const captured = await f.enqueue();
+	const sibling = await f.enqueue();
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, captured, f.document)).toBe("restored");
+	let commands = 0;
+	await f.document.submitBuiltinCommand(async () => {
+		commands++;
+		return true;
+	});
+	expect(f.repository.read(destination)).toMatchObject({
+		draft: "",
+		unconfirmed: null,
+		completedCommandRecoveryIds: [captured],
+	});
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, captured, f.document)).toBe("already-restored");
+	await f.reopen();
+	await reconcileEditedResends(f.runtime, key, f.document);
+	expect((await f.runtime.read(key)).recovery).toEqual([]);
+	expect((await f.runtime.read(key)).outbox.map((source) => source.clientMutationId)).toEqual([sibling]);
+	expect(f.document.getSnapshot().record.completedCommandRecoveryIds).toBeUndefined();
+	expect(commands).toBe(1);
+	expect(f.client.calls).toEqual([]);
+});
+
+test("multiple-source completion preserves newer draft, image, and older cleanup markers", async () => {
+	const f = fixture();
+	const first = await richSource(f);
+	const second = await richSource(f);
+	await editQueuedMessageIntoDraft(f.runtime, key, first, f.document);
+	await editQueuedMessageIntoDraft(f.runtime, key, second, f.document);
+	f.repository.write(destination, {
+		...f.document.getSnapshot().record,
+		completedCommandRecoveryIds: ["older-cleanup"],
+	});
+	f.reloadDraft();
+	let commands = 0;
+	await f.document.submitBuiltinCommand(async () => {
+		commands++;
+		f.document.edit("newer /skill");
+		f.document.addImage({ id: "typed-image", marker: 20, mediaType: "image/png", data: "AQID" });
+		return true;
+	});
+	expect(f.repository.read(destination)).toMatchObject({
+		draft: "newer /skill[image 20]",
+		images: [{ id: "typed-image", marker: 20 }],
+		completedCommandRecoveryIds: ["older-cleanup", first, second],
+	});
+	await reconcileEditedResends(f.runtime, key, f.document);
+	expect((await f.runtime.read(key)).recovery).toEqual([]);
+	expect(f.document.getSnapshot().record.completedCommandRecoveryIds).toBeUndefined();
+	expect(commands).toBe(1);
+});
+
+test("ordinary successful submit retains captured recovery until matching real resend receipt", async () => {
+	const f = fixture();
+	const id = await richSource(f);
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, id, f.document)).toBe("restored");
+	await f.document.submit(async () => true);
+	expect(f.document.getSnapshot().record.unconfirmedComposer?.recoveryIds).toEqual([id]);
+	expect(f.document.getSnapshot().record.recoveryResendAcks).toBeUndefined();
+	await f.runtime.submit(request({ recoverySourceIds: [id] }));
+	const receipt = await f.runtime.readRecoveryResend(key, [id]);
+	expect(receipt).toBeDefined();
+	expect(f.document.settleEditedResend(receipt!)).toBe(true);
+	expect(f.document.getSnapshot().record.unconfirmed).toBeNull();
+});
+
+test("failed built-in command preserves captured recovery without cleanup intent", async () => {
+	const f = fixture();
+	const captured = await f.enqueue();
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, captured, f.document)).toBe("restored");
+	await f.document.submitBuiltinCommand(async () => false);
+	expect(f.repository.read(destination)).toMatchObject({
+		unconfirmed: "same",
+		unconfirmedComposer: { recoveryIds: [captured] },
+	});
+	expect(f.repository.read(destination).completedCommandRecoveryIds).toBeUndefined();
+	expect((await f.runtime.read(key)).recovery.map((source) => source.clientMutationId)).toEqual([captured]);
+	expect(f.client.calls).toEqual([]);
+});
+
+test("failed command-success save retries durable cleanup without rerunning the command", async () => {
+	const f = fixture();
+	const captured = await f.enqueue();
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, captured, f.document)).toBe("restored");
+	f.drafts.exec(`CREATE TRIGGER reject_command_completion BEFORE UPDATE ON drafts
+		WHEN NEW.completed_command_recovery_ids IS NOT NULL BEGIN SELECT RAISE(ABORT, 'completion save rejected'); END`);
+	let commands = 0;
+	await expect(
+		f.document.submitBuiltinCommand(async () => {
+			commands++;
+			return true;
+		}),
+	).rejects.toBeInstanceOf(Error);
+	expect(f.document.getSnapshot().error).not.toBeNull();
+	expect((await f.runtime.read(key)).recovery.map((source) => source.clientMutationId)).toEqual([captured]);
+	f.drafts.exec("DROP TRIGGER reject_command_completion");
+	f.document.retry();
+	expect(f.repository.read(destination).completedCommandRecoveryIds).toEqual([captured]);
+	await reconcileEditedResends(f.runtime, key, f.document);
+	expect((await f.runtime.read(key)).recovery).toEqual([]);
+	expect(commands).toBe(1);
+});
+
+test.each(["first-delete", "second-delete"] as const)(
+	"command cleanup retries after %s failure across reopen without touching sibling targets",
+	async (cut) => {
+		const f = fixture();
+		const first = await f.enqueue();
+		const second = await f.enqueue();
+		const sibling = await f.enqueue();
+		const otherTargetKey = nativeMutationTargetKey("hub", "other-session");
+		f.runtime.registerTarget("hub", "other-session", new FakeClient("closed"), {
+			threadId: "other-thread",
+			instanceId: "other-instance",
+		});
+		await f.runtime.submit(
+			request({ targetRef: "other-session", threadId: "other-thread", instanceId: "other-instance" }),
+		);
+		const otherTarget = (await f.runtime.read(otherTargetKey)).outbox[0].clientMutationId;
+		for (const id of [first, second]) expect(await f.runtime.editQueuedMessage(id, key)).toBeDefined();
+		await f.runtime.storage.transferToRecovery(sibling, "rejected");
+		expect(await f.runtime.editQueuedMessage(otherTarget, otherTargetKey)).toBeDefined();
+		expect(await editQueuedMessageIntoDraft(f.runtime, key, first, f.document)).toBe("restored");
+		expect(await editQueuedMessageIntoDraft(f.runtime, key, second, f.document)).toBe("restored");
+		let commands = 0;
+		await f.document.submitBuiltinCommand(async () => {
+			commands++;
+			return true;
+		});
+		const failId = cut === "first-delete" ? first : second;
+		f.mutations.exec(`CREATE TRIGGER fail_cleanup BEFORE DELETE ON mutation_recovery
+			WHEN OLD.client_mutation_id = '${failId}' BEGIN SELECT RAISE(ABORT, 'delete rejected'); END`);
+		await expect(reconcileEditedResends(f.runtime, key, f.document)).rejects.toBeInstanceOf(Error);
+		const afterFailure = (await f.runtime.read(key)).recovery.map((row) => row.clientMutationId);
+		expect(afterFailure).toEqual(cut === "first-delete" ? [first, second, sibling] : [second, sibling]);
+		expect((await f.runtime.read(otherTargetKey)).recovery.map((row) => row.clientMutationId)).toEqual([otherTarget]);
+		await f.reopen();
+		f.mutations.exec("DROP TRIGGER fail_cleanup");
+		await reconcileEditedResends(f.runtime, key, f.document);
+		expect((await f.runtime.read(key)).recovery.map((row) => row.clientMutationId)).toEqual([sibling]);
+		expect((await f.runtime.read(otherTargetKey)).recovery.map((row) => row.clientMutationId)).toEqual([otherTarget]);
+		expect(f.document.getSnapshot().record.completedCommandRecoveryIds).toBeUndefined();
+		expect(commands).toBe(1);
+		expect(f.client.calls).toEqual([]);
+	},
+);
+
+test("all deletes survive marker-clear save failure and reopen treats absent IDs as complete", async () => {
+	const f = fixture();
+	const first = await f.enqueue();
+	const second = await f.enqueue();
+	for (const id of [first, second]) expect(await f.runtime.editQueuedMessage(id, key)).toBeDefined();
+	for (const id of [first, second])
+		expect(await editQueuedMessageIntoDraft(f.runtime, key, id, f.document)).toBe("restored");
+	let commands = 0;
+	await f.document.submitBuiltinCommand(async () => {
+		commands++;
+		return true;
+	});
+	f.drafts.exec(`CREATE TRIGGER fail_marker_clear BEFORE DELETE ON drafts
+		WHEN OLD.completed_command_recovery_ids IS NOT NULL
+		BEGIN SELECT RAISE(ABORT, 'marker clear rejected'); END`);
+	await reconcileEditedResends(f.runtime, key, f.document);
+	expect((await f.runtime.read(key)).recovery).toEqual([]);
+	expect(f.repository.read(destination).completedCommandRecoveryIds).toEqual([first, second]);
+	expect(f.document.getSnapshot().record.completedCommandRecoveryIds).toEqual([first, second]);
+	f.drafts.exec("DROP TRIGGER fail_marker_clear");
+	await f.reopen();
+	await reconcileEditedResends(f.runtime, key, f.document);
+	expect((await f.runtime.read(key)).recovery).toEqual([]);
+	expect(f.document.getSnapshot().record.completedCommandRecoveryIds).toBeUndefined();
+	expect(commands).toBe(1);
+});
+
+test("finishing an older processed marker snapshot keeps newer cleanup IDs", () => {
+	const f = fixture();
+	f.repository.write(destination, { draft: "", unconfirmed: null, completedCommandRecoveryIds: ["processed"] });
+	f.reloadDraft();
+	f.repository.write(destination, {
+		draft: "",
+		unconfirmed: null,
+		completedCommandRecoveryIds: ["processed", "newer"],
+	});
+	f.reloadDraft();
+	expect(f.document.finishCompletedCommandRecovery(["processed"])).toBe(true);
+	expect(f.repository.read(destination).completedCommandRecoveryIds).toEqual(["newer"]);
+});
+
 test("resumes a durable editing claim before append without reclaiming", async () => {
 	const f = fixture();
 	const id = await f.enqueue();

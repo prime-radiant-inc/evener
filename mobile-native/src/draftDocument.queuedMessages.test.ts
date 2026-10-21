@@ -152,7 +152,7 @@ it.each([
 	expect(document.getSnapshot().record).toMatchObject({
 		draft: text,
 		composer: {
-			skillNames: ["inspect"],
+			skillNames: offsets.length === 1 ? [] : ["inspect"],
 			commandNames: ["inspect"],
 			mentions: expectedMentions,
 			recoveryIds: ["exact-source"],
@@ -173,13 +173,69 @@ it.each([
 			),
 		).toEqual([
 			{ type: "text", text, mentions: expectedMentions },
-			{ type: "skill", name: "inspect" },
+			...(offsets.length === 1 ? [] : [{ type: "skill" as const, name: "inspect" }]),
 			{ type: "command", name: "inspect" },
 		]);
 		return false;
 	});
 	expect(submitted).toBe(true);
 	expect(repository.read(destination).recoveryResendAcks).toEqual(["pending-ack"]);
+});
+
+it("deselects canonical names when their last recorded label is edited", () => {
+	const before = "😀 /same and /same plus prose /same";
+	const mentions = [
+		{ kind: "skill" as const, name: "same", offset: 3 },
+		{ kind: "command" as const, name: "same", offset: 13 },
+	];
+	expect(mentions.map(({ offset, name }) => before.slice(offset, offset + name.length + 1))).toEqual([
+		"/same",
+		"/same",
+	]);
+	const source = recovery("labels", {
+		composerText: before,
+		composerMentions: mentions,
+		attachments: [],
+		payload: {
+			input: [
+				{ type: "text", text: before, mentions },
+				{ type: "skill", name: "same" },
+				{ type: "command", name: "same" },
+				{ type: "skill", name: "label-free-skill" },
+				{ type: "command", name: "label-free-command" },
+			],
+		},
+	});
+	expect(document.appendEditedRecovery(source)).toBe("restored");
+	document.edit("😀 renamed and  plus prose /same");
+	expect(document.getSnapshot().record).toMatchObject({
+		draft: "😀 renamed and  plus prose /same",
+		composer: {
+			skillNames: ["label-free-skill"],
+			commandNames: ["label-free-command"],
+			mentions: [],
+			recoveryIds: ["labels"],
+		},
+	});
+});
+
+it("keeps a canonical selection while another recorded label of the same kind and name survives", () => {
+	const before = "😀 /same then /same";
+	const mentions = [
+		{ kind: "skill" as const, name: "same", offset: 3 },
+		{ kind: "skill" as const, name: "same", offset: 14 },
+	];
+	repository.write(destination, {
+		draft: before,
+		unconfirmed: null,
+		composer: { skillNames: ["same", "independent"], mentions },
+	});
+	reopen();
+	document.edit("😀 /other then /same");
+	expect(document.getSnapshot().record.composer).toMatchObject({
+		skillNames: ["same", "independent"],
+		mentions: [{ kind: "skill", name: "same", offset: 15 }],
+	});
 });
 
 it("keeps legacy prose unbound through collisions and a later merge", () => {

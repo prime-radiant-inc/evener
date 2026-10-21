@@ -133,8 +133,10 @@ export async function submitComposerCommand(
 	let afterSubmit = () => {};
 	const id = match.command.id;
 	if (isLocalComposerCommand(id)) {
-		await context.local(id);
-		if (document.getSnapshot().record === record) document.edit("");
+		await document.submitBuiltinCommand(async () => {
+			await context.local(id);
+			return true;
+		});
 		return id;
 	}
 	// A command with a control (steer, queue, drain, stop) runs only when the
@@ -237,7 +239,9 @@ export async function submitComposerCommand(
 	}
 	let completed: typeof match.command.id | null = null;
 	try {
-		await document.submit(async () => {
+		const submit =
+			id === "steer" || id === "queue" ? document.submit.bind(document) : document.submitBuiltinCommand.bind(document);
+		await submit(async () => {
 			if (!context.isCurrent()) return false;
 			await operation();
 			completed = match.command.id;

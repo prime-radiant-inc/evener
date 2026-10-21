@@ -1,12 +1,21 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { parseSlashToken, spliceSlashCommand } from "@evener/appwire-client";
 import type { InputItem } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ConversationMutationContext } from "../../mobile/src/state/conversationMutation";
 import type { MobileConversation } from "./projectedRows";
 import { builtinComposerItems, composerCommand, submitComposerCommand } from "./composerCommand";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
+import { NativeMutationRuntime, nativeMutationTargetKey, type NativeMutationRequest } from "./nativeMutationRuntime";
+import { editQueuedMessageIntoDraft, reconcileEditedResends } from "./queuedMessageControls";
 import { openSqliteSyncDouble } from "./sqliteSync.testkit";
+
+vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
+vi.mock("expo-crypto", async () => ({
+	randomUUID: (await import("node:crypto")).randomUUID,
+	getRandomValues: (array: Uint8Array) => array,
+}));
 
 it.each(["queue", "steer"] as const)("captures /%s body metadata before encoding", async (kind) => {
 	const { database, port } = openSqliteSyncDouble();
@@ -58,6 +67,100 @@ it.each(["queue", "steer"] as const)("captures /%s body metadata before encoding
 		database.close();
 	}
 });
+
+it.each(["queue", "steer"] as const)(
+	"/%s retains an edited source until the real resend receipt settles",
+	async (kind) => {
+		const drafts = openSqliteSyncDouble();
+		const mutations = openSqliteSyncDouble();
+		const destination = { hubId: "hub-1", sessionRef: "ref-1" };
+		const targetKey = nativeMutationTargetKey(destination.hubId, destination.sessionRef);
+		const client = new FakeClient("closed");
+		let nextMutation = 0;
+		const runtime = new NativeMutationRuntime(mutations.port, {
+			createMutationId: () => `mutation-${++nextMutation}`,
+			setInterval: () => 1,
+			clearInterval: () => {},
+		});
+		const repository = new DraftRepository(drafts.port);
+		const document = new DraftDocument(() => repository, destination);
+		runtime.registerTarget(destination.hubId, destination.sessionRef, client, {
+			threadId: "thread-1",
+			instanceId: "instance-1",
+		});
+		const request = (
+			kind: "send" | "queue" | "steer",
+			input: InputItem[] = [{ type: "text", text: "source message" }],
+			context?: ConversationMutationContext,
+		): NativeMutationRequest => ({
+			hubId: destination.hubId,
+			targetRef: destination.sessionRef,
+			threadId: "thread-1",
+			instanceId: "instance-1",
+			kind,
+			input,
+			...(context?.composer === undefined ? {} : { composer: context.composer }),
+			...(context?.recoverySourceIds === undefined ? {} : { recoverySourceIds: context.recoverySourceIds }),
+		});
+		try {
+			await runtime.submit(request("send"));
+			const sourceId = (await runtime.read(targetKey)).outbox[0].clientMutationId;
+			expect(await editQueuedMessageIntoDraft(runtime, targetKey, sourceId, document)).toBe("restored");
+			document.edit(`/${kind} source message`);
+
+			const submitted: Array<{ kind: string; input: InputItem[]; context?: ConversationMutationContext }> = [];
+			await submitComposerCommand(document, {} as Parameters<typeof submitComposerCommand>[1], {
+				isCurrent: () => true,
+				local: async () => {},
+				openAside: () => {},
+				cleared: () => {},
+				turn: () => conversation({ queue: true, steer: true }, "active"),
+				drainQueue: async () => {},
+				drainRefusal: () => null,
+				submit: async (submittedKind, input, context) => {
+					submitted.push({ kind: submittedKind, input, context });
+				},
+				stop: async () => {},
+				reasoning: () => null,
+			});
+
+			expect(submitted).toHaveLength(1);
+			expect(submitted[0]).toMatchObject({
+				kind,
+				input: [{ type: "text", text: "source message" }],
+				context: { recoverySourceIds: [sourceId] },
+			});
+			expect(repository.read(destination)).toMatchObject({
+				draft: "",
+				unconfirmed: `/${kind} source message`,
+				unconfirmedComposer: { recoveryIds: [sourceId] },
+			});
+			expect(repository.read(destination).completedCommandRecoveryIds).toBeUndefined();
+			expect((await runtime.read(targetKey)).recovery.map((source) => source.clientMutationId)).toEqual([sourceId]);
+
+			await runtime.submit(request(kind, submitted[0].input, submitted[0].context));
+			const receipt = await runtime.readRecoveryResend(targetKey, [sourceId]);
+			expect(receipt).toBeDefined(); // Real outbox receipt, not the handler callback's success value.
+			expect(receipt).toMatchObject({ sourceIds: [sourceId] });
+			const admitted = await runtime.read(targetKey);
+			expect(admitted.outbox).toHaveLength(1);
+			expect(admitted.outbox[0].clientMutationId).toBe(receipt?.clientMutationId);
+			expect(admitted.outbox[0]).toMatchObject({
+				method: kind === "queue" ? "turn/queue" : "turn/steer",
+				payload: { input: submitted[0].input },
+				composerText: submitted[0].context?.composer?.text,
+			});
+			await reconcileEditedResends(runtime, targetKey, document);
+			expect(document.getSnapshot().record.unconfirmed).toBeNull();
+			expect(document.getSnapshot().record.completedCommandRecoveryIds).toBeUndefined();
+			expect((await runtime.read(targetKey)).recovery).toEqual([]);
+		} finally {
+			await runtime.stop();
+			drafts.database.close();
+			mutations.database.close();
+		}
+	},
+);
 
 it.each([
 	["/compact", "compact", ""],

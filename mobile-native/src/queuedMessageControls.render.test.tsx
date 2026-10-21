@@ -36,6 +36,7 @@ const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
 	uuid: 0,
 	kvFailure: "" as "" | "read" | "write",
+	rpcFailure: "" as string,
 	reopenKV: () => {},
 }));
 const navigationState = vi.hoisted(() => ({ state: { index: 0, routes: [] as { key: string; name: string }[] } }));
@@ -207,6 +208,7 @@ let serial = 0;
 afterEach(async () => {
 	unmountMountedTrees();
 	harness.kvFailure = "";
+	harness.rpcFailure = "";
 	await getNativeMutationRuntime().stop();
 });
 afterAll(() => {
@@ -259,6 +261,7 @@ async function mount(selectionOnly = false, command = false) {
 	client.request = async (method, raw) => {
 		const params = raw as Record<string, unknown>;
 		requests.push({ method, params });
+		if (method === harness.rpcFailure) throw new Error("scripted RPC failure");
 		if (method === "thread/read") return { thread } as never;
 		if (method === "model/list") return { data: [] } as never;
 		if (method.startsWith("turn/"))
@@ -401,6 +404,45 @@ it("actual screen edits offline into nonempty work without sending and removes b
 	});
 	expect(await f.runtime.storage.getOutbox(second.clientMutationId)).toBeUndefined();
 });
+
+it("actual screen deselects an edited recovered label before explicit Send and persists it across reopen", async () => {
+	const f = await mount();
+	await f.offline();
+	const text = "please /skill keep this";
+	const mentions = [{ kind: "skill" as const, name: "skill", offset: 7 }];
+	await act(async () => {
+		await f.runtime.submit({
+			kind: "send",
+			hubId: "hub-1",
+			targetRef: f.ref,
+			threadId: `thread-${f.ref}`,
+			instanceId: "instance",
+			input: buildComposerInput(text, [], ["skill"], [], mentions),
+			composer: { text, attachments: [], skillNames: ["skill"], mentions },
+		});
+	});
+	await settle();
+	const host = queueHosts.get(sheetKey("hub-1", f.ref));
+	if (!host?.ghosts[0]) throw new Error("no queued source");
+	await act(async () => {
+		await host.act(host.ghosts[0], "edit");
+	});
+	const edited = "please  keep this /skill";
+	const input = f.tree.root.findAll((node) => String(node.type) === "TextInput" && node.props.value === text)[0];
+	if (!input) throw new Error("missing recovered composer input");
+	await act(async () => input.props.onChangeText(edited));
+	expect(f.document.getSnapshot().record.composer?.skillNames).toEqual([]);
+	await act(async () => pressable(f.tree, "Send when you're back online")?.props.onPress());
+	await settle();
+	const persisted = await f.runtime.read(f.targetKey);
+	expect(persisted.recovery).toEqual([]);
+	expect(persisted.outbox).toHaveLength(1);
+	expect(persisted.outbox[0].payload.input).toEqual([{ type: "text", text: edited }]);
+	await f.recreateOffline();
+	expect(f.document.getSnapshot().record.draft).toBe("");
+	expect((await f.runtime.read(f.targetKey)).outbox[0].payload.input).toEqual([{ type: "text", text: edited }]);
+});
+
 it("actual screen reacquires interrupted editing ownership in an effect", async () => {
 	const f = await mount();
 	await f.offline();
@@ -484,6 +526,7 @@ it("actual screen recovers retained ownership once after Retry saving", async ()
 		await host.act(host.ghosts[0], "edit");
 	});
 	expect(f.document.getSnapshot().error).not.toBeNull();
+	expect(f.tree.root.findAllByProps({ accessibilityLabel: "Discard" })).toHaveLength(1);
 	expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: f.ref }).draft).toBe("prior");
 	expect((await f.runtime.read(f.targetKey)).recovery.map((r) => r.clientMutationId)).toEqual([
 		source.clientMutationId,
@@ -501,6 +544,44 @@ it("actual screen recovers retained ownership once after Retry saving", async ()
 	expect(read).not.toHaveBeenCalled();
 	read.mockRestore();
 	expect(f.requests.filter((r) => r.method.startsWith("turn/"))).toEqual([]);
+});
+
+it("actual screen keeps an appended source protected through a later failed save and explicit resend", async () => {
+	const f = await mount();
+	await f.offline();
+	const source = await enqueue(f);
+	const host = queueHosts.get(sheetKey("hub-1", f.ref));
+	if (!host?.ghosts[0]) throw new Error("missing source");
+	await act(async () => {
+		await host.act(host.ghosts[0], "edit");
+	});
+	expect(f.document.getSnapshot().record.composer?.recoveryIds).toEqual([source.clientMutationId]);
+
+	const db = sqlite.ports.get("evener-drafts.db") as SqliteSync;
+	db.execSync("PRAGMA query_only = ON");
+	act(() => f.document.edit("later edit"));
+	expect(f.document.getSnapshot().error).not.toBeNull();
+	expect(f.document.getSnapshot().record.composer?.recoveryIds).toEqual([source.clientMutationId]);
+	// The failed save must not offer the already-owned editing source for Discard.
+	expect(f.tree.root.findAllByProps({ accessibilityLabel: "Discard" })).toHaveLength(0);
+	expect(await f.runtime.storage.getRecovery(source.clientMutationId)).toBeDefined();
+
+	db.execSync("PRAGMA query_only = OFF");
+	await act(async () => pressable(f.tree, "Retry saving")?.props.onPress());
+	await settle();
+	expect(f.document.getSnapshot().record).toMatchObject({
+		draft: "later edit",
+		composer: { recoveryIds: [source.clientMutationId] },
+	});
+	await act(async () => pressable(f.tree, "Send when you're back online")?.props.onPress());
+	await settle();
+	const persisted = await f.runtime.read(f.targetKey);
+	expect(persisted.recovery).toEqual([]);
+	expect(persisted.outbox).toHaveLength(1);
+	expect(persisted.outbox[0].clientMutationId).not.toBe(source.clientMutationId);
+	await f.recreateOffline();
+	expect(f.document.getSnapshot().record.draft).toBe("");
+	expect((await f.runtime.read(f.targetKey)).outbox).toHaveLength(1);
 });
 
 it("actual screen retries retained editing source when image capacity becomes available", async () => {
@@ -595,6 +676,92 @@ it("actual screen retries failed receipt acknowledgment without resending or cle
 	expect(await f.runtime.readRecoveryResend(f.targetKey, [source.clientMutationId])).toBeUndefined();
 	expect(f.document.getSnapshot().record.draft).toBe("newer");
 	expect((await f.runtime.read(f.targetKey)).outbox).toHaveLength(1);
+});
+
+async function prepareRecoveredCompact() {
+	const f = await mount();
+	await f.offline();
+	const source = await enqueue(f, "recover me");
+	const host = queueHosts.get(sheetKey("hub-1", f.ref));
+	if (!host?.ghosts[0]) throw new Error("missing source");
+	await act(async () => {
+		host.act(host.ghosts[0], "edit");
+	});
+	f.thread.evener.capabilities.compact = true;
+	const input = f.tree.root.findAll(
+		(node) => String(node.type) === "TextInput" && node.props.value === "recover me",
+	)[0];
+	if (!input) throw new Error("missing recovered composer input");
+	await act(async () => input.props.onChangeText("/compact"));
+	act(() => f.client.emitStateChange("ready"));
+	harness.connection = { ...harness.connection, state: "ready" };
+	await act(async () => f.tree.update(<ConversationScreen route={f.route} navigation={navigation} />));
+	await settle();
+	return { f, source };
+}
+
+it("actual screen completes edited /compact without sending and does not replay after reopen", async () => {
+	const { f, source } = await prepareRecoveredCompact();
+	await act(async () => pressable(f.tree, "Compact transcript")?.props.onPress());
+	await settle();
+	expect(f.requests.filter((r) => r.method === "thread/compact/start")).toHaveLength(1);
+	expect(f.requests.filter((r) => r.method.startsWith("turn/")).map((r) => r.method)).toEqual([]);
+	expect((await f.runtime.read(f.targetKey)).recovery).toEqual([]);
+	expect(f.document.getSnapshot().record.draft).toBe("");
+	await f.recreateOffline();
+	expect(f.document.getSnapshot().record.draft).toBe("");
+	expect((await f.runtime.read(f.targetKey)).recovery).toEqual([]);
+	expect(f.requests.filter((r) => r.method === "thread/compact/start")).toHaveLength(1);
+	expect(await f.runtime.storage.getOutbox(source.clientMutationId)).toBeUndefined();
+});
+
+it("actual screen protects and retries cleanup after /compact success without rerunning it", async () => {
+	const { f, source } = await prepareRecoveredCompact();
+	const db = sqlite.ports.get("evener-mutations.db") as SqliteSync;
+	db.execSync("PRAGMA query_only = ON");
+	await act(async () => pressable(f.tree, "Compact transcript")?.props.onPress());
+	await settle();
+	expect(f.requests.filter((r) => r.method === "thread/compact/start")).toHaveLength(1);
+	expect(f.document.getSnapshot().record.completedCommandRecoveryIds).toEqual([source.clientMutationId]);
+	expect(f.tree.root.findAllByProps({ accessibilityLabel: "Discard" })).toHaveLength(0);
+	expect((await f.runtime.read(f.targetKey)).recovery.map((row) => row.clientMutationId)).toEqual([
+		source.clientMutationId,
+	]);
+	const draftDb = sqlite.ports.get("evener-drafts.db") as SqliteSync;
+	draftDb.execSync("PRAGMA query_only = ON");
+	act(() => f.document.edit("newer draft"));
+	expect(f.document.getSnapshot().error).not.toBeNull();
+	expect(f.document.getSnapshot().record.completedCommandRecoveryIds).toEqual([source.clientMutationId]);
+	expect(f.tree.root.findAllByProps({ accessibilityLabel: "Discard" })).toHaveLength(0);
+	draftDb.execSync("PRAGMA query_only = OFF");
+	await act(async () => pressable(f.tree, "Retry saving")?.props.onPress());
+	await settle();
+	expect(f.document.getSnapshot().record.completedCommandRecoveryIds).toEqual([source.clientMutationId]);
+	db.execSync("PRAGMA query_only = OFF");
+	await act(async () => pressable(f.tree, "Retry")?.props.onPress());
+	await settle();
+	expect(f.document.getSnapshot().record.completedCommandRecoveryIds ?? []).toEqual([]);
+	expect(await f.runtime.storage.getOutbox(source.clientMutationId)).toBeUndefined();
+	expect(f.requests.filter((r) => r.method === "thread/compact/start")).toHaveLength(1);
+	expect(f.document.getSnapshot().record.draft).toBe("newer draft");
+});
+
+it("actual screen keeps recovered command work when the built-in RPC fails", async () => {
+	const { f, source } = await prepareRecoveredCompact();
+	harness.rpcFailure = "thread/compact/start";
+	await act(async () => pressable(f.tree, "Compact transcript")?.props.onPress());
+	await settle();
+	expect(f.document.getSnapshot().record).toMatchObject({
+		draft: "/compact",
+		composer: { recoveryIds: [source.clientMutationId] },
+	});
+	expect((await f.runtime.read(f.targetKey)).recovery.map((row) => row.clientMutationId)).toEqual([
+		source.clientMutationId,
+	]);
+	expect(f.requests.filter((r) => r.method.startsWith("turn/")).map((r) => r.method)).toEqual([]);
+	await f.recreateOffline();
+	expect(f.document.getSnapshot().record.draft).toBe("/compact");
+	expect(f.requests.filter((r) => r.method === "thread/compact/start")).toHaveLength(1);
 });
 
 it("replacement identity supersedes cache and failed replacement write removes stale authority", async () => {

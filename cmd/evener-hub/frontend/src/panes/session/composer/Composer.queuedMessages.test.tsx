@@ -163,6 +163,13 @@ test.each([false, true])("queuedEditsPreserveDraftAndSendOnce, Stop=%s", async (
   await user.click(within(row).getByRole("button", { name: "Remove from queue" }));
   await flushPendingTurnsProjectionForTests();
   expect(await reopened.getOutbox(second.clientMutationId)).toBeUndefined();
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  const recoveredLabel = source.getSnapshot().text.indexOf("/review");
+  selectEditorText(editor, recoveredLabel, recoveredLabel + "/review".length);
+  await user.keyboard("{Backspace}");
+  await flushPendingTurnsProjectionForTests();
+  expect(source.getSnapshot().skillNames).toEqual(["draft"]);
+  expect(source.getSnapshot().text).toBe("current [image 1] /draft\n\noriginal [image 2] ");
   // Recreate the composer before the explicit Send, with only its durable owner.
   cleanup();
   source.dispose();
@@ -210,12 +217,11 @@ test.each([false, true])("queuedEditsPreserveDraftAndSendOnce, Stop=%s", async (
     [
       {
         type: "text",
-        text: "current (attached image 1: current.png) /draft\n\noriginal (attached image 2: original.png) /review revised ",
+        text: "current (attached image 1: current.png) /draft\n\noriginal (attached image 2: original.png) revised ",
       },
       { type: "image", mediaType: "image/png", data: "BAUG", name: "current.png" },
       { type: "image", mediaType: "image/png", data: "AQID", name: "original.png" },
       { type: "skill", name: "draft" },
-      { type: "skill", name: "review" },
     ],
   ]);
   expect(await reopened.getOutbox(second.clientMutationId)).toBeUndefined();
@@ -401,7 +407,12 @@ test("recorded literal survives Edit beside a current image and Send", async () 
   await flushPendingTurnsProjectionForTests();
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: "Edit message" }));
-  await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(record.clientMutationId));
+  await waitFor(() =>
+    expect(source.getSnapshot()).toMatchObject({
+      activeRecoveryId: record.clientMutationId,
+      recoveryActivating: false,
+    }),
+  );
   const deliveredInputs: InputItem[][] = [];
   fake.on("turn/start", (params) => {
     deliveredInputs.push(params.input ?? []);
@@ -632,4 +643,334 @@ test("failed secondary consolidation retains both original recoveries and the cu
   }
   await user.click(screen.getByRole("button", { name: "Edit message" }));
   await waitFor(() => expect(source.getSnapshot().text).toBe("first\n\nsecond"));
+});
+
+async function editQueuedMessageIntoCompact() {
+  const { storage, fake } = await setup(false);
+  const record = await queued(storage, "queued work");
+  const source = createTestComposerSource("root");
+  mount(fake, source);
+  await flushPendingTurnsProjectionForTests();
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Edit message" }));
+  await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(record.clientMutationId));
+  await flushPendingTurnsProjectionForTests();
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  selectEditorText(editor, 0, source.getSnapshot().text.length);
+  await user.keyboard("/compact");
+  await flushPendingTurnsProjectionForTests();
+  return { storage, fake, record, source, user };
+}
+
+const messageMutationMethods = new Set([
+  "turn/start",
+  "turn/steer",
+  "turn/queue",
+  "turn/drainAsSteer",
+  "turn/promoteQueuedAsSteer",
+]);
+
+test("successful built-in completes edited recovery without sending a message or resurrecting it", async () => {
+  const { storage, fake, record, source, user } = await editQueuedMessageIntoCompact();
+  const finishCommand = deferred<void>();
+  fake.on("thread/compact/start", async () => {
+    await finishCommand.promise;
+    return {};
+  });
+
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/compact/start")).toHaveLength(1));
+  await act(async () => finishCommand.resolve());
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(source.getSnapshot()).toMatchObject({ text: "", activeRecoveryId: null }));
+  await waitFor(async () => expect(await storage.getRecovery(record.clientMutationId)).toBeUndefined());
+  expect(fake.calls.filter((call) => messageMutationMethods.has(call.method))).toEqual([]);
+
+  cleanup();
+  source.dispose();
+  const reopenedStorage = new MutationOutboxIndexedDB();
+  const reopenedSource = mount(fake).source;
+  await flushPendingTurnsProjectionForTests();
+  expect(reopenedSource.getSnapshot()).toMatchObject({ text: "", activeRecoveryId: null });
+  expect(await reopenedStorage.getRecovery(record.clientMutationId)).toBeUndefined();
+  expect(await reopenedStorage.listRecovery("root")).toEqual([]);
+  expect(fake.calls.filter((call) => messageMutationMethods.has(call.method))).toEqual([]);
+  cleanup();
+  reopenedSource.dispose();
+  reopenedStorage.close();
+});
+
+test("failed built-in keeps edited recovery and reopen does not retry the command", async () => {
+  const { storage, fake, record, source, user } = await editQueuedMessageIntoCompact();
+  const failCommand = deferred<void>();
+  fake.on("thread/compact/start", async () => {
+    await failCommand.promise;
+    throw new Error("scripted compact failure");
+  });
+
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/compact/start")).toHaveLength(1));
+  await act(async () => failCommand.resolve());
+  await waitFor(async () =>
+    expect((await storage.getRecovery(record.clientMutationId))?.composerText).toBe("/compact"),
+  );
+  expect(source.getSnapshot()).toMatchObject({ text: "/compact", activeRecoveryId: record.clientMutationId });
+  expect(fake.calls.filter((call) => messageMutationMethods.has(call.method))).toEqual([]);
+
+  cleanup();
+  source.dispose();
+  const reopenedStorage = new MutationOutboxIndexedDB();
+  const reopenedSource = mount(fake).source;
+  await flushPendingTurnsProjectionForTests();
+  await user.click(screen.getByRole("button", { name: "Edit message" }));
+  await waitFor(() => expect(reopenedSource.getSnapshot().text).toBe("/compact"));
+  expect(reopenedSource.getSnapshot()).toMatchObject({ text: "/compact", activeRecoveryId: record.clientMutationId });
+  expect(fake.calls.filter((call) => call.method === "thread/compact/start")).toHaveLength(1);
+  expect(fake.calls.filter((call) => messageMutationMethods.has(call.method))).toEqual([]);
+  cleanup();
+  reopenedSource.dispose();
+  reopenedStorage.close();
+});
+
+test("late built-in success does not consume newer edited recovery work", async () => {
+  const { storage, fake, record, source, user } = await editQueuedMessageIntoCompact();
+  const commandStarted = deferred<void>();
+  const finishCommand = deferred<void>();
+  fake.on("thread/compact/start", async () => {
+    commandStarted.resolve();
+    await finishCommand.promise;
+    return {};
+  });
+
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await commandStarted.promise;
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  selectEditorText(editor, 0, source.getSnapshot().text.length);
+  await user.keyboard("newer work");
+  await waitFor(async () =>
+    expect((await storage.getRecovery(record.clientMutationId))?.composerText).toBe("newer work"),
+  );
+  await act(async () => finishCommand.resolve());
+  await waitFor(() =>
+    expect(source.getSnapshot()).toMatchObject({ text: "newer work", activeRecoveryId: record.clientMutationId }),
+  );
+  expect((await storage.getRecovery(record.clientMutationId))?.composerText).toBe("newer work");
+
+  cleanup();
+  source.dispose();
+  const reopenedStorage = new MutationOutboxIndexedDB();
+  const reopenedSource = mount(fake).source;
+  await flushPendingTurnsProjectionForTests();
+  await user.click(screen.getByRole("button", { name: "Edit message" }));
+  await waitFor(() => expect(reopenedSource.getSnapshot().text).toBe("newer work"));
+  expect(reopenedSource.getSnapshot()).toMatchObject({ text: "newer work", activeRecoveryId: record.clientMutationId });
+  expect((await reopenedStorage.getRecovery(record.clientMutationId))?.composerText).toBe("newer work");
+  expect(fake.calls.filter((call) => messageMutationMethods.has(call.method))).toEqual([]);
+  cleanup();
+  reopenedSource.dispose();
+  reopenedStorage.close();
+});
+
+test("transient cleanup failure retires completed command recovery without replay", async () => {
+  const { storage, fake, record, source, user } = await editQueuedMessageIntoCompact();
+  fake.on("thread/compact/start", () => ({}));
+  const originalDelete = IDBObjectStore.prototype.delete;
+  let cleanupFailed = false;
+  const failRecoveryDelete = vi.spyOn(IDBObjectStore.prototype, "delete").mockImplementation(function (
+    this: IDBObjectStore,
+    ...args: unknown[]
+  ) {
+    if (this.name === "recovery" && !cleanupFailed) {
+      cleanupFailed = true;
+      throw new DOMException("scripted cleanup failure", "QuotaExceededError");
+    }
+    return Reflect.apply(originalDelete, this, args);
+  });
+  try {
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/compact/start")).toHaveLength(1));
+    await waitFor(() => expect(cleanupFailed).toBe(true));
+    failRecoveryDelete.mockRestore();
+    await flushPendingTurnsProjectionForTests();
+    expect(source.getSnapshot().text).toBe("");
+    expect(fake.calls.filter((call) => call.method === "thread/compact/start")).toHaveLength(1);
+    expect(fake.calls.filter((call) => messageMutationMethods.has(call.method))).toEqual([]);
+    await waitFor(async () => expect(await storage.getRecovery(record.clientMutationId)).toBeUndefined());
+  } finally {
+    failRecoveryDelete.mockRestore();
+    cleanup();
+    source.dispose();
+    storage.close();
+  }
+});
+
+async function emptyRecoverySource() {
+  const { storage } = await setup();
+  const record = await queued(storage, "completed command");
+  await editQueuedMutation(record.clientMutationId, "root");
+  const source = createTestComposerSource("root");
+  source.bindEditor({
+    read: () => ({ text: "", cursor: 0, selection: { start: 0, end: 0 } }),
+    write: () => {},
+  });
+  source.setActiveRecoveryId(record.clientMutationId);
+  return { storage, record, source };
+}
+
+test("repeated cleanup failures retry at bounded intervals until storage recovers", async () => {
+  const { storage, record, source } = await emptyRecoverySource();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const originalDelete = IDBObjectStore.prototype.delete;
+  let deleteAttempts = 0;
+  const failThreeDeletes = vi.spyOn(IDBObjectStore.prototype, "delete").mockImplementation(function (
+    this: IDBObjectStore,
+    ...args: unknown[]
+  ) {
+    if (this.name === "recovery") {
+      deleteAttempts += 1;
+      if (deleteAttempts <= 3) throw new DOMException("scripted cleanup failure", "QuotaExceededError");
+    }
+    return Reflect.apply(originalDelete, this, args);
+  });
+  try {
+    await act(async () => source.queueRecoveryPersistence(record.clientMutationId, "", [], []).catch(() => undefined));
+    expect(deleteAttempts).toBe(1);
+    expect(vi.getTimerCount()).toBe(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(249);
+      await flushPendingTurnsProjectionForTests();
+    });
+    expect(deleteAttempts).toBe(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+      await flushPendingTurnsProjectionForTests();
+    });
+    await storage.getRecovery(record.clientMutationId);
+    expect(deleteAttempts).toBe(2);
+    expect(vi.getTimerCount()).toBe(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+      await flushPendingTurnsProjectionForTests();
+    });
+    await storage.getRecovery(record.clientMutationId);
+    expect(deleteAttempts).toBe(3);
+    expect(vi.getTimerCount()).toBe(1);
+    await act(async () => {
+      await vi.runOnlyPendingTimersAsync();
+      await flushPendingTurnsProjectionForTests();
+    });
+    await storage.getRecovery(record.clientMutationId);
+    expect(deleteAttempts).toBe(4);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(await storage.getRecovery(record.clientMutationId)).toBeUndefined();
+    expect(source.getSnapshot().activeRecoveryId).toBeNull();
+  } finally {
+    failThreeDeletes.mockRestore();
+    vi.useRealTimers();
+    source.dispose();
+    storage.close();
+  }
+});
+
+test("typing before cleanup retry preserves newer work and the recovery row", async () => {
+  const { storage, record, source } = await emptyRecoverySource();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const originalDelete = IDBObjectStore.prototype.delete;
+  let deleteAttempts = 0;
+  const failFirstDelete = vi.spyOn(IDBObjectStore.prototype, "delete").mockImplementation(function (
+    this: IDBObjectStore,
+    ...args: unknown[]
+  ) {
+    if (this.name === "recovery") {
+      deleteAttempts += 1;
+      if (deleteAttempts === 1) throw new DOMException("scripted cleanup failure", "QuotaExceededError");
+    }
+    return Reflect.apply(originalDelete, this, args);
+  });
+  try {
+    await act(async () => source.queueRecoveryPersistence(record.clientMutationId, "", [], []).catch(() => undefined));
+    expect(vi.getTimerCount()).toBe(1);
+    await act(async () => source.editText("newer work"));
+    expect(vi.getTimerCount()).toBe(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+      await flushPendingTurnsProjectionForTests();
+    });
+    expect(deleteAttempts).toBe(1);
+    expect(source.getSnapshot().text).toBe("newer work");
+    expect((await storage.getRecovery(record.clientMutationId))?.composerText).toBe("completed command");
+  } finally {
+    failFirstDelete.mockRestore();
+    vi.useRealTimers();
+    source.dispose();
+    storage.close();
+  }
+});
+
+test("disposing the source cancels its delayed recovery cleanup retry", async () => {
+  const { storage, record, source } = await emptyRecoverySource();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const originalDelete = IDBObjectStore.prototype.delete;
+  let deleteAttempts = 0;
+  const failFirstDelete = vi.spyOn(IDBObjectStore.prototype, "delete").mockImplementation(function (
+    this: IDBObjectStore,
+    ...args: unknown[]
+  ) {
+    if (this.name === "recovery") {
+      deleteAttempts += 1;
+      if (deleteAttempts === 1) throw new DOMException("scripted cleanup failure", "QuotaExceededError");
+    }
+    return Reflect.apply(originalDelete, this, args);
+  });
+  try {
+    await act(async () => source.queueRecoveryPersistence(record.clientMutationId, "", [], []).catch(() => undefined));
+    expect(vi.getTimerCount()).toBe(1);
+    await act(async () => source.dispose());
+    expect(vi.getTimerCount()).toBe(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+      await flushPendingTurnsProjectionForTests();
+    });
+    expect(deleteAttempts).toBe(1);
+    expect((await storage.getRecovery(record.clientMutationId))?.composerText).toBe("completed command");
+  } finally {
+    failFirstDelete.mockRestore();
+    vi.useRealTimers();
+    source.dispose();
+    storage.close();
+  }
+});
+
+test("replacing the recovery owner cancels the prior owner's cleanup retry", async () => {
+  const { storage, record, source } = await emptyRecoverySource();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const originalDelete = IDBObjectStore.prototype.delete;
+  let deleteAttempts = 0;
+  const failFirstDelete = vi.spyOn(IDBObjectStore.prototype, "delete").mockImplementation(function (
+    this: IDBObjectStore,
+    ...args: unknown[]
+  ) {
+    if (this.name === "recovery") {
+      deleteAttempts += 1;
+      if (deleteAttempts === 1) throw new DOMException("scripted cleanup failure", "QuotaExceededError");
+    }
+    return Reflect.apply(originalDelete, this, args);
+  });
+  try {
+    await act(async () => source.queueRecoveryPersistence(record.clientMutationId, "", [], []).catch(() => undefined));
+    expect(vi.getTimerCount()).toBe(1);
+    await act(async () => source.setActiveRecoveryId("replacement-owner"));
+    expect(vi.getTimerCount()).toBe(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+      await flushPendingTurnsProjectionForTests();
+    });
+    expect(deleteAttempts).toBe(1);
+    expect((await storage.getRecovery(record.clientMutationId))?.composerText).toBe("completed command");
+  } finally {
+    failFirstDelete.mockRestore();
+    vi.useRealTimers();
+    source.dispose();
+    storage.close();
+  }
 });

@@ -37,6 +37,11 @@ export async function reconcileEditedResends(
 		.catch(() => undefined)
 		.then(async () => {
 			if (!ready(document, targetKey)) return;
+			const completedIds = [...(document.getSnapshot().record.completedCommandRecoveryIds ?? [])];
+			if (completedIds.length) {
+				for (const id of completedIds) await runtime.discardRecovery(id, targetKey);
+				if (!ready(document, targetKey) || !document.finishCompletedCommandRecovery(completedIds)) return;
+			}
 			// Markers survive capture clearing, and receipt acknowledgment is idempotent.
 			for (const id of document.getSnapshot().record.recoveryResendAcks ?? []) {
 				await runtime.acknowledgeRecoveryResend(targetKey, id);
