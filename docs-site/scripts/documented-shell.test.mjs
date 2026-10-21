@@ -37,10 +37,11 @@ function runDailyBlock(t, { collision, failGit = false, resume = false, parent =
     writeFileSync(path.join(workspace, 'initial.json'), '{"nonce":"first","receipts":["first"]}');
     writeFileSync(path.join(workspace, 'continued.json'), '{"nonce":"second","receipts":["second"]}');
   }
+  const credentials = collision === 'unwritable' && process.getuid() === 0 ? { uid: 65534, gid: 65534 } : {};
   // Only the nonsecret probe must be reachable after dropping uid. Keep the
   // workspace, HOME and logs under private scratch, whose ancestors may be 0700.
-  const bin = collision === 'unwritable' ? realpathSync(mkdtempSync('/tmp/evener-docs-probe-')) : path.join(root, 'bin');
-  if (collision === 'unwritable') {
+  const bin = credentials.uid !== undefined ? realpathSync(mkdtempSync('/tmp/evener-docs-probe-')) : path.join(root, 'bin');
+  if (credentials.uid !== undefined) {
     t.after(() => rmSync(bin, { recursive: true, force: true }));
     chmodSync(bin, 0o755);
   } else {
@@ -69,7 +70,6 @@ function runDailyBlock(t, { collision, failGit = false, resume = false, parent =
   });
   if (collision === 'unwritable') chmodSync(caller, 0o555);
   const run = resume ? continuation : block;
-  const credentials = collision === 'unwritable' && process.getuid() === 0 ? { uid: 65534, gid: 65534 } : {};
   // Capture the block's status before recording the caller's CWD; do not put the block
   // in an if condition, which would disable errexit in its subshell.
   // Inherited FDs stay writable without exposing private log paths to the dropped uid.
