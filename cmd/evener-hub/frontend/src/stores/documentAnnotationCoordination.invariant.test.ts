@@ -1,11 +1,17 @@
 // @vitest-environment node
 
-import type { PreparedAnnotation } from "@evener/appwire-client";
+import type { DocumentKey, PreparedAnnotation } from "@evener/appwire-client";
 import { afterEach, expect, test, vi } from "vitest";
-import type { ComposerPreparation } from "../panes/session/composer/composerContract";
-import { APPEND_STORES } from "./browserDraftRepository";
+import type { ComposerPreparation, ComposerSourceState } from "../panes/session/composer/composerContract";
+import { APPEND_STORES, browserDraftKey } from "./browserDraftRepository";
 import { SAVE_STORES } from "./documentAnnotationIndexedDB";
-import { type AnnotationFixtureWithRuntime, openAnnotationFixture, pollUntil } from "./testing/annotationFixture";
+import {
+  type AnnotationFixture,
+  type AnnotationFixtureWithRuntime,
+  buildAnnotationOperation,
+  openAnnotationFixture,
+  pollUntil,
+} from "./testing/annotationFixture";
 import { holdNextWriteTransaction } from "./testing/stalledIndexedDB";
 
 afterEach(() => {
@@ -59,6 +65,79 @@ test("a storage success during an outstanding save starts the recovery pass its 
   // pass whose replay of the durable row publishes the lost wake.
   await fixture.runtime.whenIdle();
   expect(listener).toHaveBeenCalled();
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+// Every durable identity is namespace-qualified: the operation row's key is
+// [kind, origin, operationId]. The reconciliation sweep's handled set compared
+// bare operation IDs, so two namespaces that both minted "operation-1" made
+// one namespace's reconciliation skip the other's pending handoff for the rest
+// of the pass. A second namespace with the same operation ID proves the sweep
+// must key by the qualified identity: reconciling A must leave B eligible in
+// the SAME pass.
+test("a reconciled append does not skip a same-id pending operation in another namespace", async () => {
+  const secondOrigin = "https://second.example";
+  const secondKey = browserDraftKey("root", secondOrigin);
+  const secondDocument: DocumentKey = { ...secondKey, path: "NOTES.md" };
+  let secondPreparation: ComposerPreparation | null = null;
+  const secondSource = {
+    ref: "root",
+    sourceId: "source-2",
+    alive: true,
+    subscribeRecoveryPersisted: () => () => undefined,
+    prepareAnnotation: async () => secondPreparation,
+    ownsPreparation: () => true,
+    acknowledgeAnnotation: vi.fn(),
+  } as unknown as ComposerSourceState;
+  let fixture: AnnotationFixture | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    targetFor: (destination, key) =>
+      key.namespace.kind === "browser" && key.namespace.origin === secondOrigin
+        ? secondSource
+        : (fixture?.source ?? null),
+  });
+
+  // The other namespace's pending operation reuses the same operation ID.
+  const seeded = await fixture.drafts.seedDraft(secondKey, { text: "", skillNames: [] });
+  if (seeded.state !== "committed") throw new Error(`second draft seed was not committed: ${seeded.state}`);
+  secondPreparation = { key: secondKey, token: seeded.draft.token, backing: { kind: "draft" }, localGeneration: 0 };
+  const ticket = await fixture.repository.beginRead(secondDocument);
+  const accepted = await fixture.repository.acceptRead(ticket, fixture.content);
+  if (accepted.state !== "accepted") throw new Error(`second read was not accepted: ${accepted.state}`);
+  const operationB = buildAnnotationOperation(accepted.lease, fixture.content, {
+    kind: "browser-origin",
+    paneId: "pane-2",
+    compositionOwnerId: "source-2",
+  });
+  expect(operationB.operationId).toBe(fixture.operation.operationId);
+  await fixture.repository.saveAnnotation(operationB);
+
+  // A's append commits unobserved: its receipt is applied and its uncertain
+  // record retained while the completion event stays held.
+  const hold = holdNextWriteTransaction(APPEND_STORES);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let reached = false;
+  void hold.reached.then(() => {
+    reached = true;
+  });
+  const appendA = fixture.repository.handoff(fixture.document, fixture.operation.operationId);
+  await pollUntil(() => reached, 50);
+  expect(reached).toBe(true);
+  await vi.advanceTimersByTimeAsync(10_001);
+  expect(await appendA).toEqual({ state: "pending", reason: "owner-unavailable" });
+  hold.release();
+  vi.useRealTimers();
+
+  // ONE pass reconciles A first, then sweeps the persisted pending handoffs.
+  await fixture.repository.retryPending("storage-recovered");
+  const views = await fixture.repository.listAnnotations(secondDocument);
+  expect(views.find((view) => view.operation.operationId === operationB.operationId)?.handoff.state).toBe(
+    "already-applied",
+  );
 
   fixture.repository.close();
   fixture.drafts.close();

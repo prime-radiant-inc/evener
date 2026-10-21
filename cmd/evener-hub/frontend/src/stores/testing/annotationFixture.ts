@@ -162,6 +162,11 @@ export interface AnnotationFixtureOptions
   prepareAnnotation?: () => Promise<ComposerPreparation | null>;
   acknowledgeAnnotation?: (preparation: ComposerPreparation, token: ComposerPreparation["token"]) => void;
   destination?: DestinationProvenance;
+  // Resolve the destination's composer source differently from the fixture's
+  // single built source: a suite serving two browser namespaces wires one
+  // source per namespace here. When absent, every destination resolves to the
+  // built source.
+  targetFor?: DocumentAnnotationOptions["targetFor"];
   // The close suite observes what the adapter arms on its source, so it tracks
   // every registration instead of discarding them.
   trackRecoveryListeners?: boolean;
@@ -177,6 +182,7 @@ export interface AnnotationFixtureOptions
 
 export interface AnnotationFixture extends AnnotationStore {
   runtime: DocumentAnnotationRuntime | undefined;
+  source: ComposerSourceState;
   acknowledge: ReturnType<typeof vi.fn>;
   storageSuccess: ReturnType<typeof vi.fn>;
   pendingExpiryRetained: ReturnType<typeof vi.fn>;
@@ -213,9 +219,9 @@ export async function openAnnotationFixture(options: AnnotationFixtureOptions): 
   const store = await openAnnotationStore({
     databaseName: options.databaseName,
     origin: options.origin,
-    targetFor: () => {
+    targetFor: (destination, key) => {
       options.onTarget?.();
-      return source ?? null;
+      return options.targetFor ? options.targetFor(destination, key) : (source ?? null);
     },
     beforeCommit: options.beforeCommit,
     beforeExpiryFence: options.beforeExpiryFence,
@@ -231,7 +237,7 @@ export async function openAnnotationFixture(options: AnnotationFixtureOptions): 
             return { key, token: seeded.draft.token, backing: { kind: "draft" }, localGeneration: 0 };
           },
   });
-  source = {
+  const builtSource = {
     ref: "root",
     sourceId: "source-1",
     alive: true,
@@ -249,6 +255,7 @@ export async function openAnnotationFixture(options: AnnotationFixtureOptions): 
     ownsPreparation: () => true,
     acknowledgeAnnotation: acknowledge,
   } as unknown as ComposerSourceState;
+  source = builtSource;
   if (options.runtime === true) runtime = createDocumentAnnotationRuntime(store.repository);
   const content = sampleAnnotationContent();
   const ticket = await store.repository.beginRead(store.document);
@@ -259,6 +266,7 @@ export async function openAnnotationFixture(options: AnnotationFixtureOptions): 
   return {
     ...store,
     runtime,
+    source: builtSource,
     acknowledge,
     storageSuccess,
     pendingExpiryRetained,

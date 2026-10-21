@@ -1370,6 +1370,9 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // operations it already visited - a retry that re-faulted re-retains its own
   // record under the same identity, which this pass must not append twice.
   async #retryPersistedPending(cancellation?: AnnotationRetryCancellation): Promise<void> {
+    // Keyed like every durable identity: two namespaces may mint the same bare
+    // operation ID, and the pending row's own operationKey is the identity
+    // that tells them apart.
     const handled = new Set<string>();
     // A committed append whose completion went unobserved answers applied on
     // replay, so a pending scan would skip it - recovery must not skip the
@@ -1380,7 +1383,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     // backing.
     for (const record of [...this.#uncertainAppends.values()]) {
       if (cancellation?.cancelled) return;
-      handled.add(record.operationId);
+      handled.add(annotationOperationKey(record.key.namespace, record.operationId));
       await this.handoff(record.key, record.operationId, cancellation);
     }
     const pending = await this.#transaction(
@@ -1406,7 +1409,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
           );
       },
     );
-    for (const { payload } of pending) {
+    for (const { row, payload } of pending) {
       // A sweep outlives the runtime that started it only until disposal: a
       // later handoff must not start against a retained composer. The
       // operations it never reached keep their pending receipts.
@@ -1414,7 +1417,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // Reconciliation above already handed this operation off in this pass; a
       // second attempt would only repeat the outcome against the composer it
       // just touched.
-      if (handled.has(payload.operation.operationId)) continue;
+      if (handled.has(row.operationKey)) continue;
       await this.handoff(payload.operation.lease.key, payload.operation.operationId, cancellation);
     }
   }
