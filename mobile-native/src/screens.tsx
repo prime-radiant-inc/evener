@@ -2581,7 +2581,20 @@ export function ConversationScreen({
 				// what releases the message. A refusal or failure is reported here,
 				// so a parked message is never left unexplained.
 				const answered = await getNativeMutationRuntime()
-					.settleTarget(target.hubId, target.ref, client, { mayResumeFenced: async () => true })
+					.settleTarget(target.hubId, target.ref, client, {
+						mayResumeFenced: async () => true,
+						// The rows followed the resume; the pane has to as well, or the
+						// message and the work it starts land on a ref nobody is showing.
+						onResolvedIdentity: (resolved) => {
+							navigation.replace("Conversation", {
+								hubId: route.params.hubId,
+								ref: resolved,
+								title: route.params.title,
+								openedBy: route.params.openedBy,
+								slideFrom: route.params.slideFrom,
+							});
+						},
+					})
 					.catch(() => undefined);
 				if (answered === "reconciled" || answered === "open") {
 					// The store's conversation can still read resumeRequired: a

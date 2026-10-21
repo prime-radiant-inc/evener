@@ -21,7 +21,15 @@ export function sendAction(
 	// A fenced session takes the message and resumes before it sends. Its only
 	// unrunnable shape is a restartRequired daemon, which the table answers
 	// "none" for below: its older process must be stopped first.
-	if (conversation.resumeRequired) return resumeOrNone(conversation);
+	//
+	// Only the FIRST message resumes. A second one while the first is still
+	// unreflected queues behind it: two parked turn/starts would race for the
+	// same active turn once recovery lands, and the daemon rejects the loser as
+	// already active instead of running it.
+	if (conversation.resumeRequired) {
+		if (ownPendingSend(pendingMutations)) return "queue";
+		return resumeOrNone(conversation);
+	}
 	if (!connected) return offlineAction(conversation, ownPendingSend(pendingMutations));
 	const status = conversation.status.type;
 	const availability = deriveSendQueueAvailability({

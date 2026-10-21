@@ -82,6 +82,10 @@ describe("what Send does (spec 8.5)", () => {
 		// A daemon that needs restarting still has no Send: its older process
 		// must be stopped first.
 		expect(sendAction(session("restartRequired", fencedWire), [], true)).toBe("none");
+		// Only the first message resumes. A second one queues behind it, or two
+		// parked turn/starts would race for the same active turn on recovery.
+		expect(sendAction(session("idle", fencedWire), [pendingSend()], true)).toBe("queue");
+		expect(sendAction(session("idle", fencedWire), [pendingSend()], false)).toBe("queue");
 	});
 
 	it("does nothing where the harness can't take it", () => {

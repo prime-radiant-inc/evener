@@ -206,7 +206,7 @@ export class OutboxFlush {
 					// The screen is not reading here, and a resume writes nothing, so
 					// this path owns the follow-up for a settle that resumed but could
 					// not finish - the same reason the claim path does.
-					if (answer === "resumed") this.retryTargetSoon(generation);
+					if (answer === "resumed") this.retryTargetSoon();
 					// A predicate that could not read storage: retry on the existing
 					// storage backoff, since the message behind it is still waiting.
 					else if (answer === "retry") {
@@ -249,7 +249,7 @@ export class OutboxFlush {
 			// resume recycled its transport) leaves the row parked with no storage
 			// write to wake this flush, so it owns the next look. A plain "blocked"
 			// is a fence or a failure and waits as it always did.
-			if (answer === "resumed") this.retryTargetSoon(generation);
+			if (answer === "resumed") this.retryTargetSoon();
 			else if (answer === "retry") {
 				this.readFailures += 1;
 				this.retryLater(generation);
@@ -275,9 +275,14 @@ export class OutboxFlush {
 	 * fenced settle that resumed has already cleared the fence, so the next
 	 * look dispatches; the delay only keeps a transport that is still being
 	 * recycled from answering the retry with another stale read. */
-	private retryTargetSoon(generation: number): void {
+	private retryTargetSoon(): void {
 		const timer = setTimeout(() => {
-			if (generation !== this.generation) return;
+			// Deliberately not generation-checked. The resume recycles its own
+			// transport, so the app rebinds this flush and advances the generation
+			// while the settle that scheduled this retry is still in flight; a
+			// generation guard would throw the retry away in exactly the case it
+			// exists for. flush() reads the current binding and no-ops when there
+			// is none, which is the only condition that should cancel it.
 			void this.flush().catch(() => undefined);
 		}, 500);
 		timer.unref?.();

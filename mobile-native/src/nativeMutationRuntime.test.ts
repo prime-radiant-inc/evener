@@ -690,6 +690,37 @@ test("a resume that changes identity retargets the parked row", async () => {
 	await runtime.stop();
 });
 
+// Both refs can already hold sequence 1. Moving the target before the sequence
+// would violate the unique (target_ref, intent_sequence) index and roll the
+// whole retarget back, so the two must move together.
+test("a retarget into a target that already holds work keeps both rows", async () => {
+	let minted = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => {
+			minted += 1;
+			return `m-${minted}`;
+		},
+	});
+	const storage = runtime.storage;
+	const client = new FakeClient("ready");
+	await registerAndStart(runtime, client);
+	await runtime.submit(request("send"));
+	await runtime.submit({ ...request("send"), targetRef: "ref-2", threadId: "thread-2", instanceId: "instance-2" });
+
+	const moved = storage.retarget(nativeMutationTargetKey("hub-1", "ref-1"), {
+		ref: nativeMutationTargetKey("hub-1", "ref-2"),
+		wireRef: "ref-2",
+		threadId: "thread-2",
+		instanceId: "instance-2",
+	});
+	expect(moved).toHaveLength(1);
+	const rows = await storage.listOutbox(nativeMutationTargetKey("hub-1", "ref-2"));
+	expect(rows).toHaveLength(2);
+	// Distinct sequences, or the unique index would have rejected the second.
+	expect(new Set(rows.map((row) => row.intentSequence)).size).toBe(2);
+	await runtime.stop();
+});
+
 test("restart-required reads hold even never-attempted work until a later valid read", async () => {
 	const runtime = new NativeMutationRuntime(openDatabase(), {
 		createMutationId: () => "mutation-1",

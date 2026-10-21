@@ -482,7 +482,13 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		hubId: string,
 		targetRef: string,
 		client: AppwireClientLike,
-		options: { mayResumeFenced?: () => Promise<boolean> } = {},
+		options: {
+			mayResumeFenced?: () => Promise<boolean>;
+			/** Called with the resolved ref when a resume changes the session's
+			 * identity, so a mounted screen can follow it instead of staying on
+			 * the ref the daemon retired. */
+			onResolvedIdentity?: (ref: string) => void;
+		} = {},
 	): Promise<"open" | "reconciled" | "blocked" | "resumed" | "retry" | "stale" | "unregistered"> {
 		const targetKey = nativeMutationTargetKey(hubId, targetRef);
 		if (!this.#targets.has(targetKey)) return "unregistered";
@@ -570,6 +576,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 				// Subscribers match the composite key, so a bare ref reaches none of
 				// them and both projections would keep showing rows that moved.
 				this.#notifyStorageChange([targetKey, resolvedKey]);
+				options.onResolvedIdentity?.(resolvedRef);
 			}
 			try {
 				// The resume cleared the fence, so read once more and reconcile in

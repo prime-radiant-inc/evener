@@ -618,28 +618,41 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			);
 			if (rows.length === 0) return [];
 			const ids = rows.map((row) => row.client_mutation_id);
-			// Only the rows this move knows how to finish. A canceled row left
-			// behind is harmless - it can never dispatch - while one carried over
-			// without the rewrite below would reopen under the new target still
+			// Each row's target and sequence move in ONE write. Moving the target
+			// first would keep the source sequence, and both refs can already hold
+			// that number: the unique (target_ref, intent_sequence) index would
+			// reject the move and roll the whole retarget back.
+			//
+			// Only the rows this move knows how to finish take part. A canceled row
+			// left behind is harmless - it can never dispatch - while one carried
+			// over without the rewrite below would reopen under the new target still
 			// naming the retired identity.
-			for (const id of ids) {
-				this.db.runSync(
-					`UPDATE ${TABLES.outbox} SET target_ref = ?
-					 WHERE client_mutation_id = ? AND state IN ('submitting', 'blockedUnknown')`,
-					to.ref,
-					id,
+			//
+			// The optimistic table has the same unique index and the same risk, so
+			// it moves the same way.
+			const destinationEpoch = this.stopEpochOf(to.ref);
+			for (const table of [TABLES.outbox, TABLES.optimistic]) {
+				const moving = this.db.getAllSync<{ client_mutation_id: string }>(
+					`SELECT client_mutation_id FROM ${table} WHERE target_ref = ? ORDER BY intent_sequence`,
+					ref,
 				);
+				for (const row of moving) {
+					this.db.runSync(
+						`UPDATE ${table} SET target_ref = ?, intent_sequence = ? WHERE client_mutation_id = ?`,
+						to.ref,
+						this.allocateSequence(to.ref),
+						row.client_mutation_id,
+					);
+				}
 			}
-			// Optimistic displays and recovery rows describe the same messages and
-			// move with them; neither carries a wire fence of its own.
-			for (const table of [TABLES.optimistic, TABLES.recovery]) {
-				this.db.runSync(`UPDATE ${table} SET target_ref = ? WHERE target_ref = ?`, to.ref, ref);
-			}
+			// Recovery rows carry no unique sequence index and no wire fence, so they
+			// move as a set.
+			this.db.runSync(`UPDATE ${TABLES.recovery} SET target_ref = ? WHERE target_ref = ?`, to.ref, ref);
 			// The destination's stop counter is its own. A row carrying the source's
 			// epoch would be compared against an unrelated counter - falsely canceled
 			// by a lower one, or un-fenced by a higher one. Starting at the
-			// destination's current epoch keeps every existing stop effective.
-			const destinationEpoch = this.stopEpochOf(to.ref);
+			// destination's current epoch (read above, before any move) keeps every
+			// existing stop effective.
 			// A resume that names no instance still changed identity: the daemon's
 			// fence token is then the thread id, the same fused rule every other
 			// caller derives it by.
