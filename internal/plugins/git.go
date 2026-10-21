@@ -85,6 +85,27 @@ func guardGitArg(name, val string) error {
 	return nil
 }
 
+// checkoutRevision checks out target only after proving it names a commit.
+// git checkout treats an unmatched name as a pathspec, so without this a ref
+// that matches a tracked file or directory would leave the clone on its
+// default branch while the caller records the ref as checked out.
+func checkoutRevision(ctx context.Context, dir, target string) error {
+	// A branch other than the remote's default exists only as origin/<name> in
+	// a fresh clone; git checkout creates the local branch from it.
+	resolved := false
+	for _, rev := range []string{target, "origin/" + target} {
+		if _, err := gitRun(ctx, dir, "rev-parse", "--verify", "--quiet", rev+"^{commit}"); err == nil {
+			resolved = true
+			break
+		}
+	}
+	if !resolved {
+		return fmt.Errorf("refusing to check out %q: it does not name a branch, tag, or commit", target)
+	}
+	_, err := gitRun(ctx, dir, "checkout", "--quiet", target)
+	return err
+}
+
 // gitClone clones url into dir, then checks out ref and/or sha when set.
 func gitClone(ctx context.Context, url, dir, ref, sha string) error {
 	for _, g := range []struct{ n, v string }{{"url", url}, {"ref", ref}, {"sha", sha}} {
@@ -104,12 +125,12 @@ func gitClone(ctx context.Context, url, dir, ref, sha string) error {
 		return err
 	}
 	if ref != "" {
-		if _, err := gitRun(ctx, dir, "checkout", "--quiet", ref); err != nil {
+		if err := checkoutRevision(ctx, dir, ref); err != nil {
 			return err
 		}
 	}
 	if sha != "" {
-		if _, err := gitRun(ctx, dir, "checkout", "--quiet", sha); err != nil {
+		if err := checkoutRevision(ctx, dir, sha); err != nil {
 			return err
 		}
 	}
@@ -140,7 +161,7 @@ func gitSparseClone(ctx context.Context, url, dir, subdir, ref, sha string) erro
 	} else if ref != "" {
 		target = ref
 	}
-	if _, err := gitRun(ctx, dir, "checkout", "--quiet", target); err != nil {
+	if err := checkoutRevision(ctx, dir, target); err != nil {
 		return err
 	}
 	return nil

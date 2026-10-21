@@ -2644,6 +2644,36 @@ func TestAddMarketplace_RefusesAPinOnADirectorySource(t *testing.T) {
 	}
 }
 
+// git checkout treats an unmatched name as a pathspec. A ref that reuses a
+// tracked path name must fail rather than silently leave the clone on its
+// default branch while the marketplace records that ref.
+func TestAddMarketplace_RefMatchingATrackedPathIsRejected(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "pathref")
+	if err := os.MkdirAll(filepath.Join(repo, "plugins"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "plugins", "marker"), []byte("tracked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "add", "plugins")
+	gitIn(t, repo, "commit", "-qm", "track a path named like a ref")
+
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "plugins"}); err == nil {
+		t.Fatal("a ref naming a tracked path was checked out as a path instead of rejected")
+	}
+	mk, err := m.ListMarketplaces(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mk) != 0 {
+		t.Fatalf("marketplaces = %+v after a rejected ref, want none", mk)
+	}
+}
+
 // The plugin store's own directories are its to rewrite: a fetch clears
 // .staging, a swap deletes .old, the marketplaces dir holds every other
 // marketplace's clone, and the cache holds materialized plugins. A directory
