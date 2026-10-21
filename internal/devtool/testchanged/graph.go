@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -35,6 +37,7 @@ type graph struct {
 	root        string
 	moduleRoots []string
 	moduleDirs  map[string]string          // module root -> absolute dir
+	modulePaths map[string]string          // module root -> import path
 	pkgs        map[string]*pkgInfo        // import path -> package
 	byDir       map[string]string          // absolute dir -> import path
 	deps        map[string]map[string]bool // import path -> test-inclusive deps
@@ -53,6 +56,7 @@ func loadGraph(root string, moduleRoots []string) (*graph, error) {
 		root:        absRoot,
 		moduleRoots: moduleRoots,
 		moduleDirs:  make(map[string]string, len(moduleRoots)),
+		modulePaths: make(map[string]string, len(moduleRoots)),
 		pkgs:        make(map[string]*pkgInfo),
 		byDir:       make(map[string]string),
 		deps:        make(map[string]map[string]bool),
@@ -144,6 +148,19 @@ func (g *graph) addModule(module string, entries []pkgEntry) {
 		}
 		g.pkgs[self.ImportPath] = &pkgInfo{ImportPath: self.ImportPath, ModuleRoot: module, Dir: dir}
 		g.byDir[dir] = self.ImportPath
+		// The module's own import path is this package's path minus its
+		// directory inside the module. Keeping it lets a deleted package,
+		// which is no longer in the listing, still be named so its
+		// importers can be found.
+		relDir, relErr := filepath.Rel(g.moduleDirs[module], dir)
+		if relErr == nil {
+			relSlash := filepath.ToSlash(relDir)
+			if relSlash == "." {
+				g.modulePaths[module] = self.ImportPath
+			} else {
+				g.modulePaths[module] = strings.TrimSuffix(self.ImportPath, "/"+relSlash)
+			}
+		}
 		deps := map[string]bool{}
 		for _, e := range group {
 			belongs := e.ImportPath == self.ImportPath ||
@@ -188,4 +205,122 @@ func (g *graph) moduleDir(module string) string { return g.moduleDirs[module] }
 func (g *graph) packageAt(dir string) (string, bool) {
 	ip, ok := g.byDir[filepath.Clean(dir)]
 	return ip, ok
+}
+
+// importPathAt derives the import path a directory would have if it held a
+// package, without requiring one to exist. Deletion and rename probes need
+// this: `go list` no longer reports the directory, but its former importers
+// still name the package that used to live there.
+func (g *graph) importPathAt(module, dir string) (string, bool) {
+	base, ok := g.modulePaths[module]
+	if !ok {
+		return "", false
+	}
+	rel, err := filepath.Rel(g.moduleDirs[module], filepath.Clean(dir))
+	if err != nil {
+		return "", false
+	}
+	relSlash := filepath.ToSlash(rel)
+	if relSlash == "." {
+		return base, true
+	}
+	if strings.HasPrefix(relSlash, "..") {
+		return "", false
+	}
+	return base + "/" + relSlash, true
+}
+
+// embeddedAssetOwner returns the package that embeds the changed file, if any.
+// A changed asset in a package subdirectory (a prompt template directory, a
+// registry data file, frontend dist output) never appears in `go list` as a
+// package, so without this a change to an embedded asset looks like it affects
+// nothing while the embedding package's tests fail. Attribution requires a
+// real //go:embed directive matching the file, so an ordinary docs or testdata
+// change is still reported as outside rather than over-selecting its module's
+// root package.
+func (g *graph) embeddedAssetOwner(module, absFile string) (string, bool) {
+	for d := filepath.Dir(filepath.Clean(absFile)); ; d = filepath.Dir(d) {
+		if owner, found := g.packageAt(d); found {
+			if embedsFile(d, absFile) {
+				return owner, true
+			}
+		}
+		if filepath.Clean(d) == filepath.Clean(g.moduleDirs[module]) {
+			break
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			break
+		}
+	}
+	return "", false
+}
+
+// embedsFile reports whether any Go source in pkgDir has a //go:embed
+// directive whose patterns cover absFile. Patterns are relative to the package
+// directory, may be quoted, and may name a directory (which covers everything
+// beneath it), matching the go command's own rules.
+func embedsFile(pkgDir, absFile string) bool {
+	rel, err := filepath.Rel(pkgDir, absFile)
+	if err != nil {
+		return false
+	}
+	rel = filepath.ToSlash(rel)
+	entries, err := os.ReadDir(pkgDir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") {
+			continue
+		}
+		src, err := os.ReadFile(filepath.Join(pkgDir, name))
+		if err != nil {
+			continue
+		}
+		for _, pattern := range embedPatterns(string(src)) {
+			if embedPatternCovers(pattern, rel) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// embedPatterns extracts the patterns from every //go:embed directive in src.
+// The directive sits in a comment directly above the declaration it applies
+// to; the patterns are the space-separated words after the directive, with
+// optional quoting.
+func embedPatterns(src string) []string {
+	var patterns []string
+	for _, line := range strings.Split(src, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "//go:embed ") && trimmed != "//go:embed" {
+			continue
+		}
+		rest := strings.TrimPrefix(trimmed, "//go:embed")
+		for _, field := range strings.Fields(rest) {
+			patterns = append(patterns, strings.Trim(field, `"`+"`"))
+		}
+	}
+	return patterns
+}
+
+// embedPatternCovers reports whether one //go:embed pattern selects rel, a
+// slash-separated path relative to the package directory. The "all:" prefix
+// drops the leading-dot exclusion, which does not change whether a named file
+// matches; a pattern that names a directory covers every path beneath it.
+func embedPatternCovers(pattern, rel string) bool {
+	pattern = strings.TrimPrefix(pattern, "all:")
+	if pattern == "" {
+		return false
+	}
+	if ok, err := path.Match(pattern, rel); err == nil && ok {
+		return true
+	}
+	if strings.HasPrefix(rel, pattern+"/") {
+		return true
+	}
+	return false
 }

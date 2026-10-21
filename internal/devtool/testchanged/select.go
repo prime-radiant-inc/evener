@@ -26,6 +26,14 @@ type selectionResult struct {
 	GoChanged int
 }
 
+// Module manifests change what every package in their module can build against,
+// so they select the whole module rather than the directory's one package.
+var moduleManifests = map[string]bool{
+	"go.mod":  true,
+	"go.sum":  true,
+	"go.work": true,
+}
+
 // selectPackages maps each changed file to its package and selects that
 // package plus every package whose test-inclusive import graph reaches it.
 //
@@ -45,6 +53,10 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 	// observed by that package's own tests, such as a non-Go asset it reads.
 	// Those never spread either.
 	packageOnly := map[string]string{}
+	// wholeModules lists modules whose manifest changed. Every package in one
+	// is selected: a dependency change can break any of them, and a module
+	// root that holds no Go package would otherwise be dropped entirely.
+	wholeModules := map[string]string{}
 	for _, rel := range changed {
 		rel = filepath.ToSlash(rel)
 		goFile := strings.HasSuffix(rel, ".go")
@@ -57,11 +69,51 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 			continue
 		}
 		dir := filepath.Join(g.root, filepath.FromSlash(filepath.Dir(rel)))
+
+		// Only a manifest at a module's own root speaks for that module. A
+		// go.mod deeper down belongs to a nested fixture module, which is
+		// outside GO_MODULES and reported as such below.
+		atModuleRoot := filepath.Clean(dir) == filepath.Clean(g.moduleDir(module))
+		if moduleManifests[filepath.Base(rel)] && atModuleRoot {
+			if goFile {
+				res.GoChanged++
+			}
+			// go.work spans the whole workspace, so it reaches every module;
+			// go.mod and go.sum reach only their own.
+			if filepath.Base(rel) == "go.work" {
+				for _, m := range moduleRoots {
+					wholeModules[m] = joinReason(wholeModules[m], "workspace manifest "+rel)
+				}
+			} else {
+				wholeModules[module] = joinReason(wholeModules[module], "module manifest "+rel)
+			}
+			continue
+		}
+
 		ip, found := g.packageAt(dir)
 		if !found {
 			if nested, mod := nestedModule(g.moduleDir(module), dir); nested {
 				res.Outside = append(res.Outside, rel+" (nested module "+mod+")")
 				continue
+			}
+			// A deleted or renamed-away package leaves no package behind, but
+			// its former importers still name it. Deriving the import path
+			// from the path keeps those importers in the run; without this a
+			// deletion printed PASS while the dependent build was broken.
+			if ip, derived := g.importPathAt(module, dir); derived {
+				if goFile {
+					res.GoChanged++
+				}
+				propagating[ip] = joinReason(propagating[ip], "removed file "+rel)
+				continue
+			}
+			// A non-Go file below a package directory can still be embedded by
+			// that package (prompt templates, registry data, dist output).
+			if !goFile {
+				if owner, embedded := g.embeddedAssetOwner(module, filepath.Join(g.root, filepath.FromSlash(rel))); embedded {
+					propagating[owner] = joinReason(propagating[owner], "embedded asset "+rel)
+					continue
+				}
 			}
 			if goFile {
 				res.GoChanged++
@@ -95,6 +147,14 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 	for ip, r := range propagating {
 		reasonFor[ip] = r
 	}
+	for module, reason := range wholeModules {
+		for ip, info := range g.pkgs {
+			if info.ModuleRoot != module {
+				continue
+			}
+			propagating[ip] = joinReason(propagating[ip], reason)
+		}
+	}
 	// `go list -deps` is transitive, so one membership test is the whole
 	// closure. testOnly seeds are deliberately absent from this loop.
 	seeds := make([]string, 0, len(propagating))
@@ -103,6 +163,9 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 	}
 	sort.Strings(seeds)
 	for ip := range g.pkgs {
+		if _, seeded := propagating[ip]; seeded {
+			continue
+		}
 		if _, seeded := reasonFor[ip]; seeded {
 			continue
 		}
@@ -112,6 +175,9 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 				break
 			}
 		}
+	}
+	for ip, r := range propagating {
+		reasonFor[ip] = r
 	}
 
 	for ip, info := range g.pkgs {
