@@ -8,6 +8,8 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/plugin"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
 )
@@ -36,12 +38,11 @@ func TestDelegateStartupRequestCarriesTheWholePlan(t *testing.T) {
 	}
 }
 
-// A delegate with no tasks is unaffected: no plan reminder is injected, and its
-// first request carries only its brief.
+// A delegate with no tasks is unaffected: no plan reminder is injected.
 func TestDelegateStartupWithoutTasksHasNoPlanReminder(t *testing.T) {
 	t.Parallel()
 	empty := taskpkg.NewTaskStore(t.TempDir(), "empty")
-	if got := taskReminderFullWithPrompts(empty.View(), 0); got != "" {
+	if got := taskReminderFullWithPrompts(empty.View()); got != "" {
 		t.Fatalf("empty store rendered a plan: %s", got)
 	}
 
@@ -57,44 +58,107 @@ func TestDelegateStartupWithoutTasksHasNoPlanReminder(t *testing.T) {
 	}
 }
 
-// The plan does not repeat the current step's prompt: the current-task message
-// carries it in the next piece of steering. Without the omission every delegate
-// pays for that prompt twice.
-func TestDelegatePlanOmitsTheCurrentStepPrompt(t *testing.T) {
+// The plan is one message: it carries every step's prompt and names the step to
+// work first. Splitting those into two queued messages would let a crash leave
+// the plan announced with no step to work.
+func TestDelegatePlanIsOneMessageNamingTheCurrentStep(t *testing.T) {
 	t.Parallel()
 	tasks := []taskpkg.Task{
 		{ID: 1, Status: taskpkg.TaskInProgress, Description: "First step", Prompt: "PROMPT_FIRST"},
 		{ID: 2, Status: taskpkg.TaskOpen, Description: "Second step", Prompt: "PROMPT_SECOND"},
 	}
-	plan := taskReminderFullWithPrompts(tasks, 1)
-	if strings.Contains(plan, "PROMPT_FIRST") {
-		t.Fatalf("plan repeats the current step's prompt:\n%s", plan)
+	plan := withCurrentStep(taskReminderFullWithPrompts(tasks), tasks[0])
+	for _, want := range []string{"PROMPT_FIRST", "PROMPT_SECOND", "Work #1 first: First step"} {
+		if !strings.Contains(plan, want) {
+			t.Fatalf("plan is missing %q:\n%s", want, plan)
+		}
 	}
-	if !strings.Contains(plan, "PROMPT_SECOND") {
-		t.Fatalf("plan omits a later step's prompt:\n%s", plan)
-	}
-	if current := formatCurrentTaskSteering(tasks[0], true); !strings.Contains(current, "PROMPT_FIRST") {
-		t.Fatalf("current-task steering lost the prompt:\n%s", current)
+	if got := strings.Count(plan, "<SYSTEM-REMINDER>"); got != 1 {
+		t.Fatalf("plan reminder blocks = %d, want one:\n%s", got, plan)
 	}
 }
 
-// A child restored after an unclean shutdown reloads its spawn-time steering
-// from the queue file. Restoring must not announce the plan a second time.
+// A role's workflow can put its own steps before the parent_tasks slot, so the
+// step to work first is the first in-progress task, not the first task.
+func TestDelegatePlanNamesTheInProgressStep(t *testing.T) {
+	t.Parallel()
+	root, adapter := newDelegateStartupFixture(t)
+	root.pluginAgents["prefix-role"] = plugin.Agent{
+		Name:       "prefix-role",
+		AllTools:   true,
+		PluginName: "test",
+		Tasks: []taskpkg.TaskTemplate{
+			{Title: "Role intro", Prompt: "ROLE_INTRO"},
+			{Title: "Insert the parent's steps", Prompt: "placeholder", Insert: "parent_tasks"},
+		},
+	}
+	created := root.createDelegate(context.Background(), delegateArgs{
+		Task:                "do the seeded step",
+		AgentType:           "prefix-role",
+		TaskList:            []taskpkg.TaskTemplate{{Title: "Seeded step", Prompt: "SEEDED_PROMPT"}},
+		DelegationAllowance: new(0),
+	})
+	if created.Err != nil {
+		t.Fatalf("createDelegate: %v", created.Err)
+	}
+
+	first := messagesText(adapter.waitFirstRequest(t).Messages)
+	if !strings.Contains(first, "Work #1 first: Role intro") {
+		t.Fatalf("plan does not name the in-progress role step:\n%s", first)
+	}
+	if strings.Contains(first, "Work #2 first") {
+		t.Fatalf("plan names an open step as the one to work:\n%s", first)
+	}
+}
+
+// A restored delegate whose task file survived is not announced to again: its
+// queue still holds the spawn-time plan. Re-announcing would duplicate it.
 func TestRestoreDoesNotRepeatPersistedPlanSteering(t *testing.T) {
 	t.Parallel()
-	store := taskpkg.NewTaskStore(t.TempDir(), "child")
-	if err := store.PopulateFromTemplates([]taskpkg.TaskTemplate{{Title: "Only step", Prompt: "PROMPT_ONLY"}}, nil); err != nil {
-		t.Fatal(err)
+	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+		descriptor.TaskTemplates = []taskpkg.TaskTemplate{{
+			Title:  "Restored committed workflow",
+			Prompt: "Resume the committed workflow.",
+		}}
+	})
+	// A spawn always writes the child's task file, so a real restore finds the
+	// tasks already there. Write it here too; otherwise the fixture restores a
+	// state production never produces.
+	childStore := taskpkg.NewTaskStore(fixture.stateDir, fixture.childID)
+	if err := childStore.PopulateFromTemplates([]taskpkg.TaskTemplate{{
+		Title:  "Restored committed workflow",
+		Prompt: "Resume the committed workflow.",
+	}}, nil); err != nil {
+		t.Fatalf("seed child task file: %v", err)
 	}
-	child, _ := newDelegateStartupFixture(t)
-	if err := steerDelegatePlan(child, store); err != nil {
-		t.Fatalf("first announcement: %v", err)
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
 	}
-	if got := countPlanSteering(child); got != 1 {
-		t.Fatalf("plan steering after first announcement = %d, want 1", got)
+	defer root.Close()
+
+	reservation, err := root.delegateController.ReserveStart(rootDelegateActor(root.id), fixture.delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart: %v", err)
 	}
-	if !child.hasPendingPlanSteering() {
-		t.Fatal("a queued plan should be reported as pending")
+	started, err := root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	sub, restored, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	if err != nil {
+		t.Fatalf("restoreIdle: %v", err)
+	}
+	if !restored {
+		t.Fatal("restoreIdle unexpectedly reused a resident child")
+	}
+	defer func() {
+		sub.sess.discardRestoredCandidate()
+		_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
+	}()
+
+	if got := countPlanSteering(sub.sess); got != 0 {
+		t.Fatalf("restore queued %d plan messages for a child whose tasks survived, want 0", got)
 	}
 }
 
@@ -113,9 +177,7 @@ func countPlanSteering(sess *Session) int {
 
 // newDelegateStartupFixture builds a delegate-capable session whose scripted
 // adapter answers one final report and keeps every request it saw, so a test
-// can read the child's first turn. The session options mirror the shared
-// bootstrap fixture; only the adapter differs, because these tests assert on
-// what it recorded.
+// can read the child's first turn.
 func newDelegateStartupFixture(t *testing.T) (*Session, *fakeAdapter) {
 	t.Helper()
 	workspace := t.TempDir()

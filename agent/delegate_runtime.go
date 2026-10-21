@@ -2846,10 +2846,10 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	}
 	if len(descriptor.TaskTemplates) != 0 {
 		childStore := child.getOrCreateTaskStore()
-		// seeded records that THIS restore populated the store. A child whose
-		// tasks already existed, or whose queue already holds the spawn-time
-		// steering (an unclean shutdown before the first turn drained), must not
-		// be announced to again: the persisted queue redelivers it.
+		// seeded records that THIS restore populated the store. A spawned
+		// delegate always writes its own task file, so a normal restore finds
+		// the tasks already there and the persisted queue redelivers the plan.
+		// Only a store that lost its tasks needs the announcement back.
 		seeded := false
 		if err := childStore.MutateAndPublish(func(epoch, revision uint64) error {
 			if len(childStore.View()) != 0 {
@@ -2866,10 +2866,16 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			child.discardRestoredCandidate()
 			return nil, false, fmt.Errorf("restore committed delegate tasks: %w", err)
 		}
-		// A restored delegate's first turn must match a fresh spawn's: announce
-		// the whole plan, then the current step. Seeding alone would leave a
-		// resumed child back on the first-step-only behavior.
-		if seeded && !child.hasPendingPlanSteering() {
+		// A shared store is the parent's list, not this child's plan, so it is
+		// never announced. Keep the single current-task reminder for it.
+		if descriptor.SharedTaskStoreOwnerSessionID != "" {
+			if current, ok := childStore.CurrentInProgress(); ok {
+				if err := child.SteerKind(formatCurrentTaskSteering(current, child.canInstructTool("task_list")), events.SteeringKindCurrentTask); err != nil {
+					child.discardRestoredCandidate()
+					return nil, false, err
+				}
+			}
+		} else if seeded {
 			if err := steerDelegatePlan(child, childStore); err != nil {
 				child.discardRestoredCandidate()
 				return nil, false, err
