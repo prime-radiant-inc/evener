@@ -461,7 +461,9 @@ func testOnboardingOAuthAt(t *testing.T, scenario string, view onboardingView) {
 		}
 		record, err := openai.LoadAuth(hub.state, "openai-codex")
 		if err != nil || record.AccessToken != fixture.access {
-			t.Fatalf("recovering sign-in record = %v err=%v, want the recovering exchange only", record, err)
+			// Both authorized exchanges carry the same fixture access, so this
+			// checks the saved destination's record, not which flow wrote last.
+			t.Fatalf("saved OAuth record = %v err=%v, want the fixture exchange result", record, err)
 		}
 	case "oauth-endpoint-change":
 		_, exchanges, _, models := fixture.counts()
