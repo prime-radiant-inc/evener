@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -134,12 +135,11 @@ func artifactsDocTarget(ctx context.Context, cfg hubcore.WebConfig, session, rel
 	if root == "" {
 		return "", "", false, false
 	}
-	// The artifacts root sits at a fixed place beneath the session's state
-	// directory, so each component of that place must be a real directory. A
-	// symlink planted where a session's artifacts directory belongs would
-	// otherwise redirect this session's reads into another session's files,
-	// which is the isolation this root exists to keep.
-	if !artifactsRootIsReal(root) {
+	// A root that does not exist contains nothing, so every path is outside
+	// it. Without this, ResolveInRoot fails while resolving the root itself
+	// and the failure reads as a contained miss. This only chooses the refusal;
+	// the open enforces the boundary on its own.
+	if _, statErr := os.Stat(root); statErr != nil {
 		return "", "", false, false
 	}
 	// ResolveInRoot rejects an escaping path with ErrPathEscapesRoot and every
@@ -150,24 +150,6 @@ func artifactsDocTarget(ctx context.Context, cfg hubcore.WebConfig, session, rel
 		return root, "", !errors.Is(err, fspaths.ErrPathEscapesRoot), false
 	}
 	return root, abs, true, true
-}
-
-// artifactsRootIsReal reports whether dir exists and every component beneath
-// the session state directory that owns it is a real directory rather than a
-// symlink. The check refuses on any doubt, so a planted link cannot redirect a
-// read.
-func artifactsRootIsReal(dir string) bool {
-	// The session's own directory (<stateDir>/sessions/<id>) and the artifacts
-	// directory beneath it are the components a link can occupy. Everything
-	// above them is Evener-created state layout.
-	sessionDir := filepath.Dir(dir)
-	for _, component := range []string{sessionDir, dir} {
-		info, err := os.Lstat(component)
-		if err != nil || !info.IsDir() {
-			return false
-		}
-	}
-	return true
 }
 
 // sessionArtifactsRoot is the local session's retained artifacts directory, or
@@ -682,6 +664,13 @@ func readDocFile(root, abs string) (docFileRead, error) {
 // expressed relative to the resolved root. docOpenNonblock keeps the open from
 // waiting on a FIFO; a regular file reads the same.
 func openDocInRoot(root, abs string) (*os.File, error) {
+	// An artifacts path is opened through an anchored traversal of the trusted
+	// state directory, so a link planted in place of any component of the
+	// session layout is refused rather than followed. Every consumer of this
+	// seam gets that, which is what makes the check and the open one decision.
+	if stateDir, layout, ok := artifactsLayout(root); ok {
+		return openArtifactsFile(stateDir, layout, abs, root)
+	}
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		return nil, err
@@ -700,6 +689,65 @@ func openDocInRoot(root, abs string) (*os.File, error) {
 	}
 	defer dir.Close() //nolint:errcheck // a file opened through it stays open
 	return dir.OpenFile(rel, os.O_RDONLY|docOpenNonblock, 0)
+}
+
+// artifactsLayout expresses artifactsDir as the trusted state directory it
+// hangs off and the layout path beneath it: <stateDir> and
+// sessions/<id>/artifacts. It answers false for any directory that is not that
+// shape, which is every working-directory root.
+func artifactsLayout(artifactsDir string) (stateDir, layout string, ok bool) {
+	sessionDir := filepath.Dir(artifactsDir)
+	sessionsDir := filepath.Dir(sessionDir)
+	stateDir = filepath.Dir(sessionsDir)
+	if filepath.Base(sessionsDir) != "sessions" || filepath.Base(artifactsDir) != "artifacts" {
+		return "", "", false
+	}
+	if stateDir == sessionsDir || stateDir == "." || stateDir == string(filepath.Separator) {
+		return "", "", false
+	}
+	layout = path.Join("sessions", filepath.Base(sessionDir), "artifacts")
+	return stateDir, layout, true
+}
+
+// openArtifactsFile opens abs through one handle anchored at stateDir. Each
+// component of layout must be a real directory on that handle, so a symlink
+// where `sessions`, the session directory, or `artifacts` belongs is refused
+// instead of redirecting this session's read into another session's files.
+// Traversal and the open share the handle, so replacing the path between them
+// cannot redirect the read.
+func openArtifactsFile(stateDir, layout, abs, artifactsDir string) (*os.File, error) {
+	realAbs, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return nil, err
+	}
+	rel, err := filepath.Rel(artifactsDir, realAbs)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return nil, fspaths.ErrPathEscapesRoot
+	}
+	current, err := os.OpenRoot(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	// The handle is closed once the walk is done: the opened file outlives it.
+	for component := range strings.SplitSeq(filepath.ToSlash(layout), "/") {
+		info, statErr := current.Lstat(component)
+		if statErr != nil {
+			current.Close() //nolint:errcheck // read-only traversal
+			return nil, statErr
+		}
+		if !info.IsDir() {
+			current.Close() //nolint:errcheck // read-only traversal
+			return nil, fspaths.ErrPathEscapesRoot
+		}
+		next, openErr := current.OpenRoot(component)
+		current.Close() //nolint:errcheck // read-only traversal
+		if openErr != nil {
+			return nil, openErr
+		}
+		current = next
+	}
+	defer current.Close() //nolint:errcheck // the opened file outlives this handle
+	return current.OpenFile(rel, os.O_RDONLY|docOpenNonblock, 0)
 }
 
 // looksBinaryBytes reports whether a byte slice looks like binary content. A

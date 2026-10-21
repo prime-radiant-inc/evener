@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
+import type { Thread, ThreadModel, ThreadReadResponse } from "@evener/appwire-client";
 import { bindArtifactPath, bindFilePath, DOC_FILE_MAX_BYTES } from "@evener/appwire-client/docContent";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -619,3 +619,71 @@ test("a restored artifacts document says unavailable when the snapshot advertise
   await waitFor(() => expect(screen.getByTestId("empty-state").getAttribute("data-reason")).toBe("unavailable"));
   expect(requests.map((url) => url.searchParams.get("path"))).not.toContain("/state/a/sessions/s1/artifacts/report.md");
 });
+
+// A cached shell publishes before the authoritative read and carries no
+// artifacts root yet. The pane must stay pending while that is true, not tell
+// the user the report is gone.
+test("a restored artifacts document stays pending while the thread is a cached shell", async () => {
+  // A shell model carries no artifacts root, and its authoritative read has
+  // not landed. That absence must not read as rejection while the shell stands.
+  client.on("thread/read", () => new Promise(() => {}));
+  await act(async () => {
+    threadsStore.setState((state) => ({
+      threads: new Map(state.threads).set(ref, hydrateThreadForTest(cwd)),
+      cacheLifetimes: new Map(state.cacheLifetimes).set(ref, { shell: true }),
+    }));
+  });
+  respond("not read");
+  workspaceStore.getState().openPane("doc", {
+    session: ref,
+    path: "report.md",
+    root: "artifacts",
+    artifactTarget: "/state/a/sessions/s1/artifacts/report.md",
+    kind: "file",
+  });
+  const pane = workspaceStore.getState().panes.find((candidate) => candidate.type === "doc");
+  if (!pane) throw new Error("expected a document pane");
+  render(
+    <PaneVisibilityContext value={true}>
+      <DocPane params={pane.params as DocParams} paneId={pane.id} focused={false} />
+    </PaneVisibilityContext>,
+  );
+  expect(screen.queryByTestId("empty-state")).toBeNull();
+});
+
+// hydrateThreadForTest builds the model a cached shell publishes: no
+// artifacts root, and nothing authoritative behind it yet.
+function hydrateThreadForTest(at: string): ThreadModel {
+  const wire = thread(at);
+  return {
+    ref,
+    threadId: wire.id,
+    name: wire.name ?? "",
+    status: wire.status,
+    modelProvider: wire.modelProvider,
+    model: wire.modelProvider,
+    visionModel: "",
+    askPending: false,
+    pendingEscalations: [],
+    turns: [],
+    queue: null,
+    tasks: null,
+    jobsUpdatedAt: null,
+    jobsTreeRevision: null,
+    lastFrameAt: 0,
+    capabilities: wire.evener.capabilities,
+    goal: null,
+    humanNote: "",
+    agentNote: "",
+    sessionUrls: [],
+    contextUsed: 0,
+    contextWindow: 0,
+    contextPressure: 0,
+    contextAssumed: false,
+    usage: null,
+    workMillis: 0,
+    reasoningEffortLevels: [],
+    supportsReasoning: false,
+    cwd: at,
+  } as ThreadModel;
+}

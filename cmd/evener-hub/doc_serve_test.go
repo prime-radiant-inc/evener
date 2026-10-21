@@ -1121,3 +1121,37 @@ func TestHubSessionDocumentMissingArtifactIsNotFound(t *testing.T) {
 		t.Fatalf("refusal = %q, want %q", got, appwire.ErrorResourceNotFound)
 	}
 }
+
+// The `sessions` component is shared by every project's sessions, so a link
+// planted there would redirect every read. It is checked as a real directory
+// like the components beneath it.
+func TestDocFile_ArtifactsRefuseASymlinkedSessionsDirectory(t *testing.T) {
+	web, _, session := docServeTestServer(t)
+	entry, ok := web.cfg.Past.Find(session)
+	if !ok {
+		t.Fatal("fixture session is missing from the past index")
+	}
+	sessionsDir := filepath.Join(entry.StateDir, "sessions")
+	realSessions, err := os.MkdirTemp(filepath.Dir(sessionsDir), "elsewhere-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Move the real sessions directory aside and put a link in its place.
+	if err := os.Rename(sessionsDir, filepath.Join(realSessions, "sessions")); err != nil {
+		t.Skipf("cannot move the sessions directory: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(realSessions, "sessions"), sessionsDir); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	dir := filepath.Join(sessionsDir, session, "artifacts")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "report.md"), []byte("VIA LINKED SESSIONS"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRawRequest(t, web, session, filepath.Join(dir, "report.md"))
+	if rec.Code == http.StatusOK || strings.Contains(rec.Body.String(), "VIA LINKED SESSIONS") {
+		t.Fatalf("a symlinked sessions directory served a file (status %d)", rec.Code)
+	}
+}
