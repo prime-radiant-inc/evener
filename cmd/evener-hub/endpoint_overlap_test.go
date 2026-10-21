@@ -96,14 +96,58 @@ func endpointOverlapEnv(root, role string) []string {
 		"ENDPOINT_OVERLAP_ROLE=" + role,
 		"ENDPOINT_OVERLAP_ROOT=" + root,
 	}
-	if bases := os.Getenv("EVENER_HOST_TEMP_BASES"); bases != "" {
-		env = append(env, "EVENER_HOST_TEMP_BASES="+bases)
+	// TestMain already warmed the binaries. Keep that evidence and the pinned
+	// Go paths rather than rebuilding or downloading modules under fixture HOME.
+	for _, key := range []string{"EVENER_HOST_TEMP_BASES", liveStackWarmEnv, "GOCACHE", "GOPATH", "GOMODCACHE", "GOROOT", "GOTOOLCHAIN"} {
+		if value, ok := os.LookupEnv(key); ok {
+			env = append(env, key+"="+value)
+		}
 	}
 	return env
 }
 
+func TestEndpointChildEnvironmentsPreserveWarmCaches(t *testing.T) {
+	values := map[string]string{
+		liveStackWarmEnv: "already-warmed",
+		"GOCACHE":        filepath.Join(t.TempDir(), "build-cache"),
+		"GOPATH":         filepath.Join(t.TempDir(), "go"),
+		"GOMODCACHE":     filepath.Join(t.TempDir(), "module-cache"),
+		"GOROOT":         filepath.Join(t.TempDir(), "toolchain"),
+		"GOTOOLCHAIN":    "local",
+	}
+	for key, value := range values {
+		t.Setenv(key, value)
+	}
+	t.Run("fixture", func(t *testing.T) {
+		endpointTestRoot(t)
+		for key, want := range values {
+			if got := os.Getenv(key); got != want {
+				t.Errorf("fixture %s = %q, want %q", key, got, want)
+			}
+		}
+	})
+	for name, build := range map[string]func(string) []string{
+		"overlap": func(root string) []string { return endpointOverlapEnv(root, "winner") },
+		"crash":   endpointCrashEnv,
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := envMap(build(t.TempDir()))
+			for key, want := range values {
+				if got := env[key]; got != want {
+					t.Errorf("child %s = %q, want %q", key, got, want)
+				}
+			}
+		})
+	}
+}
+
 func TestEndpointOverlappingRealStarters(t *testing.T) {
 	root, state := endpointTestRoot(t)
+	t.Cleanup(func() {
+		if _, err := os.Lstat(filepath.Join(root, "home", "go", "pkg", "mod")); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("child created a fixture module cache: %v", err)
+		}
+	})
 	path := endpointTestConfig(t, root, state, "127.0.0.1:0")
 	if err := os.MkdirAll(filepath.Join(root, "tmp"), 0700); err != nil {
 		t.Fatal(err)

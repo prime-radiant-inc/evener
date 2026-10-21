@@ -35,7 +35,7 @@ func endpointTestRoot(t *testing.T) (string, string) {
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
-		if strings.HasPrefix(key, "EVENER_") && key != "EVENER_HOST_TEMP_BASES" {
+		if strings.HasPrefix(key, "EVENER_") && key != "EVENER_HOST_TEMP_BASES" && key != liveStackWarmEnv {
 			t.Setenv(key, "")
 			_ = os.Unsetenv(key)
 		}
@@ -517,19 +517,23 @@ func TestEndpointCrashChild(t *testing.T) {
 	<-sig
 }
 
-func TestEndpointCrashLeavesStaleRecordForNextOwner(t *testing.T) {
-	root, state := endpointTestRoot(t)
-	path := endpointTestConfig(t, root, state, "127.0.0.1:0")
-	cmd := exec.Command(os.Args[0], "-test.run=^TestEndpointCrashChild$")
+func endpointCrashEnv(root string) []string {
 	env := make([]string, 0, len(os.Environ())+2)
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
-		if !strings.HasPrefix(key, "EVENER_") || key == "EVENER_HOST_TEMP_BASES" {
+		if !strings.HasPrefix(key, "EVENER_") || key == "EVENER_HOST_TEMP_BASES" || key == liveStackWarmEnv {
 			env = append(env, entry)
 		}
 	}
 	env = append(env, "ENDPOINT_CRASH_CHILD=1", "ENDPOINT_CRASH_ROOT="+root)
-	cmd.Env = env
+	return env
+}
+
+func TestEndpointCrashLeavesStaleRecordForNextOwner(t *testing.T) {
+	root, state := endpointTestRoot(t)
+	path := endpointTestConfig(t, root, state, "127.0.0.1:0")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestEndpointCrashChild$")
+	cmd.Env = endpointCrashEnv(root)
 	pipe, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
