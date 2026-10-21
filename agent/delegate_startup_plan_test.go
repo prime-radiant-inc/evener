@@ -10,7 +10,9 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/schema"
 	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -220,6 +222,84 @@ func TestRestoreAnnouncesAPlanThatWasNeverDelivered(t *testing.T) {
 	if got := countPlanSteering(sub.sess); got != 1 {
 		t.Fatalf("restore queued %d plan messages for an undelivered plan, want 1", got)
 	}
+}
+
+// Once the plan has been delivered, the queue is empty and the only evidence is
+// the transcript. Restore must find it there and stay silent.
+func TestRestoreSeesADeliveredPlanInTheTranscript(t *testing.T) {
+	t.Parallel()
+	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+		descriptor.TaskTemplates = []taskpkg.TaskTemplate{{
+			Title:  "Delivered workflow",
+			Prompt: "DELIVERED_PROMPT",
+		}}
+	})
+	childStore := taskpkg.NewTaskStore(fixture.stateDir, fixture.childID)
+	if err := childStore.PopulateFromTemplates([]taskpkg.TaskTemplate{{
+		Title:  "Delivered workflow",
+		Prompt: "DELIVERED_PROMPT",
+	}}, nil); err != nil {
+		t.Fatalf("seed child task file: %v", err)
+	}
+	writeDeliveredPlanTranscript(t, fixture.stateDir, fixture.childID, fixture.meta.ID)
+
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	sub := restoreFixtureDelegate(t, root, fixture.delegateID)
+
+	if got := countPlanSteering(sub.sess); got != 0 {
+		t.Fatalf("restore queued %d plan messages for a plan already in the transcript, want 0", got)
+	}
+}
+
+// writeDeliveredPlanTranscript appends a delivered task-list announcement to a
+// child's existing transcript, which is what remains after the queue drains.
+// The fixture already created that transcript; appending keeps one file and one
+// header, as a real session keeps.
+func writeDeliveredPlanTranscript(t *testing.T, stateDir, childID, parentID string) {
+	t.Helper()
+	path := transcriptPath(stateDir, childID)
+	writer, err := transcript.NewWriter(path, transcript.Header{
+		SessionID:       childID,
+		ParentSessionID: parentID,
+	})
+	if err != nil {
+		t.Fatalf("transcript writer: %v", err)
+	}
+	defer writer.Close()
+	turn := schema.NewTurn(schema.TurnSteering, llm.System("<SYSTEM-REMINDER>\nTask list:\n</SYSTEM-REMINDER>"))
+	turn.SteeringKind = events.SteeringKindTaskList
+	if _, err := writer.Record(turn, transcript.RecordOptions{}); err != nil {
+		t.Fatalf("record steering turn: %v", err)
+	}
+}
+
+// restoreFixtureDelegate runs one cold restore of a committed delegate.
+func restoreFixtureDelegate(t *testing.T, root *Session, delegateID string) *subagent {
+	t.Helper()
+	reservation, err := root.delegateController.ReserveStart(rootDelegateActor(root.id), delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart: %v", err)
+	}
+	started, err := root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	sub, restored, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	if err != nil {
+		t.Fatalf("restoreIdle: %v", err)
+	}
+	if !restored {
+		t.Fatal("restoreIdle unexpectedly reused a resident child")
+	}
+	t.Cleanup(func() {
+		sub.sess.discardRestoredCandidate()
+		_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
+	})
+	return sub
 }
 
 // countPlanSteering counts queued task-list announcements.
