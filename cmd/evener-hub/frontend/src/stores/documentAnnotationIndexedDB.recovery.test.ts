@@ -1,166 +1,28 @@
 // @vitest-environment node
 
-import {
-  type DestinationProvenance,
-  type DocFileContent,
-  type DocumentKey,
-  displayedFingerprint,
-  type HandoffResult,
-  type PreparedAnnotation,
-} from "@evener/appwire-client";
-import { IDBDatabase, IDBFactory, IDBObjectStore } from "fake-indexeddb";
+import type { DocFileContent, HandoffResult, PreparedAnnotation } from "@evener/appwire-client";
+import { IDBDatabase, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
-import type { ComposerPreparation, ComposerSourceState } from "../panes/session/composer/composerContract";
-import { MemoryStorage } from "../storageTestUtils";
-import {
-  APPEND_STORES,
-  type BrowserDraftKey,
-  type BrowserDraftRepository,
-  browserDraftKey,
-  createBrowserDraftRepository,
-} from "./browserDraftRepository";
-import {
-  type BrowserDocumentAnnotationRepository,
-  createDocumentAnnotationRepository,
-} from "./documentAnnotationIndexedDB";
-import { createDocumentAnnotationRuntime, type DocumentAnnotationRuntime } from "./documentAnnotationRuntime";
+import type { ComposerPreparation } from "../panes/session/composer/composerContract";
+import { APPEND_STORES } from "./browserDraftRepository";
+import { createDocumentAnnotationRepository, RESET_STORES, SAVE_STORES } from "./documentAnnotationIndexedDB";
 import {
   ANNOTATION_EVIDENCE_STORE,
   ANNOTATION_EXPIRY_STORE,
-  ANNOTATION_HEADS_STORE,
   ANNOTATION_NAMESPACES_STORE,
-  ANNOTATION_OPERATIONS_STORE,
-  ANNOTATION_PAYLOADS_STORE,
-  ANNOTATION_SEQUENCES_STORE,
 } from "./localCompositionSchema";
-import { holdIndexedDBEvent, holdNextWriteTransaction, nextRealTask } from "./testing/stalledIndexedDB";
+import {
+  type AnnotationFixtureWithRuntime,
+  deferred,
+  openAnnotationFixture,
+  pollUntil,
+} from "./testing/annotationFixture";
+import { holdIndexedDBEvent, holdNextWriteTransaction } from "./testing/stalledIndexedDB";
 
 afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
-
-interface FixtureOptions {
-  prepareAnnotation?: () => Promise<ComposerPreparation | null>;
-  destination?: DestinationProvenance;
-  // A fault injected at a commit boundary: the reset case aborts its transaction
-  // there, which is the rollback whose release this suite covers.
-  beforeCommit?: (operation: "acceptRead" | "save" | "expiry" | "deleteExpiry" | "reset") => void;
-  // A real composer adopts the committed token a reconciliation hands it: that
-  // adoption is what makes a later handoff's preparation current again.
-  acknowledgeAnnotation?: (preparation: ComposerPreparation, token: ComposerPreparation["token"]) => void;
-}
-
-interface Fixture {
-  factory: IDBFactory;
-  repository: BrowserDocumentAnnotationRepository;
-  drafts: BrowserDraftRepository;
-  runtime: DocumentAnnotationRuntime;
-  acknowledge: ReturnType<typeof vi.fn>;
-  storageSuccess: ReturnType<typeof vi.fn>;
-  key: BrowserDraftKey;
-  document: DocumentKey;
-  // The namespace incarnation the fixture's first read was issued under: the
-  // reset rollback regression resets exactly this one.
-  incarnation: string;
-  content: DocFileContent;
-  operation: PreparedAnnotation;
-  preparation: ComposerPreparation;
-}
-
-async function openFixture(options: FixtureOptions = {}): Promise<Fixture> {
-  const factory = new IDBFactory();
-  const drafts = createBrowserDraftRepository({
-    indexedDB: factory,
-    databaseName: "annotation-recovery",
-    storage: new MemoryStorage(),
-  });
-  const key = browserDraftKey("root", "https://recovery.example");
-  // Seed before the repository subscribes to drafts, so setup publishes no
-  // storage-success notification of its own.
-  const seeded = await drafts.seedDraft(key, { text: "", skillNames: [], commandNames: [] });
-  if (seeded.state !== "committed") throw new Error(`draft seed was not committed: ${seeded.state}`);
-  const preparation: ComposerPreparation = {
-    key,
-    token: seeded.draft.token,
-    backing: { kind: "draft" },
-    localGeneration: 0,
-  };
-  const acknowledge = vi.fn((preparation: ComposerPreparation, token: ComposerPreparation["token"]) => {
-    options.acknowledgeAnnotation?.(preparation, token);
-  });
-  const source = {
-    ref: "root",
-    sourceId: "source-1",
-    alive: true,
-    subscribeRecoveryPersisted: () => () => undefined,
-    prepareAnnotation: options.prepareAnnotation ?? (async () => preparation),
-    ownsPreparation: () => true,
-    acknowledgeAnnotation: acknowledge,
-  } as unknown as ComposerSourceState;
-  let runtime: DocumentAnnotationRuntime | undefined;
-  // Production wiring: the repository's post-commit storage-success boundary is
-  // the runtime's recovery trigger, so a notification the repository never
-  // sends is one the runtime never sees.
-  const storageSuccess = vi.fn(() => {
-    runtime?.storageSucceeded();
-  });
-  const repository = createDocumentAnnotationRepository({
-    indexedDB: factory,
-    databaseName: "annotation-recovery",
-    drafts,
-    targetFor: () => source,
-    beforeCommit: options.beforeCommit,
-    onStorageSuccess: storageSuccess,
-  });
-  runtime = createDocumentAnnotationRuntime(repository);
-  const document: DocumentKey = { ...key, path: "NOTES.md" };
-  const content: DocFileContent = {
-    text: "A note with an [image 1] marker\n",
-    binary: false,
-    mediaType: "text/markdown",
-    truncated: false,
-    sizeBytes: 29,
-  };
-  const ticket = await repository.beginRead(document);
-  const accepted = await repository.acceptRead(ticket, content);
-  if (accepted.state !== "accepted") throw new Error(`read was not accepted: ${accepted.state}`);
-  const operation: PreparedAnnotation = {
-    operationId: "operation-1",
-    lease: accepted.lease,
-    capture: {
-      evidence: {
-        wholeRevision: content.revision,
-        fingerprint: displayedFingerprint(content.text, content.truncated),
-      },
-      sourceRange: { start: 0, end: 1 },
-      start: { line: 1, column: 1 },
-      endInclusive: { line: 1, column: 1 },
-      selectedRenderedText: "A",
-      contextBefore: "",
-      contextAfter: "",
-      mappingId: "mapping-1",
-      displayedSnapshotId: accepted.lease.displayedSnapshotId,
-    },
-    note: "note",
-    destination: options.destination ?? { kind: "browser-origin", paneId: "pane-1", compositionOwnerId: "source-1" },
-  };
-  await repository.saveAnnotation(operation);
-  return {
-    factory,
-    repository,
-    drafts,
-    runtime,
-    acknowledge,
-    storageSuccess,
-    key,
-    document,
-    incarnation: ticket.namespaceIncarnation,
-    content,
-    operation,
-    preparation,
-  };
-}
 
 // A changed read installs its provisional suppression at entry and releases it
 // only when its durable validation answers. A handoff overlapping that window
@@ -171,24 +33,22 @@ async function openFixture(options: FixtureOptions = {}): Promise<Fixture> {
 // signal at that boundary no pass starts, and the eligible annotation waits for
 // unrelated activity.
 test("a stale validation that releases provisional suppression signals the pending handoff", async () => {
-  let markPreparing: () => void = () => undefined;
-  const preparing = new Promise<void>((resolve) => {
-    markPreparing = resolve;
-  });
-  let releasePreparation: () => void = () => undefined;
-  const preparationReleased = new Promise<void>((resolve) => {
-    releasePreparation = resolve;
-  });
+  const preparing = deferred<void>();
+  const preparationReleased = deferred<void>();
   let preparations = 0;
-  let fixture: Fixture | undefined;
-  fixture = await openFixture({
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-recovery",
+    origin: "https://recovery.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
     prepareAnnotation: async () => {
       preparations += 1;
       // The first handoff finishes preparation while the overlapping
       // acceptance's provisional suppression is active, so it refuses.
       if (preparations === 1) {
-        markPreparing();
-        await preparationReleased;
+        preparing.resolve();
+        await preparationReleased.promise;
         return null;
       }
       return fixture?.preparation ?? null;
@@ -210,7 +70,7 @@ test("a stale validation that releases provisional suppression signals the pendi
 
   fixture.storageSuccess.mockClear();
   const handoff = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
-  await preparing;
+  await preparing.promise;
   // The handoff is mid-preparation. The overlapping acceptance installs its
   // provisional suppression synchronously at entry, before its first await.
   const changed: DocFileContent = {
@@ -221,7 +81,7 @@ test("a stale validation that releases provisional suppression signals the pendi
     sizeBytes: 17,
   };
   const acceptance = fixture.repository.acceptRead(ticket, changed);
-  releasePreparation();
+  preparationReleased.resolve();
 
   expect(await handoff).toEqual({ state: "pending", reason: "owner-unavailable" });
   expect(await acceptance).toEqual({ state: "stale-ticket" });
@@ -243,14 +103,18 @@ test("a stale validation that releases provisional suppression signals the pendi
 // A save can commit while its completion stays unobserved: the watchdog
 // rejects before saveAnnotation reaches the wake it publishes only after the
 // transaction wrapper settles. The runtime retains the failed attempt, and its
-// retry finds the operation already durable - newlySaved stays false - so the
-// ordinary replay publishes no wake either. For an ownerless destination no
+// retry finds the operation already durable, so the ordinary replay publishes
+// no wake either. For an ownerless destination no
 // later append supplies the missing notification, and subscribed readers stay
 // stale despite the successful recovery. The durable row the replay confirms is
 // the only cross-adapter evidence of that commit, so the replay must publish
 // the invalidation the lost attempt could not.
 test("a save replay whose first completion went unobserved wakes subscribed readers", async () => {
-  const fixture = await openFixture({
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-recovery",
+    origin: "https://recovery.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
     destination: { kind: "browser-readonly-session", sourcePaneId: "pane-1" },
   });
   const operation: PreparedAnnotation = {
@@ -263,21 +127,14 @@ test("a save replay whose first completion went unobserved wakes subscribed read
 
   // The next save transaction commits, but its completion event is held: the
   // write is durable while everything awaiting the event still waits.
-  const hold = holdNextWriteTransaction([
-    ANNOTATION_NAMESPACES_STORE,
-    ANNOTATION_HEADS_STORE,
-    ANNOTATION_EVIDENCE_STORE,
-    ANNOTATION_PAYLOADS_STORE,
-    ANNOTATION_OPERATIONS_STORE,
-    ANNOTATION_SEQUENCES_STORE,
-  ]);
+  const hold = holdNextWriteTransaction(SAVE_STORES);
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   let reached = false;
   void hold.reached.then(() => {
     reached = true;
   });
   const firstSave = fixture.runtime.save(operation);
-  for (let i = 0; i < 25 && !reached; i += 1) await nextRealTask();
+  await pollUntil(() => reached, 25);
   expect(reached).toBe(true);
   await vi.advanceTimersByTimeAsync(10_001);
 
@@ -315,8 +172,14 @@ test("a save replay whose first completion went unobserved wakes subscribed read
 // the reconciled one.
 test("an unobserved append reconciles before the pending sweep so a later handoff applies", async () => {
   const composer: { preparation: ComposerPreparation | null } = { preparation: null };
-  const fixture = await openFixture({
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-recovery",
+    origin: "https://recovery.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
     prepareAnnotation: async () => composer.preparation,
+    // A real composer adopts the committed token a reconciliation hands it:
+    // that adoption is what makes a later handoff's preparation current again.
     acknowledgeAnnotation: (preparation, token) => {
       composer.preparation = { ...preparation, token };
     },
@@ -336,7 +199,7 @@ test("an unobserved append reconciles before the pending sweep so a later handof
     reached = true;
   });
   const appendA = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
-  for (let i = 0; i < 50 && !reached; i += 1) await nextRealTask();
+  await pollUntil(() => reached, 50);
   expect(reached).toBe(true);
   await vi.advanceTimersByTimeAsync(10_001);
 
@@ -374,7 +237,12 @@ test("an unobserved append reconciles before the pending sweep so a later handof
 // storage-success boundary a stale validation does - after the validation
 // transaction settles, never inside it.
 test("an overlapping handoff completes automatically after a validation fault releases provisional suppression", async () => {
-  const fixture = await openFixture();
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-recovery",
+    origin: "https://recovery.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+  });
   const ticket = await fixture.repository.beginRead(fixture.document);
   fixture.storageSuccess.mockClear();
 
@@ -437,13 +305,13 @@ test("an overlapping handoff completes automatically after a validation fault re
     sizeBytes: 17,
   };
   const acceptance = fixture.repository.acceptRead(ticket, changed);
-  for (let i = 0; i < 50 && !validationHold; i += 1) await nextRealTask();
+  await pollUntil(() => validationHold !== undefined, 50);
   if (!validationHold) throw new Error("validation did not reach IndexedDB");
   await validationHold.reached;
   // The stalled validation transaction commits empty (the changed read's write
   // belongs to its separate fence transaction), so the handoff's reads are not
   // queued behind it.
-  for (let i = 0; i < 50 && !validationSettled; i += 1) await nextRealTask();
+  await pollUntil(() => validationSettled, 50);
   expect(validationSettled).toBe(true);
 
   const handoff = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
@@ -480,7 +348,13 @@ test("an overlapping handoff completes automatically after a validation fault re
 // eligibility-restoration voice as the stale-validation release.
 test("an overlapping handoff completes automatically after an aborted namespace reset releases provisional suppression", async () => {
   let faultArmed = false;
-  const fixture = await openFixture({
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-recovery",
+    origin: "https://recovery.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+    // The reset case aborts its transaction at this commit boundary, which is
+    // the rollback whose release this suite covers.
     beforeCommit: (operation) => {
       if (operation === "reset" && faultArmed) throw new Error("reset fault");
     },
@@ -491,15 +365,6 @@ test("an overlapping handoff completes automatically after an aborted namespace 
   // Hold the aborted reset's abort event: the rollback is real, but the reset
   // call cannot observe it until the watchdog's deadline, which keeps the
   // provisional suppression installed while the handoff refuses against it.
-  const resetStores = [
-    ANNOTATION_NAMESPACES_STORE,
-    ANNOTATION_HEADS_STORE,
-    ANNOTATION_EVIDENCE_STORE,
-    ANNOTATION_PAYLOADS_STORE,
-    ANNOTATION_OPERATIONS_STORE,
-    ANNOTATION_SEQUENCES_STORE,
-    ANNOTATION_EXPIRY_STORE,
-  ];
   const transact = IDBDatabase.prototype.transaction;
   let resetHold: ReturnType<typeof holdIndexedDBEvent> | undefined;
   const transactSpy = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (
@@ -511,8 +376,8 @@ test("an overlapping handoff completes automatically after an aborted namespace 
     if (
       !resetHold &&
       transaction.mode === "readwrite" &&
-      scope.length === resetStores.length &&
-      resetStores.every((store) => scope.includes(store))
+      scope.length === RESET_STORES.length &&
+      RESET_STORES.every((store) => scope.includes(store))
     ) {
       resetHold = holdIndexedDBEvent(transaction, "abort");
     }
@@ -524,7 +389,7 @@ test("an overlapping handoff completes automatically after an aborted namespace 
   const resetSettled = reset.catch((error: unknown) => {
     resetFailure = error;
   });
-  for (let i = 0; i < 100 && !resetHold; i += 1) await nextRealTask();
+  await pollUntil(() => resetHold !== undefined, 100);
   if (!resetHold) throw new Error("reset transaction did not reach IndexedDB");
   // The reset has ABORTED - its rollback is durable - but the held event keeps
   // the reset call from observing it, so provisional suppression is still
@@ -536,7 +401,7 @@ test("an overlapping handoff completes automatically after an aborted namespace 
   void handoff.then((result) => {
     handoffResult = result;
   });
-  for (let i = 0; i < 100 && handoffResult === undefined; i += 1) await nextRealTask();
+  await pollUntil(() => handoffResult !== undefined, 100);
   expect(handoffResult).toEqual({ state: "pending", reason: "owner-unavailable" });
 
   await vi.advanceTimersByTimeAsync(10_001);

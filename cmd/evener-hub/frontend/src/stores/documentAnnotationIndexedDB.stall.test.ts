@@ -1,27 +1,25 @@
 // @vitest-environment node
 
-import type { DocumentKey } from "@evener/appwire-client";
-import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
+import { IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
-import { MemoryStorage } from "../storageTestUtils";
-import { browserDraftKey, createBrowserDraftRepository } from "./browserDraftRepository";
-import { createDocumentAnnotationRepository } from "./documentAnnotationIndexedDB";
 import {
   ANNOTATION_HEADS_STORE,
   ANNOTATION_NAMESPACES_STORE,
   ANNOTATION_OPERATIONS_STORE,
 } from "./localCompositionSchema";
-import {
-  holdIndexedDBEvent,
-  holdNextTransactionEvent,
-  holdNextWriteTransaction,
-  nextRealTask,
-} from "./testing/stalledIndexedDB";
+import { openAnnotationStore, pollUntil } from "./testing/annotationFixture";
+import { holdIndexedDBEvent, holdNextTransactionEvent, holdNextWriteTransaction } from "./testing/stalledIndexedDB";
 
 afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
+
+// Just the platform: these cases prime their own rows and hold their own
+// transaction events, so they need no seeded annotation.
+function openStallFixture(databaseName: string) {
+  return openAnnotationStore({ databaseName, origin: "https://stall.example", targetFor: () => null });
+}
 
 // Annotation transactions gained the same watchdog the drafts repository and
 // the outbox already have: a stalled request or completion event stops
@@ -32,20 +30,7 @@ afterEach(() => {
 // check) and reads re-read durable state, so the unobserved outcome is
 // honestly reported as a fault for the caller's own retry.
 test("a stalled annotation transaction stops waiting and the same adapter can reopen and read", async () => {
-  const factory = new IDBFactory();
-  const drafts = createBrowserDraftRepository({
-    indexedDB: factory,
-    databaseName: "annotation-stall",
-    storage: new MemoryStorage(),
-  });
-  const repository = createDocumentAnnotationRepository({
-    indexedDB: factory,
-    databaseName: "annotation-stall",
-    drafts,
-    targetFor: () => null,
-  });
-  const key = browserDraftKey("root", "https://stall.example");
-  const document: DocumentKey = { ...key, path: "NOTES.md" };
+  const { drafts, repository, document } = await openStallFixture("annotation-stall");
   // Prime the namespace and head rows, then hold the next readwrite
   // transaction over the read stores: fake-indexeddb commits it, but its
   // "complete" event - and beginRead waiting on that event - stays held.
@@ -72,20 +57,7 @@ test("a stalled annotation transaction stops waiting and the same adapter can re
 // race - a stalled abort event kept the call pending forever, past the
 // watchdog, blocking the shared annotation retry pass for good.
 test("a body rejection with a stalled abort event still settles within the watchdog", async () => {
-  const factory = new IDBFactory();
-  const drafts = createBrowserDraftRepository({
-    indexedDB: factory,
-    databaseName: "annotation-abort-stall",
-    storage: new MemoryStorage(),
-  });
-  const repository = createDocumentAnnotationRepository({
-    indexedDB: factory,
-    databaseName: "annotation-abort-stall",
-    drafts,
-    targetFor: () => null,
-  });
-  const key = browserDraftKey("root", "https://stall.example");
-  const document: DocumentKey = { ...key, path: "NOTES.md" };
+  const { drafts, repository, document } = await openStallFixture("annotation-abort-stall");
   await repository.beginRead(document);
   // The next readwrite transaction over the read stores has its ABORT event
   // held: the rollback the catch awaits after the body rejects can never
@@ -124,20 +96,7 @@ test("a body rejection with a stalled abort event still settles within the watch
 // outside the repository's deadline wrapper: a stalled request left every
 // later retry awaiting the same never-settling promise.
 test("a stalled retry outcome scan stops waiting and a later retry proceeds", async () => {
-  const factory = new IDBFactory();
-  const drafts = createBrowserDraftRepository({
-    indexedDB: factory,
-    databaseName: "outcome-stall",
-    storage: new MemoryStorage(),
-  });
-  const repository = createDocumentAnnotationRepository({
-    indexedDB: factory,
-    databaseName: "outcome-stall",
-    drafts,
-    targetFor: () => null,
-  });
-  const key = browserDraftKey("root", "https://stall.example");
-  const document: DocumentKey = { ...key, path: "NOTES.md" };
+  const { drafts, repository, document } = await openStallFixture("outcome-stall");
   await repository.beginRead(document);
   const getAll = IDBObjectStore.prototype.getAll;
   let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
@@ -159,7 +118,7 @@ test("a stalled retry outcome scan stops waiting and a later retry proceeds", as
   repository.retryPendingWithOutcome("storage-recovered").catch((error: unknown) => {
     failure = error;
   });
-  for (let i = 0; i < 25 && !hold; i += 1) await nextRealTask();
+  await pollUntil(() => hold !== undefined, 25);
   if (!hold) throw new Error("outcome scan did not reach IndexedDB");
   await hold.reached;
   await vi.advanceTimersByTimeAsync(10_001);
@@ -172,25 +131,12 @@ test("a stalled retry outcome scan stops waiting and a later retry proceeds", as
   drafts.close();
 });
 
-// The scan's rollback wait shares the wrapper's defect the round-22 fix
-// closed: a body that rejects enters the catch, and its completed-wait used
-// to sit OUTSIDE the deadline race - a stalled abort event kept the shared
-// retry pass pending forever, even after the watchdog fired.
+// The scan's rollback wait shares the wrapper's defect: a body that rejects
+// enters the catch, and its completed-wait used to sit OUTSIDE the deadline
+// race - a stalled abort event kept the shared retry pass pending forever,
+// even after the watchdog fired.
 test("an outcome scan body rejection with a stalled abort event still settles within the watchdog", async () => {
-  const factory = new IDBFactory();
-  const drafts = createBrowserDraftRepository({
-    indexedDB: factory,
-    databaseName: "outcome-abort-stall",
-    storage: new MemoryStorage(),
-  });
-  const repository = createDocumentAnnotationRepository({
-    indexedDB: factory,
-    databaseName: "outcome-abort-stall",
-    drafts,
-    targetFor: () => null,
-  });
-  const key = browserDraftKey("root", "https://stall.example");
-  const document: DocumentKey = { ...key, path: "NOTES.md" };
+  const { drafts, repository, document } = await openStallFixture("outcome-abort-stall");
   await repository.beginRead(document);
   // The scan's transaction covers exactly the operations store in readonly
   // mode; its ABORT event stays held, so the rollback the catch awaits can
@@ -225,8 +171,9 @@ test("an outcome scan body rejection with a stalled abort event still settles wi
     });
   // Real task hops drive the retry pass (no pending operations) and the
   // scan's transaction to the point of its held abort - fake timers do not
-  // reach fake-indexeddb's event delivery.
-  for (let i = 0; i < 25; i += 1) await nextRealTask();
+  // reach fake-indexeddb's event delivery. The hop count is fixed because the
+  // abort is held, so no condition can observe it.
+  await pollUntil(() => false, 25);
   await vi.advanceTimersByTimeAsync(10_001);
   // The shared retry pass must settle by the watchdog deadline even though
   // its rollback event never arrived.
