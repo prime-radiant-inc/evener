@@ -41,13 +41,14 @@ type oauthFixture struct {
 	// first poll for those flows is observed by the issuer and held until the
 	// driver reports the user's intent; it then answers with a real success so
 	// the retired operation would persist or complete if production allowed it.
+	// Settlement is NOT signalled here: the issuer answering is not production
+	// receiving the tokens. The browser observes the real device-poll RPC reply,
+	// which production writes only after DevicePoll has exchanged, verified and
+	// saved or refused.
 	firstPollObserved chan struct{}
 	releaseLate       chan struct{}
-	lateSettled       chan struct{}
 	observeOnce       sync.Once
 	releaseOnce       sync.Once
-	settleOnce        sync.Once
-	lateReleased      bool
 }
 
 func newOAuthFixture(scenario string) *oauthFixture {
@@ -57,14 +58,10 @@ func newOAuthFixture(scenario string) *oauthFixture {
 		access:            "oauth-fixture-access-not-a-secret",
 		firstPollObserved: make(chan struct{}),
 		releaseLate:       make(chan struct{}),
-		lateSettled:       make(chan struct{}),
 	}
 }
 
 func (f *oauthFixture) releaseLateSuccess() {
-	f.mu.Lock()
-	f.lateReleased = true
-	f.mu.Unlock()
 	f.releaseOnce.Do(func() { close(f.releaseLate) })
 }
 
@@ -121,9 +118,6 @@ func (f *oauthFixture) issuer(t *testing.T) *httptest.Server {
 		switch r.Form.Get("grant_type") {
 		case "authorization_code":
 			f.exchanges++
-			if f.lateReleased {
-				f.settleOnce.Do(func() { close(f.lateSettled) })
-			}
 		case "refresh_token":
 			f.refreshes++
 		default:
@@ -140,6 +134,68 @@ func (f *oauthFixture) issuer(t *testing.T) *httptest.Server {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server
+}
+
+// cleanupOAuthFixture releases a poll the scripted issuer is holding before it
+// closes the fixture's servers. httptest.Server.Close waits for active
+// handlers, and the held poll waits for this release, so the release must run
+// first. t.Cleanup runs LIFO: registering it after the servers' creation puts
+// it ahead of their own Close cleanups.
+func cleanupOAuthFixture(f *oauthFixture, servers ...*httptest.Server) {
+	f.releaseLateSuccess()
+	for _, server := range servers {
+		server.Close()
+	}
+}
+
+// TestOnboardingOAuthBrowserFixtureCleanupWithHeldPoll proves the fixture
+// cleanup finishes while the issuer still holds a device poll. With the release
+// registered after the servers (the order testOnboardingOAuthAt uses), cleanup
+// releases the handler before Close waits on it.
+func TestOnboardingOAuthBrowserFixtureCleanupWithHeldPoll(t *testing.T) {
+	fixture := newOAuthFixture("oauth-cancel")
+	issuer := fixture.issuer(t)
+	// Registered after the issuer's own Close cleanup, so it runs first and a
+	// failure below cannot leave the held handler deadlocking teardown.
+	t.Cleanup(fixture.releaseLateSuccess)
+	provider := fixture.provider(t)
+	polled := make(chan error, 1)
+	go func() {
+		response, err := http.Post(
+			issuer.URL+"/api/accounts/deviceauth/token",
+			"application/json",
+			strings.NewReader(`{"user_code":"ONBOARD-CANCEL"}`),
+		)
+		if err == nil {
+			response.Body.Close()
+		}
+		polled <- err
+	}()
+	select {
+	case <-fixture.firstPollObserved:
+	case err := <-polled:
+		t.Fatalf("the poll was not held: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("issuer never observed the held poll")
+	}
+	done := make(chan struct{})
+	go func() {
+		cleanupOAuthFixture(fixture, provider, issuer)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("fixture cleanup blocked on the held poll")
+	}
+	select {
+	case err := <-polled:
+		if err != nil {
+			t.Fatalf("held poll: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("held poll handler did not return after cleanup released it")
+	}
 }
 
 func (f *oauthFixture) provider(t *testing.T) *httptest.Server {
@@ -218,9 +274,11 @@ func testOnboardingOAuthAt(t *testing.T, scenario string, view onboardingView) {
 	t.Helper()
 	guard := newOnboardingGuardEnv(t)
 	fixture := newOAuthFixture(scenario)
-	t.Cleanup(fixture.releaseLateSuccess)
 	issuer := fixture.issuer(t)
 	provider := fixture.provider(t)
+	// LIFO cleanup: register after the servers so a held late poll is released
+	// before their own Close cleanups wait on it.
+	t.Cleanup(func() { cleanupOAuthFixture(fixture, provider, issuer) })
 	config := fmt.Sprintf("[providers.\"openai-codex\"]\nbase_url = %q\ndefault_model = \"gpt-fixture-chosen\"\n", provider.URL+"/v1")
 	if err := os.WriteFile(os.Getenv("EVENER_PROVIDERS_CONFIG"), []byte(config), 0600); err != nil {
 		t.Fatal(err)
@@ -247,7 +305,7 @@ func testOnboardingOAuthAt(t *testing.T, scenario string, view onboardingView) {
 			http.Error(w, err.Error(), 500)
 			return
 		}
-		_, exchanges, _, models := fixture.counts()
+		device, exchanges, _, models := fixture.counts()
 		if len(entries) != 0 {
 			http.Error(w, "session before Start", 500)
 			return
@@ -281,15 +339,24 @@ func testOnboardingOAuthAt(t *testing.T, scenario string, view onboardingView) {
 			stages[stage] = true
 			stageMu.Unlock()
 		case "oauth-late-settled":
-			select {
-			case <-fixture.lateSettled:
-				stageMu.Lock()
-				stages[stage] = true
-				stageMu.Unlock()
-			case <-time.After(10 * time.Second):
-				http.Error(w, "released late poll never reached the token exchange", 500)
+			// The browser reports this only after it has observed the retired
+			// operation's real device-poll RPC reply. Production writes that
+			// reply after DevicePoll has received the tokens and run its
+			// persistence/refusal under the credential lock, so the effect
+			// checks below run at the real completion boundary. No recovery
+			// flow may have started yet, or its exchange would stand in for
+			// the retired one.
+			if device != 1 {
+				http.Error(w, fmt.Sprintf("device starts=%d at settlement, want only the retired flow's", device), 500)
 				return
 			}
+			if exchanges != 1 {
+				http.Error(w, fmt.Sprintf("retired poll exchanges=%d, want its in-flight exchange completed once", exchanges), 500)
+				return
+			}
+			stageMu.Lock()
+			stages[stage] = true
+			stageMu.Unlock()
 		case "oauth-cancelled":
 			if exchanges != 1 {
 				http.Error(w, fmt.Sprintf("released late poll exchanges=%d, want the in-flight request completed once", exchanges), 500)

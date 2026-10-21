@@ -76,15 +76,23 @@ registry reload, AppWire and browser UI remain production code. Subtests:
 - `oauth-cancel`: the issuer observes and holds the first device poll. The user
   cancels the editor; the checkpoint confirms no exchange, record or model
   check yet, then releases a real late authorization success. The in-flight
-  request is allowed to reach the token exchange (its count proves it completed),
-  but the checkpoint requires no persisted OAuth record and no model-list check,
-  and the browser requires no credential-saved UI, no focus change and the same
-  draft intent. A fresh sign-in then completes and adopts the configured default.
+  request is allowed to reach the token exchange, and the browser waits for the
+  real `evener/auth/device/poll` reply before reading the UI: production writes
+  that reply only after the exchange, the endpoint check and the credential
+  write or refusal have run. The browser's AppWire frame tap is passive: it
+  records the frames the production client sends and receives and changes
+  neither. The checkpoint then requires no persisted OAuth record and no
+  model-list check, and the browser requires no credential-saved UI, no focus
+  change and the same draft intent. A fresh sign-in then completes and adopts
+  the configured default.
 - `oauth-endpoint-change`: while the poll is held, Go performs a real AppWire
   `evener/instance/edit` that re-points the instance. After the same released
-  late success, the browser must return to the connection editor with the
-  `changed` alert and the polling editor gone; the token exchange may complete,
-  but the checkpoint requires no persisted record and no model-list check.
+  late success, the browser waits for the real poll reply (an error, because the
+  changed destination refuses the write) and then must return to the connection
+  editor with the `changed` alert and the polling editor gone; the token exchange
+  completes, but the checkpoint requires no persisted record and no model-list
+  check. The fixture's cleanup releases a held poll before closing its servers,
+  and `TestOnboardingOAuthBrowserFixtureCleanupWithHeldPoll` proves that order.
 
 Device and redirect each run in all four real layouts, from before setup opens
 through acquisition and automatic focus restoration; no post-completion resize

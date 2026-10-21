@@ -119,6 +119,72 @@ async function waitStage(stage, timeoutMs = 15000) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
 }
+// A passive tap on the page's real WebSocket. It records the AppWire frames the
+// production client sends and receives and changes neither, so the guard can
+// wait for the device-poll RPC's actual reply instead of mistaking the issuer's
+// receipt of the token request for production's completion. Installed before
+// the document loads.
+const appWireTap = `(() => {
+  const Native = window.WebSocket;
+  if (!Native) return;
+  const records = { sent: [], received: [] };
+  Object.defineProperty(window, "__onboardingAppWireFrames", { value: records, enumerable: false });
+  class ObservedWebSocket extends Native {
+    constructor(...args) {
+      super(...args);
+      this.addEventListener("message", (event) => {
+        if (typeof event.data === "string") records.received.push(event.data);
+      });
+    }
+    send(data) {
+      if (typeof data === "string") records.sent.push(data);
+      return super.send(data);
+    }
+  }
+  window.WebSocket = ObservedWebSocket;
+})()`;
+function parseFrame(frame) {
+  try {
+    return JSON.parse(frame);
+  } catch {
+    return null;
+  }
+}
+// The request the browser actually sent. Its id identifies the reply on the
+// same wire; matching the method keeps a later recovery flow from standing in
+// for the retired operation.
+async function observedRequest(method, label) {
+  const sent = JSON.parse(await read(`JSON.stringify(window.__onboardingAppWireFrames?.sent ?? [])`));
+  const frames = sent.map(parseFrame);
+  const found = frames.find((frame) => frame?.method === method);
+  assert.ok(found, `${label}: the browser never sent ${method} (saw ${JSON.stringify(frames.map((f) => f?.method))})`);
+  return found;
+}
+// Wait for the real reply to one already-sent request. Production writes this
+// frame only after the RPC handler returned, which for device polling means
+// the token exchange, the endpoint verification and the credential write or
+// refusal have all run.
+async function observedResponse(requestId, label, timeoutMs = 20000) {
+  await wait(
+    `(() => {
+      const records = window.__onboardingAppWireFrames;
+      if (!records) return false;
+      return records.received.some((frame) => {
+        try { return JSON.parse(frame).id === ${JSON.stringify(requestId)}; } catch { return false; }
+      });
+    })()`,
+    `${label}: real RPC reply`,
+    { timeoutMs },
+  );
+  const frames = JSON.parse(await read(`JSON.stringify(window.__onboardingAppWireFrames.received)`)).map(parseFrame);
+  return frames.find((frame) => frame?.id === requestId);
+}
+// One page task turn after the observed reply, so the client's message handler
+// and the continuation it releases run before the UI state is read. The reply
+// is the synchronization; this only lets the page drain what it started.
+async function browserHandledRpcReply() {
+  await read(`new Promise((resolve) => setTimeout(() => resolve(true), 0))`);
+}
 // Read the selected tab in the active dock group, then its controlled panel.
 // Never accept a reply/composer merely mounted in another pane.
 function activeSession() {
@@ -188,6 +254,7 @@ process.once("SIGTERM", () => {
 });
 try {
   await driver.start();
+  await driver.page.send("Page.addScriptToEvaluateOnNewDocument", { source: appWireTap });
   // The journey runs in its target layout from the moment the UI opens: the
   // acquisition, dismissal and focus restoration below happen at this size and
   // theme, not after a later resize.
@@ -319,6 +386,9 @@ try {
       if (scenario === "oauth-cancel") {
         // The issuer holds the first poll until the user's intent is settled.
         await waitStage("oauth-poll-observed");
+        // Capture the real in-flight poll before cancelling, so its reply (not
+        // a later recovery flow's) is what settlement waits for.
+        const retiredPoll = await observedRequest("evener/auth/device/poll", "cancelled sign-in");
         await button("Cancel");
         // Cancelling the sign-in editor returns to the connection editor; the
         // outer guided dialog stays until access is actually acquired.
@@ -342,6 +412,12 @@ try {
         // Now the held poll answers with a real success. A retired operation
         // would persist the record, check models or complete the UI here.
         await checkpoint(undefined, "oauth-release-late-success");
+        // The held poll now answers. Production receives the tokens and runs
+        // its persistence/refusal before it writes this RPC reply.
+        const retiredReply = await observedResponse(retiredPoll.id, "cancelled sign-in");
+        assert.equal(retiredReply?.error, undefined, JSON.stringify(retiredReply));
+        assert.equal(retiredReply?.result?.state, "authorized", JSON.stringify(retiredReply));
+        await browserHandledRpcReply();
         await waitStage("oauth-late-settled");
         const afterLate = await read(intent);
         assert.deepEqual(afterLate, beforeLate, "late success did not mutate the cancelled intent or steal focus");
@@ -357,9 +433,16 @@ try {
       }
       if (scenario === "oauth-endpoint-change") {
         await waitStage("oauth-poll-observed");
+        const retiredPoll = await observedRequest("evener/auth/device/poll", "changed sign-in");
         await checkpoint(undefined, "oauth-endpoint-change");
         await checkpoint(undefined, "oauth-changed-intent");
         await checkpoint(undefined, "oauth-release-late-success");
+        // The changed destination makes the poll's credential write refuse, so
+        // the real reply is an error rather than an authorized state. Its
+        // arrival still means production finished the exchange and the check.
+        const retiredReply = await observedResponse(retiredPoll.id, "changed sign-in");
+        assert.ok(retiredReply?.error, `changed sign-in: expected the refusal reply, got ${JSON.stringify(retiredReply)}`);
+        await browserHandledRpcReply();
         await waitStage("oauth-late-settled");
         // The listing refresh the instance edit scheduled may itself wait for
         // the in-flight poll; once that completes, the changed destination is
