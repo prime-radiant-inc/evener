@@ -56,6 +56,11 @@ export interface DocumentAnnotationPorts {
 export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationRepository): DocumentAnnotationRuntime {
   const failed = new Map<string, PreparedAnnotation>();
   let pass: Promise<void> | null = null;
+  // The sweep part of the running pass, without its follow-up. A direct handoff
+  // queued mid-pass joins the chain the follow-up also waits on, so waiting for
+  // the whole pass would leave each waiting for the other: this separates the
+  // handoff work it can race from the follow-up that runs behind it.
+  let sweep: Promise<void> | null = null;
   let retryNeeded = false;
   let pendingDuringPass = false;
   // A recovery trigger arriving while a pass runs names state that pass may
@@ -183,10 +188,14 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
       await startPass(nextReason);
     });
     pass = withFollowUp;
+    sweep = current;
     const settle = () => {
       // A nested follow-up owns the slot while it runs, and a later trigger
       // outside every pass starts its own.
-      if (pass === withFollowUp) pass = null;
+      if (pass === withFollowUp) {
+        pass = null;
+        sweep = null;
+      }
     };
     void withFollowUp.then(settle, settle);
     return withFollowUp;
@@ -213,7 +222,7 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
       // connection can reopen and appending to a retained composer after
       // application teardown.
       if (!alive) return Promise.resolve<HandoffResult>({ state: "cancelled" });
-      const prior = pass ? Promise.all([pass, handoffChain]) : handoffChain;
+      const prior = sweep ? Promise.all([sweep, handoffChain]) : handoffChain;
       const run = prior.then(
         () =>
           alive

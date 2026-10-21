@@ -228,3 +228,57 @@ test("a storage success during an active pass runs one follow-up after the sweep
   fixture.repository.close();
   fixture.drafts.close();
 });
+
+// A direct handoff queued during an active pass is work that pass's follow-up
+// must run behind, never work the pass itself waits for. A storage commit while
+// the handoff waits asks the pass for a follow-up; if the handoff also waited
+// for the follow-up to settle, each would wait for the other and neither the
+// handoff, nor any later retry, nor whenIdle() would ever settle.
+test("a direct handoff queued during an active pass settles when the pass runs a follow-up", async () => {
+  let markSweepBlocked: () => void = () => undefined;
+  const sweepBlocked = new Promise<void>((resolve) => {
+    markSweepBlocked = resolve;
+  });
+  let releaseSweep: () => void = () => undefined;
+  const sweepReleased = new Promise<void>((resolve) => {
+    releaseSweep = resolve;
+  });
+  let preparations = 0;
+  let fixture: Fixture | undefined;
+  fixture = await openFixture(async () => {
+    preparations += 1;
+    // The sweep's handoff is skipped: no composer claims it. Holding it open
+    // keeps the pass active while the reader saves and storage commits.
+    if (preparations === 1) {
+      markSweepBlocked();
+      await sweepReleased;
+      return null;
+    }
+    return fixture?.preparation ?? null;
+  });
+  const runtime = createDocumentAnnotationRuntime(fixture.repository);
+
+  void runtime.retryPending("composer-open");
+  await sweepBlocked;
+  // A save during the active pass reaches the direct handoff path, which joins
+  // the handoff chain behind the running pass. The storage commit then asks
+  // that pass for one follow-up.
+  const handoff = runtime.handoff(fixture.document, fixture.operation.operationId);
+  runtime.storageSucceeded();
+  const settled = Promise.all([handoff, runtime.whenIdle()]).then(() => "settled");
+  releaseSweep();
+
+  // A stalled handoff must read as a stall here, not hold the suite until its
+  // timeout.
+  await expect(
+    Promise.race([settled, new Promise<string>((resolve) => setTimeout(() => resolve("stalled"), 1000))]),
+  ).resolves.toBe("settled");
+  await expect(handoff).resolves.toMatchObject({ state: "applied" });
+  const views = await fixture.repository.listAnnotations(fixture.document);
+  expect(views.find((view) => view.operation.operationId === fixture.operation.operationId)?.handoff.state).toBe(
+    "already-applied",
+  );
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
