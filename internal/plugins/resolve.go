@@ -851,13 +851,20 @@ func setAsideBundledConflict(dest string) ([]string, error) {
 // anything, and old enough that no publish in flight could still be filling
 // it. Anything else at that name is someone else's data, however old it is.
 func (m *Manager) abandonedStaging(dir string) []string {
+	return m.abandonedStagingWithPrefix(dir, stagingPrefix)
+}
+
+// abandonedStagingWithPrefix is abandonedStaging with the staging name prefix
+// as a parameter, so the marketplace publishing area's own containers can be
+// swept with exactly the same proof and age rule.
+func (m *Manager) abandonedStagingWithPrefix(dir, prefix string) []string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
 	var abandoned []string
 	for _, entry := range entries {
-		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), stagingPrefix) {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) {
 			continue
 		}
 		staging := filepath.Join(dir, entry.Name())

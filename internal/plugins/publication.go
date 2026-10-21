@@ -134,6 +134,11 @@ const (
 	abandonedPublishScratch    = abandonedStaging
 )
 
+// publicationStagingPrefix names the container stagePlugin reserves under
+// publishing/<marketplace>/<plugin> for one fetch. A fetch killed before its
+// cleanup strands the container, including its Git directory.
+const publicationStagingPrefix = ".staging-"
+
 func (m *Manager) managedGitArchiveDir(rootName, rel string) string {
 	return filepath.Join(m.Root, managedGitArchiveDirName, rootName, rel)
 }

@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -231,6 +232,46 @@ func TestProbeResolveSeatbeltWithASymlinkedManagedRoot(t *testing.T) {
 	}
 	if !foundSkill {
 		t.Errorf("user-skills linked .git target was not walked:\n%s", text)
+	}
+}
+
+// probeReader overrides only the file read, so the table below proves
+// managedContentCleanAt's own parsing and version/word checks rather than a
+// test double of the whole host boundary.
+type probeReader struct {
+	managedProbeSystem
+	data []byte
+	err  error
+}
+
+func (s probeReader) readFile(string) ([]byte, error) { return s.data, s.err }
+
+func TestManagedContentCleanAtFailsClosed(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		err  error
+		want bool
+	}{
+		{name: "missing file", err: fs.ErrNotExist, want: false},
+		{name: "malformed JSON", data: `{`, want: false},
+		{name: "wrong version", data: `{"version":2,"managed_content":"clean"}`, want: false},
+		{name: "unknown word", data: `{"version":1,"managed_content":"unverified"}`, want: false},
+		{name: "non-object JSON", data: `[]`, want: false},
+		{name: "exact", data: `{"version":1,"managed_content":"clean"}`, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			system := probeReader{data: []byte(test.data), err: test.err}
+			if got := managedContentCleanAt(system, "/store"); got != test.want {
+				t.Fatalf("managedContentCleanAt(%q) = %v, want %v", test.data, got, test.want)
+			}
+		})
+	}
+
+	system := probeReader{managedProbeSystem: managedProbeSystem{}, data: []byte(`{"version":1,"managed_content":"clean"}`)}
+	if managedContentCleanAt(system, "") {
+		t.Fatal("an empty store root was claimed clean")
 	}
 }
 

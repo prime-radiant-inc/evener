@@ -207,12 +207,17 @@ func TestManagedInstallPublishesWithoutGitMetadata(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(f.entry.InstallPath, ".git")); !os.IsNotExist(err) {
 		t.Fatalf("published plugin carries .git: %v", err)
 	}
-	staging := filepath.Join(f.manager.publishingDir("acme", "widget"), ".staging")
-	if _, err := os.Stat(staging); !os.IsNotExist(err) {
-		t.Fatalf("private staging remains after publication: %v", err)
-	}
-	if _, err := os.Stat(f.manager.pluginCacheDir("acme", "widget", ".staging")); !os.IsNotExist(err) {
-		t.Fatalf("staging was created in the content root: %v", err)
+	for _, parent := range []string{
+		f.manager.publishingDir("acme", "widget"),
+		filepath.Join(f.manager.cacheDir(), "acme", "widget"),
+	} {
+		matches, err := filepath.Glob(filepath.Join(parent, ".staging*"))
+		if err != nil {
+			t.Fatalf("globbing %s: %v", parent, err)
+		}
+		if len(matches) > 0 {
+			t.Fatalf("staging remains under %s: %v", parent, matches)
+		}
 	}
 }
 

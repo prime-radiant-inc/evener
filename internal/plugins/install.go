@@ -111,6 +111,13 @@ func (m *Manager) stagePlugin(ctx context.Context, marketplace, plugin string, r
 	if err != nil {
 		return "", "", false, err
 	}
+	// The marker proves this container is ours before anything is fetched into
+	// it, so a later sweep can tell an abandoned fetch from someone else's
+	// directory wearing the same prefix.
+	if err := os.WriteFile(filepath.Join(owned, stagingMarker), nil, 0o600); err != nil {
+		_ = installRemoveAll(owned)
+		return "", "", false, err
+	}
 	staging := filepath.Join(owned, "payload")
 	sha, err = installFetchSource(ctx, cp.Source, m.catalogRoot(ref), staging)
 	if err != nil {
