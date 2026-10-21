@@ -27,9 +27,9 @@ func TestGatewayInputModalities(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// Nil, not an empty slice, is what "advertises nothing" must mean:
 			// anything else would erase a curated list on the live replay.
-			got := GatewayInputModalities(tc.arch, tc.caps)
+			got := gatewayInputModalities(tc.arch, tc.caps)
 			if !slices.Equal(got, tc.want) || (got == nil) != (tc.want == nil) {
-				t.Fatalf("GatewayInputModalities = %#v, want %#v", got, tc.want)
+				t.Fatalf("gatewayInputModalities = %#v, want %#v", got, tc.want)
 			}
 		})
 	}
@@ -141,18 +141,87 @@ func TestGatewayEffortLadder(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, published := GatewayEffortLadder(tc.compat)
+			got, published := gatewayEffortLadder(tc.compat)
 			if published != tc.published {
 				t.Fatalf("published = %v, want %v", published, tc.published)
 			}
 			if !slices.Equal(got, tc.want) || (!published && got != nil) {
-				t.Fatalf("GatewayEffortLadder = %#v, want %#v (published %v)", got, tc.want, published)
+				t.Fatalf("gatewayEffortLadder = %#v, want %#v (published %v)", got, tc.want, published)
 			}
 		})
 	}
 }
 
-func TestApplyGatewayReasoning(t *testing.T) {
+// TestApplyGatewayFacts_Dialect pins the two wire-shaping compat fields a
+// gateway publishes beside its effort map. A dialect the chat builders do not
+// know is dropped rather than carried: an unknown thinking_format writes no
+// reasoning control at all, so passing one through would silently disable
+// thinking on that row.
+func TestApplyGatewayFacts_Dialect(t *testing.T) {
+	cases := []struct {
+		name       string
+		compat     GatewayClientCompat
+		wantFormat string
+		wantMaxTok string
+	}{
+		{
+			name:       "a known dialect and token spelling are carried",
+			compat:     GatewayClientCompat{Pi: &GatewayPiCompat{ThinkingFormat: "zai", MaxTokensField: "max_completion_tokens"}},
+			wantFormat: "zai",
+			wantMaxTok: "max_completion_tokens",
+		},
+		{
+			name:       "an unknown dialect is dropped",
+			compat:     GatewayClientCompat{Pi: &GatewayPiCompat{ThinkingFormat: "claude", MaxTokensField: "max_tokens"}},
+			wantMaxTok: "max_tokens",
+		},
+		{
+			name:       "an unknown token spelling is dropped",
+			compat:     GatewayClientCompat{Pi: &GatewayPiCompat{ThinkingFormat: "openai", MaxTokensField: "max_output"}},
+			wantFormat: "openai",
+		},
+		{
+			// Both fields stay unset, so a curated row's own dialect survives.
+			name:   "an absent block states no dialect",
+			compat: GatewayClientCompat{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			caps := registry.Caps{}
+			ApplyGatewayFacts(&caps, GatewayArchitecture{}, GatewayCapabilities{}, tc.compat)
+			if got := registry.StringValue(caps.ThinkingFormat); got != tc.wantFormat {
+				t.Fatalf("ThinkingFormat = %q, want %q", got, tc.wantFormat)
+			}
+			if got := registry.StringValue(caps.MaxTokensField); got != tc.wantMaxTok {
+				t.Fatalf("MaxTokensField = %q, want %q", got, tc.wantMaxTok)
+			}
+		})
+	}
+}
+
+// TestApplyGatewayFacts_EmptyMapProvesNothing pins the other side of that
+// evidence rule: a published map with no usable level says the model takes no
+// effort control, and is not proof the model reasons at all. Raising the
+// verdict for it would open a thinking-enable object on a non-reasoning model.
+func TestApplyGatewayFacts_EmptyMapProvesNothing(t *testing.T) {
+	for name, levels := range map[string]map[string]string{
+		"empty":   {},
+		"all-nil": {"low": "", "high": ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			caps := registry.Caps{}
+			ApplyGatewayFacts(&caps, GatewayArchitecture{}, GatewayCapabilities{}, GatewayClientCompat{
+				Pi: &GatewayPiCompat{ThinkingLevelMap: levels},
+			})
+			if caps.Reasoning != nil {
+				t.Fatalf("Reasoning = %v, want the inferred verdict left alone", *caps.Reasoning)
+			}
+		})
+	}
+}
+
+func TestApplyGatewayFacts_Reasoning(t *testing.T) {
 	yes, no := true, false
 	levels := func(m map[string]string) GatewayClientCompat {
 		return GatewayClientCompat{Pi: &GatewayPiCompat{ThinkingLevelMap: m}}
@@ -236,7 +305,7 @@ func TestApplyGatewayReasoning(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			caps := registry.Caps{EffortValues: tc.before, Reasoning: tc.beforeReason}
-			ApplyGatewayReasoning(&caps, tc.capsFacts, tc.compat)
+			ApplyGatewayFacts(&caps, GatewayArchitecture{}, tc.capsFacts, tc.compat)
 			if (caps.Reasoning == nil) != (tc.wantReason == nil) || (caps.Reasoning != nil && *caps.Reasoning != *tc.wantReason) {
 				t.Fatalf("Reasoning = %v, want %v", caps.Reasoning, tc.wantReason)
 			}

@@ -28,13 +28,25 @@ jobs:
           cache-dependency-path: |
             docs-site/package-lock.json
             cmd/evener-hub/frontend/package-lock.json
+      - name: Check documented shell fixtures as root then unprivileged
+        run: |
+          sudo -n env -u EVENER_SCRATCH_DIR -u TMPDIR "$(command -v node)" --test --test-concurrency=1 docs-site/scripts/documented-shell.test.mjs
+          env -u EVENER_SCRATCH_DIR -u TMPDIR node --test --test-concurrency=1 docs-site/scripts/documented-shell.test.mjs
       - run: npm --prefix docs-site ci
       - run: npm --prefix cmd/evener-hub/frontend ci
       - name: Install Chromium for documentation checks
         working-directory: docs-site
         run: npx playwright install --with-deps chromium
       - name: Execute all four CLI and web tutorial scenarios
-        run: node docs-site/scripts/tours/refresh.mjs check --surfaces cli,web
+        run: node docs-site/scripts/tours/refresh.mjs check --surfaces cli,web --out "$RUNNER_TEMP/tutorial-candidate"
+      - name: Validate retained tutorial candidate
+        run: node docs-site/scripts/tours/refresh.mjs validate --surfaces cli,web --out "$RUNNER_TEMP/tutorial-candidate"
+      - name: Retain sanitized tutorial candidate for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: tutorial-candidate-cli-web
+          path: ${{ runner.temp }}/tutorial-candidate
+          if-no-files-found: error
       - run: npm --prefix docs-site run build
       - name: Check diagrams, search and navigation in Chromium
         working-directory: docs-site

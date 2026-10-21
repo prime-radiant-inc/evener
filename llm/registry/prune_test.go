@@ -92,7 +92,7 @@ func TestPrune_RemovesOnlyFalsePaths(t *testing.T) {
 			allFalse.Fields[p] = false
 		}
 		body := fullBody(proto)
-		pruned := Prune(body, allFalse)
+		pruned := Prune(body, allFalse, ProtocolOpenAIChat)
 		if !sort.StringsAreSorted(pruned) {
 			t.Errorf("%s: pruned list must be sorted: %v", proto, pruned)
 		}
@@ -112,7 +112,7 @@ func TestPrune_RemovesOnlyFalsePaths(t *testing.T) {
 			allTrue.Fields[p] = true
 		}
 		body = fullBody(proto)
-		if got := Prune(body, allTrue); len(got) != 0 {
+		if got := Prune(body, allTrue, ProtocolOpenAIChat); len(got) != 0 {
 			t.Errorf("%s: nothing should be pruned, got %v", proto, got)
 		}
 	}
@@ -123,7 +123,7 @@ func TestPrune_RemovesOnlyFalsePaths(t *testing.T) {
 // takes no thinking fields at all.
 func TestPrune_GoogleThinkingConfig(t *testing.T) {
 	body := map[string]any{"generationConfig": map[string]any{"temperature": 0.2, "thinkingConfig": map[string]any{"thinkingLevel": "high"}}}
-	pruned := Prune(body, Caps{Fields: map[string]bool{"generationConfig.thinkingConfig": false}})
+	pruned := Prune(body, Caps{Fields: map[string]bool{"generationConfig.thinkingConfig": false}}, ProtocolGoogle)
 	if !reflect.DeepEqual(pruned, []string{"generationConfig.thinkingConfig"}) {
 		t.Fatalf("pruned = %v", pruned)
 	}
@@ -138,7 +138,7 @@ func TestPrune_GoogleThinkingConfig(t *testing.T) {
 
 func TestPrune_NestedLeafKeepsSiblingAndDropsEmptyParent(t *testing.T) {
 	body := map[string]any{"text": map[string]any{"verbosity": "low", "format": map[string]any{"type": "text"}}, "reasoning": map[string]any{"context": "all_turns"}}
-	pruned := Prune(body, Caps{Fields: map[string]bool{"text.verbosity": false, "reasoning.context": false}})
+	pruned := Prune(body, Caps{Fields: map[string]bool{"text.verbosity": false, "reasoning.context": false}}, ProtocolOpenAIResponses)
 	if !reflect.DeepEqual(pruned, []string{"reasoning.context", "text.verbosity"}) {
 		t.Fatalf("pruned = %v", pruned)
 	}
@@ -153,19 +153,34 @@ func TestPrune_NestedLeafKeepsSiblingAndDropsEmptyParent(t *testing.T) {
 func TestPrune_MaxTokensSpelling(t *testing.T) {
 	body := map[string]any{"max_completion_tokens": 10}
 	spelling := "max_completion_tokens"
-	pruned := Prune(body, Caps{MaxTokensField: &spelling, Fields: map[string]bool{"max_tokens": false}})
+	pruned := Prune(body, Caps{MaxTokensField: &spelling, Fields: map[string]bool{"max_tokens": false}}, ProtocolOpenAIChat)
 	if !reflect.DeepEqual(pruned, []string{"max_completion_tokens"}) || len(body) != 0 {
 		t.Fatalf("pruned = %v body = %v", pruned, body)
 	}
 	body = map[string]any{"max_tokens": 10}
-	if pruned := Prune(body, Caps{Fields: map[string]bool{"max_tokens": false}}); !reflect.DeepEqual(pruned, []string{"max_tokens"}) {
+	if pruned := Prune(body, Caps{Fields: map[string]bool{"max_tokens": false}}, ProtocolOpenAIChat); !reflect.DeepEqual(pruned, []string{"max_tokens"}) {
 		t.Fatalf("default spelling: %v", pruned)
+	}
+}
+
+// TestPrune_MaxTokensFieldIsAChatSpelling pins that the output-limit spelling
+// Cap names a path only where that path exists. A gateway's chat listing can
+// advertise max_completion_tokens for a model whose row resolves to the
+// anthropic protocol; following the cap there leaves the user's
+// fields.max_tokens = false pruning nothing, so the field reaches a provider
+// that rejects it.
+func TestPrune_MaxTokensFieldIsAChatSpelling(t *testing.T) {
+	spelling := "max_completion_tokens"
+	body := map[string]any{"max_tokens": 10}
+	pruned := Prune(body, Caps{MaxTokensField: &spelling, Fields: map[string]bool{"max_tokens": false}}, ProtocolAnthropic)
+	if !reflect.DeepEqual(pruned, []string{"max_tokens"}) || len(body) != 0 {
+		t.Fatalf("pruned = %v body = %v, want the anthropic max_tokens path", pruned, body)
 	}
 }
 
 func TestPrune_DeveloperRoleIsPseudoAndAbsentPathsAreNotReported(t *testing.T) {
 	body := map[string]any{"messages": []any{map[string]any{"role": "developer"}}}
-	if pruned := Prune(body, Caps{Fields: map[string]bool{"developer_role": false, "store": false}}); len(pruned) != 0 {
+	if pruned := Prune(body, Caps{Fields: map[string]bool{"developer_role": false, "store": false}}, ProtocolOpenAIChat); len(pruned) != 0 {
 		t.Fatalf("pseudo path and absent paths must not be reported: %v", pruned)
 	}
 	if len(body["messages"].([]any)) != 1 {

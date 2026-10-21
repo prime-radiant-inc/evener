@@ -9,21 +9,28 @@ This guide assumes you have completed [provider setup](getting-started.md#connec
 Use a fresh directory so the two files below cannot overwrite existing work. Replace `provider/model` with an available model from your configured provider:
 
 ```sh
-mkdir daily-workspace
-cd daily-workspace
-git init
-evener --model provider/model 'Write initial.json with nonce b8e54d60 and a receipts array containing that nonce once.'
-evener --list-sessions
+(
+  set -e
+  mkdir daily-workspace
+  cd daily-workspace
+  git init
+  evener --model provider/model 'Write initial.json with nonce b8e54d60 and a receipts array containing that nonce once.'
+  evener --list-sessions
+)
 ```
 
 Wait for the first command to finish. Identify the session you just ran in the listing, using its creation time, then substitute its ID for `SESSION_ID`. Do not guess if another run started at the same time:
 
 ```sh
-evener --resume SESSION_ID 'Continue by writing continued.json with nonce c9f65e71 and a receipts array containing that nonce once.'
-python3 -c 'import json; print(json.dumps({p:json.load(open(p)) for p in ["initial.json","continued.json"]},sort_keys=True))'
+(
+  set -e
+  cd daily-workspace
+  evener --resume SESSION_ID 'Continue by writing continued.json with nonce c9f65e71 and a receipts array containing that nonce once.'
+  python3 -c 'import json; print(json.dumps({p:json.load(open(p)) for p in ["initial.json","continued.json"]},sort_keys=True))'
+)
 ```
 
-Check that each file has its requested nonce and exactly one matching receipt. This is sequential continuation of the same saved conversation, not a queued request to a running CLI process. Keep using the same working directory; resuming a conversation does not undo file changes made since its last turn.
+Check that each file has its requested nonce and exactly one matching receipt. This is sequential continuation of the same saved conversation, not a queued request to a running CLI process. Run this block from the same parent directory as the first; it enters `daily-workspace` without changing your shell's directory. Resuming a conversation does not undo file changes made since its last turn.
 
 For contributors, the deterministic tutorial check runs this CLI path and the browser controls below against a local scripted provider. Run it from the Evener repository root after installing the [tour prerequisites](developing-evener/tutorial-tours.md#run-serially). It verifies files and persisted session identity, not a live model's ability to follow these prompts:
 

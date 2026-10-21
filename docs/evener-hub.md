@@ -41,6 +41,111 @@ serves a strict content security policy. When you expose it further, put it
 behind an SSH tunnel, VPN or private-network firewall, or an authenticated
 reverse proxy — the token is a bearer capability, not a per-user login system.
 
+### Rotate a leaked token or revoke a lost device
+
+Rotate the shared hub credential, not just the pairing invitation. Every browser,
+phone, integration, and other client holding that credential loses access.
+Canceling or expiring an invitation cannot revoke a credential already delivered.
+Deleting a phone's local profile does not revoke its copy either.
+
+The guard loads the token once at startup. Replacing `auth-token` while the hub
+runs leaves both its old credential and existing authenticated sockets usable.
+There is no `--rotate-auth-token` flag.
+
+```mermaid
+flowchart LR
+  A[Identify service and state root] --> B[Stop hub and prevent restart]
+  B --> C[Move old token to private quarantine]
+  C --> D[Start hub with a new token]
+  D --> E[Verify old access fails]
+  E --> F[Reauthorize trusted clients]
+```
+
+Run this on the owning host as the service user. You need control of its
+supervisor, the effective `hub.toml` and environment, a private connection to
+the host, and a way to reauthorize trusted clients. If the host
+itself is compromised, isolate and recover it before issuing a replacement.
+
+1. **Identify the service.** Match the running hub's PID, executable, listener,
+   config path, and supervisor entry. Set `hub_state_root` to the effective
+   `hub_state_root` in that config; only when absent use
+   `${XDG_STATE_HOME:-$HOME/.local/state}/evener` from the **service's** environment.
+   Record its startup command without copying credentials. Do not use a guessed
+   default root or a broad process-name kill.
+2. **Stop the hub and prevent restart.** For a systemd user service, stop the
+   identified unit with `systemctl --user stop "$unit"` and disable any timer,
+   socket, or external monitor that can start it. An explicit stop suppresses
+   the unit's own `Restart=` policy. For a launchd user job, use
+   `launchctl bootout "gui/$(id -u)/$label"`, not `kickstart -k`; keep the known
+   plist or registration command for restoration. Stop a foreground hub in its
+   owning terminal. Confirm that the exact PID has exited and its listener is
+   closed. Stop here if it returns automatically. Session daemons and their jobs
+   may continue while the hub is down; rotating this token does not stop them.
+3. **Remove the old credential from the active path.** Check that `auth-token`
+   is the expected regular file owned by the service user. Keep its bytes only
+   in a private quarantine for the rejection check. In Bash, with tracing off:
+
+   ```bash
+   set +x
+   umask 077
+   revoked_dir=$(mktemp -d "${TMPDIR:-/tmp}/evener-revoked-token.XXXXXX") &&
+     mv "${hub_state_root:?Set the effective hub state root}/auth-token" "$revoked_dir/auth-token"
+   ```
+
+   Stop if either command fails. Do not delete the state directory, lock,
+   transcripts, or daemon rendezvous files. Protect old backups and startup
+   logs too: they retain the old credential.
+4. **Start the same hub.** Use `systemctl --user start "$unit"`,
+   `launchctl bootstrap "gui/$(id -u)" "$plist"` for a plist-backed job, or the
+   recorded registration/foreground command. Restore only the restart sources
+   you deliberately disabled. The absent token file makes startup generate a
+   new 256-bit credential at `<hub_state_root>/auth-token`. Check that it is
+   owned by the service user and mode `0600`. Keep supervisor output private:
+   the hub logs a credential-bearing authorization URL on startup.
+5. **Verify revocation before distributing the replacement.** Existing clients
+   must disconnect. In a browser still holding only the old cookie, open the
+   plain `/api/debug/subscriptions` URL and require HTTP 401. Do not visit the
+   new authorization URL first. Check old and new bearer access with this
+   Python 3 probe; its arguments are paths, never credentials. Set `hub_origin`
+   to the direct, trusted hub origin, with no path or embedded credential:
+
+   ```bash
+   python3 - "$hub_origin" "$revoked_dir/auth-token" "$hub_state_root/auth-token" <<'PY'
+   import pathlib, sys, urllib.error, urllib.request
+
+   class NoRedirect(urllib.request.HTTPRedirectHandler):
+       def redirect_request(self, req, fp, code, msg, headers, newurl):
+           return None
+
+   opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+   for label, path, expected in [('old', sys.argv[2], 401), ('replacement', sys.argv[3], 200)]:
+       token = pathlib.Path(path).read_text().strip()
+       request = urllib.request.Request(sys.argv[1].rstrip('/') + '/api/debug/subscriptions',
+                                        headers={'Authorization': 'Bearer ' + token})
+       try:
+           with opener.open(request, timeout=10) as response:
+               status = response.status
+       except urllib.error.HTTPError as error:
+           status = error.code
+       except Exception:
+           raise SystemExit('Probe failed, inspect the connection privately') from None
+       print(label, status)
+       if status != expected:
+           raise SystemExit('Stop, credential verification failed')
+   PY
+   ```
+
+   Expect `old 401` and `replacement 200`. `/api/health` is unauthenticated and
+   proves neither. If old access works, stop the hub again and check the process,
+   effective root, and proxy destination; do not declare the incident resolved.
+6. **Reauthorize trusted clients only.** Authorize browsers through the private
+   new URL, pair phones again, and replace integration secrets through their
+   secret store. Confirm a trusted client can initialize AppWire and list
+   sessions, or open its saved history in the UI. Review uncertain in-flight
+   actions before retrying them. Remove only the quarantined credential after
+   these checks, according to your secret-retention policy; never restore it to
+   the active path.
+
 ## Prepare the host
 
 Install Evener using [Getting started](getting-started.md), then run the hub as the user who owns the repositories and configuration. This guide assumes that installation is complete. For routine browser work, use [Daily work](daily-work.md); for headless invocations, use the [CLI](cli.md).
@@ -567,6 +672,13 @@ A live functional check can incur provider charges: authorize the browser, choos
 
 The documentation site tracks main. Release builds can lag it; snapshot builds follow ongoing development. Record the current version and installation prefix before changing channels. The installation guide owns download procedures; Settings → Hub → Updates owns an installed hub's update flow above.
 
+**Before shutting down an older daemon:** saved session trees containing legacy
+delegate lifecycle or legacy delegate-addressed watch state cannot resume on
+the current runtime. Read [the compatibility warning and fresh-root
+continuation](../UPGRADING.md#before-shutting-down-an-older-session). Preserve
+history and finish essential work first. Layout migration does not repair that
+format, and saved-history visibility is not proof of resumability.
+
 1. Finish work that must not straddle a version change. In each session's actions menu, choose **Shut down** and confirm. This stops the agent process; the composer's **Stop** only interrupts a turn. Verify that the old daemon process has exited before copying state. A hub restart alone does not stop its session daemons.
 2. Inventory effective paths and make a private [backup](security.md#storage-and-backups). Copying live state is not guaranteed consistent.
 3. Preview any legacy-layout migration on the owning host:
@@ -576,7 +688,7 @@ The documentation site tracks main. Release builds can lag it; snapshot builds f
    ```
 
 4. Review the paths before running `evener migrate`. It moves supported legacy layouts and converts old provider schema, preserving `providers.toml.pre-registry`. It is not a universal session-format repair or a promise that old project identities become current ones.
-5. Restart the intended hub, check health/build, and verify saved-session visibility. Resume a saved session or start a new one only after the intended runtime is installed.
+5. Restart the intended hub, check health/build, and verify saved-session visibility. Resume only compatible saved state after installing the intended runtime. If restoration rejects legacy state, preserve it for reading and continue in a fresh root as described above.
 6. Verify the session daemon separately from the hub. On the owning host, check its new rendezvous record's PID against the process's start time and executable path. For a direct authenticated AppWire connection to that daemon, `initialize` returns its running build in `serverInfo.version`; compare it with the intended build. A hub health response or `evener --version` alone does not prove that an existing daemon was replaced. Keep rendezvous credentials private.
 
 Keep the pre-upgrade backup until you have checked workspaces and saved sessions. Do not restore over new work or assume an older executable can read newly written state. See [provider migration](llm-provider-config-and-launch.md#upgrading-from-the-old-schema) for renamed instances and changed credential variables.

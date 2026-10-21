@@ -84,12 +84,14 @@ clean:
 ##   Local links across the repository's non-archived Markdown resolve too.
 ## trigger: Local pre-merge via make merge-approval-gate; CI's Documentation
 ##   workflow runs the same check plus tutorial tours and browser checks.
-## requires: Node 22 and the docs-site install; docs-site/node_modules must not
-##   be a symlink to another worktree's install. A real install newer than the
+## requires: Node 22, npm, Python 3, the docs-site install, and Playwright Chromium
+##   (install with `npm --prefix docs-site ci`, then `(cd docs-site && npx
+##   playwright install chromium)`). docs-site/node_modules must not be a
+##   symlink to another worktree's install. A real install newer than the
 ##   lockfile is reused instead of reinstalled.
 ## fails-when: The publisher's tests fail, a manifest entry or link is invalid,
 ##   a published asset or tutorial file is missing, or the build fails. Evidence
-##   captured at an older revision warns rather than fails.
+##   whose relevant source bytes have changed warns rather than fails.
 docs-check:
 	@set -eu; \
 	if [ -L docs-site/node_modules ]; then \

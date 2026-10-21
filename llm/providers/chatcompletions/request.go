@@ -167,9 +167,10 @@ func reconcileOutputField(body map[string]any, field string, admitted, outputCap
 	}
 }
 
-func reconcilePreparedOutput(body map[string]any, req llm.Request, caps registry.Caps) {
+func reconcilePreparedOutput(body map[string]any, req llm.Request, res registry.Resolved) {
+	caps := res.Caps
 	field := maxTokensField(caps)
-	if !requestutil.WireFieldEnabled(caps, field) {
+	if !requestutil.WireFieldEnabled(caps, field, res.Protocol) {
 		delete(body, "max_tokens")
 		delete(body, "max_completion_tokens")
 		return

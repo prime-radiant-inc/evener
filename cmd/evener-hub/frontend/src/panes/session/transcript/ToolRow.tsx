@@ -1,3 +1,11 @@
+// The kind icon's box. ToolRow owns this number because the failure badge's
+// geometry is computed from it (the cross pins to the 14px glyph's corner, not
+// to the wider avatar-column seat): passing it to ToolIcon instead of letting
+// the widget's own default apply is what keeps the CSS and the rendered glyph
+// from ever disagreeing. --tool-row-icon-size in toolcallitem.module.css must
+// carry the same value; toolRowGrammar.test.ts pins the two together.
+const ROW_ICON_SIZE = 14;
+
 // ToolRow is THE tool-call row. Every tool renderer composes this one
 // component, so no renderer owns a layout of its own — a descriptor decides
 // only its own CONTENT (what the verb/target is, what meta it shows, what its
@@ -5,8 +13,8 @@
 //
 // THE ROW GRAMMAR, two lines when an intent exists (one otherwise):
 //
-//     rail:   [kind icon, 50%]            (in the gutter, beside line 1)
-//     line 1: [✗ failure glyph?] [status?] intent[Open?][chevron inline]
+//     rail:   [kind icon, 50%] [✗ badge?] (in the gutter, beside line 1)
+//     line 1: [status?] intent[Open?][chevron inline]
 //     line 2: verb target [· meta] [affordances]
 //
 //   Line 2's truncation: COLLAPSED it middle-truncates (head … tail, the
@@ -39,8 +47,12 @@
 //     intent-only Open variant is the exception: its valid sibling order is
 //     intent, Open, chevron (never Open beyond the disclosure arrow), with
 //     one overlay trigger owning the whole line;
-//   - the failure glyph appears ONLY on a failed call and reserves no space
-//     otherwise (A2 — see the deliberate-inconsistency note below);
+//   - the failure cross appears ONLY on a failed call, and it BADGES the kind
+//     icon's bottom-right corner rather than opening a second column beside it
+//     (Jesse, 2026-10-20). A clean row reserves no space for it (A2 — see the
+//     deliberate-inconsistency note below). A row whose descriptor declares no
+//     kind icon has no corner to badge, so it falls back to the older inline
+//     seat: a failure is never unmarked;
 //   - the intent is the agent's own stated reason for the call
 //     (ItemModel.description) and LEADS the text, because it is the one part
 //     written for a human; verb/target recede to a quiet line under it, in
@@ -87,7 +99,9 @@ const CLASS = {
   mono: requireClass(styles.mono, "toolcallitem.module.css", "mono"),
   status: requireClass(styles.status, "toolcallitem.module.css", "status"),
   exitMark: requireClass(styles.exitMark, "toolcallitem.module.css", "exitMark"),
+  rowIconSlot: requireClass(styles.rowIconSlot, "toolcallitem.module.css", "rowIconSlot"),
   rowIcon: requireClass(styles.rowIcon, "toolcallitem.module.css", "rowIcon"),
+  failureBadge: requireClass(styles.failureBadge, "toolcallitem.module.css", "failureBadge"),
   demoted: requireClass(styles.demoted, "toolcallitem.module.css", "demoted"),
   clamped: requireClass(styles.clamped, "toolcallitem.module.css", "clamped"),
   clampedHead: requireClass(styles.clampedHead, "toolcallitem.module.css", "clampedHead"),
@@ -609,6 +623,11 @@ export function ToolRow({
       <Chevron />
     </span>
   ) : null;
+  // The failure mark: a cross on the kind icon's bottom-right corner, never a
+  // second column of ink beside it (Jesse, 2026-10-20). It rides BESIDE the
+  // aria-hidden seat inside the slot, never as its child: the seat recedes to
+  // 50% opacity, and a nested cross would recede with it, while the failure
+  // tone is the row's one full-strength signal.
   const failureNode = failed ? <FailureGlyph /> : null;
   // The small exit mark: a nonzero exit on an otherwise-clean call. A plain
   // cross in attention ink (ToolIcon's cross kind, attention tone), NOT the
@@ -634,16 +653,27 @@ export function ToolRow({
   // The kind icon sits in the RAIL beside the rationale line (Jesse's review
   // call: pull the tool-use and thought icons into the gutter, at 50%
   // opacity, on the rationale's line - not inline in the text). It is the
-  // row's first flex item: the .rowIcon rules pull it --speaker-gutter to the
-  // left, into the padding the runContent wrapper reserves, and pin it to the
-  // first line (the rationale) at all times. Below the breakpoint the gutter
-  // is gone and the icon simply leads the line inline, at the same 50%.
-  const iconNode =
+  // row's first flex item: the .rowIconSlot rules pull it --speaker-gutter to
+  // the left, into the padding the runContent wrapper reserves (the .rowIcon
+  // seat alone centres and dims the glyph), and pin it to the first line (the
+  // rationale) at all times. Below the breakpoint the gutter is gone and the
+  // icon simply leads the line inline, at the same 50%.
+  //
+  // The slot is the badge's POSITIONING CONTEXT and the row's flex item. A
+  // clean row renders it with only the seat inside, so success costs no extra
+  // column. A descriptor with no kind icon has no corner to badge, so the row
+  // leads with the cross inline instead - a failure is never left unmarked.
+  const leadingIconNode =
     icon !== undefined ? (
-      <span className={CLASS.rowIcon} data-testid="tool-row-icon" aria-hidden="true">
-        <ToolIcon kind={icon} />
+      <span className={CLASS.rowIconSlot} data-testid="tool-row-icon-slot">
+        <span className={CLASS.rowIcon} data-testid="tool-row-icon" aria-hidden="true">
+          <ToolIcon kind={icon} size={ROW_ICON_SIZE} />
+        </span>
+        {failed ? <span className={CLASS.failureBadge}>{failureNode}</span> : null}
       </span>
-    ) : null;
+    ) : (
+      failureNode
+    );
   // An intent-only row has no tool-call line for affordances to ride, so they
   // ride the DISCLOSURE line - the one line it has (see the grammar above).
   // The disclosure trigger is a <button>, so the control cannot nest inside
@@ -720,14 +750,13 @@ export function ToolRow({
   })();
   const content = (
     <>
-      {iconNode}
-      {/* Only failure earns a glyph, and a clean row reserves NO space for one.
+      {/* Only failure earns a mark, and a clean row reserves NO space for one.
           That is the OPPOSITE of the rail's signal gutter (shell/rail, which
           always reserves 6px) and it is deliberate: the rail needs one stable
           left edge down a long list of sibling rows, whereas a tool row sits
           inside flowing prose, where a blank reserved column reads as a stray
           indent. Different context, different answer. */}
-      {failureNode}
+      {leadingIconNode}
       {exitNode}
       {statusNode}
       {hasIntent && (
@@ -963,8 +992,7 @@ export function ToolRow({
             />
           )}
           <span className={CLASS.intentTriggerContent} data-testid="tool-row-intent-trigger-content">
-            {iconNode}
-            {failureNode}
+            {leadingIconNode}
             {exitNode}
             {statusNode}
             <span className={CLASS.intent} data-testid="tool-row-intent">
@@ -982,8 +1010,7 @@ export function ToolRow({
         // ~34px unbounded below the 700px breakpoint and wrapping the trigger
         // on a phone column (#1253 review).
         <span className={CLASS.intentLine} data-testid="tool-row-intent-line">
-          {iconNode}
-          {failureNode}
+          {leadingIconNode}
           {exitNode}
           {statusNode}
           <span className={CLASS.intent} data-testid="tool-row-intent">
@@ -999,8 +1026,7 @@ export function ToolRow({
           aria-controls={triggerControls}
           onClick={triggerOnClick}
         >
-          {iconNode}
-          {failureNode}
+          {leadingIconNode}
           {exitNode}
           {statusNode}
           <span className={CLASS.intent} data-testid="tool-row-intent">
@@ -1011,8 +1037,7 @@ export function ToolRow({
         </button>
       ) : (
         <>
-          {iconNode}
-          {failureNode}
+          {leadingIconNode}
           {exitNode}
           {statusNode}
         </>
