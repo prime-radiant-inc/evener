@@ -544,12 +544,14 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     // not keep this repository reachable through its recovery notification, so
     // every armed subscription is released too. Retained uncertain appends hold
     // composer seams that only a later handoff could reconcile - a closed
-    // repository runs none, so the records retire with it.
+    // repository runs none, so the records retire with it. Their rows may be
+    // applied with no publication yet, so that evidence is published while
+    // listeners and the channel still exist, before closure forbids it.
+    for (const operationKey of [...this.#uncertainAppends.keys()]) this.#forgetUncertainAppend(operationKey);
     this.#closed = true;
     for (const release of this.#recoveryNotificationReleases) release();
     this.#recoveryNotificationReleases.clear();
     this.#subscriptions.clear();
-    this.#uncertainAppends.clear();
     this.#pendingCancelledDiscards.clear();
     this.#unsubscribeDrafts();
     this.#channel.close();
@@ -631,6 +633,18 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const unsubscribe = source.subscribeRecoveryPersisted(() => this.#notifyStorageSuccess());
     this.#recoveryNotifications.add(source);
     this.#recoveryNotificationReleases.add(unsubscribe);
+  }
+
+  // An uncertain-append record exists only because an append's completion was
+  // never observed: the durable row may be APPLIED even though nothing
+  // announced it. Dropping the record without publishing would leave that
+  // committed evidence silent, and a successor waiting on a trigger that never
+  // comes. A redundant re-list is the accepted cost.
+  #forgetUncertainAppend(operationKey: string): void {
+    const record = this.#uncertainAppends.get(operationKey);
+    if (record === undefined) return;
+    this.#uncertainAppends.delete(operationKey);
+    this.#settleTransition({ signal: true, documentKey: annotationDocumentKey(record.key) });
   }
 
   // Release the unconfirmed suppression entries a caller still owns and signal
@@ -1899,7 +1913,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     // with the identity: reconciling it later would deliver the dismissed note
     // from the committed backing.
     if (this.#pendingCancelledDiscards.has(operationKey)) {
-      this.#uncertainAppends.delete(operationKey);
+      this.#forgetUncertainAppend(operationKey);
       return { state: "cancelled" };
     }
     // The whole fallible pre-commit path returns the documented fulfilled
@@ -1930,7 +1944,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // guard preserves newer edits, and the applied receipt prevents any
       // duplicate append.
       const reconciliation = await this.#reconcileUncertainAppend(operationKey, receipt.draftRevision, cancellation);
-      if (reconciliation !== "faulted") this.#uncertainAppends.delete(operationKey);
+      if (reconciliation !== "faulted") this.#forgetUncertainAppend(operationKey);
       if (refused()) return { state: "pending", reason: "owner-unavailable" };
       return { state: "already-applied", draftRevision: receipt.draftRevision };
     }
@@ -2016,7 +2030,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     // this handoff waited owns the identity now. Answer terminal and retire the
     // retained seam rather than appending the dismissed note.
     if (this.#pendingCancelledDiscards.has(operationKey)) {
-      this.#uncertainAppends.delete(operationKey);
+      this.#forgetUncertainAppend(operationKey);
       return { state: "cancelled" };
     }
     const suppressedAfterPreparation = suppressedOutcome();

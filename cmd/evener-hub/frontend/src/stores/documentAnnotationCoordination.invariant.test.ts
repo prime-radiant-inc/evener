@@ -1548,3 +1548,86 @@ test("a reset whose completion was lost publishes its namespace wake and retires
   fixture.repository.close();
   fixture.drafts.close();
 });
+
+// An append that commits with an unobserved completion retains an uncertain
+// record whose durable row may be APPLIED, while nothing announced that commit.
+// A dismissal fences the identity, and the next pass retires the record at that
+// fence; deleting it there without publishing left the applied row's evidence
+// silent and a successor waiting on a trigger that never comes.
+test("retiring an uncertain append at the dismissal fence publishes its applied row", async () => {
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    prepareAnnotation: async () => {
+      const current = fixture;
+      if (current === undefined) return null;
+      const loaded = await current.drafts.load(current.key);
+      return loaded ? { key: loaded.key, token: loaded.token, backing: { kind: "draft" }, localGeneration: 0 } : null;
+    },
+  });
+  const listener = vi.fn();
+  fixture.repository.subscribe(fixture.document, listener);
+
+  // The append transaction commits, but its completion event is held: the
+  // receipt is applied and the retained record waits for reconciliation.
+  const hold = holdNextWriteTransaction(APPEND_STORES);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let reached = false;
+  void hold.reached.then(() => {
+    reached = true;
+  });
+  const append = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
+  await pollUntil(() => reached, 50);
+  expect(reached).toBe(true);
+  await vi.advanceTimersByTimeAsync(10_001);
+  expect(await append).toEqual({ state: "pending", reason: "owner-unavailable" });
+  hold.release();
+  vi.useRealTimers();
+
+  // The dismissal fences the identity but cannot flip an applied row, so the
+  // fence and the record both stay. The fence's own discard publishes nothing
+  // for an applied row; the record's retirement is the remaining observation.
+  await fixture.repository.dismissOperation(fixture.document, fixture.operation.operationId);
+  listener.mockClear();
+  await fixture.repository.retryPending("storage-recovered");
+  expect(listener).toHaveBeenCalled();
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+// close() retires every retained uncertain append. The records vanish with the
+// adapter, but their rows may be applied and readers were never told; the
+// publication must happen before the clear, while listeners still exist.
+test("close publishes a retained uncertain append before clearing it", async () => {
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    prepareAnnotation: async () => fixture?.preparation ?? null,
+  });
+  const listener = vi.fn();
+  fixture.repository.subscribe(fixture.document, listener);
+
+  const hold = holdNextWriteTransaction(APPEND_STORES);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let reached = false;
+  void hold.reached.then(() => {
+    reached = true;
+  });
+  const append = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
+  await pollUntil(() => reached, 50);
+  expect(reached).toBe(true);
+  await vi.advanceTimersByTimeAsync(10_001);
+  expect(await append).toEqual({ state: "pending", reason: "owner-unavailable" });
+  hold.release();
+  vi.useRealTimers();
+  listener.mockClear();
+
+  fixture.repository.close();
+  expect(listener).toHaveBeenCalled();
+  fixture.drafts.close();
+});
