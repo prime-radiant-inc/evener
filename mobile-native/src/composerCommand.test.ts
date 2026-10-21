@@ -32,7 +32,12 @@ it.each(["queue", "steer"] as const)("captures /%s body metadata before encoding
 				recoveryIds: ["source-1", "source-2"],
 			},
 		});
-		const document = new DraftDocument(() => repository, destination);
+		const document = new DraftDocument(
+			() => repository,
+			destination,
+			undefined,
+			() => "composer-command-capture",
+		);
 		const submissions: Array<{ kind: string; input: InputItem[]; context?: ConversationMutationContext }> = [];
 		await submitComposerCommand(document, {} as Parameters<typeof submitComposerCommand>[1], {
 			isCurrent: () => true,
@@ -58,6 +63,7 @@ it.each(["queue", "steer"] as const)("captures /%s body metadata before encoding
 				mentions: [{ kind: "skill", name: "skill", offset: 0 }],
 			},
 			recoverySourceIds: ["source-1", "source-2"],
+			draftCaptureToken: "composer-command-capture",
 		});
 		expect(submissions[0].input).toEqual([
 			{ type: "text", text: "/skill payload", mentions: [{ kind: "skill", name: "skill", offset: 0 }] },

@@ -30,6 +30,19 @@ export interface PendingAttachment {
   pending: boolean;
 }
 
+// Markers identify text references and may change when recovery merges around
+// a literal marker. Encode continuations instead own this stable item token.
+const operationTokens = new WeakMap<PendingAttachment, symbol>();
+
+function operationToken(item: PendingAttachment): symbol {
+  let token = operationTokens.get(item);
+  if (!token) {
+    token = Symbol("pending attachment");
+    operationTokens.set(item, token);
+  }
+  return token;
+}
+
 // TextEditor is the seam this hook uses to change the composer's text
 // instead of ever touching a DOM node's `.value` directly: the textarea is
 // a React-controlled input, and a direct `el.value = ...` mutation gets
@@ -122,7 +135,7 @@ export function createAttachmentStore() {
   return createStore(() => ({
     items: [] as PendingAttachment[],
     nextMarkerRef: { current: 0 },
-    removedWhilePendingRef: { current: new Set<number>() },
+    removedWhilePendingRef: { current: new Set<symbol>() },
     generationRef: { current: 0 },
   }));
 }
@@ -138,7 +151,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
   // re-triggering one, exactly mirroring composer-attachments.js's own
   // pendingState.__nextMarker bookkeeping.
   const { nextMarkerRef, removedWhilePendingRef, generationRef } = store.getState();
-  // kata kt4j: markers removed via removeItem while their decode was still
+  // kata kt4j: operation tokens removed via removeItem while decode was still
   // in flight. The browser's Image/canvas pipeline has no cancellation hook,
   // so a reencodeToPng call started before removal keeps running and still
   // settles (success or failure) afterward - ingestFiles' own .then/.catch
@@ -158,8 +171,27 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
   const replaceWithSettled = (nextItems: PendingAttachment[]) => {
     nextMarkerRef.current = nextItems.reduce((highest, item) => Math.max(highest, item.marker), 0);
     // A recovery merge carries existing staged objects alongside new items.
-    // Preserve those identities so an in-flight send can still retire them.
-    setItems((previous) => nextItems.map((item) => (previous.includes(item) ? item : { ...item })));
+    // Preserve operation identity when the merge remaps a staged item's marker.
+    // Current attachments remain the ordered prefix of the merged composition.
+    const previous = store.getState().items;
+    setItems(
+      nextItems.map((item, index) => {
+        const original = previous.includes(item) ? item : previous[index];
+        let token: symbol | undefined;
+        if (
+          original &&
+          original.name === item.name &&
+          original.mediaType === item.mediaType &&
+          original.data === item.data &&
+          original.pending === item.pending
+        ) {
+          token = operationToken(original);
+        }
+        const retained = previous.includes(item) ? item : { ...item };
+        operationTokens.set(retained, token ?? operationToken(retained));
+        return retained;
+      }),
+    );
   };
 
   const reset = () => {
@@ -172,7 +204,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
   const ingestFiles = (files: File[], onRejected: (message: string) => void) => {
     const generation = generationRef.current;
     const rejections: string[] = [];
-    const accepted: { file: File; marker: number }[] = [];
+    const accepted: { file: File; marker: number; token: symbol }[] = [];
     // Reserved count starts at the CURRENT pending total and increments
     // per accepted file within this same batch (matching
     // reserveAttachmentItems's own running `reserved` counter) - a drop
@@ -191,7 +223,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
         store.getState().items,
         nextMarkerRef.current,
       );
-      accepted.push({ file, marker: nextMarkerRef.current });
+      accepted.push({ file, marker: nextMarkerRef.current, token: Symbol("pending attachment") });
     }
 
     if (accepted.length > 0) {
@@ -202,23 +234,27 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
         text,
         selection: { start, end },
       } = editor.read();
-      const newItems: PendingAttachment[] = accepted.map(({ file, marker }) => {
+      const newItems: PendingAttachment[] = accepted.map(({ file, marker, token }) => {
         const edit = insertMarker(text, start, end, markerText(marker));
         text = edit.value;
         start = end = edit.cursor;
-        return { marker, name: file.name, mediaType: "image/png", pending: true };
+        const item = { marker, name: file.name, mediaType: "image/png", pending: true };
+        operationTokens.set(item, token);
+        return item;
       });
       editor.write(text, start);
       setItems((prev) => [...prev, ...newItems]);
 
-      for (const { file, marker } of accepted) {
+      for (const { file, token } of accepted) {
         reencodeToPng(file)
           .then(({ data, width, height }) => {
             if (generationRef.current !== generation) return;
             // Discarded before it settled (kata kt4j) - nothing left to update.
-            if (removedWhilePendingRef.current.delete(marker)) return;
+            if (removedWhilePendingRef.current.delete(token)) return;
             setItems((prev) =>
-              prev.map((item) => (item.marker === marker ? { ...item, data, width, height, pending: false } : item)),
+              prev.map((item) =>
+                operationToken(item) === token ? { ...item, data, width, height, pending: false } : item,
+              ),
             );
           })
           .catch(() => {
@@ -226,11 +262,14 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
             // Same discard check as above - the user already removed this
             // attachment, so its eventual decode failure is nothing to
             // strip from the editor or tell them about.
-            if (removedWhilePendingRef.current.delete(marker)) return;
-            const current = editor.read();
-            const stripped = stripMarker(current.text, current.cursor, marker);
-            editor.write(stripped.value, stripped.cursor ?? current.cursor, "cleanup");
-            setItems((prev) => prev.filter((item) => item.marker !== marker));
+            if (removedWhilePendingRef.current.delete(token)) return;
+            const currentItem = store.getState().items.find((item) => operationToken(item) === token);
+            if (currentItem) {
+              const current = editor.read();
+              const stripped = stripMarker(current.text, current.cursor, currentItem.marker);
+              editor.write(stripped.value, stripped.cursor ?? current.cursor, "cleanup");
+              setItems((prev) => prev.filter((item) => operationToken(item) !== token));
+            }
             onRejected(`${file.name || "unknown"} (image decode failed)`);
           });
       }
@@ -251,7 +290,8 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
     // own decode drains this entry the instant it settles (see
     // ingestFiles' .then/.catch above), and an already-settled item's
     // removal adds an entry no in-flight decode will ever consult again.
-    removedWhilePendingRef.current.add(marker);
+    const removed = store.getState().items.find((item) => item.marker === marker);
+    if (removed) removedWhilePendingRef.current.add(operationToken(removed));
     const current = editor.read();
     const stripped = stripMarker(current.text, current.cursor, marker);
     editor.write(stripped.value, stripped.cursor ?? current.cursor);

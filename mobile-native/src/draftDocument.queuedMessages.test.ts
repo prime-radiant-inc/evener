@@ -224,6 +224,41 @@ it("deselects canonical names when their last recorded label is edited", () => {
 	});
 });
 
+it("drops a selected skill when typing a token character before its label and submits no stale selection", async () => {
+	const before = "/skill";
+	const mention = { kind: "skill" as const, name: "skill", offset: 0 };
+	const source = recovery("leading-boundary", {
+		composerText: before,
+		composerMentions: [mention],
+		attachments: [],
+		payload: {
+			input: [
+				{ type: "text", text: before, mentions: [mention] },
+				{ type: "skill", name: "skill" },
+			],
+		},
+	});
+	expect(document.appendEditedRecovery(source)).toBe("restored");
+	document.edit("x/skill");
+	expect(document.getSnapshot().record.composer).toMatchObject({
+		skillNames: [],
+		mentions: [],
+		recoveryIds: ["leading-boundary"],
+	});
+	await document.submit(async (draft, images, context) => {
+		expect(
+			buildComposerInput(
+				draft,
+				images,
+				context.composer?.skillNames,
+				context.composer?.commandNames,
+				context.composer?.mentions,
+			),
+		).toEqual([{ type: "text", text: "x/skill" }]);
+		return false;
+	});
+});
+
 it("keeps a canonical selection while another recorded label of the same kind and name survives", () => {
 	const before = "😀 /same then /same";
 	const mentions = [

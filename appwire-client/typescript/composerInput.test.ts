@@ -110,6 +110,20 @@ test("deselects a selected label when a prefix is inserted inside its reference"
   expect(reconcileComposerMentions("/skill", "/pkg:skill", [{ kind: "skill", name: "skill", offset: 0 }])).toEqual([]);
 });
 
+test("reconciles selected references with browser token, punctuation, namespace, and UTF-16 boundaries", () => {
+  const mention = { kind: "skill" as const, name: "skill", offset: 0 };
+  expect(reconcileComposerMentions("/skill", "x/skill", [mention])).toEqual([]);
+  expect(reconcileComposerMentions("/skill", "/skill.", [mention])).toEqual([mention]);
+  expect(reconcileComposerMentions("/skill.", "/skill. unrelated", [mention])).toEqual([mention]);
+  expect(reconcileComposerMentions("/plugin", "/plugin:hidden", [{ ...mention, name: "plugin" }])).toEqual([]);
+
+  const before = "😀 /skill.";
+  const nonBMPMention = { ...mention, offset: before.indexOf("/skill") };
+  expect(reconcileComposerMentions(before, "🐈 😀 /skill.", [nonBMPMention])).toEqual([
+    { ...nonBMPMention, offset: "🐈 😀 ".length },
+  ]);
+});
+
 test("preserves complete repeated labels at shifted nonBMP UTF-16 offsets", () => {
   const before = "😀 /skill /skill";
   const mentions = [

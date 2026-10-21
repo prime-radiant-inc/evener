@@ -389,11 +389,11 @@ it.each([false, true])("keeps malformed goal acknowledgment recoverable (clear: 
 	}
 });
 
-function commandDraft() {
+function commandDraft(createCaptureToken?: () => string) {
 	const { database: db, port } = openSqliteSyncDouble();
 	const repository = new DraftRepository(port);
 	const destination = { hubId: "hub", sessionRef: "local:test" };
-	return { db, repository, document: new DraftDocument(() => repository, destination) };
+	return { db, repository, document: new DraftDocument(() => repository, destination, undefined, createCaptureToken) };
 }
 
 it.each([
@@ -575,7 +575,7 @@ it.each([
 	["/steer sentinel", "steer", [{ type: "text", text: "sentinel" }]],
 	["/queue sentinel", "queue", [{ type: "text", text: "sentinel" }]],
 ] as const)("routes %s to the outbox, keeping it unconfirmed until admitted", async (text, kind, input) => {
-	const { db, document } = commandDraft();
+	const { db, document } = commandDraft(() => "goal-command-capture");
 	const { io, service } = boundary();
 	const submitted: unknown[] = [];
 	try {
@@ -599,7 +599,9 @@ it.each([
 				queue: { revision: 7, depth: 0 },
 			}),
 		});
-		expect(submitted).toEqual([[kind, input, { composer: { text: "sentinel", attachments: [] } }]]);
+		expect(submitted).toEqual([
+			[kind, input, { composer: { text: "sentinel", attachments: [] }, draftCaptureToken: "goal-command-capture" }],
+		]);
 		expect(document.getSnapshot().record).toMatchObject({
 			draft: "",
 			unconfirmed: null,

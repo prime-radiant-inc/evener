@@ -24,12 +24,34 @@ export function sharedSuffixLength(before: string, after: string, prefix: number
   return count;
 }
 
+const skillTokenCharacter = /[\p{L}\p{N}_./:-]/u;
+const skillSentenceTerminator = /[.:]/;
+
+/** Whether a character continues a skill reference rather than bounding one. */
+export function isSkillTokenCharacter(character: string): boolean {
+  return skillTokenCharacter.test(character);
+}
+
+/** Return the longest-first name spelled as a complete reference at this offset. */
+export function completeSkillReferenceAt(text: string, offset: number, names: readonly string[]): string | undefined {
+  if (text[offset] !== "/" || (offset > 0 && skillTokenCharacter.test(text.charAt(offset - 1)))) return undefined;
+  return names.find((candidate) => {
+    const end = offset + candidate.length + 1;
+    return (
+      text.startsWith(`/${candidate}`, offset) &&
+      (end === text.length ||
+        !skillTokenCharacter.test(text.charAt(end)) ||
+        (skillSentenceTerminator.test(text.charAt(end)) && !skillTokenCharacter.test(text.charAt(end + 1))))
+    );
+  });
+}
+
 function hasCompleteComposerReference(text: string, mention: ComposerMention): boolean {
   const end = mention.offset + mention.name.length + 1;
   return (
     mention.offset >= 0 &&
-    text.slice(mention.offset, end) === `/${mention.name}` &&
-    (end === text.length || /\s/u.test(text[end] ?? ""))
+    completeSkillReferenceAt(text, mention.offset, [mention.name]) === mention.name &&
+    end <= text.length
   );
 }
 

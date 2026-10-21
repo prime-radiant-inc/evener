@@ -424,7 +424,13 @@ async function explicitSend(f: Fixture) {
 				...context,
 			}),
 		);
-		expect((await f.runtime.read(key)).outbox[0].draftCaptureToken).toBe(context.draftCaptureToken);
+		const receipt = await f.runtime.readRecoveryResend(key, context.recoverySourceIds ?? []);
+		expect(receipt).toBeDefined();
+		const outbox = (await f.runtime.read(key)).outbox;
+		const admitted = outbox.filter((row) => row.clientMutationId === receipt!.clientMutationId);
+		expect(admitted).toHaveLength(1);
+		expect(admitted[0].clientMutationId).toBe(receipt!.clientMutationId);
+		expect(admitted[0].draftCaptureToken).toBe(context.draftCaptureToken);
 		return true;
 	});
 }

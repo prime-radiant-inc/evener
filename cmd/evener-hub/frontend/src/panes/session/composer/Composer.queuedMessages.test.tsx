@@ -23,6 +23,7 @@ import { pastePngInto, selectEditorText } from "../testing/editor";
 import { installControlledImageEncoding } from "../testing/imageEncoding";
 import { HeldSteerAnnouncements } from "../transcript/messages/HeldSteerAnnouncements";
 import { HeldSteerStack } from "../transcript/messages/HeldSteerStack";
+import { createAttachmentOperations } from "./attachments/useAttachments";
 import { Composer } from "./Composer";
 import { readComposerDraftRevisionId, readDraft, writeComposerDraft } from "./draft";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
@@ -233,6 +234,76 @@ test("recovery activation keeps newer replacement text selections and attachment
     storage.releaseContinuation();
     source.dispose();
     replacement?.dispose();
+    storage.close();
+  }
+});
+
+test("image encoding survives a literal-marker recovery merge while storage is pending", async () => {
+  const storage = new CommitThenPauseRecoveryStorage();
+  const { fake } = await setup(false, storage);
+  const queuedRecord = await queued(storage, "literal [image 1]");
+  const source = createTestComposerSource("root");
+  const encoding = installControlledImageEncoding();
+  const user = userEvent.setup();
+
+  try {
+    await editQueuedMutation(queuedRecord.clientMutationId, "root");
+    const claimed = await storage.getRecovery(queuedRecord.clientMutationId);
+    if (!claimed) throw new Error("missing claimed recovery fixture");
+    const activation = source.activateRecovery(claimed);
+    const attachments = createAttachmentOperations(source.editor, source.attachments);
+    const rejections: string[] = [];
+    await storage.committed;
+    attachments.ingestFiles([new File([new Uint8Array([1, 2, 3])], "new.png", { type: "image/png" })], (message) => {
+      rejections.push(message);
+    });
+    storage.releaseContinuation();
+    await storage.continued;
+    await activation;
+    expect(source.attachments.getState().items).toEqual([
+      { marker: 2, name: "new.png", mediaType: "image/png", pending: true },
+    ]);
+    expect(rejections).toEqual([]);
+    expect(source.getSnapshot().activeRecoveryId).toBe(queuedRecord.clientMutationId);
+    expect(source.getSnapshot().text).toContain("literal [image 1]");
+    expect(source.attachments.getState().items[0]?.marker).toBe(2);
+
+    await encoding.resolve();
+    expect(source.attachments.getState().items[0]?.pending).toBe(false);
+    const snapshot = source.getSnapshot();
+    await source.queueRecoveryPersistence(
+      queuedRecord.clientMutationId,
+      snapshot.text,
+      attachments.toInputAttachments(),
+      snapshot.skillNames,
+      snapshot.commandNames,
+      snapshot.mentions,
+    );
+    mount(fake, source);
+    expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false);
+
+    const deliveredInputs: InputItem[][] = [];
+    fake.on("turn/start", (params) => {
+      deliveredInputs.push(params.input ?? []);
+      return {
+        turn: { id: "image-merge", status: "inProgress", itemsView: "full", items: [] },
+        receipt: {
+          clientMutationId: params.clientMutationId,
+          disposition: "applied",
+          threadId: "thread-a",
+          projectionState: "reflected",
+        },
+      };
+    });
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(deliveredInputs).toHaveLength(1));
+    expect(deliveredInputs[0]).toEqual([
+      { type: "text", text: "(attached image 2: new.png)\n\nliteral [image 1]" },
+      { type: "image", mediaType: "image/png", data: "AQID", name: "new.png" },
+    ]);
+  } finally {
+    storage.releaseContinuation();
+    act(() => source.dispose());
     storage.close();
   }
 });
