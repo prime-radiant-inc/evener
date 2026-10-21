@@ -52,6 +52,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { activitySidebarStore } from "../../../shell/activitybar/activitySidebarStore";
+import { attentionEntryOwnsReader } from "../../../shell/attentionHistory";
 import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
 import { sessionBuiltinCommands } from "../../../shell/palette/commands";
 import type { SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
@@ -646,7 +647,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   // Loading a session lands keyboard focus in its composer: writing the next
   // message is what the pane is for. Mount-only, gated on the pane being
   // focused at mount (see useMountAutofocus for the full rationale).
-  useMountAutofocus(editorRef, focused);
+  useMountAutofocus(editorRef, focused && !(paneId && attentionEntryOwnsReader(paneId, ref)));
 
   const hasText = text.trim() !== "";
   const hasAttachments = attachments.items.length > 0;
