@@ -539,6 +539,11 @@ function SelectedConnection({
       return { label: "Connected", tone: "alive", row: "Model list reachable, just now" };
     if (result?.status === "unsupported") return { label: "Unverified", tone: "attention", row: "Not testable here" };
     if (saved || host) return { label: "Saved", tone: "neutral", row: "Not tested yet" };
+    if (row?.activeSource === "oauth") return { label: "Signed in", tone: "alive", row: credentialValue(row) };
+    if (!required) return { label: "Ready", tone: "neutral", row: "No credential required" };
+    if (row?.activeSource && row.activeSource !== "none" && row.activeSource !== "store")
+      return { label: "Configured", tone: "neutral", row: credentialValue(row) };
+    if (modes.includes("oauth")) return { label: "Not signed in", tone: "attention", row: "Sign in to connect" };
     return { label: "Needs a key", tone: "attention", row: "Not tested yet" };
   }
 
@@ -551,16 +556,17 @@ function SelectedConnection({
   }
   function changeValue(next: string) {
     operation.current += 1;
-    const typedBefore = value.trim() !== "";
     // A typed credential replaces host access: the flag applies only while the
     // field is empty and the card is about to test whatever the host resolves.
     if (next.trim()) {
       setHost(false);
-      // The draft's first character pins the destination on screen. Later
-      // keystrokes keep that pin even if the listing moves; the subscription
-      // drops the draft when it does. The add card has no destination yet, so
-      // its claim is pinned after the create confirms the row it authored.
-      if (!typedBefore && !adding) draftClaim.current = claimOf(row);
+      // A value with no claim cannot be proven against any destination, so
+      // what is typed now claims the row on screen - including a select-all
+      // replacement of a retained draft. A held claim is never rebound here;
+      // the subscription drops the draft when its destination moves. The add
+      // card has no destination yet, so its claim is pinned after the create
+      // confirms the row it authored.
+      if (!draftClaim.current && !adding) draftClaim.current = claimOf(row);
     } else {
       draftClaim.current = undefined;
     }
@@ -602,12 +608,17 @@ function SelectedConnection({
    * resolves is saved, not missing. */
   function adoptBaseline(next: InstanceEntry | undefined) {
     const claim = draftClaim.current;
-    if (claim && !claimHolds(claim, next)) {
+    const dropped = claim !== undefined && !claimHolds(claim, next);
+    if (dropped) {
       dropDraft();
       setError({ reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR });
     }
+    // A replacement that survived the adoption is still unsaved, however the
+    // adopted row sources its existing access. Only a row adopted with no
+    // pending replacement derives saved state from what it resolves.
+    const pending = !dropped && !saved && (draftClaim.current !== undefined || value.trim() !== "");
     const stored = isStoredAccess(next, host);
-    setSaved(stored);
+    setSaved(!pending && stored);
     setStoredAccess(stored);
     setBaseline(next);
   }
@@ -900,24 +911,30 @@ function SelectedConnection({
     selfMutation.current = true;
     let applied = false;
     // The fingerprint the create itself authored. It is read from the create's
-    // own applied listing before any further await, because a later listing is
-    // a different destination's word and must never carry this key.
+    // own answer before any further await - the applied listing, or the answer
+    // a newer request superseded, which still carries the row the hub wrote
+    // under its lock. A later listing is a different destination's word and
+    // must never carry this key.
     let authoredFingerprint: string | undefined;
+    let authored: InstanceEntry | undefined;
     try {
-      applied = await credentialsStore.getState().create({
-        name: trimmedName,
-        base: effectiveProvider.id,
-        baseUrl: trimmedBaseUrl,
-      });
+      applied = await credentialsStore.getState().create(
+        {
+          name: trimmedName,
+          base: effectiveProvider.id,
+          baseUrl: trimmedBaseUrl,
+        },
+        {
+          onSuperseded: (response) => {
+            authored = listingRow(response.instances, trimmedName);
+          },
+        },
+      );
       if (!current(token)) {
         selfMutation.current = false;
         return;
       }
-      const authored = applied
-        ? credentialsStore
-            .getState()
-            .instances.find((candidate) => candidate.name === trimmedName && !candidate.implicit)
-        : undefined;
+      if (applied) authored = listingRow(credentialsStore.getState().instances, trimmedName);
       authoredFingerprint = authored?.endpointFingerprint;
       const confirmed = applied
         ? authored !== undefined
@@ -973,9 +990,9 @@ function SelectedConnection({
     // shows.
     if (storedMode && typedKey) {
       const claim = claimOf(created);
-      if (!applied || !claim || authoredFingerprint === undefined || claim.fingerprint !== authoredFingerprint) {
-        // The create's own listing was superseded, or the reconciled row is a
-        // different destination. The draft belongs to the authored endpoint,
+      if (!claim || authoredFingerprint === undefined || claim.fingerprint !== authoredFingerprint) {
+        // The create's own answer named no destination, or the reconciled row
+        // is a different one. The draft belongs to the authored endpoint,
         // which no row on screen can prove: keep it for inspection, unpinned,
         // and let a later Save ask for the key again rather than assert a
         // destination the draft was never typed for.

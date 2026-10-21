@@ -146,6 +146,18 @@ test("an oauth-only provider renders its billing line without a key link", async
   expect(screen.getByTestId("billing-note")).toBeTruthy();
 });
 
+test("a signed-in oauth connection reports its sign-in, not a missing key", async () => {
+  const codex = provider("openai-codex", "OpenAI Codex", ["oauth"], {
+    activeSource: "oauth",
+    storedEmail: "person@example.com",
+  });
+  const { user } = setup({ instances: [], availableProviders: [codex] });
+  await choose(user, "OpenAI Codex");
+
+  expect(screen.getByText("Signed in")).toBeTruthy();
+  expect(screen.queryByText("Needs a key")).toBeNull();
+});
+
 // The apiKey providers keep both halves: the key link and the billing line.
 test("an apiKey provider still renders its key link and its billing line", async () => {
   const { user } = setup();
@@ -587,6 +599,35 @@ function scriptCreate(client: FakeClient, listing: InstanceListResponse) {
     client.on("evener/instance/list", () => structuredClone(listing));
     return structuredClone(listing);
   });
+}
+/** The create's own answer and the listing a concurrent read reconciled it to. */
+function supersededCreateFixtures(rowFp: string | undefined): {
+  authored: InstanceListResponse;
+  reconciled: InstanceListResponse;
+} {
+  const authoredRow: InstanceEntry = {
+    ...catalogue[0]!.setup!,
+    name: "recovered-team",
+    providerId: "azure",
+    base: "azure",
+    implicit: false,
+    baseUrl: "https://recovered.example/v1",
+    endpointFingerprint: "fp-authored",
+  };
+  const reconciledRow: InstanceEntry = { ...authoredRow, endpointFingerprint: rowFp };
+  return {
+    authored: { instances: [authoredRow], availableProviders: structuredClone(catalogue) },
+    reconciled: { instances: [reconciledRow], availableProviders: structuredClone(catalogue) },
+  };
+}
+async function startRecoveredCreate(user: ReturnType<typeof userEvent.setup>) {
+  await choose(user, "Anthropic");
+  await enterText(user, screen.getByLabelText("API key"), "old-draft");
+  await user.click(screen.getByRole("button", { name: "Change provider" }));
+  await choose(user, "Azure");
+  await enterName(user, "recovered-team");
+  await enterText(user, screen.getByLabelText("Endpoint URL"), "https://recovered.example/v1");
+  await enterText(user, screen.getByLabelText("API key"), "add-card-key");
 }
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -1578,42 +1619,22 @@ test("a superseded reload read does not baseline a same-named row the store stil
   expect(screen.queryByLabelText("API key")).toBeNull();
 });
 
-// A create whose own listing was superseded never writes the typed draft: the
-// only fingerprint the card may assert is the one the create itself authored.
-// The destination the reconciliation read lands - matching, different, or
-// missing its fingerprint - is the row the card shows, but it is not an
-// authority for a key typed against the authored endpoint. The draft stays
-// behind the key row, where a later Save asserts the row on screen.
+// A create whose own answer was superseded still carries the row it authored
+// under the hub's write lock. The typed draft may be written only when the
+// reconciled row proves that same destination; a different or missing
+// fingerprint keeps the draft unwritten behind the key row.
 test.each([
-  { label: "a same-fingerprint", rowFp: "fp-shared" },
-  { label: "a different-fingerprint", rowFp: "fp-other" },
-  { label: "a missing-fingerprint", rowFp: undefined },
+  { label: "a same-fingerprint", rowFp: "fp-authored", writes: true },
+  { label: "a different-fingerprint", rowFp: "fp-other", writes: false },
+  { label: "a missing-fingerprint", rowFp: undefined, writes: false },
 ])(
-  "review regression: a superseded create leaves its draft unwritten after $label reconciliation",
-  async ({ rowFp }) => {
+  "review regression: a superseded create writes its draft only to the authored destination after $label reconciliation",
+  async ({ rowFp, writes }) => {
     const baselineList: InstanceListResponse = { instances: [], availableProviders: catalogue };
     const { user, client } = setup(baselineList);
-    await choose(user, "Anthropic");
-    await enterText(user, screen.getByLabelText("API key"), "anthropic-private-draft");
-    await user.click(screen.getByRole("button", { name: "Change provider" }));
-    await choose(user, "Azure");
-    await enterName(user, "recovered-team");
-    await enterText(user, screen.getByLabelText("Endpoint URL"), "https://recovered.example/v1");
-    await enterText(user, screen.getByLabelText("API key"), "add-card-key");
+    await startRecoveredCreate(user);
     const pending = deferred<InstanceListResponse>();
-    const row = {
-      ...catalogue[0]!.setup!,
-      name: "recovered-team",
-      providerId: "azure",
-      base: "azure",
-      implicit: false,
-      baseUrl: "https://recovered.example/v1",
-      endpointFingerprint: rowFp,
-    };
-    const recovered: InstanceListResponse = {
-      instances: [row],
-      availableProviders: structuredClone(catalogue),
-    };
+    const { authored, reconciled } = supersededCreateFixtures(rowFp);
     client.on("evener/instance/create", () => pending.promise);
     client.on("evener/auth/apiKey/set", () => ({ ...saved, provider: "recovered-team" }));
     client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
@@ -1623,26 +1644,72 @@ test.each([
     // the row's own destination rather than staying unresolved.
     await act(async () => {
       await credentialsStore.getState().fetch();
-      client.on("evener/instance/list", () => structuredClone(recovered));
-      pending.resolve(structuredClone(recovered));
+      client.on("evener/instance/list", () => structuredClone(reconciled));
+      pending.resolve(structuredClone(authored));
       await pending.promise;
     });
     expect(await screen.findByRole("dialog", { name: "recovered-team" })).toBeTruthy();
-    expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
+    const sets = client.calls.filter((call) => call.method === "evener/auth/apiKey/set");
+    expect(sets).toHaveLength(writes ? 1 : 0);
+    if (writes) {
+      expect(sets[0]!.params).toMatchObject({
+        provider: "recovered-team",
+        value: "add-card-key",
+        expectedEndpointFingerprint: "fp-authored",
+      });
+    }
     expect(client.calls.some((call) => call.method === "evener/auth/test")).toBe(false);
     expect(
       client.calls.some(
         (call) =>
           call.method === "evener/auth/apiKey/set" &&
-          (call.params as { value?: string } | undefined)?.value === "anthropic-private-draft",
+          (call.params as { value?: string } | undefined)?.value === "old-draft",
       ),
     ).toBe(false);
     expect(client.calls.filter((call) => call.method === "evener/instance/create")).toHaveLength(1);
-    // The draft is retained behind the key row rather than discarded.
-    await user.click(screen.getByRole("button", { name: "Add key" }));
-    expect(screen.getByLabelText("API key")).toHaveProperty("value", "add-card-key");
+    if (!writes) {
+      // The draft is retained behind the key row rather than discarded.
+      await user.click(screen.getByRole("button", { name: "Add key" }));
+      expect(screen.getByLabelText("API key")).toHaveProperty("value", "add-card-key");
+    }
   },
 );
+
+// A create whose answer was superseded leaves its draft unclaimed when the
+// reconciled row is a different destination. Replacing that whole value in one
+// input event must still claim the row on screen, or the retype can never save.
+test("a retained unclaimed draft can be replaced and saved against the row on screen", async () => {
+  const baselineList: InstanceListResponse = { instances: [], availableProviders: catalogue };
+  const { user, client } = setup(baselineList);
+  await startRecoveredCreate(user);
+
+  const pending = deferred<InstanceListResponse>();
+  const { authored, reconciled } = supersededCreateFixtures("fp-other");
+  client.on("evener/instance/create", () => pending.promise);
+  await user.click(screen.getByRole("button", { name: "Save and test" }));
+  await act(async () => {
+    await credentialsStore.getState().fetch();
+    client.on("evener/instance/list", () => structuredClone(reconciled));
+    pending.resolve(structuredClone(authored));
+    await pending.promise;
+  });
+  expect(await screen.findByRole("dialog", { name: "recovered-team" })).toBeTruthy();
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
+
+  await user.click(screen.getByRole("button", { name: "Add key" }));
+  const field = screen.getByLabelText("API key");
+  expect(field).toHaveProperty("value", "add-card-key");
+  fireEvent.change(field, { target: { value: "retyped-key" } });
+  scriptSave(client, reconciled);
+  await user.click(screen.getByRole("button", { name: "Save" }));
+
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/auth/apiKey/set")).toBe(true));
+  expect(client.calls.find((call) => call.method === "evener/auth/apiKey/set")?.params).toMatchObject({
+    provider: "recovered-team",
+    value: "retyped-key",
+    expectedEndpointFingerprint: "fp-other",
+  });
+});
 
 // The catalogue with one provider's endpoint fingerprint set: what the hub
 // reports when the endpoint moved in a part the sanitized baseUrl cannot show
@@ -2660,6 +2727,31 @@ test("dropping a replacement draft restores the saved key state", async () => {
     expectedEndpointFingerprint: "fp-moved",
   });
   expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
+});
+
+// An adoption that keeps a replacement because the destination did not move
+// must not present it as saved: the next Save has to write the replacement,
+// not test the stored key it sits in front of.
+test("saving settings keeps a pending replacement unsaved", async () => {
+  const { user, client } = setup(savedList());
+  await choose(user);
+  await user.click(screen.getByRole("button", { name: "Replace" }));
+  await enterText(user, screen.getByLabelText("API key"), "replacement-key");
+
+  client.on("evener/instance/edit", () => structuredClone(savedList()));
+  await user.click(screen.getByText("All connection settings"));
+  await user.click(screen.getByRole("button", { name: "Save settings" }));
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/instance/edit")).toBe(true));
+
+  scriptSave(client);
+  await user.click(screen.getByRole("button", { name: "Save" }));
+
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/auth/apiKey/set")).toBe(true));
+  expect(client.calls.find((call) => call.method === "evener/auth/apiKey/set")?.params).toMatchObject({
+    provider: "anthropic",
+    value: "replacement-key",
+    expectedEndpointFingerprint: "fp-anthropic",
+  });
 });
 
 // Enter during an IME composition confirms the composition, not the card's
