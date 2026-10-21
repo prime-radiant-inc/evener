@@ -38,6 +38,8 @@ var shownMetaFields = []string{
 // SessionMeta field on neither list fails TestShownMetaFieldsCoverSessionMeta,
 // which is what forces the next added field to be classified.
 var notShownMetaFields = []string{
+	// Manager projection reads this separately; navigation retains transcript ID.
+	"WorkspaceID",
 	"ProfileID", "CheapModel", "VisionModel", "Config", "Revision",
 	"TurnBudgetWarningEmitted", "LastInputTokens", "NameSource", "NameUpdatedAt",
 	"DivergenceTurn", "Goal", "PinnedNote", "Skills", "HumanNote", "AgentNote",

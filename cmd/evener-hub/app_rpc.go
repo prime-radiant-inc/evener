@@ -1496,6 +1496,7 @@ func registerThreadHandlers(
 		}
 		return resp, nil
 	}
+	registerThreadManagerSetHandler(server, cfg, readThread, relays.resyncThread)
 	// thread/unsubscribe drops only the calling connection's downstream
 	// subscription — the browser's own read of a thread it is navigating away
 	// from. The relay key is derived by the same helper thread/read's relay

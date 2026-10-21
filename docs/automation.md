@@ -90,3 +90,23 @@ evener providers list --help
 Use doctor to inspect retained state, then correct the specific setup or runtime failure. Do not “fix” a sandbox failure by removing the sandbox in an unattended retry. Provider probes and model-driven runs are separate, opt-in checks; a deterministic documentation or protocol test should not call a hosted model.
 
 For a persistent application rather than a one-shot process, use [AppWire integration](integrations.md). For agent tool lifetimes, see [Job control](job-control.md).
+
+## Local Manager preference
+
+The hub exposes the human-only AppWire method `evener/thread/manager/set` with
+`{ref, enabled}`. The local hub supplies its own nonsecret authority ID; callers
+cannot choose it in JSON. The response's `view` contains the selected thread's
+`ref`, `instanceId` and `setting` (`hubId`, `enabled`, `revision`). A refused write
+carries the current view in error data when storage can still be read.
+
+The hosting hub stores one preference per workspace in `index.db`. Enabling
+selects authority, disabling releases it, and only a real change advances the
+revision. Disconnect, Clear and restart retain the setting; new sessions and
+forks start off. Saved historical instances keep their own navigation refs while
+explicit persisted workspace identity shares the preference. Legacy sessions
+without that identity use their own saved ID, not inferred earlier history.
+
+Thread reads expose `manager`, `managerSetting` and `managerEditable`. A committed
+change sends the existing scoped `evener/thread/resync` hint for an authoritative
+re-read. This preference does not yet provide client switches, runtime Manager
+tools or remote enabling.

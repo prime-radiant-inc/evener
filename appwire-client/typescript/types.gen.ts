@@ -800,6 +800,18 @@ export interface EvenerSubagentPreviewResponse {
 
 export interface EvenerThread {
   /**
+   * Manager is the saved human preference, not a runtime tool capability.
+   */
+  manager?: boolean;
+  /**
+   * ManagerSetting is absent when the hosting preference cannot be resolved.
+   */
+  managerSetting?: ManagerSetting;
+  /**
+   * ManagerEditable is true only where this hub can change the preference.
+   */
+  managerEditable?: boolean;
+  /**
    * ResumeRequired means recovery stopped this session and automatic actions
    * must wait for an explicit thread/resume. Saved transcripts remain readable.
    */
@@ -2181,6 +2193,18 @@ export interface MCPServerSpec {
   name: string;
   command: string;
   args?: string[];
+}
+
+export interface ManagerSetting {
+  hubId: string;
+  enabled: boolean;
+  revision: number;
+}
+
+export interface ManagerView {
+  ref: string;
+  instanceId: string;
+  setting: ManagerSetting;
 }
 
 export interface MarketplaceAddParams {
@@ -4137,6 +4161,15 @@ export interface ThreadListResponse {
   backwardsCursor?: string;
 }
 
+export interface ThreadManagerSetParams {
+  ref: string;
+  enabled: boolean;
+}
+
+export interface ThreadManagerSetResponse {
+  view: ManagerView;
+}
+
 export interface ThreadModelChangedParams {
   threadId: string;
   ref: string;
@@ -4803,6 +4836,7 @@ export const METHOD_NAMES = [
   "thread/clear",
   "thread/model/set",
   "evener/thread/name/set",
+  "evener/thread/manager/set",
   "thread/reasoning-effort/set",
   "thread/vision-model/set",
   "thread/compact/start",
@@ -5117,6 +5151,7 @@ export interface MethodTypes {
   "thread/clear": { params: ThreadClearParams; result: ThreadClearResponse };
   "thread/model/set": { params: ThreadModelSetParams; result: EmptyResponse };
   "evener/thread/name/set": { params: ThreadNameSetParams; result: EmptyResponse };
+  "evener/thread/manager/set": { params: ThreadManagerSetParams; result: ThreadManagerSetResponse };
   "thread/reasoning-effort/set": { params: ThreadReasoningEffortSetParams; result: EmptyResponse };
   "thread/vision-model/set": { params: ThreadVisionModelSetParams; result: EmptyResponse };
   "thread/compact/start": { params: ThreadCompactStartParams; result: EmptyResponse };

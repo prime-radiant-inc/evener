@@ -360,6 +360,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	favorite := hubcore.NewFavoriteStore(pastIndexDB)
 	pinSections := hubcore.NewPinSectionStore(pastIndexDB)
 	sessionSeen := hubcore.NewSessionSeenStore(pastIndexDB)
+	sessionPreferences := hubcore.NewSessionPreferencesStore(pastIndexDB)
 
 	// Spawner
 	hubToken, err := deps.newToken()
@@ -650,6 +651,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		Favorite:                  favorite,
 		PinSections:               pinSections,
 		SessionSeen:               sessionSeen,
+		SessionPreferences:        sessionPreferences,
 		MessageSearch:             messageSearch,
 		Spawner:                   spawner,
 		APILogDefault:             cfg.APILog,

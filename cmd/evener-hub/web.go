@@ -140,6 +140,9 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 }
 
 func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace) *WebServer {
+	if cfg.SessionPreferences == nil && cfg.PastIndexPath != "" {
+		cfg.SessionPreferences = hubcore.NewSessionPreferencesStore(cfg.PastIndexPath)
+	}
 	var deletionStoreErr error
 	if cfg.DeletionStore == nil {
 		cfg.DeletionStore, deletionStoreErr = hubcore.NewDeletionStore(cfg.HubStateRoot)

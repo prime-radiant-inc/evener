@@ -84,10 +84,11 @@ type WebConfig struct {
 	NoUserLayer         bool              // EVENER_PROVIDERS_CONFIG is present and empty: no user layer at all (spec §10). A file that fails to load adds to this per call; it is not folded in here.
 	APILogDefault       bool              // hub.toml api_log floor for hub-spawned daemons; applied when no launch layer sets api_log
 
-	Archive     *ArchiveStore     // archive decision store; nil when not configured (tree uses empty decisions)
-	Favorite    *FavoriteStore    // favorite decision store; nil when not configured
-	PinSections *PinSectionStore  // named pin-section store; nil when not configured
-	SessionSeen *SessionSeenStore // per-session seen-through markers (S4); nil when not configured
+	Archive            *ArchiveStore            // archive decision store; nil when not configured (tree uses empty decisions)
+	Favorite           *FavoriteStore           // favorite decision store; nil when not configured
+	PinSections        *PinSectionStore         // named pin-section store; nil when not configured
+	SessionSeen        *SessionSeenStore        // per-session seen-through markers (S4); nil when not configured
+	SessionPreferences *SessionPreferencesStore // hosting workspace Manager preferences in index.db
 	// MessageSearch is the message-text search index (S14); nil when it is not
 	// configured or search.db could not be opened, and search then finds
 	// sessions by title and prompt only.

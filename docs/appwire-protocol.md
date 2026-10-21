@@ -203,6 +203,7 @@ no router (reserved).
 | `thread/clear` | both | [ThreadClearParams](#threadclearparams) | [ThreadClearResponse](#threadclearresponse) | Clears the thread's conversation when no turn, queued, or approval work is unresolved. |
 | `thread/model/set` | both | [ThreadModelSetParams](#threadmodelsetparams) | [EmptyResponse](#emptyresponse) | Changes the session's model/provider. |
 | `evener/thread/name/set` | both | [ThreadNameSetParams](#threadnamesetparams) | [EmptyResponse](#emptyresponse) | Sets a user-chosen session title (rename). |
+| `evener/thread/manager/set` | hub | [ThreadManagerSetParams](#threadmanagersetparams) | [ThreadManagerSetResponse](#threadmanagersetresponse) | Sets the human-controlled Manager preference for a local workspace. The hub supplies its authority identity. |
 | `thread/reasoning-effort/set` | both | [ThreadReasoningEffortSetParams](#threadreasoningeffortsetparams) | [EmptyResponse](#emptyresponse) | Sets reasoning effort, normalizing and validating the value. |
 | `thread/vision-model/set` | both | [ThreadVisionModelSetParams](#threadvisionmodelsetparams) | [EmptyResponse](#emptyresponse) | Sets the vision side-channel routing ("", "off", or a model ref). |
 | `thread/compact/start` | both | [ThreadCompactStartParams](#threadcompactstartparams) | [EmptyResponse](#emptyresponse) | Starts a context-compaction pass on the session. |
@@ -358,7 +359,7 @@ the shared [TypeScript client](../appwire-client/typescript/README.md).
 | `evener/marketplace/updated` | [EmptyParams](#emptyparams) | Broadcast after a marketplace mutation (add/edit/remove, or a refresh that moved a clone to another commit or repaired it); no payload. Clients refresh the marketplace list. A refresh that changed nothing moves only lastUpdated and does not broadcast. |
 | `evener/plugin/updated` | [EmptyParams](#emptyparams) | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade, or a marketplace edit that can re-key installs); no payload. Clients refresh the plugin list. |
 | `evener/notices/changed` | [NoticesListResponse](#noticeslistresponse) | Hub-derived: the hub's notices changed (a notice appeared, cleared, or its session count moved); carries the whole new list, as evener/notices/list returns it. Hub-originated; never sent by daemons. |
-| `evener/thread/resync` | [ThreadResyncParams](#threadresyncparams) | Hub-originated hint asking clients to re-read one thread after relay recovery. |
+| `evener/thread/resync` | [ThreadResyncParams](#threadresyncparams) | Hub-originated hint asking clients to re-read one thread after relay recovery or a hub-owned setting change. |
 | `evener/thread/activity/changed` | [SessionActivityChangedParams](#sessionactivitychangedparams) | Scoped activity invalidation; clients revalidate the named observed resources for the addressed session. |
 | `evener/task/updated` | [TaskUpdatedParams](#taskupdatedparams) | The session's task-list outcome counts (total/done/cancelled/remaining) changed. |
 | `evener/goal/updated` | [GoalUpdatedParams](#goalupdatedparams) | The session's complete structured goal state changed; null clears it. |
@@ -1186,6 +1187,9 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `manager` | bool | yes |  |
+| `managerSetting` | \*[appwire.ManagerSetting](#managersetting) | yes |  |
+| `managerEditable` | bool | yes |  |
 | `resumeRequired` | bool | yes |  |
 | `resumeOnlyFoldable` | bool | yes |  |
 | `ref` | string |  |  |
@@ -2477,6 +2481,24 @@ Underlying Go kind: `string` (no struct fields).
 | `name` | string |  |  |
 | `command` | string |  |  |
 | `args` | []string | yes |  |
+
+
+### `ManagerSetting`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `hubId` | string |  |  |
+| `enabled` | bool |  |  |
+| `revision` | uint64 |  |  |
+
+
+### `ManagerView`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | string |  |  |
+| `instanceId` | string |  |  |
+| `setting` | [appwire.ManagerSetting](#managersetting) |  |  |
 
 
 ### `MarketplaceAddParams`
@@ -4046,6 +4068,21 @@ Underlying Go kind: `string` (no struct fields).
 | `data` | [][appwire.Thread](#thread) |  |  |
 | `nextCursor` | string | yes |  |
 | `backwardsCursor` | string | yes |  |
+
+
+### `ThreadManagerSetParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | string |  |  |
+| `enabled` | bool |  |  |
+
+
+### `ThreadManagerSetResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `view` | [appwire.ManagerView](#managerview) |  |  |
 
 
 ### `ThreadModelChangedParams`

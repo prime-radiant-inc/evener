@@ -835,7 +835,7 @@ func hubForkIdentityFenced(cfg hubcore.WebConfig, threadID string, owner forkThr
 func applyHubCapabilities(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
 	thread = applyHubForkCapability(cfg, thread)
 	thread.Evener.Capabilities.PageBefore = hubPagesBefore(cfg, thread.Evener.Ref)
-	return thread
+	return projectManagerMode(cfg, thread)
 }
 
 // hubPagesBefore is the hub's answer to ThreadCapabilities.PageBefore: whether
