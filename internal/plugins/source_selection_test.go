@@ -267,6 +267,35 @@ func TestInstallRejectsGitMetadataSelectionWithGitTrace(t *testing.T) {
 	}
 }
 
+func TestInstallAllowsGitLikeTreeInsideAWorktree(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	outer := filepath.Join(t.TempDir(), "outer")
+	makeGitRepo(t, outer, "README.md", "outer")
+	pluginDir := filepath.Join(outer, "plugin-with-git-like-names")
+	files := map[string]string{
+		"HEAD":              "ref: refs/heads/main\n",
+		"config":            "[core]\nordinary plugin file\n",
+		"objects/info/note": "ordinary plugin bytes",
+	}
+	writePlugin(t, pluginDir, "widget", files)
+
+	entry, err := installDirectorySource(t, pluginDir)
+	if err != nil {
+		t.Fatalf("an ordinary plugin tree inside a worktree was refused: %v", err)
+	}
+	for rel, want := range files {
+		got, err := os.ReadFile(filepath.Join(entry.InstallPath, rel))
+		if err != nil || string(got) != want {
+			t.Fatalf("published %s = %q, %v; want %q", rel, got, err, want)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(entry.InstallPath, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("published tree carries .git: %v", err)
+	}
+}
+
 func setAmbientRepositorySelection(t *testing.T, unrelated string) {
 	t.Helper()
 	for name, value := range map[string]string{
