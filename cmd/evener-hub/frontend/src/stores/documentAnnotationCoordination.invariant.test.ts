@@ -1719,3 +1719,64 @@ test("a throwing acknowledgment is retained and retried by a later pass", async 
   fixture.repository.close();
   fixture.drafts.close();
 });
+
+// A withheld acknowledgment is a transient divergence for a composer whose
+// preparation RELOADS the durable row: sourceState's prepare publishes
+// storedValue(row) and adopts row.token each time, so the next preparation
+// repairs the composer without a compensating write. This pins that SEAM
+// contract through the fixture's reloading preparation - not the production
+// composer, whose migration is the next change. After the round-17
+// commit-race dismissal withholds the acknowledgment, the next handoff's
+// preparation carries the committed token and appends without a
+// revision-conflict.
+test("a reloading preparation adopts the committed token after a withheld acknowledgment", async () => {
+  const preparations: ComposerPreparation[] = [];
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    prepareAnnotation: async () => {
+      const current = fixture;
+      if (current === undefined) return null;
+      const loaded = await current.drafts.load(current.key);
+      if (!loaded) return null;
+      const preparation: ComposerPreparation = {
+        key: loaded.key,
+        token: loaded.token,
+        backing: { kind: "draft" },
+        localGeneration: 0,
+      };
+      preparations.push(preparation);
+      return preparation;
+    },
+  });
+  fixture.acknowledge.mockClear();
+
+  // The append commits while its completion is held, and the dismissal lands
+  // inside that window: the handoff honestly reports applied, and the delivery
+  // is withheld because the user dismissed the note.
+  const hold = holdNextWriteTransaction(APPEND_STORES);
+  const append = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
+  await hold.reached;
+  fixture.runtime.retireAttempted(fixture.operation);
+  hold.release();
+  expect(await append).toMatchObject({ state: "applied" });
+  expect(fixture.acknowledge).not.toHaveBeenCalled();
+
+  // The composer's next preparation reloads the durable row, so it adopts the
+  // token the withheld acknowledgment never delivered, and its next handoff
+  // appends instead of refusing revision-conflict.
+  const beforeB = await fixture.drafts.load(fixture.key);
+  if (!beforeB) throw new Error("fixture seeded no draft");
+  const firstPreparation = preparations[0];
+  expect(beforeB.token.sessionRevision).toBeGreaterThan(firstPreparation.token.sessionRevision);
+  const operationB: PreparedAnnotation = { ...fixture.operation, operationId: "operation-2" };
+  await fixture.repository.saveAnnotation(operationB);
+  expect(await fixture.runtime.handoff(fixture.document, operationB.operationId)).toMatchObject({ state: "applied" });
+  const used = preparations.at(-1);
+  expect(used?.token.sessionRevision).toBe(beforeB.token.sessionRevision);
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
