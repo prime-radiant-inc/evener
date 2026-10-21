@@ -100,10 +100,11 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 			// its former importers still name it. Deriving the import path
 			// from the path keeps those importers in the run; without this a
 			// deletion printed PASS while the dependent build was broken.
-			if ip, derived := g.importPathAt(module, dir); derived {
-				if goFile {
-					res.GoChanged++
-				}
+			// Only a removed Go file implies a removed package. A non-Go file
+			// under a package subdirectory is usually an asset, not evidence
+			// that anything was deleted, and belongs to the embed check below.
+			if ip, derived := g.importPathAt(module, dir); derived && goFile {
+				res.GoChanged++
 				propagating[ip] = joinReason(propagating[ip], "removed file "+rel)
 				continue
 			}
@@ -144,9 +145,6 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 			reasonFor[ip] = r
 		}
 	}
-	for ip, r := range propagating {
-		reasonFor[ip] = r
-	}
 	for module, reason := range wholeModules {
 		for ip, info := range g.pkgs {
 			if info.ModuleRoot != module {
@@ -154,6 +152,11 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 			}
 			propagating[ip] = joinReason(propagating[ip], reason)
 		}
+	}
+	// The closure below only adds importers; every seed, including those the
+	// manifest expansion just added, takes its own reason here.
+	for ip, r := range propagating {
+		reasonFor[ip] = r
 	}
 	// `go list -deps` is transitive, so one membership test is the whole
 	// closure. testOnly seeds are deliberately absent from this loop.
@@ -176,10 +179,6 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 			}
 		}
 	}
-	for ip, r := range propagating {
-		reasonFor[ip] = r
-	}
-
 	for ip, info := range g.pkgs {
 		reason, ok := reasonFor[ip]
 		if !ok {
