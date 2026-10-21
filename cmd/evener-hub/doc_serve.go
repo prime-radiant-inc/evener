@@ -106,13 +106,24 @@ func (s *WebServer) resolveArtifactsDocTarget(ctx context.Context, session, rel 
 // routes and the thread snapshot use, so a link the wire advertises is exactly
 // a link the route serves.
 //
-// A running delegate's artifacts sit under its owner's project state directory,
-// so a child id resolves through the live entry that reports it. A remote
-// session names no local path.
-func sessionArtifactsRoot(ctx context.Context, cfg hubcore.WebConfig, session string) string {
-	session = canonicalRouteID(session)
-	if !isLocalRouteID(session) {
+// The argument may be a session id or the stable workspace ref a thread keeps
+// across Clear: the roster keys live entries by their current session id, so a
+// stable ref is first resolved to the session that owns it. A running
+// delegate's artifacts sit under its owner's project state directory, so a
+// child id resolves through the live entry that reports it. A remote session
+// names no local path.
+func sessionArtifactsRoot(ctx context.Context, cfg hubcore.WebConfig, ref string) string {
+	ref = canonicalRouteID(ref)
+	if !isLocalRouteID(ref) {
 		return ""
+	}
+	session := ref
+	if cfg.Roster != nil {
+		if live, ok := liveDaemonForThread(cfg.Roster, ref); ok && !live.Crashed {
+			if live.SessionID != "" {
+				session = live.SessionID
+			}
+		}
 	}
 	stateDir := sessionStateDir(ctx, cfg, session)
 	if stateDir == "" {
@@ -343,11 +354,12 @@ func sessionDocumentFromHub(ctx context.Context, cfg hubcore.WebConfig, sources 
 		return appwire.SessionDocumentResponse{}, err
 	}
 	doc, err := readSessionDocument(cwd, params.Path)
-	// The same rule the HTTP routes carry: only an absolute path may name a
-	// file outside the working directory. A relative name keeps its one
+	// The same rule the HTTP routes carry: an absolute path may also name a
+	// file in the retained artifacts directory, including after a worktree
+	// cleanup removed the working directory. A relative name keeps its one
 	// meaning, so an escaping symlink in cwd is refused rather than silently
 	// served from an unrelated artifacts file of the same name.
-	if errors.Is(err, fspaths.ErrPathEscapesRoot) && filepath.IsAbs(strings.TrimSpace(params.Path)) {
+	if filepath.IsAbs(strings.TrimSpace(params.Path)) {
 		if root := sessionArtifactsRoot(ctx, cfg, session); root != "" {
 			// The artifacts attempt may fail for its own reason (no such file
 			// under that root). The refusal must still name the escape, so the

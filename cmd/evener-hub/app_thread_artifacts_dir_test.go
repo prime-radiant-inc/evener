@@ -112,3 +112,30 @@ func TestRunningDelegateArtifactsDirMatchesTheRoute(t *testing.T) {
 		t.Fatalf("advertised artifacts dir = %q, want the route's %q", got, want)
 	}
 }
+
+// A live session keeps the stable workspace ref it was launched under across
+// Clear, while its current session id changes. The roster keys live entries by
+// the current id, so resolving the stable ref must follow it to the session
+// that owns it; otherwise a cleared session advertises (and serves) an
+// artifacts directory that belongs to nobody.
+func TestArtifactsRootFollowsAStableRefToItsCurrentSession(t *testing.T) {
+	const stableRef = "local:02wMz5Txv1C3Hut0M8GCeG"
+	const currentSession = "02wMz5Txv1C3Hut0M8GCeH"
+	stateDir := t.TempDir()
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:     rendezvous.Entry{SessionID: currentSession, WorkspaceRef: stableRef, StateDir: stateDir, StartedAt: time.Now().UTC()},
+		SessionID: currentSession,
+	})
+	cfg := hubcore.WebConfig{Roster: roster}
+	want, err := schema.SessionArtifactsDir(stateDir, currentSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sessionArtifactsRoot(t.Context(), cfg, stableRef); got != want {
+		t.Fatalf("stable ref root = %q, want the current session's %q", got, want)
+	}
+	thread := appwire.Thread{ID: currentSession, SessionID: currentSession, Evener: appwire.EvenerThread{Ref: stableRef}}
+	if got := applyHubCapabilities(cfg, thread).Evener.ArtifactsDir; got != want {
+		t.Fatalf("advertised artifacts dir = %q, want %q", got, want)
+	}
+}

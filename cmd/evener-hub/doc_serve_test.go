@@ -917,3 +917,46 @@ func TestDocFile_RelativeReadAfterWorkingDirectoryRemovedIsNotFound(t *testing.T
 		t.Fatalf("relative read after cwd removal = %d, want a not-found or unavailable refusal", rec.Code)
 	}
 }
+
+// The AppWire read answers a retained artifact after the working directory is
+// removed, exactly as the local /doc/file route does. Resolving the artifacts
+// root does not need the cwd, so a removed cwd must not make it a miss.
+func TestHubSessionDocumentServesArtifactsAfterWorkingDirectoryRemoved(t *testing.T) {
+	cwd := t.TempDir()
+	const session = "02wMz5Txv1C3Hut0M8GCeF"
+	stateDir := t.TempDir()
+	proj := filepath.Join(stateDir, "projects", "project-doc-1111111111")
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID: session, UpdatedAt: time.Now(), OriginalPrompt: "doc session",
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: cwd},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := schema.SessionArtifactsDir(proj, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "report.md")
+	if err := os.WriteFile(target, []byte("retained report"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(stateDir, "projects", "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	srv, _ := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: idx})
+	t.Cleanup(srv.Close)
+	if err := os.RemoveAll(cwd); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := requestSessionDocument(t, srv, appwire.SessionDocumentParams{SessionID: session, Path: target})
+	if err != nil || string(resp.Data) != "retained report" {
+		t.Fatalf("after cwd removal: %q, %v; want the retained report", resp.Data, err)
+	}
+}
