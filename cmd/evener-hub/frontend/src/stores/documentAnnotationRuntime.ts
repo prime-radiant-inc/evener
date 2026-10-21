@@ -43,8 +43,14 @@ export interface DocumentAnnotationRuntime {
   // namespace-qualified operation identity, leaving every other operation in the
   // shared failed-work set untouched. Cancel uses this to dismiss only its own
   // unsaved attempt without discarding a different reader's failed work for the
-  // same document.
+  // same document. The dismissal is durable: it reaches the repository even
+  // when the operation has no in-flight save left to cancel, fencing the
+  // identity and flipping its committed row terminal.
   retireAttempted(operation: PreparedAnnotation): void;
+  // Application teardown. Aborts every in-flight save transaction it can still
+  // abort, but is NOT a dismissal: it never fences an identity or flips a
+  // committed row, so committed work survives pending for whichever runtime
+  // retries after teardown.
   dispose(): void;
 }
 
@@ -112,25 +118,43 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
     annotationOperationKey(operation.lease.key.namespace, operation.operationId);
   // One operation-scoped cancellation handle per operation, alive only while a
   // save for it is in flight (reference-counted so concurrent saves for the same
-  // operation share it). retireAttempted/dispose cancel it so the repository's
-  // active save transaction aborts before commit; each save releases it at
-  // settlement so no listener or handle outlives the save.
-  const cancellations = new Map<string, { token: AnnotationSaveCancellation; cancel: () => void; active: number }>();
-  const createCancellation = (): { token: AnnotationSaveCancellation; cancel: () => void } => {
-    const state = { cancelled: false, listeners: new Set<() => void>() };
-    const cancel = (): void => {
-      if (state.cancelled) return;
-      state.cancelled = true;
+  // operation share it). retireAttempted cancels it as a DISMISSAL so the
+  // repository's active save transaction aborts before commit and the identity
+  // is fenced; each save releases it at settlement so no listener or handle
+  // outlives the save. dispose cancels as TEARDOWN: abort only, never a fence
+  // or a durable flip, so a committed row survives pending.
+  const cancellations = new Map<
+    string,
+    {
+      token: AnnotationSaveCancellation;
+      cancel: (reason: "dismissal" | "teardown") => void;
+      active: number;
+    }
+  >();
+  const createCancellation = (): {
+    token: AnnotationSaveCancellation;
+    cancel: (reason: "dismissal" | "teardown") => void;
+  } => {
+    const state: { reason: "dismissal" | "teardown" | null; listeners: Set<() => void> } = {
+      reason: null,
+      listeners: new Set(),
+    };
+    const cancel = (reason: "dismissal" | "teardown"): void => {
+      if (state.reason !== null) return;
+      state.reason = reason;
       const listeners = [...state.listeners];
       state.listeners.clear();
       for (const listener of listeners) listener();
     };
     const token: AnnotationSaveCancellation = {
       get cancelled() {
-        return state.cancelled;
+        return state.reason !== null;
+      },
+      get reason() {
+        return state.reason;
       },
       onCancel: (listener) => {
-        if (state.cancelled) {
+        if (state.reason !== null) {
           listener();
           return () => {};
         }
@@ -171,8 +195,8 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
       if (failed.get(operationKey) === operation) failed.delete(operationKey);
       return receipt;
     } catch {
-      // A cancelled save is a handled dismissal, never retryable work: its
-      // operation was already retired from the failed set by retireAttempted.
+      // A cancelled save is handled work, never retryable: a dismissal already
+      // retired its operation from the failed set, and teardown cleared it.
       if (entry.token.cancelled) return null;
       needRetry();
       return null;
@@ -336,15 +360,19 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
     },
     retireAttempted: (operation) => {
       failed.delete(id(operation));
-      // Reach the operation's in-flight persistence: abort its active save
-      // transaction before commit. A save that has not yet opened observes the
-      // cancellation at its next boundary.
-      cancellations.get(id(operation))?.cancel();
+      // Reach the operation's persistence whatever its state: abort an active
+      // save transaction before commit, then fence and durably flip the row.
+      // The cancellation handle is released at save settlement, so a
+      // settled-failed save can only be dismissed through the repository.
+      cancellations.get(id(operation))?.cancel("dismissal");
+      void repo.dismissOperation(operation.lease.key, operation.operationId);
     },
     dispose: () => {
       alive = false;
       failed.clear();
-      for (const entry of cancellations.values()) entry.cancel();
+      // Teardown aborts in-flight transactions; it is not a dismissal and
+      // never fences or flips a committed row.
+      for (const entry of cancellations.values()) entry.cancel("teardown");
       cancellations.clear();
       retryNeeded = false;
       pendingDuringPass = false;

@@ -15,7 +15,7 @@ import {
   openAnnotationFixture,
   pollUntil,
 } from "./testing/annotationFixture";
-import { holdNextWriteTransaction } from "./testing/stalledIndexedDB";
+import { holdNextWriteTransaction, nextRealTask } from "./testing/stalledIndexedDB";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -822,6 +822,247 @@ test("a stale-incarnation reset's release reaches the runtime trigger", async ()
   expect(passes).toHaveBeenCalledTimes(1);
 
   sibling.close();
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+// ---------------------------------------------------------------------------
+// The dismissal lifecycle of a saved note.
+// ---------------------------------------------------------------------------
+
+// Every handoff prepares against the draft's CURRENT token: an earlier append
+// in the same test advances the session revision, and a stale fixture
+// preparation would refuse revision-conflict instead of exercising the
+// dismissal.
+function currentPreparation(fixture: () => AnnotationFixture | undefined) {
+  return async (): Promise<ComposerPreparation | null> => {
+    const current = fixture();
+    if (current === undefined) return null;
+    const loaded = await current.drafts.load(current.key);
+    return loaded ? { key: loaded.key, token: loaded.token, backing: { kind: "draft" }, localGeneration: 0 } : null;
+  };
+}
+
+// Apply the fixture's own pending operation first: a later pending operation
+// for the same draft would otherwise refuse a direct handoff as a dirty draft,
+// which would hide the dismissal this suite is about.
+async function applyFixtureOperation(fixture: AnnotationFixture): Promise<void> {
+  expect(await fixture.repository.handoff(fixture.document, fixture.operation.operationId)).toMatchObject({
+    state: "applied",
+  });
+}
+
+// A save can settle failed while its row is committed and retained as retry
+// work. Dismissing that retained operation used to reach only the in-flight
+// cancellation handle, which the settled save had already released, so the
+// next pass appended the dismissed note. The dismissal must reach the durable
+// row itself.
+test("a dismissal of a settled-failed save keeps the next pass from appending it", async () => {
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    prepareAnnotation: currentPreparation(() => fixture),
+  });
+  const operation: PreparedAnnotation = { ...fixture.operation, operationId: "operation-2" };
+  await applyFixtureOperation(fixture);
+  fixture.acknowledge.mockClear();
+
+  // The save's transaction commits but its completion is held, so the watchdog
+  // rejects a save whose row is durable: exactly the settled-failed state.
+  const hold = holdNextWriteTransaction(SAVE_STORES);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let reached = false;
+  void hold.reached.then(() => {
+    reached = true;
+  });
+  const save = fixture.runtime.save(operation);
+  await pollUntil(() => reached, 50);
+  expect(reached).toBe(true);
+  await vi.advanceTimersByTimeAsync(10_001);
+  expect(await save).toBeNull();
+  hold.release();
+  vi.useRealTimers();
+
+  // No in-flight save exists to cancel; the dismissal must still be durable.
+  fixture.runtime.retireAttempted(operation);
+  await fixture.runtime.retryPending("storage-recovered");
+  await fixture.runtime.whenIdle();
+
+  expect(fixture.acknowledge).not.toHaveBeenCalled();
+  const views = await fixture.repository.listAnnotations(fixture.document);
+  expect(views.find((view) => view.operation.operationId === operation.operationId)).toBeUndefined();
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+// The in-memory fence cannot protect a closed adapter or a sibling on the same
+// database. A user dismissal must flip the shared durable row terminal, so a
+// fresh pair finds a terminal receipt instead of a pending note to append.
+test("a dismissed save stays terminal for a sibling adapter after close", async () => {
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    prepareAnnotation: currentPreparation(() => fixture),
+  });
+  const operation: PreparedAnnotation = { ...fixture.operation, operationId: "operation-2" };
+  await applyFixtureOperation(fixture);
+  await fixture.repository.saveAnnotation(operation);
+  fixture.acknowledge.mockClear();
+
+  fixture.runtime.retireAttempted(operation);
+
+  // Observe the durable row through an adapter that shares no fence with the
+  // dismissing one: listing excludes the row only when its flip committed.
+  const sibling = createDocumentAnnotationRepository({
+    indexedDB: fixture.factory,
+    databaseName: "annotation-coordination",
+    drafts: fixture.drafts,
+    targetFor: () => fixture?.source ?? null,
+  });
+  let durable = false;
+  for (let hop = 0; hop < 50 && !durable; hop += 1) {
+    const views = await sibling.listAnnotations(fixture.document);
+    durable = !views.some((view) => view.operation.operationId === operation.operationId);
+    if (!durable) await nextRealTask();
+  }
+  expect(durable).toBe(true);
+
+  fixture.repository.close();
+  expect(await sibling.handoff(fixture.document, operation.operationId)).toEqual({ state: "cancelled" });
+  expect(fixture.acknowledge).not.toHaveBeenCalled();
+
+  sibling.close();
+  fixture.drafts.close();
+});
+
+// An append that commits with an unobserved completion retains its composer
+// seam for reconciliation. If the user dismissed the operation, that record
+// must be DROPPED: reconciling acknowledges the composer from the committed
+// backing and is the one path that can still deliver the dismissed note.
+test("a dismissed append with an unobserved completion is dropped, not reconciled", async () => {
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+    prepareAnnotation: currentPreparation(() => fixture),
+  });
+  const operation: PreparedAnnotation = { ...fixture.operation, operationId: "operation-2" };
+  await applyFixtureOperation(fixture);
+  await fixture.runtime.save(operation);
+  fixture.acknowledge.mockClear();
+
+  // The append commits while its completion event is held, so the handoff
+  // outlives the commit and retains its uncertain reconciliation record.
+  const hold = holdNextWriteTransaction(APPEND_STORES);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let reached = false;
+  void hold.reached.then(() => {
+    reached = true;
+  });
+  const append = fixture.runtime.handoff(fixture.document, operation.operationId);
+  await pollUntil(() => reached, 50);
+  expect(reached).toBe(true);
+  await vi.advanceTimersByTimeAsync(10_001);
+  expect(await append).toEqual({ state: "pending", reason: "owner-unavailable" });
+  hold.release();
+  vi.useRealTimers();
+
+  // Dismissing an applied row cannot flip it, but the dismissal still owns the
+  // identity: the retained record must retire without acknowledging anyone.
+  fixture.runtime.retireAttempted(operation);
+  await fixture.runtime.retryPending("storage-recovered");
+  await fixture.runtime.whenIdle();
+  await fixture.runtime.retryPending("storage-recovered");
+  await fixture.runtime.whenIdle();
+
+  expect(fixture.acknowledge).not.toHaveBeenCalled();
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+// Disposal is teardown, not dismissal: it aborts the in-flight transaction it
+// can still abort, but a row that already committed survives as pending work
+// for whichever runtime retries after teardown. Treating teardown as a
+// dismissal made the row's fate depend on the dispose-versus-close ordering.
+test("dispose leaves a committed save's row pending for a later runtime", async () => {
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    prepareAnnotation: currentPreparation(() => fixture),
+  });
+  const operation: PreparedAnnotation = { ...fixture.operation, operationId: "operation-2" };
+  await applyFixtureOperation(fixture);
+  fixture.acknowledge.mockClear();
+
+  // The save commits, then teardown lands before its completion is observed.
+  const hold = holdNextWriteTransaction(SAVE_STORES);
+  const save = fixture.runtime.save(operation);
+  await hold.reached;
+  fixture.runtime.dispose();
+  hold.release();
+  expect(await save).toBeNull();
+
+  // The committed row is still pending: teardown fenced and flipped nothing.
+  const views = await fixture.repository.listAnnotations(fixture.document);
+  expect(views.find((view) => view.operation.operationId === operation.operationId)?.handoff.state).toBe("pending");
+  const sibling = createDocumentAnnotationRepository({
+    indexedDB: fixture.factory,
+    databaseName: "annotation-coordination",
+    drafts: fixture.drafts,
+    targetFor: () => fixture?.source ?? null,
+  });
+  const siblingViews = await sibling.listAnnotations(fixture.document);
+  expect(siblingViews.find((view) => view.operation.operationId === operation.operationId)?.handoff.state).toBe(
+    "pending",
+  );
+  // A later runtime can still complete the surviving work.
+  expect(await sibling.handoff(fixture.document, operation.operationId)).toMatchObject({ state: "applied" });
+
+  sibling.close();
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+// The discard's commit is what may release a dismissal fence. A discard that
+// no-ops because the row already became APPLIED must not silently release a
+// fence that still names live protection work: the identity would reconcile
+// the dismissed note into the composer on the next handoff.
+test("a no-op discard for an applied row keeps the dismissal fence", async () => {
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    prepareAnnotation: currentPreparation(() => fixture),
+  });
+  const operation: PreparedAnnotation = { ...fixture.operation, operationId: "operation-2" };
+  await applyFixtureOperation(fixture);
+  await fixture.repository.saveAnnotation(operation);
+  expect(await fixture.repository.handoff(fixture.document, operation.operationId)).toMatchObject({ state: "applied" });
+  fixture.acknowledge.mockClear();
+
+  // A replay save is in flight when the user dismisses; its own row is already
+  // applied, so the dismissal's durable discard is a no-op.
+  const hold = holdNextWriteTransaction(SAVE_STORES);
+  const save = fixture.runtime.save(operation);
+  await hold.reached;
+  fixture.runtime.retireAttempted(operation);
+  hold.release();
+  expect(await save).toBeNull();
+
+  expect(await fixture.repository.handoff(fixture.document, operation.operationId)).toEqual({ state: "cancelled" });
+  expect(fixture.acknowledge).not.toHaveBeenCalled();
+
   fixture.repository.close();
   fixture.drafts.close();
 });
