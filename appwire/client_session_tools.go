@@ -17,6 +17,7 @@ type clientSessionTools struct {
 	slots   chan struct{}
 	mu      sync.Mutex
 	watches map[string]context.CancelFunc
+	calls   map[string]context.CancelFunc
 }
 
 // SetSessionTools installs only the fixed runtime methods on this discovered
@@ -24,7 +25,7 @@ type clientSessionTools struct {
 // accepted from the wire.
 func (c *Client) SetSessionTools(binding SessionBinding, owner SessionHubClient) {
 	ctx, cancel := context.WithCancel(context.Background())
-	c.sessionTools = &clientSessionTools{ctx: ctx, cancel: cancel, binding: binding, owner: owner, slots: make(chan struct{}, SessionToolsPendingLimit), watches: map[string]context.CancelFunc{}}
+	c.sessionTools = &clientSessionTools{ctx: ctx, cancel: cancel, binding: binding, owner: owner, slots: make(chan struct{}, SessionToolsPendingLimit), watches: map[string]context.CancelFunc{}, calls: map[string]context.CancelFunc{}}
 }
 
 func (c *Client) BindSessionTools(ctx context.Context) error {
@@ -53,6 +54,31 @@ func (c *Client) receiveSessionRequest(ctx context.Context, req Request) {
 	state := c.sessionTools
 	if state == nil {
 		_ = c.sendSessionFrame(ctx, ErrorMessage(req.ID, MethodNotFound(req.Method)))
+		return
+	}
+	if req.Method == MethodRuntimeSessionCancel {
+		var p SessionRuntimeCancel
+		decoder := json.NewDecoder(bytes.NewReader(req.Params))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&p); err != nil {
+			c.respondSessionRequest(ctx, req.ID, nil, InvalidParams(err.Error()))
+			return
+		}
+		if p.BindingID == "" || p.BindingID != state.binding.BindingID {
+			c.respondSessionRequest(ctx, req.ID, nil, InvalidRequest("stale runtime binding"))
+			return
+		}
+		if p.RequestID >= 0 {
+			c.respondSessionRequest(ctx, req.ID, nil, InvalidParams("requestId must be a negative reverse request ID"))
+			return
+		}
+		state.mu.Lock()
+		cancel := state.calls[NewIntID(p.RequestID).String()]
+		state.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		c.respondSessionRequest(ctx, req.ID, EmptyResponse{}, nil)
 		return
 	}
 	var p SessionRuntimeRequest
@@ -99,12 +125,41 @@ func (c *Client) receiveSessionRequest(ctx context.Context, req Request) {
 		state.watches[p.WatchID] = watchCancel
 		state.mu.Unlock()
 	}
+	// Reserve cancellation in receive order, before the owner goroutine starts.
+	// Following cancellation can therefore stop even work not yet scheduled.
+	callCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(state.ctx, cancel)
+	state.mu.Lock()
+	if state.calls[req.ID.String()] != nil {
+		state.mu.Unlock()
+		stop()
+		cancel()
+		if watchCancel != nil {
+			watchCancel()
+			state.mu.Lock()
+			delete(state.watches, p.WatchID)
+			state.mu.Unlock()
+		}
+		<-state.slots
+		c.respondSessionRequest(ctx, req.ID, nil, InvalidRequest("duplicate in-flight request ID"))
+		return
+	}
+	state.calls[req.ID.String()] = func() {
+		cancel()
+		if watchCancel != nil {
+			watchCancel()
+		}
+	}
+	state.mu.Unlock()
 	go func() {
-		defer func() { <-state.slots }()
-		callCtx, cancel := context.WithCancel(ctx)
-		stop := context.AfterFunc(state.ctx, cancel)
-		defer stop()
-		defer cancel()
+		defer func() {
+			state.mu.Lock()
+			delete(state.calls, req.ID.String())
+			state.mu.Unlock()
+			stop()
+			cancel()
+			<-state.slots
+		}()
 		value, err := c.handleSessionRequest(callCtx, req.Method, p, watchCtx, watchCancel)
 		c.respondSessionRequest(ctx, req.ID, value, err)
 	}()

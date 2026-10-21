@@ -47,6 +47,7 @@ const (
 	MethodRuntimeSessionInvoke            = "evener/runtime/session/invoke"
 	MethodRuntimeSessionWatch             = "evener/runtime/session/watch"
 	MethodRuntimeSessionUnwatch           = "evener/runtime/session/unwatch"
+	MethodRuntimeSessionCancel            = "evener/runtime/session/cancel"
 	NotificationRuntimeSessionObservation = "evener/runtime/session/observation"
 )
 
@@ -158,6 +159,13 @@ type SessionRuntimeRequest struct {
 	Operation *SessionOperationRequest `json:"operation,omitempty"`
 	Watch     *SessionWatchRequest     `json:"watch,omitempty"`
 	WatchID   string                   `json:"watchId,omitempty"`
+}
+
+// SessionRuntimeCancel cancels only an in-flight reverse call on this binding.
+// RequestID is its negative numeric wire ID, not an operation selector.
+type SessionRuntimeCancel struct {
+	BindingID string `json:"bindingId"`
+	RequestID int64  `json:"requestId"`
 }
 
 type SessionRuntimeObservation struct {

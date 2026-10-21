@@ -198,7 +198,16 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 	}
 	b.owner.watches[observation] = struct{}{}
 	b.owner.mu.Unlock()
-	cleanup := func() { cancel(); b.owner.mu.Lock(); delete(b.owner.watches, observation); b.owner.mu.Unlock() }
+	var lease appsource.RelaySessionLease
+	cleanup := func() {
+		cancel()
+		if lease != nil {
+			lease.Close()
+		}
+		b.owner.mu.Lock()
+		delete(b.owner.watches, observation)
+		b.owner.mu.Unlock()
+	}
 	current, err := b.State(watchCtx)
 	if err != nil {
 		cleanup()
@@ -208,14 +217,33 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 		cleanup()
 		return nil, appwire.InvalidRequest("Manager mode is not enabled")
 	}
-	read, err := b.owner.read(watchCtx, appwire.ThreadReadParams{Ref: ref.String()}, false)
+	relaySource, ok := source.(appsource.RelaySessionSource)
+	if !ok {
+		cleanup()
+		return nil, appwire.Unavailable("source has no canonical status observation")
+	}
+	params := appwire.ThreadReadParams{Ref: ref.String()}
+	canonical, err := relaySource.ResolveRelaySession(params)
 	if err != nil {
 		cleanup()
 		return nil, err
 	}
-	notifications, err := source.SubscribeThread(watchCtx, appwire.ThreadReadParams{Ref: ref.String(), Subscribe: true})
+	lease, err = relaySource.AcquireRelaySession(canonical)
 	if err != nil {
 		cleanup()
+		return nil, err
+	}
+	var notifications <-chan appsource.RelayDelivery
+	read, err := b.owner.readWithHandoff(watchCtx, params, false, func() error {
+		var listenErr error
+		notifications, listenErr = lease.Listen(watchCtx)
+		return listenErr
+	})
+	if err != nil || notifications == nil {
+		cleanup()
+		if err == nil {
+			err = appwire.SessionUnavailable("thread has no live snapshot handoff")
+		}
 		return nil, err
 	}
 	updates := make(chan appwire.SessionWatchUpdate, 1)
@@ -227,10 +255,12 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 			select {
 			case <-watchCtx.Done():
 				return
-			case notification, ok := <-notifications:
+			case delivery, ok := <-notifications:
 				if !ok {
 					return
 				}
+				notification := delivery.Notification
+				delivery.Acknowledge()
 				if notification.Method != appwire.NotifyThreadStatusChanged && notification.Method != appwire.NotifyEvenerThreadResync && notification.Method != appwire.NotifyThreadClosed {
 					continue
 				}
@@ -255,6 +285,12 @@ func (o *sessionOperations) Read(ctx context.Context, params appwire.ThreadReadP
 }
 
 func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadParams, capture bool) (appwire.ThreadReadResponse, error) {
+	return o.readWithHandoff(ctx, params, capture, nil)
+}
+
+// beforeCommit installs a private listener while the canonical read still owns
+// the snapshot cut. Human reads retain their existing admission/publication path.
+func (o *sessionOperations) readWithHandoff(ctx context.Context, params appwire.ThreadReadParams, capture bool, beforeCommit func() error) (appwire.ThreadReadResponse, error) {
 	cfg, sources, relays := o.cfg, o.sources, o.relays
 
 	if err := appwire.ValidateThreadReadParams(params); err != nil {
@@ -419,9 +455,20 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 	}
 	read.response = resp
 	if !capture {
-		if read.handoff != nil && (!read.handoff.Prepare() || !read.finish(true)) {
-			read.finish(false)
-			return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread snapshot is unavailable")
+		if read.handoff != nil {
+			if !read.handoff.Prepare() {
+				read.finish(false)
+				return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread snapshot is unavailable")
+			}
+			if beforeCommit != nil {
+				if err := beforeCommit(); err != nil {
+					read.finish(false)
+					return appwire.ThreadReadResponse{}, err
+				}
+			}
+			if !read.finish(true) {
+				return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread snapshot is unavailable")
+			}
 		}
 		return resp, nil
 	}

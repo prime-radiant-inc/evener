@@ -197,6 +197,7 @@ no router (reserved).
 | `evener/runtime/session/invoke` | connection | [SessionRuntimeRequest](#sessionruntimerequest) | [SessionOperationResponse](#sessionoperationresponse) | Private reverse request, current Manager admission for exactly one implemented discovery or status operation. |
 | `evener/runtime/session/watch` | connection | [SessionRuntimeRequest](#sessionruntimerequest) | [EmptyResponse](#emptyresponse) | Private reverse request, ephemeral initial/live status observation only. Other event selectors and completion are rejected. |
 | `evener/runtime/session/unwatch` | connection | [SessionRuntimeRequest](#sessionruntimerequest) | [EmptyResponse](#emptyresponse) | Private reverse request, detaches one connection-local ephemeral observation consumer. |
+| `evener/runtime/session/cancel` | connection | [SessionRuntimeCancel](#sessionruntimecancel) | [EmptyResponse](#emptyresponse) | Private reverse request, cancels the identified negative requestId on this authenticated binding. Available at operation capacity, completed calls are no-ops. |
 | `thread/list` | both | [ThreadListParams](#threadlistparams) | [ThreadListResponse](#threadlistresponse) | Lists threads; the daemon returns its single session. |
 | `thread/read` | both | [ThreadReadParams](#threadreadparams) | [ThreadReadResponse](#threadreadresponse) | Reads one thread and optionally subscribes to its live updates; includeTurns returns the newest bounded atomic projected items, and itemLimit caps items. |
 | `thread/unsubscribe` | both | [ThreadUnsubscribeParams](#threadunsubscribeparams) | [EmptyResponse](#emptyresponse) | Drops this connection's live-update subscription to a thread without reading it. |
@@ -3679,6 +3680,14 @@ Underlying Go kind: `string` (no struct fields).
 | `changed` | bool |  |  |
 | `assignment` | [appwire.SessionPinUnpinAssignment](#sessionpinunpinassignment) |  |  |
 | `navigation` | [appwire.NavigationMutation](#navigationmutation) |  |  |
+
+
+### `SessionRuntimeCancel`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `bindingId` | string |  |  |
+| `requestId` | int64 |  |  |
 
 
 ### `SessionRuntimeObservation`

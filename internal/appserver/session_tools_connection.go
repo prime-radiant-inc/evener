@@ -135,7 +135,8 @@ func (c *Connection) closeSessionTools() {
 
 func (b *sessionToolsConnection) request(ctx context.Context, method string, p appwire.SessionRuntimeRequest, result any) error {
 	p.BindingID = b.binding.BindingID
-	id := appwire.NewIntID(-int64(b.next.Add(1)))
+	requestID := -int64(b.next.Add(1))
+	id := appwire.NewIntID(requestID)
 	ch := make(chan appwire.Message, 1)
 	b.mu.Lock()
 	if len(b.pending) >= appwire.SessionToolsPendingLimit {
@@ -159,6 +160,10 @@ func (b *sessionToolsConnection) request(ctx context.Context, method string, p a
 	case <-b.ctx.Done():
 		return appwire.Unavailable("runtime binding disconnected")
 	case <-ctx.Done():
+		// A local waiter ending must also release the remote owner. This fixed
+		// cleanup request needs no pending slot, even when all calls are busy.
+		cancelID := appwire.NewIntID(-int64(b.next.Add(1)))
+		b.conn.enqueue(appwire.RequestMessage(cancelID, appwire.MethodRuntimeSessionCancel, appwire.SessionRuntimeCancel{BindingID: b.binding.BindingID, RequestID: requestID}))
 		return ctx.Err()
 	case msg := <-ch:
 		if msg.Error != nil {

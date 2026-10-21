@@ -3606,6 +3606,11 @@ export interface SessionPinUnpinResponse {
   navigation: NavigationMutation;
 }
 
+export interface SessionRuntimeCancel {
+  bindingId: string;
+  requestId: number;
+}
+
 export interface SessionRuntimeObservation {
   bindingId: string;
   watchId: string;
@@ -4942,6 +4947,7 @@ export const METHOD_NAMES = [
   "evener/runtime/session/invoke",
   "evener/runtime/session/watch",
   "evener/runtime/session/unwatch",
+  "evener/runtime/session/cancel",
   "thread/list",
   "thread/read",
   "thread/unsubscribe",
@@ -5263,6 +5269,7 @@ export interface MethodTypes {
   "evener/runtime/session/invoke": { params: SessionRuntimeRequest; result: SessionOperationResponse };
   "evener/runtime/session/watch": { params: SessionRuntimeRequest; result: EmptyResponse };
   "evener/runtime/session/unwatch": { params: SessionRuntimeRequest; result: EmptyResponse };
+  "evener/runtime/session/cancel": { params: SessionRuntimeCancel; result: EmptyResponse };
   "thread/list": { params: ThreadListParams; result: ThreadListResponse };
   "thread/read": { params: ThreadReadParams; result: ThreadReadResponse };
   "thread/unsubscribe": { params: ThreadUnsubscribeParams; result: EmptyResponse };

@@ -168,6 +168,7 @@ var Methods = []MethodSpec{
 	{MethodRuntimeSessionInvoke, SessionRuntimeRequest{}, SessionOperationResponse{}, ScopeConnection, "Private reverse request, current Manager admission for exactly one implemented discovery or status operation."},
 	{MethodRuntimeSessionWatch, SessionRuntimeRequest{}, EmptyResponse{}, ScopeConnection, "Private reverse request, ephemeral initial/live status observation only. Other event selectors and completion are rejected."},
 	{MethodRuntimeSessionUnwatch, SessionRuntimeRequest{}, EmptyResponse{}, ScopeConnection, "Private reverse request, detaches one connection-local ephemeral observation consumer."},
+	{MethodRuntimeSessionCancel, SessionRuntimeCancel{}, EmptyResponse{}, ScopeConnection, "Private reverse request, cancels the identified negative requestId on this authenticated binding. Available at operation capacity, completed calls are no-ops."},
 	{MethodThreadList, ThreadListParams{}, ThreadListResponse{}, ScopeBoth, "Lists threads; the daemon returns its single session."},
 	{MethodThreadRead, ThreadReadParams{}, ThreadReadResponse{}, ScopeBoth, "Reads one thread and optionally subscribes to its live updates; includeTurns returns the newest bounded atomic projected items, and itemLimit caps items."},
 	{MethodThreadUnsubscribe, ThreadUnsubscribeParams{}, EmptyResponse{}, ScopeBoth, "Drops this connection's live-update subscription to a thread without reading it."},

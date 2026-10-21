@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
 	daemonserver "primeradiant.com/evener/server"
@@ -56,6 +57,110 @@ func (a *managerReadAdapter) Complete(_ context.Context, r llm.Request) (llm.Res
 		return activityRelayTool("job_status", map[string]any{"hub": map[string]any{"ref": a.ref}}), nil
 	default:
 		return activityRelayTool("communicate", map[string]any{"message": "read complete", "end_turn": true}), nil
+	}
+}
+
+func TestSessionToolsWatchSnapshotHandoff(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	const ref = "local:manager-workspace"
+	const instance = "manager-instance"
+	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "test-token"})
+	defer daemon.Close()
+	identity, err := daemonserver.PrepareAppIdentityForRef("local", instance, ref, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon.ReplaceAppIdentity(identity, nil)
+	upstream := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
+	defer upstream.Close()
+	entry := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: upstream.URL, SourceID: "local", ThreadID: instance, SessionID: instance, WorkspaceRef: ref, InstanceID: instance, HubToken: "test-token"}
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: instance}}
+	}, upstream.Client())
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	store := hubcore.NewSessionPreferencesStore(filepath.Join(t.TempDir(), "index.db"))
+	hubID, err := store.HubID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.SetManager(ref, hubID, true); err != nil {
+		t.Fatal(err)
+	}
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), SessionPreferences: store}
+	server := appserver.NewServer(appserver.ServerConfig{})
+	relays := newHubRelayFunctions(server, cfg, sources)
+	owner := &sessionOperations{cfg: cfg, sources: sources, relays: relays, server: server}
+	binding := &boundSessionOperations{owner: owner, local: source, binding: appwire.SessionBinding{Ref: ref, InstanceID: instance, HubID: hubID, BindingID: "binding"}}
+	parsed, err := appwire.ParseRef(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observer, err := source.AcquireRelaySession(parsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer observer.Close()
+	notifications, err := observer.Listen(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed := make(chan struct{}, 1)
+	go func() {
+		for delivery := range notifications {
+			delivery.Acknowledge()
+			if delivery.Notification.Method == appwire.NotifyThreadStatusChanged {
+				select {
+				case observed <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}()
+	// The real upstream snapshot is already captured, but its canonical handoff
+	// has not committed. Change the state once, before this watch can listen.
+	owner.relays.readThread = func(ctx context.Context, source appsource.Source, p appwire.ThreadReadParams) (*hubThreadReadResult, error) {
+		read, err := relays.readThread(ctx, source, p)
+		if err == nil {
+			daemon.SetProcessingTurn("turn-at-snapshot-boundary")
+		}
+		return read, err
+	}
+	updates, err := binding.Watch(ctx, appwire.SessionWatchRequest{Ref: ref, Events: []string{"status"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case update := <-updates:
+		if update.Snapshot == nil {
+			t.Fatalf("missing initial snapshot: %+v", update)
+		}
+		if update.Snapshot.Thread.Status.Type == appwire.ThreadStatusActive {
+			t.Fatal("initial snapshot already contains the boundary transition")
+		}
+	case <-ctx.Done():
+		t.Fatal("missing initial snapshot")
+	}
+	select {
+	case <-observed:
+	case <-ctx.Done():
+		t.Fatal("concurrent observer lost transition")
+	}
+	select {
+	case update := <-updates:
+		if update.Notification == nil || update.Notification.Method != appwire.NotifyThreadStatusChanged {
+			t.Fatalf("missing boundary status: %+v", update)
+		}
+		var status appwire.ThreadStatusChangedParams
+		if err := json.Unmarshal(update.Notification.Params, &status); err != nil || status.Status.Type != appwire.ThreadStatusActive || status.Ref != ref {
+			t.Fatalf("boundary status=%+v err=%v", status, err)
+		}
+	case <-ctx.Done():
+		t.Fatal("snapshot-to-listener transition lost without a second transition")
+	}
+	if n := daemon.AppServer().SubscriberCount(ref); n != 1 {
+		t.Fatalf("upstream subscriptions=%d, want one canonical subscription", n)
 	}
 }
 
@@ -448,6 +553,153 @@ func TestManagerAdmissionRealToolRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertManagerRequestSurface(t, adapter.requests[len(adapter.requests)-1], false)
+}
+
+func TestSessionToolsRuntimeIdentityReplacement(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	workDir := t.TempDir()
+	newRuntime := func(workspace string) (*agent.Session, *managerReadAdapter) {
+		t.Helper()
+		adapter := &managerReadAdapter{}
+		client := llm.NewClient()
+		client.Register(adapter)
+		session, err := agent.NewSession(client, provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), agent.SessionConfig{WorkspaceID: workspace, StateDir: t.TempDir(), Sandbox: "off"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(session.Close)
+		adapter.ref = "local:" + session.WorkspaceID()
+		return session, adapter
+	}
+	first, firstAdapter := newRuntime("")
+	ref := "local:" + first.WorkspaceID()
+	var current atomic.Pointer[agent.Session]
+	current.Store(first)
+	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "test-token"})
+	defer daemon.Close()
+	daemon.SetSessionTools(current.Load)
+	setIdentity := func(session *agent.Session) {
+		t.Helper()
+		identity, err := daemonserver.PrepareAppIdentityForRef("local", session.ID(), ref, session.TranscriptPath())
+		if err != nil {
+			t.Fatal(err)
+		}
+		daemon.ReplaceAppIdentity(identity, nil)
+		daemon.SetStatus(daemonserver.StatusInfo{SessionID: session.ID(), State: "idle", WorkingDir: workDir})
+		daemon.WireTranscriptHistory(session)
+	}
+	setIdentity(first)
+	sockets := make(chan struct{}, 4)
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
+	upstream.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateHijacked {
+			sockets <- struct{}{}
+		}
+	}
+	upstream.Start()
+	defer upstream.Close()
+	var entry atomic.Pointer[rendezvous.Entry]
+	setEntry := func(session *agent.Session) {
+		entry.Store(&rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: upstream.URL, SourceID: "local", ThreadID: session.ID(), SessionID: session.ID(), WorkspaceRef: ref, InstanceID: session.ID(), HubToken: "test-token", WorkingDir: workDir})
+	}
+	setEntry(first)
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		e := *entry.Load()
+		return []appsource.LocalDaemonEntry{{Entry: e, SessionID: e.SessionID}}
+	}, upstream.Client())
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	store := hubcore.NewSessionPreferencesStore(filepath.Join(t.TempDir(), "index.db"))
+	hubID, err := store.HubID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := store.SetManager(ref, hubID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), SessionPreferences: store}
+	web := NewWebServer(cfg)
+	_ = newHubAppServerWithNavigation(cfg, sources, web.navigation, web.resolveTopLevelSessionRef)
+	life, stop := context.WithCancel(ctx)
+	var workers sync.WaitGroup
+	defer func() { stop(); workers.Wait() }()
+	startSessionTools(life, sources, func(f func()) { workers.Go(f) })
+	parsed, _ := appwire.ParseRef(ref)
+	lease, err := source.AcquireRelaySession(parsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Close()
+	read := func() {
+		t.Helper()
+		snapshot, err := lease.Read(ctx, appwire.ThreadReadParams{Ref: ref})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !snapshot.Handoff.Commit() {
+			t.Fatal("snapshot commit failed")
+		}
+	}
+	read()
+	select {
+	case <-sockets:
+	case <-ctx.Done():
+		t.Fatal("initial transport missing")
+	}
+	if _, err := first.ProcessInput(ctx, "read through original binding", nil); err != nil {
+		t.Fatal(err)
+	}
+	assertManagerRequestSurface(t, firstAdapter.requests[0], true)
+	replacement, replacementAdapter := newRuntime(first.WorkspaceID())
+	if replacement.ID() == first.ID() {
+		t.Fatal("runtime identity was not replaced")
+	}
+	current.Store(replacement)
+	setIdentity(replacement)
+	setEntry(replacement)
+	// Before any rebind, the old runtime must fail admission via the real getter.
+	if _, err := first.ProcessInput(ctx, "capture obsolete binding", nil); err != nil {
+		t.Fatal(err)
+	}
+	assertManagerRequestSurface(t, firstAdapter.requests[len(firstAdapter.requests)-1], false)
+	source.ReconcileSessionTools()
+	select {
+	case <-sockets:
+	case <-ctx.Done():
+		t.Fatal("replacement did not reconnect")
+	}
+	// The canonical owner reconnects with the replacement identity. A read is
+	// the handshake completion barrier, not a substituted Manager client.
+	read()
+	if _, err := replacement.ProcessInput(ctx, "discover and read replacement", nil); err != nil {
+		t.Fatal(err)
+	}
+	assertManagerRequestSurface(t, replacementAdapter.requests[0], true)
+	var useful bool
+	for _, message := range replacementAdapter.requests[len(replacementAdapter.requests)-1].Messages {
+		for _, part := range message.Content {
+			if part.ToolResult == nil {
+				continue
+			}
+			text, ok := part.ToolResult.Content.(string)
+			if !ok {
+				continue
+			}
+			var response appwire.SessionOperationResponse
+			if json.Unmarshal([]byte(text), &response) == nil && response.Read != nil && response.Read.Thread.Evener.InstanceID == replacement.ID() {
+				useful = true
+			}
+		}
+	}
+	if !useful {
+		t.Fatal("replacement did not complete a useful Manager status read")
+	}
+	after, err := store.Manager(ref)
+	if err != nil || after != saved {
+		t.Fatalf("replacement changed saved Manager setting: before=%+v after=%+v err=%v", saved, after, err)
+	}
 }
 
 func assertManagerRequestSurface(t *testing.T, request llm.Request, enabled bool) {
