@@ -1155,3 +1155,68 @@ func TestDocFile_ArtifactsRefuseASymlinkedSessionsDirectory(t *testing.T) {
 		t.Fatalf("a symlinked sessions directory served a file (status %d)", rec.Code)
 	}
 }
+
+// Names that merely begin with two dots are ordinary contained files, not
+// parent references, and must be served.
+func TestDocFile_ServesArtifactNamesBeginningWithDotDot(t *testing.T) {
+	web, _, session := docServeTestServer(t)
+	dir := artifactsDirOf(t, web, session)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"..report.md", "...notes.md"} {
+		content := []byte("dotdot " + name)
+		if err := os.WriteFile(filepath.Join(dir, name), content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		rec := docRawRequest(t, web, session, filepath.Join(dir, name))
+		if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), content) {
+			t.Fatalf("%q = %d %q, want the file", name, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// The state directory may sit under a symlinked ancestor (/var on macOS, for
+// one). The request path and the root are resolved the same way, so a real
+// artifact is not mistaken for an escape.
+func TestDocFile_ServesArtifactUnderASymlinkedAncestor(t *testing.T) {
+	realRoot := t.TempDir()
+	linkParent := t.TempDir()
+	linked := filepath.Join(linkParent, "root")
+	if err := os.Symlink(realRoot, linked); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	cwd := t.TempDir()
+	const session = "02wMz5Txv1C3Hut0M8GCeM"
+	proj := filepath.Join(linked, "projects", "project-doc-3333333333")
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID: session, UpdatedAt: time.Now(), OriginalPrompt: "doc session",
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: cwd},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := schema.SessionArtifactsDir(proj, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("through a linked ancestor")
+	target := filepath.Join(dir, "report.md")
+	if err := os.WriteFile(target, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(linked, "projects", "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Past: idx})
+	rec := docRawRequest(t, web, session, target)
+	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), content) {
+		t.Fatalf("symlinked-ancestor read = %d %q, want the file", rec.Code, rec.Body.String())
+	}
+}

@@ -720,11 +720,19 @@ func openArtifactsFile(stateDir, layout, abs, artifactsDir string) (*os.File, er
 	if err != nil {
 		return nil, err
 	}
-	rel, err := filepath.Rel(artifactsDir, realAbs)
-	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+	// The state directory may itself sit under a symlinked ancestor (macOS's
+	// /var, for one), while abs was resolved. Both sides are resolved so the
+	// relative path describes one spelling of the same tree.
+	realStateDir, err := filepath.EvalSymlinks(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	realArtifactsDir := filepath.Join(realStateDir, filepath.FromSlash(layout))
+	rel, err := filepath.Rel(realArtifactsDir, realAbs)
+	if err != nil || rel == "." || isParentPath(rel) {
 		return nil, fspaths.ErrPathEscapesRoot
 	}
-	current, err := os.OpenRoot(stateDir)
+	current, err := os.OpenRoot(realStateDir)
 	if err != nil {
 		return nil, err
 	}
@@ -744,10 +752,26 @@ func openArtifactsFile(stateDir, layout, abs, artifactsDir string) (*os.File, er
 		if openErr != nil {
 			return nil, openErr
 		}
+		// The open follows a link inside the enclosing root, so the directory
+		// it reached must be the one just inspected. A component swapped for a
+		// link between the two calls fails here instead of being followed into
+		// a sibling session.
+		opened, openedErr := next.Lstat(".")
+		if openedErr != nil || !os.SameFile(info, opened) {
+			next.Close() //nolint:errcheck // read-only traversal
+			return nil, fspaths.ErrPathEscapesRoot
+		}
 		current = next
 	}
 	defer current.Close() //nolint:errcheck // the opened file outlives this handle
 	return current.OpenFile(rel, os.O_RDONLY|docOpenNonblock, 0)
+}
+
+// isParentPath reports whether rel climbs out of its base directory. It tests
+// for a real parent segment, so a contained name that merely begins with two
+// dots, such as "..report.md" or ".../plan.md", is still served.
+func isParentPath(rel string) bool {
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // looksBinaryBytes reports whether a byte slice looks like binary content. A
