@@ -149,6 +149,9 @@ func resolveRef(ctx context.Context, dir, target string) (resolvedRef, error) {
 		}
 		return resolvedRef{ref: target, name: target, kind: refRevision}, nil
 	}
+	if branch, ok := strings.CutPrefix(target, "refs/heads/"); ok && exactRefNamesCommit(ctx, dir, "refs/remotes/origin/"+branch) {
+		return resolvedRef{ref: "refs/remotes/origin/" + branch, name: branch, kind: refRemoteBranch}, nil
+	}
 	switch {
 	case exactRefNamesCommit(ctx, dir, "refs/heads/"+target):
 		return resolvedRef{ref: "refs/heads/" + target, name: target, kind: refLocalBranch}, nil
@@ -288,7 +291,14 @@ func gitRefNamesBranch(ctx context.Context, dir, name string) (bool, error) {
 	if err := guardGitArg("ref", name); err != nil {
 		return false, err
 	}
-	return gitRefExists(ctx, dir, "refs/heads/"+name)
+	ref := name
+	if !strings.HasPrefix(ref, "refs/") {
+		ref = "refs/heads/" + ref
+	}
+	if !strings.HasPrefix(ref, "refs/heads/") {
+		return false, nil
+	}
+	return gitRefExists(ctx, dir, ref)
 }
 
 // gitRefExists reports whether ref exists in the clone at dir. Git's exit

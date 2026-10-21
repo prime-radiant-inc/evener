@@ -2743,6 +2743,28 @@ func TestAddMarketplace_QualifiedRefWinsOverNamespaceExpansion(t *testing.T) {
 	}
 }
 
+// A qualified branch is still a branch: refresh follows its tip rather than
+// treating the clone as pinned.
+func TestRefreshMarketplace_AQualifiedBranchFollowsItsTip(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "qualifiedbranch")
+	m := NewManager(t.TempDir())
+	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "refs/heads/main"})
+	if err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	advanceGitRepo(t, repo, "README.md", "main advanced")
+	nextTip := gitIn(t, repo, "rev-parse", "HEAD")
+	if err := m.RefreshMarketplace(context.Background(), "qualifiedbranch"); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != nextTip {
+		t.Fatalf("HEAD after refresh = %s, want the moved main tip %s", got, nextTip)
+	}
+}
+
 // A branch and a tracked path can share a name. Checkout guessing must not
 // decide which one wins: the recorded ref selects the branch even when git is
 // configured not to guess a branch for an ambiguous name.
