@@ -155,7 +155,8 @@ export async function openAnnotationStore(options: AnnotationStoreOptions): Prom
   return { factory, drafts, repository, key, document, preparation };
 }
 
-export interface AnnotationFixtureOptions extends Omit<AnnotationStoreOptions, "seed" | "targetFor"> {
+export interface AnnotationFixtureOptions
+  extends Omit<AnnotationStoreOptions, "seed" | "targetFor" | "onStorageSuccess" | "onPendingExpiryRetained"> {
   // Whether the drafts repository holds the ordinary row a real append needs.
   seedDraft?: boolean;
   prepareAnnotation?: () => Promise<ComposerPreparation | null>;
