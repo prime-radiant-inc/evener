@@ -78,10 +78,23 @@ function onPopState(): void {
 }
 window.addEventListener("popstate", onPopState);
 
-observeRouteHistory((previousState, nextState, previousURL, nextURL) => {
+observeRouteHistory((previousState, nextState, previousURL, nextURL, transition) => {
   const previousToken = tokenAt(previousState);
   const previousEntryId = routeHistoryEntryId(previousState);
   const previousIndex = branchIndex(previousToken, previousURL, previousEntryId);
+  if (transition === "replace") {
+    if (previousIndex >= 0) {
+      const nextToken = tokenAt(nextState);
+      branch[previousIndex] = {
+        token: nextToken?.generation === generation ? nextToken : null,
+        routeEntryId: routeHistoryEntryId(nextState),
+        url: nextURL,
+      };
+      cursor = previousIndex;
+      retainBranchEntries();
+    }
+    return;
+  }
   if (previousIndex >= 0) {
     cursor = previousIndex;
   } else if (previousToken?.generation === generation && entries.has(key(previousToken))) {

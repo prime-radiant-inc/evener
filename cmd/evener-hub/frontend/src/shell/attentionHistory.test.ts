@@ -11,7 +11,7 @@ import {
 } from "./attentionHistory";
 import { conversationPaneLifetime } from "./paneLifetime";
 import { type PaneDescriptor, type PaneProps, registerPaneForTests } from "./paneRegistry";
-import { openSessionRoute } from "./routing";
+import { navigate, openSessionRoute } from "./routing";
 import { type OpenPaneRecord, presentedPanes, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 function fixtureDescriptor<P>(
@@ -391,6 +391,90 @@ test("an ordinary route between attention hops keeps still-reachable parked read
   expect(conversationPaneLifetime(a)).toBe(lifetimeA);
   expect(retainedTranscriptReadView(lifetimeA, "local:a", "session")).toBe(readViewA);
   expect(readViewB.alive).toBe(true);
+});
+
+test("ordinary replacement between attention hops keeps the Back-reachable reader", async () => {
+  history.replaceState({}, "", "/s/local%3Aa");
+  workspaceStore.getState().openPane("session", { ref: "local:a" });
+  const a = openedRef("local:a");
+  if (!a) throw new Error("A reader missing");
+  const lifetimeA = conversationPaneLifetime(a);
+  const readViewA = retainedTranscriptReadView(lifetimeA, "local:a", "session");
+
+  openAttentionSession("local:b");
+  navigate("/s/local%3Ax", { replace: true });
+  workspaceStore.getState().openPane("session", { ref: "local:x" });
+  openAttentionSession("local:c");
+
+  expect(workspaceStore.getState().panes).toContain(a);
+  expect(lifetimeA.alive).toBe(true);
+  expect(readViewA.alive).toBe(true);
+  const backToX = expectPop();
+  history.back();
+  await backToX;
+  const backToA = expectPop();
+  history.back();
+  await backToA;
+  expect(location.pathname).toBe("/s/local%3Aa");
+  expect(restoreCurrentAttentionEntry()).toBe(true);
+  expect(workspaceStore.getState().panes).toContain(a);
+  expect(conversationPaneLifetime(a)).toBe(lifetimeA);
+  expect(retainedTranscriptReadView(lifetimeA, "local:a", "session")).toBe(readViewA);
+});
+
+test("replace preserves Back and Forward readers, then a push prunes only Forward readers", async () => {
+  history.replaceState({}, "", "/s/local%3Aa");
+  const aId = workspaceStore.getState().openPane("session", { ref: "local:a" });
+  const a = openedRef("local:a");
+  if (!a) throw new Error("A reader missing");
+  const lifetimeA = conversationPaneLifetime(a);
+  const readViewA = retainedTranscriptReadView(lifetimeA, "local:a", "session");
+
+  openAttentionSession("local:b");
+  openAttentionSession("local:c");
+  const c = openedRef("local:c");
+  if (!c) throw new Error("C reader missing");
+  const lifetimeC = conversationPaneLifetime(c);
+  const readViewC = retainedTranscriptReadView(lifetimeC, "local:c", "session");
+  const cToken = history.state.__evenerAttention;
+  const backToB = expectPop();
+  history.back();
+  await backToB;
+  expect(restoreCurrentAttentionEntry()).toBe(true);
+
+  navigate("/s/local%3Ax", { replace: true });
+  workspaceStore.getState().openPane("session", { ref: "local:x" });
+  expect(history.state).not.toHaveProperty("__evenerAttention");
+  const forwardToC = expectPop();
+  history.forward();
+  await forwardToC;
+  expect(history.state.__evenerAttention).toEqual(cToken);
+  expect(workspaceStore.getState().panes).toContain(c);
+  expect(conversationPaneLifetime(c)).toBe(lifetimeC);
+  expect(retainedTranscriptReadView(lifetimeC, "local:c", "session")).toBe(readViewC);
+
+  const backToX = expectPop();
+  history.back();
+  await backToX;
+  openSessionRoute("local:d");
+  workspaceStore.getState().openPane("session", { ref: "local:d" });
+  expect(workspaceStore.getState().panes).not.toContain(c);
+  expect(lifetimeC.alive).toBe(false);
+  expect(readViewC.alive).toBe(false);
+  expect(workspaceStore.getState().panes).toContain(a);
+  expect(lifetimeA.alive).toBe(true);
+  expect(readViewA.alive).toBe(true);
+
+  const backToXAgain = expectPop();
+  history.back();
+  await backToXAgain;
+  const backToA = expectPop();
+  history.back();
+  await backToA;
+  expect(restoreCurrentAttentionEntry()).toBe(true);
+  expect(workspaceStore.getState().focusedPaneId).toBe(aId);
+  expect(conversationPaneLifetime(a)).toBe(lifetimeA);
+  expect(retainedTranscriptReadView(lifetimeA, "local:a", "session")).toBe(readViewA);
 });
 
 test("a repeated ordinary URL does not prune parked attention entries behind the second occurrence", async () => {

@@ -12,7 +12,7 @@ import type { PaneTypeId } from "./paneRegistry";
 
 const ROUTE_ENTRY_KEY = "__evenerRouteEntry";
 
-/** The per-push identity for an app-built history entry, if this state has one. */
+/** The per-entry identity for an app-built history entry, if this state has one. */
 export function routeHistoryEntryId(state: unknown): string | null {
   if (!state || typeof state !== "object") return null;
   const id = (state as Record<string, unknown>)[ROUTE_ENTRY_KEY];
@@ -160,10 +160,16 @@ function splitURL(target: string): { path: string; search: string; hash: string 
  * two modules importing each other. */
 export const HOST_QUERY_PARAM = "host";
 
-type RouteHistoryObserver = (previousState: unknown, nextState: unknown, previousURL: string, nextURL: string) => void;
+type RouteHistoryObserver = (
+  previousState: unknown,
+  nextState: unknown,
+  previousURL: string,
+  nextURL: string,
+  transition: "push" | "replace",
+) => void;
 const routeHistoryObservers = new Set<RouteHistoryObserver>();
 
-/** Observe accepted app pushes without becoming a second navigation authority. */
+/** Observe accepted app history changes without becoming a second navigation authority. */
 export function observeRouteHistory(observer: RouteHistoryObserver): () => void {
   routeHistoryObservers.add(observer);
   return () => routeHistoryObservers.delete(observer);
@@ -255,8 +261,8 @@ export function navigate(
   };
   if (options.replace) window.history.replaceState(state, "", target);
   else window.history.pushState(state, "", target);
-  if (!options.replace) {
-    for (const observer of routeHistoryObservers) observer(priorState, state, current, target);
+  for (const observer of routeHistoryObservers) {
+    observer(priorState, state, current, target, options.replace ? "replace" : "push");
   }
   // Mirror the settings selection onto the route the app just chose, before any
   // listener runs: an app-built navigation drops a remote selection it leaves

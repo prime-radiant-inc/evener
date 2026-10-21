@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { navigate, openSessionRoute, paneToURL, routeHistoryEntryId, urlToPane } from "./routing";
+import { navigate, observeRouteHistory, openSessionRoute, paneToURL, routeHistoryEntryId, urlToPane } from "./routing";
 
 beforeEach(() => {
   window.history.pushState({}, "", "/");
@@ -180,6 +180,22 @@ test("navigate dispatches a popstate event so same-tab listeners can react", () 
   navigate("/new");
   window.removeEventListener("popstate", handler);
   expect(handler).toHaveBeenCalledTimes(1);
+});
+
+test("navigate reports replacement as an in-place history change, not a push", () => {
+  const observer = vi.fn();
+  const unobserve = observeRouteHistory(observer);
+  const initialLength = history.length;
+  const previousState = history.state;
+  try {
+    navigate("/new", { replace: true });
+  } finally {
+    unobserve();
+  }
+  expect(history.length).toBe(initialLength);
+  expect(observer).toHaveBeenCalledTimes(1);
+  expect(observer).toHaveBeenCalledWith(previousState, history.state, "/", "/new", "replace");
+  expect(routeHistoryEntryId(history.state)).not.toBeNull();
 });
 
 test("navigate is a no-op when already at the target pathname", () => {
