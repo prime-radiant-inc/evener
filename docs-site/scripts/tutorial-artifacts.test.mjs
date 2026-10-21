@@ -31,6 +31,16 @@ test('publication accepts historical provenance but current candidates reject so
  const later=await checkTutorialAssets({root:f.repo,assetRoot:f.root,publication:f.publication});
  assert.equal(later.current,false,'a capture from an older tree reports stale without failing');
 });
+test('publication distinguishes revision drift from relevant source drift',async t=>{
+ const f=await fixture(t);
+ f.git('-c','user.name=Test','-c','user.email=test@example.invalid','commit','--allow-empty','-qm','unrelated');
+ const unrelated=await checkTutorialAssets({root:f.repo,assetRoot:f.root,publication:f.publication});
+ assert.equal(unrelated.current,false);
+ assert.equal(unrelated.sourceCurrent,true);
+ await writeFile(join(f.repo,'go.mod'),'module changed\n');
+ const changed=await checkTutorialAssets({root:f.repo,assetRoot:f.root,publication:f.publication});
+ assert.equal(changed.sourceCurrent,false);
+});
 const mutations={
  'missing row':f=>f.manifest.rows.pop(),
  'missing image':f=>rm(join(f.root,f.manifest.rows[0].file)),
