@@ -84,8 +84,8 @@ type RemoteHubSource struct {
 	// predecessor's unsubscribe for the same remote thread. subMu is always
 	// taken inside it, never the other way around.
 	remoteMu sync.Mutex
-	// facts is the optional component-04 preflight seam for the facts AppWire
-	// cannot report on an already-initialized connection (see HostFacts).
+	// facts supplies captured connection metadata and platform facts without
+	// reinitializing the channel (see HostFacts).
 	facts HostFactsFunc
 	// handshake is the optional component-04 attach-handshake seam: the
 	// InitializeResponse the live channel captured at attach, reached by host name

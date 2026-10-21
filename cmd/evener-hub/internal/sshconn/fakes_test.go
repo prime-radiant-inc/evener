@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -19,11 +20,12 @@ import (
 // fakeRunner records every call and delegates to injected functions. Production
 // execRunner is deliberately excluded from the default unit tests.
 type fakeRunner struct {
-	mu      sync.Mutex
-	runs    [][]string
-	starts  [][]string
-	runFn   func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error)
-	startFn func(ctx context.Context, argv []string, stderr io.Writer) (Stdio, error)
+	mu               sync.Mutex
+	runs             [][]string
+	starts           [][]string
+	protocolRefusals int
+	runFn            func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error)
+	startFn          func(ctx context.Context, argv []string, stderr io.Writer) (Stdio, error)
 }
 
 func (f *fakeRunner) Run(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
@@ -56,6 +58,34 @@ func (f *fakeRunner) recordedStarts() [][]string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([][]string(nil), f.starts...)
+}
+
+// requireProtocolUpgrade makes the remote process reject initialize until a
+// successful binary push or installer invocation. Deployment fixtures use this
+// positive live evidence rather than a difference in build labels.
+func requireProtocolUpgrade(t *testing.T, f *fakeRunner) {
+	t.Helper()
+	var installed atomic.Bool
+	run, start := f.runFn, f.startFn
+	f.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		out, err := run(ctx, argv, stdin)
+		joined := strings.Join(argv, " ")
+		if err == nil && (strings.Contains(joined, `mv "$tmp"`) || strings.Contains(joined, "evener-install.XXXXXX")) {
+			installed.Store(true)
+		}
+		return out, err
+	}
+	f.startFn = func(ctx context.Context, argv []string, stderr io.Writer) (Stdio, error) {
+		if installed.Load() {
+			return start(ctx, argv, stderr)
+		}
+		f.mu.Lock()
+		f.protocolRefusals++
+		f.mu.Unlock()
+		b := newFakeBridge("evener-appwire-v5")
+		t.Cleanup(func() { _ = b.stdio.Kill() })
+		return b.stdio, nil
+	}
 }
 
 // fakeStdio is an in-memory Stdio. Stdout is fed by a fakeBridge server; Stdin
@@ -116,6 +146,14 @@ func newFakeBridge(initProtocol string) *fakeBridge {
 	}
 	go b.serve(inR, outW)
 	return b
+}
+
+func protocolMismatchBridge(mismatch bool) Stdio {
+	protocol := appwire.ProtocolVersion
+	if mismatch {
+		protocol = "evener-appwire-v4"
+	}
+	return newFakeBridge(protocol).stdio
 }
 
 // newSilentBridge models a hub whose AppWire handshake never answers: it drains

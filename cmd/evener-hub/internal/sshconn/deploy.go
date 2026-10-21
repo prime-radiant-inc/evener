@@ -43,8 +43,8 @@ const deployTempSuffix = ".tmp."
 // Unlike every runtime build target, it does not inherit build-web as a
 // prerequisite (make/building.mk:32,124), so it verifies the embedded SPA was
 // actually built before compiling: otherwise the deployed binary would embed the
-// tracked placeholder and serve the documented 503, and version auto-match could
-// not detect it because it compares only buildinfo.GitSHA.
+// tracked placeholder and serve the documented 503, which build identity
+// verification cannot detect.
 func localBuild(ctx context.Context, source, goos, goarch, out string) error {
 	root, err := verifyBuildSource(source)
 	if err != nil {
@@ -169,8 +169,8 @@ func ValidateBuildSource(source string) (string, error) {
 // verifyBuildRevision makes the deployed binary's version stamp honest. The
 // builder stamps this process's own buildinfo into whatever the source checkout
 // compiles, so a checkout at a different revision would install code that reports
-// the controller's version while running something else — version auto-match
-// would then accept it. When this process carries a GitSHA, the source checkout's
+// the controller's version while running something else, passing deployment
+// identity checks. When this process carries a GitSHA, the source checkout's
 // HEAD must resolve to that same commit; otherwise the build is refused. An
 // unstamped (dev) controller has no revision to match and is skipped.
 func verifyBuildRevision(root string) error {
@@ -183,7 +183,7 @@ func verifyBuildRevision(root string) error {
 	// exactly the controller's version ("<sha>-dirty") while the source tree it
 	// compiled may carry a different set of uncommitted changes. HEAD equality
 	// below cannot see that difference, so refuse rather than install code that
-	// version auto-match cannot verify.
+	// deployment identity checks cannot verify.
 	if strings.TrimSpace(buildinfo.GitDirty) == "true" {
 		return fmt.Errorf("this controller was built from a dirty tree (version %q); the build source %q cannot be verified to match it, so refusing to deploy", buildinfo.Version(), root)
 	}
@@ -200,8 +200,8 @@ func verifyBuildRevision(root string) error {
 	}
 	// HEAD equality does not pin the code: the builder compiles the working tree,
 	// so a modified or untracked file at that same commit produces a different
-	// binary that still reports this controller's clean version, and version
-	// auto-match would accept it. Require a clean worktree.
+	// binary that still reports this controller's clean version and passes
+	// deployment identity checks. Require a clean worktree.
 	status, err := gitStatus(root)
 	if err != nil {
 		return fmt.Errorf("build source %q: cannot read its working-tree status to check it against this controller's build %q: %w", root, want, err)
@@ -282,7 +282,7 @@ func declaresEvenerModule(dir string) bool {
 // executable. Such a build has no reproducible identity: the push path refuses
 // to compile a tree it cannot prove matches this process (verifyBuildRevision),
 // the installer fallback has no published artifact to pin (installerRefFor), and
-// version auto-match cannot tell an operator-named artifact built from another
+// build labels cannot tell an operator-named artifact built from another
 // dirty tree at the same commit apart from this controller's build — "<sha>-dirty"
 // is not an identity. Only a source whose bytes ARE this controller's build
 // (Options.OwnExecutable: the hub's own executable, the file this process was
@@ -302,8 +302,8 @@ var errControllerDirty = errors.New("sshconn: controller build is a dirty tree")
 // build's identity. The refusal is terminal rather than ErrDeploy: retrying
 // re-pushes the same artifact, so the supervisor would loop forever while the host
 // was never attached (the same mistake round thirteen records for the
-// dirty-controller refusal). Attaching instead would serve a build version
-// auto-match exists to prevent.
+// dirty-controller refusal). Attaching instead would claim success for a
+// deployment that did not install the requested build.
 //
 // It is judged only where a deploy ran. A pass that merely started or restarted
 // the hub launched the build already on disk, and the host is allowed to keep that
@@ -317,7 +317,7 @@ var errDeployUnstamped = errors.New("sshconn: deployed build is not stamped by t
 // run target. Both are non-empty on success, so the restart, health re-probe, and
 // attach paths address the binary that was actually installed instead of a bare
 // `evener` a fresh host's non-interactive PATH may not carry.
-func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
+func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight, beforeWrite func(string) error) (string, error) {
 	// Deploying turned off wins over every deploy source: a hub started with
 	// -no-deploy installs nothing on a host, not even through the installer
 	// fallback a release or snapshot controller would otherwise use. The attach
@@ -327,16 +327,15 @@ func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight
 		return "", fmt.Errorf("%w: host %q: this controller was started with deploying disabled, so it will not install a build on any host; %s",
 			errDeployDisabled, host.Name, m.deployHelp())
 	}
-	// A dirty controller cannot install a build it cannot reproduce. deployRequired
-	// forces this deploy for an unverifiable version (a dirty "<sha>-dirty" is not
-	// an identity: another dirty checkout at the same commit reports it too), and
-	// attaching instead of deploying would silently serve a build version
-	// auto-match cannot verify.
+	// A dirty controller cannot install a build it cannot reproduce. A dirty
+	// "<sha>-dirty" label is not an identity: another dirty checkout at the same
+	// commit reports it too. This gate applies only when installation is needed
+	// or explicitly requested; compatible Connect does not reach it.
 	//
 	// Only the controller's own executable (Options.OwnExecutable) is exempt, and
 	// it is exempt on identity, not convenience: those bytes ARE the build this
 	// controller runs, so installing them needs no reproduction proof and leaves
-	// nothing for version auto-match to prove. Every other source is refused:
+	// nothing for a reproducibility check to prove. Every other source is refused:
 	// compiling a checkout requires proving it reproduces the running "<sha>-dirty"
 	// tree, which cannot be done; the installer fallback has no published artifact
 	// to pin; and an operator-named artifact cannot be told apart from a foreign
@@ -373,7 +372,7 @@ func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight
 	// the push — -build-source cross-compiles, and an explicitly named artifact
 	// keeps its own terminal mismatch refusal, which names the flag to fix.
 	if m.canBuild() && !m.ownExecutableCannotServe(facts) {
-		return m.deployPush(ctx, host, facts)
+		return m.deployPush(ctx, host, facts, beforeWrite)
 	}
 	if m.ownExecutableCannotServe(facts) {
 		// The only source is the own executable, the host runs another target, and
@@ -388,9 +387,9 @@ func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight
 			return "", fmt.Errorf("%w: host %q: this controller's own executable targets %s/%s but the host runs %s/%s, and the installer fallback has no published artifact to pin for this controller's build (a dev or dirty controller has none, and a release needs a stamped tag); %s",
 				errOwnExecutableCannotServe, host.Name, runtime.GOOS, runtime.GOARCH, facts.OS, facts.Arch, m.deployHelp())
 		}
-		return m.deployInstaller(ctx, host, facts)
+		return m.deployInstaller(ctx, host, facts, beforeWrite)
 	}
-	return m.deployInstaller(ctx, host, facts)
+	return m.deployInstaller(ctx, host, facts, beforeWrite)
 }
 
 // TargetMatches reports whether a build for buildOS/buildArch can serve a host
@@ -435,7 +434,7 @@ func (m *Manager) ownExecutableCannotServe(facts Preflight) bool {
 // on a fresh host that target is the installer default ~/.local/bin/evener, and
 // discarding it left the manager probing the literal `evener`, which the
 // non-interactive PATH cannot resolve.
-func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
+func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Preflight, beforeWrite func(string) error) (string, error) {
 	target, err := m.deployTarget(ctx, host, facts)
 	if err != nil {
 		return "", err
@@ -476,6 +475,11 @@ func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Prefl
 	info, err := f.Stat()
 	if err != nil {
 		return "", fmt.Errorf("%w: host %q stat staged binary: %w", ErrDeploy, host.Name, err)
+	}
+	if beforeWrite != nil {
+		if err := beforeWrite(target); err != nil {
+			return "", err
+		}
 	}
 	if err := m.pushBinary(ctx, host, target, f, info.Size()); err != nil {
 		return "", err
@@ -892,7 +896,7 @@ func DeployRunTargetFor(host hostreg.Host, home string) (string, error) {
 // expected build before any restart or attach. A tag that resolves to a wrong or
 // moved artifact is a failed verification (a terminal ErrVersionMismatch), never
 // a retry of the same pinned ref and never an attach.
-func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
+func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts Preflight, beforeWrite func(string) error) (string, error) {
 	ref, err := installerRefFor(buildinfo.BuildChannel(), buildinfo.ReleaseTag, buildinfo.GitDirty, m.installerRemedy())
 	if err != nil {
 		return "", err
@@ -913,6 +917,11 @@ func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts 
 	bindir, shareBindir, runTarget, err := installerDirs(host, facts)
 	if err != nil {
 		return "", err
+	}
+	if beforeWrite != nil {
+		if err := beforeWrite(runTarget); err != nil {
+			return "", err
+		}
 	}
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remoteinstall.Command(ref, "", bindir, shareBindir)), bytes.NewReader(remoteinstall.Script))
 	if err != nil {

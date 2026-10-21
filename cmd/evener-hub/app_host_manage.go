@@ -201,8 +201,12 @@ type hostManagerConfig struct {
 	// production they are the sshconn Manager's DeployForOperation and
 	// RestartForOperation; a nil pair (tests, embedders) fails the operation's
 	// worker with the refusal the missing seam means.
-	deployHost  func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight) (string, sshconn.Preflight, error)
-	restartHost func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight) error
+	deployHost  func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight, restart bool, beforeMutation func() error) (string, sshconn.Preflight, error)
+	restartHost func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight, beforeMutation func() error) (string, error)
+	// recoverDeployment renews and recovers an unfinished deployment or saved
+	// command before Restart attaches. Execution revalidates the bound entry
+	// before each mutation phase. Nil result leaves ordinary attach-first intact.
+	recoverDeployment func(context.Context, hostreg.Host, hostops.Holder, func() error) (*sshconn.RestartResult, error)
 	// attachedFacts returns the attached channel's captured preflight facts —
 	// the deploy path's facts source, since deploy runs no fresh preflight of
 	// its own (§6 step 3), and the attach-first restart's probe source. Nil
@@ -1526,6 +1530,9 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		// unit decision and the proven-replacement wait — run by the worker
 		// under the same gate.
 		m.cfg.restartHost = manager.RestartForOperation
+	}
+	if m.cfg.recoverDeployment == nil && manager != nil {
+		m.cfg.recoverDeployment = manager.RecoverDeploymentForRestart
 	}
 	if m.cfg.attachUnderGate == nil && manager != nil {
 		// The production operation-owned reattach (§6 seam (d)): the manager's

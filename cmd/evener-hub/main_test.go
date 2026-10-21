@@ -3,6 +3,7 @@ package hub
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -695,27 +696,50 @@ func TestRunMainPreparesRuntimeDirectoryBeforeRequests(t *testing.T) {
 	}
 }
 
-// TestRemoteHostFactsReportRestartedHubVersion pins that a channel whose
-// preflight facts predate a version-mismatch redeploy reports the build the
-// host hub was restarted from, not the stale pre-deploy version. sshconn keeps
-// the pre-deploy facts on the attached channel, so the old code reported the
-// host's old build while Features came from the new hub.
-func TestRemoteHostFactsReportRestartedHubVersion(t *testing.T) {
-	pf := sshconn.Preflight{
-		Protocol: "1",
-		Version:  "host-build-before-redeploy",
-		OS:       "linux",
-		Arch:     "amd64",
+func TestRemoteHostFactsUseLiveBuild(t *testing.T) {
+	var handshake appwire.InitializeResponse
+	if err := json.Unmarshal([]byte(`{"protocolVersion":"live-protocol","serverInfo":{"version":"package-build","buildVersion":"remote-build-a"}}`), &handshake); err != nil {
+		t.Fatal(err)
 	}
-	got := remoteHostFacts(pf, appwire.FeatureSet{ThreadList: true})
-	if got.HubVersion != buildinfo.Version() {
-		t.Fatalf("HubVersion = %q, want %q: the attached hub runs the controller's deployed build", got.HubVersion, buildinfo.Version())
+	client := &appwire.Client{}
+	channel := stubAttachedChannel{
+		client: client,
+		preflight: sshconn.Preflight{
+			Protocol: "disk-protocol", Version: "disk-build", OS: "linux", Arch: "amd64",
+		},
+		handshake: handshake,
 	}
-	if got.ProtocolVersion != "1" || got.OS != "linux" || got.Arch != "amd64" {
-		t.Fatalf("preflight fields = %+v, want protocol/OS/arch preserved", got)
+	got, err := remoteHostFactsForChannel(channel, "alpha", client)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !got.Features.ThreadList {
-		t.Fatalf("Features = %+v, want the client's advertised set", got.Features)
+	if got.HubVersion != "remote-build-a" {
+		t.Errorf("live build = %q", got.HubVersion)
+	}
+	if got.ProtocolVersion != "live-protocol" || got.OS != "linux" || got.Arch != "amd64" {
+		t.Errorf("host facts = %+v, want live protocol and disk system facts", got)
+	}
+	if got := remoteHostFacts(channel.preflight, handshake, appwire.FeatureSet{ThreadList: true}); !got.Features.ThreadList {
+		t.Fatalf("features = %+v, want the client's advertised set", got.Features)
+	}
+}
+
+func TestRemoteHostFactsUnknownBuildStaysUnknown(t *testing.T) {
+	client := &appwire.Client{}
+	channel := stubAttachedChannel{
+		client:    client,
+		preflight: sshconn.Preflight{Protocol: "disk-protocol", Version: "disk-build"},
+		handshake: appwire.InitializeResponse{
+			ProtocolVersion: "live-protocol",
+			ServerInfo:      appwire.ServerInfo{Version: "package-build"},
+		},
+	}
+	got, err := remoteHostFactsForChannel(channel, "alpha", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.HubVersion != "" {
+		t.Fatalf("invented build = %q", got.HubVersion)
 	}
 }
 

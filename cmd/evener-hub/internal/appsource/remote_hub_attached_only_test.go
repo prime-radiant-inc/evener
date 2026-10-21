@@ -71,13 +71,10 @@ func TestRemoteHubSourceUnattachedCallIsUnavailableWithoutDialing(t *testing.T) 
 }
 
 // The capability probe reads ProtocolVersion/SourceID/Features from the attach
-// handshake seam and OS/Arch/HubVersion from the preflight seam, over the
-// attached-only client: component 05, §"Capability probe". ProtocolVersion,
-// SourceID, and Features are handshake-only — the connection-scoped initialize
-// cannot be re-run on the already-initialized channel, and no other wire call
-// reports them. HubVersion is preflight-owned: the handshake's
-// ServerInfo.Version is the hub's package constant ("0.1.0"), not the running
-// build, so copying it would clobber the facts seam's buildinfo.Version().
+// handshake seam and OS/Arch/HubVersion from the facts seam, over the
+// attached-only client. The production facts adapter combines platform facts
+// with the captured ServerInfo.BuildVersion. ServerInfo.Version is the package
+// version, so copying it would clobber the facts seam's remote build identity.
 func TestHostCapabilitiesReadsAttachedHandshakeFacts(t *testing.T) {
 	client, _ := newScriptedClient(t, capabilityReply("gpt-x", "pl"))
 	source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
