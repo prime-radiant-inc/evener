@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/execsupport/orphanpipe"
+	"primeradiant.com/evener/identifier"
 )
 
 var (
@@ -40,10 +41,37 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	// Repository-selection variables (GIT_DIR, GIT_WORK_TREE, and friends) name
+	// an ambient repository that has nothing to do with the path this command
+	// operates on. Strip them so the command works on the repository its own
+	// directory or arguments name. Other Git configuration, credentials, hooks,
+	// and transports stay intact.
+	cmd.Env = append(identifier.FilteredGitEnvironment(os.Environ()), "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.CombinedOutput()
 	if err = orphanpipe.ChildErr(cmd, err); err != nil {
 		return "", fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, out)
+	}
+	return string(out), nil
+}
+
+// gitStdout answers with git's standard output alone, keeping diagnostic
+// writes to standard error (trace lines, warnings) out of the answer.
+func gitStdout(ctx context.Context, dir string, args ...string) (string, error) {
+	// Keep the same command shape as git: the transport guards, the same
+	// directory and environment, and the same cancellation behavior.
+	full := append([]string{"-c", "protocol.ext.allow=never", "-c", "protocol.fd.allow=never"}, args...)
+	cmd := exec.CommandContext(ctx, "git", full...)
+	cmd.Cancel = func() error { return terminateGit(cmd.Process) }
+	cmd.WaitDelay = 5 * time.Second
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	cmd.Env = append(identifier.FilteredGitEnvironment(os.Environ()), "GIT_TERMINAL_PROMPT=0")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err = orphanpipe.ChildErr(cmd, err); err != nil {
+		return "", fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, stderr.String())
 	}
 	return string(out), nil
 }

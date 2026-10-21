@@ -148,6 +148,21 @@ type ResolvedPolicy struct {
 	// exposes that content and nothing the credential denylist protects.
 	UnmaskedRoots []string
 
+	// ManagedContentRoots are the installed-plugin content roots among
+	// UnmaskedRoots. ManagedContentClean says the store completed a full audit
+	// with no Git metadata there, so both backends grant these roots without
+	// walking them for .git. User skills are never in this set.
+	ManagedContentRoots []string
+	ManagedContentClean bool
+	// managedContentRootsResolved holds each managed root's resolved spelling,
+	// so a symlinked config or store directory still matches the path a backend
+	// actually binds.
+	managedContentRootsResolved []string
+	// managedContentRootsOnDisk holds the filesystem's own case/Unicode spelling
+	// of each managed root, which APFS may return to a backend even when it
+	// differs from the configured spelling.
+	managedContentRootsOnDisk []string
+
 	// carveOutAt records where each of the UnmaskedRoots that existed at
 	// resolution resolved to (CarveOutResolvesTo holds it to that location).
 	carveOutAt map[string]string
@@ -467,17 +482,19 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 	worktree := layout.WorktreeRoot
 
 	rp := ResolvedPolicy{
-		Mode:          policy.Mode,
-		WriteBlocked:  policy.WriteBlocked,
-		Network:       netOn,
-		Backend:       backend,
-		CacheStrategy: cacheStrategyFor(policy.Mode, backend, host),
-		CacheRoots:    cacheRootsFor(policy.Mode, host, layout.WorktreeRoot),
-		SessionTmp:    true,
-		MaskedPaths:   masked,
-		Git:           layout,
-		resolveInputs: policy,
-		resolveHost:   host,
+		Mode:                policy.Mode,
+		WriteBlocked:        policy.WriteBlocked,
+		Network:             netOn,
+		Backend:             backend,
+		CacheStrategy:       cacheStrategyFor(policy.Mode, backend, host),
+		CacheRoots:          cacheRootsFor(policy.Mode, host, layout.WorktreeRoot),
+		SessionTmp:          true,
+		MaskedPaths:         masked,
+		Git:                 layout,
+		ManagedContentRoots: host.EvenerManagedContentRoots,
+		ManagedContentClean: host.EvenerManagedContentClean,
+		resolveInputs:       policy,
+		resolveHost:         host,
 	}
 	rp.FileTool, rp.Spawned = scopesFor(policy, host, layout, worktree)
 	rp.configMasks = configMasks
@@ -493,6 +510,8 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 	}
 	rp.UnmaskedRoots, rp.carveOutAt = unmaskedContentRoots(host.EvenerContentRoots, masked, configMasks,
 		slices.Concat(rp.FileTool.WriteRoots, rp.Spawned.WriteRoots), host.Home, worktree, host.OS == "darwin")
+	rp.managedContentRootsResolved = resolveRootSpellings(rp.ManagedContentRoots)
+	rp.managedContentRootsOnDisk = onDiskRootSpellings(rp.ManagedContentRoots)
 
 	// Fail-closed invariant: never grant a root that is at or under a masked path.
 	// Read roots are filtered against the whole mask, carve-outs included: a
@@ -517,6 +536,61 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 
 	rp.ToolchainBinDir = toolchainBinDir(host, rp, worktree)
 	return rp, nil
+}
+
+// ManagedWalkExempt reports whether path is exactly one of the managed content
+// roots, in its lexical, resolved, or recorded on-disk spelling, whose
+// completed audit allows the per-spawn .git walk to be skipped. Identity is
+// compared rather than a prefix so a user-skills root whose target happens to
+// sit inside a managed subtree keeps its own walk.
+func (rp ResolvedPolicy) ManagedWalkExempt(path string) bool {
+	if !rp.ManagedContentClean {
+		return false
+	}
+	path = StripDataVolumeAlias(filepath.Clean(path))
+	for _, roots := range [][]string{rp.ManagedContentRoots, rp.managedContentRootsResolved, rp.managedContentRootsOnDisk} {
+		for _, root := range roots {
+			if root != "" && StripDataVolumeAlias(filepath.Clean(root)) == path {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// onDiskRootSpellings returns each managed root's filesystem spelling through
+// its existing ancestors, which is the spelling unmaskedContentRoots also
+// admits for a carve-out on APFS.
+func onDiskRootSpellings(roots []string) []string {
+	return rootSpellings(roots, func(root string) string {
+		return onDiskSpelling(resolveExistingPrefix(root))
+	})
+}
+
+func rootSpellings(roots []string, transform func(string) string) []string {
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		if spelled := transform(root); spelled != "" {
+			out = append(out, spelled)
+		}
+	}
+	return out
+}
+
+// resolveRootSpellings returns each root's resolved spelling through whatever
+// ancestors exist, so a root created after resolution is still matched by the
+// path a backend will bind. It is what lets a symlinked config/store directory
+// use the walk exemption.
+func resolveRootSpellings(roots []string) []string {
+	return rootSpellings(roots, func(root string) string {
+		if resolved := resolveExistingPrefix(root); resolved != root {
+			return resolved
+		}
+		return ""
+	})
 }
 
 // toolchainBinDir decides whether the probed developer-toolchain bin directory

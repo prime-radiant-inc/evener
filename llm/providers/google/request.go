@@ -141,6 +141,13 @@ func thinkingConfig(effort string, caps registry.Caps) map[string]any {
 		return thinking
 	}
 	level := effort
+	// A row stating the no-effort verdict spells no level, but still reasons:
+	// keep the config so includeThoughts survives and the backend still gets
+	// thought parts to render. The budget shape above is unaffected — a numeric
+	// budget is not an effort name.
+	if registry.BoolValue(caps.EffortParameterUnsupported) {
+		return thinking
+	}
 	if len(caps.EffortValues) > 0 {
 		// A row with a ladder spells only a level the ladder vouches for.
 		level = llm.VouchedEffort(effort, caps.EffortValues)
