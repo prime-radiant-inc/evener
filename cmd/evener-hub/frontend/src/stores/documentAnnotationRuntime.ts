@@ -75,7 +75,6 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
   // promise.
   let idle: Promise<void> = Promise.resolve();
   let retryNeeded = false;
-  let pendingDuringPass = false;
   // ONE retained trigger: a storage success (or explicit retry request) that
   // arrived while work was outstanding, coalesced to its first reason. The
   // last unit of outstanding work spends it iff retry-needed is set or that
@@ -167,10 +166,7 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
     return { token, cancel };
   };
   const needRetry = () => {
-    if (alive) {
-      retryNeeded = true;
-      if (pass) pendingDuringPass = true;
-    }
+    if (alive) retryNeeded = true;
   };
   // The pass slot, the outstanding handoffs and the in-flight saves are one
   // set: a trigger can see none of their outcomes until they settle.
@@ -235,7 +231,9 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
   };
   const startPass = (reason: AnnotationRetryReason): Promise<void> => {
     if (!alive) return Promise.resolve();
-    pendingDuringPass = false; // before assigning pass, never erase observations made while it runs
+    // Taking the slot clears the need the pass is about to spend; a need
+    // recorded while it runs sets the flag again and line 251 keeps it.
+    retryNeeded = false;
     // The pass's persisted sweep drives handoffs at the repository level, so
     // it joins the same chain: in-flight direct handoffs finish first and the
     // sweep never races them for the composer.
@@ -248,7 +246,7 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
       if (alive)
         try {
           const outcome = await repo.retryPendingWithOutcome(reason, retryCancellation);
-          if (alive) retryNeeded = failed.size > 0 || outcome.pending || pendingDuringPass;
+          if (alive) retryNeeded = retryNeeded || failed.size > 0 || outcome.pending;
         } catch {
           needRetry();
         }
@@ -375,7 +373,6 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
       for (const entry of cancellations.values()) entry.cancel("teardown");
       cancellations.clear();
       retryNeeded = false;
-      pendingDuringPass = false;
       latchedTrigger = null;
     },
   };

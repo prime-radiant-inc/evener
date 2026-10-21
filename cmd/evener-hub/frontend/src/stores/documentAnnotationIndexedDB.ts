@@ -483,11 +483,9 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // persistence; recovery edits commit through the mutation outbox, which the
   // drafts-repository subscription cannot observe, so the source's own
   // recovery-persisted notification is routed through the same storage-success
-  // boundary. The WeakSet dies with the source and dedupes per source without
-  // retaining one; the release set below holds only the unsubscribe closures so
-  // close() can reach them, since a WeakSet is not iterable.
-  readonly #recoveryNotifications = new WeakSet<ComposerSourceState>();
-  readonly #recoveryNotificationReleases = new Set<() => void>();
+  // boundary. The map holds each source's unsubscribe so close() can reach it,
+  // and arming prunes the entries of sources that retired since.
+  readonly #recoveryNotificationReleases = new Map<ComposerSourceState, () => void>();
   // close() is terminal. A handoff awaiting a receipt, payload or preparation
   // read resumes outside the close call, so every asynchronous boundary checks
   // this before it reopens the connection, arms a listener, or appends through
@@ -555,7 +553,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     // listeners and the channel still exist, before closure forbids it.
     for (const operationKey of [...this.#uncertainAppends.keys()]) this.#forgetUncertainAppend(operationKey);
     this.#closed = true;
-    for (const release of this.#recoveryNotificationReleases) release();
+    for (const release of this.#recoveryNotificationReleases.values()) release();
     this.#recoveryNotificationReleases.clear();
     this.#subscriptions.clear();
     this.#pendingCancelledDiscards.clear();
@@ -635,10 +633,16 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // handoff (direct or replayed) passes here, so a recovery-typing refusal
   // leaves the notification armed before the runtime ever needs it.
   #armRecoveryCommitNotification(source: ComposerSourceState): void {
-    if (this.#recoveryNotifications.has(source)) return;
+    if (this.#recoveryNotificationReleases.has(source)) return;
+    // A source that retired since it armed holds a release nobody else would
+    // drop: prune those before arming the next one.
+    for (const [armed, release] of this.#recoveryNotificationReleases) {
+      if (armed.alive) continue;
+      release();
+      this.#recoveryNotificationReleases.delete(armed);
+    }
     const unsubscribe = source.subscribeRecoveryPersisted(() => this.#notifyStorageSuccess());
-    this.#recoveryNotifications.add(source);
-    this.#recoveryNotificationReleases.add(unsubscribe);
+    this.#recoveryNotificationReleases.set(source, unsubscribe);
   }
 
   // An uncertain-append record exists only because an append's completion was
