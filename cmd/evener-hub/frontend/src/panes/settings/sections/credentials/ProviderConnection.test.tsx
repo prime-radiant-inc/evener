@@ -1425,6 +1425,53 @@ test("a discovery-only row saves its configuration by authoring the instance", a
   });
   expect(client.calls.filter((call) => call.method === "evener/instance/edit")).toHaveLength(0);
 });
+
+// A create whose confirmation reads fail may still have landed. The card keeps
+// that write's own answer and reconciles it on retry instead of issuing a
+// second create the hub would refuse for the name it already holds.
+test("an unconfirmed editor create reconciles its own answer before a retry", async () => {
+  const setupRow = provider("anthropic", "Anthropic", ["apiKey"]);
+  const { user, client } = setup({ instances: [], availableProviders: [setupRow] });
+  await choose(user);
+  await user.click(screen.getByRole("button", { name: "Edit" }));
+  const field = screen.getByLabelText("Endpoint URL");
+  await user.clear(field);
+  await enterText(user, field, "https://proxy.example/v1");
+
+  const created: InstanceEntry = {
+    ...setupRow.setup!,
+    name: "anthropic",
+    implicit: false,
+    baseUrl: "https://proxy.example/v1",
+    endpointFingerprint: "fp-proxy",
+  };
+  const listing: InstanceListResponse = { instances: [created], availableProviders: [setupRow] };
+  const create = deferred<InstanceListResponse>();
+  client.on("evener/instance/create", () => create.promise);
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/instance/create")).toBe(true));
+
+  // Supersede the create's answer, then fail every confirming read: the write
+  // may have landed, and the card must not create again on the retry.
+  client.on("evener/instance/list", () => {
+    throw new Error("listing unavailable");
+  });
+  await act(async () => {
+    await credentialsStore.getState().fetch();
+    create.resolve(structuredClone(listing));
+    await create.promise;
+  });
+  expect(await alertReason()).toBe("save-unconfirmed");
+  expect(screen.getByLabelText("Endpoint URL")).toBeTruthy();
+
+  client.on("evener/instance/list", () => structuredClone(listing));
+  await user.click(screen.getByRole("button", { name: "Save" }));
+
+  await waitFor(() => expect(screen.queryByLabelText("Endpoint URL")).toBeNull());
+  expect(client.calls.filter((call) => call.method === "evener/instance/create")).toHaveLength(1);
+  expect(client.calls.filter((call) => call.method === "evener/instance/edit")).toHaveLength(0);
+  expect(await screen.findByText("https://proxy.example/v1")).toBeTruthy();
+});
 test("read-only provider settings do not disable an existing credential store write", async () => {
   const { user, client } = setup({ instances: [], availableProviders: catalogue, writesRefused: true });
   scriptSave(client);
@@ -2752,6 +2799,37 @@ test("saving settings keeps a pending replacement unsaved", async () => {
     value: "replacement-key",
     expectedEndpointFingerprint: "fp-anthropic",
   });
+});
+
+// A successful credential write stays saved even when the listing refresh that
+// follows it fails: canceling the replacement the card then offers must not
+// derive saved=false from the stale row and ask for the key again.
+test("canceling a replacement keeps a save whose refresh failed", async () => {
+  const { user, client } = setup(savedList("anthropic", { activeSource: "none", hasStoredFile: false }));
+  await choose(user);
+  await enterText(user, screen.getByLabelText("API key"), "first-key");
+
+  client.on("evener/auth/apiKey/set", () => ({ ...saved, provider: "anthropic" }));
+  client.on("evener/instance/list", () => {
+    throw new Error("listing unavailable");
+  });
+  await user.click(screen.getByRole("button", { name: "Save and test" }));
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/auth/apiKey/set")).toBe(true));
+
+  // The card kept the confirmed save and offers Replace; canceling it restores
+  // saved access, so the next action refreshes and tests, not re-enters a key.
+  await user.click(screen.getByRole("button", { name: "Replace" }));
+  await user.click(screen.getAllByRole("button", { name: "Cancel" })[0]!);
+
+  expect(await screen.findByRole("button", { name: "Test again" })).toBeTruthy();
+  client.on("evener/instance/list", () =>
+    structuredClone(savedList("anthropic", { activeSource: "store", hasStoredFile: true })),
+  );
+  client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+  await user.click(screen.getByRole("button", { name: "Test again" }));
+
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/auth/test")).toBe(true));
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(1);
 });
 
 // Enter during an IME composition confirms the composition, not the card's

@@ -426,6 +426,12 @@ function SelectedConnection({
   // starts. The credential claim lives in a ref because the store subscription
   // and the save handlers must read it live, not from a render.
   const draftClaim = useRef<DestinationClaim | undefined>(undefined);
+  // A write the card issued whose outcome no applied listing has confirmed yet.
+  // A retry reconciles this row instead of issuing the mutation again.
+  const pendingInstanceWrite = useRef<InstanceEntry | undefined>(undefined);
+  // A credential write the card confirmed for a destination. A failed listing
+  // refresh must not make the card forget that key.
+  const confirmedStore = useRef<DestinationClaim | undefined>(undefined);
   const [endpointClaim, setEndpointClaim] = useState<DestinationClaim | undefined>(undefined);
   const [settingsClaim, setSettingsClaim] = useState<DestinationClaim | undefined>(undefined);
   const adoptBaselineRef = useRef<(next: InstanceEntry | undefined) => void>(() => {});
@@ -491,6 +497,8 @@ function SelectedConnection({
           setSaved(false);
           setStoredAccess(false);
           setConfigured(false);
+          confirmedStore.current = undefined;
+          pendingInstanceWrite.current = undefined;
         }
       }
     });
@@ -613,18 +621,41 @@ function SelectedConnection({
       dropDraft();
       setError({ reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR });
     }
+    const confirmed = confirmedStore.current;
+    const confirmedHolds = confirmed !== undefined && claimHolds(confirmed, next);
+    // A listing that mirrors the write is the authority again; a claim for a
+    // moved destination can never contribute.
+    if (confirmed && (!confirmedHolds || isStoredAccess(next, false))) confirmedStore.current = undefined;
     // A replacement that survived the adoption is still unsaved, however the
     // adopted row sources its existing access. Only a row adopted with no
     // pending replacement derives saved state from what it resolves.
     const pending = !dropped && !saved && (draftClaim.current !== undefined || value.trim() !== "");
-    const stored = isStoredAccess(next, host);
+    const stored = isStoredAccess(next, host) || confirmedHolds;
     setSaved(!pending && stored);
     setStoredAccess(stored);
     setBaseline(next);
   }
   adoptBaselineRef.current = adoptBaseline;
 
-  type EditConfirmation = { kind: "confirmed"; row: InstanceEntry } | { kind: "moved" } | { kind: "unconfirmed" };
+  /** savedFor reports the key row's saved state: what the row itself resolves,
+   * or a credential write the card confirmed for this destination but a failed
+   * listing refresh has not mirrored yet. */
+  function savedFor(next: InstanceEntry | undefined, hostAccess: boolean): boolean {
+    const confirmed = confirmedStore.current;
+    return isStoredAccess(next, hostAccess) || (confirmed !== undefined && claimHolds(confirmed, next));
+  }
+
+  /** setSavedAccess records that the card's saved-access state is one fact, not
+   * two: the key row and the closing footer always agree. */
+  function setSavedAccess(next: boolean) {
+    setSaved(next);
+    setStoredAccess(next);
+  }
+
+  type EditConfirmation =
+    | { kind: "confirmed"; row: InstanceEntry }
+    | { kind: "moved" }
+    | { kind: "unconfirmed"; authored?: InstanceEntry };
 
   /** confirmWrite runs one instance write and resolves the row it authored from
    * a listing that reflects it. The store's applied answer is authoritative. An
@@ -635,19 +666,31 @@ function SelectedConnection({
     write: (reconcile: EditSupersededReconcile) => Promise<boolean>,
     name: string,
   ): Promise<EditConfirmation> {
-    let superseded: InstanceEntry | undefined;
-    const applied = await write({
-      onSuperseded: (response) => {
-        superseded = listingRow(response.instances, name);
-      },
-    });
-    const authored = applied ? findSetup(name) : superseded;
+    const pending = pendingInstanceWrite.current;
+    let authored: InstanceEntry | undefined;
+    let applied = false;
+    if (pending?.name === name) {
+      // The write may already have landed; reconcile it instead of issuing it
+      // again. No applied listing proves either way, so nothing is mutated.
+      authored = pending;
+    } else {
+      let superseded: InstanceEntry | undefined;
+      applied = await write({
+        onSuperseded: (response) => {
+          superseded = listingRow(response.instances, name);
+        },
+      });
+      authored = applied ? findSetup(name) : superseded;
+    }
     if (!authored) return { kind: "unconfirmed" };
     const read = await appliedSelfRead();
-    if (!applied && !read) return { kind: "unconfirmed" };
+    if (!applied && !read) return { kind: "unconfirmed", authored };
     const row = findSetup(name);
-    if (!row) return { kind: "unconfirmed" };
-    return destination(row) === destination(authored) ? { kind: "confirmed", row } : { kind: "moved" };
+    if (!row) return { kind: "unconfirmed", authored };
+    const outcome: EditConfirmation =
+      destination(row) === destination(authored) ? { kind: "confirmed", row } : { kind: "moved" };
+    if (pending?.name === name) pendingInstanceWrite.current = undefined;
+    return outcome;
   }
 
   function confirmEdit(params: InstanceEditParams): Promise<EditConfirmation> {
@@ -688,6 +731,7 @@ function SelectedConnection({
       selfMutation.current = false;
       if (!current(token)) return;
       if (outcome.kind === "unconfirmed") {
+        if (outcome.authored) pendingInstanceWrite.current = outcome.authored;
         setPhase("idle");
         setError({ reason: "save-unconfirmed", message: SAVE_UNCONFIRMED_ERROR });
         return;
@@ -856,8 +900,8 @@ function SelectedConnection({
         if (json) await state.setCredentialJson(name, value.trim(), claim.fingerprint);
         else await state.setApiKey(name, value.trim(), claim.fingerprint);
         if (!current(token)) return;
-        setSaved(true);
-        setStoredAccess(true);
+        confirmedStore.current = claim;
+        setSavedAccess(true);
         setEditing(null);
       } catch (err) {
         if (!current(token)) return;
@@ -1005,8 +1049,8 @@ function SelectedConnection({
         if (json) await credentialsStore.getState().setCredentialJson(trimmedName, typedKey, claim.fingerprint);
         else await credentialsStore.getState().setApiKey(trimmedName, typedKey, claim.fingerprint);
         if (!current(token)) return;
-        setSaved(true);
-        setStoredAccess(true);
+        confirmedStore.current = claim;
+        setSavedAccess(true);
       } catch (err) {
         if (!current(token)) return;
         const changed = destinationChangeError(err);
@@ -1478,7 +1522,8 @@ function SelectedConnection({
                             setEditing(null);
                             setHost(false);
                             changeValue("");
-                            setSaved(isStoredAccess(row, false));
+                            const stored = savedFor(row, false);
+                            setSavedAccess(stored);
                           }}
                         >
                           Cancel
