@@ -1,14 +1,17 @@
 // @vitest-environment node
 
-import type { DocumentKey, PreparedAnnotation } from "@evener/appwire-client";
+import type { DocFileContent, DocumentKey, PreparedAnnotation } from "@evener/appwire-client";
+import { IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ComposerPreparation, ComposerSourceState } from "../panes/session/composer/composerContract";
 import { APPEND_STORES, browserDraftKey } from "./browserDraftRepository";
-import { SAVE_STORES } from "./documentAnnotationIndexedDB";
+import { createDocumentAnnotationRepository, SAVE_STORES } from "./documentAnnotationIndexedDB";
+import { ANNOTATION_EVIDENCE_STORE, ANNOTATION_EXPIRY_STORE } from "./localCompositionSchema";
 import {
   type AnnotationFixture,
   type AnnotationFixtureWithRuntime,
   buildAnnotationOperation,
+  deferred,
   openAnnotationFixture,
   pollUntil,
 } from "./testing/annotationFixture";
@@ -261,6 +264,7 @@ test("a reconciliation's acknowledgment signals the runtime so a refused handoff
   expect(await fixture.runtime.handoff(fixture.document, fixture.operation.operationId)).toMatchObject({
     state: "already-applied",
   });
+  expect(fixture.storageSuccess).toHaveBeenCalled();
   // No other trigger follows: the reconciliation's signal must start the pass.
   await fixture.runtime.whenIdle();
 
@@ -269,6 +273,407 @@ test("a reconciliation's acknowledgment signals the runtime so a refused handoff
     "already-applied",
   );
 
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+// ---------------------------------------------------------------------------
+// The invariant walk: one latch across every kind of outstanding work.
+// ---------------------------------------------------------------------------
+
+// Each pair drives the same trigger into one kind of outstanding work and
+// settles that work both ways. The latch retains the trigger either way; only
+// a settle that leaves work pending spends it. retryPendingWithOutcome is the
+// pass entry point, so its call count is the number of passes scheduled.
+test("a trigger during a pass that settles clean is dropped", async () => {
+  const preparing = deferred<void>();
+  const released = deferred<void>();
+  let preparations = 0;
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+    prepareAnnotation: async () => {
+      preparations += 1;
+      if (preparations === 1) {
+        preparing.resolve();
+        await released.promise;
+      }
+      return fixture?.preparation ?? null;
+    },
+  });
+  const passes = vi.spyOn(fixture.repository, "retryPendingWithOutcome");
+
+  const pass = fixture.runtime.retryPending("composer-open");
+  await preparing.promise;
+  fixture.runtime.storageSucceeded();
+  released.resolve();
+  await pass;
+  await fixture.runtime.whenIdle();
+
+  expect(passes).toHaveBeenCalledTimes(1);
+  const views = await fixture.repository.listAnnotations(fixture.document);
+  expect(views.find((view) => view.operation.operationId === fixture.operation.operationId)?.handoff.state).toBe(
+    "already-applied",
+  );
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+test("a trigger during a pass that leaves work pending runs exactly one follow-up", async () => {
+  const preparing = deferred<void>();
+  const released = deferred<void>();
+  let preparations = 0;
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+    prepareAnnotation: async () => {
+      preparations += 1;
+      // The first sweep skips the operation: the pass leaves work pending.
+      if (preparations === 1) {
+        preparing.resolve();
+        await released.promise;
+        return null;
+      }
+      return fixture?.preparation ?? null;
+    },
+  });
+  const passes = vi.spyOn(fixture.repository, "retryPendingWithOutcome");
+
+  const pass = fixture.runtime.retryPending("composer-open");
+  await preparing.promise;
+  fixture.runtime.storageSucceeded();
+  released.resolve();
+  await pass;
+  await fixture.runtime.whenIdle();
+
+  // The follow-up is the spend of the trigger retained during the first pass.
+  expect(passes).toHaveBeenCalledTimes(2);
+  const views = await fixture.repository.listAnnotations(fixture.document);
+  expect(views.find((view) => view.operation.operationId === fixture.operation.operationId)?.handoff.state).toBe(
+    "already-applied",
+  );
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+test("a trigger during a clean direct handoff starts no pass", async () => {
+  const preparing = deferred<void>();
+  const released = deferred<void>();
+  let preparations = 0;
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+    prepareAnnotation: async () => {
+      preparations += 1;
+      if (preparations === 1) {
+        preparing.resolve();
+        await released.promise;
+      }
+      return fixture?.preparation ?? null;
+    },
+  });
+  const passes = vi.spyOn(fixture.repository, "retryPendingWithOutcome");
+
+  const handoff = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
+  await preparing.promise;
+  fixture.runtime.storageSucceeded();
+  released.resolve();
+
+  expect(await handoff).toMatchObject({ state: "applied" });
+  await fixture.runtime.whenIdle();
+  expect(passes).not.toHaveBeenCalled();
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+test("a trigger during a direct handoff that refuses starts exactly one pass", async () => {
+  const preparing = deferred<void>();
+  const released = deferred<void>();
+  let preparations = 0;
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+    prepareAnnotation: async () => {
+      preparations += 1;
+      // The handoff refuses: it leaves work pending for the retained trigger.
+      if (preparations === 1) {
+        preparing.resolve();
+        await released.promise;
+        return null;
+      }
+      return fixture?.preparation ?? null;
+    },
+  });
+  const passes = vi.spyOn(fixture.repository, "retryPendingWithOutcome");
+
+  const handoff = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
+  await preparing.promise;
+  fixture.runtime.storageSucceeded();
+  released.resolve();
+
+  expect(await handoff).toEqual({ state: "pending", reason: "owner-unavailable" });
+  await fixture.runtime.whenIdle();
+  expect(passes).toHaveBeenCalledTimes(1);
+  const views = await fixture.repository.listAnnotations(fixture.document);
+  expect(views.find((view) => view.operation.operationId === fixture.operation.operationId)?.handoff.state).toBe(
+    "already-applied",
+  );
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+test("a trigger during a clean save starts no pass", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+  });
+  const operation: PreparedAnnotation = { ...fixture.operation, operationId: "operation-2" };
+  const passes = vi.spyOn(fixture.repository, "retryPendingWithOutcome");
+
+  const hold = holdNextWriteTransaction(SAVE_STORES);
+  const save = fixture.runtime.save(operation);
+  await hold.reached;
+  fixture.runtime.storageSucceeded();
+  hold.release();
+
+  expect(await save).not.toBeNull();
+  await fixture.runtime.whenIdle();
+  expect(passes).not.toHaveBeenCalled();
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+test("a trigger retained across an outstanding save never schedules after dispose", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+  });
+  const operation: PreparedAnnotation = { ...fixture.operation, operationId: "operation-2" };
+  const passes = vi.spyOn(fixture.repository, "retryPendingWithOutcome");
+
+  const hold = holdNextWriteTransaction(SAVE_STORES);
+  const save = fixture.runtime.save(operation);
+  await hold.reached;
+  fixture.runtime.storageSucceeded();
+  fixture.runtime.dispose();
+  hold.release();
+
+  expect(await save).toBeNull();
+  await fixture.runtime.whenIdle();
+  expect(passes).not.toHaveBeenCalled();
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+// ---------------------------------------------------------------------------
+// The invariant walk: every eligibility-restoring release reaches the trigger.
+// ---------------------------------------------------------------------------
+
+// A recorded need plus an eligibility-restoring event must never end
+// unscheduled. Each case below installs one kind of provisional suppression,
+// registers the need the runtime records when a handoff refuses, releases the
+// suppression through that path, and asserts the release itself reached the
+// runtime trigger and started exactly one pass.
+
+function changedContent(): DocFileContent {
+  return {
+    text: "Changed content\n",
+    binary: false,
+    mediaType: "text/markdown",
+    truncated: false,
+    sizeBytes: 17,
+  };
+}
+
+test("a stale validation's release reaches the runtime trigger", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+  });
+  const passes = vi.spyOn(fixture.repository, "retryPendingWithOutcome");
+  const ticket = await fixture.repository.beginRead(fixture.document);
+  // A newer read in another adapter supersedes this ticket durably: its
+  // validation can only answer stale, and that release restores eligibility.
+  const sibling = createDocumentAnnotationRepository({
+    indexedDB: fixture.factory,
+    databaseName: "annotation-coordination",
+    drafts: fixture.drafts,
+    targetFor: () => null,
+  });
+  await sibling.beginRead(fixture.document);
+  fixture.storageSuccess.mockClear();
+  fixture.runtime.registerRetryNeed();
+
+  expect(await fixture.repository.acceptRead(ticket, changedContent())).toEqual({ state: "stale-ticket" });
+  await pollUntil(() => passes.mock.calls.length > 0, 50);
+  expect(fixture.storageSuccess).toHaveBeenCalled();
+  await fixture.runtime.whenIdle();
+  expect(passes).toHaveBeenCalledTimes(1);
+
+  sibling.close();
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+test("an unchanged acceptance's release reaches the runtime trigger", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+  });
+  const passes = vi.spyOn(fixture.repository, "retryPendingWithOutcome");
+  // Another adapter proves a change, rotating the durable epoch. This
+  // adapter's in-memory observations still hold the old content, so its next
+  // acceptance installs a provisional by local comparison; the durable
+  // validation of the fresh epoch finds no change and accepts, releasing it.
+  const sibling = createDocumentAnnotationRepository({
+    indexedDB: fixture.factory,
+    databaseName: "annotation-coordination",
+    drafts: fixture.drafts,
+    targetFor: () => null,
+  });
+  const siblingTicket = await sibling.beginRead(fixture.document);
+  expect(await sibling.acceptRead(siblingTicket, changedContent())).toMatchObject({ state: "expiry-pending" });
+  const ticket = await fixture.repository.beginRead(fixture.document);
+  fixture.storageSuccess.mockClear();
+  fixture.runtime.registerRetryNeed();
+
+  expect((await fixture.repository.acceptRead(ticket, changedContent())).state).toBe("accepted");
+  await pollUntil(() => passes.mock.calls.length > 0, 50);
+  expect(fixture.storageSuccess).toHaveBeenCalled();
+  await fixture.runtime.whenIdle();
+  expect(passes).toHaveBeenCalledTimes(1);
+
+  sibling.close();
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+test("a validation fault's release reaches the runtime trigger", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+  });
+  const passes = vi.spyOn(fixture.repository, "retryPendingWithOutcome");
+  const ticket = await fixture.repository.beginRead(fixture.document);
+  // The changed read installs its provisional at entry; the evidence scan then
+  // throws, and the fault path releases that still-owned entry.
+  const getAll = IDBObjectStore.prototype.getAll;
+  let faultArmed = true;
+  const getAllSpy = vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function (
+    this: IDBObjectStore,
+    ...args: Parameters<IDBObjectStore["getAll"]>
+  ) {
+    const scope = [...this.transaction.objectStoreNames];
+    if (faultArmed && this.name === ANNOTATION_EVIDENCE_STORE && scope.includes(ANNOTATION_EXPIRY_STORE)) {
+      faultArmed = false;
+      throw new Error("validation fault");
+    }
+    return getAll.apply(this, args);
+  });
+  fixture.storageSuccess.mockClear();
+  fixture.runtime.registerRetryNeed();
+
+  await expect(fixture.repository.acceptRead(ticket, changedContent())).rejects.toThrow("validation fault");
+  getAllSpy.mockRestore();
+  await pollUntil(() => passes.mock.calls.length > 0, 50);
+  expect(fixture.storageSuccess).toHaveBeenCalled();
+  await fixture.runtime.whenIdle();
+  expect(passes).toHaveBeenCalledTimes(1);
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+test("a reset rollback's release reaches the runtime trigger", async () => {
+  let faultArmed = false;
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+    beforeCommit: (operation) => {
+      if (operation === "reset" && faultArmed) throw new Error("reset fault");
+    },
+  });
+  faultArmed = true;
+  const passes = vi.spyOn(fixture.repository, "retryPendingWithOutcome");
+  fixture.storageSuccess.mockClear();
+  fixture.runtime.registerRetryNeed();
+
+  // The reset provisions its provisional entries before the fault; the
+  // rollback releases them after the transaction settles.
+  await expect(fixture.repository.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation)).rejects.toThrow(
+    "reset fault",
+  );
+  await pollUntil(() => passes.mock.calls.length > 0, 50);
+  expect(fixture.storageSuccess).toHaveBeenCalled();
+  await fixture.runtime.whenIdle();
+  expect(passes).toHaveBeenCalledTimes(1);
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+test("a stale-incarnation reset's release reaches the runtime trigger", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+  });
+  // A sibling rotates the namespace first, so this adapter's expected
+  // incarnation is stale and its reset rotates nothing; the entries it
+  // provisioned are released as an aborted reset's are.
+  const sibling = createDocumentAnnotationRepository({
+    indexedDB: fixture.factory,
+    databaseName: "annotation-coordination",
+    drafts: fixture.drafts,
+    targetFor: () => null,
+  });
+  const rotated = await sibling.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation);
+  expect(rotated.committed).toBe(true);
+  const passes = vi.spyOn(fixture.repository, "retryPendingWithOutcome");
+  fixture.storageSuccess.mockClear();
+  fixture.runtime.registerRetryNeed();
+
+  expect(await fixture.repository.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation)).toEqual({
+    committed: false,
+    incarnation: rotated.incarnation,
+  });
+  await pollUntil(() => passes.mock.calls.length > 0, 50);
+  expect(fixture.storageSuccess).toHaveBeenCalled();
+  await fixture.runtime.whenIdle();
+  expect(passes).toHaveBeenCalledTimes(1);
+
+  sibling.close();
   fixture.repository.close();
   fixture.drafts.close();
 });
