@@ -443,7 +443,11 @@ A pending standalone start or Restart retains its original build and predecessor
 enabling automatic deployment does not authorize replacing that intent with a
 controller-build installation. A known different executable build refuses another
 start or restart until the requested executable is restored. An already-completed
-expected process can still settle without another command despite later disk drift.
+expected process can still settle without another command despite later disk drift,
+including an incompatible protocol or missing launch flag. Recovery verifies the
+recorded build and process before requiring the executable to support another
+launch. An unverified effect remains pending, and another launch still requires a
+valid startup contract.
 A verified restart retires the predecessor's bridge before reattaching and
 checking the replacement, even if the old SSH connection has not reported EOF.
 If the first health probe missed the predecessor, a later probe can identify it

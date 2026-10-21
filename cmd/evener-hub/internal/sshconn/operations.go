@@ -227,13 +227,20 @@ func (m *Manager) restartForOperation(ctx context.Context, host hostreg.Host, fa
 		restartCtx, cancel = context.WithTimeout(ctx, m.opts.deployLimit())
 		defer cancel()
 	}
-	if err != nil {
+	if err != nil && (pending.deployment || pending.command == "") {
 		return RestartResult{}, err
 	}
 	running, runningKnown := m.probeRunningHub(restartCtx, host)
 	version, pin := expectedServedBuild(facts, m.opts.controllerVersion())
 	pending = m.pendingRestart(host.Name)
 	completed := runningKnown && pending.completedBy(running, facts)
+	// A saved command may already have succeeded before verification was lost.
+	// Its proven effect needs no executable, but replay or another mutation still
+	// requires the current disk contract. Pending deployment repairs stay gated above.
+	if err != nil && !completed {
+		return RestartResult{}, err
+	}
+	err = nil
 	if pending.active() {
 		version, pin = pending.expectedVersion, pending.expectedGitSHA
 		running = pending.restartPredecessor(running)

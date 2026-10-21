@@ -1341,6 +1341,7 @@ type restartRecoveryRunner struct {
 	firstWriteContract            []byte
 	failRepair                    bool
 	failRestart                   bool
+	interruptRestartVerification  bool
 	missing                       bool
 	missingError                  error
 	noSupervisor                  bool
@@ -1496,6 +1497,9 @@ func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.R
 		}
 		return nil, nil
 	case strings.Contains(command, "api/health"):
+		if r.interruptRestartVerification && r.restarts > 0 {
+			return nil, errors.New("replacement health observation interrupted")
+		}
 		if r.runningVersion == "" {
 			return nil, errors.New("no listener")
 		}
