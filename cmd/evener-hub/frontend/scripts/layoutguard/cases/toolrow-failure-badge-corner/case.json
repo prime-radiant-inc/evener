@@ -1,0 +1,22 @@
+{
+  "name": "toolrow-failure-badge-corner",
+  "description": "A failed tool call marks its kind icon with a danger cross pinned to the icon's bottom-right corner (Jesse, 2026-10-20) rather than opening a second inline column of ink beside the icon. The badge is a sibling of the seat, not a child: the seat recedes to 50% opacity while the cross must read at full strength, so it must sit outside the seat's box and still hang off the icon's corner. These are the two things jsdom cannot check: that the badge is positioned (absolute, inside the slot) rather than contributing a flex column of its own, and that it lands on the SEAT's bottom-right corner at both the desktop gutter-pulled width and phone widths, where the slot leads its line inline.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "styles/railseat.module.css",
+    "panes/session/transcript/toolcallitem.module.css",
+    "widgets/failureglyph/failureglyph.module.css"
+  ],
+  "viewport": { "width": 1200, "height": 900, "deviceScaleFactor": 1, "mobile": false },
+  "widthMatrix": [
+    { "width": 900, "rowWidth": 620, "label": "desktop: gutter-pulled rail" },
+    { "width": 420, "rowWidth": 380, "label": "phone: slot leads inline" }
+  ],
+  "mutation": {
+    "declaration": "toolcallitem.module.css: .failureBadge { position: absolute; inset-block-end: 0; inset-inline-end: calc(var(--speaker-gap) - var(--space-2)); display: inline-flex; pointer-events: none } - the position: absolute declaration reverted to static (so the badge becomes a flex column beside the icon again)",
+    "verified": "2026-10-20",
+    "expect": "fail",
+    "note": "Reverting position: absolute to static fails at both widths (900px and 420px) on all four axes at once: the badge reports static, its right edge lands 12px from the seat's corner, it no longer overlaps the 14px glyph (38..48 vs 17..31), and the failed row's rationale starts at 56.0 instead of the clean row's 46.0 - the inline column this change removes. Restored before the passing run."
+  }
+}

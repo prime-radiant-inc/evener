@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>toolrow-failure-badge-corner layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  *, *::before, *::after { transition: none !important; }
+  body {
+    margin: 0;
+    background: var(--surface-1);
+    font-family: var(--font-sans);
+    color: var(--ink-hi);
+  }
+  .fixtures { display: flex; flex-direction: column; gap: 24px; padding: 12px; }
+  .fixture { width: 300px; }
+  /* Production reserves the rail gutter at/above 700px (turnblock.module.css
+   * .runContent), which the slot's negative pull hangs into. */
+  .railBox { box-sizing: border-box; }
+  @media (min-width: 700px) {
+    .railBox { padding-left: var(--speaker-gutter); }
+  }
+</style>
+</head>
+<body data-font-size="m">
+<!-- ToolRow.tsx's failed-row branch, copied from its current jsdom render
+     (class names unhashed):
+
+       <div class="row" data-intent="true">
+         <span class="rowIconSlot">
+           <span class="rowIcon" aria-hidden="true"><svg/></span>
+           <span class="failureBadge">
+             <span role="img" aria-label="Failed"><svg/></span>
+           </span>
+         </span>
+         <span class="intent">…</span>
+       </div>
+
+     The badge rides BESIDE the aria-hidden seat inside the slot: the seat is
+     at the shared rail's 50% opacity, and a nested cross would recede with it
+     when the failure tone is the row's one full-strength signal. The slot is
+     therefore the badge's positioning context, and the cross pins to the
+     SEAT's bottom-right corner (the seat's own margin-right is the offset).
+
+     Each width renders the same row twice - failed and clean - so the failed
+     row's rationale can be held to the clean row's content edge: a failure
+     must mark the icon, not push the text.
+
+     Above the 700px breakpoint the slot's gutter pull moves the whole slot
+     into the reserved padding; the badge's relationship to the seat must not
+     change with it, which is the second thing the desktop width checks. -->
+<main class="fixtures"></main>
+<script>
+const fixtures = __LAYOUTGUARD_WIDTH_MATRIX__;
+
+const ICON_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display: block;"><path d="M2.5 3.5 H13.5 V12.5 H2.5 Z M5 6.8 L7.5 8.8 L5 10.8 M8.6 10.8 H11.2" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+const FAILURE_SVG = '<span role="img" aria-label="Failed" class="glyph"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true"><path d="M1.5 1.5 L8.5 8.5 M8.5 1.5 L1.5 8.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path></svg></span>';
+const INTENT = "Checking whether the hub already serves session artifacts over HTTP";
+
+function rowHtml(id, failed) {
+  return `
+    <div class="row" id="row-${id}" data-intent="true">
+      <span class="rowIconSlot" id="slot-${id}">
+        <span class="rowIcon" id="seat-${id}" aria-hidden="true">${ICON_SVG}</span>
+        ${failed ? `<span class="failureBadge" id="badge-${id}">${FAILURE_SVG}</span>` : ""}
+      </span>
+      <span class="intent" id="intent-${id}">${INTENT}</span>
+    </div>`;
+}
+
+for (const spec of fixtures) {
+  const fixture = document.createElement("div");
+  fixture.className = "fixture";
+  fixture.dataset.width = String(spec.width);
+  fixture.style.width = spec.rowWidth ? `${spec.rowWidth}px` : "";
+  fixture.innerHTML = `
+    <div class="railBox">
+      ${rowHtml(`${spec.width}-failed`, true)}
+      ${rowHtml(`${spec.width}-clean`, false)}
+    </div>`;
+  document.querySelector(".fixtures").append(fixture);
+}
+
+window.measure = () => {
+  const rect = (el) => {
+    const r = el.getBoundingClientRect();
+    return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+  };
+  return fixtures.map((spec) => {
+    const id = spec.width;
+    return {
+      width: spec.width,
+      slot: rect(document.getElementById(`slot-${id}-failed`)),
+      seat: rect(document.getElementById(`seat-${id}-failed`)),
+      badge: rect(document.getElementById(`badge-${id}-failed`)),
+      badgePosition: getComputedStyle(document.getElementById(`badge-${id}-failed`)).position,
+      intentLeft: rect(document.getElementById(`intent-${id}-failed`)).left,
+      cleanIntentLeft: rect(document.getElementById(`intent-${id}-clean`)).left,
+      rowLeft: rect(document.getElementById(`row-${id}-failed`)).left,
+      cleanRowLeft: rect(document.getElementById(`row-${id}-clean`)).left,
+    };
+  });
+};
+</script>
+</body>
+</html>

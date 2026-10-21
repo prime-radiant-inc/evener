@@ -62,6 +62,17 @@ test("the seat glyph is ambient context, not content: half opacity in the rail i
   expect(seat).toMatch(/\.seat\s*\{[^}]*color:\s*var\(--ink-mid\)/);
 });
 
+test("ToolRow's failure badge pins to the SEAT's corner, not the slot's edge", () => {
+  // The badge's inset-inline-end re-states the seat's own margin-right: the
+  // seat sits inside its slot with that margin, so a badge pinned to the
+  // slot's edge would hang past the glyph. Two expressions, one number - so
+  // pin them equal and a seat-width change cannot leave the cross adrift.
+  const seatMargin = seat.match(/\.seat\s*\{[^}]*margin-right:\s*([^;}]+);/)?.[1]?.trim();
+  const badgeInset = toolcallitem.match(/\.failureBadge\s*\{[^}]*inset-inline-end:\s*([^;}]+);/)?.[1]?.trim();
+  expect(seatMargin).toBeDefined();
+  expect(badgeInset).toBe(seatMargin);
+});
+
 test("the seat's text lands at the content edge: speaker-gap net of the row's own gap", () => {
   // The consumer row's --space-2 flex gap also lands between the slot and the
   // text that follows, so the slot's margin-right is the speaker-gap MINUS
@@ -79,15 +90,18 @@ test("the gutter pull exists only above the breakpoint, never unconditionally", 
   expect(seatUngated).not.toMatch(/margin-left:\s*calc\(-1/);
 });
 
-test("ToolRow's kind icon composes the shared seat and pull; only its line-height override stays local", () => {
+test("ToolRow's kind icon composes the shared seat; its slot owns the shared pull", () => {
   expect(toolcallitem).toMatch(
     /\.rowIcon\s*\{[^}]*composes:\s*seat from "\.\.\/\.\.\/\.\.\/styles\/railseat\.module\.css"/,
   );
-  expect(toolcallitem).toMatch(
-    /\.rowIcon\s*\{[^}]*composes:\s*gutterPull from "\.\.\/\.\.\/\.\.\/styles\/railseat\.module\.css"/,
-  );
   // No restated geometry: the seat's declarations belong to the shared module.
   expect(ownDeclarations(toolcallitem, "\\.rowIcon")).toBe("");
+  // The pull rides the row's own flex item (the icon's slot, which is also the
+  // failure badge's positioning context), so the gutter still has one owner
+  // and the icon cannot seat differently from the notification head's glyph.
+  expect(toolcallitem).toMatch(
+    /\.rowIconSlot\s*\{[^}]*composes:\s*gutterPull from "\.\.\/\.\.\/\.\.\/styles\/railseat\.module\.css"/,
+  );
   // The one local rule that is genuinely ToolRow's own: on intent-bearing rows
   // the first line is the rationale, whose line-height is --line-height-title
   // (tighter than the body's), so the 1lh box must narrow with it.
