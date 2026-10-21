@@ -702,6 +702,43 @@ default_model = "first"
 	}
 }
 
+// The hub decodes this contract straight into appwire.ModelDescriptor
+// (listEvenerLaunchModelContract in cmd/evener-hub/spawn.go), so the marker
+// must survive that exact decode: a producer-side test against
+// launchCheckModel would still pass if the wire tag stopped matching the
+// camelCase AppWire field.
+func TestLaunchCheckInstanceDefaultSurvivesAppWireDecode(t *testing.T) {
+	srv := launchCheckModelServer(t, "first", "chosen")
+	launchCheckRegistry(t, `
+[providers.team]
+base = "openai-compatible"
+base_url = "`+srv.URL+`/team/v1"
+api_key = "test-key"
+default_model = "chosen"
+`)
+
+	var stdout, stderr bytes.Buffer
+	if err := RunLaunchCheck([]string{"--protocol", appwire.ProtocolVersion, "--models", "--json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("runLaunchCheck: %v stderr=%s", err, stderr.String())
+	}
+	var out struct {
+		Models []appwire.ModelDescriptor `json:"models"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
+	}
+	marked := map[string]bool{}
+	for _, model := range out.Models {
+		if model.InstanceDefault {
+			marked[model.Provider+"/"+model.Model] = true
+		}
+	}
+	want := map[string]bool{"team/chosen": true}
+	if !reflect.DeepEqual(marked, want) {
+		t.Fatalf("appwire instance defaults = %v, want %v (models: %+v)", marked, want, out.Models)
+	}
+}
+
 // A default configured on the instance itself and one inherited from the
 // provider catalog are both the instance's usable configured default.
 func TestLaunchCheckModelsMarksInheritedAndOverriddenDefaults(t *testing.T) {

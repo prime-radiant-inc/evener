@@ -2203,6 +2203,10 @@ test.each(["draft", "harness", "host"])(
       await act(async () => setDraftField(origin, "source", "local"));
     }
 
+    // The revoked check's dialog is dismissed with its ownership, rather than
+    // left mounted over the draft the person navigated back to.
+    expect(screen.queryByRole("dialog")).toBeNull();
+
     await act(async () => probe.resolve({ provider: "team-local", status: "success", message: "" }));
     await settled();
 
@@ -2216,6 +2220,72 @@ test.each(["draft", "harness", "host"])(
     expect(client.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
   },
 );
+
+test("navigation during a pending connection check dismisses its dialog and a fresh setup still completes", async () => {
+  installCanvasStubs();
+  const user = setupUser();
+  window.history.pushState({}, "", "/new?dir=/tmp/revoke-a");
+  const probe = deferred<{ provider: string; status: string; message: string }>();
+  let saved = false;
+  let released = false;
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => teamInstanceList(saved));
+    // No usable catalogue until the retired check settles, so the model
+    // control still offers its connection recovery as a fresh setup entry.
+    fake.on("model/list", () => ({ data: saved && released ? TEAM_SAVED_MODELS : [] }));
+    fake.on("evener/auth/apiKey/set", ({ provider }) => {
+      saved = true;
+      return savedApiKeyResult(provider);
+    });
+    fake.on("evener/auth/test", () => probe.promise);
+    fake.on("evener/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await settled();
+  await fillPrompt(user, "revoke-a");
+  await setWorkingDir(user, "/tmp/revoke-a");
+  const origin = completionDraft("/tmp/revoke-a");
+
+  await openTeamProvider(user);
+  fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Checking model list…" })).toBeTruthy());
+
+  // The check is still pending: the person visits another draft and returns.
+  await visitSpawnURL("/new?dir=/tmp/revoke-b");
+  await act(async () => setDraftField(completionDraft("/tmp/revoke-b"), "prompt", "revoke-b"));
+  await visitSpawnURL("/new?dir=/tmp/revoke-a");
+
+  // The originating dialog is dismissed with the revoked ownership.
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+  // A replacement setup is a fresh attempt. The retired check's late success
+  // must neither close it nor write the origin draft.
+  await user.click(modelTrigger());
+  await user.click(await screen.findByRole("button", { name: "Connection settings" }));
+  await act(async () => {
+    await vi.dynamicImportSettled();
+  });
+  await user.click(await screen.findByText("Show all providers"));
+  await user.click(await screen.findByRole("button", { name: "Team local" }));
+  expect(screen.getByRole("dialog")).toBeTruthy();
+  released = true;
+  await act(async () => probe.resolve({ provider: "team-local", status: "success", message: "" }));
+  await settled();
+  expect(screen.getByRole("dialog")).toBeTruthy();
+  expect(origin.fields.getState().prompt).toBe("revoke-a");
+  expect(origin.fields.getState().model).toBe("");
+  expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
+  expect(client.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
+
+  // The fresh dialog completes through the real connector.
+  const freshSubmit = screen.getByRole("dialog").querySelector('button[type="submit"]');
+  if (!freshSubmit) throw new Error("fresh setup has no submit control");
+  fireEvent.click(freshSubmit);
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(screen.getByTestId("spawn-model-value").textContent).toBe("team-local/chosen"));
+  expect(completionDraft("/tmp/revoke-a").fields.getState().modelChoiceRevision).toBe(0);
+});
 
 test("automatic connection completion is retired by a pane remount", async () => {
   const user = setupUser();

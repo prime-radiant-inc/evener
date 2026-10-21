@@ -79,6 +79,13 @@ func testOnboardingBrowserAt(t *testing.T, view onboardingView) {
 	var mu sync.Mutex
 	var requests []map[string]any
 	checks := 0
+	failedChecks := 0
+	successfulChecks := 0
+	// Healthy listings are withheld until the browser reports the connector's
+	// own failed evener/auth/test reply. A bare first-request failure can be
+	// consumed by any catalog reader, which would let this journey pass without
+	// the connector's automatic retry actually recovering.
+	modelsReleased := false
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedAt := time.Now()
 		mu.Lock()
@@ -95,10 +102,12 @@ func testOnboardingBrowserAt(t *testing.T, view onboardingView) {
 				t.Error("model-list check must be a bodyless GET")
 			}
 			checks++
-			if checks == 1 {
+			if !modelsReleased {
+				failedChecks++
 				http.Error(w, `{"error":{"message":"fixture unavailable"}}`, http.StatusServiceUnavailable)
 				return
 			}
+			successfulChecks++
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"object":"list","data":[{"id":"gpt-4o-mini","object":"model","owned_by":"onboarding"},{"id":"gpt-4o","object":"model","owned_by":"onboarding"}]}`)
 			return
@@ -190,6 +199,13 @@ func testOnboardingBrowserAt(t *testing.T, view onboardingView) {
 	checkpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
+		if r.URL.Query().Get("stage") == "auto-check-failed" {
+			// The browser observed the real failed check on the connector's
+			// automatic flow. Only now do model-list calls answer healthy, so
+			// the completion below can only come from the connector's own
+			// retry timer.
+			modelsReleased = true
+		}
 		entries, err := rendezvous.List(run)
 		childMu.Lock()
 		attempts := len(launches)
@@ -246,6 +262,12 @@ func testOnboardingBrowserAt(t *testing.T, view onboardingView) {
 	defer mu.Unlock()
 	if checks < 2 {
 		t.Errorf("model-list requests=%d, want failure and retry", checks)
+	}
+	if !modelsReleased {
+		t.Error("the browser never reported the automatic check's failed reply")
+	}
+	if failedChecks == 0 || successfulChecks == 0 {
+		t.Errorf("model-list outcomes: failed=%d successful=%d, want the transient failure followed by a healthy automatic retry", failedChecks, successfulChecks)
 	}
 	var starts []time.Time
 	var refs []string

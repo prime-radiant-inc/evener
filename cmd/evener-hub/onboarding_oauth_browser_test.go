@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -430,7 +431,7 @@ func testOnboardingOAuthAt(t *testing.T, scenario string, view onboardingView) {
 	}
 	cmd := exec.CommandContext(ctx, "node", args...)
 	cmd.Dir = filepath.Join(guard.repo, "cmd/evener-hub/frontend")
-	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+	cmd.Cancel = func() error { return onboardingGuardCancel(cmd.Process) }
 	cmd.WaitDelay = 15 * time.Second
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -481,6 +482,155 @@ func testOnboardingOAuthAt(t *testing.T, scenario string, view onboardingView) {
 			t.Errorf("checkpoint stage %q never observed", required)
 		}
 	}
+}
+
+// onboardingGuardCancel is the signal boundary the Go owner uses to stop the
+// browser driver. The driver disposes its detached Chrome on SIGTERM — the
+// handshake its runner documents and installs — so cancellation must deliver
+// that signal, not a different one the runner does not own.
+func onboardingGuardCancel(process *os.Process) error {
+	return process.Signal(syscall.SIGTERM)
+}
+
+// TestOnboardingGuardCancellationStopsBrowser proves the cancellation boundary
+// above at the driver's own lifetime: a context cancellation sends the runner
+// the signal it owns, and the runner stops the Chrome it spawned detached
+// before it exits. This asserts the browser's process group is gone rather
+// than trusting the exit code alone.
+func TestOnboardingGuardCancellationStopsBrowser(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires Chrome")
+	}
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not available")
+	}
+	repo := skillGuardRepoRoot(t)
+	// This page satisfies nothing the journey waits for, so the driver stays in
+	// flight with its browser up until the cancellation below.
+	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprint(w, "<!doctype html><title>cancellation fixture</title>")
+	}))
+	defer page.Close()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "node", "scripts/onboardingguard/run.mjs",
+		"--url", page.URL,
+		"--artifact-dir", t.TempDir(),
+		"--work", t.TempDir(),
+		"--scenario", "auto",
+	)
+	cmd.Dir = filepath.Join(repo, "cmd/evener-hub/frontend")
+	cmd.Cancel = func() error { return onboardingGuardCancel(cmd.Process) }
+	cmd.WaitDelay = 15 * time.Second
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start driver: %v", err)
+	}
+	groups := waitForOnboardingGuardBrowsers(cmd.Process.Pid, 30*time.Second)
+	if len(groups) == 0 {
+		cancel()
+		_ = cmd.Wait()
+		t.Fatalf("driver never launched its detached browser: %s", stderr.String())
+	}
+	t.Logf("driver browsers running in process groups %v", groups)
+	defer func() {
+		// Re-check before signaling: a group that already exited must not have
+		// its numeric id reused by an unrelated process.
+		for _, group := range liveOnboardingGuardBrowsers(groups) {
+			_ = syscall.Kill(-group, syscall.SIGKILL)
+		}
+	}()
+
+	// Deliver the configured context signal through the same CommandContext
+	// path the OAuth journey uses.
+	cancel()
+	if err := cmd.Wait(); err == nil {
+		t.Fatalf("driver exited 0 after cancellation, want the signal's failure status")
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if alive := liveOnboardingGuardBrowsers(groups); len(alive) == 0 {
+			return
+		} else if time.Now().After(deadline) {
+			t.Fatalf("cancelled driver left browser process groups %v running: %s", alive, stderr.String())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// waitForOnboardingGuardBrowsers polls until the runner has spawned its
+// detached Chrome, returning the browser process groups. The runner launches
+// Chrome as its own process group, so the group id survives reparenting.
+func waitForOnboardingGuardBrowsers(parent int, timeout time.Duration) []int {
+	deadline := time.Now().Add(timeout)
+	for {
+		if groups := onboardingGuardBrowserGroups(parent); len(groups) > 0 {
+			return groups
+		}
+		if time.Now().After(deadline) {
+			return nil
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func onboardingGuardBrowserGroups(parent int) []int {
+	out, err := exec.Command("ps", "-axo", "pid=,ppid=,pgid=,command=").Output()
+	if err != nil {
+		return nil
+	}
+	var groups []int
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		ppid, err := strconv.Atoi(fields[1])
+		if err != nil || ppid != parent {
+			continue
+		}
+		command := strings.Join(fields[3:], " ")
+		if !strings.Contains(command, "--user-data-dir=") || !strings.Contains(command, "skillguard-chrome-") {
+			continue
+		}
+		pgid, err := strconv.Atoi(fields[2])
+		if err != nil {
+			continue
+		}
+		groups = append(groups, pgid)
+	}
+	return groups
+}
+
+func liveOnboardingGuardBrowsers(groups []int) []int {
+	out, err := exec.Command("ps", "-axo", "pgid=,command=").Output()
+	if err != nil {
+		// Without process evidence, report the groups as live so the caller
+		// keeps its bounded wait and kill fallback rather than passing.
+		return groups
+	}
+	live := map[int]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		pgid, err := strconv.Atoi(fields[0])
+		if err != nil {
+			continue
+		}
+		live[pgid] = true
+	}
+	var alive []int
+	for _, group := range groups {
+		if live[group] {
+			alive = append(alive, group)
+		}
+	}
+	return alive
 }
 
 func requiredStages(scenario string) []string {

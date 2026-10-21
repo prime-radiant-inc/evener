@@ -160,6 +160,20 @@ async function observedRequest(method, label) {
   assert.ok(found, `${label}: the browser never sent ${method} (saw ${JSON.stringify(frames.map((f) => f?.method))})`);
   return found;
 }
+// The request is sent by a flow that first saves and refreshes, so it may
+// arrive after the click returns. Poll for it instead of racing the handoff.
+async function waitObservedRequest(method, label, timeoutMs = 20000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const sent = JSON.parse(await read(`JSON.stringify(window.__onboardingAppWireFrames?.sent ?? [])`));
+    const found = sent.map(parseFrame).find((frame) => frame?.method === method);
+    if (found) return found;
+    if (Date.now() > deadline) {
+      throw new Error(`${label}: the browser never sent ${method} (saw ${JSON.stringify(sent.map(parseFrame).map((f) => f?.method))})`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
 // Wait for the real reply to one already-sent request. Production writes this
 // frame only after the RPC handler returned, which for device polling means
 // the token exchange, the endpoint verification and the credential write or
@@ -284,11 +298,19 @@ try {
     await button("OpenAI");
     await fill("#provider-credential", "onboarding-fixture-key-not-a-secret");
     await button("Save and check");
+    // The automatic path must survive a real failed check: observe the
+    // connector's own evener/auth/test reply as a failure, then let the
+    // fixture answer healthy, so completion requires the connector's own
+    // retry timer rather than another reader consuming a one-off 503.
+    const firstCheck = await waitObservedRequest("evener/auth/test", "automatic check");
+    const firstReply = await observedResponse(firstCheck.id, "automatic check");
+    assert.equal(firstReply?.result?.status, "endpoint_failure", JSON.stringify(firstReply));
+    await browserHandledRpcReply();
+    await checkpoint(undefined, "auto-check-failed");
     await waitForAutomaticCompletion();
     await pause(3000);
-    // The connector's own first failure and retry are what made this return
-    // possible; no manual recovery action ran. The checkpoint also proves no
-    // session, launch or generation exists before Start.
+    // The checkpoint also proves no session, launch or generation exists
+    // before Start.
     await checkpoint(2);
     assert.equal(await read(`document.querySelector('[contenteditable="true"]').textContent.includes(${JSON.stringify(task)})`), true);
     assert.ok(

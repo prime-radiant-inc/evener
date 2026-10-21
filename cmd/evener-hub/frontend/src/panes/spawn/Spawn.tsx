@@ -390,7 +390,11 @@ function SpawnForm({
   // will use - including while the manifest is still settling, when the
   // draft already names the host.
   const providerSetup = useProviderSetup(submittedSource);
-  const [connectingProvider, setConnectingProvider] = useState(false);
+  // The generation of the attempt whose dialog is mounted, or null. It is the
+  // attempt's generation rather than a bare flag so a revocation can close
+  // exactly the dialog it retired: a cleanup that runs after a replacement
+  // setup opened must leave that newer owner alone.
+  const [connectingProvider, setConnectingProvider] = useState<number | null>(null);
   // The draft remembers which source/harness/cwd scope entered onboarding, so
   // the uncredentialed-default fallback stays suppressed there across a pane
   // remount. It is one field per draft (not a pane-wide set), which is what
@@ -415,7 +419,7 @@ function SpawnForm({
   const closeProviderSetup = useCallback(() => {
     providerCompletion.current = null;
     completionOwned.current = null;
-    setConnectingProvider(false);
+    setConnectingProvider(null);
   }, []);
   // ConnectProviderDialog is a CONTROLLER-scoped editor: it reads and writes the
   // package store's top-level fields and issues its auth/test flows on the plain
@@ -434,7 +438,7 @@ function SpawnForm({
     providerDialogHostRef.current = submittedSource;
     providerCompletion.current = null;
     completionOwned.current = null;
-    setConnectingProvider(false);
+    setConnectingProvider(null);
   }, [submittedSource]);
   // The chunk hook owns the lazy payload and its cache-busted retry state;
   // see ConnectProviderDialogBoundary.tsx.
@@ -499,23 +503,27 @@ function SpawnForm({
     // operation and must not undo a preserved choice before the access check
     // even succeeds.
     completionOwned.current = { attempt, outstanding: 0, finished: false };
-    setConnectingProvider(true);
+    setConnectingProvider(attempt.generation);
   }, [draft, submittedSource, setProviderConnectionScope]);
   // The completion belongs to the attempt, not to the pane: leaving this draft,
   // changing the host/harness/directory it was opened from, navigating away or
   // unmounting retires it. Cleanup on each dependency change is what makes an
   // A -> B -> A round trip unable to revive A's old completion.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: draft/host/harness/directory are deliberate revocation triggers - the body only clears the ref, but must re-run whenever they change
+  // biome-ignore lint/correctness/useExhaustiveDependencies: draft/host/harness/directory are deliberate revocation triggers - the body retires the attempt, but must re-run whenever they change
   useEffect(() => {
     const revoke = () => {
+      const retired = providerCompletion.current?.generation ?? null;
       providerCompletion.current = null;
       completionOwned.current = null;
+      // Dismiss the originating dialog with its attempt. Ownership is the
+      // generation, so a replacement dialog opened between this revocation's
+      // commit and its cleanup is not closed with it.
+      setConnectingProvider((owner) => (owner !== null && owner === retired ? null : owner));
     };
     window.addEventListener("popstate", revoke);
     return () => {
       window.removeEventListener("popstate", revoke);
-      providerCompletion.current = null;
-      completionOwned.current = null;
+      revoke();
     };
   }, [draft, submittedSource, harness, cwd]);
   const [directoryOpen, setDirectoryOpen] = useState(false);
@@ -1226,7 +1234,7 @@ function SpawnForm({
       const ownsFocus =
         dialog !== null &&
         (activeElement === null || activeElement === document.body || dialog.contains(activeElement));
-      setConnectingProvider(false);
+      setConnectingProvider(null);
       modelListCache.current.entries.clear();
       const credentialGenerationAtRequest = credentialChangeGenerationRef.current;
       const existing = completionOwned.current;
@@ -3056,7 +3064,7 @@ function SpawnForm({
             "Effective access is being resolved."
           )}
         </InlineNotice>
-        {connectingProvider && providerSetupIsLocal && (
+        {connectingProvider !== null && providerSetupIsLocal && (
           <ConnectProviderDialogBoundary
             key={dialogChunkVersion}
             onRetry={retryProviderDialog}

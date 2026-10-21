@@ -29,10 +29,11 @@ Builds the ordinary New-session draft, stages a real image attachment, chooses
 the directory, saves an API key through the guided connector, and then waits
 without any **Retry**, **Continue** or **Choose model** action. Coverage:
 
-- The fixture's first model-list request is a 503. The connector retries it on
-  its own timer and completes; the checkpoint requires at least the failure and
-  retry, and no session, process launch or provider generation exists before
-  Start.
+- The fixture withholds healthy model listings until the browser observes the
+  connector's own failed `evener/auth/test` reply and reports the checkpoint's
+  `auto-check-failed` stage. The connector then retries on its own timer and
+  completes; the checkpoint requires both the failure and a healthy retry, and
+  no session, process launch or provider generation exists before Start.
 - Setup dismisses automatically with no forced model picker or success page.
   The untouched draft adopts the fixture's configured default, which is the
   second listed model (`gpt-4o`), not the first.
