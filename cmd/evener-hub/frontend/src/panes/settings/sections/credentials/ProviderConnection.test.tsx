@@ -683,7 +683,7 @@ test("an unchanged listing read keeps a pending OAuth start and opens its browse
   expect(reasonShown("changed")).toBe(false);
 });
 
-test.each([
+const PENDING_WRITE_CASES = [
   { name: "API key", provider: "Anthropic", label: "API key", method: "evener/auth/apiKey/set" },
   {
     name: "credential JSON",
@@ -691,7 +691,8 @@ test.each([
     label: "Credential JSON",
     method: "evener/auth/credentialJson/set",
   },
-])(
+] as const;
+test.each(PENDING_WRITE_CASES)(
   "an unchanged listing read during a pending $name write does not retire its automatic check",
   async ({ provider: providerName, label, method }) => {
     const { user, client, connected } = setup();
@@ -967,6 +968,9 @@ test("a temporary endpoint failure retries on the paced schedule and completes o
   });
   expect(attempts).toBe(1);
   expect(connected).not.toHaveBeenCalled();
+  // Saved access plus a scheduled automatic retry is said out loud, so a
+  // transient failure does not read as a terminal rejection.
+  expect(document.querySelector('[data-retry="scheduled"]')?.textContent).toMatch(/access is saved/i);
 
   // First retry is one second after the failed check, the next two seconds.
   client.on("evener/auth/test", ({ provider }) => {
@@ -982,6 +986,7 @@ test("a temporary endpoint failure retries on the paced schedule and completes o
   });
   expect(attempts).toBe(2);
   expect(connected).not.toHaveBeenCalled();
+  expect(document.querySelector('[data-retry="scheduled"]')).toBeTruthy();
   await act(async () => {
     await vi.advanceTimersByTimeAsync(1999);
   });
@@ -996,6 +1001,23 @@ test("a temporary endpoint failure retries on the paced schedule and completes o
   await act(async () => {
     await vi.advanceTimersByTimeAsync(0);
   });
+});
+
+test("saved OAuth access awaiting an automatic retry does not invite another sign-in", async () => {
+  const { user, client } = setup(savedList("openai-codex", { activeSource: "oauth", hasStoredOAuth: true }));
+  client.on("evener/auth/test", ({ provider }) => ({ provider, status: "endpoint_failure", message: "" }));
+  await choose(user, "OpenAI Codex");
+  expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Retry check" }));
+
+  await waitFor(() => expect(reasonShown("check-failed")).toBe(true));
+  expect(document.querySelector('[data-retry="scheduled"]')?.textContent).toMatch(/access is saved/i);
+  // Recovery is already running on stored access: offering a fresh acquisition
+  // would invite a needless sign-in.
+  expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
+  // Manual retry and dismissal are still the person's.
+  expect(screen.getByRole("button", { name: "Retry check" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Close, access stays saved" })).toBeTruthy();
 });
 
 test("a manual retry cancels the scheduled one so checks do not overlap", async () => {

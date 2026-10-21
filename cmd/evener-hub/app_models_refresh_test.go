@@ -131,13 +131,21 @@ func TestModelListExplicitRefreshRecoversProvider(t *testing.T) {
 				t.Fatalf("explicit retry retained stale provider result: models=%+v calls=%d before=%d", fresh.Data, calls.Load(), prior)
 			}
 			after := calls.Load()
-			if len(list(false).Data) != len(fresh.Data) || calls.Load() != after {
+			cachedAgain := list(false).Data
+			if len(cachedAgain) != len(fresh.Data) || calls.Load() != after {
 				t.Fatal("refresh did not populate normal cached reads")
 			}
-			for _, model := range list(false).Data {
-				if model.Provider == "refreshfixture" && model.Model == "refresh-model-sentinel" && !model.InstanceDefault {
-					t.Fatalf("cached model/list dropped the instance-default marker: %+v", model)
+			foundCached := false
+			for _, model := range cachedAgain {
+				if model.Provider == "refreshfixture" && model.Model == "refresh-model-sentinel" {
+					foundCached = true
+					if !model.InstanceDefault {
+						t.Fatalf("cached model/list dropped the instance-default marker: %+v", model)
+					}
 				}
+			}
+			if !foundCached {
+				t.Fatalf("cached model/list lost the sentinel row: %+v", cachedAgain)
 			}
 		})
 	}

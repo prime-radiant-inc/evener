@@ -374,6 +374,9 @@ function SelectedConnection({
   // terminal.
   const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryAttempt = useRef(0);
+  // Mirrors whether retryTimer is armed, for presentation only: a ref change
+  // does not re-render. Cleared whenever the timer is cleared or fires.
+  const [retryScheduled, setRetryScheduled] = useState(false);
   const retryRunRef = useRef<((token: number, expectedSource?: string) => Promise<void>) | null>(null);
   // What automatic work still owes the user, independent of the request token
   // that a reconnect makes obsolete: a read/check reconciliation anchored on
@@ -402,6 +405,7 @@ function SelectedConnection({
       clearTimeout(retryTimer.current);
       retryTimer.current = null;
     }
+    setRetryScheduled(false);
   }, []);
   useEffect(() => () => clearRetry(), [clearRetry]);
   const scheduleRetryRef = useRef<(expectedSource?: string) => void>(() => {});
@@ -411,8 +415,10 @@ function SelectedConnection({
       clearRetry();
       const delay = RETRY_DELAYS_MS[Math.min(retryAttempt.current, RETRY_DELAYS_MS.length - 1)] ?? 15000;
       retryAttempt.current += 1;
+      setRetryScheduled(true);
       retryTimer.current = setTimeout(() => {
         retryTimer.current = null;
+        setRetryScheduled(false);
         if (!active.current) return;
         // A retry that comes due during a reconnect waits for the recovered
         // connection instead of spending its attempt on a request that cannot
@@ -1111,7 +1117,10 @@ function SelectedConnection({
                 the Evener host.
               </p>
             )}
-            {modes.includes("oauth") && !busy && (
+            {/* While an automatic retry for saved access is pending, another
+                acquisition is not what the flow needs: the stored access is
+                already there and recovery is already scheduled. */}
+            {modes.includes("oauth") && !busy && !retryScheduled && (
               <Button disabled={busy || unavailable} onClick={() => void signIn()}>
                 Sign in
               </Button>
@@ -1161,6 +1170,11 @@ function SelectedConnection({
         {error && (
           <InlineNotice tone="danger" tabIndex={-1} ref={errorRef} data-reason={error.reason}>
             {error.message}
+          </InlineNotice>
+        )}
+        {retryScheduled && storedAccess && (
+          <InlineNotice live="status" data-retry="scheduled">
+            Access is saved. An automatic retry is scheduled; you can also retry now.
           </InlineNotice>
         )}
         {connection !== "ready" && (

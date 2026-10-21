@@ -1668,7 +1668,17 @@ test("automatic connection completion leaves a failed fresh catalogue as inline 
       if (saved && params.refresh) throw new WireError("fixture refresh failure", -32000);
       return {
         data: saved
-          ? [{ provider: "team-local", model: "stale-display", displayName: "team-local/stale-display" }]
+          ? [
+              {
+                provider: "team-local",
+                model: "stale-display",
+                displayName: "team-local/stale-display",
+                // Marked as the instance default so an implementation that
+                // adopted a cached marked row after a failed fresh read would
+                // be caught here, not excused by the marker being absent.
+                instanceDefault: true,
+              },
+            ]
           : [],
       };
     });
@@ -1690,6 +1700,9 @@ test("automatic connection completion leaves a failed fresh catalogue as inline 
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(modelState()).toBe("required");
   expect(modelValue().textContent).not.toContain("team-local/chosen");
+  // The marked cached row is display data only: a failed fresh discovery is
+  // not evidence, so it must not be adopted automatically.
+  expect(modelValue().textContent).not.toContain("stale-display");
   // Display rows survive the failed fresh read, but they are not evidence.
   await user.click(modelTrigger());
   expect(await screen.findByRole("option", { name: /stale-display/ })).toBeTruthy();
