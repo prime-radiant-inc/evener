@@ -90,6 +90,10 @@ export class DraftDocument {
 		this.retry();
 	}
 
+	get targetKey(): string {
+		return JSON.stringify([this.destination.hubId, this.destination.sessionRef]);
+	}
+
 	getSnapshot = (): DraftSnapshot => this.snapshot;
 	subscribe = (listener: () => void) => {
 		this.listeners.add(listener);
@@ -221,10 +225,7 @@ export class DraftDocument {
 	}
 
 	private isEditedSource(source: MutationRecoveryRecord): boolean {
-		return (
-			source.recoveryKind === "editing" &&
-			source.targetRef === JSON.stringify([this.destination.hubId, this.destination.sessionRef])
-		);
+		return source.recoveryKind === "editing" && source.targetRef === this.targetKey;
 	}
 
 	addImage(image: DraftImageData, cursor?: number) {
@@ -410,7 +411,7 @@ export class DraftDocument {
 			this.forgotten ||
 			!loaded ||
 			error ||
-			commit.targetRef !== JSON.stringify([this.destination.hubId, this.destination.sessionRef]) ||
+			commit.targetRef !== this.targetKey ||
 			record.unconfirmed === null ||
 			!sameSources(record.unconfirmedComposer?.recoveryIds, commit.sourceIds)
 		)

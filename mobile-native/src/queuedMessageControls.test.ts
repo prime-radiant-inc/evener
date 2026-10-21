@@ -1,0 +1,676 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, expect, test, vi } from "vitest";
+import { buildComposerInput, type InputAttachment } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { DraftDocument } from "./draftDocument";
+import { DraftRepository } from "./draftRepository";
+import { NativeMutationRuntime, nativeMutationTargetKey, type NativeMutationRequest } from "./nativeMutationRuntime";
+import { editQueuedMessageIntoDraft, reconcileEditedResends } from "./queuedMessageControls";
+import { openSqliteSyncDouble } from "./sqliteSync.testkit";
+
+vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
+vi.mock("expo-crypto", async () => ({
+	randomUUID: (await import("node:crypto")).randomUUID,
+	getRandomValues: (array: Uint8Array) => array,
+}));
+const cleanups: Array<() => Promise<void>> = [];
+afterEach(async () => {
+	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+});
+const destination = { hubId: "hub", sessionRef: "session" };
+const key = nativeMutationTargetKey(destination.hubId, destination.sessionRef);
+function request(extra: Partial<NativeMutationRequest> = {}): NativeMutationRequest {
+	return {
+		hubId: "hub",
+		targetRef: "session",
+		threadId: "thread",
+		instanceId: "instance",
+		kind: "send",
+		input: [{ type: "text", text: "same" }],
+		...extra,
+	} as NativeMutationRequest;
+}
+function fixture() {
+	const directory = mkdtempSync(join(process.env.EVENER_SCRATCH_DIR ?? tmpdir(), "queued-controls-"));
+	const draftPath = join(directory, "drafts.sqlite");
+	const mutationPath = join(directory, "mutations.sqlite");
+	let drafts = openSqliteSyncDouble(draftPath);
+	let mutations = openSqliteSyncDouble(mutationPath);
+	let next = 0;
+	const options = { createMutationId: () => `mutation-${++next}`, setInterval: () => 1, clearInterval: () => {} };
+	let runtime = new NativeMutationRuntime(mutations.port, options);
+	let repository = new DraftRepository(drafts.port);
+	let document = new DraftDocument(() => repository, destination);
+	let client = new FakeClient("closed");
+	const clients = [client];
+	const register = () =>
+		runtime.registerTarget("hub", "session", client, { threadId: "thread", instanceId: "instance" });
+	register();
+	const f = {
+		get runtime() {
+			return runtime;
+		},
+		get document() {
+			return document;
+		},
+		get repository() {
+			return repository;
+		},
+		get drafts() {
+			return drafts.database;
+		},
+		get mutations() {
+			return mutations.database;
+		},
+		get client() {
+			return client;
+		},
+		get calls() {
+			return clients.flatMap((transport) => transport.calls);
+		},
+		connect() {
+			client = new FakeClient("ready");
+			clients.push(client);
+			register();
+		},
+		async reopen() {
+			await runtime.stop();
+			document.forget();
+			drafts.database.close();
+			mutations.database.close();
+			drafts = openSqliteSyncDouble(draftPath);
+			mutations = openSqliteSyncDouble(mutationPath);
+			runtime = new NativeMutationRuntime(mutations.port, options);
+			repository = new DraftRepository(drafts.port);
+			document = new DraftDocument(() => repository, destination);
+			register();
+		},
+		reloadDraft() {
+			document.forget();
+			document = new DraftDocument(() => repository, destination);
+		},
+		async enqueue(extra: Partial<NativeMutationRequest> = {}) {
+			await runtime.submit(request(extra));
+			const rows = (await runtime.read(key)).outbox;
+			return rows[rows.length - 1].clientMutationId;
+		},
+	};
+	cleanups.push(async () => {
+		await runtime.stop();
+		drafts.database.close();
+		mutations.database.close();
+		rmSync(directory, { recursive: true });
+	});
+	return f;
+}
+
+test("offline edit and remove distinguish identical messages and restore exact IDs after reopen", async () => {
+	const f = fixture();
+	const a = await f.enqueue();
+	const b = await f.enqueue();
+	f.document.edit("current");
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, a, f.document)).toBe("restored");
+	expect(await f.runtime.removeQueuedMessage(b, key)).toBe(true);
+	expect(f.document.getSnapshot().record.draft).toBe("current\n\nsame");
+	expect(f.document.getSnapshot().record.composer?.recoveryIds).toEqual([a]);
+	expect((await f.runtime.read(key)).outbox).toEqual([]);
+	await f.reopen();
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, a, f.document)).toBe("already-restored");
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, b, f.document)).toBe("lost");
+	expect(f.document.getSnapshot().record.draft).toBe("current\n\nsame");
+	expect(f.client.calls).toEqual([]);
+});
+
+test("resumes a durable editing claim before append without reclaiming", async () => {
+	const f = fixture();
+	const id = await f.enqueue();
+	expect(await f.runtime.editQueuedMessage(id, key)).toBeDefined();
+	expect(f.document.getSnapshot().record.draft).toBe("");
+	await f.reopen();
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, id, f.document)).toBe("restored");
+	expect((await f.runtime.read(key)).recovery.map((r) => r.clientMutationId)).toEqual([id]);
+	expect(f.client.calls).toEqual([]);
+});
+
+test("appends against latest work while the claim awaits and leaves a won claim intact if forgotten", async () => {
+	const f = fixture();
+	const a = await f.enqueue();
+	const b = await f.enqueue();
+	const editing = editQueuedMessageIntoDraft(f.runtime, key, a, f.document);
+	f.document.edit("newer");
+	expect(await editing).toBe("restored");
+	expect(f.document.getSnapshot().record.draft).toBe("newer\n\nsame");
+	const unsubscribe = f.runtime.subscribeStorage(() => f.document.forget());
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, b, f.document)).toBe("blocked");
+	unsubscribe();
+	expect((await f.runtime.read(key)).recovery.map((r) => r.clientMutationId)).toEqual([a, b]);
+	await f.reopen();
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, b, f.document)).toBe("restored");
+	expect(f.document.getSnapshot().record.draft).toBe("newer\n\nsame\n\nsame");
+});
+
+test("failed draft and mutation writes retain owners and recover after storage repair", async () => {
+	const f = fixture();
+	const id = await f.enqueue();
+	f.document.edit("current");
+	f.mutations.exec("PRAGMA query_only = ON");
+	await expect(editQueuedMessageIntoDraft(f.runtime, key, id, f.document)).rejects.toBeInstanceOf(Error);
+	f.mutations.exec("PRAGMA query_only = OFF");
+	expect((await f.runtime.read(key)).outbox.map((r) => r.clientMutationId)).toEqual([id]);
+	f.drafts.exec("PRAGMA query_only = ON");
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, id, f.document)).toBe("blocked");
+	expect(f.repository.read(destination).draft).toBe("current");
+	expect((await f.runtime.read(key)).recovery.map((r) => r.clientMutationId)).toEqual([id]);
+	f.drafts.exec("PRAGMA query_only = OFF");
+	f.document.retry();
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, id, f.document)).toBe("restored");
+	await f.reopen();
+	expect(f.document.getSnapshot().record.draft).toBe("current\n\nsame");
+});
+
+test("unavailable documents do not claim and losing claims do not copy", async () => {
+	const f = fixture();
+	const id = await f.enqueue();
+	f.document.forget();
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, id, f.document)).toBe("blocked");
+	expect((await f.runtime.read(key)).outbox.map((r) => r.clientMutationId)).toEqual([id]);
+	await f.reopen();
+	const editing = editQueuedMessageIntoDraft(f.runtime, key, id, f.document);
+	await f.runtime.storage.markAttempted(id);
+	expect(await editing).toBe("lost");
+	expect(f.document.getSnapshot().record.draft).toBe("");
+	expect(f.client.calls).toEqual([]);
+});
+
+test("wrong-document Edit does not claim or retire the selected source", async () => {
+	const f = fixture();
+	const id = await f.enqueue();
+	const other = new DraftDocument(() => f.repository, { ...destination, sessionRef: "other" });
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, id, other)).toBe("blocked");
+	expect((await f.runtime.read(key)).outbox.map((r) => r.clientMutationId)).toEqual([id]);
+	expect((await f.runtime.read(key)).recovery).toEqual([]);
+	expect(other.getSnapshot().record.draft).toBe("");
+});
+
+type Fixture = ReturnType<typeof fixture>;
+const sourceImage: InputAttachment = { marker: 9, mediaType: "image/png", name: "source.png", data: "AP8H" };
+async function richSource(f: Fixture) {
+	const text = "[image 9] /skill";
+	const composer = {
+		text,
+		attachments: [sourceImage],
+		skillNames: ["skill"],
+		commandNames: ["command"],
+		mentions: [{ kind: "skill" as const, name: "skill", offset: 10 }],
+	};
+	return f.enqueue({
+		input: buildComposerInput(text, [sourceImage], composer.skillNames, composer.commandNames, composer.mentions),
+		composer,
+	});
+}
+async function explicitSend(f: Fixture) {
+	await f.document.submit(async (text, images, context) => {
+		expect(f.repository.read(destination).unconfirmed).toBe(text);
+		expect(f.repository.read(destination).unconfirmedComposer?.recoveryIds).toEqual(context.recoverySourceIds);
+		await f.runtime.submit(
+			request({
+				input: buildComposerInput(
+					text,
+					images,
+					context.composer?.skillNames,
+					context.composer?.commandNames,
+					context.composer?.mentions,
+				),
+				...context,
+			}),
+		);
+		return true;
+	});
+}
+function newerWork(f: Fixture) {
+	f.document.edit("newer /later");
+	f.document.addImage({ id: "newer-image", marker: 20, mediaType: "image/png", data: "AQID" });
+	f.repository.write(destination, {
+		...f.document.getSnapshot().record,
+		composer: {
+			skillNames: ["later"],
+			commandNames: ["later-command"],
+			mentions: [{ kind: "skill", name: "later", offset: 6 }],
+		},
+	});
+	f.reloadDraft();
+	return structuredClone(f.document.getSnapshot().record);
+}
+async function connectAndSettle(f: Fixture) {
+	f.connect();
+	f.client.on(
+		"turn/start",
+		(params) =>
+			({
+				receipt: {
+					clientMutationId: params.clientMutationId,
+					disposition: "applied",
+					threadId: "thread",
+					turnId: "turn",
+					projectionState: "pending",
+				},
+				turn: { id: "turn" },
+			}) as never,
+	);
+	f.client.emitStateChange("ready");
+	await f.runtime.start();
+	const lease = f.runtime.beginAuthoritativeRead("hub", "session", f.client);
+	expect(lease).toBeDefined();
+	await f.runtime.reconcileAuthoritativeRead(lease!, {
+		thread: {
+			id: "thread",
+			status: { type: "idle" },
+			evener: {
+				queue: { revision: 0, clientMutationIds: [] },
+				ref: "session",
+				instanceId: "instance",
+				mutationStateAuthoritative: true,
+			},
+		},
+	} as unknown as import("@evener/appwire-client").ThreadReadResponse);
+	// Dispatch runs asynchronously and exposes storage notifications rather than a completion promise.
+	await vi.waitFor(async () => expect((await f.runtime.read(key)).outbox).toEqual([]));
+	f.client.emitStateChange("closed");
+}
+const cuts = [
+	"edit claim",
+	"draft append",
+	"resend admission",
+	"outbox settlement",
+	"draft confirmation",
+	"mutation receipt acknowledgment",
+	"draft acknowledgment-marker deletion",
+] as const;
+test.each(cuts)("editedResendSurvivesEveryDatabaseCutPoint: %s", async (cut) => {
+	const f = fixture();
+	const a = await richSource(f);
+	const b = await richSource(f);
+	const removed = await richSource(f);
+	expect(await f.runtime.removeQueuedMessage(removed, key)).toBe(true);
+	for (const id of [a, b]) expect(await f.runtime.editQueuedMessage(id, key)).toBeDefined();
+	expect((await f.runtime.read(key)).outbox).toEqual([]);
+	expect((await f.runtime.read(key)).recovery.map((r) => r.clientMutationId)).toEqual([a, b]);
+	expect(f.document.getSnapshot().record.composer).toBeUndefined();
+	if (cut === "edit claim") await f.reopen();
+	for (const id of [a, b]) expect(await editQueuedMessageIntoDraft(f.runtime, key, id, f.document)).toBe("restored");
+	expect(f.document.getSnapshot().record.composer?.recoveryIds).toEqual([a, b]);
+	expect(f.document.getSnapshot().record.composer).toEqual({
+		recoveryIds: [a, b],
+		skillNames: ["skill"],
+		commandNames: ["command"],
+		mentions: [
+			{ kind: "skill", name: "skill", offset: 10 },
+			{ kind: "skill", name: "skill", offset: 28 },
+		],
+	});
+	expect(f.document.imagePreviews().map((i) => i.data)).toEqual(["AP8H", "AP8H"]);
+	if (cut === "draft append") await f.reopen();
+	f.document.edit(`${f.document.getSnapshot().record.draft} revised`);
+	const captured = structuredClone(f.document.getSnapshot().record);
+	expect(f.client.calls).toEqual([]);
+	await explicitSend(f);
+	const receipt = await f.runtime.readRecoveryResend(key, [b, a]);
+	expect(receipt).toEqual({ targetRef: key, sourceIds: [a, b], clientMutationId: "mutation-4" });
+	expect((await f.runtime.read(key)).recovery).toEqual([]);
+	expect((await f.runtime.read(key)).outbox.map((r) => r.clientMutationId)).toEqual(["mutation-4"]);
+	expect(f.document.getSnapshot().record.unconfirmed).toBe(captured.draft);
+	expect(f.document.getSnapshot().record.unconfirmedComposer).toEqual(captured.composer);
+	expect(f.document.imagePreviews(f.document.getSnapshot().record.unconfirmedImages).map((i) => i.data)).toEqual([
+		"AP8H",
+		"AP8H",
+	]);
+	const newer = newerWork(f);
+	if (cut === "resend admission") await f.reopen();
+	await connectAndSettle(f);
+	expect(f.client.calls.map((c) => c.params)).toEqual([expect.objectContaining({ clientMutationId: "mutation-4" })]);
+	expect(f.client.calls[0].params).toMatchObject({
+		input: expect.arrayContaining([
+			{ type: "image", mediaType: "image/png", name: "source.png", data: "AP8H" },
+			{ type: "skill", name: "skill" },
+			{ type: "command", name: "command" },
+		]),
+	});
+	expect(await f.runtime.readRecoveryResend(key, [a, b])).toEqual(receipt);
+	expect(f.document.getSnapshot().record.unconfirmed).toBe(captured.draft);
+	if (cut === "outbox settlement") await f.reopen();
+	if (cut === "draft confirmation") {
+		f.mutations.exec("PRAGMA query_only = ON");
+		await expect(reconcileEditedResends(f.runtime, key, f.document)).rejects.toBeInstanceOf(Error);
+		expect(f.repository.read(destination).unconfirmed).toBeNull();
+		expect(f.repository.read(destination).recoveryResendAcks).toEqual(["mutation-4"]);
+		expect(await f.runtime.readRecoveryResend(key, [a, b])).toEqual(receipt);
+		await f.reopen();
+	} else if (cut === "mutation receipt acknowledgment") {
+		const unsubscribe = f.runtime.subscribeStorage(() => f.drafts.exec("PRAGMA query_only = ON"));
+		await reconcileEditedResends(f.runtime, key, f.document);
+		unsubscribe();
+		expect(await f.runtime.readRecoveryResend(key, [a, b])).toBeUndefined();
+		expect(f.repository.read(destination).unconfirmed).toBeNull();
+		expect(f.repository.read(destination).recoveryResendAcks).toEqual(["mutation-4"]);
+		await f.reopen();
+	}
+	await reconcileEditedResends(f.runtime, key, f.document);
+	expect(f.repository.read(destination).recoveryResendAcks).toBeUndefined();
+	if (cut === "draft acknowledgment-marker deletion") await f.reopen();
+	await Promise.all([
+		reconcileEditedResends(f.runtime, key, f.document),
+		reconcileEditedResends(f.runtime, key, f.document),
+	]);
+	expect(f.document.getSnapshot().record).toEqual({
+		...newer,
+		unconfirmed: null,
+		unconfirmedImages: undefined,
+		unconfirmedComposer: undefined,
+	});
+	expect(f.document.imagePreviews().map((i) => i.data)).toEqual(["AQID"]);
+	expect(await f.runtime.readRecoveryResend(key, [a, b])).toBeUndefined();
+	expect((await f.runtime.read(key)).recovery).toEqual([]);
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, a, f.document)).toBe("lost");
+	await expect(f.runtime.submit(request({ recoverySourceIds: [a, b] }))).rejects.toBeInstanceOf(Error);
+	expect((await f.runtime.read(key)).outbox).toEqual([]);
+	await f.reopen();
+	await connectAndSettle(f);
+	expect(f.calls.map((c) => c.params)).toEqual([expect.objectContaining({ clientMutationId: "mutation-4" })]);
+});
+
+test("retained exact sources restore the edited captured revision beside newer work without automatic resend", async () => {
+	const f = fixture();
+	const a = await richSource(f);
+	const b = await richSource(f);
+	for (const id of [a, b]) await editQueuedMessageIntoDraft(f.runtime, key, id, f.document);
+	f.document.edit("revision [image 1] [image 2]");
+	f.mutations.exec("PRAGMA query_only = ON");
+	await expect(explicitSend(f)).rejects.toBeInstanceOf(Error);
+	f.mutations.exec("PRAGMA query_only = OFF");
+	expect(f.document.getSnapshot().record.unconfirmed).toBe("revision [image 1] [image 2]");
+	expect((await f.runtime.read(key)).recovery.map((r) => r.clientMutationId)).toEqual([a, b]);
+	newerWork(f);
+	await f.reopen();
+	await Promise.all([
+		reconcileEditedResends(f.runtime, key, f.document),
+		reconcileEditedResends(f.runtime, key, f.document),
+	]);
+	expect(f.document.getSnapshot().record.unconfirmed).toBeNull();
+	expect(f.document.getSnapshot().record.draft).toBe("newer /later[image 20]\n\nrevision [image 1] [image 2]");
+	expect(f.document.getSnapshot().record.composer?.recoveryIds).toEqual([a, b]);
+	expect(f.document.imagePreviews().map((i) => i.data)).toEqual(["AQID", "AP8H", "AP8H"]);
+	expect(f.client.calls).toEqual([]);
+	expect((await f.runtime.read(key)).outbox).toEqual([]);
+	await explicitSend(f);
+	await reconcileEditedResends(f.runtime, key, f.document);
+	expect(f.document.getSnapshot().record.unconfirmed).toBeNull();
+	expect((await f.runtime.read(key)).outbox).toHaveLength(1);
+});
+
+test("wrong-target reconciliation cannot settle captured ownership or acknowledge persisted markers", async () => {
+	const f = fixture();
+	const id = await richSource(f);
+	await editQueuedMessageIntoDraft(f.runtime, key, id, f.document);
+	await explicitSend(f);
+	const receipt = await f.runtime.readRecoveryResend(key, [id]);
+	const before = structuredClone(f.document.getSnapshot().record);
+	const otherKey = nativeMutationTargetKey("other-hub", "session");
+	await reconcileEditedResends(f.runtime, otherKey, f.document);
+	expect(f.document.getSnapshot().record).toEqual(before);
+	expect(await f.runtime.readRecoveryResend(key, [id])).toEqual(receipt);
+	expect(f.document.settleEditedResend(receipt!)).toBe(true);
+	await reconcileEditedResends(f.runtime, otherKey, f.document);
+	expect(f.document.getSnapshot().record.recoveryResendAcks).toEqual([receipt!.clientMutationId]);
+	expect(await f.runtime.readRecoveryResend(key, [id])).toEqual(receipt);
+	await reconcileEditedResends(f.runtime, key, f.document);
+	expect(f.document.getSnapshot().record.recoveryResendAcks).toBeUndefined();
+	expect(await f.runtime.readRecoveryResend(key, [id])).toBeUndefined();
+});
+
+test("partial receipts and incomplete retained sources never prove an absent outbox capture safe", async () => {
+	const f = fixture();
+	const a = await richSource(f);
+	const b = await richSource(f);
+	for (const id of [a, b]) await editQueuedMessageIntoDraft(f.runtime, key, id, f.document);
+	// Real draft capture and real admission of only one source produce a nonmatching receipt.
+	await f.document.submit(async (text, images, context) => {
+		await f.runtime.submit(request({ input: buildComposerInput(text, images), ...context, recoverySourceIds: [a] }));
+		return true;
+	});
+	const partial = await f.runtime.readRecoveryResend(key, [a]);
+	expect(partial).toBeDefined();
+	await f.runtime.settleIdentities([partial!.clientMutationId]);
+	const before = structuredClone(f.document.getSnapshot().record);
+	await f.reopen();
+	await reconcileEditedResends(f.runtime, key, f.document);
+	expect((await f.runtime.read(key)).outbox).toEqual([]);
+	expect((await f.runtime.read(key)).recovery.map((r) => r.clientMutationId)).toEqual([b]);
+	expect(f.document.getSnapshot().record).toEqual(before);
+	expect(await f.runtime.readRecoveryResend(key, [a])).toEqual(partial);
+	// No retained source at all is still not proof. Neither observation resends.
+	await f.runtime.discardRecovery(b, key);
+	await reconcileEditedResends(f.runtime, key, f.document);
+	expect(f.document.getSnapshot().record).toEqual(before);
+	expect(f.client.calls).toEqual([]);
+});
+
+test.each(["confirmation", "restoration"] as const)(
+	"failed draft %s preserves captured bytes until retry succeeds",
+	async (phase) => {
+		const f = fixture();
+		const id = await richSource(f);
+		await editQueuedMessageIntoDraft(f.runtime, key, id, f.document);
+		if (phase === "confirmation") await explicitSend(f);
+		else f.document.replaceDraft("replacement");
+		const before = structuredClone(f.document.getSnapshot().record);
+		f.drafts.exec("PRAGMA query_only = ON");
+		await reconcileEditedResends(f.runtime, key, f.document);
+		expect(f.document.getSnapshot().error).not.toBeNull();
+		expect(f.repository.read(destination)).toEqual(before);
+		expect(f.document.imagePreviews(before.unconfirmedImages).map((i) => i.data)).toEqual(["AP8H"]);
+		if (phase === "confirmation") expect(await f.runtime.readRecoveryResend(key, [id])).toBeDefined();
+		else expect((await f.runtime.read(key)).recovery.map((r) => r.clientMutationId)).toEqual([id]);
+		f.drafts.exec("PRAGMA query_only = OFF");
+		// Changes made during failed persistence survive the eventual retry too.
+		f.document.edit("latest");
+		f.document.retry();
+		await reconcileEditedResends(f.runtime, key, f.document);
+		expect(f.document.getSnapshot().record.unconfirmed).toBeNull();
+		expect(f.document.getSnapshot().record.draft).toBe(
+			phase === "confirmation" ? "latest" : "latest\n\n[image 1] /skill",
+		);
+		expect(f.document.getSnapshot().record.recoveryResendAcks).toBeUndefined();
+		expect(f.client.calls).toEqual([]);
+	},
+);
+
+test.each(["mutation_sequence", "mutation_recovery"] as const)(
+	"failed fresh read of %s leaves recovery intact and a later call completes",
+	async (table) => {
+		const f = fixture();
+		const id = await richSource(f);
+		await editQueuedMessageIntoDraft(f.runtime, key, id, f.document);
+		if (table === "mutation_sequence") await explicitSend(f);
+		else {
+			f.document.edit("parked revision");
+			f.document.replaceDraft("replacement");
+		}
+		const before = structuredClone(f.document.getSnapshot().record);
+		// SQLite itself rejects the read, not an application method replacement.
+		f.mutations.exec(`ALTER TABLE ${table} RENAME TO unavailable_table`);
+		try {
+			await expect(reconcileEditedResends(f.runtime, key, f.document)).rejects.toBeInstanceOf(Error);
+		} finally {
+			f.mutations.exec(`ALTER TABLE unavailable_table RENAME TO ${table}`);
+		}
+		expect(f.repository.read(destination)).toEqual(before);
+		await reconcileEditedResends(f.runtime, key, f.document);
+		expect(f.document.getSnapshot().record.unconfirmed).toBeNull();
+		expect(f.document.getSnapshot().record.draft).toBe(
+			table === "mutation_sequence" ? "" : "replacement\n\nparked revision",
+		);
+		expect(f.client.calls).toEqual([]);
+	},
+);
+
+test("a fresh retained-source read observes removal while reconciliation is queued", async () => {
+	const f = fixture();
+	const id = await richSource(f);
+	await editQueuedMessageIntoDraft(f.runtime, key, id, f.document);
+	f.document.replaceDraft("replacement");
+	const before = structuredClone(f.document.getSnapshot().record);
+	const pending = reconcileEditedResends(f.runtime, key, f.document);
+	expect(await f.runtime.discardRecovery(id, key)).toBe(true);
+	await pending;
+	expect(f.document.getSnapshot().record).toEqual(before);
+	expect((await f.runtime.read(key)).recovery).toEqual([]);
+	expect(f.client.calls).toEqual([]);
+});
+
+test("reconciliation waits for an active explicit submit instead of restoring its retained sources", async () => {
+	const f = fixture();
+	const id = await richSource(f);
+	await editQueuedMessageIntoDraft(f.runtime, key, id, f.document);
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const sending = f.document.submit(async (text, images, context) => {
+		await gate;
+		await f.runtime.submit(request({ input: buildComposerInput(text, images), ...context }));
+		return true;
+	});
+	const captured = f.document.getSnapshot().record.unconfirmed;
+	f.document.edit("while awaiting explicit submission");
+	await reconcileEditedResends(f.runtime, key, f.document);
+	expect(f.document.getSnapshot().record.unconfirmed).toBe(captured);
+	expect((await f.runtime.read(key)).recovery.map((r) => r.clientMutationId)).toEqual([id]);
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, id, f.document)).toBe("blocked");
+	release();
+	await sending;
+	await reconcileEditedResends(f.runtime, key, f.document);
+	expect(f.document.getSnapshot().record.draft).toBe("while awaiting explicit submission");
+	expect(f.document.getSnapshot().record.unconfirmed).toBeNull();
+	expect((await f.runtime.read(key)).outbox).toHaveLength(1);
+	expect(f.client.calls).toEqual([]);
+});
+
+test("old-native gapped literal markers stay unbound beside current images across recovery and resend", async () => {
+	const f = fixture();
+	const legacy = await f.enqueue({
+		input: [
+			{ type: "text", text: "literal [image 9] gap [image 3]" },
+			{ type: "image", mediaType: "image/png", data: "AP8H" },
+		],
+	});
+	await f.reopen();
+	f.document.edit("[image 1] existing");
+	f.document.addImage({ id: "current", marker: 9, mediaType: "image/png", data: "AQID" });
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, legacy, f.document)).toBe("restored");
+	expect(f.document.getSnapshot().record.draft).toBe("[image 1] existing[image 2]\n\nliteral [image 9] gap [image 3]");
+	expect(f.document.imagePreviews().map((i) => [i.marker, i.data])).toEqual([
+		[2, "AQID"],
+		[4, "AP8H"],
+	]);
+	await f.reopen();
+	const later = await richSource(f);
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, later, f.document)).toBe("restored");
+	expect(f.document.getSnapshot().record.draft).toBe(
+		"[image 1] existing[image 2]\n\nliteral [image 9] gap [image 3]\n\n[image 5] /skill",
+	);
+	expect(f.document.imagePreviews().map((i) => [i.marker, i.data])).toEqual([
+		[2, "AQID"],
+		[4, "AP8H"],
+		[5, "AP8H"],
+	]);
+	await explicitSend(f);
+	await f.reopen();
+	await reconcileEditedResends(f.runtime, key, f.document);
+	expect(f.document.getSnapshot().record.unconfirmed).toBeNull();
+	const [row] = (await f.runtime.read(key)).outbox;
+	expect(
+		(row.payload.input as Array<{ type: string; data?: string }>).filter((i) => i.type === "image").map((i) => i.data),
+	).toEqual(["AQID", "AP8H", "AP8H"]);
+	expect(f.client.calls).toEqual([]);
+});
+
+test("ordinary uncertainty and rejected recovery are not edited or automatically replayed", async () => {
+	const f = fixture();
+	const id = await f.enqueue();
+	await f.runtime.storage.transferToRecovery(id, "rejected");
+	f.document.edit("ordinary");
+	await f.document.submit(async (text) => {
+		await f.runtime.submit(request({ input: [{ type: "text", text }] }));
+		return false;
+	});
+	const before = structuredClone(f.document.getSnapshot().record);
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, id, f.document)).toBe("lost");
+	await reconcileEditedResends(f.runtime, key, f.document);
+	expect(f.document.getSnapshot().record).toEqual(before);
+	expect((await f.runtime.read(key)).recovery.map((r) => [r.clientMutationId, r.recoveryKind])).toEqual([
+		[id, "rejected"],
+	]);
+	expect(f.client.calls).toEqual([]);
+});
+
+test("stored acknowledgments finish before reconciling a later capture and preserve newer typing", async () => {
+	const f = fixture();
+	const sources: string[] = [];
+	const receipts: string[] = [];
+	for (let index = 0; index < 3; index++) {
+		const id = await f.enqueue();
+		sources.push(id);
+		expect(await editQueuedMessageIntoDraft(f.runtime, key, id, f.document)).toBe("restored");
+		await explicitSend(f);
+		const receipt = await f.runtime.readRecoveryResend(key, [id]);
+		expect(receipt).toBeDefined();
+		receipts.push(receipt!.clientMutationId);
+		if (index < 2) expect(f.document.settleEditedResend(receipt!)).toBe(true);
+	}
+	expect(f.document.getSnapshot().record.recoveryResendAcks).toEqual(receipts.slice(0, 2));
+	expect(f.document.getSnapshot().record.unconfirmedComposer?.recoveryIds).toEqual([sources[2]]);
+	await f.reopen();
+	const unsubscribe = f.runtime.subscribeStorage(() => f.document.edit("typed while acknowledging"));
+	await reconcileEditedResends(f.runtime, key, f.document);
+	unsubscribe();
+	expect(f.document.getSnapshot().record.draft).toBe("typed while acknowledging");
+	expect(f.document.getSnapshot().record.unconfirmed).toBeNull();
+	expect(f.document.getSnapshot().record.recoveryResendAcks).toBeUndefined();
+	for (const id of sources) expect(await f.runtime.readRecoveryResend(key, [id])).toBeUndefined();
+	expect((await f.runtime.read(key)).outbox.map((r) => r.clientMutationId)).toEqual(receipts);
+	expect(f.calls).toEqual([]);
+});
+
+test.each(["image", "skill", "command"] as const)(
+	"%s-only edited input captures and reconciles without a text gate",
+	async (kind) => {
+		const f = fixture();
+		const attachments = kind === "image" ? [sourceImage] : [];
+		const skillNames = kind === "skill" ? ["selected"] : [];
+		const commandNames = kind === "command" ? ["selected"] : [];
+		const id = await f.enqueue({
+			input: buildComposerInput("", attachments, skillNames, commandNames),
+			composer: { text: "", attachments, skillNames, commandNames },
+		});
+		expect(await editQueuedMessageIntoDraft(f.runtime, key, id, f.document)).toBe("restored");
+		expect(f.document.getSnapshot().record.draft).toBe("");
+		await explicitSend(f);
+		expect(f.document.getSnapshot().record.unconfirmed).toBe("");
+		expect(f.document.getSnapshot().record.unconfirmedComposer?.recoveryIds).toEqual([id]);
+		await f.reopen();
+		await reconcileEditedResends(f.runtime, key, f.document);
+		expect(f.document.getSnapshot().record.unconfirmed).toBeNull();
+		expect(f.document.getSnapshot().record.recoveryResendAcks).toBeUndefined();
+		const rows = (await f.runtime.read(key)).outbox;
+		expect(rows).toHaveLength(1);
+		expect(rows[0].clientMutationId).not.toBe(id);
+		expect(rows[0].payload.input).toEqual(
+			kind === "image"
+				? [{ type: "image", mediaType: "image/png", name: "source.png", data: "AP8H" }]
+				: [{ type: kind, name: "selected" }],
+		);
+		expect(f.calls).toEqual([]);
+	},
+);
