@@ -2576,6 +2576,7 @@ function getMutationRuntime(): MutationRuntime | null {
         // block a later failure of the same turn. The tail must still be the
         // one that was latest when this submission began.
         if (
+          record.state !== "canceled" &&
           baseline !== undefined &&
           latestTurnId(model) === baseline &&
           latest?.status === "failed" &&
@@ -7684,6 +7685,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       if (!retryAdmissionCurrent(ref, failedTurnId)) return;
       try {
         let committedId: string | undefined;
+        let committedCanceled = false;
         await sendMutationIntent(
           {
             ...composerMutationIntent(ref, "send", TURN_CONTINUATION_TEXT),
@@ -7703,10 +7705,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             // the old tail clear it as a newer publication.
             onCommitted: (record) => {
               committedId = record.clientMutationId;
+              committedCanceled = record.state === "canceled";
             },
           },
         );
-        admission.markSubmitted(ref, failedTurnId, committedId);
+        // A Stop can commit the row born-canceled: it is not a pending
+        // continuation and must not open an observation marker.
+        if (!committedCanceled) admission.markSubmitted(ref, failedTurnId, committedId);
       } catch (error) {
         if (!(error instanceof MutationAdmissionLostError)) throw error;
       }
@@ -8788,6 +8793,14 @@ export function resetThreadsStoreForTests(): void {
     },
     true,
   );
+}
+
+export function submittedTailBaselineForTests(clientMutationId: string): string | undefined {
+  return submittedTailBaselines.get(clientMutationId);
+}
+
+export function rememberSubmittedTailForTests(clientMutationId: string, tail: string): void {
+  rememberSubmittedTail(clientMutationId, tail);
 }
 
 // Read-only snapshot of the thread-id routing indexes for the store's own

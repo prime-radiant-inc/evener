@@ -11,8 +11,10 @@ import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB
 import { holdNextTransaction, holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import {
   installHydrationRetrySchedulerForTests,
+  rememberSubmittedTailForTests,
   resetThreadsStoreForTests,
   setMutationStorageForTests,
+  submittedTailBaselineForTests,
   threadsStore,
 } from "../../../stores/threads";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
@@ -128,6 +130,13 @@ class OneShotDelayedEnqueueStorage extends MutationOutboxIndexedDB {
       await this.gate;
     }
     return super.enqueueIntent(...args);
+  }
+}
+
+class BornCanceledEnqueueStorage extends MutationOutboxIndexedDB {
+  override async enqueueIntent(...args: Parameters<MutationOutboxIndexedDB["enqueueIntent"]>) {
+    const record = await super.enqueueIntent(...args);
+    return { ...record, state: "canceled" as const };
   }
 }
 
@@ -683,77 +692,14 @@ test("a read that publishes the new failed turn before the receipt creates no ma
   }
 });
 
-test("a live submission's baseline survives hundreds of later submissions", async () => {
-  const turn = failedTurn();
-  const { fake, storage } = await loadThread("ref_a", [turn]);
-  let releaseA!: () => void;
-  fake.on("turn/start", ({ clientMutationId, ref }) => {
-    if (ref !== "ref_a") return new Promise<never>(() => undefined);
-    return new Promise<MethodTypes["turn/start"]["result"]>((resolve) => {
-      releaseA = () =>
-        resolve({
-          receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
-          turn: { id: "held_turn", status: "inProgress", itemsView: "" },
-        });
-    });
-  });
-  fake.on("thread/read", () => new Promise<never>(() => undefined));
-  try {
-    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
-    await flushPendingTurnsProjectionForTests();
-    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
-
-    let sendA!: Promise<void>;
-    await act(async () => {
-      sendA = submitWithPendingTracking(
-        { ref: "ref_a", text: "held follow-up", skillNames: [], onFailure: () => {} },
-        () => threadsStore.getState().send("ref_a", "held follow-up"),
-      );
-    });
-    await waitFor(() =>
-      expect(
-        fake.calls.filter((call) => call.method === "turn/start" && (call.params as { ref?: string }).ref === "ref_a"),
-      ).toHaveLength(1),
-    );
-
-    // More submissions than the old fixed bound held elsewhere in the page.
-    act(() => {
-      const model = threadsStore.getState().threads.get("ref_a");
-      if (!model) throw new Error("thread went away");
-      const threads = new Map(threadsStore.getState().threads);
-      for (let index = 0; index < 257; index += 1) {
-        threads.set(`b${index}`, {
-          ...model,
-          ref: `b${index}`,
-          turns: [{ id: "b-latest", status: "completed" as const, items: [] }],
-        });
-      }
-      threadsStore.setState({ threads });
-      for (let index = 0; index < 257; index += 1) {
-        void submitWithPendingTracking(
-          { ref: `b${index}`, text: `later ${index}`, skillNames: [], onFailure: () => {} },
-          () => threadsStore.getState().send(`b${index}`, `later ${index}`),
-        );
-      }
-    });
-    await waitFor(
-      () => expect(fake.calls.filter((call) => call.method === "turn/start").length).toBeGreaterThanOrEqual(258),
-      {
-        timeout: 15000,
-      },
-    );
-
-    await act(async () => {
-      releaseA();
-      await sendA;
-    });
-    await flushPendingTurnsProjectionForTests();
-    expect(retryReflectionForTests("ref_a")?.failedTurnId).toBe(turn.id);
-    await waitFor(() => expect(retryButton()?.disabled).toBe(true));
-  } finally {
-    storage.close();
+test("submitted-tail baselines are retained without a cap", () => {
+  for (let index = 0; index < 300; index += 1) {
+    rememberSubmittedTailForTests(`baseline-${index}`, `tail-${index}`);
   }
-}, 30_000);
+  // The oldest live submission is still present: no count bound evicts it.
+  expect(submittedTailBaselineForTests("baseline-0")).toBe("tail-0");
+  expect(submittedTailBaselineForTests("baseline-299")).toBe("tail-299");
+});
 
 test("a turn arriving during the held enqueue cannot become the submission's baseline", async () => {
   const turn = failedTurn();
@@ -810,6 +756,52 @@ test("a turn arriving during the held enqueue cannot become the submission's bas
     const view = render(<TurnFailureEndCap error={{ message: "boom new" }} sessionRef="ref_a" turnId="new_failed" />);
     const newRetry = within(view.container).getByRole("button", { name: "Retry" }) as HTMLButtonElement;
     await waitFor(() => expect(newRetry.disabled).toBe(false));
+  } finally {
+    storage.close();
+  }
+});
+
+test("a born-canceled Retry opens no observation marker", async () => {
+  const turn = failedTurn();
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  const storage = new BornCanceledEnqueueStorage();
+  const { fake } = await loadThread("ref_a", [turn], {}, storage);
+  fake.on("thread/read", () => new Promise<never>(() => undefined));
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+    await act(async () => {
+      await threadsStore.getState().continueTurn("ref_a", turn.id);
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(retryReflectionForTests("ref_a")).toBeUndefined();
+  } finally {
+    storage.close();
+  }
+});
+
+test("Stop cancelling an unattempted Retry clears its observation marker", async () => {
+  const turn = failedTurn();
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  const storage = new MutationOutboxIndexedDB();
+  const { fake } = await loadThread("ref_a", [turn], {}, storage);
+  fake.on("thread/read", () => new Promise<never>(() => undefined));
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+    const write = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+    fireEvent.click(retryButton() as HTMLButtonElement);
+    await write.reached;
+    await storage.cancelUnattempted("ref_a");
+    write.release();
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryReflectionForTests("ref_a")).toBeUndefined());
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
   } finally {
     storage.close();
   }

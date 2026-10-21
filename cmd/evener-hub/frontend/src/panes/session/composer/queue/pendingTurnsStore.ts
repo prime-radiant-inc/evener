@@ -228,6 +228,15 @@ function reconcileRetryReflection(ref: string): void {
     clearRetryReflection(ref);
     return;
   }
+  if (
+    marker.clientMutationId !== undefined &&
+    outboxEntriesByState(pendingTurnsStore.getState().outbox, ref, "canceled").some(
+      (record) => record.clientMutationId === marker.clientMutationId,
+    )
+  ) {
+    clearRetryReflection(ref);
+    return;
+  }
   if (ownPendingTurnInput(pendingTurnsStore.pendingTurnEntries(ref))) return;
   // A handed-off marker waits for the winning read's publication. Starting a
   // read here would supersede that winner and discard the only answer in

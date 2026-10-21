@@ -11,8 +11,9 @@ export const TURN_CONTINUATION_TEXT = "continue";
 type RetryTurnThread = Pick<ThreadModel, "turns" | "runningTurnId" | "history" | "status">;
 
 /** The conversation's canonical last display turn, by identity only. */
-export function latestTurnId(model: { turns: readonly { id: string }[] } | undefined): string | undefined {
-  return model?.turns[model.turns.length - 1]?.id;
+export function latestTurnId(model: { turns?: readonly { id: string }[] } | undefined): string | undefined {
+  const turns = model?.turns;
+  return Array.isArray(turns) ? turns[turns.length - 1]?.id : undefined;
 }
 
 // Whether `failedTurnId` is the conversation's live tail, which is the shared
