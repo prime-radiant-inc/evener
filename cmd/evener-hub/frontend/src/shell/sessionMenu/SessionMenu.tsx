@@ -11,10 +11,10 @@
 // success closes it. Slash-command actions (goal/aside/compact/clear) are
 // deliberately NOT here - the command palette owns those.
 //
-// Turn verbs (Stop/Steer) are the one composer-owned exception: Jesse's
-// 2026-09-28 design ruling on the #1339 phone-width verb wrap moves them
-// into THIS menu below the composer's phone-width boundary, where they used
-// to wrap below the status row. Only the composer's chrome mount passes
+// Turn verbs (Stop/Steer) are the one composer-owned exception: Stop is
+// available here at every width, including while a draft occupies its inline
+// slot. Steer moves here below the composer's phone-width boundary rather
+// than wrapping below the status row. Only the composer's chrome mount passes
 // them (SessionChrome gates them to its composer placement), so rail rows
 // and menu-only mounts never see them. They lead the menu in their own
 // group - a turn running away on a phone is the most time-critical thing
@@ -54,7 +54,7 @@ export interface SessionMenuActions {
   onDelete(): Promise<void>;
 }
 
-/** One relocated turn verb. The menu owns the item's id and label ("Stop" /
+/** One composer turn verb. The menu owns the item's id and label ("Stop" /
  * "Steer", the same words the row buttons carry when wide); the caller owns
  * what a press does and whether it is pressable right now. */
 export interface SessionMenuTurnVerb {

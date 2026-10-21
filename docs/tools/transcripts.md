@@ -314,7 +314,10 @@ An `artifact:<id>` ref is an exact capability for generic tool output truncated
 in the current root session tree. It supports default page zero,
 `offset_bytes`, or `output_match`/`context_lines`, but not an explicit format,
 range, or turn expansion. It omits `job_status`; expired capabilities report
-`artifact_expired`.
+`artifact_expired`. Retention is best effort: when the session could not create
+its artifact store (a temp directory that outlived its directory, for example),
+the truncated result says `retention_failed` instead of carrying a ref, and the
+session starts anyway.
 
 ### Provider forensics
 

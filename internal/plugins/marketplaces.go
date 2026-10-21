@@ -25,9 +25,7 @@ var (
 	marketplaceGitFetch        = gitFetch
 	marketplaceGitFastForward  = gitFastForward
 	marketplaceRemoveAll       = os.RemoveAll
-	marketplaceRemove          = os.Remove
 	marketplaceRename          = os.Rename
-	marketplaceMkdirAll        = os.MkdirAll
 	marketplaceAcquireLock     = acquireLock
 	marketplaceStat            = os.Stat
 	marketplaceLstat           = os.Lstat
@@ -796,9 +794,8 @@ func (m *Manager) sourceTouchesPath(source, path string) (bool, error) {
 //
 //  1. fetch a changed source into staging and parse its catalog (Add's own
 //     staging discipline: a bad source never half-registers);
-//  2. rename the clone directory and the plugin cache directory, and re-key
-//     every <plugin>@old registry entry (its install path lives under the
-//     renamed cache);
+//  2. rename the clone directory and re-key every <plugin>@old registry entry,
+//     preserving published cache directories and every install path;
 //  3. swap the staged clone into the (possibly renamed) install location, or
 //     point a directory source at its path;
 //  4. save the installed registry, then the marketplaces file.
@@ -845,22 +842,14 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 				return MarketplaceRef{}, m.editFailed(name, err)
 			}
 			if renaming {
-				// The rename moves the clone and the plugin cache, so a source
-				// that lives inside either moves too while Source.Path would
-				// still name the old location — leaving the marketplace
-				// recorded against a path that is gone. Refuse rather than save
-				// that.
-				for _, moved := range []struct{ what, path string }{
-					{"clone", m.marketplaceDir(name)},
-					{"plugin cache", filepath.Join(m.cacheDir(), name)},
-				} {
-					touches, err := m.sourceTouchesPath(src.Path, moved.path)
-					if err != nil {
-						return MarketplaceRef{}, m.editFailed(name, err)
-					}
-					if touches {
-						return MarketplaceRef{}, fmt.Errorf("marketplace %q: a directory source inside its own %s cannot be combined with a rename to %q", name, moved.what, newName)
-					}
+				// Only the clone moves. Published caches and any source paths
+				// anchored there remain fixed.
+				touches, err := m.sourceTouchesPath(src.Path, m.marketplaceDir(name))
+				if err != nil {
+					return MarketplaceRef{}, m.editFailed(name, err)
+				}
+				if touches {
+					return MarketplaceRef{}, fmt.Errorf("marketplace %q: a directory source inside its own clone cannot be combined with a rename to %q", name, newName)
 				}
 			}
 		}
@@ -873,7 +862,7 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 		// With the other refusals, not beside the rename it guards: nothing
 		// the fetch does can put a leftover under the new name, so a rename
 		// this check is going to refuse need not pay for a clone first.
-		if err := m.refuseLeftoversUnder(newName, reg); err != nil {
+		if err := m.refuseCloneAndRegistryLeftoversUnder(newName, reg); err != nil {
 			return MarketplaceRef{}, err
 		}
 	}
@@ -952,17 +941,18 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 		return MarketplaceRef{}, m.editFailed(name, err)
 	}
 
-	// 2. Rename on disk and in the registry. The registry as the edit found it
-	// is kept because the re-key below replaces it wholesale and a later
-	// failure has to write it back.
+	// 2. Move only the clone and rekey logical ownership. Published paths stay
+	// fixed. Keep the original registry because the re-key replaces it wholesale
+	// and a later failure has to write it back.
 	target := name
 	registryAsFound := reg
 	if renaming {
 		target = newName
-		ref, reg, undo, err = m.moveMarketplace(name, newName, ref, mk, reg, registryKeyOwners(reg, mk), resourcing)
+		ref, undo, err = m.moveMarketplaceClone(name, newName, ref, mk)
 		if err != nil {
 			return fail(err)
 		}
+		reg = rekeyRegistry(reg, registryKeyOwners(reg, mk), name, newName, "", "")
 	}
 
 	// 3. Apply the new source into the install location. An old clone that a
@@ -1060,19 +1050,17 @@ func restoreRename(what, from, to string) error {
 // under the new name while the store file that records it still names the old
 // one, so the store has changed even though this session wrote no store file.
 // changed names the file that record lives in, which the directory decides: the
-// clone's location is in known_marketplaces.json (Marketplaces), while a plugin
-// cache holds the installs installed_plugins.json records (Plugins).
-// moveMarketplace's own fail and a caller's later runUndo (EditMarketplace, the
-// migration barrier) run these closures through the same path, so a move that
-// fails mid-rename and a rename whose final save fails after it both report the
-// state (#1800). A rollback that succeeds marks nothing, because the store is
+// clone's location is in known_marketplaces.json (Marketplaces).
+// EditMarketplace and the migration barrier run these closures through
+// runUndo, so a failed move and a rename whose final save fails both report
+// the state (#1800). A rollback that succeeds marks nothing, because the store is
 // back at the old name and nothing observable moved — the same rule that keeps
-// moveMarketplace from marking on success.
+// a clone move from marking on success.
 func (m *Manager) renameUndo(what, from, to string, changed StoreChanged) func() error {
 	return func() error {
 		if err := restoreRename(what, from, to); err != nil {
 			m.markStoreChanged(changed)
-			return err
+			return errors.Join(err, errRenameRollbackIncomplete)
 		}
 		return nil
 	}
@@ -1088,40 +1076,18 @@ func runUndo(undo []func() error) error {
 	return errors.Join(errs...)
 }
 
-// moveMarketplace renames a marketplace on disk and in the registry: the clone
-// directory, when one is there — moved for a non-directory source, swept for a
-// directory source, which never lives there; the plugin cache directory, when
-// one is there; and every <plugin>@name registry entry, whose install path
-// follows the cache. Neither store file is written. On success it returns the
-// ref and registry as they are to be recorded, and the steps that put the
-// directories back should a later step fail; a failure puts back what it had
-// moved itself and reports what it could not.
-func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, mk Marketplaces, reg Registry, owners map[string]string, resourcing bool) (MarketplaceRef, Registry, []func() error, error) {
+// moveMarketplaceClone handles only the clone side of a rename. Automatic
+// migration and explicit edits both preserve all published cache paths.
+func (m *Manager) moveMarketplaceClone(name, newName string, ref MarketplaceRef, mk Marketplaces) (MarketplaceRef, []func() error, error) {
 	var undo []func() error
-	fail := func(err error) (MarketplaceRef, Registry, []func() error, error) {
-		if undoErr := runUndo(undo); undoErr != nil {
-			return MarketplaceRef{}, Registry{}, nil, errors.Join(err, undoErr, errRenameRollbackIncomplete)
-		}
-		return MarketplaceRef{}, Registry{}, nil, err
-	}
 	oldDir, newDir := m.marketplaceDir(name), m.marketplaceDir(newName)
-	// When the edit replaces the record's own source, that source is no longer
-	// data to protect — the re-source is what removes it. Every other record's
-	// directory source always is, and a pure rename keeps the edited record's
-	// too, because the rename would move its directory out from under it.
-	registeredSources := func() []string {
-		if resourcing {
-			return marketplaceProtectionPaths(mk, name)
-		}
-		return marketplaceProtectionPaths(mk)
-	}
 	if ref.Source.Kind != SourceDirectory {
 		// The clone move follows a final symlink: pathPresent stats through it,
 		// so the move refuses rather than blindly renaming an entry it cannot
 		// read (TestEditMarketplace_TreatsOnlyAMissingPathAsAbsent).
 		haveClone, err := pathPresent(oldDir)
 		if err != nil {
-			return fail(err)
+			return MarketplaceRef{}, nil, err
 		}
 		// Whatever the entry records: a lazy fetch clears and refills this
 		// directory before it writes an install location, so a fetch killed
@@ -1134,10 +1100,10 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, mk M
 			// The record being renamed is excluded: its own clone is what moves.
 			_, displaced := m.sweepDestroysSource(marketplaceProtectionPaths(mk, name), oldDir)
 			if displaced {
-				return fail(fmt.Errorf("renaming marketplace clone %s would move a directory source another marketplace records", oldDir))
+				return MarketplaceRef{}, nil, fmt.Errorf("renaming marketplace clone %s would move a directory source another marketplace records", oldDir)
 			}
 			if err := m.withClone(context.Background(), oldDir, func() error { return marketplaceRename(oldDir, newDir) }); err != nil {
-				return fail(fmt.Errorf("renaming marketplace clone: %w", err))
+				return MarketplaceRef{}, nil, fmt.Errorf("renaming marketplace clone: %w", err)
 			}
 			undo = append(undo, m.renameUndo("marketplace clone", newDir, oldDir, StoreChanged{Marketplaces: true}))
 		}
@@ -1170,29 +1136,11 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, mk M
 		present, protect := m.sweepDestroysSource(marketplaceProtectionPaths(mk), oldDir)
 		if present && !protect {
 			if err := m.withClone(context.Background(), oldDir, func() error { return marketplaceRemoveAll(oldDir) }); err != nil {
-				return fail(fmt.Errorf("removing stale marketplace clone %s: %w", oldDir, err))
+				return MarketplaceRef{}, nil, fmt.Errorf("removing stale marketplace clone %s: %w", oldDir, err)
 			}
 		}
 	}
-	oldCache, newCache := filepath.Join(m.cacheDir(), name), filepath.Join(m.cacheDir(), newName)
-	haveCache, err := pathPresent(oldCache)
-	if err != nil {
-		return fail(err)
-	}
-	if haveCache {
-		// The cache move takes that directory with the name too. A source or
-		// install location recorded inside it — a hand-seeded store can arrange
-		// it, refuseSourceInStore only guards new operations — would be moved
-		// out from under its record, so refuse rather than break it.
-		if _, protect := m.sweepDestroysSource(registeredSources(), oldCache); protect {
-			return fail(fmt.Errorf("renaming plugin cache %s would move a path a marketplace records", oldCache))
-		}
-		if err := marketplaceRename(oldCache, newCache); err != nil {
-			return fail(fmt.Errorf("renaming plugin cache: %w", err))
-		}
-		undo = append(undo, m.renameUndo("plugin cache", newCache, oldCache, StoreChanged{Plugins: true}))
-	}
-	return ref, rekeyRegistry(reg, owners, name, newName, oldCache, newCache), undo, nil
+	return ref, undo, nil
 }
 
 // errStoreBetweenNames marks the one rename failure that leaves the store
@@ -1217,9 +1165,8 @@ var errRenameRollbackIncomplete = errors.New("a failed move could not be put bac
 // the old name is the worse of the two half-states, and evener-doctor reports
 // the other one — which now outlives a failed save only if the restore below
 // fails too. When the marketplaces file's save fails, registryAsFound is
-// written back, because the re-keyed entries name install paths under a cache
-// directory the caller is about to rename back. That restore is itself a
-// write that can fail, and only then is the store left inconsistent, so the
+// written back to restore logical ownership alongside the old marketplace name.
+// That restore can itself fail, and only then is the store inconsistent, so the
 // error says so and carries errStoreBetweenNames, which is how a rename that
 // wrote a marker knows the marker is still needed.
 //
@@ -1244,20 +1191,9 @@ func (m *Manager) saveRename(mk Marketplaces, name, newName string, ref Marketpl
 	return nil
 }
 
-// refuseLeftoversUnder rejects a rename onto a name that a removed
-// marketplace's residue still occupies. Removing a marketplace drops its clone
-// and its registration but never its plugin cache or its registry entries, and
-// a failed edit can strand a clone, so all three can outlive the marketplace
-// that made it. Renaming onto any of them would bury it under a live
-// marketplace's name — the directories silently, the registry entries as ghost
-// installs that shadow the ones being re-keyed — so each is named and refused
-// before anything moves. This runs on every rename, not only when the
-// marketplace being renamed has something of its own to move: an install-free
-// one moves neither a cache nor a registry entry and would otherwise sail past.
-//
-// Each refusal carries ErrMarketplaceExists, because that is what it is: the
-// name is taken, just not by anything the marketplaces file records. Clearing
-// the residue it names is the caller's move, not the store's failure.
+// refuseLeftoversUnder retains automatic migration's cache, clone and orphan
+// registry collision checks. Explicit edits leave caches stationary and use only
+// refuseCloneAndRegistryLeftoversUnder, allowing retained cache-only name reuse.
 func (m *Manager) refuseLeftoversUnder(newName string, reg Registry) error {
 	// Where an os.Rename LinkError would have said only "file exists". The
 	// residue is named by the name it blocks, not by path: the absolute
@@ -1272,6 +1208,13 @@ func (m *Manager) refuseLeftoversUnder(newName string, reg Registry) error {
 	if haveCache {
 		return fmt.Errorf("the plugin cache for %q already exists; a removed marketplace left it behind and it must be deleted before %q can be reused: %w", newName, newName, ErrMarketplaceExists)
 	}
+	return m.refuseCloneAndRegistryLeftoversUnder(newName, reg)
+}
+
+// refuseCloneAndRegistryLeftoversUnder prevents clone overwrite and ghost
+// selections. Orphan registry entries must never become a renamed marketplace's
+// installs, even when it has no selected plugins of its own.
+func (m *Manager) refuseCloneAndRegistryLeftoversUnder(newName string, reg Registry) error {
 	clone := m.marketplaceDir(newName)
 	haveClone, err := pathPresent(clone)
 	if err != nil {

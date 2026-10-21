@@ -86,7 +86,7 @@ func (m *Manager) catalogPlugin(ctx context.Context, marketplace, plugin string)
 // stagePlugin resolves a plugin's source. For a directory-marketplace it returns
 // the in-place dir (staged=false, empty sha, no copy). Otherwise it fetches into
 // a staging dir (staged=true) and returns that dir + the resolved sha; the caller
-// must either commitStaged it or remove it.
+// must either commitStaged it or remove it, then remove its owned parent.
 func (m *Manager) stagePlugin(ctx context.Context, marketplace, plugin string, ref MarketplaceRef, cp CatalogPlugin) (dir, sha string, staged bool, err error) {
 	if ref.Source.Kind == SourceDirectory {
 		root := ref.InstallLocation
@@ -97,28 +97,58 @@ func (m *Manager) stagePlugin(ctx context.Context, marketplace, plugin string, r
 			return cp.Source.Path, "", false, nil
 		}
 	}
-	staging := m.pluginCacheDir(marketplace, plugin, ".staging")
-	_ = installRemoveAll(staging)
+	parent := filepath.Join(m.cacheDir(), marketplace, plugin)
+	if err := installMkdirAll(parent, 0o755); err != nil {
+		return "", "", false, err
+	}
+	// A legacy marketplace may have published beneath any fixed scratch
+	// name. Reserve a fresh container, including fetchPluginSource's sibling
+	// clone scratch, and remove only this invocation's container.
+	owned, err := os.MkdirTemp(parent, ".staging-")
+	if err != nil {
+		return "", "", false, err
+	}
+	staging := filepath.Join(owned, "payload")
 	sha, err = installFetchSource(ctx, cp.Source, m.catalogRoot(ref), staging)
 	if err != nil {
-		_ = installRemoveAll(staging)
+		_ = installRemoveAll(owned)
 		return "", "", false, err
 	}
 	return staging, sha, true, nil
 }
 
-// commitStaged moves a staging dir into its final sha-keyed cache location and
-// returns that path, replacing any existing dir at that sha.
+// commitStaged publishes an already validated staging dir. It never replaces a
+// published revision, even when the source revisits an older SHA.
 func (m *Manager) commitStaged(marketplace, plugin, staging, sha string) (string, error) {
-	key := sha
-	if key == "" {
-		key = "unknown"
-	}
-	final := m.pluginCacheDir(marketplace, plugin, key)
-	_ = installRemoveAll(final)
-	if err := installMkdirAll(filepath.Dir(final), 0o755); err != nil {
+	parent := filepath.Join(m.cacheDir(), marketplace, plugin)
+	if err := installMkdirAll(parent, 0o755); err != nil {
 		_ = installRemoveAll(staging)
 		return "", err
+	}
+	final := ""
+	if sha != "" {
+		candidate := filepath.Join(parent, sha)
+		if _, err := os.Lstat(candidate); os.IsNotExist(err) {
+			final = candidate
+		} else if err != nil {
+			_ = installRemoveAll(staging)
+			return "", err
+		}
+	}
+	if final == "" {
+		// MkdirTemp reserves a sibling while the store lock is held. Remove
+		// only that empty reservation before renaming into its unique name.
+		reserved, err := os.MkdirTemp(parent, "revision-")
+		if err != nil {
+			_ = installRemoveAll(staging)
+			return "", err
+		}
+		if err := os.Remove(reserved); err != nil {
+			_ = installRemoveAll(reserved)
+			_ = installRemoveAll(staging)
+			return "", err
+		}
+		final = reserved
 	}
 	if err := installRename(staging, final); err != nil {
 		_ = installRemoveAll(staging)
@@ -151,24 +181,22 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 		return InstallEntry{}, err
 	}
 	if staged {
+		staging := dir
+		defer func() { _ = installRemoveAll(filepath.Dir(staging)) }()
+	}
+	note, err := installManifestFallback(dir, staged, cp)
+	if err != nil {
+		return InstallEntry{}, err
+	}
+	if err := installValidateDir(dir); err != nil {
+		return InstallEntry{}, fmt.Errorf("installed plugin failed validation: %w", err)
+	}
+	if staged {
 		final, cerr := m.commitStaged(marketplace, plugin, dir, sha)
 		if cerr != nil {
 			return InstallEntry{}, cerr
 		}
 		dir = final
-	}
-	note, err := installManifestFallback(dir, staged, cp)
-	if err != nil {
-		if strings.HasPrefix(dir, m.cacheDir()+string(os.PathSeparator)) {
-			_ = installRemoveAll(dir)
-		}
-		return InstallEntry{}, err
-	}
-	if err := installValidateDir(dir); err != nil {
-		if strings.HasPrefix(dir, m.cacheDir()+string(os.PathSeparator)) {
-			_ = installRemoveAll(dir)
-		}
-		return InstallEntry{}, fmt.Errorf("installed plugin failed validation: %w", err)
 	}
 
 	now := m.now().UTC()
@@ -195,10 +223,10 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 }
 
 // Upgrade re-resolves plugin from its marketplace. If the sha changed it
-// materializes a NEW sha-dir, validates, and repoints the registry — never
-// deleting the old dir (the gc sweep reclaims it) so live sessions keep working.
+// validates in staging, publishes a new immutable directory, and repoints the
+// registry. GC retains the prior directory for live and resumable sessions.
 // If the sha is unchanged (or the source is an in-place directory) it is a true
-// no-op: the staging clone is discarded and the live dir is never touched.
+// no-op: the staging clone is discarded and the published dir is never touched.
 //
 // Upgrade always upgrades once called, regardless of the plugin's AutoUpgrade
 // flag: it is the explicit-consent path (`evener plugin upgrade`, UpdateAll).
@@ -262,25 +290,23 @@ func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string,
 	if err != nil {
 		return InstallEntry{}, false, false, err
 	}
+	if staged {
+		defer func() { _ = installRemoveAll(filepath.Dir(staging)) }()
+	}
 	if !staged || sha == prev.GitCommitSha {
-		if staged {
-			_ = installRemoveAll(staging)
-		}
 		return prev, false, false, nil
 	}
 
+	note, err := installManifestFallback(staging, true, cp)
+	if err != nil {
+		return InstallEntry{}, false, false, err
+	}
+	if err := installValidateDir(staging); err != nil {
+		return InstallEntry{}, false, false, fmt.Errorf("upgraded plugin failed validation: %w", err)
+	}
 	final, err := m.commitStaged(marketplace, plugin, staging, sha)
 	if err != nil {
 		return InstallEntry{}, false, false, err
-	}
-	note, err := installManifestFallback(final, true, cp)
-	if err != nil {
-		_ = installRemoveAll(final)
-		return InstallEntry{}, false, false, err
-	}
-	if err := installValidateDir(final); err != nil {
-		_ = installRemoveAll(final)
-		return InstallEntry{}, false, false, fmt.Errorf("upgraded plugin failed validation: %w", err)
 	}
 
 	prev.InstallPath = final

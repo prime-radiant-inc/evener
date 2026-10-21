@@ -26,6 +26,7 @@ type openAIModelListEntry struct {
 	OutputTokens    int                             `json:"output_token_limit"`
 	Architecture    requestutil.GatewayArchitecture `json:"architecture"`
 	Capabilities    requestutil.GatewayCapabilities `json:"capabilities"`
+	ClientCompat    requestutil.GatewayClientCompat `json:"client_compat"`
 }
 
 // row keeps only advertised facts (registry.Model carries no field this
@@ -41,6 +42,10 @@ func (m openAIModelListEntry) row() registry.Model {
 	if o := requestutil.FirstPositiveInt(m.MaxOutputTokens, m.OutputTokens); o > 0 {
 		caps.MaxOutputTokens = new(o)
 	}
+	// A gateway's own per-model facts (lunaroute's shape) fill the reasoning
+	// capability and effort ladder a bare OpenAI listing never states: without
+	// them an uncatalogued gateway model resolves with no ladder at all.
+	requestutil.ApplyGatewayReasoning(&caps, m.Capabilities, m.ClientCompat)
 	caps.InputModalities = requestutil.GatewayInputModalities(m.Architecture, m.Capabilities)
 	return registry.Model{ID: m.ID, Caps: caps}
 }

@@ -55,7 +55,7 @@ const (
 	checkOrphanScanSkipped            = "orphan_scan_skipped"
 	checkOrphanScanRegistryUnreadable = "orphan_scan_registry_unreadable"
 	checkCacheUnreadable              = "cache_unreadable"
-	checkOrphanCacheDir               = "orphan_cache_dir"
+	checkRetainedCacheRevision        = "retained_cache_revision"
 	checkMarketplacePendingRename     = "marketplace_pending_rename"
 	checkMarketplaceUnfetched         = "marketplace_unfetched"
 	checkMarketplaceMissing           = "marketplace_missing"
@@ -88,6 +88,7 @@ type DoctorFinding struct {
 	Level       string `json:"level"`
 	Category    string `json:"category"`
 	Check       string `json:"check"`
+	Path        string `json:"path,omitempty"`
 	Message     string `json:"message"`
 	Remediation string `json:"remediation,omitempty"`
 }
@@ -247,18 +248,16 @@ func usedInPlace(src Source, marketplace MarketplaceRef) bool {
 	return sourceCannotUpgrade(src) || (src.Rel && marketplace.Source.Kind == SourceDirectory)
 }
 
-// doctorOrphanCacheDirs walks cache/<marketplace>/<plugin>/<sha> and flags any
-// sha-dir that no registry entry's InstallPath points at — left behind by a
-// crash mid-install/upgrade, or a superseded dir awaiting the gc sweep (§12).
+// doctorOrphanCacheDirs walks cache/<marketplace>/<plugin>/<revision> and
+// reports published directories not named by the registry as retained. They
+// can still belong to a stopped or cold session in any state root.
 //
 // Alone among Doctor's checks this one draws its conclusion from two pieces of
 // store state, so a writer caught between them invents it: a materialize
-// creates the sha-dir before it records the entry, and gc drops the entry
-// before it removes the dir, and either window makes a live plugin look
-// orphaned. Reading the registry and the cache under the store lock — the lock
-// both of those writers hold — is what makes "has no registry entry" true
-// rather than merely momentary. The registry Doctor's other checks read is the
-// one from before the lock, so this reads its own.
+// creates the revision dir before it records the entry. Reading the registry
+// and cache under the store lock keeps that comparison coherent. The registry
+// Doctor's other checks read is the one from before the lock, so this reads
+// its own.
 func (m *Manager) doctorOrphanCacheDirs() []DoctorFinding {
 	// A store with no cache directory has no orphans to report and no writer
 	// to wait for, so it is answered without going near the lock at all.
@@ -297,38 +296,38 @@ func (m *Manager) doctorOrphanCacheDirs() []DoctorFinding {
 	}
 
 	var findings []DoctorFinding
-	for _, mktEnt := range marketplaceEnts {
-		if !mktEnt.IsDir() {
-			continue
+	var visit func(string, int)
+	visit = func(path string, depth int) {
+		// Retained legacy marketplace names can add arbitrary path levels.
+		// A package manifest, not a fixed depth, identifies a revision root.
+		// Stop there so companion directories are never mistaken for revisions.
+		if depth >= 3 {
+			for _, flavor := range []string{".claude-plugin", ".codex-plugin"} {
+				manifest, err := doctorStat(filepath.Join(path, flavor, "plugin.json"))
+				if err == nil && !manifest.IsDir() {
+					if !referenced[filepath.Clean(path)] {
+						findings = append(findings, DoctorFinding{
+							Level: LevelOK, Category: catRegistry, Check: checkRetainedCacheRevision, Path: path,
+							Message: fmt.Sprintf("retained plugin revision %s is not the current registry selection; sessions may still use it", path),
+						})
+					}
+					return
+				}
+			}
 		}
-		mktPath := filepath.Join(m.cacheDir(), mktEnt.Name())
-		pluginEnts, err := doctorReadDir(mktPath)
+		entries, err := doctorReadDir(path)
 		if err != nil {
-			continue
+			return
 		}
-		for _, plugEnt := range pluginEnts {
-			if !plugEnt.IsDir() {
-				continue
+		for _, entry := range entries {
+			if entry.IsDir() {
+				visit(filepath.Join(path, entry.Name()), depth+1)
 			}
-			plugPath := filepath.Join(mktPath, plugEnt.Name())
-			shaEnts, err := doctorReadDir(plugPath)
-			if err != nil {
-				continue
-			}
-			for _, shaEnt := range shaEnts {
-				if !shaEnt.IsDir() {
-					continue
-				}
-				shaPath := filepath.Join(plugPath, shaEnt.Name())
-				if referenced[filepath.Clean(shaPath)] {
-					continue
-				}
-				findings = append(findings, DoctorFinding{
-					Level: LevelWarn, Category: catRegistry, Check: checkOrphanCacheDir,
-					Message:     fmt.Sprintf("orphaned cache directory %s has no registry entry", shaPath),
-					Remediation: "run `evener plugin gc` to reclaim disk space",
-				})
-			}
+		}
+	}
+	for _, entry := range marketplaceEnts {
+		if entry.IsDir() {
+			visit(filepath.Join(m.cacheDir(), entry.Name()), 1)
 		}
 	}
 	return findings

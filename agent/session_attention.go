@@ -870,13 +870,22 @@ func (s *Session) hasPendingRootDelegateAttention() bool {
 }
 
 // pendingRootDelegateAttention is hasPendingRootDelegateAttention for "is
-// this session working" reads: attention a Stop parked is not autonomous
-// work — nothing delivers it until the user re-engages — so it reads false
-// while the rail is parked, the way pendingQueueDepth reads zero for a held
-// queue (kata wms7). The raw signal stays for the rail's own machinery,
+// this session working" reads: attention a Stop parked, or a permanent
+// provider failure paused with no fresh wake or paced retry armed, is
+// deferred to the user and reads false, the way pendingQueueDepth reads zero
+// for a held queue (kata wms7). A fresh delegate event re-arms the wake, and
+// a transient failure during that attempt arms the paced retry; either one
+// counts as work again. The raw signal stays for the rail's own machinery,
 // which must see the cached IDs to re-arm them on release.
 func (s *Session) pendingRootDelegateAttention() bool {
-	return s.hasPendingRootDelegateAttention() && !s.rootAttentionRailParked()
+	if s == nil {
+		return false
+	}
+	s.attentionMu.Lock()
+	deferred := s.rootAttentionPaused && !s.rootAttentionWake && !s.rootAttentionRetry.active
+	pending := len(s.rootAttentionWakeIDs) != 0 && !deferred
+	s.attentionMu.Unlock()
+	return pending && !s.rootAttentionRailParked()
 }
 
 // beginRootDelegateAttentionTurn snapshots the exact durable IDs selected for

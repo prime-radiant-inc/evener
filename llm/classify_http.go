@@ -61,7 +61,9 @@ func ClassifyHTTPError(operation string, status int, headers http.Header, body [
 	if err := classifyByMessage(base); err != nil {
 		return err
 	}
-	base.hint = fieldHint(base.rejectedParam, res)
+	if base.rejectedParam != "" {
+		base.hint = fieldHint(base.rejectedParam, res)
+	}
 	return &invalidRequestError{base}
 }
 
