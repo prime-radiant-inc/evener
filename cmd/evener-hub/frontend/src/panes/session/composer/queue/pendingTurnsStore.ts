@@ -824,7 +824,7 @@ threadsStore.subscribe((state, previous) => {
       // failure is current now.
       for (const [clientMutationId, record] of pendingTurnsStore.getState().optimistic) {
         if (record.targetRef === ref && (record.method === "turn/start" || record.method === "turn/queue")) {
-          settleObservedTurnSubmission(clientMutationId, ref);
+          settleObservedTurnSubmission(clientMutationId, ref, false, record.submissionBaselineTail);
         }
       }
       void refreshPendingTurnsProjection(ref);

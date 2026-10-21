@@ -2569,13 +2569,15 @@ function getMutationRuntime(): MutationRuntime | null {
     // for ANY own turn submission, so the obsolete failure is not actionable
     // in that window. The mark is idempotent for the same identity.
     let reflectedTurnRef: string | undefined;
+    let reflectedBaseline: string | undefined;
     if (projectionState === "reflected") {
       const record = await storage.getOutbox(clientMutationId);
       if (record !== undefined && (record.method === "turn/start" || record.method === "turn/queue")) {
         reflectedTurnRef = record.targetRef;
+        reflectedBaseline = record.submissionBaselineTail;
         const model = threadsStore.getState().threads.get(record.targetRef);
         const latest = model === undefined ? undefined : model.turns[model.turns.length - 1];
-        const baseline = submittedTailBaselines.get(clientMutationId);
+        const baseline = submittedTailBaselines.get(clientMutationId) ?? record.submissionBaselineTail;
         // Only a failed tail offers Retry. If the ordinary send's new turn is
         // already the tail (running, completed or failed), there is no stale
         // failure to keep closed; opening a marker keyed to that turn would
@@ -2596,7 +2598,7 @@ function getMutationRuntime(): MutationRuntime | null {
     const modelAfterReceipt =
       reflectedTurnRef === undefined ? undefined : threadsStore.getState().threads.get(reflectedTurnRef);
     const latestAfterReceipt = modelAfterReceipt?.turns.at(-1);
-    const baselineBeforeReceipt = submittedTailBaselines.get(clientMutationId);
+    const baselineBeforeReceipt = submittedTailBaselines.get(clientMutationId) ?? reflectedBaseline;
     const keepsAcceptedCopy =
       settled &&
       reflectedTurnRef !== undefined &&
@@ -2609,7 +2611,7 @@ function getMutationRuntime(): MutationRuntime | null {
     // while the receipt was in flight, that copy describes nothing pending and
     // is settled now rather than blocking the new tail's own Retry.
     if (settled && reflectedTurnRef !== undefined && !keepsAcceptedCopy) {
-      settleObservedTurnSubmission(clientMutationId, reflectedTurnRef, true);
+      settleObservedTurnSubmission(clientMutationId, reflectedTurnRef, true, reflectedBaseline);
     }
     // A kept copy still needs its baseline for the model subscription's
     // observed check; it leaves with the copy in settleApplied.
@@ -3443,7 +3445,10 @@ export async function resendRecoveryMutation(
   const baselineTail = latestTurnId(threadsStore.getState().threads.get(targetRef));
   const runtime = requireMutationRuntime();
   await runtime.start;
-  const intent = composerMutationIntent(targetRef, route, text, attachments, skillNames, commandNames, mentions);
+  const intent = {
+    ...composerMutationIntent(targetRef, route, text, attachments, skillNames, commandNames, mentions),
+    submissionBaselineTail: baselineTail,
+  };
   // Registered around the write: the resent row is undelivered work, and a
   // fallback send must see it before the async refresh can.
   const record = await trackOutboxWrite(
@@ -3976,8 +3981,11 @@ export function settleObservedTurnSubmission(
   // when the new tail is running. A model publication alone cannot: the local
   // optimistic display also publishes a model, and that is not observation.
   observedNonFailure = false,
+  // The persisted baseline from the accepted optimistic copy. Settlement must
+  // survive a reload, where the page-local map is empty.
+  durableBaseline?: string,
 ): void {
-  const baseline = submittedTailBaselines.get(clientMutationId);
+  const baseline = submittedTailBaselines.get(clientMutationId) ?? durableBaseline;
   if (baseline === undefined) return;
   const model = threadsStore.getState().threads.get(ref);
   if (model === undefined) return;
@@ -4016,12 +4024,30 @@ function noteDirectSubmission(
   }
 }
 
+// Overlapping direct sends share a ref: each press owns one count, and the
+// reactive set drops the ref only when the last one settles. A Set alone lost
+// the second owner when the first failed or completed.
+const turnSubmissionOwners = new Map<string, number>();
+
 function beginTurnSubmission(ref: string): () => void {
-  threadsStore.setState((state) => {
-    if (state.turnSubmissionRefs.has(ref)) return state;
-    return { turnSubmissionRefs: new Set(state.turnSubmissionRefs).add(ref) };
-  });
+  const count = (turnSubmissionOwners.get(ref) ?? 0) + 1;
+  turnSubmissionOwners.set(ref, count);
+  if (count === 1) {
+    threadsStore.setState((state) => {
+      if (state.turnSubmissionRefs.has(ref)) return state;
+      return { turnSubmissionRefs: new Set(state.turnSubmissionRefs).add(ref) };
+    });
+  }
+  let released = false;
   return () => {
+    if (released) return;
+    released = true;
+    const remaining = (turnSubmissionOwners.get(ref) ?? 1) - 1;
+    if (remaining > 0) {
+      turnSubmissionOwners.set(ref, remaining);
+      return;
+    }
+    turnSubmissionOwners.delete(ref);
     threadsStore.setState((state) => {
       if (!state.turnSubmissionRefs.has(ref)) return state;
       const next = new Set(state.turnSubmissionRefs);
@@ -4622,6 +4648,10 @@ async function enqueueMutationIntent(
   // before runtime.start/barrierRead/any await so a turn that arrives while
   // the enqueue is in flight cannot become this submission's baseline.
   const baselineTail = latestTurnId(threadsStore.getState().threads.get(ref));
+  const durableIntent: MutationIntent =
+    (intent.method === "turn/start" || intent.method === "turn/queue") && intent.submissionBaselineTail === undefined
+      ? { ...intent, submissionBaselineTail: baselineTail }
+      : intent;
   // The recovery fence, enforced at the one funnel every durable action
   // passes through: a fenced local session's durable intent could only park
   // (the hub refuses these methods for the obligation's whole window), so it
@@ -4709,7 +4739,7 @@ async function enqueueMutationIntent(
     // enqueueDurableMutation).
     record = await enqueueDurableMutation(
       runtime,
-      intent,
+      durableIntent,
       onCommitted,
       durableWrite,
       barrierRead,
@@ -8800,6 +8830,7 @@ export function resetThreadsStoreForTests(): void {
   currentThreadIds.clear();
   currentRefsByThreadId.clear();
   submittedTailBaselines.clear();
+  turnSubmissionOwners.clear();
   userIntentStopGenerations.clear();
   userIntentStopSequence = 0;
   activeStops.clear();

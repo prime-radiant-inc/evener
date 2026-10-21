@@ -73,6 +73,13 @@ export interface MutationIntent<A extends MutationAttachmentRef = MutationAttach
   // A transcript action did not consume the composer. Refusal recovery stays
   // explicit rather than replacing even an empty draft. Local only, not RPC.
   preserveComposer?: boolean;
+  // The conversation tail at the synchronous press, persisted with a turn
+  // submission so observation survives a reload. A reflected receipt keeps it
+  // on the accepted optimistic copy; settlement compares the authoritative
+  // latest turn against this value without trusting page-local memory. Absent
+  // on rows written before the field existed, which keep the conservative
+  // page-local rule.
+  submissionBaselineTail?: string;
 }
 
 export interface MutationRecord<A extends MutationAttachmentRef = MutationAttachmentRef> extends MutationIntent<A> {
@@ -168,6 +175,7 @@ export function acceptedRecord<A extends MutationAttachmentRef = MutationAttachm
     payload: source.payload,
     attachments: source.attachments,
     optimisticDisplay: source.optimisticDisplay,
+    submissionBaselineTail: source.submissionBaselineTail,
     state: "accepted",
   };
 }

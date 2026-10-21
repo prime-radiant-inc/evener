@@ -141,6 +141,42 @@ class BornCanceledEnqueueStorage extends MutationOutboxIndexedDB {
   }
 }
 
+// Holds every enqueue at the storage boundary and can reject one with a
+// non-storage error, so overlapping direct sends can be unblocked separately.
+class GatedEnqueueStorage extends MutationOutboxIndexedDB {
+  private calls: { release: () => void; mode: "pass" | "fail" }[] = [];
+  private waiters: (() => void)[] = [];
+  private modes: ("pass" | "fail")[] = [];
+
+  failNext(): void {
+    this.modes.push("fail");
+  }
+
+  override async enqueueIntent(
+    ...args: Parameters<MutationOutboxIndexedDB["enqueueIntent"]>
+  ): ReturnType<MutationOutboxIndexedDB["enqueueIntent"]> {
+    const mode = this.modes.shift() ?? "pass";
+    await new Promise<void>((resolve) => {
+      this.calls.push({ release: resolve, mode });
+      for (const wake of this.waiters.splice(0)) wake();
+    });
+    if (mode === "fail") throw new Error("synthetic non-storage failure");
+    return super.enqueueIntent(...args);
+  }
+
+  waitForCalls(count: number): Promise<void> {
+    if (this.calls.length >= count) return Promise.resolve();
+    return new Promise((resolve) => {
+      const check = () => (this.calls.length >= count ? resolve() : this.waiters.push(check));
+      this.waiters.push(check);
+    });
+  }
+
+  release(index: number): void {
+    this.calls[index]?.release();
+  }
+}
+
 // The hint disclosure's toggle, or null when the end-cap has no hint.
 function hintSummary(): HTMLElement | null {
   return screen.getByTestId("turn-failure").querySelector("summary");
@@ -677,7 +713,7 @@ test("a read that publishes the new failed turn before the receipt creates no ma
     await act(async () => {
       await threadsStore.getState().refreshThread("ref_a");
     });
-    expect(threadsStore.getState().threads.get("ref_a")?.turns.at(-1)?.id).toBe("new_failed");
+    await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.turns.at(-1)?.id).toBe("new_failed"));
 
     await act(async () => {
       releaseReceipt();
@@ -771,6 +807,99 @@ test("a persisted reflected turn keeps Retry closed across a reload until the tu
   }
 });
 
+test("a restored reflected turn settles from its durable baseline when the authoritative tail advances", async () => {
+  const turn = failedTurn();
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "reflected-with-baseline" });
+  const seeded = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thr_ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "continue" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "continue" }] },
+    submissionBaselineTail: turn.id,
+  });
+  await storage.settleReceipt(seeded.clientMutationId, "reflected");
+  const { fake } = await loadThread("ref_a", [turn], {}, storage);
+  try {
+    // No page-local baseline exists for this row: it was restored from storage.
+    expect(submittedTailBaselineForTests(seeded.clientMutationId)).toBeUndefined();
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    expect(await storage.listOptimistic("ref_a")).toHaveLength(1);
+    await waitFor(() => expect(retryButton()?.disabled).toBe(true));
+
+    // An authoritative newer failed turn proves the stored baseline is stale.
+    let newerReads = 0;
+    fake.on("thread/read", () => {
+      newerReads += 1;
+      const response = readResponse("ref_a", {
+        status: { type: "idle" },
+        turns: [
+          { id: turn.id, status: "failed", itemsView: "full", items: [], error: { message: "boom" } },
+          { id: "new_failed", status: "failed", itemsView: "full", items: [], error: { message: "boom new" } },
+        ],
+      });
+      delete response.thread.evener.activeTurnId;
+      return response;
+    });
+    await act(async () => {
+      await threadsStore.getState().refreshThread("ref_a");
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(newerReads).toBeGreaterThan(0);
+    await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.turns.at(-1)?.id).toBe("new_failed"));
+    expect(await storage.listOptimistic("ref_a")).toHaveLength(0);
+    const view = render(<TurnFailureEndCap error={{ message: "boom new" }} sessionRef="ref_a" turnId="new_failed" />);
+    await flushPendingTurnsProjectionForTests();
+    const newRetry = within(view.container).getByRole("button", { name: "Retry" }) as HTMLButtonElement;
+    await waitFor(() => expect(newRetry.disabled).toBe(false));
+  } finally {
+    storage.close();
+  }
+});
+
+test("a same-tail authoritative read leaves a restored reflected turn closed", async () => {
+  const turn = failedTurn();
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "reflected-same-tail" });
+  const seeded = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thr_ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "continue" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "continue" }] },
+    submissionBaselineTail: turn.id,
+  });
+  await storage.settleReceipt(seeded.clientMutationId, "reflected");
+  const { fake } = await loadThread("ref_a", [turn], {}, storage);
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    expect(await storage.listOptimistic("ref_a")).toHaveLength(1);
+    await waitFor(() => expect(retryButton()?.disabled).toBe(true));
+
+    fake.on("thread/read", () =>
+      readResponse("ref_a", {
+        status: { type: "idle" },
+        turns: [{ id: turn.id, status: "failed", itemsView: "full", items: [], error: { message: "boom" } }],
+      }),
+    );
+    await act(async () => {
+      await threadsStore.getState().refreshThread("ref_a");
+    });
+    await flushPendingTurnsProjectionForTests();
+    // The stored baseline is still the latest turn: the accepted copy has not
+    // been observed, so the old failure must stay closed.
+    expect(await storage.listOptimistic("ref_a")).toHaveLength(1);
+    expect(retryButton()?.disabled).toBe(true);
+  } finally {
+    storage.close();
+  }
+});
+
 test("a direct send blocks Retry before its durable row exists", async () => {
   const turn = failedTurn();
   const { fake, storage } = await loadThread("ref_a", [turn]);
@@ -801,6 +930,53 @@ test("a direct send blocks Retry before its durable row exists", async () => {
     barrier.release();
     await act(async () => {
       await send;
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+  } finally {
+    storage.close();
+  }
+});
+
+test("overlapping direct sends keep the pre-persistence owner until the last settles", async () => {
+  const turn = failedTurn();
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  const storage = new GatedEnqueueStorage();
+  const { fake } = await loadThread("ref_a", [turn], {}, storage);
+  fake.on("turn/start", ({ clientMutationId }) => ({
+    receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
+    turn: { id: "ordinary_turn", status: "inProgress", itemsView: "" },
+  }));
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+
+    storage.failNext();
+    let first!: Promise<void>;
+    let second!: Promise<void>;
+    await act(async () => {
+      first = threadsStore.getState().send("ref_a", "first follow-up");
+      second = threadsStore.getState().send("ref_a", "second follow-up");
+      await storage.waitForCalls(2);
+    });
+    const firstSettled = first.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    // The first press fails on a non-storage error. Its cleanup must not
+    // release the second press's owner while that enqueue is still held.
+    storage.release(0);
+    expect(await firstSettled).toBeInstanceOf(Error);
+    expect(retryButton()?.disabled).toBe(true);
+    await act(async () => {
+      await threadsStore.getState().continueTurn("ref_a", turn.id);
+    });
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+
+    storage.release(1);
+    await act(async () => {
+      await second;
     });
     await flushPendingTurnsProjectionForTests();
     expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
