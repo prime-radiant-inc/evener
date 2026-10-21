@@ -883,8 +883,15 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // on the way out: the finally below only retires the ticket, and a leaked
       // unconfirmed entry would hide an unchanged epoch's annotations and
       // cancel their handoffs forever. Confirmed suppression (an expiry this or
-      // an earlier read proved) is never released here.
-      finishValidation(false);
+      // an earlier read proved) is never released here. That release RESTORES
+      // the epoch's eligibility - a handoff that refused pending against this
+      // suppression can append again - and the release is the only observation
+      // of the restored state, so it signals the storage-success boundary the
+      // runtime retries on. This catch runs after the awaited validation
+      // transaction settled (with its fault), never inside it. Without the
+      // signal the runtime keeps its recorded need with nothing to spend it and
+      // the handoff waits for unrelated activity.
+      releaseProvisional();
       throw error;
     } finally {
       this.#issuedReads.delete(ticket.requestId);
@@ -1451,11 +1458,23 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         if (entry && !entry.confirmed) entry.confirmed = true;
       }
     };
-    const releaseProvisioned = (): void => {
+    // An aborted or non-rotating reset releases what it provisioned. The release
+    // RESTORES the old epoch's eligibility: a handoff that refused pending while
+    // the reset ran can append again, and this release is the only observation
+    // of that restored state. Both callers below run after the reset
+    // transaction settled, so the storage-success signal they fire cannot start
+    // a pass inside a transaction. Returns true when it actually released an
+    // unconfirmed entry.
+    const releaseProvisioned = (): boolean => {
+      let released = false;
       for (const identity of provisioned) {
         const entry = this.#suppressedEpochs.get(identity);
-        if (entry && !entry.confirmed) this.#suppressedEpochs.delete(identity);
+        if (entry && !entry.confirmed) {
+          this.#suppressedEpochs.delete(identity);
+          released = true;
+        }
       }
+      return released;
     };
     const newIncarnation = createSecureUUID();
     let result: { committed: boolean; incarnation: string };
@@ -1524,7 +1543,9 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         },
       );
     } catch (error) {
-      releaseProvisioned();
+      // The transaction settled by rolling back; the release is an observation
+      // boundary outside it.
+      if (releaseProvisioned()) this.#notifyStorageSuccess();
       throw error;
     }
     if (result.committed) {
@@ -1540,7 +1561,10 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         }
       }
     } else {
-      releaseProvisioned();
+      // A stale expected incarnation rotated nothing: the transaction settled
+      // without the reset these entries were provisioned for, so their release
+      // restores eligibility exactly as a rollback does.
+      if (releaseProvisioned()) this.#notifyStorageSuccess();
     }
     return result;
   }

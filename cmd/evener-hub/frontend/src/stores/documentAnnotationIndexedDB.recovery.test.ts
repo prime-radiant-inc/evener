@@ -5,9 +5,10 @@ import {
   type DocFileContent,
   type DocumentKey,
   displayedFingerprint,
+  type HandoffResult,
   type PreparedAnnotation,
 } from "@evener/appwire-client";
-import { IDBFactory } from "fake-indexeddb";
+import { IDBDatabase, IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ComposerPreparation, ComposerSourceState } from "../panes/session/composer/composerContract";
 import { MemoryStorage } from "../storageTestUtils";
@@ -25,13 +26,14 @@ import {
 import { createDocumentAnnotationRuntime, type DocumentAnnotationRuntime } from "./documentAnnotationRuntime";
 import {
   ANNOTATION_EVIDENCE_STORE,
+  ANNOTATION_EXPIRY_STORE,
   ANNOTATION_HEADS_STORE,
   ANNOTATION_NAMESPACES_STORE,
   ANNOTATION_OPERATIONS_STORE,
   ANNOTATION_PAYLOADS_STORE,
   ANNOTATION_SEQUENCES_STORE,
 } from "./localCompositionSchema";
-import { holdNextWriteTransaction, nextRealTask } from "./testing/stalledIndexedDB";
+import { holdIndexedDBEvent, holdNextWriteTransaction, nextRealTask } from "./testing/stalledIndexedDB";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -41,6 +43,9 @@ afterEach(() => {
 interface FixtureOptions {
   prepareAnnotation?: () => Promise<ComposerPreparation | null>;
   destination?: DestinationProvenance;
+  // A fault injected at a commit boundary: the reset case aborts its transaction
+  // there, which is the rollback whose release this suite covers.
+  beforeCommit?: (operation: "acceptRead" | "save" | "expiry" | "deleteExpiry" | "reset") => void;
   // A real composer adopts the committed token a reconciliation hands it: that
   // adoption is what makes a later handoff's preparation current again.
   acknowledgeAnnotation?: (preparation: ComposerPreparation, token: ComposerPreparation["token"]) => void;
@@ -55,6 +60,9 @@ interface Fixture {
   storageSuccess: ReturnType<typeof vi.fn>;
   key: BrowserDraftKey;
   document: DocumentKey;
+  // The namespace incarnation the fixture's first read was issued under: the
+  // reset rollback regression resets exactly this one.
+  incarnation: string;
   content: DocFileContent;
   operation: PreparedAnnotation;
   preparation: ComposerPreparation;
@@ -102,6 +110,7 @@ async function openFixture(options: FixtureOptions = {}): Promise<Fixture> {
     databaseName: "annotation-recovery",
     drafts,
     targetFor: () => source,
+    beforeCommit: options.beforeCommit,
     onStorageSuccess: storageSuccess,
   });
   runtime = createDocumentAnnotationRuntime(repository);
@@ -146,6 +155,7 @@ async function openFixture(options: FixtureOptions = {}): Promise<Fixture> {
     storageSuccess,
     key,
     document,
+    incarnation: ticket.namespaceIncarnation,
     content,
     operation,
     preparation,
@@ -342,13 +352,207 @@ test("an unobserved append reconciles before the pending sweep so a later handof
   await fixture.runtime.retryPending("storage-recovered");
   await fixture.runtime.whenIdle();
 
-  // Reconciliation ran - the composer now carries the token A committed - yet B
-  // is still pending: the sweep visited it before the acknowledgment landed.
+  // Reconciliation ran - the composer now carries the token A committed - so the
+  // same pass can apply B.
   expect(fixture.acknowledge).toHaveBeenCalled();
   const views = await fixture.repository.listAnnotations(fixture.document);
   expect(views.find((view) => view.operation.operationId === operationB.operationId)?.handoff.state).toBe(
     "already-applied",
   );
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+// A changed read installs its provisional suppression at entry and releases it
+// on the way out of a validation fault. That release RESTORES the old epoch's
+// eligibility: an overlapping handoff that refused pending during the
+// suppression can append again, and the release is the only event that proves
+// it. The cleanup used to remove the entry silently, so the runtime kept its
+// recorded need but nothing started the pass that could spend it, and the
+// handoff waited for unrelated activity. The release now signals the same
+// storage-success boundary a stale validation does - after the validation
+// transaction settles, never inside it.
+test("an overlapping handoff completes automatically after a validation fault releases provisional suppression", async () => {
+  const fixture = await openFixture();
+  const ticket = await fixture.repository.beginRead(fixture.document);
+  fixture.storageSuccess.mockClear();
+
+  // Hold the validation's own first read so the overlapping handoff observes
+  // the provisional suppression while the validation is still in flight. The
+  // request's success event has already arrived when `reached` resolves; only
+  // its delivery to the awaiting body is held.
+  const get = IDBObjectStore.prototype.get;
+  let validationHold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  let validationSettled = false;
+  const getSpy = vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(function (
+    this: IDBObjectStore,
+    ...args: Parameters<IDBObjectStore["get"]>
+  ) {
+    const request = get.apply(this, args);
+    const scope = [...this.transaction.objectStoreNames];
+    if (
+      !validationHold &&
+      this.name === ANNOTATION_NAMESPACES_STORE &&
+      scope.includes(ANNOTATION_EVIDENCE_STORE) &&
+      scope.includes(ANNOTATION_EXPIRY_STORE)
+    ) {
+      this.transaction.addEventListener(
+        "complete",
+        () => {
+          validationSettled = true;
+        },
+        { once: true },
+      );
+      this.transaction.addEventListener(
+        "abort",
+        () => {
+          validationSettled = true;
+        },
+        { once: true },
+      );
+      validationHold = holdIndexedDBEvent(request, "success");
+    }
+    return request;
+  });
+  // The validation faults after its held read: the evidence scan's request
+  // creation throws, which rejects the body and aborts the transaction. The
+  // changed content has already installed the provisional suppression at entry.
+  const getAll = IDBObjectStore.prototype.getAll;
+  const getAllSpy = vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function (
+    this: IDBObjectStore,
+    ...args: Parameters<IDBObjectStore["getAll"]>
+  ) {
+    const scope = [...this.transaction.objectStoreNames];
+    if (this.name === ANNOTATION_EVIDENCE_STORE && scope.includes(ANNOTATION_EXPIRY_STORE)) {
+      throw new Error("validation fault");
+    }
+    return getAll.apply(this, args);
+  });
+  const changed: DocFileContent = {
+    text: "Changed content\n",
+    binary: false,
+    mediaType: "text/markdown",
+    truncated: false,
+    sizeBytes: 17,
+  };
+  const acceptance = fixture.repository.acceptRead(ticket, changed);
+  for (let i = 0; i < 50 && !validationHold; i += 1) await nextRealTask();
+  if (!validationHold) throw new Error("validation did not reach IndexedDB");
+  await validationHold.reached;
+  // The stalled validation transaction commits empty (the changed read's write
+  // belongs to its separate fence transaction), so the handoff's reads are not
+  // queued behind it.
+  for (let i = 0; i < 50 && !validationSettled; i += 1) await nextRealTask();
+  expect(validationSettled).toBe(true);
+
+  const handoff = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
+  expect(await handoff).toEqual({ state: "pending", reason: "owner-unavailable" });
+
+  // The fault releases the suppression; no external trigger follows.
+  validationHold.release();
+  let acceptanceFailed = false;
+  await acceptance.catch(() => {
+    acceptanceFailed = true;
+  });
+  expect(acceptanceFailed).toBe(true);
+  await fixture.runtime.whenIdle();
+
+  const views = await fixture.repository.listAnnotations(fixture.document);
+  expect(views.find((view) => view.operation.operationId === fixture.operation.operationId)?.handoff.state).toBe(
+    "already-applied",
+  );
+  expect(fixture.storageSuccess).toHaveBeenCalled();
+
+  getSpy.mockRestore();
+  getAllSpy.mockRestore();
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+// Reset also installs provisional suppression before its first await so an
+// in-flight handoff cancels instead of appending behind the wiped namespace.
+// An ABORTED reset rolls nothing back into eligibility until its transaction
+// settles, and that rollback releases the suppression; the release used to be
+// silent, so a handoff that refused pending during the suppression stayed
+// pending with its retry need recorded and nothing to spend it. The rollback
+// now notifies the runtime after the reset transaction settles, in the same
+// eligibility-restoration voice as the stale-validation release.
+test("an overlapping handoff completes automatically after an aborted namespace reset releases provisional suppression", async () => {
+  let faultArmed = false;
+  const fixture = await openFixture({
+    beforeCommit: (operation) => {
+      if (operation === "reset" && faultArmed) throw new Error("reset fault");
+    },
+  });
+  faultArmed = true;
+  fixture.storageSuccess.mockClear();
+
+  // Hold the aborted reset's abort event: the rollback is real, but the reset
+  // call cannot observe it until the watchdog's deadline, which keeps the
+  // provisional suppression installed while the handoff refuses against it.
+  const resetStores = [
+    ANNOTATION_NAMESPACES_STORE,
+    ANNOTATION_HEADS_STORE,
+    ANNOTATION_EVIDENCE_STORE,
+    ANNOTATION_PAYLOADS_STORE,
+    ANNOTATION_OPERATIONS_STORE,
+    ANNOTATION_SEQUENCES_STORE,
+    ANNOTATION_EXPIRY_STORE,
+  ];
+  const transact = IDBDatabase.prototype.transaction;
+  let resetHold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  const transactSpy = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (
+    this: IDBDatabase,
+    ...args: Parameters<IDBDatabase["transaction"]>
+  ) {
+    const transaction = transact.apply(this, args);
+    const scope = [...transaction.objectStoreNames];
+    if (
+      !resetHold &&
+      transaction.mode === "readwrite" &&
+      scope.length === resetStores.length &&
+      resetStores.every((store) => scope.includes(store))
+    ) {
+      resetHold = holdIndexedDBEvent(transaction, "abort");
+    }
+    return transaction;
+  });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const reset = fixture.repository.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation);
+  let resetFailure: unknown;
+  const resetSettled = reset.catch((error: unknown) => {
+    resetFailure = error;
+  });
+  for (let i = 0; i < 100 && !resetHold; i += 1) await nextRealTask();
+  if (!resetHold) throw new Error("reset transaction did not reach IndexedDB");
+  // The reset has ABORTED - its rollback is durable - but the held event keeps
+  // the reset call from observing it, so provisional suppression is still
+  // installed when the handoff runs.
+  await resetHold.reached;
+
+  const handoff = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
+  let handoffResult: HandoffResult | undefined;
+  void handoff.then((result) => {
+    handoffResult = result;
+  });
+  for (let i = 0; i < 100 && handoffResult === undefined; i += 1) await nextRealTask();
+  expect(handoffResult).toEqual({ state: "pending", reason: "owner-unavailable" });
+
+  await vi.advanceTimersByTimeAsync(10_001);
+  await resetSettled;
+  expect(resetFailure).toBeDefined();
+  resetHold.release();
+  transactSpy.mockRestore();
+  vi.useRealTimers();
+
+  // No external trigger follows the rollback's release.
+  await fixture.runtime.whenIdle();
+  const views = await fixture.repository.listAnnotations(fixture.document);
+  expect(views.find((view) => view.operation.operationId === fixture.operation.operationId)?.handoff.state).toBe(
+    "already-applied",
+  );
+  expect(fixture.storageSuccess).toHaveBeenCalled();
 
   fixture.repository.close();
   fixture.drafts.close();
