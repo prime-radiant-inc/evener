@@ -5,12 +5,14 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -35,10 +37,35 @@ type oauthFixture struct {
 	models     int
 	access     string
 	providerAt time.Time
+	// Late-effect handshake for cancellation and destination change. The
+	// first poll for those flows is observed by the issuer and held until the
+	// driver reports the user's intent; it then answers with a real success so
+	// the retired operation would persist or complete if production allowed it.
+	firstPollObserved chan struct{}
+	releaseLate       chan struct{}
+	lateSettled       chan struct{}
+	observeOnce       sync.Once
+	releaseOnce       sync.Once
+	settleOnce        sync.Once
+	lateReleased      bool
 }
 
 func newOAuthFixture(scenario string) *oauthFixture {
-	return &oauthFixture{scenario: scenario, polls: map[string]int{}, access: "oauth-fixture-access-not-a-secret"}
+	return &oauthFixture{
+		scenario:          scenario,
+		polls:             map[string]int{},
+		access:            "oauth-fixture-access-not-a-secret",
+		firstPollObserved: make(chan struct{}),
+		releaseLate:       make(chan struct{}),
+		lateSettled:       make(chan struct{}),
+	}
+}
+
+func (f *oauthFixture) releaseLateSuccess() {
+	f.mu.Lock()
+	f.lateReleased = true
+	f.mu.Unlock()
+	f.releaseOnce.Do(func() { close(f.releaseLate) })
 }
 
 func (f *oauthFixture) issuer(t *testing.T) *httptest.Server {
@@ -67,12 +94,15 @@ func (f *oauthFixture) issuer(t *testing.T) *httptest.Server {
 			UserCode string `json:"user_code"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		f.mu.Lock()
-		defer f.mu.Unlock()
 		if strings.Contains(req.UserCode, "CANCEL") || strings.Contains(req.UserCode, "CHANGE") {
-			http.Error(w, "pending", http.StatusForbidden)
+			f.observeOnce.Do(func() { close(f.firstPollObserved) })
+			<-f.releaseLate
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"authorization_code":"fixture-late-authorization-code","code_challenge":"fixture-challenge","code_verifier":"fixture-verifier"}`)
 			return
 		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
 		f.polls[req.UserCode]++
 		if f.polls[req.UserCode] == 1 {
 			http.Error(w, "pending", http.StatusForbidden)
@@ -91,6 +121,9 @@ func (f *oauthFixture) issuer(t *testing.T) *httptest.Server {
 		switch r.Form.Get("grant_type") {
 		case "authorization_code":
 			f.exchanges++
+			if f.lateReleased {
+				f.settleOnce.Do(func() { close(f.lateSettled) })
+			}
 		case "refresh_token":
 			f.refreshes++
 		default:
@@ -149,145 +182,235 @@ func TestOnboardingOAuthBrowser(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires Chrome and production frontend")
 	}
-	for _, scenario := range []string{"oauth-device", "oauth-redirect", "oauth-cancel", "oauth-endpoint-change"} {
-		t.Run(scenario, func(t *testing.T) {
-			guard := newOnboardingGuardEnv(t)
-			fixture := newOAuthFixture(scenario)
-			issuer := fixture.issuer(t)
-			provider := fixture.provider(t)
-			config := fmt.Sprintf("[providers.\"openai-codex\"]\nbase_url = %q\ndefault_model = \"gpt-fixture-chosen\"\n", provider.URL+"/v1")
-			if err := os.WriteFile(os.Getenv("EVENER_PROVIDERS_CONFIG"), []byte(config), 0600); err != nil {
-				t.Fatal(err)
-			}
-			t.Setenv("OLLAMA_BASE_URL", provider.URL+"/unavailable")
-			t.Setenv("EVENER_OFFLINE", "1")
-			hub := newOnboardingGuardHub(t, guard, func(c *hubAuthController) {
-				c.cfg = openai.Config{IssuerBaseURL: issuer.URL}
-				c.client = issuer.Client()
-			})
-			if inst, ok := hub.reg.Get().Instance("openai-codex"); !ok || inst.DefaultModel != "gpt-fixture-chosen" {
-				t.Fatalf("fixture instance default = %q ok=%v, want the configured non-first default", inst.DefaultModel, ok)
-			}
-			// The checkpoint is the fixture channel to the real Go owners. It
-			// asserts the pre-Start absence of sessions/generations and, at the
-			// named stage, performs a real instance edit or verifies that a
-			// cancelled/changed flow left no completion behind.
-			var stageMu sync.Mutex
-			stages := map[string]bool{}
-			checkpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				stage := r.URL.Query().Get("stage")
-				entries, err := rendezvous.List(guard.run)
-				if err != nil {
-					http.Error(w, err.Error(), 500)
-					return
-				}
-				_, exchanges, _, models := fixture.counts()
-				if len(entries) != 0 {
-					http.Error(w, "session before Start", 500)
-					return
-				}
-				switch stage {
-				case "oauth-pending":
-					stageMu.Lock()
-					stages[stage] = true
-					stageMu.Unlock()
-				case "oauth-cancelled":
-					if exchanges != 0 || models != 0 {
-						http.Error(w, fmt.Sprintf("cancelled flow completed: exchanges=%d models=%d", exchanges, models), 500)
-						return
-					}
-					stageMu.Lock()
-					stages[stage] = true
-					stageMu.Unlock()
-				case "oauth-endpoint-change":
-					if err := editOnboardingEndpoint(r.Context(), hub, guard, provider.URL+"/moved/v1"); err != nil {
-						http.Error(w, err.Error(), 500)
-						return
-					}
-				case "oauth-endpoint-changed":
-					if exchanges != 0 || models != 0 {
-						http.Error(w, fmt.Sprintf("changed flow completed: exchanges=%d models=%d", exchanges, models), 500)
-						return
-					}
-					stageMu.Lock()
-					stages[stage] = true
-					stageMu.Unlock()
-				}
-				_ = json.NewEncoder(w).Encode(map[string]int{"checks": models, "sessions": len(entries), "generations": 0})
-			}))
-			defer checkpoint.Close()
+	var cases []struct {
+		scenario string
+		view     onboardingView
+	}
+	for _, scenario := range []string{"oauth-device", "oauth-redirect"} {
+		for _, view := range onboardingViews() {
+			cases = append(cases, struct {
+				scenario string
+				view     onboardingView
+			}{scenario, view})
+		}
+	}
+	// Cancellation and an endpoint move need the late-effect handshake, not the
+	// full presentation matrix: one representative desktop layout each.
+	cases = append(cases,
+		struct {
+			scenario string
+			view     onboardingView
+		}{"oauth-cancel", onboardingViews()[0]},
+		struct {
+			scenario string
+			view     onboardingView
+		}{"oauth-endpoint-change", onboardingViews()[0]},
+	)
+	for _, c := range cases {
+		scenario, view := c.scenario, c.view
+		t.Run(scenario+"-"+view.name, func(t *testing.T) {
+			testOnboardingOAuthAt(t, scenario, view)
+		})
+	}
+}
 
-			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
-			defer cancel()
-			args := []string{
-				"scripts/onboardingguard/run.mjs",
-				"--url", hubedge.AuthURLFor(hub.server.URL, guard.token),
-				"--artifact-dir", guard.root,
-				"--work", guard.work,
-				"--checkpoint", checkpoint.URL,
-				"--scenario", scenario,
-				"--adopted-model", "openai-codex/gpt-fixture-chosen",
+func testOnboardingOAuthAt(t *testing.T, scenario string, view onboardingView) {
+	t.Helper()
+	guard := newOnboardingGuardEnv(t)
+	fixture := newOAuthFixture(scenario)
+	t.Cleanup(fixture.releaseLateSuccess)
+	issuer := fixture.issuer(t)
+	provider := fixture.provider(t)
+	config := fmt.Sprintf("[providers.\"openai-codex\"]\nbase_url = %q\ndefault_model = \"gpt-fixture-chosen\"\n", provider.URL+"/v1")
+	if err := os.WriteFile(os.Getenv("EVENER_PROVIDERS_CONFIG"), []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OLLAMA_BASE_URL", provider.URL+"/unavailable")
+	t.Setenv("EVENER_OFFLINE", "1")
+	hub := newOnboardingGuardHub(t, guard, func(c *hubAuthController) {
+		c.cfg = openai.Config{IssuerBaseURL: issuer.URL}
+		c.client = issuer.Client()
+	})
+	if inst, ok := hub.reg.Get().Instance("openai-codex"); !ok || inst.DefaultModel != "gpt-fixture-chosen" {
+		t.Fatalf("fixture instance default = %q ok=%v, want the configured non-first default", inst.DefaultModel, ok)
+	}
+	// The checkpoint is the fixture channel to the real Go owners. It
+	// asserts the pre-Start absence of sessions/generations and, at the
+	// named stage, performs a real instance edit or verifies that a
+	// cancelled/changed flow left no completion behind.
+	var stageMu sync.Mutex
+	stages := map[string]bool{}
+	checkpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		stage := r.URL.Query().Get("stage")
+		entries, err := rendezvous.List(guard.run)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		_, exchanges, _, models := fixture.counts()
+		if len(entries) != 0 {
+			http.Error(w, "session before Start", 500)
+			return
+		}
+		switch stage {
+		case "oauth-pending":
+			stageMu.Lock()
+			stages[stage] = true
+			stageMu.Unlock()
+		case "oauth-poll-observed":
+			select {
+			case <-fixture.firstPollObserved:
+				stageMu.Lock()
+				stages[stage] = true
+				stageMu.Unlock()
+			default:
+				http.Error(w, "issuer has not observed the poll yet", 500)
+				return
 			}
-			if guard.recordVideo != "" {
-				args = append(args, "--record-video", guard.recordVideo)
-			}
-			if guard.evidenceDir != "" {
-				args = append(args, "--evidence-dir", guard.evidenceDir)
-			}
-			cmd := exec.CommandContext(ctx, "node", args...)
-			cmd.Dir = filepath.Join(guard.repo, "cmd/evener-hub/frontend")
-			cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
-			cmd.WaitDelay = 15 * time.Second
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("browser %s: %v\n%s", scenario, err, out)
-			}
-			t.Logf("browser: %s", out)
-
-			switch scenario {
-			case "oauth-device", "oauth-redirect":
-				record, err := openai.LoadAuth(hub.state, "openai-codex")
-				if err != nil {
-					t.Fatalf("saved OAuth record: %v", err)
-				}
-				if record.AccessToken != fixture.access || record.Email != "onboarding-oauth@example.invalid" {
-					t.Fatalf("OAuth record = access %q email %q, want the fixture exchange result", record.AccessToken, record.Email)
-				}
-				_, exchanges, _, models := fixture.counts()
-				if exchanges != 1 || models == 0 {
-					t.Fatalf("exchanges=%d model lists=%d, want one real token exchange and model-list access", exchanges, models)
-				}
-			case "oauth-cancel":
-				device, exchanges, _, models := fixture.counts()
-				if device < 2 || exchanges != 1 {
-					t.Fatalf("device starts=%d exchanges=%d, want a cancelled first flow and one recovering flow", device, exchanges)
-				}
-				if models == 0 {
-					t.Fatal("recovering sign-in never checked the model list")
-				}
-			case "oauth-endpoint-change":
-				_, exchanges, _, models := fixture.counts()
-				if exchanges != 0 || models != 0 {
-					t.Fatalf("changed flow completed: exchanges=%d models=%d", exchanges, models)
-				}
+		case "oauth-cancelled-intent", "oauth-changed-intent":
+			if exchanges != 0 || models != 0 {
+				http.Error(w, fmt.Sprintf("late effect before intent was settled: exchanges=%d models=%d", exchanges, models), 500)
+				return
 			}
 			stageMu.Lock()
-			defer stageMu.Unlock()
-			for _, required := range requiredStages(scenario) {
-				if !stages[required] {
-					t.Errorf("checkpoint stage %q never observed", required)
-				}
+			stages[stage] = true
+			stageMu.Unlock()
+		case "oauth-release-late-success":
+			fixture.releaseLateSuccess()
+			stageMu.Lock()
+			stages[stage] = true
+			stageMu.Unlock()
+		case "oauth-late-settled":
+			select {
+			case <-fixture.lateSettled:
+				stageMu.Lock()
+				stages[stage] = true
+				stageMu.Unlock()
+			case <-time.After(10 * time.Second):
+				http.Error(w, "released late poll never reached the token exchange", 500)
+				return
 			}
-		})
+		case "oauth-cancelled":
+			if exchanges != 1 {
+				http.Error(w, fmt.Sprintf("released late poll exchanges=%d, want the in-flight request completed once", exchanges), 500)
+				return
+			}
+			if models != 0 {
+				http.Error(w, fmt.Sprintf("cancelled flow checked models: models=%d", models), 500)
+				return
+			}
+			if _, err := openai.LoadAuth(hub.state, "openai-codex"); !errors.Is(err, openai.ErrAuthNotFound) {
+				http.Error(w, fmt.Sprintf("cancelled flow persisted access: %v", err), 500)
+				return
+			}
+			stageMu.Lock()
+			stages[stage] = true
+			stageMu.Unlock()
+		case "oauth-endpoint-change":
+			if err := editOnboardingEndpoint(r.Context(), hub, guard, provider.URL+"/moved/v1"); err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+		case "oauth-endpoint-changed":
+			if exchanges != 1 {
+				http.Error(w, fmt.Sprintf("released late poll exchanges=%d, want the in-flight request completed once", exchanges), 500)
+				return
+			}
+			if models != 0 {
+				http.Error(w, fmt.Sprintf("changed flow checked models: models=%d", models), 500)
+				return
+			}
+			if _, err := openai.LoadAuth(hub.state, "openai-codex"); !errors.Is(err, openai.ErrAuthNotFound) {
+				http.Error(w, fmt.Sprintf("changed flow persisted access: %v", err), 500)
+				return
+			}
+			stageMu.Lock()
+			stages[stage] = true
+			stageMu.Unlock()
+		}
+		_ = json.NewEncoder(w).Encode(map[string]int{"checks": models, "sessions": len(entries), "generations": 0})
+	}))
+	defer checkpoint.Close()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	defer cancel()
+	args := []string{
+		"scripts/onboardingguard/run.mjs",
+		"--url", hubedge.AuthURLFor(hub.server.URL, guard.token),
+		"--artifact-dir", guard.root,
+		"--work", guard.work,
+		"--checkpoint", checkpoint.URL,
+		"--scenario", scenario,
+		"--adopted-model", "openai-codex/gpt-fixture-chosen",
+		"--width", strconv.Itoa(view.width),
+		"--height", strconv.Itoa(view.height),
+		"--theme", view.theme,
+	}
+	if guard.recordVideo != "" {
+		args = append(args, "--record-video", guard.recordVideo)
+	}
+	if guard.evidenceDir != "" {
+		args = append(args, "--evidence-dir", guard.evidenceDir)
+	}
+	cmd := exec.CommandContext(ctx, "node", args...)
+	cmd.Dir = filepath.Join(guard.repo, "cmd/evener-hub/frontend")
+	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+	cmd.WaitDelay = 15 * time.Second
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("browser %s: %v\n%s", scenario, err, out)
+	}
+	t.Logf("browser: %s", out)
+
+	switch scenario {
+	case "oauth-device", "oauth-redirect":
+		record, err := openai.LoadAuth(hub.state, "openai-codex")
+		if err != nil {
+			t.Fatalf("saved OAuth record: %v", err)
+		}
+		if record.AccessToken != fixture.access || record.Email != "onboarding-oauth@example.invalid" {
+			t.Fatalf("OAuth record = access %q email %q, want the fixture exchange result", record.AccessToken, record.Email)
+		}
+		_, exchanges, _, models := fixture.counts()
+		if exchanges != 1 || models == 0 {
+			t.Fatalf("exchanges=%d model lists=%d, want one real token exchange and model-list access", exchanges, models)
+		}
+	case "oauth-cancel":
+		device, exchanges, _, models := fixture.counts()
+		if device != 2 || exchanges != 2 {
+			t.Fatalf("device starts=%d exchanges=%d, want the late cancelled exchange plus the recovering flow", device, exchanges)
+		}
+		if models == 0 {
+			t.Fatal("recovering sign-in never checked the model list")
+		}
+		record, err := openai.LoadAuth(hub.state, "openai-codex")
+		if err != nil || record.AccessToken != fixture.access {
+			t.Fatalf("recovering sign-in record = %v err=%v, want the recovering exchange only", record, err)
+		}
+	case "oauth-endpoint-change":
+		_, exchanges, _, models := fixture.counts()
+		if exchanges != 1 || models != 0 {
+			t.Fatalf("changed flow late effect: exchanges=%d models=%d, want the token exchange attempted but no model check", exchanges, models)
+		}
+		if _, err := openai.LoadAuth(hub.state, "openai-codex"); !errors.Is(err, openai.ErrAuthNotFound) {
+			t.Fatalf("changed flow persisted access: %v", err)
+		}
+	}
+	stageMu.Lock()
+	defer stageMu.Unlock()
+	for _, required := range requiredStages(scenario) {
+		if !stages[required] {
+			t.Errorf("checkpoint stage %q never observed", required)
+		}
 	}
 }
 
 func requiredStages(scenario string) []string {
 	switch scenario {
 	case "oauth-cancel":
-		return []string{"oauth-pending", "oauth-cancelled"}
+		return []string{"oauth-pending", "oauth-poll-observed", "oauth-cancelled-intent", "oauth-release-late-success", "oauth-late-settled", "oauth-cancelled"}
 	case "oauth-endpoint-change":
-		return []string{"oauth-pending", "oauth-endpoint-changed"}
+		return []string{"oauth-pending", "oauth-poll-observed", "oauth-changed-intent", "oauth-release-late-success", "oauth-late-settled", "oauth-endpoint-changed"}
 	case "oauth-device":
 		return []string{"oauth-pending"}
 	}

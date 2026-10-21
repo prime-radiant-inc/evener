@@ -43,16 +43,19 @@ without any **Retry**, **Continue** or **Choose model** action. Coverage:
   streamed turn uses the adopted model and shows `ONBOARDING_REPLY_72e`; a
   second, deliberately blank launch has no user input, reply or completed turn.
 
-The driver captures `journey-automatic-draft-<width>-<theme>.png` and the
-matching session screenshots at 1440×1000 and 390×844, light and dark. Each
-capture is also an assertion: the settled draft has no dialog or open picker,
-Start is visibly available, the model control shows the adopted model, the task,
-directory and attachment are present, and the composer owns focus. At the
-narrow viewport the driver enters the composer with a real pointer interaction
-before the capture, so mobile focus is exercised during interaction rather than
-read immediately after a resize. The narrow layout has no dockview tab strip, so
-its session capture checks the visible page text instead of the desktop pane.
-Reply and composer queries are scoped to the active pane at desktop sizes.
+The journey runs four times, once per real layout: 1440×1000 and 390×844 in
+light and dark. The viewport and emulated system theme are set before any setup
+interaction, and nothing in the acquisition capture resizes, clicks or focuses.
+`acquisition-automatic-<width>-<theme>.png` and its JSON are taken only after
+production has dismissed setup, adopted the configured model, enabled Start and
+restored the composer. Focus is asserted there before any driver intervention.
+The narrow session uses the visible page text and the rendered session pane's
+real ref; desktop keeps the active-dock and transcript identity checks.
+
+The session response is captured as `session-automatic-<width>-<theme>.png`.
+Recording-only access views (written after the video) remain presentation
+evidence: they navigate and resize, and never contribute to the acquisition or
+focus oracle.
 
 ## `TestOnboardingOAuthBrowser`: device, redirect, cancel, endpoint change
 
@@ -70,19 +73,24 @@ registry reload, AppWire and browser UI remain production code. Subtests:
   falls back to the authorize URL, and the driver pastes a callback URL carrying
   the production flow's own `state`. The real code exchange and persistence are
   then verified as above.
-- `oauth-cancel`: a device flow that stays pending is cancelled. After two poll
-  intervals the checkpoint requires zero exchanges and zero model-list checks,
-  proving no late completion. A second sign-in on the same editor then
-  completes automatically and adopts the configured default.
-- `oauth-endpoint-change`: while the device flow is pending, Go performs a real
-  AppWire `evener/instance/edit` that re-points the instance. The browser must
-  return to the connection editor with the `changed` alert and the polling
-  editor gone; the checkpoint requires no token exchange or model-list check
-  from the refused flow.
+- `oauth-cancel`: the issuer observes and holds the first device poll. The user
+  cancels the editor; the checkpoint confirms no exchange, record or model
+  check yet, then releases a real late authorization success. The in-flight
+  request is allowed to reach the token exchange (its count proves it completed),
+  but the checkpoint requires no persisted OAuth record and no model-list check,
+  and the browser requires no credential-saved UI, no focus change and the same
+  draft intent. A fresh sign-in then completes and adopts the configured default.
+- `oauth-endpoint-change`: while the poll is held, Go performs a real AppWire
+  `evener/instance/edit` that re-points the instance. After the same released
+  late success, the browser must return to the connection editor with the
+  `changed` alert and the polling editor gone; the token exchange may complete,
+  but the checkpoint requires no persisted record and no model-list check.
 
-These subtests also prove the redirect tab does not break the theme matrix by
-keeping the app tab in front before emulation. All three completing paths now
-require the adopted configured default and an enabled Start, matching
+Device and redirect each run in all four real layouts, from before setup opens
+through acquisition and automatic focus restoration; no post-completion resize
+contributes to those assertions. The redirect tab does not break the matrix
+because the app tab stays in front. All three completing paths require the
+adopted configured default and an enabled Start, matching
 `TestOnboardingBrowser`. The launch-model publication that used to abort
 adoption carries its own catalog-only `reason`; credential and instance changes
 keep the empty reason and still retire the completion.
@@ -126,6 +134,15 @@ Remote-host OAuth/editor ownership, native onboarding, billing/quota or
 generation-permission proof, a provider whose listing returns no usable models,
 and an explicit model choice made during the check in a real browser. Those
 remain covered by focused Go/component tests, task review, or separate work.
+
+One initial-load timeout was observed in the first mobile-dark key run: the
+page's body was empty for the whole readiness wait. It occurred when the CDP
+device-metrics/theme emulation was applied before the first navigation. Applying
+the target layout immediately after navigation (still before any setup
+interaction) was followed by five consecutive mobile-dark passes. The cause is
+inferred as a pre-navigation emulation race; if the blank document recurs, the
+guard fails explicitly on the missing prerequisite rather than timing out a
+stale layout.
 
 ## Activation lifecycle regression
 

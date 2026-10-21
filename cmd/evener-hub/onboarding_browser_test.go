@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -47,6 +48,31 @@ func TestOnboardingBrowser(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires Chrome and production frontend")
 	}
+	for _, view := range onboardingViews() {
+		view := view
+		t.Run(view.name, func(t *testing.T) { testOnboardingBrowserAt(t, view) })
+	}
+}
+
+// onboardingView is one real production layout the acquisition journey runs
+// in from before setup opens, not a post-completion resize.
+type onboardingView struct {
+	name          string
+	width, height int
+	theme         string
+}
+
+func onboardingViews() []onboardingView {
+	return []onboardingView{
+		{name: "desktop-light", width: 1440, height: 1000, theme: "light"},
+		{name: "desktop-dark", width: 1440, height: 1000, theme: "dark"},
+		{name: "mobile-light", width: 390, height: 844, theme: "light"},
+		{name: "mobile-dark", width: 390, height: 844, theme: "dark"},
+	}
+}
+
+func testOnboardingBrowserAt(t *testing.T, view onboardingView) {
+	t.Helper()
 	guard := newOnboardingGuardEnv(t)
 	recordVideo, evidenceDir := guard.recordVideo, guard.evidenceDir
 	root, repo, work, run := guard.root, guard.repo, guard.work, guard.run
@@ -177,7 +203,17 @@ func TestOnboardingBrowser(t *testing.T) {
 	defer checkpoint.Close()
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "node", "scripts/onboardingguard/run.mjs", "--url", hubedge.AuthURLFor(hub.URL, token), "--artifact-dir", root, "--work", work, "--checkpoint", checkpoint.URL, "--adopted-model", "openai/gpt-4o", "--scenario", "auto")
+	cmd := exec.CommandContext(ctx, "node", "scripts/onboardingguard/run.mjs",
+		"--url", hubedge.AuthURLFor(hub.URL, token),
+		"--artifact-dir", root,
+		"--work", work,
+		"--checkpoint", checkpoint.URL,
+		"--adopted-model", "openai/gpt-4o",
+		"--scenario", "auto",
+		"--width", strconv.Itoa(view.width),
+		"--height", strconv.Itoa(view.height),
+		"--theme", view.theme,
+	)
 	if recordVideo != "" {
 		cmd.Args = append(cmd.Args, "--record-video", recordVideo)
 	}
@@ -197,8 +233,14 @@ func TestOnboardingBrowser(t *testing.T) {
 		t.Fatal(err)
 	}
 	stopChildren()
-	if len(children) != 2 {
-		t.Fatalf("spawned %d daemons, want task and blank sessions", len(children))
+	wantSessions := 2
+	if view.width <= 390 {
+		// The narrow journey proves acquisition/Start/focus/reply; the blank
+		// second-session check is the desktop journey's.
+		wantSessions = 1
+	}
+	if len(children) != wantSessions {
+		t.Fatalf("spawned %d daemons, want %d", len(children), wantSessions)
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -227,7 +269,7 @@ func TestOnboardingBrowser(t *testing.T) {
 			refs = append(refs, detail.Ref)
 		}
 	}
-	if len(refs) != 2 || refs[0] == refs[1] {
+	if len(refs) != wantSessions || (wantSessions == 2 && refs[0] == refs[1]) {
 		t.Fatalf("browser session identities: %v", refs)
 	}
 	var generations []time.Time
@@ -242,8 +284,12 @@ func TestOnboardingBrowser(t *testing.T) {
 			turns = append(turns, req)
 		}
 	}
-	if err := onboardingStarts(starts, launches, generations); err != nil {
-		t.Fatal(err)
+	if wantSessions == 2 {
+		if err := onboardingStarts(starts, launches, generations); err != nil {
+			t.Fatal(err)
+		}
+	} else if len(starts) != 1 || len(launches) != 1 || launches[0].Before(starts[0]) || len(generations) == 0 || generations[0].Before(starts[0]) {
+		t.Fatalf("mobile start/launch/generation order: starts=%v launches=%v generations=%v", starts, launches, generations)
 	}
 	if len(turns) != 1 {
 		t.Fatalf("streamed user turns=%d, want 1 (total generations=%d)", len(turns), len(requests))

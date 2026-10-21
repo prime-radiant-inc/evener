@@ -8,7 +8,7 @@ import path from "node:path";
 import { evaluate, navigateTo } from "../browserGuardCdp.mjs";
 import { Driver } from "../skillguard/run.mjs";
 import { button as activateButton } from "./button.mjs";
-import { captureAccessViews, captureJourneyViews, record } from "./record.mjs";
+import { captureAccessViews, captureAcquisition, captureSession, record } from "./record.mjs";
 
 const args = Object.fromEntries(
   Array.from({ length: (process.argv.length - 2) / 2 }, (_, i) => [
@@ -17,6 +17,9 @@ const args = Object.fromEntries(
   ]),
 );
 const scenario = args.scenario ?? "auto";
+const width = Number(args.width ?? 1440);
+const height = Number(args.height ?? (width === 390 ? 844 : 1000));
+const theme = args.theme ?? "dark";
 const task = "ONBOARDING_TASK_72e";
 const adopted = args["adopted-model"] ?? "openai/gpt-4o";
 const evidenceDir = args["evidence-dir"];
@@ -104,6 +107,18 @@ async function checkpoint(minChecks, stage) {
   if (minChecks !== undefined) assert.ok(JSON.parse(body).checks >= minChecks, body);
   return body;
 }
+// A stage that records another process's progress: poll the Go checkpoint until
+// it observes the condition, rather than sleeping a guessed interval.
+async function waitStage(stage, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const response = await fetch(`${args.checkpoint}?stage=${encodeURIComponent(stage)}`);
+    const body = await response.text();
+    if (response.status === 200) return body;
+    if (Date.now() > deadline) throw new Error(`stage ${stage} not observed: ${body}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
 // Read the selected tab in the active dock group, then its controlled panel.
 // Never accept a reply/composer merely mounted in another pane.
 function activeSession() {
@@ -139,7 +154,9 @@ async function start() {
   driver.milestone("start-activated", { activatedAt });
 }
 async function chooseWorkingDirectory() {
-  await driver.click("#spawn-cwd");
+  // A raw pointer click can miss the directory control in the narrow layout's
+  // responsive chrome; activate its real handler in the page instead.
+  await evaluate(driver.send, `document.querySelector('#spawn-cwd').click()`);
   await wait(hasButton("Use this folder"), "initial directory resolved");
   await fill('input[aria-label="Path"]', args.work);
   await pause();
@@ -171,15 +188,16 @@ process.once("SIGTERM", () => {
 });
 try {
   await driver.start();
-  if (args["record-video"]) {
-    await driver.send("Emulation.setDeviceMetricsOverride", {
-      width: 1440,
-      height: 1000,
-      deviceScaleFactor: 1,
-      mobile: false,
-    });
-  }
+  // The journey runs in its target layout from the moment the UI opens: the
+  // acquisition, dismissal and focus restoration below happen at this size and
+  // theme, not after a later resize.
   await navigateTo(driver.page, args.url);
+  await driver.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+  await driver.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: theme }] });
+  await wait(
+    `(document.documentElement.dataset.theme ?? 'dark') === ${JSON.stringify(theme)} && innerWidth === ${width} && innerHeight === ${height}`,
+    `${width}x${height} ${theme} target layout`,
+  );
   await wait(`!!document.querySelector('[data-testid="spawn-provider-prerequisite"]')`, "fresh missing access route");
   if (args["record-video"]) finishRecording = await record(driver.page, args["artifact-dir"], args["record-video"]);
   await pause(3000);
@@ -217,52 +235,65 @@ try {
       1,
       "attachment retained",
     );
-    await captureJourneyViews(driver, {
+    await captureAcquisition(driver, {
       artifactDir: args["artifact-dir"],
       evidenceDir,
       label: "automatic",
-      phase: "draft",
+      width,
+      height,
+      theme,
       work: args.work,
       task,
       adopted,
-      strictFocus: true,
     });
-    await driver.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
-    await driver.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "light" }] });
     await pause(5000);
     await start();
-    await wait(`${active}?.reply === true`, "active session producer reply");
-    const firstSession = await read(active);
+    const mobile = width <= 390;
+    let firstSession;
+    if (mobile) {
+      await wait(`document.body.innerText.includes('ONBOARDING_REPLY_72e') && !document.querySelector('[role="dialog"]')`, "mobile session producer reply");
+      // The narrow layout has no dock tab strip, but the rendered session pane
+      // still carries the real hub ref the Go owner joins to its daemon.
+      const ref = await read(`(() => {
+        const bodies = [...document.querySelectorAll('[data-pane-scaffold^="session:"]')].filter((e) => e.getBoundingClientRect().width > 0);
+        return bodies.length === 1 ? bodies[0].dataset.paneScaffold.slice("session:".length) : null;
+      })()`);
+      assert.ok(ref, "mobile session ref");
+      firstSession = { ref };
+    } else {
+      await wait(`${active}?.reply === true`, "active session producer reply");
+      firstSession = await read(active);
+    }
     driver.milestone("session-observed", firstSession);
     await pause(3000);
-    await captureJourneyViews(driver, {
+    await captureSession(driver, {
       artifactDir: args["artifact-dir"],
       evidenceDir,
       label: "automatic",
-      phase: "session",
-      work: args.work,
-      task,
-      adopted,
+      width,
+      height,
+      theme,
     });
-    await driver.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
     await pause(2000);
-    // A second launch is deliberately blank. Production routing, not injected
-    // client state, must open a session with an editable composer and no turn.
-    await navigateTo(driver.page, new URL("/new", args.url).href);
-    await wait(`!!document.querySelector('[data-testid="spawn-submit"]')`, "configured user new session");
-    assert.equal(await read(`!!document.querySelector('[data-testid="spawn-provider-prerequisite"]')`), false);
-    await fill('[contenteditable="true"]', "");
-    await pause(3000);
-    await start();
-    await wait(
-      `${active} !== null && ${active}.ref !== ${JSON.stringify(firstSession.ref)}`,
-      "second active session composer",
-    );
-    const blankSession = await read(active);
-    assert.equal(blankSession.text, "");
-    assert.equal(blankSession.reply, false);
-    driver.milestone("session-observed", blankSession);
-    await pause(4000);
+    if (!mobile) {
+      // A second launch is deliberately blank. Production routing, not injected
+      // client state, must open a session with an editable composer and no turn.
+      await navigateTo(driver.page, new URL("/new", args.url).href);
+      await wait(`!!document.querySelector('[data-testid="spawn-submit"]')`, "configured user new session");
+      assert.equal(await read(`!!document.querySelector('[data-testid="spawn-provider-prerequisite"]')`), false);
+      await fill('[contenteditable="true"]', "");
+      await pause(3000);
+      await start();
+      await wait(
+        `${active} !== null && ${active}.ref !== ${JSON.stringify(firstSession.ref)}`,
+        "second active session composer",
+      );
+      const blankSession = await read(active);
+      assert.equal(blankSession.text, "");
+      assert.equal(blankSession.reply, false);
+      driver.milestone("session-observed", blankSession);
+      await pause(4000);
+    }
     if (finishRecording) {
       await finishRecording();
       finishRecording = null;
@@ -275,7 +306,7 @@ try {
     // OAuth journeys: the connector offers sign-in only for an instance whose
     // scheme is the Codex device/redirect flow. Every step below is production
     // UI and real AppWire; the Go owner scripts only the external issuer.
-    const providerLabel = scenario === "oauth-redirect" ? "OpenAI Codex" : "OpenAI Codex";
+    const providerLabel = "OpenAI Codex";
     await button("Connect provider");
     await button(providerLabel);
     await button("Sign in");
@@ -286,6 +317,8 @@ try {
       );
       await checkpoint(undefined, "oauth-pending");
       if (scenario === "oauth-cancel") {
+        // The issuer holds the first poll until the user's intent is settled.
+        await waitStage("oauth-poll-observed");
         await button("Cancel");
         // Cancelling the sign-in editor returns to the connection editor; the
         // outer guided dialog stays until access is actually acquired.
@@ -293,23 +326,56 @@ try {
           `!document.querySelector('[role="status"][data-state="waiting-for-authorization"]') && ${hasButton("Sign in")}`,
           "cancelled device flow closed",
         );
-        await pause(3500);
-        // The cancelled flow must not check or complete later.
+        // The state the person left behind: the connection editor's focus owner
+        // and a draft that has not adopted anything. The held late success
+        // must not change either.
+        const intent = `(() => ({
+          focusId: document.activeElement?.id ?? '',
+          focusText: (document.activeElement?.textContent ?? '').trim(),
+          model: document.querySelector('[data-testid="spawn-model-slot"]')?.dataset.state ?? 'missing',
+          modelValue: document.querySelector('[data-testid="spawn-model-value"]')?.textContent?.trim() ?? '',
+          saved: document.querySelector('[data-testid="credential-saved"]') !== null
+        }))()`;
+        const beforeLate = await read(intent);
+        assert.equal(beforeLate.saved, false, "cancel itself saved nothing");
+        await checkpoint(undefined, "oauth-cancelled-intent");
+        // Now the held poll answers with a real success. A retired operation
+        // would persist the record, check models or complete the UI here.
+        await checkpoint(undefined, "oauth-release-late-success");
+        await waitStage("oauth-late-settled");
+        const afterLate = await read(intent);
+        assert.deepEqual(afterLate, beforeLate, "late success did not mutate the cancelled intent or steal focus");
+        assert.equal(
+          await read(`document.querySelector('[data-testid="credential-saved"]') === null && document.body.innerText.includes("Signed in to") === false`),
+          true,
+          "cancelled flow did not complete the UI",
+        );
         await checkpoint(undefined, "oauth-cancelled");
         // Recovery: a fresh sign-in on the still-open connection editor
         // completes automatically.
         await button("Sign in");
       }
       if (scenario === "oauth-endpoint-change") {
+        await waitStage("oauth-poll-observed");
         await checkpoint(undefined, "oauth-endpoint-change");
+        await checkpoint(undefined, "oauth-changed-intent");
+        await checkpoint(undefined, "oauth-release-late-success");
+        await waitStage("oauth-late-settled");
+        // The listing refresh the instance edit scheduled may itself wait for
+        // the in-flight poll; once that completes, the changed destination is
+        // what the UI must show. The intent was set before the release.
         await wait(
           `!document.querySelector('[role="status"][data-state="waiting-for-authorization"]') &&
            document.querySelector('[data-reason="changed"]') !== null`,
           "changed destination refused",
         );
-        await pause(3000);
+        assert.equal(
+          await read(`document.querySelector('[data-testid="credential-saved"]') === null`),
+          true,
+          "changed-destination flow did not save access",
+        );
         await checkpoint(undefined, "oauth-endpoint-changed");
-        console.log("PASS endpoint change refused the pending sign-in with its changed alert");
+        console.log("PASS endpoint change refused the pending sign-in with its changed alert and late success");
         await stop();
         process.exit(0);
       }
@@ -351,16 +417,16 @@ try {
     assert.equal(oauthSettled.modelState, "chosen", "OAuth completion adopted the configured instance default");
     assert.ok(oauthSettled.model.includes(adopted), `OAuth adopted model ${oauthSettled.model} missing ${adopted}`);
     assert.equal(await read(`document.querySelector('[contenteditable="true"]').textContent.includes(${JSON.stringify(task)})`), true);
-    await captureJourneyViews(driver, {
+    await captureAcquisition(driver, {
       artifactDir: args["artifact-dir"],
       evidenceDir,
       label: scenario,
-      phase: "draft",
+      width,
+      height,
+      theme,
       work: args.work,
       task,
       adopted,
-      strictFocus: true,
-      requireChosen: true,
     });
     console.log(`PASS ${scenario}: real issuer flow, automatic access check and completion, explicit Start, no pre-Start generation`);
   }
