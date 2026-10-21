@@ -25,7 +25,7 @@ func newContextStatusLargeFixture(turns int) (*Session, *provider.Profile) {
 	profile := NewOpenAIProfile("gpt-5.2")
 	text := contextStatusText()
 	history := make([]schema.Turn, 0, turns)
-	for i := 0; i < turns; i++ {
+	for i := range turns {
 		if i%2 == 0 {
 			history = append(history, schema.NewTurn(schema.TurnUserInput, llm.User(text)))
 		} else {

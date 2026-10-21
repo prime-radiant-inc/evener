@@ -22,8 +22,9 @@ func assertContextStatus(t *testing.T, s *Session, wantUsed, wantWindow int, wan
 			metrics, pressure, wantUsed, wantWindow, wantAssumed)
 	}
 	checkContextStatusInvariants(t, metrics, pressure)
-	// Preservation check only: each wrapper must report the same sample the
-	// combined call just returned.
+	// Preservation check only: each wrapper takes a fresh sample of the
+	// unchanged session state, so it must report the same metrics and pressure
+	// the combined call just returned.
 	if got := s.ContextMetrics(); got != metrics {
 		t.Fatalf("ContextMetrics = %+v, want %+v", got, metrics)
 	}
@@ -43,7 +44,7 @@ func TestContextStatusParityAcrossMutations(t *testing.T) {
 	text := contextStatusText()
 	userTurn := schema.NewTurn(schema.TurnUserInput, llm.User(text))
 	assistantTurn := schema.NewTurn(schema.TurnAssistant, llm.Assistant(text))
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		if i%2 == 0 {
 			s.recordTurn(userTurn, userTurn)
 		} else {
@@ -133,7 +134,7 @@ func TestContextStatusAllocationCeiling10000Turns(t *testing.T) {
 	const iters = 20
 	var metrics ContextMetrics
 	var pressure float64
-	for i := 0; i < iters; i++ {
+	for range iters {
 		metrics, pressure = s.ContextStatus()
 	}
 	runtime.ReadMemStats(&after)
@@ -159,10 +160,7 @@ func TestContextStatusAllocationCeiling10000Turns(t *testing.T) {
 // independent of which mutation has landed.
 func checkContextStatusInvariants(t *testing.T, metrics ContextMetrics, pressure float64) {
 	t.Helper()
-	wantRemaining := metrics.Window - metrics.Used
-	if wantRemaining < 0 {
-		wantRemaining = 0
-	}
+	wantRemaining := max(metrics.Window-metrics.Used, 0)
 	if metrics.Remaining != wantRemaining {
 		t.Errorf("Remaining = %d, want %d for %+v", metrics.Remaining, wantRemaining, metrics)
 	}
@@ -202,7 +200,7 @@ func TestContextStatusConcurrentMutations(t *testing.T) {
 	// writer 1: the production append path takes attentionMu then s.mu.
 	go func() {
 		defer wg.Done()
-		for i := 0; i < iterations; i++ {
+		for range iterations {
 			s.recordTurn(turn, turn)
 		}
 	}()
@@ -211,7 +209,7 @@ func TestContextStatusConcurrentMutations(t *testing.T) {
 	// the snapshot and publish so the revision check succeeds.
 	go func() {
 		defer wg.Done()
-		for i := 0; i < iterations; i++ {
+		for range iterations {
 			folded := []schema.Turn{schema.NewTurn(schema.TurnSummary, llm.Assistant(text))}
 			s.attentionMu.Lock()
 			s.mu.Lock()
@@ -230,7 +228,7 @@ func TestContextStatusConcurrentMutations(t *testing.T) {
 	// Every call must be accepted; no SetProfile runs during this test.
 	go func() {
 		defer wg.Done()
-		for i := 0; i < iterations; i++ {
+		for range iterations {
 			s.mu.Lock()
 			historyLen := len(s.history)
 			s.mu.Unlock()
@@ -244,7 +242,7 @@ func TestContextStatusConcurrentMutations(t *testing.T) {
 	// report the fixture's only known window state.
 	go func() {
 		defer wg.Done()
-		for i := 0; i < iterations; i++ {
+		for range iterations {
 			metrics, pressure := s.ContextStatus()
 			if metrics.Window != wantWindow || metrics.Assumed {
 				t.Errorf("Window/Assumed = %d/%v, want %d/false", metrics.Window, metrics.Assumed, wantWindow)

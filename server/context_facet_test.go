@@ -45,6 +45,7 @@ const (
 	contextFacetFixtureTextLen       = 1024
 	contextFacetFixtureCallID        = "call_fixture"
 	contextFacetFixtureResultTool    = "communicate"
+	contextFacetFixtureTitle         = "context facet fixture"
 )
 
 func contextFacetFixtureText(unit string) string {
@@ -141,6 +142,7 @@ func (s *contextFacetEnvelopeSource) ContextStatus() (ContextMetrics, float64) {
 }
 
 type contextFacetFixture struct {
+	sess             *agent.Session
 	srv              *Server
 	expectedMetrics  ContextMetrics
 	expectedPressure float64
@@ -187,6 +189,15 @@ func newContextFacetFixture(t testing.TB) *contextFacetFixture {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(func() { sess.Close() })
+
+	// Assign a title through the real Rename path before the first input.
+	// launchInitialPromptNamer returns when naming.set or naming.value is
+	// already set, so NameSource="user" suppresses the asynchronous namer and
+	// its logging instead of letting them overlap the measured publications.
+	// The recorded baseline fixture had no title; this changes that setup.
+	if err := sess.Rename(contextFacetFixtureTitle); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
 
 	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -260,6 +271,7 @@ func newContextFacetFixture(t testing.TB) *contextFacetFixture {
 	}
 
 	return &contextFacetFixture{
+		sess:             sess,
 		srv:              srv,
 		expectedMetrics:  expected,
 		expectedPressure: expectedPressure,
