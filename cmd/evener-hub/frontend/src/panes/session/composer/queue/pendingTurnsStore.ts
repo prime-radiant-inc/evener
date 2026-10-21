@@ -155,6 +155,16 @@ function clearRetryReflection(ref: string): void {
   publishRetryReflections();
 }
 
+function clearRetryReflectionByMutation(clientMutationId: string): void {
+  let changed = false;
+  for (const [ref, marker] of retryReflections) {
+    if (marker.clientMutationId !== clientMutationId) continue;
+    retryReflections.delete(ref);
+    changed = true;
+  }
+  if (changed) publishRetryReflections();
+}
+
 function hasNewRecovery(ref: string, marker: RetryReflection): boolean {
   return recoveryEntries(pendingTurnsStore.getState().recovery, ref).some((record) =>
     marker.clientMutationId === undefined
@@ -316,6 +326,7 @@ installRetryPendingProjection({
   isInFlight: (ref) => retryAdmissions.has(ref),
   markSubmitted: markRetrySubmitted,
   awaitingReflection: (ref, failedTurnId) => retryReflections.get(ref)?.failedTurnId === failedTurnId,
+  settledMutation: clearRetryReflectionByMutation,
 });
 
 // Settlement notifications and model changes are the two facts that can

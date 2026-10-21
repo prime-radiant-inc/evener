@@ -2203,8 +2203,14 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
   // turn inputs, so their retained copies retire with the instance.
   const runtime = getMutationRuntime();
   if (runtime) {
-    const retired = await runtime.storage.retireAcceptedCopies(targetRef);
-    if (retired.length > 0) notifyMutationPersistence([targetRef]);
+    // Best-effort, like the canceled-row discard above: a cleanup failure must
+    // not stop the authoritative clear response from publishing.
+    try {
+      const retired = await runtime.storage.retireAcceptedCopies(targetRef);
+      if (retired.length > 0) notifyMutationPersistence([targetRef]);
+    } catch {
+      // The replacement model and read retirement still land below.
+    }
   }
   const now = Date.now();
   const model = hydrateThread({ thread: response.thread }, targetRef, now);
@@ -2602,33 +2608,52 @@ function getMutationRuntime(): MutationRuntime | null {
   storage.settleApplied = async (clientMutationId) => {
     const settled = await settleApplied(clientMutationId);
     submittedTailBaselines.delete(clientMutationId);
-    if (settled) noteHandledMutation(clientMutationId);
+    if (settled) {
+      noteHandledMutation(clientMutationId);
+      retryPendingProjection?.settledMutation(clientMutationId);
+    }
     return settled;
   };
   const transferToRecovery = storage.transferToRecovery.bind(storage);
   storage.transferToRecovery = async (clientMutationId, recoveryKind, recoveryReason) => {
     const transferred = await transferToRecovery(clientMutationId, recoveryKind, recoveryReason);
     submittedTailBaselines.delete(clientMutationId);
+    if (transferred) retryPendingProjection?.settledMutation(clientMutationId);
     return transferred;
   };
   const discardCanceled = storage.discardCanceled.bind(storage);
   storage.discardCanceled = async (targetRef) => {
     const discarded = await discardCanceled(targetRef);
-    for (const clientMutationId of discarded) submittedTailBaselines.delete(clientMutationId);
+    for (const clientMutationId of discarded) {
+      submittedTailBaselines.delete(clientMutationId);
+      retryPendingProjection?.settledMutation(clientMutationId);
+    }
     return discarded;
   };
   const discardCanceledOfInstance = storage.discardCanceledOfInstance.bind(storage);
   storage.discardCanceledOfInstance = async (targetRef, supersededInstanceId) => {
     const discarded = await discardCanceledOfInstance(targetRef, supersededInstanceId);
-    for (const clientMutationId of discarded) submittedTailBaselines.delete(clientMutationId);
+    for (const clientMutationId of discarded) {
+      submittedTailBaselines.delete(clientMutationId);
+      retryPendingProjection?.settledMutation(clientMutationId);
+    }
     return discarded;
   };
   storage.setSettledListener((targetRef) => {
     noteMutationStateChange(targetRef);
+    // A settle during an in-flight read is that read's to reconcile: its
+    // snapshot owns the ref, and a competing pin read would only contend with
+    // the parked transaction. The publication refreshes pins itself.
+    if (
+      pendingThreadHydrations.has(targetRef) ||
+      pendingMutationReconciliations.has(targetRef) ||
+      dispatchableMutationRefs.has(targetRef)
+    )
+      return;
     // A settle can be the moment a retained accepted copy stops pinning, or
-    // the last outbox row leaves. Re-read the ref's pins so a background model
-    // with no durable work retires instead of waiting for an unrelated scan.
-    if (runtime) void refreshMutationPins(runtime, [targetRef]).catch(() => undefined);
+    // the last outbox row leaves. Re-read only the ref's pin so a background
+    // model with no durable work retires without starting a competing drain.
+    if (runtime) void refreshMutationPinAfterRemoval(runtime, targetRef).catch(() => undefined);
   });
   // §6's note-row supersede discard commits fire-and-forget AFTER the settle
   // that spawned it has already notified — the dispatcher's post-settlement
@@ -4000,15 +4025,19 @@ async function recordDirectAccepted(
   baselineTail: string | undefined,
   clientMutationId: string,
   acceptedTurnId?: string,
+  persistCopy = true,
 ): Promise<void> {
   // The page-local bridge opens first and always: a storage failure after a
   // successful RPC must not leave this accepted input actionable as a Retry.
   noteDirectSubmission(ref, intent.method, baselineTail, clientMutationId);
-  if (isTurnSubmissionMethod(intent.method)) {
+  if (persistCopy && isTurnSubmissionMethod(intent.method)) {
     const runtime = getMutationRuntime();
     if (runtime) {
-      try {
-        await runtime.storage.recordAcceptedCopy(
+      // Best-effort durable owner, after the accepted RPC: a slow or failing
+      // copy write must not delay or fail the send. The page bridge above owns
+      // Retry admission in the meantime.
+      void runtime.storage
+        .recordAcceptedCopy(
           {
             ...intent,
             submissionBaselineTail: intent.submissionBaselineTail ?? baselineTail,
@@ -4016,12 +4045,16 @@ async function recordDirectAccepted(
           },
           clientMutationId,
           acceptedTurnId,
-        );
-        noteMutationStateChange(ref);
-        notifyMutationPersistence([ref]);
-      } catch {
-        // Best-effort durable owner; the RPC already succeeded.
-      }
+        )
+        .then(() => {
+          // A test/store reset (or a client swap) may have retired this runtime
+          // while the copy write was in flight; the completion must not wake a
+          // projection and mint a fresh runtime after reset.
+          if (!isCurrentMutationRuntime(runtime)) return;
+          noteMutationStateChange(ref);
+          notifyMutationPersistence([ref]);
+        })
+        .catch(() => undefined);
     }
   }
 }
@@ -4310,6 +4343,10 @@ interface RetryPendingProjection {
   // establishes the current tail.
   markSubmitted(ref: string, failedTurnId: string, clientMutationId?: string): void;
   awaitingReflection(ref: string, failedTurnId: string): boolean;
+  // The durable owner conclusively settled this exact mutation (identity
+  // reconciliation, omission, or terminal recovery). A marker waiting on it
+  // must clear even when the conversation tail did not advance.
+  settledMutation(clientMutationId: string): void;
 }
 let retryPendingProjection: RetryPendingProjection | null = null;
 
@@ -4855,7 +4892,14 @@ async function enqueueMutationIntent(
     // untouched (it lives in localStorage), and a send is retryable by hand -
     // the trade the fallback makes against failing closed.
     await dispatchMutationDirectly(dispatchClient, durableIntent, (clientMutationId, acceptedTurnId) =>
-      recordDirectAccepted(ref, durableIntent, baselineTail, clientMutationId, acceptedTurnId),
+      recordDirectAccepted(
+        ref,
+        durableIntent,
+        baselineTail,
+        clientMutationId,
+        acceptedTurnId,
+        !isStorageTimeout(error),
+      ),
     );
     return undefined;
   }

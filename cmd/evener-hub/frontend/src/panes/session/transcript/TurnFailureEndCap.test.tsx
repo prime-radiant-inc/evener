@@ -178,6 +178,12 @@ class GatedEnqueueStorage extends MutationOutboxIndexedDB {
   }
 }
 
+class ClearCleanupFailureStorage extends MutationOutboxIndexedDB {
+  override async retireAcceptedCopies(): Promise<string[]> {
+    throw new DOMException("storage unavailable", "UnknownError");
+  }
+}
+
 // The hint disclosure's toggle, or null when the end-cap has no hint.
 function hintSummary(): HTMLElement | null {
   return screen.getByTestId("turn-failure").querySelector("summary");
@@ -685,7 +691,7 @@ test("a reflected ordinary send whose new turn is already the tail creates no ma
       await reconcileMutationIdentitiesForTests([accepted.clientMutationId]);
     });
     await flushPendingTurnsProjectionForTests();
-    expect(await storage.listOptimistic("ref_a")).toHaveLength(0);
+    await waitFor(async () => expect(await storage.listOptimistic("ref_a")).toHaveLength(0));
     const view = render(
       <TurnFailureEndCap error={{ message: "boom ordinary" }} sessionRef="ref_a" turnId="ordinary_turn" />,
     );
@@ -970,10 +976,15 @@ test("a complete latest read that omits a restored accepted copy settles it", as
       delete response.thread.evener.activeTurnId;
       return response;
     });
-    await act(async () => {
-      await threadsStore.getState().refreshThread("ref_a");
-    });
-    await flushPendingTurnsProjectionForTests();
+    for (let attempt = 0; attempt < 3 && (await storage.listOptimistic("ref_a")).length > 0; attempt += 1) {
+      await act(async () => {
+        await threadsStore.getState().refreshThread("ref_a");
+      });
+      await flushPendingTurnsProjectionForTests();
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+    }
     expect(await storage.listOptimistic("ref_a")).toHaveLength(0);
     const laterView = render(
       <TurnFailureEndCap error={{ message: "later" }} sessionRef="ref_a" turnId="later_failed" />,
@@ -1017,6 +1028,67 @@ test("a non-authoritative read cannot settle a retained accepted copy", async ()
   }
 });
 
+test("an authoritative settlement of the accepted Retry clears its marker without a new tail", async () => {
+  const turn = failedTurn();
+  const { fake, storage } = await loadThread("ref_a", [turn]);
+  fake.on("thread/read", () => new Promise<never>(() => undefined));
+  fake.on("turn/start", ({ clientMutationId }) => ({
+    receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
+    turn: { id: "turn_continued", status: "inProgress", itemsView: "" },
+  }));
+  try {
+    const view = render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+    await act(async () => {
+      await threadsStore.getState().continueTurn("ref_a", turn.id);
+    });
+    await flushPendingTurnsProjectionForTests();
+    const marker = retryReflectionForTests("ref_a");
+    if (!marker?.clientMutationId) throw new Error("the Retry opened no marker with an identity");
+    await waitFor(() => expect(retryButton()?.disabled).toBe(true));
+
+    // The read settles the accepted mutation by identity; the original failure
+    // is still the latest turn, so no tail advance can clear the marker.
+    fake.on("thread/read", () =>
+      readResponse("ref_a", {
+        status: { type: "idle" },
+        turns: [
+          {
+            id: turn.id,
+            status: "failed",
+            itemsView: "full",
+            items: [
+              {
+                id: "item_retry",
+                turnId: turn.id,
+                type: "userMessage",
+                text: "continue",
+                clientMutationId: marker.clientMutationId,
+              },
+            ],
+            error: { message: "boom" },
+          },
+        ],
+      }),
+    );
+    await act(async () => {
+      await threadsStore.getState().refreshThread("ref_a");
+    });
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryReflectionForTests("ref_a")).toBeUndefined());
+    expect(await storage.listOptimistic("ref_a")).toHaveLength(0);
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+
+    view.unmount();
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+  } finally {
+    storage.close();
+  }
+});
+
 test("clear retires a retained accepted copy for the replaced instance", async () => {
   const turn = failedTurn();
   vi.stubGlobal("indexedDB", new IDBFactory());
@@ -1055,6 +1127,39 @@ test("clear retires a retained accepted copy for the replaced instance", async (
     });
     await flushPendingTurnsProjectionForTests();
     expect(await storage.listOptimistic("ref_a")).toHaveLength(0);
+  } finally {
+    storage.close();
+  }
+});
+
+test("a failed accepted-copy cleanup does not abort an authoritative clear", async () => {
+  const turn = failedTurn();
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  const storage = new ClearCleanupFailureStorage();
+  const { fake } = await loadThread("ref_a", [turn], {}, storage);
+  fake.on("thread/clear", ({ clientMutationId }) => {
+    const cleared = readResponse("ref_a", { turns: [], status: { type: "idle" } }).thread;
+    return {
+      thread: cleared,
+      ref: "ref_a",
+      receipt: {
+        clientMutationId,
+        disposition: "applied",
+        threadId: cleared.id,
+        projectionState: "reflected",
+      },
+    };
+  });
+  try {
+    await act(async () => {
+      await threadsStore.getState().clearThread("ref_a");
+    });
+    await flushPendingTurnsProjectionForTests();
+    const model = threadsStore.getState().threads.get("ref_a");
+    if (!model) throw new Error("the clear response did not publish a replacement model");
+    expect(model.turns).toEqual([]);
+    expect(model.status.type).toBe("idle");
+    await waitFor(async () => expect(await storage.listOutbox("ref_a")).toHaveLength(0));
   } finally {
     storage.close();
   }
@@ -2127,6 +2232,7 @@ test("a direct fallback from an empty conversation keeps its accepted copy until
       await threadsStore.getState().send("ref_a", "direct from empty");
     });
     await flushPendingTurnsProjectionForTests();
+    await waitFor(async () => expect(await storage.listOptimistic("ref_a")).toHaveLength(1));
     const accepted = (await storage.listOptimistic("ref_a"))[0];
     if (!accepted) throw new Error("the direct fallback kept no accepted copy");
     expect(accepted.retainAcceptedCopyUntilObserved).toBe(true);
@@ -2239,6 +2345,7 @@ test("a superseded reflection read cannot reopen the old Retry", async () => {
       await threadsStore.getState().continueTurn("ref_a", turn.id);
     });
     await flushPendingTurnsProjectionForTests();
+    await waitFor(async () => expect(await storage.listOptimistic("ref_a")).toHaveLength(1));
     await waitFor(() => expect(reads).toHaveLength(1));
     expect(retryButton()?.disabled).toBe(true);
     let newer: Promise<void>;
