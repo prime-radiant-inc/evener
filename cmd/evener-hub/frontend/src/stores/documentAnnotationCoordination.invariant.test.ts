@@ -9,7 +9,10 @@ import { createDocumentAnnotationRepository, SAVE_STORES } from "./documentAnnot
 import {
   ANNOTATION_EVIDENCE_STORE,
   ANNOTATION_EXPIRY_STORE,
+  ANNOTATION_HEADS_STORE,
+  ANNOTATION_NAMESPACES_STORE,
   ANNOTATION_OPERATIONS_STORE,
+  ANNOTATION_PAYLOADS_STORE,
 } from "./localCompositionSchema";
 import {
   type AnnotationFixture,
@@ -1374,6 +1377,115 @@ test("a retained discard that observes an already-terminal row publishes the los
   );
   // The original pass plus the follow-up its lost publication must start.
   expect(passes).toHaveBeenCalledTimes(2);
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+// finishExpiry commits the expired epoch's deletion and flips its receipt to
+// "deleted", but the suppression release and reader wake run only after the
+// await resolves. A watchdog that outlives the completion leaves the epoch's
+// suppression entry installed forever, and the sweep skips the deleted row, so
+// no later arm ever releases it. The durable row is the commit's evidence: a
+// rejected finishExpiry re-reads it, and a sweep that encounters a deleted row
+// this adapter still suppresses releases and wakes once.
+test("a finishExpiry whose completion was lost releases its suppression and wakes the reader", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+  });
+  const ticket = await fixture.repository.beginRead(fixture.document);
+  const acceptance = await fixture.repository.acceptRead(ticket, changedContent());
+  if (acceptance.state !== "expiry-pending" || acceptance.receipt === undefined) {
+    throw new Error(`changed read did not fence: ${acceptance.state}`);
+  }
+  const listener = vi.fn();
+  fixture.repository.subscribe(fixture.document, listener);
+  // The changed read's own fence already woke readers; only the lost deletion
+  // publication is under test.
+  listener.mockClear();
+
+  // The deletion transaction commits, but its completion event is held: the
+  // watchdog rejects a finishExpiry whose row is already terminal.
+  const hold = holdNextWriteTransaction([
+    ANNOTATION_NAMESPACES_STORE,
+    ANNOTATION_HEADS_STORE,
+    ANNOTATION_EVIDENCE_STORE,
+    ANNOTATION_OPERATIONS_STORE,
+    ANNOTATION_EXPIRY_STORE,
+    ANNOTATION_PAYLOADS_STORE,
+  ]);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let reached = false;
+  void hold.reached.then(() => {
+    reached = true;
+  });
+  let finishFailure: unknown;
+  const finish = fixture.repository.finishExpiry(acceptance.receipt).catch((error: unknown) => {
+    finishFailure = error;
+  });
+  await pollUntil(() => reached, 50);
+  expect(reached).toBe(true);
+  await vi.advanceTimersByTimeAsync(10_001);
+  await finish;
+  expect(finishFailure).toMatchObject({ message: "Document annotation repository transaction timed out" });
+  hold.release();
+  vi.useRealTimers();
+
+  // The rejected finishExpiry re-read the terminal row and published the
+  // release and wake its lost completion skipped.
+  expect(listener).toHaveBeenCalled();
+
+  // The release happened once: a later sweep finds no entry and stays silent.
+  listener.mockClear();
+  await fixture.repository.retryPending("storage-recovered");
+  expect(listener).not.toHaveBeenCalled();
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+// A finishExpiry that commits and completes in ANOTHER adapter leaves a
+// "deleted" receipt this adapter still suppresses: its own observation of the
+// deletion never ran. The sweep used to skip every deleted row, so that
+// suppression entry lived for the life of the adapter and readers that missed
+// the fence's wake were never invalidated. The row is the evidence; the sweep
+// releases and wakes once.
+test("a sweep that meets an already-deleted expiry releases the suppression it still holds", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+  });
+  const ticket = await fixture.repository.beginRead(fixture.document);
+  const acceptance = await fixture.repository.acceptRead(ticket, changedContent());
+  if (acceptance.state !== "expiry-pending" || acceptance.receipt === undefined) {
+    throw new Error(`changed read did not fence: ${acceptance.state}`);
+  }
+  const listener = vi.fn();
+  fixture.repository.subscribe(fixture.document, listener);
+
+  // A sibling adapter completes the deletion; this adapter never runs its own
+  // finishExpiry, so it keeps the suppressed epoch.
+  const sibling = createDocumentAnnotationRepository({
+    indexedDB: fixture.factory,
+    databaseName: "annotation-coordination",
+    drafts: fixture.drafts,
+    targetFor: () => null,
+  });
+  await sibling.finishExpiry(acceptance.receipt);
+  // The sibling's own wake reaches this adapter as a peer message; retire that
+  // channel and let any in-flight peer delivery land before measuring what
+  // THIS adapter's sweep publishes.
+  sibling.close();
+  for (let hop = 0; hop < 5; hop += 1) await nextRealTask();
+  listener.mockClear();
+
+  await fixture.repository.retryPending("storage-recovered");
+  expect(listener).toHaveBeenCalled();
+
+  listener.mockClear();
+  await fixture.repository.retryPending("storage-recovered");
+  expect(listener).not.toHaveBeenCalled();
 
   fixture.repository.close();
   fixture.drafts.close();

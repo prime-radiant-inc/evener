@@ -1388,58 +1388,89 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const documentKey = annotationDocumentKey(receipt.key);
     const expiryKey = annotationExpiryKey(documentKey, receipt.expiredEpoch);
     let removed = false;
-    await this.#transaction([...ACCEPT_STORES, ANNOTATION_PAYLOADS_STORE], "readwrite", async (transaction) => {
-      const namespaceRow = await readNamespaceRow(transaction, namespace);
-      if (!namespaceRow || namespaceRow.incarnation !== receipt.namespaceIncarnation) return;
-      const expiryRow = await requestResult<AnnotationExpiryRow | undefined>(
-        transaction.objectStore(ANNOTATION_EXPIRY_STORE).get(expiryKey),
-      );
-      if (!expiryRow || expiryRow.receipt.expiredEpoch !== receipt.expiredEpoch) return;
-      if (expiryRow.receipt.phase === "deleted") return;
-      const [payloads, evidence] = await Promise.all([
-        rowsForDocumentEpoch<AnnotationPayloadRow>(
-          transaction.objectStore(ANNOTATION_PAYLOADS_STORE),
-          ANNOTATION_PAYLOADS_DOCUMENT_EPOCH_INDEX,
-          this.#keyRange,
-          documentKey,
-          receipt.expiredEpoch,
-        ),
-        rowsForDocumentEpoch<AnnotationEvidenceRow>(
-          transaction.objectStore(ANNOTATION_EVIDENCE_STORE),
-          ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX,
-          this.#keyRange,
-          documentKey,
-          receipt.expiredEpoch,
-        ),
-      ]);
-      for (const payload of payloads) {
-        await requestResult(transaction.objectStore(ANNOTATION_PAYLOADS_STORE).delete(payload.payloadKey));
-      }
-      for (const row of evidence) {
-        await requestResult(transaction.objectStore(ANNOTATION_EVIDENCE_STORE).delete(row.evidenceKey));
-      }
-      await requestResult(
-        transaction.objectStore(ANNOTATION_EXPIRY_STORE).put({
-          expiryKey,
-          receipt: { ...expiryRow.receipt, phase: "deleted" },
-        } satisfies AnnotationExpiryRow),
-      );
-      this.#options.beforeCommit?.("deleteExpiry");
-      removed = true;
-    });
-    if (removed) {
-      // The expired epoch's payloads and evidence are gone, its replacement
-      // minted a fresh UUID epoch, and the fence that wrote this receipt
-      // already flipped the epoch's pending operations terminal. Every consult
-      // path keys on this exact document+incarnation+epoch identity - listing,
-      // save validation, handoff eligibility, durable validation and the
-      // revert-resurrection fence - so a released entry can never legitimately
-      // match a live epoch again: the identity names a deleted UUID, never a
-      // replacement. Release it so a long-lived adapter does not retain one
-      // inert entry per proven source change.
-      this.#suppressedEpochs.delete(epochIdentityOf(documentKey, receipt.namespaceIncarnation, receipt.expiredEpoch));
-      this.#settleTransition({ documentKey });
+    try {
+      await this.#transaction([...ACCEPT_STORES, ANNOTATION_PAYLOADS_STORE], "readwrite", async (transaction) => {
+        const namespaceRow = await readNamespaceRow(transaction, namespace);
+        if (!namespaceRow || namespaceRow.incarnation !== receipt.namespaceIncarnation) return;
+        const expiryRow = await requestResult<AnnotationExpiryRow | undefined>(
+          transaction.objectStore(ANNOTATION_EXPIRY_STORE).get(expiryKey),
+        );
+        if (!expiryRow || expiryRow.receipt.expiredEpoch !== receipt.expiredEpoch) return;
+        if (expiryRow.receipt.phase === "deleted") return;
+        const [payloads, evidence] = await Promise.all([
+          rowsForDocumentEpoch<AnnotationPayloadRow>(
+            transaction.objectStore(ANNOTATION_PAYLOADS_STORE),
+            ANNOTATION_PAYLOADS_DOCUMENT_EPOCH_INDEX,
+            this.#keyRange,
+            documentKey,
+            receipt.expiredEpoch,
+          ),
+          rowsForDocumentEpoch<AnnotationEvidenceRow>(
+            transaction.objectStore(ANNOTATION_EVIDENCE_STORE),
+            ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX,
+            this.#keyRange,
+            documentKey,
+            receipt.expiredEpoch,
+          ),
+        ]);
+        for (const payload of payloads) {
+          await requestResult(transaction.objectStore(ANNOTATION_PAYLOADS_STORE).delete(payload.payloadKey));
+        }
+        for (const row of evidence) {
+          await requestResult(transaction.objectStore(ANNOTATION_EVIDENCE_STORE).delete(row.evidenceKey));
+        }
+        await requestResult(
+          transaction.objectStore(ANNOTATION_EXPIRY_STORE).put({
+            expiryKey,
+            receipt: { ...expiryRow.receipt, phase: "deleted" },
+          } satisfies AnnotationExpiryRow),
+        );
+        this.#options.beforeCommit?.("deleteExpiry");
+        removed = true;
+      });
+    } catch (error) {
+      // The deletion may have committed before the rejection: a watchdog can
+      // outlive a held completion. The durable expiry row is the evidence of
+      // that commit, so a "deleted" row settles the same release and wake the
+      // resolved path would have published.
+      await this.#settleDeletedExpiry(receipt, expiryKey);
+      throw error;
     }
+    if (removed) {
+      this.#releaseExpiredEpoch(documentKey, receipt.namespaceIncarnation, receipt.expiredEpoch);
+    }
+  }
+
+  // The expired epoch's payloads and evidence are gone, its replacement minted
+  // a fresh UUID epoch, and the fence that wrote this receipt already flipped
+  // the epoch's pending operations terminal. Every consult path keys on this
+  // exact document+incarnation+epoch identity - listing, save validation,
+  // handoff eligibility, durable validation and the revert-resurrection fence -
+  // so a released entry can never legitimately match a live epoch again: the
+  // identity names a deleted UUID, never a replacement. Release it so a
+  // long-lived adapter does not retain one inert entry per proven source change.
+  #releaseExpiredEpoch(documentKey: string, namespaceIncarnation: string, expiredEpoch: string): void {
+    const identity = epochIdentityOf(documentKey, namespaceIncarnation, expiredEpoch);
+    if (!this.#suppressedEpochs.delete(identity)) return;
+    this.#settleTransition({ documentKey });
+  }
+
+  // Act on the durable "deleted" phase a rejected finishExpiry left behind.
+  // True when the row proves the commit; the release and wake have then been
+  // published through the one emission helper.
+  async #settleDeletedExpiry(receipt: ExpiryReceipt, expiryKey: string): Promise<boolean> {
+    if (this.#closed) return false;
+    let row: AnnotationExpiryRow | undefined;
+    try {
+      row = await this.#readRow<AnnotationExpiryRow>(ANNOTATION_EXPIRY_STORE, expiryKey);
+    } catch {
+      // The evidence is unreadable now; the original rejection stays
+      // authoritative and a later sweep re-observes the row.
+      return false;
+    }
+    if (row?.receipt.phase !== "deleted") return false;
+    this.#releaseExpiredEpoch(annotationDocumentKey(receipt.key), receipt.namespaceIncarnation, receipt.expiredEpoch);
+    return true;
   }
 
   // Cancel exactly ONE durable pending operation outside any acceptance. The
@@ -1575,7 +1606,18 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     );
     const faults: unknown[] = [];
     for (const row of rows) {
-      if (row.receipt.phase === "deleted") continue;
+      if (row.receipt.phase === "deleted") {
+        // A deleted row this adapter still suppresses is a finishExpiry whose
+        // commit its caller never observed (or whose release it never
+        // reached). The row is the durable evidence, so settle it once here
+        // instead of skipping the only arm that could publish it.
+        this.#releaseExpiredEpoch(
+          annotationDocumentKey(row.receipt.key),
+          row.receipt.namespaceIncarnation,
+          row.receipt.expiredEpoch,
+        );
+        continue;
+      }
       try {
         await this.finishExpiry(row.receipt);
       } catch (error) {
