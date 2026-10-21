@@ -8,11 +8,22 @@ import {
 	type QuestionSelections,
 } from "./questionAnswers";
 import { type SqliteSync, withSavepoint } from "./sqliteSync";
+import type { ComposerMention } from "@evener/appwire-client";
+
+export interface DraftComposerMetadata {
+	skillNames?: string[];
+	commandNames?: string[];
+	mentions?: ComposerMention[];
+	recoveryIds?: string[];
+}
 export interface DraftRecord {
 	draft: string;
 	unconfirmed: string | null;
 	images?: DraftImage[];
 	unconfirmedImages?: DraftImage[];
+	composer?: DraftComposerMetadata;
+	unconfirmedComposer?: DraftComposerMetadata;
+	recoveryResendAcks?: string[];
 }
 
 export interface DraftDestination {
@@ -40,6 +51,16 @@ export class DraftRepository {
       unconfirmed TEXT,
       PRIMARY KEY (hub_id, session_ref)
     )`);
+		const draftColumns = new Set(
+			db.getAllSync<{ name: string }>("PRAGMA table_info(drafts)").map((column) => column.name),
+		);
+		for (const [name, type] of [
+			["composer", "TEXT"],
+			["unconfirmed_composer", "TEXT"],
+			["recovery_resend_acks", "TEXT"],
+		] as const) {
+			if (!draftColumns.has(name)) db.execSync(`ALTER TABLE drafts ADD COLUMN ${name} ${type}`);
+		}
 		db.execSync(`CREATE TABLE IF NOT EXISTS question_drafts (
           hub_id TEXT NOT NULL, session_ref TEXT NOT NULL, signature TEXT NOT NULL,
           selections TEXT NOT NULL, PRIMARY KEY (hub_id, session_ref)
@@ -106,12 +127,24 @@ export class DraftRepository {
 		);
 	}
 	read(destination: DraftDestination): DraftRecord {
-		const record = this.db.getFirstSync<DraftRecord>(
-			"SELECT draft, unconfirmed FROM drafts WHERE hub_id = ? AND session_ref = ?",
+		const draftRow = this.db.getFirstSync<{
+			draft: string;
+			unconfirmed: string | null;
+			composer: string | null;
+			unconfirmed_composer: string | null;
+			recovery_resend_acks: string | null;
+		}>(
+			"SELECT draft, unconfirmed, composer, unconfirmed_composer, recovery_resend_acks FROM drafts WHERE hub_id = ? AND session_ref = ?",
 			destination.hubId,
 			destination.sessionRef,
-		) ?? { draft: "", unconfirmed: null };
-		const row = this.db.getFirstSync<{
+		);
+		const record: DraftRecord = { draft: draftRow?.draft ?? "", unconfirmed: draftRow?.unconfirmed ?? null };
+		if (draftRow?.composer) record.composer = JSON.parse(draftRow.composer) as DraftComposerMetadata;
+		if (draftRow?.unconfirmed_composer)
+			record.unconfirmedComposer = JSON.parse(draftRow.unconfirmed_composer) as DraftComposerMetadata;
+		if (draftRow?.recovery_resend_acks)
+			record.recoveryResendAcks = JSON.parse(draftRow.recovery_resend_acks) as string[];
+		const imageRow = this.db.getFirstSync<{
 			images: string;
 			unconfirmed_images: string;
 		}>(
@@ -119,9 +152,9 @@ export class DraftRepository {
 			destination.hubId,
 			destination.sessionRef,
 		);
-		if (row) {
-			const images = parseImages(row.images);
-			const unconfirmedImages = parseImages(row.unconfirmed_images);
+		if (imageRow) {
+			const images = parseImages(imageRow.images);
+			const unconfirmedImages = parseImages(imageRow.unconfirmed_images);
 			for (const image of [...images, ...unconfirmedImages]) this.requireImage(destination, image);
 			if (images.length) record.images = images;
 			if (unconfirmedImages.length) record.unconfirmedImages = unconfirmedImages;
@@ -211,7 +244,13 @@ export class DraftRepository {
 	}
 
 	private writeText(destination: DraftDestination, record: DraftRecord): void {
-		if (record.draft === "" && record.unconfirmed === null) {
+		if (
+			record.draft === "" &&
+			record.unconfirmed === null &&
+			!record.composer &&
+			!record.unconfirmedComposer &&
+			!record.recoveryResendAcks?.length
+		) {
 			this.db.runSync(
 				"DELETE FROM drafts WHERE hub_id = ? AND session_ref = ?",
 				destination.hubId,
@@ -220,14 +259,19 @@ export class DraftRepository {
 			return;
 		}
 		this.db.runSync(
-			`INSERT INTO drafts (hub_id, session_ref, draft, unconfirmed)
-       VALUES (?, ?, ?, ?)
+			`INSERT INTO drafts (hub_id, session_ref, draft, unconfirmed, composer, unconfirmed_composer, recovery_resend_acks)
+	       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (hub_id, session_ref) DO UPDATE SET
-         draft = excluded.draft, unconfirmed = excluded.unconfirmed`,
+	         draft = excluded.draft, unconfirmed = excluded.unconfirmed,
+	         composer = excluded.composer, unconfirmed_composer = excluded.unconfirmed_composer,
+	         recovery_resend_acks = excluded.recovery_resend_acks`,
 			destination.hubId,
 			destination.sessionRef,
 			record.draft,
 			record.unconfirmed,
+			record.composer ? JSON.stringify(record.composer) : null,
+			record.unconfirmedComposer ? JSON.stringify(record.unconfirmedComposer) : null,
+			record.recoveryResendAcks?.length ? JSON.stringify(record.recoveryResendAcks) : null,
 		);
 	}
 

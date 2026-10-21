@@ -6,7 +6,7 @@ import type { AskQuestionRef } from "@evener/appwire-client";
 import { boundQuestionText, questionsIdentity } from "./questionAnswers";
 import { boundQuestion, MAX_ITEM_BYTES } from "./projectedRows";
 import { DraftRepository } from "./draftRepository";
-import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
+import { openSqliteSyncDouble, sqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 
 let directory: string;
 let database: SqliteDoubleDatabase;
@@ -66,6 +66,74 @@ test("image bytes and draft references survive reopen without following another 
 	]);
 	expect(repository.read({ ...destination, hubId: "hub-b" }).images).toBeUndefined();
 	expect(() => repository.imageInputs({ ...destination, hubId: "hub-b" }, [image])).toThrow();
+});
+
+test("composition metadata and resend acknowledgments survive reopen and empty text cleanup", () => {
+	const record = {
+		draft: "",
+		unconfirmed: null,
+		composer: { skillNames: ["review"], mentions: [{ kind: "skill" as const, name: "review", offset: 0 }] },
+		unconfirmedComposer: { recoveryIds: ["source-a", "source-b"] },
+		recoveryResendAcks: ["mutation-a"],
+	};
+	repository.write(destination, record);
+	database.close();
+	openRepository();
+	expect(repository.read(destination)).toEqual(record);
+	repository.write(destination, { ...record, composer: undefined, unconfirmedComposer: undefined });
+	expect(repository.read(destination)).toEqual({ draft: "", unconfirmed: null, recoveryResendAcks: ["mutation-a"] });
+});
+
+test("adds composition columns to a legacy drafts table and preserves existing prose across reopen", () => {
+	database.exec(`DROP TABLE drafts;
+		CREATE TABLE drafts (hub_id TEXT NOT NULL, session_ref TEXT NOT NULL, draft TEXT NOT NULL, unconfirmed TEXT,
+			PRIMARY KEY (hub_id, session_ref));
+		INSERT INTO drafts (hub_id, session_ref, draft, unconfirmed) VALUES ('hub-a', 'session-1', 'legacy prose', NULL);`);
+	repository = new DraftRepository(sqliteSyncDouble(database));
+	expect(repository.read(destination)).toEqual({ draft: "legacy prose", unconfirmed: null });
+	repository.write(destination, {
+		draft: "legacy prose",
+		unconfirmed: null,
+		composer: { commandNames: ["explain"] },
+	});
+	database.close();
+	openRepository();
+	expect(repository.read(destination)).toEqual({
+		draft: "legacy prose",
+		unconfirmed: null,
+		composer: { commandNames: ["explain"] },
+	});
+});
+
+test("metadata and image bytes roll back together when the draft savepoint fails", () => {
+	const originalImage = { id: "original", marker: 1, mediaType: "image/png" };
+	const addedImage = { id: "added", marker: 2, mediaType: "image/png" };
+	const original = {
+		draft: "original text",
+		unconfirmed: null,
+		images: [originalImage],
+		composer: { skillNames: ["review"] },
+	};
+	repository.write(destination, original, [{ ...originalImage, data: "AQID" }]);
+	database.exec(
+		"CREATE TRIGGER reject_composition BEFORE UPDATE ON drafts BEGIN SELECT RAISE(ABORT, 'checkpoint rejected'); END",
+	);
+	expect(() =>
+		repository.write(
+			destination,
+			{
+				draft: "changed text",
+				unconfirmed: null,
+				images: [addedImage],
+				composer: { commandNames: ["explain"] },
+				recoveryResendAcks: ["mutation-a"],
+			},
+			[{ ...addedImage, data: "BAUG" }],
+		),
+	).toThrow();
+	expect(repository.read(destination)).toEqual(original);
+	expect(repository.imageInputs(destination, [originalImage])[0]?.data).toBe("AQID");
+	expect(() => repository.imageInputs(destination, [addedImage])).toThrow();
 });
 
 test("text edits do not rewrite image bytes and a failed checkpoint rolls back references", () => {
