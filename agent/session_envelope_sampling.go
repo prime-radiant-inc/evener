@@ -58,8 +58,10 @@ import (
 // invoke no caller-supplied callback under them. So constraining this surface
 // closes the direction that was left open.
 type EnvelopeSampling interface {
-	ContextPressure() float64
-	ContextMetrics() ContextMetrics
+	// ContextStatus returns the context pair from one shared history snapshot
+	// and one profile/measurement snapshot, not a globally atomic session
+	// instant.
+	ContextStatus() (ContextMetrics, float64)
 	DetailedStatus() DetailedStatus
 	ClientMutationProjection() (appwire.QueueState, []appwire.PendingMutation)
 	TasksWithError() ([]task.Task, error)

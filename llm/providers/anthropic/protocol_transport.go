@@ -26,7 +26,7 @@ func (p *Protocol) call(operation, method, u string, body map[string]any, req ll
 func (p *Protocol) completionCall(operation, method, u string, body map[string]any, req llm.Request, res registry.Resolved) *protocolhttp.Call {
 	call := p.call(operation, method, u, body, req, res)
 	call.FinalizeBody = func(_ context.Context, finalBody map[string]any) error {
-		if !requestutil.WireFieldEnabled(res.Caps, "max_tokens") {
+		if !requestutil.WireFieldEnabled(res.Caps, "max_tokens", res.Protocol) {
 			delete(finalBody, "max_tokens")
 			return nil
 		}

@@ -62,6 +62,26 @@ export function workspaceLabels(workspace) {
  return workspace.startsWith('/private/tmp/') ? [workspace, workspace.slice(8)] : workspace.startsWith('/tmp/') ? [workspace, `/private${workspace}`] : [workspace];
 }
 
+// Read-only event evidence, not an action's success report. Labels locate
+// controls, while trusted events and visibility prove their activation.
+export function installProjectNavigationProbe(projectName) {
+ window.__evenerProjectNavigation?.close();
+ const events=[];
+ const listener=event=>{
+  const target=event.target.closest?.('button, [role="menuitem"], input');
+  if(!target)return;
+  let kind;
+  if(event.type==='click'&&target.getAttribute('aria-label')===`Actions for ${projectName}`)kind='menu';
+  if(event.type==='click'&&target.getAttribute('role')==='menuitem'&&target.textContent.trim()==='Project settings')kind='project';
+  if(event.type==='input'&&target.type==='number')kind='edit';
+  if(!kind)return;
+  const rect=target.getBoundingClientRect(),style=getComputedStyle(target);
+  events.push({kind,trusted:event.isTrusted,visible:rect.width>0&&rect.height>0&&style.visibility==='visible'&&style.display!=='none'});
+ };
+ for(const type of ['click','input'])document.addEventListener(type,listener,true);
+ window.__evenerProjectNavigation={events,close(){for(const type of ['click','input'])document.removeEventListener(type,listener,true);}};
+}
+
 // Runs in the browser. Conversation panes also carry data-session-ref, so
 // only a row with the rail's title can certify navigation readiness.
 export function railCaptureReady(refs) {
@@ -115,6 +135,7 @@ export async function open(options) {
   await page.getByRole('textbox', { name: 'Path', exact: true }).press('Enter');
   phase = 'folder-confirm';
   await page.getByRole('button', { name: 'Use this folder', exact: true }).click();
+  if(options.scenario==='first-provider')return;
   phase = 'model selection';
   await page.getByRole('button', { name: /change model$/i }).click();
   await page.getByRole('combobox', { name: 'Model', exact: true }).fill(options.model.split('/')[1]);
@@ -128,13 +149,58 @@ export async function open(options) {
   return {
    async act(action, args = {}) {
     if (action === 'configure') {
+     try {
      assert.equal(args.scope, 'project');
      assert.equal(args.field, 'max_rounds');
      assert.ok([workspace, ...(options.workspaces ?? [])].includes(args.workspace ?? workspace));
-     await page.goto(`${url}/settings/project?cwd=${encodeURIComponent(args.workspace ?? workspace)}`);
+     // Each journey begins outside settings, so an earlier project's form and
+     // saved status cannot satisfy the next project's readiness checks.
+     if(new URL(page.url()).pathname.startsWith('/settings/')) {
+      await page.getByRole('button',{name:/^(?:\+ )?New session$/}).click();
+      await page.waitForURL(u=>u.pathname==='/new');
+     }
+     const selectedWorkspace=args.workspace??workspace;
+     const projectName=selectedWorkspace.split('/').at(-1);
+     await page.evaluate(installProjectNavigationProbe,projectName);
+     const menu=page.getByRole('button',{name:`Actions for ${projectName}`,exact:true});
+     // The menu is visibility:hidden until its visible project row is hovered.
+     await page.getByRole('treeitem').filter({has:page.getByRole('button',{name:`Actions for ${projectName}`,exact:true,includeHidden:true})}).hover();
+     await menu.click();
+     await page.getByRole('menuitem',{name:'Project settings',exact:true}).click();
+     await page.waitForURL(u=>u.pathname==='/settings/project'&&workspaceLabels(selectedWorkspace).includes(u.searchParams.get('cwd')));
      await page.getByRole('spinbutton', { name: 'Max rounds', exact: true }).fill(String(args.value));
      await page.getByRole('button', { name: 'Save launch defaults', exact: true }).click();
      await page.locator('[data-testid="launch-config-status"][data-state="saved"]').waitFor();
+     return {events:await page.evaluate(()=>window.__evenerProjectNavigation?.events??[])};
+     } catch(error) {
+      await recordWebFailure(error,'project navigation');throw error;
+     }
+    } else if(action==='setup-provider') {
+     assert.equal(options.scenario,'first-provider');
+     const endpoint=new URL(args.baseURL);
+     assert.ok(endpoint.protocol==='http:'&&endpoint.hostname==='127.0.0.1'&&!endpoint.username&&!endpoint.password);
+     assert.ok(`${args.providerID}/${args.modelID}`===options.model);
+     try {
+      phase='provider chooser';
+      await page.getByRole('button',{name:'Connect provider',exact:true}).click();
+      await page.getByTestId('show-all-providers').click();
+      await page.getByRole('button',{name:'OpenAI-compatible endpoint',exact:true}).click();
+      phase='provider endpoint';
+      await page.getByRole('button',{name:'Configure provider',exact:true}).click();
+      await page.getByRole('textbox',{name:'Name',exact:true}).fill(args.providerID);
+      await page.getByRole('textbox',{name:'Base URL (optional)',exact:true}).fill(args.baseURL);
+      await page.getByRole('button',{name:'Create',exact:true}).click();
+      phase='provider credential';
+      await page.getByLabel('API key',{exact:true}).fill(args.credential);
+      await page.getByRole('button',{name:'Save and check',exact:true}).click();
+      phase='provider model selection';
+      await page.getByRole('button',{name:'Choose model',exact:true}).click();
+      await page.getByRole('combobox',{name:'Model',exact:true}).fill(args.modelID);
+      await page.getByRole('listbox',{name:'Model',exact:true}).getByRole('option').first().click();
+     } catch(error) {
+      // Do not retain locator call logs: a password fill can contain the key.
+      error.tourPhase=phase;throw error;
+     }
     } else if (action === 'start') {
      if (args.workspace) await newSession(args.workspace);
      const prompt = page.getByRole('textbox', { name: 'Prompt', exact: true });
@@ -159,6 +225,7 @@ export async function open(options) {
     } else if (action === 'stop') {
      await page.getByTestId('composer-stop').click();
     } else if (action === 'capture') {
+     assert.notEqual(options.scenario,'first-provider','provider credentials must never be captured');
      assert.ok(['entry', 'action', 'verified'].includes(args.id));
      assert.ok(!page.url().includes('/auth/'));
      if (options.scenario === 'configuration' && args.id === 'entry') await page.getByTestId('composer-stop').waitFor({ state: 'visible' });

@@ -153,8 +153,7 @@ func exerciseResidualCallbacks(t *testing.T, s *residualServeServer, sessionID s
 	}
 	// Every envelope facet now enters the daemon through one seam. Exercising
 	// each method keeps the residual sweep's coverage of the live producers.
-	_ = s.envelopeSource.ContextPressure()
-	_ = s.envelopeSource.ContextMetrics()
+	_, _ = s.envelopeSource.ContextStatus()
 	_ = s.envelopeSource.DetailedStatus()
 	_, _ = s.envelopeSource.ClientMutationProjection()
 	_ = s.envelopeSource.TaskAggregate()

@@ -215,6 +215,62 @@ func TestListModelsGatewayPiWithoutMapStatesNoLadder(t *testing.T) {
 	}
 }
 
+// TestListModelsReadsGatewayDialect pins the two wire-shaping compat fields a
+// gateway publishes per model. A lunaroute glm row says zai; without reading
+// it the row spells the openai dialect and the thinking object never opens.
+func TestListModelsReadsGatewayDialect(t *testing.T) {
+	c := listRow(t, `{"id":"glm-5.3","capabilities":{"reasoning":true},"client_compat":{"pi":{"thinkingFormat":"zai","maxTokensField":"max_tokens","supportsReasoningEffort":true,"thinkingLevelMap":{"low":"low","high":"high"}}}}`)
+	if got := registry.StringValue(c.ThinkingFormat); got != "zai" {
+		t.Fatalf("ThinkingFormat = %q, want zai", got)
+	}
+	if got := registry.StringValue(c.MaxTokensField); got != "max_tokens" {
+		t.Fatalf("MaxTokensField = %q, want max_tokens", got)
+	}
+}
+
+// TestApplyThinkingFormat_CatalogToggleKeepsOpenRouterEffort pins the other
+// side: a toggle-only ladder the catalog states (86 OpenRouter rows, e.g.
+// anthropic/claude-sonnet-4.5) is not a gateway rejection of effort. OpenRouter
+// translates the level into a budget, so suppressing it would silently discard
+// the user's setting.
+func TestApplyThinkingFormat_CatalogToggleKeepsOpenRouterEffort(t *testing.T) {
+	high, on := "high", true
+	format := "openrouter"
+	body := map[string]any{}
+	applyThinkingFormat(body, llm.Request{ReasoningEffort: &high}, registry.Caps{
+		Reasoning:         &on,
+		ReasoningControls: []string{"toggle"},
+		ThinkingFormat:    &format,
+	})
+	r, _ := body["reasoning"].(map[string]any)
+	if r == nil || r["effort"] != "high" {
+		t.Fatalf("reasoning = %v, want effort high passed through", body["reasoning"])
+	}
+}
+
+// TestApplyThinkingFormat_ToggleOnlyZaiKeepsThinkingObject pins the wire half
+// of the vision-route rule: a toggle-only row carries a requested effort so the
+// dialect opens its thinking object, and the adapter withholds the level name
+// the row cannot take. Suppressing the effort at the call site instead would
+// leave thinking off entirely.
+func TestApplyThinkingFormat_ToggleOnlyZaiKeepsThinkingObject(t *testing.T) {
+	high, on := "high", true
+	format := "zai"
+	body := map[string]any{}
+	applyThinkingFormat(body, llm.Request{ReasoningEffort: &high}, registry.Caps{
+		Reasoning:         &on,
+		ReasoningControls: []string{"toggle"},
+		ThinkingFormat:    &format,
+	})
+	thinking, _ := body["thinking"].(map[string]any)
+	if thinking == nil || thinking["type"] != "enabled" {
+		t.Fatalf("thinking = %v, want the enable object on a toggle-only zai row", body["thinking"])
+	}
+	if _, has := body["reasoning_effort"]; has {
+		t.Fatalf("body carries reasoning_effort = %v, want no level on a toggle-only row", body["reasoning_effort"])
+	}
+}
+
 // TestListModelsPrefersContextLengthOverContextWindow keeps OpenRouter's
 // ordering: context_length wins when both spellings are present.
 func TestListModelsPrefersContextLengthOverContextWindow(t *testing.T) {

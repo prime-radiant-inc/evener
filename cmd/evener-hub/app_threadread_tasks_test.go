@@ -194,9 +194,8 @@ func TestTaskAggregateMalformedPersistedStoreMatchesLiveAndColdUnknown(t *testin
 // daemon with nothing to say reports.
 type sessionTaskEnvelopeSource struct{ sess *agent.Session }
 
-func (s sessionTaskEnvelopeSource) ContextPressure() float64 { return 0 }
-func (s sessionTaskEnvelopeSource) ContextMetrics() server.ContextMetrics {
-	return server.ContextMetrics{}
+func (s sessionTaskEnvelopeSource) ContextStatus() (server.ContextMetrics, float64) {
+	return server.ContextMetrics{}, 0
 }
 func (s sessionTaskEnvelopeSource) DetailedStatus() server.DetailedStatus {
 	return server.DetailedStatus{}

@@ -52,8 +52,9 @@ message alone proves neither. Direct CLI flags do not save hub launch defaults.
 On the selected host, create `input.json` containing `{"value":42}` in a fresh
 working directory, as in the CLI example. The browser does not upload this file.
 
-1. Choose the intended host and working directory. Open the project's menu and
-   choose **Project settings**.
+1. Start from **New session** or a conversation. Find the intended host's project
+   in the sidebar; it appears there after you create a session in that directory.
+   Hover over the project row, open its actions menu, and choose **Project settings**.
 2. Under **Local overrides**, set **Max rounds** to `1` and choose
    **Save launch defaults**. This saves the private project layer, not credentials
    or user-wide defaults.
@@ -86,11 +87,14 @@ node docs-site/scripts/tours/refresh.mjs check --surfaces cli,web --scenario con
 The scripted provider requests a read in one round and a write in the next.
 The checks read persisted effective model/limit fields and actual tool records:
 one round produces one read, no write, and no `forbidden.json`; four rounds allow
-the write and the independent file check passes. The web check also saves through
-the real project editor, checks project isolation, and confirms that a running
-session's configuration does not change. These are partial CLI/web checks, not
-native coverage or screenshot publication. The tour opens the project settings
-route directly; it does not verify the menu navigation described above.
+the write and the independent file check passes. The web check observes actual
+browser clicks on the visible project actions menu and **Project settings** before
+editing. It reads the saved project layer and resolved provenance independently,
+checks project isolation, and confirms that a running session's configuration
+does not change. Each menu journey starts outside settings, not by switching
+directly between two open project editors. These are partial CLI/web checks, not
+native coverage or screenshot publication. For the separate empty-configuration
+provider journey, see [first-provider verification](getting-started.md#first-provider-verification).
 
 ## Locate the files
 
