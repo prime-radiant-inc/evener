@@ -46,7 +46,7 @@ func TestRound8PushDeployReturnsResolvedTarget(t *testing.T) {
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{BuildBinary: writeStageBinary})
 
-	target, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
+	target, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
 	if err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestRound8InstallerPreservesSymlinkedInstallLayout(t *testing.T) {
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "newsha"})
 
-	target, err := m.deployInstaller(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
+	target, err := m.deployInstaller(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
 	if err != nil {
 		t.Fatalf("deployInstaller: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestRound8InstallerVersionMismatchIsTerminal(t *testing.T) {
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "newsha"})
 
-	_, err := m.deployInstaller(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
+	_, err := m.deployInstaller(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
 	if !errors.Is(err, ErrVersionMismatch) {
 		t.Fatalf("err = %v, want ErrVersionMismatch (a moved snapshot channel must not be retried as ErrDeploy)", err)
 	}

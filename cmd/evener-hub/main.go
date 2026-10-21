@@ -147,12 +147,11 @@ type hubOptions struct {
 	addr           string
 	evenerBinary   string
 	appwireTrace   string
-	// deployBinary and buildSource describe how a missed host gets the
+	// deployBinary and buildSource describe how a host needing installation gets the
 	// controller's build pushed to it. With neither set, deployBinary defaults to
 	// this hub's own executable (deployDefault records that), so a host that
-	// needs the controller's build is provisioned by default; -no-deploy disables
-	// the default and both flags, leaving a local-only controller with no deploy
-	// path at all.
+	// needs installation is provisioned by default; -no-deploy disables the
+	// default and both flags while preserving compatible remote connections.
 	deployBinary string
 	buildSource  string
 	// noDeploy is the explicit opt-out: the hub wires no deploy source (not even
@@ -894,9 +893,9 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// marketplace, then upgrades every installed, git-backed plugin with
 	// autoUpgrade enabled. Runs once immediately and then on
 	// cfg.PluginAutoUpgradeInterval; gated by cfg.PluginAutoUpgrade (on by
-	// default — see config.go). Never deletes; superseded dirs are reclaimed
-	// separately by `evener plugin gc` (also run once here, before any session
-	// exists, per §12).
+	// default — see config.go). Published plugin revisions are retained for
+	// existing and resumable sessions. `evener plugin gc`, also run once here,
+	// cleans unused marketplace clones without reclaiming published packages.
 	startHubPluginMaintenance(ctx, cfg, web, startBackground)
 	// Remote-thread cache refresher: refreshRemoteThreads (web_api_tree.go)
 	// walks every configured remote source's ListThreads, a synchronous
@@ -1143,21 +1142,12 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 	return opts, err
 }
 
-// remoteHostFacts assembles the preflight half of a remote host's capability
-// snapshot from the channel's captured facts and the freshly initialized
-// client's advertised features.
-//
-// The channel's facts are captured before attach: when the host's build differs
-// from the controller's, sshconn's ensureOnce redeploys the controller's build
-// and restarts the host hub before attaching, but the channel keeps those
-// pre-deploy facts. pf.Version is therefore stale exactly in that case, while
-// Features come from the newly initialized client. A successful Ensure
-// guarantees the attached hub runs the controller's build — the only build the
-// manager deploys — so report that version rather than the pre-deploy string.
-func remoteHostFacts(pf sshconn.Preflight, features appwire.FeatureSet) appsource.HostFacts {
+// remoteHostFacts combines disk system facts with the serving process's
+// captured handshake. Missing live build metadata stays unknown.
+func remoteHostFacts(pf sshconn.Preflight, handshake appwire.InitializeResponse, features appwire.FeatureSet) appsource.HostFacts {
 	return appsource.HostFacts{
-		ProtocolVersion: pf.Protocol,
-		HubVersion:      buildinfo.Version(),
+		ProtocolVersion: handshake.ProtocolVersion,
+		HubVersion:      handshake.ServerInfo.BuildVersion,
 		OS:              pf.OS,
 		Arch:            pf.Arch,
 		Features:        features,
@@ -1190,7 +1180,7 @@ func remoteHostFactsForChannel(ch attachedChannelView, host string, client *appw
 	if ch == nil || ch.Client() != client {
 		return appsource.HostFacts{}, appwire.SessionUnavailable("remote hub unavailable: " + host)
 	}
-	return remoteHostFacts(ch.Preflight(), client.Features()), nil
+	return remoteHostFacts(ch.Preflight(), ch.Handshake(), client.Features()), nil
 }
 
 // remoteHostFactsIfAttached is the RemoteHostFacts seam: it looks host up

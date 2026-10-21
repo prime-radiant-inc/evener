@@ -96,6 +96,29 @@ func TestReadLineBoundExcludesNewlineAndDrainsOversizedRecords(t *testing.T) {
 	if err != nil || !complete || string(line) != "ok" || bytesRead != 3 {
 		t.Fatalf("line after oversized record = (%q, %t, %d, %v), want (ok, true, 3, nil)", line, complete, bytesRead, err)
 	}
+
+	// A reader smaller than any line forces ReadSlice's ErrBufferFull path, so
+	// each record reassembles from fragments split across buffer boundaries.
+	// The limit still applies to the whole line: exactly at the limit succeeds,
+	// one byte over is drained as ErrLineTooLong, and the next line stays
+	// readable.
+	fragmented := strings.Repeat("a", 64) + "\n" + strings.Repeat("b", 65) + "\n" + "tail\n"
+	reader = bufio.NewReaderSize(strings.NewReader(fragmented), 16)
+
+	line, complete, bytesRead, err = ReadLine(reader, 64)
+	if err != nil || !complete || len(line) != 64 || bytesRead != 65 {
+		t.Fatalf("exact-limit fragmented line = (len=%d, %t, %d, %v), want (64, true, 65, nil)", len(line), complete, bytesRead, err)
+	}
+
+	line, complete, bytesRead, err = ReadLine(reader, 64)
+	if !errors.Is(err, ErrLineTooLong) || complete || line != nil || bytesRead != 66 {
+		t.Fatalf("oversized fragmented line = (len=%d, %t, %d, %v), want drained ErrLineTooLong", len(line), complete, bytesRead, err)
+	}
+
+	line, complete, bytesRead, err = ReadLine(reader, 64)
+	if err != nil || !complete || string(line) != "tail" || bytesRead != 5 {
+		t.Fatalf("line after oversized fragmented record = (%q, %t, %d, %v), want (tail, true, 5, nil)", line, complete, bytesRead, err)
+	}
 }
 
 func TestReadLineDiscardsArbitraryUnterminatedTailWithoutRetention(t *testing.T) {

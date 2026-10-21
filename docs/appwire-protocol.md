@@ -3302,6 +3302,7 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `name` | string |  |  |
 | `version` | string |  |  |
+| `buildVersion` | string | yes |  |
 | `os` | string | yes |  |
 | `arch` | string | yes |  |
 | `roots` | []string | yes |  |

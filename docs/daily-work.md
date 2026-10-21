@@ -9,21 +9,28 @@ This guide assumes you have completed [provider setup](getting-started.md#connec
 Use a fresh directory so the two files below cannot overwrite existing work. Replace `provider/model` with an available model from your configured provider:
 
 ```sh
-mkdir daily-workspace
-cd daily-workspace
-git init
-evener --model provider/model 'Write initial.json with nonce b8e54d60 and a receipts array containing that nonce once.'
-evener --list-sessions
+(
+  set -e
+  mkdir daily-workspace
+  cd daily-workspace
+  git init
+  evener --model provider/model 'Write initial.json with nonce b8e54d60 and a receipts array containing that nonce once.'
+  evener --list-sessions
+)
 ```
 
 Wait for the first command to finish. Identify the session you just ran in the listing, using its creation time, then substitute its ID for `SESSION_ID`. Do not guess if another run started at the same time:
 
 ```sh
-evener --resume SESSION_ID 'Continue by writing continued.json with nonce c9f65e71 and a receipts array containing that nonce once.'
-python3 -c 'import json; print(json.dumps({p:json.load(open(p)) for p in ["initial.json","continued.json"]},sort_keys=True))'
+(
+  set -e
+  cd daily-workspace
+  evener --resume SESSION_ID 'Continue by writing continued.json with nonce c9f65e71 and a receipts array containing that nonce once.'
+  python3 -c 'import json; print(json.dumps({p:json.load(open(p)) for p in ["initial.json","continued.json"]},sort_keys=True))'
+)
 ```
 
-Check that each file has its requested nonce and exactly one matching receipt. This is sequential continuation of the same saved conversation, not a queued request to a running CLI process. Keep using the same working directory; resuming a conversation does not undo file changes made since its last turn.
+Check that each file has its requested nonce and exactly one matching receipt. This is sequential continuation of the same saved conversation, not a queued request to a running CLI process. Run this block from the same parent directory as the first; it enters `daily-workspace` without changing your shell's directory. Resuming a conversation does not undo file changes made since its last turn.
 
 For contributors, the deterministic tutorial check runs this CLI path and the browser controls below against a local scripted provider. Run it from the Evener repository root after installing the [tour prerequisites](developing-evener/tutorial-tours.md#run-serially). It verifies files and persisted session identity, not a live model's ability to follow these prompts:
 
@@ -75,11 +82,20 @@ Choose the action that matches your intent:
 | **Steer** | New information should change the work already underway | The running agent receives your correction, but actions already completed remain |
 | **Stop** | You want the current work interrupted | Completed edits and external side effects remain |
 
-Busy sessions expose Stop and, when supported, Steer. Narrow layouts may put actions in the session menu rather than beside the composer. Read the pending-message or queue state before resending text, especially after a connection loss.
+Busy sessions expose Stop and, when supported, Steer. On the web, an empty draft puts Stop in Send's slot at every width; adding text, images or selected skills or commands restores Send. Stop also remains in Session actions. Steer stays beside wide composers and moves to the menu in narrow ones. After Send changes to Stop, the inline Stop waits 500 ms before accepting input to prevent accidental double-taps; menu Stop remains available. Read the pending-message or queue state before resending text, especially after a connection loss.
 
-The submit button still says **Send** while the agent is busy; it does not become a separate Queue button. Messages waiting for a later turn appear in **Queued messages** beside the composer. A **Sending** or **Retrying** indicator means delivery is still in progress, not that the agent has already acted on the message.
+With a draft, the submit button still says **Send** while the agent is busy; it does not become a separate Queue button. Messages waiting for a later turn appear in **Queued messages** beside the composer. A **Sending** or **Retrying** indicator means delivery is still in progress, not that the agent has already acted on the message.
 
 For a queued message, use **Remove from queue** to withdraw it before it runs, **Edit message** to bring it back for revision, or **Steer now** to send it into the current work. These controls appear only when the session supports them and may be disabled during recovery. Confirm that removal succeeded; an error means you must not assume the request was withdrawn. Removing a queued message cannot undo work the agent has already started. If a row says **Delivery uncertain**, let the session recover before submitting a duplicate.
+
+On a failed turn, **Retry** sends a new `continue` message in the same
+conversation in both the browser and native app. The earlier prompt, images,
+transcript and completed work stay in place. Retry leaves your current draft
+and staged images alone, including when delivery is refused. A refused
+continuation stays available through the existing message-recovery controls;
+it does not replace an empty draft. Native keeps Resume and Sign in ahead of
+Retry when those actions are needed. Queued-message and delivery-uncertain
+retries keep their own recovery behavior.
 
 A useful steering message is specific:
 

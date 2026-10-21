@@ -157,6 +157,14 @@ Keep disclosure separate from file/transcript opening; retain existing folding a
 disclosure persistence. Evidence stays in its native code, diff, output or structured
 renderer rather than becoming a second prose summary.
 
+A failed call badges its kind icon: the `--danger` ✗ overlays the icon's
+bottom-right corner instead of opening a second inline column beside it, so the
+failure marks the glyph the reader is already scanning. The badge is a sibling
+of the aria-hidden icon seat, not a child — the seat is at the rail's ambient
+50% opacity, and the failure tone is the one signal on the row that must read
+at full strength. A descriptor with no kind icon keeps the older inline cross;
+a failure is never unmarked.
+
 **Delegates are durable collaborators, not launch-tool status.** The inline
 [delegate renderer](../../cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx)
 and [row model](../../cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModuleStore.ts)
@@ -315,9 +323,11 @@ owning row and shifted to keep 8px of viewport clearance. An open card follows t
 the sidebar is dragged to a new width. When the card cannot fit beside the
 sidebar, it opens above or below the row with the same 12px gap. The card stays in the body portal
 and does not reflow navigation or take focus. Scroll and viewport resize dismiss it and cancel
-pending reveals, including long presses; a fresh gesture reveals it at the new position.
-Containment applies when the card's dimensions fit the viewport. Other HoverCards and tooltips
-keep their default placement.
+pending reveals, including long presses; a fresh gesture reveals it at the new position. The
+window scroll and resize cancellation listeners a long press arms live only while its initiating
+pointer holds the gesture, so an idle trigger owns none and a second pointer neither ends nor
+takes over the first pointer's press. Containment applies when the card's dimensions fit the
+viewport. Other HoverCards and tooltips keep their default placement.
 
 ---
 
@@ -499,7 +509,7 @@ during implementation (noted inline); this table is the one to trust.
 | **Chip** | `{children: ReactNode; tone?: "neutral"\|"attention"\|"alive"\|"danger"; onRemove?: () => void}` | Small labeled pill; `onRemove` renders a remove button, `aria-label` derived from string children or `"Remove"`. |
 | **Badge** | `{count: number; tone?: "neutral"\|"attention"\|"alive"\|"danger"}` | Numeric count indicator, caps display at "99+". |
 | **StatusDot** | `{state: CadenceState; decorative?: boolean}`; also exports `STATUS_LABEL: Record<CadenceState, string>` | The one session/agent status indicator (imports `CadenceState` from Cadence, doesn't redeclare it) — for tighter contexts than Cadence's full trace: rail rows, pane tabs, ancestor spines, the command palette, delegate rows. Carries its own accessible name since nothing else labels it standalone; the names (`Idle` / `Working` / `Needs you` / `Failed` / `Ended`) are the one status vocabulary, exported as `STATUS_LABEL` for text that names a session's state (a hover card's status line). A caller whose own adjacent text already names the status passes `decorative`, which drops the glyph's role and name (kept: its shape, geometry and motion) so assistive tech hears one label, not two — the compact ancestor spine, whose exact runtime label is the one that stays, uses it. `working` is an activity indicator: an open `--alive` ring that turns continuously (`--motion-duration-activity`, linear), the one continuous motion sanctioned for agent liveness (§5); under `prefers-reduced-motion: reduce` it is the static alive dot. `failed` is a `--danger` diamond (`data-shape="diamond"`, a 7px square turned 45°) so it never differs from needs-you by hue alone (§1); every other state is a round dot (`data-shape="dot"`: `--attention`, `--ink-low`). Callers that show only signal states (working / needs-you / failed) gate rendering themselves (`SIGNAL_STATES` in `shell/sessionStatus.ts`). |
-| **FailureGlyph** | none | The `--danger` ✗ that marks something as failed, sized to sit on a line of text. A widget because `--danger` may only be referenced from an allowlisted widget stylesheet; carries its own accessible name ("Failed") since it is often a row's only failure signal. Passive: no interaction, no focus. |
+| **FailureGlyph** | none | The `--danger` ✗ that marks something as failed, sized to sit on a line of text. In a tool row it badges the kind icon's bottom-right corner rather than taking an inline seat of its own; in a notification or turn-failure line it leads the text. A widget because `--danger` may only be referenced from an allowlisted widget stylesheet; carries its own accessible name ("Failed") since it is often a row's only failure signal. Passive: no interaction, no focus. |
 | **SteeringGlyph** | none | The hollow ◇ that marks a system steering message, drawn as SVG because the subsetted Plex Sans has no U+25xx glyphs. Decorative (`aria-hidden`) — the row's own text says "System steered: …" — and inherits currentColor. |
 | **Timestamp** | `{value: number; now: number}` (epoch ms) | A relative time ("5m ago", "now" under 10s or for future/clock-skew values) in a `<time>` whose native `title` carries the absolute instant (time-only same day, date+time across a day boundary) and whose `dateTime` is ISO. Pure render like Cadence and Loader: the caller owns `now`; a NaN `value` or `now` renders nothing. |
 | **Meter** | `{label: string; value: number; max: number; tone?: "neutral"\|"attention"\|"alive"\|"danger"}` | `role="meter"`; `label` is required (not optional as an early sketch had it) since role=meter needs an accessible name and a Meter can't ship without one. Fill width via a `--fill` style custom property, not an inline style rule. |

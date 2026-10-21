@@ -43,8 +43,9 @@ type stubThreadEnvelopeSource struct {
 	parkAfterMeta func()
 }
 
-func (s *stubThreadEnvelopeSource) ContextPressure() float64       { return s.contextPressure }
-func (s *stubThreadEnvelopeSource) ContextMetrics() ContextMetrics { return s.contextMetrics }
+func (s *stubThreadEnvelopeSource) ContextStatus() (ContextMetrics, float64) {
+	return s.contextMetrics, s.contextPressure
+}
 func (s *stubThreadEnvelopeSource) DetailedStatus() DetailedStatus { return s.detailedStatus }
 func (s *stubThreadEnvelopeSource) TaskAggregate() *appwire.TaskAggregate {
 	s.taskCalls++

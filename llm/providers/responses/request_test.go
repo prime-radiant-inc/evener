@@ -100,7 +100,7 @@ func TestBuildBody_GroqBaselineSendsOnlyTheSpecFields(t *testing.T) {
 	if body["model"] != "openai/gpt-oss-120b" || body["instructions"] != "be terse" {
 		t.Fatalf("model/instructions: %s", jsonOf(t, body))
 	}
-	pruned := registry.Prune(body, res.Caps)
+	pruned := registry.Prune(body, res.Caps, res.Protocol)
 	if len(pruned) != 1 || pruned[0] != "include" {
 		t.Fatalf("the baseline prunes include and nothing else that was built: %v", pruned)
 	}

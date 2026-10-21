@@ -55,8 +55,9 @@ type Call struct {
 	// error ClassifyHTTPError produced.
 	Reclassify func(status int, body []byte, err error) error
 	// FinalizeBody, when set, runs after transport constants and the request
-	// preparer, immediately before the final body is marshaled.
-	FinalizeBody func(body map[string]any) error
+	// preparer, immediately before the final body is marshaled. Its context
+	// carries the active attempt's deadline and cancellation.
+	FinalizeBody func(ctx context.Context, body map[string]any) error
 }
 
 // Prepared is a Call after prune → constants → auth → prepare.
@@ -75,7 +76,7 @@ type Prepared struct {
 func Prepare(ctx context.Context, c *Call) (*Prepared, error) {
 	var pruned []string
 	if c.Body != nil {
-		pruned = registry.Prune(c.Body, c.Res.Caps)
+		pruned = registry.Prune(c.Body, c.Res.Caps, c.Res.Protocol)
 		registry.ApplyBodyConstants(c.Body, c.Res.Transport.Body)
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, c.Method, c.URL, nil)
@@ -110,7 +111,7 @@ func Prepare(ctx context.Context, c *Call) (*Prepared, error) {
 		}
 	}
 	if c.FinalizeBody != nil && c.Body != nil {
-		if err := c.FinalizeBody(c.Body); err != nil {
+		if err := c.FinalizeBody(ctx, c.Body); err != nil {
 			return nil, err
 		}
 	}

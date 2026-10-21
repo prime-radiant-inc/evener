@@ -21,7 +21,7 @@ func (p *Protocol) call(operation, family, method, u string, body map[string]any
 
 func (p *Protocol) completionCall(operation, family, method, u string, body map[string]any, req llm.Request, res registry.Resolved) *protocolhttp.Call {
 	call := p.call(operation, family, method, u, body, req, res)
-	call.FinalizeBody = func(finalBody map[string]any) error {
+	call.FinalizeBody = func(_ context.Context, finalBody map[string]any) error {
 		return reconcileOutputField(finalBody, req.MaxTokens, res.Caps.MaxOutputTokens)
 	}
 	return call
@@ -168,7 +168,7 @@ func (p *Protocol) CountTokens(ctx context.Context, req llm.Request, res registr
 	if err != nil {
 		return 0, err
 	}
-	registry.Prune(inner, res.Caps)
+	registry.Prune(inner, res.Caps, res.Protocol)
 	inner["model"] = "models/" + res.WireID
 	body := map[string]any{"generateContentRequest": inner}
 	var count int

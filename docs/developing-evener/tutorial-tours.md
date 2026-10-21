@@ -27,10 +27,11 @@ cache is outside the default location. The web tour builds the frontend before
 embedding it in the test binary. Do not run frontend builds or tours concurrently.
 
 ```sh
-node --test docs-site/scripts/tours/artifacts.test.mjs
+node --test docs-site/scripts/tours/*.test.mjs docs-site/scripts/tutorial-artifacts.test.mjs
 node docs-site/scripts/tours/refresh.mjs check --surfaces cli,web --scenario receipt
 node docs-site/scripts/tours/refresh.mjs refresh --surfaces cli,web --out /ABS/OWNED-SCRATCH/new-candidate
 node docs-site/scripts/tours/refresh.mjs validate --surfaces cli,web --out /ABS/OWNED-SCRATCH/new-candidate
+node docs-site/scripts/tours/review.mjs --candidate /ABS/OWNED-SCRATCH/new-candidate --out /ABS/OWNED-SCRATCH/new-review
 ```
 
 The scratch parent must exist. `refresh` requires an explicit absolute path to a
@@ -103,10 +104,38 @@ commands and output, not an interactive terminal; the paired `.txt` files are
 selectable output. Web PNGs capture the real browser UI, with exact owned
 workspace labels masked rather than rewritten.
 
-After independent evidence review and image inspection, copy only the selected
-PNG/text files and their matching `manifest.json` to `docs/assets/tutorials/`.
-List each path in `docs-site/publication.json.assets`. Keep the manifest and
-selected files together in Git; never copy raw logs or an entire run directory.
+`review.mjs` validates the current candidate and the historical published set,
+then writes `summary.json`, `review.md`, and `refresh.patch` to a new directory
+outside the repository and both inputs. It refuses existing outputs and symlinks.
+The command never changes its inputs, applies the patch, or publishes assets.
+The summary reports `sourceChanged`, `changedFiles`, and a status of `unchanged`
+or `review-required`. Matching relevant source and artifact content need no
+replacement merely because the capture revision changed. A changed source
+digest or evidence requires review even if the pixels match.
+
+Failures exit 1 and write JSON to stderr with `status: "failed"` and a fixed
+`code`. Diagnostics never include input values, paths, or caught error messages.
+
+| Code | What to check |
+| --- | --- |
+| `invalid-arguments` | Required, unknown, missing-value, or duplicate CLI options. |
+| `unsafe-path` | Output must be absolute, outside every input, and free of symlinks. Check input paths for symlinks too. |
+| `output-unavailable` | Choose a new output directory with an existing writable parent. |
+| `stale-source` | Candidate revision or source digest no longer matches. Capture fresh evidence. |
+| `private-data` | Candidate or published metadata/text contains private data. Inspect locally, never paste it into a report. |
+| `invalid-candidate` | Candidate files, manifest, or source repository failed validation. |
+| `invalid-published` | Published files or manifest failed historical validation. |
+| `review-failed` | Review preparation or output writing failed after validation. Check local Git and storage. |
+
+Check `summary.json` first. If its status is `unchanged`, stop without applying:
+the patch is empty and no replacement is needed. For `review-required`, inspect
+all 24 images and 12 selectable transcripts, not just changed files.
+After independent evidence review and approval, apply the proposed patch
+locally with `git apply --check /ABS/OWNED-SCRATCH/new-review/refresh.patch`, then
+`git apply /ABS/OWNED-SCRATCH/new-review/refresh.patch`. The patch touches only
+canonical tutorial assets and their manifest. Keep their explicit entries in
+`docs-site/publication.json.assets`; the review command does not edit that file.
+Commit the manifest and selected files together; never copy raw logs or an entire run directory.
 Use ordinary relative Markdown image and text links. Instructions and meaningful
 alt text must explain the result without requiring the image.
 
@@ -120,9 +149,15 @@ require equality with a future HEAD or working tree. This exception applies
 only to checked-in publication, never current-candidate validation. Do not edit
 provenance to make an old capture look current.
 
+The build warns when relevant source bytes differ from the capture. An unrelated
+documentation commit or the later asset commit alone does not trigger that warning.
+New candidates still require both the current revision and source digest.
+
 CI provisions Go, Python, Node, frontend/docs dependencies, and Chromium. It
 executes all four CLI/web scenarios before building and browser-checking the
-docs site. Missing requested-lane prerequisites fail. Pages deploys checked-in
+docs site. Successful validation retains the sanitized 24-row candidate as the
+`tutorial-candidate-cli-web` workflow artifact for review, never private raw logs.
+Workflow candidates are not publication approval. Missing requested-lane prerequisites fail. Pages deploys checked-in
 reviewed assets from main, not runtime candidates. Native remains deferred and
 unverified; there is no native publication lane. Host installation, live provider
 authentication, model quality, physical devices, and camera pairing are not

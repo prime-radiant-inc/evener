@@ -1,8 +1,7 @@
-// The composer's narrow-layout gate: below the phone-width boundary the verb
-// cluster leaves the control row and rides in the session menu instead of
-// wrapping below the status row (Jesse's 2026-09-28 design ruling on the
-// #1339 phone-width wrap, which superseded the provisional three-verb wrap
-// rule this boundary was measured for).
+// The composer's narrow-layout gate: below the phone-width boundary Steer
+// moves into the session menu instead of wrapping below the status row.
+// Stop/Send share a draft-aware slot at every width; Stop also stays in the
+// menu. The breakpoint remains the one chosen for the #1339 phone-width wrap.
 //
 // Why a ResizeObserver and not the viewport: a docked pane squeezed to phone
 // width inside a desktop viewport must compact exactly like the phone does
@@ -11,10 +10,10 @@
 // wrap rule's @container query resolved against. And why JS and not CSS: the
 // session menu's items render through a portal to document.body
 // (widgets/menu), outside every container the pane's queries can reach, so
-// the verbs' relocation between two DOM homes cannot be a pure style change.
+// Steer's relocation between two DOM homes cannot be a pure style change.
 //
 // The observer also can't be CSS for the buttons alone: hiding the row
-// buttons below the boundary while the menu shows the same verbs would leave
+// Steer below the boundary while the menu shows it would leave
 // two DOM owners for one control - the inline-controls design's own rule is
 // one DOM location, one tab order (2026-08-10-composer-controls-inline-design.md).
 

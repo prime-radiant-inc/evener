@@ -63,7 +63,7 @@ func applyThinkingFormat(body map[string]any, req llm.Request, caps registry.Cap
 		// OpenRouter is the documented exception to the vouch gate: it
 		// normalizes reasoning.effort itself and its model listing often
 		// omits supported efforts, so the requested level is passed through
-		// unconditionally and the gateway maps it to a budget.
+		// and the gateway maps it to a budget.
 		if explicit {
 			body["reasoning"] = map[string]any{"effort": wire}
 		} else if alwaysOn {

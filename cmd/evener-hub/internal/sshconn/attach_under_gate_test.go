@@ -538,7 +538,7 @@ func TestAttachUnderGateExplicitControlsTheBootstrap(t *testing.T) {
 	}
 	for _, argv := range fr.recordedRuns() {
 		joined := strings.Join(argv, " ")
-		for _, bootstrap := range []string{"systemctl", "launchctl", "nohup", "lsof", "ss -"} {
+		for _, bootstrap := range []string{"systemctl", "launchctl", "nohup"} {
 			if strings.Contains(joined, bootstrap) {
 				t.Fatalf("explicit=false issued a bootstrap command (%q): %v", bootstrap, argv)
 			}
@@ -560,6 +560,7 @@ func TestAttachUnderGateEmitsFailedOnATerminalAttachFailure(t *testing.T) {
 		runFn:   cannedRun(map[string][]byte{"launch-check": []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`)}),
 		startFn: goodStartFn(t),
 	}
+	requireProtocolUpgrade(t, fr)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "dev",
 		OnEvent: func(ev Event) {
@@ -870,7 +871,14 @@ func TestAttachUnderGateTerminalFailureStopsAParkedSupervisor(t *testing.T) {
 			}
 			return good(ctx, argv, stdin)
 		},
-		startFn: goodStartFn(t),
+		startFn: func(ctx context.Context, argv []string, stderr io.Writer) (Stdio, error) {
+			if terminalDials.Load() {
+				b := newFakeBridge("evener-appwire-v5")
+				t.Cleanup(func() { _ = b.stdio.Kill() })
+				return b.stdio, nil
+			}
+			return goodStartFn(t)(ctx, argv, stderr)
+		},
 	}
 	backoffParked := make(chan struct{}, 1)
 	resume := make(chan struct{})

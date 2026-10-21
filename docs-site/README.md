@@ -112,6 +112,12 @@ as comprehension tests.
 
 ## Publishing
 
+Tutorial captures remain version 1: 24 CLI/web checkpoints, with native explicitly
+deferred. The workflow retains validated sanitized candidates separately from
+the Pages artifact. Use the [tutorial review procedure](../docs/developing-evener/tutorial-tours.md#review-and-publication)
+to generate a proposed asset patch and inspect every image and selectable transcript.
+The review command neither applies that patch nor publishes it.
+
 `.github/workflows/docs.yml` builds and uploads this same checked artifact on PRs,
 main pushes and manual dispatch. It explicitly installs Chromium and runs the
 diagram, search and navigation browser checks before uploading. Only a main-branch push or main-branch manual

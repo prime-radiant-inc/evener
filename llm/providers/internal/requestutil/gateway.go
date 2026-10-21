@@ -1,6 +1,11 @@
 package requestutil
 
-import "slices"
+import (
+	"slices"
+
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
+)
 
 // GatewayArchitecture is the model-facts object an OpenRouter-shaped /models
 // listing publishes per row.
@@ -9,17 +14,135 @@ type GatewayArchitecture struct {
 }
 
 // GatewayCapabilities is the capability object some OpenAI-compatible gateways
-// publish per /models row (lunaroute's shape). Only vision affects model
-// resolution today.
+// publish per /models row (lunaroute's shape).
 type GatewayCapabilities struct {
-	Vision *bool `json:"vision"`
+	Vision    *bool `json:"vision"`
+	Reasoning *bool `json:"reasoning"`
 }
 
-// GatewayInputModalities is the input modality list a /models row advertises:
+// GatewayClientCompat is the per-model compatibility block some gateways
+// publish (lunaroute's shape).
+type GatewayClientCompat struct {
+	Pi *GatewayPiCompat `json:"pi"`
+}
+
+// GatewayPiCompat is one gateway model as the Pi client sees it.
+type GatewayPiCompat struct {
+	// ThinkingLevelMap maps an evener reasoning level to the wire string the
+	// gateway accepts. A null value decodes as the empty string and, like an
+	// absent key, is a level the model does not support.
+	ThinkingLevelMap map[string]string `json:"thinkingLevelMap"`
+	// ThinkingFormat is the reasoning dialect to spell for this model.
+	ThinkingFormat string `json:"thinkingFormat"`
+	// MaxTokensField is the output-limit spelling this model takes.
+	MaxTokensField string `json:"maxTokensField"`
+}
+
+// ApplyGatewayFacts folds a row's own per-model facts (lunaroute's shape) into
+// caps: the reasoning verdict and effort ladder, then the wire-shaping dialect
+// and output-limit spelling the gateway states for that model. Both /models
+// readers share it so they cannot disagree about the precedence — the gateway
+// knows per model what a listing's provider-wide parameters only infer, and a
+// fact it does not state leaves what the caller inferred in place.
+func ApplyGatewayFacts(caps *registry.Caps, arch GatewayArchitecture, capsFacts GatewayCapabilities, compat GatewayClientCompat) {
+	applyGatewayReasoning(caps, capsFacts, compat)
+	if pi := compat.Pi; pi != nil {
+		// A value outside the registry's vocabulary is dropped rather than
+		// carried: an unknown dialect writes no reasoning control at all, and
+		// an unknown output spelling reaches no field, so carrying one would
+		// silently switch that behavior off for the row.
+		if registry.ValidThinkingFormat(pi.ThinkingFormat) {
+			caps.ThinkingFormat = new(pi.ThinkingFormat)
+		}
+		if registry.ValidMaxTokensField(pi.MaxTokensField) {
+			caps.MaxTokensField = new(pi.MaxTokensField)
+		}
+	}
+	caps.InputModalities = gatewayInputModalities(arch, capsFacts)
+}
+
+// applyGatewayReasoning is ApplyGatewayFacts' reasoning half.
+//
+// The two verdicts a gateway can state are checked in precedence order. An
+// explicit capabilities verdict on reasoning wins outright: a non-reasoning row
+// carries no ladder and no effort control, whatever a map or the effort field
+// beside it says. Next, a model the gateway says takes no effort parameter is
+// toggle-only — it reasons, but no level ever reaches the wire, so the ladder
+// is neither built nor kept. Only then is the map itself consulted, and a
+// usable ladder is evidence the model tunes effort: it raises a verdict
+// inferred elsewhere (a provider-wide parameter list, the catalog) to true.
+//
+// A row the gateway marks non-reasoning carries no ladder. Clearing it here,
+// rather than merely skipping the write, is what keeps the raw live row
+// honest: a listing that also publishes supported_efforts has already set one,
+// and the row reaches ApplyLive, the live snapshot, and standalone listings
+// before derivation would clear it. A published map with no usable level is the
+// gateway saying the same thing, so it too clears any inherited ladder rather
+// than letting the replay keep one the gateway marks unsupported.
+func applyGatewayReasoning(caps *registry.Caps, capsFacts GatewayCapabilities, compat GatewayClientCompat) {
+	// An explicit capabilities verdict is the gateway's own knowledge, and a
+	// negative one ends the matter: nothing below may reopen it. A verdict the
+	// caller already inferred (a provider-wide parameter list, the catalog) is
+	// weaker, and a usable ladder below still raises it.
+	if capsFacts.Reasoning != nil {
+		caps.Reasoning = capsFacts.Reasoning
+		if !*capsFacts.Reasoning {
+			caps.EffortValues = nil
+			return
+		}
+	}
+	ladder, published := gatewayEffortLadder(compat)
+	if len(ladder) > 0 {
+		caps.Reasoning = new(true)
+	}
+	if published {
+		caps.EffortValues = ladder
+	}
+}
+
+// gatewayEffortLadder returns the effort ladder a gateway's per-model
+// client_compat states, ordered as evener displays one: an explicit off level
+// first when the model has one, then minimal → max. A null value, or no key at
+// all, is a level the model does not support; a value outside evener's
+// vocabulary is dropped rather than offered, because the clamp cannot rank it.
+// Values are wire spellings deduped in vocabulary order, so two keys sharing a
+// value (glm maps medium and high to "high") advertise it once.
+//
+// published reports whether the listing stated a map at all. Absent (no
+// client_compat block, or a Pi block carrying only its other compat fields)
+// leaves the ladder nil so the live replay inherits a curated one. A published
+// map whose every level is null is the gateway stating that the model takes no
+// effort control: the ladder is empty and the caller must apply it as such, not
+// inherit around it.
+func gatewayEffortLadder(compat GatewayClientCompat) (ladder []string, published bool) {
+	if compat.Pi == nil || compat.Pi.ThinkingLevelMap == nil {
+		return nil, false
+	}
+	levels := compat.Pi.ThinkingLevelMap
+	// off plus the six ranked levels, the most a full map can advertise.
+	out := make([]string, 0, 7)
+	if levels["off"] == llm.ReasoningEffortNone {
+		out = append(out, llm.ReasoningEffortNone)
+	}
+	for _, level := range llm.ReasoningEffortVocabulary() {
+		if wire := levels[level]; llm.ReasoningEffortRank(wire) != 0 {
+			out = append(out, wire)
+		}
+	}
+	// Non-nil even when nothing survived: the live layer merges a non-nil
+	// slice wholesale, and that is how a published map with no usable level
+	// clears an inherited ladder instead of inheriting around it.
+	if ladder = DedupStrings(out); ladder == nil {
+		ladder = []string{}
+	}
+	return ladder, true
+}
+
+// gatewayInputModalities is the input modality list a /models row advertises:
 // architecture.input_modalities when that list carries any entry, else text
 // plus image for an advertised vision capability, else nil. The protocol
 // readers share it so they cannot disagree about the precedence.
-func GatewayInputModalities(arch GatewayArchitecture, caps GatewayCapabilities) []string {
+func gatewayInputModalities(arch GatewayArchitecture, caps GatewayCapabilities) []string {
 	if mods := DedupStrings(arch.InputModalities); len(mods) > 0 {
 		return mods
 	}

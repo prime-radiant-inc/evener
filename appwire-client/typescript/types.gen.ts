@@ -3253,6 +3253,11 @@ export interface SearchTopLevel {
 export interface ServerInfo {
   name: string;
   version: string;
+  /**
+   * BuildVersion identifies the running executable, independently of the
+   * server package version. Absence means the build is unknown.
+   */
+  buildVersion?: string;
   os?: string;
   arch?: string;
   roots?: string[];

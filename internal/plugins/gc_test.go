@@ -18,7 +18,7 @@ func TestGc_NoCacheDirYet(t *testing.T) {
 	}
 }
 
-func TestGc_RemovesOrphanedKeepsReferenced(t *testing.T) {
+func TestGcPreservesPublishedRevisions(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")
 	}
@@ -33,8 +33,8 @@ func TestGc_RemovesOrphanedKeepsReferenced(t *testing.T) {
 		t.Fatalf("Install: %v", err)
 	}
 
-	// Advance the plugin's upstream HEAD and upgrade — Upgrade never deletes,
-	// so the first sha-dir is left orphaned once the registry repoints.
+	// Advance the plugin's upstream HEAD and upgrade. A previously selected
+	// session can still refer to the first path after the registry repoints.
 	advanceGitRepo(t, pluginRepo, "extra.txt", "v2")
 	second, err := m.Upgrade(context.Background(), "widget", "acme")
 	if err != nil {
@@ -51,11 +51,11 @@ func TestGc_RemovesOrphanedKeepsReferenced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Gc: %v", err)
 	}
-	if len(removed) != 1 || removed[0] != first.InstallPath {
-		t.Fatalf("Gc removed = %v, want [%s]", removed, first.InstallPath)
+	if len(removed) != 0 {
+		t.Fatalf("Gc removed published revision(s): %v", removed)
 	}
-	if _, err := os.Stat(first.InstallPath); !os.IsNotExist(err) {
-		t.Fatal("orphaned sha-dir not removed by Gc")
+	if _, err := os.Stat(first.InstallPath); err != nil {
+		t.Fatalf("Gc removed historical revision: %v", err)
 	}
 	if _, err := os.Stat(second.InstallPath); err != nil {
 		t.Fatalf("referenced sha-dir removed by Gc: %v", err)
@@ -248,10 +248,9 @@ func TestGc_KeepsALeftoverCloneADirectorySourceSitsIn(t *testing.T) {
 	}
 }
 
-// A failure to read the marketplaces directory is returned, after the cache
-// removals already made, rather than reported as a success that skipped the
-// clone sweep entirely.
-func TestGc_ReportsAMarketplacesReadFailureAfterReclaimingTheCache(t *testing.T) {
+// A failure to read the marketplaces directory is reported without deleting
+// a published revision or claiming the clone sweep succeeded.
+func TestGc_ReportsAMarketplacesReadFailureWhilePreservingTheCache(t *testing.T) {
 	m := NewManager(t.TempDir())
 	sha := m.pluginCacheDir("acme", "widget", "deadbeef")
 	if err := os.MkdirAll(sha, 0o755); err != nil {
@@ -267,17 +266,11 @@ func TestGc_ReportsAMarketplacesReadFailureAfterReclaimingTheCache(t *testing.T)
 	if err == nil {
 		t.Fatal("Gc reported success while skipping the clone sweep")
 	}
-	found := false
-	for _, p := range removed {
-		if p == sha {
-			found = true
-		}
+	if len(removed) != 0 {
+		t.Fatalf("Gc removed published revision(s) before clone sweep failed: %v", removed)
 	}
-	if !found {
-		t.Fatalf("Gc removed = %v, want the already-reclaimed cache dir %s reported", removed, sha)
-	}
-	if _, err := os.Stat(sha); !os.IsNotExist(err) {
-		t.Fatalf("cache dir was not reclaimed: %v", err)
+	if _, err := os.Stat(sha); err != nil {
+		t.Fatalf("published revision not preserved: %v", err)
 	}
 }
 
