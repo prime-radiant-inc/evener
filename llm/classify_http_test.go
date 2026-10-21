@@ -92,7 +92,7 @@ func TestClassifyHTTPErrorTable(t *testing.T) {
 		{
 			name: "groq invalid JSON body", status: 400,
 			body: `{"error":{"message":"invalid JSON body","type":"invalid_request_error"}}`,
-			res:  responsesRes, kind: KindInvalidRequest, code: "invalid_request_error", hint: "generic",
+			res:  responsesRes, kind: KindInvalidRequest, code: "invalid_request_error",
 		},
 		{
 			name: "anthropic prompt is too long", status: 400,
@@ -112,7 +112,7 @@ func TestClassifyHTTPErrorTable(t *testing.T) {
 		{
 			name: "anthropic not supported with thinking names no parameter", status: 400,
 			body: "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"`top_k` is not supported with thinking.\"}}",
-			res:  anthropicRes, kind: KindInvalidRequest, code: "invalid_request_error", hint: "generic",
+			res:  anthropicRes, kind: KindInvalidRequest, code: "invalid_request_error",
 		},
 		{
 			name: "openai insufficient_quota", status: 429,

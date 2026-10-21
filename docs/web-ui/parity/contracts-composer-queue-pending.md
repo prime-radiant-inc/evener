@@ -18,6 +18,36 @@ except where a line says so itself.
 
 ## Composer
 
+### Stop and Send placement
+
+- At every web width, an ordinary composer with Stop available and an empty
+  draft shows Stop in Send's slot, never both. Whitespace alone is empty.
+  Text, images (including preparation), selected skills or selected commands
+  restore Send. Idle, finished and otherwise non-stoppable sessions retain
+  Send with its existing eligibility and recovery behavior.
+- Session actions offers Stop whenever session controls permit it, with or
+  without a draft, at every width. Steer stays inline above a 399px composer
+  content box and in the menu at or below it. Its draft and queue behavior
+  does not change.
+- A Send-to-Stop swap shows a distinct Stop button immediately, disabled for
+  500 ms to reject accidental double-taps. A Stop present when the composer
+  opens needs no delay. The delay expires automatically and cannot outlive
+  its slot or session. Existing pending gates can keep Stop disabled longer;
+  menu Stop is not subject to the inline delay.
+- A pointer press begun on Send cannot finish on its replacement Stop.
+  The swap preserves editor focus and Send's existing focus handoff. Empty
+  form, Enter and keyboard-chord submissions never interrupt a turn.
+- Stop uses the existing interrupt owner, capabilities and pending gates.
+  Refused or failed Stop preserves the draft and leaves healthy actions usable.
+  Cancellation and durable-input ownership do not change.
+- Pending questions still hide the ordinary input card and menu. Returning
+  restores the primary slot for the preserved current draft.
+- `node scripts/overflowguard/run.mjs --composer-only 390 1400`, from the
+  frontend directory, exercises the real composer in Chrome: trusted Send
+  double-taps and split presses, keyboard Stop, editor focus, both themes,
+  measured 399/400px content boxes, a narrow desktop pane, and Send geometry
+  at larger font sizes. The default browser guard includes the same checks.
+
 ### Atomic skill and command selections
 
 - Session and launcher composers share the real ProseMirror editor. Explicit

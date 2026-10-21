@@ -3,6 +3,7 @@ package chatcompletions
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -127,6 +128,90 @@ func TestListModelsMapsGatewayTopLevelLimits(t *testing.T) {
 	}
 	if c.MaxOutputTokens == nil || *c.MaxOutputTokens != 262144 {
 		t.Fatalf("MaxOutputTokens = %v, want 262144", c.MaxOutputTokens)
+	}
+}
+
+// TestListModelsReadsGatewayReasoningLadder pins lunaroute's per-model effort
+// ladder, which it publishes only under client_compat.pi.thinkingLevelMap. The
+// model is absent from models.dev, so without this read the resolved row has an
+// empty EffortValues ladder: the session picker falls back to
+// low/medium/high, and the request builder omits the effort name entirely.
+func TestListModelsReadsGatewayReasoningLadder(t *testing.T) {
+	c := listRow(t, `{"id":"deepseek-4.1-flash","capabilities":{"reasoning":true,"tools":true},"client_compat":{"streaming":true,"pi":{"maxTokensField":"max_tokens","supportsReasoningEffort":true,"thinkingFormat":"openai","thinkingLevelMap":{"high":"high","low":"low","max":"max","medium":"medium","minimal":null,"off":null,"xhigh":"xhigh"}}}}`)
+	if got, want := c.EffortValues, []string{"low", "medium", "high", "xhigh", "max"}; !slices.Equal(got, want) {
+		t.Fatalf("EffortValues = %v, want %v", got, want)
+	}
+	if c.Reasoning == nil || !*c.Reasoning {
+		t.Fatalf("Reasoning = %v, want true from capabilities.reasoning", c.Reasoning)
+	}
+}
+
+// TestListModelsReadsGatewayReasoningOffLevel covers a gateway model that can
+// be told to stop reasoning: the map's off key names the wire value, which is
+// the ladder's off entry (EffortOffCapable reads "none").
+func TestListModelsReadsGatewayReasoningOffLevel(t *testing.T) {
+	c := listRow(t, `{"id":"toggle-model","client_compat":{"pi":{"thinkingLevelMap":{"off":"none","low":"low","high":"high"}}}}`)
+	if got, want := c.EffortValues, []string{"none", "low", "high"}; !slices.Equal(got, want) {
+		t.Fatalf("EffortValues = %v, want %v", got, want)
+	}
+}
+
+// TestListModelsGatewayReasoningFollowsTheCapability pins that a gateway
+// stating reasoning = false keeps its row non-reasoning: the map is ignored,
+// because capabilities.reasoning is the model's own verdict and derivation
+// clears a ladder on an off row.
+func TestListModelsGatewayReasoningFollowsTheCapability(t *testing.T) {
+	c := listRow(t, `{"id":"no-reasoning","capabilities":{"reasoning":false},"client_compat":{"pi":{"thinkingLevelMap":{"low":"low","high":"high"}}}}`)
+	if c.Reasoning == nil || *c.Reasoning {
+		t.Fatalf("Reasoning = %v, want an explicit false", c.Reasoning)
+	}
+}
+
+// TestListModelsGatewayWithoutPiKeepsOtherFacts pins that a gateway which
+// publishes no Pi compat block still contributes its capabilities and limits;
+// the absence of a ladder must stay nil, not become an empty one.
+func TestListModelsGatewayWithoutPiKeepsOtherFacts(t *testing.T) {
+	c := listRow(t, `{"id":"plain-gateway","context_window":8192,"capabilities":{"reasoning":true,"tools":true},"client_compat":{"streaming":true}}`)
+	if c.EffortValues != nil {
+		t.Fatalf("EffortValues = %#v, want nil when no map is published", c.EffortValues)
+	}
+	if c.Reasoning == nil || !*c.Reasoning || c.ContextWindow == nil || *c.ContextWindow != 8192 {
+		t.Fatalf("caps = %+v", c)
+	}
+}
+
+// TestListModelsGatewayLadderRaisesInferredFalse pins that a usable ladder is
+// evidence the model tunes effort, even when supported_parameters inferred
+// reasoning = false first. Without the raise, registry derivation discards the
+// ladder and request shaping drops the selected effort.
+func TestListModelsGatewayLadderRaisesInferredFalse(t *testing.T) {
+	c := listRow(t, `{"id":"no-reasoning-param","supported_parameters":["tools"],"client_compat":{"pi":{"thinkingLevelMap":{"low":"low","high":"high"}}}}`)
+	if c.Reasoning == nil || !*c.Reasoning {
+		t.Fatalf("Reasoning = %v, want true from the ladder", c.Reasoning)
+	}
+	if got, want := c.EffortValues, []string{"low", "high"}; !slices.Equal(got, want) {
+		t.Fatalf("EffortValues = %v, want %v", got, want)
+	}
+}
+
+// TestListModelsGatewayPublishedEmptyMapStatesNoEffort covers a gateway map
+// whose every level is null: the gateway is saying the model takes no effort
+// control, so the row must not carry a ladder at all rather than inherit one
+// from a curated row at resolve time.
+func TestListModelsGatewayPublishedEmptyMapStatesNoEffort(t *testing.T) {
+	c := listRow(t, `{"id":"no-effort","capabilities":{"reasoning":true},"client_compat":{"pi":{"thinkingLevelMap":{"low":null,"high":null}}}}`)
+	if len(c.EffortValues) != 0 || c.EffortValues == nil {
+		t.Fatalf("EffortValues = %#v, want a published empty ladder", c.EffortValues)
+	}
+}
+
+// TestListModelsGatewayPiWithoutMapStatesNoLadder pins that the Pi block's
+// other compat fields do not count as a published map: silence about effort
+// must leave an inherited ladder alone rather than erase it.
+func TestListModelsGatewayPiWithoutMapStatesNoLadder(t *testing.T) {
+	c := listRow(t, `{"id":"max-tokens-only","client_compat":{"pi":{"maxTokensField":"max_tokens","supportsReasoningEffort":true}}}`)
+	if c.EffortValues != nil {
+		t.Fatalf("EffortValues = %#v, want nil when the block states no map", c.EffortValues)
 	}
 }
 

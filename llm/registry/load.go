@@ -166,6 +166,12 @@ type record struct {
 // capLayer is one layer's contribution to a record. own is true for the
 // layers the record itself contributed (false for layers copied from its
 // base chain), which is what "own layers" means in spec §10.
+//
+// rows borrows the layer's Provider.Models map read-only: the folded record
+// never edits it, and keepInheritedRows rebuilds a narrowed map instead of
+// deleting entries from this one. Any future writer must replace the map
+// rather than mutate it, because the same map may belong to a cached
+// provider or the injected source.
 type capLayer struct {
 	tag         string
 	owner       string
@@ -693,7 +699,7 @@ func setIfNonEmpty(dst *string, src string) {
 func (rec *record) fold(src Provider, tag string, presets map[string]Transport) error {
 	h := &rec.head
 	where := "providers." + src.ID
-	layer := capLayer{tag: tag, owner: src.ID, own: true, provider: src.Caps, rows: map[string]Model{}}
+	layer := capLayer{tag: tag, owner: src.ID, own: true, provider: src.Caps, rows: src.Models}
 	if src.Protocol != "" && h.Protocol != "" && src.Protocol != h.Protocol {
 		clearProtocolTransport(&h.Transport)
 		layer.resetFields = true
@@ -754,7 +760,6 @@ func (rec *record) fold(src Provider, tag string, presets map[string]Transport) 
 			return err
 		}
 		h.Models[id] = merged
-		layer.rows[id] = m
 	}
 	rec.layers = append(rec.layers, layer)
 	return nil

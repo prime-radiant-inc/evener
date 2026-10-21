@@ -242,7 +242,7 @@ func printPluginUsage(w io.Writer) {
 	_, _ = fmt.Fprintf(w, "  upgrade       Upgrade installed plugins\n")
 	_, _ = fmt.Fprintf(w, "  auto-upgrade  Toggle a plugin's auto-upgrade flag (--off to disable)\n")
 	_, _ = fmt.Fprintf(w, "  check-now     Run one auto-upgrade pass now for every opted-in plugin\n")
-	_, _ = fmt.Fprintf(w, "  gc            Garbage collect unused plugin cache and orphaned marketplace clones\n")
+	_, _ = fmt.Fprintf(w, "  gc            Remove leftover marketplace clones; keep published plugin revisions\n")
 	_, _ = fmt.Fprintf(w, "  doctor        Run plugin-store health checks\n")
 }
 

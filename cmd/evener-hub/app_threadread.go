@@ -198,7 +198,7 @@ func pastThreadTurnsList(ctx context.Context, cfg hubcore.WebConfig, params appw
 	}
 	packed, packErr := packThreadTurnsItemCandidates(page.candidateResult(), func(response appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error) {
 		thread := appwire.Thread{ID: entry.Meta.ID, SessionID: entry.Meta.ID, CWD: entry.Meta.EnvInfo.WorkingDir, Turns: response.Data}
-		thread = stampItemPageTurns(cfg, entry, thread, page.Derived)
+		thread = stampItemPageTurns(cfg, entry, thread)
 		response.Data = thread.Turns
 		return response, nil
 	}, itemLimit)
@@ -233,13 +233,14 @@ func pastEntryItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, param
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
-	page, err := pastEntryLatestItems(ctx, entry, itemLimit, params.HeldSnapshot)
+	page, err := pastEntryLatestItems(ctx, entry, itemLimit, params.HeldSnapshot, true)
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
 	packed, packErr := packThreadReadItemCandidates(page.candidateResult(), func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
 		thread.Turns = response.Thread.Turns
-		thread = stampItemPageTurns(cfg, entry, thread, page.Derived)
+		thread = stampItemPageTurns(cfg, entry, thread)
+		thread = stampDerivedTotalsWith(cfg, entry, thread, page.Derived)
 		response.Thread = thread
 		return response, nil
 	}, itemLimit)
@@ -406,8 +407,10 @@ func answerPastTranscriptIndexError(entry hubcore.PastEntry, err error) error {
 }
 
 // pastEntryLatestItems reads the latest window and, when the client holds a
-// snapshot of the same incarnation, what changed since it.
-func pastEntryLatestItems(ctx context.Context, entry hubcore.PastEntry, limit int, held *appwire.SnapshotIdentity) (pastItemPage, error) {
+// snapshot of the same incarnation, what changed since it. Only a caller that
+// returns the session totals (thread/read) asks for them with includeTotals; a
+// history page discards them and must not pay to derive them.
+func pastEntryLatestItems(ctx context.Context, entry hubcore.PastEntry, limit int, held *appwire.SnapshotIdentity, includeTotals bool) (pastItemPage, error) {
 	var page pastItemPage
 	err := withPastTranscriptIndex(ctx, entry, func(index *transcriptindex.Index) error {
 		var window transcriptindex.Window
@@ -428,7 +431,9 @@ func pastEntryLatestItems(ctx context.Context, entry hubcore.PastEntry, limit in
 			}
 		}
 		page = pastItemPageFromWindow(entry, window)
-		page.Derived = pastIndexDerivedTotals(index, entry)
+		if includeTotals {
+			page.Derived = pastIndexDerivedTotals(index, entry)
+		}
 		page.Changes = changes
 		return nil
 	})
@@ -452,7 +457,7 @@ func pastIndexDerivedTotals(index *transcriptindex.Index, entry hubcore.PastEntr
 // the client re-reads the latest window.
 func pastEntryPageItems(ctx context.Context, entry hubcore.PastEntry, params appwire.ThreadTurnsListParams, limit int) (pastItemPage, error) {
 	if params.Cursor == "" && params.Before == nil {
-		return pastEntryLatestItems(ctx, entry, limit, nil)
+		return pastEntryLatestItems(ctx, entry, limit, nil, false)
 	}
 	var page pastItemPage
 	err := withPastTranscriptIndex(ctx, entry, func(index *transcriptindex.Index) error {
@@ -473,7 +478,6 @@ func pastEntryPageItems(ctx context.Context, entry hubcore.PastEntry, params app
 			return appwire.TranscriptItemCursorStale()
 		}
 		page = pastItemPageFromWindow(entry, window)
-		page.Derived = pastIndexDerivedTotals(index, entry)
 		return nil
 	})
 	return page, err
@@ -516,11 +520,10 @@ func pastHistoryChanges(cfg hubcore.WebConfig, entry hubcore.PastEntry, changes 
 	return &appwire.HistoryChanges{Turns: turns, Items: carrier.Turns[0].Items}
 }
 
-func stampItemPageTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry, thread appwire.Thread, derived *pastDerivedTotals) appwire.Thread {
+func stampItemPageTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
 	stampSessionImageURLs(entry.Meta.ID, thread.Turns)
 	stampPastTurnCosts(pastEntryCost(cfg, entry), thread.Turns)
-	thread = reconcileAndEnrichPastThread(entry, thread)
-	return stampDerivedTotalsWith(cfg, entry, thread, derived)
+	return reconcileAndEnrichPastThread(entry, thread)
 }
 
 func pastEntryForRead(cfg hubcore.WebConfig, params appwire.ThreadReadParams) (hubcore.PastEntry, bool) {
