@@ -454,6 +454,13 @@ without requesting another replacement.
 Source refusals before a write leave no recovery intent. Recovery does not
 reinterpret the operation from a newly observed executable or hide its failure.
 
+**Stable installation paths.** Keep executable symlinks and their parent
+directories unchanged until pending deployment recovery finishes. Host-entry
+validation does not freeze remote filesystem path resolution: redirecting a
+configured `evener_path` symlink between attempts can send a retried write to its
+new destination. Destination-drift handling is deferred in
+[#4802](https://github.com/prime-radiant-inc/evener/issues/4802).
+
 **Own-executable limit.** The default reads the executable file at deploy time,
 not a copy of the running process. Replacing that file while the controller runs
 changes what it pushes. A cross-commit replacement fails the post-install build

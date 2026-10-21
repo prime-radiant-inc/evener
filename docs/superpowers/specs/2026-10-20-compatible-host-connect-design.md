@@ -130,6 +130,13 @@ state, protocol fields, a configuration parser in the SSH layer, or a new retry
 policy. Ordinary automatic operations without an explicit entry binding retain
 their existing policy.
 
+The recovery contract assumes stable remote installation paths. Changes to
+executable symlinks or their parent directories between attempts are outside
+this change's target-preservation guarantee. A redirected configured symlink can
+send a retried installation write to its new destination even with an unchanged
+host entry. Jesse accepted this limitation and deferred destination-drift handling
+to [#4802](https://github.com/prime-radiant-inc/evener/issues/4802).
+
 ## Version reporting and clients
 
 The controller's version and the connected host's version are distinct facts.
