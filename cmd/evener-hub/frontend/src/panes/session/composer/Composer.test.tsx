@@ -1531,7 +1531,8 @@ test.each([399, 400])("empty keyboard and form submission never interrupt at wid
 test.each([399, 400])("Send-to-Stop guards the inline button for exactly 500ms at width %s", async (width) => {
   installNarrowComposer(width);
   const fake = await mountComposer("ref_a", { status: { type: "active" } });
-  vi.useFakeTimers();
+  // Keep IndexedDB's task scheduling real while controlling the activation clock.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   expect(stopButton().disabled).toBe(false);
   act(() => replaceEditorText(textarea(), "draft"));
   const send = submitButton();
@@ -1551,7 +1552,8 @@ test.each([399, 400])("Send-to-Stop guards the inline button for exactly 500ms a
 
 test("a cancelled delay cannot shorten the next Send-to-Stop guard", async () => {
   await mountComposer("ref_a", { status: { type: "active" } });
-  vi.useFakeTimers();
+  // Keep IndexedDB's task scheduling real while controlling the activation clock.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   act(() => replaceEditorText(textarea(), "first"));
   act(() => replaceEditorText(textarea(), ""));
   expect(stopButton().disabled).toBe(true);
@@ -1608,7 +1610,8 @@ test("session replacement and unmount cancel the old inline Stop delay", async (
     await threadsStore.getState().ensureThread("ref_b");
   });
   const source = createTestComposerSource("ref_b");
-  vi.useFakeTimers();
+  // Keep IndexedDB's task scheduling real while controlling the activation clock.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   act(() => replaceEditorText(textarea(), "first"));
   act(() => replaceEditorText(textarea(), ""));
   expect(stopButton().disabled).toBe(true);
@@ -3898,7 +3901,8 @@ test("an indefinitely pending steer never emits a timeout warning or reload inst
   await flushPendingTurnsProjectionForTests();
   expect(fake.calls.some((call) => call.method === "turn/steer")).toBe(true);
 
-  vi.useFakeTimers();
+  // Keep IndexedDB's task scheduling real while controlling the activation clock.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   await act(() => vi.advanceTimersByTimeAsync(60_000));
 
   expect(screen.queryByText(/accepted.*view didn't update/i)).toBeNull();
@@ -5971,7 +5975,8 @@ test.each([399, 400])("pending interrupt still gates Stop after the inline delay
     await act(async () => held.reached);
     expect(submitButton().disabled).toBe(true);
     expect(textarea().textContent).toBe("draft");
-    vi.useFakeTimers();
+    // Keep IndexedDB's task scheduling real while controlling the activation clock.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     act(() => replaceEditorText(textarea(), ""));
     act(() => vi.advanceTimersByTime(500));
     expect(stopButton().disabled).toBe(true);
