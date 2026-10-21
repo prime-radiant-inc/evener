@@ -1631,3 +1631,46 @@ test("close publishes a retained uncertain append before clearing it", async () 
   expect(listener).toHaveBeenCalled();
   fixture.drafts.close();
 });
+
+// A dismissal that observes an APPLIED row keeps its fence up forever: the
+// row is committed work the fence still protects, and the listing hides it.
+// That changes what this adapter's readers see, but the discard returned
+// without waking them, so a same-adapter subscriber kept rendering the
+// dismissed note. The applied observation publishes one document wake; the
+// fence is retried every pass and must not wake again.
+test("a dismissal of an already-applied row wakes the same-adapter reader once", async () => {
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    prepareAnnotation: async () => {
+      const current = fixture;
+      if (current === undefined) return null;
+      const loaded = await current.drafts.load(current.key);
+      return loaded ? { key: loaded.key, token: loaded.token, backing: { kind: "draft" }, localGeneration: 0 } : null;
+    },
+  });
+  expect(await fixture.repository.handoff(fixture.document, fixture.operation.operationId)).toMatchObject({
+    state: "applied",
+  });
+  const listener = vi.fn();
+  fixture.repository.subscribe(fixture.document, listener);
+  fixture.acknowledge.mockClear();
+
+  await fixture.repository.dismissOperation(fixture.document, fixture.operation.operationId);
+  expect(listener).toHaveBeenCalledTimes(1);
+
+  // The fence is permanent, so every pass re-observes the applied row; the
+  // publication happens once.
+  await fixture.repository.retryPending("storage-recovered");
+  await fixture.repository.retryPending("storage-recovered");
+  expect(listener).toHaveBeenCalledTimes(1);
+  expect(fixture.acknowledge).not.toHaveBeenCalled();
+
+  const views = await fixture.repository.listAnnotations(fixture.document);
+  expect(views.find((view) => view.operation.operationId === fixture?.operation.operationId)).toBeUndefined();
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});

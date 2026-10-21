@@ -358,6 +358,10 @@ interface PendingCancelledDiscard {
   // classified the row is not repeated inline, while a flip that ran before the
   // save committed (row absent) is repeated now that the row exists.
   dismissal?: Promise<DiscardOutcome>;
+  // The applied observation's one document wake. The fence stays up and every
+  // pass re-observes the applied row, but this adapter's listing changed only
+  // when the fence first hid it, so the wake is published once.
+  wakePublished?: boolean;
 }
 
 // What a durable discard found, so the in-memory fence is dropped only when the
@@ -1513,6 +1517,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     let outcome: DiscardOutcome = "absent";
     let flippedDocumentKey: string | undefined;
     let terminalDocumentKey: string | undefined;
+    let appliedDocumentKey: string | undefined;
     await this.#transaction([ANNOTATION_OPERATIONS_STORE], "readwrite", async (transaction) => {
       const row = await requestResult<AnnotationOperationRow | undefined>(
         transaction.objectStore(ANNOTATION_OPERATIONS_STORE).get(operationKey),
@@ -1527,6 +1532,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         // an earlier arm never observed. Publish it before the record retires,
         // or the dismissal's last trace leaves with the record.
         if (row.state !== "applied") terminalDocumentKey = row.documentKey;
+        else appliedDocumentKey = row.documentKey;
         return;
       }
       this.#options.beforeCommit?.("discard");
@@ -1543,6 +1549,16 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     // outside it, exactly as every other committed transition does.
     if (terminalDocumentKey !== undefined) this.#settleTransition({ signal: true, documentKey: terminalDocumentKey });
     if (flippedDocumentKey !== undefined) this.#settleTransition({ signal: true, documentKey: flippedDocumentKey });
+    // An applied row stays committed but the permanent dismissal fence hides
+    // it from this adapter's listing, so same-adapter subscribers must re-list.
+    // Later passes observe the same applied row; only the first publishes.
+    if (appliedDocumentKey !== undefined) {
+      const record = this.#pendingCancelledDiscards.get(operationKey);
+      if (record !== undefined && record.wakePublished !== true) {
+        record.wakePublished = true;
+        this.#settleTransition({ documentKey: appliedDocumentKey });
+      }
+    }
     return outcome;
   }
 
