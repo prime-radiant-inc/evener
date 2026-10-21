@@ -34,7 +34,6 @@ import {
   readMutationPersistence,
   resendRecoveryMutation,
   retryBlockedMutation,
-  settleObservedTurnSubmission,
   subscribeMutationPersistence,
   threadsStore,
   transientRefusalRetryPending,
@@ -818,17 +817,7 @@ threadsStore.subscribe((state, previous) => {
   for (const ref of new Set([...state.threads.keys(), ...retryReflections.keys()])) {
     const modelChanged = state.threads.get(ref) !== previous.threads.get(ref);
     const hydrationChanged = state.hydrations.get(ref) !== previous.hydrations.get(ref);
-    if (modelChanged) {
-      // An accepted continuation whose new turn has already been published is
-      // observed: settle its kept copy so it cannot block Retry on whatever
-      // failure is current now.
-      for (const [clientMutationId, record] of pendingTurnsStore.getState().optimistic) {
-        if (record.targetRef === ref && (record.method === "turn/start" || record.method === "turn/queue")) {
-          settleObservedTurnSubmission(clientMutationId, ref, false, record.submissionBaselineTail);
-        }
-      }
-      void refreshPendingTurnsProjection(ref);
-    }
+    if (modelChanged) void refreshPendingTurnsProjection(ref);
     if ((modelChanged || hydrationChanged) && retryReflections.has(ref)) reconcileRetryReflection(ref);
   }
 });

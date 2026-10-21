@@ -2568,13 +2568,9 @@ function getMutationRuntime(): MutationRuntime | null {
     // the new turn is observed. Open the same observation marker Retry uses,
     // for ANY own turn submission, so the obsolete failure is not actionable
     // in that window. The mark is idempotent for the same identity.
-    let reflectedTurnRef: string | undefined;
-    let reflectedBaseline: string | undefined;
     if (projectionState === "reflected") {
       const record = await storage.getOutbox(clientMutationId);
       if (record !== undefined && (record.method === "turn/start" || record.method === "turn/queue")) {
-        reflectedTurnRef = record.targetRef;
-        reflectedBaseline = record.submissionBaselineTail;
         const model = threadsStore.getState().threads.get(record.targetRef);
         const latest = model === undefined ? undefined : model.turns[model.turns.length - 1];
         const baseline = submittedTailBaselines.get(clientMutationId) ?? record.submissionBaselineTail;
@@ -2595,27 +2591,7 @@ function getMutationRuntime(): MutationRuntime | null {
       }
     }
     const settled = await settleReceipt(clientMutationId, projectionState);
-    const modelAfterReceipt =
-      reflectedTurnRef === undefined ? undefined : threadsStore.getState().threads.get(reflectedTurnRef);
-    const latestAfterReceipt = modelAfterReceipt?.turns.at(-1);
-    const baselineBeforeReceipt = submittedTailBaselines.get(clientMutationId) ?? reflectedBaseline;
-    const keepsAcceptedCopy =
-      settled &&
-      reflectedTurnRef !== undefined &&
-      baselineBeforeReceipt !== undefined &&
-      latestTurnId(modelAfterReceipt) === baselineBeforeReceipt &&
-      latestAfterReceipt?.status === "failed" &&
-      latestAfterReceipt.error !== undefined;
-    // The receipt kept an accepted copy only because the submission had not
-    // been observed. If an authoritative publication already moved the tail
-    // while the receipt was in flight, that copy describes nothing pending and
-    // is settled now rather than blocking the new tail's own Retry.
-    if (settled && reflectedTurnRef !== undefined && !keepsAcceptedCopy) {
-      settleObservedTurnSubmission(clientMutationId, reflectedTurnRef, true, reflectedBaseline);
-    }
-    // A kept copy still needs its baseline for the model subscription's
-    // observed check; it leaves with the copy in settleApplied.
-    if (!keepsAcceptedCopy) submittedTailBaselines.delete(clientMutationId);
+    submittedTailBaselines.delete(clientMutationId);
     if (settled) noteHandledMutation(clientMutationId);
     return settled;
   };
@@ -3483,6 +3459,15 @@ export function setMutationStorageForTests(storage: MutationOutboxIndexedDB): vo
   mutationStorageForTests = storage;
 }
 
+// Test-only: run the durable owner's own identity reconciliation, the path an
+// authoritative read's item/pending/queue ids take. Tests whose concern is the
+// surface after observation use this rather than re-creating read ownership.
+export async function reconcileMutationIdentitiesForTests(clientMutationIds: readonly string[]): Promise<void> {
+  const runtime = getMutationRuntime();
+  if (runtime === null) return;
+  await runtime.dispatcher.reconcileIdentities(clientMutationIds);
+}
+
 // listModels' own session-lifetime cache (models are not per-ref, so this
 // is a single slot, not a Map): modelsCache holds the last successful
 // response; inflightModelsList de-dupes concurrent non-refresh callers the
@@ -3966,43 +3951,6 @@ const submittedTailBaselines = new Map<string, string>();
 function rememberSubmittedTail(clientMutationId: string, tail: string | undefined): void {
   if (tail === undefined) return;
   submittedTailBaselines.set(clientMutationId, tail);
-}
-
-// An accepted-but-unreflected turn whose conversation has already moved past
-// this submission's baseline no longer describes anything pending: the new
-// tail is observed, so its kept optimistic copy must not keep Retry closed on
-// the current failure. Settle it through the same durable owner a later
-// authoritative read would use; the baseline map is the page-lifetime record
-// of what "moved" means for this id.
-export function settleObservedTurnSubmission(
-  clientMutationId: string,
-  ref: string,
-  // A receipt can prove the pre-submission failure is no longer the tail even
-  // when the new tail is running. A model publication alone cannot: the local
-  // optimistic display also publishes a model, and that is not observation.
-  observedNonFailure = false,
-  // The persisted baseline from the accepted optimistic copy. Settlement must
-  // survive a reload, where the page-local map is empty.
-  durableBaseline?: string,
-): void {
-  const baseline = submittedTailBaselines.get(clientMutationId) ?? durableBaseline;
-  if (baseline === undefined) return;
-  const model = threadsStore.getState().threads.get(ref);
-  if (model === undefined) return;
-  const latest = model.turns.at(-1);
-  // The kept copy exists only to close a stale failure. While that same failed
-  // tail is still the latest turn, the submission is not observed yet. Any
-  // other tail - a newer turn (running, completed or failed) or a non-failure -
-  // means there is no stale failure left for this copy to protect.
-  const failed = latest?.status === "failed" && latest.error !== undefined;
-  if (!failed) {
-    if (!observedNonFailure) return;
-  } else if (latestTurnId(model) === baseline) {
-    return;
-  }
-  const runtime = getMutationRuntime();
-  if (!runtime) return;
-  void runtime.storage.settleApplied(clientMutationId).catch(() => undefined);
 }
 
 // A direct fallback has no durable row for settleReceipt to observe, so the

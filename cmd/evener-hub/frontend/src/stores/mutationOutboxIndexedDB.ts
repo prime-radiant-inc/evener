@@ -672,8 +672,12 @@ export class MutationOutboxIndexedDB {
           (projectionState === "pending" && (carriesOptimisticInput(source) || source.method === "notes/human/set")) ||
           // A reflected turn receipt is accepted but not yet observed: keep the
           // accepted copy until an authoritative read/reconcile settles it, so
-          // a restored outbox row still blocks Retry across reload.
-          (projectionState === "reflected" && (source.method === "turn/start" || source.method === "turn/queue"));
+          // a restored outbox row still blocks Retry across reload. Only a
+          // submission that carries a press-time baseline can protect a stale
+          // failure; a reflected row without one keeps the previous settle-out.
+          (projectionState === "reflected" &&
+            source.submissionBaselineTail !== undefined &&
+            (source.method === "turn/start" || source.method === "turn/queue"));
         if (retainsAcceptedCopy) {
           // The accepted whitelist lives in the package's acceptedRecord so
           // this adapter and native's build the same row.
