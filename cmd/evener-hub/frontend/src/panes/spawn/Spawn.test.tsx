@@ -1780,6 +1780,32 @@ test("automatic connection completion preserves a saved model the fresh catalogu
     access_mode: "read-only",
   });
   expect(client.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
+
+  // The successful credential write queues the store's own listing refresh for
+  // 250ms later. Completion finishes before that timer in this fixture, so the
+  // delivery that can erase the choice is exactly the one this drains - not a
+  // later user action or an unrelated configuration change.
+  const readsAtDismissal = client.calls.filter((call) => call.method === "evener/instance/list").length;
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(300);
+  });
+  await settled();
+  // The completion's awaited reconciliation consumed the queued refresh: the
+  // timer leaves no second, unowned listing update behind. Before the fix this
+  // advanced clock produced another listing read and the assertions below
+  // failed.
+  expect(client.calls.filter((call) => call.method === "evener/instance/list").length).toBe(readsAtDismissal);
+
+  // The acquisition's own delayed refresh must carry the completion's
+  // ownership: both the draft's explicit unavailable choice and the two saved
+  // defaults survive its settlement.
+  expect(modelValue().textContent).toBe("openai/gpt-5");
+  expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
+  expect(localStorage.getItem("evener-hub.spawn-defaults.global.model")).toBe("openai/gpt-5");
+  expect(JSON.parse(localStorage.getItem("evener-hub.spawn-defaults./tmp/auto-saved") ?? "null")).toEqual({
+    model: "openai/gpt-5",
+    access_mode: "read-only",
+  });
 });
 
 test("automatic connection completion keeps a same-value chip choice as explicit intent", async () => {
