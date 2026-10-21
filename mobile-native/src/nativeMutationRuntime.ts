@@ -480,8 +480,29 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 			response.thread.status.type !== "restartRequired"
 		) {
 			// A refused resume leaves the row parked and the next settle retries.
-			await client.resumeThread(targetRef).catch(() => undefined);
-			return "blocked";
+			const resumed = await client.resumeThread(targetRef).then(
+				() => true,
+				() => false,
+			);
+			if (!resumed) return "blocked";
+			// The resume cleared the fence, so read once more and reconcile in this
+			// same settle. A flush with no screen on the target lets go after a
+			// "blocked" answer and is woken by storage writes only, and the resume
+			// writes none - so leaving the row for "the next settle" would strand it.
+			const afterLease = this.beginAuthoritativeRead(hubId, targetRef, client);
+			if (!afterLease) return "blocked";
+			let after: ThreadReadResponse;
+			try {
+				after = await client.request("thread/read", {
+					ref: targetRef,
+					includeTurns: true,
+					itemsView: "fragment",
+					itemLimit: READ_ITEM_LIMIT,
+				});
+			} catch {
+				return "blocked";
+			}
+			return this.reconcileAuthoritativeRead(afterLease, after);
 		}
 		return this.reconcileAuthoritativeRead(lease, response);
 	}

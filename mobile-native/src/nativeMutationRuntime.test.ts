@@ -628,13 +628,11 @@ test("a fenced settle resumes the target, an ordinary read does not", async () =
 	expect(client.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
 	expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
 
-	// The flush's settle: same fenced read, but it resumes the target.
-	expect(await runtime.settleTarget("hub-1", "ref-1", client, { resumeFenced: true })).toBe("blocked");
+	// The flush's settle: same fenced read, but it resumes the target and then
+	// reconciles the unfenced read in that same settle, so the parked row goes
+	// without waiting for a flush that a storage-only wake would never send.
+	expect(await runtime.settleTarget("hub-1", "ref-1", client, { resumeFenced: true })).toBe("reconciled");
 	expect(client.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
-
-	// The resume's read is unfenced, so the parked send follows.
-	const releasedLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
-	expect(await runtime.reconcileAuthoritativeRead(releasedLease!, readResponse("ref-1"))).toBe("reconciled");
 	await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
 	await runtime.stop();
 });

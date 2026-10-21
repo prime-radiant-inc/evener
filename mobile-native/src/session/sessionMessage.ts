@@ -203,7 +203,11 @@ export async function submitSessionMessage(
 	if (!client) return;
 	if (resumeFirst) {
 		if (typeof client.resumeThread !== "function") throw new Error("ConversationService: resume is unavailable");
-		await client.resumeThread(target.ref);
+		// The message is already durably admitted, so a failed resume is not a
+		// failed send: throwing here would report one to a caller whose retry
+		// mints a second message. The row stays parked for the next resume or
+		// settle to dispatch.
+		await client.resumeThread(target.ref).catch(() => undefined);
 	}
 	await runtime.settleTarget(target.hubId, target.ref, client).catch(() => "blocked" as const);
 }

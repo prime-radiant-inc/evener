@@ -2569,8 +2569,13 @@ export function ConversationScreen({
 				if (target === null) return false;
 				await getNativeMutationRuntime().submit(offlineRequest(target, "resume", buildComposerInput(text, images)));
 				haptic("light");
-				const resumed = await controls?.resume();
-				return resumed === true;
+				// The message is durably admitted, so it is sent: the resume is the
+				// recovery it needs, not part of the send's success. Reporting a
+				// failed resume as a failed send would leave a ghost of a message
+				// that is already parked, and re-sending that ghost would duplicate
+				// it. The next resume or settle dispatches the parked row.
+				void controls?.resume();
+				return true;
 			}
 			const previous = store.getState().lastAcceptedMutation;
 			await store.getState()[kind](through, buildComposerInput(text, images));

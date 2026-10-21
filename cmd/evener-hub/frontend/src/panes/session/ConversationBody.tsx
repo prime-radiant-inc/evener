@@ -4,7 +4,7 @@ import { useStore } from "zustand";
 import { paneToURL, refParam } from "../../shell/routing";
 import { workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
-import { controlsFor } from "../../stores/liveControls";
+import { controlsFor, recoveryFence } from "../../stores/liveControls";
 import { ownerRetainedRef, threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { Button, Cadence, EmptyState, InlineNotice, type VirtualListHandle, VisuallyHidden } from "../../widgets";
@@ -15,7 +15,7 @@ import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { AskDock, AskDockAnnouncements, useAskDockActivationEpoch, useAskDockPending } from "./composer/askDock";
 import { Composer } from "./composer/Composer";
 import { carryComposerDraft } from "./composer/draft";
-import { usePendingTurnEntries } from "./composer/queue/pendingTurnsStore";
+import { useBlockedMutationEntries, usePendingTurnEntries } from "./composer/queue/pendingTurnsStore";
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import type { ComposerSourceState } from "./composer/sourceState";
 import { cadenceStateForStatus, NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
@@ -148,6 +148,7 @@ export function ConversationBody({
   const deletedRef = useThreadsStore((s) => s.deletedRefs.has(ref));
   const restartPending = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(ref));
+  const blockedMutations = useBlockedMutationEntries(ref);
   const reconciliationFailed = useThreadsStore((s) => s.mutationReconciliationFailures.has(ref));
 
   // Identity follow-up for a store-driven resume: the transcript is already
@@ -279,9 +280,18 @@ export function ConversationBody({
 
   // Send drives the resume on every recoverable shape, so the notice belongs
   // only to the two Send cannot complete: an incompatible-protocol daemon that
-  // must be stopped first, and a snapshot an owning session retains.
+  // must be stopped first, and a retained child whose work its owner must
+  // reconcile. Every descendant read carries mutationStateAuthoritative=false,
+  // so retention alone would put the owner notice on every subagent pane; the
+  // notice also needs the uncertainty or the fence that gives it something to
+  // say.
+  const fence = recoveryFence(model, restartPending, {
+    uncertainMessages: blockedMutations.length > 0,
+  });
   const recoveryOwnerRef = ownerRetainedRef(model, mutationStateAuthoritative);
-  const showRestartNotice = model.status.type === "restartRequired" || recoveryOwnerRef !== undefined;
+  const showRestartNotice =
+    model.status.type === "restartRequired" ||
+    (recoveryOwnerRef !== undefined && (restartPending || blockedMutations.length > 0) && !fence.sendDriven);
 
   const cadence = <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />;
 

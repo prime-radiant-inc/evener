@@ -4501,6 +4501,35 @@ test("a reconciliation-failed Send-resumes face keeps its recovery notice", asyn
   expect(sendResumesModel(ref)).toBe(true);
 });
 
+// Every descendant read carries mutationStateAuthoritative=false, so a plain
+// "is this ref retained?" test would put the owner notice on every subagent
+// pane. The notice belongs only to a child that actually has work its owner
+// must reconcile.
+test.each(["active", "idle"])("a retained %s child with nothing uncertain shows no owner alert", async (status) => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("local:quiet-child", {
+      status: { type: status },
+      evener: {
+        ref: "local:quiet-child",
+        capabilities: CAPABILITIES,
+        kind: "subagent",
+        parentRef: "local:parent",
+        mutationStateAuthoritative: false,
+        queue: { revision: 1 },
+      },
+    }),
+  );
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "local:quiet-child" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().threads.has("local:quiet-child")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
 test.each(["active", "idle"])("retained %s child preserves uncertainty until its owner releases it", async (status) => {
   vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
   const mutationId = await seedPendingSend("local:retained-child");
