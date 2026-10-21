@@ -243,7 +243,15 @@ func runHostPipelineEndpointCase(t *testing.T, endpointCase hostPipelineEndpoint
 		t.Fatalf("host %s already has %s at the start of the case; the pipeline case needs a run target with no evener", host.target, runTarget)
 	}
 	host.mustRun("mkdir -p " + shellquote.RemoteWord(filepath.Dir(configPath)))
-	host.writeFile(configPath, []byte(fmt.Sprintf("addr = %q\nhub_state_root = %q\nplugin_auto_upgrade = false\n", addr, root)))
+	configContents := fmt.Sprintf("addr = %q\nhub_state_root = %q\nplugin_auto_upgrade = false\n", addr, root)
+	host.writeFile(configPath, []byte(configContents))
+	assertConfigPreserved := func() {
+		t.Helper()
+		got, err := host.runStdout("cat " + shellquote.RemoteWord(configPath))
+		if err != nil || string(got) != configContents {
+			t.Fatalf("selected config changed: got %q, want %q (%v)", got, configContents, err)
+		}
+	}
 	marker, markerContents := root+"/pipeline-marker", "selected-"+runID
 	var unrelatedWant hostPipelineEndpointWant
 	var unrelatedBefore hostPipelineEndpointSnapshot
@@ -308,7 +316,6 @@ func runHostPipelineEndpointCase(t *testing.T, endpointCase hostPipelineEndpoint
 			t.Fatal("unrelated default-port hub satisfied selected readiness")
 		}
 		assertHostPipelineRemoteMarker(ctx, t, client, host, hostName, marker, markerContents)
-		hostPipelineLockDiagnostic(t, host, beforeSelected, "before-deploy")
 		t.Cleanup(func() {
 			if t.Failed() {
 				hostPipelineLockDiagnostic(t, host, beforeSelected, "failed-case")
@@ -351,6 +358,7 @@ func runHostPipelineEndpointCase(t *testing.T, endpointCase hostPipelineEndpoint
 		assertHostPipelineSameEndpoint(t, beforeSelected, hostPipelineEndpointRead(t, host, want, "selected-after-deploy-disk-replacement"))
 		assertHostPipelineUnrelated(t, host, unrelatedWant, unrelatedBefore, "unrelated-after-deploy")
 		assertHostPipelineRemoteMarker(ctx, t, client, host, hostName, marker, markerContents)
+		assertConfigPreserved()
 	}
 
 	// Step 4: the confirmation token is single-use. Presenting the consumed
@@ -399,6 +407,7 @@ func runHostPipelineEndpointCase(t *testing.T, endpointCase hostPipelineEndpoint
 		}
 		assertHostPipelineUnrelated(t, host, unrelatedWant, unrelatedBefore, "unrelated-after-restart")
 		assertHostPipelineRemoteMarker(ctx, t, client, host, hostName, marker, markerContents)
+		assertConfigPreserved()
 	} else {
 		afterHealth = hostPipelineHostHealth(t, host, addr)
 	}

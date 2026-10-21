@@ -1,8 +1,10 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -285,8 +287,9 @@ func assertHostPipelineRetiredPort(t *testing.T, host *hostSSH, hostDir, ready, 
 	t.Logf("port-zero successor changed %s -> %s, unrelated owned holder PID %d retains predecessor port", before, after, pid)
 }
 
-// Diagnostic-only wrapper: observe only the credential-free selected-lock
-// command, forwarding exact stdout, stderr and exit status. No argv is rewritten.
+// Diagnostic-only wrapper: retain anomalous credential-free selected-lock
+// results, forwarding exact stdout, stderr and exit status without argv changes.
+// Redirection still changes timing, so this is not an uninstrumented execution.
 func installHostPipelineLockTrace(t *testing.T) {
 	t.Helper()
 	realSSH, err := exec.LookPath("ssh")
@@ -295,34 +298,53 @@ func installHostPipelineLockTrace(t *testing.T) {
 	}
 	dir := t.TempDir()
 	trace := filepath.Join(dir, "lock-trace")
-	script := fmt.Sprintf(`#!/bin/sh
-matched=false
-for a in "$@"; do
- case "$a" in *"stat -Lc"*"/hub.lock"*"/proc/locks"*) matched=true; command=$a;; esac
-done
-if ! "$matched"; then exec %s "$@"; fi
-out=$(mktemp %s/out.XXXXXX) || exit 97
-err=$(mktemp %s/err.XXXXXX) || exit 97
-%s "$@" >"$out" 2>"$err"
-status=$?
-{ printf 'command=%%s\nstatus=%%s\nstdout=[' "$command" "$status"; cat "$out"; printf ']\nstderr=['; cat "$err"; printf ']\n'; } >> %s
-cat "$out"
-cat "$err" >&2
-rm "$out" "$err"
-exit "$status"
-`, shellquote.RemoteWord(realSSH), shellquote.RemoteWord(dir), shellquote.RemoteWord(dir), shellquote.RemoteWord(realSSH), shellquote.RemoteWord(trace))
+	script := hostPipelineLockTraceScript(realSSH, dir)
 	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Cleanup(func() {
+		matches, err := os.ReadFile(filepath.Join(dir, "matches"))
+		if err != nil || len(matches) == 0 {
+			t.Errorf("selected-lock diagnostic wrapper was not exercised: %v", err)
+		}
+		t.Logf("selected-lock diagnostic wrapper: %d real SSH invocations captured", len(matches))
 		data, err := os.ReadFile(trace)
+		if os.IsNotExist(err) {
+			t.Log("selected-lock failure capture: no anomalous result observed")
+			return
+		}
 		if err != nil {
 			t.Logf("lock trace read: %v", err)
 			return
 		}
-		t.Logf("actual product selected-lock trace:\n%s", data)
+		t.Logf("actual product selected-lock anomalous results:\n%s", data)
 	})
+}
+
+func hostPipelineLockTraceScript(realSSH, dir string) string {
+	return fmt.Sprintf(`#!/bin/sh
+umask 077
+matched=false
+for a in "$@"; do
+ case "$a" in lock=*"/hub.lock"*'identity=$(stat -Lc'*'key=$(printf'*"/proc/locks"*) matched=true; command=$a;; esac
+done
+if ! "$matched"; then exec %s "$@"; fi
+printf . >> %s
+out=%s/out.$$
+err=%s/err.$$
+%s "$@" >"$out" 2>"$err"
+status=$?
+value=$(cat "$out")
+case "$value" in ''|0|*[!0-9]*) anomalous=true;; *) anomalous=false;; esac
+if "$anomalous" || [ "$status" -ne 0 ] || [ -s "$err" ]; then
+ { printf 'command=%%s\nstatus=%%s\nstdout=[' "$command" "$status"; cat "$out"; printf ']\nstderr=['; cat "$err"; printf ']\n'; } >> %s
+fi
+cat "$out"
+cat "$err" >&2
+rm "$out" "$err"
+exit "$status"
+`, shellquote.RemoteWord(realSSH), shellquote.RemoteWord(filepath.Join(dir, "matches")), shellquote.RemoteWord(dir), shellquote.RemoteWord(dir), shellquote.RemoteWord(realSSH), shellquote.RemoteWord(filepath.Join(dir, "lock-trace")))
 }
 
 func hostPipelineLockDiagnostic(t *testing.T, host *hostSSH, selected hostPipelineEndpointSnapshot, phase string) {
@@ -333,4 +355,99 @@ func hostPipelineLockDiagnostic(t *testing.T, host *hostSSH, selected hostPipeli
 		"printf 'selected lock descriptors:\\n'; lsof -nP -a -p " + strconv.Itoa(r.PID) + " -Fn " + shellquote.RemoteWord(r.Root+"/hub.lock")
 	out, err := host.run(script)
 	t.Logf("%s lock diagnosis: root=%s selectedPID=%d boot=%s birth=%s status=%v\n%s", phase, r.Root, r.PID, r.BootID, selected.birth, err, out)
+}
+
+// TestHostPipelineLockTrace executes the actual wrapper in /bin/sh. The command
+// fixture is the exact selectedLockRemote output at the continuation base, not
+// a rewritten lock probe. The fake boundary below is SSH, not product logic.
+func TestHostPipelineLockTrace(t *testing.T) {
+	const selectedCommand = `lock=/run/selected/hub-state/hub.lock; identity=$(stat -Lc '%d %i' "$lock") || exit; set -- $identity; [ "$#" -eq 2 ] || exit 1; dev=$1; ino=$2; major=$(( ((dev >> 8) & 4095) | ((dev >> 32) & 4294963200) )); minor=$(( (dev & 255) | ((dev >> 12) & 4294967040) )); key=$(printf '%02x:%02x:%s' "$major" "$minor" "$ino"); for attempt in 1 2 3; do current=$(stat -Lc '%d %i' "$lock") || exit; [ "$current" = "$identity" ] || exit 1; owners=$(awk -v key="$key" '$2 == "FLOCK" && $3 == "ADVISORY" && $4 == "WRITE" && $6 == key { print $5 }' /proc/locks && printf '.') || exit; owners=${owners%.}; current=$(stat -Lc '%d %i' "$lock") || exit; [ "$current" = "$identity" ] || exit 1; if [ -n "$owners" ]; then printf '%s' "$owners"; exit; fi; done`
+	for _, tc := range []struct {
+		name, command, stdout, stderr string
+		status                        int
+		matched, capture              bool
+	}{
+		{name: "normal", command: selectedCommand, stdout: "12345\n", matched: true},
+		{name: "empty", command: selectedCommand, matched: true, capture: true},
+		{name: "zero", command: selectedCommand, stdout: "0\n", matched: true, capture: true},
+		{name: "malformed", command: selectedCommand, stdout: "12\x00x3\n\n", matched: true, capture: true},
+		{name: "stderr", command: selectedCommand, stdout: "12345\n", stderr: "warning\x00\n", matched: true, capture: true},
+		{name: "failure", command: selectedCommand, stdout: "12345\n", status: 37, matched: true, capture: true},
+		{name: "stat-only", command: "stat -Lc '%d %i' /run/selected/hub-state/hub.lock", status: 19},
+		{name: "environment", command: "cat /proc/123/environ", stdout: "synthetic-private-value\n"},
+		{name: "other-lock-command", command: "cat /run/selected/hub-state/hub.lock /proc/locks", status: 9},
+		{name: "missing-key", command: strings.ReplaceAll(selectedCommand, "key=$(printf", "other=$(printf")},
+		{name: "missing-lock", command: strings.ReplaceAll(selectedCommand, "/hub.lock", "/other.lock")},
+		{name: "missing-proc", command: strings.ReplaceAll(selectedCommand, "/proc/locks", "/other/locks")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			stdout, stderr, argv := filepath.Join(dir, "stdout"), filepath.Join(dir, "stderr"), filepath.Join(dir, "argv")
+			for path, data := range map[string]string{stdout: tc.stdout, stderr: tc.stderr} {
+				if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			realSSH := filepath.Join(dir, "real-ssh")
+			stub := "#!/bin/sh\nprintf '%s\\000' \"$@\" > " + shellquote.RemoteWord(argv) + "\ncat " + shellquote.RemoteWord(stdout) + "\ncat " + shellquote.RemoteWord(stderr) + " >&2\nexit " + strconv.Itoa(tc.status) + "\n"
+			shim := filepath.Join(dir, "ssh")
+			for path, data := range map[string]string{realSSH: stub, shim: hostPipelineLockTraceScript(realSSH, dir)} {
+				if err := os.WriteFile(path, []byte(data), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			args := []string{"-T", "--", "fixture-host", tc.command, "space and 'quote", ""}
+			cmd := exec.Command("/bin/sh", append([]string{shim}, args...)...)
+			var out, errOut bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &out, &errOut
+			err := cmd.Run()
+			status := 0
+			if err != nil {
+				var exit *exec.ExitError
+				if !errors.As(err, &exit) {
+					t.Fatal(err)
+				}
+				status = exit.ExitCode()
+			}
+			if status != tc.status || out.String() != tc.stdout || errOut.String() != tc.stderr {
+				t.Fatalf("forwarding: status=%d stdout=%q stderr=%q, want %d %q %q", status, out.String(), errOut.String(), tc.status, tc.stdout, tc.stderr)
+			}
+			gotArgv, err := os.ReadFile(argv)
+			if err != nil || string(gotArgv) != strings.Join(args, "\x00")+"\x00" {
+				t.Fatalf("argv changed: %q (%v)", gotArgv, err)
+			}
+			for name, want := range map[string]bool{"matches": tc.matched, "lock-trace": tc.capture} {
+				path := filepath.Join(dir, name)
+				data, err := os.ReadFile(path)
+				if !want {
+					if !os.IsNotExist(err) {
+						t.Fatalf("unexpected %s: %q (%v)", name, data, err)
+					}
+					continue
+				}
+				if err != nil {
+					t.Fatalf("missing %s: %v", name, err)
+				}
+				info, err := os.Stat(path)
+				if err != nil || info.Mode().Perm() != 0600 {
+					t.Fatalf("private %s mode: %v (%v)", name, info, err)
+				}
+				if name == "matches" && string(data) != "." {
+					t.Fatalf("match count=%q", data)
+				}
+				if name == "lock-trace" {
+					wantData := "command=" + tc.command + "\nstatus=" + strconv.Itoa(tc.status) + "\nstdout=[" + tc.stdout + "]\nstderr=[" + tc.stderr + "]\n"
+					if string(data) != wantData {
+						t.Fatalf("capture differs: %q", data)
+					}
+				}
+			}
+			for _, pattern := range []string{"out.*", "err.*"} {
+				files, err := filepath.Glob(filepath.Join(dir, pattern))
+				if err != nil || len(files) != 0 {
+					t.Fatalf("temporary output remains: %v (%v)", files, err)
+				}
+			}
+		})
+	}
 }
