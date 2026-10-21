@@ -1643,7 +1643,7 @@ func (s *Session) SetModel(model string) error {
 	// runs under the lock and must stay a pure registry lookup, while the
 	// live rows this applies are what let it accept a model the bundled
 	// roster lags.
-	s.primeCodexRoster(model)
+	primedInstance, primedListing := s.primeCodexRoster(model)
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
@@ -1671,7 +1671,7 @@ func (s *Session) SetModel(model string) error {
 	// the membership preflight below (see resolveModelSwitchTarget) — this
 	// rejects before any state changes when the target instance can
 	// enumerate its models and the requested model isn't among them.
-	nextProfile, err = resolveModelSwitchTarget(client, nextProfile, s.id, *s.providerAdapterTimeout())
+	nextProfile, err = resolveModelSwitchTarget(client, nextProfile, s.id, *s.providerAdapterTimeout(), primedInstance, primedListing)
 	if err != nil {
 		return err
 	}
@@ -1769,18 +1769,22 @@ func (s *Session) SetModel(model string) error {
 // model is a Codex id the bundled roster does not carry. The switch's own
 // resolve runs under s.mu, so the network call lives here instead, outside the
 // lock; a failure leaves the resolve to report its authoritative error.
-func (s *Session) primeCodexRoster(ref string) {
+func (s *Session) primeCodexRoster(ref string) (string, *llm.ModelListing) {
 	ref = strings.TrimSpace(ref)
 	instance, _, ok := strings.Cut(ref, "/")
 	if !ok || instance == "" || s.client == nil {
-		return
+		return "", nil
 	}
 	if _, err := s.client.Resolve(ref); err == nil || !errors.Is(err, registry.ErrCodexModelNotListed) {
-		return
+		return "", nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), llm.LiveModelListTimeout)
 	defer cancel()
-	_, _ = s.client.Models(ctx, instance)
+	listing, err := s.client.Models(s.apiLogContext(ctx), instance)
+	if err != nil || !listing.Usable {
+		return "", nil
+	}
+	return instance, &listing
 }
 
 // SetVisionModel changes the vision side-channel routing for future image

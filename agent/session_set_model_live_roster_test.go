@@ -42,6 +42,13 @@ func (p *stagedCodexLiveProtocol) ListModels(_ context.Context, res registry.Res
 	}
 	return []registry.Model{{ID: "gpt-5.6"}}, nil
 }
+
+func (p *stagedCodexLiveProtocol) callCount(instance string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls[instance]
+}
+
 func (*stagedCodexLiveProtocol) CountTokens(context.Context, llm.Request, registry.Resolved) (int, error) {
 	return 0, llm.ErrInputTokenCountUnsupported
 }
@@ -76,6 +83,14 @@ func TestSetModel_SwitchesToLiveListedCodexModel(t *testing.T) {
 		t.Fatalf("registry: %v", err)
 	}
 	client := llm.NewClient(llm.WithRegistry(r))
+	// Every other instance, including the implicit local Ollama, gets a
+	// scripted adapter: session startup enumerates all of them, and the
+	// registry's offline mode does not disable a listing request.
+	for _, inst := range r.Instances() {
+		if inst.Name != "codex-home" && inst.Name != "codex-target" {
+			client.Register(&fakeAdapter{name: inst.Name})
+		}
+	}
 	profile, err := provider.Resolve(r, "codex-home/gpt-5.6")
 	if err != nil {
 		t.Fatalf("home profile: %v", err)
@@ -92,8 +107,12 @@ func TestSetModel_SwitchesToLiveListedCodexModel(t *testing.T) {
 			testOnly: testConfig{skipGitSnapshot: true},
 		}),
 	)
+	before := proto.callCount("codex-target")
 	if err := sess.SetModel("codex-target/gpt-reserve"); err != nil {
 		t.Fatalf("SetModel to a model the target lists live: %v", err)
+	}
+	if got := proto.callCount("codex-target") - before; got != 1 {
+		t.Fatalf("target listed %d times during the switch, want the primed listing reused", got)
 	}
 	got := sess.currentProfile()
 	if got.ID() != "codex-target" || got.Model() != "gpt-reserve" {

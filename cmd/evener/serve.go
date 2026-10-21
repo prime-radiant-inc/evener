@@ -2134,7 +2134,7 @@ func resolveInitialProfile(ctx context.Context, client *llm.Client, modelRef cmd
 	listCtx, cancel := context.WithTimeout(ctx, llm.LiveModelListTimeout)
 	defer cancel()
 	if _, listErr := client.Models(listCtx, modelRef.Provider); listErr != nil {
-		return nil, fmt.Errorf("%w; the provider's live model list could not be read: %v", err, listErr)
+		return nil, fmt.Errorf("%w; the provider's live model list could not be read: %w", err, listErr)
 	}
 	return cmdutil.ResolveProfile(client, modelRef.Qualified())
 }
