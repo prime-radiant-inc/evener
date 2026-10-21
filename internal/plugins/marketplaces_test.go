@@ -2631,6 +2631,19 @@ func TestAddMarketplace_RefusesADirectorySourceInsideTheStore(t *testing.T) {
 	})
 }
 
+func TestAddMarketplace_RefusesAPinOnADirectorySource(t *testing.T) {
+	m := NewManager(t.TempDir())
+	source := plantCatalog(t, t.TempDir())
+	for _, src := range []Source{
+		{Kind: SourceDirectory, Path: source, Ref: "main"},
+		{Kind: SourceDirectory, Path: source, Sha: "abc1234"},
+	} {
+		if _, err := m.AddMarketplace(context.Background(), "", src); !errors.Is(err, ErrMarketplaceSourcePinned) {
+			t.Fatalf("AddMarketplace(%+v) error = %v, want ErrMarketplaceSourcePinned", src, err)
+		}
+	}
+}
+
 // The plugin store's own directories are its to rewrite: a fetch clears
 // .staging, a swap deletes .old, the marketplaces dir holds every other
 // marketplace's clone, and the cache holds materialized plugins. A directory

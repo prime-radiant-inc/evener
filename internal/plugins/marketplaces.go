@@ -139,6 +139,15 @@ func (m *Manager) stampRefreshed(mk Marketplaces, name string, ref MarketplaceRe
 	return nil
 }
 
+// refuseDirectoryPin rejects a ref or sha on a directory source, which is read
+// in place and has no remote to check one out from.
+func refuseDirectoryPin(src Source) error {
+	if src.Kind == SourceDirectory && (src.Ref != "" || src.Sha != "") {
+		return ErrMarketplaceSourcePinned
+	}
+	return nil
+}
+
 // fetchMarketplaceContainer clones/references src into destDir and returns the
 // directory that contains .claude-plugin/marketplace.json.
 func (m *Manager) fetchMarketplaceContainer(ctx context.Context, src Source, destDir string) (string, error) {
@@ -217,6 +226,9 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 	}
 	defer release()
 
+	if err := refuseDirectoryPin(src); err != nil {
+		return MarketplaceRef{}, err
+	}
 	if src.Kind == SourceDirectory {
 		// Before the staging clear below, which would destroy a source that
 		// sits there — and before the fetch, which is what would leave this
@@ -835,6 +847,9 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 		}
 	}
 	if resourcing {
+		if err := refuseDirectoryPin(*src); err != nil {
+			return MarketplaceRef{}, err
+		}
 		if src.Kind == SourceDirectory {
 			// Before the staging directory is cleared, which is itself one of
 			// the paths this refuses.

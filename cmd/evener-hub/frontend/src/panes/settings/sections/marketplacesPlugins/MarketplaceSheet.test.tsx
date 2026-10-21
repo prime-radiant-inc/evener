@@ -219,6 +219,11 @@ test("shows the branch or tag a marketplace is pinned to", () => {
   expect(screen.getByTestId("marketplace-pinned-to").textContent).toBe("release/next");
 });
 
+test("does not show a pin for a directory source", () => {
+  renderSheet({ ...LOCAL, source: { kind: "directory", path: "/srv/mkt", ref: "main" } });
+  expect(screen.queryByTestId("marketplace-pinned-to")).toBeNull();
+});
+
 test("Save is disabled until something changes, and a rename alone promises no re-fetch", async () => {
   renderSheet(ACME);
   expect(saveButton().disabled).toBe(true);

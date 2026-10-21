@@ -41,6 +41,10 @@ var (
 	// ErrMarketplaceSourceUnsupported rejects a source kind this build does not
 	// accept; it is wire input, not a store failure, and carries no path.
 	ErrMarketplaceSourceUnsupported = errors.New("unsupported marketplace source")
+	// ErrMarketplaceSourcePinned rejects a directory source carrying a git
+	// branch, tag, or commit: a directory is read in place and has no remote to
+	// check one out from.
+	ErrMarketplaceSourcePinned = errors.New("a directory source cannot name a branch, tag, or commit")
 	// ErrSelectionUnavailable identifies an --enabled-plugins selection naming
 	// a plugin that cannot be loaded.
 	ErrSelectionUnavailable = errors.New("enabled plugin selection is unavailable")

@@ -134,6 +134,20 @@ func TestPlugins_Marketplace_AddInvalidKind_Errors(t *testing.T) {
 	}
 }
 
+func TestPlugins_Marketplace_AddDirectoryWithPin_Errors(t *testing.T) {
+	ctl := newTestPluginsController(t)
+	dir := t.TempDir()
+	writeTestMarketplace(t, dir)
+	_, err := ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
+		Name:   "pinned-dir",
+		Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: dir, Ref: "main"},
+	})
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("AddMarketplace with a pinned directory error = %v, want InvalidParams", err)
+	}
+}
+
 func TestPlugins_Marketplace_RemoveUnknown_Errors(t *testing.T) {
 	ctl := newTestPluginsController(t)
 	_, err := ctl.RemoveMarketplace(context.Background(), appwire.MarketplaceNameParams{Name: "nope"})

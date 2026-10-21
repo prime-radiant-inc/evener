@@ -472,10 +472,10 @@ export function MarketplaceSheet({
                     ),
                     mono: true,
                   },
-                  ...(entry.source.ref || entry.source.sha
+                  ...(entry.source.kind !== "directory" && (entry.source.ref || entry.source.sha)
                     ? [
                         {
-                          label: "Pinned to",
+                          label: entry.source.sha ? "Pinned to" : "Ref",
                           value: (
                             <span data-testid="marketplace-pinned-to">{entry.source.sha || entry.source.ref}</span>
                           ),

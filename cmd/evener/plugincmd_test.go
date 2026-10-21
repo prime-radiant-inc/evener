@@ -140,6 +140,59 @@ func TestPluginMarketplaceAdd_RefFlagRejectsDirectorySource(t *testing.T) {
 	}
 }
 
+func TestPluginMarketplaceAdd_RefAfterSourceIsRejected(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	m := &marketplaceAddCapture{}
+	oldManager := newPluginManager
+	newPluginManager = func() pluginManager { return m }
+	t.Cleanup(func() { newPluginManager = oldManager })
+
+	var out, errb bytes.Buffer
+	err := runPlugin([]string{"marketplace", "add", "--yes", "acme/plugins", "--ref", "main"}, nil, &out, &errb)
+	if err == nil {
+		t.Fatal("a --ref after the source should be rejected rather than silently ignored")
+	}
+	if m.calls != 0 {
+		t.Fatalf("AddMarketplace called %d times with a trailing --ref, want 0", m.calls)
+	}
+}
+
+func TestSourceDescription_ShowsThePin(t *testing.T) {
+	cases := []struct {
+		name string
+		src  plugins.Source
+		want string
+	}{
+		{
+			name: "github ref",
+			src:  plugins.Source{Kind: plugins.SourceGitHub, Repo: "acme/plugins", Ref: "release/next"},
+			want: "github: acme/plugins@release/next",
+		},
+		{
+			name: "url sha",
+			src:  plugins.Source{Kind: plugins.SourceURL, URL: "https://example.com/plugins.git", Sha: "abc1234"},
+			want: "url: https://example.com/plugins.git@abc1234",
+		},
+		{
+			name: "git-subdir ref",
+			src:  plugins.Source{Kind: plugins.SourceGitSubdir, URL: "https://example.com/plugins.git", Path: "sub", Ref: "v2"},
+			want: "git-subdir: https://example.com/plugins.git/sub@v2",
+		},
+		{
+			name: "directory has no pin",
+			src:  plugins.Source{Kind: plugins.SourceDirectory, Path: "/srv/plugins"},
+			want: "directory: /srv/plugins",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sourceDescription(tc.src); got != tc.want {
+				t.Errorf("sourceDescription(%+v) = %q, want %q", tc.src, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPluginMarketplaceRemove(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	m := plugins.NewManager("")

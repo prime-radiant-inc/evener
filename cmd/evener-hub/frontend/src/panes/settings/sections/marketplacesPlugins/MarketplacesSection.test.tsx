@@ -172,7 +172,9 @@ test("a branch or tag is sent for a git url source", async () => {
   await user.type(screen.getByPlaceholderText("https://github.com/owner/repo.git"), "https://example.com/x.git");
   await user.type(screen.getByLabelText("Branch or tag (optional)"), "v2");
   await user.click(screen.getByRole("button", { name: "Add" }));
-  await waitFor(() => expect(fake.calls.some((call) => call.method === "evener/marketplace/add")).toBe(true));
+  await waitFor(() =>
+    expect(getToasts().some((t) => t.kind === "success" && t.text === "Added marketplace")).toBe(true),
+  );
 });
 
 test("a non-empty name is appended to the success toast and sent in the payload", async () => {

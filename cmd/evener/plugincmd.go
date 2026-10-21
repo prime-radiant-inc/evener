@@ -114,7 +114,10 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 		if fs.NArg() < 1 {
-			return errors.New("usage: evener plugin marketplace add <url|owner/repo|path> [--ref <branch|tag>] [--yes]")
+			return errors.New("usage: evener plugin marketplace add [--ref <branch|tag>] [--yes] <url|owner/repo|path>")
+		}
+		if fs.NArg() > 1 {
+			return fmt.Errorf("unexpected argument %q; put options before the source, e.g. marketplace add --ref <branch|tag> <source>", fs.Arg(1))
 		}
 		src, err := parsePluginMarketplaceSource(fs.Arg(0))
 		if err != nil {
@@ -127,7 +130,11 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 			src.Ref = *gitRef
 		}
 		if !*yes {
-			_, _ = fmt.Fprintf(stderr, "Add marketplace from %s? Marketplaces are arbitrary code repositories.\nPass --yes to confirm.\n", fs.Arg(0))
+			from := fs.Arg(0)
+			if *gitRef != "" {
+				from += " at " + *gitRef
+			}
+			_, _ = fmt.Fprintf(stderr, "Add marketplace from %s? Marketplaces are arbitrary code repositories.\nPass --yes to confirm.\n", from)
 			return errors.New("confirmation required")
 		}
 		ref, err := m.AddMarketplace(context.Background(), "", src)
@@ -280,15 +287,23 @@ func renderMarketplaces(w io.Writer, mk plugins.Marketplaces, asJSON bool) error
 }
 
 func sourceDescription(src plugins.Source) string {
+	pin := src.Sha
+	if pin == "" {
+		pin = src.Ref
+	}
+	suffix := ""
+	if pin != "" {
+		suffix = "@" + pin
+	}
 	switch src.Kind {
 	case plugins.SourceDirectory:
 		return "directory: " + src.Path
 	case plugins.SourceGitHub:
-		return "github: " + src.Repo
+		return "github: " + src.Repo + suffix
 	case plugins.SourceURL:
-		return "url: " + src.URL
+		return "url: " + src.URL + suffix
 	case plugins.SourceGitSubdir:
-		return "git-subdir: " + src.URL + "/" + src.Path
+		return "git-subdir: " + src.URL + "/" + src.Path + suffix
 	default:
 		return "unknown: " + string(src.Kind)
 	}
