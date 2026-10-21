@@ -18,6 +18,7 @@ var (
 	gitLookPath = exec.LookPath
 	gitMkdirAll = os.MkdirAll
 	gitRun      = git
+	gitStdout   = gitStdoutImpl
 )
 
 func gitAvailable() bool {
@@ -56,7 +57,7 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 
 // gitStdout answers with git's standard output alone, keeping diagnostic
 // writes to standard error (trace lines, warnings) out of the answer.
-func gitStdout(ctx context.Context, dir string, args ...string) (string, error) {
+func gitStdoutImpl(ctx context.Context, dir string, args ...string) (string, error) {
 	// Keep the same command shape as git: the transport guards, the same
 	// directory and environment, and the same cancellation behavior.
 	full := append([]string{"-c", "protocol.ext.allow=never", "-c", "protocol.fd.allow=never"}, args...)
