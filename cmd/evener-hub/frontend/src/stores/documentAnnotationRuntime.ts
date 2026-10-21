@@ -49,6 +49,8 @@ export interface DocumentAnnotationRuntime {
 }
 
 export interface DocumentAnnotationPorts {
+  // The session wiring constructs these two as one pair: a repository and the
+  // retry runtime that drives its retained work.
   repository: BrowserDocumentAnnotationRepository;
   runtime: DocumentAnnotationRuntime;
 }
@@ -69,7 +71,7 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
   // coalesced follow-up when the pass settles; a trigger during that follow-up
   // coalesces into at most one more pass the same way. Disposal clears it, so
   // no follow-up is ever scheduled after close.
-  let followUpRequested = false;
+  // Non-null means a follow-up is retained: the reason doubles as the request.
   let followUpReason: AnnotationRetryReason | null = null;
   // A direct handoff records an outcome only when it RETURNS: while its
   // preparation is outstanding the refusal that sets retryNeeded has not
@@ -146,8 +148,8 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
     if (!alive) return null;
     // Retain the immutable operation BEFORE the fallible await; a later caller
     // mutation cannot change what a retry persists.
-    const operation = failed.get(id(input)) ?? structuredClone(input);
-    const operationKey = id(operation);
+    const operationKey = id(input);
+    const operation = failed.get(operationKey) ?? structuredClone(input);
     failed.set(operationKey, operation);
     let entry = cancellations.get(operationKey);
     if (entry === undefined) {
@@ -173,7 +175,6 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
   };
   const startPass = (reason: AnnotationRetryReason): Promise<void> => {
     pendingDuringPass = false; // before assigning pass, never erase observations made while it runs
-    followUpRequested = false;
     followUpReason = null;
     // The pass's persisted sweep drives handoffs at the repository level, so
     // it joins the same chain: an in-flight direct handoff finishes first and
@@ -193,10 +194,10 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
         }
     });
     const withFollowUp = current.then(async () => {
-      if (!alive || !followUpRequested) return;
+      if (!alive || followUpReason === null) return;
       // Read the retained reason before startPass resets the entry point: the
       // follow-up's own trigger handling stays independent of this pass's.
-      const nextReason = followUpReason ?? reason;
+      const nextReason = followUpReason;
       await startPass(nextReason);
     });
     pass = withFollowUp;
@@ -217,7 +218,6 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
     if (pass) {
       // This trigger reports state the running pass may already have visited:
       // retain it for one coalesced follow-up instead of dropping it.
-      followUpRequested = true;
       followUpReason ??= reason;
       return pass;
     }
@@ -254,16 +254,11 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
       // a queued handoff's outcome is just as unrecorded as a running one's.
       outstandingHandoffs += 1;
       const prior = sweep ? Promise.all([sweep, handoffChain]) : handoffChain;
-      const run = prior.then(
-        () =>
-          alive
-            ? repo.handoff(key, operationId, retryCancellation)
-            : Promise.resolve<HandoffResult>({ state: "cancelled" }),
-        () =>
-          alive
-            ? repo.handoff(key, operationId, retryCancellation)
-            : Promise.resolve<HandoffResult>({ state: "cancelled" }),
-      );
+      const attempt = () =>
+        alive
+          ? repo.handoff(key, operationId, retryCancellation)
+          : Promise.resolve<HandoffResult>({ state: "cancelled" });
+      const run = prior.then(attempt, attempt);
       handoffChain = run.then(
         () => undefined,
         () => undefined,
@@ -289,7 +284,6 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
         // A storage commit during a pass is the same retained trigger: it may
         // have made a skipped handoff claimable after the sweep passed it. Do
         // not gate on retryNeeded, which the running pass has not updated yet.
-        followUpRequested = true;
         followUpReason ??= "storage-recovered";
         return;
       }
@@ -305,10 +299,11 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
       needRetry();
     },
     invalidate: (key, retired) => {
+      if (retired === null) return;
+      const documentKey = annotationDocumentKey(key);
       for (const [operationKey, operation] of failed)
         if (
-          retired !== null &&
-          annotationDocumentKey(operation.lease.key) === annotationDocumentKey(key) &&
+          annotationDocumentKey(operation.lease.key) === documentKey &&
           operation.lease.namespaceIncarnation === retired.namespaceIncarnation &&
           operation.lease.epoch === retired.epoch
         )
@@ -328,7 +323,6 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
       cancellations.clear();
       retryNeeded = false;
       pendingDuringPass = false;
-      followUpRequested = false;
       followUpReason = null;
       handoffRecoveryTriggered = false;
     },
