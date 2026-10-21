@@ -8,6 +8,25 @@ unsent draft survives. The lost-reply case drops a real acceptance reply and
 closes the socket. The refusal case sends a wrong instance precondition once,
 then uses the client's explicit recovery action.
 
+The browser journey additionally runs three integrated scenarios. `eligibility`
+holds the acceptance response, authoritative reads and the new turn's
+history/overlay events independently, presses Retry twice in one task, and
+proves one durable mutation identity and no duplicate provider continuation.
+It also proves a newer running turn with no transcript items removes the older
+action, a newer failure offers its own Retry, and a newer success leaves the
+older failure readable without one. `recovery` loses the acceptance reply,
+reloads while the durable pending read is held unknown and the first
+authoritative history read fails once, then proves automatic reconciliation,
+one mutation identity, a completed continuation and the documented draft and
+attachment lifetimes. `history` creates more than one newest page of turns,
+pages to an older failure through the real older-history owner, and repeats
+that after a reload.
+
+The holds live at external boundaries only: WebSocket frames (including
+independently released RPC responses and notifications) and IndexedDB read
+completion. No hub reply, eligibility decision, mutation row or transcript item
+is fabricated.
+
 From the repository root, with frontend, native and AppWire TypeScript
 dependencies installed:
 
