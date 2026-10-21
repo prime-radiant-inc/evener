@@ -3,14 +3,30 @@
 import type { ComposerMention, InputItem } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { draftStorageKey } from "../panes/session/composer/draft";
 import { recoveryComposerDraft } from "../panes/session/composer/recovery/recoveryDraft";
 import { parseSkillDocument, skillAtomMentions } from "../panes/session/composer/skillDocument";
+import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
+import { browserDraftKey, createBrowserDraftRepository } from "./browserDraftRepository";
 import { setMutationClientIdentityForTests } from "./mutationClientIdentity";
 import { type MutationIntent, MutationOutbox } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { faultAfterEarlierDraftAndMarker } from "./testing/legacyDraftTransferFault";
 import { rewriteOutboxRowWithoutFields } from "./testing/legacyOutboxRows";
 import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
+
+// Node has no `location`; the outbox derives a recovery write's browser session
+// key from the ambient origin.
+let originalLocationDescriptor: PropertyDescriptor | undefined;
+beforeEach(() => {
+  originalLocationDescriptor = Object.getOwnPropertyDescriptor(globalThis, "location");
+  Object.defineProperty(globalThis, "location", { value: { origin: "https://hub.test" }, configurable: true });
+});
+afterEach(() => {
+  if (originalLocationDescriptor) Object.defineProperty(globalThis, "location", originalLocationDescriptor);
+  else Reflect.deleteProperty(globalThis, "location");
+});
 
 // The outbox reads readiness off the same client lookup the dispatcher takes,
 // so these tests supply a ready client rather than a boolean flag.
@@ -40,6 +56,19 @@ function intent(text: string, targetRef = TARGET): MutationIntent {
     },
     attachments: [],
     optimisticDisplay: { text },
+  };
+}
+
+function noteIntent(note: string): MutationIntent {
+  return {
+    targetRef: TARGET,
+    threadId: "thread-1",
+    method: "notes/human/set",
+    payload: { ref: TARGET, expectedInstanceId: "instance-1", note },
+    attachments: [],
+    // Production note intents carry no display (threads.ts's setHumanNote):
+    // nothing renders while a note waits on its canonical reflection.
+    optimisticDisplay: null,
   };
 }
 
@@ -92,6 +121,118 @@ describe("MutationOutboxIndexedDB", () => {
     expect(await store.settleReceipt(persisted.clientMutationId, "pending")).toBe(true);
     const [accepted] = await store.listOptimistic();
     expect(accepted?.originClientId).toBe("tab-a");
+  });
+
+  test("an ordinary settlement proceeds when the legacy draft store is unreadable", async () => {
+    const store = new MutationOutboxIndexedDB({ indexedDB, databaseName, createMutationId: idSequence() });
+    const persisted = await store.enqueueIntent(intent("settle against a broken legacy store"));
+
+    // The legacy localStorage is unreadable while the durable IndexedDB stays
+    // healthy: no migration can ever order against it, so an ordinary
+    // settlement - one that writes no composer draft row - must proceed through
+    // its own transaction instead of waiting for a transfer that cannot run.
+    // jsdom's localStorage is inherited, so the fault shadows it with an own
+    // accessor and the restore deletes the shadow.
+    try {
+      Object.defineProperty(globalThis, "localStorage", {
+        configurable: true,
+        get() {
+          throw new Error("legacy storage unreadable");
+        },
+      });
+      expect(await store.settleReceipt(persisted.clientMutationId, "pending")).toBe(true);
+      expect(await store.getOutbox(persisted.clientMutationId)).toBeUndefined();
+    } finally {
+      delete (globalThis as { localStorage?: Storage }).localStorage;
+    }
+  });
+
+  test("a settlement that writes no session row proceeds while an unrelated legacy transfer stays pending", async () => {
+    // The legacy draft belongs to a session this settlement never touches, and
+    // its transfer faults on its own durable write through the shared
+    // request-fault seam - a real duplicate-key ConstraintError aborts the
+    // transfer transaction, so the migration stays pending. An outbox-only
+    // settlement writes no session row, so it must not wait for that transfer:
+    // the dispatcher holds a settlement at the head of its queue while it
+    // retries, and behind a blocked settlement waits every later input.
+    const fault = faultAfterEarlierDraftAndMarker(new IDBFactory());
+    const store = new MutationOutboxIndexedDB({
+      indexedDB: fault.factory,
+      databaseName,
+      createMutationId: idSequence(),
+    });
+    const receipt = await store.enqueueIntent(intent("settle beside a pending legacy transfer"));
+    const applied = await store.enqueueIntent(intent("settle applied beside a pending legacy transfer"));
+    try {
+      const storage = new MemoryStorage();
+      installLocalStorage(storage);
+      storage.setItem(draftStorageKey("legacy-owner"), "legacy draft");
+      expect(await store.settleReceipt(receipt.clientMutationId, "pending")).toBe(true);
+      expect(await store.settleApplied(applied.clientMutationId)).toBe(true);
+      expect(await store.getOutbox(receipt.clientMutationId)).toBeUndefined();
+      expect(await store.getOutbox(applied.clientMutationId)).toBeUndefined();
+      // The settlement neither ran nor repaired the unrelated transfer: the
+      // legacy draft is still there, and its own next transfer still faults.
+      expect(storage.getItem(draftStorageKey("legacy-owner"))).toBe("legacy draft");
+      const probe = createBrowserDraftRepository({ indexedDB: fault.factory, databaseName });
+      try {
+        expect(await probe.transferSupportedDrafts(browserDraftKey("").namespace)).toEqual({ state: "pending" });
+      } finally {
+        probe.close();
+      }
+    } finally {
+      delete (globalThis as { localStorage?: Storage }).localStorage;
+    }
+  });
+
+  test("a recovery-bearing settlement still waits for a pending legacy transfer", async () => {
+    const fault = faultAfterEarlierDraftAndMarker(new IDBFactory());
+    const store = new MutationOutboxIndexedDB({
+      indexedDB: fault.factory,
+      databaseName,
+      createMutationId: idSequence(),
+    });
+    const persisted = await store.enqueueIntent(intent("settle a recovery record beside a pending transfer"));
+    await store.transferToRecovery(persisted.clientMutationId, "rejected");
+    try {
+      const storage = new MemoryStorage();
+      installLocalStorage(storage);
+      storage.setItem(draftStorageKey("legacy-owner"), "legacy draft");
+      // Retiring the recovery record writes the ref's session row, which is
+      // exactly what the migration orders against: a row initialized before
+      // the legacy draft transferred would strand it. This settlement keeps
+      // waiting for the transfer, and the caller retries by acting again.
+      await expect(store.settleReceipt(persisted.clientMutationId, "pending")).rejects.toThrow();
+      expect(await store.getRecovery(persisted.clientMutationId)).toBeDefined();
+      expect(storage.getItem(draftStorageKey("legacy-owner"))).toBe("legacy draft");
+    } finally {
+      delete (globalThis as { localStorage?: Storage }).localStorage;
+    }
+  });
+
+  test("a settlement that retires superseded note recovery still waits for a pending legacy transfer", async () => {
+    const fault = faultAfterEarlierDraftAndMarker(new IDBFactory());
+    const store = new MutationOutboxIndexedDB({
+      indexedDB: fault.factory,
+      databaseName,
+      createMutationId: idSequence(),
+    });
+    const refused = await store.enqueueIntent(noteIntent("refused earlier note"));
+    await store.transferToRecovery(refused.clientMutationId, "rejected");
+    const accepted = await store.enqueueIntent(noteIntent("later accepted note"));
+    try {
+      const storage = new MemoryStorage();
+      installLocalStorage(storage);
+      storage.setItem(draftStorageKey("legacy-owner"), "legacy draft");
+      // Retiring the earlier refused note advances the ref's session row, so
+      // the later note's settlement keeps the composer store in scope and
+      // waits for the transfer with it.
+      await expect(store.settleReceipt(accepted.clientMutationId, "pending")).rejects.toThrow();
+      expect(await store.getRecovery(refused.clientMutationId)).toBeDefined();
+      expect(await store.getOutbox(accepted.clientMutationId)).toBeDefined();
+    } finally {
+      delete (globalThis as { localStorage?: Storage }).localStorage;
+    }
   });
 
   test("a resent recovery belongs to the resending client", async () => {
@@ -622,11 +763,11 @@ describe("MutationOutboxIndexedDB", () => {
       [newAttachment],
     );
 
-    expect(updated?.payload.input).toEqual([
+    expect(updated?.record.payload.input).toEqual([
       { type: "text", text: "edited text" },
       { type: "image", mediaType: "image/png", data: "CQgH", name: "new.png" },
     ]);
-    expect(updated?.attachments.map((attachment) => attachment.name)).toEqual(["new.png"]);
+    expect(updated?.record.attachments.map((attachment) => attachment.name)).toEqual(["new.png"]);
   });
 
   test.each(["partial", "replace", "clear", "relocate"] as const)(
@@ -657,8 +798,8 @@ describe("MutationOutboxIndexedDB", () => {
         nextMentions,
       );
       const expected = mode === "partial" ? mentions : nextMentions;
-      expect(updated?.composerMentions).toEqual(expected);
-      expect(updated?.composerText).toBe(inputText);
+      expect(updated?.record.composerMentions).toEqual(expected);
+      expect(updated?.record.composerText).toBe(inputText);
       const reopened = new MutationOutboxIndexedDB({ indexedDB, databaseName });
       const recovered = await reopened.getRecovery(original.clientMutationId);
       expect(recovered?.composerMentions).toEqual(expected);

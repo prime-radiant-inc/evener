@@ -85,6 +85,8 @@ import {
   MutationOutboxIndexedDB,
   MutationStorageError,
   MutationStorageTimeoutError,
+  type RecoveryOrdinaryConsumption,
+  type RecoveryWriteGuard,
   type RetargetedMutations,
 } from "./mutationOutboxIndexedDB";
 import { trackProjectionWork } from "./projectionWork";
@@ -347,6 +349,10 @@ export interface ThreadsStoreState {
   // request. It is gated: a non-empty selection requires the target's
   // advertised capabilities.skillInput to be true, and a refusal throws
   // before anything durable is written (composerMutationIntent's own gate).
+  // stopBarrier is §4's click-time stop-epoch observation (see
+  // requestClickTimeStopBarrier): a caller that pressed before an await hands
+  // its capture through so a Stop landing during that await still outranks
+  // the row; undefined captures at the enqueue instead.
   send(
     ref: string,
     text: string,
@@ -354,6 +360,7 @@ export interface ThreadsStoreState {
     skillNames?: readonly string[],
     commandNames?: readonly string[],
     mentions?: readonly ComposerMention[],
+    stopBarrier?: Promise<number>,
   ): Promise<void>;
   continueTurn(ref: string): Promise<void>;
   steer(
@@ -363,6 +370,7 @@ export interface ThreadsStoreState {
     skillNames?: readonly string[],
     commandNames?: readonly string[],
     mentions?: readonly ComposerMention[],
+    stopBarrier?: Promise<number>,
   ): Promise<void>;
   queue(
     ref: string,
@@ -371,6 +379,7 @@ export interface ThreadsStoreState {
     skillNames?: readonly string[],
     commandNames?: readonly string[],
     mentions?: readonly ComposerMention[],
+    stopBarrier?: Promise<number>,
   ): Promise<void>;
   interrupt(ref: string): Promise<void>;
   // drainAsSteer atomically appends the composer's current text/attachments
@@ -386,6 +395,7 @@ export interface ThreadsStoreState {
     skillNames?: readonly string[],
     commandNames?: readonly string[],
     mentions?: readonly ComposerMention[],
+    stopBarrier?: Promise<number>,
   ): Promise<void>;
   // Removes one queued message by index and injects it as steering into the
   // in-flight turn (issue #22). expectedEntryId, when non-empty, must match
@@ -3298,6 +3308,8 @@ export async function updateRecoveryMutation(
   skillNames?: readonly string[],
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
+  guard?: RecoveryWriteGuard,
+  consumeOrdinary?: RecoveryOrdinaryConsumption,
 ): Promise<boolean> {
   const runtime = requireMutationRuntime();
   await runtime.start;
@@ -3307,6 +3319,8 @@ export async function updateRecoveryMutation(
     durableAttachments(attachments),
     text,
     mentions,
+    guard,
+    consumeOrdinary,
   );
   if (!record) return false;
   notifyMutationPersistence([targetRef]);
@@ -3317,10 +3331,11 @@ export async function discardRecoveryMutation(
   clientMutationId: string,
   targetRef: string,
   shouldDiscard?: () => boolean,
+  guard?: RecoveryWriteGuard,
 ): Promise<boolean> {
   const runtime = requireMutationRuntime();
   await runtime.start;
-  const discarded = await runtime.storage.discardRecovery(clientMutationId, shouldDiscard);
+  const discarded = await runtime.storage.discardRecovery(clientMutationId, shouldDiscard, guard);
   if (discarded) {
     // A row left the outbox: in-flight reads for the ref are stale.
     noteMutationStateChange(targetRef);
@@ -3341,6 +3356,7 @@ export async function resendRecoveryMutation(
   skillNames?: readonly string[],
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
+  guard?: RecoveryWriteGuard,
 ): Promise<MutationOutboxRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
@@ -3349,7 +3365,7 @@ export async function resendRecoveryMutation(
   // fallback send must see it before the async refresh can.
   const record = await trackOutboxWrite(
     targetRef,
-    () => runtime.storage.resendRecovery(clientMutationId, intent),
+    () => runtime.storage.resendRecovery(clientMutationId, intent, guard),
     // A resend mints its own row, so the id comes from the record it returns.
     (resent) =>
       resent === undefined
@@ -3374,6 +3390,15 @@ export async function resendRecoveryMutation(
 export function setMutationStorageForTests(storage: MutationOutboxIndexedDB): void {
   if (mutationRuntime) throw new Error("setMutationStorageForTests must run before the mutation runtime starts");
   mutationStorageForTests = storage;
+}
+
+// The source defaults share the EXISTING mutation runtime storage - the same
+// outbox the dispatcher uses, never a second instance or database. It awaits the
+// runtime's own start so a caller sees a ready outbox.
+export async function getComposerMutationStorage(): Promise<MutationOutboxIndexedDB> {
+  const runtime = requireMutationRuntime();
+  await runtime.start;
+  return runtime.storage;
 }
 
 // listModels' own session-lifetime cache (models are not per-ref, so this
@@ -3816,7 +3841,7 @@ function attachmentBlob(attachment: InputAttachment): Blob {
   return new Blob([bytes], { type: attachment.mediaType });
 }
 
-function durableAttachments(attachments?: InputAttachment[]): MutationAttachment[] {
+export function durableAttachments(attachments?: InputAttachment[]): MutationAttachment[] {
   return (attachments ?? []).map((attachment) => ({
     presentationId: createSecureUUID(),
     marker: attachment.marker,
@@ -3847,7 +3872,12 @@ const COMPOSER_ROUTE_METHODS: Record<ComposerMutationRoute, string> = {
   drain: "turn/drainAsSteer",
 };
 
-async function sendMutationIntent(intent: MutationIntent): Promise<void> {
+async function sendMutationIntent(
+  intent: MutationIntent,
+  onCommitted?: (record: MutationOutboxRecord) => void,
+  durableWrite: "enqueue" | "interruptAndCancel" = "enqueue",
+  clickTimeBarrier?: Promise<number>,
+): Promise<void> {
   // The recovery fence is enforced at the shared admission every durable
   // action funnels through (enqueueMutationIntent's central check), so the
   // alternate send paths - the palette's slash fallthrough, the ask dock's
@@ -3861,7 +3891,7 @@ async function sendMutationIntent(intent: MutationIntent): Promise<void> {
   // is read AFTER the write: a hydration that landed while the write was in
   // flight is the snapshot the admission saw, and re-reading here keeps the
   // drive from being skipped (or spuriously started) across that window.
-  await enqueueMutationIntent(intent);
+  await enqueueMutationIntent(intent, onCommitted, durableWrite, clickTimeBarrier);
   if (sendResumesLocalModel(intent.targetRef)) void resumeFencedForSend(intent.targetRef);
 }
 
@@ -4352,10 +4382,24 @@ function dispatchReplayGateOpen(ref: string): boolean {
   return pending?.client !== wiredClient || pending.epoch !== readyEpoch;
 }
 
+// §4's stop barrier, the click-time request a caller with an await between
+// its press and its enqueue takes itself: the submission pipeline prepares
+// the draft before it sends, so the capture must be read in the press's own
+// synchronous prefix - not re-read after the preparation, where a Stop
+// another tab committed during the wait would become the send's baseline
+// epoch and the send would dispatch the work that Stop meant to cancel.
+// Undefined when no durable runtime exists, mirroring enqueueMutationIntent's
+// own no-IndexedDB fallback (no durable row means no barrier to carry).
+export function requestClickTimeStopBarrier(ref: string): Promise<number> | undefined {
+  const runtime = getMutationRuntime();
+  return runtime === null ? undefined : runtime.storage.readStopEpoch(ref);
+}
+
 async function enqueueMutationIntent(
   intent: MutationIntent,
   onCommitted?: (record: MutationOutboxRecord) => void,
   durableWrite: "enqueue" | "interruptAndCancel" = "enqueue",
+  clickTimeBarrier?: Promise<number>,
 ): Promise<MutationOutboxRecord | undefined> {
   const ref = intent.targetRef;
   // The recovery fence, enforced at the one funnel every durable action
@@ -4419,7 +4463,10 @@ async function enqueueMutationIntent(
   // unfenceable order is a Stop whose write is created before the capture's
   // transaction can exist at all (§4's honest boundary). The Stop's own
   // interrupt record passes no barrier (it IS the click the epoch records).
-  const barrierRead = durableWrite === "enqueue" ? runtime.storage.readStopEpoch(ref) : undefined;
+  // A caller whose press preceded an await — the draft preparation before a
+  // composer send — carries the capture it requested at the press instead, so
+  // the waits between cannot swallow a Stop the click already outranks.
+  const barrierRead = clickTimeBarrier ?? (durableWrite === "enqueue" ? runtime.storage.readStopEpoch(ref) : undefined);
   await runtime.start;
   // Enqueue schedules discovery before returning; preserve the hydrated replay
   // gate now, but only a durable commit may pin this ref after its pane closes.
@@ -7473,9 +7520,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     }
   },
 
-  async send(ref, text, attachments, skillNames, commandNames, mentions) {
+  async send(ref, text, attachments, skillNames, commandNames, mentions, stopBarrier) {
     await sendMutationIntent(
       composerMutationIntent(ref, "send", text, attachments, skillNames, commandNames, mentions),
+      undefined,
+      undefined,
+      stopBarrier,
     );
   },
 
@@ -7486,15 +7536,21 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     });
   },
 
-  async steer(ref, text, attachments, skillNames, commandNames, mentions) {
+  async steer(ref, text, attachments, skillNames, commandNames, mentions, stopBarrier) {
     await enqueueMutationIntent(
       composerMutationIntent(ref, "steer", text, attachments, skillNames, commandNames, mentions),
+      undefined,
+      undefined,
+      stopBarrier,
     );
   },
 
-  async queue(ref, text, attachments, skillNames, commandNames, mentions) {
+  async queue(ref, text, attachments, skillNames, commandNames, mentions, stopBarrier) {
     await enqueueMutationIntent(
       composerMutationIntent(ref, "queue", text, attachments, skillNames, commandNames, mentions),
+      undefined,
+      undefined,
+      stopBarrier,
     );
   },
 
@@ -7523,9 +7579,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     );
   },
 
-  async drainAsSteer(ref, text, attachments, skillNames, commandNames, mentions) {
+  async drainAsSteer(ref, text, attachments, skillNames, commandNames, mentions, stopBarrier) {
     await enqueueMutationIntent(
       composerMutationIntent(ref, "drain", text, attachments, skillNames, commandNames, mentions),
+      undefined,
+      undefined,
+      stopBarrier,
     );
   },
 

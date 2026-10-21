@@ -1,4 +1,5 @@
 import type { ComposerMention } from "@evener/appwire-client";
+import type { DraftSettlement, SubmittedDraft } from "@evener/appwire-client/state/mutation";
 import {
   awaitingFirstFrameSend,
   createMutationProjectionFence,
@@ -21,6 +22,7 @@ import type {
   MutationOutboxRecord,
   MutationRecoveryRecord,
 } from "../../../../stores/mutationOutbox";
+import type { RecoveryOrdinaryConsumption, RecoveryWriteGuard } from "../../../../stores/mutationOutboxIndexedDB";
 import { clearProjectionWorkForTests, trackProjectionWork } from "../../../../stores/projectionWork";
 import {
   type ComposerMutationRoute,
@@ -29,6 +31,7 @@ import {
   installResumeOnlyProjection,
   notifyReadyForMutationDispatch,
   readMutationPersistence,
+  requestClickTimeStopBarrier,
   resendRecoveryMutation,
   retryBlockedMutation,
   subscribeMutationPersistence,
@@ -37,7 +40,8 @@ import {
   updateRecoveryMutation,
   useThreadsStore,
 } from "../../../../stores/threads";
-import { clearDraft, readComposerDraft, readDraftRevision } from "../draft";
+import { readComposerDraft, readDraftRevision } from "../draft";
+import type { ComposerSourceState } from "../sourceState";
 import type { PendingMethod, PendingTurnEntry } from "./pendingReconcile";
 
 export type { PendingMethod, PendingTurnEntry } from "./pendingReconcile";
@@ -56,7 +60,11 @@ const threadsPort: PendingTurnsThreadsPort = {
 const draftPort: PendingTurnsDraftPort = {
   readDraftRevision,
   readComposerDraft,
-  clearDraft,
+  // Browser settlement is ALWAYS the async per-call source hook; the legacy
+  // synchronous clear is intentionally unsupported, not a fallback writer.
+  clearDraft: () => {
+    throw new Error("Browser settlement requires settleDraft");
+  },
 };
 const pendingTurnsStore = createPendingTurnsStore<MutationAttachment>({
   threads: threadsPort,
@@ -116,6 +124,18 @@ const refreshTarget: (ref?: string) => void = (ref) => void refreshPendingTurnsP
 
 export function refreshPendingTurnsProjection(ref?: string): Promise<boolean> {
   return trackProjectionWork(readProjectionIntoStore(ref));
+}
+
+// The published recovery projection for one ref, read exactly as the
+// pristine-composer auto-restore reads it. The built-in command settlement
+// refuses to clear the editor while the projection still names the recovery
+// record it just consumed: a refresh superseded by a newer in-flight read can
+// resolve after a pre-discard snapshot that still lists it, and a restore from
+// that stale row would resurface the command the user already acted on.
+export function recoveryProjectionListsRecord(ref: string, clientMutationId: string): boolean {
+  return recoveryEntries(pendingTurnsStore.getState().recovery, ref).some(
+    (record) => record.clientMutationId === clientMutationId,
+  );
 }
 
 // Un-loads the readiness of every ref a refresh will cover, BEFORE its read
@@ -239,6 +259,11 @@ export interface SubmitWithPendingTrackingOptions {
   skillNames?: readonly string[];
   commandNames?: readonly string[];
   recoveryId?: string;
+  // The original source (browser) captures and settles the durable draft. Every
+  // Composer/QueueStrip browser submission passes it; browser settlement is
+  // always this source's async per-call hook, never a fallback.
+  source: ComposerSourceState;
+  mentions?: readonly ComposerMention[];
   onFailure: (error: unknown) => void;
 }
 
@@ -254,6 +279,7 @@ type SubmissionCommittedListener = (
   skillNames: readonly string[],
   recovery?: RecoverySubmissionCommit,
   commandNames?: readonly string[],
+  context?: { submitted: SubmittedDraft; settlement: DraftSettlement },
 ) => void;
 const submissionCommittedListeners = new Set<SubmissionCommittedListener>();
 
@@ -268,38 +294,94 @@ export function useComposerSubmitting(ref: string): boolean {
 
 // The action resolves at the local IndexedDB commit boundary. Durable state,
 // not a component timer or text echo, is the only optimistic lifecycle. The
-// begin/epoch-guard/settle-draft/end/refresh sequencing lives in the
+// begin/prepare/epoch-guard/settle-draft/end/refresh sequencing lives in the
 // package's submission lifecycle (state/mutation/submission.ts); this binds
 // it to the browser's projection tracker and fence, and turns what it
 // decided into this file's own composer-submission notification (the
 // recovery tray, the draft UI) - neither of which the package names.
 export function submitWithPendingTracking(
   opts: SubmitWithPendingTrackingOptions,
-  perform: () => Promise<void>,
+  perform: (submitted: SubmittedDraft, stopBarrier?: Promise<number> | undefined) => Promise<unknown>,
 ): Promise<void> {
   const skillNames = [...(opts.skillNames ?? [])];
+  // §4's barrier is the click's OWN storage observation, so request it in
+  // this synchronous prefix - before the preparation's first await. A
+  // recovery resend never enqueues a row (it rewrites the durable pending
+  // turn instead), so it requests no barrier: an unconsumed read could
+  // reject unhandled.
+  const stopBarrier = opts.recoveryId === undefined ? requestClickTimeStopBarrier(opts.ref) : undefined;
+  // The enqueue that consumes this capture attaches its await only after
+  // the preparation's turns, so a watchdog timeout rejecting the read
+  // inside that window would fire as an unhandled rejection first. Mark the
+  // optimistic read handled here; the enqueue's await still receives the
+  // rejection and takes the storage-failure fallback it already owns.
+  stopBarrier?.catch(() => undefined);
+  const source = opts.source;
+  let settlement: DraftSettlement = { cleared: false, draftUnchanged: false, persistence: "pending" };
+  let accepted = false;
+  // The durable draft capture runs INSIDE the runner's ownership window
+  // (#4605): the ref's guard is acquired synchronously at this call, before
+  // the capture's first await, so a same-ref press from a second composer
+  // while the capture is pending hears the guard's existing refusal instead
+  // of waiting the window out and double-sending once this submission
+  // releases. An ordinary send proceeds from its captured payload when the
+  // durable draft's own preparation fails (#4194) - the failing storage
+  // refuses the settlement, never the send. A recovery resend rewrites a
+  // durable pending turn, so it keeps strict preparation: its failures
+  // dispatch nothing, and the runner reports them through onFailure. The
+  // runner's track registers the whole guarded window - this function's own
+  // tracker, bound into it at module scope - so no separate registration
+  // wraps the call here.
   return runSubmission(
     {
       ref: opts.ref,
-      draftRevisionAtStart: readDraftRevision(opts.ref),
-      text: opts.text,
-      skillNames,
-      commandNames: opts.commandNames,
       onFailure: opts.onFailure,
+      prepare: () =>
+        source.submissionDraft(
+          {
+            text: opts.text,
+            skillNames,
+            ...(opts.commandNames === undefined ? {} : { commandNames: [...opts.commandNames] }),
+            ...(opts.mentions === undefined ? {} : { mentions: opts.mentions.map((mention) => ({ ...mention })) }),
+          },
+          opts.recoveryId === undefined ? { tolerateStorageFault: true } : undefined,
+        ),
+      settleDraft: async (
+        _ref: string,
+        captured: SubmittedDraft,
+      ): Promise<{ cleared: boolean; draftUnchanged: boolean }> => {
+        if (!accepted) return { cleared: false, draftUnchanged: false };
+        try {
+          settlement = await source.settleDraft(captured);
+        } catch {
+          // Retain pending cleanup; never relabel accepted input as failed.
+        }
+        return { cleared: settlement.cleared, draftUnchanged: settlement.draftUnchanged };
+      },
     },
-    perform,
-    ({ cleared, draftUnchanged }) => {
-      if (!cleared && !opts.recoveryId) return;
+    async (submitted) => {
+      accepted = (await perform(submitted, stopBarrier)) !== false;
+    },
+    (committed, submitted) => {
+      if (!accepted) return;
+      // Notify from the immutable submitted capture for every ordinary and
+      // recovery outcome, including ordinary pending cleanup. The sixth
+      // argument always carries a defined submitted draft.
       for (const listener of submissionCommittedListeners) {
         try {
           listener(
             opts.ref,
-            opts.text,
-            skillNames,
+            submitted.text,
+            submitted.skillNames,
             opts.recoveryId
-              ? { clientMutationId: opts.recoveryId, draftUnchanged, attachments: opts.attachments ?? [] }
+              ? {
+                  clientMutationId: opts.recoveryId,
+                  draftUnchanged: committed.draftUnchanged,
+                  attachments: opts.attachments ?? [],
+                }
               : undefined,
-            opts.commandNames,
+            submitted.commandNames,
+            { submitted, settlement },
           );
         } catch (error) {
           console.error("Composer submission listener failed", error);
@@ -471,6 +553,8 @@ export function updateRecoveryPendingTurn(
   skillNames?: readonly string[],
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
+  guard?: RecoveryWriteGuard,
+  consumeOrdinary?: RecoveryOrdinaryConsumption,
 ): Promise<boolean> {
   // Composer serializes edits before resending. A committed edit must release
   // that chain even when the recovery tray cannot refresh yet.
@@ -484,6 +568,8 @@ export function updateRecoveryPendingTurn(
         skillNames,
         commandNames,
         mentions,
+        guard,
+        consumeOrdinary,
       );
       void refreshPendingTurnsProjection(ref);
       return updated;
@@ -495,8 +581,9 @@ export function discardRecoveryPendingTurn(
   clientMutationId: string,
   ref: string,
   shouldDiscard?: () => boolean,
+  guard?: RecoveryWriteGuard,
 ): Promise<boolean> {
-  return mutateThenRefresh(ref, () => discardRecoveryMutation(clientMutationId, ref, shouldDiscard));
+  return mutateThenRefresh(ref, () => discardRecoveryMutation(clientMutationId, ref, shouldDiscard, guard));
 }
 
 export function resendRecoveryPendingTurn(
@@ -508,6 +595,7 @@ export function resendRecoveryPendingTurn(
   skillNames?: readonly string[],
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
+  guard?: RecoveryWriteGuard,
 ): Promise<boolean> {
   // Resend publishes its committed handoff directly. Reading the recovery
   // tray again cannot hold up a submission that already has a durable owner.
@@ -522,6 +610,7 @@ export function resendRecoveryPendingTurn(
         skillNames,
         commandNames,
         mentions,
+        guard,
       );
       void refreshPendingTurnsProjection(ref);
       return record !== undefined;

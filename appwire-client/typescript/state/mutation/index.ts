@@ -41,6 +41,9 @@ export {
   truncateForDisplay,
 } from "./pendingEntries";
 export type {
+  DraftBackingIdentity,
+  DraftSettlement,
+  DraftSettlementGuard,
   PendingTurnsDraftPort,
   PendingTurnsState,
   PendingTurnsStore,
@@ -67,6 +70,7 @@ export { createMutationProjectionWorkTracker } from "./projectionWork";
 export type {
   ClientIdentity,
   ClientIdentityStorage,
+  DraftSessionToken,
   MutationAttachmentRef,
   MutationIntent,
   MutationOptimisticRecord,

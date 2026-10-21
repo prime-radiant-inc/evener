@@ -3,6 +3,7 @@ import { deferred } from "@evener/appwire-client/testing/deferred";
 import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
 import { ActivitySidebar } from "../../shell/activitybar/ActivitySidebar";
@@ -11,13 +12,19 @@ import { ClientProvider } from "../../shell/clientContext";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
+import {
+  browserDraftKey,
+  getBrowserDraftRepository,
+  resetBrowserDraftRepositoryForTests,
+} from "../../stores/browserDraftRepository";
 import { connectionStore } from "../../stores/connection";
 import { activityDelegate, activitySummary, activityThread } from "../../stores/sessionActivityTestUtils";
-import { resetThreadsStoreForTests } from "../../stores/threads";
+import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { getToasts, pushToast, resetToastStoreForTests } from "../../widgets/toast/store";
 import { useAttachments } from "../session/composer/attachments/useAttachments";
 import { readComposerDraft } from "../session/composer/draft";
+import { retainedConversationComposer } from "../session/composer/retainedComposer";
 import { installControlledImageEncoding } from "../session/testing/imageEncoding";
 import { enterAgentCascade } from "./actions";
 import { cascadeClient, cascadeContext, cascadeScope } from "./cascadeTestUtils";
@@ -27,6 +34,8 @@ import "./index";
 
 beforeEach(() => {
   installLocalStorage(new MemoryStorage());
+  globalThis.indexedDB = new IDBFactory();
+  resetBrowserDraftRepositoryForTests();
   resetWorkspaceStoreForTests();
   resetActivitySidebarStoreForTests();
   resetThreadsStoreForTests();
@@ -140,6 +149,7 @@ test.each(["success", "failure"] as const)(
     const lifetime = conversationPaneLifetime(old);
     const source = lifetime.composer;
     if (!source) throw new Error("Missing original source");
+    await act(async () => source.ready());
     const attachments = renderHook(() => useAttachments(source.editor, source.attachments));
     act(() =>
       attachments.result.current.ingestFiles(
@@ -157,10 +167,32 @@ test.each(["success", "failure"] as const)(
     const replacement = conversationPaneLifetime(restored);
     const replacementSource = replacement.composer;
     if (!replacementSource) throw new Error("Missing restored source");
+    await act(async () => replacementSource.ready());
     const text = "new original [image 1]";
     replacementSource.editor.write(text, text.length);
+    await act(async () => replacementSource.whenSettled());
+    const durableBefore = await getBrowserDraftRepository().load(browserDraftKey("root"));
+    expect(durableBefore).toMatchObject({ text, skillNames: [] });
     mount();
     await conversationMounted("grandchild");
+    // The merged column mounts a composer whose retained source hydrates from
+    // the browser draft repository asynchronously; settle it inside act so its
+    // update cannot escape the test's windows.
+    await act(async () => {
+      const live = conversationPaneLifetime(restored);
+      await retainedConversationComposer(live, "grandchild")?.ready();
+    });
+    // The merged world produces each conversation's transcript entries in
+    // the background: a column mounts before production publishes its model,
+    // and that publication would otherwise land after the test's last act
+    // window. Join the mounted columns' in-flight ensureThread reads inside
+    // act so the publications settle inside the test's windows.
+    await act(async () => {
+      const state = threadsStore.getState();
+      await state.ensureThread("root");
+      await state.ensureThread("child");
+      await state.ensureThread("grandchild");
+    });
     await act(async () => {
       if (outcome === "success") await encoding.resolve();
       else await encoding.reject();
@@ -172,6 +204,7 @@ test.each(["success", "failure"] as const)(
     expect(replacementSource.attachments.getState().items).toEqual([]);
     expect(readComposerDraft("root")).toEqual({ text, skillNames: [] });
     expect(replacementSource.getSnapshot().text).toBe(text);
+    expect(await getBrowserDraftRepository().load(browserDraftKey("root"))).toEqual(durableBefore);
     expect(workspaceStore.getState().panes[0]).toBe(restored);
     expect(getToasts()).toEqual([]);
   },

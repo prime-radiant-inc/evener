@@ -10,6 +10,7 @@
 
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
+import { LOCAL_COMPOSITION_DATABASE_VERSION } from "./localCompositionSchema";
 import type { MutationIntent } from "./mutationOutbox";
 import type { MutationOutboxOpenDiagnostic } from "./mutationOutboxIndexedDB";
 import {
@@ -21,8 +22,8 @@ import {
 import { neverSettlingRequest, settleRealTasks } from "./testing/stalledIndexedDB";
 
 const DATABASE_NAME = "evener-mutation-outbox";
-// The adapter's own schema fence: DATABASE_VERSION in mutationOutboxIndexedDB.ts.
-const VERSION = 4;
+// The adapter's shared schema fence.
+const VERSION = LOCAL_COMPOSITION_DATABASE_VERSION;
 
 const intent: MutationIntent = {
   targetRef: "local:thread-1",

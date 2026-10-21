@@ -21,7 +21,7 @@ import type {
 import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/fakeClient";
 import { IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readComposerDraft, writeComposerDraft } from "../panes/session/composer/draft";
+import { publishRuntimeDraft, readComposerDraft } from "../panes/session/composer/draft";
 import { connectionStore } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { settleProjectionWorkForTests } from "./projectionWork";
@@ -1303,7 +1303,10 @@ describe("ordinary entry transcript route", () => {
       const generationBefore = await entryCache.getHistoryGeneration(historyKey);
 
       // A composer draft is independent of cache ownership and must survive.
-      writeComposerDraft(selected, { text: "keep me", skillNames: [] });
+      // This branch's drafts live in the composition database behind a live
+      // source's projection, not in the localStorage write path main's test
+      // used, so the seed publishes the projection the reader serves.
+      publishRuntimeDraft(selected, { text: "keep me", skillNames: [] }, "entry-delete-composer");
       // And so is a queued mutation in the outbox.
       const outbox = new MutationOutboxIndexedDB({ createMutationId: () => "task4-delete-outbox" });
       const outboxRecord = await outbox.enqueueIntent({

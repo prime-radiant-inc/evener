@@ -295,6 +295,29 @@ async function main() {
         failures.push(`harness not ready: ${(errors0.errors ?? []).join("; ")}${debug}`);
       }
 
+      // The composer publishes its hydrated draft asynchronously from the
+      // durable repository, a tick after the pane mounts. Snapshot 0 must not
+      // race that hydration: readDraft falls back to the legacy empty seam
+      // until the projection lands, and the survival assertion would then
+      // compare an empty before-draft against the fixture draft that arrives
+      // moments later — a phantom "draft changed across retirement". Wait
+      // through the same read the assertions use, and fail loudly if the
+      // projection never lands.
+      const projected = await evaluate(
+        send,
+        `(async () => {
+          const deadline = Date.now() + 10000;
+          while (Date.now() < deadline) {
+            if (window.retirementHarness.snapshot().draft.length > 0) return true;
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+          return false;
+        })()`,
+      );
+      if (projected !== true) {
+        failures.push("the composer never projected the fixture draft before the before-read");
+      }
+
       if (failures.length === 0) {
         // --- Snapshot 0: initial state -------------------------------------
         const snap0 = await evaluate(send, "JSON.stringify(window.retirementHarness.snapshot())");

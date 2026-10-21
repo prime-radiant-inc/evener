@@ -52,6 +52,21 @@ function hub(respond: (url: string) => Response | Promise<Response>): DocPort & 
 const text = (body: string, headers: Record<string, string> = {}) =>
 	new Response(body, { headers: { "Content-Type": "text/plain; charset=utf-8", ...headers } });
 
+it("a BOM-prefixed heading still derives a heading block and title while the source keeps the BOM", async () => {
+	// The decoder preserves a leading BOM so source coordinates stay exact;
+	// the native presentation blocks must not let it leak into Markdown
+	// lexing, where it would turn the first heading into a paragraph.
+	const document = await loadDocument(
+		hub(() => text("\uFEFF# Title heading\n\nBody.")),
+		"h1:local:02wMz5Txv1C3Hut0M8GCeB",
+		"/work/b/docs/a.md",
+	);
+	if (document.kind !== "markdown") throw new Error("expected a markdown document");
+	expect(document.blocks[0]).toMatchObject({ kind: "heading", depth: 1 });
+	expect(document.title).toBe("Title heading");
+	expect(document.text).toBe("\uFEFF# Title heading\n\nBody.");
+});
+
 it("preserves actual HTTP binary bytes and explicit capped/truncated text without treating an exact cap as truncated", async () => {
 	const server = createServer((request, response) => {
 		const path = new URL(request.url ?? "", "http://fixture.test").searchParams.get("path");

@@ -192,13 +192,21 @@ function createAtomView(node: ProseMirrorNode, kind: "skill" | "command", props:
 }
 
 function sameEditorValue(a: SkillEditorValue, b: SkillEditorValue): boolean {
-  return (
-    a.text === b.text &&
-    a.skillNames.length === b.skillNames.length &&
-    a.skillNames.every((name, index) => b.skillNames[index] === name) &&
-    JSON.stringify(a.commandNames ?? []) === JSON.stringify(b.commandNames ?? []) &&
-    JSON.stringify(a.mentions ?? []) === JSON.stringify(b.mentions ?? [])
-  );
+  if (
+    a.text !== b.text ||
+    a.skillNames.length !== b.skillNames.length ||
+    !a.skillNames.every((name, index) => b.skillNames[index] === name) ||
+    JSON.stringify(a.commandNames ?? []) !== JSON.stringify(b.commandNames ?? [])
+  ) {
+    return false;
+  }
+  if (JSON.stringify(a.mentions ?? []) === JSON.stringify(b.mentions ?? [])) return true;
+  // Explicit mention pins are part of the caller's value, but the serializer
+  // omits exactly the pins the document re-derives on its own, so an omitted
+  // array and its redundant pinned form describe the same document. Compare
+  // there, so the sync echo never reports its own canonicalization as an edit
+  // and strips a caller-supplied array.
+  return parseSkillDocument(a).eq(parseSkillDocument(b));
 }
 
 function insertAtom(

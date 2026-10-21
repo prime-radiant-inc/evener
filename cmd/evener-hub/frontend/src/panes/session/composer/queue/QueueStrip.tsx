@@ -12,12 +12,14 @@ import type { ComposerMention, InputItem } from "@evener/appwire-client";
 import { canonicalSkillNames, errorText, STEER_UNAVAILABLE, sessionActionError } from "@evener/appwire-client";
 import { type ReactNode, useState } from "react";
 import { copyToClipboard } from "../../../../shell/palette/commands";
+import { browserDraftKey } from "../../../../stores/browserDraftRepository";
 import { controlsFor, pressLocalRecoveryFenced, pressRefusal } from "../../../../stores/liveControls";
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { InputAttachment } from "../../../../stores/threads";
 import { retryBlockedBySnapshot, threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { Button, IconButton, Tooltip, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import type { ComposerSourceState } from "../sourceState";
 import {
   discardRecoveryPendingTurn,
   type PendingTurnEntry,
@@ -51,6 +53,9 @@ const CLASS = {
 // util).
 export interface QueueStripProps {
   ref: string;
+  // The original composer source, so a drain submits and settles through the
+  // same durable source contract as the Composer's own submit.
+  source: ComposerSourceState;
   // Returns the composer's CURRENT text/attachments/hasPending at the moment
   // the drain affordance is used - drainAsSteer atomically appends this to
   // the queue before draining the whole thing into the active turn as one
@@ -177,6 +182,7 @@ function editDisabledReason(opts: {
 
 export function QueueStrip({
   ref: sessionRef,
+  source,
   getComposerText,
   onRestoreToComposer,
   activeRecoveryId,
@@ -386,11 +392,13 @@ export function QueueStrip({
           attachments,
           skillNames,
           commandNames,
+          source,
+          mentions,
           onFailure: (err) => {
             toasts.push("error", sessionActionError("Drain failed", err));
           },
         },
-        async () => {
+        async (submitted, stopBarrier) => {
           if (activeRecoveryId) {
             wonRecoveryResend = await resendRecoveryPendingTurn(
               activeRecoveryId,
@@ -401,15 +409,19 @@ export function QueueStrip({
               skillNames,
               commandNames,
               mentions,
+              source.recoveryWriteGuard(submitted),
             );
-            return;
+            return wonRecoveryResend;
           }
           return threadsStore
             .getState()
-            .drainAsSteer(sessionRef, text, attachments, skillNames, commandNames, mentions);
+            .drainAsSteer(sessionRef, text, attachments, skillNames, commandNames, mentions, stopBarrier);
         },
       );
-      if (!wonRecoveryResend) toasts.push("info", "This message was already sent in another tab.");
+      if (!wonRecoveryResend) {
+        toasts.push("info", "This message could not be resent; your draft is kept.");
+        return;
+      }
       onDrainSuccess();
     } catch {
       // Already reported via onFailure above; swallow so the rejection
@@ -457,9 +469,54 @@ export function QueueStrip({
   // projection unconditionally, so a record another surface already discarded
   // still leaves the strip instead of sitting there being counted as queued.
   async function handleDismiss(record: MutationRecoveryRecord): Promise<void> {
+    // Lock the row at the press, before any yield.
     setRowBusy(record.clientMutationId, true);
     try {
-      await discardRecoveryPendingTurn(record.clientMutationId, sessionRef);
+      // Every deliberate press establishes current durable authority first: a
+      // previous refused press leaves the cached token at the revision the
+      // storage already refused, and a background transition or another tab's
+      // edit can have advanced the durable row since this source last loaded.
+      // That authority belongs to THIS press: the source adopts it as its own
+      // editing lineage only when the durable content still matches what the
+      // editor shows, so a peer's edit cannot become the stale editor's next
+      // resend authority.
+      // The press's own guards still capture before the discard's yield and
+      // never refresh after a competitor commits while the press is waiting.
+      const currentToken = await source.currentDraftToken();
+      // Capture before any yield, never refresh destructive authority after a
+      // competitor commits while the original press is waiting.
+      const key = browserDraftKey(source.ref);
+      const generation = source.getLocalGeneration();
+      const backing = source.getRuntimeBacking();
+      const replacementEpoch = source.continuity.recoveryReplacementEpochRef.current;
+      const guard = Object.freeze({
+        key: Object.freeze({ namespace: Object.freeze({ ...key.namespace }), sessionRef: key.sessionRef }),
+        token: Object.freeze({ ...currentToken }),
+        stillAuthorized: () => {
+          const currentBacking = source.getRuntimeBacking();
+          return (
+            source.alive &&
+            source.getLocalGeneration() === generation &&
+            source.continuity.recoveryReplacementEpochRef.current === replacementEpoch &&
+            currentBacking.kind === backing.kind &&
+            (backing.kind !== "recovery" ||
+              (currentBacking.kind === "recovery" && currentBacking.recoveryId === backing.recoveryId))
+          );
+        },
+      });
+      const discarded = await discardRecoveryPendingTurn(record.clientMutationId, sessionRef, undefined, guard);
+      if (!discarded) {
+        // A refusal means the durable state moved past this press's authority
+        // (a competitor's commit or a transition this press must not adopt).
+        // The row stays visible for a conscious retry; do NOT re-establish
+        // authority and retry here.
+        return;
+      }
+      // Our own successful discard advanced the durable session revision.
+      // Refresh the source's editing lineage before releasing the row's lock:
+      // the advance is adopted only while the visible value still matches the
+      // durable backing, so a peer's unrelated edit stays out of this editor.
+      await source.currentDraftToken();
     } catch (error) {
       toasts.push("error", `Couldn't dismiss this row: ${errorText(error)}`);
     } finally {

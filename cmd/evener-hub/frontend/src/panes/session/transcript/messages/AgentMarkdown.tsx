@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { Markdown, OpenButton } from "../../../../widgets";
 import { MERMAID_DIAGRAM_ATTR } from "../../../../widgets/mermaid/markers";
+import { useDocOpeningOrigin } from "../../../doc/docOpeningContext";
 import { openDocBeside } from "../../../doc/openDoc";
 import { enhanceEntityText } from "../EntityText";
 import { enhanceFileReferences } from "./fileReferenceDOM";
@@ -12,9 +13,17 @@ import { enhanceFileReferences } from "./fileReferenceDOM";
 /** Adds source-bound file actions to sanitized assistant prose without changing
  * the shared Markdown renderer's URL policy or admitting authored HTML. */
 export function AgentMarkdown({ source, live = false }: { source: string; live?: boolean }) {
-  const { thread, sourcePaneId } = useTranscriptRenderContext();
-  const sessionRef = thread?.ref;
-  const cwd = thread?.cwd;
+  const renderContext = useTranscriptRenderContext();
+  const sessionRef = renderContext.thread?.ref;
+  const cwd = renderContext.thread?.cwd;
+  const origin = useDocOpeningOrigin();
+  // A live pane reading surface names the opening pane through the render
+  // context; a scope that renders transcripts WITHOUT one (each Zoom column)
+  // still declares it through the doc-opening origin, whose pane identity is
+  // the same record the real open path keys on.
+  const providerOriginPaneId =
+    origin === undefined ? undefined : origin.kind === "browser-origin" ? origin.paneId : origin.sourcePaneId;
+  const sourcePaneId = renderContext.sourcePaneId ?? providerOriginPaneId;
   const root = useRef<HTMLDivElement>(null);
   const [portals, setPortals] = useState<ReactNode[]>([]);
   // Portal updates must not replace the innerHTML that owns their mount points.
@@ -31,7 +40,7 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
     const qualifiedRef = sessionRef?.includes(":") ? sessionRef : `local:${sessionRef ?? ""}`;
     const context =
       sessionRef && isValidTranscriptRef(qualifiedRef) && cwd && sourcePaneId
-        ? { sessionRef, cwd, sourcePaneId }
+        ? { sessionRef, cwd, sourcePaneId, ...(origin === undefined ? {} : { origin }) }
         : undefined;
     if (context) {
       // Only authored eligible anchors get the existing OpenButton. Capture
@@ -40,7 +49,12 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
         if (link.closest(`pre, [data-entity-host], [${MERMAID_DIAGRAM_ATTR}]`)) continue;
         const reference = parseFileReference(link.getAttribute("href") ?? "", "link", context.cwd);
         if (!reference) continue;
-        const request = { session: context.sessionRef, reference, sourcePaneId: context.sourcePaneId };
+        const request = {
+          session: context.sessionRef,
+          reference,
+          sourcePaneId: context.sourcePaneId,
+          ...(origin === undefined ? {} : { origin }),
+        };
         const slot = document.createElement("span");
         slot.setAttribute("data-file-action", "");
         link.after(slot);
@@ -61,7 +75,7 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
       restoreFiles();
       for (const slot of slots) slot.remove();
     };
-  }, [source, live, sessionRef, cwd, sourcePaneId]);
+  }, [source, live, sessionRef, cwd, sourcePaneId, origin]);
 
   return (
     <>

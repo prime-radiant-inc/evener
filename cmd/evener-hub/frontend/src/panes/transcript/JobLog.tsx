@@ -232,7 +232,7 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
       const rect = element.getBoundingClientRect();
       return element.dataset.joblogKind === "unloaded" && rect.bottom >= viewport.top && rect.top <= viewport.bottom;
     });
-    const gapIndex =
+    let gapIndex =
       gaps.find(
         ({ row }) =>
           row.startBytes === Number(marker?.dataset.sourceStart) ||
@@ -242,6 +242,33 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
             ((previous.byteOffset < row.startBytes && byte >= row.endBytes) ||
               (previous.byteOffset >= row.endBytes && byte < row.startBytes))),
       )?.index ?? -1;
+    // A backward wheel that reaches the loaded window's start can leave the
+    // one-line unloaded marker just above the viewport: measuring the rows the
+    // wheel scrolled past adjusts the offset to keep the visible content still,
+    // and the marker ends up off-screen. The viewport is nonetheless at the
+    // paging boundary - the first loaded row has been scrolled fully past the
+    // top - so page from the gap above it even though the marker cannot be
+    // seen. Without this, the wheel that reached the boundary strands the
+    // reader until an unrelated scroll reveals the marker again.
+    // Only a glyph capture that moved before the previous one counts as
+    // backward: a wrapped row's start sits above its first visible glyph, so
+    // comparing the row start would page older output while the reader moves
+    // forward inside that row.
+    if (
+      gapIndex < 0 &&
+      previous !== null &&
+      !following &&
+      capture !== null &&
+      capture.byteOffset < previous.byteOffset
+    ) {
+      const boundary = gaps.find(({ row, index }) => {
+        const next = rows[index + 1];
+        if (next?.kind !== "output" || next.row.offsetBytes !== row.endBytes) return false;
+        const firstLoaded = elements.find((element) => Number(element.dataset.sourceStart) === next.row.offsetBytes);
+        return firstLoaded !== undefined && firstLoaded.getBoundingClientRect().bottom <= viewport.top;
+      });
+      if (boundary !== undefined) gapIndex = boundary.index;
+    }
     const gap = rows[gapIndex];
     if (gap && gap.kind === "unloaded") {
       const direction = (previous?.byteOffset ?? byte ?? 0) >= gap.endBytes ? "backward" : "forward";

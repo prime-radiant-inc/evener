@@ -3,21 +3,30 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ItemModel, Thread, ThreadCapabilities, TurnModel } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { IDBFactory } from "fake-indexeddb";
 import { lazy } from "react";
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { conversationPaneLifetime } from "../../../../shell/paneLifetime";
 import { registerPaneForTests } from "../../../../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../../storageTestUtils";
+import * as browserDrafts from "../../../../stores/browserDraftRepository";
+import {
+  createBrowserDraftRepository,
+  resetBrowserDraftRepositoryForTests,
+} from "../../../../stores/browserDraftRepository";
 import { connectionStore } from "../../../../stores/connection";
+import { ANNOTATION_NAMESPACES_STORE, COMPOSER_DRAFTS_STORE } from "../../../../stores/localCompositionSchema";
+import { holdNextWriteTransaction, nextRealTask } from "../../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
 import { Toast } from "../../../../widgets";
+import { getToasts } from "../../../../widgets/toast/store";
 import { hoverForTooltip } from "../../../../widgets/tooltip/tooltipTestUtils";
-import { readDraft } from "../../composer/draft";
 import { SessionNowContext } from "../../liveness";
 import { ignoringTurn, itemRendererFor } from "../types";
-import { UserMessageItem, UserMessageView } from "./UserMessageItem";
+import { resetForkRetentionForTests, UserMessageItem, UserMessageView } from "./UserMessageItem";
 import styles from "./usermessageitem.module.css";
 
 beforeAll(() => {
@@ -325,10 +334,464 @@ function connectForkClient(): FakeClient {
 
 describe("per-message fork affordance", () => {
   beforeEach(() => {
+    globalThis.indexedDB = new IDBFactory();
+    resetBrowserDraftRepositoryForTests();
     connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
     resetThreadsStoreForTests();
     resetWorkspaceStoreForTests();
+    resetForkRetentionForTests();
     localStorage.clear();
+  });
+
+  // A read projection cannot replace a durable seed before the pane opens.
+  test("fork durably commits the literal original input before the actual pane opens without hydration advancing its revision", async () => {
+    const fake = connectForkClient();
+    fake.on("thread/fork", () => ({ thread: forkWireThread(), originalInput: "literal /same\nsecond line" }));
+    const repository = createBrowserDraftRepository();
+    const key = { namespace: { kind: "browser" as const, origin: location.origin }, sessionRef: "local/child_1" };
+    let atOpen: ReturnType<typeof repository.load> | undefined;
+    const unsubscribe = workspaceStore.subscribe((state) => {
+      if (!atOpen && state.panes.some((pane) => pane.type === "session")) atOpen = repository.load(key);
+    });
+    try {
+      render(
+        <UserMessageItem
+          item={item({ text: "original", transcriptKey: "apptranscript-item-v2:turn_1:0:0" })}
+          turn={turn}
+          live={false}
+          sessionRef="ref_a"
+        />,
+      );
+      await userEvent.setup().click(screen.getByRole("button", { name: /fork from here/i }));
+      await waitFor(() => expect(atOpen).toBeDefined());
+      const committed = await atOpen;
+      expect(committed).toEqual({
+        key,
+        text: "literal /same\nsecond line",
+        skillNames: [],
+        token: { namespaceIncarnation: expect.any(String), sessionRevision: 1 },
+        // seedDraft stamps the wall-clock edit time the resume-carry ranks by.
+        editedAt: expect.any(Number),
+      });
+      const pane = workspaceStore.getState().panes.find((record) => record.type === "session");
+      if (!pane) throw new Error("fork did not open its session");
+      const source = conversationPaneLifetime(pane).composer;
+      if (!source) throw new Error("fork session has no composer source");
+      await act(async () => source.ready());
+      expect(source.getSnapshot()).toMatchObject({
+        text: "literal /same\nsecond line",
+        skillNames: [],
+        commandNames: [],
+        mentions: undefined,
+      });
+      expect(await repository.load(key)).toEqual(committed);
+      expect(source.sourceId).toEqual(expect.any(String));
+      expect(pane).not.toHaveProperty("sourceId");
+      expect(pane.params).toEqual({ ref: "local/child_1" });
+    } finally {
+      unsubscribe();
+      resetWorkspaceStoreForTests();
+      repository.close();
+    }
+  });
+
+  test.each(["conflict", "transaction fault"] as const)(
+    "fork seed %s preserves existing durable values, reports failure and opens no pane",
+    async (mode) => {
+      const fake = connectForkClient();
+      fake.on("thread/fork", () => ({ thread: forkWireThread(), originalInput: "literal /same\nsecond line" }));
+      let faultArmed = false;
+      let faults = 0;
+      const repository = createBrowserDraftRepository({
+        beforeCommit(operation) {
+          if (faultArmed && operation === "seedDraft") {
+            faults += 1;
+            throw new Error("real fork seed transaction fault");
+          }
+        },
+      });
+      const key = browserDrafts.browserDraftKey("local/child_1");
+      const unrelatedKey = browserDrafts.browserDraftKey("unrelated");
+      const repositoryAccessor = vi.spyOn(browserDrafts, "getBrowserDraftRepository").mockReturnValue(repository);
+      try {
+        const unrelated = await repository.seedDraft(unrelatedKey, { text: "unrelated remains", skillNames: [] });
+        expect(unrelated.state).toBe("committed");
+        const beforeUnrelated = await repository.load(unrelatedKey);
+        if (mode === "conflict") {
+          expect(
+            (
+              await repository.seedDraft(key, {
+                text: "existing /audit",
+                skillNames: [],
+                commandNames: ["audit"],
+                mentions: [{ kind: "command", name: "audit", offset: 9 }],
+              })
+            ).state,
+          ).toBe("committed");
+        }
+        const before = await repository.load(key);
+        faultArmed = mode === "transaction fault";
+        const beforeToasts = getToasts().map((toast) => ({ kind: toast.kind, text: toast.text }));
+        render(
+          <UserMessageItem
+            item={item({ text: "original", transcriptKey: "apptranscript-item-v2:turn_1:0:0" })}
+            turn={turn}
+            live={false}
+            sessionRef="ref_a"
+          />,
+        );
+        const button = screen.getByRole<HTMLButtonElement>("button", { name: /fork from here/i });
+        await userEvent.setup().click(button);
+        await waitFor(() => expect(button.disabled).toBe(false));
+        expect(workspaceStore.getState().panes).toEqual([]);
+        expect(await repository.load(key)).toEqual(before);
+        expect(await repository.load(unrelatedKey)).toEqual(beforeUnrelated);
+        expect(faults).toBe(mode === "transaction fault" ? 1 : 0);
+        expect(fake.calls.filter((call) => call.method === "thread/fork")).toHaveLength(1);
+        expect(getToasts().map((toast) => ({ kind: toast.kind, text: toast.text }))).toEqual([
+          ...beforeToasts,
+          {
+            kind: "error",
+            text:
+              mode === "conflict"
+                ? "Couldn't fork from here: The forked session already has a draft"
+                : "Forked the session, but couldn't save its message locally. Press Fork from here again to retry.",
+          },
+        ]);
+      } finally {
+        faultArmed = false;
+        repositoryAccessor.mockRestore();
+        repository.close();
+      }
+    },
+  );
+
+  test("a seed fault retains the created child: a second press seeds it without repeating the fork RPC", async () => {
+    const fake = connectForkClient();
+    let forkCalls = 0;
+    fake.on("thread/fork", () => {
+      forkCalls += 1;
+      return {
+        thread: forkWireThread({
+          id: `child_${forkCalls}`,
+          sessionId: `child_${forkCalls}`,
+          evener: { ...forkWireThread().evener, ref: `local/child_${forkCalls}` },
+        }),
+        originalInput: "literal /same\nsecond line",
+      };
+    });
+    let faultArmed = true;
+    const repository = createBrowserDraftRepository({
+      beforeCommit(operation) {
+        if (faultArmed && operation === "seedDraft") throw new Error("real fork seed transaction fault");
+      },
+    });
+    const repositoryAccessor = vi.spyOn(browserDrafts, "getBrowserDraftRepository").mockReturnValue(repository);
+    try {
+      render(
+        <UserMessageItem
+          item={item({ text: "original", transcriptKey: "apptranscript-item-v2:turn_1:0:0" })}
+          turn={turn}
+          live={false}
+          sessionRef="ref_a"
+        />,
+      );
+      const button = screen.getByRole<HTMLButtonElement>("button", { name: /fork from here/i });
+      await userEvent.setup().click(button);
+      await waitFor(() => expect(button.disabled).toBe(false));
+      // The fork RPC created the child; only its local seeding faulted, and the
+      // toast names that real outcome instead of claiming the fork failed.
+      expect(forkCalls).toBe(1);
+      expect(workspaceStore.getState().panes).toEqual([]);
+      expect(
+        getToasts().some(
+          (toast) =>
+            toast.kind === "error" &&
+            toast.text ===
+              "Forked the session, but couldn't save its message locally. Press Fork from here again to retry.",
+        ),
+      ).toBe(true);
+
+      faultArmed = false;
+      await userEvent.setup().click(button);
+      await waitFor(() => expect(workspaceStore.getState().panes.length).toBe(1));
+      // The second press finished the RETAINED child; the fork RPC never ran
+      // again, so no second child was created.
+      expect(forkCalls).toBe(1);
+      const pane = workspaceStore.getState().panes[0];
+      if (!pane) throw new Error("the retained fork child did not open");
+      expect(pane.params).toEqual({ ref: "local/child_1" });
+      const key = browserDrafts.browserDraftKey("local/child_1");
+      expect((await repository.load(key))?.text).toBe("literal /same\nsecond line");
+    } finally {
+      faultArmed = false;
+      repositoryAccessor.mockRestore();
+      repository.close();
+    }
+  });
+
+  test("an uncertain seed that actually committed completes navigation on the retry", async () => {
+    const fake = connectForkClient();
+    let forkCalls = 0;
+    fake.on("thread/fork", () => {
+      forkCalls += 1;
+      return {
+        thread: forkWireThread({
+          id: `child_${forkCalls}`,
+          sessionId: `child_${forkCalls}`,
+          evener: { ...forkWireThread().evener, ref: `local/child_${forkCalls}` },
+        }),
+        originalInput: "literal /same\nsecond line",
+      };
+    });
+    const repository = createBrowserDraftRepository({});
+    const repositoryAccessor = vi.spyOn(browserDrafts, "getBrowserDraftRepository").mockReturnValue(repository);
+    try {
+      render(
+        <UserMessageItem
+          item={item({ text: "original", transcriptKey: "apptranscript-item-v2:turn_1:0:0" })}
+          turn={turn}
+          live={false}
+          sessionRef="ref_a"
+        />,
+      );
+      const button = screen.getByRole<HTMLButtonElement>("button", { name: /fork from here/i });
+      // The seed transaction commits while its completion event stalls: the
+      // transaction watchdog settles the press with the honest unavailable
+      // outcome, and the draft is durable anyway.
+      const hold = holdNextWriteTransaction([COMPOSER_DRAFTS_STORE, ANNOTATION_NAMESPACES_STORE]);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      await act(async () => {
+        fireEvent.click(button);
+        await hold.reached;
+        await vi.advanceTimersByTimeAsync(10_001);
+      });
+      vi.useRealTimers();
+      hold.release();
+      expect(forkCalls).toBe(1);
+      expect(workspaceStore.getState().panes).toEqual([]);
+      expect(
+        getToasts().some(
+          (toast) =>
+            toast.kind === "error" &&
+            toast.text ===
+              "Forked the session, but couldn't save its message locally. Press Fork from here again to retry.",
+        ),
+      ).toBe(true);
+      const key = browserDrafts.browserDraftKey("local/child_1");
+      expect((await repository.load(key))?.text).toBe("literal /same\nsecond line");
+
+      // The retry finds the committed row and must complete the navigation:
+      // the retained child's durable draft is exactly the message being
+      // forked, so the child opens instead of stranding behind a conflict.
+      await waitFor(() => expect(button.disabled).toBe(false));
+      await userEvent.setup().click(button);
+      await waitFor(() => expect(workspaceStore.getState().panes.length).toBe(1));
+      expect(forkCalls).toBe(1);
+      const pane = workspaceStore.getState().panes[0];
+      if (!pane) throw new Error("the retained fork child did not open");
+      expect(pane.params).toEqual({ ref: "local/child_1" });
+    } finally {
+      vi.useRealTimers();
+      repositoryAccessor.mockRestore();
+      repository.close();
+    }
+  });
+
+  test("the retained child survives row virtualization: a retry after unmount and remount still never repeats the fork RPC", async () => {
+    const fake = connectForkClient();
+    let forkCalls = 0;
+    fake.on("thread/fork", () => {
+      forkCalls += 1;
+      return {
+        thread: forkWireThread({
+          id: `child_${forkCalls}`,
+          sessionId: `child_${forkCalls}`,
+          evener: { ...forkWireThread().evener, ref: `local/child_${forkCalls}` },
+        }),
+        originalInput: "literal /same\nsecond line",
+      };
+    });
+    let faultArmed = true;
+    const repository = createBrowserDraftRepository({
+      beforeCommit(operation) {
+        if (faultArmed && operation === "seedDraft") throw new Error("real fork seed transaction fault");
+      },
+    });
+    const repositoryAccessor = vi.spyOn(browserDrafts, "getBrowserDraftRepository").mockReturnValue(repository);
+    try {
+      const row = item({ text: "original", transcriptKey: "apptranscript-item-v2:turn_1:0:0" });
+      const { unmount } = render(<UserMessageItem item={row} turn={turn} live={false} sessionRef="ref_a" />);
+      const button = screen.getByRole<HTMLButtonElement>("button", { name: /fork from here/i });
+      await userEvent.setup().click(button);
+      await waitFor(() => expect(button.disabled).toBe(false));
+      // The fork RPC created the child; only its local seeding faulted.
+      expect(forkCalls).toBe(1);
+      expect(
+        getToasts().some(
+          (toast) =>
+            toast.kind === "error" &&
+            toast.text ===
+              "Forked the session, but couldn't save its message locally. Press Fork from here again to retry.",
+        ),
+      ).toBe(true);
+
+      // The transcript virtualizes its rows: scrolling this message away and
+      // back unmounts the row and remounts it, discarding any row-local state.
+      unmount();
+      render(<UserMessageItem item={row} turn={turn} live={false} sessionRef="ref_a" />);
+
+      faultArmed = false;
+      const remountedButton = screen.getByRole<HTMLButtonElement>("button", { name: /fork from here/i });
+      await userEvent.setup().click(remountedButton);
+      await waitFor(() => expect(workspaceStore.getState().panes.length).toBe(1));
+      // The retry finished the child the FIRST press created; the fork RPC never
+      // ran again, so no duplicate child exists.
+      expect(forkCalls).toBe(1);
+      const pane = workspaceStore.getState().panes[0];
+      if (!pane) throw new Error("the retained fork child did not open");
+      expect(pane.params).toEqual({ ref: "local/child_1" });
+      const key = browserDrafts.browserDraftKey("local/child_1");
+      expect((await repository.load(key))?.text).toBe("literal /same\nsecond line");
+    } finally {
+      faultArmed = false;
+      repositoryAccessor.mockRestore();
+      repository.close();
+    }
+  });
+
+  test("the child is retained before the seed settles: a press after an unmount mid-seed never repeats the fork RPC", async () => {
+    const fake = connectForkClient();
+    let forkCalls = 0;
+    fake.on("thread/fork", () => {
+      forkCalls += 1;
+      return {
+        thread: forkWireThread({
+          id: `child_${forkCalls}`,
+          sessionId: `child_${forkCalls}`,
+          evener: { ...forkWireThread().evener, ref: `local/child_${forkCalls}` },
+        }),
+        originalInput: "literal /same\nsecond line",
+      };
+    });
+    const repository = createBrowserDraftRepository({});
+    const repositoryAccessor = vi.spyOn(browserDrafts, "getBrowserDraftRepository").mockReturnValue(repository);
+    // The toasts store outlives this describe's reset, so convergence is
+    // asserted against the count this test started with, not absolute absence.
+    const errorToastsBefore = getToasts().filter((toast) => toast.kind === "error").length;
+    try {
+      const row = item({ text: "original", transcriptKey: "apptranscript-item-v2:turn_1:0:0" });
+      const { unmount } = render(<UserMessageItem item={row} turn={turn} live={false} sessionRef="ref_a" />);
+      const button = screen.getByRole<HTMLButtonElement>("button", { name: /fork from here/i });
+      // The first press creates the child and pauses inside its seed
+      // transaction - no seeding outcome has settled yet.
+      const hold = holdNextWriteTransaction([COMPOSER_DRAFTS_STORE, ANNOTATION_NAMESPACES_STORE]);
+      await act(async () => {
+        fireEvent.click(button);
+        await hold.reached;
+      });
+      expect(forkCalls).toBe(1);
+
+      // The transcript virtualizes its rows: the row unmounts while the
+      // seed is still pending, and the remounted button has fresh state.
+      unmount();
+      render(<UserMessageItem item={row} turn={turn} live={false} sessionRef="ref_a" />);
+      const remountedButton = screen.getByRole<HTMLButtonElement>("button", { name: /fork from here/i });
+      await act(async () => {
+        fireEvent.click(remountedButton);
+        // Let the remounted press read its retention and queue whatever it
+        // issues behind the still-held seed transaction before releasing.
+        await nextRealTask();
+        await nextRealTask();
+        await nextRealTask();
+      });
+      // The remounted press found the child the first press created and
+      // never repeated the fork RPC, so no duplicate session exists.
+      expect(forkCalls).toBe(1);
+
+      hold.release();
+      await waitFor(() => expect(workspaceStore.getState().panes.length).toBe(1));
+      expect(forkCalls).toBe(1);
+      const pane = workspaceStore.getState().panes[0];
+      if (!pane) throw new Error("the retained fork child did not open");
+      expect(pane.params).toEqual({ ref: "local/child_1" });
+      const key = browserDrafts.browserDraftKey("local/child_1");
+      expect((await repository.load(key))?.text).toBe("literal /same\nsecond line");
+      // Both presses converge silently: the second seed resolved through
+      // the conflict-compare path, so no new error reached the user.
+      expect(getToasts().filter((toast) => toast.kind === "error").length).toBe(errorToastsBefore);
+    } finally {
+      repositoryAccessor.mockRestore();
+      repository.close();
+    }
+  });
+
+  test("a press joins the fork already in flight: a remount during the RPC itself never repeats it", async () => {
+    const fake = connectForkClient();
+    let forkCalls = 0;
+    let releaseFork: (() => void) | undefined;
+    fake.on("thread/fork", () => {
+      forkCalls += 1;
+      return new Promise((resolve) => {
+        releaseFork = () =>
+          resolve({
+            thread: forkWireThread({
+              id: `child_${forkCalls}`,
+              sessionId: `child_${forkCalls}`,
+              evener: { ...forkWireThread().evener, ref: `local/child_${forkCalls}` },
+            }),
+            originalInput: "literal /same\nsecond line",
+          });
+      });
+    });
+    const repository = createBrowserDraftRepository({});
+    const repositoryAccessor = vi.spyOn(browserDrafts, "getBrowserDraftRepository").mockReturnValue(repository);
+    // The toasts store outlives this describe's reset, so the silent join is
+    // asserted against the count this test started with, not absolute absence.
+    const errorToastsBefore = getToasts().filter((toast) => toast.kind === "error").length;
+    try {
+      const row = item({ text: "original", transcriptKey: "apptranscript-item-v2:turn_1:0:0" });
+      const { unmount } = render(<UserMessageItem item={row} turn={turn} live={false} sessionRef="ref_a" />);
+      const button = screen.getByRole<HTMLButtonElement>("button", { name: /fork from here/i });
+      await act(async () => {
+        fireEvent.click(button);
+        await nextRealTask();
+      });
+      // The fork RPC is in flight and nothing has been retained yet.
+      expect(forkCalls).toBe(1);
+
+      // The row unmounts while the RPC itself is still pending, and the
+      // remounted button has fresh state. Its press must JOIN the fork
+      // already in flight, not issue a second RPC into a duplicate child.
+      unmount();
+      render(<UserMessageItem item={row} turn={turn} live={false} sessionRef="ref_a" />);
+      const remountedButton = screen.getByRole<HTMLButtonElement>("button", { name: /fork from here/i });
+      await act(async () => {
+        fireEvent.click(remountedButton);
+        await nextRealTask();
+        await nextRealTask();
+      });
+      expect(forkCalls).toBe(1);
+
+      await act(async () => {
+        releaseFork?.();
+        await nextRealTask();
+        await nextRealTask();
+      });
+      await waitFor(() => expect(workspaceStore.getState().panes.length).toBe(1));
+      expect(forkCalls).toBe(1);
+      const pane = workspaceStore.getState().panes[0];
+      if (!pane) throw new Error("the forked child did not open");
+      expect(pane.params).toEqual({ ref: "local/child_1" });
+      const key = browserDrafts.browserDraftKey("local/child_1");
+      expect((await repository.load(key))?.text).toBe("literal /same\nsecond line");
+      // The single fork completed silently: no error reached the user.
+      expect(getToasts().filter((toast) => toast.kind === "error").length).toBe(errorToastsBefore);
+    } finally {
+      releaseFork?.();
+      repositoryAccessor.mockRestore();
+      repository.close();
+    }
   });
 
   test("a user message with a sessionRef renders a Fork-from-here button; a read-only one (no ref) does not", () => {
@@ -412,7 +875,14 @@ describe("per-message fork affordance", () => {
       }),
     );
     // ...with the original text seeded into its composer draft (never auto-sent).
-    expect(readDraft("local/child_1")).toBe("fix the bug");
+    expect(
+      await browserDrafts.getBrowserDraftRepository().load(browserDrafts.browserDraftKey("local/child_1")),
+    ).toMatchObject({
+      text: "fix the bug",
+      skillNames: [],
+      token: { sessionRevision: 1 },
+    });
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   });
 
   test("a failed fork surfaces an error toast and opens no pane", async () => {

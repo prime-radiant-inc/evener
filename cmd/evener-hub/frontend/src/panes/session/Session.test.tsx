@@ -21,6 +21,7 @@ import * as StatusBarModule from "../../shell/statusbar/StatusBar";
 import { resetMobileViewportForTests } from "../../shell/useIsMobile";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "../../stores/activityPanel";
+import { browserDraftKey, getBrowserDraftRepository } from "../../stores/browserDraftRepository";
 import { connectionStore } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
@@ -57,7 +58,6 @@ import * as SessionChromeModule from "./chrome/SessionChrome";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
 import { askPendingStatusChanged } from "./composer/askDock/askDockTestUtils";
 import * as ComposerModule from "./composer/Composer";
-import { readDraft, writeDraft } from "./composer/draft";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
 import { settleActivityDiscovery } from "./testing/activityDiscovery";
@@ -3592,7 +3592,15 @@ test("Send follows the returned identity through transcript and new sends", asyn
             result = { data: [], nextCursor: null };
             break;
           case "turn/start":
-            result = { turn: { id: "new-turn", status: "inProgress", itemsView: "full" } };
+            result = {
+              turn: { id: "new-turn", status: "inProgress", itemsView: "full" },
+              receipt: {
+                clientMutationId: request.params.clientMutationId,
+                disposition: "applied",
+                threadId: `thr_${currentRef}`,
+                projectionState: "pending",
+              },
+            } satisfies appwireClient.TurnStartResponse;
             break;
         }
         socket.receive({ id: request.id, result });
@@ -3663,6 +3671,13 @@ test("Send follows the returned identity through transcript and new sends", asyn
   expect(starts[0]?.params).toEqual(
     expect.objectContaining({ ref: currentRef, expectedInstanceId: `thr_${currentRef}` }),
   );
+  const sentId = requests.find(({ method }) => method === "turn/start")?.params.clientMutationId;
+  expect(sentId).toEqual(expect.any(String));
+  expect(sentId).not.toBe("");
+  expect(sentId).not.toBe(uncertain);
+  expect(await mutationStorage.listOutbox(currentRef)).toEqual([]);
+  expect(await mutationStorage.listOutbox(stableRef)).toEqual([]);
+  expect(await mutationStorage.getOutbox(uncertain)).toBeUndefined();
 });
 
 // R09 acceptance applies to EVERY resume trigger, not only the Send-resumes
@@ -3733,7 +3748,10 @@ test("a newer draft typed during the notice's Resume follows the resumed identit
   });
   await waitFor(() => expect(window.location.pathname).toBe(`/s/${encodeURIComponent(currentRef)}`));
   await waitFor(() => expect(threadsStore.getState().threads.get(currentRef)?.status.type).toBe("idle"));
-  expect(screen.getByRole("textbox", { name: /^message$/i }).textContent).toBe("notice draft");
+  // The resumed pane's composer hydrates its carried draft from the browser
+  // draft repository asynchronously, so the draft follows the pane once that
+  // load lands rather than in the same tick as the navigation.
+  await waitFor(() => expect(screen.getByRole("textbox", { name: /^message$/i }).textContent).toBe("notice draft"));
 });
 
 // R09 acceptance: "the transcript and any newer draft are preserved". A message
@@ -3808,7 +3826,10 @@ test("a newer draft typed before the resume lands follows the pane to the resume
   });
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Adraft-current"));
   await waitFor(() => expect(threadsStore.getState().threads.get(currentRef)?.status.type).toBe("idle"));
-  expect(screen.getByRole("textbox", { name: /^message$/i }).textContent).toBe("newer draft");
+  // The resumed pane's composer hydrates its carried draft from the browser
+  // draft repository asynchronously, so the draft follows the pane once that
+  // load lands rather than in the same tick as the navigation.
+  await waitFor(() => expect(screen.getByRole("textbox", { name: /^message$/i }).textContent).toBe("newer draft"));
 });
 
 // RoboRev finding on the reduced branch: the explicit Resume passed
@@ -5206,7 +5227,16 @@ test("a cascade column's resume reaches an ordinary view of the same ref when it
     keyboardScrollPaneId: null,
     onResumedIdentity: (resumedRef) => resumeCascadeScope(cascadeLifetime, ref, resumedRef),
   };
-  writeDraft(ref, "draft typed before the resume");
+  // The conversation's draft lives in the browser draft repository; the
+  // merged resume carry (carryBrowserDraft) moves that row. Seed it through
+  // the app's own singleton instance: this suite swaps the global IndexedDB
+  // factory per test, so a fresh repository instance would seed a different
+  // database than the one the carry reads.
+  await getBrowserDraftRepository().seedDraft(browserDraftKey(ref), {
+    text: "draft typed before the resume",
+    skillNames: [],
+    mentions: [],
+  });
 
   function OrdinaryView({ open }: { open: boolean }) {
     // AppShell drives a session pane from the URL, so a followed resume
@@ -5249,8 +5279,13 @@ test("a cascade column's resume reaches an ordinary view of the same ref when it
   // The cascade column followed, but the ordinary view is still inactive and
   // has not followed: the notification must survive for it.
   expect(threadsStore.getState().resumedIdentities.get(ref)).toBe(resumed);
-  // The draft carried to the resumed identity.
-  expect(readDraft(resumed)).toBe("draft typed before the resume");
+  // The draft carried to the resumed identity: the repository row moves
+  // asynchronously, so the assertion waits for the carry to land.
+  await waitFor(async () =>
+    expect((await getBrowserDraftRepository().load(browserDraftKey(resumed)))?.text).toBe(
+      "draft typed before the resume",
+    ),
+  );
 
   // Reopen the ordinary view: it must follow the retained identity.
   rerender(

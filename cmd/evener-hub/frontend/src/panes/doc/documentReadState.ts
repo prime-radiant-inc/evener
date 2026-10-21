@@ -1,0 +1,262 @@
+// Retained reader work for the browser document-annotation reader (Task 5).
+//
+// One viewer-id map retains each open document's editable comment, frozen
+// capture, accepted lease, attempted immutable operation, phase and scroll
+// position across render-host unsubscribe/remount. Key replacement and explicit
+// committed disposal end a reader's subscriptions; the shared repository and
+// runtime are never owned by an individual host. Every save runs through the
+// real document-annotation runtime and repository; no timers or second recovery
+// framework are introduced.
+import type {
+  AcceptedSourceLease,
+  AnnotationCommentWork,
+  AnnotationRetryReason,
+  AnnotationView,
+  CapturedPassage,
+  DestinationProvenance,
+  DocumentKey,
+  PreparedAnnotation,
+} from "@evener/appwire-client";
+import { retainedComposerSourceFor } from "../../shell/paneLifetime";
+import { getBrowserDraftRepository } from "../../stores/browserDraftRepository";
+import { annotationDocumentKey, createDocumentAnnotationRepository } from "../../stores/documentAnnotationIndexedDB";
+import {
+  createDocumentAnnotationRuntime,
+  type DocumentAnnotationPorts,
+  type DocumentAnnotationRuntime,
+} from "../../stores/documentAnnotationRuntime";
+import { createSecureUUID } from "../../stores/secureUUID";
+
+export interface DocumentReaderWork {
+  key: DocumentKey;
+  ports: DocumentAnnotationPorts;
+  comment: AnnotationCommentWork;
+  scrollTop: number;
+  attempted: PreparedAnnotation | null;
+  attemptedComment: AnnotationCommentWork | null;
+  lease: AcceptedSourceLease | null;
+  // The evidence of the content this reader currently displays under its
+  // accepted lease, synthesized at the acceptance that installed it. A later
+  // faulted reread can prove a source change against the DISPLAYED content
+  // even when this reader never attempted, composed or saved anything of its
+  // own - a reopened reader displays accepted content and persisted pending
+  // annotations that another reader saved - and the proven change must
+  // suppress the displayed lease's epoch so that pending handoff cannot
+  // append its obsolete reference behind the changed source.
+  displayed: { lease: AcceptedSourceLease; evidence: CapturedPassage["evidence"] } | null;
+  // The last save THIS reader committed, set when its receipt lands and kept
+  // across the handoff: its capture is the retained evidence a later fault
+  // branch needs to prove a source change against the saved operation, and
+  // its lease names the epoch whose pending handoff such a change must
+  // suppress. The expiry machinery owns the durable row's retirement.
+  saved: PreparedAnnotation | null;
+  // The comment textarea's retained caret selection, captured on the box's
+  // select events and restored by a remounted box WITHOUT touching focus or
+  // the document selection. Cleared whenever the note itself resets.
+  commentSelection: CommentSelection | null;
+  phase: "reading" | "saving" | "unsaved" | "expiry-pending";
+}
+
+// The comment field's caret/selection state, in the textarea's own terms.
+export interface CommentSelection {
+  start: number;
+  end: number;
+  direction: "forward" | "backward" | "none";
+}
+
+// The one lazy browser singleton: the repository and runtime every production
+// reader shares. `targetFor` resolves ONLY the supplied runtime origin within
+// the current browser origin and session through the existing pane-lifetime
+// authority; it never creates a lifetime or falls back to focus.
+let browserPorts: DocumentAnnotationPorts | undefined;
+
+export function getDocumentAnnotationPorts(): DocumentAnnotationPorts {
+  if (browserPorts) return browserPorts;
+  let runtime: DocumentAnnotationRuntime | undefined;
+  const repository = createDocumentAnnotationRepository({
+    drafts: getBrowserDraftRepository(),
+    targetFor: (origin, key) =>
+      origin.kind === "browser-origin" && key.namespace.kind === "browser" && key.namespace.origin === location.origin
+        ? retainedComposerSourceFor(origin.paneId, origin.compositionOwnerId, key.sessionRef)
+        : null,
+    onStorageSuccess: () => runtime?.storageSucceeded(),
+    onPendingExpiryRetained: () => runtime?.registerRetryNeed(),
+  });
+  runtime = createDocumentAnnotationRuntime(repository);
+  // The foreground retry listener belongs to the application runtime's
+  // lifetime, not the reader count: the runtime and its persisted pending
+  // handoffs outlive every open reader, so a foreground return after the
+  // last pane closed must still retry them. addEventListener is idempotent
+  // for the same listener, and teardown removes it exactly once.
+  document.addEventListener("visibilitychange", onReaderForeground);
+  const ports: DocumentAnnotationPorts = { repository, runtime };
+  browserPorts = ports;
+  return ports;
+}
+
+// Tests install real fixture ports as the application-owned singleton so a
+// retry pass reaches them exactly as production reaches the real singleton.
+export function setDocumentAnnotationPortsForTests(ports: DocumentAnnotationPorts | undefined): void {
+  browserPorts = ports;
+  if (ports) document.addEventListener("visibilitychange", onReaderForeground);
+  else document.removeEventListener("visibilitychange", onReaderForeground);
+}
+
+type ReaderEntry = { work: DocumentReaderWork; listeners: Set<() => void>; unsubscribe: () => void };
+
+// The ONE retained-work map, keyed by viewer id. Hosts subscribe and unsubscribe
+// their render listeners; only committed viewer removal or key replacement
+// disposes the work.
+const readers = new Map<string, ReaderEntry>();
+
+export function publishReader(work: DocumentReaderWork): void {
+  for (const entry of readers.values()) if (entry.work === work) for (const listener of entry.listeners) listener();
+}
+
+// A late receipt can only retire the exact attempt it saw; if the work slot now
+// holds a newer attempt, the old completion is ignored untouched.
+function settleSavedAttempt(work: DocumentReaderWork, operation: PreparedAnnotation): void {
+  if (work.attempted !== operation) return;
+  const unchanged = work.comment === work.attemptedComment;
+  work.saved = operation;
+  work.attempted = null;
+  work.attemptedComment = null;
+  if (unchanged) {
+    work.comment = { note: "", captureFrozen: false };
+    work.commentSelection = null;
+  }
+  work.phase = unchanged ? "reading" : "unsaved";
+  publishReader(work);
+}
+
+async function refreshSavedAttempt(work: DocumentReaderWork): Promise<void> {
+  const operation = work.attempted;
+  if (!operation) {
+    publishReader(work);
+    return;
+  }
+  let views: AnnotationView[];
+  try {
+    views = await work.ports.repository.listAnnotations(operation.lease.key);
+  } catch {
+    return; // storage still failed: retain the attempt, comment and honest status
+  }
+  if (views.some((view) => view.receipt.operationId === operation.operationId)) settleSavedAttempt(work, operation);
+}
+
+export function documentReaderWork(
+  viewerId: string,
+  key: DocumentKey,
+  ports: DocumentAnnotationPorts = getDocumentAnnotationPorts(),
+): DocumentReaderWork {
+  const existing = readers.get(viewerId);
+  if (existing && annotationDocumentKey(existing.work.key) === annotationDocumentKey(key)) return existing.work;
+  if (existing) disposeDocumentReaderWork(viewerId);
+  const work: DocumentReaderWork = {
+    key: structuredClone(key),
+    ports,
+    scrollTop: 0,
+    comment: { note: "", captureFrozen: false },
+    attempted: null,
+    attemptedComment: null,
+    lease: null,
+    displayed: null,
+    saved: null,
+    commentSelection: null,
+    phase: "reading",
+  };
+  const entry: ReaderEntry = { work, listeners: new Set(), unsubscribe: () => {} };
+  readers.set(viewerId, entry);
+  entry.unsubscribe = ports.repository.subscribe(key, () => {
+    void refreshSavedAttempt(work);
+  });
+  return work;
+}
+
+export function subscribeDocumentReaderWork(viewerId: string, listener: () => void): () => void {
+  const entry = readers.get(viewerId);
+  if (!entry) throw new Error("reader work not created");
+  entry.listeners.add(listener);
+  return () => {
+    entry.listeners.delete(listener);
+  };
+}
+
+export function disposeDocumentReaderWork(viewerId: string): void {
+  const entry = readers.get(viewerId);
+  if (!entry) return;
+  entry.unsubscribe();
+  readers.delete(viewerId);
+}
+
+// Genuine application teardown of the ONE lazy production singleton. It retires
+// every retained reader first (their real repository unsubscribes and the shared
+// foreground listener is removed), then disposes the runtime and closes the
+// annotation repository's own connection/channel. The shared browser draft
+// repository is a SEPARATE authority and is left untouched, so durable
+// annotations and composer drafts keep loading after teardown. No ports are
+// created here when none exist; a later getDocumentAnnotationPorts() supplies
+// usable fresh ports. Ordinary document host remount and client replacement are
+// NOT teardown and never call this.
+export function disposeDocumentAnnotationPorts(): void {
+  const ports = browserPorts;
+  browserPorts = undefined;
+  document.removeEventListener("visibilitychange", onReaderForeground);
+  for (const viewerId of [...readers.keys()]) disposeDocumentReaderWork(viewerId);
+  if (!ports) return;
+  ports.runtime.dispose();
+  ports.repository.close();
+}
+
+export async function retryDocumentReaders(reason: AnnotationRetryReason): Promise<void> {
+  const runtimes = new Set([...readers.values()].map((entry) => entry.work.ports.runtime));
+  // The application-owned runtime outlives every open reader: a persisted
+  // pending handoff must stay reachable by composer-open and foreground
+  // retries after the last document pane closed.
+  if (browserPorts) runtimes.add(browserPorts.runtime);
+  await Promise.all([...runtimes].map((runtime) => runtime.retryPending(reason)));
+  await Promise.all([...readers.values()].map((entry) => refreshSavedAttempt(entry.work)));
+}
+
+function onReaderForeground(): void {
+  if (document.visibilityState === "visible") void retryDocumentReaders("foreground");
+}
+
+export async function saveReaderAnnotation(
+  work: DocumentReaderWork,
+  destination: DestinationProvenance,
+): Promise<void> {
+  if (!work.attempted) {
+    // Capture the complete lease/capture/note/destination before any await so a
+    // later caller mutation cannot change what is saved. Trim gates Send only;
+    // the literal note bytes are preserved.
+    const lease = work.lease;
+    const capture = work.comment.capture;
+    const note = work.comment.note;
+    if (!lease || !capture || !note.trim()) return;
+    work.attemptedComment = work.comment;
+    work.attempted = structuredClone({
+      operationId: createSecureUUID(),
+      lease,
+      capture,
+      note,
+      destination,
+    });
+  }
+  const operation = work.attempted;
+  if (!operation) return;
+  const key = operation.lease.key; // captured BEFORE any await
+  work.phase = "saving";
+  publishReader(work);
+  const receipt = await work.ports.runtime.save(operation);
+  if (!receipt) {
+    if (work.attempted === operation) {
+      work.phase = "unsaved";
+      publishReader(work);
+    }
+    return; // retain the exact attempt/comment; no handoff and no second Send
+  }
+  settleSavedAttempt(work, operation);
+  await work.ports.runtime.handoff(key, operation.operationId);
+  publishReader(work);
+}

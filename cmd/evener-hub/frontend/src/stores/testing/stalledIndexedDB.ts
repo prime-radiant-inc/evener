@@ -132,12 +132,25 @@ export function holdIndexedDBEvent(target: EventTarget, type: string) {
   };
 }
 
-// Holds the next transaction in `mode` opened over exactly `stores`:
-// fake-indexeddb commits it, but its "complete" event, and with it the storage
-// call that is waiting on that event, stays held until release(). `reached`
-// resolves once the held event has arrived, which is when the work is durably
-// done yet still in flight for everything awaiting it.
-export function holdNextTransaction(stores: readonly string[], mode: IDBTransactionMode) {
+// Holds the next readwrite transaction opened over exactly `stores`:
+// fake-indexeddb commits it, but its "complete" event, and with it the
+// storage call that is waiting on that event, stays held until release().
+// `reached` resolves once the held event has arrived, which is when the
+// write is durably done yet still in flight for everything awaiting it.
+export function holdNextWriteTransaction(stores: readonly string[]) {
+  return holdNextTransactionEvent(stores, "complete");
+}
+
+// Holds the named event of the next readwrite transaction opened over exactly
+// `stores` - the abort-event twin a rollback's bounded-wait coverage needs,
+// since an aborted transaction never fires "complete". The mode defaults to
+// readwrite (the write seam's shape); the outcome scan's readonly
+// transaction passes "readonly".
+export function holdNextTransactionEvent(
+  stores: readonly string[],
+  event: "complete" | "abort",
+  mode: IDBTransactionMode = "readwrite",
+) {
   const transact = IDBDatabase.prototype.transaction;
   let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
   let markReached: (() => void) | undefined;
@@ -155,7 +168,7 @@ export function holdNextTransaction(stores: readonly string[], mode: IDBTransact
       transaction.objectStoreNames.length === stores.length &&
       stores.every((store) => transaction.objectStoreNames.contains(store))
     ) {
-      hold = holdIndexedDBEvent(transaction, "complete");
+      hold = holdIndexedDBEvent(transaction, event);
       void hold.reached.then(() => markReached?.());
     }
     return transaction;
@@ -169,10 +182,11 @@ export function holdNextTransaction(stores: readonly string[], mode: IDBTransact
   };
 }
 
-// Holds the next readwrite transaction opened over exactly `stores` (the
-// session cache's four-store write). See holdNextTransaction.
-export function holdNextWriteTransaction(stores: readonly string[]) {
-  return holdNextTransaction(stores, "readwrite");
+// Main's entry-backed-transcripts seam: the complete-event hold over an
+// explicit mode (the session cache's four-store write passes "readwrite").
+// See holdNextTransactionEvent.
+export function holdNextTransaction(stores: readonly string[], mode: IDBTransactionMode) {
+  return holdNextTransactionEvent(stores, "complete", mode);
 }
 
 // One real macrotask hop, off the faked timers: MessageChannel is a task the

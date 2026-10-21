@@ -15,6 +15,7 @@ import { useSessionActivity, useSubagentCounts } from "../../stores/sessionActiv
 import { useThreadsStore } from "../../stores/threads";
 import { Button, EmptyState, Loader, PaneScaffold, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { docOpeningOriginFor } from "../doc/docOpeningContext";
 import { ConversationBody, type ConversationSeat } from "../session/ConversationBody";
 import { retainedConversationComposer } from "../session/composer/retainedComposer";
 import { retainedTranscriptReadView } from "../session/transcript/transcriptReadView";
@@ -106,6 +107,10 @@ function ScopeConversation({
   const activity = deriveScope(navigationStore.getState(), scope.requestedRef, snapshot, subagents);
   activity.leaf.title = (imageMatches && model?.name) || scope.title;
   const composer = (admitted ? retainedConversationComposer(lifetime, scope.requestedRef) : null) ?? null;
+  // EACH column captures its own displayed scope's origin: only the lifetime's
+  // own session source column earns a browser-origin; every other column is an
+  // explicit read-only source pane.
+  const docOpeningOrigin = docOpeningOriginFor(lifetime, scope.requestedRef);
   const seat = useMemo<ConversationSeat>(
     () => ({
       readView: view,
@@ -133,8 +138,9 @@ function ScopeConversation({
       // never fires there.
       onResumedIdentity: (resumedRef) => resumeCascadeScope(lifetime, scope.requestedRef, resumedRef),
       sessionMenu: true,
+      docOpeningOrigin,
     }),
-    [view, composer, leaf, pane, lifetime, scope.requestedRef],
+    [view, composer, leaf, pane, lifetime, scope.requestedRef, docOpeningOrigin],
   );
   const readableWidth = leaf ? 440 : 400;
   const desktopWidth = readable ? readableWidth : 52;
