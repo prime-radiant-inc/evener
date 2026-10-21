@@ -270,7 +270,12 @@ test("a created connection's own provider drives the card rather than the chosen
   // The card creates the base the catalogue entry names, but the row the
   // listing returns can resolve to a different provider; that row is what the
   // card continues with, including its help.
-  const row = { ...catalogue[1]!.setup!, name: "openai-team", implicit: false };
+  const row = {
+    ...catalogue[1]!.setup!,
+    name: "openai-team",
+    implicit: false,
+    baseUrl: "https://team.openai.example/v1",
+  };
   client.on("evener/instance/create", () => {
     client.on("evener/instance/list", () => ({ instances: [row], availableProviders: structuredClone(catalogue) }));
     return { instances: [row], availableProviders: structuredClone(catalogue) };
@@ -1268,7 +1273,12 @@ test("a new connection card does not inherit the previous card's host-access cho
   await choose(user, "Azure");
   await enterName(user, "openai-team");
   await enterText(user, screen.getByLabelText("Endpoint URL"), "https://team.openai.example/v1");
-  const row = { ...catalogue[1]!.setup!, name: "openai-team", implicit: false };
+  const row = {
+    ...catalogue[1]!.setup!,
+    name: "openai-team",
+    implicit: false,
+    baseUrl: "https://team.openai.example/v1",
+  };
   client.on("evener/instance/create", () => {
     client.on("evener/instance/list", () => ({ instances: [row], availableProviders: structuredClone(catalogue) }));
     return { instances: [row], availableProviders: structuredClone(catalogue) };
@@ -1424,30 +1434,20 @@ test("a superseded reload read does not baseline a same-named row the store stil
   expect(screen.queryByLabelText("API key")).toBeNull();
 });
 
-// A recovered add card writes only the key typed in the card that created the
-// connection, asserted with the endpoint identity the recovered row carries -
-// never the previous connection's draft and never the previous row's
-// fingerprint. The provider that resolves the recovered row does not change
-// this: a key for the second endpoint is written to that endpoint, and a row
-// with no fingerprint is written without an assertion rather than with a
-// guess (roborev rounds 36 and 37).
+// A create whose own listing was superseded never writes the typed draft: the
+// only fingerprint the card may assert is the one the create itself authored.
+// The destination the reconciliation read lands - matching, different, or
+// missing its fingerprint - is the row the card shows, but it is not an
+// authority for a key typed against the authored endpoint. The draft stays
+// behind the key row, where a later Save asserts the row on screen.
 test.each([
-  { base: "anthropic", baselineFp: "fp-shared", rowFp: "fp-shared" },
-  { base: "openai", baselineFp: "fp-shared", rowFp: "fp-other" },
-  { base: "anthropic", baselineFp: undefined, rowFp: undefined },
+  { label: "a same-fingerprint", rowFp: "fp-shared" },
+  { label: "a different-fingerprint", rowFp: "fp-other" },
+  { label: "a missing-fingerprint", rowFp: undefined },
 ])(
-  "review regression: a deferred $base create writes its own draft with the recovered endpoint identity",
-  async ({ base, baselineFp, rowFp }) => {
-    const baselineList: InstanceListResponse = {
-      instances: [],
-      availableProviders: catalogue.map((row) =>
-        row.id === "anthropic"
-          ? provider("anthropic", "Anthropic", ["apiKey"], {
-              endpointFingerprint: baselineFp,
-            })
-          : row,
-      ),
-    };
+  "review regression: a superseded create leaves its draft unwritten after $label reconciliation",
+  async ({ rowFp }) => {
+    const baselineList: InstanceListResponse = { instances: [], availableProviders: catalogue };
     const { user, client } = setup(baselineList);
     await choose(user, "Anthropic");
     await enterText(user, screen.getByLabelText("API key"), "anthropic-private-draft");
@@ -1458,9 +1458,12 @@ test.each([
     await enterText(user, screen.getByLabelText("API key"), "add-card-key");
     const pending = deferred<InstanceListResponse>();
     const row = {
-      ...catalogue.find((candidate) => candidate.id === base)!.setup!,
+      ...catalogue[0]!.setup!,
       name: "recovered-team",
+      providerId: "azure",
+      base: "azure",
       implicit: false,
+      baseUrl: "https://recovered.example/v1",
       endpointFingerprint: rowFp,
     };
     const recovered: InstanceListResponse = {
@@ -1481,13 +1484,8 @@ test.each([
       await pending.promise;
     });
     expect(await screen.findByRole("dialog", { name: "recovered-team" })).toBeTruthy();
-    await waitFor(() => expect(client.calls.some((call) => call.method === "evener/auth/apiKey/set")).toBe(true));
-    expect(client.calls.find((call) => call.method === "evener/auth/apiKey/set")?.params).toEqual({
-      provider: "recovered-team",
-      value: "add-card-key",
-      ...(rowFp ? { expectedEndpointFingerprint: rowFp } : {}),
-      originClientId: "test-tab",
-    });
+    expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
+    expect(client.calls.some((call) => call.method === "evener/auth/test")).toBe(false);
     expect(
       client.calls.some(
         (call) =>
@@ -1496,6 +1494,9 @@ test.each([
       ),
     ).toBe(false);
     expect(client.calls.filter((call) => call.method === "evener/instance/create")).toHaveLength(1);
+    // The draft is retained behind the key row rather than discarded.
+    await user.click(screen.getByRole("button", { name: "Add key" }));
+    expect(screen.getByLabelText("API key")).toHaveProperty("value", "add-card-key");
   },
 );
 
@@ -1954,4 +1955,297 @@ test.each([
   expect(await alertReason()).toBe(reason);
   expect(document.querySelector('[role="status"][data-state="success"]')).toBeNull();
   expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
+});
+
+test("a create reconciled onto a different endpoint sends no credential and requires review", async () => {
+  const { user, client } = setup();
+  await choose(user, "Azure");
+  await enterName(user, "raced-team");
+  await enterText(user, screen.getByLabelText("Endpoint URL"), "https://authored.example/v1");
+  await enterText(user, screen.getByLabelText("API key"), "authored-key");
+  // Another client repoints the name before this create's confirmation read:
+  // the create answers with the row that now resolves to the other endpoint.
+  const repointed: InstanceEntry = {
+    ...catalogue[0]!.setup!,
+    name: "raced-team",
+    providerId: "azure",
+    implicit: false,
+    baseUrl: "https://repointed.example/v1",
+    endpointFingerprint: "fp-repointed",
+    activeSource: "none",
+  };
+  const listing: InstanceListResponse = {
+    instances: [repointed],
+    availableProviders: structuredClone(catalogue),
+  };
+  client.on("evener/instance/create", () => {
+    client.on("evener/instance/list", () => structuredClone(listing));
+    return structuredClone(listing);
+  });
+  client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+
+  await user.click(screen.getByRole("button", { name: "Save and test" }));
+
+  // The card reviewed the destination before writing the key for it.
+  const review = await screen.findByTestId("access-review");
+  expect(review.textContent).toContain("https://authored.example/v1");
+  expect(review.textContent).toContain("https://repointed.example/v1");
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
+  expect(client.calls.some((call) => call.method === "evener/auth/test")).toBe(false);
+
+  await user.click(screen.getByRole("button", { name: "Use reviewed access and test" }));
+  await checkConfirmed();
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
+  expect(client.calls.find((call) => call.method === "evener/auth/test")?.params).toEqual({
+    provider: "raced-team",
+    expectedEndpointFingerprint: "fp-repointed",
+  });
+});
+
+test("dismissing during the free-name read does not create the connection", async () => {
+  const { user, client, close } = setup();
+  await choose(user, "Azure");
+  await enterName(user, "late-team");
+  await enterText(user, screen.getByLabelText("Endpoint URL"), "https://late.example/v1");
+  const read = deferred<InstanceListResponse>();
+  client.on("evener/instance/list", () => read.promise);
+
+  await user.click(screen.getByRole("button", { name: "Save and test" }));
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(close).toHaveBeenCalledTimes(1);
+
+  await act(async () => {
+    read.resolve({ instances: [], availableProviders: structuredClone(catalogue) });
+    await read.promise;
+  });
+  expect(client.calls.filter((call) => call.method === "evener/instance/create")).toHaveLength(0);
+});
+
+test("an unconfirmed create keeps its name and offers reload", async () => {
+  const { user, client } = setup();
+  await choose(user, "Azure");
+  await enterName(user, "unconfirmed-team");
+  await enterText(user, screen.getByLabelText("Endpoint URL"), "https://unconfirmed.example/v1");
+  const empty: InstanceListResponse = { instances: [], availableProviders: structuredClone(catalogue) };
+  client.on("evener/instance/create", () => {
+    client.on("evener/instance/list", () => structuredClone(empty));
+    return structuredClone(empty);
+  });
+
+  await user.click(screen.getByRole("button", { name: "Save and test" }));
+
+  expect(await alertReason()).toBe("reload-failed");
+  expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy();
+  expect(client.calls.filter((call) => call.method === "evener/instance/create")).toHaveLength(1);
+});
+
+test("starting an endpoint save drops the previous successful check", async () => {
+  const { user, client } = setup(savedList());
+  client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+  await choose(user);
+  await user.click(screen.getByRole("button", { name: "Test again" }));
+  await checkConfirmed();
+  const save = deferred<InstanceListResponse>();
+  client.on("evener/instance/edit", () => save.promise);
+  await user.click(screen.getByRole("button", { name: "Edit" }));
+  const field = screen.getByLabelText("Endpoint URL");
+  await user.clear(field);
+  await enterText(user, field, "https://moved.example/v1");
+
+  await user.click(screen.getByRole("button", { name: "Save" }));
+
+  expect(screen.queryByRole("button", { name: "Choose model" })).toBeNull();
+  expect(document.querySelector('[role="status"][data-state="success"]')).toBeNull();
+  await act(async () => {
+    save.resolve(savedList("anthropic", { baseUrl: "https://moved.example/v1" }));
+    await save.promise;
+  });
+});
+
+test("starting a settings save drops the previous successful check", async () => {
+  const { user, client } = setup(savedList());
+  client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+  await choose(user);
+  await user.click(screen.getByRole("button", { name: "Test again" }));
+  await checkConfirmed();
+  const save = deferred<InstanceListResponse>();
+  client.on("evener/instance/edit", () => save.promise);
+  await user.click(screen.getByText("All connection settings"));
+
+  await user.click(screen.getByRole("button", { name: "Save settings" }));
+
+  expect(screen.queryByRole("button", { name: "Choose model" })).toBeNull();
+  await act(async () => {
+    save.resolve(savedList());
+    await save.promise;
+  });
+});
+
+test("canceling a replacement restores the saved key row", async () => {
+  const { user } = setup(savedList());
+  await choose(user);
+  await user.click(screen.getByRole("button", { name: "Replace" }));
+  await enterText(user, screen.getByLabelText("API key"), "replacement-draft");
+
+  // The row's Cancel comes before the footer's in document order.
+  await user.click(screen.getAllByRole("button", { name: "Cancel" })[0]!);
+
+  expect(screen.getByTestId("credential-saved")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Test again" })).toBeTruthy();
+});
+
+test("typing a credential after choosing host access saves it", async () => {
+  const { user, client } = setup(
+    savedList("anthropic", { activeSource: "env:ANTHROPIC_API_KEY", hasStoredFile: false }),
+  );
+  scriptSave(client);
+  await choose(user);
+  // A connection with no stored key opens its key row already.
+  await openHostAccess(user);
+  await enterText(user, screen.getByLabelText("API key"), "typed-key");
+
+  await user.click(screen.getByRole("button", { name: /^(Save and test|Test connection)$/ }));
+
+  await checkConfirmed();
+  expect(client.calls.find((call) => call.method === "evener/auth/apiKey/set")?.params).toEqual({
+    provider: "anthropic",
+    value: "typed-key",
+    expectedEndpointFingerprint: "fp-anthropic",
+    originClientId: "test-tab",
+  });
+});
+
+test("saving one settings field leaves an externally changed field alone", async () => {
+  const { user, client } = setup(savedList());
+  await choose(user);
+  await user.click(screen.getByText("All connection settings"));
+  // Another client changes the protocol while the disclosure sits open; the
+  // untouched draft field must not overwrite it.
+  const external = { ...savedList().instances[0]!, protocol: "anthropic" };
+  client.on("evener/instance/list", () => ({
+    instances: [external],
+    availableProviders: structuredClone(catalogue),
+  }));
+  await act(async () => {
+    await credentialsStore.getState().fetch();
+  });
+  const edited = { ...external, apiKeyEnv: "TEAM_KEY" };
+  client.on("evener/instance/edit", () => {
+    const listing: InstanceListResponse = {
+      instances: [edited],
+      availableProviders: structuredClone(catalogue),
+    };
+    client.on("evener/instance/list", () => structuredClone(listing));
+    return structuredClone(listing);
+  });
+  await enterText(user, screen.getByLabelText("API key env"), "TEAM_KEY");
+
+  await user.click(screen.getByRole("button", { name: "Save settings" }));
+
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/instance/edit")).toBe(true));
+  expect(client.calls.find((call) => call.method === "evener/instance/edit")?.params).toEqual({
+    name: "anthropic",
+    apiKeyEnv: "TEAM_KEY",
+    clearApiKeyEnv: false,
+    expectedEndpointFingerprint: "fp-anthropic",
+    originClientId: "test-tab",
+  });
+});
+
+test("Enter in the endpoint editor saves that row's draft", async () => {
+  const { user, client } = setup(savedList());
+  await choose(user);
+  await user.click(screen.getByRole("button", { name: "Edit" }));
+  const field = screen.getByLabelText("Endpoint URL");
+  await user.clear(field);
+  await enterText(user, field, "https://moved.example/v1");
+  const save = deferred<InstanceListResponse>();
+  client.on("evener/instance/edit", () => save.promise);
+
+  await user.keyboard("{Enter}");
+
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/instance/edit")).toBe(true));
+  expect(client.calls.some((call) => call.method === "evener/auth/test")).toBe(false);
+  await act(async () => {
+    save.resolve(savedList("anthropic", { baseUrl: "https://moved.example/v1" }));
+    await save.promise;
+  });
+});
+
+test("Enter in the add card creates the connection", async () => {
+  const { user, client } = setup();
+  await choose(user, "Azure");
+  await enterName(user, "enter-team");
+  await enterText(user, screen.getByLabelText("Endpoint URL"), "https://enter.example/v1");
+  const row: InstanceEntry = {
+    ...catalogue[0]!.setup!,
+    name: "enter-team",
+    providerId: "azure",
+    implicit: false,
+    baseUrl: "https://enter.example/v1",
+  };
+  const listing: InstanceListResponse = { instances: [row], availableProviders: structuredClone(catalogue) };
+  client.on("evener/instance/create", () => {
+    client.on("evener/instance/list", () => structuredClone(listing));
+    return structuredClone(listing);
+  });
+  client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+
+  await user.keyboard("{Enter}");
+
+  await waitFor(() => expect(client.calls.filter((call) => call.method === "evener/instance/create")).toHaveLength(1));
+});
+
+test("a superseded create never writes its draft against the reconciled endpoint", async () => {
+  const { user, client } = setup();
+  await choose(user, "Azure");
+  await enterName(user, "raced-team");
+  await enterText(user, screen.getByLabelText("Endpoint URL"), "https://authored.example/v1");
+  await enterText(user, screen.getByLabelText("API key"), "authored-key");
+
+  // The create's own listing authored endpoint A. The same sanitized URL can
+  // hide a different endpoint identity, so B differs only by fingerprint.
+  const authored: InstanceEntry = {
+    ...catalogue[0]!.setup!,
+    name: "raced-team",
+    providerId: "azure",
+    implicit: false,
+    baseUrl: "https://authored.example/v1",
+    endpointFingerprint: "fp-authored",
+    activeSource: "none",
+  };
+  const repointed: InstanceEntry = {
+    ...authored,
+    endpointFingerprint: "fp-repointed",
+  };
+  const authoredListing: InstanceListResponse = {
+    instances: [authored],
+    availableProviders: structuredClone(catalogue),
+  };
+  const repointedListing: InstanceListResponse = {
+    instances: [repointed],
+    availableProviders: structuredClone(catalogue),
+  };
+  const create = deferred<InstanceListResponse>();
+  client.on("evener/instance/create", () => create.promise);
+
+  await user.click(screen.getByRole("button", { name: "Save and test" }));
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/instance/create")).toBe(true));
+  // A concurrent read lands endpoint B and supersedes the create's answer.
+  client.on("evener/instance/list", () => structuredClone(repointedListing));
+  await act(async () => {
+    await credentialsStore.getState().fetchSelf();
+  });
+  await act(async () => {
+    create.resolve(structuredClone(authoredListing));
+    await create.promise;
+  });
+
+  // The reconciliation read finds B. The card may show B, but it may not send
+  // the key typed for A to B's fingerprint.
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
+  expect(client.calls.some((call) => call.method === "evener/auth/test")).toBe(false);
+  expect(await screen.findByRole("dialog", { name: "raced-team" })).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Add key" }));
+  expect(screen.getByLabelText("API key")).toHaveProperty("value", "authored-key");
 });

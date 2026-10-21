@@ -380,6 +380,7 @@ function SelectedConnection({
   const [endpointDraft, setEndpointDraft] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsDraft, setSettingsDraft] = useState<SettingsDraft>(() => settingsOf(row));
+  const [settingsBaseline, setSettingsBaseline] = useState<SettingsDraft>(() => settingsOf(row));
   const modes = row?.authModes ?? effectiveProvider.authModes ?? [];
   const json = modes.includes("credentialJson");
   const storedMode = json || modes.includes("apiKey");
@@ -468,6 +469,9 @@ function SelectedConnection({
   }
   function changeValue(next: string) {
     operation.current += 1;
+    // A typed credential replaces host access: the flag applies only while the
+    // field is empty and the card is about to test whatever the host resolves.
+    if (next.trim()) setHost(false);
     setDraft({ providerId: resolvedProviderId ?? effectiveProvider.id, value: next });
     setMissingCredential(false);
     setSaved(false);
@@ -650,18 +654,29 @@ function SelectedConnection({
       document.getElementById("connection-endpoint")?.focus();
       return;
     }
+    // The read is part of this operation: a dismissal or a replaced connection
+    // while it runs must invalidate the continuation, so the token is taken
+    // before the await and the card is busy for its duration.
+    const token = ++operation.current;
+    setPhase("saving");
     if (!(await nameIsFree(trimmedName))) {
+      if (!current(token)) return;
+      setPhase("idle");
       setError({ reason: "create-failed", message: `A connection named ${trimmedName} already exists.` });
       document.getElementById("connection-name")?.focus();
       return;
     }
-    const token = ++operation.current;
+    if (!current(token)) return;
     setError(null);
     setResult(null);
-    setPhase("saving");
     selfMutation.current = true;
+    let applied = false;
+    // The fingerprint the create itself authored. It is read from the create's
+    // own applied listing before any further await, because a later listing is
+    // a different destination's word and must never carry this key.
+    let authoredFingerprint: string | undefined;
     try {
-      const applied = await credentialsStore.getState().create({
+      applied = await credentialsStore.getState().create({
         name: trimmedName,
         base: effectiveProvider.id,
         baseUrl: trimmedBaseUrl,
@@ -670,15 +685,23 @@ function SelectedConnection({
         selfMutation.current = false;
         return;
       }
-      const confirmed = applied
+      const authored = applied
         ? credentialsStore
             .getState()
-            .instances.some((candidate) => candidate.name === trimmedName && !candidate.implicit)
+            .instances.find((candidate) => candidate.name === trimmedName && !candidate.implicit)
+        : undefined;
+      authoredFingerprint = authored?.endpointFingerprint;
+      const confirmed = applied
+        ? authored !== undefined
         : await confirmListingState((instances) =>
             instances.some((candidate) => candidate.name === trimmedName && !candidate.implicit),
           );
       selfMutation.current = false;
       if (!confirmed) {
+        // The create itself landed. Keep its name and move to the card's
+        // reload recovery rather than leaving add mode without a way back.
+        setName(trimmedName);
+        setConfigured(true);
         setPhase("idle");
         setError({
           reason: "reload-failed",
@@ -702,19 +725,41 @@ function SelectedConnection({
     if (!current(token)) return;
     const created = findSetup(trimmedName);
     setName(trimmedName);
-    setBaseline(created);
     setConfigured(true);
     setStoredAccess(created?.activeSource === "store");
     setHost(false);
     setMissingCredential(false);
+    if (!created) {
+      setPhase("idle");
+      setError({ reason: "reload-failed", message: RELOAD_FAILED_ERROR });
+      return;
+    }
+    const typedKey = value.trim();
+    if (!needsConfiguration(created) && created.baseUrl !== trimmedBaseUrl) {
+      // The name resolved to a different destination than this card authored.
+      // The draft belongs to the authored endpoint, so it is dropped; the
+      // reviewed row is contacted only after the user accepts the move.
+      changeValue("");
+      setBaseline({ ...created, baseUrl: trimmedBaseUrl });
+      setReview(created);
+      setPhase("review");
+      return;
+    }
+    setBaseline(created);
     // The key typed in the add state belongs to the endpoint just created, so
     // it is written against that row and tested with it.
-    const typedKey = value.trim();
-    if (storedMode && typedKey && created) {
+    if (storedMode && typedKey) {
+      if (!applied || authoredFingerprint === undefined || created.endpointFingerprint !== authoredFingerprint) {
+        // The create's own listing was superseded, or the reconciled row is a
+        // different destination. The draft belongs to the authored endpoint:
+        // keep it, and let the user save it from the key row, whose write
+        // asserts the row actually on screen.
+        setPhase("idle");
+        return;
+      }
       try {
-        if (json)
-          await credentialsStore.getState().setCredentialJson(trimmedName, typedKey, created.endpointFingerprint);
-        else await credentialsStore.getState().setApiKey(trimmedName, typedKey, created.endpointFingerprint);
+        if (json) await credentialsStore.getState().setCredentialJson(trimmedName, typedKey, authoredFingerprint);
+        else await credentialsStore.getState().setApiKey(trimmedName, typedKey, authoredFingerprint);
         if (!current(token)) return;
         setSaved(true);
         setStoredAccess(true);
@@ -763,6 +808,7 @@ function SelectedConnection({
     const token = ++operation.current;
     setPhase("saving");
     setError(null);
+    setResult(null);
     selfMutation.current = true;
     try {
       await credentialsStore
@@ -798,18 +844,27 @@ function SelectedConnection({
     const token = ++operation.current;
     setPhase("saving");
     setError(null);
+    setResult(null);
     selfMutation.current = true;
+    const changed = (field: keyof SettingsDraft) => settingsDraft[field] !== settingsBaseline[field];
     try {
       await credentialsStore.getState().edit({
         name: row.name,
-        protocol: settingsDraft.protocol || undefined,
-        clearProtocol: !settingsDraft.protocol,
-        surface: settingsDraft.surface || undefined,
-        clearSurface: !settingsDraft.surface,
-        apiKeyEnv: settingsDraft.apiKeyEnv || undefined,
-        clearApiKeyEnv: !settingsDraft.apiKeyEnv,
-        credentialHeader: settingsDraft.credentialHeader || undefined,
-        clearCredentialHeader: !settingsDraft.credentialHeader,
+        ...(changed("protocol")
+          ? { protocol: settingsDraft.protocol || undefined, clearProtocol: !settingsDraft.protocol }
+          : {}),
+        ...(changed("surface")
+          ? { surface: settingsDraft.surface || undefined, clearSurface: !settingsDraft.surface }
+          : {}),
+        ...(changed("apiKeyEnv")
+          ? { apiKeyEnv: settingsDraft.apiKeyEnv || undefined, clearApiKeyEnv: !settingsDraft.apiKeyEnv }
+          : {}),
+        ...(changed("credentialHeader")
+          ? {
+              credentialHeader: settingsDraft.credentialHeader || undefined,
+              clearCredentialHeader: !settingsDraft.credentialHeader,
+            }
+          : {}),
         expectedEndpointFingerprint: row.endpointFingerprint,
       });
       selfMutation.current = false;
@@ -925,6 +980,7 @@ function SelectedConnection({
     );
 
   function primaryActionLabel(): string {
+    if (editing === "endpoint") return "Save endpoint";
     if (busy) {
       if (phase === "saving") return adding ? "Creating…" : "Saving…";
       return phase === "refreshing" ? "Reading providers…" : "Testing…";
@@ -952,13 +1008,15 @@ function SelectedConnection({
             {storedAccess ? "Close, access stays saved" : "Cancel"}
           </Button>
           {result?.status === "unsupported" ? (
-            <Button variant="secondary" onClick={() => leave(() => onConnected(name))}>
+            <Button variant="secondary" disabled={busy} onClick={() => leave(() => onConnected(name))}>
               Continue without verification
             </Button>
           ) : result?.status === "success" ? (
-            <Button onClick={() => leave(() => onConnected(name))}>{completionLabel}</Button>
+            <Button disabled={busy} onClick={() => leave(() => onConnected(name))}>
+              {completionLabel}
+            </Button>
           ) : (
-            <Button disabled={busy || unavailable || hostConfigured} onClick={() => void submit()}>
+            <Button type="submit" form="provider-connection-form" disabled={busy || unavailable || hostConfigured}>
               {primaryLabel}
             </Button>
           )}
@@ -971,7 +1029,14 @@ function SelectedConnection({
         noValidate
         onSubmit={(event) => {
           event.preventDefault();
-          void submit();
+          if (editing === "endpoint") void saveEndpoint();
+          else void submit();
+        }}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" || event.target instanceof HTMLButtonElement) return;
+          event.preventDefault();
+          if (editing === "endpoint") void saveEndpoint();
+          else void submit();
         }}
       >
         <div className={styles.cardHead}>
@@ -1159,6 +1224,7 @@ function SelectedConnection({
                             setEditing(null);
                             setHost(false);
                             changeValue("");
+                            setSaved(row?.activeSource === "store");
                           }}
                         >
                           Cancel
@@ -1280,7 +1346,17 @@ function SelectedConnection({
         )}
 
         {!adding && !hostConfigured && (
-          <Disclosure open={settingsOpen} onOpenChange={setSettingsOpen} summary="All connection settings">
+          <Disclosure
+            open={settingsOpen}
+            onOpenChange={(open) => {
+              if (open) {
+                setSettingsDraft(settingsOf(row));
+                setSettingsBaseline(settingsOf(row));
+              }
+              setSettingsOpen(open);
+            }}
+            summary="All connection settings"
+          >
             <div className={styles.settings}>
               {row?.vars && Object.keys(row.vars).length > 0 && (
                 <p className={styles.note}>{Object.keys(row.vars).sort(byCodePoint).join(", ")}</p>
