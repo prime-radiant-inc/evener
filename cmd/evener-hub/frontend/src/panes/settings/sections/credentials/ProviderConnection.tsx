@@ -541,10 +541,7 @@ function SelectedConnection({
   }, [errorMessage]);
 
   function leave(callback: () => void) {
-    clearRetry();
-    retryAttempt.current = 0;
-    pendingRecovery.current = null;
-    operation.current += 1;
+    retireForIntentChange();
     callback();
   }
   function current(token: number) {
@@ -815,8 +812,8 @@ function SelectedConnection({
         });
         return;
       }
-      await refreshAndCheck(token, acquisitionSource.current);
-    } else await refreshAndCheck(token, acquisitionSource.current);
+    }
+    await refreshAndCheck(token, acquisitionSource.current);
   }
 
   async function signIn() {

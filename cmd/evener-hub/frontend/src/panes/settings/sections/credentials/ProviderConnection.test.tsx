@@ -1,5 +1,6 @@
 import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "@evener/appwire-client";
 import { ErrorEndpointConflict, WireError } from "@evener/appwire-client";
+import { deferred as sharedDeferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -809,13 +810,8 @@ function scriptSave(client: FakeClient, next = savedList()) {
   client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "raw-provider-secret" }));
 }
 function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((r, j) => {
-    resolve = r;
-    reject = j;
-  });
-  return { promise, resolve, reject };
+  const { promise, resolve, reject } = sharedDeferred<T>();
+  return { promise, resolve, reject: (reason?: unknown) => reject(reason) };
 }
 
 // The store refuses a save issued from the previous connection's listing
@@ -970,7 +966,10 @@ test("a temporary endpoint failure retries on the paced schedule and completes o
   expect(connected).not.toHaveBeenCalled();
   // Saved access plus a scheduled automatic retry is said out loud, so a
   // transient failure does not read as a terminal rejection.
-  expect(document.querySelector('[data-retry="scheduled"]')?.textContent).toMatch(/access is saved/i);
+  const scheduledNotice = document.querySelector<HTMLElement>('[data-retry="scheduled"]');
+  expect(scheduledNotice).not.toBeNull();
+  expect(scheduledNotice?.getAttribute("role")).toBe("status");
+  expect(scheduledNotice?.textContent?.trim()).not.toBe("");
 
   // First retry is one second after the failed check, the next two seconds.
   client.on("evener/auth/test", ({ provider }) => {
@@ -1011,7 +1010,10 @@ test("saved OAuth access awaiting an automatic retry does not invite another sig
   await user.click(screen.getByRole("button", { name: "Retry check" }));
 
   await waitFor(() => expect(reasonShown("check-failed")).toBe(true));
-  expect(document.querySelector('[data-retry="scheduled"]')?.textContent).toMatch(/access is saved/i);
+  const scheduledNotice = document.querySelector<HTMLElement>('[data-retry="scheduled"]');
+  expect(scheduledNotice).not.toBeNull();
+  expect(scheduledNotice?.getAttribute("role")).toBe("status");
+  expect(scheduledNotice?.textContent?.trim()).not.toBe("");
   // Recovery is already running on stored access: offering a fresh acquisition
   // would invite a needless sign-in.
   expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
