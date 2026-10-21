@@ -16,7 +16,7 @@ import {
 } from "@evener/appwire-client";
 import type { EditSupersededReconcile } from "@evener/appwire-client/state/credentials";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { isEditableTarget } from "../../../../keybindings/dispatcher";
+import { isIMECompositionKeydown, isTextEntryTarget } from "../../../../keybindings/dispatcher";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
 import {
   credentialsStore,
@@ -189,6 +189,11 @@ function listingRow(rows: InstanceEntry[], name: string): InstanceEntry | undefi
 
 function needsConfiguration(row: InstanceEntry | undefined): boolean {
   return !row?.baseUrl || /[{}]/.test(row.baseUrl);
+}
+/** isStoredAccess reports whether the row's usable credential is the one in
+ * the credential store, with host access overriding it. */
+function isStoredAccess(row: InstanceEntry | undefined, host: boolean): boolean {
+  return !host && row?.activeSource === "store";
 }
 /** The refusal every write and check reports the same way: either the
  * connection was replaced under the flow, or its endpoint moved. */
@@ -406,8 +411,8 @@ function SelectedConnection({
   }, [resolvedProviderId]);
   const [missingCredential, setMissingCredential] = useState(false);
   const [host, setHost] = useState(false);
-  const [saved, setSaved] = useState(row?.activeSource === "store");
-  const [storedAccess, setStoredAccess] = useState(row?.activeSource === "store");
+  const [saved, setSaved] = useState(isStoredAccess(row, false));
+  const [storedAccess, setStoredAccess] = useState(isStoredAccess(row, false));
   const [configured, setConfigured] = useState(false);
   const [oauth, setOAuth] = useState<OAuthEditor | null>(null);
   const [phase, setPhaseState] = useState<Phase>("idle");
@@ -423,7 +428,7 @@ function SelectedConnection({
   const draftClaim = useRef<DestinationClaim | undefined>(undefined);
   const [endpointClaim, setEndpointClaim] = useState<DestinationClaim | undefined>(undefined);
   const [settingsClaim, setSettingsClaim] = useState<DestinationClaim | undefined>(undefined);
-  const dropDraftRef = useRef<() => void>(() => {});
+  const adoptBaselineRef = useRef<(next: InstanceEntry | undefined) => void>(() => {});
   // A listing the card's own create/edit installed is not a foreign change.
   // The write's asserted endpoint is what protects it from a destination that
   // moved meanwhile, so the watch stands aside until the write's continuation
@@ -495,14 +500,12 @@ function SelectedConnection({
       // A credential draft is pinned to the destination it was typed for. The
       // listing moving that destination is the one change no later save may
       // miss: drop the draft now, and say why, before any write can use it.
+      const now = findSetup(name);
       const claim = draftClaim.current;
-      if (claim && !claimHolds(claim, findSetup(name))) {
-        dropDraftRef.current();
-        setError({ reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR });
-      }
+      if (claim && !claimHolds(claim, now)) adoptBaselineRef.current(now);
       if (
         ["saving", "checking", "result", "review"].includes(phaseRef.current) ||
-        (oauth && destination(findSetup(name)) !== destination(baseline))
+        (oauth && destination(now) !== destination(baseline))
       )
         invalidate();
     });
@@ -577,7 +580,6 @@ function SelectedConnection({
     setDraft({ providerId: resolvedProviderId ?? effectiveProvider.id, value: "" });
     setMissingCredential(false);
   }
-  dropDraftRef.current = dropDraft;
 
   /** closeEndpointEditor ends the endpoint row's edit and drops its claim. The
    * caller decides whether the save landed and what to report. */
@@ -595,17 +597,21 @@ function SelectedConnection({
 
   /** adoptBaseline makes next the card's new baseline, and does it for every
    * path. A credential draft is pinned to the destination it was typed for, so
-   * adopting a different destination drops the draft first and says why. No
-   * later Save can compare the new baseline with itself and send the draft to
-   * a replacement the user never reviewed. */
+   * adopting a different destination drops the draft first and says why. The
+   * key row is derived from the row actually adopted, so a stored key it still
+   * resolves is saved, not missing. */
   function adoptBaseline(next: InstanceEntry | undefined) {
     const claim = draftClaim.current;
     if (claim && !claimHolds(claim, next)) {
       dropDraft();
       setError({ reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR });
     }
+    const stored = isStoredAccess(next, host);
+    setSaved(stored);
+    setStoredAccess(stored);
     setBaseline(next);
   }
+  adoptBaselineRef.current = adoptBaseline;
 
   type EditConfirmation = { kind: "confirmed"; row: InstanceEntry } | { kind: "moved" } | { kind: "unconfirmed" };
 
@@ -740,7 +746,8 @@ function SelectedConnection({
       // Best-effort: the alert below is the answer either way.
     }
     changeValue("");
-    adoptBaseline(findSetup(targetName));
+    const recovered = findSetup(targetName);
+    adoptBaseline(recovered);
     setError(changed);
   }
 
@@ -823,7 +830,6 @@ function SelectedConnection({
     if (!saved && storedMode && !host && value.trim()) {
       const claim = draftClaim.current;
       if (!claim || !claimHolds(claim, row)) {
-        dropDraft();
         adoptBaseline(row);
         setError({ reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR });
         return;
@@ -948,7 +954,7 @@ function SelectedConnection({
     const created = findSetup(trimmedName);
     setName(trimmedName);
     setConfigured(true);
-    setStoredAccess(created?.activeSource === "store");
+    setStoredAccess(isStoredAccess(created, false));
     setHost(false);
     setMissingCredential(false);
     if (!created) {
@@ -1240,12 +1246,14 @@ function SelectedConnection({
         }}
         onKeyDown={(event) => {
           if (event.key !== "Enter" || event.defaultPrevented) return;
+          // Composition Enter confirms text, not a card save.
+          if (isIMECompositionKeydown(event.nativeEvent)) return;
           const target = event.target;
           // Enter belongs to the editable field it was pressed in. A summary,
           // link, or button is a native control: intercepting it here would
           // submit the card (and could start a provider check) instead of
           // opening settings or following the link.
-          if (!(target instanceof HTMLElement) || !isEditableTarget(target)) return;
+          if (!(target instanceof HTMLElement) || !isTextEntryTarget(target)) return;
           event.preventDefault();
           if (editing === "endpoint" && target.id === "connection-endpoint") {
             void saveEndpoint();
@@ -1453,7 +1461,7 @@ function SelectedConnection({
                             setEditing(null);
                             setHost(false);
                             changeValue("");
-                            setSaved(row?.activeSource === "store");
+                            setSaved(isStoredAccess(row, false));
                           }}
                         >
                           Cancel

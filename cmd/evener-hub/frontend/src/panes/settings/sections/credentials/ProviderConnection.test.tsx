@@ -2491,7 +2491,9 @@ test.each([
       await enterText(user, screen.getByLabelText("API key"), "typed-for-anthropic");
     },
     async attempt(user: ReturnType<typeof userEvent.setup>) {
-      await user.click(screen.getByRole("button", { name: "Save and test" }));
+      // The stored key the replacement sat in front of is still saved, so the
+      // primary action is the check, not another save.
+      await user.click(screen.getByRole("button", { name: "Test again" }));
     },
   },
   {
@@ -2618,6 +2620,72 @@ test("Enter on a disclosure or link keeps its native activation", async () => {
 
   const link = screen.getByRole("link", { name: "Get an API key" });
   fireEvent.keyDown(link, { key: "Enter" });
+  expect(client.calls.filter((call) => call.method === "evener/instance/edit")).toHaveLength(0);
+  expect(client.calls.some((call) => call.method === "evener/auth/test")).toBe(false);
+});
+
+// A replacement typed against the old destination is dropped when that
+// destination moves, but the stored key the returned row still resolves is
+// not: the card must show saved access and let the check run.
+test("dropping a replacement draft restores the saved key state", async () => {
+  const { user, client } = setup(savedList());
+  await choose(user);
+  await user.click(screen.getByRole("button", { name: "Replace" }));
+  await enterText(user, screen.getByLabelText("API key"), "replacement-for-anthropic");
+  await user.click(screen.getByRole("button", { name: "Edit" }));
+  const field = screen.getByLabelText("Endpoint URL");
+  await user.clear(field);
+  await enterText(user, field, "https://moved.example/v1");
+
+  const moved = savedList("anthropic", {
+    baseUrl: "https://moved.example/v1",
+    endpointFingerprint: "fp-moved",
+    activeSource: "store",
+  });
+  client.on("evener/instance/edit", () => {
+    client.on("evener/instance/list", () => structuredClone(moved));
+    return structuredClone(moved);
+  });
+  client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+
+  await user.click(screen.getByRole("button", { name: "Save" }));
+
+  // The replacement is gone; the stored key still resolves, so the card is
+  // back to saved access and testing is not blocked on a missing credential.
+  expect(await screen.findByRole("button", { name: "Test again" })).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Test again" }));
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/auth/test")).toBe(true));
+  expect(client.calls.find((call) => call.method === "evener/auth/test")?.params).toMatchObject({
+    provider: "anthropic",
+    expectedEndpointFingerprint: "fp-moved",
+  });
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
+});
+
+// Enter during an IME composition confirms the composition, not the card's
+// editor: the field may still be mid-composition and must not save.
+test("Enter during IME composition does not save", async () => {
+  const { user, client } = setup(savedList());
+  await choose(user);
+  await user.click(screen.getByRole("button", { name: "Edit" }));
+  const field = screen.getByLabelText("Endpoint URL");
+  await user.clear(field);
+  await enterText(user, field, "https://composed.example/v1");
+
+  fireEvent.keyDown(field, { key: "Enter", isComposing: true, keyCode: 229 });
+
+  expect(client.calls.filter((call) => call.method === "evener/instance/edit")).toHaveLength(0);
+});
+
+// A native select keeps its own Enter behavior; the save shortcut is for text
+// fields, not the Protocol or Surface picker.
+test("Enter on a settings picker keeps native activation", async () => {
+  const { user, client } = setup(savedList());
+  await choose(user);
+  await user.click(screen.getByText("All connection settings"));
+
+  fireEvent.keyDown(screen.getByLabelText("Protocol"), { key: "Enter" });
+
   expect(client.calls.filter((call) => call.method === "evener/instance/edit")).toHaveLength(0);
   expect(client.calls.some((call) => call.method === "evener/auth/test")).toBe(false);
 });
