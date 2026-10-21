@@ -76,8 +76,15 @@ function RetryAction({
   const admissionInFlight = useRetryAdmissionInFlight(sessionRef);
   const awaitingReflection = useRetryAwaitingReflection(sessionRef, turnId);
   const submitting = useComposerSubmitting(sessionRef);
-  const cacheUnverified = useThreadsStore((state) => state.cacheUnverified.has(sessionRef));
-  const submissionInFlight = useThreadsStore((state) => state.turnSubmissionRefs.has(sessionRef));
+  const threadBlock = useThreadsStore((state) =>
+    state.cacheUnverified.has(sessionRef)
+      ? "cache"
+      : state.turnSubmissionRefs.has(sessionRef)
+        ? "submission"
+        : undefined,
+  );
+  const cacheUnverified = threadBlock === "cache";
+  const submissionInFlight = threadBlock === "submission";
   const pending = ownPendingTurnInput(pendingEntries);
   useEffect(() => {
     if (awaitingReflection) ensureRetryReflectionResolved(sessionRef);

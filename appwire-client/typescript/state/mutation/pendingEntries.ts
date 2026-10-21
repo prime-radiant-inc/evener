@@ -64,6 +64,12 @@ export const PENDING_TURN_METHODS: readonly string[] = Object.freeze([
   "turn/promoteQueuedAsSteer",
 ]);
 
+// The two methods that submit user turn input. Retry, retention and admission
+// all mean exactly these; steering a queued message is not a turn submission.
+export function isTurnSubmissionMethod(method: string): boolean {
+  return method === "turn/start" || method === "turn/queue";
+}
+
 // Collapses any whitespace run to a single space and trims both ends.
 export function normalizeText(s: string): string {
   return s.replace(/\s+/g, " ").trim();

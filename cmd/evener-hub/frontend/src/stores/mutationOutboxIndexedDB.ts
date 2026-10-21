@@ -1,4 +1,5 @@
 import type { ComposerMention, InputItem } from "@evener/appwire-client";
+import { isTurnSubmissionMethod } from "@evener/appwire-client/state/mutation";
 import { IDBConnection, requestResult, transactionCompletion, tryAbortTransaction } from "./idbConnection";
 import { ownClientId } from "./mutationClientIdentity";
 import type {
@@ -303,12 +304,34 @@ export class MutationOutboxIndexedDB {
         (record) =>
           record.targetRef === targetRef &&
           record.originClientId === ownClientId() &&
-          (record.method === "turn/start" || record.method === "turn/queue") &&
+          isTurnSubmissionMethod(record.method) &&
           record.state !== "canceled",
       )
     ) {
       throw new MutationAdmissionLostError();
     }
+  }
+
+  // The one optimistic-copy deletion loop. The target index bounds the read to
+  // this ref and returns intent-sequence order; the predicate decides which
+  // rows leave. Returns the deleted ids in that order.
+  async #deleteOptimisticCopies(
+    transaction: IDBTransaction,
+    targetRef: string,
+    shouldDelete: (record: MutationOptimisticRecord) => boolean,
+  ): Promise<string[]> {
+    const index = transaction.objectStore(OPTIMISTIC_STORE).index(TARGET_SEQUENCE_INDEX);
+    const keyRange = globalThis.IDBKeyRange;
+    const records = await requestResult<MutationOptimisticRecord[]>(
+      index.getAll(keyRange === undefined ? undefined : keyRange.bound([targetRef], [targetRef, []])),
+    );
+    const deleted: string[] = [];
+    for (const record of records) {
+      if (record.targetRef !== targetRef || !shouldDelete(record)) continue;
+      await requestResult(transaction.objectStore(OPTIMISTIC_STORE).delete(record.clientMutationId));
+      deleted.push(record.clientMutationId);
+    }
+    return deleted;
   }
 
   // The click-time half of §4's stop barrier: what an enqueuing tab reads at
@@ -678,23 +701,15 @@ export class MutationOutboxIndexedDB {
     observedTurnIds: ReadonlySet<string>,
   ): Promise<string[]> {
     return this.#write([OPTIMISTIC_STORE], "settleAbsentAcceptedCopies", async (transaction) => {
-      const store = transaction.objectStore(OPTIMISTIC_STORE);
-      const records = await requestResult<MutationOptimisticRecord[]>(store.getAll());
-      const settled: string[] = [];
-      for (const record of records) {
+      return this.#deleteOptimisticCopies(transaction, targetRef, (record) => {
         const acceptedTurnObserved =
           record.submissionAcceptedTurnId !== undefined && observedTurnIds.has(record.submissionAcceptedTurnId);
-        if (
-          record.targetRef === targetRef &&
+        return (
           record.retainAcceptedCopyUntilObserved === true &&
           (acceptedTurnObserved || (record.acceptedAt !== undefined && record.acceptedAt < observedBefore)) &&
           !authoritativeIds.has(record.clientMutationId)
-        ) {
-          await requestResult(store.delete(record.clientMutationId));
-          settled.push(record.clientMutationId);
-        }
-      }
-      return settled;
+        );
+      });
     });
   }
 
@@ -702,15 +717,7 @@ export class MutationOutboxIndexedDB {
   // none of them describes the replacement conversation.
   async retireAcceptedCopies(targetRef: string): Promise<string[]> {
     return this.#write([OPTIMISTIC_STORE], "retireAcceptedCopies", async (transaction) => {
-      const store = transaction.objectStore(OPTIMISTIC_STORE);
-      const records = await requestResult<MutationOptimisticRecord[]>(store.getAll());
-      const retired: string[] = [];
-      for (const record of records) {
-        if (record.targetRef !== targetRef) continue;
-        await requestResult(store.delete(record.clientMutationId));
-        retired.push(record.clientMutationId);
-      }
-      return retired;
+      return this.#deleteOptimisticCopies(transaction, targetRef, () => true);
     });
   }
 
@@ -756,7 +763,7 @@ export class MutationOutboxIndexedDB {
           // keeps the previous settle-out.
           (projectionState === "reflected" &&
             source.retainAcceptedCopyUntilObserved === true &&
-            (source.method === "turn/start" || source.method === "turn/queue"));
+            isTurnSubmissionMethod(source.method));
         if (retainsAcceptedCopy) {
           // The accepted whitelist lives in the package's acceptedRecord so
           // this adapter and native's build the same row.

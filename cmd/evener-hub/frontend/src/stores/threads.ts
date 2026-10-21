@@ -62,7 +62,7 @@ import {
   threadModelFromCache,
   WireError,
 } from "@evener/appwire-client";
-import { notificationMutationIdentities } from "@evener/appwire-client/state/mutation";
+import { isTurnSubmissionMethod, notificationMutationIdentities } from "@evener/appwire-client/state/mutation";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
@@ -2583,24 +2583,14 @@ function getMutationRuntime(): MutationRuntime | null {
     // in that window. The mark is idempotent for the same identity.
     if (projectionState === "reflected") {
       const record = await storage.getOutbox(clientMutationId);
-      if (record !== undefined && (record.method === "turn/start" || record.method === "turn/queue")) {
-        const model = threadsStore.getState().threads.get(record.targetRef);
-        const latest = model === undefined ? undefined : model.turns[model.turns.length - 1];
+      if (record !== undefined && isTurnSubmissionMethod(record.method)) {
         const baseline = submittedTailBaselines.get(clientMutationId) ?? record.submissionBaselineTail;
         // Only a failed tail offers Retry. If the ordinary send's new turn is
         // already the tail (running, completed or failed), there is no stale
         // failure to keep closed; opening a marker keyed to that turn would
         // block a later failure of the same turn. The tail must still be the
         // one that was latest when this submission began.
-        if (
-          record.state !== "canceled" &&
-          baseline !== undefined &&
-          latestTurnId(model) === baseline &&
-          latest?.status === "failed" &&
-          latest.error !== undefined
-        ) {
-          retryPendingProjection?.markSubmitted(record.targetRef, latest.id, clientMutationId);
-        }
+        if (record.state !== "canceled") markStaleRetryTail(record.targetRef, baseline, clientMutationId);
       }
     }
     const settled = await settleReceipt(clientMutationId, projectionState, acceptedTurnId);
@@ -3457,7 +3447,7 @@ export async function resendRecoveryMutation(
         : { clientMutationId: resent.clientMutationId, undelivered: resent.state !== "canceled" },
   );
   if (!record) return undefined;
-  if (record.method === "turn/start" || record.method === "turn/queue") {
+  if (isTurnSubmissionMethod(record.method)) {
     rememberSubmittedTail(record.clientMutationId, baselineTail);
   }
   // The resend mints a new row and removes the recovery row it came from, so
@@ -3973,6 +3963,19 @@ function rememberSubmittedTail(clientMutationId: string, tail: string | undefine
   submittedTailBaselines.set(clientMutationId, tail);
 }
 
+// The one stale-failed-tail gate: a receipt or direct send may only open
+// Retry's observation marker when the conversation still names the pre-press
+// failed tail. A new tail (running, completed or failed) means there is no
+// stale failure to protect.
+function markStaleRetryTail(ref: string, baseline: string | undefined, clientMutationId: string): void {
+  if (baseline === undefined) return;
+  const model = threadsStore.getState().threads.get(ref);
+  const latest = model === undefined ? undefined : model.turns[model.turns.length - 1];
+  if (latestTurnId(model) === baseline && latest?.status === "failed" && latest.error !== undefined) {
+    retryPendingProjection?.markSubmitted(ref, latest.id, clientMutationId);
+  }
+}
+
 // A direct fallback has no durable row for settleReceipt to observe, so the
 // send itself registers its baseline and opens the same observation marker
 // when the conversation still names the pre-send failed tail.
@@ -3982,14 +3985,10 @@ function noteDirectSubmission(
   baselineTail: string | undefined,
   clientMutationId: string,
 ): void {
-  if (method !== "turn/start" && method !== "turn/queue") return;
+  if (!isTurnSubmissionMethod(method)) return;
   if (baselineTail === undefined) return;
   rememberSubmittedTail(clientMutationId, baselineTail);
-  const model = threadsStore.getState().threads.get(ref);
-  const latest = model === undefined ? undefined : model.turns[model.turns.length - 1];
-  if (latestTurnId(model) === baselineTail && latest?.status === "failed" && latest.error !== undefined) {
-    retryPendingProjection?.markSubmitted(ref, baselineTail, clientMutationId);
-  }
+  markStaleRetryTail(ref, baselineTail, clientMutationId);
 }
 
 // A direct fallback has no outbox row, so the success path records the same
@@ -4005,7 +4004,7 @@ async function recordDirectAccepted(
   // The page-local bridge opens first and always: a storage failure after a
   // successful RPC must not leave this accepted input actionable as a Retry.
   noteDirectSubmission(ref, intent.method, baselineTail, clientMutationId);
-  if (intent.method === "turn/start" || intent.method === "turn/queue") {
+  if (isTurnSubmissionMethod(intent.method)) {
     const runtime = getMutationRuntime();
     if (runtime) {
       try {
@@ -4651,14 +4650,13 @@ async function enqueueMutationIntent(
   // before runtime.start/barrierRead/any await so a turn that arrives while
   // the enqueue is in flight cannot become this submission's baseline.
   const baselineTail = latestTurnId(threadsStore.getState().threads.get(ref));
-  const durableIntent: MutationIntent =
-    intent.method === "turn/start" || intent.method === "turn/queue"
-      ? {
-          ...intent,
-          submissionBaselineTail: intent.submissionBaselineTail ?? baselineTail,
-          retainAcceptedCopyUntilObserved: true,
-        }
-      : intent;
+  const durableIntent: MutationIntent = isTurnSubmissionMethod(intent.method)
+    ? {
+        ...intent,
+        submissionBaselineTail: intent.submissionBaselineTail ?? baselineTail,
+        retainAcceptedCopyUntilObserved: true,
+      }
+    : intent;
   // The recovery fence, enforced at the one funnel every durable action
   // passes through: a fenced local session's durable intent could only park
   // (the hub refuses these methods for the obligation's whole window), so it
@@ -4887,7 +4885,7 @@ async function enqueueMutationIntent(
   if (committedUndelivered && dispatchReplayGateOpen(ref)) {
     dispatchableMutationRefs.add(ref);
   }
-  if (record.method === "turn/start" || record.method === "turn/queue") {
+  if (isTurnSubmissionMethod(record.method)) {
     rememberSubmittedTail(record.clientMutationId, baselineTail);
   }
   notifyMutationPersistence([ref], { record });
@@ -7875,9 +7873,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           {
             beforeDurableWrite: () => assertRetrySourceCurrent(ref, failedTurnId),
             admission: {
-              validate: () => {
-                if (!retryAdmissionCurrent(ref, failedTurnId)) throw new MutationAdmissionLostError();
-              },
+              validate: () => assertRetrySourceCurrent(ref, failedTurnId),
               rejectIfPendingTurnInput: true,
             },
             // Capture only. The marker is opened after the enqueue await, when

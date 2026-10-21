@@ -186,28 +186,16 @@ function markRetrySubmitted(ref: string, failedTurnId: string, clientMutationId?
 function waitForRetryReflection(ref: string, marker: RetryReflection): void {
   if (marker.refreshStarted) return;
   marker.refreshStarted = true;
-  void threadsStore
-    .getState()
-    .refreshThread(ref)
-    .then(() => {
-      if (retryReflections.get(ref) !== marker) return;
-      marker.refreshStarted = false;
-      // The model subscription decides from the published turn identity,
-      // never from the fact that a read completed. A read that still names the
-      // same failed tail proves the accepted continuation has not been
-      // observed, so it must leave the marker open. Hand the next decision to
-      // the model subscription or an explicit remount probe.
-      marker.handedOff = true;
-    })
-    .catch(() => {
-      // A failed read proves nothing, so the marker stays; a later
-      // notification, reconnect or remount drives another attempt.
-      if (retryReflections.get(ref) !== marker) return;
-      marker.refreshStarted = false;
-      // The owner's hydration-retry lifecycle owns the next read after a
-      // transport failure; its publication settles this marker.
-      marker.handedOff = true;
-    });
+  // A completed read is decided by the model subscription, never by the fact
+  // that a read answered; a failed read proves nothing either. Both hand the
+  // next decision to the model subscription, the owner's hydration retry, or
+  // an explicit remount probe.
+  const handOff = () => {
+    if (retryReflections.get(ref) !== marker) return;
+    marker.refreshStarted = false;
+    marker.handedOff = true;
+  };
+  void threadsStore.getState().refreshThread(ref).then(handOff, handOff);
 }
 
 // Re-decide one marker from the owners as they are now. Only an actual advance
@@ -242,17 +230,7 @@ function reconcileRetryReflection(ref: string): void {
   // turn is different: the marker is already closed by it, and a read is the
   // observation that can settle it. Asking the thread owner is safe there and
   // is what lets a remount after a failed read make progress.
-  if (
-    pendingTurnsStore
-      .pendingTurnEntries(ref)
-      .some(
-        (entry) =>
-          entry.fromThisClient &&
-          entry.state !== "canceled" &&
-          entry.source !== "optimistic" &&
-          (entry.method === "send" || entry.method === "queue"),
-      )
-  ) {
+  if (ownPendingTurnInput(pendingTurnsStore.pendingTurnEntries(ref).filter((entry) => entry.source !== "optimistic"))) {
     return;
   }
   // A handed-off marker waits for the winning read's publication. Starting a

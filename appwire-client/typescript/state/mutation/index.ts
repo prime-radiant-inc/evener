@@ -31,6 +31,7 @@ export type { PendingMethod, PendingTurnEntry, PendingTurnState } from "./pendin
 export {
   commandMarkers,
   imagePlaceholder,
+  isTurnSubmissionMethod,
   normalizeText,
   ownPendingSend,
   ownPendingTurnInput,

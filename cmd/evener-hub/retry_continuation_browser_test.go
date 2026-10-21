@@ -12,7 +12,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -134,14 +133,7 @@ func TestRetryContinuationJourney(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				counts := map[string]int{}
-				for _, turn := range read.Thread.Turns {
-					for _, item := range turn.Items {
-						if item.Type == "userMessage" {
-							counts[item.Text]++
-						}
-					}
-				}
+				counts := retryUserInputCounts(read.Thread)
 				if counts[original] != 1 || counts["continue"] != 1 || len(counts) != 2 {
 					t.Fatalf("authoritative user input counts: %v", counts)
 				}
@@ -270,14 +262,8 @@ func waitRetryMilestone(ctx context.Context, t *testing.T, path, name string, dr
 	t.Helper()
 	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
-		data, err := os.ReadFile(path)
-		if err == nil {
-			for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-				var record skillGuardMilestone
-				if json.Unmarshal([]byte(line), &record) == nil && record.Milestone == name {
-					return
-				}
-			}
+		if milestones, err := backgroundReadMilestones(path); err == nil && backgroundMilestonePresent(milestones, name) {
+			return
 		}
 		select {
 		case err := <-driverDone:
