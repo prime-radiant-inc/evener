@@ -1153,7 +1153,12 @@ func (m *Manager) reinstallRetainedTarget(ctx context.Context, host hostreg.Host
 				if err != nil || pid != prior.pid {
 					return errOwnerSelectionMismatch
 				}
-				argv, err := m.recoverHubArgv(ctx, host, prior.pid)
+				// This retained reinstall already proved the target unusable and
+				// bound this PID to the recorded owner. Match every recorded argv
+				// word, including the exact executable spelling, without resolving
+				// the deleted pathname. Ordinary recovery keeps its existing-file
+				// executable check; the live image is validated below via /proc.
+				argv, err := m.recoverHubArgvRaw(ctx, host, prior.pid)
 				if err != nil || !slices.Equal(argv, prior.argv) {
 					return errOwnerSelectionMismatch
 				}

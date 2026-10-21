@@ -116,13 +116,14 @@ func TestRetainedDeployRepairRequiresRealEndpointEvidence(t *testing.T) {
 }
 
 func TestRetainedTargetReinstallEvidence(t *testing.T) {
-	for _, mode := range []string{"live", "live-config-mismatch", "live-report-missing", "live-report-malformed", "live-report-schema", "stopped", "stopped-config-mismatch", "stopped-report-missing", "stopped-report-malformed", "stopped-report-schema", "target-mismatch", "write-failed", "post-write-capability", "generation-at-write", "binding-at-write"} {
+	for _, mode := range []string{"live", "live-argv-mismatch", "live-process-mismatch", "live-config-mismatch", "live-report-missing", "live-report-malformed", "live-report-schema", "stopped", "stopped-config-mismatch", "stopped-report-missing", "stopped-report-malformed", "stopped-report-schema", "target-mismatch", "write-failed", "post-write-capability", "generation-at-write", "binding-at-write"} {
 		t.Run(mode, func(t *testing.T) {
 			host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
-			repair, absent, boundary := false, false, false
-			writes, procReads, postReads, starts := 0, 0, 0, 0
+			repair, boundary := false, false
+			writes, procReads, postReads, starts, missingResolutions := 0, 0, 0, 0, 0
+			var selected *selectedProcessFixture
 			fr, selected := deployRunnerForFixture(t, "linux", "amd64", func(int) ([]byte, error) {
-				if repair && !absent && mode == "post-write-capability" {
+				if repair && !selected.executableAbsent && mode == "post-write-capability" {
 					return []byte(strings.ReplaceAll(string(launchContract("newsha")), `"hub_endpoint_schema":1`, `"hub_endpoint_schema":0`)), nil
 				}
 				return launchContract("newsha"), nil
@@ -139,16 +140,22 @@ func TestRetainedTargetReinstallEvidence(t *testing.T) {
 					starts++
 				}
 				if repair && strings.HasPrefix(remote, "if test -x ") {
-					if absent {
+					if selected.executableAbsent {
 						return nil, exitStatus(t, 1)
 					}
 					return nil, nil
+				}
+				if repair && selected.executableAbsent && remote == resolveDeployCommand(selected.exe) {
+					missingResolutions++
+				}
+				if repair && mode == "live-argv-mismatch" && remote == hubArgvRemote("4242") {
+					return []byte("/opt/evener/bin/./evener\x00hub\x00"), nil
 				}
 				if repair && strings.Contains(remote, "cat /proc/sys/kernel/random/boot_id") {
 					if strings.HasPrefix(mode, "stopped") {
 						return nil, errors.New("recorded predecessor no longer exists")
 					}
-					if boundary && mode == "generation-at-write" {
+					if mode == "live-process-mismatch" || boundary && mode == "generation-at-write" {
 						return []byte("other-boot\n99999\n"), nil
 					}
 				}
@@ -157,7 +164,7 @@ func TestRetainedTargetReinstallEvidence(t *testing.T) {
 					if !repair || mode == "write-failed" {
 						return nil, errors.New("interrupted recorded write")
 					}
-					absent = false
+					selected.executableAbsent = false
 				}
 				if repair && strings.Contains(remote, " hub endpoint --json") {
 					proc := strings.Contains(remote, "/proc/4242/exe hub endpoint --json")
@@ -165,7 +172,7 @@ func TestRetainedTargetReinstallEvidence(t *testing.T) {
 						procReads++
 					} else {
 						postReads++
-						if absent {
+						if selected.executableAbsent {
 							t.Fatal("read endpoint from absent target")
 						}
 					}
@@ -209,8 +216,13 @@ func TestRetainedTargetReinstallEvidence(t *testing.T) {
 			if retained.selected == nil || !retained.deployment {
 				t.Fatal("missing recorded owner")
 			}
-			repair, absent = true, true
+			repair, selected.executableAbsent = true, true
 			selected.stopped = strings.HasPrefix(mode, "stopped")
+			if mode == "live" {
+				if argv, err := m.recoverHubArgv(t.Context(), host, "4242"); err == nil || argv != nil || missingResolutions != 1 {
+					t.Fatalf("ordinary argv recovery accepted absent executable: argv=%q err=%v missing-resolutions=%d", argv, err, missingResolutions)
+				}
+			}
 			if mode == "target-mismatch" {
 				host.EvenerPath = "/other/bin/evener"
 				m.setResolvedTarget(host.Name, host.EvenerPath)
@@ -223,16 +235,24 @@ func TestRetainedTargetReinstallEvidence(t *testing.T) {
 				if mode == "live" && procReads < 2 || mode == "stopped" && procReads != 0 {
 					t.Fatalf("wrong resolver authority: proc=%d mode=%s", procReads, mode)
 				}
+				if mode == "live" && missingResolutions != 2 {
+					// Ordinary recovery and deploy's existing-file probe both refuse.
+					// Only deploy's existing parent-directory resolver may name the write.
+					t.Fatalf("unexpected absent executable resolutions: missing-resolutions=%d", missingResolutions)
+				}
 			} else if err == nil || !m.pendingRestart(host.Name).deployment || !reflect.DeepEqual(m.pendingRestart(host.Name).selected, retained.selected) {
 				t.Fatalf("refusal lost pending repair: err=%v writes=%d pending=%+v", err, writes, m.pendingRestart(host.Name))
 			}
 			if (mode == "post-write-capability" || strings.Contains(mode, "-report-")) && (!errors.Is(err, ErrEndpointMigration) || !isTerminal(err)) {
 				t.Fatalf("post-write capability failure is not terminal: %v", err)
 			}
-			if mode == "live-config-mismatch" || strings.HasPrefix(mode, "live-report-") || mode == "target-mismatch" || mode == "generation-at-write" || mode == "binding-at-write" {
+			if mode == "live-argv-mismatch" || mode == "live-process-mismatch" || mode == "live-config-mismatch" || strings.HasPrefix(mode, "live-report-") || mode == "target-mismatch" || mode == "generation-at-write" || mode == "binding-at-write" {
 				if writes != 1 {
 					t.Fatalf("refused repair wrote: %d", writes)
 				}
+			}
+			if (mode == "live-argv-mismatch" || mode == "live-process-mismatch") && procReads != 0 {
+				t.Fatalf("unproven process reached executable resolver: proc=%d", procReads)
 			}
 			if starts != 0 || len(fr.recordedStarts()) != 0 {
 				t.Fatal("repair refusal or deploy-only success started or attached a hub")

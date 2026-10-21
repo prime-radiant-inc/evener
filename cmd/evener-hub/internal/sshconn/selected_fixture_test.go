@@ -30,6 +30,7 @@ type selectedProcessFixture struct {
 	observe                       func(*selectedProcessFixture)
 	reportedStart                 *time.Time
 	initialUnavailable            bool
+	executableAbsent              bool
 }
 
 func modelSelectedProcess(t *testing.T, fr *fakeRunner, exe, before, after string) *selectedProcessFixture {
@@ -83,6 +84,9 @@ func modelSelectedProcess(t *testing.T, fr *fakeRunner, exe, before, after strin
 		}
 		switch remote {
 		case endpoint, contextEndpoint, ownerContext("/home/dev", []string{"HOME=/home/dev"}) + "/proc/" + pid + "/exe hub endpoint --json":
+			if f.executableAbsent && (remote == endpoint || remote == contextEndpoint) {
+				return nil, exitStatus(t, 127)
+			}
 			f.endpointPolls++
 			return json.Marshal(report)
 		case selectedLockRemote(root):
@@ -179,7 +183,13 @@ func modelSelectedProcess(t *testing.T, fr *fakeRunner, exe, before, after strin
 		// Canonicalization is exact, not a substring that could make another
 		// executable match. Deploy's independent path probes still reach base.
 		if remote == resolveDeployCommand(f.exe) {
+			if f.executableAbsent {
+				return nil, exitStatus(t, 1)
+			}
 			return []byte(f.exe + "\n"), nil
+		}
+		if remote == createTargetCommand(f.exe) && f.executableAbsent {
+			return []byte(f.exe + "\n"), nil // The recorded target's parent still exists.
 		}
 		if remote == "kill -- 4242" && f.adhoc {
 			out, err := base(ctx, argv, in)
