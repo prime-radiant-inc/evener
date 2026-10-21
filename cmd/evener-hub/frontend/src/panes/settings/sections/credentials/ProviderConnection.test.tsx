@@ -1472,6 +1472,112 @@ test("an unconfirmed editor create reconciles its own answer before a retry", as
   expect(client.calls.filter((call) => call.method === "evener/instance/edit")).toHaveLength(0);
   expect(await screen.findByText("https://proxy.example/v1")).toBeTruthy();
 });
+
+// The retained write must not swallow a newer draft. Once it reconciles, the
+// editor's current value is compared with the row it authored and written when
+// it differs, instead of closing as if the newer value had been saved.
+test("a changed draft is written after an unconfirmed create reconciles", async () => {
+  const setupRow = provider("anthropic", "Anthropic", ["apiKey"]);
+  const { user, client } = setup({ instances: [], availableProviders: [setupRow] });
+  await choose(user);
+  await user.click(screen.getByRole("button", { name: "Edit" }));
+  const field = screen.getByLabelText("Endpoint URL");
+  await user.clear(field);
+  await enterText(user, field, "https://proxy.example/v1");
+
+  const created: InstanceEntry = {
+    ...setupRow.setup!,
+    name: "anthropic",
+    implicit: false,
+    baseUrl: "https://proxy.example/v1",
+    endpointFingerprint: "fp-proxy",
+  };
+  const listing: InstanceListResponse = { instances: [created], availableProviders: [setupRow] };
+  const create = deferred<InstanceListResponse>();
+  client.on("evener/instance/create", () => create.promise);
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/instance/create")).toBe(true));
+
+  client.on("evener/instance/list", () => {
+    throw new Error("listing unavailable");
+  });
+  await act(async () => {
+    await credentialsStore.getState().fetch();
+    create.resolve(structuredClone(listing));
+    await create.promise;
+  });
+  expect(await alertReason()).toBe("save-unconfirmed");
+
+  await user.clear(field);
+  await enterText(user, field, "https://second.example/v1");
+  const edited: InstanceEntry = {
+    ...created,
+    baseUrl: "https://second.example/v1",
+    endpointFingerprint: "fp-second",
+  };
+  const editedListing: InstanceListResponse = { instances: [edited], availableProviders: [setupRow] };
+  let reads = 0;
+  client.on("evener/instance/list", () => structuredClone(reads++ === 0 ? listing : editedListing));
+  client.on("evener/instance/edit", () => structuredClone(editedListing));
+  await user.click(screen.getByRole("button", { name: "Save" }));
+
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/instance/edit")).toBe(true));
+  expect(client.calls.find((call) => call.method === "evener/instance/edit")?.params).toMatchObject({
+    name: "anthropic",
+    baseUrl: "https://second.example/v1",
+    expectedEndpointFingerprint: "fp-proxy",
+  });
+  expect(client.calls.filter((call) => call.method === "evener/instance/create")).toHaveLength(1);
+  expect(await screen.findByText("https://second.example/v1")).toBeTruthy();
+});
+
+test("a changed settings field is written after an unconfirmed create reconciles", async () => {
+  const setupRow = provider("anthropic", "Anthropic", ["apiKey"]);
+  const { user, client } = setup({ instances: [], availableProviders: [setupRow] });
+  await choose(user);
+  await user.click(screen.getByText("All connection settings"));
+  await enterText(user, screen.getByLabelText("API key env"), "TEAM_KEY");
+
+  const created: InstanceEntry = {
+    ...setupRow.setup!,
+    name: "anthropic",
+    implicit: false,
+    endpointFingerprint: "fp-settings",
+    apiKeyEnv: "TEAM_KEY",
+  };
+  const listing: InstanceListResponse = { instances: [created], availableProviders: [setupRow] };
+  const create = deferred<InstanceListResponse>();
+  client.on("evener/instance/create", () => create.promise);
+  await user.click(screen.getByRole("button", { name: "Save settings" }));
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/instance/create")).toBe(true));
+
+  client.on("evener/instance/list", () => {
+    throw new Error("listing unavailable");
+  });
+  await act(async () => {
+    await credentialsStore.getState().fetch();
+    create.resolve(structuredClone(listing));
+    await create.promise;
+  });
+  expect(await alertReason()).toBe("save-unconfirmed");
+
+  await user.clear(screen.getByLabelText("API key env"));
+  await enterText(user, screen.getByLabelText("API key env"), "OTHER_KEY");
+  const edited: InstanceEntry = { ...created, apiKeyEnv: "OTHER_KEY" };
+  const editedListing: InstanceListResponse = { instances: [edited], availableProviders: [setupRow] };
+  let reads = 0;
+  client.on("evener/instance/list", () => structuredClone(reads++ === 0 ? listing : editedListing));
+  client.on("evener/instance/edit", () => structuredClone(editedListing));
+  await user.click(screen.getByRole("button", { name: "Save settings" }));
+
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/instance/edit")).toBe(true));
+  expect(client.calls.find((call) => call.method === "evener/instance/edit")?.params).toMatchObject({
+    name: "anthropic",
+    apiKeyEnv: "OTHER_KEY",
+    expectedEndpointFingerprint: "fp-settings",
+  });
+  expect(client.calls.filter((call) => call.method === "evener/instance/create")).toHaveLength(1);
+});
 test("read-only provider settings do not disable an existing credential store write", async () => {
   const { user, client } = setup({ instances: [], availableProviders: catalogue, writesRefused: true });
   scriptSave(client);
@@ -2828,6 +2934,32 @@ test("canceling a replacement keeps a save whose refresh failed", async () => {
   client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
   await user.click(screen.getByRole("button", { name: "Test again" }));
 
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/auth/test")).toBe(true));
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(1);
+});
+
+// A refused replacement's recovery row can still report stored access. That
+// adoption must clear the replacement's pending state synchronously, or the
+// card asks for a key it already has and blocks the check.
+test("a refused replacement whose recovery row has stored access keeps saved testing", async () => {
+  const { user, client } = setup(fingerprintList("fp-2024", "store"));
+  await choose(user);
+  await user.click(screen.getByRole("button", { name: "Replace" }));
+  await enterText(user, screen.getByLabelText("API key"), "replacement");
+  client.on("evener/auth/apiKey/set", () => {
+    throw new WireError(
+      "anthropic no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
+      -32013,
+      { evenerErrorInfo: ErrorEndpointConflict },
+    );
+  });
+  client.on("evener/instance/list", () => structuredClone(fingerprintList("fp-2024", "store")));
+
+  await user.click(screen.getByRole("button", { name: "Save and test" }));
+
+  expect(await screen.findByRole("button", { name: "Test again" })).toBeTruthy();
+  client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+  await user.click(screen.getByRole("button", { name: "Test again" }));
   await waitFor(() => expect(client.calls.some((call) => call.method === "evener/auth/test")).toBe(true));
   expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(1);
 });

@@ -404,11 +404,10 @@ function SelectedConnection({
   const [draft, setDraft] = useState({ providerId: resolvedProviderId ?? provider.id, value: "" });
   const value = resolvedProviderId && resolvedProviderId !== draft.providerId ? "" : draft.value;
   useEffect(() => {
-    if (!resolvedProviderId) return;
-    setDraft((current) =>
-      current.providerId === resolvedProviderId ? current : { providerId: resolvedProviderId, value: "" },
-    );
-  }, [resolvedProviderId]);
+    if (!resolvedProviderId || draft.providerId === resolvedProviderId) return;
+    draftValue.current = "";
+    setDraft({ providerId: resolvedProviderId, value: "" });
+  }, [resolvedProviderId, draft.providerId]);
   const [missingCredential, setMissingCredential] = useState(false);
   const [host, setHost] = useState(false);
   const [saved, setSaved] = useState(isStoredAccess(row, false));
@@ -426,6 +425,9 @@ function SelectedConnection({
   // starts. The credential claim lives in a ref because the store subscription
   // and the save handlers must read it live, not from a render.
   const draftClaim = useRef<DestinationClaim | undefined>(undefined);
+  // The typed value as it is right now, not as the render that opened a save
+  // saw it. Clearing a draft and adopting a row happen in one closure.
+  const draftValue = useRef("");
   // A write the card issued whose outcome no applied listing has confirmed yet.
   // A retry reconciles this row instead of issuing the mutation again.
   const pendingInstanceWrite = useRef<InstanceEntry | undefined>(undefined);
@@ -564,6 +566,7 @@ function SelectedConnection({
   }
   function changeValue(next: string) {
     operation.current += 1;
+    draftValue.current = next;
     // A typed credential replaces host access: the flag applies only while the
     // field is empty and the card is about to test whatever the host resolves.
     if (next.trim()) {
@@ -591,6 +594,7 @@ function SelectedConnection({
    * to. What is already saved is untouched; the caller decides the report. */
   function dropDraft() {
     draftClaim.current = undefined;
+    draftValue.current = "";
     setDraft({ providerId: resolvedProviderId ?? effectiveProvider.id, value: "" });
     setMissingCredential(false);
   }
@@ -629,7 +633,7 @@ function SelectedConnection({
     // A replacement that survived the adoption is still unsaved, however the
     // adopted row sources its existing access. Only a row adopted with no
     // pending replacement derives saved state from what it resolves.
-    const pending = !dropped && !saved && (draftClaim.current !== undefined || value.trim() !== "");
+    const pending = !dropped && !saved && (draftClaim.current !== undefined || draftValue.current.trim() !== "");
     const stored = isStoredAccess(next, host) || confirmedHolds;
     setSaved(!pending && stored);
     setStoredAccess(stored);
@@ -666,31 +670,19 @@ function SelectedConnection({
     write: (reconcile: EditSupersededReconcile) => Promise<boolean>,
     name: string,
   ): Promise<EditConfirmation> {
-    const pending = pendingInstanceWrite.current;
-    let authored: InstanceEntry | undefined;
-    let applied = false;
-    if (pending?.name === name) {
-      // The write may already have landed; reconcile it instead of issuing it
-      // again. No applied listing proves either way, so nothing is mutated.
-      authored = pending;
-    } else {
-      let superseded: InstanceEntry | undefined;
-      applied = await write({
-        onSuperseded: (response) => {
-          superseded = listingRow(response.instances, name);
-        },
-      });
-      authored = applied ? findSetup(name) : superseded;
-    }
+    let superseded: InstanceEntry | undefined;
+    const applied = await write({
+      onSuperseded: (response) => {
+        superseded = listingRow(response.instances, name);
+      },
+    });
+    const authored = applied ? findSetup(name) : superseded;
     if (!authored) return { kind: "unconfirmed" };
     const read = await appliedSelfRead();
     if (!applied && !read) return { kind: "unconfirmed", authored };
     const row = findSetup(name);
     if (!row) return { kind: "unconfirmed", authored };
-    const outcome: EditConfirmation =
-      destination(row) === destination(authored) ? { kind: "confirmed", row } : { kind: "moved" };
-    if (pending?.name === name) pendingInstanceWrite.current = undefined;
-    return outcome;
+    return destination(row) === destination(authored) ? { kind: "confirmed", row } : { kind: "moved" };
   }
 
   function confirmEdit(params: InstanceEditParams): Promise<EditConfirmation> {
@@ -712,12 +704,30 @@ function SelectedConnection({
     return listedInstance(name) ? () => confirmEdit(editParams) : () => confirmCreate(createParams);
   }
 
+  /** writeBase resolves the row and endpoint fingerprint a settled editor write
+   * asserts: the adopted row when settlement produced one, the editor's own
+   * claim otherwise. */
+  function writeBase(
+    base: InstanceEntry | undefined,
+    fallback: InstanceEntry,
+    claim: DestinationClaim,
+  ): { target: InstanceEntry; asserted: string | undefined } {
+    return {
+      target: base ?? fallback,
+      asserted: base ? base.endpointFingerprint || undefined : claim.fingerprint,
+    };
+  }
+
   /** saveClaimed runs one editor save through the card's one outcome protocol.
+   * A retained write is settled first: when it landed, the editor's current
+   * draft is compared with the row it authored and written only if it differs.
    * confirmEdit/confirmCreate assert the claim on the wire; a confirmed row
    * becomes the baseline, a moved destination closes the editor and re-anchors,
    * and an unconfirmed write keeps the editor and its draft for a retry. */
   async function saveClaimed(
-    write: () => Promise<EditConfirmation>,
+    name: string,
+    write: (base: InstanceEntry | undefined) => () => Promise<EditConfirmation>,
+    draftSettled: (row: InstanceEntry) => boolean,
     closeEditor: () => void,
     saveFailedMessage: string,
   ): Promise<void> {
@@ -727,7 +737,41 @@ function SelectedConnection({
     setResult(null);
     selfMutation.current = true;
     try {
-      const outcome = await write();
+      const pending = pendingInstanceWrite.current;
+      let settled: InstanceEntry | undefined;
+      if (pending?.name === name) {
+        const read = await appliedSelfRead();
+        if (!current(token)) {
+          selfMutation.current = false;
+          return;
+        }
+        const row = read ? findSetup(name) : undefined;
+        if (!read || !row) {
+          // No applied listing proves whether the retained write landed, so
+          // nothing is mutated; the editor and its draft stay put.
+          selfMutation.current = false;
+          setPhase("idle");
+          setError({ reason: "save-unconfirmed", message: SAVE_UNCONFIRMED_ERROR });
+          return;
+        }
+        pendingInstanceWrite.current = undefined;
+        if (destination(row) !== destination(pending)) {
+          selfMutation.current = false;
+          closeEditor();
+          await recoverChangedEndpoint({ reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR });
+          return;
+        }
+        adoptBaseline(row);
+        if (draftSettled(row)) {
+          selfMutation.current = false;
+          closeEditor();
+          setResult(null);
+          setPhase("idle");
+          return;
+        }
+        settled = row;
+      }
+      const outcome = await write(settled)();
       selfMutation.current = false;
       if (!current(token)) return;
       if (outcome.kind === "unconfirmed") {
@@ -1110,12 +1154,22 @@ function SelectedConnection({
       await recoverChangedEndpoint({ reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR });
       return;
     }
-    const write = writeFor(
+    const write = (base: InstanceEntry | undefined) => {
+      const { target, asserted } = writeBase(base, row, claim);
+      return writeFor(
+        row.name,
+        { name: row.name, baseUrl: next, expectedEndpointFingerprint: asserted },
+        { name: row.name, base: target.base || target.providerId, baseUrl: next },
+      );
+    };
+    const draftSettled = (settled: InstanceEntry) => (settled.baseUrl ?? "").trim() === next;
+    await saveClaimed(
       row.name,
-      { name: row.name, baseUrl: next, expectedEndpointFingerprint: claim.fingerprint },
-      { name: row.name, base: row.base || row.providerId, baseUrl: next },
+      write,
+      draftSettled,
+      closeEndpointEditor,
+      "The endpoint could not be saved. Your value is kept.",
     );
-    await saveClaimed(write, closeEndpointEditor, "The endpoint could not be saved. Your value is kept.");
   }
 
   // The full editor is this card's own disclosure. Saving it is one edit with
@@ -1139,21 +1193,36 @@ function SelectedConnection({
       apiKeyEnv: settingsDraft.apiKeyEnv || undefined,
       credentialHeader: settingsDraft.credentialHeader || undefined,
     };
-    const write = writeFor(
+    const write = (base: InstanceEntry | undefined) => {
+      const { target, asserted } = writeBase(base, row, claim);
+      return writeFor(
+        row.name,
+        {
+          name: row.name,
+          ...(changed("protocol") ? { protocol: values.protocol, clearProtocol: !values.protocol } : {}),
+          ...(changed("surface") ? { surface: values.surface, clearSurface: !values.surface } : {}),
+          ...(changed("apiKeyEnv") ? { apiKeyEnv: values.apiKeyEnv, clearApiKeyEnv: !values.apiKeyEnv } : {}),
+          ...(changed("credentialHeader")
+            ? { credentialHeader: values.credentialHeader, clearCredentialHeader: !values.credentialHeader }
+            : {}),
+          expectedEndpointFingerprint: asserted,
+        },
+        { name: row.name, base: target.base || target.providerId, ...values },
+      );
+    };
+    const draftSettled = (settled: InstanceEntry) => {
+      const current = settingsOf(settled);
+      return (Object.keys(current) as (keyof SettingsDraft)[]).every(
+        (field) => current[field] === settingsDraft[field],
+      );
+    };
+    await saveClaimed(
       row.name,
-      {
-        name: row.name,
-        ...(changed("protocol") ? { protocol: values.protocol, clearProtocol: !values.protocol } : {}),
-        ...(changed("surface") ? { surface: values.surface, clearSurface: !values.surface } : {}),
-        ...(changed("apiKeyEnv") ? { apiKeyEnv: values.apiKeyEnv, clearApiKeyEnv: !values.apiKeyEnv } : {}),
-        ...(changed("credentialHeader")
-          ? { credentialHeader: values.credentialHeader, clearCredentialHeader: !values.credentialHeader }
-          : {}),
-        expectedEndpointFingerprint: claim.fingerprint,
-      },
-      { name: row.name, base: row.base || row.providerId, ...values },
+      write,
+      draftSettled,
+      closeSettings,
+      "The settings could not be saved. Your values are kept.",
     );
-    await saveClaimed(write, closeSettings, "The settings could not be saved. Your values are kept.");
   }
 
   async function signIn() {

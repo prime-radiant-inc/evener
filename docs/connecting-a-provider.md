@@ -50,11 +50,12 @@ pasting an API key. Availability depends on your account and provider terms.
 ## Other access routes
 
 - **Cloud providers:** use **Show all providers**, choose Azure, Vertex, Bedrock, or
-  another provider, then **Configure provider** when offered. Supply the required
-  project/resource/region or endpoint variables. The full editor retains
-  protocol, surface, header, and custom-name controls. Vertex can use credential
-  JSON or existing Application Default Credentials; follow the selected
-  provider's access instructions rather than substituting an API key.
+  another provider. A provider whose base URL is unset opens the new-connection
+  card: enter the name, endpoint URL, and key or credential JSON, then save and
+  test. **All connection settings** holds protocol, surface, API key env, and
+  credential header. Vertex can use credential JSON or existing Application
+  Default Credentials; follow the selected provider's access instructions rather
+  than substituting an API key.
 - **Local/custom endpoints:** start the server on a host reachable from the
   Evener host and use the local/custom route. Configure its actual URL and any
   required credentials. An empty optional key means keep resolved host access,
