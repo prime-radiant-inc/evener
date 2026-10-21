@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
@@ -54,6 +55,60 @@ func TestDelegateStartupWithoutTasksHasNoPlanReminder(t *testing.T) {
 	if strings.Contains(first, "Task list:") {
 		t.Fatalf("a delegate with no tasks received a plan reminder:\n%s", first)
 	}
+}
+
+// The plan does not repeat the current step's prompt: the current-task message
+// carries it in the next piece of steering. Without the omission every delegate
+// pays for that prompt twice.
+func TestDelegatePlanOmitsTheCurrentStepPrompt(t *testing.T) {
+	t.Parallel()
+	tasks := []taskpkg.Task{
+		{ID: 1, Status: taskpkg.TaskInProgress, Description: "First step", Prompt: "PROMPT_FIRST"},
+		{ID: 2, Status: taskpkg.TaskOpen, Description: "Second step", Prompt: "PROMPT_SECOND"},
+	}
+	plan := taskReminderFullWithPrompts(tasks, 1)
+	if strings.Contains(plan, "PROMPT_FIRST") {
+		t.Fatalf("plan repeats the current step's prompt:\n%s", plan)
+	}
+	if !strings.Contains(plan, "PROMPT_SECOND") {
+		t.Fatalf("plan omits a later step's prompt:\n%s", plan)
+	}
+	if current := formatCurrentTaskSteering(tasks[0], true); !strings.Contains(current, "PROMPT_FIRST") {
+		t.Fatalf("current-task steering lost the prompt:\n%s", current)
+	}
+}
+
+// A child restored after an unclean shutdown reloads its spawn-time steering
+// from the queue file. Restoring must not announce the plan a second time.
+func TestRestoreDoesNotRepeatPersistedPlanSteering(t *testing.T) {
+	t.Parallel()
+	store := taskpkg.NewTaskStore(t.TempDir(), "child")
+	if err := store.PopulateFromTemplates([]taskpkg.TaskTemplate{{Title: "Only step", Prompt: "PROMPT_ONLY"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	child, _ := newDelegateStartupFixture(t)
+	if err := steerDelegatePlan(child, store); err != nil {
+		t.Fatalf("first announcement: %v", err)
+	}
+	if got := countPlanSteering(child); got != 1 {
+		t.Fatalf("plan steering after first announcement = %d, want 1", got)
+	}
+	if !child.hasPendingPlanSteering() {
+		t.Fatal("a queued plan should be reported as pending")
+	}
+}
+
+// countPlanSteering counts queued task-list announcements.
+func countPlanSteering(sess *Session) int {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	count := 0
+	for _, message := range sess.steeringQueue {
+		if message.Kind == events.SteeringKindTaskList {
+			count++
+		}
+	}
+	return count
 }
 
 // newDelegateStartupFixture builds a delegate-capable session whose scripted

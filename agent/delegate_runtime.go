@@ -2846,6 +2846,11 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	}
 	if len(descriptor.TaskTemplates) != 0 {
 		childStore := child.getOrCreateTaskStore()
+		// seeded records that THIS restore populated the store. A child whose
+		// tasks already existed, or whose queue already holds the spawn-time
+		// steering (an unclean shutdown before the first turn drained), must not
+		// be announced to again: the persisted queue redelivers it.
+		seeded := false
 		if err := childStore.MutateAndPublish(func(epoch, revision uint64) error {
 			if len(childStore.View()) != 0 {
 				return nil
@@ -2853,6 +2858,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			if err := childStore.PopulateFromTemplates(descriptor.TaskTemplates, nil); err != nil {
 				return err
 			}
+			seeded = true
 			summary := task.Summarize(childStore.View())
 			child.emit(events.EventTaskUpdated, taskUpdatedData(summary, child.taskStoreOwnerSessionID(), epoch, revision))
 			return nil
@@ -2863,9 +2869,11 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		// A restored delegate's first turn must match a fresh spawn's: announce
 		// the whole plan, then the current step. Seeding alone would leave a
 		// resumed child back on the first-step-only behavior.
-		if err := steerDelegatePlan(child, childStore); err != nil {
-			child.discardRestoredCandidate()
-			return nil, false, err
+		if seeded && !child.hasPendingPlanSteering() {
+			if err := steerDelegatePlan(child, childStore); err != nil {
+				child.discardRestoredCandidate()
+				return nil, false, err
+			}
 		}
 	}
 	now := s.sclock().Now()

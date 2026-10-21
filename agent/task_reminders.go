@@ -53,10 +53,11 @@ func taskReminderFull(store *taskpkg.TaskStore) string {
 // skipPromptID is the step whose prompt the current-task reminder delivers in
 // the next message, so the plan does not repeat it.
 //
-// The comparison behind this is recorded in the task-list startup experiment:
-// across 30 runs per arm on one model, delegates given the full plan completed
-// a cross-step fixture 30/30 times, against 22/30 when only their first step
-// was announced, at 12% fewer tokens.
+// Why the plan is announced: on a fixture whose later step needed a function
+// only its own prompt named, delegates given the whole plan finished 30 of 30
+// runs and delegates given only their first step finished 22 of 30 (Fisher
+// exact, two-sided p=0.005), using 12% fewer tokens. One model, one fixture —
+// enough to choose this default, not a general claim about task planning.
 func taskReminderFullWithPrompts(tasks []taskpkg.Task, skipPromptID int) string {
 	return renderTaskListReminder(tasks, true, skipPromptID)
 }
@@ -128,6 +129,21 @@ func steerDelegatePlan(sess *Session, store *taskpkg.TaskStore) error {
 		return sess.SteerKind(formatCurrentTaskSteering(*current, sess.canInstructTool("task_list")), events.SteeringKindCurrentTask)
 	}
 	return nil
+}
+
+// hasPendingPlanSteering reports whether the session's queue already carries a
+// task-list announcement. A child restored after an unclean shutdown reloads
+// the spawn-time steering from disk, and announcing again would put the whole
+// plan and the current step into its first request twice.
+func (s *Session) hasPendingPlanSteering() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, message := range s.steeringQueue {
+		if message.Kind == events.SteeringKindTaskList {
+			return true
+		}
+	}
+	return false
 }
 
 // taskReminderAllDone signals that the agent has completed all tasks on its
