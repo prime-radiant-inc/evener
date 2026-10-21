@@ -3350,6 +3350,31 @@ func TestRefreshMarketplace_ABranchRefFollowsItsTip(t *testing.T) {
 	}
 }
 
+// A tag named refs/heads/release is the same target checkout selects and pin
+// verification must resolve. An intact clone of it must not be recloned.
+func TestRefreshMarketplace_ATagInTheBranchNamespaceStaysIntact(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "namespacedtag")
+	tagTip := gitIn(t, repo, "rev-parse", "HEAD")
+	gitIn(t, repo, "tag", "refs/heads/release")
+	m := NewManager(t.TempDir())
+	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "refs/heads/release"})
+	if err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != tagTip {
+		t.Fatalf("HEAD = %s, want the tag tip %s", got, tagTip)
+	}
+	if err := os.Rename(repo, repo+".gone"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RefreshMarketplace(context.Background(), "namespacedtag"); err != nil {
+		t.Fatalf("refreshing an intact pinned clone contacted the remote: %v", err)
+	}
+}
+
 // A clone whose branch check fails for a reason other than a missing ref is
 // not taken for pinned: the check refreshes it and warns of the failure.
 func TestCheckUpdates_ABranchCheckThatFailsIsNotAPin(t *testing.T) {
