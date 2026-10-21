@@ -7,6 +7,7 @@ import (
 	"os"
 	"testing"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/server"
 )
@@ -120,5 +121,113 @@ func TestWorkspaceIdentityLegacyResumePersistsBeforeReferencePreparation(t *test
 	}
 	if want := "local:" + sessionID; preparedRef != want {
 		t.Fatalf("prepared workspace ref = %q, want %q", preparedRef, want)
+	}
+}
+
+func TestWorkspaceIdentityLegacyClearRestartKeepsPublicReference(t *testing.T) {
+	stateDir := t.TempDir()
+	const originalSessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	seedResumableSession(t, stateDir, originalSessionID, originalSessionID)
+	legacyMeta, err := schema.LoadSessionMeta(stateDir, originalSessionID)
+	if err != nil {
+		t.Fatalf("load legacy fixture metadata: %v", err)
+	}
+	if legacyMeta.WorkspaceID != "" {
+		t.Fatalf("legacy fixture workspace ID = %q, want omitted", legacyMeta.WorkspaceID)
+	}
+
+	deps, state, baseArgs := newClearServeDeps(t)
+	baseArgs[7] = stateDir
+	args := append(append([]string(nil), baseArgs...), "--resume", originalSessionID)
+	var initialPreparedRef string
+	prepare := deps.prepareAppIdentity
+	deps.prepareAppIdentity = func(sourceID, threadID, ref, transcriptPath string) (server.PreparedAppIdentity, error) {
+		meta, err := schema.LoadSessionMeta(stateDir, originalSessionID)
+		if err != nil {
+			t.Fatalf("load legacy metadata before identity preparation: %v", err)
+		}
+		if meta.WorkspaceID != originalSessionID {
+			t.Fatalf("workspace identity before initial preparation = %q, want %q", meta.WorkspaceID, originalSessionID)
+		}
+		if threadID == originalSessionID {
+			initialPreparedRef = ref
+		}
+		return prepare(sourceID, threadID, ref, transcriptPath)
+	}
+
+	var initialPublicRef, clearedPublicRef string
+	var oldInstanceID, replacementID string
+	var clearErr error
+	deps.serveHTTP = func(*http.Server, net.Listener) error {
+		oldInstanceID = originalSessionID
+		initialRead := clearThreadRead(t, state.srv)
+		initialPublicRef = initialRead.Thread.Evener.Ref
+		if initialRead.Thread.ID != originalSessionID {
+			t.Errorf("initial public instance ID = %q, want restored ID %q", initialRead.Thread.ID, originalSessionID)
+		}
+		clearErr = state.srv.clear(context.Background(), appwire.ThreadClearParams{
+			Ref:                initialPublicRef,
+			ClientMutationID:   "legacy-clear",
+			ExpectedInstanceID: oldInstanceID,
+		})
+		if clearErr == nil {
+			replacement := state.session(0)
+			replacementID = replacement.ID()
+			clearedPublicRef = clearThreadRead(t, state.srv).Thread.Evener.Ref
+		}
+		state.srv.shutdown()
+		return http.ErrServerClosed
+	}
+	if err := runServeWithDeps(args, deps); err != nil {
+		t.Fatalf("serve legacy session and Clear: %v", err)
+	}
+	if clearErr != nil {
+		t.Fatalf("Clear legacy session: %v", clearErr)
+	}
+	wantRef := "local:" + originalSessionID
+	if initialPreparedRef != wantRef || initialPublicRef != wantRef {
+		t.Fatalf("initial prepared/public refs = %q/%q, want %q", initialPreparedRef, initialPublicRef, wantRef)
+	}
+	if replacementID == "" || replacementID == oldInstanceID {
+		t.Fatalf("Clear instance IDs = %q then %q, want a distinct replacement", oldInstanceID, replacementID)
+	}
+	if clearedPublicRef != wantRef {
+		t.Fatalf("public ref after Clear = %q, want %q", clearedPublicRef, wantRef)
+	}
+	replacementMeta, err := schema.LoadSessionMeta(stateDir, replacementID)
+	if err != nil {
+		t.Fatalf("load replacement metadata: %v", err)
+	}
+	if replacementMeta.WorkspaceID != originalSessionID {
+		t.Fatalf("replacement workspace ID = %q, want %q", replacementMeta.WorkspaceID, originalSessionID)
+	}
+
+	restartDeps, restartState, _ := newClearServeDeps(t)
+	restartArgs := []string{
+		"--model", "openai/gpt-test", "--addr", "127.0.0.1:0",
+		"--resume", replacementID, "--dir", baseArgs[5],
+		"--state-dir", stateDir, "--run-dir", baseArgs[9],
+	}
+	var restartPreparedRef, restartPublicRef, restartPublicInstanceID string
+	restartPrepare := restartDeps.prepareAppIdentity
+	restartDeps.prepareAppIdentity = func(sourceID, threadID, ref, transcriptPath string) (server.PreparedAppIdentity, error) {
+		restartPreparedRef = ref
+		return restartPrepare(sourceID, threadID, ref, transcriptPath)
+	}
+	restartDeps.serveHTTP = func(*http.Server, net.Listener) error {
+		read := clearThreadRead(t, restartState.srv)
+		restartPublicRef = read.Thread.Evener.Ref
+		restartPublicInstanceID = read.Thread.ID
+		restartState.srv.shutdown()
+		return http.ErrServerClosed
+	}
+	if err := runServeWithDeps(restartArgs, restartDeps); err != nil {
+		t.Fatalf("restart cleared legacy session: %v", err)
+	}
+	if restartPreparedRef != wantRef || restartPublicRef != wantRef {
+		t.Fatalf("restarted prepared/public refs = %q/%q, want %q", restartPreparedRef, restartPublicRef, wantRef)
+	}
+	if restartPublicInstanceID != replacementID {
+		t.Fatalf("restarted public instance ID = %q, want replacement %q", restartPublicInstanceID, replacementID)
 	}
 }
