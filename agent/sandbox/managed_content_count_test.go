@@ -24,16 +24,16 @@ func TestSpawnPolicyWalkCount(t *testing.T) {
 		}
 	}
 
-	original := gitDirsUnderPolicy
+	original := gitReadDirChunk
 	var mu sync.Mutex
 	var walked []string
-	gitDirsUnderPolicy = func(root string, budget int) ([]string, bool) {
+	gitReadDirChunk = func(f *os.File, n int) ([]os.DirEntry, error) {
 		mu.Lock()
-		walked = append(walked, root)
+		walked = append(walked, f.Name())
 		mu.Unlock()
-		return original(root, budget)
+		return original(f, n)
 	}
-	t.Cleanup(func() { gitDirsUnderPolicy = original })
+	t.Cleanup(func() { gitReadDirChunk = original })
 
 	// Compare identity, not raw spelling: a resolved root has its own name.
 	normalize := func(p string) string {

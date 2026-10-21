@@ -256,7 +256,7 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 			ok = true
 			if (rp.MasksWrite(r) || rp.MasksWrite(resolved)) && !rp.ManagedWalkExempt(resolved) {
 				var gitDirs []string
-				gitDirs, ok = gitDirsUnderPolicy(resolved, gitWalkBudget)
+				gitDirs, ok = gitDirsUnder(resolved, gitWalkBudget)
 				if ok {
 					carvedGitDirs = append(carvedGitDirs, gitDirs...)
 				}
@@ -433,9 +433,6 @@ const gitWalkBudget = 50_000
 // gitReadDirChunk reads up to n entries of an open directory (os.File.ReadDir),
 // a seam for tests.
 var gitReadDirChunk = func(f *os.File, n int) ([]os.DirEntry, error) { return f.ReadDir(n) }
-
-// gitDirsUnderPolicy is the seam policy construction walks through, so tests can count real traversals.
-var gitDirsUnderPolicy = gitDirsUnder
 
 // gitDirsUnder returns the .git entries (directories or gitdir files) at any
 // depth below root, without descending into them or following symlinks (the

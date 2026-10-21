@@ -3,12 +3,15 @@ package plugins
 import (
 	"bytes"
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/internal/bundled"
 )
 
 func writeTestFile(t *testing.T, path, body string) {
@@ -231,6 +234,21 @@ func TestAuditBundledPayloadRefusesGit(t *testing.T) {
 	writeTestFile(t, filepath.Join(payload, "skill", ".git", "config"), "token")
 	if err := auditBundledPayload(payload); err == nil {
 		t.Fatal("bundled payload with .git passed its audit")
+	}
+}
+
+func TestEmbeddedBundledTreeHasNoGitMetadata(t *testing.T) {
+	err := fs.WalkDir(bundled.Plugins(), ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if isGitName(d.Name()) {
+			t.Errorf("embedded bundled tree carries Git metadata at %q", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -283,7 +283,7 @@ func unmaskedSection(rp ResolvedPolicy, ps *paramSet) string {
 		var linkedGitDirs []string
 		// A root missing on the host has nothing to walk.
 		if _, err := os.Lstat(canonical); masked && err == nil && !rp.ManagedWalkExempt(canonical) {
-			found, complete := gitDirsUnderPolicy(canonical, gitWalkBudget)
+			found, complete := gitDirsUnder(canonical, gitWalkBudget)
 			if !complete {
 				continue
 			}
