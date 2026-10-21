@@ -68,9 +68,12 @@ Tasks 1–2 establish the preservation path before any visible control. Task 3 g
 **Files**
 - Modify: `cmd/evener-hub/frontend/src/shell/workspace.ts`, `DockHost.tsx`, `mobile/StackHost.tsx`.
 - Modify/test: `cmd/evener-hub/frontend/src/shell/sessionCycle.ts`, `sessionCycle.test.ts` so ordinary pane cycling uses presented records.
+- Modify/test: `cmd/evener-hub/frontend/src/shell/sessionPlacement.ts`, `sessionPlacement.test.ts` so ordinary focus skips parked matches and parent ownership follows the exact opened pane.
+- Modify/test: `cmd/evener-hub/frontend/src/shell/activitybar/activitySidebarStore.ts`, `activitySidebarStore.test.ts`, `shell/palette/paletteContext.ts`, `paletteContext.test.ts` so activity focus/source candidates and palette composer destinations use presented records.
+- Modify/test: `cmd/evener-hub/frontend/src/panes/doc/openDoc.ts`, `openDoc.test.ts`, `panes/session/transcript/openTranscript.tsx`, `openTranscript.test.tsx`, `panes/zoom/actions.ts`, `actions.test.ts` for ordinary opener integration only. Document-review UI and workflow remain out of scope.
 - Create: `cmd/evener-hub/frontend/src/shell/attentionPlacement.ts` for runtime presentation metadata only.
 - Tests: `cmd/evener-hub/frontend/src/shell/workspace.test.ts`, `paneLifetime.test.ts`, `DockHost.slotGeometry.regression.test.tsx`, `mobile/StackHost.test.tsx`, `panes/zoom/inspectionOrigin.test.ts`.
-- Read, preserve ownership: `shell/paneLifetime.ts`, `panes/session/Session.tsx`, `panes/zoom/Zoom.tsx`, `shell/sessionPlacement.ts`.
+- Read, preserve ownership: `shell/paneLifetime.ts`, `panes/session/Session.tsx`, `panes/zoom/Zoom.tsx`.
 
 **Interfaces**
 - Extend `PaneSlot` with `"parked"`. `workspace.panes` still contains every living record. `mainPane()` remains the single presented main.
@@ -111,7 +114,13 @@ Also assert literal expected presented pane IDs, exact independent group IDs/tab
 
 Add `ordinary session cycling skips parked neighbors` in `sessionCycle.test.ts`: next and previous choose the next presented session even when a parked record intervenes; a non-session origin chooses the first/last presented session; one presented session remains a no-op. Filter candidates through `presentedPanes` before computing the cycle, rather than merely rejecting a hidden focus target afterward.
 
-- [ ] **Run red:** `npx vitest run $(vitest_run_args) src/shell/workspace.test.ts src/shell/paneLifetime.test.ts src/shell/DockHost.slotGeometry.regression.test.tsx src/shell/mobile/StackHost.test.tsx src/shell/sessionCycle.test.ts src/panes/zoom/inspectionOrigin.test.ts`. Confirm the new retention/geometry cases fail for the absent behavior, not missing dependencies.
+Add ordinary-placement regressions in `sessionPlacement.test.ts`: with a parked same-ref record preceding a presented match, `openSessionByRef` focuses the presented match. With a parked child and an unchanged owner main, `openNestedSessionWithOwner` records parent ownership on the exact pane returned by `openPane`, leaving the parked record's metadata unchanged. Find the opened record by its returned ID instead of repeating a first-by-ref search.
+
+Add parked-first and parked-only regressions in `activitySidebarStore.test.ts` and `paletteContext.test.ts`. Activity activation focuses a presented matching conversation or uses its existing explicit-scope behavior when no presented match exists. A stale parked cascade source cannot own a new focus request. Palette composer destinations must be presented, or null when no presented reader matches. Keep lifetime/origin membership checks over all living records.
+
+Ordinary document and transcript openers use presented reuse/source candidates and bind the newly presented record, leaving parked matches' metadata untouched. Job-log deduplication excludes parked records. Retained conversation parent-context lookup prefers a presented same-ref holder, then falls back to retained holders. Cascade entry uses presented source candidates, without changing lifetime, reconciliation or resume ownership. Inspection Return closes the inspector as before and requests origin focus only when the exact surviving origin is presented; an unavailable origin uses existing host fallback without attention-history restoration. Prove parked-first and parked-only cases, unchanged retained metadata/lifetimes, competing parent chains, stale parked cascade sources and actual host fallback. Do not change document rendering, loading, review workflow or Back.
+
+- [ ] **Run red:** `npx vitest run $(vitest_run_args) src/shell/workspace.test.ts src/shell/paneLifetime.test.ts src/shell/DockHost.slotGeometry.regression.test.tsx src/shell/mobile/StackHost.test.tsx src/shell/sessionCycle.test.ts src/shell/sessionPlacement.test.ts src/shell/activitybar/activitySidebarStore.test.ts src/shell/palette/paletteContext.test.ts src/panes/zoom/inspectionOrigin.test.ts src/panes/doc/openDoc.test.ts src/panes/session/transcript/openTranscript.test.tsx src/panes/zoom/actions.test.ts`. Confirm the new retention/geometry cases fail for the absent behavior, not missing dependencies.
 - [ ] **Implement the interfaces and host projection above.** Keep `paneLifetime` as the disposal authority. If actual Dockview substitution cannot preserve unrelated geometry, stop here and report the failed test before broadening the design.
 - [ ] **Run green:** the same files, formatting and typecheck must complete with no failures. Independently inspect the actual Dockview state in the geometry tests, not just the new metadata.
 - [ ] **Commit:** stage only the files listed for this task that changed; use `feat(web): retain attention conversations without extra panes`.
