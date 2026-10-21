@@ -36,7 +36,8 @@ import (
 // backward compatibility): HandleAuth reads the path only.
 //
 // The token lives in $hub_state_root/auth-token (mode 0600). Delete the
-// file (or use --rotate-auth-token) to invalidate existing sessions.
+// file while the hub is stopped, then restart to generate a replacement.
+// Changing the file alone does not update a running guard or close connections.
 
 const (
 	// authCookiePrefix begins the cookie key set after a successful /auth

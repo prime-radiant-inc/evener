@@ -12,7 +12,7 @@ Updated receipt.py to multiply prices by quantities. The checker exited zero.
 
 stderr:
 [model] fake-test-model (fake)
-[prompt] embedded:prompts/system.md.tmpl (26314B)
+[prompt] embedded:prompts/system.md.tmpl (26300B)
 [prompt] agent:default (0B)
 [usage] in=1 out=1 total=2
 [tool] read_file {"file_path":"README.md","intent":"Reading receipt fixture"}

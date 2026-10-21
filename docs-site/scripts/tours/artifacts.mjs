@@ -37,7 +37,10 @@ export function classifyTourFailure(output) {
  return summary;
 }
 const id = row => `${row.scenario}/${row.surface}/${row.checkpoint}`;
-function insist(condition, message) { if (!condition) throw new Error(message); }
+export class CandidateValidationError extends Error {
+ constructor(message, code) { super(message); this.code = code; }
+}
+function insist(condition, message, code) { if (!condition) throw code ? new CandidateValidationError(message, code) : new Error(message); }
 // Explicit-root local Git operations must not inherit another repository or
 // caller configuration. Keep repository-local configuration and hooks intact.
 export function gitEnvironment(root) {
@@ -45,11 +48,11 @@ export function gitEnvironment(root) {
  return { ...env, GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_SYSTEM: devNull, GIT_CONFIG_NOSYSTEM: '1', GIT_CEILING_DIRECTORIES: dirname(resolve(root)) };
 }
 export function revision(root = repositoryRoot) {
- return execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8', env: gitEnvironment(root) }).trim();
+ return execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8', stdio: 'pipe', env: gitEnvironment(root) }).trim();
 }
 // Hash working bytes, including untracked active sources. Native is deferred.
 export async function sourceTreeDigest(root = repositoryRoot) {
- const paths = execFileSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { maxBuffer: 32 * 1024 * 1024, env: gitEnvironment(root) }).toString().split('\0').filter(Boolean);
+ const paths = execFileSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { maxBuffer: 32 * 1024 * 1024, stdio: 'pipe', env: gitEnvironment(root) }).toString().split('\0').filter(Boolean);
  const relevant = p => /^(agent\/|appwire\/|appwire-client\/|auth\/|buildinfo\/|cmd\/|cmdutil\/|execsupport\/|frontmatter\/|hubapi\/|identifier\/|internal\/|invariant\/|llm\/|rendezvous\/|server\/|test\/|envvars\/|scripts\/|make\/|Makefile$|docs\/examples\/|go\.(mod|sum|work|work.sum)$|docs-site\/(package(-lock)?\.json|scripts\/tours\/))/.test(p) && !/^docs-site\/scripts\/tours\/(native[^/]*|xctest\/)/.test(p);
  const digest = createHash('sha256');
  for (const path of [...new Set(paths)].filter(relevant).sort()) {
@@ -61,14 +64,6 @@ export async function sourceTreeDigest(root = repositoryRoot) {
  return digest.digest('hex');
 }
 
-// provenanceMatches is the single definition of "this evidence belongs to the
-// current tree": both the revision and the working-tree digest must agree.
-// validateCandidate enforces it for a candidate; a published capture is kept
-// from an older revision deliberately, so the caller decides what to do with
-// the answer rather than re-deriving it.
-export async function provenanceMatches(manifest, root = repositoryRoot) {
- return manifest.sourceRevision === revision(root) && manifest.sourceTreeDigest === await sourceTreeDigest(root);
-}
 export async function rejectSymlinks(path) {
  const absolute = resolve(path); const parts = absolute.split(sep); let current = sep;
  for (const part of parts.filter(Boolean)) {
@@ -78,7 +73,7 @@ export async function rejectSymlinks(path) {
  }
 }
 function scanText(text) {
- insist(!/credential[-_ ]?canary|secret[-_ ]?canary|sk-[a-zA-Z0-9_-]+|Bearer\s+(?!\[REDACTED\])\S+|(?:api[_-]?key|token|secret)\s*[=:]\s*(?!\[REDACTED\])[^\s"},]+|https?:\/\/[^\s"<>]*(?:token|auth|key)=|\/(?:Users|home|private|tmp|var\/folders)\//i.test(text), 'Private data in candidate text');
+ insist(!/credential[-_ ]?canary|secret[-_ ]?canary|sk-[a-zA-Z0-9_-]+|Bearer\s+(?!\[REDACTED\])\S+|(?:api[_-]?key|token|secret)\s*[=:]\s*(?!\[REDACTED\])[^\s"},]+|https?:\/\/[^\s"<>]*(?:token|auth|key)=|\/(?:Users|home|private|tmp|var\/folders)\//i.test(text), 'Private data in candidate text', 'private-data');
 }
 export function pngDimensions(bytes) {
  insist(bytes.length > 32 && bytes.subarray(0,8).equals(Buffer.from('89504e470d0a1a0a','hex')), 'Invalid PNG signature');
@@ -126,7 +121,7 @@ export async function validateCandidate(root, required, {sourceRoot=repositoryRo
  insist(typeof m.sourceRevision==='string' && /^[a-f0-9]{40}$/.test(m.sourceRevision) && typeof m.sourceTreeDigest==='string' && /^[a-f0-9]{64}$/.test(m.sourceTreeDigest),'Invalid source provenance');
  // Publication preserves capture provenance, it does not assert a new execution.
  // Refresh and candidate review retain strict correspondence by default.
- if (!historicalProvenance) insist(m.sourceRevision===revision(sourceRoot)&&m.sourceTreeDigest===await sourceTreeDigest(sourceRoot),'Stale source correspondence');
+ if (!historicalProvenance) insist(m.sourceRevision===revision(sourceRoot)&&m.sourceTreeDigest===await sourceTreeDigest(sourceRoot),'Stale source correspondence','stale-source');
  insist(m.toolVersions && ['node','go','playwright'].every(k=>typeof m.toolVersions[k]==='string'&&m.toolVersions[k]),'Missing tool versions');
  insist(JSON.stringify(m.deferredSurfaces)===JSON.stringify(['native']),'Native deferral must be explicit');
  const valid=new Set(fullMatrix.map(id)), wanted=new Set(required.map(id));

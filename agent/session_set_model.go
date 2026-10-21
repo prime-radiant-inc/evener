@@ -86,7 +86,20 @@ const modelSwitchEnumerationTimeout = 8 * time.Second
 // pre-session counterpart — every caller here (SetModel, subagent model
 // selection) runs on an already-existing session, so sessionID is always that
 // session's own id.
-func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, sessionID string, timeout llm.AdapterTimeout) (*provider.Profile, error) {
+func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, sessionID string, timeout llm.AdapterTimeout, primedInstance string, primed *llm.ModelListing) (*provider.Profile, error) {
+	if primed != nil && primedInstance == profile.ID() {
+		// SetModel already listed this instance before it took the session
+		// lock. Reuse that listing: a second fetch could return empty and clear
+		// the rows the resolve just applied, and it would cost another full
+		// enumeration budget.
+		if res, err := client.Resolve(profile.ID() + "/" + profile.Model()); err == nil {
+			profile = profile.WithResolved(res)
+		}
+		if err := validateModelSwitchMembership(client, profile, *primed); err != nil {
+			return profile, err
+		}
+		return profile, nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), modelSwitchEnumerationTimeout)
 	defer cancel()
 	ctx = llm.WithModelListingTimeout(ctx, timeout)

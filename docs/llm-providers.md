@@ -204,7 +204,9 @@ previously healthy live snapshot.
 For facts on a visible ID, the live layer sits between the curated overlay and
 the user config. It supplies `Tools`, `InputModalities`, `ContextWindow`,
 `MaxOutputTokens`, `EffortValues`, `DefaultEffort`, `Cost`, `Reasoning`, plus
-`ThinkingAlwaysOn` (only when OpenRouter's `reasoning.mandatory` is `true`).
+`ThinkingAlwaysOn` (only when OpenRouter's `reasoning.mandatory` is `true`)
+and, from a gateway's per-model compat block, `ReasoningControls`,
+`ThinkingFormat`, and `MaxTokensField`.
 `InputModalities` comes from OpenRouter's `architecture.input_modalities`, or,
 when that list carries no entry, from a gateway's `capabilities.vision` (an
 advertised vision capability is `["text", "image"]`); the Codex backend states
@@ -222,15 +224,23 @@ ladder is itself evidence the model tunes effort and raises a verdict inferred
 from a provider-wide parameter list. A model whose listing carries no map at
 all keeps whatever ladder its curated row supplies, and an uncatalogued one
 resolves with none, so the request builder sends no effort name it cannot
-vouch for. The gateway's `thinkingFormat`, `maxTokensField`, and
-`supportsReasoningEffort` fields are not read yet; the dialect comes from the
-row's `thinking_format`.
+vouch for.
+
+The same per-model block states two wire-shaping facts, applied through the
+live layer on every protocol though only the two OpenAI-shaped listings report
+them: `thinkingFormat` becomes the row's `ThinkingFormat` dialect, and
+`maxTokensField` its `MaxTokensField` spelling. A value outside the load-time
+vocabulary is dropped rather than carried, because an unknown dialect writes no
+reasoning control at all and an unknown output spelling reaches no field. An
+explicit `capabilities.reasoning: false` wins over both.
+
 
 The live layer overrides catalog and curated facts but **never a field the
-user layer (layer 4) set**, and it never touches any other wire-shaping cap.
-Live rows matching the non-chat pattern list (`embedding`, `whisper`, `tts`,
-`dall-e`, `moderation`, `audio`, `transcribe`, `image`, `realtime`, `davinci`,
-`babbage`, `sora`) are unusable for model selection and are dropped.
+user layer (layer 4) set**. Beyond the facts listed above it touches no other
+cap. Live rows matching the non-chat pattern list (`embedding`, `whisper`,
+`tts`, `dall-e`, `moderation`, `audio`, `transcribe`, `image`, `realtime`,
+`davinci`, `babbage`, `sora`) are unusable for model selection and are
+dropped.
 
 ## Instances
 
@@ -722,7 +732,15 @@ transport with behavior beyond authentication:
   `[providers.openai] base = "openai-codex"`.
 - the backend enforces a model allowlist: an unknown id is a resolve error,
   not a synthesized row (the exception in [Unknown models](#unknown-models)
-  above).
+  above). Launch and resume resolve the reference again after applying the
+  instance's live listing when the bundled rows reject it, so a model the
+  backend serves but the catalog lags — including a restarted session's
+  persisted model — starts instead of failing the roster check. The hub's
+  launch check reads the same live listing for an ordinary instance and leaves
+  a command-credentialed instance's unlisted Codex id to the child, whose
+  credential alone may be minted; its resume credential gate likewise leaves
+  the model verdict to the child. An id the live listing does not name either
+  is still a resolve error.
 
 `openai-codex/gpt-6-astra` is available in the curated catalog, including on
 named instances with `base = "openai-codex"`; discovery is not required to

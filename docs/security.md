@@ -27,6 +27,11 @@ Evener's sandbox controls the tool plane; it does not prevent the daemon from co
 
 If a credential leaks, revoke or rotate it with its issuer first, then replace it in Evener. Deleting a local copy does not revoke access. Do not delete the whole state directory to repair authentication.
 
+For a lost paired device or leaked hub capability, follow the
+[shared-token rotation runbook](evener-hub.md#rotate-a-leaked-token-or-revoke-a-lost-device).
+It requires stopping the hub and reauthorizing every trusted client sharing the
+token. Canceling an invitation or changing the token file alone is insufficient.
+
 ## Choose a sandbox
 
 Use `read-only` for review, `workspace-write` for code changes, or `restricted` to narrow reads as well. Pair a non-off mode with network off when tools do not need network access. Check the startup report for the backend and actual policy. See [Sandboxing](sandboxing.md) for platform limits, secret-path masking, cache behavior, and the degraded read-only delegate exception.
@@ -64,11 +69,54 @@ There is no verified one-command, transactional backup/restore procedure documen
 For a conservative maintenance backup:
 
 1. Record the build version, selected hosts, effective config/state paths, and repository/worktree locations. Do not record secret values in the inventory.
-2. Finish or stop active sessions and their owned jobs. Check remote hosts too. Stop the hub through its supervisor and prevent automatic restart while copying.
+2. Read the [legacy compatibility warning](../UPGRADING.md#before-shutting-down-an-older-session) before shutting down an older daemon. Finish work, then use each session's **Shut down** action and confirm its process has exited; the composer's **Stop** is not enough. Check owned jobs and remote hosts too. Stop the hub through its supervisor and prevent automatic restart while copying.
 3. Make a private, encrypted backup of configuration, durable state, referenced extension content, and repositories. Preserve permissions. Follow the backup tool's consistency procedure for SQLite files; do not copy only the main database while ignoring live sidecars.
 4. Verify the backup by restoring to an isolated location with no production listeners or provider credentials active. Check files and saved-session readability before considering a production restore.
 
 Restoring old state over newer state can lose work or reintroduce credentials and authorization tokens. Preserve both copies, stop writers, and investigate the specific damaged store rather than overlaying a backup blindly. Do not infer that every older binary can read state written by a newer one.
+
+### Rehearse history restoration
+
+This provider-free check proves that a consistent backup contains readable
+history. It does **not** prove that an agent can resume, restore a live process,
+or recover workspace files. A full backup includes the configuration, credentials,
+memory, project buckets, referenced files, and repositories listed above.
+Specialized [AgentsView reconstruction](troubleshooting.md#reconstruct-a-lost-transcript)
+is a different operation for missing transcripts.
+
+You need the intended Evener build, a completed backup, enough private disk space,
+and `diff`. Verify the backup tool's checksum manifest before and after the
+rehearsal. Set `backup_bucket` to one **backed-up project bucket** containing
+`sessions/`, not the live project directory. Set `session` to a known saved
+session ID. Keep all output private; transcripts may contain secrets.
+
+```bash
+(
+  set -euo pipefail
+  umask 077
+  rehearsal=$(mktemp -d "${TMPDIR:-/tmp}/evener-history-check.XXXXXX")
+  printf 'Private rehearsal directory: %s\n' "$rehearsal"
+  mkdir "$rehearsal/state"
+  cp -pR "$backup_bucket/." "$rehearsal/state/"
+  diff -qr "$backup_bucket" "$rehearsal/state"
+  evener doctor sessions --state-dir "$rehearsal/state" --json
+  evener doctor transcript "$session" --state-dir "$rehearsal/state" --format outline
+  evener doctor transcript "$session" --state-dir "$rehearsal/state" --range last:10
+  diff -qr "$backup_bucket" "$rehearsal/state"
+)
+```
+
+Require the expected session ID in the listing, no unreadable-session entries,
+and the expected recorded work in the transcript. Both `diff` calls must exit
+zero, and the backup's original hashes must still match. Stop on missing,
+ambiguous, or unreadable history; do not launch a daemon to make the check pass.
+`--state-dir` confines these doctor reads to the copied bucket, without loading a
+hub or making a provider call.
+
+Keep the backup unchanged. The rehearsal directory is disposable after review;
+remove only that directory under your data-retention policy. A production restore
+needs a separate decision about compatibility and newer work. Never copy the
+rehearsal over the live root as the final step of this check.
 
 ## Share diagnostics safely
 

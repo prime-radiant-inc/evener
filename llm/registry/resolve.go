@@ -133,7 +133,8 @@ func liveFacts(m Model) Model {
 	out := Model{ID: m.ID, WireID: m.ID, Caps: Caps{
 		Tools: m.Caps.Tools, InputModalities: m.Caps.InputModalities, ContextWindow: m.Caps.ContextWindow,
 		MaxInputTokens: m.Caps.MaxInputTokens, MaxOutputTokens: m.Caps.MaxOutputTokens, EffortValues: m.Caps.EffortValues, Cost: m.Caps.Cost, Reasoning: m.Caps.Reasoning,
-		DefaultEffort: m.Caps.DefaultEffort,
+		DefaultEffort: m.Caps.DefaultEffort, ReasoningControls: m.Caps.ReasoningControls,
+		ThinkingFormat: m.Caps.ThinkingFormat, MaxTokensField: m.Caps.MaxTokensField,
 	}}
 	if m.Caps.ThinkingAlwaysOn != nil && *m.Caps.ThinkingAlwaysOn {
 		out.Caps.ThinkingAlwaysOn = new(true)
@@ -250,6 +251,22 @@ func exactRowIDs(rec *record) []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+// codexValidRowIDs is the roster the Codex refusal advertises: the exact
+// catalog rows plus any ids this process's live listing supplied. A model that
+// resolved through the live layer never reaches the gate, but a nearby id
+// does, and the message should name what the backend serves rather than only
+// the bundled catalog.
+func (r *Registry) codexValidRowIDs(rec *record) []string {
+	valid := make(map[string]bool)
+	for _, id := range exactRowIDs(rec) {
+		valid[id] = true
+	}
+	for _, m := range r.LiveModels(rec.name) {
+		valid[m.ID] = true
+	}
+	return sortedKeys(valid)
 }
 
 // Resolve is the single lookup path (spec §7): reference → instance record →
@@ -718,10 +735,17 @@ func (r *Registry) resolveLayersMode(rec *record, ref Ref, warnings []string, de
 	return r.resolveLayersModeLive(rec, ref, warnings, depth, true, false)
 }
 
+// ErrCodexModelNotListed reports a model missing from the Codex transport's
+// roster. The transport enforces the backend's allowlist rather than
+// synthesizing a row, so the gate is a resolve error; a caller holding a live
+// roster can establish membership the bundled catalog does not carry and
+// resolve again.
+var ErrCodexModelNotListed = errors.New("unknown model on the Codex transport")
+
 func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string, depth resolveDepth, includeLive, allowCodexCandidate bool) (Resolved, error) {
 	hit := r.lookupRowMode(rec, ref.Model, includeLive)
 	if hit.synthesized && rec.head.Transport.Auth == AuthOAuthOpenAICodex && !allowCodexCandidate {
-		return Resolved{}, fmt.Errorf("%s/%s: unknown model on the Codex transport (valid: %s)", rec.name, ref.Model, strings.Join(exactRowIDs(rec), ", "))
+		return Resolved{}, fmt.Errorf("%s/%s: %w (valid: %s)", rec.name, ref.Model, ErrCodexModelNotListed, strings.Join(r.codexValidRowIDs(rec), ", "))
 	}
 	prov := map[string]string{"model": hit.step}
 	if hit.rowID != "" {

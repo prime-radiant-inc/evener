@@ -4,7 +4,7 @@ import { dirname, join, posix, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { visit } from "unist-util-visit";
 import { load } from "cheerio";
-import { validateCandidate, fullMatrix, repositoryRoot, provenanceMatches } from "./tours/artifacts.mjs";
+import { validateCandidate, fullMatrix, repositoryRoot, revision, sourceTreeDigest } from "./tours/artifacts.mjs";
 
 // Dated design records and research are kept for provenance, not maintained as
 // current references: their links point at paths and line numbers from the
@@ -252,21 +252,20 @@ export async function checkTutorialAssets({root=repositoryRoot, assetRoot=join(r
       throw new Error(`Tutorial asset absent from publication.json.assets: ${file}`);
     }
   }
-  // Publication keeps the capture's own provenance: a later commit does not
-  // invalidate a screenshot that was correct when taken. It does make the
-  // evidence older than the UI it shows. Report that to the caller rather than
-  // warning here, so a test asserting successful acceptance stays silent and
-  // the build entry point decides how loud to be.
-  return { manifest, current: await provenanceMatches(manifest, root) };
+  // Keep strict correspondence available to callers. Publication warnings use
+  // relevant working bytes, not commit distance or unrelated documentation.
+  const revisionCurrent = manifest.sourceRevision === revision(root);
+  const sourceCurrent = manifest.sourceTreeDigest === await sourceTreeDigest(root);
+  return { manifest, current: revisionCurrent && sourceCurrent, sourceCurrent };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   await checkDocLinks();
-  const { manifest, current } = await checkTutorialAssets();
-  if (!current) {
+  const { manifest, sourceCurrent } = await checkTutorialAssets();
+  if (!sourceCurrent) {
     process.emitWarning(
-      `tutorial evidence was captured at ${manifest.sourceRevision}, which no longer matches this tree. ` +
-        "Refresh before relying on the screenshots: node docs-site/scripts/tours/refresh.mjs refresh " +
+      `tutorial evidence was captured at ${manifest.sourceRevision}, and relevant source has changed. ` +
+        "Capture and review before relying on the screenshots: node docs-site/scripts/tours/refresh.mjs refresh " +
         "--surfaces cli,web --out /ABS/NEW-CANDIDATE",
     );
   }

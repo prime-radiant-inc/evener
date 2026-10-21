@@ -142,7 +142,7 @@ func FuzzResponsesBuildBody(f *testing.F) {
 			t.Fatalf("request body missing required field \"input\"\njson=%s", b)
 		}
 
-		registry.Prune(body, res.Caps) // must never panic
+		registry.Prune(body, res.Caps, res.Protocol) // must never panic
 
 		if lite {
 			input, _ := body["input"].([]any)
