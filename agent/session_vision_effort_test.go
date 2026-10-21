@@ -693,9 +693,23 @@ func TestDescribeImage_PinnedRouteEffortFollowsTheRegistry(t *testing.T) {
 			row:   &registry.Model{Caps: registry.Caps{Reasoning: new(false)}},
 		},
 		{
-			name:  "a toggle-only row gets no effort knob",
-			model: "toggle-only",
-			row:   &registry.Model{Caps: registry.Caps{Reasoning: new(true), ReasoningControls: []string{"toggle"}}},
+			// The route reasons, so the request carries an effort: the toggle
+			// dialect opens its thinking object from it, and the adapter withholds
+			// the level name itself. Whether the name reaches the wire is covered
+			// by the dialect tests in chatcompletions.
+			name:       "a toggle-only row still asks the route to reason",
+			model:      "toggle-only",
+			row:        &registry.Model{Caps: registry.Caps{Reasoning: new(true), ReasoningControls: []string{"toggle"}}},
+			wantEffort: visionReasoningEffort,
+		},
+		{
+			// A no-effort verdict suppresses the level name, not reasoning
+			// itself: a budget-shaped row still needs its request effort to
+			// size a numeric budget, and the vision cap still applies.
+			name:       "a budget row stating the no-effort verdict keeps the cap",
+			model:      "budget-no-effort",
+			row:        &registry.Model{Caps: registry.Caps{Reasoning: new(true), ReasoningControls: []string{"budget_tokens"}, EffortParameterUnsupported: new(true)}},
+			wantEffort: visionReasoningEffort,
 		},
 		{
 			name:       "an unknown model on the instance passes the cap through",
