@@ -286,3 +286,84 @@ func TestEmbeddedAssetInPackageDirReachesImporters(t *testing.T) {
 		t.Errorf("%s imports the embedding package and must be selected", importer)
 	}
 }
+
+// run() owns the exit status a developer's pre-push check depends on: 0 for a
+// diff with no Go work, 2 when Go files changed but nothing was selected, and 1
+// when a selected package fails. An earlier version had no test here, so the
+// loud-failure guard could regress unnoticed.
+func TestRunExitStatus(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, root string)
+		want  int
+	}{
+		{
+			name:  "unchanged tree",
+			setup: func(t *testing.T, root string) {},
+			want:  0,
+		},
+		{
+			name: "non-Go change only",
+			setup: func(t *testing.T, root string) {
+				writeFile(t, filepath.Join(root, "README.md"), "changed\n")
+			},
+			want: 0,
+		},
+		{
+			// A new package selects itself, so the loud-failure guard only
+			// fires when no package covers the file at all: here the module
+			// root holds no Go package and the file sits directly in it.
+			name: "Go file with no package",
+			setup: func(t *testing.T, root string) {
+				if err := os.RemoveAll(filepath.Join(root, "pkg")); err != nil {
+					t.Fatalf("removing pkg: %v", err)
+				}
+				writeFile(t, filepath.Join(root, "testdata", "gen", "x.go"), "package gen\n")
+			},
+			want: 2,
+		},
+		{
+			name: "selected package fails",
+			setup: func(t *testing.T, root string) {
+				writeFile(t, filepath.Join(root, "pkg", "x_test.go"), "package pkg\n\nimport \"testing\"\n\nfunc TestFails(t *testing.T) { t.Fatal(\"boom\") }\n")
+			},
+			want: 1,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			root := newTestModule(t)
+			gitIn(t, root, "add", ".")
+			gitIn(t, root, "commit", "-q", "-m", "base")
+			c.setup(t, root)
+
+			if got := run(root, "HEAD", []string{"."}, false); got != c.want {
+				t.Fatalf("run() = %d, want %d", got, c.want)
+			}
+		})
+	}
+}
+
+// newTestModule writes a one-package module under a fresh temp dir.
+func newTestModule(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	gitIn(t, root, "init", "-q")
+	gitIn(t, root, "config", "user.email", "test@example.com")
+	gitIn(t, root, "config", "user.name", "test")
+	writeFile(t, filepath.Join(root, "go.mod"), "module example.com/m\n\ngo 1.27.0\n")
+	writeFile(t, filepath.Join(root, "go.work"), "go 1.27.0\n\nuse .\n")
+	writeFile(t, filepath.Join(root, "pkg", "x.go"), "package pkg\n")
+	writeFile(t, filepath.Join(root, "pkg", "x_test.go"), "package pkg\n\nimport \"testing\"\n\nfunc TestOK(t *testing.T) {}\n")
+	return root
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}

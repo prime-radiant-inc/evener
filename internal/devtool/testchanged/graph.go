@@ -200,12 +200,26 @@ func (g *graph) addModule(module string, entries []pkgEntry) {
 				continue
 			}
 			for _, d := range e.Deps {
-				deps[d] = true
+				deps[bareImportPath(d)] = true
 			}
 		}
 		delete(deps, self.ImportPath)
 		g.deps[self.ImportPath] = deps
 	}
+}
+
+// bareImportPath drops the test-variant annotation go list appends to a
+// package name, as in `pkg [pkg.test]`. Without this, a dependency edge reached
+// only through an external test package is stored under a name no real import
+// path ever equals, so the closure can never match a change to that package.
+func bareImportPath(dep string) string {
+	if bare, _, ok := strings.Cut(dep, " ["); ok {
+		return bare
+	}
+	if trimmed, ok := strings.CutSuffix(dep, ".test"); ok {
+		return trimmed
+	}
+	return dep
 }
 
 // moduleFor maps a repo-relative path to its longest GO_MODULES root. The

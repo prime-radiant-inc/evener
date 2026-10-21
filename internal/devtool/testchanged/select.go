@@ -3,6 +3,7 @@ package main
 import (
 	"maps"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -134,6 +135,16 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 					continue
 				}
 			}
+			// A non-Go fixture under testdata/ (a golden, a table, a script) is
+			// read by the nearest package's tests. It cannot be embedded, and it
+			// changes nothing an importer can observe, so it stays package-local
+			// instead of spreading.
+			if !goFile && isTestdataPath(rel) {
+				if owner, ok := g.nearestPackageAncestor(module, dir); ok {
+					packageOnly[owner] = joinReason(packageOnly[owner], "testdata fixture "+rel)
+					continue
+				}
+			}
 			// A file that no longer exists is a deletion, not a stray file in a
 			// package-less directory: removing a dead package with no surviving
 			// importers is a complete, correct change, so it is reported and
@@ -243,6 +254,13 @@ func joinReason(prev, add string) string {
 		return add
 	}
 	return prev + ", " + add
+}
+
+// isTestdataPath reports whether a repo-relative path sits under a testdata
+// directory, the go command's own convention for files that belong to tests
+// rather than to a package.
+func isTestdataPath(rel string) bool {
+	return slices.Contains(strings.Split(rel, "/"), "testdata")
 }
 
 // nestedModule reports whether dir sits inside a module that is not in
