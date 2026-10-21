@@ -12,7 +12,7 @@
 // An authoritative removal closes the sheet, except during its own rename.
 
 import type { AppwireClientLike, MarketplaceEntry } from "@evener/appwire-client";
-import { errorText } from "@evener/appwire-client";
+import { errorText, marketplaceSourcePin } from "@evener/appwire-client";
 import { HUB_WRITE_BUSY, isHubWriteBusy, marketplaceRemovalOutcome } from "@evener/appwire-client/state/extensions";
 import { type Dispatch, type SetStateAction, useEffect, useId, useRef, useState } from "react";
 import { useIsMobile } from "../../../../shell/useIsMobile";
@@ -97,6 +97,7 @@ export function MarketplaceSheet({
   const ids = useId();
 
   const entry = name === null || marketplaces === null ? undefined : marketplaces.find((m) => m.name === name);
+  const sourcePin = entry === undefined ? "" : marketplaceSourcePin(entry.source);
 
   const [draft, setDraft] = useState<MarketplaceDraft | null>(null);
   const [baseline, setBaseline] = useState<MarketplaceEntry | null>(null);
@@ -472,13 +473,11 @@ export function MarketplaceSheet({
                     ),
                     mono: true,
                   },
-                  ...(entry.source.kind !== "directory" && (entry.source.ref || entry.source.sha)
+                  ...(sourcePin
                     ? [
                         {
                           label: entry.source.sha ? "Pinned to" : "Ref",
-                          value: (
-                            <span data-testid="marketplace-pinned-to">{entry.source.sha || entry.source.ref}</span>
-                          ),
+                          value: <span data-testid="marketplace-pinned-to">{sourcePin}</span>,
                           mono: true,
                         },
                       ]

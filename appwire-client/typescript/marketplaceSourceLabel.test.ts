@@ -1,6 +1,21 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
-import { marketplaceSourceLabel } from "./marketplaceSourceLabel";
+import { marketplaceSourceLabel, marketplaceSourcePin, marketplaceSourceTakesRef } from "./marketplaceSourceLabel";
+
+test("only git-backed kinds take a ref", () => {
+  expect(marketplaceSourceTakesRef("github")).toBe(true);
+  expect(marketplaceSourceTakesRef("url")).toBe(true);
+  expect(marketplaceSourceTakesRef("git-subdir")).toBe(true);
+  expect(marketplaceSourceTakesRef("directory")).toBe(false);
+  expect(marketplaceSourceTakesRef("mystery")).toBe(false);
+});
+
+test("the pin is the sha when the source carries one", () => {
+  expect(marketplaceSourcePin({ kind: "github", repo: "acme/plugins", ref: "main" })).toBe("main");
+  expect(marketplaceSourcePin({ kind: "github", repo: "acme/plugins", ref: "main", sha: "abc1234" })).toBe("abc1234");
+  expect(marketplaceSourcePin({ kind: "github", repo: "acme/plugins" })).toBe("");
+  expect(marketplaceSourcePin({ kind: "directory", path: "/srv/plugins", ref: "main" })).toBe("");
+});
 
 test("github: shows the repo prefixed with 'github: '", () => {
   expect(marketplaceSourceLabel({ kind: "github", repo: "acme/plugins" })).toBe("github: acme/plugins");

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -124,7 +125,7 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 		if *gitRef != "" {
-			if src.Kind == plugins.SourceDirectory {
+			if !src.Kind.HasRemote() {
 				return errors.New("--ref applies only to git sources, not a local directory")
 			}
 			src.Ref = *gitRef
@@ -287,10 +288,7 @@ func renderMarketplaces(w io.Writer, mk plugins.Marketplaces, asJSON bool) error
 }
 
 func sourceDescription(src plugins.Source) string {
-	pin := src.Sha
-	if pin == "" {
-		pin = src.Ref
-	}
+	pin := cmp.Or(src.Sha, src.Ref)
 	suffix := ""
 	if pin != "" {
 		suffix = "@" + pin

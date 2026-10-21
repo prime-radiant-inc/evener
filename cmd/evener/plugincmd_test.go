@@ -84,6 +84,16 @@ func (m *marketplaceAddCapture) AddMarketplace(_ context.Context, _ string, src 
 	return plugins.MarketplaceRef{InstallLocation: "/tmp/marketplace"}, nil
 }
 
+func captureAdd(t *testing.T) *marketplaceAddCapture {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	m := &marketplaceAddCapture{}
+	oldManager := newPluginManager
+	newPluginManager = func() pluginManager { return m }
+	t.Cleanup(func() { newPluginManager = oldManager })
+	return m
+}
+
 func TestPluginMarketplaceAdd_RefFlag(t *testing.T) {
 	cases := []struct {
 		name string
@@ -103,11 +113,7 @@ func TestPluginMarketplaceAdd_RefFlag(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-			m := &marketplaceAddCapture{}
-			oldManager := newPluginManager
-			newPluginManager = func() pluginManager { return m }
-			t.Cleanup(func() { newPluginManager = oldManager })
+			m := captureAdd(t)
 
 			var out, errb bytes.Buffer
 			if err := runPlugin([]string{"marketplace", "add", "--ref", "release/next", "--yes", tc.arg}, nil, &out, &errb); err != nil {
@@ -124,11 +130,7 @@ func TestPluginMarketplaceAdd_RefFlag(t *testing.T) {
 }
 
 func TestPluginMarketplaceAdd_RefFlagRejectsDirectorySource(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	m := &marketplaceAddCapture{}
-	oldManager := newPluginManager
-	newPluginManager = func() pluginManager { return m }
-	t.Cleanup(func() { newPluginManager = oldManager })
+	m := captureAdd(t)
 
 	var out, errb bytes.Buffer
 	err := runPlugin([]string{"marketplace", "add", "--ref", "main", "--yes", t.TempDir()}, nil, &out, &errb)
@@ -141,11 +143,7 @@ func TestPluginMarketplaceAdd_RefFlagRejectsDirectorySource(t *testing.T) {
 }
 
 func TestPluginMarketplaceAdd_RefAfterSourceIsRejected(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	m := &marketplaceAddCapture{}
-	oldManager := newPluginManager
-	newPluginManager = func() pluginManager { return m }
-	t.Cleanup(func() { newPluginManager = oldManager })
+	m := captureAdd(t)
 
 	var out, errb bytes.Buffer
 	err := runPlugin([]string{"marketplace", "add", "--yes", "acme/plugins", "--ref", "main"}, nil, &out, &errb)

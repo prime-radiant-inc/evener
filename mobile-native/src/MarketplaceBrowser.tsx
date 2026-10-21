@@ -688,15 +688,12 @@ export function AddMarketplace({
 		setError(null);
 		const value = source.trim();
 		const gitRef = ref.trim();
+		const base: MarketplaceAddParams["source"] =
+			kind === "github" ? { kind, repo: value } : kind === "directory" ? { kind, path: value } : { kind, url: value };
 		const outcome = await runGatedMutation(canUseConnection, () =>
 			onAdd({
 				name: name.trim(),
-				source:
-					kind === "github"
-						? { kind, repo: value, ...(gitRef ? { ref: gitRef } : {}) }
-						: kind === "directory"
-							? { kind, path: value }
-							: { kind, url: value, ...(gitRef ? { ref: gitRef } : {}) },
+				source: gitRef ? { ...base, ref: gitRef } : base,
 			}),
 		);
 		if (!alive.current) return;
@@ -788,20 +785,18 @@ export function AddMarketplace({
 						<GroupFooter>This path is on the hub, not this phone.</GroupFooter>
 					</>
 				) : (
-					<Group label={typed?.sourceLabel ?? ""}>
-						<TextFieldRow
-							label="Marketplace source"
-							placeholder={typed?.placeholder}
-							value={source}
-							onChangeText={setSource}
-							disabled={busy}
-							returnKeyType="next"
-							onSubmitEditing={() => nameInput.current?.focus()}
-						/>
-					</Group>
-				)}
-				{kind !== "directory" && (
 					<>
+						<Group label={typed?.sourceLabel ?? ""}>
+							<TextFieldRow
+								label="Marketplace source"
+								placeholder={typed?.placeholder}
+								value={source}
+								onChangeText={setSource}
+								disabled={busy}
+								returnKeyType="next"
+								onSubmitEditing={() => nameInput.current?.focus()}
+							/>
+						</Group>
 						<Group label="Branch or tag">
 							<TextFieldRow
 								label="Branch or tag"

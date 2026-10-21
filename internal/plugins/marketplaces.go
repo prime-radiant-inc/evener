@@ -142,7 +142,7 @@ func (m *Manager) stampRefreshed(mk Marketplaces, name string, ref MarketplaceRe
 // refuseDirectoryPin rejects a ref or sha on a directory source, which is read
 // in place and has no remote to check one out from.
 func refuseDirectoryPin(src Source) error {
-	if src.Kind == SourceDirectory && (src.Ref != "" || src.Sha != "") {
+	if !src.Kind.HasRemote() && (src.Ref != "" || src.Sha != "") {
 		return ErrMarketplaceSourcePinned
 	}
 	return nil
@@ -220,15 +220,15 @@ func (m *Manager) ensureFetched(ctx context.Context, name string) (MarketplaceRe
 // the same name and a different source re-sources that marketplace in place; a
 // failed save leaves the previously recorded clone as it was.
 func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (MarketplaceRef, error) {
+	if err := refuseDirectoryPin(src); err != nil {
+		return MarketplaceRef{}, err
+	}
 	release, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
 	if err != nil {
 		return MarketplaceRef{}, err
 	}
 	defer release()
 
-	if err := refuseDirectoryPin(src); err != nil {
-		return MarketplaceRef{}, err
-	}
 	if src.Kind == SourceDirectory {
 		// Before the staging clear below, which would destroy a source that
 		// sits there — and before the fetch, which is what would leave this

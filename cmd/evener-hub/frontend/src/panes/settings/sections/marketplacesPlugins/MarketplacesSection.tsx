@@ -7,7 +7,7 @@
 // than here.
 
 import type { MarketplaceSourceInput } from "@evener/appwire-client";
-import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
+import { errorText, marketplaceSourceLabel, marketplaceSourceTakesRef } from "@evener/appwire-client";
 import { HUB_WRITE_BUSY, isHubWriteBusy } from "@evener/appwire-client/state/extensions";
 import { type FormEvent, useId, useState } from "react";
 import {
@@ -173,7 +173,7 @@ export function MarketplacesSection({ onSelect, onBrowse }: MarketplacesSectionP
               />
             </FormRow>
           )}
-          {kind !== "directory" && (
+          {marketplaceSourceTakesRef(kind) && (
             <FormRow
               label="Branch or tag (optional)"
               htmlFor={refId}

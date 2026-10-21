@@ -3182,6 +3182,37 @@ func TestRefreshMarketplace_ARefNamingATagAndABranchIsTheTagsPin(t *testing.T) {
 	}
 }
 
+// A ref that names a branch is not a pin: a refresh follows the branch's tip.
+func TestRefreshMarketplace_ABranchRefFollowsItsTip(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "branching")
+	gitIn(t, repo, "checkout", "--quiet", "-b", "release")
+	advanceGitRepo(t, repo, "README.md", "release one")
+	firstTip := gitIn(t, repo, "rev-parse", "HEAD")
+	gitIn(t, repo, "checkout", "--quiet", "-")
+	m := NewManager(t.TempDir())
+	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "release"})
+	if err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != firstTip {
+		t.Fatalf("the clone is at %s, want the release branch tip %s", got, firstTip)
+	}
+
+	gitIn(t, repo, "checkout", "--quiet", "release")
+	advanceGitRepo(t, repo, "README.md", "release two")
+	nextTip := gitIn(t, repo, "rev-parse", "HEAD")
+	gitIn(t, repo, "checkout", "--quiet", "-")
+	if err := m.RefreshMarketplace(context.Background(), "branching"); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != nextTip {
+		t.Fatalf("HEAD after refresh = %s, want the moved release tip %s", got, nextTip)
+	}
+}
+
 // A clone whose branch check fails for a reason other than a missing ref is
 // not taken for pinned: the check refreshes it and warns of the failure.
 func TestCheckUpdates_ABranchCheckThatFailsIsNotAPin(t *testing.T) {
