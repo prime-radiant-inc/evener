@@ -1638,6 +1638,12 @@ func (s *Session) SetModel(model string) error {
 		return admissionErr
 	}
 	defer release()
+	// A named Codex model may exist only in the target instance's live
+	// roster. List it before s.mu: the strict cross-provider resolve below
+	// runs under the lock and must stay a pure registry lookup, while the
+	// live rows this applies are what let it accept a model the bundled
+	// roster lags.
+	s.primeCodexRoster(model)
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
@@ -1757,6 +1763,24 @@ func (s *Session) SetModel(model string) error {
 	s.maybeAutoSave()
 	s.resumeRootAttentionAfterModelSwitch()
 	return nil
+}
+
+// primeCodexRoster applies the target instance's live listing when a named
+// model is a Codex id the bundled roster does not carry. The switch's own
+// resolve runs under s.mu, so the network call lives here instead, outside the
+// lock; a failure leaves the resolve to report its authoritative error.
+func (s *Session) primeCodexRoster(ref string) {
+	ref = strings.TrimSpace(ref)
+	instance, _, ok := strings.Cut(ref, "/")
+	if !ok || instance == "" || s.client == nil {
+		return
+	}
+	if _, err := s.client.Resolve(ref); err == nil || !errors.Is(err, registry.ErrCodexModelNotListed) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), llm.LiveModelListTimeout)
+	defer cancel()
+	_, _ = s.client.Models(ctx, instance)
 }
 
 // SetVisionModel changes the vision side-channel routing for future image

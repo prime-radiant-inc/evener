@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
-	"time"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/llm"
@@ -14,7 +13,7 @@ import (
 
 // instanceLiveListTimeout bounds one instance's live /models fetch, the
 // same per-instance budget launch-check and the model picker use.
-const instanceLiveListTimeout = 8 * time.Second
+const instanceLiveListTimeout = llm.LiveModelListTimeout
 
 // fetchInstanceLive fetches one instance's live listing into the holder,
 // so later InstanceModels calls include the live ids. It is the shared

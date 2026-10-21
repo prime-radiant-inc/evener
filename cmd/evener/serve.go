@@ -2118,11 +2118,6 @@ func buildInitialProfile(ctx context.Context, client *llm.Client, modelRef cmdut
 	return provider.WithAllowedDecisions(p, allowedDecisions), nil
 }
 
-// initialCodexRosterTimeout bounds the one live listing a Codex reference may
-// need when its id is not in the bundled roster. It matches the per-instance
-// budget the hub's model picker and launch check use.
-const initialCodexRosterTimeout = 8 * time.Second
-
 // resolveInitialProfile resolves modelRef on the client's registry. The Codex
 // transport rejects an id absent from its roster instead of synthesizing a
 // row, and the bundled roster lags the models the backend serves. A session
@@ -2136,7 +2131,7 @@ func resolveInitialProfile(ctx context.Context, client *llm.Client, modelRef cmd
 	if err == nil || !errors.Is(err, registry.ErrCodexModelNotListed) {
 		return raw, err
 	}
-	listCtx, cancel := context.WithTimeout(ctx, initialCodexRosterTimeout)
+	listCtx, cancel := context.WithTimeout(ctx, llm.LiveModelListTimeout)
 	defer cancel()
 	if _, listErr := client.Models(listCtx, modelRef.Provider); listErr != nil {
 		return nil, fmt.Errorf("%w; the provider's live model list could not be read: %v", err, listErr)

@@ -10,7 +10,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/appwire"
@@ -26,7 +25,7 @@ var launchCheckLoadClient = cmdutil.LoadClient
 
 // launchCheckListTimeout bounds one instance's model listing. It is per
 // instance, not per command, so a slow endpoint costs only its own budget.
-const launchCheckListTimeout = 8 * time.Second
+const launchCheckListTimeout = llm.LiveModelListTimeout
 
 type launchCheckModel struct {
 	Provider string `json:"provider"`
@@ -128,15 +127,16 @@ func validateLaunchCheckProfile(ref cmdutil.ModelRef) error {
 	if pr.Model == "" {
 		return fmt.Errorf("%q: empty model reference", ref.Qualified())
 	}
-	_, err = client.Registry().ResolveInstanceModelFacts(pr.Instance, pr.Model)
-	if errors.Is(err, registry.ErrCodexModelNotListed) {
+	if _, err := client.Registry().ResolveInstanceModelFacts(pr.Instance, pr.Model); err != nil {
+		if !errors.Is(err, registry.ErrCodexModelNotListed) {
+			return err
+		}
 		// The bundled Codex roster lags the backend. The model check below
 		// owns the live-roster judgment (and the child repeats it with the
 		// real credential), so this network-free facts read defers instead of
 		// refusing a model the provider may serve.
-		return nil
 	}
-	return err
+	return nil
 }
 
 // launchCheckModels lists what every visible instance can launch. Each

@@ -1,6 +1,15 @@
 package llm
 
-import "context"
+import (
+	"context"
+	"time"
+)
+
+// LiveModelListTimeout bounds one instance's live model listing. The launch
+// check, the hub's prefetch and model picker, a Codex roster retry at launch,
+// and a model switch all use this one per-instance budget so they cannot
+// drift apart.
+const LiveModelListTimeout = 8 * time.Second
 
 type modelListingTimeoutKey struct{}
 

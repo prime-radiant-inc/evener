@@ -262,17 +262,10 @@ func (r *Registry) codexValidRowIDs(rec *record) []string {
 	for _, id := range exactRowIDs(rec) {
 		valid[id] = true
 	}
-	r.liveMu.RLock()
-	for id := range r.live[rec.name].rows {
-		valid[id] = true
+	for _, m := range r.LiveModels(rec.name) {
+		valid[m.ID] = true
 	}
-	r.liveMu.RUnlock()
-	ids := make([]string, 0, len(valid))
-	for id := range valid {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	return ids
+	return sortedKeys(valid)
 }
 
 // Resolve is the single lookup path (spec §7): reference → instance record →
