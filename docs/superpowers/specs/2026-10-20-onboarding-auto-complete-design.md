@@ -127,6 +127,11 @@ launch behavior remains unchanged outside this completion path.
    focus. Bind completion to the originating draft, host and attempt, reusing
    existing ownership and generation mechanisms.
 
+Cancel retires the dialog's ownership, not an already-running server-side OAuth
+operation. That operation may save credentials after cancellation if the
+destination is unchanged. Keep its late UI effects retired and preserve saved
+access; adding server-side cancellation is outside this change.
+
 Keep credentials scoped to their selected host and provider instance. Do not
 transfer secrets between providers or discard saved access on check failure.
 
