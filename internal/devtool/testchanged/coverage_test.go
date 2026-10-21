@@ -119,6 +119,21 @@ func TestRepositoryFileIsReportedAsAuditOnly(t *testing.T) {
 	}
 }
 
+// A file sitting in the repo-root package's own directory must follow the same
+// boundary: selecting the root package there would run the ~40s audit suite,
+// which the docs say this target does not run.
+func TestRootLevelFileIsAuditOnly(t *testing.T) {
+	g := loadTestGraph(t)
+	res := selectPackages(g, []string{"AGENTS.md"}, testModules)
+
+	if len(res.Selected) != 0 {
+		t.Errorf("selected %v, want nothing for a root-level file", selectedPaths(res))
+	}
+	if len(res.AuditOnly) != 1 || res.AuditOnly[0] != "AGENTS.md" {
+		t.Errorf("AuditOnly = %v, want [AGENTS.md]", res.AuditOnly)
+	}
+}
+
 // A deleted repository file is audit-only too; it must not be counted as a
 // broken Go selection, and it must not disappear without a word.
 func TestDeletedRepositoryFileIsAuditOnly(t *testing.T) {
@@ -191,16 +206,18 @@ func TestGoSumStaysScopedToItsModule(t *testing.T) {
 	g := loadTestGraph(t)
 	res := selectPackages(g, []string{"agent/go.sum"}, testModules)
 
+	// go.sum must not trigger the shared-build-list rule that go.mod does. Any
+	// package selected beyond agent's own is reached through the import
+	// closure, which is legitimate; what must not happen is a package whose
+	// stated reason is the shared build list.
+	for _, s := range res.Selected {
+		if strings.Contains(s.Reason, "shared build list") {
+			t.Errorf("%s selected for %q; only go.mod shares the build list", s.ImportPath, s.Reason)
+		}
+	}
 	seen := map[string]bool{}
 	for _, s := range res.Selected {
 		seen[s.ModuleRoot] = true
-	}
-	// The repo-root package comes along as a repository file, but go.sum must
-	// not whole-module-select the other gate modules the way go.mod does.
-	for _, m := range testModules {
-		if m != "agent" && m != "." && seen[m] {
-			t.Errorf("agent/go.sum whole-module selected %q; only go.mod shares the build list", m)
-		}
 	}
 	if !seen["agent"] {
 		t.Error("agent/go.sum selected nothing in agent")
@@ -366,12 +383,10 @@ func TestDeletedUnimportedFileIsReportedNotFailed(t *testing.T) {
 	if res.GoChanged != 0 {
 		t.Errorf("GoChanged = %d, want 0 so the empty-selection guard does not fail the run", res.GoChanged)
 	}
-	// The root audit package comes along (its audits walk tracked files, and a
-	// deletion is a tracked-file change), but nothing else should.
-	for _, p := range selectedPaths(res) {
-		if p != modulePath {
-			t.Errorf("Selected = %v, want only the root package %s", selectedPaths(res), modulePath)
-		}
+	// Nothing is selected: root audits are out of scope, and no import edge
+	// reaches a package that no longer exists.
+	if len(res.Selected) != 0 {
+		t.Errorf("Selected = %v, want nothing", selectedPaths(res))
 	}
 }
 

@@ -235,6 +235,15 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 				propagating[ip] = joinReason(propagating[ip], "embedded asset "+rel)
 				continue
 			}
+			// A non-Go file in the repo-root package's own directory (AGENTS.md,
+			// README.md, Makefile) would otherwise select the root audit suite,
+			// contradicting the documented boundary that test-changed does not
+			// run it. Report it as audit-only unless the root package actually
+			// embeds it, which the check above already handled.
+			if rootPkg, ok := g.packageAt(g.root); ok && ip == rootPkg {
+				res.AuditOnly = append(res.AuditOnly, rel)
+				continue
+			}
 			packageOnly[ip] = joinReason(packageOnly[ip], "changed file "+rel)
 			continue
 		}
