@@ -550,6 +550,9 @@ type Warning struct {
 	Code    string `json:"code,omitempty"`
 }
 
+// WarningCodeImageColorUnmanaged marks successful image recovery without color management.
+const WarningCodeImageColorUnmanaged = "image_color_unmanaged"
+
 // RateLimitInfo reports provider rate-limit state parsed from response headers.
 type RateLimitInfo struct {
 	RequestsRemaining *int       `json:"requests_remaining,omitempty"`

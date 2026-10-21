@@ -2,12 +2,52 @@ package fakellm
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestTerminalHTTPFailure(t *testing.T) {
+	t.Parallel()
+	srv, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(srv.Close)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"stream":true,"tools":[{}]}`)).WithContext(ctx)
+	recorder := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.handleChat(recorder, request)
+	}()
+	call, err := srv.Next(ctx.Done())
+	if err != nil {
+		t.Fatal(err)
+	}
+	call.RespondHTTPError(http.StatusBadRequest, "fixture_failure")
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusBadRequest || body.Error.Code != "fixture_failure" {
+		t.Fatalf("HTTP failure: status=%d code=%q", recorder.Code, body.Error.Code)
+	}
+}
 
 // TestHandleModels covers the /v1/models handler.
 func TestHandleModels(t *testing.T) {

@@ -18,7 +18,7 @@ import (
 // decodeStream consumes the Chat Completions SSE stream in its own goroutine: it
 // translates each chunk into llm stream events and emits the final accumulated
 // Response on [DONE]. It owns closing the response body and the ChanStream.
-func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, res registry.Resolved, r *protocolhttp.Result, attempt *transport.APIAttemptCapture) {
+func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, res registry.Resolved, r *protocolhttp.Result, attempt *transport.APIAttemptCapture, warnings []llm.Warning) {
 	rl := llm.ParseRateLimitHeaders(resp.Header)
 	defer func() {
 		_ = resp.Body.Close()
@@ -147,6 +147,7 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 					Message:   msg,
 					Finish:    finish,
 					RateLimit: rl,
+					Warnings:  warnings,
 				}
 				if usage != nil {
 					finalResp.Usage = *usage

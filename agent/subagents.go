@@ -870,6 +870,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 		subCfg = subagentConfigFromFrozenDescriptor(frozen.Config, parentCfg)
 	}
 	subCfg.artifactStore = s.artifactStore
+	subCfg.artifactStoreInherited = true
 	subCfg.MCPConfigFiles = nil
 	subCfg.MCPInline = nil
 	subCfg.spawn.sessionID = ""

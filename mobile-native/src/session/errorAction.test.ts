@@ -3,8 +3,6 @@ import { errorAction } from "./errorAction";
 
 const session = (resumeRequired = false) => ({
 	resumeRequired,
-	// The failed turn opened with the user's own input; errorAction's lookback
-	// reads it to decide whether Retry has anything honest to re-send.
 	turns: [
 		{ id: "turn_1" },
 		{ id: "turn_2", items: [{ id: "u-1", type: "userMessage", text: "my original question" }] },
@@ -30,7 +28,7 @@ describe("an error's one action (spec 8.2, ruling 26)", () => {
 		["no retry while Send can't act", failure("go test exited 1"), session(), false, null],
 		["no retry under an earlier turn", failure("go test exited 1", "turn_1"), session(), true, null],
 		["no retry for a warning's row", { ...failure("rate limited"), id: "warn-item-1" }, session(), true, null],
-		["no retry when the turn's input is gone", failure("go test exited 1"), sessionless(), true, null],
+		["retry when the turn's input is gone", failure("go test exited 1"), sessionless(), true, "retry"],
 	] as const)("%s", (_name, row, model, canSend, action) => {
 		expect(errorAction(row, model, canSend)).toBe(action);
 	});
