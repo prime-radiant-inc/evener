@@ -58,6 +58,14 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
   let pass: Promise<void> | null = null;
   let retryNeeded = false;
   let pendingDuringPass = false;
+  // A recovery trigger arriving while a pass runs names state that pass may
+  // already have visited: the composer its handoff skipped can have become
+  // claimable after the sweep moved on. Retain one such trigger and run one
+  // coalesced follow-up when the pass settles; a trigger during that follow-up
+  // coalesces into at most one more pass the same way. Disposal clears it, so
+  // no follow-up is ever scheduled after close.
+  let followUpRequested = false;
+  let followUpReason: AnnotationRetryReason | null = null;
   let alive = true;
   // The pass hands off through the repository's own sweep, so disposal must be
   // observable between those handoffs and not only at this pass's outer
@@ -146,32 +154,53 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
       if (entry.active === 0 && cancellations.get(operationKey) === entry) cancellations.delete(operationKey);
     }
   };
-  const retryPending = (reason: AnnotationRetryReason): Promise<void> => {
-    if (!alive) return Promise.resolve();
-    if (pass) return pass;
+  const startPass = (reason: AnnotationRetryReason): Promise<void> => {
     pendingDuringPass = false; // before assigning pass, never erase observations made while it runs
+    followUpRequested = false;
+    followUpReason = null;
     // The pass's persisted sweep drives handoffs at the repository level, so
     // it joins the same chain: an in-flight direct handoff finishes first and
     // the sweep never races it for the composer.
-    pass = handoffChain
-      .then(async () => {
-        for (const operation of [...failed.values()]) {
-          if (!alive) return;
-          // invalidate may have removed this attempt while an earlier save waited.
-          if (failed.get(id(operation)) === operation) await save(operation);
+    const current = handoffChain.then(async () => {
+      for (const operation of [...failed.values()]) {
+        if (!alive) return;
+        // invalidate may have removed this attempt while an earlier save waited.
+        if (failed.get(id(operation)) === operation) await save(operation);
+      }
+      if (alive)
+        try {
+          const outcome = await repo.retryPendingWithOutcome(reason, retryCancellation);
+          if (alive) retryNeeded = failed.size > 0 || outcome.pending || pendingDuringPass;
+        } catch {
+          needRetry();
         }
-        if (alive)
-          try {
-            const outcome = await repo.retryPendingWithOutcome(reason, retryCancellation);
-            if (alive) retryNeeded = failed.size > 0 || outcome.pending || pendingDuringPass;
-          } catch {
-            needRetry();
-          }
-      })
-      .finally(() => {
-        pass = null;
-      });
-    return pass;
+    });
+    const withFollowUp = current.then(async () => {
+      if (!alive || !followUpRequested) return;
+      // Read the retained reason before startPass resets the entry point: the
+      // follow-up's own trigger handling stays independent of this pass's.
+      const nextReason = followUpReason ?? reason;
+      await startPass(nextReason);
+    });
+    pass = withFollowUp;
+    const settle = () => {
+      // A nested follow-up owns the slot while it runs, and a later trigger
+      // outside every pass starts its own.
+      if (pass === withFollowUp) pass = null;
+    };
+    void withFollowUp.then(settle, settle);
+    return withFollowUp;
+  };
+  const retryPending = (reason: AnnotationRetryReason): Promise<void> => {
+    if (!alive) return Promise.resolve();
+    if (pass) {
+      // This trigger reports state the running pass may already have visited:
+      // retain it for one coalesced follow-up instead of dropping it.
+      followUpRequested = true;
+      followUpReason ??= reason;
+      return pass;
+    }
+    return startPass(reason);
   };
   return {
     save,
@@ -205,7 +234,16 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
       });
     },
     storageSucceeded: () => {
-      if (alive && retryNeeded && !pass) void retryPending("storage-recovered");
+      if (!alive) return;
+      if (pass) {
+        // A storage commit during a pass is the same retained trigger: it may
+        // have made a skipped handoff claimable after the sweep passed it. Do
+        // not gate on retryNeeded, which the running pass has not updated yet.
+        followUpRequested = true;
+        followUpReason ??= "storage-recovered";
+        return;
+      }
+      if (retryNeeded) void retryPending("storage-recovered");
     },
     registerRetryNeed: () => {
       needRetry();
@@ -234,6 +272,8 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
       cancellations.clear();
       retryNeeded = false;
       pendingDuringPass = false;
+      followUpRequested = false;
+      followUpReason = null;
     },
   };
 }

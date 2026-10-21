@@ -169,3 +169,62 @@ test("dispose during the append's reads stops the final commit", async () => {
   fixture.repository.close();
   fixture.drafts.close();
 });
+
+// A recovery trigger that arrives while a pass is running names state that pass
+// may already have visited: the composer its handoff skipped can have become
+// claimable after the sweep moved on. The trigger must be retained and run one
+// coalesced follow-up, or the annotation stays pending until unrelated activity
+// starts a later pass.
+test("a storage success during an active pass runs one follow-up after the sweep skipped the operation", async () => {
+  let markSecondHandoffStarted: () => void = () => undefined;
+  const secondHandoffStarted = new Promise<void>((resolve) => {
+    markSecondHandoffStarted = resolve;
+  });
+  let releaseSecondHandoff: () => void = () => undefined;
+  const secondHandoffReleased = new Promise<void>((resolve) => {
+    releaseSecondHandoff = resolve;
+  });
+  let preparations = 0;
+  let fixture: Fixture | undefined;
+  fixture = await openFixture(async () => {
+    preparations += 1;
+    // The first operation's handoff is skipped: no composer claims it.
+    if (preparations === 1) return null;
+    // Block the second handoff so the pass is still active after the sweep
+    // visited the first operation.
+    if (preparations === 2) {
+      markSecondHandoffStarted();
+      await secondHandoffReleased;
+      return null;
+    }
+    // Every later pass sees the composer, now that it became available.
+    return fixture?.preparation ?? null;
+  });
+  const secondOperation: PreparedAnnotation = { ...fixture.operation, operationId: "operation-2" };
+  await fixture.repository.saveAnnotation(secondOperation);
+  const runtime = createDocumentAnnotationRuntime(fixture.repository);
+
+  const pass = runtime.retryPending("composer-open");
+  await secondHandoffStarted;
+  // The sweep already visited operation-1 and is blocked in operation-2's
+  // handoff. The composer's storage commits land during that window, and both
+  // coalesce into one follow-up pass.
+  runtime.storageSucceeded();
+  runtime.storageSucceeded();
+  releaseSecondHandoff();
+  await pass;
+  await runtime.whenIdle();
+
+  const views = await fixture.repository.listAnnotations(fixture.document);
+  // A persisted applied row lists as already-applied: the follow-up's append
+  // committed, so the annotation is no longer pending.
+  expect(views.find((view) => view.operation.operationId === fixture.operation.operationId)?.handoff.state).toBe(
+    "already-applied",
+  );
+  // Two operations in the skipped pass plus two in the one follow-up; a second
+  // follow-up would prepare the still-pending operation again.
+  expect(preparations).toBe(4);
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
