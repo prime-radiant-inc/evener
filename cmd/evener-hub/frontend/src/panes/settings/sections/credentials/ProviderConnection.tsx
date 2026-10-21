@@ -374,6 +374,13 @@ interface SettingsDraft {
   credentialHeader: string;
 }
 
+const SETTINGS_FIELDS = [
+  "protocol",
+  "surface",
+  "apiKeyEnv",
+  "credentialHeader",
+] as const satisfies readonly (keyof SettingsDraft)[];
+
 function settingsOf(row: InstanceEntry | undefined): SettingsDraft {
   return {
     protocol: row?.protocol ?? "",
@@ -431,6 +438,10 @@ function SelectedConnection({
   // A credential write the card confirmed for a destination. A failed listing
   // refresh must not make the card forget that key.
   const confirmedStore = useRef<DestinationClaim | undefined>(undefined);
+  // The row the last successful write authored. It is used only to reconcile a
+  // retry: confirm the row has appeared and edit it, instead of issuing a
+  // duplicate mutation. It never suppresses a later edit.
+  const writeReceipt = useRef<InstanceEntry | undefined>(undefined);
   const [endpointClaim, setEndpointClaim] = useState<DestinationClaim | undefined>(undefined);
   const [settingsClaim, setSettingsClaim] = useState<DestinationClaim | undefined>(undefined);
   const adoptBaselineRef = useRef<(next: InstanceEntry | undefined) => void>(() => {});
@@ -497,6 +508,7 @@ function SelectedConnection({
           setStoredAccess(false);
           setConfigured(false);
           confirmedStore.current = undefined;
+          writeReceipt.current = undefined;
         }
       }
     });
@@ -652,7 +664,10 @@ function SelectedConnection({
     setStoredAccess(next);
   }
 
-  type EditConfirmation = { kind: "confirmed"; row: InstanceEntry } | { kind: "moved" } | { kind: "unconfirmed" };
+  type EditConfirmation =
+    | { kind: "confirmed"; row: InstanceEntry }
+    | { kind: "moved" }
+    | { kind: "unconfirmed"; authored?: InstanceEntry };
 
   /** confirmWrite runs one instance write and resolves the row it authored from
    * a listing that reflects it. The store's applied answer is authoritative. An
@@ -662,24 +677,29 @@ function SelectedConnection({
   async function confirmWrite(
     write: (reconcile: EditSupersededReconcile) => Promise<boolean>,
     name: string,
+    includeImplicit = false,
   ): Promise<EditConfirmation> {
     let superseded: InstanceEntry | undefined;
     const applied = await write({
       onSuperseded: (response) => {
-        superseded = listingRow(response.instances, name);
+        // An edit can land on a curated implicit row; a create authors a new
+        // explicit instance, so its row lookup keeps the implicit filter.
+        superseded = includeImplicit
+          ? response.instances.find((candidate) => candidate.name === name)
+          : listingRow(response.instances, name);
       },
     });
     const authored = applied ? findSetup(name) : superseded;
     if (!authored) return { kind: "unconfirmed" };
     const read = await appliedSelfRead();
-    if (!applied && !read) return { kind: "unconfirmed" };
+    if (!applied && !read) return { kind: "unconfirmed", authored };
     const row = findSetup(name);
-    if (!row) return { kind: "unconfirmed" };
+    if (!row) return { kind: "unconfirmed", authored };
     return destination(row) === destination(authored) ? { kind: "confirmed", row } : { kind: "moved" };
   }
 
   function confirmEdit(params: InstanceEditParams): Promise<EditConfirmation> {
-    return confirmWrite((reconcile) => credentialsStore.getState().edit(params, reconcile), params.name);
+    return confirmWrite((reconcile) => credentialsStore.getState().edit(params, reconcile), params.name, true);
   }
 
   function confirmCreate(params: InstanceCreateParams): Promise<EditConfirmation> {
@@ -697,19 +717,42 @@ function SelectedConnection({
     return listedInstance(name) ? () => confirmEdit(editParams) : () => confirmCreate(createParams);
   }
 
+  function receiptFor(name: string): InstanceEntry | undefined {
+    return writeReceipt.current?.name === name ? writeReceipt.current : undefined;
+  }
+
+  function writeTarget(base: InstanceEntry | undefined, claim: DestinationClaim, row: InstanceEntry) {
+    return {
+      target: base ?? row,
+      asserted: base ? base.endpointFingerprint || undefined : claim.fingerprint,
+    };
+  }
+
+  function reportUnconfirmed(authored?: InstanceEntry) {
+    if (authored) writeReceipt.current = authored;
+    selfMutation.current = false;
+    setPhase("idle");
+    setError({ reason: "save-unconfirmed", message: SAVE_UNCONFIRMED_ERROR });
+  }
+
   /** saveClaimed runs one editor save through the card's one outcome protocol.
-   * The write is awaited and then confirmed from a listing that reflects it
-   * before anything on the card advances. A confirmed row becomes the baseline;
-   * a moved destination closes the editor and re-anchors; an unconfirmed write
-   * keeps the editor and its draft and reports that it could not be confirmed. */
+   * A write receipt is reconciled first: once its authored row appears in an
+   * applied listing, the retry edits that row instead of issuing a duplicate
+   * mutation. The write is then awaited and confirmed from a listing that
+   * reflects it before anything on the card advances. A confirmed row becomes
+   * the baseline; a moved destination closes the editor and re-anchors; an
+   * unconfirmed write keeps the editor and its draft and reports the failure. */
   async function saveClaimed(
+    name: string,
     claim: DestinationClaim,
     row: InstanceEntry,
-    write: () => Promise<EditConfirmation>,
+    write: (base: InstanceEntry | undefined, receipt: InstanceEntry | undefined) => Promise<EditConfirmation>,
+    settled: (row: InstanceEntry) => boolean,
     closeEditor: () => void,
     saveFailedMessage: string,
   ): Promise<void> {
-    if (claimEndpointMoved(claim, row)) {
+    const receipt = receiptFor(name);
+    if (!receipt && claimEndpointMoved(claim, row)) {
       // The row moved while the editor sat open. The value was authored
       // against the row the editor showed, so it cannot be written to the
       // replacement; drop it and re-anchor the card on what is there now.
@@ -723,14 +766,54 @@ function SelectedConnection({
     setResult(null);
     selfMutation.current = true;
     try {
-      const outcome = await write();
+      let base: InstanceEntry | undefined;
+      let activeReceipt = receipt;
+      if (receipt) {
+        const read = await appliedSelfRead();
+        if (!current(token)) {
+          selfMutation.current = false;
+          return;
+        }
+        if (!read) {
+          // No applied listing proves either way; keep the receipt and the
+          // editor, and do not issue a duplicate mutation.
+          reportUnconfirmed();
+          return;
+        }
+        const found = findSetup(name);
+        const receiptClaim = claimOf(receipt);
+        if (!found) {
+          // The applied listing proves the authored row is not there; the
+          // retry is a fresh write again.
+          writeReceipt.current = undefined;
+          activeReceipt = undefined;
+        } else if (!receiptClaim || !claimHolds(receiptClaim, found)) {
+          // The name now resolves elsewhere; that is a destination change, not
+          // a receipt to hold the editor behind.
+          writeReceipt.current = undefined;
+          closeEditor();
+          await recoverChangedEndpoint({ reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR });
+          return;
+        } else {
+          writeReceipt.current = undefined;
+          adoptBaseline(found);
+          if (settled(found)) {
+            selfMutation.current = false;
+            closeEditor();
+            setPhase("idle");
+            return;
+          }
+          base = found;
+        }
+      }
+      const outcome = await write(base, activeReceipt);
       selfMutation.current = false;
       if (!current(token)) return;
       if (outcome.kind === "unconfirmed") {
-        setPhase("idle");
-        setError({ reason: "save-unconfirmed", message: SAVE_UNCONFIRMED_ERROR });
+        reportUnconfirmed(outcome.authored);
         return;
       }
+      writeReceipt.current = undefined;
       closeEditor();
       if (outcome.kind === "confirmed") {
         adoptBaseline(outcome.row);
@@ -1088,7 +1171,8 @@ function SelectedConnection({
       setError({ reason: "endpoint-required", message: ENDPOINT_REQUIRED_ERROR });
       return;
     }
-    if (next === endpointSeed.trim()) {
+    const receipt = receiptFor(row.name);
+    if (!receipt && next === endpointSeed.trim()) {
       // Nothing the editor can see changed. Close it without writing the
       // sanitized display value back over the endpoint's hidden parts.
       closeEndpointEditor();
@@ -1097,12 +1181,24 @@ function SelectedConnection({
     }
     const claim = endpointClaim;
     if (!claim) return;
-    const write = writeFor(
+    const write = (base: InstanceEntry | undefined) => {
+      const { target, asserted } = writeTarget(base, claim, row);
+      return writeFor(
+        row.name,
+        { name: row.name, baseUrl: next, expectedEndpointFingerprint: asserted },
+        { name: row.name, base: target.base || target.providerId, baseUrl: next },
+      )();
+    };
+    const settled = (found: InstanceEntry) => (found.baseUrl ?? "").trim() === next;
+    await saveClaimed(
       row.name,
-      { name: row.name, baseUrl: next, expectedEndpointFingerprint: claim.fingerprint },
-      { name: row.name, base: row.base || row.providerId, baseUrl: next },
+      claim,
+      row,
+      write,
+      settled,
+      closeEndpointEditor,
+      "The endpoint could not be saved. Your value is kept.",
     );
-    await saveClaimed(claim, row, write, closeEndpointEditor, "The endpoint could not be saved. Your value is kept.");
   }
 
   // The full editor is this card's own disclosure. Saving it is one edit with
@@ -1112,28 +1208,50 @@ function SelectedConnection({
     if (!row) return;
     const claim = settingsClaim;
     if (!claim) return;
-    const changed = (field: keyof SettingsDraft) => settingsDraft[field] !== settingsBaseline[field];
     const values = {
       protocol: settingsDraft.protocol || undefined,
       surface: settingsDraft.surface || undefined,
       apiKeyEnv: settingsDraft.apiKeyEnv || undefined,
       credentialHeader: settingsDraft.credentialHeader || undefined,
     };
-    const write = writeFor(
+    const write = (base: InstanceEntry | undefined, receipt: InstanceEntry | undefined) => {
+      const currentSettings = settingsOf(base ?? row);
+      const before = receipt ? settingsOf(receipt) : undefined;
+      // A field the user changed from the opening baseline is theirs to write.
+      // A field the receipt wrote and the current draft no longer matches is
+      // theirs to clear.
+      const changed = (field: keyof SettingsDraft) =>
+        settingsDraft[field] !== settingsBaseline[field] ||
+        (before !== undefined && settingsDraft[field] !== currentSettings[field]);
+      const { target, asserted } = writeTarget(base, claim, row);
+      return writeFor(
+        row.name,
+        {
+          name: row.name,
+          ...(changed("protocol") ? { protocol: values.protocol, clearProtocol: !values.protocol } : {}),
+          ...(changed("surface") ? { surface: values.surface, clearSurface: !values.surface } : {}),
+          ...(changed("apiKeyEnv") ? { apiKeyEnv: values.apiKeyEnv, clearApiKeyEnv: !values.apiKeyEnv } : {}),
+          ...(changed("credentialHeader")
+            ? { credentialHeader: values.credentialHeader, clearCredentialHeader: !values.credentialHeader }
+            : {}),
+          expectedEndpointFingerprint: asserted,
+        },
+        { name: row.name, base: target.base || target.providerId, ...values },
+      )();
+    };
+    const settled = (found: InstanceEntry) => {
+      const currentSettings = settingsOf(found);
+      return SETTINGS_FIELDS.every((field) => currentSettings[field] === settingsDraft[field]);
+    };
+    await saveClaimed(
       row.name,
-      {
-        name: row.name,
-        ...(changed("protocol") ? { protocol: values.protocol, clearProtocol: !values.protocol } : {}),
-        ...(changed("surface") ? { surface: values.surface, clearSurface: !values.surface } : {}),
-        ...(changed("apiKeyEnv") ? { apiKeyEnv: values.apiKeyEnv, clearApiKeyEnv: !values.apiKeyEnv } : {}),
-        ...(changed("credentialHeader")
-          ? { credentialHeader: values.credentialHeader, clearCredentialHeader: !values.credentialHeader }
-          : {}),
-        expectedEndpointFingerprint: claim.fingerprint,
-      },
-      { name: row.name, base: row.base || row.providerId, ...values },
+      claim,
+      row,
+      write,
+      settled,
+      closeSettings,
+      "The settings could not be saved. Your values are kept.",
     );
-    await saveClaimed(claim, row, write, closeSettings, "The settings could not be saved. Your values are kept.");
   }
 
   async function signIn() {
