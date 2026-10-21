@@ -100,6 +100,43 @@ it("removing an image prunes a selected label that the shifted text no longer co
 	expect(submitted).toEqual([{ type: "text", text: "/skillExtra" }]);
 });
 
+it("removing an image keeps a selected label that survives after the marker", async () => {
+	const { repository, destination } = setup();
+	repository.write(
+		destination,
+		{
+			draft: "[image 1] /inspect",
+			unconfirmed: null,
+			images: [{ id: "tile", marker: 1, mediaType: "image/png" }],
+			composer: {
+				skillNames: ["inspect"],
+				mentions: [{ kind: "skill", name: "inspect", offset: 10 }],
+			},
+		},
+		[{ id: "tile", marker: 1, mediaType: "image/png", data: "AQID" }],
+	);
+	const document = new DraftDocument(() => repository, destination);
+	document.removeImage("tile");
+	const stored = repository.read(destination);
+	expect(stored).toMatchObject({
+		draft: " /inspect",
+		composer: { skillNames: ["inspect"], mentions: [{ kind: "skill", name: "inspect", offset: 1 }] },
+	});
+	let submitted: ReturnType<typeof buildComposerInput> | undefined;
+	await document.submit(async (text, images, context) => {
+		submitted = buildComposerInput(
+			text,
+			images,
+			context.composer?.skillNames ?? [],
+			context.composer?.commandNames ?? [],
+			context.composer?.mentions,
+		);
+		return false;
+	});
+	expect(submitted?.[0]).toMatchObject({ type: "text", text: " /inspect" });
+	expect(submitted).toContainEqual({ type: "skill", name: "inspect" });
+});
+
 it("reallocates a marker claimed by a literal or another tile and reopens with original image bytes", () => {
 	const { document, repository, destination } = setup();
 	document.edit("literal [image 4]");

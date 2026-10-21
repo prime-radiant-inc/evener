@@ -55,21 +55,28 @@ function releasedIds(record: DraftRecord): string[] {
 	return [...new Set([...(record.releasedRecoveryIds ?? []), ...(legacy ?? [])])];
 }
 
+/** An empty exclusion set is absent state, not a record field. */
+function withReleasedRecoveryIds(record: DraftRecord, ids: string[]): DraftRecord {
+	if (ids.length) return { ...record, releasedRecoveryIds: ids };
+	if (record.releasedRecoveryIds === undefined) return record;
+	const { releasedRecoveryIds: _omitted, ...withoutIds } = record;
+	return withoutIds;
+}
+
 function releaseEmptyComposerOwnership(record: DraftRecord): DraftRecord {
-	const composer = record.composer;
 	const releasedRecoveryIds = releasedIds(record);
+	const base = withReleasedRecoveryIds(record, releasedRecoveryIds);
+	const composer = base.composer;
 	const { releasedRecoveryIds: _legacy, ...composerMetadata } =
 		(composer as (DraftComposerMetadata & { releasedRecoveryIds?: string[] }) | undefined) ?? {};
 	const migrated =
-		releasedRecoveryIds.length && record.releasedRecoveryIds === undefined
-			? { ...record, releasedRecoveryIds }
-			: record;
+		releasedRecoveryIds.length && base.releasedRecoveryIds === undefined ? { ...base, releasedRecoveryIds } : base;
 	if (!composer) return migrated;
-	const parkedIds = new Set(record.unconfirmedComposer?.recoveryIds ?? []);
+	const parkedIds = new Set(base.unconfirmedComposer?.recoveryIds ?? []);
 	const claimedIds = (composer?.recoveryIds ?? []).filter((id) => !parkedIds.has(id));
 	if (
-		record.draft !== "" ||
-		(record.images?.length ?? 0) > 0 ||
+		base.draft !== "" ||
+		(base.images?.length ?? 0) > 0 ||
 		composer?.skillNames?.length ||
 		composer?.commandNames?.length ||
 		!claimedIds.length
@@ -351,27 +358,15 @@ export class DraftDocument {
 		const image = record.images?.find((item) => item.id === id);
 		if (!image) return;
 		const images = record.images?.filter((item) => item.id !== id);
-		const marker = markerText(image.marker);
-		const markerOffset = record.draft.indexOf(marker);
-		const shiftedMentions =
-			record.composer?.mentions && markerOffset >= 0
-				? record.composer.mentions.map((mention) => ({
-						...mention,
-						offset:
-							mention.offset >= markerOffset + marker.length
-								? mention.offset - marker.length
-								: mention.offset > markerOffset
-									? markerOffset
-									: mention.offset,
-					}))
-				: record.composer?.mentions;
 		const text = stripMarker(record.draft, undefined, image.marker).value;
+		// Offsets stay in the pre-removal coordinates here: reconciliation maps
+		// each surviving mention through the removed marker exactly once.
 		const composer = reconcileEditedComposer(
 			record,
 			text,
 			record.composer?.mentions === undefined
 				? undefined
-				: reconcileComposerMentions(record.draft, text, shiftedMentions ?? []),
+				: reconcileComposerMentions(record.draft, text, record.composer.mentions),
 		);
 		try {
 			this.persist(
