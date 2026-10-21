@@ -584,15 +584,16 @@ func TestOnboardingEvidenceGuardCancellationStopsBrowser(t *testing.T) {
 			lastErr = err
 		} else {
 			lastErr = nil
-			if alive = onboardingGuardBrowsersOwned(snapshot, browsers); len(alive) == 0 {
+			if onboardingGuardBrowsersGroupGone(snapshot, nil, browsers) {
 				return
 			}
+			alive = onboardingGuardBrowsersGroupAlive(snapshot, browsers)
 		}
 		if time.Now().After(deadline) {
 			if lastErr != nil {
 				t.Fatalf("process inspection failed; browser cleanup is inconclusive: %v", lastErr)
 			}
-			t.Fatalf("cancelled driver left browser %v running: %s", alive, stderr.String())
+			t.Fatalf("cancelled driver left browser process group running: %v: %s", alive, stderr.String())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -696,6 +697,50 @@ func onboardingGuardBrowsersOwned(snapshot string, browsers []onboardingGuardBro
 	return owned
 }
 
+// onboardingGuardBrowsersGroupGone is the post-cancellation cleanup-success
+// predicate. Success needs the whole captured process group empty, because an
+// owned renderer or utility child can outlive the leader the capture names.
+// An unreadable process table is inconclusive and cannot prove cleanup, and an
+// empty capture has nothing left to clean.
+func onboardingGuardBrowsersGroupGone(snapshot string, snapshotErr error, browsers []onboardingGuardBrowser) bool {
+	if snapshotErr != nil {
+		return false
+	}
+	return len(onboardingGuardBrowsersGroupAlive(snapshot, browsers)) == 0
+}
+
+// onboardingGuardBrowsersGroupAlive returns the captured browsers whose
+// process group still holds at least one member, whether or not the captured
+// leader itself is one of them.
+func onboardingGuardBrowsersGroupAlive(snapshot string, browsers []onboardingGuardBrowser) []onboardingGuardBrowser {
+	var alive []onboardingGuardBrowser
+	for _, browser := range browsers {
+		if onboardingGuardBrowserGroupAlive(snapshot, browser) {
+			alive = append(alive, browser)
+		}
+	}
+	return alive
+}
+
+// onboardingGuardBrowserGroupAlive reports whether any process still belongs
+// to the captured browser's process group.
+func onboardingGuardBrowserGroupAlive(snapshot string, browser onboardingGuardBrowser) bool {
+	for _, line := range strings.Split(snapshot, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		pgid, err := strconv.Atoi(fields[2])
+		if err != nil {
+			continue
+		}
+		if pgid == browser.pgid {
+			return true
+		}
+	}
+	return false
+}
+
 // onboardingGuardBrowsersToSignal returns the captured identities a
 // destructive fallback may signal. An unreadable process table is
 // inconclusive: it proves nothing about ownership, so it authorizes no signal.
@@ -765,6 +810,39 @@ func TestOnboardingEvidenceBrowserIdentityRejectsInspectionError(t *testing.T) {
 	captured := onboardingGuardBrowser{pid: 123, pgid: 456, profile: "/tmp/skillguard-chrome-owned"}
 	if got := onboardingGuardBrowsersToSignal("", errors.New("ps unavailable"), []onboardingGuardBrowser{captured}); len(got) != 0 {
 		t.Fatalf("inspection error authorized a signal: %v", got)
+	}
+}
+
+// TestOnboardingEvidenceBrowserCleanupRejectsLeaderGoneChildSurvives proves the
+// post-cancellation success check needs the whole captured process group empty:
+// a renderer that outlives its leader still belongs to the browser this run
+// started, so the leader's disappearance is not cleanup.
+func TestOnboardingEvidenceBrowserCleanupRejectsLeaderGoneChildSurvives(t *testing.T) {
+	captured := []onboardingGuardBrowser{{pid: 123, pgid: 123, profile: "/tmp/skillguard-chrome-owned"}}
+	survivor := "124 1 123 /usr/bin/google-chrome --type=renderer --user-data-dir=/tmp/skillguard-chrome-owned\n"
+	if onboardingGuardBrowsersGroupGone(survivor, nil, captured) {
+		t.Fatalf("leader gone but owned group member survived; accepted cleanup for %v", captured)
+	}
+	if got := onboardingGuardBrowsersToSignal(survivor, nil, captured); len(got) != 0 {
+		t.Fatalf("surviving owned child authorized a signal: %v", got)
+	}
+}
+
+// TestOnboardingEvidenceBrowserCleanupAcceptsEmptyGroup pins cleanup success:
+// once no member of the captured group remains, and an empty capture trivially
+// has nothing to clean, the predicate reports success. An unreadable snapshot
+// is inconclusive and must not report success.
+func TestOnboardingEvidenceBrowserCleanupAcceptsEmptyGroup(t *testing.T) {
+	captured := []onboardingGuardBrowser{{pid: 123, pgid: 123, profile: "/tmp/skillguard-chrome-owned"}}
+	unrelated := "999 1 999 /usr/bin/unrelated --flag\n"
+	if !onboardingGuardBrowsersGroupGone(unrelated, nil, captured) {
+		t.Fatalf("empty captured group still reported not gone for %v", captured)
+	}
+	if !onboardingGuardBrowsersGroupGone(unrelated, nil, nil) {
+		t.Fatal("empty capture reported not gone")
+	}
+	if onboardingGuardBrowsersGroupGone("", errors.New("ps unavailable"), captured) {
+		t.Fatal("unreadable snapshot reported cleanup success")
 	}
 }
 
