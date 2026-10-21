@@ -34,13 +34,11 @@ export function reconcileComposerMentions(
   const suffix = sharedSuffixLength(before, after, prefix);
   const oldEnd = before.length - suffix;
   const delta = after.length - before.length;
-  return mentions.flatMap((item) =>
-    item.offset + item.name.length + 1 <= prefix
-      ? [item]
-      : item.offset >= oldEnd
-        ? [{ ...item, offset: item.offset + delta }]
-        : [],
-  );
+  return mentions.flatMap((item) => {
+    if (item.offset + item.name.length + 1 <= prefix) return [item];
+    if (item.offset >= oldEnd) return [{ ...item, offset: item.offset + delta }];
+    return [];
+  });
 }
 
 /** Staged image bytes; marker identifies its editing anchor, never a wire field. */
