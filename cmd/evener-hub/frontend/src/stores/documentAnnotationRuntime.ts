@@ -186,8 +186,14 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
       if (!alive) return Promise.resolve<HandoffResult>({ state: "cancelled" });
       const prior = pass ? Promise.all([pass, handoffChain]) : handoffChain;
       const run = prior.then(
-        () => (alive ? repo.handoff(key, operationId) : Promise.resolve<HandoffResult>({ state: "cancelled" })),
-        () => (alive ? repo.handoff(key, operationId) : Promise.resolve<HandoffResult>({ state: "cancelled" })),
+        () =>
+          alive
+            ? repo.handoff(key, operationId, retryCancellation)
+            : Promise.resolve<HandoffResult>({ state: "cancelled" }),
+        () =>
+          alive
+            ? repo.handoff(key, operationId, retryCancellation)
+            : Promise.resolve<HandoffResult>({ state: "cancelled" }),
       );
       handoffChain = run.then(
         () => undefined,

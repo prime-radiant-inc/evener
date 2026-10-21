@@ -143,7 +143,11 @@ export interface BrowserDocumentAnnotationRepository extends AnnotationReadRepos
     namespace: BrowserDraftKey["namespace"],
     expectedIncarnation: string,
   ): Promise<{ committed: boolean; incarnation: string }>;
-  handoff(key: DocumentKey, operationId: string): Promise<HandoffResult>;
+  // A runtime that drives this handoff owns its own disposal: pass the same
+  // retry-scoped cancellation the persisted sweep uses so a handoff already
+  // awaiting a preparation or its append reads refuses at the append's final
+  // guard instead of appending after application teardown.
+  handoff(key: DocumentKey, operationId: string, cancellation?: AnnotationRetryCancellation): Promise<HandoffResult>;
   subscribe(key: DocumentKey, listener: () => void): () => void;
   close(): void;
 }
@@ -1311,7 +1315,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // later handoff must not start against a retained composer. The
       // operations it never reached keep their pending receipts.
       if (cancellation?.cancelled) return;
-      await this.handoff(payload.operation.lease.key, payload.operation.operationId);
+      await this.handoff(payload.operation.lease.key, payload.operation.operationId, cancellation);
     }
     // A committed append whose completion went unobserved answers applied on
     // replay, so the pending scan above skips it - recovery must not skip the
@@ -1323,7 +1327,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     for (const record of [...this.#uncertainAppends.values()]) {
       if (handled.has(record.operationId)) continue;
       if (cancellation?.cancelled) return;
-      await this.handoff(record.key, record.operationId);
+      await this.handoff(record.key, record.operationId, cancellation);
     }
   }
 
@@ -1476,8 +1480,17 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     return result;
   }
 
-  async handoff(key: DocumentKey, operationId: string): Promise<HandoffResult> {
-    if (this.#closed) return { state: "pending", reason: "owner-unavailable" };
+  async handoff(
+    key: DocumentKey,
+    operationId: string,
+    cancellation?: AnnotationRetryCancellation,
+  ): Promise<HandoffResult> {
+    // Closure is terminal for this adapter; a runtime's cancellation is
+    // terminal for the work it started. Both mean the same thing to a handoff
+    // at every asynchronous boundary below: do not reopen the connection, arm a
+    // listener, or append through a retained composer.
+    const refused = (): boolean => this.#closed || cancellation?.cancelled === true;
+    if (refused()) return { state: "pending", reason: "owner-unavailable" };
     const namespace = key.namespace;
     if (namespace.kind !== "browser") return { state: "cancelled" };
     const operationKey = annotationOperationKey(namespace, operationId);
@@ -1494,7 +1507,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // operation survives for the next pass.
       return { state: "pending", reason: "owner-unavailable" };
     }
-    if (this.#closed) return { state: "pending", reason: "owner-unavailable" };
+    if (refused()) return { state: "pending", reason: "owner-unavailable" };
     if (!receipt) {
       this.#uncertainAppends.delete(operationKey);
       return { state: "cancelled" };
@@ -1508,9 +1521,9 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // composer from the committed backing; the source's own ownership
       // guard preserves newer edits, and the applied receipt prevents any
       // duplicate append.
-      const reconciliation = await this.#reconcileUncertainAppend(operationKey, receipt.draftRevision);
+      const reconciliation = await this.#reconcileUncertainAppend(operationKey, receipt.draftRevision, cancellation);
       if (reconciliation !== "faulted") this.#uncertainAppends.delete(operationKey);
-      if (this.#closed) return { state: "pending", reason: "owner-unavailable" };
+      if (refused()) return { state: "pending", reason: "owner-unavailable" };
       return { state: "already-applied", draftRevision: receipt.draftRevision };
     }
     // The receipt is observably NOT applied: a previously uncertain attempt
@@ -1529,7 +1542,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     } catch {
       return { state: "pending", reason: "owner-unavailable" };
     }
-    if (this.#closed) return { state: "pending", reason: "owner-unavailable" };
+    if (refused()) return { state: "pending", reason: "owner-unavailable" };
     if (!payload) return { state: "cancelled" };
     // The immutable ORIGINAL payload lease owns suppression eligibility for this
     // operation; any suppression of that old epoch (provisional or confirmed)
@@ -1550,7 +1563,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     };
     let provisionalSuppressionAtGuard = false;
     const documentStillEligible = () => {
-      if (this.#closed) return false;
+      if (refused()) return false;
       // The append's last guard asks this after its reads. Record a provisional
       // answer so the cancellation it causes stays retryable: the validation the
       // entry awaits may still prove its read stale and release the suppression.
@@ -1578,7 +1591,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     }
     const source = this.#options.targetFor(payload.operation.destination, key);
     if (!source) return { state: "pending", reason: "owner-unavailable" };
-    if (this.#closed) return { state: "pending", reason: "owner-unavailable" };
+    if (refused()) return { state: "pending", reason: "owner-unavailable" };
     this.#armRecoveryCommitNotification(source);
     let preparation: ComposerPreparation | null;
     try {
@@ -1586,7 +1599,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     } catch {
       return { state: "pending", reason: "owner-unavailable" };
     }
-    if (this.#closed) return { state: "pending", reason: "owner-unavailable" };
+    if (refused()) return { state: "pending", reason: "owner-unavailable" };
     if (!preparation) return { state: "pending", reason: "owner-unavailable" };
     const suppressedAfterPreparation = suppressedOutcome();
     if (suppressedAfterPreparation) return suppressedAfterPreparation;
@@ -1616,11 +1629,11 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // instead of leaving the editor on its pre-append text while the
       // durable draft moved on. The recoverable pending outcome and the
       // caller's own retry semantics are unchanged.
-      if (this.#closed) return { state: "pending", reason: "owner-unavailable" };
+      if (refused()) return { state: "pending", reason: "owner-unavailable" };
       this.#uncertainAppends.set(operationKey, { key, operationId, source, preparation });
       return { state: "pending", reason: "owner-unavailable" };
     }
-    if (this.#closed) return { state: "pending", reason: "owner-unavailable" };
+    if (refused()) return { state: "pending", reason: "owner-unavailable" };
     if (result.state === "applied") {
       invokeObserver(() => this.#options.afterCommit?.());
       invokeObserver(() => source.acknowledgeAnnotation(preparation, result.token, result.value));
@@ -1650,6 +1663,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   async #reconcileUncertainAppend(
     operationKey: string,
     draftRevision: number,
+    cancellation?: AnnotationRetryCancellation,
   ): Promise<"reconciled" | "unreconcilable" | "faulted" | "none"> {
     const retained = this.#uncertainAppends.get(operationKey);
     if (!retained) return "none";
@@ -1661,7 +1675,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // only this reconciliation is still outstanding.
       return "faulted";
     }
-    if (this.#closed) return "none";
+    if (this.#closed || cancellation?.cancelled === true) return "none";
     this.#publishDocumentWake(annotationDocumentKey(retained.key));
     if (
       !backing ||
