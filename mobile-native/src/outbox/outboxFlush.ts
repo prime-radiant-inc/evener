@@ -214,7 +214,7 @@ export class OutboxFlush {
 			// sending: a session the person deliberately stopped has no such row,
 			// and reconnecting must not restart it behind their back.
 			const answer = await runtime.settleTarget(hubId, ref, client, {
-				resumeFenced: await this.waiting(runtime, key),
+				resumeFenced: await this.waiting(runtime, key).catch(() => false),
 			});
 			settled = answer === "reconciled" || answer === "open";
 			// A settle that resumed but could not finish (a stale read after the
