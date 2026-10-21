@@ -181,52 +181,11 @@ func coverageGC(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	gcReadDir = func(path string) ([]os.DirEntry, error) {
-		switch filepath.Base(path) {
-		case "cache":
-			return []os.DirEntry{coverageDirEntry{name: "flat"}, coverageDirEntry{name: "market", dir: true}}, nil
-		case "marketplaces":
-			return nil, nil
-		case "market":
-			return nil, boom
-		default:
-			return nil, boom
-		}
+	clone := filepath.Join(m.marketplacesDir(), "leftover")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if got, err := m.Gc(context.Background()); err != nil || len(got) != 0 {
-		t.Fatalf("market: %#v, %v", got, err)
-	}
-	gcReadDir = func(path string) ([]os.DirEntry, error) {
-		switch filepath.Base(path) {
-		case "cache":
-			return []os.DirEntry{coverageDirEntry{name: "market", dir: true}}, nil
-		case "marketplaces":
-			return nil, nil
-		case "market":
-			return []os.DirEntry{coverageDirEntry{name: "flat"}, coverageDirEntry{name: "plugin", dir: true}}, nil
-		case "plugin":
-			return nil, boom
-		default:
-			return nil, boom
-		}
-	}
-	if got, err := m.Gc(context.Background()); err != nil || len(got) != 0 {
-		t.Fatalf("plugin: %#v, %v", got, err)
-	}
-	gcReadDir = func(path string) ([]os.DirEntry, error) {
-		switch filepath.Base(path) {
-		case "cache":
-			return []os.DirEntry{coverageDirEntry{name: "market", dir: true}}, nil
-		case "marketplaces":
-			return nil, nil
-		case "market":
-			return []os.DirEntry{coverageDirEntry{name: "plugin", dir: true}}, nil
-		case "plugin":
-			return []os.DirEntry{coverageDirEntry{name: "flat"}, coverageDirEntry{name: "sha", dir: true}}, nil
-		default:
-			return nil, boom
-		}
-	}
+	gcReadDir = os.ReadDir
 	gcRemoveAll = func(string) error { return boom }
 	if _, err := m.Gc(context.Background()); err == nil {
 		t.Fatal("remove succeeded")

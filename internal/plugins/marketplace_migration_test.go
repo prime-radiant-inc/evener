@@ -214,6 +214,7 @@ func plantInterruptedMerge(t *testing.T, m *Manager, duplicate string) {
 	t.Helper()
 	plantLegacyMarketplace(t, m, "a/./b", "widget")
 	plantLegacyMarketplace(t, m, duplicate, "gadget")
+	plantOneSource(t, m, "a/./b", duplicate)
 	if err := os.Rename(m.marketplaceDir(duplicate), m.marketplaceDir("a-b")); err != nil {
 		t.Fatal(err)
 	}
@@ -285,10 +286,8 @@ func TestMigratedMarketplaceName(t *testing.T) {
 	}
 }
 
-// With both foo@bar and bar recorded, the key widget@foo@bar is plugin
-// "widget" from foo@bar and equally plugin "widget@foo" from bar. The
-// migration settles it once: foo@bar becomes foo-bar, its clone and cache
-// follow, and its keys re-key exactly, leaving bar's own where they are.
+// Longest-name ownership distinguishes widget@foo@bar from bar's own keys.
+// Only the clone moves. Logical registry keys change, but cache paths stay.
 func TestMarketplaceNameMigration_RenamesAnAtNamedMarketplaceBesideItsSuffix(t *testing.T) {
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
@@ -323,11 +322,11 @@ func TestMarketplaceNameMigration_RenamesAnAtNamedMarketplaceBesideItsSuffix(t *
 		t.Fatalf("registry keys = %v, want widget@foo-bar and gadget@bar", reg.Plugins)
 	}
 	widget := installedAt(t, reg, registryKey("widget", "foo-bar"))
-	if want := m.pluginCacheDir("foo-bar", "widget", "sha1"); widget.InstallPath != want {
+	if want := m.pluginCacheDir("foo@bar", "widget", "sha1"); widget.InstallPath != want {
 		t.Fatalf("widget InstallPath = %q, want %q", widget.InstallPath, want)
 	}
 	mustExist(t, widget.InstallPath)
-	mustNotExist(t, filepath.Join(m.cacheDir(), "foo@bar"))
+	mustExist(t, filepath.Join(m.cacheDir(), "foo@bar"))
 	if got := installedAt(t, reg, registryKey("gadget", "bar")).InstallPath; got != gadget {
 		t.Fatalf("gadget InstallPath = %q, want it untouched at %q", got, gadget)
 	}
@@ -531,8 +530,8 @@ func TestMarketplaceNameMigration_MovesAScratchNamedClone(t *testing.T) {
 				t.Fatal(err)
 			}
 			entry := installedAt(t, reg, registryKey("widget", want))
-			if entry.InstallPath != m.pluginCacheDir(want, "widget", "sha1") {
-				t.Fatalf("InstallPath = %q, want it under cache/%s", entry.InstallPath, want)
+			if entry.InstallPath != m.pluginCacheDir(scratch, "widget", "sha1") {
+				t.Fatalf("InstallPath = %q, want original cache/%s", entry.InstallPath, scratch)
 			}
 			mustExist(t, entry.InstallPath)
 		})
@@ -681,12 +680,9 @@ func TestMarketplaceNameMigration_KeepsADirectorySourcesPathForATraversingName(t
 	mustExist(t, filepath.Join(dir, ".claude-plugin", "marketplace.json"))
 }
 
-// A name carrying a separator derives directories that really are inside the
-// store: <marketplaces>/a/b and cache/a/b are where an older evener put this
-// marketplace's clone and its plugins, one level down. They are this
-// marketplace's, so the migration moves them under the flat new name exactly
-// as a rename does, and the record and the install paths follow.
-func TestMarketplaceNameMigration_MovesANestedCloneAndCache(t *testing.T) {
+// A nested clone moves to a valid namespace, while its published cache stays
+// at the path existing sessions selected.
+func TestMarketplaceNameMigration_MovesANestedCloneButPreservesCache(t *testing.T) {
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
 	nested := plantLegacyMarketplace(t, m, "a/b", "widget")
@@ -704,25 +700,21 @@ func TestMarketplaceNameMigration_MovesANestedCloneAndCache(t *testing.T) {
 	}
 	mustExist(t, filepath.Join(m.marketplaceDir("a-b"), ".claude-plugin", "marketplace.json"))
 	mustNotExist(t, filepath.Join(m.marketplacesDir(), "a", "b"))
-	mustNotExist(t, nested)
+	mustExist(t, nested)
 
 	reg, err := m.loadRegistry()
 	if err != nil {
 		t.Fatal(err)
 	}
 	entry := installedAt(t, reg, registryKey("widget", "a-b"))
-	if want := m.pluginCacheDir("a-b", "widget", "sha1"); entry.InstallPath != want {
+	if want := m.pluginCacheDir("a/b", "widget", "sha1"); entry.InstallPath != want {
 		t.Fatalf("InstallPath = %q, want %q", entry.InstallPath, want)
 	}
 	mustExist(t, entry.InstallPath)
 }
 
-// A separator name derives directories inside the store that another recorded
-// marketplace already owns: "a/b" beside a valid "a" names a subdirectory of
-// a's clone and the cache directory of a's plugin "b". They are inside the
-// store but they are a's, so the migration leaves a's clone, a's plugin and
-// a's registry entry exactly as they were, and re-keys the record where it
-// stands — taking with it only the cache directory of its own plugin.
+// A valid parent owns the nested clone. Migration leaves that clone and all
+// published caches alone, then records the child under a valid logical name.
 func TestMarketplaceNameMigration_LeavesAnotherMarketplacesNestedDirs(t *testing.T) {
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
@@ -772,23 +764,18 @@ func TestMarketplaceNameMigration_LeavesAnotherMarketplacesNestedDirs(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := installedAt(t, reg, registryKey("widget", "a-b")).InstallPath, m.pluginCacheDir("a-b", "widget", "sha1"); got != want {
+	if got, want := installedAt(t, reg, registryKey("widget", "a-b")).InstallPath, m.pluginCacheDir("a/b", "widget", "sha1"); got != want {
 		t.Fatalf("widget's InstallPath = %q, want its own plugin cache at %q", got, want)
 	}
-	mustNotExist(t, filepath.Join(m.cacheDir(), "a", "b", "widget"))
+	mustExist(t, filepath.Join(m.cacheDir(), "a", "b", "widget"))
 	if got := installedAt(t, reg, registryKey("b", "a")).InstallPath; got != pluginB {
 		t.Fatalf("b's InstallPath = %q, want it untouched at %q", got, pluginB)
 	}
 }
 
-// The blocked entry keeps the owner's directories but not its own plugins'
-// caches: they sit at cache/a/b/<plugin>/<sha>, one level below the
-// cache/<marketplace>/<plugin>/<sha> layout Gc reads, so left there the sweep
-// the hub runs at startup takes cache/a/b/widget for an unreferenced sha
-// directory and reclaims the install the rename just carried over. Each of the
-// entry's own plugin directories moves under the new name instead, where Gc
-// reads it as the install it is.
-func TestMarketplaceNameMigration_MovesTheOwnPluginCachesOfABlockedName(t *testing.T) {
+// A blocked name's plugin caches remain useful at their original nested
+// paths. GC retains them even though that layout predates the valid name.
+func TestMarketplaceNameMigration_PreservesTheOwnPluginCachesOfABlockedName(t *testing.T) {
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
 	pluginP := plantLegacyMarketplace(t, m, "a", "p")
@@ -803,12 +790,12 @@ func TestMarketplaceNameMigration_MovesTheOwnPluginCachesOfABlockedName(t *testi
 	}
 	want := []string{
 		"p@a installed at " + pluginP,
-		"widget@a-b installed at " + m.pluginCacheDir("a-b", "widget", "sha1"),
+		"widget@a-b installed at " + m.pluginCacheDir("a/b", "widget", "sha1"),
 	}
 	if keyed := keyedInstalls(reg); !slices.Equal(keyed, want) {
 		t.Fatalf("registry:\n%s\nwant:\n%s", strings.Join(keyed, "\n"), strings.Join(want, "\n"))
 	}
-	mustNotExist(t, filepath.Join(m.cacheDir(), "a", "b", "widget"))
+	mustExist(t, filepath.Join(m.cacheDir(), "a", "b", "widget"))
 	// Marketplace a keeps every directory of its own: the clone holding
 	// a/b's, and its own plugin's cache beside the one that left.
 	mustExist(t, filepath.Join(m.marketplaceDir("a"), "b", ".claude-plugin", "marketplace.json"))
@@ -821,7 +808,7 @@ func TestMarketplaceNameMigration_MovesTheOwnPluginCachesOfABlockedName(t *testi
 	if len(removed) != 0 {
 		t.Fatalf("Gc removed %v, want every install the migration left kept", removed)
 	}
-	mustExist(t, m.pluginCacheDir("a-b", "widget", "sha1"))
+	mustExist(t, m.pluginCacheDir("a/b", "widget", "sha1"))
 }
 
 // A name that cleans to another marketplace's own directories derives exactly
@@ -931,11 +918,8 @@ func TestMarketplaceNameMigration_LeavesAPluginCacheAnotherRecordInstallsIn(t *t
 	mustNotExist(t, filepath.Join(m.cacheDir(), "x-2"))
 }
 
-// A refused name is no owner of the directories it nests around, because it
-// is migrating too: "a@b" and "a@b/c" both move, the longer one first, and
-// each takes its own clone and cache with it. Deferring to a sibling that is
-// itself about to move would leave the longer name re-keyed in place and its
-// installs buried under the shorter one's new directories.
+// Both refused names get valid logical records and separately moved clones.
+// Their nested published caches stay at their original paths.
 func TestMarketplaceNameMigration_MovesBothOfANestedRefusedPair(t *testing.T) {
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
@@ -953,10 +937,10 @@ func TestMarketplaceNameMigration_MovesBothOfANestedRefusedPair(t *testing.T) {
 	if len(reg.Plugins) != 2 {
 		t.Fatalf("registry keys = %v, want widget@a-b and gadget@a-b-c alone", reg.Plugins)
 	}
-	for _, installed := range []struct{ plugin, marketplace string }{{"widget", "a-b"}, {"gadget", "a-b-c"}} {
+	for _, installed := range []struct{ plugin, marketplace, original string }{{"widget", "a-b", "a@b"}, {"gadget", "a-b-c", "a@b/c"}} {
 		entry := installedAt(t, reg, registryKey(installed.plugin, installed.marketplace))
 		mustExist(t, entry.InstallPath)
-		if want := m.pluginCacheDir(installed.marketplace, installed.plugin, "sha1"); entry.InstallPath != want {
+		if want := m.pluginCacheDir(installed.original, installed.plugin, "sha1"); entry.InstallPath != want {
 			t.Fatalf("%s's InstallPath = %q, want %q", installed.plugin, entry.InstallPath, want)
 		}
 	}
@@ -1040,8 +1024,8 @@ func TestMarketplaceNameMigration_SuffixesADerivedNameThatIsTaken(t *testing.T) 
 				t.Fatal(err)
 			}
 			entry := installedAt(t, reg, registryKey("widget", "foo-bar-2"))
-			if entry.InstallPath != m.pluginCacheDir("foo-bar-2", "widget", "sha1") {
-				t.Fatalf("InstallPath = %q, want it under cache/foo-bar-2", entry.InstallPath)
+			if entry.InstallPath != m.pluginCacheDir("foo@bar", "widget", "sha1") {
+				t.Fatalf("InstallPath = %q, want original cache/foo@bar", entry.InstallPath)
 			}
 			mustExist(t, entry.InstallPath)
 		})
@@ -1074,10 +1058,10 @@ func TestMarketplaceNameMigration_MigratesLongerNamesFirst(t *testing.T) {
 	if len(reg.Plugins) != 2 {
 		t.Fatalf("registry keys = %v, want widget@foo-bar and gizmo@z-foo-bar", reg.Plugins)
 	}
-	for _, mkt := range []struct{ name, plugin string }{{"foo-bar", "widget"}, {"z-foo-bar", "gizmo"}} {
+	for _, mkt := range []struct{ name, plugin, original string }{{"foo-bar", "widget", "foo@bar"}, {"z-foo-bar", "gizmo", "z@foo@bar"}} {
 		entry := installedAt(t, reg, registryKey(mkt.plugin, mkt.name))
-		if entry.InstallPath != m.pluginCacheDir(mkt.name, mkt.plugin, "sha1") {
-			t.Fatalf("%s InstallPath = %q, want it under cache/%s", mkt.plugin, entry.InstallPath, mkt.name)
+		if entry.InstallPath != m.pluginCacheDir(mkt.original, mkt.plugin, "sha1") {
+			t.Fatalf("%s InstallPath = %q, want original cache/%s", mkt.plugin, entry.InstallPath, mkt.original)
 		}
 		mustExist(t, entry.InstallPath)
 	}
@@ -1111,8 +1095,8 @@ func TestMarketplaceNameMigration_MigratesADescendantBeforeItsAncestor(t *testin
 	// that moved out from under the parent took its own with it, and the
 	// parent's plugins stayed in the parent.
 	want := []string{
-		"gadget@a-b-2 installed at " + m.pluginCacheDir("a-b-2", "gadget", "sha1"),
-		"widget@a-b installed at " + m.pluginCacheDir("a-b", "widget", "sha1"),
+		"gadget@a-b-2 installed at " + m.pluginCacheDir("a/b/..", "gadget", "sha1"),
+		"widget@a-b installed at " + m.pluginCacheDir("a/b", "widget", "sha1"),
 	}
 	if keyed := keyedInstalls(reg); !slices.Equal(keyed, want) {
 		t.Fatalf("registry:\n%s\nwant:\n%s", strings.Join(keyed, "\n"), strings.Join(want, "\n"))
@@ -1156,7 +1140,7 @@ func TestMarketplaceNameMigration_ReKeysAnOutOfStoreNameBeforeItsSuffix(t *testi
 	}
 	want := []string{
 		"gadget@..-a-b installed at " + gadget,
-		"widget@a-b installed at " + m.pluginCacheDir("a-b", "widget", "sha1"),
+		"widget@a-b installed at " + m.pluginCacheDir("a/b", "widget", "sha1"),
 	}
 	if keyed := keyedInstalls(reg); !slices.Equal(keyed, want) {
 		t.Fatalf("registry:\n%s\nwant:\n%s", strings.Join(keyed, "\n"), strings.Join(want, "\n"))
@@ -1191,9 +1175,9 @@ func TestMarketplaceNameMigration_OrdersADescendantAndAnAtSuffixTogether(t *test
 		t.Fatal(err)
 	}
 	want := []string{
-		"gadget@a-b-2 installed at " + m.pluginCacheDir("a-b-2", "gadget", "sha1"),
-		"gizmo@x-a-b installed at " + m.pluginCacheDir("x-a-b", "gizmo", "sha1"),
-		"widget@a-b installed at " + m.pluginCacheDir("a-b", "widget", "sha1"),
+		"gadget@a-b-2 installed at " + m.pluginCacheDir("a/b/..", "gadget", "sha1"),
+		"gizmo@x-a-b installed at " + m.pluginCacheDir("x@a/b", "gizmo", "sha1"),
+		"widget@a-b installed at " + m.pluginCacheDir("a/b", "widget", "sha1"),
 	}
 	if keyed := keyedInstalls(reg); !slices.Equal(keyed, want) {
 		t.Fatalf("registry:\n%s\nwant:\n%s", strings.Join(keyed, "\n"), strings.Join(want, "\n"))
@@ -1422,8 +1406,8 @@ func TestUpgrade_ReadsTheRegistryTheMigrationLeft(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry := installedAt(t, reg, registryKey("widget", "foo-bar"))
-	if entry.InstallPath != m.pluginCacheDir("foo-bar", "widget", "sha1") {
-		t.Fatalf("InstallPath = %q, want it under cache/foo-bar", entry.InstallPath)
+	if entry.InstallPath != m.pluginCacheDir("foo@bar", "widget", "sha1") {
+		t.Fatalf("InstallPath = %q, want original cache/foo@bar", entry.InstallPath)
 	}
 	if _, still := reg.Plugins[registryKey("widget", "foo@bar")]; still {
 		t.Fatal("the old registry key survived the upgrade")
@@ -1537,20 +1521,16 @@ func TestMarketplaceNameMigration_MovesInsideASymlinkedMarketplacesDir(t *testin
 		t.Fatal(err)
 	}
 	entry := installedAt(t, reg, registryKey("widget", "a-b"))
-	if want := m.pluginCacheDir("a-b", "widget", "sha1"); entry.InstallPath != want {
+	if want := m.pluginCacheDir("a/b", "widget", "sha1"); entry.InstallPath != want {
 		t.Fatalf("widget InstallPath = %q, want %q", entry.InstallPath, want)
 	}
 	mustExist(t, entry.InstallPath)
-	mustNotExist(t, filepath.Join(m.cacheDir(), "a", "b"))
+	mustExist(t, filepath.Join(m.cacheDir(), "a", "b"))
 }
 
-// A rename writes the marker naming it, moves the clone, moves the cache,
-// writes the registry and writes the marketplaces file, in that order. A run
-// that exits partway through leaves the marker behind, and the next lock
-// holder finishes the rename it names: whatever of the two directories is
-// still under the old name moves, whatever keys are still under it are
-// re-keyed, and the entry comes out recorded under the new name alone, its
-// plugin where it says, whichever step the exit fell after.
+// Compatibility with an older move-based writer at each interruption point:
+// preserve a cache that has not moved, and reconcile paths only after it has.
+// The existing marker names the exact destination in all four cases.
 func TestMarketplaceNameMigration_CompletesTheRenameItsMarkerNames(t *testing.T) {
 	const recorded = "a/b"
 	moveClone := func(t *testing.T, m *Manager) {
@@ -1639,7 +1619,11 @@ func TestMarketplaceNameMigration_CompletesTheRenameItsMarkerNames(t *testing.T)
 				t.Fatalf("registry keys = %v, want widget@a-b alone", reg.Plugins)
 			}
 			entry := installedAt(t, reg, registryKey("widget", "a-b"))
-			if want := m.pluginCacheDir("a-b", "widget", "sha1"); entry.InstallPath != want {
+			wantPath := m.pluginCacheDir("a-b", "widget", "sha1")
+			if point.what == "after the clone move" {
+				wantPath = m.pluginCacheDir(recorded, "widget", "sha1")
+			}
+			if want := wantPath; entry.InstallPath != want {
 				t.Fatalf("widget's InstallPath = %q, want %q", entry.InstallPath, want)
 			}
 			mustExist(t, entry.InstallPath)
@@ -1728,7 +1712,7 @@ func TestMarketplaceNameMigration_MergesARefusedAliasIntoOneRecord(t *testing.T)
 	}
 	for _, plugin := range []string{"widget", "gadget"} {
 		entry := installedAt(t, reg, registryKey(plugin, "a-b"))
-		if want := m.pluginCacheDir("a-b", plugin, "sha1"); entry.InstallPath != want {
+		if want := m.pluginCacheDir("a/b", plugin, "sha1"); entry.InstallPath != want {
 			t.Fatalf("%s's InstallPath = %q, want %q", plugin, entry.InstallPath, want)
 		}
 		mustExist(t, entry.InstallPath)
@@ -1799,7 +1783,7 @@ func TestMarketplaceNameMigration_MergeKeepsTheEntryTheFirstRenameLeft(t *testin
 	if entry.Version != "1.0.0" {
 		t.Fatalf("widget is version %q, want the 1.0.0 the rename that moved the cache re-keyed", entry.Version)
 	}
-	if want := m.pluginCacheDir("a-b", "widget", "sha1"); entry.InstallPath != want {
+	if want := m.pluginCacheDir("a/b", "widget", "sha1"); entry.InstallPath != want {
 		t.Fatalf("widget's InstallPath = %q, want %q", entry.InstallPath, want)
 	}
 	mustExist(t, entry.InstallPath)
@@ -2117,17 +2101,19 @@ func TestMarketplaceNameMigration_AFailedMoveThatRollsBackRemovesTheMarker(t *te
 	mustNotExist(t, filepath.Join(m.cacheDir(), "a-b"))
 }
 
-// The same holds when the plugin cache is what fails to move: the clone the
-// move already made is put back, so the store is at the old name again and the
-// marker goes with the failure.
-func TestMarketplaceNameMigration_AFailedCacheMoveThatRollsBackRemovesTheMarker(t *testing.T) {
+// A cache-move refusal cannot break automatic migration: there must be no
+// cache-move attempt in the first place. The clone still takes the new name.
+func TestMarketplaceNameMigration_NeverAttemptsAPublishedCacheMove(t *testing.T) {
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
-	plantLegacyMarketplace(t, m, "a/b", "widget")
+	path := plantLegacyMarketplace(t, m, "a/b", "widget")
+	before := snapshotMigrationTree(t, path)
+	attempts := 0
 	orig := marketplaceRename
 	t.Cleanup(func() { marketplaceRename = orig })
 	marketplaceRename = func(from, to string) error {
 		if to == filepath.Join(m.cacheDir(), "a-b") {
+			attempts++
 			return errors.New("boom")
 		}
 		return orig(from, to)
@@ -2135,12 +2121,13 @@ func TestMarketplaceNameMigration_AFailedCacheMoveThatRollsBackRemovesTheMarker(
 
 	_, err := m.ListMarketplaces(context.Background())
 	marketplaceRename = orig
-	if err == nil {
-		t.Fatal("expected the cache move to fail")
+	if err != nil || attempts != 0 {
+		t.Fatalf("migration err=%v, cache move attempts=%d", err, attempts)
 	}
+	assertMigrationTree(t, before)
 	mustNotExist(t, renameMarkerFile(m))
-	mustExist(t, filepath.Join(m.marketplaceDir("a/b"), ".claude-plugin", "marketplace.json"))
-	mustNotExist(t, m.marketplaceDir("a-b"))
+	mustExist(t, filepath.Join(m.marketplaceDir("a-b"), ".claude-plugin", "marketplace.json"))
+	mustNotExist(t, m.marketplaceDir("a/b"))
 	mustExist(t, m.pluginCacheDir("a/b", "widget", "sha1"))
 	mustNotExist(t, filepath.Join(m.cacheDir(), "a-b"))
 }
@@ -2310,8 +2297,8 @@ func TestMarketplaceNameMigration_TwoSourcesDerivingOnePairKeepTheirOwnAliases(t
 }
 
 // A marketplace's aliases can be spread across runs: "a/./b" migrates in one,
-// and "a/b" — deriving the same directories, which the first run already took
-// with the rename — is only recorded later. The run that migrated the first has
+// and "a/b" — deriving the same clone and retained cache family — is recorded
+// only later. The run that migrated the first has
 // to leave something naming the family, or the second aliases the existing
 // record and takes a numbered name whose installs point at a cache nobody made.
 func TestMarketplaceNameMigration_AnAliasRecordedInALaterRunMergesIntoTheMigratedRecord(t *testing.T) {
@@ -2344,9 +2331,10 @@ func TestMarketplaceNameMigration_AnAliasRecordedInALaterRunMergesIntoTheMigrate
 	if err := second.saveMarketplaces(mk); err != nil {
 		t.Fatal(err)
 	}
-	// A plugin only the second name records, whose cache stood inside the
-	// directory the first run moved.
-	writePlugin(t, second.pluginCacheDir("a-b", "gadget", "sha1"), "gadget", nil)
+	// A plugin only the second name records remains in the retained old cache.
+	gadget := second.pluginCacheDir("a/b", "gadget", "sha1")
+	writePlugin(t, gadget, "gadget", nil)
+	tree := snapshotMigrationTree(t, gadget)
 	reg, err := second.loadRegistry()
 	if err != nil {
 		t.Fatal(err)
@@ -2375,6 +2363,7 @@ func TestMarketplaceNameMigration_AnAliasRecordedInALaterRunMergesIntoTheMigrate
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertMigrationTree(t, tree)
 	for key, entries := range reg.Plugins {
 		for _, entry := range entries {
 			if _, err := os.Stat(entry.InstallPath); err != nil {
@@ -2522,7 +2511,7 @@ func TestMarketplaceNameMigration_ACacheSymlinkDoesNotLetARenameTakeAnotherKeysP
 }
 
 // A refused name can reach the migrated record's directories through symlinks,
-// and those symlinks outlive the rename that moves what is under them. The
+// and those symlinks outlive the clone rename while caches remain in place. The
 // recorded family has to hold the directories the rename resolved, not ones
 // resolved again from a name whose directories have since moved.
 func TestMarketplaceNameMigration_ALaterAliasThroughASymlinkMergesIntoTheMigratedRecord(t *testing.T) {
@@ -2567,9 +2556,10 @@ func TestMarketplaceNameMigration_ALaterAliasThroughASymlinkMergesIntoTheMigrate
 	if err := second.saveMarketplaces(mk); err != nil {
 		t.Fatal(err)
 	}
-	// A plugin only the second name records, whose cache the first run moved
-	// with the directory it stood in.
-	writePlugin(t, second.pluginCacheDir("link-x", "gadget", "sha1"), "gadget", nil)
+	// The later alias keeps its physical path through the retained old cache.
+	gadget := second.pluginCacheDir("real/x", "gadget", "sha1")
+	writePlugin(t, gadget, "gadget", nil)
+	tree := snapshotMigrationTree(t, gadget)
 	reg, err := second.loadRegistry()
 	if err != nil {
 		t.Fatal(err)
@@ -2598,6 +2588,7 @@ func TestMarketplaceNameMigration_ALaterAliasThroughASymlinkMergesIntoTheMigrate
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertMigrationTree(t, tree)
 	for key, entries := range reg.Plugins {
 		for _, entry := range entries {
 			if _, err := os.Stat(entry.InstallPath); err != nil {
@@ -2677,37 +2668,50 @@ func TestMarketplaceNameMigration_ALongNameOfLegalComponentsMovesItsDirectories(
 	mustNotExist(t, m.marketplaceDir(name))
 }
 
-// The marker's other half: a move that fails and cannot put back what it moved
-// leaves the store between the two names, so the marker stays and the error
-// names it, for the next lock holder to finish the rename from.
-func TestMarketplaceNameMigration_AnIncompleteMoveRollbackKeepsTheMarker(t *testing.T) {
+// A failed marketplace save followed by a failed clone rollback leaves the
+// journal marker in place, with the original published cache untouched.
+func TestMarketplaceNameMigration_AFailedCloneRollbackKeepsTheMarker(t *testing.T) {
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
 	plantLegacyMarketplace(t, m, "a/b", "widget")
-	orig := marketplaceRename
-	t.Cleanup(func() { marketplaceRename = orig })
-	// The clone moves, the cache move then fails, and the clone cannot be
-	// renamed back: the move's own rollback fails, so the store is left
-	// between the two names rather than at either.
+	orig, write := marketplaceRename, marketplaceAtomicWriteFile
+	t.Cleanup(func() { marketplaceRename, marketplaceAtomicWriteFile = orig, write })
+	saveFailures, rollbackFailures := 0, 0
+	marketplaceAtomicWriteFile = func(path string, data []byte, perm os.FileMode) error {
+		if filepath.Base(path) == marketplacesFileName {
+			saveFailures++
+			return os.ErrPermission
+		}
+		return write(path, data, perm)
+	}
+	// The clone moves, the marketplace save fails, and the clone cannot be
+	// renamed back. Recovery still needs the marker.
 	marketplaceRename = func(from, to string) error {
-		if to == filepath.Join(m.cacheDir(), "a-b") || from == m.marketplaceDir("a-b") {
-			return errors.New("boom")
+		if from == m.marketplaceDir("a-b") {
+			rollbackFailures++
+			return errors.New("clone rollback failed")
 		}
 		return orig(from, to)
 	}
 
 	_, err := m.ListMarketplaces(context.Background())
-	marketplaceRename = orig
+	marketplaceRename, marketplaceAtomicWriteFile = orig, write
 	if err == nil {
-		t.Fatal("expected the cache move to fail")
+		t.Fatal("expected failed save and clone rollback")
 	}
 	mustExist(t, renameMarkerFile(m))
 	if strings.Contains(err.Error(), renameMarkerFile(m)) {
 		t.Fatalf("error = %v, want no absolute path in the client-facing error", err)
 	}
-	if !errors.Is(err, errRenameRollbackIncomplete) {
-		t.Fatalf("error = %v, want errors.Is(err, errRenameRollbackIncomplete)", err)
+	if _, ok := errors.AsType[*pathFreeError](err); !ok {
+		t.Fatalf("error type = %T, want path-free failure", err)
 	}
+	if saveFailures != 1 || rollbackFailures != 1 {
+		t.Fatalf("injected save failures=%d, rollback failures=%d, want one each", saveFailures, rollbackFailures)
+	}
+	mustExist(t, m.marketplaceDir("a-b"))
+	mustNotExist(t, m.marketplaceDir("a/b"))
+	mustExist(t, m.pluginCacheDir("a/b", "widget", "sha1"))
 }
 
 // A recovery that cannot finish the rename but puts everything back — the
@@ -2924,7 +2928,7 @@ func TestMarketplaceNameMigration_AFailedRestoreKeepsTheMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry := installedAt(t, reg, registryKey("widget", "a-b"))
-	if want := m.pluginCacheDir("a-b", "widget", "sha1"); entry.InstallPath != want {
+	if want := m.pluginCacheDir("a/b", "widget", "sha1"); entry.InstallPath != want {
 		t.Fatalf("widget's InstallPath = %q, want %q", entry.InstallPath, want)
 	}
 	mustExist(t, entry.InstallPath)
@@ -3353,10 +3357,8 @@ func TestMarketplaceNameMigration_CompletesThePluginCacheMovesItsMarkerNames(t *
 	}
 }
 
-// A rename that cannot save puts back every plugin cache it lifted out of the
-// owner's, and the numbered name a retry would take is not spent on the
-// directory it created for them: the store is as it was found, and the next
-// lock holder migrates it whole.
+// A failed save leaves blocked-name plugin caches and metadata as found.
+// Retrying rekeys them without moving or replacing their published paths.
 func TestMarketplaceNameMigration_AFailedSavePutsThePluginCachesBack(t *testing.T) {
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
@@ -3399,7 +3401,7 @@ func TestMarketplaceNameMigration_AFailedSavePutsThePluginCachesBack(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := installedAt(t, reg, registryKey("widget", "a-b")).InstallPath, m.pluginCacheDir("a-b", "widget", "sha1"); got != want {
+	if got, want := installedAt(t, reg, registryKey("widget", "a-b")).InstallPath, m.pluginCacheDir("a/b", "widget", "sha1"); got != want {
 		t.Fatalf("widget's InstallPath = %q, want %q", got, want)
 	}
 }
@@ -3554,7 +3556,7 @@ func TestMarketplaceNameMigration_DropsAMarkerThatNamesNoRename(t *testing.T) {
 				t.Fatalf("InstallLocation = %q, want the clone the migration moved to %q", ref.InstallLocation, want)
 			}
 			mustExist(t, filepath.Join(m.marketplaceDir("a-b"), ".claude-plugin", "marketplace.json"))
-			mustExist(t, m.pluginCacheDir("a-b", "widget", "sha1"))
+			mustExist(t, m.pluginCacheDir("a/b", "widget", "sha1"))
 			mustNotExist(t, filepath.Join(m.Root, "escaped"))
 			mustNotExist(t, renameMarkerFile(m))
 			if !strings.Contains(stderr.String(), marker.says) {
@@ -3690,13 +3692,8 @@ func TestMarketplaceNameMigration_ADirectorySourceClaimsNoResidue(t *testing.T) 
 	}
 }
 
-// The merge is two file writes too, and a run can stop between them: the
-// registry write moves the duplicate's keys under the record it folds into,
-// and a later run — a new run, which has migrated nothing yet — reads those
-// keys as a removed marketplace's residue and gives the duplicate a numbered
-// name of its own. So the merge marks itself before that write, saying it is
-// a merge and which record it folds into, and drops the marker once the
-// marketplaces file records the removal.
+// A fresh merge is logical and retryable through its exact-source family.
+// It must not write the older physical-move marker at either registry save.
 func TestMarketplaceNameMigration_MarksTheMergeItMakes(t *testing.T) {
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
@@ -3722,7 +3719,7 @@ func TestMarketplaceNameMigration_MarksTheMergeItMakes(t *testing.T) {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
 	installSaveRegistry = orig
-	want := []renameMarker{{From: "a/./b", To: "a-b"}, {From: "a/b", To: "a-b", Merge: true}}
+	want := []renameMarker{{From: "a/./b", To: "a-b"}, {}}
 	if !slices.Equal(marked, want) {
 		t.Fatalf("marker on disk at each registry save = %+v, want %+v", marked, want)
 	}
@@ -3894,7 +3891,7 @@ func TestMarketplaceNameMigration_MergesAnAliasIntoTheNameItsRenameTook(t *testi
 	}
 	for _, plugin := range []string{"widget", "gadget"} {
 		entry := installedAt(t, reg, registryKey(plugin, "a-b-2"))
-		if want := m.pluginCacheDir("a-b-2", plugin, "sha1"); entry.InstallPath != want {
+		if want := m.pluginCacheDir("a/b", plugin, "sha1"); entry.InstallPath != want {
 			t.Fatalf("%s's InstallPath = %q, want %q", plugin, entry.InstallPath, want)
 		}
 		mustExist(t, entry.InstallPath)
@@ -3947,10 +3944,10 @@ func TestMarketplaceNameMigration_MergesAnAliasPastASameBaseStranger(t *testing.
 	}
 	slices.Sort(keyed)
 	want := []string{
-		"gadget@a-b installed at " + m.pluginCacheDir("a-b", "gadget", "sha1"),
-		"other@a-b-2 installed at " + m.pluginCacheDir("a-b-2", "other", "sha1"),
-		"widget@a-b installed at " + m.pluginCacheDir("a-b", "widget", "sha1"),
-		"zed@a-b installed at " + m.pluginCacheDir("a-b", "zed", "sha1"),
+		"gadget@a-b installed at " + m.pluginCacheDir("a@b", "gadget", "sha1"),
+		"other@a-b-2 installed at " + m.pluginCacheDir(`a\b/`, "other", "sha1"),
+		"widget@a-b installed at " + m.pluginCacheDir("a@b", "widget", "sha1"),
+		"zed@a-b installed at " + m.pluginCacheDir("a@b", "zed", "sha1"),
 	}
 	if !slices.Equal(keyed, want) {
 		t.Fatalf("registry:\n%s\nwant:\n%s", strings.Join(keyed, "\n"), strings.Join(want, "\n"))
@@ -3990,8 +3987,8 @@ func TestMarketplaceNameMigration_DropsAMarkerWhoseDestinationCannotBeADirectory
 }
 
 // The same holds when the later alias reaches those directories through another
-// symlink: the record kept the directories as they were, and a path whose leaf
-// has moved still resolves through the symlinks above it.
+// symlink: the record kept the physical family, and the retained published
+// path still resolves through the symlinks above it.
 func TestMarketplaceNameMigration_ALaterAliasThroughAnotherSymlinkMergesIntoTheMigratedRecord(t *testing.T) {
 	root := t.TempDir()
 	first := NewManager(root)
@@ -4037,7 +4034,9 @@ func TestMarketplaceNameMigration_ALaterAliasThroughAnotherSymlinkMergesIntoTheM
 	if err := second.saveMarketplaces(mk); err != nil {
 		t.Fatal(err)
 	}
-	writePlugin(t, second.pluginCacheDir("link-x", "gadget", "sha1"), "gadget", nil)
+	gadget := second.pluginCacheDir("link2/x", "gadget", "sha1")
+	writePlugin(t, gadget, "gadget", nil)
+	tree := snapshotMigrationTree(t, gadget)
 	reg, err := second.loadRegistry()
 	if err != nil {
 		t.Fatal(err)
@@ -4066,6 +4065,7 @@ func TestMarketplaceNameMigration_ALaterAliasThroughAnotherSymlinkMergesIntoTheM
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertMigrationTree(t, tree)
 	for key, entries := range reg.Plugins {
 		for _, entry := range entries {
 			if _, err := os.Stat(entry.InstallPath); err != nil {
@@ -4176,7 +4176,7 @@ func TestMergeIntoMigrated_DoesNotResurrectAKeyALongerNameOwns(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := m.mergeIntoMigrated(mk, registryKeyOwners(reg, mk), reg, "x@a-b", "a-b")
+	got, err := m.mergeIntoMigrated(mk, registryKeyOwners(reg, mk), reg, "x@a-b", "a-b", false)
 	if err != nil {
 		t.Fatalf("mergeIntoMigrated: %v", err)
 	}
