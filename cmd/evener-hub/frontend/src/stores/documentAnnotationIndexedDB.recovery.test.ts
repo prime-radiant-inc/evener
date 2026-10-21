@@ -22,6 +22,15 @@ import {
   createDocumentAnnotationRepository,
 } from "./documentAnnotationIndexedDB";
 import { createDocumentAnnotationRuntime, type DocumentAnnotationRuntime } from "./documentAnnotationRuntime";
+import {
+  ANNOTATION_EVIDENCE_STORE,
+  ANNOTATION_HEADS_STORE,
+  ANNOTATION_NAMESPACES_STORE,
+  ANNOTATION_OPERATIONS_STORE,
+  ANNOTATION_PAYLOADS_STORE,
+  ANNOTATION_SEQUENCES_STORE,
+} from "./localCompositionSchema";
+import { holdNextWriteTransaction, nextRealTask } from "./testing/stalledIndexedDB";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -211,6 +220,67 @@ test("a stale validation that releases provisional suppression signals the pendi
   expect(fixture.storageSuccess).toHaveBeenCalled();
 
   sibling.close();
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+// A save can commit while its completion stays unobserved: the watchdog
+// rejects before saveAnnotation reaches the wake it publishes only after the
+// transaction wrapper settles. The runtime retains the failed attempt, and its
+// retry finds the operation already durable - newlySaved stays false - so the
+// ordinary replay publishes no wake either. For an ownerless destination no
+// later append supplies the missing notification, and subscribed readers stay
+// stale despite the successful recovery. The durable row the replay confirms is
+// the only cross-adapter evidence of that commit, so the replay must publish
+// the invalidation the lost attempt could not.
+test("a save replay whose first completion went unobserved wakes subscribed readers", async () => {
+  const fixture = await openFixture({
+    destination: { kind: "browser-readonly-session", sourcePaneId: "pane-1" },
+  });
+  const operation: PreparedAnnotation = {
+    ...fixture.operation,
+    operationId: "operation-2",
+    destination: { kind: "browser-readonly-session", sourcePaneId: "pane-1" },
+  };
+  const listener = vi.fn();
+  fixture.repository.subscribe(fixture.document, listener);
+
+  // The next save transaction commits, but its completion event is held: the
+  // write is durable while everything awaiting the event still waits.
+  const hold = holdNextWriteTransaction([
+    ANNOTATION_NAMESPACES_STORE,
+    ANNOTATION_HEADS_STORE,
+    ANNOTATION_EVIDENCE_STORE,
+    ANNOTATION_PAYLOADS_STORE,
+    ANNOTATION_OPERATIONS_STORE,
+    ANNOTATION_SEQUENCES_STORE,
+  ]);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let reached = false;
+  void hold.reached.then(() => {
+    reached = true;
+  });
+  const firstSave = fixture.runtime.save(operation);
+  for (let i = 0; i < 25 && !reached; i += 1) await nextRealTask();
+  expect(reached).toBe(true);
+  await vi.advanceTimersByTimeAsync(10_001);
+
+  // The save reported failure and retained its operation; the commit it could
+  // not observe never reached the wake publication.
+  expect(await firstSave).toBeNull();
+  expect(listener).not.toHaveBeenCalled();
+  hold.release();
+  vi.useRealTimers();
+
+  // Recovery: the retained attempt replays against the durable row, and the
+  // ownerless destination settles its handoff without an append of its own.
+  await fixture.runtime.retryPending("storage-recovered");
+  await fixture.runtime.whenIdle();
+
+  const views = await fixture.repository.listAnnotations(fixture.document);
+  expect(views.find((view) => view.operation.operationId === operation.operationId)?.handoff.state).toBe("pending");
+  expect(listener).toHaveBeenCalled();
+
   fixture.repository.close();
   fixture.drafts.close();
 });

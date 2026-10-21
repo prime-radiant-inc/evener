@@ -997,6 +997,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const documentKey = annotationDocumentKey(captured.lease.key);
     const sessionKey = serializeSessionKey({ namespace, sessionRef: captured.lease.key.sessionRef });
     let newlySaved = false;
+    let replayedSaved = false;
     const receipt = await this.#transaction(
       SAVE_STORES,
       "readwrite",
@@ -1015,6 +1016,15 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
           if (priorPayload && JSON.stringify(priorPayload.operation) !== JSON.stringify(captured)) {
             throw new Error("duplicate operation id with a different payload");
           }
+          // A durable row answers the replay even when its first attempt never
+          // observed the commit: a watchdog rejected after the transaction
+          // committed, so the wake below its rejection skipped was never
+          // published. The row is the only cross-adapter evidence of that
+          // commit, so the replay publishes the invalidation the lost attempt
+          // could not. A genuinely duplicate save publishes one redundant wake;
+          // readers re-list durable state, which costs a read and changes
+          // nothing else.
+          replayedSaved = true;
           return {
             operationId: captured.operationId,
             epoch: existing.epoch,
@@ -1106,8 +1116,9 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       cancellation,
     );
     this.#notifyStorageSuccess();
-    // A duplicate save wrote nothing, so only a newly persisted operation wakes readers.
-    if (newlySaved) this.#publishDocumentWake(documentKey);
+    // A newly persisted operation and a replay that confirms an existing one
+    // both name a committed state readers may not have observed.
+    if (newlySaved || replayedSaved) this.#publishDocumentWake(documentKey);
     return receipt;
   }
 
