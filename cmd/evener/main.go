@@ -175,6 +175,13 @@ func mainWithDeps(deps mainDeps) {
 		return
 	}
 
+	// An inherited TMPDIR can name a session temp container that has already
+	// been deleted. Nothing below may inherit it. Placed after the version
+	// query, which needs no temp dir.
+	if !cmdutil.TempDirExists(envvars.TmpDir.Getenv()) {
+		_ = envvars.TmpDir.Unsetenv()
+	}
+
 	// Subcommand dispatch — before flag.Parse() so subcommands get their own flag sets.
 	if handled, label, err := deps.dispatch(deps.args, deps.stdin, deps.stdout, deps.stderr); handled {
 		if err != nil {

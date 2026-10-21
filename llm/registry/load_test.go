@@ -41,7 +41,7 @@ func fixtureLoad(t *testing.T, env map[string]string, config string, extra ...Op
 	return r
 }
 
-func embeddedLoad(t *testing.T, extra ...Option) *Registry {
+func embeddedLoad(t testing.TB, extra ...Option) *Registry {
 	t.Helper()
 	opts := []Option{
 		WithStateRoot(t.TempDir()),

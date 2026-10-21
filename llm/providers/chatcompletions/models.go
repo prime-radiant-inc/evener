@@ -36,7 +36,8 @@ type modelEntry struct {
 		DefaultEnabled   *bool    `json:"default_enabled"`
 		SupportedEfforts []string `json:"supported_efforts"`
 	} `json:"reasoning"`
-	Pricing struct {
+	ClientCompat requestutil.GatewayClientCompat `json:"client_compat"`
+	Pricing      struct {
 		Prompt     string `json:"prompt"`
 		Completion string `json:"completion"`
 	} `json:"pricing"`
@@ -84,6 +85,7 @@ func (m modelEntry) row() registry.Model {
 		}
 		caps.EffortValues = requestutil.DedupStrings(m.Reasoning.SupportedEfforts)
 	}
+	requestutil.ApplyGatewayReasoning(&caps, m.Capabilities, m.ClientCompat)
 	caps.InputModalities = requestutil.GatewayInputModalities(m.Architecture, m.Capabilities)
 	if in, ok := perTokenCostToPerMillion(m.Pricing.Prompt); ok {
 		if out, ok := perTokenCostToPerMillion(m.Pricing.Completion); ok {

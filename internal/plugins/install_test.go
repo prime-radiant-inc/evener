@@ -92,8 +92,8 @@ func TestInstall_AcceptsAPluginNameThatCarriesAnAt(t *testing.T) {
 // The store's scratch directories are the marketplaces directory's own
 // children, so a plugin can carry one of their names without colliding with
 // anything: its cache directory is cache/<marketplace>/.old, and the staging
-// an install fetches into is cache/<marketplace>/.old/.staging, a level
-// deeper. A catalog is free to name a plugin that, and refusing it would
+// an install fetches into has a fresh owned container below that cache
+// directory. A catalog is free to name a plugin that, and refusing it would
 // leave that plugin uninstallable.
 func TestInstall_AcceptsAPluginNamedForAScratchDirectory(t *testing.T) {
 	if !gitAvailable() {
@@ -281,6 +281,44 @@ func TestInstall_ManifestLessPlugin_NoUsableFields_Installs(t *testing.T) {
 	reg, _ := LoadRegistry(m.registryPath())
 	if _, ok := reg.Plugins["bare-nothing@acme"]; !ok {
 		t.Fatal("a successful install must leave a registry entry")
+	}
+}
+
+func TestInstall_ManifestLessPluginValidatedBeforePublication(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	pluginRepo := filepath.Join(t.TempDir(), "plugin")
+	makeGitRepo(t, pluginRepo, "resource.txt", "companion") // deliberately has no manifest
+	marketRepo := filepath.Join(t.TempDir(), "market")
+	writeURLCatalog(t, marketRepo, "widget", pluginRepo, "")
+	makeGitRepo(t, marketRepo, "README.md", "market")
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: marketRepo}); err != nil {
+		t.Fatal(err)
+	}
+	oldRename := installRename
+	t.Cleanup(func() { installRename = oldRename }) // package-wide seam; keep this test serial.
+	renamed := false
+	installRename = func(from, to string) error {
+		renamed = true
+		if _, err := os.Stat(filepath.Join(from, ".claude-plugin", "plugin.json")); err != nil {
+			t.Fatalf("manifest missing in owned staging before publication: %v", err)
+		}
+		if err := validatePluginDir(from); err != nil {
+			t.Fatalf("staging did not validate before publication: %v", err)
+		}
+		return oldRename(from, to)
+	}
+	entry, err := m.Install(context.Background(), "widget", "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !renamed {
+		t.Fatal("publication rename was not attempted")
+	}
+	if err := validatePluginDir(entry.InstallPath); err != nil {
+		t.Fatalf("published plugin failed validation: %v", err)
 	}
 }
 

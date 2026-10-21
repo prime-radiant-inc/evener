@@ -47,6 +47,11 @@ type SessionConfig struct {
 	// the tree roots at Background and only Close can cancel it. Not persisted.
 	LifetimeContext context.Context `json:"-"`
 	artifactStore   artifactStore
+	// artifactStoreInherited marks a store handed down by the parent runtime,
+	// which may be nil when the tree's retention is degraded. A child shares
+	// its tree's retention either way: minting its own store would hand back
+	// artifact refs the root cannot read and delete them on the child's close.
+	artifactStoreInherited bool
 
 	// MemoryStateRoot is the owning runtime host's binding, never persisted.
 	// An empty state root leaves library sessions without memory access.
