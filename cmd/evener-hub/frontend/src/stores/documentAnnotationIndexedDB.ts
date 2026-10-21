@@ -661,12 +661,29 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     }
     // Confirm or remove ONLY this invocation's still-owned provisional entry, from
     // the real durable validation result, never a caller-supplied boolean.
-    const finishValidation = (current: boolean): void => {
-      if (!provisional) return;
+    // Returns true when it actually released an unconfirmed entry: that release
+    // is an observation boundary the retry runtime must hear about.
+    const finishValidation = (current: boolean): boolean => {
+      if (!provisional) return false;
       const entry = this.#suppressedEpochs.get(provisional);
-      if (entry?.requestId !== ticket.requestId) return;
-      if (current) entry.confirmed = true;
-      else if (!entry.confirmed) this.#suppressedEpochs.delete(provisional);
+      if (entry?.requestId !== ticket.requestId) return false;
+      if (current) {
+        entry.confirmed = true;
+        return false;
+      }
+      if (entry.confirmed) return false;
+      this.#suppressedEpochs.delete(provisional);
+      return true;
+    };
+    // A stale or unchanged validation releases the provisional restriction a
+    // concurrent handoff may have refused against. That refusal only records
+    // the runtime's retry need; the release is the sole event proving the
+    // restriction lifted, so signal the storage-success boundary the runtime
+    // already subscribes to. Without it the annotation stays pending until
+    // unrelated activity starts a pass. Called after the validation transaction
+    // settled, never inside it, so the pass the runtime may start is serviceable.
+    const releaseProvisional = (): void => {
+      if (finishValidation(false)) this.#notifyStorageSuccess();
     };
     try {
       // Validation commits before the fence: the durable identity of this ticket
@@ -795,13 +812,13 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         } as const;
       });
       if (validation.kind === "stale") {
-        finishValidation(false);
+        releaseProvisional();
         return { state: "stale-ticket" };
       }
       if (validation.kind === "accepted") {
         // An unchanged acceptance is not a changed read: drop any provisional the
         // local comparison installed and record the completed acceptance.
-        finishValidation(false);
+        releaseProvisional();
         this.#readStates.set(documentKey, {
           ticket,
           accepted: { lease: validation.lease, content },
