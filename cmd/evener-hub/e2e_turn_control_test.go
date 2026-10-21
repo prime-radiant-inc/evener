@@ -566,8 +566,53 @@ var liveStackBuild struct {
 	err  error
 }
 
+// repoRootForTestMain is the repo root from this package's working directory,
+// which `go test` sets to cmd/evener-hub. It returns "" unless the result
+// really is the checkout: filepath.Abs succeeds from any readable directory, so
+// a helper launched from a temp workspace would otherwise "resolve" a root and
+// build from it.
+func repoRootForTestMain() string {
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		// The only caller is TestMain, which reports the error itself; an
+		// unreadable working directory would fail far earlier than this.
+		return ""
+	}
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+		return ""
+	}
+	if _, err := os.Stat(filepath.Join(root, "cmd", "evener")); err != nil {
+		return ""
+	}
+	return root
+}
+
+// warmLiveStackBinaries does the build liveStackBinaries would do lazily, so it
+// lands before any test's clock starts. Called from TestMain.
+//
+// A process with no resolvable repo root warms nothing and reports no error:
+// that is a helper running from somewhere other than the checkout (the browser
+// guard launches one through the shell from a session workspace), and it starts
+// no live stack. Failing there killed a helper that only needed to write bytes.
+func warmLiveStackBinaries(repoRoot string) error {
+	if repoRoot == "" {
+		return nil
+	}
+	liveStackBinariesBuild(repoRoot)
+	return liveStackBuild.err
+}
+
 func liveStackBinaries(t *testing.T, repoRoot string) string {
 	t.Helper()
+	liveStackBinariesBuild(repoRoot)
+	if liveStackBuild.err != nil {
+		t.Fatalf("build live-stack binaries: %v", liveStackBuild.err)
+	}
+	return liveStackBuild.dir
+}
+
+// liveStackBinariesBuild is the once-guarded build both entry points use.
+func liveStackBinariesBuild(repoRoot string) {
 	liveStackBuild.once.Do(func() {
 		// Under TestMain's root, so its Discard is the only cleanup path.
 		dir := filepath.Join(testEnv.Root, "live-stack-bin")
@@ -585,10 +630,6 @@ func liveStackBinaries(t *testing.T, repoRoot string) string {
 			}
 		}
 	})
-	if liveStackBuild.err != nil {
-		t.Fatalf("build live-stack binaries: %v", liveStackBuild.err)
-	}
-	return liveStackBuild.dir
 }
 
 func startHubStack(t *testing.T, provider *fakellm.Server) hubStack {
