@@ -1,8 +1,12 @@
 import type { ThreadCapabilities, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { tokenUnitLabel } from "@evener/appwire-client";
-import { cleanup, render, screen } from "@testing-library/react";
+import { deferred } from "@evener/appwire-client/testing/deferred";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
+import { connectionStore } from "../../../stores/connection";
+import { putThreadModel, resetThreadsStoreForTests, threadsStore, useThreadsStore } from "../../../stores/threads";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import rawMeterStyles from "../../../widgets/meter/meter.module.css";
 import { DetailsPanel } from "./DetailsPanel";
@@ -82,7 +86,61 @@ function rowTerm(value: HTMLElement): string | null | undefined {
 
 afterEach(() => {
   cleanup();
+  resetThreadsStoreForTests();
+  connectionStore.setState({ state: "idle", client: null });
   vi.unstubAllGlobals();
+});
+
+test("Manager switch refuses unknown, offline and other-authority edits", async () => {
+  await openPanel(testModel());
+  expect((screen.getByRole("switch", { name: "Manager" }) as HTMLButtonElement).disabled).toBe(true);
+  cleanup();
+  await openPanel(
+    testModel({
+      manager: true,
+      managerSetting: { hubId: "other-hub", enabled: true, revision: 4 },
+      managerEditable: false,
+    }),
+  );
+  const control = screen.getByRole("switch", { name: "Manager" });
+  expect(control.getAttribute("aria-checked")).toBe("true");
+  expect((control as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByTestId("session-details-manager-hub").textContent).toBe("other-hub");
+});
+
+test("Manager switch holds confirmed value and focus while pending, then reports failure", async () => {
+  const fake = new FakeClient("ready");
+  connectionStore.getState().connect(fake);
+  const model = testModel({
+    instanceId: "instance",
+    manager: false,
+    managerEditable: true,
+    managerSetting: { hubId: "hub", enabled: false, revision: 0 },
+  });
+  putThreadModel(model.ref, model);
+  const response = deferred<never>();
+  fake.on("evener/thread/manager/set", () => response.promise);
+  fake.on("thread/read", () => {
+    throw new Error("fixture-offline");
+  });
+  function ConnectedPanel() {
+    const current = useThreadsStore((state) => state.threads.get(model.ref));
+    return <DetailsPanel model={current ?? model} now={0} />;
+  }
+  render(<ConnectedPanel />);
+  await userEvent.click(screen.getByRole("button", { name: "Details" }));
+  const control = screen.getByRole("switch", { name: "Manager" });
+  await userEvent.click(control);
+  expect(control.getAttribute("aria-checked")).toBe("false");
+  expect(control.getAttribute("aria-disabled")).toBe("true");
+  expect(document.activeElement).toBe(control);
+  await userEvent.click(control);
+  expect(fake.calls.filter((call) => call.method === "evener/thread/manager/set")).toHaveLength(1);
+  await act(async () => {
+    response.reject(new Error("fixture-refusal"));
+  });
+  expect(screen.getByRole("alert")).toBeTruthy();
+  expect(threadsStore.getState().threads.get(model.ref)?.managerSetting?.enabled).toBe(false);
 });
 
 test("the trigger opens the details sheet", async () => {

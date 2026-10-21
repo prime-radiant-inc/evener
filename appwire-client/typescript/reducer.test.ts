@@ -8,7 +8,9 @@ import streamingWithResetFixture from "./fixtures/streaming-with-reset.jsonl?raw
 import toolAndJobsFixture from "./fixtures/tool-and-jobs.jsonl?raw";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import {
+  applyManagerView,
   applyNotification,
+  applyReadModel,
   collectAuthoritativeMutationIds,
   decodeTranscriptItem,
   encodeTranscriptItem,
@@ -275,6 +277,118 @@ function testHydrate(overrides: TestThreadOverrides = {}): ThreadModel {
   const thread = testThread(overrides);
   return hydrateThread({ thread }, thread.evener.ref, 1000);
 }
+
+test("Manager reads preserve selected authority and unknown is not disabled", () => {
+  const setting = { hubId: "hub-selected", enabled: true, revision: 7 };
+  const model = testHydrate({
+    evener: {
+      ref: "local:historical",
+      instanceId: "old-instance",
+      manager: true,
+      managerEditable: false,
+      managerSetting: setting,
+    },
+  });
+  expect(model).toMatchObject({
+    ref: "local:historical",
+    instanceId: "old-instance",
+    manager: true,
+    managerEditable: false,
+    managerSetting: setting,
+  });
+  const unknown = applyReadModel(
+    model,
+    testHydrate({ evener: { ref: "local:historical", instanceId: "old-instance" } }),
+  );
+  expect(unknown.managerSetting).toBeUndefined();
+  expect(unknown.managerEditable).toBe(false);
+});
+
+test("Manager views fence public identity and revision without replacing history", () => {
+  const model = testHydrate({
+    evener: {
+      instanceId: "instance",
+      managerEditable: true,
+      managerSetting: { hubId: "hub", enabled: false, revision: 2 },
+    },
+  });
+  const view = { ref: model.ref, instanceId: "instance", setting: { hubId: "hub", enabled: true, revision: 3 } };
+  const next = applyManagerView(model, view);
+  expect(next.managerSetting).toEqual(view.setting);
+  expect(next.manager).toBe(true);
+  expect(next.turns).toBe(model.turns);
+  expect(next.managerEditable).toBe(true);
+  for (const rejected of [
+    undefined,
+    {},
+    { ...view, ref: "local:other" },
+    { ...view, instanceId: "replacement" },
+    { ...view, setting: { ...view.setting, revision: 1 } },
+  ]) {
+    expect(applyManagerView(model, rejected)).toBe(model);
+  }
+  expect(applyManagerView(model, { ...view, setting: { ...view.setting, hubId: "other-hub" } }).managerEditable).toBe(
+    false,
+  );
+});
+
+test("Manager epochless resync leaves replacement decisions to authoritative history identity", () => {
+  const model = testHydrateV6({
+    turns: [
+      {
+        id: "old",
+        status: "completed",
+        itemsView: "full",
+        items: [{ id: "older-page", turnId: "old", type: "agentMessage", text: "old-sentinel" }],
+      },
+    ],
+  });
+  const hinted = applyNotification(
+    model,
+    { method: "evener/thread/resync", params: { ref: model.ref, threadId: model.threadId } },
+    2,
+  );
+  expect(hinted.history).toBe(model.history);
+  const same = applyReadModel(hinted, testHydrateV6());
+  expect(same.turns.flatMap((turn) => turn.items).map((item) => item.id)).toContain("older-page");
+  const changed = hydrateThread(
+    { thread: testThread(), bootGeneration: "", epoch: 2, snapshot: { incarnation: "replacement", length: 0 } },
+    model.ref,
+    3,
+  );
+  expect(applyReadModel(hinted, changed).turns).toEqual([]);
+  const invalidated = applyNotification(
+    model,
+    {
+      method: "evener/thread/resync",
+      params: { ref: model.ref, threadId: model.threadId, bootGeneration: "", epoch: 2 },
+    },
+    2,
+  );
+  expect(invalidated.history?.invalidatedAtGeneration).toBeDefined();
+});
+
+test("Manager read reconciliation retains only the selected workspace setting", () => {
+  const setting = { hubId: "hub-selected", enabled: true, revision: 7 };
+  const before = testHydrate({ evener: { manager: true, managerEditable: true, managerSetting: setting } });
+  const cleared = applyReadModel(
+    before,
+    testHydrate({ id: "replacement", evener: { manager: true, managerEditable: true, managerSetting: setting } }),
+  );
+  expect(cleared.managerSetting).toEqual(setting);
+  const disabled = { hubId: "", enabled: false, revision: 0 };
+  for (const ref of ["local:new", "local:fork"]) {
+    const fresh = testHydrate({ evener: { ref, managerEditable: true, managerSetting: disabled } });
+    expect(fresh.manager).toBe(false);
+    expect(fresh.managerSetting).toEqual(disabled);
+  }
+  const reconnected = applyReadModel(
+    before,
+    testHydrate({ evener: { managerEditable: true, managerSetting: { ...setting, enabled: false, revision: 8 } } }),
+  );
+  expect(reconnected.manager).toBe(false);
+  expect(reconnected.managerSetting?.revision).toBe(8);
+});
 
 // testHydrate's v6 twin: adds `snapshot`, so a fold that follows can be a
 // live history/updated (item/completed's and turn/completed's read-model

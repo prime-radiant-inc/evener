@@ -28,6 +28,8 @@ import {
 	WireError,
 } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { createConversationService } from "../services/conversation";
 import type {
 	MutationOptimisticRecord,
 	MutationOutboxRecord,
@@ -110,6 +112,111 @@ const ALL_TRUE_CAPS: ThreadCapabilities = {
 	// The hub pages the thread from a before position, so the cap may trim.
 	pageBefore: true,
 };
+
+it("Manager subscriber resync and reconnect preserve later history pages and unsent input", async () => {
+	const ref = "local:historical";
+	let setting = { hubId: "hub", enabled: false, revision: 0 };
+	const turn = (entry: number): Turn => ({
+		id: `turn_${entry}`,
+		status: "completed",
+		itemsView: "fragment",
+		items: [
+			{
+				id: `item_${entry}`,
+				turnId: `turn_${entry}`,
+				type: "agentMessage",
+				text: `sentinel-${entry}`,
+				version: entry,
+				position: { entry, item: 0 },
+			},
+		],
+	});
+	const thread = (): Thread => ({
+		id: "history-instance",
+		sessionId: "history-instance",
+		preview: "",
+		ephemeral: false,
+		modelProvider: "test",
+		createdAt: 1,
+		updatedAt: 1,
+		status: { type: "idle" },
+		cwd: "/fixture",
+		cliVersion: "test",
+		source: "evener",
+		turns: [turn(30)],
+		evener: {
+			ref,
+			instanceId: "history-instance",
+			capabilities: ALL_TRUE_CAPS,
+			queue: { revision: 0 },
+			manager: setting.enabled,
+			managerEditable: true,
+			managerSetting: setting,
+		},
+	});
+	const identity = { bootGeneration: "1", epoch: 1, snapshot: { incarnation: "history", length: 31 } };
+	const clients = [new FakeClient("ready"), new FakeClient("ready")];
+	const bindings = [];
+	for (const client of clients) {
+		client.on("thread/read", () => ({ thread: thread(), ...identity, olderCursor: "page-2" }));
+		client.on("thread/turns/list", ({ cursor }) => ({
+			...identity,
+			data: [turn(cursor === "page-2" ? 20 : 10)],
+			nextCursor: cursor === "page-2" ? "page-3" : undefined,
+		}));
+		const service = createConversationService(client);
+		const store = createConversationStore();
+		const activity = createActivityStore();
+		await store.getState().openProjected(service, activity.getState(), ref);
+		expect((await store.getState().loadOlder(service)).status).toBe("loaded");
+		expect((await store.getState().loadOlder(service)).status).toBe("loaded");
+		expect(
+			store
+				.getState()
+				.conversation?.turns.flatMap((item) => item.items)
+				.map((item) => item.id),
+		).toEqual(["item_10", "item_20", "item_30"]);
+		store.getState().setDraft("unsent-sentinel");
+		bindings.push({ client, service, store, activity });
+	}
+	const [writer, subscriber] = bindings;
+	if (!writer || !subscriber) throw new Error("missing fixture binding");
+	writer.client.on("evener/thread/manager/set", ({ ref: selected, enabled }) => {
+		expect(selected).toBe(ref);
+		setting = { ...setting, enabled, revision: setting.revision + 1 };
+		return { view: { ref, instanceId: "history-instance", setting } };
+	});
+	await writer.service.setManager(true);
+	const refreshed = new Promise<void>((resolve) => {
+		const unsubscribe = subscriber.store.subscribe((state) => {
+			if (state.conversation?.managerSetting?.revision === 1) {
+				unsubscribe();
+				resolve();
+			}
+		});
+	});
+	subscriber.client.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: "history-instance" } });
+	await refreshed;
+	expect(subscriber.store.getState().conversation?.managerSetting).toEqual(setting);
+	expect(subscriber.client.calls.filter((call) => call.method === "evener/thread/manager/set")).toHaveLength(0);
+	const retained = () => {
+		const state = subscriber.store.getState();
+		expect(state.draft).toBe("unsent-sentinel");
+		expect(state.conversation?.turns.flatMap((item) => item.items).map((item) => item.id)).toEqual([
+			"item_10",
+			"item_20",
+			"item_30",
+		]);
+		expect(state.conversation?.items.some((item) => JSON.stringify(item).includes("sentinel-10"))).toBe(true);
+	};
+	retained();
+	subscriber.store.getState().suspendProjected();
+	setting = { ...setting, enabled: false, revision: 2 };
+	await subscriber.store.getState().resumeProjected(subscriber.service, subscriber.activity.getState(), ref);
+	expect(subscriber.store.getState().conversation?.managerSetting).toEqual(setting);
+	retained();
+	for (const { store } of bindings) store.getState().reset();
+});
 
 // The hub refusing a mutation whose capability moved on without a status frame
 // this client saw (F11: a real WireError, matched by identity).

@@ -853,6 +853,7 @@ export function ConversationScreen({
 				!document.getSnapshot().submitting &&
 				store.getState().pendingMutation?.status !== "pending",
 			knownCatalog.current,
+			(view) => store.getState().acceptManagerView(view),
 		);
 	}, [
 		service,

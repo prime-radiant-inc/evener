@@ -14,6 +14,7 @@
 import type { Thread, ThreadCapabilities } from "@evener/appwire-client";
 import { hydrateThread } from "@evener/appwire-client";
 import { ActivityPanel } from "../../panes/session/chrome/ActivityPanel";
+import { DetailsPanel } from "../../panes/session/chrome/DetailsPanel";
 import { StatusRow } from "../../panes/session/chrome/StatusRow";
 import { TasksPanel } from "../../panes/session/chrome/TasksPanel";
 import styles from "../gallery-section.module.css";
@@ -70,6 +71,39 @@ const fixtureThread: Thread = {
 
 const model = hydrateThread({ thread: fixtureThread }, ref, Date.now());
 
+// Rendering fixtures only: the gallery stays disconnected and never installs
+// a mutation handler. Every switch remains disabled, including local settings.
+const managerFixtures = [
+  {
+    name: "confirmed-off",
+    projection: {
+      manager: false,
+      managerEditable: true,
+      managerSetting: { hubId: "fixture-local-hub", enabled: false, revision: 1 },
+    },
+  },
+  {
+    name: "confirmed-on",
+    projection: {
+      manager: true,
+      managerEditable: true,
+      managerSetting: { hubId: "fixture-local-hub", enabled: true, revision: 2 },
+    },
+  },
+  { name: "unknown", projection: {} },
+  {
+    name: "read-only",
+    projection: {
+      manager: true,
+      managerEditable: false,
+      managerSetting: { hubId: "fixture-other-hub", enabled: true, revision: 3 },
+    },
+  },
+].map(({ name, projection }) => ({
+  name,
+  model: hydrateThread({ thread: { ...fixtureThread, evener: { ...fixtureThread.evener, ...projection } } }, ref, 1000),
+}));
+
 export default function ChromeSurfaceSection() {
   return (
     <section>
@@ -92,6 +126,12 @@ export default function ChromeSurfaceSection() {
           <p className={styles.rowLabel}>activity</p>
           <ActivityPanel sessionRef={ref} model={model} />
         </div>
+        {managerFixtures.map((fixture) => (
+          <div key={fixture.name} className={styles.row} data-testid={`manager-fixture-${fixture.name}`}>
+            <p className={styles.rowLabel}>Manager {fixture.name}, disconnected</p>
+            <DetailsPanel model={fixture.model} now={1000} />
+          </div>
+        ))}
       </ThemeFlip>
     </section>
   );

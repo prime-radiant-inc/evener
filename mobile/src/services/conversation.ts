@@ -174,6 +174,10 @@ export interface ConversationModelCatalog {
 	models(): Promise<ModelListResponse>;
 }
 
+export interface ConversationManagerActions {
+	setManager(enabled: boolean): Promise<import("@evener/appwire-client").ManagerView>;
+}
+
 export interface ConversationGoalActions {
 	setGoal(objective: string): Promise<void>;
 }
@@ -464,6 +468,7 @@ export function createConversationService<ReadLease = unknown>(
 	client: ConversationClientLike | AppwireClient,
 	options: ConversationServiceOptions<ReadLease> = {},
 ): LiveConversationService &
+	ConversationManagerActions &
 	ConversationModelCatalog &
 	ConversationGoalActions &
 	ConversationForkActions &
@@ -508,6 +513,7 @@ export function createConversationService<ReadLease = unknown>(
 		pushed: { threadId: string; caps: ThreadCapabilities } | null;
 	} | null = null;
 	let capabilities: ThreadCapabilities | null = null;
+	let managerEditable = false;
 	let notificationUnsub: (() => void) | null = null;
 	type PendingProjection = {
 		ref: string;
@@ -593,6 +599,12 @@ export function createConversationService<ReadLease = unknown>(
 	}
 
 	return {
+		async setManager(enabled) {
+			const targetRef = requireRef();
+			if (!managerEditable) throw new Error("Manager setting is read-only or unavailable.");
+			const response = await client.request("evener/thread/manager/set", { ref: targetRef, enabled });
+			return response.view;
+		},
 		async open(threadRef, _cursor) {
 			pendingProjection = null;
 			// The compatibility cursor is intentionally ignored: open() must send
@@ -630,6 +642,7 @@ export function createConversationService<ReadLease = unknown>(
 				threadId = response.thread.id;
 				ref = threadRef;
 				capabilities = caps;
+				managerEditable = thread.evener.managerEditable === true && thread.evener.managerSetting !== undefined;
 				opening = null;
 			}
 			// Reconcile the host's durable dispatch gate only for a read whose
@@ -685,6 +698,7 @@ export function createConversationService<ReadLease = unknown>(
 					threadId = response.thread.id;
 					ref = threadRef;
 					capabilities = caps;
+					managerEditable = thread.evener.managerEditable === true && thread.evener.managerSetting !== undefined;
 					opening = null;
 				}
 				// Reconcile the host's durable dispatch gate only after the projection
@@ -874,6 +888,7 @@ export function createConversationService<ReadLease = unknown>(
 			threadId = thread.id;
 			ref = response.ref;
 			capabilities = caps;
+			managerEditable = thread.evener.managerEditable === true && thread.evener.managerSetting !== undefined;
 			opening = null;
 			return { conversation, activity, olderCursor: null };
 		},

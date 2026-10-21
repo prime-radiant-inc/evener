@@ -31,6 +31,7 @@ import type {
 	WarningParams,
 } from "@evener/appwire-client";
 import {
+	applyManagerView,
 	applyNotification,
 	applyReadModel,
 	configFingerprint,
@@ -400,6 +401,7 @@ export interface ConversationState {
 	open(service: ConversationService, ref: string): Promise<void>;
 	loadOlder(service: ConversationService): Promise<LoadOlderResult>;
 	setDraft(text: string): void;
+	acceptManagerView(view: unknown): void;
 	send(service: ConversationService, input: InputItem[]): Promise<void>;
 	queue(service: ConversationService, input: InputItem[]): Promise<void>;
 	interrupt(service: ConversationService): Promise<void>;
@@ -2705,6 +2707,12 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			setDraft(text) {
 				draftRevision += 1;
 				set({ draft: text });
+			},
+			acceptManagerView(view) {
+				const state = get();
+				if (state.status !== "open" || !state.conversation) return;
+				const conversation = applyManagerView(state.conversation, view);
+				if (conversation !== state.conversation) set({ conversation });
 			},
 
 			bindPendingMutations(port) {

@@ -106,7 +106,15 @@ forks start off. Saved historical instances keep their own navigation refs while
 explicit persisted workspace identity shares the preference. Legacy sessions
 without that identity use their own saved ID, not inferred earlier history.
 
-Thread reads expose `manager`, `managerSetting` and `managerEditable`. A committed
-change sends the existing scoped `evener/thread/resync` hint for an authoritative
-re-read. This preference does not yet provide client switches, runtime Manager
-tools or remote enabling.
+Thread reads expose `manager`, `managerSetting` and `managerEditable`. The web
+session Details panel and native session Info sheet show the human Manager switch
+and selected hub identity. An unavailable setting is not a confirmed off value;
+unknown or noneditable settings cannot be changed. A pending write keeps the last
+confirmed value and blocks a second toggle. Failures and reconnects trigger an
+authoritative re-read rather than replaying the toggle.
+
+A committed change sends the existing scoped `evener/thread/resync` hint to other
+subscribers. Connected refresh preserves loaded history pages when their source
+identity still matches, and preserves unsent input. Reconnect may replace stale
+pages with the latest authoritative window. This preference does not yet provide
+runtime Manager tools or remote enabling.

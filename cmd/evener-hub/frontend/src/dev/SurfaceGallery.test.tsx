@@ -1,10 +1,30 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { resetAskDockStoreForTests } from "../panes/session/composer/askDock/askDockStore";
 import { resetNavigationStoreForTests } from "../stores/navigation/store";
 import { resetThreadsStoreForTests } from "../stores/threads";
 import { resetDisclosureStoreForTests } from "../widgets/disclosure/disclosureStore";
 import SurfaceGallery, { SURFACE_GALLERY_SECTIONS } from "./SurfaceGallery";
+import ChromeSurfaceSection from "./surface-sections/chrome";
+
+test.each([
+  ["confirmed-off", false],
+  ["confirmed-on", true],
+  ["unknown", false],
+  ["read-only", true],
+])("Manager gallery %s renders the real disconnected Details panel", (state, checked) => {
+  render(<ChromeSurfaceSection />);
+  const row = screen.getAllByTestId(`manager-fixture-${state}`)[0];
+  fireEvent.click(within(row!).getByRole("button", { name: "Details" }));
+  const toggle = screen.getByRole("switch", { name: "Manager" });
+  expect(toggle.getAttribute("aria-checked")).toBe(String(checked));
+  expect(toggle.hasAttribute("disabled")).toBe(true);
+  if (state === "unknown") expect(screen.queryByTestId("session-details-manager-hub")).toBeNull();
+  else
+    expect(screen.getByTestId("session-details-manager-hub").textContent).toBe(
+      state === "read-only" ? "fixture-other-hub" : "fixture-local-hub",
+    );
+});
 
 afterEach(() => {
   cleanup();

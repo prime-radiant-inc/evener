@@ -10,6 +10,7 @@ import type {
   EvenerTurnSlots,
   EvenerUsage,
   GoalState,
+  ManagerSetting,
   OverlayItem,
   PendingMutation,
   QueueState,
@@ -322,6 +323,10 @@ export interface ThreadModel {
   // a daemon on an incompatible protocol. Snapshot-only: a resume that clears
   // the fence re-hydrates the model without it.
   resumeOnlyFoldable?: boolean;
+  /** Human-only hub projection. An absent setting is unknown, not off. */
+  manager?: boolean;
+  managerEditable?: boolean;
+  managerSetting?: ManagerSetting;
   modelProvider: string;
   model: string;
   reasoningEffort?: string;

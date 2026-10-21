@@ -16,7 +16,7 @@ import { useReadingType } from "../display/displayContext";
 import type { MobileConversation } from "../projectedRows";
 import type { Routes } from "../screens";
 import { type SessionControls, useControlsState } from "../sessionControls";
-import { Group, GroupFooter, GroupedPage, Row } from "../sheet/Grouped";
+import { Group, GroupFooter, GroupedPage, Row, SwitchRow } from "../sheet/Grouped";
 import { Sheet } from "../sheet/Sheet";
 import { useSheet } from "../sheet/useSheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
@@ -213,6 +213,24 @@ function SessionInfoBody({
 						onPress={() => navigation.navigate("ModelSheet", { hubId, ref: sessionRef, setting: "vision" })}
 					/>
 				) : null}
+			</Group>
+
+			<Group section="manager">
+				<SwitchRow
+					label="Manager"
+					value={session.managerSetting?.enabled ?? false}
+					sub={
+						!session.managerSetting
+							? "Manager setting unavailable."
+							: session.managerSetting.hubId
+								? `Hub: ${session.managerSetting.hubId}`
+								: "New sessions and forks start with Manager off."
+					}
+					disabled={!host.controls || !!state?.pending || !session.managerEditable || !session.managerSetting}
+					onChange={(enabled) => {
+						void host.controls?.setManager(enabled);
+					}}
+				/>
 			</Group>
 
 			{plugins ? (

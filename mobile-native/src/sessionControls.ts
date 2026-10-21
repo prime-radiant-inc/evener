@@ -5,12 +5,14 @@ import { effortOptionLevels, sessionEffortLevels } from "@evener/appwire-client"
 import type { MobileConversation } from "./projectedRows";
 import type {
 	ConversationModelCatalog,
+	ConversationManagerActions,
 	ConversationRecoveryActions,
 	ConversationService,
 } from "../../mobile/src/services/conversation";
 
 type Operation =
 	| "rename"
+	| "setManager"
 	| "compact"
 	| "shutdown"
 	| "forceStop"
@@ -47,7 +49,8 @@ export class SessionControls {
 	// An announcement arrived while a load was out, to be read once it settles.
 	private refreshAfterLoad = false;
 	constructor(
-		private service: Pick<ConversationService, Exclude<Operation, "forceStop" | "resume">> &
+		private service: Pick<ConversationService, Exclude<Operation, "forceStop" | "resume" | "setManager">> &
+			ConversationManagerActions &
 			ConversationRecoveryActions &
 			ConversationModelCatalog,
 		private refresh: () => Promise<void>,
@@ -61,10 +64,17 @@ export class SessionControls {
 		// The catalog the screen already knows, from its last binding: the
 		// model's name needs no read to show.
 		catalog: ModelListResponse | null = null,
+		private publishManager: (view: unknown) => void = () => {},
 	) {
 		this.state = { ...this.state, catalog };
 	}
 	getSnapshot = () => this.state;
+	setManager(enabled: boolean): Promise<boolean> {
+		return this.run("setManager", async () => {
+			const view = await this.service.setManager(enabled);
+			if (!this.disposed && this.isCurrent()) this.publishManager(view);
+		});
+	}
 	subscribe = (listener: () => void) => {
 		this.listeners.add(listener);
 		return () => {
@@ -215,22 +225,32 @@ export class SessionControls {
 				pending: null,
 				error: null,
 				notice:
-					kind === "resume"
-						? "Runtime resumed."
-						: kind === "compact"
-							? "Compaction requested. Progress appears in the conversation."
-							: kind === "setReasoningEffort"
-								? "Reasoning effort updated."
-								: kind === "setVisionModel"
-									? "Vision model updated."
-									: kind === "changeModel"
-										? "Model updated."
-										: "Session renamed.",
+					kind === "setManager"
+						? null
+						: kind === "resume"
+							? "Runtime resumed."
+							: kind === "compact"
+								? "Compaction requested. Progress appears in the conversation."
+								: kind === "setReasoningEffort"
+									? "Reasoning effort updated."
+									: kind === "setVisionModel"
+										? "Vision model updated."
+										: kind === "changeModel"
+											? "Model updated."
+											: "Session renamed.",
 			});
 			return true;
 		} catch (cause) {
 			if (this.disposed || !this.isCurrent()) return false;
-			if (cause instanceof WireError && cause.evenerErrorInfo === "actionUnavailable") {
+			if (
+				kind === "setManager" &&
+				cause instanceof WireError &&
+				cause.data &&
+				typeof cause.data === "object" &&
+				"view" in cause.data
+			)
+				this.publishManager(cause.data.view);
+			if (kind === "setManager" || (cause instanceof WireError && cause.evenerErrorInfo === "actionUnavailable")) {
 				try {
 					await this.refresh();
 				} catch {
