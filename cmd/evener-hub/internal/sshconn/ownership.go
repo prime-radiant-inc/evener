@@ -109,8 +109,8 @@ func (m *Manager) resolveLinuxOwner(ctx context.Context, host hostreg.Host, repo
 	if err != nil {
 		return selectedOwner{}, err
 	}
-	cwd := strings.TrimSpace(string(cwdOut))
-	if !path.IsAbs(cwd) {
+	cwd, err := ownerPathOutput(cwdOut)
+	if err != nil {
 		return selectedOwner{}, fmt.Errorf("%w: process working directory unavailable", errOwnerEvidence)
 	}
 	env, err := m.ownerEnvironment(ctx, host, pid)
@@ -579,7 +579,7 @@ func (m *Manager) supervisorForOwner(ctx context.Context, host hostreg.Host, pid
 			return supervisor{}, err
 		}
 		fields := map[string]string{}
-		for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+		for line := range strings.SplitSeq(strings.TrimSuffix(string(out), "\n"), "\n") {
 			key, value, ok := strings.Cut(line, "=")
 			if !ok {
 				return supervisor{}, fmt.Errorf("%w: malformed service definition", errOwnerEvidence)
@@ -635,10 +635,13 @@ func (m *Manager) supervisorForOwner(ctx context.Context, host hostreg.Host, pid
 			workingDirectory = "/"
 			if candidate.kind == supervisorSystemdUser {
 				out, err := m.ownerRead(ctx, host, "getent passwd "+shellquote.RemoteWord(user)+" | cut -d: -f6")
-				if err != nil || !path.IsAbs(strings.TrimSpace(string(out))) {
+				if err != nil {
 					return supervisor{}, fmt.Errorf("%w: user-service home unavailable", errOwnerEvidence)
 				}
-				workingDirectory = strings.TrimSpace(string(out))
+				workingDirectory, err = ownerPathOutput(out)
+				if err != nil {
+					return supervisor{}, err
+				}
 			}
 		}
 		userMatches, err := m.sameUser(ctx, host, definitionUser, user)

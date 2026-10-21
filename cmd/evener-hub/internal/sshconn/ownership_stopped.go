@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path"
 	"slices"
 	"strings"
 
@@ -15,7 +14,7 @@ import (
 
 func serviceWords(out []byte) (map[string]string, []string, error) {
 	fields := map[string]string{}
-	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSuffix(string(out), "\n"), "\n") {
 		key, value, ok := strings.Cut(line, "=")
 		if !ok {
 			return nil, nil, errOwnerEvidence
@@ -217,8 +216,8 @@ func (m *Manager) stoppedServiceEnvironment(ctx context.Context, host hostreg.Ho
 	if err != nil {
 		return nil, err
 	}
-	home := strings.TrimSpace(string(out))
-	if !path.IsAbs(home) {
+	home, err := ownerPathOutput(out)
+	if err != nil {
 		return nil, errOwnerEvidence
 	}
 	remote := "systemctl"

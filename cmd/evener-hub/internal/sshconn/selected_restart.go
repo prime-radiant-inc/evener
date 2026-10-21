@@ -3,8 +3,6 @@ package sshconn
 import (
 	"context"
 	"fmt"
-	"path"
-	"strings"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/internal/hubendpoint"
@@ -242,8 +240,8 @@ func (m *Manager) freshSelectedOwner(ctx context.Context, host hostreg.Host, rep
 	if err != nil {
 		return selectedOwner{}, err
 	}
-	cwd := strings.TrimSpace(string(out))
-	if !path.IsAbs(cwd) {
+	cwd, err := ownerPathOutput(out)
+	if err != nil {
 		return selectedOwner{}, errOwnerEvidence
 	}
 	out, err = m.ownerRead(ctx, host, freshOwnerEnvironmentRemote)

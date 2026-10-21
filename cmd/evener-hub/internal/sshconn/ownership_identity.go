@@ -52,11 +52,18 @@ func (m *Manager) directoryIdentity(ctx context.Context, host hostreg.Host, cwd 
 	if err != nil {
 		return "", err
 	}
-	physical := strings.TrimSpace(string(out))
-	if !path.IsAbs(physical) {
-		return "", fmt.Errorf("%w: physical working directory unavailable", errOwnerEvidence)
+	return ownerPathOutput(out)
+}
+
+// Unix pathname commands add one LF, not whitespace padding. Every other byte
+// belongs to the pathname, including spaces, tabs and CR. Multi-line and NUL
+// output cannot unambiguously identify one pathname and must not be normalized.
+func ownerPathOutput(out []byte) (string, error) {
+	value, framed := strings.CutSuffix(string(out), "\n")
+	if !framed || !path.IsAbs(value) || strings.ContainsAny(value, "\n\x00") {
+		return "", fmt.Errorf("%w: single absolute pathname unavailable", errOwnerEvidence)
 	}
-	return physical, nil
+	return value, nil
 }
 
 func (m *Manager) sameDirectory(ctx context.Context, host hostreg.Host, a, b string) (bool, error) {

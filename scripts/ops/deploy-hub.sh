@@ -131,9 +131,17 @@ async function build(repo) {
         if (complete) { fs.unlinkSync(path.join(directory, 'build.log')); fs.rmdirSync(directory); }
     }
 }
-const text = async (file, args, options) => (await run(file, args, options)).text.trim();
+const rawText = async (file, args, options) => (await run(file, args, options)).text;
+const text = async (file, args, options) => (await rawText(file, args, options)).trim();
 function object(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 function string(value) { return typeof value === 'string' && value.length > 0 && !/[\x00-\x1f\x7f]/.test(value); }
+function pathname(raw) {
+    // Unix path commands add one LF. Spaces are pathname bytes, not padding.
+    need(raw.endsWith('\n'), 'missing pathname framing');
+    const value = raw.slice(0, -1);
+    need(string(value) && path.isAbsolute(value), 'invalid single pathname output');
+    return value;
+}
 function json(raw) {
     let value;
     try { value = JSON.parse(raw); } catch (_) { throw new Error('invalid structured command output'); }
@@ -163,7 +171,7 @@ config_path "$1"`;
 async function configMatches(selector, canonical, options) {
     need(string(selector) && string(canonical), 'missing config path evidence');
     if (selector === canonical) return true;
-    return await text('bash', ['-c', configIdentityScript, 'config-identity', selector], options) === canonical;
+    return pathname(await rawText('bash', ['-c', configIdentityScript, 'config-identity', selector], options)) === canonical;
 }
 function sameFile(a, b) {
     try {
@@ -176,7 +184,7 @@ function definition(raw) {
     const seen = new Set();
     let depth = 0, block = '', inherited = {}, environment = {};
     for (const rawLine of raw.split('\n')) {
-        const line = rawLine.trim();
+        const line = rawLine.replace(/^[ \t]+/, '');
         if (!line) continue;
         if (line === '}') { depth--; need(depth >= 0, 'ambiguous service definition'); block = ''; continue; }
         if (depth === 2 && block === 'arguments') { def.argv.push(line); continue; }
@@ -231,7 +239,7 @@ function selectors(def) {
     return result;
 }
 function intent(def) { return JSON.stringify([def.program, def.cwd, def.argv, relevant.map(k => [k, def.env[k]])]); }
-async function service(ms = inspectMS) { return definition(await text('launchctl', ['print', target], {ms})); }
+async function service(ms = inspectMS) { return definition(await rawText('launchctl', ['print', target], {ms})); }
 async function processIdentity(def, ms = inspectMS) {
     if (!def.pid) return '';
     const pid = String(def.pid);
@@ -239,7 +247,7 @@ async function processIdentity(def, ms = inspectMS) {
     const birth = await text('ps', ['-p', pid, '-o', 'lstart='], {ms});
     need(string(birth), 'selected process birth unavailable');
     need(await text('ps', ['-p', pid, '-ww', '-o', 'command='], {ms}) === def.argv.join(' '), 'selected process argv differs');
-    const cwd = (await text('lsof', ['-a', '-p', pid, '-d', 'cwd', '-Fn'], {ms})).split('\n').filter(s => s.startsWith('n/'));
+    const cwd = (await rawText('lsof', ['-a', '-p', pid, '-d', 'cwd', '-Fn'], {ms})).split('\n').filter(s => s.startsWith('n/'));
     need(cwd.length === 1 && sameFile(cwd[0].slice(1), def.cwd), 'selected process working directory differs');
     need(await text('ps', ['-p', pid, '-o', 'lstart='], {ms}) === birth, 'selected process changed during inspection');
     return birth;
@@ -288,7 +296,7 @@ async function capability(def) {
 }
 let binary, target, invocationCwd = process.cwd();
 (async () => {
-    const repo = await text('git', ['rev-parse', '--show-toplevel']);
+    const repo = pathname(await rawText('git', ['rev-parse', '--show-toplevel']));
     binary = path.join(repo, 'evener');
     if (!label) {
         const listing = await text('launchctl', ['list']);
@@ -315,7 +323,7 @@ let binary, target, invocationCwd = process.cwd();
             // Corroborate the root through the selected service's open lock file,
             // not a claimed metadata PID. This is NOT kernel flock attestation.
             const lock = path.join(predecessor.hub_state_root, 'hub.lock');
-            const files = await text('lsof', ['-a', '-p', String(def.pid), '-Fn', lock]);
+            const files = await rawText('lsof', ['-a', '-p', String(def.pid), '-Fn', lock]);
             need(files.split('\n').includes('n'+lock), 'missing selected process state-root evidence');
         }
         await capability(def);

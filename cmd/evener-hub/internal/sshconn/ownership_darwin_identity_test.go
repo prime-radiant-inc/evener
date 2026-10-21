@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/execsupport/shellquote"
 )
 
 // launchctl/ps/lsof remain ordered command fixtures on Linux. The directories
@@ -19,7 +21,9 @@ func TestDarwinOwnerDirectoryIdentity(t *testing.T) {
 	physical := filepath.Join(root, "physical")
 	other := filepath.Join(root, "other")
 	alias := filepath.Join(root, "alias")
-	for _, p := range []string{physical, other} {
+	spaced := filepath.Join(root, "physical ")
+	spacedAlias := filepath.Join(root, "spaced-alias")
+	for _, p := range []string{physical, other, spaced} {
 		if err := os.Mkdir(p, 0700); err != nil {
 			t.Fatal(err)
 		}
@@ -27,24 +31,37 @@ func TestDarwinOwnerDirectoryIdentity(t *testing.T) {
 	if err := os.Symlink(physical, alias); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Symlink(spaced, spacedAlias); err != nil {
+		t.Fatal(err)
+	}
 	var err error
 	physical, err = filepath.EvalSymlinks(physical)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, different := range []bool{false, true} {
+	spaced, err = filepath.EvalSymlinks(spaced)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, configured, actual string
+		different                bool
+	}{
+		{"alias", alias, physical, false},
+		{"different-directory", other, physical, true},
+		{"trailing-space-alias", spacedAlias, spaced, false},
+		{"trailing-space-literal", spaced, spaced, false},
+		{"trailing-space-collision", spacedAlias, physical, true},
+	} {
 		for _, stopped := range []bool{false, true} {
-			t.Run(fmt.Sprintf("different=%t/stopped=%t", different, stopped), func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s/stopped=%t", tc.name, stopped), func(t *testing.T) {
 				host, _ := ownerCommands(t)
-				configured := alias
-				if different {
-					configured = other
-				}
+				configured := tc.configured
 				adapt := func(commands []ownerCommand) []ownerCommand {
 					for i := range commands {
 						commands[i].output = strings.ReplaceAll(commands[i].output, "working directory = /srv", "working directory = "+configured)
-						commands[i].output = strings.ReplaceAll(commands[i].output, "n/srv\n", "n"+physical+"\n")
-						commands[i].command = strings.ReplaceAll(commands[i].command, "cd /srv || exit;", "cd "+configured+" || exit;")
+						commands[i].output = strings.ReplaceAll(commands[i].output, "n/srv\n", "n"+tc.actual+"\n")
+						commands[i].command = strings.ReplaceAll(commands[i].command, "cd /srv || exit;", "cd "+shellquote.RemoteWord(configured)+" || exit;")
 					}
 					return commands
 				}
@@ -60,7 +77,7 @@ func TestDarwinOwnerDirectoryIdentity(t *testing.T) {
 				} else {
 					report.Running.PID = 4242
 				}
-				if different {
+				if tc.different {
 					commands = commands[:len(commands)-1]
 				}
 				fr, index := ownerRunner(t, commands)
@@ -92,7 +109,7 @@ func TestDarwinOwnerDirectoryIdentity(t *testing.T) {
 					}
 				}
 				now, err := m.resolveDarwinOwner(t.Context(), host, facts, report)
-				if different {
+				if tc.different {
 					if !errors.Is(err, errOwnerEvidence) || !strings.Contains(err.Error(), "Darwin process cwd disagrees") {
 						t.Fatalf("different directory accepted or wrong refusal: %v", err)
 					}
@@ -103,12 +120,22 @@ func TestDarwinOwnerDirectoryIdentity(t *testing.T) {
 					if now.cwd != configured {
 						t.Fatal("configured launch cwd rewritten")
 					}
+					if now.cwdIdentity != tc.actual || stopped && prior.cwdIdentity != tc.actual {
+						t.Fatalf("pathname bytes changed: prior=%q now=%q want=%q", prior.cwdIdentity, now.cwdIdentity, tc.actual)
+					}
 					if stopped && !selectedSuccessor(now, prior, "release-selected", "") {
 						t.Fatal("same directory refused as stopped-service successor")
 					}
 				}
-				if *index != len(commands) || probes == 0 || len(fr.recordedStarts()) != 0 {
-					t.Fatalf("incomplete ownership proof: commands=%d/%d probes=%d", *index, len(commands), probes)
+				wantProbes := 0
+				if tc.actual != configured {
+					wantProbes = 2
+				}
+				if stopped {
+					wantProbes++
+				}
+				if *index != len(commands) || probes != wantProbes || len(fr.recordedStarts()) != 0 {
+					t.Fatalf("incomplete ownership proof: commands=%d/%d probes=%d/%d", *index, len(commands), probes, wantProbes)
 				}
 			})
 		}

@@ -29,10 +29,15 @@ func TestOwnerOSIdentity(t *testing.T) {
 	physical := filepath.Join(root, "physical")
 	other := filepath.Join(root, "other")
 	alias := filepath.Join(root, "alias")
-	for _, dir := range []string{physical, other} {
+	spaced := filepath.Join(root, "physical ")
+	spacedAlias := filepath.Join(root, "spaced-alias")
+	for _, dir := range []string{physical, other, spaced} {
 		if err := os.Mkdir(dir, 0700); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := os.Symlink(spaced, spacedAlias); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.Symlink(physical, alias); err != nil {
 		t.Fatal(err)
@@ -58,6 +63,17 @@ func TestOwnerOSIdentity(t *testing.T) {
 	if !os.SameFile(a, b) {
 		t.Fatal("symlink fixture does not identify the same directory")
 	}
+	spaced, err = filepath.EvalSymlinks(spaced)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err = os.Stat(spacedAlias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(a, b) {
+		t.Fatal("trailing-space directory unexpectedly has the same OS identity")
+	}
 	config := filepath.Join(root, "hub.toml")
 	if err := os.WriteFile(config, fmt.Appendf(nil, "addr = \"127.0.0.1:0\"\nhub_state_root = %q\n", filepath.Join(root, "state")), 0600); err != nil {
 		t.Fatal(err)
@@ -68,11 +84,15 @@ func TestOwnerOSIdentity(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name, cwd, serviceUser     string
+		processCwd                 string
 		differentDir, differentUID bool
 		userScope                  bool
 	}{
 		{name: "directory-symlink", cwd: alias, serviceUser: account.Username},
 		{name: "directory-symlink-dotdot", cwd: root + "/deep-link/..", serviceUser: account.Username},
+		{name: "trailing-space-alias", cwd: spacedAlias, processCwd: spaced, serviceUser: account.Username},
+		{name: "trailing-space-literal", cwd: spaced, processCwd: spaced, serviceUser: account.Username},
+		{name: "trailing-space-collision", cwd: spacedAlias, serviceUser: account.Username, differentDir: true},
 		{name: "numeric-user", cwd: physical, serviceUser: account.Uid},
 		{name: "combined", cwd: alias, serviceUser: account.Uid},
 		{name: "named-user", cwd: physical, serviceUser: account.Username},
@@ -83,6 +103,10 @@ func TestOwnerOSIdentity(t *testing.T) {
 	} {
 		for _, stopped := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/stopped=%t", tc.name, stopped), func(t *testing.T) {
+				processCwd := tc.processCwd
+				if processCwd == "" {
+					processCwd = physical
+				}
 				fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 					return nil, fmt.Errorf("unexpected command: %v", argv)
 				}}
@@ -131,7 +155,7 @@ func TestOwnerOSIdentity(t *testing.T) {
 					case remote == hubArgvRemote(pid):
 						return []byte(resolver + "\x00hub\x00--config\x00" + config + "\x00"), nil
 					case remote == "readlink /proc/"+pid+"/cwd":
-						return []byte(physical + "\n"), nil
+						return []byte(processCwd + "\n"), nil
 					case remote == "ps -o user= -p "+pid:
 						return shell(ctx, "ps -o user= -p "+strconv.Itoa(os.Getpid()))
 					case remote == "id -un", strings.HasPrefix(remote, "id -u "), strings.HasSuffix(remote, "pwd -P"), strings.Contains(remote, " -ef "):
@@ -181,19 +205,24 @@ func TestOwnerOSIdentity(t *testing.T) {
 						t.Fatal(err)
 					}
 					now.report.State = "running"
+					if prior.cwdIdentity != processCwd || now.cwdIdentity != processCwd {
+						t.Fatalf("pathname bytes changed: prior=%q now=%q want=%q", prior.cwdIdentity, now.cwdIdentity, processCwd)
+					}
 					now.report.Running = remoteEndpointFixture(config, "127.0.0.1:19371", "successor-boot").Running
 					now.report.Running.PID, now.report.Running.Version = 4343, "new"
 					if !selectedSuccessor(now, prior, "new", "") {
 						t.Fatalf("same OS identity refused as successor: prior=%+v now=%+v", prior, now)
 					}
 				} else {
-					_, err := m.resolveLinuxOwner(t.Context(), host, report, "4242", false)
+					now, err := m.resolveLinuxOwner(t.Context(), host, report, "4242", false)
 					if tc.differentDir || tc.differentUID {
 						if !errors.Is(err, errOwnerEvidence) || !strings.Contains(err.Error(), "service definition disagrees") {
 							t.Fatalf("different owner accepted: %v", err)
 						}
 					} else if err != nil {
 						t.Fatal(err)
+					} else if now.cwdIdentity != processCwd {
+						t.Fatalf("live pathname bytes changed: got=%q want=%q", now.cwdIdentity, processCwd)
 					}
 				}
 			})

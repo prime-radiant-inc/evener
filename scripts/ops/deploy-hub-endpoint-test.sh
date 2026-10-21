@@ -71,9 +71,16 @@ with (p/'calls.jsonl').open('a') as out:
 def refuse():
     (p/'violation').write_text(json.dumps([cmd,args]))
     sys.exit(97)
-def save(): (p/'state.json').write_text(json.dumps(s))
-def service_cwd(): return p/'service-alias' if f.get('cwd_alias') else (p/'service' if f.get('service_cwd') else p/'repo')
+def save():
+    pending=p/('state-next-'+str(os.getpid())+'.json')
+    pending.write_text(json.dumps(s))
+    pending.replace(p/'state.json')
+def service_cwd():
+    if f.get('cwd_space_alias'): return p/'space-alias'
+    if f.get('cwd_space_literal'): return p/'physical '
+    return p/'service-alias' if f.get('cwd_alias') else (p/'service' if f.get('service_cwd') else p/'repo')
 def config_selector():
+    if f.get('config_space'): return str(p/'space-config-alias.toml')
     return {'alias':str(p/'alias.toml'),'relative':'../alias.toml','dotdot':'../link/../../selected.toml','different':'../link/../selected.toml'}.get(f.get('config_selector'),str(p/'selected.toml'))
 def program(): return str(p/'alias-bin/evener' if f.get('program_alias') else (p/'other/evener' if f.get('different_program') else p/'repo/evener'))
 def argv():
@@ -143,7 +150,7 @@ elif cmd == 'ps':
     elif args==['-p',pid,'-ww','-o','command=']: print(' '.join(argv())+(' unexpected' if f.get('wrong_argv') else ''))
     else: refuse()
 elif cmd == 'lsof':
-    if args==['-a','-p',str(s['pid']),'-d','cwd','-Fn']: print('p'+str(s['pid'])+'\nn'+str(p/'other' if f.get('wrong_cwd') else service_cwd().resolve()))
+    if args==['-a','-p',str(s['pid']),'-d','cwd','-Fn']: print('p'+str(s['pid'])+'\nn'+str(p/'other' if f.get('wrong_cwd') else (p/'physical' if f.get('cwd_space_collision') else service_cwd().resolve())))
     elif args[:4]==['-a','-p',str(s['pid']),'-Fn'] and args[4:] in [[str(p/'state/evener/hub.lock')],[str(p/'other-state/evener/hub.lock')],[str(p/'custom-root/hub.lock')]]:
         lock=p/'custom-root/hub.lock' if f.get('custom_root') else p/'state/evener/hub.lock'
         if f.get('missing_root_evidence') or args[4]!=str(lock): sys.exit(1)
@@ -173,6 +180,7 @@ elif cmd == 'evener':
         if new:
             s['successor_queries']=s.get('successor_queries',0)+1; save()
         config=p/'config/evener/hub.toml' if f.get('default_config') else p/'selected.toml'
+        if f.get('config_space') and not f.get('config_space_collision'): config=p/'selected.toml '
         root=p/'other-state/evener' if (s['built'] and f.get('root_change')) or f.get('unavailable_wrong_root') else p/'state/evener'
         if f.get('custom_root'): root=p/'custom-root'
         source='env' if f.get('env_listener') else ('config' if f.get('toml_listener') else 'flag')
@@ -232,6 +240,14 @@ cases=[
  ('different_cwd_symlink',{'cwd_alias':True,'wrong_cwd':True},[],False,(0,0)),
  ('program_symlink',{'program_alias':True},[],True,(1,1)),
  ('different_program_inode',{'different_program':True},[],False,(0,0)),
+ ('live_cwd_space_alias',{'cwd_space_alias':True},[],True,(1,1)),
+ ('stopped_cwd_space_alias',{'cwd_space_alias':True,'stopped':True},[],True,(1,1)),
+ ('live_cwd_space_literal',{'cwd_space_literal':True},[],True,(1,1)),
+ ('stopped_cwd_space_literal',{'cwd_space_literal':True,'stopped':True},[],True,(1,1)),
+ ('live_cwd_space_collision',{'cwd_space_alias':True,'cwd_space_collision':True},[],False,(0,0)),
+ ('stopped_cwd_space_collision',{'cwd_space_alias':True,'cwd_space_collision':True,'stopped':True},[],False,(1,1)),
+ ('config_path_space',{'config_space':True},[],True,(1,1)),
+ ('config_path_space_collision',{'config_space':True,'config_space_collision':True},[],False,(0,0)),
  ('service_config_symlink',{'config_selector':'alias'},[],True,(1,1)),
  ('explicit_config_symlink',{},['--config','@alias'],True,(1,1)),
  ('running_config_symlink',{'running_alias':True},[],True,(1,1)),
@@ -335,7 +351,14 @@ with tempfile.TemporaryDirectory(prefix='task7c-', dir=os.environ.get('EVENER_SC
         if facts.get('custom_root'): original+='hub_state_root = "'+str(p/'custom-root')+'"\n'
         (p/'selected.toml').write_text(original); (p/'config/evener/hub.toml').write_text(original); (p/'other.toml').write_text('addr = "127.0.0.1:9180"\n')
         (p/'alias.toml').symlink_to(p/'selected.toml')
+        (p/'selected.toml ').write_text(original)
+        (p/'space-config-alias.toml').symlink_to(p/'selected.toml ')
+        assert os.path.samefile(p/'space-config-alias.toml',p/'selected.toml ')
+        assert not os.path.samefile(p/'space-config-alias.toml',p/'selected.toml')
         (p/'service').mkdir(); (p/'physical/inner').mkdir(parents=True); (p/'other').mkdir()
+        (p/'physical ').mkdir(); (p/'space-alias').symlink_to(p/'physical ',target_is_directory=True)
+        assert os.path.samefile(p/'space-alias',p/'physical ')
+        assert not os.path.samefile(p/'space-alias',p/'physical')
         (p/'service-alias').symlink_to(p/'repo',target_is_directory=True)
         assert os.path.samefile(p/'service-alias',p/'repo')
         assert not os.path.samefile(p/'service-alias',p/'other')
@@ -424,7 +447,10 @@ with tempfile.TemporaryDirectory(prefix='task7c-', dir=os.environ.get('EVENER_SC
                     assert running['bound_addr']=='0.0.0.0:'+port and port!='0'
                     assert running['local_url']==running['loopback_url']=='http://127.0.0.1:'+port
                     assert 'public_url' not in report
-            if effects==(1,1):
+            if name=='stopped_cwd_space_collision':
+                kick=next(i for i,c in enumerate(calls) if c['cmd']=='launchctl' and c['args'][0]=='kickstart')
+                assert len(endpoints)==2 and not any(c in endpoints for c in calls[kick:]), 'wrong-cwd successor reached endpoint inspection'
+            elif effects==(1,1):
                 assert len(endpoints)>=3, 'selected endpoint not re-resolved before/after restart'
                 build=next(i for i,c in enumerate(calls) if c['cmd']=='make')
                 assert any(c in endpoints for c in calls[:build]), 'build preceded endpoint authorization'
@@ -434,7 +460,8 @@ with tempfile.TemporaryDirectory(prefix='task7c-', dir=os.environ.get('EVENER_SC
                 if facts.get('empty_listener'): expected_env['EVENER_HUB_LISTEN_ADDR']=''
                 if facts.get('definition_change') and call['env'].get('XDG_STATE_HOME')==str(p/'other-state'): expected_env['XDG_STATE_HOME']=str(p/'other-state')
                 assert call['env']==expected_env, 'ambient/environment contamination: '+str(call['env'])
-                assert call['cwd']==str(p/'service' if facts.get('service_cwd') else p/'repo'), 'wrong service working directory'
+                expected_cwd=p/'physical ' if facts.get('cwd_space_alias') or facts.get('cwd_space_literal') else (p/'service' if facts.get('service_cwd') else p/'repo')
+                assert call['cwd']==str(expected_cwd), 'wrong service working directory'
             assert b'SECRET_DO_NOT_PRINT' not in out+err, 'secret disclosed'
             markers=[facts[key].encode() for key in ['build_stdout_marker','build_stderr_marker','build_private_marker']]
             assert all(marker not in out+err for marker in markers), 'raw build output disclosed'

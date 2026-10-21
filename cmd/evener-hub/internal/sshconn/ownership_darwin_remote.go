@@ -29,7 +29,7 @@ func parseLaunchdDefinition(out []byte) (launchdDefinition, error) {
 	var def launchdDefinition
 	args := false
 	for line := range strings.SplitSeq(string(out), "\n") {
-		line = strings.TrimSpace(line)
+		line = strings.TrimLeft(line, " \t")
 		if line == "" {
 			continue
 		}
