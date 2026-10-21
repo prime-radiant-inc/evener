@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 
@@ -19,13 +20,15 @@ import (
 // pkgEntry is the subset of `go list -json` output this tool reads. ImportPath
 // is the raw field, so a test variant keeps its " [pkg.test]" suffix.
 type pkgEntry struct {
-	ImportPath string
-	ForTest    string
-	DepOnly    bool
-	Dir        string
-	Name       string
-	Deps       []string
-	Module     *struct {
+	ImportPath   string
+	ForTest      string
+	DepOnly      bool
+	Dir          string
+	Name         string
+	Deps         []string
+	TestGoFiles  []string // basenames reported by go list
+	XTestGoFiles []string
+	Module       *struct {
 		Path string
 		Dir  string
 	}
@@ -33,8 +36,9 @@ type pkgEntry struct {
 
 // pkgInfo is one real (buildable, non-test-variant) package in the workspace.
 type pkgInfo struct {
-	ModuleRoot string // GO_MODULES entry, "." for the root module
-	Dir        string // absolute
+	ModuleRoot  string   // GO_MODULES entry, "." for the root module
+	Dir         string   // absolute
+	TestGoFiles []string // absolute paths of the package's test sources
 }
 
 // graph is the workspace's test-inclusive import graph: every real package the
@@ -172,6 +176,15 @@ func (g *graph) addModule(module string, entries []pkgEntry) {
 		}
 		g.pkgs[self.ImportPath] = &pkgInfo{ModuleRoot: module, Dir: dir}
 		g.byDir[dir] = self.ImportPath
+		// go list reports the package's test sources by basename; keep them
+		// absolute so a repository file's reader can be found by resolving
+		// a reference in those sources.
+		for _, name := range append(append([]string{}, self.TestGoFiles...), self.XTestGoFiles...) {
+			g.pkgs[self.ImportPath].TestGoFiles = append(
+				g.pkgs[self.ImportPath].TestGoFiles,
+				filepath.Join(dir, name),
+			)
+		}
 		// go list already reports the module each package belongs to. Using
 		// it keeps a deleted package's import path derivable without
 		// inferring a module path from a package path.
@@ -336,6 +349,72 @@ func containsModule(modules []string, m string) bool {
 func (g *graph) importedAnywhere(importPath string) bool {
 	for _, deps := range g.deps {
 		if deps[importPath] {
+			return true
+		}
+	}
+	return false
+}
+
+// packagesReading returns every package whose test sources name absFile by a
+// path that resolves to it. A repository file outside any package tree is
+// often read from a package's tests by a relative path (`../../install.sh`,
+// `../../../scripts/lib/gate-surface-lib.sh`), and no import edge expresses
+// that. Without this, such a file was labelled audit-only and its real reader
+// never ran.
+//
+// Only string literals count. A plain substring search over the source matched
+// comment mentions and selected most of the workspace for a docs edit, which
+// brings back the cost this target exists to remove. Each literal is resolved
+// from the package's directory and compared with the changed file, so a path
+// that is merely discussed in a comment does not select anything.
+func (g *graph) packagesReading(absFile string) []string {
+	absFile = filepath.Clean(absFile)
+	var out []string
+	for ip, info := range g.pkgs {
+		for _, src := range info.TestGoFiles {
+			body, err := os.ReadFile(src)
+			if err != nil {
+				continue
+			}
+			if literalsNameFile(string(body), info.Dir, absFile) {
+				out = append(out, ip)
+				break
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// literalsNameFile reports whether any double-quoted string literal in src
+// resolves, relative to pkgDir, to absFile.
+func literalsNameFile(src, pkgDir, absFile string) bool {
+	for i := 0; i < len(src); i++ {
+		if src[i] != '"' {
+			continue
+		}
+		// Find the closing quote, honouring the escapes Go string literals use.
+		start := i + 1
+		j := start
+		for ; j < len(src); j++ {
+			if src[j] == '\\' {
+				j++
+				continue
+			}
+			if src[j] == '"' {
+				break
+			}
+		}
+		if j >= len(src) {
+			return false
+		}
+		literal := src[start:j]
+		i = j
+		if literal == "" || (!strings.Contains(literal, "/") && !strings.HasSuffix(literal, ".md") && !strings.HasSuffix(literal, ".sh")) {
+			continue
+		}
+		candidate := filepath.Clean(filepath.Join(pkgDir, filepath.FromSlash(literal)))
+		if candidate == absFile {
 			return true
 		}
 	}

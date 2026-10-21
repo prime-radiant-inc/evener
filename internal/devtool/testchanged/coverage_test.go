@@ -104,18 +104,42 @@ func TestEmbeddedAssetSelectsItsEmbeddingPackage(t *testing.T) {
 }
 
 // A repository file that no package embeds or reads is consumed only by the
-// repo-root audit suite, which test-changed does not run (it costs ~43s). The
-// file is reported as audit-only rather than silently ignored, and no package
-// is selected for it.
+// repo-root package, which test-changed does not run (it costs ~43s). The file
+// is reported as audit-only rather than silently ignored.
 func TestRepositoryFileIsReportedAsAuditOnly(t *testing.T) {
+	g := loadTestGraph(t)
+	// No test source names this path, so no package can be attributed.
+	res := selectPackages(g, []string{"docs/unreferenced-note.md"}, testModules)
+
+	if len(res.Selected) != 0 {
+		t.Errorf("selected %v, want nothing for an unreferenced audit-only file", selectedPaths(res))
+	}
+	if len(res.AuditOnly) != 1 || res.AuditOnly[0] != "docs/unreferenced-note.md" {
+		t.Errorf("AuditOnly = %v, want [docs/unreferenced-note.md]", res.AuditOnly)
+	}
+}
+
+// A repository file that root tests read by relative path is attributed to the
+// package that reads it, not dismissed as audit-only.
+func TestReferencedRepositoryFileSelectsItsReader(t *testing.T) {
 	g := loadTestGraph(t)
 	res := selectPackages(g, []string{"docs/developing-evener/testing.md"}, testModules)
 
-	if len(res.Selected) != 0 {
-		t.Errorf("selected %v, want nothing for an audit-only file", selectedPaths(res))
+	if reasonForPath(res, "primeradiant.com/evener") == "" {
+		t.Errorf("selected %v, want the root package that reads this file", selectedPaths(res))
 	}
-	if len(res.AuditOnly) != 1 || res.AuditOnly[0] != "docs/developing-evener/testing.md" {
-		t.Errorf("AuditOnly = %v, want [docs/developing-evener/testing.md]", res.AuditOnly)
+}
+
+// install.sh is read by internal/remoteinstall's tests, not only the root
+// package. Labelling it audit-only let an edit report a clean run while that
+// package's short-mode test failed.
+func TestInstallScriptSelectsItsReadingPackage(t *testing.T) {
+	g := loadTestGraph(t)
+	res := selectPackages(g, []string{"install.sh"}, testModules)
+
+	const reader = "primeradiant.com/evener/internal/remoteinstall"
+	if reasonForPath(res, reader) == "" {
+		t.Errorf("selected %v, want %s, whose tests read ../../install.sh", selectedPaths(res), reader)
 	}
 }
 

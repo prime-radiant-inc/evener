@@ -7,8 +7,46 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 )
+
+// privateTestEnv returns the environment for one module's test run: the
+// developer's own variables, with HOME, the XDG roots and TMPDIR pointed at
+// privateRoot. That mirrors what `make test` gives each module, so a test that
+// reads user configuration sees an empty directory rather than the developer's
+// real state. GOCACHE, GOMODCACHE and GOPATH are left alone so the run reuses
+// the existing build cache instead of rebuilding cold.
+func privateTestEnv(privateRoot string) ([]string, error) {
+	dirs := map[string]string{
+		"HOME":            filepath.Join(privateRoot, "home"),
+		"XDG_CONFIG_HOME": filepath.Join(privateRoot, "xdg-config"),
+		"XDG_CACHE_HOME":  filepath.Join(privateRoot, "xdg-cache"),
+		"XDG_STATE_HOME":  filepath.Join(privateRoot, "xdg-state"),
+		"TMPDIR":          filepath.Join(privateRoot, "tmp"),
+	}
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, err
+		}
+	}
+	env := make([]string, 0, len(os.Environ())+len(dirs))
+	for _, entry := range os.Environ() {
+		name, _, ok := strings.Cut(entry, "=")
+		if ok {
+			if _, replace := dirs[name]; replace {
+				continue
+			}
+		}
+		env = append(env, entry)
+	}
+	for name, dir := range dirs {
+		env = append(env, name+"="+dir)
+	}
+	sort.Strings(env)
+	return env, nil
+}
 
 // sayf and sayln write the tool's progress lines. Their return value is
 // deliberately ignored: a tool whose stdout is a closed pipe has nothing

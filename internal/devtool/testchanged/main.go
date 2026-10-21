@@ -115,6 +115,20 @@ func run(stdout, stderr io.Writer, root, base string, modules []string, race boo
 
 	failed := false
 	mods := orderedModules(res.Selected, modules)
+	// `make test` runs each module under a disposable HOME and TMPDIR. Go owns
+	// the directory here so the Makefile needs no recursive delete, and so the
+	// removal happens even if the run is interrupted.
+	privateRoot, err := os.MkdirTemp("", "evener-test-changed-")
+	if err != nil {
+		sayf(stderr, "test-changed: creating a private test root: %v\n", err)
+		return 2
+	}
+	defer func() { _ = os.RemoveAll(privateRoot) }()
+	testEnv, err := privateTestEnv(privateRoot)
+	if err != nil {
+		sayf(stderr, "test-changed: preparing a private test environment: %v\n", err)
+		return 2
+	}
 	for _, m := range mods {
 		sels := selectionsFor(res.Selected, m)
 		args := []string{"test", "-short", "-count=1"}
@@ -136,6 +150,7 @@ func run(stdout, stderr io.Writer, root, base string, modules []string, race boo
 		// inspection deadline the git and go list calls use.
 		cmd := exec.CommandContext(context.Background(), "go", args...)
 		cmd.Dir = g.moduleDir(m)
+		cmd.Env = testEnv
 		cmd.Stdout = stdout
 		cmd.Stderr = stderr
 		if err := cmd.Run(); err != nil {

@@ -210,6 +210,16 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 					packageOnly[owner] = joinReason(packageOnly[owner], "repository file "+rel)
 					continue
 				}
+				// Otherwise find the packages whose tests read the file. This
+				// must come before the audit-only fallback: install.sh and the
+				// gate scripts are read by non-root packages, so calling them
+				// audit-only let those edits report a clean run.
+				if readers := g.packagesReading(filepath.Join(g.root, filepath.FromSlash(rel))); len(readers) > 0 {
+					for _, reader := range readers {
+						packageOnly[reader] = joinReason(packageOnly[reader], "repository file "+rel)
+					}
+					continue
+				}
 				res.AuditOnly = append(res.AuditOnly, rel)
 				continue
 			}
@@ -241,6 +251,20 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 			// run it. Report it as audit-only unless the root package actually
 			// embeds it, which the check above already handled.
 			if rootPkg, ok := g.packageAt(g.root); ok && ip == rootPkg {
+				// A root-level file (install.sh, a Makefile fragment) can still
+				// be read by another package's tests; attribute those readers
+				// first, and only then fall back to audit-only.
+				abs := filepath.Join(g.root, filepath.FromSlash(rel))
+				readers := g.packagesReading(abs)
+				for _, reader := range readers {
+					if reader == rootPkg {
+						continue
+					}
+					packageOnly[reader] = joinReason(packageOnly[reader], "repository file "+rel)
+				}
+				if len(readers) > 0 {
+					continue
+				}
 				res.AuditOnly = append(res.AuditOnly, rel)
 				continue
 			}

@@ -241,11 +241,6 @@ test-short:
 test-changed:
 	@set -eu; \
 		. scripts/lib/gate-surface-lib.sh; \
-		. scripts/lib/private-go-home.sh; \
-		tmp="$$(mktemp -d "$${TMPDIR:-/tmp}/evener-test-changed.XXXXXX")"; \
-		trap 'rm -rf "$$tmp"' EXIT HUP INT TERM; \
-		export TMPDIR="$$tmp"; \
-		evener_prepare_private_go_home "$$tmp"; \
 		go run ./internal/devtool/testchanged \
 			-base "$(or $(BASE),main)" \
 			-race "$(or $(RACE),0)" \
