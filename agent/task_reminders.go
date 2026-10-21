@@ -41,6 +41,27 @@ func formatCurrentTaskSteering(task taskpkg.Task, canUseTaskList bool) string {
 // wrapped as a SYSTEM-REMINDER so the model treats it as steering rather than
 // conversational content.
 func taskReminderFull(store *taskpkg.TaskStore) string {
+	return renderTaskListReminder(store, false)
+}
+
+// taskReminderFullWithPrompts is the plan a delegate receives at spawn: every
+// step's description, status, effort, dependencies, and prompt. A delegate
+// works a multi-step job, and a later step's instructions often decide what the
+// first step must build, so a step that sees only its own prompt cannot plan
+// for the rest.
+//
+// The comparison behind this is recorded in the task-list startup experiment:
+// across 30 runs per arm on one model, delegates given the full plan completed
+// a cross-step fixture 30/30 times, against 22/30 when only their first step
+// was announced, at 12% fewer tokens.
+func taskReminderFullWithPrompts(store *taskpkg.TaskStore) string {
+	return renderTaskListReminder(store, true)
+}
+
+// renderTaskListReminder renders a store's tasks as steering. withPrompts adds
+// each task's prompt under its line, which the spawn-time plan needs and the
+// post-compaction reminder does not.
+func renderTaskListReminder(store *taskpkg.TaskStore, withPrompts bool) string {
 	tasks := store.View()
 	if len(tasks) == 0 {
 		return ""
@@ -57,6 +78,11 @@ func taskReminderFull(store *taskpkg.TaskStore) string {
 			fmt.Fprintf(b, " (depends_on: %v)", t.DependsOn)
 		}
 		b.WriteString("\n")
+		if withPrompts {
+			if prompt := strings.TrimSpace(t.Prompt); prompt != "" {
+				fmt.Fprintf(b, "    prompt: %s\n", prompt)
+			}
+		}
 		for _, n := range t.Notes {
 			fmt.Fprintf(b, "    note: %s\n", n)
 		}
