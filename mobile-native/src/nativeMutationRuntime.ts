@@ -5,6 +5,8 @@ import { collectAuthoritativeMutationIds } from "@evener/appwire-client";
 import {
 	createClientIdentity,
 	createSecureUUID,
+	canEditQueuedMessage,
+	canRemoveQueuedMessage,
 	validConsumedClientMutationIds,
 	MutationDispatcher,
 	MutationOutbox,
@@ -16,6 +18,7 @@ import {
 	type MutationOutboxStorage,
 	type MutationPersistenceSnapshot,
 	type MutationRecoveryRecord,
+	type QueuedMessageStorage,
 	type SecureRandomSource,
 } from "@evener/appwire-client/state/mutation";
 import { READ_ITEM_LIMIT } from "../../mobile/src/services/conversation";
@@ -24,7 +27,7 @@ import type {
 	ConversationMutationRequest,
 	ConversationMutationSubmitter,
 } from "../../mobile/src/state/conversationMutation";
-import { MutationOutboxSQLite } from "./mutationOutboxStorage";
+import { MutationOutboxSQLite, type RecoveryResendCommit } from "./mutationOutboxStorage";
 import { isSqliteStorageFailure, type SqliteSync } from "./sqliteSync";
 
 export interface NativeMutationRuntimeOptions {
@@ -35,21 +38,29 @@ export interface NativeMutationRuntimeOptions {
 	clearInterval?: MutationOutboxOptions["clearInterval"];
 }
 
-type NativeStorage = MutationOutboxStorage<MutationAttachmentRef> & {
-	listOutbox(targetRef?: string): Promise<MutationOutboxRecord<MutationAttachmentRef>[]>;
-	readStopEpoch(targetRef: string): Promise<number>;
-	listRecovery(targetRef: string): Promise<MutationRecoveryRecord<MutationAttachmentRef>[]>;
-	discardRecovery(clientMutationId: string, targetRef: string): Promise<boolean>;
-	discardUndelivered(clientMutationId: string, targetRef: string): Promise<boolean>;
-	releaseCanceled(clientMutationId: string, targetRef: string, barrier: MutationStopBarrier): Promise<boolean>;
-	pruneUnlistedAccepted(
-		targetRef: string,
-		acceptedBefore: number,
-		authoritativeIds: ReadonlySet<string>,
-	): Promise<string[]>;
-};
+type NativeStorage = MutationOutboxStorage<MutationAttachmentRef> &
+	QueuedMessageStorage & {
+		readRecoveryResend(targetRef: string, sourceIds: readonly string[]): Promise<RecoveryResendCommit | undefined>;
+		acknowledgeRecoveryResend(targetRef: string, clientMutationId: string): Promise<void>;
+		listOutbox(targetRef?: string): Promise<MutationOutboxRecord<MutationAttachmentRef>[]>;
+		readStopEpoch(targetRef: string): Promise<number>;
+		listRecovery(targetRef: string): Promise<MutationRecoveryRecord<MutationAttachmentRef>[]>;
+		discardRecovery(clientMutationId: string, targetRef: string): Promise<boolean>;
+		discardUndelivered(clientMutationId: string, targetRef: string): Promise<boolean>;
+		releaseCanceled(clientMutationId: string, targetRef: string, barrier: MutationStopBarrier): Promise<boolean>;
+		pruneUnlistedAccepted(
+			targetRef: string,
+			acceptedBefore: number,
+			authoritativeIds: ReadonlySet<string>,
+		): Promise<string[]>;
+	};
 
 export type NativeMutationStorageListener = (targetRefs: readonly string[]) => void;
+
+export interface NativeMutationTargetIdentity {
+	readonly threadId: string;
+	readonly instanceId?: string;
+}
 
 export interface NativeMutationReadLease {
 	readonly targetKey: string;
@@ -104,6 +115,7 @@ function intentFor(request: NativeMutationRequest): MutationIntent {
 		payload.index = request.queueEntry.index;
 		payload.expectedEntryId = request.queueEntry.id;
 	}
+	const composer = request.composer;
 	const input = request.display ?? request.input;
 	return {
 		targetRef: nativeMutationTargetKey(request.hubId, request.targetRef),
@@ -111,7 +123,19 @@ function intentFor(request: NativeMutationRequest): MutationIntent {
 		instanceId: request.instanceId,
 		method,
 		payload,
-		attachments: [],
+		attachments:
+			composer?.attachments.map((attachment) => ({
+				presentationId: createSecureUUID(nativeRandomSource()),
+				marker: attachment.marker,
+				name: attachment.name ?? "",
+				mediaType: attachment.mediaType,
+			})) ?? [],
+		...(composer === undefined
+			? {}
+			: {
+					composerText: composer.text,
+					...(composer.mentions === undefined ? {} : { composerMentions: composer.mentions }),
+				}),
 		optimisticDisplay: request.kind === "interrupt" ? { method } : { method, input },
 	};
 }
@@ -143,6 +167,9 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		{ client: AppwireClientLike; token: symbol; readToken?: symbol; unsubscribe: () => void }
 	>();
 	readonly #blockedTargets = new Set<string>();
+	// A cached screen identity is sufficient for local actions, even without a
+	// client. Never infer the current session from the queued row being claimed.
+	readonly #targetIdentities = new Map<string, NativeMutationTargetIdentity & { owner?: symbol }>();
 	// The mutations this phone submitted to each target, by id, with when:
 	// reconcilePendingEntries' submittedHere. An authoritative read that lists
 	// a send as pending settles its durable record before any turn shows it,
@@ -268,6 +295,55 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		return discarded;
 	}
 
+	async editQueuedMessage(id: string, targetKey: string): Promise<MutationRecoveryRecord | undefined> {
+		const snapshot = await this.#queuedMessageSnapshot(id, targetKey);
+		const recovery =
+			snapshot?.isCurrent() && canEditQueuedMessage(snapshot.record)
+				? await this.storage.editQueuedMessage(snapshot.record, { stopEpoch: snapshot.stopEpoch })
+				: undefined;
+		this.#notifyStorageChange([targetKey]);
+		return recovery;
+	}
+
+	async removeQueuedMessage(id: string, targetKey: string): Promise<boolean> {
+		const snapshot = await this.#queuedMessageSnapshot(id, targetKey);
+		const removed =
+			snapshot?.isCurrent() && canRemoveQueuedMessage(snapshot.record)
+				? await this.storage.removeQueuedMessage(snapshot.record, { stopEpoch: snapshot.stopEpoch })
+				: false;
+		this.#notifyStorageChange([targetKey]);
+		return removed;
+	}
+
+	async #queuedMessageSnapshot(id: string, targetKey: string) {
+		const registration = this.#targets.get(targetKey);
+		const identity = this.#targetIdentities.get(targetKey);
+		const { record, stopEpoch } = await this.storage.getOutboxWithStopEpoch(id);
+		if (!record) return undefined;
+		return {
+			record,
+			stopEpoch,
+			// Evaluate in the caller immediately before SQLite's synchronous claim,
+			// not here before this helper's promise adds another continuation.
+			isCurrent: () =>
+				record.targetRef === targetKey &&
+				identity !== undefined &&
+				this.#targets.get(targetKey) === registration &&
+				this.#targetIdentities.get(targetKey) === identity &&
+				record.threadId === identity.threadId &&
+				(record.instanceId ?? record.threadId) === (identity.instanceId ?? identity.threadId),
+		};
+	}
+
+	readRecoveryResend(targetKey: string, sourceIds: readonly string[]): Promise<RecoveryResendCommit | undefined> {
+		return this.storage.readRecoveryResend(targetKey, sourceIds);
+	}
+
+	async acknowledgeRecoveryResend(targetKey: string, clientMutationId: string): Promise<void> {
+		await this.storage.acknowledgeRecoveryResend(targetKey, clientMutationId);
+		this.#notifyStorageChange([targetKey]);
+	}
+
 	// Discard on your own message a Stop held or whose delivery couldn't be
 	// confirmed. It notifies as discardRecovery does, after the write, zero
 	// rows included. Removing a blocked head lets the target's next message
@@ -310,14 +386,27 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		await this.#dispatcher.reconcileIdentities(clientMutationIds);
 	}
 
-	registerTarget(hubId: string, targetRef: string, client: AppwireClientLike | null): () => void {
+	registerTarget(
+		hubId: string,
+		targetRef: string,
+		client: AppwireClientLike | null,
+		identity?: NativeMutationTargetIdentity,
+	): () => void {
 		const key = nativeMutationTargetKey(hubId, targetRef);
 		const current = this.#targets.get(key);
+		const token = Symbol();
+		// Optional cached identity adds local ownership without changing a null
+		// client's existing no-op transport semantics or another screen's lease.
+		const knownIdentity = identity ?? (client === null ? undefined : this.#targetIdentities.get(key));
+		const localIdentity = knownIdentity === undefined ? undefined : { ...knownIdentity, owner: token };
+		if (localIdentity) this.#targetIdentities.set(key, localIdentity);
 		// A null client is a state transition, not an owner identity. Only the
 		// closure returned to the registering screen may remove its binding.
-		if (client === null) return () => undefined;
+		if (client === null)
+			return () => {
+				if (this.#targetIdentities.get(key)?.owner === token) this.#targetIdentities.delete(key);
+			};
 		current?.unsubscribe();
-		const token = Symbol();
 		const unsubscribe = client.onStateChange((state) => {
 			const target = this.#targets.get(key);
 			if (target?.token !== token) return;
@@ -337,6 +426,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 			if (this.#targets.get(key)?.token === token) {
 				this.#targets.delete(key);
 				this.#blockedTargets.delete(key);
+				if (this.#targetIdentities.get(key)?.owner === token) this.#targetIdentities.delete(key);
 			}
 		};
 	}
@@ -381,6 +471,11 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		)
 			return "stale";
 
+		this.#targetIdentities.set(lease.targetKey, {
+			threadId: response.thread.id,
+			instanceId: response.thread.evener.instanceId ?? response.thread.id,
+			owner: lease.registrationToken,
+		});
 		const authoritativeIds = collectAuthoritativeMutationIds(response);
 		if (!this.#isCurrentRead(lease)) return "stale";
 		await this.#dispatcher.reconcileIdentities(authoritativeIds);
@@ -493,6 +588,13 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 
 	async submit(request: NativeMutationRequest): Promise<MutationReceipt | undefined> {
 		const intent = intentFor(request);
+		if (!this.#targetIdentities.has(intent.targetRef)) {
+			this.#targetIdentities.set(intent.targetRef, {
+				threadId: request.threadId,
+				instanceId: request.instanceId,
+				owner: this.#targets.get(intent.targetRef)?.token,
+			});
+		}
 		if (request.kind === "interrupt") {
 			// Stop's click is the cancel moment: the combined durable write
 			// cancels the target's never-attempted rows and enqueues the
@@ -502,6 +604,22 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 			await this.start();
 			const record = await this.#outbox.enqueueInterruptAndCancel(intent);
 			this.#notifyStorageChange([record.targetRef]);
+			return undefined;
+		}
+		if (request.recoverySourceIds?.length) {
+			// Capture before startup, not when the all-source transaction begins.
+			// This path has no ordinary enqueue or direct-send fallback: the draft
+			// retains ownership until its exact durable receipt is acknowledged.
+			const barrier = { stopEpoch: await this.storage.readStopEpoch(intent.targetRef) };
+			await this.start();
+			const record = await this.storage.resendRecovery(request.recoverySourceIds, intent, barrier);
+			if (!record) {
+				this.#notifyStorageChange([intent.targetRef]);
+				throw new Error("Recovery sources are no longer available");
+			}
+			this.#rememberSubmitted(record.targetRef, record.clientMutationId, record.createdAt);
+			this.#notifyStorageChange([record.targetRef]);
+			void this.#dispatcher.dispatchTargets([record.targetRef]).catch(() => undefined);
 			return undefined;
 		}
 		try {

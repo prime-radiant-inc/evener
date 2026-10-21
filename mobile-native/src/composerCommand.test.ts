@@ -1,7 +1,63 @@
 import { expect, it } from "vitest";
 import { parseSlashToken, spliceSlashCommand } from "@evener/appwire-client";
+import type { InputItem } from "@evener/appwire-client";
+import type { ConversationMutationContext } from "../../mobile/src/state/conversationMutation";
 import type { MobileConversation } from "./projectedRows";
-import { builtinComposerItems, composerCommand } from "./composerCommand";
+import { builtinComposerItems, composerCommand, submitComposerCommand } from "./composerCommand";
+import { DraftDocument } from "./draftDocument";
+import { DraftRepository } from "./draftRepository";
+import { openSqliteSyncDouble } from "./sqliteSync.testkit";
+
+it.each(["queue", "steer"] as const)("captures /%s body metadata before encoding", async (kind) => {
+	const { database, port } = openSqliteSyncDouble();
+	try {
+		const repository = new DraftRepository(port);
+		const destination = { hubId: "hub-1", sessionRef: "ref-1" };
+		const prefix = `/${kind} `;
+		repository.write(destination, {
+			draft: `${prefix}/skill payload`,
+			unconfirmed: null,
+			composer: {
+				skillNames: ["skill"],
+				mentions: [{ kind: "skill", name: "skill", offset: prefix.length }],
+				recoveryIds: ["source-1", "source-2"],
+			},
+		});
+		const document = new DraftDocument(() => repository, destination);
+		const submissions: Array<{ kind: string; input: InputItem[]; context?: ConversationMutationContext }> = [];
+		await submitComposerCommand(document, {} as Parameters<typeof submitComposerCommand>[1], {
+			isCurrent: () => true,
+			local: async () => {},
+			openAside: () => {},
+			cleared: () => {},
+			turn: () => conversation({ queue: true, steer: true }, "active"),
+			drainQueue: async () => {},
+			drainRefusal: () => null,
+			submit: async (submittedKind, input, context) => {
+				submissions.push({ kind: submittedKind, input, context });
+			},
+			stop: async () => {},
+			reasoning: () => null,
+		});
+		expect(submissions).toHaveLength(1);
+		expect(submissions[0].kind).toBe(kind);
+		expect(submissions[0].context).toEqual({
+			composer: {
+				text: "/skill payload",
+				attachments: [],
+				skillNames: ["skill"],
+				mentions: [{ kind: "skill", name: "skill", offset: 0 }],
+			},
+			recoverySourceIds: ["source-1", "source-2"],
+		});
+		expect(submissions[0].input).toEqual([
+			{ type: "text", text: "/skill payload", mentions: [{ kind: "skill", name: "skill", offset: 0 }] },
+			{ type: "skill", name: "skill" },
+		]);
+	} finally {
+		database.close();
+	}
+});
 
 it.each([
 	["/compact", "compact", ""],

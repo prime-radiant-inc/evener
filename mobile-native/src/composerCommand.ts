@@ -17,6 +17,7 @@ import type {
 	ConversationService,
 } from "../../mobile/src/services/conversation";
 import type { DraftDocument } from "./draftDocument";
+import type { ConversationMutationContext } from "../../mobile/src/state/conversationMutation";
 
 const localCommands = [
 	{ id: "project", capability: null, label: "Show in project" },
@@ -103,7 +104,7 @@ interface CommandContext {
 	drainRefusal(): string | null;
 	/** Sends a steer or queue through the outbox, as the composer does, so it
 	 * keeps its place in line and a lost answer is resent. */
-	submit(kind: "steer" | "queue", input: InputItem[]): Promise<void>;
+	submit(kind: "steer" | "queue", input: InputItem[], context?: ConversationMutationContext): Promise<void>;
 	/** Stops the turn as the Stop button does. */
 	stop(): Promise<void>;
 	reasoning(): Pick<MobileConversation, "supportsReasoning" | "reasoningEffort" | "reasoningEffortLevels"> | null;
@@ -163,14 +164,39 @@ export async function submitComposerCommand(
 		};
 	} else if (id === "steer" || id === "queue" || id === "drain-as-steer") {
 		requireControl();
-		const input = buildComposerInput(match.argsText);
 		// The explicit /steer command preserves waiting queue entries. Draining
 		// uses its own command, the one Steer all now is.
 		if (id === "drain-as-steer") {
 			const refusal = context.drainRefusal();
 			if (refusal !== null) throw new CommandArgumentError(refusal);
+			operation = () => context.drainQueue();
+		} else {
+			// Recover the message body, not the routing command. Mention offsets
+			// belong to that same original body, before buildComposerInput trims it.
+			const bodyOffset = record.draft.length - match.argsText.length;
+			const mentions = record.composer?.mentions
+				?.filter((mention) => mention.offset >= bodyOffset)
+				.map((mention) => ({ ...mention, offset: mention.offset - bodyOffset }));
+			const composer = {
+				text: match.argsText,
+				attachments: [],
+				...(record.composer?.skillNames === undefined ? {} : { skillNames: record.composer.skillNames }),
+				...(record.composer?.commandNames === undefined ? {} : { commandNames: record.composer.commandNames }),
+				...(mentions === undefined ? {} : { mentions }),
+			};
+			const input = buildComposerInput(
+				composer.text,
+				composer.attachments,
+				composer.skillNames,
+				composer.commandNames,
+				composer.mentions,
+			);
+			const mutationContext: ConversationMutationContext = {
+				composer,
+				...(record.composer?.recoveryIds === undefined ? {} : { recoverySourceIds: record.composer.recoveryIds }),
+			};
+			operation = () => context.submit(id, input, mutationContext);
 		}
-		operation = id === "drain-as-steer" ? () => context.drainQueue() : () => context.submit(id, input);
 	} else if (id === "model") {
 		const catalog = await service.models();
 		// A catalog request must never consume text edited while it was loading,
