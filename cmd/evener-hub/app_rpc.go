@@ -1936,6 +1936,9 @@ func registerThreadHandlers(
 		}
 		resp, err := clearThreadWithResume(ctx, cfg, sources, params)
 		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
+		if err == nil {
+			resp.Thread = applyHubCapabilities(cfg, resp.Thread)
+		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadCompactStart, func(ctx context.Context, params appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {

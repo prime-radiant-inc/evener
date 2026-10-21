@@ -123,6 +123,12 @@ func TestManagerModeClearColdRead(t *testing.T) {
 	if instance == "" || instance == initial.Thread.Evener.InstanceID {
 		t.Fatalf("Clear instance = %q, previous = %q", instance, initial.Thread.Evener.InstanceID)
 	}
+	if cleared.Thread.Evener.Ref != ref {
+		t.Fatalf("Clear ref = %q, want %q", cleared.Thread.Evener.Ref, ref)
+	}
+	if !cleared.Thread.Evener.Manager || !cleared.Thread.Evener.ManagerEditable || cleared.Thread.Evener.ManagerSetting == nil || *cleared.Thread.Evener.ManagerSetting != enabled.View.Setting {
+		t.Fatalf("Clear Manager projection = %+v, want enabled and editable with setting %+v", cleared.Thread.Evener, enabled.View.Setting)
+	}
 	meta, err := schema.LoadSessionMeta(f.stateDir, instance)
 	if err != nil {
 		t.Fatal(err)
