@@ -396,16 +396,12 @@ func (s *Session) goalSnapshotForMeta() *schema.GoalSnapshot {
 	}
 }
 
-// ContextPressure returns the estimated context pressure as a fraction (0.0–1.0).
-// Returns 0 if the context manager is not initialized.
+// ContextPressure returns the estimated context pressure as a fraction. It may
+// exceed 1.0 when used exceeds the window. Returns 0 if the context manager is
+// not initialized. Each call takes one full sample.
 func (s *Session) ContextPressure() float64 {
-	if s.contextMgr == nil {
-		return 0
-	}
-	s.mu.Lock()
-	hist := append([]schema.Turn{}, s.history...)
-	s.mu.Unlock()
-	return s.contextMgr.Pressure(hist, 0)
+	_, pressure := s.ContextStatus()
+	return pressure
 }
 
 func (s *Session) closingOrClosedLocked() bool {
