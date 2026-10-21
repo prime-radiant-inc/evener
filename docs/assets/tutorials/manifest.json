@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "sourceRevision": "6c9bd788818f77383cf0c1f6a34b889046462fa0",
-  "sourceTreeDigest": "c8c46eeaab6c91d9d193e299a56e5c80b6e93934be859cd876df7ea0652ec0ed",
+  "sourceRevision": "b4185e10dc0cf66715772c0eabb8722f5cb51242",
+  "sourceTreeDigest": "7c87962862b0affb9b0d90bf7aef4258608637ca0181de6e6e625953a0258421",
   "toolVersions": {
     "node": "v22.13.1",
     "go": "go version go1.27.1 darwin/arm64",
@@ -232,7 +232,7 @@
       "checkpoint": "action",
       "representation": "web-screenshot",
       "file": "receipt/web/action.png",
-      "sha256": "05ddbb34c900cd679f11587b783bdea39c55a9484b4dee09549168c81d4ff08c",
+      "sha256": "f074ca1b58ef76a6ed0f7baa1a8defc02000677236934c9640fac6819e4833ac",
       "dimensions": {
         "width": 1280,
         "height": 900
@@ -259,7 +259,7 @@
       "checkpoint": "verified",
       "representation": "web-screenshot",
       "file": "receipt/web/verified.png",
-      "sha256": "c8dcfa231df7d1b78031d1d3d4380487356f432d2691da77dc7c5877d7328df0",
+      "sha256": "ecd425de3ae1b08e91fb1d93075ec096f4761f082a7786259ae338bfd81c91ca",
       "dimensions": {
         "width": 1280,
         "height": 900
@@ -373,7 +373,7 @@
       "checkpoint": "action",
       "representation": "rendered-command-transcript",
       "file": "daily/cli/action.png",
-      "sha256": "b59cf0411b44002d1ac78964b633cd0d6b62a88d4b0b2296800061c7457cc56c",
+      "sha256": "386491562296cec48b6efc3910b2eaeff6140164a35640caae25ea566c7ed004",
       "dimensions": {
         "width": 1200,
         "height": 1800
@@ -387,7 +387,7 @@
       "result": "passed",
       "text": {
         "file": "daily/cli/action.txt",
-        "sha256": "382cf2f2029d20b6276c072a804858d0b00911ab47c16e3fe7b2bd14a9454a85"
+        "sha256": "8ff52fa064ae27d5e8c9bbbb24e4f5bc5e20ab58460ae0f0e869356326489345"
       }
     },
     {
@@ -396,7 +396,7 @@
       "checkpoint": "verified",
       "representation": "rendered-command-transcript",
       "file": "daily/cli/verified.png",
-      "sha256": "9d92f46c356e83e6f1555fb4f84749e2f0b06e0f7d4bc3478660a35f472cfc26",
+      "sha256": "1ef5faffc1f246eed71cbf9b98e5a3f1781f05b50f6a54ad0ab430f6428f026d",
       "dimensions": {
         "width": 1200,
         "height": 1800
@@ -410,7 +410,7 @@
       "result": "passed",
       "text": {
         "file": "daily/cli/verified.txt",
-        "sha256": "a6273cc1c175bd15f8d69c0bd55be341174fc380b6c5c133b5ecca2ca4b2dd9a"
+        "sha256": "4affbfdaec9d39db6ff4f3d9204df2a4a46d90c95d65e1b40ee28c8401b6fa4a"
       }
     },
     {
@@ -438,7 +438,7 @@
       "checkpoint": "action",
       "representation": "web-screenshot",
       "file": "daily/web/action.png",
-      "sha256": "3713decb7ad826875dda38312c8bd39f3c0a983c72396d44c590b7760c9984f8",
+      "sha256": "76751133846c21fd8054ea388e957948ff3848f0dd672adbd7f54f264c9f1ace",
       "dimensions": {
         "width": 1280,
         "height": 900
@@ -461,7 +461,7 @@
       "checkpoint": "verified",
       "representation": "web-screenshot",
       "file": "daily/web/verified.png",
-      "sha256": "1bb59a352cf57efaf6da5a0ff1432bf8539acdc6888b96712843a47a7e2b9db5",
+      "sha256": "7310235b2a6079912ec56fb0fbea62590ea3f72fc0824476cae1e9410bfe80f7",
       "dimensions": {
         "width": 1280,
         "height": 900
@@ -599,7 +599,7 @@
       "checkpoint": "verified",
       "representation": "web-screenshot",
       "file": "configuration/web/verified.png",
-      "sha256": "c1acf0cc76b414bf5921c2ad8dcee8a39439d0d7ff10263a2d59217ab91257e7",
+      "sha256": "56ad01fb0c2823aac0d7a4455e869fca5d52d605ff692f940ebd18320de6bb65",
       "dimensions": {
         "width": 1280,
         "height": 900
@@ -641,7 +641,7 @@
       "checkpoint": "action",
       "representation": "rendered-command-transcript",
       "file": "extensions/cli/action.png",
-      "sha256": "de16344581494ce739e226e89bca5d0d69289f6c760186ef79b7469d73886a7d",
+      "sha256": "d807510f01add9f4e4be404151381beebd1ebff5427a3a90f80a82bf297c84b7",
       "dimensions": {
         "width": 1200,
         "height": 1800
@@ -655,7 +655,7 @@
       "result": "passed",
       "text": {
         "file": "extensions/cli/action.txt",
-        "sha256": "e5b8c03dc5a9998d344e244711cd8ed2ef1e875ae4415e77370aaa4a514e63a1"
+        "sha256": "303109cd4eb3da09a42a918e4c92bcd514d920f140565d996692109c46574712"
       }
     },
     {
@@ -664,7 +664,7 @@
       "checkpoint": "verified",
       "representation": "rendered-command-transcript",
       "file": "extensions/cli/verified.png",
-      "sha256": "5a931b8871d404fd450f49ad21d8b7bf09e2079dabf24a1ecd061fca17cadc34",
+      "sha256": "c9bd4fb05e9b84f9f2a605fc0f66e2f15e64867656f01941a59da7a589c6c07e",
       "dimensions": {
         "width": 1200,
         "height": 1800
@@ -678,7 +678,7 @@
       "result": "passed",
       "text": {
         "file": "extensions/cli/verified.txt",
-        "sha256": "0d5025f2d2fb0b6176370533d452c7b795dc33b0aa511def88570d9a496fb508"
+        "sha256": "e09fddc953d27d8b60941ccd640081338633729dcc9135e74db7ee12e5361cce"
       }
     },
     {
@@ -687,7 +687,7 @@
       "checkpoint": "entry",
       "representation": "web-screenshot",
       "file": "extensions/web/entry.png",
-      "sha256": "e5d63e0274573e763926a93fde613cd4d03f092b8f59564c550ffd5d4c838a05",
+      "sha256": "2d42b43878b3d883cc0490cc16198ad7e6a288fa31898dbbc7cf5fd7e10b30ea",
       "dimensions": {
         "width": 1280,
         "height": 900
@@ -706,7 +706,7 @@
       "checkpoint": "action",
       "representation": "web-screenshot",
       "file": "extensions/web/action.png",
-      "sha256": "0f066aa509d9780f1a930240e5ea4b52cec6ec1aa8d273ffb9e0f4dc751346ce",
+      "sha256": "cb8eb56efa80079f5c0cb7b5b5b7a33348125587aa6a7933199180ba0f80a8cf",
       "dimensions": {
         "width": 1280,
         "height": 900
@@ -725,7 +725,7 @@
       "checkpoint": "verified",
       "representation": "web-screenshot",
       "file": "extensions/web/verified.png",
-      "sha256": "46c9f74bd438ad4aef3dd8465956d84d6033fdf06a2910eec104afef5c1ceebe",
+      "sha256": "40c1069344db109f5ece63cadb8f5de2125b779f61bea3eff23bd2a4ca2164ea",
       "dimensions": {
         "width": 1280,
         "height": 900
