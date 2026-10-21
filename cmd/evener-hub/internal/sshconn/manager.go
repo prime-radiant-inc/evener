@@ -3537,7 +3537,13 @@ func (m *Manager) recordDeployment(name string, intent pendingRestartState, targ
 	}
 	intent.writeAcknowledged = false
 	intent.installTarget = target
-	m.resolvedTargets[name] = target
+	// The canonical write destination can differ from the discovered launch
+	// spelling. Recovery must keep addressing the retained selected owner.
+	launch := target
+	if intent.selected != nil {
+		launch = intent.selected.host.EvenerPath
+	}
+	m.resolvedTargets[name] = launch
 	m.pendingRestarts[name] = intent
 }
 

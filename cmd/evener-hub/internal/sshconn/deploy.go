@@ -1056,7 +1056,13 @@ func (m *Manager) deploySelectedWithSupersession(ctx context.Context, host hostr
 			}
 			return nil
 		}
-		if !sameOwner(now, prior) || now.report.Running == nil || prior.report.Running == nil || now.report.Running.BootID != prior.report.Running.BootID || now.report.Running.Version != prior.report.Running.Version || now.report.Running.BackendGitSHA != prior.report.Running.BackendGitSHA {
+		if !sameOwner(now, prior) {
+			return errOwnerSelectionMismatch
+		}
+		// Health can be unavailable even though the independently inspected owner
+		// and original-image capability still match. Compare health when both exist.
+		current, before := now.report.Running, prior.report.Running
+		if current != nil && before != nil && (current.BootID != before.BootID || current.Version != before.Version || current.BackendGitSHA != before.BackendGitSHA) {
 			return errOwnerSelectionMismatch
 		}
 		return nil
@@ -1218,7 +1224,10 @@ func (m *Manager) reinstallRetainedTarget(ctx context.Context, host hostreg.Host
 				// remains runnable after the recorded pathname is removed.
 				if err := m.checkOwnerConfigUsing(ctx, host, argv, prior.cwd, env, prior.report, "/proc/"+prior.pid+"/exe", func(report hubendpoint.Report) error {
 					now, before := report.Running, prior.report.Running
-					if now == nil || before == nil || now.PID != before.PID || now.BootID != before.BootID || now.Version != before.Version || now.BackendGitSHA != before.BackendGitSHA {
+					if now != nil && strconv.Itoa(now.PID) != prior.pid {
+						return errOwnerSelectionMismatch
+					}
+					if now != nil && before != nil && (now.BootID != before.BootID || now.Version != before.Version || now.BackendGitSHA != before.BackendGitSHA) {
 						return errOwnerSelectionMismatch
 					}
 					return nil

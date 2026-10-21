@@ -2,6 +2,7 @@ package sshconn
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/internal/hubendpoint"
 )
 
 func TestRetainedDeployRepairRequiresRealEndpointEvidence(t *testing.T) {
@@ -121,7 +123,7 @@ func TestRetainedDeployRepairRequiresRealEndpointEvidence(t *testing.T) {
 }
 
 func TestRetainedTargetReinstallEvidence(t *testing.T) {
-	for _, mode := range []string{"live", "live-trailing-space", "live-different-directory", "live-argv-mismatch", "live-process-mismatch", "live-config-mismatch", "live-report-missing", "live-report-malformed", "live-report-schema", "stopped", "stopped-config-mismatch", "stopped-report-missing", "stopped-report-malformed", "stopped-report-schema", "target-mismatch", "write-failed", "post-write-capability", "generation-at-write", "binding-at-write"} {
+	for _, mode := range []string{"live", "live-unresponsive", "live-unresponsive-health-returns", "live-unresponsive-pid-mismatch", "live-boot-mismatch", "live-build-mismatch", "live-sha-mismatch", "live-trailing-space", "live-different-directory", "live-argv-mismatch", "live-process-mismatch", "live-config-mismatch", "live-report-missing", "live-report-malformed", "live-report-schema", "stopped", "stopped-config-mismatch", "stopped-report-missing", "stopped-report-malformed", "stopped-report-schema", "target-mismatch", "write-failed", "post-write-capability", "generation-at-write", "binding-at-write"} {
 		t.Run(mode, func(t *testing.T) {
 			host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 			realPaths := mode == "live-trailing-space" || mode == "live-different-directory"
@@ -169,6 +171,7 @@ func TestRetainedTargetReinstallEvidence(t *testing.T) {
 				}
 				return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180","started_at":"2026-01-01T00:00:00Z"}`), nil
 			})
+			selected.initialUnavailable = strings.HasPrefix(mode, "live-unresponsive")
 			if realPaths {
 				selected.exe = target
 				selected.endpointAlias = alias + " hub endpoint --json"
@@ -255,6 +258,23 @@ func TestRetainedTargetReinstallEvidence(t *testing.T) {
 					if mode == "live-config-mismatch" && proc || mode == "stopped-config-mismatch" && !proc {
 						out = []byte(strings.ReplaceAll(string(out), "/home/dev/.local/state/evener", "/srv/changed-state"))
 					}
+					if proc && (mode == "live-unresponsive-pid-mismatch" || mode == "live-boot-mismatch" || mode == "live-build-mismatch" || mode == "live-sha-mismatch") {
+						var report hubendpoint.Report
+						if err := json.Unmarshal(out, &report); err != nil || report.Running == nil {
+							t.Fatalf("live fixture report: %s, %v", out, err)
+						}
+						switch mode {
+						case "live-unresponsive-pid-mismatch":
+							report.Running.PID++
+						case "live-boot-mismatch":
+							report.Running.BootID = "different-boot"
+						case "live-build-mismatch":
+							report.Running.Version = "different-build"
+						case "live-sha-mismatch":
+							report.Running.BackendGitSHA = "different-sha"
+						}
+						return json.Marshal(report)
+					}
 					return out, err
 				}
 				out, err := base(ctx, argv, in)
@@ -298,6 +318,7 @@ func TestRetainedTargetReinstallEvidence(t *testing.T) {
 				}
 			}
 			repair, selected.executableAbsent = true, true
+			selected.initialUnavailable = mode == "live-unresponsive"
 			selected.stopped = strings.HasPrefix(mode, "stopped")
 			if mode == "live" {
 				if argv, err := m.recoverHubArgv(t.Context(), host, "4242"); err == nil || argv != nil || missingResolutions != 1 {
@@ -309,11 +330,11 @@ func TestRetainedTargetReinstallEvidence(t *testing.T) {
 				m.setResolvedTarget(host.Name, host.EvenerPath)
 			}
 			_, _, err = m.deployForOperation(t.Context(), host, Preflight{Host: host.Name, OS: "linux", Arch: "amd64", UID: "1000", ExecutableMissing: true}, retained)
-			if mode == "live" || mode == "live-trailing-space" || mode == "stopped" {
+			if mode == "live" || mode == "live-unresponsive" || mode == "live-unresponsive-health-returns" || mode == "live-trailing-space" || mode == "stopped" {
 				if err != nil || writes != 2 || postReads == 0 || m.pendingRestart(host.Name).active() {
 					t.Fatalf("repair: err=%v writes=%d proc=%d post=%d pending=%+v", err, writes, procReads, postReads, m.pendingRestart(host.Name))
 				}
-				if mode == "live" && procReads < 2 || mode == "stopped" && procReads != 0 {
+				if (mode == "live" || strings.HasPrefix(mode, "live-unresponsive")) && procReads < 2 || mode == "stopped" && procReads != 0 {
 					t.Fatalf("wrong resolver authority: proc=%d mode=%s", procReads, mode)
 				}
 				if mode == "live" && missingResolutions != 2 {
@@ -337,7 +358,7 @@ func TestRetainedTargetReinstallEvidence(t *testing.T) {
 			if (mode == "post-write-capability" || strings.Contains(mode, "-report-")) && (!errors.Is(err, ErrEndpointMigration) || !isTerminal(err)) {
 				t.Fatalf("post-write capability failure is not terminal: %v", err)
 			}
-			if mode == "live-different-directory" || mode == "live-argv-mismatch" || mode == "live-process-mismatch" || mode == "live-config-mismatch" || strings.HasPrefix(mode, "live-report-") || mode == "target-mismatch" || mode == "generation-at-write" || mode == "binding-at-write" {
+			if mode == "live-different-directory" || mode == "live-argv-mismatch" || mode == "live-process-mismatch" || mode == "live-config-mismatch" || strings.HasPrefix(mode, "live-report-") || mode == "target-mismatch" || mode == "generation-at-write" || mode == "binding-at-write" || strings.HasPrefix(mode, "live-") && strings.HasSuffix(mode, "-mismatch") {
 				if writes != 1 {
 					t.Fatalf("refused repair wrote: %d", writes)
 				}
