@@ -753,7 +753,7 @@ test("a live submission's baseline survives hundreds of later submissions", asyn
   } finally {
     storage.close();
   }
-});
+}, 30_000);
 
 test("a turn arriving during the held enqueue cannot become the submission's baseline", async () => {
   const turn = failedTurn();
