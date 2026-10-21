@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import type { AskQuestionRef } from "@evener/appwire-client";
 import { boundQuestionText, questionsIdentity } from "./questionAnswers";
 import { boundQuestion, MAX_ITEM_BYTES } from "./projectedRows";
-import { DraftRepository } from "./draftRepository";
+import { DraftRepository, type DraftRecord } from "./draftRepository";
 import { openSqliteSyncDouble, sqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 
 let directory: string;
@@ -642,4 +642,49 @@ test("refsWithDrafts names the sessions with typed, unconfirmed or image-only dr
 	expect([...repository.refsWithDrafts("hub-a")].sort()).toEqual(["images-only", "typed", "unconfirmed"]);
 	expect([...repository.refsWithDrafts("hub-b")]).toEqual(["elsewhere"]);
 	expect(repository.refsWithDrafts("hub-c").size).toBe(0);
+});
+
+test("composer-only records survive file reopen and clean up without any acknowledgment fields", () => {
+	const destination = { hubId: "hub-composer", sessionRef: "selection-only" };
+	for (const metadata of [{ skillNames: ["skill"] }, { commandNames: ["command"] }, { recoveryIds: ["source"] }]) {
+		repository.write(destination, { draft: "", unconfirmed: null, composer: metadata });
+		database.close();
+		openRepository();
+		expect(repository.read(destination)).toEqual({ draft: "", unconfirmed: null, composer: metadata });
+		repository.write(destination, { draft: "", unconfirmed: null });
+		database.close();
+		openRepository();
+		expect(
+			database
+				.prepare("SELECT count(*) AS count FROM drafts WHERE hub_id = ? AND session_ref = ?")
+				.get(destination.hubId, destination.sessionRef),
+		).toEqual({ count: 0 });
+	}
+});
+
+test("draft discovery includes selections and recovery ownership on its hub but excludes acknowledgment-only and empty metadata", () => {
+	const hubId = "metadata-hub";
+	for (const [sessionRef, record] of [
+		["skill", { composer: { skillNames: ["s"] } }],
+		["command", { composer: { commandNames: ["c"] } }],
+		["source", { composer: { recoveryIds: ["r"] } }],
+		["unconfirmed-skill", { unconfirmedComposer: { skillNames: ["s"] } }],
+		["unconfirmed-command", { unconfirmedComposer: { commandNames: ["c"] } }],
+		["unconfirmed-source", { unconfirmedComposer: { recoveryIds: ["r"] } }],
+		["ack-only", { recoveryResendAcks: ["ack"] }],
+		["empty", { composer: {}, unconfirmedComposer: {} }],
+		["empty-arrays", { composer: { skillNames: [], commandNames: [], recoveryIds: [], mentions: [] } }],
+	] satisfies [string, Partial<DraftRecord>][]) {
+		repository.write({ hubId, sessionRef }, { draft: "", unconfirmed: null, ...structuredClone(record) });
+	}
+	repository.write(
+		{ hubId: "other-hub", sessionRef: "other" },
+		{ draft: "", unconfirmed: null, composer: { skillNames: ["s"] } },
+	);
+	database.close();
+	openRepository();
+	expect(repository.refsWithDrafts(hubId)).toEqual(
+		new Set(["skill", "command", "source", "unconfirmed-skill", "unconfirmed-command", "unconfirmed-source"]),
+	);
+	expect(repository.refsWithDrafts("other-hub")).toEqual(new Set(["other"]));
 });

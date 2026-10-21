@@ -2,13 +2,41 @@ import {
 	insertMarker,
 	markerText,
 	MAX_ATTACHMENTS,
+	mergeComposerCompositions,
 	nextComposerImageMarker,
+	recoverMutationComposition,
 	stripMarker,
 } from "@evener/appwire-client";
 import type { InputAttachment } from "@evener/appwire-client";
+import type { MutationRecoveryRecord } from "@evener/appwire-client/state/mutation";
+import type { ConversationMutationContext } from "../../mobile/src/state/conversationMutation";
 import type { DraftImage, DraftImageData } from "./draftImages";
 import { restoreUnconfirmedDraft } from "./draftRecovery";
-import type { DraftDestination, DraftRecord, DraftRepository } from "./draftRepository";
+import type { DraftComposerMetadata, DraftDestination, DraftRecord, DraftRepository } from "./draftRepository";
+import type { RecoveryResendCommit } from "./mutationOutboxStorage";
+
+function sameSources(owned: readonly string[] | undefined, supplied: readonly string[]): boolean {
+	return (
+		!!owned?.length &&
+		owned.length === supplied.length &&
+		new Set(supplied).size === supplied.length &&
+		owned.every((id) => supplied.includes(id))
+	);
+}
+
+function occupiedMetadata(metadata?: DraftComposerMetadata): boolean {
+	return !!(metadata?.skillNames?.length || metadata?.commandNames?.length || metadata?.recoveryIds?.length);
+}
+
+function composition(text: string, images: DraftImage[] = [], metadata?: DraftComposerMetadata) {
+	return {
+		text,
+		attachments: images,
+		skillNames: metadata?.skillNames ?? [],
+		commandNames: metadata?.commandNames ?? [],
+		...(metadata?.mentions === undefined ? {} : { mentions: metadata.mentions }),
+	};
+}
 
 interface DraftSnapshot {
 	record: DraftRecord;
@@ -131,11 +159,72 @@ export class DraftDocument {
 
 	replaceDraft(text: string) {
 		if (!this.snapshot.loaded || this.snapshot.submitting || this.snapshot.record.unconfirmed !== null) return;
+		const record = this.snapshot.record;
+		const owned = !!record.composer?.recoveryIds?.length;
 		try {
-			this.persist({ draft: text, unconfirmed: null }, true);
+			// A replacement is not an edit of the recovered message. Park the old
+			// composition until retained-source proof can safely restore it.
+			this.persist(
+				{
+					...record,
+					draft: text,
+					images: undefined,
+					composer: undefined,
+					unconfirmed: owned ? record.draft : null,
+					unconfirmedImages: owned ? record.images : undefined,
+					unconfirmedComposer: owned ? record.composer : undefined,
+				},
+				true,
+			);
 		} catch {
 			/* Keep the replacement visible with an explicit save retry. */
 		}
+	}
+
+	appendEditedRecovery(source: MutationRecoveryRecord): "restored" | "already-restored" | "blocked" {
+		const { record, loaded, submitting, error } = this.snapshot;
+		if (this.forgotten || !loaded || submitting || error || !this.isEditedSource(source)) return "blocked";
+		if (
+			[...(record.composer?.recoveryIds ?? []), ...(record.unconfirmedComposer?.recoveryIds ?? [])].includes(
+				source.clientMutationId,
+			)
+		)
+			return "already-restored";
+		const recovered = recoverMutationComposition(source);
+		if ((record.images?.length ?? 0) + recovered.attachments.length > MAX_ATTACHMENTS) return "blocked";
+		const additions = recovered.attachments.map((image) => ({ ...image, id: this.createImageId() }));
+		const merged = mergeComposerCompositions(composition(record.draft, record.images, record.composer), {
+			...recovered,
+			attachments: additions.map(({ data: _data, ...image }) => image),
+		});
+		for (const image of additions) this.unsavedImages.set(image.id, image);
+		try {
+			this.persist(
+				{
+					...record,
+					draft: merged.text,
+					images: merged.attachments,
+					composer: {
+						skillNames: merged.skillNames,
+						commandNames: merged.commandNames,
+						mentions: merged.mentions,
+						recoveryIds: [...(record.composer?.recoveryIds ?? []), source.clientMutationId],
+					},
+				},
+				false,
+			);
+			return "restored";
+		} catch {
+			for (const image of additions) this.unsavedImages.delete(image.id);
+			return "blocked";
+		}
+	}
+
+	private isEditedSource(source: MutationRecoveryRecord): boolean {
+		return (
+			source.recoveryKind === "editing" &&
+			source.targetRef === JSON.stringify([this.destination.hubId, this.destination.sessionRef])
+		);
 	}
 
 	addImage(image: DraftImageData, cursor?: number) {
@@ -218,7 +307,9 @@ export class DraftDocument {
 			/* The visible removal can be retried without deleting other images. */
 		}
 	}
-	async submit(operation: (text: string, images: InputAttachment[]) => Promise<boolean>) {
+	async submit(
+		operation: (text: string, images: InputAttachment[], context: ConversationMutationContext) => Promise<boolean>,
+	) {
 		return this.submitContent(this.snapshot.record.draft, false, operation);
 	}
 	/** Submit composer text without consuming the draft. `reissued` carries the
@@ -234,13 +325,21 @@ export class DraftDocument {
 	private async submitContent(
 		text: string,
 		preserveDraft: boolean,
-		operation: (text: string, images: InputAttachment[]) => Promise<boolean>,
+		operation: (text: string, images: InputAttachment[], context: ConversationMutationContext) => Promise<boolean>,
 		reissued?: InputAttachment[],
 	) {
 		const { record, loaded, submitting, error } = this.snapshot;
 		const images = preserveDraft ? [] : (record.images ?? []);
 		const outbound = reissued ?? images;
-		if (!loaded || submitting || error || record.unconfirmed !== null || (!text.trim() && outbound.length === 0))
+		const metadata = preserveDraft ? undefined : record.composer;
+		if (
+			!loaded ||
+			this.forgotten ||
+			submitting ||
+			error ||
+			record.unconfirmed !== null ||
+			(!text.trim() && outbound.length === 0 && !metadata?.skillNames?.length && !metadata?.commandNames?.length)
+		)
 			return;
 		// A re-issued input (a Retry) carries its images as wire attachments:
 		// register them as pending image data so the uncertain record keeps
@@ -265,21 +364,37 @@ export class DraftDocument {
 		const inputImages = reissued ?? this.repository().imageInputs(this.destination, images);
 		this.persist(
 			{
+				...record,
 				draft: preserveDraft ? record.draft : "",
 				unconfirmed: text,
-				...(preserveDraft && record.images?.length ? { images: record.images } : {}),
-				...(outbound.length ? { unconfirmedImages: [...reissuedRecords, ...images] } : {}),
+				images: preserveDraft ? record.images : undefined,
+				composer: preserveDraft ? record.composer : undefined,
+				unconfirmedComposer: metadata,
+				unconfirmedImages: outbound.length ? [...reissuedRecords, ...images] : undefined,
 			},
 			false,
 		);
 		this.update({ submitting: true });
 		try {
-			if (await operation(text, inputImages))
+			const context: ConversationMutationContext = {
+				composer: {
+					text,
+					attachments: inputImages,
+					...(metadata?.skillNames === undefined ? {} : { skillNames: [...metadata.skillNames] }),
+					...(metadata?.commandNames === undefined ? {} : { commandNames: [...metadata.commandNames] }),
+					...(metadata?.mentions === undefined
+						? {}
+						: { mentions: metadata.mentions.map((mention) => ({ ...mention })) }),
+				},
+				...(metadata?.recoveryIds?.length ? { recoverySourceIds: [...metadata.recoveryIds] } : {}),
+			};
+			if ((await operation(text, inputImages, context)) && !metadata?.recoveryIds?.length)
 				this.persist(
 					{
 						...this.snapshot.record,
 						unconfirmed: null,
 						unconfirmedImages: undefined,
+						unconfirmedComposer: undefined,
 					},
 					true,
 				);
@@ -287,14 +402,112 @@ export class DraftDocument {
 			this.update({ submitting: false });
 		}
 	}
+
+	/** A runtime receipt, not transport success or an absent outbox row, releases ownership. */
+	settleEditedResend(commit: RecoveryResendCommit): boolean {
+		const { record, loaded, error } = this.snapshot;
+		if (
+			this.forgotten ||
+			!loaded ||
+			error ||
+			commit.targetRef !== JSON.stringify([this.destination.hubId, this.destination.sessionRef]) ||
+			record.unconfirmed === null ||
+			!sameSources(record.unconfirmedComposer?.recoveryIds, commit.sourceIds)
+		)
+			return false;
+		try {
+			this.persist(
+				{
+					...record,
+					unconfirmed: null,
+					unconfirmedImages: undefined,
+					unconfirmedComposer: undefined,
+					recoveryResendAcks: [...new Set([...(record.recoveryResendAcks ?? []), commit.clientMutationId])],
+				},
+				false,
+			);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	/** Call only after runtime acknowledgment succeeds. Failure retains the durable retry marker. */
+	finishRecoveryResendAck(clientMutationId: string): boolean {
+		const { record, loaded, error } = this.snapshot;
+		if (this.forgotten || !loaded || error) return false;
+		if (!record.recoveryResendAcks?.includes(clientMutationId)) return true;
+		const remaining = record.recoveryResendAcks.filter((id) => id !== clientMutationId);
+		try {
+			this.persist({ ...record, recoveryResendAcks: remaining.length ? remaining : undefined }, false);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	/** The coordinator must freshly read ALL retained editing rows before calling.
+	 * Missing outbox rows are not proof. Restore our captured revision, not the
+	 * older source payload, and never submit here. */
+	restoreEditedRecovery(retainedSources: readonly MutationRecoveryRecord[]): boolean {
+		const { record, loaded, submitting, error } = this.snapshot;
+		if (
+			this.forgotten ||
+			!loaded ||
+			submitting ||
+			error ||
+			record.unconfirmed === null ||
+			!sameSources(
+				record.unconfirmedComposer?.recoveryIds,
+				retainedSources.map((source) => source.clientMutationId),
+			) ||
+			!retainedSources.every((source) => this.isEditedSource(source)) ||
+			(record.images?.length ?? 0) + (record.unconfirmedImages?.length ?? 0) > MAX_ATTACHMENTS
+		)
+			return false;
+		const merged = mergeComposerCompositions(composition(record.draft, record.images, record.composer), {
+			...composition(record.unconfirmed, record.unconfirmedImages, record.unconfirmedComposer),
+			// Legacy append already assigned disjoint markers without changing prose.
+			imageReferences: "recorded",
+		});
+		try {
+			this.persist(
+				{
+					...record,
+					draft: merged.text,
+					images: merged.attachments,
+					composer: {
+						skillNames: merged.skillNames,
+						commandNames: merged.commandNames,
+						mentions: merged.mentions,
+						recoveryIds: [...(record.composer?.recoveryIds ?? []), ...(record.unconfirmedComposer?.recoveryIds ?? [])],
+					},
+					unconfirmed: null,
+					unconfirmedImages: undefined,
+					unconfirmedComposer: undefined,
+				},
+				false,
+			);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
 	dismiss() {
-		if (!this.snapshot.loaded || this.snapshot.submitting) return;
+		if (
+			!this.snapshot.loaded ||
+			this.snapshot.submitting ||
+			this.snapshot.record.unconfirmedComposer?.recoveryIds?.length
+		)
+			return;
 		try {
 			this.persist(
 				{
 					...this.snapshot.record,
 					unconfirmed: null,
 					unconfirmedImages: undefined,
+					unconfirmedComposer: undefined,
 				},
 				true,
 			);
@@ -304,15 +517,27 @@ export class DraftDocument {
 	}
 	restore() {
 		const { record, loaded, submitting } = this.snapshot;
-		if (!loaded || submitting || record.unconfirmed === null || record.images?.length) return;
+		if (
+			!loaded ||
+			submitting ||
+			record.unconfirmed === null ||
+			record.images?.length ||
+			occupiedMetadata(record.composer) ||
+			record.unconfirmedComposer?.recoveryIds?.length
+		)
+			return;
 		const text = restoreUnconfirmedDraft(record.draft, record.unconfirmed);
 		if (text === null) return;
 		try {
 			this.persist(
 				{
+					...record,
 					draft: text,
 					unconfirmed: null,
-					...(record.unconfirmedImages?.length ? { images: record.unconfirmedImages } : {}),
+					images: record.unconfirmedImages,
+					composer: record.unconfirmedComposer,
+					unconfirmedImages: undefined,
+					unconfirmedComposer: undefined,
 				},
 				true,
 			);
@@ -333,6 +558,7 @@ export class DraftDocument {
 			!submitting &&
 			error === null &&
 			record.draft === "" &&
+			!occupiedMetadata(record.composer) &&
 			(record.images?.length ?? 0) === 0
 		);
 	}
@@ -348,7 +574,7 @@ export class DraftDocument {
 		if (submitting) return "sending";
 		if (error !== null) return "unsaved";
 		if ((record.images?.length ?? 0) > 0) return "image";
-		if (record.draft !== "") return "occupied";
+		if (record.draft !== "" || occupiedMetadata(record.composer)) return "occupied";
 		return null;
 	}
 
@@ -371,9 +597,8 @@ export class DraftDocument {
 		try {
 			this.persist(
 				{
+					...record,
 					draft: text,
-					unconfirmed: record.unconfirmed,
-					...(record.unconfirmedImages?.length ? { unconfirmedImages: record.unconfirmedImages } : {}),
 				},
 				false,
 			);
