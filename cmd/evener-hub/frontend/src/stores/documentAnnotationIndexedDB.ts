@@ -1241,9 +1241,8 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // transaction only while it can abort, and one past that boundary leaves its
   // pending row durable. This is the SECOND arm: the dismissal-time flip
   // (dismissOperation) already ran, and this re-runs it only when that flip
-  // found no row yet. A fault keeps the fence and the retained discard, and
-  // registers the retry need a later storage-success trigger spends. The
-  // runtime's cancellation stays terminal for this attempt either way.
+  // found no row yet. The runtime's cancellation stays terminal for this
+  // attempt either way.
   async #discardCancelledSave(operation: PreparedAnnotation): Promise<void> {
     const record = this.#fenceCancelledDiscard(operation.lease.key, operation.operationId);
     if (!record) return;
@@ -1255,15 +1254,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       const outcome = await record.dismissal;
       if (outcome !== "absent") return;
     }
-    try {
-      await this.#completeCancelledDiscard(record, true);
-    } catch {
-      // Closure is terminal: this adapter retains nothing it could never retry,
-      // and a handoff refuses anyway. Any other fault keeps the fence and the
-      // record, and the runtime registers the need a later trigger spends.
-      if (this.#closed) return;
-      invokeObserver(() => this.#options.onCancelledDiscardRetained?.());
-    }
+    await this.#completeDismissal(record, true);
   }
 
   // Dismiss ONE operation. The fence is installed synchronously, before this
@@ -1275,15 +1266,22 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   async dismissOperation(key: DocumentKey, operationId: string): Promise<void> {
     const record = this.#fenceCancelledDiscard(key, operationId);
     if (!record) return;
-    const dismissal = this.#completeCancelledDiscard(record, false).catch((_error: unknown) => {
-      // Closure is terminal: there is nothing a closed adapter could retry.
-      // Any other fault keeps the fence and registers the need a later
-      // storage-success trigger spends.
-      if (!this.#closed) invokeObserver(() => this.#options.onCancelledDiscardRetained?.());
-      return "faulted" as const;
-    });
+    const dismissal = this.#completeDismissal(record, false);
     record.dismissal = dismissal;
     await dismissal;
+  }
+
+  // ONE runner owns both dismissal arms' fault handling. Closure is terminal:
+  // this adapter retains nothing it could never retry, and a handoff refuses
+  // anyway. Any other fault keeps the fence and the retained record, and the
+  // runtime registers the need a later storage-success trigger spends.
+  async #completeDismissal(record: PendingCancelledDiscard, dropAbsent: boolean): Promise<DiscardOutcome> {
+    try {
+      return await this.#completeCancelledDiscard(record, dropAbsent);
+    } catch {
+      if (!this.#closed) invokeObserver(() => this.#options.onCancelledDiscardRetained?.());
+      return "faulted";
+    }
   }
 
   // Fence ONE operation identity from handoff until its durable discard
@@ -1469,6 +1467,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const operationKey = annotationOperationKey(key.namespace, operationId);
     let outcome: DiscardOutcome = "absent";
     let flippedDocumentKey: string | undefined;
+    let terminalDocumentKey: string | undefined;
     await this.#transaction([ANNOTATION_OPERATIONS_STORE], "readwrite", async (transaction) => {
       const row = await requestResult<AnnotationOperationRow | undefined>(
         transaction.objectStore(ANNOTATION_OPERATIONS_STORE).get(operationKey),
@@ -1479,6 +1478,10 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // still protects.
       if (row.state !== "pending") {
         outcome = row.state === "applied" ? "applied" : "terminal";
+        // A terminal row is the committed evidence of a flip whose completion
+        // an earlier arm never observed. Publish it before the record retires,
+        // or the dismissal's last trace leaves with the record.
+        if (row.state !== "applied") terminalDocumentKey = row.documentKey;
         return;
       }
       this.#options.beforeCommit?.("discard");
@@ -1488,10 +1491,12 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     });
     // A committed pending-to-cancelled flip is the eligibility-restoring event
     // for a successor that refused behind this row in the session FIFO, and it
-    // removes the row from every reader's listing. Emit both observations after
-    // the transaction settles, outside it, exactly as every other committed
-    // transition does. A no-op over an absent or already-terminal row changed
-    // nothing and emits nothing.
+    // removes the row from every reader's listing. An arm that instead OBSERVED
+    // an already-terminal row owns the same publication: the flip committed
+    // earlier, but the watchdog outlived the completion that would have
+    // announced it. Emit both observations after the transaction settles,
+    // outside it, exactly as every other committed transition does.
+    if (terminalDocumentKey !== undefined) this.#settleTransition({ signal: true, documentKey: terminalDocumentKey });
     if (flippedDocumentKey !== undefined) this.#settleTransition({ signal: true, documentKey: flippedDocumentKey });
     return outcome;
   }

@@ -6,7 +6,11 @@ import { afterEach, expect, test, vi } from "vitest";
 import type { ComposerPreparation, ComposerSourceState } from "../panes/session/composer/composerContract";
 import { APPEND_STORES, browserDraftKey } from "./browserDraftRepository";
 import { createDocumentAnnotationRepository, SAVE_STORES } from "./documentAnnotationIndexedDB";
-import { ANNOTATION_EVIDENCE_STORE, ANNOTATION_EXPIRY_STORE } from "./localCompositionSchema";
+import {
+  ANNOTATION_EVIDENCE_STORE,
+  ANNOTATION_EXPIRY_STORE,
+  ANNOTATION_OPERATIONS_STORE,
+} from "./localCompositionSchema";
 import {
   type AnnotationFixture,
   type AnnotationFixtureWithRuntime,
@@ -1290,6 +1294,86 @@ test("a committed dismissal flip wakes subscribed readers", async () => {
   expect(listener).toHaveBeenCalledTimes(1);
   const after = await fixture.repository.listAnnotations(fixture.document);
   expect(after.find((view) => view.operation.operationId === fixture.operation.operationId)).toBeUndefined();
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+// A dismissal flip whose completion the watchdog outlives still commits. The
+// arm that later observes the already-terminal row owns the publication that
+// lost completion skipped: the retained-discard retry used to read "terminal",
+// publish nothing, and delete the record - the last trace of the dismissal.
+// The cancelled row is the evidence of the commit, so the retry publishes the
+// storage-success signal and the document wake before it drops the record.
+test("a retained discard that observes an already-terminal row publishes the lost dismissal", async () => {
+  let preparations = 0;
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+    routeCancelledDiscardIntoRuntime: true,
+    prepareAnnotation: async () => {
+      preparations += 1;
+      // The recovery pass that completes the dismissal schedules B's handoff
+      // against a composer that is not ready yet; only the follow-up the lost
+      // publication must start sees the current preparation.
+      if (preparations === 1) return null;
+      const current = fixture;
+      if (current === undefined) return null;
+      const loaded = await current.drafts.load(current.key);
+      return loaded ? { key: loaded.key, token: loaded.token, backing: { kind: "draft" }, localGeneration: 0 } : null;
+    },
+  });
+  // B belongs to the same session as A but another document, so only the
+  // dismissal's own publication can wake A's reader; B's applied append wakes
+  // its own document instead.
+  const otherDocument: DocumentKey = { ...fixture.key, path: "OTHER.md" };
+  const ticket = await fixture.repository.beginRead(otherDocument);
+  const accepted = await fixture.repository.acceptRead(ticket, fixture.content);
+  if (accepted.state !== "accepted") throw new Error(`read was not accepted: ${accepted.state}`);
+  const operationB: PreparedAnnotation = {
+    ...buildAnnotationOperation(accepted.lease, fixture.content),
+    operationId: "operation-2",
+  };
+  await fixture.repository.saveAnnotation(operationB);
+  const listener = vi.fn();
+  fixture.repository.subscribe(fixture.document, listener);
+  const passes = vi.spyOn(fixture.repository, "retryPendingWithOutcome");
+
+  // The flip transaction commits, but its completion event is held: the
+  // watchdog rejects a dismissal whose row is already terminal, so the flip's
+  // own emission never runs.
+  const hold = holdNextWriteTransaction([ANNOTATION_OPERATIONS_STORE]);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let reached = false;
+  void hold.reached.then(() => {
+    reached = true;
+  });
+  fixture.runtime.retireAttempted(fixture.operation);
+  await pollUntil(() => reached, 50);
+  expect(reached).toBe(true);
+  await vi.advanceTimersByTimeAsync(10_001);
+  hold.release();
+  vi.useRealTimers();
+  await pollUntil(() => fixture?.cancelledDiscardRetained.mock.calls.length === 1, 50);
+  expect(fixture.cancelledDiscardRetained).toHaveBeenCalledTimes(1);
+
+  // No pass starts on its own after the lost completion. This one pass
+  // completes the retained discard by observing the terminal row, and that
+  // observation must publish the dismissal the lost completion skipped.
+  listener.mockClear();
+  await fixture.runtime.retryPending("storage-recovered");
+  await fixture.runtime.whenIdle();
+
+  expect(listener).toHaveBeenCalled();
+  const views = await fixture.repository.listAnnotations(otherDocument);
+  expect(views.find((view) => view.operation.operationId === operationB.operationId)?.handoff.state).toBe(
+    "already-applied",
+  );
+  // The original pass plus the follow-up its lost publication must start.
+  expect(passes).toHaveBeenCalledTimes(2);
 
   fixture.repository.close();
   fixture.drafts.close();
