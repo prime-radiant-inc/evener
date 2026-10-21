@@ -360,3 +360,102 @@ func TestManagedMetadataMigrationPreservesNestedGitNamespace(t *testing.T) {
 		}
 	})
 }
+
+func TestManagedMetadataMigrationFinishesInterruptedCrossDeviceArchive(t *testing.T) {
+	m := NewManager(t.TempDir())
+	source := filepath.Join(m.cacheDir(), "acme", "widget", "aaa", ".git")
+	// An interrupted old cross-device archive: the copy is complete, but only a
+	// partial source tree remains where the removal stopped.
+	if err := os.MkdirAll(filepath.Join(source, "objects", "info"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	base := m.managedGitArchiveDir("cache", "acme/widget/aaa/.git")
+	writeGitAdministration(t, base)
+	writeTestFile(t, filepath.Join(base, "marker.txt"), "archived bytes")
+	pending := base + ".evener-pending"
+	if err := os.WriteFile(pending, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m.ensureManagedContentMigrated(context.Background())
+
+	if _, err := os.Stat(source); !os.IsNotExist(err) {
+		t.Fatalf("interrupted source metadata survived: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(base, "marker.txt")); err != nil || string(got) != "archived bytes" {
+		t.Fatalf("archive bytes = %q, %v", got, err)
+	}
+	if _, err := os.Stat(pending); !os.IsNotExist(err) {
+		t.Fatalf("pending marker survived: %v", err)
+	}
+	if !m.managedContentClean() {
+		t.Fatal("recovered store was not reported clean")
+	}
+}
+
+func TestManagedMetadataMigrationDoesNotTrustAPartialArchiveCopy(t *testing.T) {
+	m := NewManager(t.TempDir())
+	source := filepath.Join(m.cacheDir(), "acme", "widget", "aaa", ".git")
+	writeGitAdministration(t, source)
+	base := m.managedGitArchiveDir("cache", "acme/widget/aaa/.git")
+	// A partial destination from an interrupted old copy is not proof of a
+	// complete archive, so the move must still archive to a numbered sibling.
+	if err := os.MkdirAll(filepath.Join(base, "objects", "info"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	m.ensureManagedContentMigrated(context.Background())
+
+	if _, err := os.Stat(source); !os.IsNotExist(err) {
+		t.Fatalf("source metadata survived: %v", err)
+	}
+	numbered := base + "-1"
+	if !looksLikeGitAdministration(numbered) {
+		t.Fatalf("numbered archive %s is not administration-shaped", numbered)
+	}
+	if _, err := os.Stat(filepath.Join(base, "objects", "info")); err != nil {
+		t.Fatalf("partial archive destination was disturbed: %v", err)
+	}
+	if !m.managedContentClean() {
+		t.Fatal("store was not reported clean")
+	}
+}
+
+func TestManagedMetadataMigrationKeepsAPartialSourceWithoutAPendingMarker(t *testing.T) {
+	m := NewManager(t.TempDir())
+	source := filepath.Join(m.cacheDir(), "acme", "widget", "aaa", ".git")
+	if err := os.MkdirAll(filepath.Join(source, "objects", "info"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	base := m.managedGitArchiveDir("cache", "acme/widget/aaa/.git")
+	writeGitAdministration(t, base)
+
+	m.ensureManagedContentMigrated(context.Background())
+
+	if _, err := os.Stat(source); err != nil {
+		t.Fatalf("partial source was removed without proof of ownership: %v", err)
+	}
+	if m.managedContentClean() {
+		t.Fatal("a preserved partial source was reported clean")
+	}
+}
+
+func TestManagedMetadataMigrationRemovesStalePendingMarkers(t *testing.T) {
+	m := NewManager(t.TempDir())
+	missingSource := filepath.Join(m.cacheDir(), "acme", "widget", "gone", ".git")
+	base := m.managedGitArchiveDir("cache", "acme/widget/gone/.git")
+	writeGitAdministration(t, base)
+	pending := base + ".evener-pending"
+	if err := os.WriteFile(pending, []byte(missingSource), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m.ensureManagedContentMigrated(context.Background())
+
+	if _, err := os.Stat(pending); !os.IsNotExist(err) {
+		t.Fatalf("stale pending marker survived: %v", err)
+	}
+	if !m.managedContentClean() {
+		t.Fatal("store with a reclaimed marker was not reported clean")
+	}
+}

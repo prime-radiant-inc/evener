@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -124,6 +125,11 @@ func relForDiagnostic(root, path string) string {
 // runtime.
 const managedGitArchiveDirName = "managed-git-archive"
 
+// managedGitArchivePendingSuffix names the private journal marker written
+// beside a completed archive copy before the source is removed. It lives in
+// the archive area, never inside a managed content root.
+const managedGitArchivePendingSuffix = ".evener-pending"
+
 const (
 	// publishScratchPrefix names the temporary sibling of a destination used
 	// when staging and destination are on different filesystems. The sidecar
@@ -171,8 +177,17 @@ func moveEntry(src, dst string) error {
 		_ = os.RemoveAll(dst)
 		return err
 	}
-	// The archive copy is complete before the content root copy goes away.
-	return os.RemoveAll(src)
+	// Record ownership by source path only after a complete copy exists. A
+	// crash during the removal leaves this marker for the next migration to
+	// finish; the copy itself is never proof enough to delete content.
+	marker := dst + managedGitArchivePendingSuffix
+	if err := os.WriteFile(marker, []byte(src), 0o600); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(src); err != nil {
+		return err
+	}
+	return os.Remove(marker)
 }
 
 // copyEntryExact copies one directory, file, or symlink for a cross-filesystem
@@ -295,7 +310,12 @@ func reclaimPublishScratch(parent string) {
 // copyTreeExact copies a prepared tree preserving directory modes, file modes,
 // and symlinks. It is used only after the source has passed the content audit.
 func copyTreeExact(src, dst string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+	type directory struct {
+		path string
+		mode fs.FileMode
+	}
+	var directories []directory
+	err := filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -306,7 +326,14 @@ func copyTreeExact(src, dst string) error {
 		target := filepath.Join(dst, rel)
 		switch {
 		case info.IsDir():
-			return os.MkdirAll(target, info.Mode().Perm())
+			// Children are written before the intended mode is restored, so a
+			// populated read-only directory can still be filled.
+			mode := info.Mode().Perm()
+			if err := os.MkdirAll(target, mode|0o700); err != nil {
+				return err
+			}
+			directories = append(directories, directory{path: target, mode: mode})
+			return nil
 		case info.Mode()&os.ModeSymlink != 0:
 			link, err := os.Readlink(path)
 			if err != nil {
@@ -319,4 +346,13 @@ func copyTreeExact(src, dst string) error {
 			return fmt.Errorf("prepared content %s is not a regular file, directory, or symlink", relForDiagnostic(src, path))
 		}
 	})
+	if err != nil {
+		return err
+	}
+	for _, dir := range slices.Backward(directories) {
+		if err := os.Chmod(dir.path, dir.mode); err != nil {
+			return err
+		}
+	}
+	return nil
 }

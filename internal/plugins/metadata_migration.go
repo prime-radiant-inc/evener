@@ -30,7 +30,7 @@ const maxGitPointerBytes = 64 << 10
 // inside a managed root without a .git component is left in place and
 // reported, which keeps the store unverified and the old scan active.
 func (m *Manager) migrateManagedGitMetadata() []string {
-	var problems []string
+	problems := m.reclaimPendingArchiveMarkers()
 	for _, root := range m.managedRoots() {
 		entries, readProblems := collectGitEntries(root.path)
 		problems = append(problems, readProblems...)
@@ -52,6 +52,24 @@ func (m *Manager) migrateManagedGitMetadata() []string {
 			// (including a retained legacy name that nests one deeper), so it
 			// stays and the store remains unverified.
 			if info.IsDir() && !looksLikeGitAdministration(entry) {
+				if rel, relErr := filepath.Rel(root.path, entry); relErr == nil {
+					if markers := m.pendingArchiveMarkers(root.name, rel, entry); len(markers) > 0 {
+						// A complete copy plus a marker naming this exact source
+						// proves the interrupted archive owns it, so finish the
+						// removal and clear the journal.
+						if err := os.RemoveAll(entry); err != nil {
+							problems = append(problems, "removing "+rootRelative(root.path, entry)+": "+err.Error())
+							continue
+						}
+						for _, marker := range markers {
+							if err := os.Remove(marker); err != nil {
+								problems = append(problems, "removing an archive marker: "+err.Error())
+							}
+						}
+						moved = append(moved, entry)
+						continue
+					}
+				}
 				problems = append(problems, "left a namespace directory named .git in place at "+rootRelative(root.path, entry))
 				continue
 			}
@@ -74,6 +92,82 @@ func (m *Manager) migrateManagedGitMetadata() []string {
 			}
 			moved = append(moved, entry)
 		}
+	}
+	return problems
+}
+
+// pendingArchiveMarkers returns the journal markers beside this archive
+// destination that record source as their interrupted move.
+func (m *Manager) pendingArchiveMarkers(rootName, rel, source string) []string {
+	base := m.managedGitArchiveDir(rootName, rel)
+	parent := filepath.Dir(base)
+	name := filepath.Base(base)
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return nil
+	}
+	var markers []string
+	for _, entry := range entries {
+		entryName := entry.Name()
+		if entryName != name+managedGitArchivePendingSuffix && !numberedArchiveName(entryName, name+managedGitArchivePendingSuffix) {
+			continue
+		}
+		path := filepath.Join(parent, entryName)
+		recorded, err := os.ReadFile(path)
+		if err != nil || string(recorded) != source {
+			continue
+		}
+		markers = append(markers, path)
+	}
+	return markers
+}
+
+// numberedArchiveName reports whether name is base followed by a dash and one
+// or more digits.
+func numberedArchiveName(name, base string) bool {
+	rest, ok := strings.CutPrefix(name, base+"-")
+	if !ok || rest == "" {
+		return false
+	}
+	for _, r := range rest {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// reclaimPendingArchiveMarkers removes journal markers whose recorded source
+// no longer exists, so a later publication at that path is not treated as an
+// interrupted cleanup.
+func (m *Manager) reclaimPendingArchiveMarkers() []string {
+	var problems []string
+	archive := filepath.Join(m.Root, managedGitArchiveDirName)
+	if _, err := os.Stat(archive); os.IsNotExist(err) {
+		return nil
+	}
+	err := filepath.Walk(archive, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || !strings.HasSuffix(info.Name(), managedGitArchivePendingSuffix) {
+			return nil
+		}
+		recorded, readErr := os.ReadFile(path)
+		if readErr != nil {
+			problems = append(problems, "reading an archive marker: "+readErr.Error())
+			return nil //nolint:nilerr // the read failure is reported as a migration problem, not a walk error
+		}
+		if _, err := os.Lstat(string(recorded)); err == nil || !os.IsNotExist(err) {
+			return nil
+		}
+		if err := os.Remove(path); err != nil {
+			problems = append(problems, "removing an archive marker: "+err.Error())
+		}
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		problems = append(problems, "reading the metadata archive: "+err.Error())
 	}
 	return problems
 }

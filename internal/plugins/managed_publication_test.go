@@ -317,3 +317,98 @@ func TestManagedPublicationJourneyPreservesOlderSessionPaths(t *testing.T) {
 		}
 	}
 }
+
+func assertMode(t *testing.T, path string, want fs.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("%s mode = %04o, want %04o", path, got, want)
+	}
+}
+
+func TestCopyTreeExactRestoresReadOnlyDirectoryModes(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "source")
+	nested := filepath.Join(src, "nested")
+	writeTestFile(t, filepath.Join(src, "root.txt"), "root bytes")
+	writeTestFile(t, filepath.Join(nested, "nested.txt"), "nested bytes")
+	if err := os.Chmod(nested, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(src, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "copy")
+	t.Cleanup(func() {
+		_ = os.Chmod(filepath.Join(dst, "nested"), 0o755)
+		_ = os.Chmod(dst, 0o755)
+		_ = os.Chmod(nested, 0o755)
+		_ = os.Chmod(src, 0o755)
+	})
+
+	if err := copyTreeExact(src, dst); err != nil {
+		t.Fatal(err)
+	}
+
+	assertMode(t, dst, 0o555)
+	assertMode(t, filepath.Join(dst, "nested"), 0o555)
+	assertMode(t, filepath.Join(dst, "root.txt"), 0o644)
+	assertMode(t, filepath.Join(dst, "nested", "nested.txt"), 0o644)
+	if got, err := os.ReadFile(filepath.Join(dst, "root.txt")); err != nil || string(got) != "root bytes" {
+		t.Fatalf("root file = %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dst, "nested", "nested.txt")); err != nil || string(got) != "nested bytes" {
+		t.Fatalf("nested file = %q, %v", got, err)
+	}
+}
+
+func TestPublishStagedCrossDeviceRestoresReadOnlyDirectoryModes(t *testing.T) {
+	parent := t.TempDir()
+	staging := filepath.Join(parent, "staging")
+	nested := filepath.Join(staging, "nested")
+	writeTestFile(t, filepath.Join(staging, "root.txt"), "root bytes")
+	writeTestFile(t, filepath.Join(nested, "nested.txt"), "nested bytes")
+	if err := os.Chmod(nested, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(staging, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	final := filepath.Join(t.TempDir(), "published")
+	t.Cleanup(func() {
+		_ = os.Chmod(filepath.Join(final, "nested"), 0o755)
+		_ = os.Chmod(final, 0o755)
+		_ = os.Chmod(nested, 0o755)
+		_ = os.Chmod(staging, 0o755)
+	})
+	oldRename := installRename
+	t.Cleanup(func() { installRename = oldRename })
+	calls := 0
+	installRename = func(from, to string) error {
+		calls++
+		if calls == 1 {
+			return &os.LinkError{Op: "rename", Old: from, New: to, Err: syscall.EXDEV}
+		}
+		return oldRename(from, to)
+	}
+
+	if err := publishStaged(staging, final, installRename); err != nil {
+		t.Fatal(err)
+	}
+
+	if calls < 2 {
+		t.Fatalf("cross-device publication did not fall back: %d calls", calls)
+	}
+	assertMode(t, final, 0o555)
+	assertMode(t, filepath.Join(final, "nested"), 0o555)
+	assertMode(t, filepath.Join(final, "root.txt"), 0o644)
+	assertMode(t, filepath.Join(final, "nested", "nested.txt"), 0o644)
+	if got, err := os.ReadFile(filepath.Join(final, "root.txt")); err != nil || string(got) != "root bytes" {
+		t.Fatalf("root file = %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(final, "nested", "nested.txt")); err != nil || string(got) != "nested bytes" {
+		t.Fatalf("nested file = %q, %v", got, err)
+	}
+}
