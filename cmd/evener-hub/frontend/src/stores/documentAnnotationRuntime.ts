@@ -57,34 +57,38 @@ export interface DocumentAnnotationPorts {
 
 export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationRepository): DocumentAnnotationRuntime {
   const failed = new Map<string, PreparedAnnotation>();
+  // Work whose outcome a storage-success trigger cannot see yet: the running
+  // pass, every queued or running direct handoff, and every in-flight save.
+  // One trigger slot and one spend rule cover all three, so a save and a
+  // handoff can never grow the per-window patches that a pass once needed.
   let pass: Promise<void> | null = null;
-  // The sweep part of the running pass, without its follow-up. A direct handoff
-  // queued mid-pass joins the chain the follow-up also waits on, so waiting for
-  // the whole pass would leave each waiting for the other: this separates the
-  // handoff work it can race from the follow-up that runs behind it.
-  let sweep: Promise<void> | null = null;
+  // The idle chain: the current pass plus every follow-up pass its settlement
+  // starts. whenIdle waits on this, so a trigger retained during a pass still
+  // keeps the caller waiting for the pass that spends it, even though a
+  // follow-up is a sibling pass rather than a continuation of this pass's own
+  // promise.
+  let idle: Promise<void> = Promise.resolve();
   let retryNeeded = false;
   let pendingDuringPass = false;
-  // A recovery trigger arriving while a pass runs names state that pass may
-  // already have visited: the composer its handoff skipped can have become
-  // claimable after the sweep moved on. Retain one such trigger and run one
-  // coalesced follow-up when the pass settles; a trigger during that follow-up
-  // coalesces into at most one more pass the same way. Disposal clears it, so
-  // no follow-up is ever scheduled after close.
-  // Non-null means a follow-up is retained: the reason doubles as the request.
-  let followUpReason: AnnotationRetryReason | null = null;
-  // A direct handoff records an outcome only when it RETURNS: while its
-  // preparation is outstanding the refusal that sets retryNeeded has not
-  // happened, and no pass exists to keep an observation for. A storage commit
-  // landing then names work this commit may have made claimable, so dropping
-  // the trigger leaves the annotation pending until unrelated activity
-  // arrives. Retain one trigger across EVERY outstanding handoff - queued ones
-  // included, because a queued handoff runs before any pass's sweep and can
-  // refuse the same way - and let the last one to settle spend it: one
-  // serialized pass if any of them left work pending, nothing if they all
-  // applied. Disposal clears it, so nothing schedules after close.
+  // ONE retained trigger: a storage success (or explicit retry request) that
+  // arrived while work was outstanding, coalesced to its first reason. The
+  // last unit of outstanding work spends it iff retry-needed is set or that
+  // unit's own outcome left work pending; otherwise the trigger named state
+  // the settled work already covered and is dropped. Disposal clears it, so a
+  // latched trigger never schedules a pass after close.
+  let latchedTrigger: AnnotationRetryReason | null = null;
+  // A direct handoff records an outcome only when it RETURNS or REJECTS:
+  // while its preparation is outstanding the refusal that sets retry-needed
+  // has not happened, and no pass exists to keep an observation for. A commit
+  // landing then names work it may have made claimable, so the trigger is
+  // retained across every outstanding handoff - queued ones included, because
+  // a queued handoff runs before any pass's sweep and can refuse the same way.
   let outstandingHandoffs = 0;
-  let handoffRecoveryTriggered = false;
+  // A save's outcome is equally unrecorded while its transaction is in
+  // flight: its failure records retry-needed only when the rejection lands,
+  // and a trigger arriving meanwhile is the only observation of the storage
+  // commit that failure may have left claimable.
+  let outstandingSaves = 0;
   let alive = true;
   // The pass hands off through the repository's own sweep, so disposal must be
   // observable between those handoffs and not only at this pass's outer
@@ -144,6 +148,9 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
       if (pass) pendingDuringPass = true;
     }
   };
+  // The pass slot, the outstanding handoffs and the in-flight saves are one
+  // set: a trigger can see none of their outcomes until they settle.
+  const outstandingWork = (): number => (pass === null ? 0 : 1) + outstandingHandoffs + outstandingSaves;
   const save = async (input: PreparedAnnotation): Promise<SaveReceipt | null> => {
     if (!alive) return null;
     // Retain the immutable operation BEFORE the fallible await; a later caller
@@ -158,6 +165,7 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
       cancellations.set(operationKey, entry);
     }
     entry.active += 1;
+    outstandingSaves += 1;
     try {
       const receipt = await repo.saveAnnotation(operation, entry.token);
       if (failed.get(operationKey) === operation) failed.delete(operationKey);
@@ -171,15 +179,43 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
     } finally {
       entry.active -= 1;
       if (entry.active === 0 && cancellations.get(operationKey) === entry) cancellations.delete(operationKey);
+      // A handled dismissal settles here too: it is still work whose outcome
+      // a retained trigger was waiting on.
+      outstandingSaves -= 1;
+      settleWork(false);
     }
   };
+  // The ONE spend rule every kind of outstanding work shares: the pass, a
+  // direct handoff and a save all settle here. Only the LAST unit to settle
+  // reads the latch, and it spends it on work still pending - retry-needed
+  // covers a failed save, a refused handoff, a rejection the retry map cannot
+  // show, and a pass outcome that left persisted work; settledWorkPending
+  // covers a work unit whose own answer left something claimable. At the
+  // moment a pass settles, the pass slot is already clear and every queued
+  // handoff is still counted, so a handoff queued mid-pass defers the spend to
+  // its own settlement instead of racing this one. Returns the pass chain it
+  // started, so a pass settlement can chain a follow-up into whenIdle.
+  const spendTrigger = (settledWorkPending: boolean): Promise<void> | undefined => {
+    if (outstandingWork() > 0) return undefined;
+    const trigger = latchedTrigger;
+    if (trigger === null) return undefined;
+    if (!alive || (!settledWorkPending && !retryNeeded)) {
+      latchedTrigger = null;
+      return undefined;
+    }
+    latchedTrigger = null;
+    return startPass(trigger);
+  };
+  const settleWork = (settledWorkPending: boolean): void => {
+    void spendTrigger(settledWorkPending);
+  };
   const startPass = (reason: AnnotationRetryReason): Promise<void> => {
+    if (!alive) return Promise.resolve();
     pendingDuringPass = false; // before assigning pass, never erase observations made while it runs
-    followUpReason = null;
     // The pass's persisted sweep drives handoffs at the repository level, so
-    // it joins the same chain: an in-flight direct handoff finishes first and
-    // the sweep never races it for the composer.
-    const current = handoffChain.then(async () => {
+    // it joins the same chain: in-flight direct handoffs finish first and the
+    // sweep never races them for the composer.
+    const run = handoffChain.then(async () => {
       for (const operation of [...failed.values()]) {
         if (!alive) return;
         // invalidate may have removed this attempt while an earlier save waited.
@@ -193,56 +229,40 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
           needRetry();
         }
     });
-    const withFollowUp = current.then(async () => {
-      if (!alive || followUpReason === null) return;
-      // Read the retained reason before startPass resets the entry point: the
-      // follow-up's own trigger handling stays independent of this pass's.
-      const nextReason = followUpReason;
-      await startPass(nextReason);
-    });
-    pass = withFollowUp;
-    sweep = current;
-    const settle = () => {
-      // A nested follow-up owns the slot while it runs, and a later trigger
-      // outside every pass starts its own.
-      if (pass === withFollowUp) {
-        pass = null;
-        sweep = null;
-      }
-    };
-    void withFollowUp.then(settle, settle);
-    return withFollowUp;
+    pass = run;
+    // A trigger retained during this pass is spent when it settles, as a
+    // SIBLING pass ordered behind the handoff chain rather than a continuation
+    // chained INTO this pass's promise. That keeps "the current pass" one
+    // awaitable unit, so a direct handoff queued mid-pass can wait for it
+    // without also waiting for a follow-up that is itself ordered behind that
+    // handoff - the wait graph that deadlocked when the follow-up was part of
+    // the pass.
+    const chain = run.then(
+      () => settlePass(run),
+      () => settlePass(run),
+    );
+    idle = chain;
+    return chain;
+  };
+  const settlePass = (run: Promise<void>): Promise<void> | undefined => {
+    // A follow-up started by an earlier settle owns the slot while it runs.
+    if (pass === run) pass = null;
+    return spendTrigger(false);
   };
   const retryPending = (reason: AnnotationRetryReason): Promise<void> => {
     if (!alive) return Promise.resolve();
     if (pass) {
       // This trigger reports state the running pass may already have visited:
       // retain it for one coalesced follow-up instead of dropping it.
-      followUpReason ??= reason;
-      return pass;
+      latchedTrigger ??= reason;
+      return idle;
     }
     return startPass(reason);
-  };
-  // Settlement bookkeeping for one direct handoff. Only the last outstanding
-  // handoff can spend the retained trigger, and it spends it on the work still
-  // pending rather than on its own answer: an earlier handoff in the set can
-  // have refused while the last one applied, and retryNeeded is the only place
-  // that refusal left a trace. A need an earlier pass could not prove is just
-  // as valid to sweep on a retained storage-recovered trigger. At the moment
-  // this schedules, no other handoff is in flight or queued and this handoff's
-  // own chain entry has settled, so the pass waits only on settled work.
-  const settleHandoff = (leftPending: boolean): void => {
-    outstandingHandoffs -= 1;
-    if (outstandingHandoffs > 0) return;
-    const retained = handoffRecoveryTriggered;
-    handoffRecoveryTriggered = false;
-    if (!alive || !retained) return;
-    if (leftPending || retryNeeded) void retryPending("storage-recovered");
   };
   return {
     save,
     retryPending,
-    whenIdle: () => pass ?? Promise.resolve(),
+    whenIdle: () => idle,
     handoff: (key, operationId) => {
       // A disposed runtime owns no composer work: a handoff arriving after
       // disposal, or waiting in the serialization chain when disposal lands,
@@ -253,7 +273,11 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
       // Counted from the call rather than from the moment the chain reaches it:
       // a queued handoff's outcome is just as unrecorded as a running one's.
       outstandingHandoffs += 1;
-      const prior = sweep ? Promise.all([sweep, handoffChain]) : handoffChain;
+      // Wait for the pass that was current when this handoff was called, never
+      // for a follow-up that pass may start: the follow-up is ordered behind
+      // this handoff in the handoff chain, so waiting for both would close the
+      // cycle that stranded a queued handoff behind a follow-up waiting on it.
+      const prior = pass ? Promise.all([pass, handoffChain]) : handoffChain;
       const attempt = () =>
         alive
           ? repo.handoff(key, operationId, retryCancellation)
@@ -267,33 +291,34 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
         (result) => {
           const leftPending = result.state === "pending";
           if (leftPending) needRetry();
-          settleHandoff(leftPending);
+          outstandingHandoffs -= 1;
+          settleWork(leftPending);
           return result;
         },
         (error) => {
           // A rejected handoff is an unobserved outcome the retry map cannot
           // show: spend a retained trigger on the pass that can record it.
-          settleHandoff(true);
+          outstandingHandoffs -= 1;
+          settleWork(true);
           throw error;
         },
       );
     },
     storageSucceeded: () => {
       if (!alive) return;
-      if (pass) {
-        // A storage commit during a pass is the same retained trigger: it may
-        // have made a skipped handoff claimable after the sweep passed it. Do
-        // not gate on retryNeeded, which the running pass has not updated yet.
-        followUpReason ??= "storage-recovered";
+      // A storage commit during a running pass, an outstanding handoff or an
+      // in-flight save names work whose outcome this notification cannot see
+      // yet: retain one coalesced trigger and let the last unit to settle
+      // spend it. The pass is included here on purpose - a commit during a
+      // pass may have made a handoff the sweep already skipped claimable, and
+      // the pass's own settlement is the spend point.
+      if (outstandingWork() > 0) {
+        latchedTrigger ??= "storage-recovered";
         return;
       }
-      if (retryNeeded) {
-        void retryPending("storage-recovered");
-        return;
-      }
-      // Nothing recorded a need and no pass runs: an outstanding direct handoff
-      // is the only work whose outcome this notification cannot see yet.
-      if (outstandingHandoffs > 0) handoffRecoveryTriggered = true;
+      // Nothing is outstanding and a need is already recorded: start the pass
+      // now. A trigger with neither names no work and is dropped.
+      if (retryNeeded) void startPass("storage-recovered");
     },
     registerRetryNeed: () => {
       needRetry();
@@ -323,8 +348,7 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
       cancellations.clear();
       retryNeeded = false;
       pendingDuringPass = false;
-      followUpReason = null;
-      handoffRecoveryTriggered = false;
+      latchedTrigger = null;
     },
   };
 }
