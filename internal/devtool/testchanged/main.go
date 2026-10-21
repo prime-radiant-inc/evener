@@ -129,7 +129,7 @@ func run(stdout, stderr io.Writer, root, base string, modules []string, race boo
 		}
 	}
 	if failed {
-		fmt.Fprintln(os.Stderr, "test-changed: FAIL: at least one selected module failed")
+		sayln(stderr, "test-changed: FAIL: at least one selected module failed")
 		return 1
 	}
 	sayf(stdout, "test-changed: PASS (%d package(s) in %d module(s))\n", len(res.Selected), len(mods))

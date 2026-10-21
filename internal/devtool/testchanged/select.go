@@ -152,7 +152,12 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 			// package's tests, so it must reach the attribution below rather
 			// than be dropped as unobservable. Treating it as removed reported
 			// success while the owning package's tests failed.
-			if !isTestdataPath(rel) && !pathExists(filepath.Join(g.root, filepath.FromSlash(rel))) {
+			//
+			// Non-Go files are exempt too. Only a Go file implies a package that
+			// stopped existing; a deleted doc or Makefile fragment is read by
+			// the repo-root audit tests, so it must reach the repository-file
+			// branch below instead of being dropped as unobservable.
+			if goFile && !isTestdataPath(rel) && !pathExists(filepath.Join(g.root, filepath.FromSlash(rel))) {
 				res.Removed = append(res.Removed, rel)
 				continue
 			}

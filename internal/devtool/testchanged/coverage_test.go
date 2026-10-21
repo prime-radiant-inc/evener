@@ -116,6 +116,25 @@ func TestRepositoryFileSelectsRootPackageOnly(t *testing.T) {
 	}
 }
 
+// Deleting a repository file the root audit tests read must select the root
+// package too. The removed shortcut once swallowed it, so `git rm` of a doc
+// reported success while `go test .` failed.
+func TestDeletedRepositoryFileSelectsRootPackage(t *testing.T) {
+	g := loadTestGraph(t)
+	// A path that is absent from this checkout: the point is the deleted case.
+	res := selectPackages(g, []string{"docs/removed-guide.md"}, testModules)
+
+	if len(res.Removed) != 0 {
+		t.Errorf("Removed = %v, want nothing: a deleted doc is read by root audit tests", res.Removed)
+	}
+	if reasonForPath(res, "primeradiant.com/evener") == "" {
+		t.Errorf("Selected = %v, want the repo-root package", selectedPaths(res))
+	}
+	if res.GoChanged != 0 {
+		t.Errorf("GoChanged = %d, want 0 for a deleted non-Go file", res.GoChanged)
+	}
+}
+
 // go.mod changes what every package in its module can build against, and a
 // module root that holds no package at all used to vanish entirely.
 func TestModuleManifestSelectsTheWholeModule(t *testing.T) {
