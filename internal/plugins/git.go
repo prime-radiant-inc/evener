@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/execsupport/orphanpipe"
+	"primeradiant.com/evener/identifier"
 )
 
 var (
@@ -40,7 +41,12 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	// Repository-selection variables (GIT_DIR, GIT_WORK_TREE, and friends) name
+	// an ambient repository that has nothing to do with the path this command
+	// operates on. Strip them so the command works on the repository its own
+	// directory or arguments name. Other Git configuration, credentials, hooks,
+	// and transports stay intact.
+	cmd.Env = append(identifier.FilteredGitEnvironment(os.Environ()), "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.CombinedOutput()
 	if err = orphanpipe.ChildErr(cmd, err); err != nil {
 		return "", fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, out)

@@ -97,8 +97,11 @@ func (m *Manager) stagePlugin(ctx context.Context, marketplace, plugin string, r
 			return cp.Source.Path, "", false, nil
 		}
 	}
-	parent := filepath.Join(m.cacheDir(), marketplace, plugin)
-	if err := installMkdirAll(parent, 0o755); err != nil {
+	// Preparation happens under the store's private publishing area, never in
+	// the content root: a fetch's Git directory must not exist where a session
+	// can be granted it, even for the moment before publication.
+	parent := filepath.Join(m.publishingDir(marketplace, plugin))
+	if err := installMkdirAll(parent, 0o700); err != nil {
 		return "", "", false, err
 	}
 	// A legacy marketplace may have published beneath any fixed scratch
@@ -120,6 +123,18 @@ func (m *Manager) stagePlugin(ctx context.Context, marketplace, plugin string, r
 // commitStaged publishes an already validated staging dir. It never replaces a
 // published revision, even when the source revisits an older SHA.
 func (m *Manager) commitStaged(marketplace, plugin, staging, sha string) (string, error) {
+	if err := auditPluginContent(staging); err != nil {
+		_ = installRemoveAll(staging)
+		return "", err
+	}
+	if (isGitName(marketplace) || isGitName(plugin)) && m.managedContentClean() {
+		// Invalidate before even creating the namespace. If this write fails,
+		// preserve the content that the previous clean marker describes.
+		if err := m.writeManagedContentState(managedContentUnverified); err != nil {
+			_ = installRemoveAll(staging)
+			return "", err
+		}
+	}
 	parent := filepath.Join(m.cacheDir(), marketplace, plugin)
 	if err := installMkdirAll(parent, 0o755); err != nil {
 		_ = installRemoveAll(staging)
@@ -150,7 +165,7 @@ func (m *Manager) commitStaged(marketplace, plugin, staging, sha string) (string
 		}
 		final = reserved
 	}
-	if err := installRename(staging, final); err != nil {
+	if err := publishStaged(staging, final, installRename); err != nil {
 		_ = installRemoveAll(staging)
 		return "", err
 	}
