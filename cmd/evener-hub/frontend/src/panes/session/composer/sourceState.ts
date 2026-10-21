@@ -573,10 +573,11 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
     bindEditor(nextEditor) {
       if (disposed) return () => {};
       if (!ownsDraft() && activeRecoveryIdRef.current === null) {
-        const draft = readComposerDraft(ref);
+        const draft = readComposerDraftSnapshot(ref);
         updateText(draft.text);
         updateSkillNames(restoredSkillNames(draft));
         updateSelectionMeta(draft);
+        currentDraftRevisionId = draft.revisionId;
         ownedDraftRevisionRef.current = readDraftRevision(ref);
       }
       markRestore();

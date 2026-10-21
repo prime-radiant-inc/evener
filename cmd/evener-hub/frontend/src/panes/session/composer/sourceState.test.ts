@@ -10,7 +10,14 @@ import { getToasts, pushToast, resetToastStoreForTests } from "../../../widgets/
 import { createTestComposerSource } from "../testing/composerSource";
 import { installControlledImageEncoding } from "../testing/imageEncoding";
 import { createAttachmentOperations, useAttachments } from "./attachments/useAttachments";
-import { readComposerDraft, readComposerDraftRevisionId, readDraftRevision, writeComposerDraft } from "./draft";
+import {
+  draftStorageKey,
+  markDraftEdited,
+  readComposerDraft,
+  readComposerDraftRevisionId,
+  readDraftRevision,
+  writeComposerDraft,
+} from "./draft";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 
 beforeEach(() => {
@@ -154,6 +161,87 @@ test("failed source draft write cannot acquire another source's revision token",
     setItem.mockRestore();
     sourceA.dispose();
     sourceB.dispose();
+    storage.close();
+  }
+});
+
+test("rebound composer adopts and consumes the exact persisted draft revision once", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const queued = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input: [{ type: "text", text: "B" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "B" }] },
+  });
+  await storage.transferToRecovery(queued.clientMutationId, "rejected");
+
+  // The pane source exists before another owner writes the persisted draft.
+  const source = createTestComposerSource("root");
+  const detachInitialEditor = source.bindEditor({ read: () => source.editor.read(), write: () => {} });
+  detachInitialEditor();
+  writeComposerDraft("root", { text: "A", skillNames: [] });
+  const draftRevisionId = readComposerDraftRevisionId("root");
+  if (!draftRevisionId) throw new Error("missing persisted draft revision fixture");
+  const unbind = source.bindEditor({ read: () => source.editor.read(), write: () => {} });
+
+  try {
+    expect(source.getSnapshot().text).toBe("A");
+    const recovery = await storage.getRecovery(queued.clientMutationId);
+    if (!recovery) throw new Error("missing recovery fixture");
+    await source.activateRecovery(recovery);
+    const consolidated = await storage.getRecovery(queued.clientMutationId);
+    expect(consolidated?.composerText).toBe("A\n\nB");
+    expect(consolidated?.localDraftRevisionId).toBe(draftRevisionId);
+
+    unbind();
+    source.dispose();
+    const reopened = createTestComposerSource("root");
+    try {
+      const reopenedRecovery = await storage.getRecovery(queued.clientMutationId);
+      if (!reopenedRecovery) throw new Error("missing consolidated recovery fixture");
+      await reopened.activateRecovery(reopenedRecovery);
+      expect(reopened.getSnapshot().text).toBe("A\n\nB");
+      expect(readComposerDraftRevisionId("root")).toBeUndefined();
+    } finally {
+      reopened.dispose();
+    }
+  } finally {
+    unbind();
+    source.dispose();
+    storage.close();
+  }
+});
+
+test("rebound legacy draft is merged without claiming a missing revision", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const queued = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input: [{ type: "text", text: "B" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "B" }] },
+  });
+  await storage.transferToRecovery(queued.clientMutationId, "rejected");
+  const source = createTestComposerSource("root");
+  const detachInitialEditor = source.bindEditor({ read: () => source.editor.read(), write: () => {} });
+  detachInitialEditor();
+  localStorage.setItem(draftStorageKey("root"), "legacy A");
+  markDraftEdited("root");
+  const unbind = source.bindEditor({ read: () => source.editor.read(), write: () => {} });
+
+  try {
+    const recovery = await storage.getRecovery(queued.clientMutationId);
+    if (!recovery) throw new Error("missing recovery fixture");
+    await source.activateRecovery(recovery);
+    const consolidated = await storage.getRecovery(queued.clientMutationId);
+    expect(consolidated?.composerText).toBe("legacy A\n\nB");
+    expect(consolidated?.localDraftRevisionId).toBeUndefined();
+  } finally {
+    unbind();
+    source.dispose();
     storage.close();
   }
 });

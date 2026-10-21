@@ -93,6 +93,15 @@ test("completed-command cleanup markers survive reopen without becoming draft in
 	expect(repository.refsWithDrafts(destination.hubId)).not.toContain(destination.sessionRef);
 });
 
+test("released recovery exclusions survive reopen without becoming a draft indicator", () => {
+	const released = { draft: "", unconfirmed: null, releasedRecoveryIds: ["source-a"] };
+	repository.write(destination, released);
+	database.close();
+	openRepository();
+	expect(repository.read(destination)).toEqual(released);
+	expect(repository.refsWithDrafts(destination.hubId)).not.toContain(destination.sessionRef);
+});
+
 test("a failed whole-record write preserves prior draft content and completion marker", () => {
 	const prior = {
 		draft: "prior work",

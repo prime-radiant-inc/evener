@@ -2,6 +2,7 @@ import { afterEach, expect, it } from "vitest";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
+import { buildComposerInput } from "@evener/appwire-client";
 
 const databases: SqliteDoubleDatabase[] = [];
 function setup() {
@@ -64,6 +65,39 @@ it("shifts mention offsets around a multi-digit marker using UTF-16 positions", 
 			],
 		},
 	});
+});
+
+it("removing an image prunes a selected label that the shifted text no longer contains", async () => {
+	const { repository, destination } = setup();
+	repository.write(
+		destination,
+		{
+			draft: "/skill[image 1]Extra",
+			unconfirmed: null,
+			images: [{ id: "tile", marker: 1, mediaType: "image/png" }],
+			composer: {
+				skillNames: ["skill"],
+				mentions: [{ kind: "skill", name: "skill", offset: 0 }],
+			},
+		},
+		[{ id: "tile", marker: 1, mediaType: "image/png", data: "AQID" }],
+	);
+	const document = new DraftDocument(() => repository, destination);
+	document.removeImage("tile");
+	const stored = repository.read(destination);
+	expect(stored).toMatchObject({ draft: "/skillExtra", composer: { skillNames: [], mentions: [] } });
+	let submitted: ReturnType<typeof buildComposerInput> | undefined;
+	await document.submit(async (text, images, context) => {
+		submitted = buildComposerInput(
+			text,
+			images,
+			context.composer?.skillNames ?? [],
+			context.composer?.commandNames ?? [],
+			context.composer?.mentions,
+		);
+		return false;
+	});
+	expect(submitted).toEqual([{ type: "text", text: "/skillExtra" }]);
 });
 
 it("reallocates a marker claimed by a literal or another tile and reopens with original image bytes", () => {

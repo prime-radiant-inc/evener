@@ -646,6 +646,166 @@ it("actual screen reacquires interrupted editing ownership in an effect", async 
 	expect(f.requests.filter((r) => r.method.startsWith("turn/"))).toEqual([]);
 });
 
+it("actual screen restores an interrupted Edit after cached identity Retry", async () => {
+	const f = await mount();
+	await f.offline();
+	const source = await enqueue(f, "exact interrupted source text");
+	act(() => f.tree.unmount());
+	await act(async () => {
+		const claimed = await f.runtime.storage.transferToRecovery(source.clientMutationId, "editing");
+		expect(claimed?.clientMutationId).toBe(source.clientMutationId);
+	});
+	harness.kvFailure = "read";
+	const tree = await f.recreateOffline();
+	expect(f.document.getSnapshot().record.composer?.recoveryIds).toBeUndefined();
+	expect(tree.root.findAllByProps({ accessibilityLabel: "Retry" })).toHaveLength(1);
+	harness.kvFailure = "";
+	await act(async () => pressable(tree, "Retry")?.props.onPress());
+	await settle();
+	expect(f.document.getSnapshot().record).toMatchObject({
+		draft: "exact interrupted source text",
+		composer: { recoveryIds: [source.clientMutationId] },
+	});
+	expect((await f.runtime.read(f.targetKey)).recovery.map((row) => row.clientMutationId)).toEqual([
+		source.clientMutationId,
+	]);
+});
+
+it("actual screen releases owned recovery when text-only composition becomes empty", async () => {
+	const f = await mount();
+	await f.offline();
+	await act(async () => {
+		await f.runtime.submit({
+			kind: "send",
+			hubId: "hub-1",
+			targetRef: f.ref,
+			threadId: f.thread.id,
+			instanceId: "instance",
+			input: [{ type: "text", text: "text to clear" }],
+			composer: { text: "text to clear", attachments: [] },
+		});
+	});
+	const source = (await f.runtime.read(f.targetKey)).outbox[0];
+	if (!source) throw new Error("missing text recovery source");
+	act(() => f.tree.unmount());
+	await act(async () => {
+		await f.runtime.storage.transferToRecovery(source.clientMutationId, "editing");
+	});
+	const beforeClear = await f.recreateOffline();
+	expect(f.document.getSnapshot().record.composer?.recoveryIds).toEqual([source.clientMutationId]);
+	const input = beforeClear.root.findAll(
+		(node) => String(node.type) === "TextInput" && node.props.value === "text to clear",
+	)[0];
+	if (!input) throw new Error("missing recovered text input");
+	await act(async () => input.props.onChangeText(""));
+	const tree = await f.recreateOffline();
+	const recovered = tree.root.findAllByType(GhostRowView).map((node) => node.props.row.ghost as Ghost | undefined);
+	expect(
+		recovered.find(
+			(row) => row?.origin.kind === "recovery" && row.origin.row.clientMutationId === source.clientMutationId,
+		)?.buttons,
+	).toEqual(["discard"]);
+});
+
+it("actual screen keeps a released source available when a later Edit claims another source", async () => {
+	const f = await mount();
+	await f.offline();
+	await act(async () => {
+		await f.runtime.submit({
+			kind: "send",
+			hubId: "hub-1",
+			targetRef: f.ref,
+			threadId: f.thread.id,
+			instanceId: "instance",
+			input: [{ type: "text", text: "source A text" }],
+			composer: { text: "source A text", attachments: [] },
+		});
+	});
+	await settle();
+	const sourceA = (await f.runtime.read(f.targetKey)).outbox[0];
+	if (!sourceA) throw new Error("missing source A recovery record");
+	act(() => f.tree.unmount());
+	await act(async () => {
+		await f.runtime.storage.transferToRecovery(sourceA.clientMutationId, "editing");
+	});
+	const aTree = await f.recreateOffline();
+	await settle();
+	expect(f.document.getSnapshot().record.releasedRecoveryIds ?? []).toEqual([]);
+	expect((await f.runtime.read(f.targetKey)).recovery.map((row) => row.clientMutationId)).toEqual([
+		sourceA.clientMutationId,
+	]);
+	expect(f.document.getSnapshot().record.draft).toBe("source A text");
+	const input = aTree.root.findAll(
+		(node) => String(node.type) === "TextInput" && node.props.value === "source A text",
+	)[0];
+	if (!input) throw new Error("missing source A composer input");
+	await act(async () => input.props.onChangeText(""));
+	await f.recreateOffline();
+	await act(async () => {
+		await f.runtime.submit({
+			kind: "send",
+			hubId: "hub-1",
+			targetRef: f.ref,
+			threadId: f.thread.id,
+			instanceId: "instance",
+			input: [{ type: "text", text: "source B text" }],
+			composer: { text: "source B text", attachments: [] },
+		});
+	});
+	const sourceB = (await f.runtime.read(f.targetKey)).outbox.at(-1);
+	if (!sourceB) throw new Error("missing source B recovery record");
+	await act(async () => {
+		await f.runtime.storage.transferToRecovery(sourceB.clientMutationId, "editing");
+	});
+	const tree = await f.recreateOffline();
+	const record = f.document.getSnapshot().record;
+	expect(record.draft).toBe("source B text");
+	expect(record.composer?.recoveryIds).toEqual([sourceB.clientMutationId]);
+	expect(record.releasedRecoveryIds).toEqual([sourceA.clientMutationId]);
+	const sourceARow = tree.root
+		.findAllByType(GhostRowView)
+		.map((node) => node.props.row.ghost as Ghost | undefined)
+		.find((row) => row?.origin.kind === "recovery" && row.origin.row.clientMutationId === sourceA.clientMutationId);
+	expect(sourceARow?.buttons).toEqual(["discard"]);
+});
+
+it("actual screen releases owned recovery when image-only composition becomes empty", async () => {
+	const f = await mount();
+	await f.offline();
+	await act(async () => {
+		await f.runtime.submit({
+			kind: "send",
+			hubId: "hub-1",
+			targetRef: f.ref,
+			threadId: f.thread.id,
+			instanceId: "instance",
+			input: [{ type: "image", mediaType: "image/png", data: "AQID" }],
+			composer: { text: "", attachments: [{ marker: 1, mediaType: "image/png", data: "AQID" }] },
+		});
+	});
+	await settle();
+	const source = (await f.runtime.read(f.targetKey)).outbox[0];
+	if (!source) throw new Error("missing image recovery source");
+	act(() => f.tree.unmount());
+	await act(async () => {
+		await f.runtime.storage.transferToRecovery(source.clientMutationId, "editing");
+	});
+	await f.recreateOffline();
+	expect(f.document.getSnapshot().record.composer?.recoveryIds).toEqual([source.clientMutationId]);
+	const image = f.document.getSnapshot().record.images?.[0];
+	if (!image) throw new Error("missing recovered image");
+	act(() => f.document.removeImage(image.id));
+	const tree = await f.recreateOffline();
+	const row = tree.root
+		.findAllByType(GhostRowView)
+		.map((node) => node.props.row.ghost as Ghost | undefined)
+		.find(
+			(candidate) =>
+				candidate?.origin.kind === "recovery" && candidate.origin.row.clientMutationId === source.clientMutationId,
+		);
+	expect(row?.buttons).toEqual(["discard"]);
+});
+
 it("actual screen keeps uncertain Discard separate from local queue actions", async () => {
 	const f = await mount();
 	await f.offline();

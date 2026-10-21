@@ -30,6 +30,61 @@ function occupiedMetadata(metadata?: DraftComposerMetadata): boolean {
 	return !!(metadata?.skillNames?.length || metadata?.commandNames?.length || metadata?.recoveryIds?.length);
 }
 
+function reconcileEditedComposer(
+	record: DraftRecord,
+	text: string,
+	mentions: DraftComposerMetadata["mentions"],
+): DraftComposerMetadata | undefined {
+	const composer = record.composer;
+	if (composer?.mentions === undefined) return composer;
+	const retains = (kind: "skill" | "command", name: string) => {
+		const hadLabel = composer.mentions?.some((mention) => mention.kind === kind && mention.name === name);
+		return !hadLabel || !!mentions?.some((mention) => mention.kind === kind && mention.name === name);
+	};
+	return {
+		...composer,
+		mentions,
+		skillNames: composer.skillNames?.filter((name) => retains("skill", name)),
+		commandNames: composer.commandNames?.filter((name) => retains("command", name)),
+	};
+}
+
+function releasedIds(record: DraftRecord): string[] {
+	const legacy = (record.composer as (DraftComposerMetadata & { releasedRecoveryIds?: string[] }) | undefined)
+		?.releasedRecoveryIds;
+	return [...new Set([...(record.releasedRecoveryIds ?? []), ...(legacy ?? [])])];
+}
+
+function releaseEmptyComposerOwnership(record: DraftRecord): DraftRecord {
+	const composer = record.composer;
+	const releasedRecoveryIds = releasedIds(record);
+	const { releasedRecoveryIds: _legacy, ...composerMetadata } =
+		(composer as (DraftComposerMetadata & { releasedRecoveryIds?: string[] }) | undefined) ?? {};
+	const migrated =
+		releasedRecoveryIds.length && record.releasedRecoveryIds === undefined
+			? { ...record, releasedRecoveryIds }
+			: record;
+	if (!composer) return migrated;
+	const parkedIds = new Set(record.unconfirmedComposer?.recoveryIds ?? []);
+	const claimedIds = (composer?.recoveryIds ?? []).filter((id) => !parkedIds.has(id));
+	if (
+		record.draft !== "" ||
+		(record.images?.length ?? 0) > 0 ||
+		composer?.skillNames?.length ||
+		composer?.commandNames?.length ||
+		!claimedIds.length
+	)
+		return migrated;
+	return {
+		...migrated,
+		composer: {
+			...composerMetadata,
+			recoveryIds: composer.recoveryIds?.filter((id) => !claimedIds.includes(id)) ?? [],
+		},
+		releasedRecoveryIds: [...new Set([...releasedRecoveryIds, ...claimedIds])],
+	};
+}
+
 function composition(text: string, images: DraftImage[] = [], metadata?: DraftComposerMetadata) {
 	return {
 		text,
@@ -110,20 +165,21 @@ export class DraftDocument {
 	}
 	private persist(record: DraftRecord, retainOnFailure: boolean) {
 		if (this.forgotten) return;
+		const persisted = releaseEmptyComposerOwnership(record);
 		try {
 			const referenced = new Set(
-				[...(record.images ?? []), ...(record.unconfirmedImages ?? [])].map((image) => image.id),
+				[...(persisted.images ?? []), ...(persisted.unconfirmedImages ?? [])].map((image) => image.id),
 			);
 			this.repository().write(
 				this.destination,
-				record,
+				persisted,
 				[...this.unsavedImages.values()].filter((image) => referenced.has(image.id)),
 			);
 			this.unsavedImages.clear();
-			this.update({ record, error: null });
+			this.update({ record: persisted, error: null });
 		} catch (error) {
 			this.update({
-				...(retainOnFailure ? { record } : {}),
+				...(retainOnFailure ? { record: persisted } : {}),
 				error: "Your latest draft could not be saved on this device. Keep this screen open and retry saving.",
 			});
 			throw error;
@@ -133,12 +189,11 @@ export class DraftDocument {
 		if (this.forgotten) return;
 		try {
 			if (this.snapshot.loaded) this.persist(this.snapshot.record, true);
-			else
-				this.update({
-					record: this.repository().read(this.destination),
-					loaded: true,
-					error: null,
-				});
+			else {
+				const record = this.repository().read(this.destination);
+				this.update({ record, loaded: true, error: null });
+				if (releasedIds(record).length && record.releasedRecoveryIds === undefined) this.persist(record, true);
+			}
 		} catch {
 			if (!this.snapshot.loaded)
 				this.update({
@@ -158,28 +213,17 @@ export class DraftDocument {
 	edit(text: string) {
 		if (!this.snapshot.loaded) return;
 		const record = this.snapshot.record;
-		const composer = record.composer;
 		const mentions =
-			composer?.mentions === undefined ? undefined : reconcileComposerMentions(record.draft, text, composer.mentions);
-		const retains = (kind: "skill" | "command", name: string) => {
-			const hadLabel = composer?.mentions?.some((mention) => mention.kind === kind && mention.name === name);
-			return !hadLabel || !!mentions?.some((mention) => mention.kind === kind && mention.name === name);
-		};
+			record.composer?.mentions === undefined
+				? undefined
+				: reconcileComposerMentions(record.draft, text, record.composer.mentions);
+		const composer = reconcileEditedComposer(record, text, mentions);
 		try {
 			this.persist(
 				{
 					...record,
 					draft: text,
-					...(composer?.mentions !== undefined
-						? {
-								composer: {
-									...composer,
-									mentions,
-									skillNames: composer.skillNames?.filter((name) => retains("skill", name)),
-									commandNames: composer.commandNames?.filter((name) => retains("command", name)),
-								},
-							}
-						: {}),
+					...(composer === undefined ? {} : { composer }),
 				},
 				true,
 			);
@@ -201,6 +245,7 @@ export class DraftDocument {
 					draft: text,
 					images: undefined,
 					composer: undefined,
+					releasedRecoveryIds: releasedIds(record),
 					unconfirmed: owned ? record.draft : null,
 					unconfirmedImages: owned ? record.images : undefined,
 					unconfirmedComposer: owned ? record.composer : undefined,
@@ -242,6 +287,7 @@ export class DraftDocument {
 						mentions: merged.mentions,
 						recoveryIds: [...(record.composer?.recoveryIds ?? []), source.clientMutationId],
 					},
+					releasedRecoveryIds: releasedIds(record).filter((id) => id !== source.clientMutationId),
 				},
 				false,
 			);
@@ -307,26 +353,31 @@ export class DraftDocument {
 		const images = record.images?.filter((item) => item.id !== id);
 		const marker = markerText(image.marker);
 		const markerOffset = record.draft.indexOf(marker);
-		const composer =
+		const shiftedMentions =
 			record.composer?.mentions && markerOffset >= 0
-				? {
-						...record.composer,
-						mentions: record.composer.mentions.map((mention) => ({
-							...mention,
-							offset:
-								mention.offset >= markerOffset + marker.length
-									? mention.offset - marker.length
-									: mention.offset > markerOffset
-										? markerOffset
-										: mention.offset,
-						})),
-					}
-				: record.composer;
+				? record.composer.mentions.map((mention) => ({
+						...mention,
+						offset:
+							mention.offset >= markerOffset + marker.length
+								? mention.offset - marker.length
+								: mention.offset > markerOffset
+									? markerOffset
+									: mention.offset,
+					}))
+				: record.composer?.mentions;
+		const text = stripMarker(record.draft, undefined, image.marker).value;
+		const composer = reconcileEditedComposer(
+			record,
+			text,
+			record.composer?.mentions === undefined
+				? undefined
+				: reconcileComposerMentions(record.draft, text, shiftedMentions ?? []),
+		);
 		try {
 			this.persist(
 				{
 					...record,
-					draft: stripMarker(record.draft, undefined, image.marker).value,
+					draft: text,
 					images: images?.length ? images : undefined,
 					...(composer === undefined ? {} : { composer }),
 				},
@@ -410,6 +461,9 @@ export class DraftDocument {
 				unconfirmedComposer: metadata,
 				unconfirmedCaptureToken: draftCaptureToken,
 				unconfirmedImages: outbound.length ? [...reissuedRecords, ...images] : undefined,
+				releasedRecoveryIds: builtinCommand
+					? releasedIds(record).filter((id) => !metadata?.recoveryIds?.includes(id))
+					: releasedIds(record),
 			},
 			false,
 		);
@@ -446,6 +500,7 @@ export class DraftDocument {
 								unconfirmedComposer: undefined,
 								unconfirmedCaptureToken: undefined,
 								completedCommandRecoveryIds: [...new Set([...(current.completedCommandRecoveryIds ?? []), ...ids])],
+								releasedRecoveryIds: releasedIds(current).filter((id) => !ids.includes(id)),
 							},
 							true,
 						);
@@ -505,7 +560,14 @@ export class DraftDocument {
 		const remaining = (record.completedCommandRecoveryIds ?? []).filter((id) => !ids.includes(id));
 		if (remaining.length === (record.completedCommandRecoveryIds ?? []).length) return true;
 		try {
-			this.persist({ ...record, completedCommandRecoveryIds: remaining.length ? remaining : undefined }, false);
+			this.persist(
+				{
+					...record,
+					completedCommandRecoveryIds: remaining.length ? remaining : undefined,
+					releasedRecoveryIds: releasedIds(record).filter((id) => !ids.includes(id)),
+				},
+				false,
+			);
 			return true;
 		} catch {
 			return false;
@@ -592,6 +654,9 @@ export class DraftDocument {
 						mentions: merged.mentions,
 						recoveryIds: [...(record.composer?.recoveryIds ?? []), ...(record.unconfirmedComposer?.recoveryIds ?? [])],
 					},
+					releasedRecoveryIds: releasedIds(record).filter(
+						(id) => !record.unconfirmedComposer?.recoveryIds?.includes(id),
+					),
 					unconfirmed: null,
 					unconfirmedImages: undefined,
 					unconfirmedComposer: undefined,

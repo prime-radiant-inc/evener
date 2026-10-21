@@ -2740,6 +2740,7 @@ export function ConversationScreen({
 			.map((row) => row.clientMutationId),
 		captured: draft.record.unconfirmedComposer?.recoveryIds,
 		owned: draft.record.composer?.recoveryIds,
+		released: draft.record.releasedRecoveryIds,
 		completed: draft.record.completedCommandRecoveryIds,
 		acks: draft.record.recoveryResendAcks,
 	});
@@ -2751,9 +2752,10 @@ export function ConversationScreen({
 			const runtime = getNativeMutationRuntime();
 			await reconcileEditedResends(runtime, targetKey, document);
 			const retained = await runtime.read(targetKey);
+			const deliberatelyReleased = new Set(draft.record.releasedRecoveryIds ?? []);
 			for (const row of retained.recovery) {
 				if (!current || imageSelection.getSnapshot().busy) return;
-				if (row.recoveryKind === "editing")
+				if (row.recoveryKind === "editing" && !deliberatelyReleased.has(row.clientMutationId))
 					await editQueuedMessageIntoDraft(runtime, targetKey, row.clientMutationId, document);
 			}
 			if (current) setEditedRecoveryFailure(null);
@@ -2776,6 +2778,8 @@ export function ConversationScreen({
 		draft.error,
 		imageState.busy,
 		imageSelection,
+		localThread,
+		localInstance,
 	]);
 	// A recreated offline screen has no live conversation store binding. Its
 	// scoped durable records still use the shared native client-owned projection.
