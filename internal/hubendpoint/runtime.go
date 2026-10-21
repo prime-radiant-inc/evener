@@ -137,7 +137,9 @@ func Publish(stateRoot string, record Record) (func() error, error) {
 	if len(data) > maxEndpointBytes {
 		return nil, errors.New("endpoint record exceeds size limit")
 	}
-	temp, err := os.CreateTemp(stateRoot, ".hub-endpoint-*")
+	path := filepath.Join(stateRoot, recordName)
+	parent := filepath.Dir(path)
+	temp, err := os.CreateTemp(parent, ".hub-endpoint-*")
 	if err != nil {
 		return nil, err
 	}
@@ -158,11 +160,10 @@ func Publish(stateRoot string, record Record) (func() error, error) {
 	if err := temp.Close(); err != nil {
 		return nil, err
 	}
-	path := filepath.Join(stateRoot, recordName)
 	if err := os.Rename(tmpName, path); err != nil {
 		return nil, err
 	}
-	if err := syncDir(stateRoot); err != nil {
+	if err := syncDir(parent); err != nil {
 		_ = os.Remove(path)
 		return nil, err
 	}

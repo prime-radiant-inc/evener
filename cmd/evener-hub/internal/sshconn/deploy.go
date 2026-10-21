@@ -1263,9 +1263,33 @@ func (m *Manager) reinstallRetainedTarget(ctx context.Context, host hostreg.Host
 				}
 				return nil
 			}
+			// A failed generation read is not process absence. Reuse the
+			// explicit exit probe, and preserve inconclusive generation errors.
+			out, err := m.ownerRead(ctx, host, processAliveRemote(prior.pid))
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(string(out)) != pidGoneMarker {
+				return generationErr
+			}
 		}
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if facts.OS == "linux" {
+			if !path.IsAbs(prior.report.HubStateRoot) {
+				return errOwnerEvidence
+			}
+			// The old process can be gone while another ad-hoc hub owns the
+			// same root. Only a successful, empty selected-lock query proves
+			// this retained selection stopped, including at the write boundary.
+			out, err := m.ownerRead(ctx, host, selectedLockRemote(prior.report.HubStateRoot))
+			if err != nil {
+				return err
+			}
+			if len(out) != 0 {
+				return errOwnerSelectionMismatch
+			}
 		}
 		if prior.supervisor.kind != supervisorNone {
 			return m.revalidateStoppedService(ctx, host, facts, prior)

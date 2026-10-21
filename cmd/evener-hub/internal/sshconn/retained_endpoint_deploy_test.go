@@ -221,6 +221,9 @@ func TestRetainedTargetReinstallEvidence(t *testing.T) {
 				if repair && mode == "live-argv-mismatch" && remote == hubArgvRemote("4242") {
 					return []byte("/opt/evener/bin/./evener\x00hub\x00"), nil
 				}
+				if repair && strings.HasPrefix(mode, "stopped") && remote == processAliveRemote("4242") {
+					return []byte(pidGoneMarker + "\n"), nil
+				}
 				if repair && strings.Contains(remote, "cat /proc/sys/kernel/random/boot_id") {
 					if strings.HasPrefix(mode, "stopped") {
 						return nil, errors.New("recorded predecessor no longer exists")
