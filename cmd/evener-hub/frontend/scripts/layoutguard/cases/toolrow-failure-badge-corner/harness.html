@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>toolrow-failure-badge-corner layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  *, *::before, *::after { transition: none !important; }
+  html, body { margin: 0; background: var(--surface-0); color: var(--ink-hi); }
+  body { padding: 16px; font-family: var(--font-sans); font-size: var(--font-size-body); line-height: var(--line-height-body); }
+  .fixtures { display: flex; flex-direction: column; gap: 24px; }
+  iframe { border: 0; height: 240px; }
+</style>
+</head>
+<body data-font-size="m">
+<!-- ToolRow.tsx's failed-row branch, copied from its current jsdom render
+     (class names unhashed):
+
+       <div class="row" data-intent="true">
+         <span class="rowIconSlot">
+           <span class="rowIcon" aria-hidden="true"><svg/></span>
+           <span class="failureBadge">
+             <span role="img" aria-label="Failed"><svg/></span>
+           </span>
+         </span>
+         <span class="intent">…</span>
+       </div>
+
+     The badge rides BESIDE the aria-hidden seat inside the slot: the seat is
+     at the shared rail's 50% opacity, and a nested cross would recede with it
+     when the failure tone is the row's one full-strength signal. The slot is
+     the badge's positioning context, and the cross pins to the icon GLYPH's
+     bottom-right corner (the seat's own avatar-column box is 5px wider on each
+     side and about 1px taller than the 14px glyph).
+
+     Rendered in IFRAMES, one document per width: a phone-width case must put
+     the document itself at 390px so the `max-width` media context applies (the
+     `min-width: 700px` gutter pull and the phone-density token overrides both
+     key off the viewport, not a nested box). A narrow `<div>` in one 1200px
+     document would silently measure the desktop cascade at "phone" width -
+     the first version of this case did exactly that.
+
+     Each frame renders the same row twice - failed and clean - so the failed
+     row's rationale can be held to the clean row's content edge: a failure
+     must mark the icon, not push the text. -->
+<div class="fixtures"></div>
+<script>
+const ICON_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display: block;"><path d="M2.5 3.5 H13.5 V12.5 H2.5 Z M5 6.8 L7.5 8.8 L5 10.8 M8.6 10.8 H11.2" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+const FAILURE_SVG = '<span role="img" aria-label="Failed" class="glyph"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true"><path d="M1.5 1.5 L8.5 8.5 M8.5 1.5 L1.5 8.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path></svg></span>';
+const INTENT = "Checking whether the hub already serves session artifacts over HTTP";
+
+function rowHtml(id, failed) {
+  return `
+    <div class="row" id="row-${id}" data-intent="true">
+      <span class="rowIconSlot" id="slot-${id}">
+        <span class="rowIcon" id="seat-${id}" aria-hidden="true">${ICON_SVG}</span>
+        ${failed ? `<span class="failureBadge" id="badge-${id}">${FAILURE_SVG}</span>` : ""}
+      </span>
+      <span class="intent" id="intent-${id}">${INTENT}</span>
+    </div>`;
+}
+
+function frameDocument(width) {
+  return `<!doctype html><html lang="en" data-theme="dark"><head>
+    <meta charset="utf-8"><meta name="viewport" content="width=${width}, initial-scale=1"><base href="${location.href}">
+    <link rel="stylesheet" href="tokens.css"><link rel="stylesheet" href="resolved.css">
+    <style>
+      *, *::before, *::after { box-sizing: border-box; transition: none !important; }
+      html, body { margin: 0; background: var(--surface-0); color: var(--ink-hi); }
+      body { padding: 16px; font-family: var(--font-sans); font-size: var(--font-size-body); line-height: var(--line-height-body); }
+      /* Production reserves the rail gutter at/above 700px (turnblock.module.css
+       * .runContent), which the slot's negative pull hangs into; below it there
+       * is no gutter and the slot leads its line inline. */
+      .railBox { box-sizing: border-box; }
+      @media (min-width: 700px) {
+        .railBox { padding-left: var(--speaker-gutter); }
+      }
+    </style></head><body data-font-size="m">
+    <div class="railBox">
+      ${rowHtml("failed", true)}
+      ${rowHtml("clean", false)}
+    </div>
+    </body></html>`;
+}
+
+const specs = [
+  { mode: "desktop", width: 900 },
+  { mode: "phone", width: 390 },
+];
+const frames = specs.map((spec) => {
+  const frame = document.createElement("iframe");
+  frame.style.width = `${spec.width}px`;
+  frame.srcdoc = frameDocument(spec.width);
+  document.querySelector(".fixtures").append(frame);
+  return { ...spec, frame };
+});
+
+function ready({ frame }) {
+  return new Promise((resolve) => {
+    const finish = () => frame.contentWindow.requestAnimationFrame(() => frame.contentWindow.requestAnimationFrame(resolve));
+    if (frame.contentDocument?.readyState === "complete") finish();
+    else frame.addEventListener("load", finish, { once: true });
+  });
+}
+
+function box(el) {
+  const r = el.getBoundingClientRect();
+  return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+}
+
+window.measure = async () => {
+  await Promise.all(frames.map(ready));
+  return frames.map(({ mode, width, frame }) => {
+    const doc = frame.contentDocument;
+    const badge = doc.getElementById("badge-failed");
+    const cross = badge.querySelector("svg");
+    const iconGlyph = doc.querySelector("#seat-failed svg");
+    const style = frame.contentWindow.getComputedStyle(badge);
+    return {
+      mode,
+      width,
+      viewportWidth: frame.contentWindow.innerWidth,
+      slot: box(doc.getElementById("slot-failed")),
+      cross: box(cross),
+      iconGlyph: box(iconGlyph),
+      badgePosition: style.position,
+      intentLeft: box(doc.getElementById("intent-failed")).left,
+      cleanIntentLeft: box(doc.getElementById("intent-clean")).left,
+      rowLeft: box(doc.getElementById("row-failed")).left,
+      cleanRowLeft: box(doc.getElementById("row-clean")).left,
+    };
+  });
+};
+</script>
+</body>
+</html>
