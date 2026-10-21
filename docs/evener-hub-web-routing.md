@@ -112,6 +112,22 @@ daemon descriptor. Archived reads reload session metadata from disk rather than
 using the navigation index's cached directory. Remote text reads route through
 the owning host with the captured absolute file target.
 
+An absolute path may also name a file in the session's retained artifacts
+directory, `<stateDir>/sessions/<sessionID>/artifacts`. Agents file reports
+there and link them by `file://` URL, so the transcript turns such a link into a
+document read. The artifacts directory is a second boundary beside the current
+directory, never a widening of it: both are resolved by the same containment
+check, and the read opens through whichever root accepted the path. A relative
+path resolves against the current directory only, and a path outside both roots
+is refused. A delegate's artifacts resolve through the live entry that reports
+it as a running subagent, since they sit under its owner's project state
+directory.
+
+`Thread.evener.artifactsDir` announces that directory for a local session, so a
+client can tell an openable `file://` link from one the hub would refuse without
+guessing. It is empty for a remote thread, an unknown ref, or a hub serving no
+state directory.
+
 A missing archived metadata file returns `ResourceNotFound` (HTTP 404). Other
 metadata read or decode failures return `SessionUnavailable` (HTTP 503), so the
 shared document read owner keeps its paced retry demand instead of treating a
@@ -131,8 +147,9 @@ status, so failed image loads keep paced retries.
 `/doc/file?format=download` is the one representation that does not stop at the
 pane cap: the body is the file itself, with its type from its extension and its
 own name in `Content-Disposition`. It shares the raw read's containment rules
-(the path must resolve inside the session's folder, and the open goes through
-that folder's root) and refuses a non-regular file. The body is served as
+(the path must resolve inside the session's folder or its retained artifacts
+directory, and the open goes through whichever of those roots accepted it) and
+refuses a non-regular file. The body is served as
 content, so `HEAD` and `Range` work and an interrupted transfer resumes. Its
 type table is the whole answer: an extension it does not list is
 `application/octet-stream`, never a type borrowed from the host's mime tables.

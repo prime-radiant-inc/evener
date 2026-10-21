@@ -170,6 +170,15 @@ const SANITIZE_CONFIG = {
   // automatic - re-check whether "class"/"align" should stay this
   // permissive at that point.
   ALLOWED_ATTR: ["href", "title", "target", "rel", "class", "align"],
+  // DOMPurify's default scheme allowlist plus `file`. A file:// link is how an
+  // agent names a report it filed beside the session, and dropping the href
+  // leaves a bare anchor that looks like a link and goes nowhere. Keeping the
+  // destination is only half the job: the transcript's own anchor pass decides
+  // which file destinations the hub can actually open and turns those into
+  // document-pane requests. Everything absent here stays refused exactly as
+  // before - javascript:, data:, and every other scheme DOMPurify's default
+  // already rejected are still stripped, which the widget's own tests pin.
+  ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|file):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i,
 };
 
 // One prose slice of a segmented message: the same parse+sanitize pipeline as

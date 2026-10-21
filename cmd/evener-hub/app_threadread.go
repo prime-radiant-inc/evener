@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/envvars/userdirs"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/apptranscript"
@@ -830,12 +831,48 @@ func hubForkIdentityFenced(cfg hubcore.WebConfig, threadID string, owner forkThr
 
 // applyHubCapabilities stamps the capability bits the hub owns, not the
 // daemon, on a thread it serves: fork (applyHubForkCapability) and pageBefore
-// (hubPagesBefore). Every path that serves a thread applies it, so a session
-// reads the same from thread/list and thread/read (#1840).
+// (hubPagesBefore), plus the session's retained artifacts directory. Every
+// path that serves a thread applies it, so a session reads the same from
+// thread/list and thread/read (#1840).
 func applyHubCapabilities(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
 	thread = applyHubForkCapability(cfg, thread)
 	thread.Evener.Capabilities.PageBefore = hubPagesBefore(cfg, thread.Evener.Ref)
+	thread.Evener.ArtifactsDir = hubArtifactsDir(cfg, thread.Evener.Ref)
 	return thread
+}
+
+// hubArtifactsDir is the session's retained artifacts directory,
+// <stateDir>/sessions/<sessionID>/artifacts — the same path the doc routes
+// serve and the same one agent.delegateArtifactsDir creates for a delegate.
+// Clients resolve a file:// link to a document-pane path by checking it
+// against this directory, so announcing it is what turns an agent's
+// retained-report link into something the transcript can open.
+//
+// Only a local ref names a path on this hub. A remote thread's artifacts live
+// on its own host, and an unparseable ref names nothing, so both stay empty.
+func hubArtifactsDir(cfg hubcore.WebConfig, ref string) string {
+	parsed, err := appwire.ParseRef(ref)
+	if err != nil || parsed.SourceID != "local" || parsed.ThreadID == "" {
+		return ""
+	}
+	if identifier.ValidateSessionID(parsed.ThreadID) != nil {
+		return ""
+	}
+	stateDir := ""
+	if cfg.Past != nil {
+		if entry, ok := cfg.Past.Find(parsed.ThreadID); ok {
+			stateDir = strings.TrimSpace(entry.StateDir)
+		}
+	}
+	if stateDir == "" && cfg.Roster != nil {
+		if live, ok := cfg.Roster.Find(parsed.ThreadID); ok && !live.Crashed {
+			stateDir = strings.TrimSpace(live.StateDir)
+		}
+	}
+	if stateDir == "" {
+		return ""
+	}
+	return filepath.Join(stateDir, "sessions", parsed.ThreadID, artifactsSubdir)
 }
 
 // hubPagesBefore is the hub's answer to ThreadCapabilities.PageBefore: whether

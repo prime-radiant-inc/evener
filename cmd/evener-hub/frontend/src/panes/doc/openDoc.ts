@@ -19,6 +19,13 @@ import "./index";
 export interface DocParams {
   session: string;
   path: string;
+  /** Which root `path` is read from, for a document the session's working
+   * directory does not contain. Absent means the working directory, the only
+   * root a document pane knew before retained artifacts were linkable. The
+   * params outlive the pane's in-memory reference (a restored workspace
+   * rebuilds it from params alone), so this is what lets the pane read the
+   * same file again after a reload. */
+  root?: "artifacts";
   kind: "file" | "image";
 }
 
@@ -40,16 +47,26 @@ function paneOwnsSession(pane: OpenPaneRecord, session: string): boolean {
 function isRequestedDocument(pane: OpenPaneRecord, params: DocParams): boolean {
   if (pane.type !== "doc") return false;
   const candidate = pane.params as Partial<DocParams>;
-  return candidate.session === params.session && candidate.path === params.path && candidate.kind === params.kind;
+  return (
+    candidate.session === params.session &&
+    candidate.path === params.path &&
+    candidate.kind === params.kind &&
+    (candidate.root ?? undefined) === (params.root ?? undefined)
+  );
 }
 
 export function openDocBeside(request: DocumentOpenRequest): void {
   const path = request.reference.provenance === "absolute" ? request.reference.readTarget : request.reference.path;
   const reference = bindFilePath(path, request.reference.cwd);
   if (!reference) return;
+  const artifacts = request.reference.root === "artifacts";
   const params: DocParams = {
     session: request.session,
-    path: reference.path,
+    // An artifacts document keeps its absolute path: the pane needs it to
+    // rebind against the artifacts root after a reload, when the thread may
+    // not have hydrated yet.
+    path: artifacts ? request.reference.readTarget : reference.path,
+    ...(artifacts ? { root: "artifacts" as const } : {}),
     kind: isImagePath(reference.path) ? "image" : "file",
   };
   const workspace = workspaceStore.getState();

@@ -1,5 +1,4 @@
 import { isValidTranscriptRef } from "@evener/appwire-client";
-import { parseFileReference } from "@evener/appwire-client/docContent";
 import { type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
@@ -7,7 +6,7 @@ import { Markdown, OpenButton } from "../../../../widgets";
 import { MERMAID_DIAGRAM_ATTR } from "../../../../widgets/mermaid/markers";
 import { openDocBeside } from "../../../doc/openDoc";
 import { enhanceEntityText } from "../EntityText";
-import { enhanceFileReferences } from "./fileReferenceDOM";
+import { enhanceFileReferences, resolveAnchorReference } from "./fileReferenceDOM";
 
 /** Adds source-bound file actions to sanitized assistant prose without changing
  * the shared Markdown renderer's URL policy or admitting authored HTML. */
@@ -15,6 +14,7 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
   const { thread, sourcePaneId } = useTranscriptRenderContext();
   const sessionRef = thread?.ref;
   const cwd = thread?.cwd;
+  const artifactsDir = thread?.artifactsDir;
   const root = useRef<HTMLDivElement>(null);
   const [portals, setPortals] = useState<ReactNode[]>([]);
   // Portal updates must not replace the innerHTML that owns their mount points.
@@ -31,14 +31,14 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
     const qualifiedRef = sessionRef?.includes(":") ? sessionRef : `local:${sessionRef ?? ""}`;
     const context =
       sessionRef && isValidTranscriptRef(qualifiedRef) && cwd && sourcePaneId
-        ? { sessionRef, cwd, sourcePaneId }
+        ? { sessionRef, cwd, sourcePaneId, artifactsDir }
         : undefined;
     if (context) {
       // Only authored eligible anchors get the existing OpenButton. Capture
       // destinations before the DOM adapter rewrites hrefs or generates links.
       for (const link of element.querySelectorAll<HTMLAnchorElement>("a[href]")) {
         if (link.closest(`pre, [data-entity-host], [${MERMAID_DIAGRAM_ATTR}]`)) continue;
-        const reference = parseFileReference(link.getAttribute("href") ?? "", "link", context.cwd);
+        const reference = resolveAnchorReference(link.getAttribute("href") ?? "", context.cwd, context.artifactsDir);
         if (!reference) continue;
         const request = { session: context.sessionRef, reference, sourcePaneId: context.sourcePaneId };
         const slot = document.createElement("span");
@@ -61,7 +61,7 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
       restoreFiles();
       for (const slot of slots) slot.remove();
     };
-  }, [source, live, sessionRef, cwd, sourcePaneId]);
+  }, [source, live, sessionRef, cwd, artifactsDir, sourcePaneId]);
 
   return (
     <>

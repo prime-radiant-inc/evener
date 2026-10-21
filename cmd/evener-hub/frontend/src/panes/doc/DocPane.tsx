@@ -1,4 +1,5 @@
 import {
+  bindArtifactPath,
   bindFilePath,
   DOC_FILE_MAX_BYTES,
   type DocFileContent,
@@ -151,6 +152,7 @@ export default function DocPane({ params, paneId, focused }: PaneProps<DocParams
   const pane = panes.find((candidate) => candidate.id === paneId);
   const retained = pane && documentPaneState(pane);
   const cwd = useThreadsStore((state) => state.threads.get(params.session)?.cwd);
+  const artifactsDir = useThreadsStore((state) => state.threads.get(params.session)?.artifactsDir);
 
   useEffect(() => {
     let started = false;
@@ -174,6 +176,10 @@ export default function DocPane({ params, paneId, focused }: PaneProps<DocParams
   if (retained) {
     if (cwd && cwd !== retained.reference.cwd) reference = rebindFileReference(retained.reference, cwd);
     else reference = retained.reference;
+  } else if (params.root === "artifacts") {
+    // A restored artifacts document: params.path is the absolute retained
+    // path, so binding needs the artifacts root the thread snapshot names.
+    reference = artifactsDir === undefined ? undefined : bindArtifactPath(params.path, artifactsDir);
   } else if (cwd) reference = bindFilePath(params.path, cwd);
   useLayoutEffect(() => {
     if (!pane || !reference || retained?.reference === reference) return;

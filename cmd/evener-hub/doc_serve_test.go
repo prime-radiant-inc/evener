@@ -692,3 +692,123 @@ func TestDocFile_Raw_UnderCapEmitsNoTruncationHeaders(t *testing.T) {
 		t.Fatalf("body=%q, want %q", rec.Body.Bytes(), content)
 	}
 }
+
+// A session's retained artifacts directory is the second root /doc/file and
+// /doc/image serve from. Agent reports filed there are named by file:// URLs in
+// assistant prose, and the web transcript turns those into document-pane links,
+// so the route has to serve them for the link to resolve.
+func artifactsDirOf(t *testing.T, web *WebServer, session string) string {
+	t.Helper()
+	entry, ok := web.cfg.Past.Find(session)
+	if !ok {
+		t.Fatalf("fixture session %q is missing from the past index", session)
+	}
+	return filepath.Join(entry.StateDir, "sessions", session, "artifacts")
+}
+
+func TestDocFile_Raw_ServesSessionArtifacts(t *testing.T) {
+	web, _, session := docServeTestServer(t)
+	dir := artifactsDirOf(t, web, session)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("# Report\n\nretained evidence")
+	target := filepath.Join(dir, "report.md")
+	if err := os.WriteFile(target, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRawRequest(t, web, session, target)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("artifacts file should be served, got %d body=%q", rec.Code, rec.Body.String())
+	}
+	if !bytes.Equal(rec.Body.Bytes(), content) {
+		t.Fatalf("body=%q, want %q", rec.Body.Bytes(), content)
+	}
+}
+
+func TestDocImage_ServesSessionArtifactsImage(t *testing.T) {
+	web, _, session := docServeTestServer(t)
+	dir := artifactsDirOf(t, web, session)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	png := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+	target := filepath.Join(dir, "shot.png")
+	if err := os.WriteFile(target, png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := docImageRequest(t, web, session, target)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("artifacts image should be served, got %d body=%q", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/png" {
+		t.Fatalf("Content-Type=%q, want image/png", ct)
+	}
+}
+
+// The artifacts root is one more boundary, not a replacement for cwd: a file
+// outside both is still refused, and the artifacts root of one session is not
+// reachable from another.
+func TestDocFile_ArtifactsRootDoesNotWidenCwdContainment(t *testing.T) {
+	web, cwd, session := docServeTestServer(t)
+	dir := artifactsDirOf(t, web, session)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(filepath.Dir(dir), "..", "delegates.jsonl")
+	secret := filepath.Join(filepath.Dir(filepath.Dir(dir)), "delegates.jsonl")
+	if err := os.WriteFile(secret, []byte("SESSION SECRET"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{secret, other, filepath.Join(cwd, "..", "secret.txt")} {
+		rec := docRawRequest(t, web, session, path)
+		if rec.Code == http.StatusOK {
+			t.Fatalf("path %q outside both roots must be refused, got 200", path)
+		}
+		if strings.Contains(rec.Body.String(), "SESSION SECRET") {
+			t.Fatalf("SECURITY: %q served a file outside the served roots", path)
+		}
+	}
+}
+
+// A relative path keeps resolving against cwd only. It names no artifacts file
+// even when a same-named file exists there, so the second root cannot be used
+// to reach a neighboring session's artifacts either.
+func TestDocFile_RelativePathNeverResolvesAgainstArtifacts(t *testing.T) {
+	web, cwd, session := docServeTestServer(t)
+	dir := artifactsDirOf(t, web, session)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "only-in-artifacts.md"), []byte("artifacts only"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRawRequest(t, web, session, "only-in-artifacts.md")
+	if rec.Code == http.StatusOK {
+		t.Fatalf("a relative path must resolve against cwd only, got 200 body=%q", rec.Body.String())
+	}
+	if err := os.WriteFile(filepath.Join(cwd, "cwd-file.md"), []byte("cwd file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if rec := docRawRequest(t, web, session, "cwd-file.md"); rec.Code != http.StatusOK {
+		t.Fatalf("cwd-relative file must still be served, got %d", rec.Code)
+	}
+}
+
+func TestDocFile_ArtifactsUnknownSession404(t *testing.T) {
+	web, _, session := docServeTestServer(t)
+	dir := artifactsDirOf(t, web, session)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "report.md")
+	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A path under a session that does not exist never resolves, whatever the
+	// artifacts root of the real fixture session holds.
+	rec := docRawRequest(t, web, "01NOPE", target)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown session should 404, got %d body=%q", rec.Code, rec.Body.String())
+	}
+}

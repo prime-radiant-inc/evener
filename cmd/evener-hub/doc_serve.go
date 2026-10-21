@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -39,11 +40,19 @@ const docFileMaxBytes = 512 * 1024
 // ~/git was 3.2 MB. A larger file is served without a revision.
 const docRevisionMaxBytes = 16 * 1024 * 1024
 
-// resolveLocalDocTarget resolves a local session id and a cwd-relative path to
-// the session's current working directory and a contained absolute path. It
-// answers the request itself when it cannot, so every local doc route refuses
-// an unknown session, an escape attempt and a missing path identically: 503 for
-// a session whose folder cannot be resolved, 403 for an escape, 404 otherwise.
+// resolveLocalDocTarget resolves a local session id and a path to a served
+// root and a contained absolute path. It answers the request itself when it
+// cannot, so every local doc route refuses an unknown session, an escape
+// attempt and a missing path identically: 503 for a session whose folder
+// cannot be resolved, 403 for an escape, 404 otherwise.
+//
+// A relative path resolves against the session's cwd only. An absolute path
+// may also name a file inside the session's retained artifacts directory:
+// agents file reports there and name them by file:// URL, and the transcript
+// turns those into document-pane links, so the route has to serve them. The
+// artifacts root is one more boundary beside cwd, never a widening of it:
+// both are resolved by fspaths.ResolveInRoot, and the root that accepted the
+// path is returned so the read opens through that same root.
 func (s *WebServer) resolveLocalDocTarget(w http.ResponseWriter, r *http.Request, session, rel string) (string, string, bool) {
 	cwd, err := s.localSessionCWD(r.Context(), session)
 	if err != nil {
@@ -51,15 +60,101 @@ func (s *WebServer) resolveLocalDocTarget(w http.ResponseWriter, r *http.Request
 		return "", "", false
 	}
 	abs, err := fspaths.ResolveInRoot(cwd, rel)
-	if err != nil {
-		if errors.Is(err, fspaths.ErrPathEscapesRoot) {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return "", "", false
+	if err == nil {
+		return cwd, abs, true
+	}
+	if errors.Is(err, fspaths.ErrPathEscapesRoot) && filepath.IsAbs(strings.TrimSpace(rel)) {
+		if root, abs, ok := s.resolveArtifactsDocTarget(r.Context(), session, rel); ok {
+			return root, abs, true
 		}
-		http.NotFound(w, r)
+	}
+	if errors.Is(err, fspaths.ErrPathEscapesRoot) {
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return "", "", false
 	}
-	return cwd, abs, true
+	http.NotFound(w, r)
+	return "", "", false
+}
+
+// artifactsSubdir names the retained-artifacts directory inside a session's
+// own state directory, <stateDir>/sessions/<sessionID>/artifacts. It is the
+// same layout agent.delegateArtifactsDir creates.
+const artifactsSubdir = "artifacts"
+
+// resolveArtifactsDocTarget resolves an absolute request path against the
+// session's retained artifacts directory. An unknown session, a missing
+// artifacts directory and a path outside it all report not-served, so the
+// caller answers them with the same refusal it gives any other miss.
+func (s *WebServer) resolveArtifactsDocTarget(ctx context.Context, session, rel string) (string, string, bool) {
+	root, err := s.sessionArtifactsRoot(ctx, session)
+	if err != nil || root == "" {
+		return "", "", false
+	}
+	abs, err := fspaths.ResolveInRoot(root, rel)
+	if err != nil {
+		return "", "", false
+	}
+	return root, abs, true
+}
+
+// sessionArtifactsRoot returns the local session's retained artifacts
+// directory. A delegate's artifacts sit under its owning daemon's state
+// directory, the same project state dir its parent lives in, so a delegate id
+// resolves through the live entry that reports it as a running subagent. A
+// remote session names no local path and is refused by both branches.
+func (s *WebServer) sessionArtifactsRoot(ctx context.Context, session string) (string, error) {
+	session = canonicalRouteID(session)
+	if !isLocalRouteID(session) {
+		return "", appwire.ResourceNotFound("session not found")
+	}
+	stateDir, err := s.localSessionStateDir(ctx, session)
+	if err != nil {
+		return "", err
+	}
+	if stateDir == "" {
+		return "", appwire.ResourceNotFound("session state directory unavailable")
+	}
+	return filepath.Join(stateDir, "sessions", refThreadID(session), artifactsSubdir), nil
+}
+
+// localSessionStateDir resolves the project state directory that holds a local
+// session's own <sessionID>/artifacts directory. A roster-owned session or a
+// running delegate answers from its live entry's StateDir; an archived session
+// from the past index's trusted locator. It never reads a cached launch root.
+func (s *WebServer) localSessionStateDir(ctx context.Context, session string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if s.cfg.Roster != nil {
+		if live, ok := s.cfg.Roster.Find(session); ok && !live.Crashed && live.StateDir != "" {
+			return live.StateDir, nil
+		}
+		for _, entry := range s.cfg.Roster.Snapshot().Live {
+			if entry.Crashed || entry.StateDir == "" {
+				continue
+			}
+			if slices.Contains(entry.RunningSubagentIDs, session) {
+				return entry.StateDir, nil
+			}
+		}
+	}
+	if s.cfg.Past == nil {
+		return "", nil
+	}
+	entry, ok := s.cfg.Past.Find(session)
+	if !ok {
+		return "", nil
+	}
+	return entry.StateDir, nil
+}
+
+// refThreadID returns the thread id a session route id names, or the id itself
+// when it is not a parseable ref.
+func refThreadID(session string) string {
+	if ref, err := appwire.ParseRef(session); err == nil && ref.ThreadID != "" {
+		return ref.ThreadID
+	}
+	return session
 }
 
 // The representations /doc/file serves: the capped head a pane renders, and

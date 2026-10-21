@@ -1210,6 +1210,7 @@ Underlying Go kind: `string` (no struct fields).
 | `humanNote` | string | yes |  |
 | `agentNote` | string | yes |  |
 | `sessionUrls` | [][appwire.SessionURL](#sessionurl) | yes |  |
+| `artifactsDir` | string | yes |  |
 | `usage` | \*[appwire.EvenerUsage](#evenerusage) | yes |  |
 | `workMillis` | int64 | yes |  |
 | `activeTurnStartedAt` | int64 | yes |  |
