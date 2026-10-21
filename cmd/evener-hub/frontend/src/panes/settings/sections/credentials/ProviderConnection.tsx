@@ -513,11 +513,16 @@ function SelectedConnection({
         return;
       }
       if (!foreignListingChange(current, previous)) return;
-      // A mutation or sign-in start has no check to anchor on yet; a foreign
-      // read can still change the connection it is about to write to. An open
-      // OAuth editor is kept across an acquisition's own source change (the
-      // destination is what it showed) and retired when the destination moves.
-      if (phaseRef.current === "saving" || (oauth && destination(selected) !== destination(baseline))) invalidate();
+      // A mutation or sign-in start has no check to anchor on yet, so it is
+      // anchored on the destination it showed: an unrelated provider's update,
+      // another row's replacement or a read's loading transition does not
+      // retire an acquisition the user already confirmed, while an actual move
+      // of the selected destination still does. The acquisition's own expected
+      // source/revision change is not a destination change. An open OAuth
+      // editor follows the same rule.
+      if ((phaseRef.current === "saving" || oauth !== null) && destination(selected) !== destination(baseline)) {
+        invalidate();
+      }
     });
     return () => {
       unsubscribeConnection();

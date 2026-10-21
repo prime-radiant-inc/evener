@@ -495,7 +495,7 @@ test("a retry with the client gone reports no unhandled rejection", async () => 
   expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
 });
 
-test("configuration refresh invalidates a pending OAuth start before it opens a browser", async () => {
+test("a changed destination invalidates a pending OAuth start before it opens a browser", async () => {
   const { user, client } = setup();
   await choose(user, "OpenAI Codex");
   const pending = deferred<{
@@ -515,6 +515,17 @@ test("configuration refresh invalidates a pending OAuth start before it opens a 
   const opened = vi.spyOn(window, "open").mockReturnValue(null);
   await user.click(screen.getByRole("button", { name: "Sign in" }));
   await act(async () => {
+    client.on("evener/instance/list", () => ({
+      instances: [],
+      availableProviders: catalogue.map((candidate) =>
+        candidate.id === "openai-codex"
+          ? provider("openai-codex", "OpenAI Codex", ["oauth"], {
+              endpointFingerprint: "fp-moved",
+              baseUrl: "https://moved.example/v1",
+            })
+          : candidate,
+      ),
+    }));
     await credentialsStore.getState().fetch();
     pending.resolve({
       provider: "openai-codex",
@@ -529,6 +540,88 @@ test("configuration refresh invalidates a pending OAuth start before it opens a 
   expect(opened).not.toHaveBeenCalled();
   expect(screen.queryByLabelText("Redirect URL")).toBeNull();
 });
+
+test("an unchanged listing read keeps a pending OAuth start and opens its browser", async () => {
+  const { user, client } = setup();
+  await choose(user, "OpenAI Codex");
+  const pending = deferred<{
+    provider: string;
+    flowId: string;
+    userCode: string;
+    verificationUrl: string;
+    intervalSeconds: number;
+    fallback: boolean;
+  }>();
+  client.on("evener/auth/device/start", () => pending.promise);
+  client.on("evener/auth/login/start", () => ({
+    provider: "openai-codex",
+    flowId: "kept",
+    url: "https://auth.example/kept",
+  }));
+  await user.click(screen.getByRole("button", { name: "Sign in" }));
+  await act(async () => {
+    // The rows and the selected destination are unchanged: only the read's own
+    // loading transition moves, which is not a change this start must retire.
+    await credentialsStore.getState().fetch();
+    pending.resolve({
+      provider: "openai-codex",
+      flowId: "kept",
+      userCode: "kept",
+      verificationUrl: "https://auth.example",
+      intervalSeconds: 5,
+      fallback: true,
+    });
+    await pending.promise;
+  });
+  // The start was not retired: its redirect editor opened and the browser
+  // handoff went through the shared lossless opener path once.
+  expect(client.calls.filter((call) => call.method === "evener/auth/login/start")).toHaveLength(1);
+  expect(screen.getByLabelText("Redirect URL")).toBeTruthy();
+  expect(reasonShown("changed")).toBe(false);
+});
+
+test.each([
+  { name: "API key", provider: "Anthropic", label: "API key", method: "evener/auth/apiKey/set" },
+  {
+    name: "credential JSON",
+    provider: "Google Vertex",
+    label: "Credential JSON",
+    method: "evener/auth/credentialJson/set",
+  },
+])(
+  "an unchanged listing read during a pending $name write does not retire its automatic check",
+  async ({ provider: providerName, label, method }) => {
+    const { user, client, connected } = setup();
+    const write = deferred<typeof saved>();
+    client.on(method, () => write.promise);
+    client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+    await choose(user, providerName);
+    await enterText(user, screen.getByLabelText(label), "fixture-only-key");
+    await user.click(screen.getByRole("button", { name: "Save and check" }));
+    expect(screen.getByRole("button", { name: "Saving…" })).toHaveProperty("disabled", true);
+
+    // An ordinary read of the same unchanged destination - its loading
+    // transition, then its answer - is not a change this pending write has to
+    // be retired for.
+    await act(async () => {
+      client.on("evener/instance/list", () => savedList(providerName === "Anthropic" ? "anthropic" : "google-vertex"));
+      await credentialsStore.getState().fetch();
+    });
+
+    await act(async () => {
+      write.resolve(saved);
+      await write.promise;
+    });
+
+    await waitFor(() =>
+      expect(connected).toHaveBeenCalledExactlyOnceWith(providerName === "Anthropic" ? "anthropic" : "google-vertex"),
+    );
+    expect(reasonShown("changed")).toBe(false);
+    expect(screen.queryByRole("button", { name: "Use reviewed access and check" })).toBeNull();
+    expect(client.calls.filter((call) => call.method === method)).toHaveLength(1);
+    expect(client.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1);
+  },
+);
 afterEach(() => {
   cleanup();
   connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
