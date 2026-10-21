@@ -54,28 +54,30 @@ const docRevisionMaxBytes = 16 * 1024 * 1024
 // path is returned so the read opens through that same root.
 func (s *WebServer) resolveLocalDocTarget(w http.ResponseWriter, r *http.Request, session, rel string) (string, string, bool) {
 	cwd, err := s.localSessionCWD(r.Context(), session)
+	absolute := filepath.IsAbs(strings.TrimSpace(rel))
 	var cwdResolveErr error
 	if err == nil {
-		if resolved, resolveErr := fspaths.ResolveInRoot(cwd, rel); resolveErr == nil {
+		resolved, resolveErr := fspaths.ResolveInRoot(cwd, rel)
+		if resolveErr == nil {
 			return cwd, resolved, true
-		} else if !filepath.IsAbs(strings.TrimSpace(rel)) {
-			// A relative path can only mean the working directory, so a cwd
-			// failure is the whole answer for it.
+		}
+		// A relative path can only mean the working directory, so a cwd
+		// failure is the whole answer for it.
+		if !absolute {
 			if errors.Is(resolveErr, fspaths.ErrPathEscapesRoot) {
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return "", "", false
 			}
 			http.NotFound(w, r)
 			return "", "", false
-		} else {
-			cwdResolveErr = resolveErr
 		}
+		cwdResolveErr = resolveErr
 	}
 	// A retained artifact lives under the session's state directory, which
 	// outlives the working directory: that is why it is tried for an absolute
 	// path even when the cwd itself cannot be resolved at all (a removed
 	// worktree, or a session whose live source is momentarily unavailable).
-	if filepath.IsAbs(strings.TrimSpace(rel)) {
+	if absolute {
 		if root, resolved, ok := s.resolveArtifactsDocTarget(r.Context(), session, rel); ok {
 			return root, resolved, true
 		}
