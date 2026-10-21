@@ -2697,6 +2697,29 @@ func TestAddMarketplace_RefMatchingATrackedPathAndAnOriginTagIsRejected(t *testi
 	}
 }
 
+// A tag whose name embeds refs/heads/ must not stand in for the branch that
+// namespace names: the target plugins still only matches a path.
+func TestAddMarketplace_RefMatchingATrackedPathAndANamespaceTagIsRejected(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "pathandnamespacetag")
+	if err := os.MkdirAll(filepath.Join(repo, "plugins"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "plugins", "marker"), []byte("tracked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "add", "plugins")
+	gitIn(t, repo, "commit", "-qm", "track a path named like a ref")
+	gitIn(t, repo, "tag", "refs/heads/plugins")
+
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "plugins"}); err == nil {
+		t.Fatal("a tag named refs/heads/plugins let a path-only ref through")
+	}
+}
+
 // A branch and a tracked path can share a name. Checkout guessing must not
 // decide which one wins: the recorded ref selects the branch even when git is
 // configured not to guess a branch for an ambiguous name.

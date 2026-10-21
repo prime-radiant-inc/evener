@@ -99,16 +99,16 @@ func checkoutRevision(ctx context.Context, dir, target string) error {
 	// branch gets a tracking branch without relying on checkout.guess, and a
 	// tag or commit detaches.
 	switch {
-	case refNamesCommit(ctx, dir, "refs/heads/"+target):
+	case exactRefNamesCommit(ctx, dir, "refs/heads/"+target):
 		_, err := gitRun(ctx, dir, "checkout", "--quiet", target)
 		return err
-	case refNamesCommit(ctx, dir, "refs/tags/"+target):
+	case exactRefNamesCommit(ctx, dir, "refs/tags/"+target):
 		_, err := gitRun(ctx, dir, "checkout", "--quiet", "--detach", "refs/tags/"+target)
 		return err
-	case refNamesCommit(ctx, dir, "refs/remotes/origin/"+target):
+	case exactRefNamesCommit(ctx, dir, "refs/remotes/origin/"+target):
 		_, err := gitRun(ctx, dir, "checkout", "--quiet", "-b", target, "--track", "refs/remotes/origin/"+target)
 		return err
-	case refNamesCommit(ctx, dir, target):
+	case revNamesCommit(ctx, dir, target):
 		_, err := gitRun(ctx, dir, "checkout", "--quiet", "--detach", target)
 		return err
 	default:
@@ -116,7 +116,18 @@ func checkoutRevision(ctx context.Context, dir, target string) error {
 	}
 }
 
-func refNamesCommit(ctx context.Context, dir, rev string) bool {
+// exactRefNamesCommit reports whether ref exists in exactly the namespace
+// named. show-ref, unlike rev-parse, does not expand an input like
+// refs/heads/x to a tag or another namespace that happens to share the name.
+func exactRefNamesCommit(ctx context.Context, dir, ref string) bool {
+	if _, err := gitRun(ctx, dir, "show-ref", "--verify", "--quiet", ref); err != nil {
+		return false
+	}
+	_, err := gitRun(ctx, dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	return err == nil
+}
+
+func revNamesCommit(ctx context.Context, dir, rev string) bool {
 	_, err := gitRun(ctx, dir, "rev-parse", "--verify", "--quiet", rev+"^{commit}")
 	return err == nil
 }
