@@ -128,8 +128,19 @@ func artifactsDocTarget(ctx context.Context, cfg hubcore.WebConfig, session, rel
 	// A session fenced for deletion must not serve retained files through this
 	// root either. The cwd path gets this from sessionCWD's deletion check;
 	// artifacts resolve from the roster or the past index, which do not.
-	if err := deletionFenceError(cfg, appRefFromRouteID(session), canonicalRouteID(session), ""); err != nil {
-		return "", "", false, false
+	//
+	// A stable workspace ref can resolve to a different current session, so
+	// the fence covers both identities: a deletion recorded against the session
+	// the ref now names must not be bypassed by asking through the ref.
+	_, resolvedSession, resolved := artifactsSessionScope(ctx, cfg, session)
+	fenced := []string{canonicalRouteID(session)}
+	if resolved && resolvedSession != "" && resolvedSession != fenced[0] {
+		fenced = append(fenced, resolvedSession)
+	}
+	for _, identity := range fenced {
+		if err := deletionFenceError(cfg, appRefFromRouteID(identity), identity, ""); err != nil {
+			return "", "", false, false
+		}
 	}
 	root = sessionArtifactsRoot(ctx, cfg, session)
 	if root == "" {
@@ -164,20 +175,8 @@ func artifactsDocTarget(ctx context.Context, cfg hubcore.WebConfig, session, rel
 // child id resolves through the live entry that reports it. A remote session
 // names no local path.
 func sessionArtifactsRoot(ctx context.Context, cfg hubcore.WebConfig, ref string) string {
-	ref = canonicalRouteID(ref)
-	if !isLocalRouteID(ref) {
-		return ""
-	}
-	session := ref
-	if cfg.Roster != nil {
-		if live, ok := liveDaemonForThread(cfg.Roster, ref); ok && !live.Crashed {
-			if live.SessionID != "" {
-				session = live.SessionID
-			}
-		}
-	}
-	stateDir := sessionStateDir(ctx, cfg, session)
-	if stateDir == "" {
+	stateDir, session, ok := artifactsSessionScope(ctx, cfg, ref)
+	if !ok {
 		return ""
 	}
 	root, err := schema.SessionArtifactsDir(stateDir, session)
@@ -185,6 +184,30 @@ func sessionArtifactsRoot(ctx context.Context, cfg hubcore.WebConfig, ref string
 		return ""
 	}
 	return root
+}
+
+// artifactsSessionScope resolves the state directory and the current session id
+// an artifacts path belongs to. A stable workspace ref follows to the live
+// session that owns it, because the roster keys entries by the current id. The
+// document fence needs that resolved identity as well as the requested one.
+func artifactsSessionScope(ctx context.Context, cfg hubcore.WebConfig, ref string) (stateDir, sessionID string, ok bool) {
+	ref = canonicalRouteID(ref)
+	if !isLocalRouteID(ref) {
+		return "", "", false
+	}
+	session := ref
+	if cfg.Roster != nil {
+		if live, liveOK := liveDaemonForThread(cfg.Roster, ref); liveOK && !live.Crashed {
+			if live.SessionID != "" {
+				session = live.SessionID
+			}
+		}
+	}
+	stateDir = sessionStateDir(ctx, cfg, session)
+	if stateDir == "" {
+		return "", "", false
+	}
+	return stateDir, session, true
 }
 
 // sessionStateDir resolves the project state directory that holds a local

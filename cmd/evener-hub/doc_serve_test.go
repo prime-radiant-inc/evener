@@ -1220,3 +1220,40 @@ func TestDocFile_ServesArtifactUnderASymlinkedAncestor(t *testing.T) {
 		t.Fatalf("symlinked-ancestor read = %d %q, want the file", rec.Code, rec.Body.String())
 	}
 }
+
+// A deletion can be recorded against the session a stable ref now names. Asking
+// through the ref must not sidestep that fence, so both identities are checked.
+func TestDocFile_ArtifactsRefuseADeletionFencedStableRef(t *testing.T) {
+	const stableRef = "local:02wMz5Txv1C3Hut0M8GCeN"
+	const session = "02wMz5Txv1C3Hut0M8GCeP"
+	stateDir := t.TempDir()
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:     rendezvous.Entry{SessionID: session, WorkspaceRef: stableRef, StateDir: stateDir, StartedAt: time.Now().UTC()},
+		SessionID: session,
+	})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: roster, StateDir: stateDir})
+	dir, err := schema.SessionArtifactsDir(stateDir, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "report.md")
+	if err := os.WriteFile(target, []byte("fenced report"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	web.cfg.DeletionStore = store
+	if _, err := store.Begin("project-fence-0000000000", []hubcore.DeletionTarget{{Ref: "local:" + session, ThreadID: session}}); err != nil {
+		t.Fatal(err)
+	}
+	// The request names the stable ref, not the fenced session id.
+	rec := docRawRequest(t, web, stableRef, target)
+	if rec.Code == http.StatusOK || strings.Contains(rec.Body.String(), "fenced report") {
+		t.Fatalf("a stable ref bypassed its current session's deletion fence (status %d)", rec.Code)
+	}
+}

@@ -1167,6 +1167,18 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 	} else {
 		thread = applyHubCapabilities(cfg, thread)
 	}
+	// The artifacts directory is a place the hub serves, not a capability of
+	// the daemon: a saved read whose daemon is unavailable or on an older build
+	// still names the root the document routes serve from, so its links work.
+	thread.Evener.ArtifactsDir = hubArtifactsDir(cfg, thread.Evener.Ref)
+	if thread.Evener.ArtifactsDir == "" {
+		// An incompatible daemon is not in the roster's live set, so resolving
+		// the stable ref finds nothing. The saved entry's own state directory
+		// is the same root the document route serves these files from.
+		if dir, dirErr := schema.SessionArtifactsDir(entry.StateDir, entry.Meta.ID); dirErr == nil {
+			thread.Evener.ArtifactsDir = dir
+		}
+	}
 	thread.Evener.VisionModel = entry.Meta.VisionModel
 	thread.Evener.Access = appwire.SessionAccess(entry.Meta.Config.Sandbox, entry.Meta.Config.SandboxNet)
 	return thread, nil
