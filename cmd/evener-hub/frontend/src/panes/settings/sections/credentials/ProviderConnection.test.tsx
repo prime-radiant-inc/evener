@@ -550,6 +550,10 @@ function savedList(id = "anthropic", extra: Partial<InstanceEntry> = {}): Instan
   const row = { ...catalogue.find((p) => p.id === id)!.setup!, activeSource: "store", hasStoredFile: true, ...extra };
   return { instances: [row], availableProviders: catalogue.map((p) => (p.id === id ? { ...p, setup: row } : p)) };
 }
+/** The saved Anthropic row repointed at another endpoint, as a listing. */
+function movedList(): InstanceListResponse {
+  return savedList("anthropic", { baseUrl: "https://moved.example/v1", endpointFingerprint: "fp-moved" });
+}
 const saved = { provider: "anthropic", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
 async function choose(user: ReturnType<typeof userEvent.setup>, name = "Anthropic") {
   // Choosing from the revealed catalogue covers both kinds of provider this
@@ -2331,4 +2335,196 @@ test("a superseded create never writes its draft against the reconciled endpoint
   expect(await screen.findByRole("dialog", { name: "raced-team" })).toBeTruthy();
   await user.click(screen.getByRole("button", { name: "Add key" }));
   expect(screen.getByLabelText("API key")).toHaveProperty("value", "authored-key");
+});
+
+// One class, every path. A credential draft is only ever written against the
+// destination the card showed when the draft was typed. A foreign refresh can
+// install a replacement while the draft is held; whichever action the card
+// takes next - a key save, an endpoint save, or the settings save - must prove
+// the destination first and must never carry the old draft to the replacement.
+test.each([
+  {
+    path: "a credential save",
+    async stage(user: ReturnType<typeof userEvent.setup>) {
+      await choose(user);
+      await user.click(screen.getByRole("button", { name: "Replace" }));
+      await enterText(user, screen.getByLabelText("API key"), "typed-for-anthropic");
+    },
+    async attempt(user: ReturnType<typeof userEvent.setup>) {
+      await user.click(screen.getByRole("button", { name: "Save and test" }));
+    },
+  },
+  {
+    path: "an endpoint save",
+    async stage(user: ReturnType<typeof userEvent.setup>) {
+      await choose(user);
+      await user.click(screen.getByRole("button", { name: "Edit" }));
+      const field = screen.getByLabelText("Endpoint URL");
+      await user.clear(field);
+      await enterText(user, field, "https://authored.example/v1");
+    },
+    async attempt(user: ReturnType<typeof userEvent.setup>) {
+      await user.click(screen.getByRole("button", { name: "Save" }));
+    },
+  },
+  {
+    path: "a settings save",
+    async stage(user: ReturnType<typeof userEvent.setup>) {
+      await choose(user);
+      await user.click(screen.getByRole("button", { name: "Replace" }));
+      await enterText(user, screen.getByLabelText("API key"), "typed-for-anthropic");
+    },
+    async attempt(user: ReturnType<typeof userEvent.setup>) {
+      await user.click(screen.getByText("All connection settings"));
+      await user.click(screen.getByRole("button", { name: "Save settings" }));
+      // The settings draft was authored against the replacement, so the save
+      // may land there; the key drafted for the old destination must be gone
+      // before anything can write it - including the key row's own Save.
+      await user.click(screen.getByRole("button", { name: "Save" }));
+    },
+  },
+])("destination integrity: $path never writes a draft to a replacement", async ({ stage, attempt }) => {
+  const { user, client } = setup(savedList());
+  await stage(user);
+
+  const movedListing = movedList();
+  client.on("evener/instance/list", () => structuredClone(movedListing));
+  client.on("evener/instance/edit", () => structuredClone(movedListing));
+  await act(async () => {
+    await credentialsStore.getState().fetch();
+  });
+
+  await attempt(user);
+
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
+  const keyField = screen.queryByLabelText("API key");
+  if (keyField) expect(keyField).toHaveProperty("value", "");
+});
+
+// The adoption race the review named: a self-marked read (another part of the
+// page refreshing) installs B without the foreign-change watch standing up, so
+// the card holds a key typed against A while its row already says B. Opening
+// the settings disclosure now pins B, and an unchanged save compares B with B.
+// The credential draft's own claim is the only thing that still knows it was
+// typed for A, so adoption must consult it before advancing the baseline.
+test("a settings adoption cannot retain a key typed for the replaced destination", async () => {
+  const { user, client } = setup(savedList());
+  await choose(user);
+  await user.click(screen.getByRole("button", { name: "Replace" }));
+  await enterText(user, screen.getByLabelText("API key"), "typed-for-anthropic");
+
+  const movedListing = movedList();
+  client.on("evener/instance/list", () => structuredClone(movedListing));
+  client.on("evener/instance/edit", () => structuredClone(movedListing));
+  // Marked as this page's own read: the foreign-change watch stands aside, so
+  // the draft survives until the save itself consults its claim.
+  await act(async () => {
+    await credentialsStore.getState().fetchSelf();
+  });
+  expect(screen.getByLabelText("API key")).toHaveProperty("value", "typed-for-anthropic");
+
+  await user.click(screen.getByText("All connection settings"));
+  await user.click(screen.getByRole("button", { name: "Save settings" }));
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/instance/edit")).toBe(true));
+
+  // The settings save adopted B. The next Save of the key row must not find a
+  // baseline that matches the row and send A's key to B.
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
+  expect(screen.getByLabelText("API key")).toHaveProperty("value", "");
+});
+
+// The endpoint editor's Save asserts the destination the editor was opened on,
+// not whatever row a foreign refresh installed while it sat idle. Otherwise a
+// URL authored against A silently overwrites the replacement B.
+test("an endpoint save asserts the destination the editor was opened on", async () => {
+  const { user, client } = setup(savedList());
+  await choose(user);
+  await user.click(screen.getByRole("button", { name: "Edit" }));
+  const field = screen.getByLabelText("Endpoint URL");
+  await user.clear(field);
+  await enterText(user, field, "https://authored.example/v1");
+
+  const movedListing = movedList();
+  client.on("evener/instance/list", () => structuredClone(movedListing));
+  await act(async () => {
+    await credentialsStore.getState().fetch();
+  });
+
+  await user.click(screen.getByRole("button", { name: "Save" }));
+
+  expect(client.calls.filter((call) => call.method === "evener/instance/edit")).toHaveLength(0);
+  expect(await alertReason()).toBe("endpoint-changed");
+  // The editor closed rather than keeping a draft that belonged to A as if it
+  // were an edit for B.
+  expect(screen.queryByLabelText("Endpoint URL")).toBeNull();
+});
+
+// Enter belongs to the editable field it was pressed in. A disclosure summary
+// and a link are native controls: intercepting Enter there submits the
+// connection form (and can start a provider check) instead of opening settings
+// or following the link.
+test("Enter on a disclosure or link keeps its native activation", async () => {
+  const { user, client } = setup(savedList());
+  await choose(user);
+  await user.click(screen.getByText("All connection settings"));
+  // Close it again so the summary is the control under test.
+  await user.click(screen.getByText("All connection settings"));
+
+  const summary = screen.getByText("All connection settings");
+  fireEvent.keyDown(summary, { key: "Enter" });
+  expect(client.calls.filter((call) => call.method === "evener/instance/edit")).toHaveLength(0);
+  expect(client.calls.some((call) => call.method === "evener/auth/test")).toBe(false);
+
+  const link = screen.getByRole("link", { name: "Get an API key" });
+  fireEvent.keyDown(link, { key: "Enter" });
+  expect(client.calls.filter((call) => call.method === "evener/instance/edit")).toHaveLength(0);
+  expect(client.calls.some((call) => call.method === "evener/auth/test")).toBe(false);
+});
+
+// A write whose answer a newer request superseded is not proof its listing is
+// the one on screen. When no applied listing can confirm the row the edit
+// wrote, the editor and its draft stay put rather than closing on the old
+// listing and discarding the draft.
+test("a superseded settings edit stays open until a listing confirms it", async () => {
+  const { user, client } = setup(savedList());
+  await choose(user);
+  await user.click(screen.getByText("All connection settings"));
+  await enterText(user, screen.getByLabelText("API key env"), "TEAM_KEY");
+
+  const edit = deferred<InstanceListResponse>();
+  client.on("evener/instance/edit", () => edit.promise);
+  await user.click(screen.getByRole("button", { name: "Save settings" }));
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/instance/edit")).toBe(true));
+
+  // A newer read starts before the edit answers, so the store discards the
+  // edit's response. Every later read fails too: the card has no applied
+  // listing it can adopt.
+  const newer = deferred<InstanceListResponse>();
+  let reads = 0;
+  client.on("evener/instance/list", () => {
+    reads += 1;
+    if (reads === 1) return newer.promise;
+    throw new Error("listing unavailable");
+  });
+  let pending!: Promise<boolean>;
+  await act(async () => {
+    pending = credentialsStore.getState().fetchSelf();
+  });
+  const edited = { ...savedList().instances[0]!, apiKeyEnv: "TEAM_KEY" };
+  await act(async () => {
+    edit.resolve({ instances: [edited], availableProviders: structuredClone(catalogue) });
+    await edit.promise;
+  });
+
+  expect(await alertReason()).toBe("save-unconfirmed");
+  // The draft and the editor are retained: the write may have landed, and the
+  // card must not close on a listing that predates it.
+  expect(screen.getByLabelText("API key env")).toHaveProperty("value", "TEAM_KEY");
+  expect(screen.getByRole("button", { name: "Save settings" })).toBeTruthy();
+
+  await act(async () => {
+    newer.resolve(savedList());
+    await pending.catch(() => false);
+  });
 });

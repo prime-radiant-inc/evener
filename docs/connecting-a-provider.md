@@ -21,7 +21,7 @@ configured, choose that connection rather than adding it again.
    [OpenAI](https://platform.openai.com/api-keys),
    [Gemini](https://aistudio.google.com/apikey),
    [OpenRouter](https://openrouter.ai/settings/keys).
-4. Select **Save and check**. Evener saves access on the Evener host, reloads the
+4. Select **Save and test**. Evener saves access on the Evener host, reloads the
    resolved connection, and requests the provider's **model list only**. It does
    not send your prompt or make a generation request. A returned list does not
    prove generation access, quota, billing status, or a model's tool capability.
@@ -64,8 +64,7 @@ pasting an API key. Availability depends on your account and provider terms.
   closes and Settings → Providers & credentials opens; each instance row there
   opens the complete inspector, where you can review the displayed destination
   and credential source and test current access before contacting the provider.
-  The guided form also offers **Use existing host access** under **Advanced
-  settings**.
+  The guided form's key row also offers **use this host's access instead**.
 - **Advanced management:** Settings → Providers & credentials → **Connect provider** uses the
   same connector. After a successful check, **Done** returns to Settings; it does
   not open the New session model chooser. The instance rows are the real editor, with custom instances,

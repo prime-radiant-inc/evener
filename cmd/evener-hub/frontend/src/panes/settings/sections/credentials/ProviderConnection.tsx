@@ -1,4 +1,4 @@
-import type { AuthTestResponse, InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
+import type { AuthTestResponse, InstanceEditParams, InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
 import {
   activeSourceLabel,
   CONNECTION_REPLACED_ERROR,
@@ -9,6 +9,7 @@ import {
   safeCredentialTestResult,
 } from "@evener/appwire-client";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { isEditableTarget } from "../../../../keybindings/dispatcher";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
 import {
   credentialsStore,
@@ -34,7 +35,7 @@ import { byCodePoint, PROTOCOL_OPTIONS, SURFACE_OPTIONS } from "./instanceEdit";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
 import styles from "./ProviderConnection.module.css";
-import { confirmListingState, refreshListingAfterMutation } from "./reconcileListing";
+import { appliedSelfRead, confirmListingState, refreshListingAfterMutation } from "./reconcileListing";
 import { useEditorLifetime } from "./useEditorLifetime";
 
 // A connection is one card in every state: the same rows, the same footer.
@@ -46,6 +47,8 @@ const CHANGED_ERROR = "Connection or configuration changed. Review access and ch
 const REFRESH_FAILED_ERROR = "Access could not be refreshed. Your saved credential is retained; retry the check.";
 const RELOAD_FAILED_ERROR =
   "The saved connection could not be loaded. Reload it or open the full editor; do not create it again.";
+const SAVE_UNCONFIRMED_ERROR =
+  "The change reached the host, but the provider list could not confirm it. Your draft is kept; retry, or reopen this connection to review its destination.";
 const NAME_REQUIRED_ERROR = "Enter a name for this connection.";
 const ENDPOINT_REQUIRED_ERROR = "Enter the endpoint's base URL.";
 
@@ -53,8 +56,9 @@ const ENDPOINT_REQUIRED_ERROR = "Enter the endpoint's base URL.";
  * configuration changed under it, the check or the save was refused for a
  * destination the hub cannot fingerprint, the endpoint moved, the connection
  * was replaced, the check failed, the refresh failed, the connection needs
- * configuration, the save or the sign-in start failed, a create was refused,
- * or a created connection could not be reloaded. */
+ * configuration, the save or the sign-in start failed, a save reached the host
+ * but no applied listing could confirm it, a create was refused, or a created
+ * connection could not be reloaded. */
 type ConnectionErrorReason =
   | "changed"
   | "check-fingerprint-unavailable"
@@ -65,6 +69,7 @@ type ConnectionErrorReason =
   | "refresh-failed"
   | "needs-configuration"
   | "save-failed"
+  | "save-unconfirmed"
   | "sign-in-failed"
   | "reload-failed"
   | "name-required"
@@ -135,6 +140,40 @@ function destination(row: InstanceEntry | undefined): string {
     row.hidden,
   ]);
 }
+/** DestinationClaim is the destination a draft was authored against: the
+ * endpoint fingerprint the wire asserts, and the whole destination the card
+ * compares. A credential or editor draft pins one claim when it starts, and
+ * every write, test and adoption while it is held goes through that claim. */
+interface DestinationClaim {
+  fingerprint: string | undefined;
+  baseUrl: string;
+  key: string;
+}
+
+function claimOf(row: InstanceEntry | undefined): DestinationClaim | undefined {
+  return row
+    ? { fingerprint: row.endpointFingerprint || undefined, baseUrl: row.baseUrl ?? "", key: destination(row) }
+    : undefined;
+}
+
+function claimHolds(claim: DestinationClaim, row: InstanceEntry | undefined): boolean {
+  return row !== undefined && destination(row) === claim.key;
+}
+
+/** claimEndpointMoved reports a row whose endpoint identity is not the one the
+ * claim was read from: the fingerprint when the claim carries one (the hub's
+ * immutable identity), the sanitized URL otherwise. Configuration fields such
+ * as protocol are not part of it, so their move does not block an edit whose
+ * own write is still scoped to the endpoint the user saw. */
+function claimEndpointMoved(claim: DestinationClaim, row: InstanceEntry): boolean {
+  if (claim.fingerprint !== undefined) return row.endpointFingerprint !== claim.fingerprint;
+  return (row.baseUrl ?? "") !== claim.baseUrl;
+}
+
+function listingRow(rows: InstanceEntry[], name: string): InstanceEntry | undefined {
+  return rows.find((row) => row.name === name && !row.implicit);
+}
+
 function needsConfiguration(row: InstanceEntry | undefined): boolean {
   return !row || !!row.hidden || !row.baseUrl || /[{}]/.test(row.baseUrl);
 }
@@ -365,6 +404,13 @@ function SelectedConnection({
   const [review, setReview] = useState<InstanceEntry | null>(null);
   const errorRef = useRef<HTMLDivElement>(null);
   const operation = useRef(0);
+  // The destination each draft was authored against, captured when the draft
+  // starts. The credential claim lives in a ref because the store subscription
+  // and the save handlers must read it live, not from a render.
+  const draftClaim = useRef<DestinationClaim | undefined>(undefined);
+  const [endpointClaim, setEndpointClaim] = useState<DestinationClaim | undefined>(undefined);
+  const [settingsClaim, setSettingsClaim] = useState<DestinationClaim | undefined>(undefined);
+  const dropDraftRef = useRef<() => void>(() => {});
   // A listing the card's own create/edit installed is not a foreign change.
   // The write's asserted endpoint is what protects it from a destination that
   // moved meanwhile, so the watch stands aside until the write's continuation
@@ -427,6 +473,14 @@ function SelectedConnection({
     const unsubscribeStore = credentialsStore.subscribe((current, previous) => {
       if (selfMutation.current) return;
       if (!foreignListingChange(current, previous)) return;
+      // A credential draft is pinned to the destination it was typed for. The
+      // listing moving that destination is the one change no later save may
+      // miss: drop the draft now, and say why, before any write can use it.
+      const claim = draftClaim.current;
+      if (claim && !claimHolds(claim, findSetup(name))) {
+        dropDraftRef.current();
+        setError({ reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR });
+      }
       if (
         ["saving", "checking", "result", "review"].includes(phaseRef.current) ||
         (oauth && destination(findSetup(name)) !== destination(baseline))
@@ -455,6 +509,8 @@ function SelectedConnection({
     if (phase === "checking") return { label: "Testing", tone: "neutral", row: "Asking for the model list…" };
     if (phase === "review") return { label: "Review", tone: "attention", row: "Waiting for your review" };
     if (error?.reason === "check-failed") return { label: "Failed", tone: "danger", row: "Failed just now" };
+    if (error?.reason === "save-unconfirmed")
+      return { label: "Review", tone: "attention", row: "Saved, not confirmed" };
     if (error && (error.reason === "endpoint-changed" || error.reason === "changed"))
       return { label: "Review", tone: "attention", row: "Recheck before use" };
     if (result?.status === "success")
@@ -473,9 +529,19 @@ function SelectedConnection({
   }
   function changeValue(next: string) {
     operation.current += 1;
+    const typedBefore = value.trim() !== "";
     // A typed credential replaces host access: the flag applies only while the
     // field is empty and the card is about to test whatever the host resolves.
-    if (next.trim()) setHost(false);
+    if (next.trim()) {
+      setHost(false);
+      // The draft's first character pins the destination on screen. Later
+      // keystrokes keep that pin even if the listing moves; the subscription
+      // drops the draft when it does. The add card has no destination yet, so
+      // its claim is pinned after the create confirms the row it authored.
+      if (!typedBefore && !adding) draftClaim.current = claimOf(row);
+    } else {
+      draftClaim.current = undefined;
+    }
     setDraft({ providerId: resolvedProviderId ?? effectiveProvider.id, value: next });
     setMissingCredential(false);
     setSaved(false);
@@ -485,17 +551,108 @@ function SelectedConnection({
     setError(null);
   }
 
-  /** adoptBaseline makes next the card's new baseline. A destination that
-   * moved under a typed credential draft invalidates that draft: it was typed
-   * for the endpoint the user saw, and a later Save that compared the row with
-   * the adopted baseline would otherwise pass the destination check and send
-   * the draft to the replacement. The card clears it and says what changed. */
-  function adoptBaseline(next: InstanceEntry | undefined, previous: InstanceEntry | undefined) {
-    if (next && previous && destination(next) !== destination(previous) && value.trim()) {
-      changeValue("");
+  /** dropDraft clears the typed credential and the destination it was pinned
+   * to. What is already saved is untouched; the caller decides the report. */
+  function dropDraft() {
+    draftClaim.current = undefined;
+    setDraft({ providerId: resolvedProviderId ?? effectiveProvider.id, value: "" });
+    setMissingCredential(false);
+  }
+  dropDraftRef.current = dropDraft;
+
+  /** closeEndpointEditor ends the endpoint row's edit and drops its claim. The
+   * caller decides whether the save landed and what to report. */
+  function closeEndpointEditor() {
+    setEndpointDraft("");
+    setEndpointClaim(undefined);
+    setEditing(null);
+  }
+
+  /** closeSettings ends the settings disclosure's edit and drops its claim. */
+  function closeSettings() {
+    setSettingsOpen(false);
+    setSettingsClaim(undefined);
+  }
+
+  /** adoptBaseline makes next the card's new baseline, and does it for every
+   * path. A credential draft is pinned to the destination it was typed for, so
+   * adopting a different destination drops the draft first and says why. No
+   * later Save can compare the new baseline with itself and send the draft to
+   * a replacement the user never reviewed. */
+  function adoptBaseline(next: InstanceEntry | undefined) {
+    const claim = draftClaim.current;
+    if (claim && !claimHolds(claim, next)) {
+      dropDraft();
       setError({ reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR });
     }
     setBaseline(next);
+  }
+
+  type EditConfirmation = { kind: "confirmed"; row: InstanceEntry } | { kind: "moved" } | { kind: "unconfirmed" };
+
+  /** confirmEdit runs one instance edit and resolves the row it wrote from a
+   * listing that reflects it. The store's applied answer is authoritative. An
+   * answer a newer request superseded still carries the edit's own row, read
+   * under the hub's write lock, but only an applied read may make that row the
+   * card's baseline; without one the caller keeps its draft and says so. */
+  async function confirmEdit(params: InstanceEditParams): Promise<EditConfirmation> {
+    let superseded: InstanceEntry | undefined;
+    const applied = await credentialsStore.getState().edit(params, {
+      onSuperseded: (response) => {
+        superseded = listingRow(response.instances, params.name);
+      },
+    });
+    const authored = applied ? findSetup(params.name) : superseded;
+    if (!authored) return { kind: "unconfirmed" };
+    const read = await appliedSelfRead();
+    if (!applied && !read) return { kind: "unconfirmed" };
+    const row = findSetup(params.name);
+    if (!row) return { kind: "unconfirmed" };
+    return destination(row) === destination(authored) ? { kind: "confirmed", row } : { kind: "moved" };
+  }
+
+  /** saveClaimedEdit runs one editor save through the card's one outcome
+   * protocol. confirmEdit asserts the claim on the wire; a confirmed row
+   * becomes the baseline, a moved destination closes the editor and re-anchors,
+   * and an unconfirmed write keeps the editor and its draft for a retry. */
+  async function saveClaimedEdit(
+    params: InstanceEditParams,
+    closeEditor: () => void,
+    saveFailedMessage: string,
+  ): Promise<void> {
+    const token = ++operation.current;
+    setPhase("saving");
+    setError(null);
+    setResult(null);
+    selfMutation.current = true;
+    try {
+      const outcome = await confirmEdit(params);
+      selfMutation.current = false;
+      if (!current(token)) return;
+      if (outcome.kind === "unconfirmed") {
+        setPhase("idle");
+        setError({ reason: "save-unconfirmed", message: SAVE_UNCONFIRMED_ERROR });
+        return;
+      }
+      closeEditor();
+      if (outcome.kind === "confirmed") {
+        adoptBaseline(outcome.row);
+        setResult(null);
+        setPhase("idle");
+        return;
+      }
+      await recoverChangedEndpoint({ reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR });
+    } catch (err) {
+      selfMutation.current = false;
+      if (!current(token)) return;
+      const changed = destinationChangeError(err);
+      if (changed) {
+        await recoverChangedEndpoint(changed);
+        return;
+      }
+      setPhase("idle");
+      setError({ reason: "save-failed", message: saveFailedMessage });
+    }
   }
 
   async function check(token: number, target: InstanceEntry) {
@@ -542,7 +699,7 @@ function SelectedConnection({
       // Best-effort: the alert below is the answer either way.
     }
     changeValue("");
-    setBaseline(findSetup(targetName));
+    adoptBaseline(findSetup(targetName));
     setError(changed);
   }
 
@@ -608,6 +765,12 @@ function SelectedConnection({
     }
     if (needsConfiguration(row)) return;
     if (!saved && storedMode && required && !value.trim()) {
+      // A draft the destination moved out from under is already reported as
+      // the change it is; a missing-key hint would replace that explanation.
+      if (error && (error.reason === "endpoint-changed" || error.reason === "changed")) {
+        document.getElementById("provider-credential")?.focus();
+        return;
+      }
       setMissingCredential(true);
       document.getElementById("provider-credential")?.focus();
       return;
@@ -617,23 +780,23 @@ function SelectedConnection({
     setResult(null);
     setReview(null);
     if (!saved && storedMode && !host && value.trim()) {
+      const claim = draftClaim.current;
+      if (!claim || !claimHolds(claim, row)) {
+        dropDraft();
+        adoptBaseline(row);
+        setError({ reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR });
+        return;
+      }
       if (fingerprintUnavailable(row)) {
         setPhase("idle");
         setError({ reason: "fingerprint-unavailable", message: FINGERPRINT_UNAVAILABLE_ERROR });
         return;
       }
-      if (row && destination(row) !== destination(baseline)) {
-        changeValue("");
-        setBaseline(row);
-        setError({ reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR });
-        return;
-      }
       setPhase("saving");
       try {
         const state = credentialsStore.getState();
-        const asserted = row?.endpointFingerprint;
-        if (json) await state.setCredentialJson(name, value.trim(), asserted);
-        else await state.setApiKey(name, value.trim(), asserted);
+        if (json) await state.setCredentialJson(name, value.trim(), claim.fingerprint);
+        else await state.setApiKey(name, value.trim(), claim.fingerprint);
         if (!current(token)) return;
         setSaved(true);
         setStoredAccess(true);
@@ -752,7 +915,7 @@ function SelectedConnection({
       return;
     }
     const typedKey = value.trim();
-    setBaseline(created);
+    adoptBaseline(created);
     // The key typed in the add state belongs to the endpoint just created, so
     // it is written against that row and tested with it. The authored row is
     // identified by the fingerprint its create captured under the hub's write
@@ -761,17 +924,21 @@ function SelectedConnection({
     // endpoints and a query-bearing endpoint's own URL is not what the listing
     // shows.
     if (storedMode && typedKey) {
-      if (!applied || authoredFingerprint === undefined || created.endpointFingerprint !== authoredFingerprint) {
+      const claim = claimOf(created);
+      if (!applied || !claim || authoredFingerprint === undefined || claim.fingerprint !== authoredFingerprint) {
         // The create's own listing was superseded, or the reconciled row is a
-        // different destination. The draft belongs to the authored endpoint:
-        // keep it, and let the user save it from the key row, whose write
-        // asserts the row actually on screen.
+        // different destination. The draft belongs to the authored endpoint,
+        // which no row on screen can prove: keep it for inspection, unpinned,
+        // and let a later Save ask for the key again rather than assert a
+        // destination the draft was never typed for.
+        draftClaim.current = undefined;
         setPhase("idle");
         return;
       }
+      draftClaim.current = claim;
       try {
-        if (json) await credentialsStore.getState().setCredentialJson(trimmedName, typedKey, authoredFingerprint);
-        else await credentialsStore.getState().setApiKey(trimmedName, typedKey, authoredFingerprint);
+        if (json) await credentialsStore.getState().setCredentialJson(trimmedName, typedKey, claim.fingerprint);
+        else await credentialsStore.getState().setApiKey(trimmedName, typedKey, claim.fingerprint);
         if (!current(token)) return;
         setSaved(true);
         setStoredAccess(true);
@@ -821,41 +988,24 @@ function SelectedConnection({
     if (next === endpointSeed.trim()) {
       // Nothing the editor can see changed. Close it without writing the
       // sanitized display value back over the endpoint's hidden parts.
-      setEndpointDraft("");
-      setEditing(null);
+      closeEndpointEditor();
       setError(null);
       return;
     }
-    const token = ++operation.current;
-    setPhase("saving");
-    setError(null);
-    setResult(null);
-    selfMutation.current = true;
-    try {
-      await credentialsStore
-        .getState()
-        .edit({ name: row.name, baseUrl: next, expectedEndpointFingerprint: row.endpointFingerprint });
-      selfMutation.current = false;
-      if (!current(token)) return;
-      await credentialsStore.getState().fetchSelf();
-      if (!current(token)) return;
-      const updated = findSetup(name);
-      adoptBaseline(updated, row);
-      setEndpointDraft("");
-      setEditing(null);
-      setResult(null);
-      setPhase("idle");
-    } catch (err) {
-      selfMutation.current = false;
-      if (!current(token)) return;
-      const changed = destinationChangeError(err);
-      if (changed) {
-        await recoverChangedEndpoint(changed);
-        return;
-      }
-      setPhase("idle");
-      setError({ reason: "save-failed", message: "The endpoint could not be saved. Your value is kept." });
+    const claim = endpointClaim;
+    if (!claim || claimEndpointMoved(claim, row)) {
+      // The row moved while the editor sat open. The value was authored
+      // against the row the editor showed, so it cannot be written to the
+      // replacement; drop it and re-anchor the card on what is there now.
+      closeEndpointEditor();
+      await recoverChangedEndpoint({ reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR });
+      return;
     }
+    await saveClaimedEdit(
+      { name: row.name, baseUrl: next, expectedEndpointFingerprint: claim.fingerprint },
+      closeEndpointEditor,
+      "The endpoint could not be saved. Your value is kept.",
+    );
   }
 
   // The full editor is this card's own disclosure. Saving it is one edit with
@@ -863,14 +1013,18 @@ function SelectedConnection({
   async function saveSettings() {
     if (busy) return;
     if (!row) return;
-    const token = ++operation.current;
-    setPhase("saving");
-    setError(null);
-    setResult(null);
-    selfMutation.current = true;
+    const claim = settingsClaim;
+    if (!claim || claimEndpointMoved(claim, row)) {
+      // The settings draft was authored against the destination the disclosure
+      // opened on. Saving it onto a replacement would overwrite configuration
+      // nobody reviewed, so close it and re-anchor instead.
+      closeSettings();
+      await recoverChangedEndpoint({ reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR });
+      return;
+    }
     const changed = (field: keyof SettingsDraft) => settingsDraft[field] !== settingsBaseline[field];
-    try {
-      await credentialsStore.getState().edit({
+    await saveClaimedEdit(
+      {
         name: row.name,
         ...(changed("protocol")
           ? { protocol: settingsDraft.protocol || undefined, clearProtocol: !settingsDraft.protocol }
@@ -887,26 +1041,11 @@ function SelectedConnection({
               clearCredentialHeader: !settingsDraft.credentialHeader,
             }
           : {}),
-        expectedEndpointFingerprint: row.endpointFingerprint,
-      });
-      selfMutation.current = false;
-      if (!current(token)) return;
-      await credentialsStore.getState().fetchSelf();
-      if (!current(token)) return;
-      adoptBaseline(findSetup(name), row);
-      setSettingsOpen(false);
-      setResult(null);
-      setPhase("idle");
-    } catch (err) {
-      selfMutation.current = false;
-      if (!current(token)) return;
-      if (isStaleListingRefusal(err)) {
-        await recoverChangedEndpoint({ reason: "connection-replaced", message: CONNECTION_REPLACED_ERROR });
-        return;
-      }
-      setPhase("idle");
-      setError({ reason: "save-failed", message: "The settings could not be saved. Your values are kept." });
-    }
+        expectedEndpointFingerprint: claim.fingerprint,
+      },
+      closeSettings,
+      "The settings could not be saved. Your values are kept.",
+    );
   }
 
   async function signIn() {
@@ -973,7 +1112,7 @@ function SelectedConnection({
     const created = findSetup(name);
     if (!applied || state.loading || state.error || !created) {
       setError({ reason: "reload-failed", message: RELOAD_FAILED_ERROR });
-    } else setBaseline(created);
+    } else adoptBaseline(created);
   }
 
   if (oauth?.kind === "device")
@@ -1055,16 +1194,22 @@ function SelectedConnection({
           else void submit();
         }}
         onKeyDown={(event) => {
-          if (event.key !== "Enter" || event.target instanceof HTMLButtonElement) return;
+          if (event.key !== "Enter" || event.defaultPrevented) return;
+          const target = event.target;
+          // Enter belongs to the editable field it was pressed in. A summary,
+          // link, or button is a native control: intercepting it here would
+          // submit the card (and could start a provider check) instead of
+          // opening settings or following the link.
+          if (!(target instanceof HTMLElement) || !isEditableTarget(target)) return;
           event.preventDefault();
-          if (editing === "endpoint") {
+          if (editing === "endpoint" && target.id === "connection-endpoint") {
             void saveEndpoint();
             return;
           }
           // Enter belongs to the editor that has focus. A settings field must
           // save the settings it was typed into, not submit a check of the
           // configuration still on the wire.
-          if (event.target instanceof HTMLElement && event.target.closest("[data-settings-editor]")) {
+          if (target.closest("[data-settings-editor]")) {
             void saveSettings();
             return;
           }
@@ -1165,7 +1310,7 @@ function SelectedConnection({
                       <Button variant="secondary" size="xs" disabled={busy} onClick={() => void saveEndpoint()}>
                         Save
                       </Button>
-                      <Button variant="quiet" size="xs" disabled={busy} onClick={() => setEditing(null)}>
+                      <Button variant="quiet" size="xs" disabled={busy} onClick={closeEndpointEditor}>
                         Cancel
                       </Button>
                     </>
@@ -1177,6 +1322,7 @@ function SelectedConnection({
                       onClick={() => {
                         setEndpointSeed(row?.baseUrl ?? "");
                         setEndpointDraft(row?.baseUrl ?? "");
+                        setEndpointClaim(claimOf(row));
                         setEditing("endpoint");
                         setError(null);
                       }}
@@ -1343,7 +1489,7 @@ function SelectedConnection({
             <Button
               disabled={unavailable}
               onClick={() => {
-                setBaseline(review);
+                adoptBaseline(review);
                 void check(++operation.current, review);
               }}
             >
@@ -1385,7 +1531,8 @@ function SelectedConnection({
               if (open) {
                 setSettingsDraft(settingsOf(row));
                 setSettingsBaseline(settingsOf(row));
-              }
+                setSettingsClaim(claimOf(row));
+              } else setSettingsClaim(undefined);
               setSettingsOpen(open);
             }}
             summary="All connection settings"
