@@ -852,6 +852,108 @@ async function applyFixtureOperation(fixture: AnnotationFixture): Promise<void> 
   });
 }
 
+// A dismissal while a handoff waits on its preparation must cancel that
+// handoff. The durable flip can fault or still be in flight at this boundary,
+// so the dismissal must join the eligibility predicate the handoff consults
+// after preparation; the append must never issue its reads.
+test("a dismissal during an outstanding preparation cancels the resumed handoff", async () => {
+  const preparationStarted = deferred<void>();
+  const preparationReleased = deferred<void>();
+  let holdPreparation = false;
+  let discardFaults = 1;
+  const appendReads = vi.fn();
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    routeCancelledDiscardIntoRuntime: true,
+    onAppendReadsIssued: appendReads,
+    beforeCommit: (operation) => {
+      if (operation === "discard" && discardFaults > 0) {
+        discardFaults -= 1;
+        throw new Error("discard fault");
+      }
+    },
+    prepareAnnotation: async () => {
+      const current = fixture;
+      if (current === undefined) return null;
+      if (holdPreparation) {
+        preparationStarted.resolve();
+        await preparationReleased.promise;
+      }
+      const loaded = await current.drafts.load(current.key);
+      return loaded ? { key: loaded.key, token: loaded.token, backing: { kind: "draft" }, localGeneration: 0 } : null;
+    },
+  });
+  const operation: PreparedAnnotation = { ...fixture.operation, operationId: "operation-2" };
+  await applyFixtureOperation(fixture);
+  appendReads.mockClear();
+  fixture.acknowledge.mockClear();
+
+  // The save commits with its completion held; the handoff passes the entry
+  // guard, reads that pending receipt and waits on the composer.
+  const saveHold = holdNextWriteTransaction(SAVE_STORES);
+  const save = fixture.runtime.save(operation);
+  await saveHold.reached;
+  holdPreparation = true;
+  const handoff = fixture.runtime.handoff(fixture.document, operation.operationId);
+  await preparationStarted.promise;
+
+  // The dismissal lands while the handoff waits. The durable flip faults, so
+  // only the in-memory fence can protect the identity at this boundary.
+  fixture.runtime.retireAttempted(operation);
+  preparationReleased.resolve();
+  saveHold.release();
+
+  expect(await save).toBeNull();
+  expect(await handoff).toEqual({ state: "cancelled" });
+  expect(appendReads).not.toHaveBeenCalled();
+  expect(fixture.acknowledge).not.toHaveBeenCalled();
+
+  // The retained dismissal completes on the next trigger and retires the row.
+  fixture.runtime.storageSucceeded();
+  await fixture.runtime.whenIdle();
+  const views = await fixture.repository.listAnnotations(fixture.document);
+  expect(views.find((view) => view.operation.operationId === operation.operationId)).toBeUndefined();
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+// A dismissal landing after the append issued its reads but before its final
+// guard cannot be seen by the append's first receipt read, and its durable flip
+// is serialized behind the append's own write transaction. The final guard
+// must consult the same eligibility predicate and refuse.
+test("a dismissal during the append's reads refuses the final commit", async () => {
+  let dismissOnReads: (() => void) | undefined;
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    prepareAnnotation: currentPreparation(() => fixture),
+    onAppendReadsIssued: () => dismissOnReads?.(),
+  });
+  const operation: PreparedAnnotation = { ...fixture.operation, operationId: "operation-2" };
+  await applyFixtureOperation(fixture);
+  await fixture.repository.saveAnnotation(operation);
+  fixture.acknowledge.mockClear();
+
+  dismissOnReads = () => fixture?.runtime.retireAttempted(operation);
+  expect(await fixture.runtime.handoff(fixture.document, operation.operationId)).toEqual({ state: "cancelled" });
+  expect(fixture.acknowledge).not.toHaveBeenCalled();
+
+  // The queued flip retires the row once the refused append transaction ends.
+  await fixture.runtime.retryPending("storage-recovered");
+  await fixture.runtime.whenIdle();
+  const views = await fixture.repository.listAnnotations(fixture.document);
+  expect(views.find((view) => view.operation.operationId === operation.operationId)).toBeUndefined();
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
 // A save can settle failed while its row is committed and retained as retry
 // work. Dismissing that retained operation used to reach only the in-flight
 // cancellation handle, which the settled save had already released, so the

@@ -702,6 +702,16 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         // recovery-backed append leaves the ordinary draft untouched and keeps
         // its stamp.
         const nextRow = preparation.backing.kind === "draft" ? { ...appended, editedAt: Date.now() } : appended;
+        // The operation's OWN durable row is the cross-instance fence: a
+        // dismissal flips it terminal in its own transaction, so re-read it at
+        // guard time and refuse a row that is no longer pending. IndexedDB
+        // serializes the write transactions, so a dismissal issued during this
+        // append either waits behind it (the in-memory predicate below catches
+        // that same-instance case) or was already committed when this read ran.
+        const currentOperation = await requestResult<AnnotationOperationRow | undefined>(
+          operations.get(input.operationKey),
+        );
+        if (currentOperation?.state !== "pending") return { state: "cancelled" };
         // Every asynchronous prerequisite and construction precedes this guard.
         input.beforeFinalGuard?.();
         if (!input.documentStillEligible()) return { state: "cancelled" };

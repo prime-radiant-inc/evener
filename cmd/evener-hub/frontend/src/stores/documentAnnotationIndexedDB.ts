@@ -1312,8 +1312,10 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
 
   // Listing is durable-read only: no composer lookup, transport or mutation. It
   // returns unexpired pending AND applied operations whose retained payload still
-  // exists (payloadKey equals the operation key), excluding cancelled rows and
-  // any epoch carrying a durable expiry row.
+  // exists (payloadKey equals the operation key), excluding cancelled rows, any
+  // epoch carrying a durable expiry row, and identities a dismissal still
+  // fences. The flip at dismissal time collapses the window to its commit; the
+  // fence filter hides the note even inside that window.
   async listAnnotations(key: DocumentKey): Promise<AnnotationView[]> {
     if (key.namespace.kind !== "browser") return [];
     const documentKey = annotationDocumentKey(key);
@@ -1342,6 +1344,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         const views: AnnotationView[] = [];
         for (const row of operations) {
           if (row.documentKey !== documentKey || row.state === "cancelled") continue;
+          if (this.#pendingCancelledDiscards.has(row.operationKey)) continue;
           if (expiredKeys.has(annotationExpiryKey(documentKey, row.epoch))) continue;
           if (this.#suppressedEpochs.has(epochIdentityOf(row.documentKey, row.namespaceIncarnation, row.epoch))) {
             continue;
@@ -1868,6 +1871,9 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     let provisionalSuppressionAtGuard = false;
     const documentStillEligible = () => {
       if (refused()) return false;
+      // A dismissal joins the same predicate at the append's final guard: its
+      // synchronous fence is set before its durable flip can be observed here.
+      if (this.#pendingCancelledDiscards.has(operationKey)) return false;
       // The append's last guard asks this after its reads. Record a provisional
       // answer so the cancellation it causes stays retryable: the validation the
       // entry awaits may still prove its read stale and release the suppression.
@@ -1905,6 +1911,13 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     }
     if (refused()) return { state: "pending", reason: "owner-unavailable" };
     if (!preparation) return { state: "pending", reason: "owner-unavailable" };
+    // The entry guard ran before the preparation; a dismissal that landed while
+    // this handoff waited owns the identity now. Answer terminal and retire the
+    // retained seam rather than appending the dismissed note.
+    if (this.#pendingCancelledDiscards.has(operationKey)) {
+      this.#uncertainAppends.delete(operationKey);
+      return { state: "cancelled" };
+    }
     const suppressedAfterPreparation = suppressedOutcome();
     if (suppressedAfterPreparation) return suppressedAfterPreparation;
     let result: AppendAnnotationResult;
@@ -1971,6 +1984,11 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   ): Promise<"reconciled" | "unreconcilable" | "faulted" | "none"> {
     const retained = this.#uncertainAppends.get(operationKey);
     if (!retained) return "none";
+    // A dismissed identity is never reconciled into the composer: the
+    // acknowledgment below is the one path that can still deliver the note
+    // after the fence is gone. Returning "none" makes the caller drop the
+    // record.
+    if (this.#pendingCancelledDiscards.has(operationKey)) return "none";
     let backing: CommittedAppendBacking | null;
     try {
       backing = await this.#options.drafts.readAppendBacking(retained.preparation);
@@ -1980,6 +1998,8 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       return "faulted";
     }
     if (this.#closed || cancellation?.cancelled === true) return "none";
+    // The fence can land while the backing read is outstanding.
+    if (this.#pendingCancelledDiscards.has(operationKey)) return "none";
     this.#publishDocumentWake(annotationDocumentKey(retained.key));
     if (
       !backing ||
