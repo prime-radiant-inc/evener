@@ -417,9 +417,11 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // persistence; recovery edits commit through the mutation outbox, which the
   // drafts-repository subscription cannot observe, so the source's own
   // recovery-persisted notification is routed through the same storage-success
-  // boundary. The WeakMap dies with the source, and a disposed source clears
-  // its listeners, so a closed repository can never be revived by one.
+  // boundary. The WeakMap dies with the source and dedupes per source without
+  // retaining one; the release set below holds only the unsubscribe closures so
+  // close() can reach them, since a WeakMap is not iterable.
   readonly #recoveryNotifications = new WeakMap<ComposerSourceState, () => void>();
+  readonly #recoveryNotificationReleases = new Set<() => void>();
   // Best-effort peer wakeups, scoped to this adapter's database.
   readonly #channel: AnnotationWakeChannel;
   readonly #channelSourceId = makeSourceId();
@@ -471,9 +473,13 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
 
   close(): void {
     // Late work must not revive a closed registration; retire every listener and
-    // the peer channel before the connection. Retained uncertain appends hold
+    // the peer channel before the connection. A surviving composer source must
+    // not keep this repository reachable through its recovery notification, so
+    // every armed subscription is released too. Retained uncertain appends hold
     // composer seams that only a later handoff could reconcile - a closed
     // repository runs none, so the records retire with it.
+    for (const release of this.#recoveryNotificationReleases) release();
+    this.#recoveryNotificationReleases.clear();
     this.#subscriptions.clear();
     this.#uncertainAppends.clear();
     this.#unsubscribeDrafts();
@@ -539,6 +545,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     if (this.#recoveryNotifications.has(source)) return;
     const unsubscribe = source.subscribeRecoveryPersisted(() => this.#notifyStorageSuccess());
     this.#recoveryNotifications.set(source, unsubscribe);
+    this.#recoveryNotificationReleases.add(unsubscribe);
   }
 
   // Test-only inspection of the adapter-local issued-ticket map: acceptance
