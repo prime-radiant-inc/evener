@@ -7,6 +7,7 @@ import {
   fingerprintUnavailable,
   isEndpointConflict,
   safeCredentialTestResult,
+  WireError,
 } from "@evener/appwire-client";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
@@ -41,23 +42,35 @@ import { useEditorLifetime } from "./useEditorLifetime";
 // assertion this flow carried, or the client's own listing moved under it.
 const ENDPOINT_MOVED_ERROR =
   "This connection changed to a different endpoint. Check its destination and enter the key again.";
+const ACCESS_CHANGED_ERROR = "Access changed during the check. Checking again.";
 const CHANGED_ERROR = "Connection or configuration changed. Review access and check again.";
 const REFRESH_FAILED_ERROR = "Access could not be refreshed. Your saved credential is retained; retry the check.";
 const RELOAD_FAILED_ERROR =
   "The saved connection could not be loaded. Reload it or open the full editor; do not create it again.";
 
+// isAccessChangedConflict recognizes the hub refusing a check result that a
+// hub-observed credential write superseded while the probe ran
+// (appwire.Conflict: code -32013 with data.evenerErrorInfo "conflict"). The
+// discriminant, never the code: endpointConflict shares the code and keeps its
+// own destination-review handling above. This refusal is not evidence about
+// the endpoint, so it must not be presented as an endpoint failure.
+function isAccessChangedConflict(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === "conflict";
+}
+
 /** Why the flow stopped, as its alert's data-reason: the connection or its
  * configuration changed under it, the check or the save was refused for a
  * destination the hub cannot fingerprint, the endpoint moved, the connection
- * was replaced, the check failed, the refresh failed, the connection needs
- * configuration, the save or the sign-in start failed, or a created connection
- * could not be reloaded. */
+ * was replaced, a credential write superseded the check, the check failed, the
+ * refresh failed, the connection needs configuration, the save or the sign-in
+ * start failed, or a created connection could not be reloaded. */
 type ConnectionErrorReason =
   | "changed"
   | "check-fingerprint-unavailable"
   | "fingerprint-unavailable"
   | "endpoint-changed"
   | "connection-replaced"
+  | "access-changed"
   | "check-failed"
   | "refresh-failed"
   | "needs-configuration"
@@ -630,6 +643,17 @@ function SelectedConnection({
             ? { reason: "connection-replaced", message: CONNECTION_REPLACED_ERROR }
             : { reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR },
         );
+        return;
+      }
+      if (isAccessChangedConflict(err)) {
+        // The credential this check sent was replaced by a hub-observed write
+        // while the provider was answering. The replacement is already saved;
+        // the paced retry rereads the listing and checks it without saving
+        // again. Clear any endpoint verdict: this endpoint did not move.
+        setResult(null);
+        setPhase("result");
+        setError({ reason: "access-changed", message: ACCESS_CHANGED_ERROR });
+        scheduleRetry(target.activeSource);
         return;
       }
       const response = safeCredentialTestResult(target.name, {

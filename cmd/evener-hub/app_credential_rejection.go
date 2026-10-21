@@ -157,26 +157,34 @@ func (c *hubAuthController) currentCredentialRevision(name string) string {
 // credentialRejectionChanged; the caller must not hold credMu, since the
 // announcement reads the instance's status.
 //
+// It reports whether the probe is still current. A false verdict means the
+// outcome describes neither the credential nor the configuration the instance
+// has now, so a caller that publishes the outcome as a verdict must refuse it;
+// callers that only feed rejection state may ignore the result, which they
+// already did. Freshness is not "a rejection was recorded": a keyless probe or
+// an inconclusive one is still a valid answer about the same state.
+//
 // A probe with no revision records nothing: either the instance sent no
 // credential, or the hub could not resolve its fingerprint key and the
 // rejection could not tell the configuration it was about from any other.
-func (c *hubAuthController) settleCredentialProbe(start credentialProbeStart, listing llm.ModelListing, err error) {
+func (c *hubAuthController) settleCredentialProbe(start credentialProbeStart, listing llm.ModelListing, err error) bool {
 	if c == nil {
-		return
+		return true
+	}
+	if start.revision != "" && c.currentCredentialRevision(start.name) != start.revision {
+		return false
 	}
 	status, rejected := credentialRejectionStatus(err)
 	verified := err == nil && listing.Live
-	if (!rejected && !verified) || start.revision == "" {
-		return
-	}
-	if c.currentCredentialRevision(start.name) != start.revision {
-		return
-	}
 	r := &c.rejections
 	r.mu.Lock()
 	if r.writes[start.name] != start.writes {
 		r.mu.Unlock()
-		return
+		return false
+	}
+	if (!rejected && !verified) || start.revision == "" {
+		r.mu.Unlock()
+		return true
 	}
 	previous, had := r.byName[start.name]
 	changed := false
@@ -195,6 +203,7 @@ func (c *hubAuthController) settleCredentialProbe(start credentialProbeStart, li
 	if changed && c.credentialRejectionChanged != nil {
 		c.credentialRejectionChanged(start.name)
 	}
+	return true
 }
 
 // forgetCredentialRejection drops name's rejection and voids name's probes in

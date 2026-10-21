@@ -110,11 +110,13 @@ keep the empty reason and still retire the completion.
 ## Optional recording
 
 Set `EVENER_ONBOARDING_VIDEO` to an absolute, new `.mp4` path outside source
-and put `ffmpeg` with libx264 on PATH. Create its parent directory first:
+and put `ffmpeg` with libx264 on PATH. Create its parent directory first. One
+recording invocation selects one view, so record `desktop-light` alone and give
+each such invocation its own fresh absolute output path:
 
 ```sh
-EVENER_ONBOARDING_VIDEO=/absolute/session-artifacts/onboarding.mp4 \
-  go test -tags browserguard ./cmd/evener-hub -run '^TestOnboardingBrowser$' -count=1 -v
+EVENER_ONBOARDING_VIDEO=/absolute/session-artifacts/onboarding-desktop-light.mp4 \
+  go test -tags browserguard ./cmd/evener-hub -run '^TestOnboardingBrowser/desktop-light$' -count=1 -v
 ```
 
 This runs the same assertions with finite reading pauses. CDP screencast capture
@@ -123,7 +125,11 @@ bar. Chrome remains headless with its own disposable profile. Frame timestamps
 preserve elapsed time, including the pauses, in a 20fps H.264 MP4. A separate
 offscreen canvas supplies a persistent recording annotation identifying the
 scripted provider and fixture reply; it never changes production UI. The output
-adds that 72px annotation above the 1440×1000 viewport.
+adds that 72px annotation above the 1440×1000 viewport. The encoder refuses to
+overwrite an existing video (`ffmpeg -n`), so a recorded path cannot be reused
+across views. Ordinary all-view test runs without `EVENER_ONBOARDING_VIDEO` are
+unchanged. The annotation fixes desktop width; record desktop views for video
+and rely on the ordinary tests and access-view PNGs for mobile.
 
 The MP4 and eight access-view PNGs plus `access-views.json` leave the test's temporary root.
 After the video, the driver captures resolved access and the real Change button's

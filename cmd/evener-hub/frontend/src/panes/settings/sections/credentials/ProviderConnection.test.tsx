@@ -1002,6 +1002,109 @@ test("a temporary endpoint failure retries on the paced schedule and completes o
   });
 });
 
+// The hub refuses a probe result that a credential write superseded while the
+// check ran (appwire.Conflict with evenerErrorInfo "conflict"). This is not an
+// endpoint failure: the saved access is retained, the dialog stays open, and
+// the paced retry rereads the listing and checks the replacement without
+// saving it again.
+test("a superseded credential check keeps saved access and retries to fresh success", async () => {
+  const { user, client, close, connected } = setup();
+  scriptSave(client);
+  const listReads = () => client.calls.filter((call) => call.method === "evener/instance/list").length;
+  let probes = 0;
+  const first = deferred<{ provider: string; status: string; message: string }>();
+  client.on("evener/auth/test", () => {
+    probes += 1;
+    return first.promise;
+  });
+  await choose(user);
+  await enterText(user, screen.getByLabelText("API key"), "fixture-key");
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  await screen.findByRole("button", { name: "Checking model list…" });
+
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  await act(async () => {
+    first.reject(
+      new WireError("Credentials changed while this check was running.", -32013, { evenerErrorInfo: "conflict" }),
+    );
+    await first.promise.catch(() => {});
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(reasonShown("access-changed")).toBe(true);
+  expect(connected).not.toHaveBeenCalled();
+  expect(close).not.toHaveBeenCalled();
+  expect(screen.getByRole("dialog")).toBeTruthy();
+  // The credential that was saved before the check stays saved.
+  expect(screen.getByTestId("credential-saved")).toBeTruthy();
+  expect(screen.getByRole("button", { name: /^Close, access stays saved$/ })).toBeTruthy();
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(1);
+
+  const readsBeforeRetry = listReads();
+  client.on("evener/auth/test", ({ provider }) => {
+    probes += 1;
+    return { provider, status: "success", message: "" };
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(999);
+  });
+  expect(probes).toBe(1);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1);
+  });
+  expect(connected).toHaveBeenCalledExactlyOnceWith("anthropic");
+  expect(probes).toBe(2);
+  expect(listReads()).toBeGreaterThan(readsBeforeRetry);
+  // Recovery tested the replacement; it did not save it again.
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(1);
+});
+
+test("a superseded credential check retries to the replacement's own rejection", async () => {
+  const { user, client, connected } = setup();
+  scriptSave(client);
+  let probes = 0;
+  const first = deferred<{ provider: string; status: string; message: string }>();
+  client.on("evener/auth/test", () => {
+    probes += 1;
+    return first.promise;
+  });
+  await choose(user);
+  await enterText(user, screen.getByLabelText("API key"), "fixture-key");
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  await screen.findByRole("button", { name: "Checking model list…" });
+
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  await act(async () => {
+    first.reject(
+      new WireError("Credentials changed while this check was running.", -32013, { evenerErrorInfo: "conflict" }),
+    );
+    await first.promise.catch(() => {});
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(reasonShown("access-changed")).toBe(true);
+  expect(connected).not.toHaveBeenCalled();
+  expect(screen.getByTestId("credential-saved")).toBeTruthy();
+
+  client.on("evener/auth/test", ({ provider }) => {
+    probes += 1;
+    return { provider, status: "auth_rejected", message: "" };
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  expect(reasonShown("check-failed")).toBe(true);
+  expect(probes).toBe(2);
+  expect(connected).not.toHaveBeenCalled();
+  // The replacement's rejection is a terminal answer about that credential,
+  // so no further retry is pending and the saved access remains.
+  expect(document.querySelector('[data-retry="scheduled"]')).toBeNull();
+  expect(screen.getByTestId("credential-saved")).toBeTruthy();
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(1);
+});
+
 test("saved OAuth access awaiting an automatic retry does not invite another sign-in", async () => {
   const { user, client } = setup(savedList("openai-codex", { activeSource: "oauth", hasStoredOAuth: true }));
   client.on("evener/auth/test", ({ provider }) => ({ provider, status: "endpoint_failure", message: "" }));
