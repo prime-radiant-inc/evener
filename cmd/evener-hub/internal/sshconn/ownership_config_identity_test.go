@@ -164,6 +164,10 @@ func TestOwnerConfigFileIdentity(t *testing.T) {
 func TestSystemdConfigFileIdentity(t *testing.T) {
 	resolver := buildConfigIdentityResolver(t)
 	root := t.TempDir()
+	cwd := filepath.Join(root, "working ")
+	if err := os.Mkdir(cwd, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	config := filepath.Join(root, "hub.toml")
 	for _, file := range []string{config, filepath.Join(root, "other.toml")} {
 		if err := os.WriteFile(file, fmt.Appendf(nil, "addr = \"127.0.0.1:0\"\nhub_state_root = %q\n", filepath.Join(root, "state")), 0600); err != nil {
@@ -199,10 +203,12 @@ func TestSystemdConfigFileIdentity(t *testing.T) {
 						if live {
 							pid = "4242"
 						}
-						return fmt.Appendf(nil, "Id=evener-hub.service\nMainPID=%s\nUser=dev\nExecStart={ path=%s ; argv[]=%s hub --config %s ; ignore_errors=no ; }\nWorkingDirectory=%s\n", pid, resolver, resolver, selector, root), nil
+						return fmt.Appendf(nil, "Id=evener-hub.service\nMainPID=%s\nUser=dev\nExecStart={ path=%s ; argv[]=%s hub --config %s ; ignore_errors=no ; }\nWorkingDirectory=%s\n", pid, resolver, resolver, selector, cwd), nil
 					case remote == hubArgvRemote("4242"):
 						return []byte(resolver + "\x00hub\x00--config\x00" + selector + "\x00"), nil
-					case remote == "readlink /proc/4242/cwd", remote == "getent passwd dev | cut -d: -f6", remote == "pwd":
+					case remote == "readlink /proc/4242/cwd", remote == "pwd":
+						return []byte(cwd + "\n"), nil
+					case remote == "getent passwd dev | cut -d: -f6":
 						return []byte(root + "\n"), nil
 					case remote == freshOwnerEnvironmentRemote:
 						return []byte("HOME=" + root + "\x00"), nil

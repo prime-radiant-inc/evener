@@ -781,8 +781,8 @@ func TestResolveDeployCommandIsPortableAcrossReadlinkVariants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.TrimSpace(out); got != want {
-		t.Fatalf("resolver output = %q, want %q", got, want)
+	if out != want+"\n" {
+		t.Fatalf("resolver output = %q, want %q", out, want+"\n")
 	}
 
 	// The pre-fix command must fail under the same shim: this is the darwin
@@ -799,7 +799,7 @@ func TestResolveDeployCommandIsPortableAcrossReadlinkVariants(t *testing.T) {
 	if err == nil {
 		t.Fatalf("resolver succeeded for a missing path (stdout %q)", out)
 	}
-	if strings.TrimSpace(out) != "" {
+	if out != "" {
 		t.Fatalf("resolver printed %q for a missing path, want nothing", out)
 	}
 
@@ -836,7 +836,7 @@ func TestResolveDeployCommandIsPortableAcrossReadlinkVariants(t *testing.T) {
 	if ctx.Err() != nil {
 		t.Fatal("resolver hung on a symlink cycle")
 	}
-	if strings.TrimSpace(cycOut.String()) != "" {
+	if cycOut.Len() != 0 {
 		t.Fatalf("resolver printed %q for a symlink cycle, want nothing", cycOut.String())
 	}
 }
@@ -967,8 +967,8 @@ func TestDeployBuildsFromTheConfiguredSource(t *testing.T) {
 		t.Fatalf("go build did not run: %v", err)
 	}
 	want, _ := filepath.EvalSymlinks(source)
-	if strings.TrimSpace(string(got)) != want {
-		t.Fatalf("go build ran in %q, want the configured source %q", strings.TrimSpace(string(got)), want)
+	if string(got) != want+"\n" {
+		t.Fatalf("go build cwd output = %q, want the configured source %q", got, want+"\n")
 	}
 	args, err := os.ReadFile(argsMarker)
 	if err != nil {
@@ -1213,11 +1213,9 @@ func TestVerifyBuildRevisionRefusesDirtyController(t *testing.T) {
 	}
 }
 
-// TestDeployTargetUsesFirstLineOfCommandV pins the finding that deployTarget ran
-// the whole `command -v evener` output through TrimSpace: trailing noise would be
-// folded into the path handed to the resolver, unlike resolveDeployTarget's own
-// first-line read.
-func TestDeployTargetUsesFirstLineOfCommandV(t *testing.T) {
+// Multi-line output could be noise or a pathname containing LF. Neither can
+// identify one executable, so do not turn the first line into write authority.
+func TestDeployTargetRefusesMultilineCommandV(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	var resolverJoined string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
@@ -1235,14 +1233,8 @@ func TestDeployTargetUsesFirstLineOfCommandV(t *testing.T) {
 	m := newTestManager(t, testRegistry(t, host), fr, Options{})
 
 	got, err := m.deployTarget(context.Background(), host, Preflight{})
-	if err != nil {
-		t.Fatalf("deployTarget: %v (the first line of `command -v` output must be the path)", err)
-	}
-	if got != "/usr/local/bin/evener" {
-		t.Fatalf("deployTarget = %q, want the first line", got)
-	}
-	if resolverJoined == "" {
-		t.Fatal("the resolver was not invoked with the first line alone")
+	if !errors.Is(err, ErrDeploy) || got != "" || resolverJoined != "" {
+		t.Fatalf("ambiguous path reached resolver: target=%q err=%v resolver=%q", got, err, resolverJoined)
 	}
 }
 

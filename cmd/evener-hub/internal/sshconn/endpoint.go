@@ -105,5 +105,6 @@ func (m *Manager) configPathMatches(ctx context.Context, host hostreg.Host, sele
 	if err != nil {
 		return false, err
 	}
-	return strings.TrimSpace(string(out)) == canonical, nil
+	resolved, err := ownerPathOutput(out)
+	return resolved == canonical && err == nil, err
 }

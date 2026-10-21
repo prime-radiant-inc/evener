@@ -1401,7 +1401,7 @@ func (m *Manager) recoverHubArgvRaw(ctx context.Context, host hostreg.Host, pid 
 // attached as a hub that can never answer. A deploy cannot preserve a run
 // target the host cannot serve.
 func installableEvenerBasename(p string) bool {
-	return path.Base(strings.TrimSpace(p)) == "evener"
+	return path.Base(p) == "evener"
 }
 
 // hubExecutableMatches proves a recovered hub argv[0] is the executable the
@@ -1455,8 +1455,8 @@ func (m *Manager) resolveExecutableName(ctx context.Context, host hostreg.Host, 
 	if err != nil {
 		return "", fmt.Errorf("%w: host %q resolve hub executable %q on PATH: %w: %s", ErrRestart, host.Name, exe, err, tail(out))
 	}
-	p := firstLine(string(out))
-	if p == "" {
+	p, err := commandPathOutput(out)
+	if err != nil {
 		return "", fmt.Errorf("%w: host %q hub executable %q is not on PATH and is not a path; refusing to restart it", ErrRestart, host.Name, exe)
 	}
 	return p, nil
@@ -1473,7 +1473,7 @@ func (m *Manager) resolveExecutableName(ctx context.Context, host hostreg.Host, 
 // setResolvedTarget), so the host is read as running the controller's build
 // rather than re-deployed to on every reconnect.
 func (m *Manager) expectedHubExecutable(ctx context.Context, host hostreg.Host) (string, error) {
-	if p := strings.TrimSpace(host.EvenerPath); p != "" {
+	if p := host.EvenerPath; p != "" {
 		return m.resolveRemotePath(ctx, host, p)
 	}
 	if p := m.resolvedTarget(host.Name); p != "" {
@@ -1489,8 +1489,8 @@ func (m *Manager) expectedHubExecutable(ctx context.Context, host hostreg.Host) 
 	if err != nil {
 		return "", fmt.Errorf("%w: host %q resolve evener on PATH: %w: %s", ErrRestart, host.Name, err, tail(out))
 	}
-	p := firstLine(string(out))
-	if p == "" {
+	p, err := commandPathOutput(out)
+	if err != nil {
 		return "", fmt.Errorf("%w: host %q has no evener on PATH and no configured evener_path to identify the hub by; set evener_path", ErrRestart, host.Name)
 	}
 	return m.resolveRemotePath(ctx, host, p)
@@ -1503,8 +1503,8 @@ func (m *Manager) resolveRemotePath(ctx context.Context, host hostreg.Host, p st
 	if err != nil {
 		return "", fmt.Errorf("%w: host %q resolve %q: %w: %s", ErrRestart, host.Name, p, err, tail(out))
 	}
-	resolved := firstLine(string(out))
-	if resolved == "" {
+	resolved, err := ownerPathOutput(out)
+	if err != nil {
 		return "", fmt.Errorf("%w: host %q path %q does not resolve to a real file", ErrRestart, host.Name, p)
 	}
 	return resolved, nil
@@ -1740,10 +1740,19 @@ func parseLogPath(out []byte) (string, bool) {
 		if fields[4] != "REG" {
 			continue
 		}
-		// The NAME column begins at field 8 and may itself contain spaces (a log
-		// path like "/home/dev/my hub.log"), so rejoin the remainder rather than
-		// taking the last whitespace-delimited word.
-		name := strings.Join(fields[8:], " ")
+		// Only the first eight columns are whitespace-delimited metadata. Keep
+		// every byte of the absolute NAME, including repeated/trailing spaces.
+		name := line
+		for range 8 {
+			name = strings.TrimLeft(name, " \t")
+			end := strings.IndexAny(name, " \t")
+			if end < 0 {
+				name = ""
+				break
+			}
+			name = name[end:]
+		}
+		name = strings.TrimLeft(name, " \t")
 		if !strings.HasPrefix(name, "/") {
 			continue
 		}

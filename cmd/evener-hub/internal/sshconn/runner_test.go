@@ -40,9 +40,10 @@ func TestComposeDest(t *testing.T) {
 func TestEvenerCommand(t *testing.T) {
 	cases := map[string]string{
 		"":                       "evener",
-		"   ":                    "evener",
+		"   ":                    "   ",
 		"evener":                 "evener",
-		" /usr/local/bin/evener": "/usr/local/bin/evener",
+		" /usr/local/bin/evener": " /usr/local/bin/evener",
+		"/usr/local/bin/evener ": "/usr/local/bin/evener ",
 		"/opt/evener/bin/evener": "/opt/evener/bin/evener",
 	}
 	for in, want := range cases {

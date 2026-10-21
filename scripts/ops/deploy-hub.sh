@@ -152,19 +152,33 @@ function absolute(value, cwd) { need(string(value), 'missing path evidence'); re
 // Filesystem lookup must precede lexical cleaning, especially for symlink/...
 // Positional arguments carry selectors, no captured input is evaluated as shell.
 const configIdentityScript = `
+evener_path_value() {
+  evener_value=$("$@" && printf '.') || return 1
+  evener_value=\${evener_value%.}
+  case "$evener_value" in
+    *'
+') evener_value=\${evener_value%?} ;;
+    *) return 1 ;;
+  esac
+  case "$evener_value" in ''|*'
+'*) return 1 ;; esac
+  printf '%s\\n' "$evener_value"
+}
+evener_directory() { CDPATH='' cd -P -- "$1" 2>/dev/null && pwd -P; }
 config_path() {
     p=$1
     n=0
     while [ -L "$p" ]; do
         n=$((n+1)); [ "$n" -le 40 ] || return 1
-        link=$(readlink "$p") || return 1
+        link=$(evener_path_value readlink "$p") || return 1
         case "$link" in
             /*) p=$link ;;
-            *) p=$(dirname "$p")/$link ;;
+            *) parent=$(evener_path_value dirname "$p") || return 1; p=$parent/$link ;;
         esac
     done
     [ -f "$p" ] || return 1
-    parent=$(CDPATH='' cd -P -- "$(dirname "$p")" && pwd -P) || return 1
+    parent=$(evener_path_value dirname "$p") || return 1
+    parent=$(evener_path_value evener_directory "$parent") || return 1
     printf '%s/%s\\n' "$parent" "\${p##*/}"
 }
 config_path "$1"`;

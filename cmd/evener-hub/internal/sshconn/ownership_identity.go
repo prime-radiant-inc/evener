@@ -59,9 +59,17 @@ func (m *Manager) directoryIdentity(ctx context.Context, host hostreg.Host, cwd 
 // belongs to the pathname, including spaces, tabs and CR. Multi-line and NUL
 // output cannot unambiguously identify one pathname and must not be normalized.
 func ownerPathOutput(out []byte) (string, error) {
-	value, framed := strings.CutSuffix(string(out), "\n")
-	if !framed || !path.IsAbs(value) || strings.ContainsAny(value, "\n\x00") {
+	value, err := commandPathOutput(out)
+	if err != nil || !path.IsAbs(value) {
 		return "", fmt.Errorf("%w: single absolute pathname unavailable", errOwnerEvidence)
+	}
+	return value, nil
+}
+
+func commandPathOutput(out []byte) (string, error) {
+	value, framed := strings.CutSuffix(string(out), "\n")
+	if !framed || value == "" || strings.ContainsAny(value, "\n\x00") {
+		return "", fmt.Errorf("%w: single pathname unavailable", errOwnerEvidence)
 	}
 	return value, nil
 }

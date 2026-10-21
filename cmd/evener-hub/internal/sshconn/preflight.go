@@ -107,13 +107,14 @@ func mapArch(unameM string) (string, bool) {
 // a shell but exports no XDG_* (spike finding), so the `-` default leaves both
 // empty and the roots fall back to ~/.config/evener and ~/.local/state/evener.
 // It is one ssh argument so the remote shell performs the parameter expansion.
-const envProbeScript = `printf '%s\n' "HOME=${HOME-}" "XDG_STATE_HOME=${XDG_STATE_HOME-}" "XDG_CONFIG_HOME=${XDG_CONFIG_HOME-}"`
+const envProbeScript = `case "${HOME-}${XDG_STATE_HOME-}${XDG_CONFIG_HOME-}" in *'
+'*) exit 1 ;; esac; printf '%s\n' "HOME=${HOME-}" "XDG_STATE_HOME=${XDG_STATE_HOME-}" "XDG_CONFIG_HOME=${XDG_CONFIG_HOME-}"`
 
 // parseEnvProbe turns the probe's KEY=value lines into a map. HOME must be
 // present (it may be empty, which resolves to the same fallback evener uses).
 func parseEnvProbe(out []byte) (map[string]string, error) {
 	env := map[string]string{}
-	text := strings.TrimRight(string(out), "\n")
+	text := strings.TrimSuffix(string(out), "\n")
 	for line := range strings.SplitSeq(text, "\n") {
 		if line == "" {
 			continue
@@ -552,5 +553,8 @@ func (m *Manager) installerDefaultForPreflight(ctx context.Context, host hostreg
 	if err != nil {
 		return "", err
 	}
-	return firstLine(string(out)), nil
+	if len(out) == 0 {
+		return "", nil
+	}
+	return ownerPathOutput(out)
 }

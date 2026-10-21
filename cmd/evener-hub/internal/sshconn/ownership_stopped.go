@@ -231,7 +231,7 @@ func (m *Manager) stoppedServiceEnvironment(ctx context.Context, host hostreg.Ho
 		return nil, err
 	}
 	properties := map[string]bool{}
-	for line := range strings.SplitSeq(strings.TrimSpace(string(fileOut)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSuffix(string(fileOut), "\n"), "\n") {
 		key, value, ok := strings.Cut(line, "=")
 		if !ok || value != "" || properties[key] || !slices.Contains([]string{"EnvironmentFiles", "PassEnvironment", "UnsetEnvironment"}, key) {
 			return nil, fmt.Errorf("%w: stopped service requires retained environment intent", errOwnerEvidence)

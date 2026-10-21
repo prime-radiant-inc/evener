@@ -298,8 +298,8 @@ func composeDest(h hostreg.Host) string {
 // evenerCommand is the remote evener invocation: the registry's evener_path, or
 // the literal "evener" to resolve on the remote PATH when it is empty.
 func evenerCommand(path string) string {
-	if p := strings.TrimSpace(path); p != "" {
-		return p
+	if path != "" {
+		return path
 	}
 	return "evener"
 }

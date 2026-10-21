@@ -80,6 +80,8 @@ def service_cwd():
     if f.get('cwd_space_literal'): return p/'physical '
     return p/'service-alias' if f.get('cwd_alias') else (p/'service' if f.get('service_cwd') else p/'repo')
 def config_selector():
+    if f.get('config_newline_link'): return str(p/'newline-config-alias.toml')
+    if f.get('config_newline_parent'): return str(p/'newline-parent-alias/selected.toml')
     if f.get('config_space'): return str(p/'space-config-alias.toml')
     return {'alias':str(p/'alias.toml'),'relative':'../alias.toml','dotdot':'../link/../../selected.toml','different':'../link/../selected.toml'}.get(f.get('config_selector'),str(p/'selected.toml'))
 def program(): return str(p/'alias-bin/evener' if f.get('program_alias') else (p/'other/evener' if f.get('different_program') else p/'repo/evener'))
@@ -180,6 +182,7 @@ elif cmd == 'evener':
         if new:
             s['successor_queries']=s.get('successor_queries',0)+1; save()
         config=p/'config/evener/hub.toml' if f.get('default_config') else p/'selected.toml'
+        if f.get('config_newline_parent'): config=p/'config-parent/selected.toml'
         if f.get('config_space') and not f.get('config_space_collision'): config=p/'selected.toml '
         root=p/'other-state/evener' if (s['built'] and f.get('root_change')) or f.get('unavailable_wrong_root') else p/'state/evener'
         if f.get('custom_root'): root=p/'custom-root'
@@ -248,6 +251,8 @@ cases=[
  ('stopped_cwd_space_collision',{'cwd_space_alias':True,'cwd_space_collision':True,'stopped':True},[],False,(1,1)),
  ('config_path_space',{'config_space':True},[],True,(1,1)),
  ('config_path_space_collision',{'config_space':True,'config_space_collision':True},[],False,(0,0)),
+ ('config_newline_link_collision',{'config_newline_link':True},[],False,(0,0)),
+ ('config_newline_parent_collision',{'config_newline_parent':True},[],False,(0,0)),
  ('service_config_symlink',{'config_selector':'alias'},[],True,(1,1)),
  ('explicit_config_symlink',{},['--config','@alias'],True,(1,1)),
  ('running_config_symlink',{'running_alias':True},[],True,(1,1)),
@@ -355,6 +360,13 @@ with tempfile.TemporaryDirectory(prefix='task7c-', dir=os.environ.get('EVENER_SC
         (p/'space-config-alias.toml').symlink_to(p/'selected.toml ')
         assert os.path.samefile(p/'space-config-alias.toml',p/'selected.toml ')
         assert not os.path.samefile(p/'space-config-alias.toml',p/'selected.toml')
+        (p/'selected.toml\n').write_text(original)
+        (p/'newline-config-alias.toml').symlink_to('selected.toml\n')
+        for parent in ['config-parent','config-parent\n']:
+            (p/parent).mkdir(); (p/parent/'selected.toml').write_text(original)
+        (p/'newline-parent-alias').symlink_to('config-parent\n',target_is_directory=True)
+        assert not os.path.samefile(p/'newline-config-alias.toml',p/'selected.toml')
+        assert not os.path.samefile(p/'newline-parent-alias/selected.toml',p/'config-parent/selected.toml')
         (p/'service').mkdir(); (p/'physical/inner').mkdir(parents=True); (p/'other').mkdir()
         (p/'physical ').mkdir(); (p/'space-alias').symlink_to(p/'physical ',target_is_directory=True)
         assert os.path.samefile(p/'space-alias',p/'physical ')

@@ -64,11 +64,15 @@ func (m *Manager) selectedServicePID(ctx context.Context, host hostreg.Host, rep
 			if err != nil {
 				return "", err
 			}
+			cwd, err := ownerPathOutput(cwdOut)
+			if err != nil {
+				return "", err
+			}
 			env, err := m.ownerEnvironment(ctx, host, pid)
 			if err != nil {
 				return "", err
 			}
-			if err := m.checkOwnerConfig(ctx, host, argv, strings.TrimSpace(string(cwdOut)), env, report); err != nil {
+			if err := m.checkOwnerConfig(ctx, host, argv, cwd, env, report); err != nil {
 				continue
 			}
 			if selected != "" && selected != pid {

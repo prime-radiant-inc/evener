@@ -554,7 +554,7 @@ func checkRunTarget(hostName, p string) error {
 	if installableEvenerBasename(p) {
 		return nil
 	}
-	base := path.Base(strings.TrimSpace(p))
+	base := path.Base(p)
 	if base == "evener-dev" {
 		return fmt.Errorf("%w: host %q evener_path %q names %q, the development tooling binary (cmd/evener-dev), which does not provide the hub command and has no launch-check, so it can never serve a hub; configure the evener binary", errRunTargetUnservable, hostName, p, base)
 	}
@@ -576,7 +576,7 @@ func checkRunTarget(hostName, p string) error {
 // matches — so the deploy/restart pair loops forever. deployInstaller preserves
 // the same location (existingInstallableEvener); this is the push path's half.
 func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host, facts Preflight, checks ...func(string) error) (string, error) {
-	if p := strings.TrimSpace(host.EvenerPath); p != "" {
+	if p := host.EvenerPath; p != "" {
 		// Before even the directory probe: a run target that cannot serve a hub
 		// is refused with no remote command at all (checkRunTarget).
 		if err := checkRunTarget(host.Name, p); err != nil {
@@ -604,7 +604,7 @@ func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host, facts Pre
 		// back to the installer's own default location and create its directory,
 		// so a push deploy can still bring up a host that has no evener installed
 		// at all.
-		home := strings.TrimSpace(facts.Home)
+		home := facts.Home
 		if home == "" {
 			return "", fmt.Errorf("%w: host %q has no evener_path, no evener on PATH, and preflight found no HOME to resolve the installer default ~/.local/bin/evener; set evener_path", ErrDeploy, host.Name)
 		}
@@ -630,9 +630,12 @@ func (m *Manager) evenerOnPath(ctx context.Context, host hostreg.Host) (string, 
 	if err != nil {
 		return "", fmt.Errorf("%w: host %q resolve evener on PATH: %w: %s", ErrDeploy, host.Name, err, tail(out))
 	}
-	p := firstLine(string(out))
-	if p == "" || p == evenerPathMissingMarker {
+	if len(out) == 0 || string(out) == evenerPathMissingMarker+"\n" {
 		return "", nil
+	}
+	p, err := commandPathOutput(out)
+	if err != nil {
+		return "", fmt.Errorf("%w: host %q resolve evener on PATH: %w", ErrDeploy, host.Name, err)
 	}
 	return p, nil
 }
@@ -648,21 +651,41 @@ func (m *Manager) evenerOnPath(ctx context.Context, host hostreg.Host) (string, 
 // directory and report success, leaving the real executable un-upgraded. The
 // traversal is bounded so a symlink cycle returns nonzero like ELOOP instead of
 // looping until the ssh command times out.
-const resolvePathScript = `evener_resolve() {
+// A sentinel protects command output from shell substitution's removal of all
+// trailing LFs. Strip exactly the command's one framing LF, and refuse pathname
+// LFs before a later substitution could turn them into a different path.
+const pathValueScript = `evener_path_value() {
+  evener_value=$("$@" && printf '.') || return 1
+  evener_value=${evener_value%.}
+  case "$evener_value" in
+    *'
+') evener_value=${evener_value%?} ;;
+    *) return 1 ;;
+  esac
+  case "$evener_value" in ''|*'
+'*) return 1 ;; esac
+  printf '%s\n' "$evener_value"
+}
+evener_directory() { CDPATH='' cd -P -- "$1" 2>/dev/null && pwd -P; }
+`
+
+const resolvePathScript = pathValueScript + `evener_resolve() {
   p=$1
   n=0
   while [ -L "$p" ]; do
     n=$((n+1))
     [ "$n" -le 40 ] || return 1
-    d=$(cd -P "$(dirname "$p")" 2>/dev/null && pwd) || return 1
-    t=$(readlink "$p") || return 1
+    d=$(evener_path_value dirname "$p") || return 1
+    d=$(evener_path_value evener_directory "$d") || return 1
+    t=$(evener_path_value readlink "$p") || return 1
     case $t in
       /*) p=$t ;;
       *) p=$d/$t ;;
     esac
   done
   [ -f "$p" ] || return 1
-  d=$(cd -P "$(dirname "$p")" 2>/dev/null && pwd) || return 1
+  d=$(evener_path_value dirname "$p") || return 1
+  d=$(evener_path_value evener_directory "$d") || return 1
   printf '%s\n' "$d/${p##*/}"
 }
 evener_resolve `
@@ -685,8 +708,8 @@ func (m *Manager) resolveDeployTarget(ctx context.Context, host hostreg.Host, p 
 	if err != nil {
 		return "", fmt.Errorf("%w: host %q resolve install path %q: %w: %s", ErrDeploy, host.Name, p, err, tail(out))
 	}
-	resolved := firstLine(string(out))
-	if resolved == "" {
+	resolved, err := ownerPathOutput(out)
+	if err != nil {
 		return "", fmt.Errorf("%w: host %q install path %q does not resolve to a real file", ErrDeploy, host.Name, p)
 	}
 	return resolved, nil
@@ -713,8 +736,8 @@ func (m *Manager) resolveDeployOrCreateTarget(ctx context.Context, host hostreg.
 		// failed.
 		return "", fmt.Errorf("%w: host %q create install target %q: %w: %s", ErrDeploy, host.Name, p, cerr, tail(out))
 	}
-	created := firstLine(string(out))
-	if created == "" {
+	created, decodeErr := ownerPathOutput(out)
+	if decodeErr != nil {
 		return "", fmt.Errorf("%w: host %q install target %q cannot be created (the parent directory may not exist): %w", ErrDeploy, host.Name, p, err)
 	}
 	return created, nil
@@ -727,8 +750,9 @@ func (m *Manager) resolveDeployOrCreateTarget(ctx context.Context, host hostreg.
 // directory.
 func createTargetCommand(p string) string {
 	q := shellquote.RemoteWord(p)
-	return "p=" + q + "; if [ -e \"$p\" ] || [ -L \"$p\" ]; then exit 1; fi; " +
-		"d=$(cd -P \"$(dirname \"$p\")\" 2>/dev/null && pwd) || exit 1; " +
+	return pathValueScript + "p=" + q + "; if [ -e \"$p\" ] || [ -L \"$p\" ]; then exit 1; fi; " +
+		"d=$(evener_path_value dirname \"$p\") || exit 1; " +
+		"d=$(evener_path_value evener_directory \"$d\") || exit 1; " +
 		"printf '%s\\n' \"$d/${p##*/}\""
 }
 
@@ -827,9 +851,9 @@ func installerRefFor(channel, releaseTag, dirty, remedy string) (string, error) 
 // the installer installs the runtime binary as `evener`, so a path naming
 // anything else is a run target the installer cannot produce a hub for.
 func installerDirs(host hostreg.Host, facts Preflight) (bindir, shareBindir, runTarget string, err error) {
-	p := strings.TrimSpace(host.EvenerPath)
+	p := host.EvenerPath
 	if p == "" {
-		home := strings.TrimSpace(facts.Home)
+		home := facts.Home
 		if home == "" {
 			return "", "", "", fmt.Errorf("%w: host %q has no evener_path and preflight found no HOME to resolve the installer's default ~/.local/bin/evener; set evener_path", ErrDeploy, host.Name)
 		}
@@ -887,7 +911,7 @@ func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts 
 	// hub it was meant to replace, while a supervisor keeps restarting the old
 	// executable — the upgrade never lands. installerDirs turns the preserved path
 	// into BINDIR so install.sh writes exactly there.
-	if strings.TrimSpace(host.EvenerPath) == "" {
+	if host.EvenerPath == "" {
 		if existing := m.existingInstallableEvener(ctx, host); existing != "" {
 			host.EvenerPath = existing
 		}
@@ -992,7 +1016,7 @@ func (m *Manager) deploySelectedWithSupersession(ctx context.Context, host hostr
 	}
 	var owner selectedOwner
 	if !facts.ExecutableMissing {
-		if strings.TrimSpace(host.EvenerPath) == "" {
+		if host.EvenerPath == "" {
 			target, err := m.evenerOnPath(ctx, host)
 			if err != nil {
 				return "", err
@@ -1168,8 +1192,12 @@ func (m *Manager) reinstallRetainedTarget(ctx context.Context, host hostreg.Host
 				if err != nil || !slices.Equal(argv, prior.argv) {
 					return errOwnerSelectionMismatch
 				}
-				cwd, err := m.ownerRead(ctx, host, "readlink /proc/"+prior.pid+"/cwd")
-				if err != nil || strings.TrimSpace(string(cwd)) != prior.cwd {
+				cwdOut, err := m.ownerRead(ctx, host, "readlink /proc/"+prior.pid+"/cwd")
+				if err != nil {
+					return errOwnerSelectionMismatch
+				}
+				cwd, err := ownerPathOutput(cwdOut)
+				if err != nil || cwd != prior.cwd {
 					return errOwnerSelectionMismatch
 				}
 				env, err := m.ownerEnvironment(ctx, host, prior.pid)

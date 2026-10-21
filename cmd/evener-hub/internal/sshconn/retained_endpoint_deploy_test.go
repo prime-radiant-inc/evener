@@ -4,7 +4,12 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -116,9 +121,40 @@ func TestRetainedDeployRepairRequiresRealEndpointEvidence(t *testing.T) {
 }
 
 func TestRetainedTargetReinstallEvidence(t *testing.T) {
-	for _, mode := range []string{"live", "live-argv-mismatch", "live-process-mismatch", "live-config-mismatch", "live-report-missing", "live-report-malformed", "live-report-schema", "stopped", "stopped-config-mismatch", "stopped-report-missing", "stopped-report-malformed", "stopped-report-schema", "target-mismatch", "write-failed", "post-write-capability", "generation-at-write", "binding-at-write"} {
+	for _, mode := range []string{"live", "live-trailing-space", "live-different-directory", "live-argv-mismatch", "live-process-mismatch", "live-config-mismatch", "live-report-missing", "live-report-malformed", "live-report-schema", "stopped", "stopped-config-mismatch", "stopped-report-missing", "stopped-report-malformed", "stopped-report-schema", "target-mismatch", "write-failed", "post-write-capability", "generation-at-write", "binding-at-write"} {
 		t.Run(mode, func(t *testing.T) {
 			host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+			realPaths := mode == "live-trailing-space" || mode == "live-different-directory"
+			var cwd, target, alias, childPID, otherPID string
+			if realPaths {
+				if runtime.GOOS != "linux" {
+					t.Skip("real /proc cwd evidence requires Linux")
+				}
+				root := t.TempDir()
+				cwd, target, alias = filepath.Join(root, "physical "), filepath.Join(root, "evener"), filepath.Join(root, "alias", "evener")
+				for _, dir := range []string{cwd, filepath.Join(root, "physical"), filepath.Dir(alias)} {
+					if err := os.Mkdir(dir, 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := os.WriteFile(target, []byte("predecessor"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, alias); err != nil {
+					t.Fatal(err)
+				}
+				child := func(dir string) string {
+					cmd := exec.Command("sleep", "60")
+					cmd.Dir = dir
+					if err := cmd.Start(); err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+					return strconv.Itoa(cmd.Process.Pid)
+				}
+				childPID, otherPID = child(cwd), child(filepath.Join(root, "physical"))
+				host.EvenerPath = alias
+			}
 			repair, boundary := false, false
 			writes, procReads, postReads, starts, missingResolutions := 0, 0, 0, 0, 0
 			var selected *selectedProcessFixture
@@ -133,9 +169,40 @@ func TestRetainedTargetReinstallEvidence(t *testing.T) {
 				}
 				return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180","started_at":"2026-01-01T00:00:00Z"}`), nil
 			})
+			if realPaths {
+				selected.exe = target
+				selected.endpointAlias = alias + " hub endpoint --json"
+			}
 			base := fr.runFn
 			fr.runFn = func(ctx context.Context, argv []string, in io.Reader) ([]byte, error) {
 				remote := strings.Join(argv[12:], " ")
+				if realPaths {
+					run := func(command string) ([]byte, error) {
+						cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
+						cmd.Stdin = in
+						return cmd.Output()
+					}
+					switch {
+					case remote == "readlink /proc/4242/cwd":
+						pid := childPID
+						if repair && mode == "live-different-directory" {
+							pid = otherPID
+						}
+						return run("readlink /proc/" + pid + "/cwd")
+					case strings.HasSuffix(remote, " && pwd -P"), strings.HasPrefix(remote, "test -d "), remote == resolveDeployCommand(alias), remote == resolveDeployCommand(target), remote == createTargetCommand(target):
+						return run(remote)
+					case strings.Contains(remote, "cat >") && repair:
+						writes++
+						out, err := run(remote)
+						if err == nil {
+							selected.executableAbsent = false
+						}
+						return out, err
+					case strings.HasPrefix(remote, ownerContext(cwd, []string{"HOME=/home/dev"})):
+						remote = ownerContext("/home/dev", []string{"HOME=/home/dev"}) + strings.TrimPrefix(remote, ownerContext(cwd, []string{"HOME=/home/dev"}))
+						argv = rawCommandArgv(Options{}, host, remote)
+					}
+				}
 				if strings.Contains(remote, "systemctl restart") || strings.Contains(remote, "systemctl start") {
 					starts++
 				}
@@ -190,7 +257,11 @@ func TestRetainedTargetReinstallEvidence(t *testing.T) {
 					}
 					return out, err
 				}
-				return base(ctx, argv, in)
+				out, err := base(ctx, argv, in)
+				if realPaths && strings.HasPrefix(remote, "systemctl show --property=Id,") {
+					out = []byte(strings.ReplaceAll(string(out), "WorkingDirectory=/home/dev\n", "WorkingDirectory="+cwd+"\n"))
+				}
+				return out, err
 			}
 			guard := func() error {
 				if boundary && mode == "binding-at-write" {
@@ -211,10 +282,20 @@ func TestRetainedTargetReinstallEvidence(t *testing.T) {
 			intent.binding = newEffectBinding(host, guard)
 			if _, _, err := m.deployForOperation(t.Context(), host, facts, intent); err == nil {
 				t.Fatal("initial write did not retain a failed deployment")
+			} else if realPaths {
+				t.Logf("initial interrupted deployment: %v", err)
 			}
 			retained := m.pendingRestart(host.Name)
 			if retained.selected == nil || !retained.deployment {
 				t.Fatal("missing recorded owner")
+			}
+			if realPaths {
+				if retained.selected.cwd != cwd || retained.installTarget != target {
+					t.Fatalf("recorded paths: cwd=%q target=%q", retained.selected.cwd, retained.installTarget)
+				}
+				if err := os.Chmod(target, 0o644); err != nil {
+					t.Fatal(err)
+				}
 			}
 			repair, selected.executableAbsent = true, true
 			selected.stopped = strings.HasPrefix(mode, "stopped")
@@ -228,7 +309,7 @@ func TestRetainedTargetReinstallEvidence(t *testing.T) {
 				m.setResolvedTarget(host.Name, host.EvenerPath)
 			}
 			_, _, err = m.deployForOperation(t.Context(), host, Preflight{Host: host.Name, OS: "linux", Arch: "amd64", UID: "1000", ExecutableMissing: true}, retained)
-			if mode == "live" || mode == "stopped" {
+			if mode == "live" || mode == "live-trailing-space" || mode == "stopped" {
 				if err != nil || writes != 2 || postReads == 0 || m.pendingRestart(host.Name).active() {
 					t.Fatalf("repair: err=%v writes=%d proc=%d post=%d pending=%+v", err, writes, procReads, postReads, m.pendingRestart(host.Name))
 				}
@@ -240,18 +321,28 @@ func TestRetainedTargetReinstallEvidence(t *testing.T) {
 					// Only deploy's existing parent-directory resolver may name the write.
 					t.Fatalf("unexpected absent executable resolutions: missing-resolutions=%d", missingResolutions)
 				}
+				if realPaths {
+					data, readErr := os.ReadFile(target)
+					link, linkErr := os.Readlink(alias)
+					if readErr != nil || string(data) != "staged-binary" || linkErr != nil || link != target || procReads < 2 {
+						t.Fatalf("real repair: target=%q err=%v symlink=%q err=%v proc=%d", data, readErr, link, linkErr, procReads)
+					}
+				}
 			} else if err == nil || !m.pendingRestart(host.Name).deployment || !reflect.DeepEqual(m.pendingRestart(host.Name).selected, retained.selected) {
 				t.Fatalf("refusal lost pending repair: err=%v writes=%d pending=%+v", err, writes, m.pendingRestart(host.Name))
+			}
+			if mode == "live-different-directory" && !errors.Is(err, errOwnerSelectionMismatch) {
+				t.Fatalf("cwd mismatch lost typed refusal: %v", err)
 			}
 			if (mode == "post-write-capability" || strings.Contains(mode, "-report-")) && (!errors.Is(err, ErrEndpointMigration) || !isTerminal(err)) {
 				t.Fatalf("post-write capability failure is not terminal: %v", err)
 			}
-			if mode == "live-argv-mismatch" || mode == "live-process-mismatch" || mode == "live-config-mismatch" || strings.HasPrefix(mode, "live-report-") || mode == "target-mismatch" || mode == "generation-at-write" || mode == "binding-at-write" {
+			if mode == "live-different-directory" || mode == "live-argv-mismatch" || mode == "live-process-mismatch" || mode == "live-config-mismatch" || strings.HasPrefix(mode, "live-report-") || mode == "target-mismatch" || mode == "generation-at-write" || mode == "binding-at-write" {
 				if writes != 1 {
 					t.Fatalf("refused repair wrote: %d", writes)
 				}
 			}
-			if (mode == "live-argv-mismatch" || mode == "live-process-mismatch") && procReads != 0 {
+			if (mode == "live-different-directory" || mode == "live-argv-mismatch" || mode == "live-process-mismatch") && procReads != 0 {
 				t.Fatalf("unproven process reached executable resolver: proc=%d", procReads)
 			}
 			if starts != 0 || len(fr.recordedStarts()) != 0 {
