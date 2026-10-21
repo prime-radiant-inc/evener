@@ -265,6 +265,16 @@ class SupersededFenceError extends Error {}
 // a handled, non-retryable dismissal.
 class SaveCancelledError extends Error {}
 
+// close() is terminal. A transaction or scan that sees closure refuses before
+// it opens a connection, so no later asynchronous boundary can revive the
+// adapter. Callers classify it like any other storage refusal: the retry
+// runtime keeps its retry-needed state rather than treating work as done.
+class RepositoryClosedError extends Error {
+  constructor() {
+    super("Document annotation repository is closed");
+  }
+}
+
 interface SuppressionEntry {
   // The ticket whose read owns a provisional entry, or null when no ticket
   // owns it (a suppression installed from a proven change outside any
@@ -526,11 +536,13 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
 
   // Local wakeup plus best-effort peer wakeup, called only after a real commit.
   #publishDocumentWake(documentKey: string): void {
+    if (this.#closed) return;
     this.#notifyDocument(documentKey);
     this.#channel.postMessage({ documentKey });
   }
 
   #publishNamespaceWake(namespaceKey: string): void {
+    if (this.#closed) return;
     this.#notifyNamespace(namespaceKey);
     this.#channel.postMessage({ namespaceKey });
   }
@@ -545,6 +557,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // recovery commit the composer persists through the shared drafts
   // repository. An observer fault cannot change the committed result.
   #notifyStorageSuccess(): void {
+    if (this.#closed) return;
     invokeObserver(() => this.#options.onStorageSuccess?.());
   }
 
@@ -820,6 +833,10 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         });
         return { state: "expiry-pending", receipt: fenced.receipt };
       } catch (error) {
+        // Closure refused the fence before it opened a connection. This adapter
+        // can never retry, so the read is stale with no retained work and no
+        // post-teardown notification.
+        if (this.#closed) return { state: "stale-ticket" };
         if (error instanceof SupersededFenceError) return { state: "stale-ticket" };
         // A failed fence keeps the confirmed suppression and its pending expiry for
         // retry; the read is honest expiry-pending with no committed receipt.
@@ -1345,6 +1362,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       reason,
       () => this.#uncertainAppends.size > 0,
       cancellation,
+      () => this.#closed,
     );
   }
 
@@ -1744,8 +1762,18 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     body: (transaction: IDBTransaction) => Promise<T>,
     cancellation?: AnnotationSaveCancellation,
   ): Promise<T> {
+    // close() is terminal for every flow, not only the handoff path: a changed
+    // read resuming between its validation and its fence, a sweep row, or a
+    // settle must not reopen the connection and write after teardown.
+    if (this.#closed) throw new RepositoryClosedError();
     if (cancellation?.cancelled) throw new SaveCancelledError();
     const database = await this.#connection.open();
+    // close() can land while the open is outstanding. The connection would
+    // otherwise install a fresh database after teardown; refuse and release it.
+    if (this.#closed) {
+      this.#connection.close();
+      throw new RepositoryClosedError();
+    }
     const transaction = database.transaction([...stores], mode);
     // Observe operation-scoped cancellation for the life of THIS transaction. The
     // listener aborts before commit, and registering it synchronously here also
@@ -1827,9 +1855,19 @@ export async function retryBrowserAnnotationsWithOutcome(
   // stale and must keep the runtime's shared retry intent alive.
   hasRetainedReconciliation: () => boolean = () => false,
   cancellation?: AnnotationRetryCancellation,
+  isClosed?: () => boolean,
 ): Promise<BrowserAnnotationRetryOutcome> {
+  // close() is terminal: a pass that was already in flight must not reopen the
+  // adapter for the scan. Refuse like any other storage fault so the caller
+  // keeps its retry-needed state instead of reading through teardown.
+  if (isClosed?.() === true) throw new RepositoryClosedError();
   await repository.retryPending(reason, cancellation);
+  if (isClosed?.() === true) throw new RepositoryClosedError();
   const database = await connection.open();
+  if (isClosed?.() === true) {
+    connection.close();
+    throw new RepositoryClosedError();
+  }
   const transaction = database.transaction(ANNOTATION_OPERATIONS_STORE, "readonly");
   const completed = transactionCompletion(transaction);
   void completed.catch(() => undefined);

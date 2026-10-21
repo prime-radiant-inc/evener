@@ -20,6 +20,8 @@ import {
   type BrowserDocumentAnnotationRepository,
   createDocumentAnnotationRepository,
 } from "./documentAnnotationIndexedDB";
+import { ANNOTATION_OPERATIONS_STORE, ANNOTATION_PAYLOADS_STORE } from "./localCompositionSchema";
+import { holdNextTransactionEvent } from "./testing/stalledIndexedDB";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -27,6 +29,8 @@ afterEach(() => {
 
 interface FixtureOptions {
   prepareAnnotation?: () => Promise<ComposerPreparation | null>;
+  // Runs after a changed read validates and before its expiry fence opens.
+  beforeExpiryFence?: () => Promise<void>;
   // Runs when a handoff resolves its destination, immediately before the arm.
   onTarget?: () => void;
   // Runs once the append has issued all of its reads, before it awaits them.
@@ -36,9 +40,11 @@ interface FixtureOptions {
 }
 
 interface Fixture {
+  factory: IDBFactory;
   repository: BrowserDocumentAnnotationRepository;
   drafts: BrowserDraftRepository;
   acknowledge: ReturnType<typeof vi.fn>;
+  pendingExpiryRetained: ReturnType<typeof vi.fn>;
   listeners: Set<() => void>;
   subscribeCount: () => number;
   storageSuccess: ReturnType<typeof vi.fn>;
@@ -82,6 +88,7 @@ async function openFixture(options: FixtureOptions = {}): Promise<Fixture> {
     acknowledgeAnnotation: acknowledge,
   } as unknown as ComposerSourceState;
   const storageSuccess = vi.fn();
+  const pendingExpiryRetained = vi.fn();
   const repository = createDocumentAnnotationRepository({
     indexedDB: factory,
     databaseName: "annotation-close",
@@ -91,6 +98,8 @@ async function openFixture(options: FixtureOptions = {}): Promise<Fixture> {
       return source;
     },
     onStorageSuccess: storageSuccess,
+    beforeExpiryFence: options.beforeExpiryFence,
+    onPendingExpiryRetained: pendingExpiryRetained,
     onAppendReadsIssued: () => options.onAppendReadsIssued?.(),
   });
   const document = { ...key, path: "NOTES.md" };
@@ -126,9 +135,11 @@ async function openFixture(options: FixtureOptions = {}): Promise<Fixture> {
   };
   await repository.saveAnnotation(operation);
   return {
+    factory,
     repository,
     drafts,
     acknowledge,
+    pendingExpiryRetained,
     listeners,
     subscribeCount: () => subscribeCalls,
     storageSuccess,
@@ -238,5 +249,84 @@ test("close during the append's reads stops the final commit", async () => {
   expect(fixture.acknowledge).not.toHaveBeenCalled();
   expect(fixture.storageSuccess).not.toHaveBeenCalled();
   expect((await fixture.drafts.load(fixture.preparation.key))?.text).toBe("");
+  fixture.drafts.close();
+});
+
+// A changed read validates in one transaction and fences in a second, with an
+// observation boundary between them. Closure at that boundary must stop the
+// fence before it opens a connection again: a resumed fence would rewrite the
+// durable head after application teardown. The refusal is a stale ticket, not
+// a retained expiry: this adapter holds no retry work past close().
+test("close between a changed read's validation and its expiry fence stops the fence", async () => {
+  let markFence: () => void = () => undefined;
+  const fenceReached = new Promise<void>((resolve) => {
+    markFence = resolve;
+  });
+  let releaseFence: () => void = () => undefined;
+  const fenceGate = new Promise<void>((resolve) => {
+    releaseFence = resolve;
+  });
+  const fixture = await openFixture({
+    beforeExpiryFence: () => {
+      markFence();
+      return fenceGate;
+    },
+  });
+  const changed: DocFileContent = {
+    text: "Changed content\n",
+    binary: false,
+    mediaType: "text/markdown",
+    truncated: false,
+    sizeBytes: 17,
+  };
+  const ticket = await fixture.repository.beginRead(fixture.document);
+  const acceptance = fixture.repository.acceptRead(ticket, changed);
+  await fenceReached;
+  fixture.storageSuccess.mockClear();
+  fixture.repository.close();
+  releaseFence();
+
+  expect(await acceptance).toEqual({ state: "stale-ticket" });
+  // No post-close notification and no retained work this closed adapter could
+  // never retry.
+  expect(fixture.pendingExpiryRetained).not.toHaveBeenCalled();
+  expect(fixture.storageSuccess).not.toHaveBeenCalled();
+  // No fence landed: a fresh adapter still reads the head the first acceptance
+  // established, not the replacement epoch a resumed fence would have written.
+  const probe = createDocumentAnnotationRepository({
+    indexedDB: fixture.factory,
+    databaseName: "annotation-close",
+    drafts: fixture.drafts,
+    targetFor: () => null,
+  });
+  const read = await probe.beginRead(fixture.document);
+  expect(read.headRevision).toBe(fixture.operation.lease.headRevision);
+  probe.close();
+  fixture.drafts.close();
+});
+
+// The runtime's retry pass sweeps persisted work before the separate outcome
+// scan opens its own connection. Closure landing while the pass is outstanding
+// must reach that scan too: the scan's promise keeps the caller's retry-needed
+// state alive, so it rejects as a storage refusal instead of reopening the
+// closed adapter and reading through it.
+test("close during an outstanding retry pass stops the outcome scan reopening", async () => {
+  const fixture = await openFixture({ seedDraft: true });
+  const open = vi.spyOn(fixture.factory, "open");
+  // The pass's pending-operation read is its last transaction before the scan.
+  const hold = holdNextTransactionEvent(
+    [ANNOTATION_OPERATIONS_STORE, ANNOTATION_PAYLOADS_STORE],
+    "complete",
+    "readonly",
+  );
+  const retry = fixture.repository.retryPendingWithOutcome("storage-recovered");
+  await hold.reached;
+  fixture.repository.close();
+  const opensAtClose = open.mock.calls.length;
+  expect(opensAtClose).toBe(0);
+  hold.release();
+
+  await expect(retry).rejects.toThrow("Document annotation repository is closed");
+  expect(open).toHaveBeenCalledTimes(opensAtClose);
   fixture.drafts.close();
 });
