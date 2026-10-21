@@ -12,6 +12,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import type { ComposerPreparation, ComposerSourceState } from "../panes/session/composer/composerContract";
 import { MemoryStorage } from "../storageTestUtils";
 import {
+  APPEND_STORES,
   type BrowserDraftKey,
   type BrowserDraftRepository,
   browserDraftKey,
@@ -40,6 +41,9 @@ afterEach(() => {
 interface FixtureOptions {
   prepareAnnotation?: () => Promise<ComposerPreparation | null>;
   destination?: DestinationProvenance;
+  // A real composer adopts the committed token a reconciliation hands it: that
+  // adoption is what makes a later handoff's preparation current again.
+  acknowledgeAnnotation?: (preparation: ComposerPreparation, token: ComposerPreparation["token"]) => void;
 }
 
 interface Fixture {
@@ -74,7 +78,9 @@ async function openFixture(options: FixtureOptions = {}): Promise<Fixture> {
     backing: { kind: "draft" },
     localGeneration: 0,
   };
-  const acknowledge = vi.fn();
+  const acknowledge = vi.fn((preparation: ComposerPreparation, token: ComposerPreparation["token"]) => {
+    options.acknowledgeAnnotation?.(preparation, token);
+  });
   const source = {
     ref: "root",
     sourceId: "source-1",
@@ -280,6 +286,69 @@ test("a save replay whose first completion went unobserved wakes subscribed read
   const views = await fixture.repository.listAnnotations(fixture.document);
   expect(views.find((view) => view.operation.operationId === operation.operationId)?.handoff.state).toBe("pending");
   expect(listener).toHaveBeenCalled();
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+// Recovery from an append whose completion went unobserved is a two-operation
+// story. The committed append A advances the composer's durable token while the
+// live composer still holds its pre-append one, so the persisted pending handoff
+// B - swept FIRST - refuses revision-conflict against that stale token.
+// Reconciliation then acknowledges A, and that acknowledgment is exactly the
+// moment the composer becomes ready for B again. Reconciliation answers an
+// applied receipt and publishes its wake to readers, not a storage-success
+// signal to the retry runtime, so a sweep that reconciles after it already
+// visited B stops with B pending and nothing left to trigger a revisit. The
+// sweep must reconcile the uncertain appends it retained BEFORE it visits the
+// persisted pending handoffs, so the composer those handoffs prepare against is
+// the reconciled one.
+test("an unobserved append reconciles before the pending sweep so a later handoff applies", async () => {
+  const composer: { preparation: ComposerPreparation | null } = { preparation: null };
+  const fixture = await openFixture({
+    prepareAnnotation: async () => composer.preparation,
+    acknowledgeAnnotation: (preparation, token) => {
+      composer.preparation = { ...preparation, token };
+    },
+  });
+  composer.preparation = fixture.preparation;
+  const operationB: PreparedAnnotation = { ...fixture.operation, operationId: "operation-2" };
+  await fixture.runtime.save(operationB);
+  fixture.storageSuccess.mockClear();
+
+  // A's next append transaction commits, but its completion event is held: the
+  // applied receipt and the composer's new durable token exist while the
+  // handoff that produced them waits on an event the watchdog outlives.
+  const hold = holdNextWriteTransaction(APPEND_STORES);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let reached = false;
+  void hold.reached.then(() => {
+    reached = true;
+  });
+  const appendA = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
+  for (let i = 0; i < 50 && !reached; i += 1) await nextRealTask();
+  expect(reached).toBe(true);
+  await vi.advanceTimersByTimeAsync(10_001);
+
+  // The append is durable but unobserved: the handoff retains its composer seam
+  // and answers pending, exactly the state reconciliation exists to resolve.
+  expect(await appendA).toEqual({ state: "pending", reason: "owner-unavailable" });
+  hold.release();
+  vi.useRealTimers();
+
+  // ONE recovery pass, with no external trigger after it. B must come out of the
+  // same pass applied: reconciliation makes its preparation current before the
+  // sweep reaches it.
+  await fixture.runtime.retryPending("storage-recovered");
+  await fixture.runtime.whenIdle();
+
+  // Reconciliation ran - the composer now carries the token A committed - yet B
+  // is still pending: the sweep visited it before the acknowledgment landed.
+  expect(fixture.acknowledge).toHaveBeenCalled();
+  const views = await fixture.repository.listAnnotations(fixture.document);
+  expect(views.find((view) => view.operation.operationId === operationB.operationId)?.handoff.state).toBe(
+    "already-applied",
+  );
 
   fixture.repository.close();
   fixture.drafts.close();

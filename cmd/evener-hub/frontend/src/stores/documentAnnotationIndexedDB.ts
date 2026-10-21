@@ -1331,7 +1331,34 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // session then session sequence, so a session's earlier operation is retried
   // before its later one while a session whose owner is unavailable stays pending
   // without holding up another session.
+  //
+  // Retained uncertain appends are reconciled FIRST, before the pending scan
+  // below is even read. An append that committed without an observed completion
+  // advances the composer's durable token while the live composer still holds
+  // the pre-append one, so a pending handoff swept first refuses
+  // revision-conflict against that stale token. Reconciliation acknowledges the
+  // committed backing, and that acknowledgment is exactly what makes the
+  // composer's next preparation current. It answers an already-applied receipt,
+  // so it publishes a reader wake but no storage-success signal the runtime
+  // could retry on: a sweep that reconciles only after visiting the pending
+  // handoffs leaves them stranded with nothing left to trigger a revisit. The
+  // uncertain pass therefore runs first, and the pending sweep below skips the
+  // operations it already visited - a retry that re-faulted re-retains its own
+  // record under the same identity, which this pass must not append twice.
   async #retryPersistedPending(cancellation?: AnnotationRetryCancellation): Promise<void> {
+    const handled = new Set<string>();
+    // A committed append whose completion went unobserved answers applied on
+    // replay, so a pending scan would skip it - recovery must not skip the
+    // now-applied operation, and must reconcile it before a later handoff
+    // prepares against the composer it is about to update. Its receipt either
+    // proves the rollback (the record retires inside handoff) or answers
+    // applied, where the retained composer seam reconciles with the committed
+    // backing.
+    for (const record of [...this.#uncertainAppends.values()]) {
+      if (cancellation?.cancelled) return;
+      handled.add(record.operationId);
+      await this.handoff(record.key, record.operationId, cancellation);
+    }
     const pending = await this.#transaction(
       [ANNOTATION_OPERATIONS_STORE, ANNOTATION_PAYLOADS_STORE],
       "readonly",
@@ -1360,19 +1387,11 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // later handoff must not start against a retained composer. The
       // operations it never reached keep their pending receipts.
       if (cancellation?.cancelled) return;
+      // Reconciliation above already handed this operation off in this pass; a
+      // second attempt would only repeat the outcome against the composer it
+      // just touched.
+      if (handled.has(payload.operation.operationId)) continue;
       await this.handoff(payload.operation.lease.key, payload.operation.operationId, cancellation);
-    }
-    // A committed append whose completion went unobserved answers applied on
-    // replay, so the pending scan above skips it - recovery must not skip the
-    // now-applied operation. Replay every retained uncertain operation the
-    // scan did not already hand off: its receipt either proves the rollback
-    // (the record retires inside handoff) or answers applied, where the
-    // retained composer seam reconciles with the committed backing.
-    const handled = new Set(pending.map(({ payload }) => payload.operation.operationId));
-    for (const record of [...this.#uncertainAppends.values()]) {
-      if (handled.has(record.operationId)) continue;
-      if (cancellation?.cancelled) return;
-      await this.handoff(record.key, record.operationId, cancellation);
     }
   }
 
