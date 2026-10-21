@@ -1407,12 +1407,16 @@ func (s *Session) hasTranscriptWriter() bool {
 // allToolDefinitions returns cached tool definitions.
 // The cache is built once at session init via rebuildToolDefsCache.
 func (s *Session) allToolDefinitions(_ int) []llm.ToolDefinition {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.cachedToolDefs
 }
 
 // ToolDefinitions returns the model-facing tool definitions currently
 // advertised by this session.
 func (s *Session) ToolDefinitions() []llm.ToolDefinition {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return append([]llm.ToolDefinition(nil), s.cachedToolDefs...)
 }
 
@@ -1558,6 +1562,7 @@ func (s *Session) profileWireToolDefs() []llm.ToolDefinition {
 // current profile, MCP tools, and registry state. Called once at session init
 // and again if tools are added at runtime (e.g. MCP or custom tools).
 func (s *Session) rebuildToolDefsCache() {
+	s.composeHubRegistry()
 	registered := s.reg.RegisteredNames()
 
 	// Profile tool definitions are canonical (e.g. "shell"); the registry is also
@@ -1582,6 +1587,9 @@ func (s *Session) rebuildToolDefsCache() {
 			}
 			// Registration builds descriptions that name the session's result
 			// tool; the profile's copy names the default.
+			if s.hubEnabled && (td.Name == "job_list" || td.Name == "job_status") {
+				td = managerReadDefinition(td, s.hubOrdinaryAvailable(td.Name))
+			}
 			td.Description = s.reg.Get(td.Name).Definition.Description
 			wire := td
 			if mapped, ok := nameMap[td.Name]; ok {
@@ -1606,6 +1614,11 @@ func (s *Session) rebuildToolDefsCache() {
 	for _, td := range s.reg.Definitions() {
 		if included[td.Name] {
 			continue
+		}
+		if s.hubEnabled && (td.Name == "job_list" || td.Name == "job_status") {
+			if mapped, ok := nameMap[td.Name]; ok {
+				td.Name = mapped
+			}
 		}
 		defs = append(defs, normalizeRegistryToolDefinition(td))
 	}

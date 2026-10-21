@@ -1544,6 +1544,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// thread/clear installs resolves on its own registry.
 	srv.SetCostLookupFunc(func(ref string) *registry.Cost { return getSession().CostFor(ref) })
 	srv.SetTasksFunc(func() []appwire.Task { return getSession().Tasks() })
+	if sessionTools, ok := srv.(interface{ SetSessionTools(func() *agent.Session) }); ok {
+		sessionTools.SetSessionTools(getSession)
+	}
 	srv.SetThreadActivityReadFunc(func(ctx context.Context, params appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error) {
 		sess := getSession()
 		if params.Ref == workspaceRef {

@@ -787,6 +787,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		bump()
 		web.navigation.Invalidate(navigationChangeHint{})
 		observeSessionCredentials()
+		reconcileSessionTools(web.sources)
 	})
 	archive.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
 	favorite.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
@@ -836,6 +837,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// this awaited group and only the context gates starting one.
 	transcriptIndexRepairs.wire(ctx)
 	sessionCredentials.start(ctx, startBackground)
+	startSessionTools(ctx, web.sources, startBackground)
 	// Populate the roster before serving so the first sidebar request can't hit
 	// an empty roster (the "flash of no sessions" right after a restart). Probes
 	// run concurrently, so this is bounded by ~one probe timeout regardless of

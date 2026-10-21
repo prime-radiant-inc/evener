@@ -196,10 +196,11 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	if current, ok := store.CurrentInProgress(); ok {
 		effortOverride = normalizeTaskEffort(strings.TrimSpace(current.ReasoningEffort))
 	}
+	s.refreshHubState(ctx)
 	s.mu.Lock()
 	profile = s.profile
 	sys = s.cachedSystemPrompt
-	toolDefs := s.allToolDefinitions(round)
+	toolDefs := s.cachedToolDefs
 	// The task override applies to this round only; s.cfg.ReasoningEffort keeps
 	// the session's configured effort so it is restored when the task ends.
 	reasoningEffort = effectiveReasoningEffort(strings.TrimSpace(s.cfg.ReasoningEffort), effortOverride, s.loopEffortEscalated)

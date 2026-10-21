@@ -116,5 +116,26 @@ authoritative re-read rather than replaying the toggle.
 A committed change sends the existing scoped `evener/thread/resync` hint to other
 subscribers. Connected refresh preserves loaded history pages when their source
 identity still matches, and preserves unsent input. Reconnect may replace stale
-pages with the latest authoritative window. This preference does not yet provide
-runtime Manager tools or remote enabling.
+pages with the latest authoritative window.
+
+## Manager discovery and status
+
+An authenticated live runtime can use `job_list` with
+`{"hub":{"mode":"discovery"}}` to discover reachable sessions and sources,
+then `job_status` with `{"hub":{"ref":"local:WORKSPACE_ID"}}` to read a
+source-qualified session's status through the existing hub read owner. Use a
+returned reference rather than constructing one. Ordinary calls keep their
+existing behavior. Explicit tool-policy denials still apply.
+
+Only the human switch grants Manager mode. The hub rechecks its current setting
+on every operation, and the connection supplies caller identity. Model requests
+publish the Manager schemas and guidance together. A disconnect removes that
+surface without clearing the saved preference; reconnection restores it when
+the setting still permits it. Another connected hub cannot silently replace the
+selected authority.
+
+This slice does not expose session controls, messaging, creation, activity,
+transcript reads, model listing, remote enabling or Manager `job_watch`.
+The private transport supports ephemeral status observations through the existing
+relay, not durable watches or completion events. Cancellation, revocation and
+connection loss close those consumers.

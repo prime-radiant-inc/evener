@@ -107,6 +107,11 @@ func (s *Session) nextJobTreeRevision(kind events.EventKind) (string, uint64, bo
 // history, registered tools, context-management state, subagents, plugins, MCP
 // connections, and persistence settings.
 type Session struct {
+	hubClient              SessionHubClient
+	hubGeneration          uint64
+	hubEnabled             bool
+	hubOrdinary            map[string]*tool.RegisteredTool
+	hubRegistry            *tool.Registry
 	id                     string
 	cfg                    SessionConfig
 	delegateController     *delegateTreeController

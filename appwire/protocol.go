@@ -163,6 +163,11 @@ type NotificationSpec struct {
 var Methods = []MethodSpec{
 	{MethodInitialize, InitializeParams{}, InitializeResponse{}, ScopeConnection, "Handshake; must be the first request. Returns server info, protocol version, source ID, and feature set."},
 	{MethodPing, EmptyParams{}, EmptyResponse{}, ScopeConnection, "Connection keepalive, answered directly before the initialize gate (the browser's app-level heartbeat)."},
+	{MethodRuntimeSessionBind, SessionBinding{}, SessionBinding{}, ScopeConnection, "Private authenticated hub-to-runtime binding, accepted only by explicitly installed daemon handlers after initialize."},
+	{MethodRuntimeSessionState, SessionRuntimeRequest{}, ManagerView{}, ScopeConnection, "Private reverse request on a bound runtime connection, reads current human Manager state even while disabled."},
+	{MethodRuntimeSessionInvoke, SessionRuntimeRequest{}, SessionOperationResponse{}, ScopeConnection, "Private reverse request, current Manager admission for exactly one implemented discovery or status operation."},
+	{MethodRuntimeSessionWatch, SessionRuntimeRequest{}, EmptyResponse{}, ScopeConnection, "Private reverse request, ephemeral initial/live status observation only. Other event selectors and completion are rejected."},
+	{MethodRuntimeSessionUnwatch, SessionRuntimeRequest{}, EmptyResponse{}, ScopeConnection, "Private reverse request, detaches one connection-local ephemeral observation consumer."},
 	{MethodThreadList, ThreadListParams{}, ThreadListResponse{}, ScopeBoth, "Lists threads; the daemon returns its single session."},
 	{MethodThreadRead, ThreadReadParams{}, ThreadReadResponse{}, ScopeBoth, "Reads one thread and optionally subscribes to its live updates; includeTurns returns the newest bounded atomic projected items, and itemLimit caps items."},
 	{MethodThreadUnsubscribe, ThreadUnsubscribeParams{}, EmptyResponse{}, ScopeBoth, "Drops this connection's live-update subscription to a thread without reading it."},
@@ -369,6 +374,7 @@ func ValidateMutationParams(method string, raw json.RawMessage) error {
 // intentionally absent — it is defined but emitted by nothing (context
 // pressure rides on the Thread snapshot instead).
 var Notifications = []NotificationSpec{
+	{NotificationRuntimeSessionObservation, SessionRuntimeObservation{}, "Targeted private bound-connection status observation or consumer end. Not a durable job_watch delivery."},
 	{NotifyThreadStarted, ThreadStartedParams{}, "Session started; carries the initial Thread snapshot."},
 	{NotifyThreadClosed, ThreadClosedParams{}, "Session ended."},
 	{NotifyThreadStatusChanged, ThreadStatusChangedParams{}, "Thread status (type + active flags) changed."},

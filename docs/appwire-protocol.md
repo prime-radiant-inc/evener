@@ -192,6 +192,11 @@ no router (reserved).
 |--------|-------|--------|--------|---------|
 | `initialize` | connection | [InitializeParams](#initializeparams) | [InitializeResponse](#initializeresponse) | Handshake; must be the first request. Returns server info, protocol version, source ID, and feature set. |
 | `ping` | connection | [EmptyParams](#emptyparams) | [EmptyResponse](#emptyresponse) | Connection keepalive, answered directly before the initialize gate (the browser's app-level heartbeat). |
+| `evener/runtime/session/bind` | connection | [SessionBinding](#sessionbinding) | [SessionBinding](#sessionbinding) | Private authenticated hub-to-runtime binding, accepted only by explicitly installed daemon handlers after initialize. |
+| `evener/runtime/session/state` | connection | [SessionRuntimeRequest](#sessionruntimerequest) | [ManagerView](#managerview) | Private reverse request on a bound runtime connection, reads current human Manager state even while disabled. |
+| `evener/runtime/session/invoke` | connection | [SessionRuntimeRequest](#sessionruntimerequest) | [SessionOperationResponse](#sessionoperationresponse) | Private reverse request, current Manager admission for exactly one implemented discovery or status operation. |
+| `evener/runtime/session/watch` | connection | [SessionRuntimeRequest](#sessionruntimerequest) | [EmptyResponse](#emptyresponse) | Private reverse request, ephemeral initial/live status observation only. Other event selectors and completion are rejected. |
+| `evener/runtime/session/unwatch` | connection | [SessionRuntimeRequest](#sessionruntimerequest) | [EmptyResponse](#emptyresponse) | Private reverse request, detaches one connection-local ephemeral observation consumer. |
 | `thread/list` | both | [ThreadListParams](#threadlistparams) | [ThreadListResponse](#threadlistresponse) | Lists threads; the daemon returns its single session. |
 | `thread/read` | both | [ThreadReadParams](#threadreadparams) | [ThreadReadResponse](#threadreadresponse) | Reads one thread and optionally subscribes to its live updates; includeTurns returns the newest bounded atomic projected items, and itemLimit caps items. |
 | `thread/unsubscribe` | both | [ThreadUnsubscribeParams](#threadunsubscribeparams) | [EmptyResponse](#emptyresponse) | Drops this connection's live-update subscription to a thread without reading it. |
@@ -338,6 +343,7 @@ the shared [TypeScript client](../appwire-client/typescript/README.md).
 
 | Notification | Payload | Summary |
 |--------------|---------|---------|
+| `evener/runtime/session/observation` | [SessionRuntimeObservation](#sessionruntimeobservation) | Targeted private bound-connection status observation or consumer end. Not a durable job_watch delivery. |
 | `thread/started` | [ThreadStartedParams](#threadstartedparams) | Session started; carries the initial Thread snapshot. |
 | `thread/closed` | [ThreadClosedParams](#threadclosedparams) | Session ended. |
 | `thread/status/changed` | [ThreadStatusChangedParams](#threadstatuschangedparams) | Thread status (type + active flags) changed. |
@@ -708,6 +714,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `sessionTools` | bool | yes |  |
 | `experimentalApi` | bool |  |  |
 | `optOutNotificationMethods` | []string | yes |  |
 
@@ -1315,6 +1322,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `sessionTools` | bool | yes |  |
 | `threadList` | bool |  |  |
 | `threadTurnsList` | bool |  |  |
 | `turnStart` | bool |  |  |
@@ -2791,6 +2799,14 @@ Underlying Go kind: `string` (no struct fields).
 | `notices` | [][appwire.HubNotice](#hubnotice) |  |  |
 
 
+### `Notification`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `method` | string |  |  |
+| `params` | jsontext.Value | yes |  |
+
+
 ### `OperationProgressEntry`
 
 | Field | Go type | Omitempty | Embedded |
@@ -3445,6 +3461,24 @@ Underlying Go kind: `string` (no struct fields).
 | `watches` | [appwire.SessionActivityCounts](#sessionactivitycounts) |  |  |
 
 
+### `SessionActor`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `kind` | string |  |  |
+| `managerRef` | string | yes |  |
+
+
+### `SessionBinding`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | string |  |  |
+| `instanceId` | string |  |  |
+| `hubId` | string |  |  |
+| `bindingId` | string |  |  |
+
+
 ### `SessionDelegate`
 
 | Field | Go type | Omitempty | Embedded |
@@ -3507,6 +3541,14 @@ Underlying Go kind: `string` (no struct fields).
 | `navigation` | [appwire.NavigationMutation](#navigationmutation) |  |  |
 
 
+### `SessionDiscovery`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threads` | [appwire.ThreadListResponse](#threadlistresponse) |  |  |
+| `sources` | [][appwire.SessionSource](#sessionsource) |  |  |
+
+
 ### `SessionDocumentParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -3552,6 +3594,40 @@ Underlying Go kind: `string` (no struct fields).
 | `scope` | [appwire.SessionActivityScope](#sessionactivityscope) |  |  |
 | `page` | [appwire.SessionActivityPage](#sessionactivitypage) |  |  |
 | `jobs` | [][appwire.JobActivityJob](#jobactivityjob) |  |  |
+
+
+### `SessionObservationMetadata`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | string |  |  |
+| `instanceId` | string | yes |  |
+| `generationId` | string | yes |  |
+| `turnId` | string | yes |  |
+| `entryId` | string | yes |  |
+| `endTurn` | bool | yes |  |
+| `endReason` | string | yes |  |
+| `terminalAccepted` | \*bool | yes |  |
+| `causalKnown` | bool |  |  |
+| `causal` | \*provenance.Causal | yes |  |
+
+
+### `SessionOperationRequest`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `discover` | \*[appwire.ThreadListParams](#threadlistparams) | yes |  |
+| `read` | \*[appwire.ThreadReadParams](#threadreadparams) | yes |  |
+
+
+### `SessionOperationResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `actor` | [appwire.SessionActor](#sessionactor) |  |  |
+| `discover` | \*[appwire.SessionDiscovery](#sessiondiscovery) | yes |  |
+| `read` | \*[appwire.ThreadReadResponse](#threadreadresponse) | yes |  |
+| `followUps` | [][appwire.SessionStatusFollowUp](#sessionstatusfollowup) | yes |  |
 
 
 ### `SessionPinAssignParams`
@@ -3605,6 +3681,26 @@ Underlying Go kind: `string` (no struct fields).
 | `navigation` | [appwire.NavigationMutation](#navigationmutation) |  |  |
 
 
+### `SessionRuntimeObservation`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `bindingId` | string |  |  |
+| `watchId` | string |  |  |
+| `update` | \*[appwire.SessionWatchUpdate](#sessionwatchupdate) | yes |  |
+| `ended` | bool | yes |  |
+
+
+### `SessionRuntimeRequest`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `bindingId` | string |  |  |
+| `operation` | \*[appwire.SessionOperationRequest](#sessionoperationrequest) | yes |  |
+| `watch` | \*[appwire.SessionWatchRequest](#sessionwatchrequest) | yes |  |
+| `watchId` | string | yes |  |
+
+
 ### `SessionSeenMark`
 
 | Field | Go type | Omitempty | Embedded |
@@ -3630,6 +3726,35 @@ Underlying Go kind: `string` (no struct fields).
 | `navigation` | [appwire.NavigationMutation](#navigationmutation) |  |  |
 
 
+### `SessionSource`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | string |  |  |
+
+
+### `SessionStatusArguments`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `hub` | [appwire.SessionStatusTarget](#sessionstatustarget) |  |  |
+
+
+### `SessionStatusFollowUp`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `tool` | string |  |  |
+| `arguments` | [appwire.SessionStatusArguments](#sessionstatusarguments) |  |  |
+
+
+### `SessionStatusTarget`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | string |  |  |
+
+
 ### `SessionURL`
 
 | Field | Go type | Omitempty | Embedded |
@@ -3652,9 +3777,27 @@ Underlying Go kind: `string` (no struct fields).
 | `watch` | [appwire.EvenerWatchInfo](#evenerwatchinfo) |  |  |
 
 
+### `SessionWatchRequest`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | string |  |  |
+| `events` | []string | yes |  |
+| `completion` | bool | yes |  |
+
+
 ### `SessionWatchState`
 
 Underlying Go kind: `string` (no struct fields).
+
+
+### `SessionWatchUpdate`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `snapshot` | \*[appwire.ThreadReadResponse](#threadreadresponse) | yes |  |
+| `notification` | \*[appwire.Notification](#notification) | yes |  |
+| `metadata` | [appwire.SessionObservationMetadata](#sessionobservationmetadata) |  |  |
 
 
 ### `SessionWatchesResponse`

@@ -141,6 +141,7 @@ const concurrentRequestTotalCap = 4 * concurrentRequestCap
 const slowReadCapStallAdvisory = 30 * time.Second
 
 type Server struct {
+	sessionToolsBind       func(context.Context, appwire.SessionBinding, appwire.SessionHubClient) error
 	cfg                    ServerConfig
 	router                 *Router
 	subs                   *Subscriptions
@@ -617,11 +618,14 @@ type admittedRequest struct {
 }
 
 type Connection struct {
-	id         string
-	server     *Server
-	send       chan appwire.Message
-	sendMu     sync.RWMutex
-	sendClosed bool
+	sessionMu       sync.Mutex
+	sessionTools    *sessionToolsConnection
+	sessionLifetime context.Context
+	id              string
+	server          *Server
+	send            chan appwire.Message
+	sendMu          sync.RWMutex
+	sendClosed      bool
 	// requests is the bounded inbound queue between the transport's receive
 	// loop (the only producer) and the serial worker (the only consumer).
 	// Neither side ever closes it — producer teardown is "stop sending",
@@ -1041,6 +1045,9 @@ func (c *Connection) HandleMessage(ctx context.Context, msg appwire.Message) app
 	}
 	if c.isInitialized() && req.Method == appwire.MethodInitialize {
 		return appwire.ErrorMessage(req.ID, appwire.InvalidRequest("already initialized"))
+	}
+	if req.Method == appwire.MethodRuntimeSessionBind {
+		return c.bindSessionTools(ctx, req)
 	}
 	if !c.server.cfg.AdapterNativeInitialize {
 		if err := appwire.ValidateMutationParams(req.Method, req.Params); err != nil {
@@ -1678,6 +1685,9 @@ func concurrentDispatchMethod(method string) bool {
 // cascade cancels the connection: ping liveness is guaranteed against
 // handler behavior, not against a peer that stopped draining its own socket.
 func (c *Connection) receiveInbound(ctx context.Context, msg appwire.Message) bool {
+	if c.receiveSessionFrame(msg) {
+		return true
+	}
 	if msg.Request != nil && c.server.cfg.RequestAdmissionContext != nil {
 		admitted, ok := c.admitRequestContext(ctx, msg)
 		if !ok {

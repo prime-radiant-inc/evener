@@ -109,6 +109,9 @@ type promptData struct {
 	// jobs sections and the stated allowance.
 	CanDelegate         bool
 	DelegationAllowance int
+	ManagerEnabled      bool
+	ManagerDiscovery    bool
+	ManagerStatus       bool
 
 	// Available agents (for delegate)
 	AvailableAgents []agentEntry

@@ -379,8 +379,15 @@ export interface AuthTestResponse {
 }
 
 export interface Capabilities {
+  sessionTools?: boolean;
   experimentalApi: boolean;
   optOutNotificationMethods?: string[];
+}
+
+export interface Causal {
+  watch_keys?: WatchKey[];
+  chain?: Entry[];
+  chain_truncated?: boolean;
 }
 
 export interface ClientInfo {
@@ -556,6 +563,15 @@ export interface EmptyParams {
 }
 
 export interface EmptyResponse {
+}
+
+export interface Entry {
+  kind: string;
+  watch_id?: string;
+  watch_generation?: string;
+  delivery_id?: string;
+  session_id?: string;
+  job_id?: string;
 }
 
 export interface EvenerAuthUpdatedParams {
@@ -1133,6 +1149,7 @@ export interface FavoriteSetResponse {
 }
 
 export interface FeatureSet {
+  sessionTools?: boolean;
   threadList: boolean;
   threadTurnsList: boolean;
   turnStart: boolean;
@@ -2757,6 +2774,11 @@ export interface NoticesListResponse {
   notices: HubNotice[];
 }
 
+export interface Notification {
+  method: string;
+  params?: unknown;
+}
+
 export interface OperationProgressEntry {
   ts: string;
   message: string;
@@ -3404,6 +3426,18 @@ export interface SessionActivitySummary {
   watches: SessionActivityCounts;
 }
 
+export interface SessionActor {
+  kind: string;
+  managerRef?: string;
+}
+
+export interface SessionBinding {
+  ref: string;
+  instanceId: string;
+  hubId: string;
+  bindingId: string;
+}
+
 export interface SessionDelegate {
   /**
    * Name is the immutable caller display label, capped at 200 Unicode code points.
@@ -3477,6 +3511,11 @@ export interface SessionDeleteResponse {
   navigation: NavigationMutation;
 }
 
+export interface SessionDiscovery {
+  threads: ThreadListResponse;
+  sources: SessionSource[];
+}
+
 export interface SessionDocumentParams {
   sessionId: string;
   path: string;
@@ -3507,6 +3546,31 @@ export interface SessionJobsResponse {
   scope: SessionActivityScope;
   page: SessionActivityPage;
   jobs: JobActivityJob[];
+}
+
+export interface SessionObservationMetadata {
+  ref: string;
+  instanceId?: string;
+  generationId?: string;
+  turnId?: string;
+  entryId?: string;
+  endTurn?: boolean;
+  endReason?: string;
+  terminalAccepted?: boolean;
+  causalKnown: boolean;
+  causal?: Causal;
+}
+
+export interface SessionOperationRequest {
+  discover?: ThreadListParams;
+  read?: ThreadReadParams;
+}
+
+export interface SessionOperationResponse {
+  actor: SessionActor;
+  discover?: SessionDiscovery;
+  read?: ThreadReadResponse;
+  followUps?: SessionStatusFollowUp[];
 }
 
 export interface SessionPinAssignParams {
@@ -3542,6 +3606,20 @@ export interface SessionPinUnpinResponse {
   navigation: NavigationMutation;
 }
 
+export interface SessionRuntimeObservation {
+  bindingId: string;
+  watchId: string;
+  update?: SessionWatchUpdate;
+  ended?: boolean;
+}
+
+export interface SessionRuntimeRequest {
+  bindingId: string;
+  operation?: SessionOperationRequest;
+  watch?: SessionWatchRequest;
+  watchId?: string;
+}
+
 export interface SessionSeenMark {
   ref: string;
   seenThrough?: number;
@@ -3556,6 +3634,23 @@ export interface SessionSeenSetResponse {
   ok: boolean;
   changed: boolean;
   navigation: NavigationMutation;
+}
+
+export interface SessionSource {
+  id: string;
+}
+
+export interface SessionStatusArguments {
+  hub: SessionStatusTarget;
+}
+
+export interface SessionStatusFollowUp {
+  tool: string;
+  arguments: SessionStatusArguments;
+}
+
+export interface SessionStatusTarget {
+  ref: string;
 }
 
 export interface SessionURL {
@@ -3575,6 +3670,18 @@ export interface SessionWatch {
   receiverRef: string;
   state: SessionWatchState;
   watch: EvenerWatchInfo;
+}
+
+export interface SessionWatchRequest {
+  ref: string;
+  events?: string[];
+  completion?: boolean;
+}
+
+export interface SessionWatchUpdate {
+  snapshot?: ThreadReadResponse;
+  notification?: Notification;
+  metadata: SessionObservationMetadata;
 }
 
 export interface SessionWatchesResponse {
@@ -4822,9 +4929,19 @@ export interface WarningParams {
   cause?: DiagnosticCause;
 }
 
+export interface WatchKey {
+  watch_id: string;
+  watch_generation: string;
+}
+
 export const METHOD_NAMES = [
   "initialize",
   "ping",
+  "evener/runtime/session/bind",
+  "evener/runtime/session/state",
+  "evener/runtime/session/invoke",
+  "evener/runtime/session/watch",
+  "evener/runtime/session/unwatch",
   "thread/list",
   "thread/read",
   "thread/unsubscribe",
@@ -5021,6 +5138,7 @@ export const HOST_REQUEST_METHODS = [
 export type HostRequestMethod = (typeof HOST_REQUEST_METHODS)[number];
 
 export const NOTIFICATION_NAMES = [
+  "evener/runtime/session/observation",
   "thread/started",
   "thread/closed",
   "thread/status/changed",
@@ -5140,6 +5258,11 @@ export type ThreadItemEventKind = (typeof THREAD_ITEM_EVENT_KINDS)[number];
 export interface MethodTypes {
   "initialize": { params: InitializeParams; result: InitializeResponse };
   "ping": { params: EmptyParams; result: EmptyResponse };
+  "evener/runtime/session/bind": { params: SessionBinding; result: SessionBinding };
+  "evener/runtime/session/state": { params: SessionRuntimeRequest; result: ManagerView };
+  "evener/runtime/session/invoke": { params: SessionRuntimeRequest; result: SessionOperationResponse };
+  "evener/runtime/session/watch": { params: SessionRuntimeRequest; result: EmptyResponse };
+  "evener/runtime/session/unwatch": { params: SessionRuntimeRequest; result: EmptyResponse };
   "thread/list": { params: ThreadListParams; result: ThreadListResponse };
   "thread/read": { params: ThreadReadParams; result: ThreadReadResponse };
   "thread/unsubscribe": { params: ThreadUnsubscribeParams; result: EmptyResponse };
@@ -5281,6 +5404,7 @@ export interface MethodTypes {
 }
 
 export interface NotificationTypes {
+  "evener/runtime/session/observation": SessionRuntimeObservation;
   "thread/started": ThreadStartedParams;
   "thread/closed": ThreadClosedParams;
   "thread/status/changed": ThreadStatusChangedParams;
