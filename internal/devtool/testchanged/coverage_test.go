@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"sort"
@@ -102,14 +103,16 @@ func TestEmbeddedAssetSelectsItsEmbeddingPackage(t *testing.T) {
 	}
 }
 
-// A non-Go file that nothing embeds must not drag in its module's packages.
-// Otherwise every README or testdata edit runs the whole module again, which
-// is the cost this target exists to remove.
-func TestOrdinaryNonGoFileSelectsNothing(t *testing.T) {
+// A repository file that no package embeds still selects the repo-root
+// package, because its audit tests read repository files directly: they glob
+// make/*.mk and check docs/developing-evener/testing.md. It must not spread to
+// importers, which would turn every doc edit into a whole-module run.
+func TestRepositoryFileSelectsRootPackageOnly(t *testing.T) {
 	g := loadTestGraph(t)
 	res := selectPackages(g, []string{"docs/developing-evener/testing.md"}, testModules)
-	if len(res.Selected) != 0 {
-		t.Errorf("selected %v for an unembedded doc change, want nothing", selectedPaths(res))
+
+	if got := selectedPaths(res); len(got) != 1 || got[0] != "primeradiant.com/evener" {
+		t.Errorf("selected %v, want only the repo-root package", got)
 	}
 }
 
@@ -341,15 +344,23 @@ func TestGraphOnlyModuleChangeIsSkippedNotFailed(t *testing.T) {
 		modulePath = "example.com/mod"
 	)
 	root := t.TempDir()
+	fuzzDir := filepath.Join(root, "fuzzmod", "x")
+	if err := os.MkdirAll(fuzzDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
 	g := &graph{
 		root:        root,
 		moduleRoots: []string{moduleRoot},
 		moduleDirs:  map[string]string{moduleRoot: root, "fuzzmod": filepath.Join(root, "fuzzmod")},
 		modulePaths: map[string]string{moduleRoot: modulePath, "fuzzmod": "example.com/fuzzmod"},
 		runnable:    map[string]bool{moduleRoot: true},
-		pkgs:        map[string]*pkgInfo{},
-		byDir:       map[string]string{},
-		deps:        map[string]map[string]bool{},
+		// A real package in the graph-only module is what the per-file path
+		// counts; without one the file never reaches the counting branch.
+		pkgs: map[string]*pkgInfo{
+			"example.com/fuzzmod/x": {ImportPath: "example.com/fuzzmod/x", ModuleRoot: "fuzzmod", Dir: fuzzDir},
+		},
+		byDir: map[string]string{fuzzDir: "example.com/fuzzmod/x"},
+		deps:  map[string]map[string]bool{},
 	}
 
 	res := selectPackages(g, []string{"fuzzmod/x/x.go"}, []string{moduleRoot})
@@ -415,8 +426,15 @@ func TestRunExitStatus(t *testing.T) {
 			gitIn(t, root, "commit", "-q", "-m", "base")
 			c.setup(t, root)
 
-			if got := run(root, "HEAD", []string{"."}, false); got != c.want {
-				t.Fatalf("run() = %d, want %d", got, c.want)
+			// Capture both streams: a passing suite must not print the failure
+			// output of the case that expects one, and that output is itself
+			// the evidence the failure was reported.
+			var stdout, stderr bytes.Buffer
+			if got := run(&stdout, &stderr, root, "HEAD", []string{"."}, false); got != c.want {
+				t.Fatalf("run() = %d, want %d\nstdout:\n%s\nstderr:\n%s", got, c.want, stdout.String(), stderr.String())
+			}
+			if c.want != 0 && !strings.Contains(stderr.String(), "FAIL") {
+				t.Errorf("exit %d without a FAIL verdict on stderr; stderr:\n%s", c.want, stderr.String())
 			}
 		})
 	}

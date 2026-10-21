@@ -320,16 +320,18 @@ func difference(a, b []string) []string {
 	return out
 }
 
-// TestNothingSelectedMessageShape pins the two exit paths run() decides
-// between: a non-Go diff is allowed to select nothing, a Go diff is not.
+// TestSelectionEmptyForNonGoDiff pins the counts run() decides between: a
+// non-Go diff counts no Go files (so it can exit 0), while a Go diff does. A
+// repository file may still select the root package, whose audit tests read it
+// directly; what matters here is that it is not counted as an unrun Go change.
 func TestSelectionEmptyForNonGoDiff(t *testing.T) {
 	g := loadTestGraph(t)
 	res := selectPackages(g, []string{"docs/developing-evener/testing.md"}, testModules)
-	if len(res.Selected) != 0 {
-		t.Fatalf("docs-only change selected %v, want nothing", sortedKeys(selectedSet(res)))
-	}
 	if res.GoChanged != 0 {
 		t.Fatalf("GoChanged = %d for a docs-only change", res.GoChanged)
+	}
+	if res.OutOfScope != 0 {
+		t.Fatalf("OutOfScope = %d for a docs-only change", res.OutOfScope)
 	}
 	res = selectPackages(g, []string{"agent/argrepair/argrepair.go"}, testModules)
 	if res.GoChanged == 0 {

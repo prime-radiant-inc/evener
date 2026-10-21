@@ -2,11 +2,25 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
 )
+
+// sayf and sayln write the tool's progress lines. Their return value is
+// deliberately ignored: a tool whose stdout is a closed pipe has nothing
+// useful to do about it, and every caller would otherwise carry the same
+// unchecked-error noise.
+func sayf(w io.Writer, format string, args ...any) {
+	_, _ = fmt.Fprintf(w, format, args...)
+}
+
+func sayln(w io.Writer, args ...any) {
+	_, _ = fmt.Fprintln(w, args...)
+}
 
 // inspectionTimeout bounds one git or `go list` call. Neither is a long-running
 // job, and a wedged one must fail the run rather than hang a pre-push check

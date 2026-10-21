@@ -52,6 +52,16 @@ var moduleManifests = map[string]bool{
 // are read by that package's tests.
 func selectPackages(g *graph, changed []string, moduleRoots []string) selectionResult {
 	var res selectionResult
+	// countGo records one changed Go file. A file in a module test-changed does
+	// not run (fuzz) is a legitimate skip rather than a broken selection, so the
+	// two counts are kept together and cannot drift apart.
+	countGo := func(module string) {
+		if g.runnableModule(module) {
+			res.GoChanged++
+			return
+		}
+		res.OutOfScope++
+	}
 	// propagating maps a changed package to a reason when its code or assets
 	// changed, so its importers are affected. testOnly maps a package to its
 	// reason when only its tests changed; those never spread.
@@ -75,6 +85,8 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 		// there breaks, so they must come through the closure below.
 		if !ok {
 			if goFile {
+				// Outside every module, so no module is out of scope here: this
+				// is a real Go change nothing claimed, and the guard should see it.
 				res.GoChanged++
 			}
 			res.Outside = append(res.Outside, rel)
@@ -88,7 +100,7 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 		atModuleRoot := filepath.Clean(dir) == filepath.Clean(g.moduleDir(module))
 		if moduleManifests[filepath.Base(rel)] && atModuleRoot {
 			if goFile {
-				res.GoChanged++
+				countGo(module)
 			}
 			// go.work spans the whole workspace, so it reaches every module;
 			// go.mod and go.sum reach only their own.
@@ -117,7 +129,7 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 			// otherwise it is a fixture or generated file living outside any
 			// package (testdata), which its nearest package owns.
 			if ip, derived := g.importPathAt(module, dir); derived && goFile && g.importedAnywhere(ip) {
-				res.GoChanged++
+				countGo(module)
 				propagating[ip] = joinReason(propagating[ip], "removed file "+rel)
 				continue
 			}
@@ -152,7 +164,7 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 			// observe it.
 			if goFile && isTestdataPath(rel) {
 				if owner, ok := g.nearestPackageAncestor(module, dir); ok {
-					res.GoChanged++
+					countGo(module)
 					packageOnly[owner] = joinReason(packageOnly[owner], "testdata fixture "+rel)
 					continue
 				}
@@ -167,14 +179,25 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 					continue
 				}
 			}
+			// The repo-root package's audit tests read repository files directly:
+			// it globs make/*.mk, and checks docs/developing-evener/testing.md
+			// and the workflow files. A non-Go change to one of those is
+			// invisible to `go list` as a package, but it can fail those tests,
+			// so it selects the root package only — no spread to importers.
+			if !goFile {
+				if owner, ok := g.packageAt(g.root); ok {
+					packageOnly[owner] = joinReason(packageOnly[owner], "repository file "+rel)
+					continue
+				}
+			}
 			if goFile {
-				res.GoChanged++
+				countGo(module)
 			}
 			res.NoPackage = append(res.NoPackage, rel)
 			continue
 		}
 		if goFile {
-			res.GoChanged++
+			countGo(module)
 		}
 		if strings.HasSuffix(rel, "_test.go") {
 			testOnly[ip] = joinReason(testOnly[ip], "test-only change "+rel)
@@ -266,18 +289,6 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 		return a.ImportPath < b.ImportPath
 	})
 
-	// Go changes in a module test-changed does not run are a legitimate skip,
-	// not a broken selection. Recording them separately keeps a fuzz-only diff
-	// from exiting 2 with "no runnable package was selected".
-	for _, rel := range changed {
-		rel = filepath.ToSlash(rel)
-		if !strings.HasSuffix(rel, ".go") {
-			continue
-		}
-		if module, ok := g.moduleFor(rel); ok && !g.runnableModule(module) {
-			res.OutOfScope++
-		}
-	}
 	return res
 }
 

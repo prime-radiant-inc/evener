@@ -21,6 +21,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -46,59 +47,61 @@ func main() {
 		os.Exit(2)
 	}
 
-	os.Exit(run(*root, *base, moduleRoots, *race == "1"))
+	os.Exit(run(os.Stdout, os.Stderr, *root, *base, moduleRoots, *race == "1"))
 }
 
-// run is main's testable body: it returns the process exit status.
-func run(root, base string, modules []string, race bool) int {
+// run is main's testable body: it writes to the given streams and returns the
+// process exit status. Tests capture the streams so a passing suite cannot
+// print a FAIL line that nothing asserts.
+func run(stdout, stderr io.Writer, root, base string, modules []string, race bool) int {
 	changed, err := changedFiles(root, base)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "test-changed: collecting the diff against %s: %v\n", base, err)
+		sayf(stderr, "test-changed: collecting the diff against %s: %v\n", base, err)
 		return 2
 	}
-	fmt.Printf("test-changed: base %s, %d changed file(s)\n", base, len(changed))
+	sayf(stdout, "test-changed: base %s, %d changed file(s)\n", base, len(changed))
 	if len(changed) == 0 {
-		fmt.Println("test-changed: no changed files; nothing to run")
+		sayln(stdout, "test-changed: no changed files; nothing to run")
 		return 0
 	}
 
 	g, err := loadGraph(root, modules)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "test-changed: loading the import graph: %v\n", err)
+		sayf(stderr, "test-changed: loading the import graph: %v\n", err)
 		return 2
 	}
 
 	res := selectPackages(g, changed, modules)
 	for _, f := range res.Outside {
-		fmt.Printf("test-changed: skipped %s: outside every module in GO_MODULES\n", f)
+		sayf(stdout, "test-changed: skipped %s: outside every module in GO_MODULES\n", f)
 	}
 	for _, f := range res.NoPackage {
-		fmt.Printf("test-changed: skipped %s: no Go package in its directory\n", f)
+		sayf(stdout, "test-changed: skipped %s: no Go package in its directory\n", f)
 	}
 	for _, f := range res.Removed {
-		fmt.Printf("test-changed: skipped %s: removed, and no surviving package imports it\n", f)
+		sayf(stdout, "test-changed: skipped %s: removed, and no surviving package imports it\n", f)
 	}
 	for _, p := range res.GraphOnly {
-		fmt.Printf("test-changed: skipped %s\n", p)
+		sayf(stdout, "test-changed: skipped %s\n", p)
 	}
 	if len(res.Selected) == 0 {
 		// Only Go changes test-changed could have run count here. A change
 		// confined to a module it does not run is a legitimate skip, reported
 		// below rather than treated as a broken selection.
 		if inScope := res.GoChanged - res.OutOfScope; inScope > 0 {
-			fmt.Fprintf(os.Stderr, "test-changed: FAIL: %d Go file(s) changed but no runnable package was selected; refusing to report a passing run\n", inScope)
+			sayf(stderr, "test-changed: FAIL: %d Go file(s) changed but no runnable package was selected; refusing to report a passing run\n", inScope)
 			return 2
 		}
 		if res.OutOfScope > 0 {
-			fmt.Printf("test-changed: %d Go file(s) changed in modules test-changed does not run; nothing to run here\n", res.OutOfScope)
+			sayf(stdout, "test-changed: %d Go file(s) changed in modules test-changed does not run; nothing to run here\n", res.OutOfScope)
 			return 0
 		}
-		fmt.Println("test-changed: diff touches no Go package; nothing to run")
+		sayln(stdout, "test-changed: diff touches no Go package; nothing to run")
 		return 0
 	}
 
 	for _, s := range res.Selected {
-		fmt.Printf("test-changed: select module %s package %s reason: %s\n", s.ModuleRoot, s.ImportPath, s.Reason)
+		sayf(stdout, "test-changed: select module %s package %s reason: %s\n", s.ModuleRoot, s.ImportPath, s.Reason)
 	}
 
 	failed := false
@@ -111,16 +114,16 @@ func run(root, base string, modules []string, race bool) int {
 		for _, s := range sels {
 			args = append(args, packageArg(g, s))
 		}
-		fmt.Printf("test-changed: module %s: go %s (in %s)\n", m, strings.Join(args, " "), g.moduleDir(m))
+		sayf(stdout, "test-changed: module %s: go %s (in %s)\n", m, strings.Join(args, " "), g.moduleDir(m))
 		// The test run is deliberately unbounded: a package may legitimately
 		// take minutes, so it takes the caller's context rather than the
 		// inspection deadline the git and go list calls use.
 		cmd := exec.CommandContext(context.Background(), "go", args...)
 		cmd.Dir = g.moduleDir(m)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+		cmd.Stdout = stdout
+		cmd.Stderr = stderr
 		if err := cmd.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "test-changed: FAIL module %s: %v\n", m, err)
+			sayf(stderr, "test-changed: FAIL module %s: %v\n", m, err)
 			failed = true
 		}
 	}
@@ -128,7 +131,7 @@ func run(root, base string, modules []string, race bool) int {
 		fmt.Fprintln(os.Stderr, "test-changed: FAIL: at least one selected module failed")
 		return 1
 	}
-	fmt.Printf("test-changed: PASS (%d package(s) in %d module(s))\n", len(res.Selected), len(orderedModules(res.Selected, modules)))
+	sayf(stdout, "test-changed: PASS (%d package(s) in %d module(s))\n", len(res.Selected), len(orderedModules(res.Selected, modules)))
 	return 0
 }
 
