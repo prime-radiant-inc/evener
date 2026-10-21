@@ -103,10 +103,18 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 				countGo(module)
 			}
 			// go.work spans the whole workspace, so it reaches every module;
-			// go.mod and go.sum reach only their own.
+			// so does a go.mod, because go.work mode shares one MVS build list:
+			// bumping a requirement in agent/go.mod changes the version every
+			// root-module package compiles against, whether or not it imports
+			// agent. go.sum is a checksum list for its own module and stays
+			// scoped to that module.
 			if filepath.Base(rel) == "go.work" {
 				for _, m := range moduleRoots {
 					wholeModules[m] = joinReason(wholeModules[m], "workspace manifest "+rel)
+				}
+			} else if filepath.Base(rel) == "go.mod" {
+				for _, m := range moduleRoots {
+					wholeModules[m] = joinReason(wholeModules[m], "shared build list from "+rel)
 				}
 			} else {
 				wholeModules[module] = joinReason(wholeModules[module], "module manifest "+rel)
@@ -190,6 +198,16 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 			// invisible to `go list` as a package, but it can fail those tests,
 			// so it selects the root package only — no spread to importers.
 			if !goFile {
+				// A file inside a package's directory tree can still be read by
+				// that package's tests by relative path (docs/examples/**
+				// fixtures). Attribute it there first: the nearest package is
+				// the one whose tests would notice, and package-only means no
+				// spread. The root package is then an addition, not a
+				// replacement, because the root audit tests also read deep
+				// repository files.
+				if owner, ok := g.nearestPackageAncestor(module, dir); ok {
+					packageOnly[owner] = joinReason(packageOnly[owner], "repository file "+rel)
+				}
 				if owner, ok := g.packageAt(g.root); ok {
 					packageOnly[owner] = joinReason(packageOnly[owner], "repository file "+rel)
 					continue

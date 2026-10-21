@@ -135,27 +135,58 @@ func TestDeletedRepositoryFileSelectsRootPackage(t *testing.T) {
 	}
 }
 
-// go.mod changes what every package in its module can build against, and a
-// module root that holds no package at all used to vanish entirely.
-func TestModuleManifestSelectsTheWholeModule(t *testing.T) {
+// In go.work mode every module shares one MVS build list, so a go.mod bump in
+// any module changes what every module compiles against, not only the module
+// that owns the file. go.sum stays scoped to its own module.
+func TestModuleManifestSelectsEveryModule(t *testing.T) {
 	g := loadTestGraph(t)
 	res := selectPackages(g, []string{"agent/go.mod"}, testModules)
 
-	var agentPackages int
-	for _, info := range g.pkgs {
-		if info.ModuleRoot == "agent" {
-			agentPackages++
-		}
-	}
-	var selectedAgent int
+	seen := map[string]bool{}
 	for _, s := range res.Selected {
-		if s.ModuleRoot == "agent" {
-			selectedAgent++
+		seen[s.ModuleRoot] = true
+	}
+	for _, m := range testModules {
+		if !seen[m] {
+			t.Errorf("agent/go.mod selected no package in module %q; the workspace shares one build list", m)
 		}
 	}
-	if selectedAgent != agentPackages {
-		t.Errorf("agent/go.mod selected %d of %d agent packages, want all",
-			selectedAgent, agentPackages)
+}
+
+// go.sum belongs to its own module's checksums and must not pull in the rest.
+func TestGoSumStaysScopedToItsModule(t *testing.T) {
+	g := loadTestGraph(t)
+	res := selectPackages(g, []string{"agent/go.sum"}, testModules)
+
+	seen := map[string]bool{}
+	for _, s := range res.Selected {
+		seen[s.ModuleRoot] = true
+	}
+	// The repo-root package comes along as a repository file, but go.sum must
+	// not whole-module-select the other gate modules the way go.mod does.
+	for _, m := range testModules {
+		if m != "agent" && m != "." && seen[m] {
+			t.Errorf("agent/go.sum whole-module selected %q; only go.mod shares the build list", m)
+		}
+	}
+	if !seen["agent"] {
+		t.Error("agent/go.sum selected nothing in agent")
+	}
+}
+
+// A fixture inside a package's directory tree is read by that package's tests
+// by relative path, so it must select that package, not only the repo root.
+func TestFixtureUnderPackageTreeSelectsThatPackage(t *testing.T) {
+	g := loadTestGraph(t)
+	res := selectPackages(g, []string{"docs/examples/extensions/commands/summarize-change.md"}, testModules)
+
+	const owner = "primeradiant.com/evener/docs/examples/extensions"
+	if reasonForPath(res, owner) == "" {
+		t.Errorf("selected %v, want %s for its own fixture", selectedPaths(res), owner)
+	}
+	// The root package still comes along: its audit tests read deep repo files.
+	if reasonForPath(res, "primeradiant.com/evener") == "" {
+		t.Error("the repo-root package should also be selected")
 	}
 }
 
