@@ -7,6 +7,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { candidateFixture, independentPNG, chunk } from './artifact-test-support.mjs';
 import { fileURLToPath } from 'node:url';
 import { reviewCandidate } from './review.mjs';
+import { gitEnvironment } from './artifacts.mjs';
 
 const required = ['receipt','daily','configuration','extensions'].flatMap(scenario => ['cli','web'].flatMap(surface => ['entry','action','verified'].map(checkpoint => ({scenario,surface,checkpoint}))));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -65,7 +66,7 @@ test('revision-only and unrelated documentation commits need no replacement',asy
  assert.deepEqual(JSON.parse(await readFile(join(f.out,'summary.json'))),{status:'unchanged',sourceChanged:false,changedFiles:[]});
  assert.deepEqual((await readdir(f.out)).sort(),['refresh.patch','review.md','summary.json']);
 });
-for(const change of ['source','text','image','evidence']) test(`review and exact binary patch roundtrip: ${change}`,async t=>{
+for(const hostile of [false,true]) for(const change of ['source','text','image','evidence']) test(`review and exact binary patch roundtrip: ${change}${hostile?' with hostile Git environment':''}`,async t=>{
  const f=await fixture(t);const row=f.manifest.rows[0];
  if(change==='source') {
   await writeFile(join(f.repo,'go.mod'),'module changed\n');
@@ -82,6 +83,8 @@ for(const change of ['source','text','image','evidence']) test(`review and exact
   await writeFile(join(f.root,row.file),changed);row.sha256=hash(changed);
  } else row.assertions.push({name:'second-independent-oracle',passed:true});
  await f.save();
+ // Valid JSON whitespace must roundtrip even when caller Git rejects it.
+ if(hostile)await writeFile(join(f.root,'manifest.json'),Buffer.concat([await readFile(join(f.root,'manifest.json')),Buffer.from(' \n')]));
  const before=await snapshot(f.base);const summary=await review(f);
  const expected=['docs/assets/tutorials/manifest.json'];
  if(change==='text')expected.push('docs/assets/tutorials/'+row.text.file);
@@ -90,9 +93,29 @@ for(const change of ['source','text','image','evidence']) test(`review and exact
  const after=await snapshot(f.base);delete after.review;assert.deepEqual(after,before);
  const disposable=join(f.base,'disposable');await mkdir(disposable);
  await cp(f.published,join(disposable,'docs/assets/tutorials'),{recursive:true});
- // Real Git applies the binary patch to an owned copy, never the inputs.
- execFileSync('git',['apply','--check',join(f.out,'refresh.patch')],{cwd:disposable});
- execFileSync('git',['apply',join(f.out,'refresh.patch')],{cwd:disposable});
+ const ambient=process.env;let caller,callerBefore;
+ try {
+  if(hostile) {
+   caller=join(f.base,'caller');await mkdir(caller);
+   const template=join(f.base,'caller-template');await mkdir(template);
+   execFileSync('git',['init','-q',`--template=${template}`],{cwd:caller,env:gitEnvironment(caller)});
+   await cp(f.published,join(caller,'docs/assets/tutorials'),{recursive:true});
+   const config=join(caller,'ambient.config');await writeFile(config,'[apply]\n\twhitespace = error\n');
+   callerBefore=await snapshot(caller);
+   // Process-wide only during these synchronous Git calls, restored on failure.
+   // Every hostile target is owned, even when the isolation below regresses.
+   process.env={...ambient,GIT_DIR:join(caller,'.git'),GIT_WORK_TREE:caller,
+    GIT_CONFIG_GLOBAL:config,GIT_CONFIG_SYSTEM:config,GIT_CONFIG_COUNT:'1',
+    GIT_CONFIG_KEY_0:'core.worktree',GIT_CONFIG_VALUE_0:caller};
+   assert.equal(execFileSync('git',['rev-parse','--show-toplevel'],{cwd:disposable,encoding:'utf8'}).trim(),caller);
+  }
+  // Real Git applies the binary patch to an owned copy, never the inputs.
+  execFileSync('git',['apply','--check',join(f.out,'refresh.patch')],{cwd:disposable,env:gitEnvironment(disposable),stdio:'pipe'});
+  execFileSync('git',['apply',join(f.out,'refresh.patch')],{cwd:disposable,env:gitEnvironment(disposable),stdio:'pipe'});
+ } finally {
+  process.env=ambient;
+  if(hostile)assert.deepEqual(await snapshot(caller),callerBefore);
+ }
  assert.deepEqual(await snapshot(join(disposable,'docs/assets/tutorials')),await snapshot(f.root));
 });
 for(const mode of ['existing','source-child','candidate-child','published-child','ancestor','relative','symlink-output','symlink-candidate','symlink-published','symlink-source']) test(`review refuses unsafe paths: ${mode}`,async t=>{
