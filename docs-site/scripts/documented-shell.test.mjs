@@ -2,14 +2,14 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import test from 'node:test';
+import test, { after } from 'node:test';
 
 const doc = readFileSync(new URL('../../docs/daily-work.md', import.meta.url), 'utf8');
 const blocks = [...doc.matchAll(/```sh\n([\s\S]*?)\n```/g)].map((match) => match[1]);
 assert.ok(blocks.length >= 2);
 const [block, continuation] = blocks;
-const fixtureParent = path.join(process.env.EVENER_SCRATCH_DIR || process.env.TMPDIR || '/tmp', 'task-1-fixtures');
-mkdirSync(fixtureParent, { recursive: true });
+const fixtureParent = realpathSync(mkdtempSync(path.join(process.env.EVENER_SCRATCH_DIR || process.env.TMPDIR || '/tmp', 'documented-shell-fixtures-')));
+after(() => rmSync(fixtureParent, { recursive: true, force: true }));
 
 function runDailyBlock(t, { collision, failGit = false, resume = false, parent = fixtureParent } = {}) {
   const root = realpathSync(mkdtempSync(path.join(parent, 'daily-work-')));
@@ -37,11 +37,18 @@ function runDailyBlock(t, { collision, failGit = false, resume = false, parent =
     writeFileSync(path.join(workspace, 'initial.json'), '{"nonce":"first","receipts":["first"]}');
     writeFileSync(path.join(workspace, 'continued.json'), '{"nonce":"second","receipts":["second"]}');
   }
-  const bin = path.join(root, 'bin');
-  mkdirSync(bin);
+  // Only the nonsecret probe must be reachable after dropping uid. Keep the
+  // workspace, HOME and logs under private scratch, whose ancestors may be 0700.
+  const bin = collision === 'unwritable' ? realpathSync(mkdtempSync('/tmp/evener-docs-probe-')) : path.join(root, 'bin');
+  if (collision === 'unwritable') {
+    t.after(() => rmSync(bin, { recursive: true, force: true }));
+    chmodSync(bin, 0o755);
+  } else {
+    mkdirSync(bin);
+  }
   const calls = path.join(root, 'calls');
   const evener = path.join(bin, 'evener');
-  writeFileSync(evener, '#!/bin/sh\nprintf "%s\\t%s\\n" "$PWD" "$1" >> "$CALLS"\n');
+  writeFileSync(evener, '#!/bin/sh\nprintf "%s\\t%s\\n" "$PWD" "$1" >&4\n');
   chmodSync(evener, 0o755);
   if (failGit) {
     const git = path.join(bin, 'git');
@@ -57,33 +64,41 @@ function runDailyBlock(t, { collision, failGit = false, resume = false, parent =
     GIT_CONFIG_GLOBAL: '/dev/null',
     GIT_CEILING_DIRECTORIES: root,
     PATH: `${bin}:${env.PATH}`,
-    CALLS: calls,
     GIT_CALLS: path.join(root, 'git-calls'),
     CALLER_AFTER: path.join(root, 'caller-after'),
   });
   if (collision === 'unwritable') chmodSync(caller, 0o555);
   const run = resume ? continuation : block;
   const credentials = collision === 'unwritable' && process.getuid() === 0 ? { uid: 65534, gid: 65534 } : {};
-  if (credentials.uid !== undefined) {
-    const check = spawnSync('/bin/sh', ['-c', 'id -u && mkdir -p .'], { cwd: caller, env, encoding: 'utf8', ...credentials });
-    assert.ifError(check.error);
-    assert.equal(check.status, 0, check.stderr);
-    assert.equal(check.stdout.trim(), '65534');
-  }
   // Capture the block's status before recording the caller's CWD; do not put the block
   // in an if condition, which would disable errexit in its subshell.
-  // FD 3 remains writable after a privileged runner drops to an unprivileged uid.
-  const after = openSync(env.CALLER_AFTER, 'w');
+  // Inherited FDs stay writable without exposing private log paths to the dropped uid.
+  const callerAfter = openSync(env.CALLER_AFTER, 'w', 0o600);
+  const callsFD = openSync(calls, 'w', 0o600);
+  const stdio = ['ignore', 'pipe', 'pipe', callerAfter, callsFD];
+  let probeCalls = '';
   let result;
   try {
+    if (collision === 'unwritable') {
+      const check = spawnSync('/bin/sh', ['-c', 'id -u && evener --fixture-probe'], { cwd: caller, env, encoding: 'utf8', stdio, ...credentials });
+      assert.ifError(check.error);
+      assert.equal(check.status, 0, check.stderr);
+      assert.equal(check.stdout.trim(), String(credentials.uid ?? process.getuid()));
+      probeCalls = readFileSync(calls, 'utf8');
+      assert.equal(probeCalls, `${caller}\t--fixture-probe\n`);
+    }
     result = spawnSync('/bin/sh', ['-c', `${run}\nblock_status=$?\nprintf '%s' "$PWD" >&3\nexit "$block_status"`], {
-      cwd: caller, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe', after], ...credentials,
+      cwd: caller, env, encoding: 'utf8', stdio, ...credentials,
     });
   } finally {
-    closeSync(after);
+    closeSync(callerAfter);
+    closeSync(callsFD);
   }
   assert.ifError(result.error);
-  const agentCalls = existsSync(calls) ? readFileSync(calls, 'utf8').trimEnd().split('\n').map((line) => {
+  const recordedCalls = readFileSync(calls, 'utf8');
+  if (collision === 'unwritable') assert.equal(recordedCalls, probeCalls);
+  const blockCalls = recordedCalls.slice(probeCalls.length).trimEnd();
+  const agentCalls = blockCalls ? blockCalls.split('\n').map((line) => {
     const [cwd, firstArg] = line.split('\t');
     return { cwd, firstArg };
   }) : [];

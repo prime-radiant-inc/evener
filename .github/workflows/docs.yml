@@ -28,6 +28,10 @@ jobs:
           cache-dependency-path: |
             docs-site/package-lock.json
             cmd/evener-hub/frontend/package-lock.json
+      - name: Check documented shell fixtures as root then unprivileged
+        run: |
+          sudo -n env -u EVENER_SCRATCH_DIR -u TMPDIR "$(command -v node)" --test --test-concurrency=1 docs-site/scripts/documented-shell.test.mjs
+          env -u EVENER_SCRATCH_DIR -u TMPDIR node --test --test-concurrency=1 docs-site/scripts/documented-shell.test.mjs
       - run: npm --prefix docs-site ci
       - run: npm --prefix cmd/evener-hub/frontend ci
       - name: Install Chromium for documentation checks
