@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"golang.org/x/mod/modfile"
 )
 
 // pkgEntry is the subset of `go list -json` output this tool reads. ImportPath
@@ -254,36 +256,25 @@ func (g *graph) importPathAt(module, dir string) (string, bool) {
 }
 
 // workspaceModules returns the go.work `use` entries that GO_MODULES does not
-// already list, as repo-relative paths. It reads go.work textually because the
-// `use` block is a simple list; anything it cannot parse yields no extra
-// modules, which only makes selection more conservative, never wrong.
+// already list, as repo-relative paths. It parses with x/mod's modfile, the same
+// reader cmd/evener-fuzzregistry uses, so quoting and trailing comments are
+// handled by the toolchain's own grammar instead of a second implementation of
+// it. A workspace that will not parse yields no extra modules: that only makes
+// selection more conservative, never wrong.
 func workspaceModules(root string, known []string) []string {
-	src, err := os.ReadFile(filepath.Join(root, "go.work"))
+	workPath := filepath.Join(root, "go.work")
+	src, err := os.ReadFile(workPath)
 	if err != nil {
 		return nil
 	}
-	inUse := false
+	work, err := modfile.ParseWork(workPath, src, nil)
+	if err != nil {
+		return nil
+	}
 	var extra []string
-	for _, line := range strings.Split(string(src), "\n") {
-		line = strings.TrimSpace(line)
-		switch {
-		case strings.HasPrefix(line, "use ("):
-			inUse = true
-			continue
-		case inUse && line == ")":
-			inUse = false
-			continue
-		case strings.HasPrefix(line, "use "):
-			line = strings.TrimSpace(strings.TrimPrefix(line, "use "))
-		case !inUse:
-			continue
-		}
-		line = strings.Trim(line, `"`)
-		if line == "" || strings.HasPrefix(line, "//") {
-			continue
-		}
-		line = strings.TrimPrefix(line, "./")
-		if containsModule(known, line) {
+	for _, use := range work.Use {
+		line := strings.TrimPrefix(filepath.ToSlash(use.Path), "./")
+		if line == "" || containsModule(known, line) {
 			continue
 		}
 		extra = append(extra, line)

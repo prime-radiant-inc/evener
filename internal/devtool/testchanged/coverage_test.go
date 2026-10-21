@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -188,6 +190,34 @@ func TestEmbedPatternCovers(t *testing.T) {
 	for _, c := range cases {
 		if got := embedPatternCovers(c.pattern, c.rel); got != c.want {
 			t.Errorf("embedPatternCovers(%q, %q) = %v, want %v", c.pattern, c.rel, got, c.want)
+		}
+	}
+}
+
+// workspaceModules must read go.work with the module grammar, not with a line
+// scanner: a trailing comment on a `use` line belongs to the comment, not to
+// the module path, and a quoted path keeps its spaces.
+func TestWorkspaceModulesParsesCommentsAndQuoting(t *testing.T) {
+	root := t.TempDir()
+	work := "go 1.27.0\n\nuse (\n\t./known // the module we already run\n\t./extra\n\t\"./odd name\"\n)\n"
+	if err := os.WriteFile(filepath.Join(root, "go.work"), []byte(work), 0o644); err != nil {
+		t.Fatalf("writing go.work: %v", err)
+	}
+
+	got := workspaceModules(root, []string{".", "known"})
+
+	want := []string{"extra", "odd name"}
+	if len(got) != len(want) {
+		t.Fatalf("workspaceModules = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("workspaceModules = %v, want %v", got, want)
+		}
+	}
+	for _, m := range got {
+		if strings.Contains(m, "//") {
+			t.Errorf("workspaceModules = %v, a comment leaked into a module path", got)
 		}
 	}
 }
