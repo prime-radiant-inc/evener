@@ -2625,11 +2625,37 @@ test("focus-only attention departures restore a changed cascade leaf with exactl
   const changedView = retainedTranscriptReadView(changedLifetime, "local:leaf-two", "cascade");
   if (!changedView) throw new Error("missing changed cascade view");
 
+  const independentMain = workspaceStore.getState().mainPane();
+  const independentSource = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
+  if (!independentMain || !independentSource) throw new Error("missing independent panes before second hop");
+  const independentMainLifetime = conversationPaneLifetime(independentMain);
+  const independentSourceLifetime = conversationPaneLifetime(independentSource);
+  expect(independentMain).toMatchObject({ type: "session", params: { ref: "local:leaf-one" }, slot: "main" });
+  expect(independentSource).toMatchObject({ type: "session", params: { ref: "local:focus" }, slot: "secondary" });
+  expect(independentMainLifetime).toMatchObject({
+    paneId: independentMain.id,
+    sourceRef: "local:leaf-one",
+    alive: true,
+  });
+  expect(independentSourceLifetime).toMatchObject({
+    paneId: independentSource.id,
+    sourceRef: "local:focus",
+    alive: true,
+  });
+
   await user.keyboard("{Meta>}j{/Meta}");
   await waitFor(() => expect(focusedSessionRef()).toBe("local:ny2"));
   expect(window.location.pathname).toBe("/s/local%3Any2");
   expect(window.history.length).toBe(historyLength + 2);
   expect((window.history.state as Record<string, unknown>).__evenerAttention).toBeDefined();
+  expect(workspaceStore.getState().panes).toContain(independentMain);
+  expect(workspaceStore.getState().panes).toContain(independentSource);
+  expect(independentMain).toMatchObject({ type: "session", params: { ref: "local:leaf-one" }, slot: "main" });
+  expect(independentSource).toMatchObject({ type: "session", params: { ref: "local:focus" }, slot: "secondary" });
+  expect(conversationPaneLifetime(independentMain)).toBe(independentMainLifetime);
+  expect(conversationPaneLifetime(independentSource)).toBe(independentSourceLifetime);
+  expect(independentMainLifetime.alive).toBe(true);
+  expect(independentSourceLifetime.alive).toBe(true);
 
   const back = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
   await act(async () => {
@@ -2641,6 +2667,14 @@ test("focus-only attention departures restore a changed cascade leaf with exactl
   expect((changedCascade.params as { ref: string }).ref).toBe("local:leaf-two");
   expect(conversationPaneLifetime(changedCascade)).toBe(changedLifetime);
   expect(retainedTranscriptReadView(changedLifetime, "local:leaf-two", "cascade")).toBe(changedView);
+  expect(workspaceStore.getState().panes).toContain(independentMain);
+  expect(workspaceStore.getState().panes).toContain(independentSource);
+  expect(independentMain).toMatchObject({ type: "session", params: { ref: "local:leaf-one" }, slot: "main" });
+  expect(independentSource).toMatchObject({ type: "session", params: { ref: "local:focus" }, slot: "secondary" });
+  expect(conversationPaneLifetime(independentMain)).toBe(independentMainLifetime);
+  expect(conversationPaneLifetime(independentSource)).toBe(independentSourceLifetime);
+  expect(independentMainLifetime.alive).toBe(true);
+  expect(independentSourceLifetime.alive).toBe(true);
 
   const forward = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
   await act(async () => {
@@ -2648,6 +2682,14 @@ test("focus-only attention departures restore a changed cascade leaf with exactl
     await forward;
   });
   await waitFor(() => expect(focusedSessionRef()).toBe("local:ny2"));
+  expect(workspaceStore.getState().panes).toContain(independentMain);
+  expect(workspaceStore.getState().panes).toContain(independentSource);
+  expect(independentMain).toMatchObject({ type: "session", params: { ref: "local:leaf-one" }, slot: "main" });
+  expect(independentSource).toMatchObject({ type: "session", params: { ref: "local:focus" }, slot: "secondary" });
+  expect(conversationPaneLifetime(independentMain)).toBe(independentMainLifetime);
+  expect(conversationPaneLifetime(independentSource)).toBe(independentSourceLifetime);
+  expect(independentMainLifetime.alive).toBe(true);
+  expect(independentSourceLifetime.alive).toBe(true);
 });
 
 test("v1 Mod+J cold-demand requests page zero once and opens its first ref", async () => {
