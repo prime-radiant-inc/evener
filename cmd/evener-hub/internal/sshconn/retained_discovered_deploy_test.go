@@ -16,8 +16,9 @@ import (
 )
 
 func TestRetainedDiscoveredSymlinkDeployment(t *testing.T) {
-	for _, mode := range []string{"interrupted-write", "lost-reply", "changed-registration"} {
+	for _, mode := range []string{"interrupted-write", "lost-reply", "changed-registration", "retained-reinstall-restart"} {
 		t.Run(mode, func(t *testing.T) {
+			restart := mode == "retained-reinstall-restart"
 			root := t.TempDir()
 			target, alias := filepath.Join(root, "installed", "evener"), filepath.Join(root, "bin", "evener")
 			for _, dir := range []string{filepath.Dir(target), filepath.Dir(alias)} {
@@ -32,6 +33,7 @@ func TestRetainedDiscoveredSymlinkDeployment(t *testing.T) {
 				t.Fatal(err)
 			}
 			host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+			writes, discoveries, guardCalls, starts, procReads := 0, 0, 0, 0, 0
 			fr, selected := deployRunnerForFixture(t, "linux", "amd64", func(int) ([]byte, error) {
 				data, err := os.ReadFile(target)
 				if err != nil {
@@ -43,11 +45,13 @@ func TestRetainedDiscoveredSymlinkDeployment(t *testing.T) {
 				}
 				return launchContract(version), nil
 			}, func(int) ([]byte, error) {
+				if starts != 0 {
+					return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180","started_at":"2026-01-01T00:00:01Z"}`), nil
+				}
 				return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180","started_at":"2026-01-01T00:00:00Z"}`), nil
 			})
 			selected.exe = alias
 			selected.endpointAlias = target + " hub endpoint --json"
-			writes, discoveries, guardCalls, starts := 0, 0, 0, 0
 			lostReply := errors.New("push completed, reply lost")
 			base := fr.runFn
 			fr.runFn = func(ctx context.Context, argv []string, in io.Reader) ([]byte, error) {
@@ -63,6 +67,8 @@ func TestRetainedDiscoveredSymlinkDeployment(t *testing.T) {
 					return []byte(alias + "\n"), nil
 				case resolveDeployCommand(alias), resolveDeployCommand(target), createTargetCommand(target), "test -d " + shellquote.RemoteWord(filepath.Dir(alias)), "test -d " + shellquote.RemoteWord(filepath.Dir(target)):
 					return run(in)
+				case "if test -x " + shellquote.RemoteWord(alias) + "; then exit 0; else exit 1; fi", "if test -x " + shellquote.RemoteWord(target) + "; then exit 0; else exit 1; fi":
+					return run(in)
 				}
 				if strings.Contains(remote, "cat >") {
 					writes++
@@ -74,6 +80,9 @@ func TestRetainedDiscoveredSymlinkDeployment(t *testing.T) {
 						return run(io.LimitReader(in, 3))
 					}
 					out, err := run(in)
+					if err == nil {
+						selected.executableAbsent = false
+					}
 					if writes == 1 && err == nil {
 						return out, lostReply
 					}
@@ -81,6 +90,9 @@ func TestRetainedDiscoveredSymlinkDeployment(t *testing.T) {
 				}
 				if strings.HasPrefix(remote, "systemctl restart ") || strings.HasPrefix(remote, "systemctl start ") {
 					starts++
+				}
+				if strings.Contains(remote, "/proc/4242/exe hub endpoint --json") {
+					procReads++
 				}
 				return base(ctx, argv, in)
 			}
@@ -91,7 +103,7 @@ func TestRetainedDiscoveredSymlinkDeployment(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := m.DeployForOperation(t.Context(), host, facts, false, guard); err == nil || writes != 1 {
+			if _, _, err := m.DeployForOperation(t.Context(), host, facts, restart, guard); err == nil || writes != 1 {
 				t.Fatalf("first push did not fail at its write: err=%v writes=%d", err, writes)
 			}
 			retained := m.pendingRestart(host.Name)
@@ -117,11 +129,36 @@ func TestRetainedDiscoveredSymlinkDeployment(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if restart {
+				if !retained.restart {
+					t.Fatalf("missing pending selected restart: %+v", retained)
+				}
+				if err := os.Chmod(target, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				selected.executableAbsent = true
+				facts.ExecutableMissing = true
+			}
 			discoveredBeforeRetry := discoveries
-			launch, after, err := m.DeployForOperation(t.Context(), host, facts, false, guard)
+			launch, after, err := m.DeployForOperation(t.Context(), host, facts, restart, guard)
 			if mode == "changed-registration" {
 				if err == nil || writes != 1 || !reflect.DeepEqual(retained, m.pendingRestart(host.Name)) {
 					t.Fatalf("changed registration replayed write or lost intent: err=%v writes=%d pending=%+v", err, writes, m.pendingRestart(host.Name))
+				}
+			} else if restart {
+				if err != nil || writes != 2 || procReads < 2 || after.Version != "newsha" || after.HubEndpointSchema != 1 {
+					t.Fatalf("retained reinstall: err=%v writes=%d proc=%d after=%+v", err, writes, procReads, after)
+				}
+				if launch != alias || m.resolvedTarget(host.Name) != alias {
+					t.Errorf("retained reinstall published canonical target: launch=%q resolved=%q want alias=%q", launch, m.resolvedTarget(host.Name), alias)
+				}
+				pending := m.pendingRestart(host.Name)
+				if !pending.writeAcknowledged || pending.installTarget != target || pending.selected == nil || pending.selected.host.EvenerPath != alias || pending.command != retained.command || !pending.restart {
+					t.Fatalf("reinstall lost selected restart intent: %+v", pending)
+				}
+				version, err := m.RestartForOperation(t.Context(), host, after, guard)
+				if err != nil || version != "newsha" || starts != 1 || m.pendingRestart(host.Name).active() {
+					t.Fatalf("reinstalled alias restart: err=%v version=%q starts=%d pending=%+v", err, version, starts, m.pendingRestart(host.Name))
 				}
 			} else if err != nil || writes != 2 || launch != alias || m.resolvedTarget(host.Name) != alias || after.Version != "newsha" || after.HubEndpointSchema != 1 || m.pendingRestart(host.Name).active() {
 				t.Fatalf("retained discovered launch recovery: err=%v launch=%q resolved=%q writes=%d after=%+v pending=%+v", err, launch, m.resolvedTarget(host.Name), writes, after, m.pendingRestart(host.Name))
@@ -132,7 +169,11 @@ func TestRetainedDiscoveredSymlinkDeployment(t *testing.T) {
 			if mode == "changed-registration" {
 				want = "predecessor"
 			}
-			if readErr != nil || string(data) != want || linkErr != nil || link != target || starts != 0 || len(fr.recordedStarts()) != 0 || discoveries != discoveredBeforeRetry {
+			wantStarts := 0
+			if restart {
+				wantStarts = 1
+			}
+			if readErr != nil || string(data) != want || linkErr != nil || link != target || starts != wantStarts || len(fr.recordedStarts()) != 0 || discoveries != discoveredBeforeRetry {
 				t.Fatalf("recovery effects: data=%q err=%v link=%q err=%v starts=%d discoveries=%d/%d", data, readErr, link, linkErr, starts, discoveries, discoveredBeforeRetry)
 			}
 		})

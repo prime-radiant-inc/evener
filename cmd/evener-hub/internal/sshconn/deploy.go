@@ -1256,7 +1256,7 @@ func (m *Manager) reinstallRetainedTarget(ctx context.Context, host hostreg.Host
 	if err := check(pending.installTarget); err != nil {
 		return "", err
 	}
-	target, err := m.deploy(ctx, host, facts, func(target string) error {
+	_, err := m.deploy(ctx, host, facts, func(target string) error {
 		if err := check(target); err != nil {
 			return err
 		}
@@ -1280,5 +1280,5 @@ func (m *Manager) reinstallRetainedTarget(ctx context.Context, host hostreg.Host
 	if err := m.checkOwnerConfig(ctx, host, prior.argv, prior.cwd, prior.env, prior.report); err != nil {
 		return "", fmt.Errorf("%w: %w", endpointMigration(host), err)
 	}
-	return target, nil
+	return prior.host.EvenerPath, nil
 }
