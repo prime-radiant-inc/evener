@@ -9,6 +9,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
@@ -40,12 +42,12 @@ type probeRequest struct {
 // access change while the answer is in flight.
 type probeBoundary struct {
 	server      *httptest.Server
-	hold        bool
+	hold        atomic.Bool
 	mu          sync.Mutex
 	reqs        []probeRequest
-	started     chan struct{}
+	held        chan struct{}
 	release     chan struct{}
-	once        sync.Once
+	heldOnce    sync.Once
 	releaseOnce sync.Once
 	status      atomic.Int32
 }
@@ -53,10 +55,10 @@ type probeBoundary struct {
 func newProbeBoundary(t *testing.T, hold bool) *probeBoundary {
 	t.Helper()
 	b := &probeBoundary{
-		hold:    hold,
-		started: make(chan struct{}),
+		held:    make(chan struct{}),
 		release: make(chan struct{}),
 	}
+	b.hold.Store(hold)
 	b.status.Store(http.StatusOK)
 	b.server = httptest.NewServer(http.HandlerFunc(b.serve))
 	t.Cleanup(func() {
@@ -71,13 +73,10 @@ func newProbeBoundary(t *testing.T, hold bool) *probeBoundary {
 func (b *probeBoundary) serve(w http.ResponseWriter, r *http.Request) {
 	b.mu.Lock()
 	b.reqs = append(b.reqs, probeRequest{path: r.URL.Path, authorization: r.Header.Get("Authorization")})
-	first := len(b.reqs) == 1
 	b.mu.Unlock()
-	if first {
-		b.once.Do(func() { close(b.started) })
-		if b.hold {
-			<-b.release
-		}
+	if b.hold.Load() {
+		b.heldOnce.Do(func() { close(b.held) })
+		<-b.release
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if b.status.Load() == http.StatusUnauthorized {
@@ -97,9 +96,9 @@ func (b *probeBoundary) requests() []probeRequest {
 func (b *probeBoundary) acknowledge(t *testing.T) {
 	t.Helper()
 	select {
-	case <-b.started:
+	case <-b.held:
 	case <-time.After(10 * time.Second):
-		t.Fatal("the probe never reached the local model-list boundary")
+		t.Fatal("the held probe never reached the local model-list boundary")
 	}
 }
 
@@ -127,6 +126,20 @@ func newAccessProbeFixture(t *testing.T, toml string, env map[string]string) *ac
 	tomlPath := writeProvidersToml(t, dir, toml)
 	auth := newTestAuthController(t, credsDir, t.TempDir(), tomlPath, env)
 	credsPath := filepath.Join(credsDir, "credentials.toml")
+	installRealProbeLoader(auth, credsPath, env)
+	return &accessProbeFixture{
+		auth:  auth,
+		inst:  &hubInstancesController{reg: auth.reg, providersConfigPath: tomlPath, auth: auth},
+		toml:  tomlPath,
+		creds: credsPath,
+		env:   env,
+	}
+}
+
+// installRealProbeLoader makes the probe load the providers file the hub just
+// wrote, through the real registry and HTTP client, with the fixture's
+// environment map.
+func installRealProbeLoader(auth *hubAuthController, credsPath string, env map[string]string) {
 	auth.credentialTestLoader = func(path string, noUserLayer bool) (credentialProbeClient, error) {
 		store, err := credentials.LoadStore(credsPath)
 		if err != nil {
@@ -147,13 +160,6 @@ func newAccessProbeFixture(t *testing.T, toml string, env map[string]string) *ac
 		}
 		return llm.NewClient(llm.WithRegistry(r)), nil
 	}
-	return &accessProbeFixture{
-		auth:  auth,
-		inst:  &hubInstancesController{reg: auth.reg, providersConfigPath: tomlPath, auth: auth},
-		toml:  tomlPath,
-		creds: credsPath,
-		env:   env,
-	}
 }
 
 type probeOutcome struct {
@@ -167,6 +173,22 @@ func startProbe(c *hubAuthController, name string) <-chan probeOutcome {
 		resp, err := c.TestCredentials(context.Background(), appwire.AuthTestParams{Provider: name})
 		done <- probeOutcome{resp: resp, err: err}
 	}()
+	return done
+}
+
+// joinProbe starts a second caller and waits until the shared in-flight call
+// reports it joined, so a later release cannot race a fresh probe of its own.
+func joinProbe(t *testing.T, c *hubAuthController, name string) <-chan probeOutcome {
+	t.Helper()
+	joined := make(chan struct{})
+	var once sync.Once
+	c.credentialTestJoined = func() { once.Do(func() { close(joined) }) }
+	done := startProbe(c, name)
+	select {
+	case <-joined:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the second caller did not join the pending probe")
+	}
 	return done
 }
 
@@ -218,6 +240,20 @@ func headerEnv() map[string]string {
 	return map[string]string{"KEY_A": "fixture-key-a", "KEY_B": "fixture-key-b"}
 }
 
+func optionalBearerTOML(baseURL string) string {
+	return fmt.Sprintf("[providers.local]\nbase = \"openai-compatible\"\nbase_url = %q\nauth = \"optional-bearer\"\n", baseURL)
+}
+
+// implicitAnthropicEnv resolves the curated "anthropic" instance against the
+// local boundary. No providers.toml entry is written, so the instance is
+// implicit until an edit authors one.
+func implicitAnthropicEnv(baseURL string) map[string]string {
+	return map[string]string{
+		"ANTHROPIC_API_KEY":  "fixture-implicit-key",
+		"ANTHROPIC_BASE_URL": baseURL,
+	}
+}
+
 // TestCredentialProbeAccessTransitions is the invariant table: a probe accepts
 // its outcome only if the access it read is still the access the instance has,
 // and a refusal is the generic Conflict, not a verdict about the replacement.
@@ -229,7 +265,7 @@ func TestCredentialProbeAccessTransitions(t *testing.T) {
 		b.acknowledge(t)
 
 		f.edit(t, appwire.InstanceEditParams{Name: "local", BaseURL: b.server.URL + "/b/v1"})
-		joined := startProbe(f.auth, "local")
+		joined := joinProbe(t, f.auth, "local")
 		b.unleash()
 
 		got := waitProbe(t, original)
@@ -302,7 +338,7 @@ func TestCredentialProbeAccessTransitions(t *testing.T) {
 		if after.ConfigRevision != before.ConfigRevision || after.ActiveSource != before.ActiveSource {
 			t.Fatalf("precondition: the header-selector edit moved the public identity %+v -> %+v; this case must exercise an unchanged revision", before, after)
 		}
-		joined := startProbe(f.auth, "local")
+		joined := joinProbe(t, f.auth, "local")
 		b.unleash()
 
 		got := waitProbe(t, original)
@@ -335,6 +371,242 @@ func TestCredentialProbeAccessTransitions(t *testing.T) {
 		}
 	})
 
+	t.Run("header edit publication does not let the probe settle before its fence", func(t *testing.T) {
+		b := newProbeBoundary(t, true)
+		f := newAccessProbeFixture(t, headerTOML(b.server.URL+"/v1", "Bearer $KEY_A"), headerEnv())
+		before := f.status(t, "local")
+		original := startProbe(f.auth, "local")
+		b.acknowledge(t)
+
+		published := make(chan struct{})
+		finish := make(chan struct{})
+		var publishOnce, finishOnce sync.Once
+		allowFinish := func() { finishOnce.Do(func() { close(finish) }) }
+		defer allowFinish()
+		f.inst.afterAccessReload = func() {
+			publishOnce.Do(func() { close(published) })
+			<-finish
+		}
+		edited := make(chan error, 1)
+		go func() {
+			edited <- f.inst.Edit(appwire.InstanceEditParams{Name: "local", CredentialHeader: "Authorization=Bearer $KEY_B"})
+		}()
+		select {
+		case <-published:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the edit never published the replacement access")
+		}
+		// The replacement is current but the edit has not advanced the fence.
+		// The probe must not settle here: its answer is about key A.
+		b.unleash()
+		select {
+		case got := <-original:
+			t.Fatalf("the probe settled between the edit's publication and its fence: resp=%+v err=%v", got.resp, got.err)
+		case <-time.After(250 * time.Millisecond):
+		}
+		allowFinish()
+		if err := <-edited; err != nil {
+			t.Fatalf("Edit: %v", err)
+		}
+		after := f.status(t, "local")
+		if after.ConfigRevision != before.ConfigRevision || after.ActiveSource != before.ActiveSource {
+			t.Fatalf("precondition: the edit moved the public identity %+v -> %+v", before, after)
+		}
+		got := waitProbe(t, original)
+		assertGenericConflict(t, got.err)
+		if got.resp.Status == appwire.AuthTestStatusSuccess {
+			t.Fatal("the old key's success was accepted for the replacement the edit published")
+		}
+	})
+
+	t.Run("implicit equal effective access keeps a standing rejection and pending probe", func(t *testing.T) {
+		b := newProbeBoundary(t, false)
+		b.status.Store(http.StatusUnauthorized)
+		f := newAccessProbeFixture(t, "", implicitAnthropicEnv(b.server.URL+"/v1"))
+		inst, ok := f.auth.reg.Get().Instance("anthropic")
+		if !ok || inst.Protocol == "" {
+			t.Fatalf("precondition: implicit anthropic instance = %+v, present %v", inst, ok)
+		}
+		if resp := f.freshCheck(t, "anthropic"); resp.Status != appwire.AuthTestStatusAuthRejected {
+			t.Fatalf("precondition: first check = %q (%q), want auth_rejected", resp.Status, resp.Message)
+		}
+		before := f.status(t, "anthropic")
+		if before.Error == "" {
+			t.Fatal("precondition: the first 401 was not recorded")
+		}
+
+		b.hold.Store(true)
+		original := startProbe(f.auth, "anthropic")
+		b.acknowledge(t)
+		// Explicitly author the protocol the implicit instance already resolves to:
+		// the record changes, the effective access does not.
+		if err := f.inst.Edit(appwire.InstanceEditParams{Name: "anthropic", Protocol: inst.Protocol}); err != nil {
+			t.Fatalf("Edit: %v", err)
+		}
+		after := f.status(t, "anthropic")
+		if after.ConfigRevision == "" || after.ConfigRevision != before.ConfigRevision || after.ActiveSource != before.ActiveSource {
+			t.Fatalf("precondition: equal effective access moved the public identity %+v -> %+v", before, after)
+		}
+		if after.Error == "" {
+			t.Fatal("an edit that re-authored equal effective access dropped the standing rejection")
+		}
+
+		b.unleash()
+		got := waitProbe(t, original)
+		if got.err != nil {
+			t.Fatalf("equal effective access refused a pending probe: %v", got.err)
+		}
+		if got.resp.Status != appwire.AuthTestStatusAuthRejected {
+			t.Fatalf("probe status = %q (%q), want the standing rejection's own answer", got.resp.Status, got.resp.Message)
+		}
+		if f.status(t, "anthropic").Error == "" {
+			t.Fatal("the standing rejection disappeared after the probe settled")
+		}
+	})
+
+	t.Run("keyless optional-bearer access replaced by a stored key refuses old keyless success", func(t *testing.T) {
+		b := newProbeBoundary(t, true)
+		f := newAccessProbeFixture(t, optionalBearerTOML(b.server.URL+"/v1"), nil)
+		if source := f.status(t, "local").ActiveSource; source != "none" {
+			t.Fatalf("precondition: active source = %q, want none", source)
+		}
+		original := startProbe(f.auth, "local")
+		b.acknowledge(t)
+
+		if _, err := f.auth.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "local", Value: "fixture-stored"}); err != nil {
+			t.Fatalf("ApiKeySet: %v", err)
+		}
+		if source := f.status(t, "local").ActiveSource; source != "store" {
+			t.Fatalf("precondition: active source = %q after the write, want store", source)
+		}
+		b.unleash()
+		got := waitProbe(t, original)
+		assertGenericConflict(t, got.err)
+		if got.resp.Status == appwire.AuthTestStatusSuccess {
+			t.Fatal("the old keyless success was accepted after the access gained a stored key")
+		}
+		if fresh := f.freshCheck(t, "local"); fresh.Status != appwire.AuthTestStatusSuccess {
+			t.Fatalf("fresh check = %q (%q), want success", fresh.Status, fresh.Message)
+		}
+		reqs := b.requests()
+		if last := reqs[len(reqs)-1]; last.authorization != "Bearer fixture-stored" {
+			t.Fatalf("fresh request Authorization = %q, want the stored key", last.authorization)
+		}
+	})
+
+	t.Run("keyless auth-none to authored header refuses old keyless success", func(t *testing.T) {
+		b := newProbeBoundary(t, true)
+		f := newAccessProbeFixture(t, keylessTOML(b.server.URL+"/v1", ""), headerEnv())
+		original := startProbe(f.auth, "local")
+		b.acknowledge(t)
+
+		f.edit(t, appwire.InstanceEditParams{Name: "local", CredentialHeader: "Authorization=Bearer $KEY_A"})
+		if source := f.status(t, "local").ActiveSource; source != "credential_headers" {
+			t.Fatalf("precondition: active source = %q after the edit, want credential_headers", source)
+		}
+		b.unleash()
+		got := waitProbe(t, original)
+		assertGenericConflict(t, got.err)
+		if got.resp.Status == appwire.AuthTestStatusSuccess {
+			t.Fatal("the old keyless success was accepted after the access gained a credential header")
+		}
+		if fresh := f.freshCheck(t, "local"); fresh.Status != appwire.AuthTestStatusSuccess {
+			t.Fatalf("fresh check = %q (%q), want success", fresh.Status, fresh.Message)
+		}
+		reqs := b.requests()
+		if last := reqs[len(reqs)-1]; last.authorization != "Bearer fixture-key-a" {
+			t.Fatalf("fresh request Authorization = %q, want the authored header", last.authorization)
+		}
+	})
+
+	t.Run("failed-before-application edit keeps the standing rejection and pending probe", func(t *testing.T) {
+		b := newProbeBoundary(t, false)
+		b.status.Store(http.StatusUnauthorized)
+		f := newAccessProbeFixture(t, headerTOML(b.server.URL+"/v1", "Bearer $KEY_A"), headerEnv())
+		if resp := f.freshCheck(t, "local"); resp.Status != appwire.AuthTestStatusAuthRejected {
+			t.Fatalf("precondition: first check = %q (%q), want auth_rejected", resp.Status, resp.Message)
+		}
+		if f.status(t, "local").Error == "" {
+			t.Fatal("precondition: the first 401 was not recorded")
+		}
+
+		b.hold.Store(true)
+		original := startProbe(f.auth, "local")
+		b.acknowledge(t)
+		err := f.inst.Edit(appwire.InstanceEditParams{Name: "local", CredentialHeader: "Authorization=fixture-literal-secret"})
+		if err == nil {
+			t.Fatal("the invalid credential header edit succeeded")
+		}
+		if f.status(t, "local").Error == "" {
+			t.Fatal("a refused-before-write edit dropped the standing rejection")
+		}
+		b.unleash()
+		got := waitProbe(t, original)
+		if got.err != nil {
+			t.Fatalf("a refused-before-write edit refused the pending probe: %v", got.err)
+		}
+		if got.resp.Status != appwire.AuthTestStatusAuthRejected {
+			t.Fatalf("probe status = %q (%q), want the standing rejection's answer", got.resp.Status, got.resp.Message)
+		}
+		if f.status(t, "local").Error == "" {
+			t.Fatal("the standing rejection disappeared after the probe settled")
+		}
+	})
+
+	t.Run("standing access edit whose restore fails advances the fence", func(t *testing.T) {
+		b := newProbeBoundary(t, false)
+		b.status.Store(http.StatusUnauthorized)
+		clearProviderKeysFromEnvironment(t)
+		dir := t.TempDir()
+		credsDir := filepath.Join(dir, "creds")
+		if err := os.MkdirAll(credsDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		stateDir := t.TempDir()
+		tomlPath := writeProvidersToml(t, dir, headerTOML(b.server.URL+"/v1", "Bearer $KEY_A"))
+		var breakOnce sync.Once
+		ctl := newTestInstancesController(t, tomlPath, credsDir, stateDir, headerEnv(), instancesControllerHooks{
+			load: func(load int) error {
+				if load != 2 {
+					return nil
+				}
+				breakOnce.Do(func() {
+					if err := os.Remove(tomlPath); err != nil {
+						t.Errorf("remove providers.toml: %v", err)
+					}
+					if err := os.Mkdir(tomlPath, 0o700); err != nil {
+						t.Errorf("block providers.toml: %v", err)
+					}
+				})
+				return errors.New("providers config could not be read")
+			},
+		})
+		installRealProbeLoader(ctl.auth, filepath.Join(credsDir, "credentials.toml"), headerEnv())
+		if resp, err := ctl.auth.TestCredentials(context.Background(), appwire.AuthTestParams{Provider: "local"}); err != nil || resp.Status != appwire.AuthTestStatusAuthRejected {
+			t.Fatalf("precondition: first check = %+v (%v), want auth_rejected", resp, err)
+		}
+
+		b.hold.Store(true)
+		original := startProbe(ctl.auth, "local")
+		b.acknowledge(t)
+		err := ctl.Edit(appwire.InstanceEditParams{Name: "local", CredentialHeader: "Authorization=Bearer $KEY_B"})
+		if err == nil {
+			t.Fatal("the edit whose reload and restore both fail succeeded")
+		}
+		if !errors.Is(err, hubcore.ErrWriteApplied) {
+			t.Fatalf("edit error = %v, want a standing write", err)
+		}
+		b.unleash()
+		got := waitProbe(t, original)
+		assertGenericConflict(t, got.err)
+		ctl.auth.rejections.mu.Lock()
+		_, kept := ctl.auth.rejections.byName["local"]
+		ctl.auth.rejections.mu.Unlock()
+		if kept {
+			t.Fatal("a standing access replacement kept the rejection of the replaced access")
+		}
+	})
+
 	t.Run("same-name credential header edit refuses old rejection and checks the replacement", func(t *testing.T) {
 		b := newProbeBoundary(t, true)
 		b.status.Store(http.StatusUnauthorized)
@@ -343,12 +615,18 @@ func TestCredentialProbeAccessTransitions(t *testing.T) {
 		b.acknowledge(t)
 
 		f.edit(t, appwire.InstanceEditParams{Name: "local", CredentialHeader: "Authorization=Bearer $KEY_B"})
+		joined := joinProbe(t, f.auth, "local")
 		b.unleash()
 
 		got := waitProbe(t, original)
 		assertGenericConflict(t, got.err)
 		if got.resp.Status == appwire.AuthTestStatusAuthRejected {
 			t.Fatal("the old key's rejection was published as the replacement's verdict")
+		}
+		joinedGot := waitProbe(t, joined)
+		assertGenericConflict(t, joinedGot.err)
+		if joinedGot.resp.Status == appwire.AuthTestStatusAuthRejected {
+			t.Fatal("the joined caller inherited the old key's rejection for the replacement")
 		}
 		if errText := f.status(t, "local").Error; errText != "" {
 			t.Fatalf("status error = %q: the old key's rejection was recorded against the replacement", errText)

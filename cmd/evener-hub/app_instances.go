@@ -17,6 +17,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 
@@ -56,6 +57,11 @@ type hubInstancesController struct {
 	// remember to attach. Cleared when a mutation takes mu, and again when a
 	// rollback puts the previous file back.
 	applied appliedWrites
+	// afterAccessReload, when set, runs after an access-affecting edit's
+	// reload has published the replacement access and before the probe fence
+	// advances. A test uses it to settle a probe inside that window
+	// deterministically; nil in production.
+	afterAccessReload func()
 }
 
 func (c *hubInstancesController) read() (*registry.Layer, bool, error) {
@@ -1279,28 +1285,33 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	}
 	// An access-affecting edit replaces the access a credential probe is about
 	// even when the public credential-configuration revision cannot show it:
-	// that revision deliberately omits the credential-header values, and a
+	// that revision deliberately omits the credential-header expressions, and a
 	// probe of this instance must not have its old answer accepted for the
-	// replacement. The authored access fields are compared rather than the
-	// resolved secret: re-authoring the same values is no change, while an
-	// endpoint, protocol, credential-header, api_key_env or vars edit is. This
-	// is the same per-instance fence a hub credential write advances
+	// replacement. effectiveAccessIdentity compares the resolved public
+	// identity plus those authored expressions, so re-authoring values the
+	// instance already resolved to is no change while a real endpoint,
+	// protocol, credential-header, api_key_env or vars change is. This is the
+	// same per-instance fence a hub credential write advances
 	// (forgetCredentialRejection), so unrelated instances and the registry's
 	// global generation stay out of it. A rename is not this case: its name,
 	// and so the revision identity, moves, and moveCredentials already retires
 	// the old and new names when it lands.
-	accessChanged := false
+	var beforeProvider registry.Provider
+	var beforeAuthored bool
+	beforeAccess := ""
 	if !renaming {
-		beforeProvider, beforeAuthored := before.Providers[name]
-		accessChanged = !beforeAuthored || !reflect.DeepEqual(beforeProvider, p)
+		beforeProvider, beforeAuthored = before.Providers[name]
+		beforeAccess = effectiveAccessIdentity(key, c.reg.Get(), name, beforeProvider, beforeAuthored)
 	}
 	// writeAndReload restores before when the reload fails (see #711
 	// on its comment); a rename continues below on success.
 	if err := c.writeAndReload(before, l, name, "edit"); err != nil {
 		// A write that landed although its rollback could not run is standing:
 		// retire the probes of the access it replaced. A clean rollback leaves
-		// the old access in place, and its probes remain current.
-		if accessChanged && c.applied.peekApplied() {
+		// the old access in place, and its probes remain current. The reload
+		// failed, so the intended access cannot be resolved against the live
+		// registry; the authored comparison is deliberately conservative here.
+		if !renaming && c.applied.peekApplied() && authoredAccessDiffers(beforeProvider, beforeAuthored, p) {
 			c.auth.forgetCredentialRejection(name)
 		}
 		// A rename whose reload failed and whose rollback write also failed
@@ -1316,10 +1327,19 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 		}
 		return err
 	}
-	if accessChanged {
-		// The replacement stands: void probes that dialed the old access and
-		// drop a rejection recorded for the configuration the edit replaced.
-		c.auth.forgetCredentialRejection(name)
+	if !renaming {
+		afterAccess := effectiveAccessIdentity(key, c.reg.Get(), name, p, true)
+		// An edit that only re-authored values the instance already resolved to
+		// is no access change: pending probes and a standing rejection describe
+		// the same access and stay.
+		if effectiveAccessChanged(beforeAccess, afterAccess, beforeProvider, beforeAuthored, p) {
+			if c.afterAccessReload != nil {
+				c.afterAccessReload()
+			}
+			// The replacement stands: void probes that dialed the old access and
+			// drop a rejection recorded for the configuration the edit replaced.
+			c.auth.forgetCredentialRejection(name)
+		}
 	}
 	if renaming {
 		moveErr := c.moveCredentials(name, newName)
@@ -1374,6 +1394,62 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 // writing it back would only add an empty [providers.<name>] shadow (#1024).
 func providerIsBare(p registry.Provider) bool {
 	return reflect.DeepEqual(p, registry.Provider{ID: p.ID})
+}
+
+// authoredAccessDiffers is the conservative fallback for a write that stands
+// although its reload failed: the intended access cannot be resolved against
+// the live registry, so any difference in the authored record retires the
+// probe rather than risk publishing an answer about the old access.
+func authoredAccessDiffers(before registry.Provider, beforeAuthored bool, after registry.Provider) bool {
+	return !beforeAuthored || !reflect.DeepEqual(before, after)
+}
+
+// effectiveAccessChanged answers whether an edit changed what a credential
+// probe would send. beforeAccess and afterAccess come from
+// effectiveAccessIdentity; when either could not be established (no
+// fingerprint key, or the name does not resolve), the authored record
+// comparison is the fallback. That fallback can over-invalidate, but it never
+// reads two different access states as equal.
+func effectiveAccessChanged(beforeAccess, afterAccess string, before registry.Provider, beforeAuthored bool, after registry.Provider) bool {
+	if beforeAccess == "" || afterAccess == "" {
+		return authoredAccessDiffers(before, beforeAuthored, after)
+	}
+	return beforeAccess != afterAccess
+}
+
+// effectiveAccessIdentity is the access a probe would read, resolved from the
+// registry and the authored entry: the public credential-configuration
+// revision (destination, protocol, surface, auth, resolved source, authored
+// layer, credential-header names) plus the authored credential-header
+// expressions. The public revision deliberately omits those expressions so a
+// reader cannot tell one secret reference from another; this identity is
+// internal to the edit-fence decision and is never exported, logged or sent.
+// An implicit instance with no authored entry contributes no expression.
+func effectiveAccessIdentity(key []byte, r *registry.Registry, name string, authored registry.Provider, authoredOK bool) string {
+	if len(key) == 0 || r == nil {
+		return ""
+	}
+	res, err := r.ResolveInstancePresence(name)
+	if err != nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(hubcore.CredentialConfigRevisionResolved(key, res))
+	if authoredOK && len(authored.CredentialHeaders) > 0 {
+		keys := make([]string, 0, len(authored.CredentialHeaders))
+		for header := range authored.CredentialHeaders {
+			keys = append(keys, header)
+		}
+		sort.Strings(keys)
+		b.WriteString("\x00credentialHeaders")
+		for _, header := range keys {
+			b.WriteByte(0)
+			b.WriteString(header)
+			b.WriteByte('=')
+			b.WriteString(authored.CredentialHeaders[header])
+		}
+	}
+	return b.String()
 }
 
 // credentialsUnder names the credentials already filed under name, in the

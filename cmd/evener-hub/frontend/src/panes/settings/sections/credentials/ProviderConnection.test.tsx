@@ -1159,6 +1159,68 @@ test("a refreshed same-revision credential-header row waits for review instead o
   expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
 });
 
+// The other order: the hub's generic Conflict reaches the connector while the
+// row on screen is still the old access. The paced retry then performs the real
+// store refresh, and that refresh discovers the changed credential header
+// under the same public revision. The connector must stop at review rather than
+// check the replacement, and recovery happens only after the review action.
+test("a superseded check whose retry discovers changed credential-header access waits for review", async () => {
+  const { user, client, connected } = setup(
+    savedList("anthropic", {
+      configRevision: "rev-hdr",
+      credentialHeader: "Authorization=Bearer $KEY_A",
+    }),
+  );
+  const first = deferred<{ provider: string; status: string; message: string }>();
+  let probes = 0;
+  client.on("evener/auth/test", () => {
+    probes += 1;
+    return first.promise;
+  });
+  await choose(user);
+  await user.click(screen.getByRole("button", { name: "Retry check" }));
+  await screen.findByRole("button", { name: "Checking model list…" });
+
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  await act(async () => {
+    first.reject(
+      new WireError("Credentials changed while this check was running.", -32013, { evenerErrorInfo: "conflict" }),
+    );
+    await first.promise.catch(() => {});
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(reasonShown("access-changed")).toBe(true);
+  expect(connected).not.toHaveBeenCalled();
+  expect(probes).toBe(1);
+
+  // The scheduled retry's own read carries the replacement access.
+  client.on("evener/instance/list", () =>
+    savedList("anthropic", {
+      configRevision: "rev-hdr",
+      credentialHeader: "Authorization=Bearer $KEY_B",
+    }),
+  );
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  vi.useRealTimers();
+  expect(await screen.findByTestId("access-review")).toBeTruthy();
+  expect(probes).toBe(1);
+  expect(connected).not.toHaveBeenCalled();
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
+
+  client.on("evener/auth/test", ({ provider }) => {
+    probes += 1;
+    return { provider, status: "success", message: "" };
+  });
+  await user.click(screen.getByRole("button", { name: "Use reviewed access and check" }));
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("anthropic"));
+  expect(probes).toBe(2);
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
+});
+
 test("saved OAuth access awaiting an automatic retry does not invite another sign-in", async () => {
   const { user, client } = setup(savedList("openai-codex", { activeSource: "oauth", hasStoredOAuth: true }));
   client.on("evener/auth/test", ({ provider }) => ({ provider, status: "endpoint_failure", message: "" }));

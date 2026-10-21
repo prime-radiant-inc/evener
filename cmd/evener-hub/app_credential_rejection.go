@@ -120,22 +120,31 @@ type credentialProbeStart struct {
 
 // beginCredentialProbe captures name's probe start. A probe begins before
 // anything reads the credential it sends (the client is built after), so a
-// write that lands in between voids it. It resolves the configuration
-// revision, so the caller must not hold credMu (currentCredentialRevision).
-// A nil controller begins a probe that settles to nothing, for a caller with
-// no hub credential state to feed.
+// write or access edit that lands in between voids it.
+//
+// The fingerprint key is resolved before credMu is taken (a resolution can
+// repair the key file); the capture itself takes credMu's shared side, so it
+// cannot interleave with an instance edit's privileged section. That is what
+// makes an edit's published access and its probe fence one boundary for a
+// capture: the capture sees the old state before the edit or the new state
+// after it, never a new revision with an unfenced old counter. A nil
+// controller begins a probe that settles to nothing, for a caller with no hub
+// credential state to feed.
 func (c *hubAuthController) beginCredentialProbe(name string) credentialProbeStart {
 	if c == nil {
 		return credentialProbeStart{}
 	}
-	revision, recordable := c.currentCredentialRevision(name)
+	key, _ := resolveEndpointFingerprintKey(c.stateDir)
+	c.credMu.RLock()
+	defer c.credMu.RUnlock()
+	revision, recordable := c.currentCredentialRevisionForKey(key, name)
 	c.rejections.mu.Lock()
 	defer c.rejections.mu.Unlock()
 	return credentialProbeStart{name: name, revision: revision, writes: c.rejections.writes[name], recordable: recordable}
 }
 
-// currentCredentialRevision is name's credential configuration revision now,
-// the one its status reports, and whether an outcome may be recorded as a
+// currentCredentialRevisionForKey is name's credential configuration revision
+// now, the one its status reports, and whether an outcome may be recorded as a
 // credential rejection. The revision describes a resolved keyless instance
 // too: its endpoint, protocol and auth scheme can all move while a probe is in
 // flight, and the probe's answer is only about the configuration it read. An
@@ -143,9 +152,12 @@ func (c *hubAuthController) beginCredentialProbe(name string) credentialProbeSta
 // registry, no resolution, or no fingerprint key), not that the access is
 // unchanged; it records nothing (settleCredentialProbe). A keyless instance's
 // 401 or 403 is no credential the provider rejected, so recordable is false
-// even though its identity is real. It resolves the fingerprint key, which can
-// repair the key file, so the caller must not hold credMu.
-func (c *hubAuthController) currentCredentialRevision(name string) (revision string, recordable bool) {
+// even though its identity is real.
+//
+// The caller holds credMu (shared or exclusive) and has already resolved key;
+// that shared side orders this read against an instance edit's privileged
+// publish-and-fence section.
+func (c *hubAuthController) currentCredentialRevisionForKey(key []byte, name string) (revision string, recordable bool) {
 	r := c.registry()
 	if r == nil {
 		return "", false
@@ -154,7 +166,6 @@ func (c *hubAuthController) currentCredentialRevision(name string) (revision str
 	if err != nil {
 		return "", false
 	}
-	key, _ := resolveEndpointFingerprintKey(c.stateDir)
 	return c.credentialConfigRevisionForKey(key, name, res), res.Credential.Source != "none"
 }
 
@@ -180,26 +191,37 @@ func (c *hubAuthController) currentCredentialRevision(name string) (revision str
 // tell the configuration it was about from any other. A keyless probe has an
 // identity and is compared like any other, but records nothing: it sent no
 // credential to reject.
+//
+// The freshness comparison and the write-count check take credMu's shared
+// side together. An instance edit holds the exclusive side from its write
+// through the probe fence, so a probe cannot read the replacement access while
+// the fence is still at the old value. The key is resolved before the lock,
+// and the change callback runs after both mutexes are released.
 func (c *hubAuthController) settleCredentialProbe(start credentialProbeStart, listing llm.ModelListing, err error) bool {
 	if c == nil {
 		return true
 	}
+	key, _ := resolveEndpointFingerprintKey(c.stateDir)
+	status, rejected := credentialRejectionStatus(err)
+	verified := err == nil && listing.Live
+	c.credMu.RLock()
 	if start.revision != "" {
-		current, _ := c.currentCredentialRevision(start.name)
+		current, _ := c.currentCredentialRevisionForKey(key, start.name)
 		if current != start.revision {
+			c.credMu.RUnlock()
 			return false
 		}
 	}
-	status, rejected := credentialRejectionStatus(err)
-	verified := err == nil && listing.Live
 	r := &c.rejections
 	r.mu.Lock()
 	if r.writes[start.name] != start.writes {
 		r.mu.Unlock()
+		c.credMu.RUnlock()
 		return false
 	}
 	if (!rejected && !verified) || start.revision == "" || !start.recordable {
 		r.mu.Unlock()
+		c.credMu.RUnlock()
 		return true
 	}
 	previous, had := r.byName[start.name]
@@ -216,6 +238,7 @@ func (c *hubAuthController) settleCredentialProbe(start credentialProbeStart, li
 		changed = true
 	}
 	r.mu.Unlock()
+	c.credMu.RUnlock()
 	if changed && c.credentialRejectionChanged != nil {
 		c.credentialRejectionChanged(start.name)
 	}
