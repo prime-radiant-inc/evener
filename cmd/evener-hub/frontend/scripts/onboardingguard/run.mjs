@@ -160,20 +160,6 @@ async function waitForAutomaticCompletion() {
     { timeoutMs: 45000 },
   );
 }
-// OAuth acquisition completes without any manual action and with no picker
-// overlay. The connected instance's configured default should also be adopted,
-// but that adoption races the acquisition's own auth/updated generation in the
-// real browser; the report records that finding instead of hiding it.
-async function waitForOAuthCompletion() {
-  await wait(
-    `!document.querySelector('[role="dialog"]') &&
-     !document.querySelector('[role="option"]') &&
-     !document.querySelector('[data-testid="spawn-provider-prerequisite"]') &&
-     !!document.querySelector('[data-testid="spawn-model-slot"]')`,
-    "automatic OAuth completion dismissed setup without a picker overlay",
-    { timeoutMs: 45000 },
-  );
-}
 let stopping;
 let finishRecording;
 async function stop() {
@@ -239,6 +225,7 @@ try {
       work: args.work,
       task,
       adopted,
+      strictFocus: true,
     });
     await driver.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
     await driver.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "light" }] });
@@ -326,7 +313,7 @@ try {
         await stop();
         process.exit(0);
       }
-      await waitForOAuthCompletion();
+      await waitForAutomaticCompletion();
     } else {
       await wait(`!!document.querySelector('#oauth-redirect-url')`, "redirect paste-back editor");
       const authUrl = await read(`document.querySelector('[role="dialog"] a[href*="/oauth/authorize"]')?.href ?? ''`);
@@ -338,7 +325,7 @@ try {
         `http://localhost:1455/auth/callback?code=onboarding-fixture-code&state=${encodeURIComponent(state)}`,
       );
       await button("Finish");
-      await waitForOAuthCompletion();
+      await waitForAutomaticCompletion();
     }
     await pause(3000);
     // At least the acquisition's own automatic access check must have run; the
@@ -355,14 +342,14 @@ try {
     const oauthSettled = await read(`(() => {
       const button = document.querySelector('[data-testid="spawn-submit"]');
       const slot = document.querySelector('[data-testid="spawn-model-slot"]');
+      const value = document.querySelector('[data-testid="spawn-model-value"]');
       const rect = button?.getBoundingClientRect();
       return { visible: !!rect && rect.width > 0 && rect.height > 0, enabled: !!button && !button.disabled,
-        modelState: slot?.dataset.state ?? 'missing' };
+        modelState: slot?.dataset.state ?? 'missing', model: value?.textContent?.trim() ?? '' };
     })()`);
-    assert.equal(oauthSettled.visible, true, "explicit Start visible after automatic OAuth completion");
-    if (!oauthSettled.enabled) {
-      console.log(`REPORT oauth completion left model state ${oauthSettled.modelState} and Start disabled`);
-    }
+    assert.equal(oauthSettled.visible && oauthSettled.enabled, true, `explicit Start enabled after automatic OAuth completion (${JSON.stringify(oauthSettled)})`);
+    assert.equal(oauthSettled.modelState, "chosen", "OAuth completion adopted the configured instance default");
+    assert.ok(oauthSettled.model.includes(adopted), `OAuth adopted model ${oauthSettled.model} missing ${adopted}`);
     assert.equal(await read(`document.querySelector('[contenteditable="true"]').textContent.includes(${JSON.stringify(task)})`), true);
     await captureJourneyViews(driver, {
       artifactDir: args["artifact-dir"],
@@ -373,7 +360,7 @@ try {
       task,
       adopted,
       strictFocus: true,
-      requireChosen: false,
+      requireChosen: true,
     });
     console.log(`PASS ${scenario}: real issuer flow, automatic access check and completion, explicit Start, no pre-Start generation`);
   }

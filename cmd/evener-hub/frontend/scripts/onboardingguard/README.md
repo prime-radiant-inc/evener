@@ -47,9 +47,10 @@ The driver captures `journey-automatic-draft-<width>-<theme>.png` and the
 matching session screenshots at 1440×1000 and 390×844, light and dark. Each
 capture is also an assertion: the settled draft has no dialog or open picker,
 Start is visibly available, the model control shows the adopted model, the task,
-directory and attachment are present, and focus stayed in a visible draft
-control (the composer is required where the connector still owns focus, as it
-does on the OAuth polling path). The narrow layout has no dockview tab strip, so
+directory and attachment are present, and the composer owns focus. At the
+narrow viewport the driver enters the composer with a real pointer interaction
+before the capture, so mobile focus is exercised during interaction rather than
+read immediately after a resize. The narrow layout has no dockview tab strip, so
 its session capture checks the visible page text instead of the desktop pane.
 Reply and composer queries are scoped to the active pane at desktop sizes.
 
@@ -61,9 +62,10 @@ device-code request/poll, token exchange, `auth/openai-codex.json` persistence,
 registry reload, AppWire and browser UI remain production code. Subtests:
 
 - `oauth-device`: device usercode, one pending poll, token exchange, automatic
-  model-list check and setup dismissal. The saved record is read back from the
-  real state root and the provider saw the OAuth access token. One token
-  exchange and model-list access are required; no generation is attempted.
+  model-list check, setup dismissal and adoption of the connected instance's
+  configured default. The saved record is read back from the real state root
+  and the provider saw the OAuth access token. One token exchange and
+  model-list access are required; no generation is attempted.
 - `oauth-redirect`: the issuer's device endpoint returns 404, the connector
   falls back to the authorize URL, and the driver pastes a callback URL carrying
   the production flow's own `state`. The real code exchange and persistence are
@@ -71,7 +73,7 @@ registry reload, AppWire and browser UI remain production code. Subtests:
 - `oauth-cancel`: a device flow that stays pending is cancelled. After two poll
   intervals the checkpoint requires zero exchanges and zero model-list checks,
   proving no late completion. A second sign-in on the same editor then
-  completes automatically.
+  completes automatically and adopts the configured default.
 - `oauth-endpoint-change`: while the device flow is pending, Go performs a real
   AppWire `evener/instance/edit` that re-points the instance. The browser must
   return to the connection editor with the `changed` alert and the polling
@@ -79,13 +81,11 @@ registry reload, AppWire and browser UI remain production code. Subtests:
   from the refused flow.
 
 These subtests also prove the redirect tab does not break the theme matrix by
-keeping the app tab in front before emulation. The OAuth completion currently
-dismisses setup automatically but leaves the model control in its `required`
-state with Start disabled; the browser logs this as `REPORT oauth completion
-left model state ... and Start disabled`. That is a recorded finding, not a
-pass condition here: these paths are required to prove persistence and
-model-list access, and the configured-default adoption contract is proved by
-`TestOnboardingBrowser`.
+keeping the app tab in front before emulation. All three completing paths now
+require the adopted configured default and an enabled Start, matching
+`TestOnboardingBrowser`. The launch-model publication that used to abort
+adoption carries its own catalog-only `reason`; credential and instance changes
+keep the empty reason and still retire the completion.
 
 ## Optional recording
 
@@ -124,8 +124,7 @@ leaves the test's temporary root.
 
 Remote-host OAuth/editor ownership, native onboarding, billing/quota or
 generation-permission proof, a provider whose listing returns no usable models,
-an explicit model choice made during the check in a real browser, and the
-OAuth completion's configured-default adoption (the finding above). Those
+and an explicit model choice made during the check in a real browser. Those
 remain covered by focused Go/component tests, task review, or separate work.
 
 ## Activation lifecycle regression

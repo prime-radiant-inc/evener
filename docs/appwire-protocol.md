@@ -975,6 +975,7 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `provider` | string | yes |  |
 | `activeSource` | string | yes |  |
+| `reason` | string | yes |  |
 | `originClientId` | string | yes |  |
 
 

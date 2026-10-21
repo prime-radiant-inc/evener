@@ -408,9 +408,10 @@ function SpawnForm({
     finished: boolean;
   } | null>(null);
   const providerCompletionGeneration = useRef(0);
-  // The credential generation the completion's fresh catalog must belong to,
-  // read at resolution time rather than captured in a stale callback.
-  const credentialsGenerationRef = useRef(0);
+  // Credential/target changes only: a catalog-only launch-model publication
+  // advances the catalog generation below but is not a retired credential
+  // generation for an in-flight completion.
+  const credentialChangeGenerationRef = useRef(0);
   const closeProviderSetup = useCallback(() => {
     providerCompletion.current = null;
     completionOwned.current = null;
@@ -1101,11 +1102,17 @@ function SpawnForm({
   // The completion's fresh catalog is only evidence while it belongs to the
   // generation current when the request was issued: a late answer from a
   // retired generation must not adopt a model.
-  credentialsGenerationRef.current = credentialsGeneration;
   useEffect(
     () =>
       client.onNotification((n) => {
         if (n.method === "evener/auth/updated") {
+          // Both forms refresh the catalog. Only a credential/target change
+          // retires an in-flight completion: a catalog-only launch-model
+          // publication ("models_changed") is the completion's own fresh
+          // listing changing what pickers show, not a stale credential
+          // generation. Every other broadcast, including the empty-payload
+          // instance-change form, still advances the credential generation.
+          if (n.params.reason !== "models_changed") credentialChangeGenerationRef.current += 1;
           setCredentialsGeneration((generation) => generation + 1);
           return;
         }
@@ -1211,10 +1218,17 @@ function SpawnForm({
       // Restore focus to the composer only while this flow still owns it: the
       // dialog must still hold focus at the moment it closes.
       const dialog = document.querySelector('[role="dialog"]');
-      const ownsFocus = dialog !== null && document.activeElement !== null && dialog.contains(document.activeElement);
+      // A disabled submit during saving/checking blurs to the document body:
+      // that is the flow's own busy transition, not the person leaving setup.
+      // Body focus therefore still counts as owned; a deliberate move to any
+      // other control outside the dialog does not, and keeps that control.
+      const activeElement = document.activeElement;
+      const ownsFocus =
+        dialog !== null &&
+        (activeElement === null || activeElement === document.body || dialog.contains(activeElement));
       setConnectingProvider(false);
       modelListCache.current.entries.clear();
-      const generationAtRequest = credentialsGenerationRef.current;
+      const credentialGenerationAtRequest = credentialChangeGenerationRef.current;
       const existing = completionOwned.current;
       const owned =
         existing !== null && existing.attempt === attempt ? existing : { attempt, outstanding: 0, finished: false };
@@ -1237,7 +1251,7 @@ function SpawnForm({
             return;
           }
           if (providerCompletion.current !== attempt) return;
-          if (credentialsGenerationRef.current !== generationAtRequest) return;
+          if (credentialChangeGenerationRef.current !== credentialGenerationAtRequest) return;
           if (spawnDraftsStore.getState().current !== attempt.draft) return;
           const current = attempt.draft.fields.getState();
           if (

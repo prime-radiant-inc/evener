@@ -32,6 +32,7 @@ import { credentialsStore, resetCredentialsStoreForTests, resetHostInstancesForT
 import { extensionsStore, resetExtensionsStoreForTests } from "../../stores/extensions";
 import { HOST_DEPENDENT_DISCOVERY_METHODS } from "../../stores/hostRouting";
 import { hostsStore } from "../../stores/hosts";
+import { ownClientId } from "../../stores/mutationClientIdentity";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { enterText } from "../../textEntryTestUtils";
@@ -1906,6 +1907,182 @@ test("automatic connection completion does not adopt over a /model choice made w
     modelProvider: "team-local",
     model: "later",
   });
+});
+
+test("automatic connection completion retires on a same-page credential change", async () => {
+  const user = setupUser();
+  let saved = false;
+  const pendingCatalog = deferred<ModelListResponse>();
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => teamInstanceList(saved));
+    fake.on("model/list", (params) => {
+      if (saved && params.refresh) return pendingCatalog.promise;
+      return { data: saved ? TEAM_SAVED_MODELS : [] };
+    });
+    fake.on("evener/auth/apiKey/set", ({ provider }) => {
+      saved = true;
+      return savedApiKeyResult(provider);
+    });
+    fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+    fake.on("evener/launch/resolve", () => ({
+      effective: { model: "other/global-default" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await settled();
+  await fillPrompt(user, "own-echo");
+  await setWorkingDir(user, "/tmp/own-echo");
+
+  await openTeamProvider(user);
+  await saveAndCheckProvider();
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+  // Another credential write from this same page while the completion's fresh
+  // catalogue is in flight is still a credential generation change: page
+  // identity is not operation identity, so it retires the completion.
+  act(() =>
+    client.emitNotification({
+      method: "evener/auth/updated",
+      params: { originClientId: ownClientId(), provider: "team-local", activeSource: "store" },
+    }),
+  );
+  await act(async () => pendingCatalog.resolve({ data: TEAM_SAVED_MODELS }));
+  await settled();
+
+  expect(screen.getByTestId("spawn-model-value").textContent).not.toBe("team-local/chosen");
+  expect(modelState()).toBe("required");
+});
+
+test("automatic connection completion still refuses a foreign credential generation", async () => {
+  const user = setupUser();
+  let saved = false;
+  const pendingCatalog = deferred<ModelListResponse>();
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => teamInstanceList(saved));
+    fake.on("model/list", (params) => {
+      if (saved && params.refresh) return pendingCatalog.promise;
+      return { data: saved ? TEAM_SAVED_MODELS : [] };
+    });
+    fake.on("evener/auth/apiKey/set", ({ provider }) => {
+      saved = true;
+      return savedApiKeyResult(provider);
+    });
+    fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+    fake.on("evener/launch/resolve", () => ({
+      effective: { model: "other/global-default" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await settled();
+  await fillPrompt(user, "foreign-generation");
+  await setWorkingDir(user, "/tmp/foreign-generation");
+
+  await openTeamProvider(user);
+  await saveAndCheckProvider();
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+  act(() =>
+    client.emitNotification({
+      method: "evener/auth/updated",
+      params: { originClientId: "another-page", provider: "team-local", activeSource: "store" },
+    }),
+  );
+  await act(async () => pendingCatalog.resolve({ data: TEAM_SAVED_MODELS }));
+  await settled();
+
+  expect(screen.getByTestId("spawn-model-value").textContent).not.toBe("team-local/chosen");
+  expect(modelState()).toBe("required");
+});
+
+test("automatic connection completion accepts its own fresh catalogue's launch-model announcement", async () => {
+  const user = setupUser();
+  let saved = false;
+  const pendingCatalog = deferred<ModelListResponse>();
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => teamInstanceList(saved));
+    fake.on("model/list", (params) => {
+      if (saved && params.refresh) return pendingCatalog.promise;
+      return { data: saved ? TEAM_SAVED_MODELS : [] };
+    });
+    fake.on("evener/auth/apiKey/set", ({ provider }) => {
+      saved = true;
+      return savedApiKeyResult(provider);
+    });
+    fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+    fake.on("evener/launch/resolve", () => ({
+      effective: { model: "other/global-default" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await settled();
+  await fillPrompt(user, "catalogue-announcement");
+  await setWorkingDir(user, "/tmp/catalogue-announcement");
+
+  await openTeamProvider(user);
+  await saveAndCheckProvider();
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+  // launchModelsChanged broadcasts the catalog-only form: no provider/origin,
+  // plus an explicit reason. It was caused by this completion's own fresh
+  // listing, not a retired credential generation.
+  act(() =>
+    client.emitNotification({
+      method: "evener/auth/updated",
+      params: { reason: "models_changed" },
+    }),
+  );
+  await act(async () => pendingCatalog.resolve({ data: TEAM_SAVED_MODELS }));
+  await settled();
+
+  expect(screen.getByTestId("spawn-model-value").textContent).toBe("team-local/chosen");
+  expect(modelState()).toBe("chosen");
+  expect(completionDraft("/tmp/catalogue-announcement").fields.getState().modelChoiceRevision).toBe(0);
+});
+
+test("automatic connection completion restores the composer after its own busy blur", async () => {
+  const user = setupUser();
+  let saved = false;
+  const probe = deferred<{ provider: string; status: string; message: string }>();
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => teamInstanceList(saved));
+    fake.on("model/list", () => ({ data: saved ? TEAM_SAVED_MODELS : [] }));
+    fake.on("evener/auth/apiKey/set", ({ provider }) => {
+      saved = true;
+      return savedApiKeyResult(provider);
+    });
+    fake.on("evener/auth/test", () => probe.promise);
+    fake.on("evener/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await settled();
+  await fillPrompt(user, "busy-blur");
+  await setWorkingDir(user, "/tmp/busy-blur");
+
+  await openTeamProvider(user);
+  fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Checking model list…" })).toBeTruthy());
+  // Disabling the submit blurs it to the document body. That internal busy
+  // transition is not the person moving focus away from setup.
+  await act(async () => {
+    document.body.tabIndex = -1;
+    document.body.focus();
+  });
+  expect(document.activeElement).toBe(document.body);
+
+  await act(async () => probe.resolve({ provider: "team-local", status: "success", message: "" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Prompt" })));
+  expect(screen.getByTestId("spawn-model-value").textContent).toBe("team-local/chosen");
 });
 
 test("automatic connection completion preserves an explicit empty /model choice made while pending", async () => {

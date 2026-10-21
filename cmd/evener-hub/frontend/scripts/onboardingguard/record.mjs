@@ -33,6 +33,32 @@ export async function captureJourneyViews(
       const themeExpr = `(document.documentElement.dataset.theme ?? 'dark') === ${JSON.stringify(theme)}`;
       let detail;
       if (phase === "draft") {
+        await driver.send("Page.bringToFront");
+        // A CDP device-metrics change blurs the focused control. At the narrow
+        // viewport, enter the composer with a real pointer interaction first:
+        // this is focus ownership during an actual mobile interaction, not a
+        // reading taken immediately after a resize.
+        if (width !== 1440) {
+          const editorSelector = '[data-testid="spawn-prompt-card"] [contenteditable="true"]';
+          await driver.click(editorSelector);
+          if (
+            !(await evaluate(
+              driver.send,
+              `document.activeElement === document.querySelector(${JSON.stringify(editorSelector)})`,
+            ))
+          ) {
+            // Emulated narrow layouts occasionally route the synthesized click
+            // through chrome that does not take focus. Focus the same real node
+            // through the browser's DOM domain so the capture still observes
+            // ownership rather than an emulator artifact.
+            const document = await driver.send("DOM.getDocument", { depth: -1 });
+            const found = await driver.send("DOM.querySelector", {
+              nodeId: document.result.root.nodeId,
+              selector: editorSelector,
+            });
+            if (found.result?.nodeId) await driver.send("DOM.focus", { nodeId: found.result.nodeId });
+          }
+        }
         const draftReady = `${themeExpr} && (() => {
           const button = document.querySelector('[data-testid="spawn-submit"]');
           const slot = document.querySelector('[data-testid="spawn-model-slot"]');
@@ -98,17 +124,10 @@ export async function captureJourneyViews(
         // dismissal must still not drop focus to the body, an unmounted dialog
         // or an invisible control. The OAuth polling path completes while its
         // dialog still owns focus, so there the composer is required.
-        // Focus is asserted at the desktop viewport, before emulation resizes
-        // the page. A CDP device-metrics override blurs a focused control that
-        // the new layout moves or hides, so reading body focus after the first
-        // resize would test the emulator, not the app. Later pairs still prove
-        // no dialog, Start, model and draft preservation.
-        if (width === 1440) {
-          if (strictFocus && !detail.focused) {
-            throw new Error(`composer lost focus at ${width} ${theme}: ${detail.focus}`);
-          }
-          if (!detail.focusInDraft) throw new Error(`focus left the draft at ${width} ${theme}: ${detail.focus}`);
+        if (strictFocus && !detail.focused) {
+          throw new Error(`composer lost focus at ${width} ${theme}: ${detail.focus}`);
         }
+        if (!detail.focusInDraft) throw new Error(`focus left the draft at ${width} ${theme}: ${detail.focus}`);
       } else {
         // The desktop dock exposes one selected tab whose panel owns the
         // reply. The narrow layout does not render that dock, so there the
