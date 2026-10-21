@@ -1288,10 +1288,11 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	// that revision deliberately omits the credential-header expressions, and a
 	// probe of this instance must not have its old answer accepted for the
 	// replacement. effectiveAccessIdentity compares the resolved public
-	// identity plus those authored expressions, so re-authoring values the
-	// instance already resolved to is no change while a real endpoint,
-	// protocol, credential-header, api_key_env or vars change is. This is the
-	// same per-instance fence a hub credential write advances
+	// identity plus those authored expressions and the resolved transport
+	// vars, so re-authoring values the instance already resolved to is no
+	// change while a real endpoint, protocol, credential-header, api_key_env
+	// or vars change is. This is the same per-instance fence a hub credential
+	// write advances
 	// (forgetCredentialRejection), so unrelated instances and the registry's
 	// global generation stay out of it. A rename is not this case: its name,
 	// and so the revision identity, moves, and moveCredentials already retires
@@ -1421,10 +1422,19 @@ func effectiveAccessChanged(beforeAccess, afterAccess string, before registry.Pr
 // registry and the authored entry: the public credential-configuration
 // revision (destination, protocol, surface, auth, resolved source, authored
 // layer, credential-header names) plus the authored credential-header
-// expressions. The public revision deliberately omits those expressions so a
-// reader cannot tell one secret reference from another; this identity is
-// internal to the edit-fence decision and is never exported, logged or sent.
-// An implicit instance with no authored entry contributes no expression.
+// expressions and the resolved transport vars. The public revision
+// deliberately omits those expressions so a reader cannot tell one secret
+// reference from another, and it carries the resolved destinations only: a
+// URL template and the literal that resolves to the same bytes hash equally
+// there, while buildTransport exposes a variable only while some URL
+// template references it, so literalizing the template drops its vars from
+// the resolution even though every destination stays byte-identical — and
+// those vars are request inputs an authenticator can read (the GCP
+// authenticator's quota-project header comes from the resolved project
+// variable). The vars are part of what a request carries, so they are part of
+// this identity; like the whole string it is internal to the edit-fence
+// decision and is never exported, logged or sent. An implicit instance with
+// no authored entry contributes no expression.
 func effectiveAccessIdentity(key []byte, r *registry.Registry, name string, authored registry.Provider, authoredOK bool) string {
 	if len(key) == 0 || r == nil {
 		return ""
@@ -1447,6 +1457,20 @@ func effectiveAccessIdentity(key []byte, r *registry.Registry, name string, auth
 			b.WriteString(header)
 			b.WriteByte('=')
 			b.WriteString(authored.CredentialHeaders[header])
+		}
+	}
+	if len(res.Transport.Vars) > 0 {
+		names := make([]string, 0, len(res.Transport.Vars))
+		for n := range res.Transport.Vars {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		b.WriteString("\x00vars")
+		for _, n := range names {
+			b.WriteByte(0)
+			b.WriteString(n)
+			b.WriteByte('=')
+			b.WriteString(res.Transport.Vars[n])
 		}
 	}
 	return b.String()

@@ -35,6 +35,11 @@ import (
 type probeRequest struct {
 	path          string
 	authorization string
+	// quotaProject is the request's x-goog-user-project, the header the GCP
+	// authenticator derives from the resolved GOOGLE_VERTEX_PROJECT variable
+	// for a user credential: the regression needs to see it present on the
+	// held request and gone on the replacement's.
+	quotaProject string
 }
 
 // probeBoundary is a local model-list endpoint. The first request is held
@@ -50,6 +55,9 @@ type probeBoundary struct {
 	heldOnce    sync.Once
 	releaseOnce sync.Once
 	status      atomic.Int32
+	// vertex serves the Vertex publisher-model listing shape instead of the
+	// OpenAI one, for instances on the vertex transports.
+	vertex bool
 }
 
 func newProbeBoundary(t *testing.T, hold bool) *probeBoundary {
@@ -72,7 +80,7 @@ func newProbeBoundary(t *testing.T, hold bool) *probeBoundary {
 
 func (b *probeBoundary) serve(w http.ResponseWriter, r *http.Request) {
 	b.mu.Lock()
-	b.reqs = append(b.reqs, probeRequest{path: r.URL.Path, authorization: r.Header.Get("Authorization")})
+	b.reqs = append(b.reqs, probeRequest{path: r.URL.Path, authorization: r.Header.Get("Authorization"), quotaProject: r.Header.Get("x-goog-user-project")})
 	b.mu.Unlock()
 	if b.hold.Load() {
 		b.heldOnce.Do(func() { close(b.held) })
@@ -84,7 +92,23 @@ func (b *probeBoundary) serve(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"error":{"type":"authentication_error","message":"fixture rejection"}}`))
 		return
 	}
+	if b.vertex {
+		// The publisher listing the vertex transports page through
+		// (llm/providers/google/vertex_models.go): one GA text row is a live
+		// listing a credential check can succeed on.
+		_, _ = w.Write([]byte(`{"publisherModels":[{"name":"publishers/google/models/gemini-3.8-flash","launchStage":"GA"}]}`))
+		return
+	}
 	_, _ = w.Write([]byte(`{"data":[{"id":"fixture-model","type":"model","display_name":"Fixture model"}],"has_more":false}`))
+}
+
+// newVertexProbeBoundary is a probeBoundary that answers with the Vertex
+// publisher-listing shape, for an instance on a vertex transport.
+func newVertexProbeBoundary(t *testing.T, hold bool) *probeBoundary {
+	t.Helper()
+	b := newProbeBoundary(t, hold)
+	b.vertex = true
+	return b
 }
 
 func (b *probeBoundary) requests() []probeRequest {
@@ -254,6 +278,61 @@ func implicitAnthropicEnv(baseURL string) map[string]string {
 	}
 }
 
+// vertexUserADCTOML is one instance on the curated google-vertex base whose
+// URL-template variables are pinned to the local boundary, so its resolved
+// destination names the fixture and its model-list requests reach the
+// scripted provider boundary.
+func vertexUserADCTOML(host, project, location string) string {
+	return fmt.Sprintf("[providers.local]\nbase = \"google-vertex\"\n\n[providers.local.vars]\n\"GOOGLE_VERTEX_HOST\" = %q\n\"GOOGLE_VERTEX_PROJECT\" = %q\n\"GOOGLE_VERTEX_LOCATION\" = %q\n", host, project, location)
+}
+
+// newADCTokenEndpoint is the scripted OAuth token endpoint: the real oauth2
+// refresh flow POSTs here and mints a fixture access token. It is the token
+// half of the scripted external boundary; the model-list half is the probe
+// boundary.
+func newADCTokenEndpoint(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"fixture-adc-token","token_type":"Bearer","expires_in":3600}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// adcUserCredentialsFile writes a fixture authorized-user ADC file whose
+// token_uri is the scripted endpoint. The registry's own token-endpoint gate
+// (registry.CheckCredentialJSON) applies only to credential JSON stored for
+// an instance; the ADC lookup path reads the file with the real Google
+// library, which honors the file's token_uri, so this is the one route where
+// the real lookup and refresh run against a local boundary.
+func adcUserCredentialsFile(t *testing.T, tokenURI string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "application_default_credentials.json")
+	raw := fmt.Sprintf(`{"type":"authorized_user","client_id":"fixture-client","client_secret":"fixture-secret","refresh_token":"fixture-refresh","token_uri":%q}`, tokenURI)
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write ADC file: %v", err)
+	}
+	return path
+}
+
+// newVertexADCProbeFixture builds the access-probe fixture around one
+// google-vertex instance resolved against the local boundary, with
+// application-default credentials modeled by a fixture authorized-user file:
+// the registry resolves the instance's credential source as adc through the
+// fixture environment, and the real Google lookup that runs at request time
+// reads the same file from the process environment, refreshing against the
+// scripted endpoint. No ambient ADC is read: the process variable points at
+// the fixture file for the duration of the test.
+func newVertexADCProbeFixture(t *testing.T, b *probeBoundary) *accessProbeFixture {
+	t.Helper()
+	token := newADCTokenEndpoint(t)
+	adcFile := adcUserCredentialsFile(t, token.URL+"/token")
+	f := newAccessProbeFixture(t, vertexUserADCTOML(b.server.URL, "fixture-project", "global"), map[string]string{"GOOGLE_APPLICATION_CREDENTIALS": adcFile})
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", adcFile)
+	return f
+}
+
 // TestCredentialProbeAccessTransitions is the invariant table: a probe accepts
 // its outcome only if the access it read is still the access the instance has,
 // and a refusal is the generic Conflict, not a verdict about the replacement.
@@ -375,6 +454,13 @@ func TestCredentialProbeAccessTransitions(t *testing.T) {
 		b := newProbeBoundary(t, true)
 		f := newAccessProbeFixture(t, headerTOML(b.server.URL+"/v1", "Bearer $KEY_A"), headerEnv())
 		before := f.status(t, "local")
+		// The settlement-entry acknowledgment: once the provider's answer is
+		// back, the fence is the only thing between settlement and a published
+		// outcome, so the observation below cannot be escaped by a probe that
+		// merely never reached settlement.
+		settled := make(chan struct{})
+		var settleOnce sync.Once
+		f.auth.rejections.settlementEntered = func() { settleOnce.Do(func() { close(settled) }) }
 		original := startProbe(f.auth, "local")
 		b.acknowledge(t)
 
@@ -396,9 +482,23 @@ func TestCredentialProbeAccessTransitions(t *testing.T) {
 		case <-time.After(10 * time.Second):
 			t.Fatal("the edit never published the replacement access")
 		}
-		// The replacement is current but the edit has not advanced the fence.
-		// The probe must not settle here: its answer is about key A.
+		// The replacement is current but the edit has not advanced the fence,
+		// and the edit holds credMu exclusively while it is parked here.
+		// Release the provider's answer: the probe's outcome is back and
+		// settlement has begun, so the probe goroutine is inside
+		// settleCredentialProbe and runnable.
 		b.unleash()
+		select {
+		case <-settled:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the probe's outcome never reached settlement")
+		}
+		// Settlement has been entered and needs credMu's shared side, which
+		// the parked edit holds exclusively, so the probe's answer — about
+		// key A — cannot be published until the edit advances the fence. The
+		// bound below is a tripwire, not the mechanism: a settlement that
+		// took no lock would finish while the edit is still parked, the probe
+		// goroutine being the only runnable work left.
 		select {
 		case got := <-original:
 			t.Fatalf("the probe settled between the edit's publication and its fence: resp=%+v err=%v", got.resp, got.err)
@@ -782,6 +882,108 @@ func TestCredentialProbeAccessTransitions(t *testing.T) {
 		assertGenericConflict(t, got.err)
 		if got.resp.Status == appwire.AuthTestStatusSuccess {
 			t.Fatal("the removed key's success was accepted as the current access")
+		}
+	})
+
+	t.Run("vertex url literalization changes the auth header and refuses the old success", func(t *testing.T) {
+		b := newVertexProbeBoundary(t, true)
+		f := newVertexADCProbeFixture(t, b)
+		res, err := f.auth.reg.Get().ResolveInstancePresence("local")
+		if err != nil {
+			t.Fatalf("precondition: resolve: %v", err)
+		}
+		resolvedURL := res.Transport.BaseURL
+		if !strings.Contains(resolvedURL, "/projects/fixture-project/locations/global") {
+			t.Fatalf("precondition: resolved base URL = %q, want the fixture project and location in the URL", resolvedURL)
+		}
+		if project := res.Transport.Vars["GOOGLE_VERTEX_PROJECT"]; project != "fixture-project" {
+			t.Fatalf("precondition: resolved project var = %q, want the fixture project the authenticator reads", project)
+		}
+		before := f.status(t, "local")
+		if before.ConfigRevision == "" || before.ActiveSource != "adc" {
+			t.Fatalf("precondition: status = %+v, want a resolved ADC identity", before)
+		}
+
+		original := startProbe(f.auth, "local")
+		b.acknowledge(t)
+		held := b.requests()
+		if len(held) != 1 || held[0].authorization != "Bearer fixture-adc-token" || held[0].quotaProject != "fixture-project" {
+			t.Fatalf("held request = %+v, want the fixture ADC token and the quota-project header the resolved project variable carries", held)
+		}
+
+		// Supported edit: author the exact literal URL the instance already
+		// resolves to. Every resolved destination and the public identity stay
+		// equal; the resolved transport vars the template carried do not, and
+		// for a user credential they are what puts the quota-project header on
+		// the request.
+		f.edit(t, appwire.InstanceEditParams{Name: "local", BaseURL: resolvedURL})
+		after := f.status(t, "local")
+		if after.ConfigRevision != before.ConfigRevision || after.ActiveSource != before.ActiveSource {
+			t.Fatalf("precondition: the literalization moved the public identity %+v -> %+v; this case must exercise an unchanged revision", before, after)
+		}
+		joined := joinProbe(t, f.auth, "local")
+		b.unleash()
+
+		got := waitProbe(t, original)
+		assertGenericConflict(t, got.err)
+		if got.resp.Status == appwire.AuthTestStatusSuccess {
+			t.Fatal("the old success was accepted for a replacement whose requests drop the quota-project header")
+		}
+		joinedGot := waitProbe(t, joined)
+		assertGenericConflict(t, joinedGot.err)
+		if joinedGot.resp.Status == appwire.AuthTestStatusSuccess {
+			t.Fatal("the joined caller inherited the old success for the replacement")
+		}
+
+		// The replacement's own answer is what may succeed now: same
+		// destination, same token, and the authentication header the
+		// resolved project variable used to carry is gone.
+		fresh := f.freshCheck(t, "local")
+		if fresh.Status != appwire.AuthTestStatusSuccess {
+			t.Fatalf("fresh check status = %q (%q), want success", fresh.Status, fresh.Message)
+		}
+		reqs := b.requests()
+		if len(reqs) != 2 {
+			t.Fatalf("probe requests = %+v, want exactly the held and fresh checks", reqs)
+		}
+		if reqs[1].authorization != "Bearer fixture-adc-token" {
+			t.Fatalf("fresh request Authorization = %q, want the same fixture ADC token", reqs[1].authorization)
+		}
+		if reqs[1].quotaProject != "" {
+			t.Fatalf("fresh request x-goog-user-project = %q, want the header the template's project variable carried to be gone", reqs[1].quotaProject)
+		}
+	})
+
+	t.Run("vertex template re-authoring keeps the probe current", func(t *testing.T) {
+		b := newVertexProbeBoundary(t, true)
+		f := newVertexADCProbeFixture(t, b)
+		before := f.status(t, "local")
+		original := startProbe(f.auth, "local")
+		b.acknowledge(t)
+
+		// Re-author the inherited template string itself (the curated
+		// google-vertex base URL): the authored record gains a base_url field,
+		// while every resolved destination and the resolved vars are the ones
+		// the probe already dialed, so the effective access is unchanged and
+		// the probe must stay current.
+		const inheritedTemplate = "{GOOGLE_VERTEX_HOST}/v1/projects/{GOOGLE_VERTEX_PROJECT}/locations/{GOOGLE_VERTEX_LOCATION}"
+		f.edit(t, appwire.InstanceEditParams{Name: "local", BaseURL: inheritedTemplate})
+		after := f.status(t, "local")
+		if after.ConfigRevision != before.ConfigRevision || after.ActiveSource != before.ActiveSource {
+			t.Fatalf("precondition: re-authoring the inherited template moved the public identity %+v -> %+v", before, after)
+		}
+		b.unleash()
+
+		got := waitProbe(t, original)
+		if got.err != nil {
+			t.Fatalf("an edit that re-authored the template the instance already resolves from refused the probe: %v", got.err)
+		}
+		if got.resp.Status != appwire.AuthTestStatusSuccess {
+			t.Fatalf("status = %q (%q), want success", got.resp.Status, got.resp.Message)
+		}
+		reqs := b.requests()
+		if len(reqs) != 1 || reqs[0].quotaProject != "fixture-project" {
+			t.Fatalf("probe requests = %+v, want the one held check still carrying the quota-project header", reqs)
 		}
 	})
 }

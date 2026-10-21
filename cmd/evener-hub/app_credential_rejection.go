@@ -96,6 +96,12 @@ type credentialRejections struct {
 	// replaced by the time the provider answers.
 	writes map[string]uint64
 	byName map[string]credentialRejection
+	// settlementEntered, when set, runs at the entry of settleCredentialProbe,
+	// before credMu is taken. A test that parks an instance edit between its
+	// publication and its fence uses it to know the probe's outcome is back
+	// and settlement has begun, so the fence's blocking can be observed
+	// without guessing at scheduling. Nil in production.
+	settlementEntered func()
 }
 
 type credentialRejection struct {
@@ -200,6 +206,9 @@ func (c *hubAuthController) currentCredentialRevisionForKey(key []byte, name str
 func (c *hubAuthController) settleCredentialProbe(start credentialProbeStart, listing llm.ModelListing, err error) bool {
 	if c == nil {
 		return true
+	}
+	if c.rejections.settlementEntered != nil {
+		c.rejections.settlementEntered()
 	}
 	key, _ := resolveEndpointFingerprintKey(c.stateDir)
 	status, rejected := credentialRejectionStatus(err)
