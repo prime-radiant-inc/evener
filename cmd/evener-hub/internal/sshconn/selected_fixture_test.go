@@ -60,7 +60,7 @@ func modelSelectedProcess(t *testing.T, fr *fakeRunner, exe, before, after strin
 		config := "/home/dev/.config/evener/hub.toml"
 		root := "/home/dev/.local/state/evener"
 		endpoint := f.exe + " hub endpoint --json"
-		contextEndpoint := "cd /home/dev || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; " + endpoint
+		contextEndpoint := "CDPATH='' cd -P -- /home/dev || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; " + endpoint
 		launchArgv := []string{f.exe, "hub"}
 		if f.launchAddr != "" {
 			contextEndpoint += " --addr " + shellquote.RemoteWord(f.launchAddr)
@@ -198,7 +198,7 @@ func modelSelectedProcess(t *testing.T, fr *fakeRunner, exe, before, after strin
 			}
 			return out, err
 		}
-		relaunch := "cd /home/dev || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; " + relaunchCommand(launchArgv, "")
+		relaunch := "CDPATH='' cd -P -- /home/dev || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; " + relaunchCommand(launchArgv, "")
 		if remote == "systemctl start evener-hub.service" || remote == "systemctl restart evener-hub.service" || remote == "launchctl kickstart -k gui/1000/com.example.evener-hub" || (f.adhoc && remote == relaunch) {
 			out, err := base(ctx, argv, in)
 			if err == nil || f.advisory {

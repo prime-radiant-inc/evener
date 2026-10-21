@@ -40,7 +40,7 @@ func TestEnsureSelectedBootstrapRecovery(t *testing.T) {
 							return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 						case "/opt/evener/bin/evener launch-check --json", "/opt/evener/bin/evener launch-check --protocol evener-appwire-v7 --json":
 							return []byte(strings.ReplaceAll(goodLaunchCheck, `"version":"dev"`, `"version":"`+version+`"`)), nil
-						case "systemctl start evener-hub.service", "cd /home/dev || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; nohup /opt/evener/bin/evener hub </dev/null >/dev/null 2>&1 &":
+						case "systemctl start evener-hub.service", "CDPATH='' cd -P -- /home/dev || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; nohup /opt/evener/bin/evener hub </dev/null >/dev/null 2>&1 &":
 							starts++
 							if starts == 1 {
 								if started {
@@ -163,7 +163,7 @@ func TestEnsureFreshBootstrapListener(t *testing.T) {
 			if strings.HasPrefix(want, "[") {
 				quoted = "'" + want + "'"
 			}
-			launch := "cd /home/dev || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; nohup /opt/evener/bin/evener hub --addr " + quoted + " </dev/null >/dev/null 2>&1 &"
+			launch := "CDPATH='' cd -P -- /home/dev || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; nohup /opt/evener/bin/evener hub --addr " + quoted + " </dev/null >/dev/null 2>&1 &"
 			preflight := cannedRun(nil)
 			launched := 0
 			fr := &fakeRunner{startFn: goodStartFn(t), runFn: func(ctx context.Context, argv []string, in io.Reader) ([]byte, error) {
@@ -193,7 +193,7 @@ func TestEnsureStoppedInspectionFailureIsNotAbsence(t *testing.T) {
 			host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 			preflight := cannedRun(nil)
 			fr := &fakeRunner{startFn: goodStartFn(t), runFn: func(ctx context.Context, argv []string, in io.Reader) ([]byte, error) {
-				if strings.Join(argv[12:], " ") == "cd /home/dev || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; nohup /opt/evener/bin/evener hub </dev/null >/dev/null 2>&1 &" {
+				if strings.Join(argv[12:], " ") == "CDPATH='' cd -P -- /home/dev || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; nohup /opt/evener/bin/evener hub </dev/null >/dev/null 2>&1 &" {
 					return nil, nil
 				}
 				return preflight(ctx, argv, in)
@@ -248,7 +248,7 @@ func TestEnsureStoppedCandidateInspectionFailure(t *testing.T) {
 			f.stopped = true
 			run := fr.runFn
 			fr.runFn = func(ctx context.Context, argv []string, in io.Reader) ([]byte, error) {
-				if strings.Join(argv[12:], " ") == "cd /home/dev || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; /opt/evener/bin/evener hub endpoint --json" {
+				if strings.Join(argv[12:], " ") == "CDPATH='' cd -P -- /home/dev || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; /opt/evener/bin/evener hub endpoint --json" {
 					if malformed {
 						return []byte("not json"), nil
 					}

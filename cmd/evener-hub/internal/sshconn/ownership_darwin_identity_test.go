@@ -61,7 +61,7 @@ func TestDarwinOwnerDirectoryIdentity(t *testing.T) {
 					for i := range commands {
 						commands[i].output = strings.ReplaceAll(commands[i].output, "working directory = /srv", "working directory = "+configured)
 						commands[i].output = strings.ReplaceAll(commands[i].output, "n/srv\n", "n"+tc.actual+"\n")
-						commands[i].command = strings.ReplaceAll(commands[i].command, "cd /srv || exit;", "cd "+shellquote.RemoteWord(configured)+" || exit;")
+						commands[i].command = strings.ReplaceAll(commands[i].command, "CDPATH='' cd -P -- /srv || exit;", "CDPATH='' cd -P -- "+shellquote.RemoteWord(configured)+" || exit;")
 					}
 					return commands
 				}

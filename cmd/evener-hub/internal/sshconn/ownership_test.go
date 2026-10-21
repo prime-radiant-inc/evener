@@ -32,7 +32,7 @@ func ownerCommands(t *testing.T) (hostreg.Host, []ownerCommand) {
 		{"canonical", "/opt/evener\n"},
 		{"readlink /proc/4242/cwd", "/srv\n"},
 		{ownerEnvironmentRemote("4242"), "HOME=/home/dev\x00"},
-		{"cd /srv || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; /opt/evener hub endpoint --json --config /srv/selected.toml --addr '[::]:0'", mustOwnerJSON(t, report)},
+		{"CDPATH='' cd -P -- /srv || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; /opt/evener hub endpoint --json --config /srv/selected.toml --addr '[::]:0'", mustOwnerJSON(t, report)},
 		{"systemctl list-units --type=service --all --no-legend --plain", "evener-hub-other.service loaded active running\nevener-hub-selected.service loaded active running\n"},
 		{"systemctl --user list-units --type=service --all --no-legend --plain", "evener-hub-user.service loaded active running\n"},
 		{"systemctl show --property=Id,MainPID,User,ExecStart,WorkingDirectory -- evener-hub-other.service", "Id=evener-hub-other.service\nMainPID=5151\nUser=dev\nExecStart={ path=/opt/evener ; argv[]=/opt/evener hub --config=/srv/other.toml ; ignore_errors=no ; }\nWorkingDirectory=/srv\n"},

@@ -80,7 +80,7 @@ func TestRemoteRestartPreservesBinding(t *testing.T) {
 				if strings.Contains(tc.env, "EVENER_HUB_LISTEN_ADDR=") {
 					exports = "export EVENER_HUB_LISTEN_ADDR=127.0.0.1:0; " + exports
 				}
-				commands[9].command = "cd /srv || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; " + exports + "/opt/evener hub endpoint --json" + tc.query
+				commands[9].command = "CDPATH='' cd -P -- /srv || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; " + exports + "/opt/evener hub endpoint --json" + tc.query
 				for i := range commands {
 					commands[i].output = strings.ReplaceAll(commands[i].output, "/srv/selected.toml", tc.config)
 					if successor {
@@ -119,7 +119,7 @@ func TestRemoteRestartPreservesBinding(t *testing.T) {
 			if strings.Contains(tc.env, "EVENER_HUB_LISTEN_ADDR=") {
 				env = "export EVENER_HUB_LISTEN_ADDR=127.0.0.1:0; " + env
 			}
-			launch := "cd /srv || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; " + env + "nohup /opt/evener hub" + tc.launch + " >>'" + logPath + "' 2>&1 </dev/null &"
+			launch := "CDPATH='' cd -P -- /srv || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; " + env + "nohup /opt/evener hub" + tc.launch + " >>'" + logPath + "' 2>&1 </dev/null &"
 			commands = append(commands, ownerCommand{"kill -- 4242", ""}, ownerCommand{processAliveRemote("4242"), pidAliveMarker + "\n"}, ownerCommand{processAliveRemote("4242"), pidGoneMarker + "\n"}, ownerCommand{launch, ""})
 			commands = append(commands, prepare(true)...)
 			fr, index := ownerRunner(t, commands)

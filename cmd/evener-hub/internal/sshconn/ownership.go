@@ -309,7 +309,7 @@ var ownerEnvKeys = []string{"HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "EVENER
 
 func ownerContext(cwd string, env []string) string {
 	var remote strings.Builder
-	remote.WriteString("cd " + shellquote.RemoteWord(cwd) + " || exit; unset " + strings.Join(ownerEnvKeys, " ") + "; ")
+	remote.WriteString("CDPATH='' cd -P -- " + shellquote.RemoteWord(cwd) + " || exit; unset " + strings.Join(ownerEnvKeys, " ") + "; ")
 	for _, value := range env {
 		remote.WriteString("export " + shellquote.RemoteWord(value) + "; ")
 	}

@@ -95,9 +95,9 @@ func (f *darwinBootstrapFixture) runner(t *testing.T, host hostreg.Host) *fakeRu
 			return []byte("/opt/evener\n"), nil
 		case resolveDeployCommand("/other/evener"):
 			return []byte("/other/evener\n"), nil
-		case "cd /srv || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; /opt/evener hub endpoint --json --config /srv/selected.toml":
+		case "CDPATH='' cd -P -- /srv || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; /opt/evener hub endpoint --json --config /srv/selected.toml":
 			return report(false), nil
-		case "cd /candidate || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; /opt/evener hub endpoint --json --config /srv/selected.toml":
+		case "CDPATH='' cd -P -- /candidate || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; /opt/evener hub endpoint --json --config /srv/selected.toml":
 			if f.boundary == "config" {
 				return inspect()
 			}
@@ -112,7 +112,7 @@ func (f *darwinBootstrapFixture) runner(t *testing.T, host hostreg.Host) *fakeRu
 			return []byte("/opt/evener hub --config /srv/selected.toml\n"), nil
 		case "lsof -a -p 4343 -d cwd -Fn":
 			return []byte("p4343\nfcwd\nn/srv\n"), nil
-		case "cd /srv || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; nohup /opt/evener hub --config /srv/selected.toml </dev/null >/dev/null 2>&1 &":
+		case "CDPATH='' cd -P -- /srv || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; nohup /opt/evener hub --config /srv/selected.toml </dev/null >/dev/null 2>&1 &":
 			f.launches++
 			if f.launches == 1 && f.lostReply {
 				f.running = true

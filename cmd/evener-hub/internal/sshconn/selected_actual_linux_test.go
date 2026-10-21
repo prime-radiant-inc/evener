@@ -156,7 +156,7 @@ func TestRemoteRestartActualDisposableHub(t *testing.T) {
 	fr.startFn = func(ctx context.Context, argv []string, stderr io.Writer) (Stdio, error) {
 		remote := strings.Join(argv[12:], " ")
 		local := append([]string{"/usr/bin/env", "-i"}, env...)
-		local = append(local, "/bin/bash", "-c", "cd "+strconv.Quote(root)+" && "+remote)
+		local = append(local, "/bin/bash", "-c", "CDPATH='' cd -P -- "+strconv.Quote(root)+" && "+remote)
 		return (execRunner{}).Start(ctx, local, stderr)
 	}
 	ch, err := m.Ensure(ctx, host.Name)

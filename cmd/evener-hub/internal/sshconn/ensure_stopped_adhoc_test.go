@@ -20,7 +20,7 @@ func TestEnsureRetainedStoppedAdhocStart(t *testing.T) {
 			host := hostreg.Host{Name: "alpha", SSH: "fixture.invalid", EvenerPath: "/opt/evener/bin/evener"}
 			launches, attaches, recorded, finished := 0, 0, 0, 0
 			attachBoundary := errors.New("fixture attach boundary")
-			launch := "cd /home/dev || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; nohup /opt/evener/bin/evener hub </dev/null >/dev/null 2>&1 &"
+			launch := "CDPATH='' cd -P -- /home/dev || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; nohup /opt/evener/bin/evener hub </dev/null >/dev/null 2>&1 &"
 			base := cannedRun(nil)
 			var f *selectedProcessFixture
 			fr := &fakeRunner{runFn: func(ctx context.Context, argv []string, in io.Reader) ([]byte, error) {
