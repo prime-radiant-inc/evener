@@ -742,6 +742,25 @@ func (r *Registry) ResolveGateCredential(instance, model string) (Resolved, erro
 	return Resolved{Instance: rec.name, Transport: t, Credential: cred, Warnings: warnings}, nil
 }
 
+// ResolveGateCredentialInstance judges a bare instance name at the provider's
+// own shape: the transport a synthesized row inherits, with the listing's
+// structural credential presence and no command execution. It is the gate's
+// fallback for a model the bundled roster cannot resolve. That model has no
+// row, so the default row's transport does not describe it; a default-row
+// override of none must not pass a launch that still authenticates the
+// provider's way.
+func (r *Registry) ResolveGateCredentialInstance(instance string) (Resolved, error) {
+	name := strings.ToLower(strings.TrimSpace(instance))
+	rec, ok := r.recordFor(name)
+	if !ok {
+		return Resolved{}, fmt.Errorf("%w %q", ErrUnknownInstance, name)
+	}
+	transport, _, warnings := r.buildTransport(rec, Model{}, rec.head.Protocol)
+	cred, cw := r.credential(rec, transport)
+	warnings = append(warnings, cw...)
+	return Resolved{Instance: rec.name, Transport: transport, Credential: cred, Warnings: warnings}, nil
+}
+
 // authHeaderName is the header the auth scheme of the transport a launch
 // resolves writes the credential to: the author's auth_header for header
 // auth, Authorization for every other scheme — the same choice the

@@ -53,11 +53,22 @@ func (*stagedCodexLiveProtocol) CountTokens(context.Context, llm.Request, regist
 	return 0, llm.ErrInputTokenCountUnsupported
 }
 
-func registerStagedCodexProtocol(p *stagedCodexLiveProtocol) {
-	if _, ok := llm.ProtocolFor(p.ID()); ok {
-		return
+// stagedCodexProtocol returns the id's registered protocol, resetting its
+// counters for a repeated test run, or registers a new one.
+func stagedCodexProtocol(id string) *stagedCodexLiveProtocol {
+	if existing, ok := llm.ProtocolFor(id); ok {
+		p, ok := existing.(*stagedCodexLiveProtocol)
+		if !ok {
+			panic("staged codex protocol registered with another type")
+		}
+		p.mu.Lock()
+		p.calls = map[string]int{}
+		p.mu.Unlock()
+		return p
 	}
+	p := &stagedCodexLiveProtocol{id: id, calls: map[string]int{}}
 	llm.RegisterProtocol(p)
+	return p
 }
 
 // TestSetModel_SwitchesToLiveListedCodexModel pins the in-session door: a
@@ -67,8 +78,7 @@ func registerStagedCodexProtocol(p *stagedCodexLiveProtocol) {
 // lock so the strict cross-provider resolve accepts the model.
 func TestSetModel_SwitchesToLiveListedCodexModel(t *testing.T) {
 	const protocolID = "test-proto-agent-codex-live"
-	proto := &stagedCodexLiveProtocol{id: protocolID, calls: map[string]int{}}
-	registerStagedCodexProtocol(proto)
+	proto := stagedCodexProtocol(protocolID)
 
 	r, err := registry.Load(
 		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),

@@ -884,7 +884,7 @@ func resolveEvenerStateDirWithProject(workDir, override, stateHome string) (iden
 func resolveGateCredentialForSpawn(r *registry.Registry, name, model string) (registry.Resolved, error) {
 	res, err := r.ResolveGateCredential(name, model)
 	if err != nil && model != "" && errors.Is(err, registry.ErrCodexModelNotListed) {
-		return r.ResolveGateCredential(name, "")
+		return r.ResolveGateCredentialInstance(name)
 	}
 	return res, err
 }

@@ -74,12 +74,15 @@ func TestBuildInitialProfileUsesLiveCodexRoster(t *testing.T) {
 	registerCodexLiveProtocol(codexLiveListProtocol{id: protocolID, rows: []registry.Model{{ID: "gpt-reserve"}}})
 	client := codexLiveClient(t, protocolID)
 
-	profile, err := buildInitialProfile(context.Background(), client, cmdutil.ModelRef{Provider: "codex-plan", Model: "gpt-reserve"}, "")
+	profile, startupListing, err := buildInitialProfile(context.Background(), client, cmdutil.ModelRef{Provider: "codex-plan", Model: "gpt-reserve"}, "")
 	if err != nil {
 		t.Fatalf("buildInitialProfile rejected a Codex model its instance lists live: %v", err)
 	}
 	if profile.ID() != "codex-plan" || profile.Model() != "gpt-reserve" {
 		t.Fatalf("profile = %s/%s, want codex-plan/gpt-reserve", profile.ID(), profile.Model())
+	}
+	if startupListing == nil || startupListing.Instance != "codex-plan" || !startupListing.Listing.Usable {
+		t.Fatalf("startup listing = %+v, want the usable codex-plan roster for reuse", startupListing)
 	}
 }
 
@@ -91,7 +94,7 @@ func TestBuildInitialProfileKeepsCodexRosterRejection(t *testing.T) {
 	registerCodexLiveProtocol(codexLiveListProtocol{id: protocolID, rows: []registry.Model{{ID: "gpt-5.6"}}})
 	client := codexLiveClient(t, protocolID)
 
-	_, err := buildInitialProfile(context.Background(), client, cmdutil.ModelRef{Provider: "codex-plan", Model: "gpt-reserve"}, "")
+	_, _, err := buildInitialProfile(context.Background(), client, cmdutil.ModelRef{Provider: "codex-plan", Model: "gpt-reserve"}, "")
 	if !errors.Is(err, registry.ErrCodexModelNotListed) {
 		t.Fatalf("error = %v, want the Codex roster sentinel", err)
 	}

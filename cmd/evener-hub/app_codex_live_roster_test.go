@@ -57,3 +57,31 @@ func TestCredentialGateStillRefusesUnsignedCodexModel(t *testing.T) {
 		t.Fatal("the resume gate accepted an unsigned Codex instance")
 	}
 }
+
+// TestCredentialGateIgnoresDefaultRowOverrideForUnlistedCodexModel pins the
+// fallback's transport: an unlisted Codex model has no row, so it inherits the
+// provider's OAuth shape. A default row that overrides auth to none describes
+// a bare-name launch, not this model, and must not wave it through unsigned.
+func TestCredentialGateIgnoresDefaultRowOverrideForUnlistedCodexModel(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	clearProviderKeysFromEnvironment(t)
+
+	dir := t.TempDir()
+	store, err := credentials.LoadStore(dir + "/credentials.toml")
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	reg := newProbeRegistry(t, t.TempDir(), store, nil, map[string]registry.Provider{
+		"work": {
+			Base:         "openai-codex",
+			DefaultModel: "default-model",
+			Models: map[string]registry.Model{
+				"default-model": {Transport: &registry.Transport{Auth: registry.AuthNone}},
+			},
+		},
+	})
+
+	if err := validateProviderCredentials("work", "gpt-reserve", reg); err == nil {
+		t.Fatal("the resume gate judged an unlisted Codex model by its default row's auth override")
+	}
+}

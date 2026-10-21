@@ -318,7 +318,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		}
 	}
 
-	profile, err := buildInitialProfile(ctx, client, modelRef, cfg.outputSchema)
+	profile, startupListing, err := buildInitialProfile(ctx, client, modelRef, cfg.outputSchema)
 	if err != nil {
 		return err
 	}
@@ -375,6 +375,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		OpenAIResponsesContinuation: openAIResponsesContinuation,
 		ProviderIdleTimeout:         cfg.providerIdleTimeout,
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
+		StartupModelListing:         startupListing,
 	}
 	// --ask-responder attaches a responder for this process only: ask_user is
 	// offered, while the session stays NonInteractive in everything it saves
@@ -422,6 +423,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			StateDir:                    stateDir,
 			Project:                     project,
 			ResolveProfile:              baseSessionCfg.ResolveProfile,
+			StartupModelListing:         startupListing,
 			AcquireSessionOwnership:     reserveSession,
 			OwnershipAlreadyAcquired:    true,
 			OpenAIResponsesContinuation: openAIResponsesContinuation,

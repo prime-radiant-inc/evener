@@ -270,8 +270,8 @@ func TestRunServeResidualCoverage(t *testing.T) {
 			}
 		}},
 		{"build profile", func(_ *testing.T, d *serveDeps, _ *[]string) {
-			d.buildProfile = func(context.Context, *llm.Client, cmdutil.ModelRef, string) (*provider.Profile, error) {
-				return nil, boom
+			d.buildProfile = func(context.Context, *llm.Client, cmdutil.ModelRef, string) (*provider.Profile, *agent.StartupModelListing, error) {
+				return nil, nil, boom
 			}
 		}},
 		{"cheap profile", func(_ *testing.T, d *serveDeps, _ *[]string) {
