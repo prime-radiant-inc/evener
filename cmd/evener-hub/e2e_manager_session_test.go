@@ -513,11 +513,39 @@ func managerToolResult(call *fakellm.Call, out any) bool {
 			continue
 		}
 		body, _ := message["content"].(string)
-		if json.Unmarshal([]byte(body), out) == nil {
-			return true
-		}
+		return json.Unmarshal([]byte(body), out) == nil
 	}
 	return false
+}
+
+func managerToolRefusal(call *fakellm.Call) string {
+	messages, _ := call.Body["messages"].([]any)
+	for i := len(messages) - 1; i >= 0; i-- {
+		message, _ := messages[i].(map[string]any)
+		if message["role"] != "tool" {
+			continue
+		}
+		body, _ := message["content"].(string)
+		if json.Valid([]byte(body)) {
+			return "latest tool returned JSON without the expected operation"
+		}
+		return body
+	}
+	return "no tool result"
+}
+
+func TestManagerToolResultRejectsLatestRefusal(t *testing.T) {
+	call := &fakellm.Call{Body: map[string]any{"messages": []any{
+		map[string]any{"role": "tool", "content": `{"actor":{"kind":"manager"},"read":{}}`},
+		map[string]any{"role": "tool", "content": "appwire thread/read: thread subscription is unavailable"},
+	}}}
+	var response appwire.SessionOperationResponse
+	if managerToolResult(call, &response) {
+		t.Fatal("parsed a stale successful operation after the current refusal")
+	}
+	if got := managerToolRefusal(call); got != "appwire thread/read: thread subscription is unavailable" {
+		t.Fatalf("latest refusal=%q", got)
+	}
 }
 
 // The Manager switch must be committed before the first model turn begins.

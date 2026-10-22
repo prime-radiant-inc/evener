@@ -84,6 +84,10 @@ type Options struct {
 	// handshake. Defaults: "evener-hub" and buildinfo.Version().
 	ClientName    string
 	ClientVersion string
+	// SessionToolsHubID is this hub's persisted nonsecret ID. On every attach,
+	// the connection owner identifies before publishing the channel. A bearer
+	// token authenticates the route, not the particular peer ID.
+	SessionToolsHubID string
 
 	// BackoffBase/BackoffMax bound the reconnect delay. Defaults 500ms / 30s.
 	BackoffBase time.Duration
@@ -96,6 +100,10 @@ type Options struct {
 	// non-reentrant lock and would deadlock. Record state, or hand the work to
 	// another goroutine and call Ensure from there.
 	OnEvent func(Event)
+	// BeforeAttached runs on the published, identified channel before Attached
+	// is announced. It must not call Ensure (the host gate is held). A failure
+	// reports restoration trouble but does not make ordinary SSH attach fail.
+	BeforeAttached func(context.Context, string) error
 
 	// BuildBinary cross-compiles the controller's own tree for goos/goarch into
 	// the absolute path out, stamping the same buildinfo ldflags this process
@@ -745,6 +753,11 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 	if m.opts.afterPublish != nil {
 		m.opts.afterPublish(name, ch)
 	}
+	if m.opts.BeforeAttached != nil && !ch.isClosed() && !ch.isLost() {
+		if err := m.opts.BeforeAttached(ctx, name); err != nil && m.opts.Logger != nil {
+			m.opts.Logger("remote Manager restoration for host %q failed: %v", name, err)
+		}
+	}
 	if m.isClosed() || ch.isClosed() {
 		// Close landed between publishing and announcing: nothing will supervise
 		// this channel, so consumers must not hear about it either.
@@ -1000,6 +1013,11 @@ func (m *Manager) AttachUnderGate(ctx context.Context, host hostreg.Host, holder
 	}
 	if m.opts.afterPublish != nil {
 		m.opts.afterPublish(name, ch)
+	}
+	if m.opts.BeforeAttached != nil && !ch.isClosed() && !ch.isLost() {
+		if err := m.opts.BeforeAttached(ctx, name); err != nil && m.opts.Logger != nil {
+			m.opts.Logger("remote Manager restoration for host %q failed: %v", name, err)
+		}
 	}
 	if ch.isLost() || ch.isClosed() {
 		// The link died between the validation and the announcement: reap the
@@ -2469,6 +2487,12 @@ func (m *Manager) attach(ctx context.Context, host hostreg.Host, facts Preflight
 	// Publish the handshake before the channel is handed to any caller, so the
 	// attached-only HandshakeIfAttached never races the attach it reports on.
 	ch.handshake = handshake
+	if handshake.Features.SessionTools && m.opts.SessionToolsHubID != "" {
+		if _, err := client.IdentifySessionToolsPeer(initCtx, appwire.SessionToolsPeerParams{HubID: m.opts.SessionToolsHubID}); err != nil {
+			_ = reapBridge(transport, stdio)
+			return nil, fmt.Errorf("host %q session tools peer identification: %w", host.Name, err)
+		}
+	}
 
 	if m.baseCtx.Err() != nil {
 		_ = reapBridge(transport, stdio)

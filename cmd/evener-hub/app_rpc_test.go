@@ -3019,8 +3019,8 @@ func TestHubRPCStableCurrentAdmissionCancellation(t *testing.T) {
 		read        appwire.ThreadReadParams
 		unsubscribe appwire.ThreadUnsubscribeParams
 	}{
-		{"stable_ref_current_id", appwire.ThreadReadParams{Ref: "local:stable"}, appwire.ThreadUnsubscribeParams{ThreadID: "current"}},
-		{"current_id_stable_ref", appwire.ThreadReadParams{ThreadID: "current"}, appwire.ThreadUnsubscribeParams{Ref: "local:stable"}},
+		{"stable_ref_current_id", appwire.ThreadReadParams{Ref: "local:stable", Subscribe: true}, appwire.ThreadUnsubscribeParams{ThreadID: "current"}},
+		{"current_id_stable_ref", appwire.ThreadReadParams{ThreadID: "current", Subscribe: true}, appwire.ThreadUnsubscribeParams{Ref: "local:stable"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -3064,7 +3064,7 @@ func TestHubRPCStableCurrentAdmissionCancellation(t *testing.T) {
 			if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:other"}); err != nil {
+			if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:other", Subscribe: true}); err != nil {
 				t.Fatalf("unrelated read: %v", err)
 			}
 			readDone := make(chan error, 1)
@@ -3112,7 +3112,7 @@ func TestHubRPCStableCurrentAdmissionCancellation(t *testing.T) {
 			if got := aliasMethodCountUntilBarrier(t, client, "test/stale-admission"); got != 0 {
 				t.Fatalf("canceled read delivered %d notifications", got)
 			}
-			if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:stable"}); err != nil {
+			if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:stable", Subscribe: true}); err != nil {
 				t.Fatalf("later read: %v", err)
 			}
 			if got := appServer.SubscriberCount("local:stable"); got != 1 {
@@ -3134,10 +3134,10 @@ func TestHubRPCRootChildAdmissionIsolation(t *testing.T) {
 		read        appwire.ThreadReadParams
 		unsubscribe appwire.ThreadUnsubscribeParams
 	}{
-		{"child_ref", appwire.ThreadReadParams{Ref: "local:stable"}, appwire.ThreadUnsubscribeParams{Ref: "local:child"}},
-		{"child_id", appwire.ThreadReadParams{ThreadID: "current"}, appwire.ThreadUnsubscribeParams{ThreadID: "child"}},
-		{"unsubscribe_ref_precedence", appwire.ThreadReadParams{Ref: "local:stable"}, appwire.ThreadUnsubscribeParams{Ref: "local:child", ThreadID: "current"}},
-		{"read_ref_precedence", appwire.ThreadReadParams{Ref: "local:stable", ThreadID: "child"}, appwire.ThreadUnsubscribeParams{Ref: "local:child"}},
+		{"child_ref", appwire.ThreadReadParams{Ref: "local:stable", Subscribe: true}, appwire.ThreadUnsubscribeParams{Ref: "local:child"}},
+		{"child_id", appwire.ThreadReadParams{ThreadID: "current", Subscribe: true}, appwire.ThreadUnsubscribeParams{ThreadID: "child"}},
+		{"unsubscribe_ref_precedence", appwire.ThreadReadParams{Ref: "local:stable", Subscribe: true}, appwire.ThreadUnsubscribeParams{Ref: "local:child", ThreadID: "current"}},
+		{"read_ref_precedence", appwire.ThreadReadParams{Ref: "local:stable", ThreadID: "child", Subscribe: true}, appwire.ThreadUnsubscribeParams{Ref: "local:child"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -3182,7 +3182,7 @@ func TestHubRPCRootChildAdmissionIsolation(t *testing.T) {
 			if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:other"}); err != nil {
+			if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:other", Subscribe: true}); err != nil {
 				t.Fatalf("unrelated read: %v", err)
 			}
 			readDone := make(chan error, 1)
@@ -3262,7 +3262,7 @@ func TestHubRPCThreadReadRelaysDaemonNotifications(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_1"}); err != nil {
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_1", Subscribe: true}); err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
 
@@ -3314,7 +3314,7 @@ func TestHubRPCThreadReadRelaysEnrichedOutputImageNotification(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_img"}); err != nil {
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_img", Subscribe: true}); err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
 	expectRelaySubscription(t, source.subscribed)
@@ -3449,7 +3449,7 @@ func TestHubRPCThreadReadRelaysSHARoutedToolResultImage(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_shot"}); err != nil {
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_shot", Subscribe: true}); err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
 	expectRelaySubscription(t, source.subscribed)
@@ -3509,7 +3509,7 @@ func TestHubRPCThreadReadRelaysNotificationsBySourceQualifiedThread(t *testing.T
 	if _, err := clientA.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize clientA: %v", err)
 	}
-	if _, err := clientA.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex-a:" + threadID}); err != nil {
+	if _, err := clientA.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex-a:" + threadID, Subscribe: true}); err != nil {
 		t.Fatalf("ThreadRead clientA: %v", err)
 	}
 	clientB := dialHubRPC(t, srv)
@@ -3517,7 +3517,7 @@ func TestHubRPCThreadReadRelaysNotificationsBySourceQualifiedThread(t *testing.T
 	if _, err := clientB.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize clientB: %v", err)
 	}
-	if _, err := clientB.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex-b:" + threadID}); err != nil {
+	if _, err := clientB.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex-b:" + threadID, Subscribe: true}); err != nil {
 		t.Fatalf("ThreadRead clientB: %v", err)
 	}
 
@@ -7050,7 +7050,7 @@ func TestHubRPCThreadReadRetiresRelayWhenClientDisconnects(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_1"}); err != nil {
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_1", Subscribe: true}); err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
 	if err := client.Close(); err != nil {
@@ -7098,7 +7098,7 @@ func TestHubRPCThreadReadKeepsRelayWhenSubscriberArrivesDuringIdleRetirement(t *
 	if _, err := client1.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize client1: %v", err)
 	}
-	if _, err := client1.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_1"}); err != nil {
+	if _, err := client1.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_1", Subscribe: true}); err != nil {
 		t.Fatalf("ThreadRead client1: %v", err)
 	}
 	if err := client1.Close(); err != nil {
@@ -7116,7 +7116,7 @@ func TestHubRPCThreadReadKeepsRelayWhenSubscriberArrivesDuringIdleRetirement(t *
 	if _, err := client2.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize client2: %v", err)
 	}
-	if _, err := client2.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_1"}); err != nil {
+	if _, err := client2.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_1", Subscribe: true}); err != nil {
 		t.Fatalf("ThreadRead client2: %v", err)
 	}
 	close(releaseIdle)
@@ -7271,7 +7271,7 @@ func TestHubRPCThreadReadKeepsReplacementRelayTrackedAfterIdleCleanup(t *testing
 	if _, err := client1.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize client1: %v", err)
 	}
-	if _, err := client1.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID}); err != nil {
+	if _, err := client1.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true}); err != nil {
 		t.Fatalf("ThreadRead client1: %v", err)
 	}
 	expectRelaySubscription(t, source.subscribed)
@@ -7290,7 +7290,7 @@ func TestHubRPCThreadReadKeepsReplacementRelayTrackedAfterIdleCleanup(t *testing
 	if _, err := client2.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize client2: %v", err)
 	}
-	if _, err := client2.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID}); err != nil {
+	if _, err := client2.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true}); err != nil {
 		t.Fatalf("ThreadRead client2: %v", err)
 	}
 	expectRelaySubscription(t, source.subscribed)
@@ -7302,7 +7302,7 @@ func TestHubRPCThreadReadKeepsReplacementRelayTrackedAfterIdleCleanup(t *testing
 	}
 	drainRelaySubscriptions(source.subscribed)
 
-	if _, err := client2.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID}); err != nil {
+	if _, err := client2.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true}); err != nil {
 		t.Fatalf("ThreadRead client2 again: %v", err)
 	}
 	select {
@@ -7349,7 +7349,7 @@ func TestHubRPCThreadReadPropagatesInFlightRelaySubscribeFailure(t *testing.T) {
 
 	readErrs := make(chan error, 2)
 	go func() {
-		_, err := client1.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_subscribe_fail"})
+		_, err := client1.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_subscribe_fail", Subscribe: true})
 		readErrs <- err
 	}()
 	select {
@@ -7359,7 +7359,7 @@ func TestHubRPCThreadReadPropagatesInFlightRelaySubscribeFailure(t *testing.T) {
 	}
 
 	go func() {
-		_, err := client2.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_subscribe_fail"})
+		_, err := client2.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_subscribe_fail", Subscribe: true})
 		readErrs <- err
 	}()
 	select {
@@ -7408,7 +7408,7 @@ func TestHubRPCThreadReadSubscribeFailureDoesNotLeaveClientSubscribed(t *testing
 	if _, err := failedClient.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize failedClient: %v", err)
 	}
-	if _, err := failedClient.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID}); err == nil || !strings.Contains(err.Error(), "subscribe failed once") {
+	if _, err := failedClient.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true}); err == nil || !strings.Contains(err.Error(), "subscribe failed once") {
 		t.Fatalf("ThreadRead failedClient error=%v, want subscribe failed once", err)
 	}
 
@@ -7417,7 +7417,7 @@ func TestHubRPCThreadReadSubscribeFailureDoesNotLeaveClientSubscribed(t *testing
 	if _, err := okClient.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize okClient: %v", err)
 	}
-	if _, err := okClient.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID}); err != nil {
+	if _, err := okClient.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true}); err != nil {
 		t.Fatalf("ThreadRead okClient: %v", err)
 	}
 	source.notifications <- appwire.Notification{
@@ -12877,6 +12877,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 	}
 
 	expected := []string{
+		appwire.MethodHubSessionToolsInput,
 		appwire.MethodThreadList,
 		appwire.MethodThreadRead,
 		appwire.MethodEvenerSessionImage,

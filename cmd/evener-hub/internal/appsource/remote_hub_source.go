@@ -3,6 +3,7 @@ package appsource
 import (
 	"cmp"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,7 +48,11 @@ type RemoteHubClientFunc func(ctx context.Context, host string) (*appwire.Client
 // component-04 reconnect that swaps the underlying client is picked up
 // automatically.
 type RemoteHubSource struct {
-	id string
+	id              string
+	managerMu       sync.Mutex
+	managerOwner    func(appwire.SessionBinding) (appwire.SessionHubClient, error)
+	managerHubID    func() (string, error)
+	managerBindings map[string]remoteManagerBinding
 	// roots is the host's configured [[hosts]].roots scoping. It is retained
 	// for the staged 05b/05c/05d lifecycle, mutation and capability work, which
 	// is the "advisory inputs to components 04/05" contract in
@@ -122,6 +127,90 @@ type RemoteHubSource struct {
 	// while probing). It is never held across a wire call.
 	probeMu sync.Mutex
 	probe   *remoteHubProbe
+}
+
+type remoteManagerBinding struct {
+	client  *appwire.Client
+	binding appwire.SessionBinding
+}
+
+type managerInputBindingKey struct{}
+
+// WithManagerInputBinding marks work admitted by the enabling hub's private
+// owner. Wire parameters cannot construct a Go context value.
+func WithManagerInputBinding(ctx context.Context, bindingID string) context.Context {
+	return context.WithValue(ctx, managerInputBindingKey{}, bindingID)
+}
+
+// SetSessionTools supplies the enabling hub's owner. A Source never accepts
+// HubID from a tool operation or human parameters; its stored ID supplies it.
+func (s *RemoteHubSource) SetSessionTools(owner func(appwire.SessionBinding) (appwire.SessionHubClient, error), hubID func() (string, error)) {
+	s.managerMu.Lock()
+	defer s.managerMu.Unlock()
+	s.managerOwner, s.managerHubID = owner, hubID
+	s.managerBindings = map[string]remoteManagerBinding{}
+}
+
+// HasManagerBindings distinguishes a known Manager reconnect from ordinary
+// host attach. Initial discovery still runs on the existing Attached event.
+func (s *RemoteHubSource) HasManagerBindings() bool {
+	s.managerMu.Lock()
+	defer s.managerMu.Unlock()
+	return len(s.managerBindings) != 0
+}
+
+// BindManager restores one saved, currently enabled remote workspace on this
+// specific attached bridge. The host verifies the authoritative row again
+// before accepting the bind; a different client always gets a fresh ID.
+func (s *RemoteHubSource) BindManager(ctx context.Context, view appwire.ManagerView) error {
+	s.managerMu.Lock()
+	defer s.managerMu.Unlock()
+	if s.managerOwner == nil || s.managerHubID == nil {
+		return appwire.Unavailable("remote Manager transport unavailable")
+	}
+	hubID, err := s.managerHubID()
+	if err != nil {
+		return err
+	}
+	if !view.Setting.Enabled || view.Setting.HubID != hubID {
+		return appwire.InvalidRequest("enabling hub does not own saved Manager preference")
+	}
+	ref, err := s.toRemoteRef(view.Ref, "")
+	if err != nil {
+		return err
+	}
+	client, err := s.resolveClient(ctx)
+	if err != nil {
+		return s.mapConnectError(err)
+	}
+	if existing := s.managerBindings[view.Ref]; existing.client == client && existing.binding.InstanceID == view.InstanceID && existing.binding.PreferenceRevision == view.Setting.Revision {
+		return nil
+	}
+	binding := appwire.SessionBinding{Ref: ref.String(), InstanceID: view.InstanceID, HubID: hubID, BindingID: rand.Text(), PreferenceRevision: view.Setting.Revision}
+	owner, err := s.managerOwner(appwire.SessionBinding{Ref: view.Ref, InstanceID: view.InstanceID, HubID: hubID, BindingID: binding.BindingID, PreferenceRevision: view.Setting.Revision})
+	if err != nil {
+		return err
+	}
+	if err := client.AddSessionTools(binding, owner); err != nil {
+		return err
+	}
+	if err := client.BindSessionToolsID(ctx, binding.BindingID); err != nil {
+		return err
+	}
+	if existing := s.managerBindings[view.Ref]; existing.client != nil {
+		existing.client.RemoveSessionTools(existing.binding.BindingID)
+	}
+	s.managerBindings[view.Ref] = remoteManagerBinding{client: client, binding: binding}
+	return nil
+}
+
+func (s *RemoteHubSource) UnbindManager(ref string) {
+	s.managerMu.Lock()
+	if existing := s.managerBindings[ref]; existing.client != nil {
+		existing.client.RemoveSessionTools(existing.binding.BindingID)
+		delete(s.managerBindings, ref)
+	}
+	s.managerMu.Unlock()
 }
 
 var (
@@ -279,13 +368,36 @@ func (s *RemoteHubSource) callOn(ctx context.Context, client *appwire.Client, me
 	if err := ctx.Err(); err != nil {
 		return s.mapCallError(err)
 	}
-	if err := client.Request(ctx, method, params, out); err != nil {
+	if err := s.requestOn(ctx, client, method, params, out); err != nil {
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
 		}
 		return s.mapCallError(err)
 	}
 	return s.translateOut(out)
+}
+
+func (s *RemoteHubSource) requestOn(ctx context.Context, client *appwire.Client, method string, params any, out any) error {
+	if id, _ := ctx.Value(managerInputBindingKey{}).(string); id != "" && (method == appwire.MethodTurnStart || method == appwire.MethodTurnQueue || method == appwire.MethodTurnSteer || method == appwire.MethodEvenerSandboxEscalationResolve) {
+		// The source translated the target ref first. The caller metadata came
+		// from the bound hub owner and must never reach the ordinary human RPC.
+		encoded, err := json.Marshal(params)
+		if err != nil {
+			return err
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(encoded, &fields); err != nil {
+			return err
+		}
+		delete(fields, "managerProof")
+		encoded, err = json.Marshal(fields)
+		if err != nil {
+			return err
+		}
+		params = appwire.SessionToolsInput{BindingID: id, Method: method, Params: encoded}
+		method = appwire.MethodHubSessionToolsInput
+	}
+	return client.Request(ctx, method, params, out)
 }
 
 // mapCallError mirrors LocalDaemonSource's error shapes for a remote hub: a

@@ -188,16 +188,29 @@ authoritative empty inventory. Neither permits controller catalog fallback.
 router. **unimplemented** methods are defined with a client stub but served by
 no router (reserved).
 
+For a remote target, Manager reads, status, text/queue/steer input, supported
+skill/command input and sandbox approval use the identified hub bridge.
+Remote Manager `job_watch` is **not advertised or supported**: the canonical
+observation lease is local-only, while remote notifications use the existing
+AppWire subscriber relay without its generation/entry evidence and snapshot
+handoff. A request returns an explicit unsupported error; the other remote
+operations remain available. Qualifying it requires that evidence under the
+same lease, not a second subscription. After a cold enabling-hub restart,
+initial Manager discovery is asynchronous, so the first turn can precede the
+fresh binding even though the saved hosting-hub authority remains unchanged.
+
 | Method | Scope | Params | Result | Summary |
 |--------|-------|--------|--------|---------|
 | `initialize` | connection | [InitializeParams](#initializeparams) | [InitializeResponse](#initializeresponse) | Handshake; must be the first request. Returns server info, protocol version, source ID, and feature set. |
 | `ping` | connection | [EmptyParams](#emptyparams) | [EmptyResponse](#emptyresponse) | Connection keepalive, answered directly before the initialize gate (the browser's app-level heartbeat). |
+| `evener/hub/session-tools/identify` | connection | [SessionToolsPeerParams](#sessiontoolspeerparams) | [SessionToolsPeerResponse](#sessiontoolspeerresponse) | Private peer identity exchange on an authenticated, negotiated hub bridge; a hub ID is not a credential. |
 | `evener/runtime/session/bind` | connection | [SessionBinding](#sessionbinding) | [SessionBinding](#sessionbinding) | Private authenticated hub-to-runtime binding, accepted only by explicitly installed daemon handlers after initialize. |
 | `evener/runtime/session/state` | connection | [SessionRuntimeRequest](#sessionruntimerequest) | [ManagerView](#managerview) | Private reverse request on a bound runtime connection, reads current human Manager state even while disabled. |
 | `evener/runtime/session/invoke` | connection | [SessionRuntimeRequest](#sessionruntimerequest) | [SessionOperationResponse](#sessionoperationresponse) | Private reverse request, current Manager admission for exactly one implemented discovery or status operation. |
 | `evener/runtime/session/watch` | connection | [SessionRuntimeRequest](#sessionruntimerequest) | [EmptyResponse](#emptyresponse) | Private reverse request, ephemeral initial/live status observation only. Other event selectors and completion are rejected. |
 | `evener/runtime/session/unwatch` | connection | [SessionRuntimeRequest](#sessionruntimerequest) | [EmptyResponse](#emptyresponse) | Private reverse request, detaches one connection-local ephemeral observation consumer. |
 | `evener/runtime/session/cancel` | connection | [SessionRuntimeCancel](#sessionruntimecancel) | [EmptyResponse](#emptyresponse) | Private reverse request, cancels the identified negative requestId on this authenticated binding. Available at operation capacity, completed calls are no-ops. |
+| `evener/hub/session-tools/input` | hub | [SessionToolsInput](#sessiontoolsinput) | [Value](#value) | Private identified bridge input for a bound Manager; its fixed method and target are admitted by the hosting hub, not arbitrary remote RPC. |
 | `thread/list` | both | [ThreadListParams](#threadlistparams) | [ThreadListResponse](#threadlistresponse) | Lists threads; the daemon returns its single session. |
 | `thread/read` | both | [ThreadReadParams](#threadreadparams) | [ThreadReadResponse](#threadreadresponse) | Reads one thread and optionally subscribes to its live updates; includeTurns returns the newest bounded atomic projected items, and itemLimit caps items. |
 | `thread/unsubscribe` | both | [ThreadUnsubscribeParams](#threadunsubscribeparams) | [EmptyResponse](#emptyresponse) | Drops this connection's live-update subscription to a thread without reading it. |
@@ -209,7 +222,7 @@ no router (reserved).
 | `thread/clear` | both | [ThreadClearParams](#threadclearparams) | [ThreadClearResponse](#threadclearresponse) | Clears the thread's conversation when no turn, queued, or approval work is unresolved. |
 | `thread/model/set` | both | [ThreadModelSetParams](#threadmodelsetparams) | [EmptyResponse](#emptyresponse) | Changes the session's model/provider. |
 | `evener/thread/name/set` | both | [ThreadNameSetParams](#threadnamesetparams) | [EmptyResponse](#emptyresponse) | Sets a user-chosen session title (rename). |
-| `evener/thread/manager/set` | hub | [ThreadManagerSetParams](#threadmanagersetparams) | [ThreadManagerSetResponse](#threadmanagersetresponse) | Sets the human-controlled Manager preference for a local workspace. The hub supplies its authority identity. |
+| `evener/thread/manager/set` | hub | [ThreadManagerSetParams](#threadmanagersetparams) | [ThreadManagerSetResponse](#threadmanagersetresponse) | Sets the human-controlled Manager preference. A local caller uses the hosting hub's identity; an identified peer uses its connection-scoped identity. The saved authority cannot be displaced while enabled. |
 | `thread/reasoning-effort/set` | both | [ThreadReasoningEffortSetParams](#threadreasoningeffortsetparams) | [EmptyResponse](#emptyresponse) | Sets reasoning effort, normalizing and validating the value. |
 | `thread/vision-model/set` | both | [ThreadVisionModelSetParams](#threadvisionmodelsetparams) | [EmptyResponse](#emptyresponse) | Sets the vision side-channel routing ("", "off", or a model ref). |
 | `thread/compact/start` | both | [ThreadCompactStartParams](#threadcompactstartparams) | [EmptyResponse](#emptyresponse) | Starts a context-compaction pass on the session. |
@@ -3489,6 +3502,7 @@ Underlying Go kind: `string` (no struct fields).
 | `instanceId` | string |  |  |
 | `hubId` | string |  |  |
 | `bindingId` | string |  |  |
+| `preferenceRevision` | uint64 | yes |  |
 
 
 ### `SessionControlRequest`
@@ -3645,6 +3659,7 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `discover` | \*[appwire.ThreadListParams](#threadlistparams) | yes |  |
 | `read` | \*[appwire.ThreadReadParams](#threadreadparams) | yes |  |
+| `create` | \*[appwire.ThreadStartParams](#threadstartparams) | yes |  |
 | `start` | \*[appwire.TurnStartParams](#turnstartparams) | yes |  |
 | `queue` | \*[appwire.TurnQueueParams](#turnqueueparams) | yes |  |
 | `steer` | \*[appwire.TurnSteerParams](#turnsteerparams) | yes |  |
@@ -3658,6 +3673,7 @@ Underlying Go kind: `string` (no struct fields).
 | `actor` | [appwire.SessionActor](#sessionactor) |  |  |
 | `discover` | \*[appwire.SessionDiscovery](#sessiondiscovery) | yes |  |
 | `read` | \*[appwire.ThreadReadResponse](#threadreadresponse) | yes |  |
+| `create` | \*[appwire.ThreadStartResponse](#threadstartresponse) | yes |  |
 | `start` | \*[appwire.TurnStartResponse](#turnstartresponse) | yes |  |
 | `queue` | \*[appwire.TurnQueueResponse](#turnqueueresponse) | yes |  |
 | `steer` | \*[appwire.TurnSteerResponse](#turnsteerresponse) | yes |  |
@@ -3798,6 +3814,29 @@ Underlying Go kind: `string` (no struct fields).
 | `ref` | string |  |  |
 
 
+### `SessionToolsInput`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `bindingId` | string |  |  |
+| `method` | string |  |  |
+| `params` | jsontext.Value |  |  |
+
+
+### `SessionToolsPeerParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `hubId` | string |  |  |
+
+
+### `SessionToolsPeerResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `hubId` | string |  |  |
+
+
 ### `SessionURL`
 
 | Field | Go type | Omitempty | Embedded |
@@ -3840,6 +3879,7 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `snapshot` | \*[appwire.ThreadReadResponse](#threadreadresponse) | yes |  |
 | `notification` | \*[appwire.Notification](#notification) | yes |  |
+| `event` | string | yes |  |
 | `metadata` | [appwire.SessionObservationMetadata](#sessionobservationmetadata) |  |  |
 
 
@@ -4922,6 +4962,11 @@ Underlying Go kind: `struct` (no struct fields).
 | `threadId` | string |  |  |
 | `ref` | string |  |  |
 | `urls` | [][appwire.SessionURL](#sessionurl) | yes |  |
+
+
+### `Value`
+
+Underlying Go kind: `slice` (no struct fields).
 
 
 ### `WarningParams`

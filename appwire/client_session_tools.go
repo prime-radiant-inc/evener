@@ -37,6 +37,59 @@ func (c *Client) SetSessionTools(binding SessionBinding, owner SessionHubClient)
 	c.sessionTools = &clientSessionTools{ctx: ctx, cancel: cancel, binding: binding, owner: owner, slots: make(chan struct{}, SessionToolsPendingLimit), watches: map[string]context.CancelFunc{}, calls: map[string]context.CancelFunc{}}
 }
 
+// AddSessionTools installs a separately scoped Manager binding on an attached
+// bridge. Unlike a local daemon connection, one bridge transports many live
+// remote Manager workspaces. The caller must have completed identify first.
+func (c *Client) AddSessionTools(binding SessionBinding, owner SessionHubClient) error {
+	if binding.BindingID == "" || binding.Ref == "" || binding.InstanceID == "" || binding.HubID == "" || owner == nil {
+		return InvalidParams("complete runtime binding and owner required")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	state := &clientSessionTools{ctx: ctx, cancel: cancel, binding: binding, owner: owner, slots: make(chan struct{}, SessionToolsPendingLimit), watches: map[string]context.CancelFunc{}, calls: map[string]context.CancelFunc{}}
+	c.sessionToolsMu.Lock()
+	defer c.sessionToolsMu.Unlock()
+	if c.sessionToolBindings == nil {
+		c.sessionToolBindings = map[string]*clientSessionTools{}
+	}
+	if _, exists := c.sessionToolBindings[binding.BindingID]; exists {
+		cancel()
+		return Conflict("runtime binding ID already installed")
+	}
+	c.sessionToolBindings[binding.BindingID] = state
+	return nil
+}
+
+// BindSessionToolsID installs exactly the chosen binding over the already
+// identified bridge; local daemon BindSessionTools keeps its prior contract.
+func (c *Client) BindSessionToolsID(ctx context.Context, bindingID string) error {
+	c.sessionToolsMu.Lock()
+	state := c.sessionToolBindings[bindingID]
+	c.sessionToolsMu.Unlock()
+	if state == nil || !c.Features().SessionTools {
+		return Unavailable("peer does not support this session binding")
+	}
+	var result SessionBinding
+	if err := c.Request(ctx, MethodRuntimeSessionBind, state.binding, &result); err != nil {
+		c.RemoveSessionTools(bindingID)
+		return err
+	}
+	if result != state.binding {
+		c.RemoveSessionTools(bindingID)
+		return InvalidRequest("runtime binding identity changed")
+	}
+	return nil
+}
+
+func (c *Client) RemoveSessionTools(bindingID string) {
+	c.sessionToolsMu.Lock()
+	state := c.sessionToolBindings[bindingID]
+	delete(c.sessionToolBindings, bindingID)
+	c.sessionToolsMu.Unlock()
+	if state != nil {
+		state.cancel()
+	}
+}
+
 func (c *Client) BindSessionTools(ctx context.Context) error {
 	if c.sessionTools == nil || !c.Features().SessionTools {
 		return Unavailable("peer does not support session tools")
@@ -49,6 +102,20 @@ func (c *Client) BindSessionTools(ctx context.Context) error {
 		return InvalidRequest("runtime binding identity changed")
 	}
 	return nil
+}
+
+// IdentifySessionToolsPeer runs after initialize negotiated SessionTools and
+// before any forwarding or binding on this connection. Reconnect repeats it.
+func (c *Client) IdentifySessionToolsPeer(ctx context.Context, params SessionToolsPeerParams) (SessionToolsPeerResponse, error) {
+	var response SessionToolsPeerResponse
+	if !c.Features().SessionTools {
+		return response, Unavailable("peer does not support session tools")
+	}
+	if params.HubID == "" {
+		return response, InvalidParams("hub identity is required")
+	}
+	err := c.Request(ctx, MethodHubSessionToolsIdentify, params, &response)
+	return response, err
 }
 
 func (c *Client) sendSessionFrame(ctx context.Context, message Message) error {
@@ -97,9 +164,30 @@ func (c *Client) sendSessionFrameOrClose(ctx context.Context, message Message) e
 }
 
 func (c *Client) receiveSessionRequest(ctx context.Context, req Request) {
-	state := c.sessionTools
+	// Every reverse request, including cleanup, identifies one binding. Never
+	// fall back to the local owner when an ID is absent or belongs to a peer.
+	var key struct {
+		BindingID string `json:"bindingId"`
+	}
+	if err := json.Unmarshal(req.Params, &key); err != nil {
+		c.respondSessionRequest(ctx, req.ID, nil, InvalidParams(err.Error()))
+		return
+	}
+	var state *clientSessionTools
+	if key.BindingID != "" && c.sessionTools != nil && key.BindingID == c.sessionTools.binding.BindingID {
+		state = c.sessionTools
+	}
+	c.sessionToolsMu.Lock()
+	if selected := c.sessionToolBindings[key.BindingID]; selected != nil {
+		if state != nil {
+			state = nil // duplicate IDs must not resolve ambiguously
+		} else {
+			state = selected
+		}
+	}
+	c.sessionToolsMu.Unlock()
 	if state == nil {
-		c.sendSessionFrameOrClose(ctx, ErrorMessage(req.ID, MethodNotFound(req.Method)))
+		c.respondSessionRequest(ctx, req.ID, nil, InvalidRequest("unknown runtime binding"))
 		return
 	}
 	if req.Method == MethodRuntimeSessionCancel {
@@ -140,7 +228,7 @@ func (c *Client) receiveSessionRequest(ctx context.Context, req Request) {
 	}
 	// Cleanup must remain available even when all operation slots are occupied.
 	if req.Method == MethodRuntimeSessionUnwatch {
-		value, err := c.handleSessionRequest(ctx, req.Method, p, nil, nil)
+		value, err := c.handleSessionRequest(ctx, state, req.Method, p, nil, nil)
 		c.respondSessionRequest(ctx, req.ID, value, err)
 		return
 	}
@@ -206,7 +294,7 @@ func (c *Client) receiveSessionRequest(ctx context.Context, req Request) {
 			cancel()
 			<-state.slots
 		}()
-		value, err := c.handleSessionRequest(callCtx, req.Method, p, watchCtx, watchCancel)
+		value, err := c.handleSessionRequest(callCtx, state, req.Method, p, watchCtx, watchCancel)
 		c.respondSessionRequest(ctx, req.ID, value, err)
 	}()
 }
@@ -223,8 +311,7 @@ func (c *Client) respondSessionRequest(ctx context.Context, id ID, value any, er
 	}
 }
 
-func (c *Client) handleSessionRequest(ctx context.Context, method string, p SessionRuntimeRequest, watchCtx context.Context, cancel context.CancelFunc) (any, error) {
-	s := c.sessionTools
+func (c *Client) handleSessionRequest(ctx context.Context, s *clientSessionTools, method string, p SessionRuntimeRequest, watchCtx context.Context, cancel context.CancelFunc) (any, error) {
 	switch method {
 	case MethodRuntimeSessionState:
 		if p.Operation != nil || p.Watch != nil || p.WatchID != "" {

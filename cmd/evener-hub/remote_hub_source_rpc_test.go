@@ -570,10 +570,9 @@ func TestHubRPCThreadReadSubscribeDeliversMaskedRemoteStatus(t *testing.T) {
 				t.Fatal("relayed status capabilities = nil, want the read path's masked set")
 			}
 			// The daemon claims Shutdown as well, so this pins both halves of the
-			// mask: the one forwarded action survives, every unforwarded one is
-			// dropped. An expectation of the empty set would only show that a claim
-			// containing no forwarded action stays empty.
-			if want := (appwire.ThreadCapabilities{Shutdown: true}); *status.Capabilities != want {
+			// mask: qualified shared input and shutdown survive, while
+			// unqualified mutations such as interrupt and fork remain absent.
+			if want := (appwire.ThreadCapabilities{Send: true, Queue: true, Steer: true, SkillInput: true, Shutdown: true}); *status.Capabilities != want {
 				t.Fatalf("relayed status capabilities = %+v, want %+v", *status.Capabilities, want)
 			}
 			return

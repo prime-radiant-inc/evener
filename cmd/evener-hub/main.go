@@ -533,6 +533,10 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// the WebServer below, after the SSH manager, and it is only ever invoked
 	// once the background loops start attaching hosts.
 	var hostAttachedWakeup func(host string)
+	// Bound after web and the hub lifetime exist. SSH OnEvent runs under its
+	// per-host lock, so the hook schedules rather than performing bridge RPCs.
+	var restoreRemoteManagers func(host string)
+	var prepareRemoteManagers func(context.Context, string) error
 	// hostManageEvents is late-bound the same way: the host-management
 	// controller is constructed with the WebServer below, after the SSH
 	// manager, and its event recorder is only ever invoked once the
@@ -551,7 +555,20 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	if newSSHManager == nil {
 		newSSHManager = sshconn.New
 	}
+	// The same durable identity is used for local settings and the authenticated
+	// bridge exchange. A process token is not a hub identity.
+	sessionToolsHubID, err := sessionPreferences.HubID()
+	if err != nil {
+		return fmt.Errorf("session tools hub identity: %w", err)
+	}
 	sshManager := newSSHManager(hostRegistry, sshconn.Options{
+		SessionToolsHubID: sessionToolsHubID,
+		BeforeAttached: func(ctx context.Context, host string) error {
+			if prepareRemoteManagers == nil {
+				return nil
+			}
+			return prepareRemoteManagers(ctx, host)
+		},
 		Logger:         func(format string, args ...any) { _, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...) },
 		BuildBinary:    deploy.buildBinary,
 		BuildSource:    deploy.buildSource,
@@ -586,6 +603,9 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 					// poke above is: the sshconn event loop must never block.
 					if hostAttachedWakeup != nil {
 						hostAttachedWakeup(host)
+					}
+					if restoreRemoteManagers != nil {
+						restoreRemoteManagers(host)
 					}
 				},
 			)(ev)
@@ -831,6 +851,30 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}()
 	startBackground := func(fn func()) {
 		background.Go(fn)
+	}
+	restoreRemoteManagers = func(host string) {
+		startBackground(func() {
+			source, ok := web.sources.Source(host)
+			remote, isRemote := source.(*appsource.RemoteHubSource)
+			if !ok || !isRemote {
+				return
+			}
+			restoreCtx, done := context.WithTimeout(ctx, 2*time.Minute)
+			defer done()
+			if err := remote.RestoreManagerBindings(restoreCtx); err != nil && ctx.Err() == nil {
+				_, _ = fmt.Fprintf(stderr, "[hub] remote Manager restoration for host %q failed: %v\n", host, err)
+			}
+		})
+	}
+	prepareRemoteManagers = func(ctx context.Context, host string) error {
+		source, ok := web.sources.Source(host)
+		remote, isRemote := source.(*appsource.RemoteHubSource)
+		if !ok || !isRemote || !remote.HasManagerBindings() {
+			return nil
+		}
+		restoreCtx, done := context.WithTimeout(ctx, 2*time.Minute)
+		defer done()
+		return remote.RestoreManagerBindings(restoreCtx)
 	}
 	// Transcript-index repairs are detached on purpose: a multi-minute rebuild
 	// must not hold hub exit, so the repair goroutine deliberately escapes

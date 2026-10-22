@@ -5,11 +5,67 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 
 	"primeradiant.com/evener/appwire"
 )
+
+const sessionToolsAuthorityConflict = "local and identified peer Manager bindings cannot share a connection"
+
+// IdentifySessionToolsPeer records an honest cooperating peer's persisted ID
+// only on this initialized authenticated connection. The caller must first
+// verify bridge origin and negotiated support. A token alone authenticates
+// access, not the particular hub named by this nonsecret ID.
+func IdentifySessionToolsPeer(ctx context.Context, id string) error {
+	c, ok := ctx.Value(connectionContextKey{}).(*Connection)
+	if !ok || !c.isInitialized() {
+		return appwire.InvalidRequest("initialized peer connection is required")
+	}
+	if strings.TrimSpace(id) == "" {
+		return appwire.InvalidParams("hub identity is required")
+	}
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+	if c.sessionTools != nil {
+		return appwire.Conflict(sessionToolsAuthorityConflict)
+	}
+	c.peerMu.Lock()
+	defer c.peerMu.Unlock()
+	if c.peerHubID != "" && c.peerHubID != id {
+		return appwire.Conflict("connection already identified as another hub")
+	}
+	c.peerHubID = id
+	return nil
+}
+
+// SessionToolsPeerID reads the completed exchange on the current connection.
+func SessionToolsPeerID(ctx context.Context) string {
+	c, ok := ctx.Value(connectionContextKey{}).(*Connection)
+	if !ok {
+		return ""
+	}
+	c.peerMu.Lock()
+	defer c.peerMu.Unlock()
+	return c.peerHubID
+}
+
+// SessionToolsPeerBinding resolves only an already-installed binding on this
+// very connection, never an ID supplied in another connection's arguments.
+func SessionToolsPeerBinding(ctx context.Context, bindingID string) (appwire.SessionBinding, bool) {
+	c, ok := ctx.Value(connectionContextKey{}).(*Connection)
+	if !ok || bindingID == "" {
+		return appwire.SessionBinding{}, false
+	}
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+	bound := c.sessionBindings[bindingID]
+	if bound == nil || bound.ctx.Err() != nil {
+		return appwire.SessionBinding{}, false
+	}
+	return bound.binding, true
+}
 
 // InstallSessionTools explicitly admits binding on a daemon server. The daemon
 // validates its live identity before installing the connection-private client.
@@ -48,21 +104,44 @@ func (c *Connection) bindSessionTools(ctx context.Context, req appwire.Request) 
 		return appwire.ErrorMessage(req.ID, appwire.InvalidParams("binding identity is required"))
 	}
 	if c.sessionLifetime != nil {
-		ctx = c.sessionLifetime
+		ctx = context.WithValue(c.sessionLifetime, connectionContextKey{}, c)
 	}
 	lifetime, cancel := context.WithCancel(ctx)
 	bound := &sessionToolsConnection{conn: c, binding: binding, ctx: lifetime, cancel: cancel, pending: map[string]chan appwire.Message{}, watches: map[string]*sessionWatchConsumer{}}
 	c.sessionMu.Lock()
 	defer c.sessionMu.Unlock()
+	peerID := SessionToolsPeerID(ctx)
 	if c.sessionTools != nil {
 		cancel()
+		if peerID != "" {
+			return appwire.ErrorMessage(req.ID, appwire.Conflict(sessionToolsAuthorityConflict))
+		}
 		return appwire.ErrorMessage(req.ID, appwire.Conflict("connection is already bound"))
+	}
+	if c.sessionBindings[binding.BindingID] != nil {
+		cancel()
+		return appwire.ErrorMessage(req.ID, appwire.Conflict("binding ID already installed"))
+	}
+	if peerID != "" && binding.HubID != peerID {
+		cancel()
+		return appwire.ErrorMessage(req.ID, appwire.Conflict(sessionToolsAuthorityConflict))
+	}
+	if len(c.sessionBindings) != 0 && peerID == "" {
+		cancel()
+		return appwire.ErrorMessage(req.ID, appwire.Conflict(sessionToolsAuthorityConflict))
 	}
 	if err := c.server.sessionToolsBind(lifetime, binding, bound); err != nil {
 		cancel()
 		return appwire.ErrorMessage(req.ID, WireError(err))
 	}
-	c.sessionTools = bound
+	if peerID == "" {
+		c.sessionTools = bound
+	} else {
+		if c.sessionBindings == nil {
+			c.sessionBindings = map[string]*sessionToolsConnection{}
+		}
+		c.sessionBindings[binding.BindingID] = bound
+	}
 	return appwire.ResponseMessage(req.ID, binding)
 }
 
@@ -71,23 +150,41 @@ func (c *Connection) bindSessionTools(ctx context.Context, req appwire.Request) 
 func (c *Connection) receiveSessionFrame(msg appwire.Message) bool {
 	c.sessionMu.Lock()
 	bound := c.sessionTools
+	peers := make([]*sessionToolsConnection, 0, len(c.sessionBindings))
+	for _, peer := range c.sessionBindings {
+		peers = append(peers, peer)
+	}
 	c.sessionMu.Unlock()
-	if bound == nil {
+	if bound == nil && len(peers) == 0 {
 		return false
 	}
 	if msg.Response != nil || msg.Error != nil {
-		bound.mu.Lock()
-		ch := bound.pending[msg.IDString()]
-		delete(bound.pending, msg.IDString())
-		bound.mu.Unlock()
-		if ch != nil {
-			ch <- msg
+		for _, current := range append(peers, bound) {
+			if current == nil {
+				continue
+			}
+			current.mu.Lock()
+			ch := current.pending[msg.IDString()]
+			delete(current.pending, msg.IDString())
+			current.mu.Unlock()
+			if ch != nil {
+				ch <- msg
+				return true
+			}
 		}
 		return true
 	}
 	if msg.Notification != nil && msg.Notification.Method == appwire.NotificationRuntimeSessionObservation {
 		var p appwire.SessionRuntimeObservation
-		if json.Unmarshal(msg.Notification.Params, &p) != nil || p.BindingID != bound.binding.BindingID {
+		if json.Unmarshal(msg.Notification.Params, &p) != nil || p.BindingID == "" {
+			return true
+		}
+		if bound == nil || p.BindingID != bound.binding.BindingID {
+			c.sessionMu.Lock()
+			bound = c.sessionBindings[p.BindingID]
+			c.sessionMu.Unlock()
+		}
+		if bound == nil {
 			return true
 		}
 		bound.mu.Lock()
@@ -119,7 +216,16 @@ func (c *Connection) closeSessionTools() {
 	c.sessionMu.Lock()
 	bound := c.sessionTools
 	c.sessionTools = nil
+	peers := c.sessionBindings
+	c.sessionBindings = nil
 	c.sessionMu.Unlock()
+	for _, peer := range peers {
+		closeSessionBinding(peer)
+	}
+	closeSessionBinding(bound)
+}
+
+func closeSessionBinding(bound *sessionToolsConnection) {
 	if bound == nil {
 		return
 	}
@@ -135,7 +241,7 @@ func (c *Connection) closeSessionTools() {
 
 func (b *sessionToolsConnection) request(ctx context.Context, method string, p appwire.SessionRuntimeRequest, result any) error {
 	p.BindingID = b.binding.BindingID
-	requestID := -int64(b.next.Add(1))
+	requestID := -int64(b.conn.sessionNext.Add(1))
 	id := appwire.NewIntID(requestID)
 	ch := make(chan appwire.Message, 1)
 	b.mu.Lock()
@@ -163,7 +269,7 @@ func (b *sessionToolsConnection) request(ctx context.Context, method string, p a
 	case <-ctx.Done():
 		// A local waiter ending must also release the remote owner. This fixed
 		// cleanup request needs no pending slot, even when all calls are busy.
-		cancelID := appwire.NewIntID(-int64(b.next.Add(1)))
+		cancelID := appwire.NewIntID(-int64(b.conn.sessionNext.Add(1)))
 		if !b.conn.enqueue(appwire.RequestMessage(cancelID, appwire.MethodRuntimeSessionCancel, appwire.SessionRuntimeCancel{BindingID: b.binding.BindingID, RequestID: requestID})) {
 			b.conn.cancelContext()
 		}
@@ -238,7 +344,7 @@ func (b *sessionToolsConnection) unwatch(watchID string) {
 	if b.ctx.Err() != nil {
 		return
 	}
-	id := appwire.NewIntID(-int64(b.next.Add(1)))
+	id := appwire.NewIntID(-int64(b.conn.sessionNext.Add(1)))
 	if !b.conn.enqueue(appwire.RequestMessage(id, appwire.MethodRuntimeSessionUnwatch, appwire.SessionRuntimeRequest{BindingID: b.binding.BindingID, WatchID: watchID})) {
 		b.conn.cancelContext()
 	}

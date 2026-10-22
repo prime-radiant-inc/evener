@@ -62,6 +62,16 @@ func recordedObservationUpdates(items []appwire.ThreadItem, request appwire.Sess
 }
 
 func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.SessionWatchRequest) (<-chan appwire.SessionWatchUpdate, error) {
+	// A remote AppWire subscriber stream is not the local observation lease.
+	// Fail this unsupported target before asking for a snapshot or a lease; the
+	// local watch's admission and handoff order below remains unchanged.
+	if target, err := appwire.ParseRef(request.Ref); err == nil {
+		if source, err := b.owner.sources.SourceForRef(target.String()); err == nil {
+			if _, remote := source.(*appsource.RemoteHubSource); remote {
+				return nil, appwire.Unavailable("remote job_watch is unsupported: the remote observation lease is unavailable; reads, status, input and approval remain available")
+			}
+		}
+	}
 	view, err := b.State(ctx)
 	if err != nil {
 		return nil, err
@@ -82,7 +92,7 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 	}
 	relaySource, ok := source.(appsource.RelaySessionSource)
 	if !ok {
-		return nil, appwire.Unavailable("source has no canonical observation")
+		return nil, appwire.Unavailable("remote job_watch is unsupported: the remote observation lease is unavailable; reads, status, input and approval remain available")
 	}
 	key, err := managerPreferenceRef(b.owner.cfg, appwire.Thread{Evener: appwire.EvenerThread{Ref: view.Ref, InstanceID: view.InstanceID}})
 	if err != nil {

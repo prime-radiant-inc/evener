@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"primeradiant.com/evener/appwire"
@@ -617,8 +618,12 @@ type admittedRequest struct {
 }
 
 type Connection struct {
+	peerMu          sync.Mutex
+	peerHubID       string
 	sessionMu       sync.Mutex
 	sessionTools    *sessionToolsConnection
+	sessionBindings map[string]*sessionToolsConnection
+	sessionNext     atomic.Uint64
 	sessionLifetime context.Context
 	id              string
 	server          *Server

@@ -6,6 +6,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appserver"
 )
@@ -79,7 +80,7 @@ func managerSetError(err error, view *appwire.ManagerView) error {
 	return wire
 }
 
-func registerThreadManagerSetHandler(server *appserver.Server, cfg hubcore.WebConfig, readThread func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error), resyncThread func(appwire.Thread, string)) {
+func registerThreadManagerSetHandler(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry, readThread func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error), resyncThread func(appwire.Thread, string)) {
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerThreadManagerSet, func(ctx context.Context, params appwire.ThreadManagerSetParams) (appwire.ThreadManagerSetResponse, error) {
 		var response appwire.ThreadManagerSetResponse
 		requested, err := appwire.ParseRef(params.Ref)
@@ -87,7 +88,18 @@ func registerThreadManagerSetHandler(server *appserver.Server, cfg hubcore.WebCo
 			return response, appwire.InvalidParams(err.Error())
 		}
 		if requested.SourceID != "local" {
-			return response, appwire.Unavailable("Manager settings on remote hosts are not supported yet")
+			if hostRoutingOrigin(ctx) != "" {
+				return response, appwire.InvalidRequest("bridge may not route Manager setting to a second host")
+			}
+			source, err := sourceForThread(sources, requested.String(), "")
+			if err != nil {
+				return response, err
+			}
+			remote, ok := source.(*appsource.RemoteHubSource)
+			if !ok {
+				return response, appwire.Unavailable("remote Manager setting requires an attached hub")
+			}
+			return remote.SetManager(ctx, params)
 		}
 		if cfg.SessionPreferences == nil {
 			return response, appwire.Unavailable("session preferences storage is not configured")
@@ -105,9 +117,17 @@ func registerThreadManagerSetHandler(server *appserver.Server, cfg hubcore.WebCo
 			return response, managerSetError(err, nil)
 		}
 		view := appwire.ManagerView{Ref: read.Thread.Evener.Ref, InstanceID: read.Thread.Evener.InstanceID, Setting: setting}
-		hubID, err := cfg.SessionPreferences.HubID()
-		if err != nil {
-			return response, managerSetError(err, &view)
+		var hubID string
+		if hostRoutingOrigin(ctx) == hostRoutingOriginBridge {
+			hubID = appserver.SessionToolsPeerID(ctx)
+			if hubID == "" {
+				return response, appwire.InvalidRequest("peer identity exchange required before Manager setting")
+			}
+		} else {
+			hubID, err = cfg.SessionPreferences.HubID()
+			if err != nil {
+				return response, managerSetError(err, &view)
+			}
 		}
 		current, err := cfg.SessionPreferences.SetManager(key, hubID, params.Enabled)
 		if err != nil {

@@ -118,20 +118,17 @@ func (s *RemoteHubSource) fromRemoteThreadStartError(err error) error {
 // hub's own claim, so an action reaches a remote session only when this set names
 // it AND the remote advertises it.
 //
-// Shutdown is the one entry. The controller forwards thread/shutdown on the owning
-// host's client, and the remote hub serves it against its own local daemon, so a
-// controller can stop a session it did not host. The intersection keeps the remote
-// daemon's own claim in charge: a remote that does not advertise Shutdown stays
-// refused. The remaining lifecycle verbs and the turn mutations are implemented in
-// remote_hub_mutations.go but stay masked until the host capability probe can say
-// the host supports them.
+// Shared text, queue, steer and typed skill/command input use the same forwarded
+// methods and receipts for human and Manager callers. The remote daemon's own
+// claim still gates each flag. Shutdown remains forwarded. Unqualified lifecycle
+// and other mutations remain masked.
 //
 // A capability not named here stays masked, so a field added to
 // appwire.ThreadCapabilities later starts masked until a component names the method
 // that answers for it. TestRemoteHubCapabilitiesMatchForwardedMethods holds the
 // correspondence between this set and those methods; change the two together.
 func remoteForwardedThreadCapabilities() appwire.ThreadCapabilities {
-	return appwire.ThreadCapabilities{Shutdown: true}
+	return appwire.ThreadCapabilities{Send: true, Queue: true, Steer: true, SkillInput: true, CommandInput: true, Shutdown: true}
 }
 
 // maskRemoteThreadCapabilities intersects the capability set a remote hub reported
@@ -142,8 +139,8 @@ func remoteForwardedThreadCapabilities() appwire.ThreadCapabilities {
 // the remote's set verbatim would advertise an action this controller cannot carry:
 // it would fail with an internal error the moment a client used one (the hub gates
 // each of them on exactly these fields — cmd/evener-hub's threadActionAvailable).
-// Component 05c implements the mutations but forwards only Shutdown here; the
-// other flags turn on with 05d's host capability probe.
+// The shared qualified input and Shutdown paths are forwarded; unrelated
+// mutations remain masked.
 //
 // Fields are listed one by one rather than copied wholesale so a capability added
 // to appwire.ThreadCapabilities later starts masked until a component names the

@@ -22,8 +22,10 @@ import (
 type LocalDaemonSource struct {
 	sessionToolsFactory     func(appwire.SessionBinding) (appwire.SessionHubClient, error)
 	sessionToolsHubID       func() (string, error)
+	sessionToolsAuthority   func(appwire.SessionBinding) (string, string, error)
 	sessionToolsPoke        chan struct{}
 	sessionToolsMu          sync.Mutex
+	sessionToolsChanged     chan struct{}
 	sessionToolsLifetime    context.Context
 	sessionToolsConnections map[string]sessionToolsLiveConnection
 	sourceID                string
@@ -196,8 +198,9 @@ func (s *LocalDaemonSource) ID() string {
 }
 
 type sessionToolsLiveConnection struct {
-	binding   appwire.SessionBinding
-	transport appwire.Transport
+	binding       appwire.SessionBinding
+	peerBindingID string
+	transport     appwire.Transport
 }
 
 // SetSessionTools is installed before any source connection starts. It does not
@@ -206,7 +209,15 @@ func (s *LocalDaemonSource) SetSessionTools(factory func(appwire.SessionBinding)
 	s.sessionToolsFactory = factory
 	s.sessionToolsHubID = hubID
 	s.sessionToolsPoke = make(chan struct{}, 1)
+	s.sessionToolsChanged = make(chan struct{})
 	s.sessionToolsConnections = map[string]sessionToolsLiveConnection{}
+}
+
+// SetSessionToolsAuthority resolves the desired owner from durable preference
+// state. A binding whose authority changed is retired through relay recovery,
+// never displaced while it is live on the daemon connection.
+func (s *LocalDaemonSource) SetSessionToolsAuthority(authority func(appwire.SessionBinding) (string, string, error)) {
+	s.sessionToolsAuthority = authority
 }
 
 func (s *LocalDaemonSource) SessionToolsThread(binding appwire.SessionBinding) (appwire.Thread, error) {
@@ -230,6 +241,32 @@ func (s *LocalDaemonSource) ReconcileSessionTools() {
 	case s.sessionToolsPoke <- struct{}{}:
 	default:
 	}
+}
+
+// AwaitSessionToolsBinding waits for the existing daemon connection owner to
+// install the identified binding. A remote bridge bind must not be reported
+// ready while its daemon still advertises the ordinary tool schema.
+func (s *LocalDaemonSource) AwaitSessionToolsBinding(ctx context.Context, binding appwire.SessionBinding) error {
+	for {
+		s.sessionToolsMu.Lock()
+		connection := s.sessionToolsConnections[binding.Ref]
+		changed := s.sessionToolsChanged
+		ready := connection.binding.BindingID != "" && connection.binding.InstanceID == binding.InstanceID && connection.binding.HubID == binding.HubID && connection.peerBindingID == binding.BindingID
+		s.sessionToolsMu.Unlock()
+		if ready {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-changed:
+		}
+	}
+}
+
+func (s *LocalDaemonSource) signalSessionToolsChanged() {
+	close(s.sessionToolsChanged)
+	s.sessionToolsChanged = make(chan struct{})
 }
 
 // RunSessionTools holds demand on the existing canonical relay, whose recovery
@@ -257,6 +294,7 @@ func (s *LocalDaemonSource) RunSessionTools(ctx context.Context) {
 		for ref, connection := range s.sessionToolsConnections {
 			transports = append(transports, connection.transport)
 			delete(s.sessionToolsConnections, ref)
+			s.signalSessionToolsChanged()
 		}
 		s.sessionToolsMu.Unlock()
 		for _, transport := range transports {
@@ -281,9 +319,18 @@ func (s *LocalDaemonSource) RunSessionTools(ctx context.Context) {
 		s.sessionToolsMu.Lock()
 		var stale []appwire.Transport
 		for ref, connection := range s.sessionToolsConnections {
-			if wanted[ref].Evener.InstanceID != connection.binding.InstanceID {
+			desired, desiredBindingID := connection.binding.HubID, connection.peerBindingID
+			if s.sessionToolsAuthority != nil {
+				var err error
+				desired, desiredBindingID, err = s.sessionToolsAuthority(connection.binding)
+				if err != nil {
+					desired = ""
+				}
+			}
+			if wanted[ref].Evener.InstanceID != connection.binding.InstanceID || desired != connection.binding.HubID || desiredBindingID != connection.peerBindingID {
 				stale = append(stale, connection.transport)
 				delete(s.sessionToolsConnections, ref)
+				s.signalSessionToolsChanged()
 			}
 		}
 		s.sessionToolsMu.Unlock()
@@ -447,6 +494,7 @@ func (s *LocalDaemonSource) AcquireRelaySession(ref appwire.Ref) (RelaySessionRo
 				client := appwire.NewClient(transport)
 				client.SetLogf(hubConnectionLogf)
 				var binding appwire.SessionBinding
+				var peerBindingID string
 				s.sessionToolsMu.Lock()
 				bindingLifetime := s.sessionToolsLifetime
 				s.sessionToolsMu.Unlock()
@@ -456,9 +504,16 @@ func (s *LocalDaemonSource) AcquireRelaySession(ref appwire.Ref) (RelaySessionRo
 						binding = appwire.SessionBinding{Ref: ref.String(), InstanceID: currentEntry.SessionID, HubID: hubID, BindingID: rand.Text()}
 						owner, ownerErr := s.sessionToolsFactory(binding)
 						if ownerErr == nil {
+							if remote, ok := owner.(interface{ SessionToolsHubID() string }); ok {
+								binding.HubID = remote.SessionToolsHubID()
+							}
+							if remote, ok := owner.(interface{ SessionToolsBindingID() string }); ok {
+								peerBindingID = remote.SessionToolsBindingID()
+							}
 							client.SetSessionTools(binding, owner)
 						} else {
-							binding = appwire.SessionBinding{}
+							binding.BindingID = ""
+							binding.HubID = ""
 						}
 					}
 				}
@@ -481,9 +536,21 @@ func (s *LocalDaemonSource) AcquireRelaySession(ref appwire.Ref) (RelaySessionRo
 							_ = transport.Close()
 							return nil, nil, bindingLifetime.Err()
 						}
-						s.sessionToolsConnections[ref.String()] = sessionToolsLiveConnection{binding: binding, transport: transport}
 						s.sessionToolsMu.Unlock()
+					} else {
+						binding.HubID = ""
 					}
+				}
+				if s.sessionToolsFactory != nil {
+					binding.Ref = ref.String()
+					binding.InstanceID = currentEntry.SessionID
+					s.sessionToolsMu.Lock()
+					s.sessionToolsConnections[ref.String()] = sessionToolsLiveConnection{binding: binding, peerBindingID: peerBindingID, transport: transport}
+					s.signalSessionToolsChanged()
+					s.sessionToolsMu.Unlock()
+					// A peer can bind while this dial is in flight. Its earlier
+					// reconciliation saw no connection, so check the published one.
+					s.ReconcileSessionTools()
 				}
 				return client, transport, nil
 			},

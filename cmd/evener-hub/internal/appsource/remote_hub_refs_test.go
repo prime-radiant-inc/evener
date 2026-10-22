@@ -30,6 +30,7 @@ func allRemoteThreadCapabilities() appwire.ThreadCapabilities {
 		SharedNotes:       true,
 		Rename:            true,
 		SkillInput:        true,
+		CommandInput:      true,
 		StopSubagent:      true,
 		PageBefore:        true,
 	}
@@ -37,16 +38,14 @@ func allRemoteThreadCapabilities() appwire.ThreadCapabilities {
 
 // maskedRemoteThreadCapabilities is the set a remote thread may advertise for the
 // full daemon claim: the remote's own flags intersected with the actions this
-// source forwards. Shutdown is the one action remoteForwardedThreadCapabilities
-// names today; every other staged action stays masked.
-var maskedRemoteThreadCapabilities = appwire.ThreadCapabilities{Shutdown: true}
+// source forwards. Shared input and Shutdown are enabled; unrelated actions
+// remain masked.
+var maskedRemoteThreadCapabilities = appwire.ThreadCapabilities{Send: true, Steer: true, Queue: true, SkillInput: true, CommandInput: true, Shutdown: true}
 
 // A remote hub reports the capability set of its OWN session daemon. Those flags
 // describe what the remote daemon can do, not what the controller can forward, so
-// the mask must drop every action this source cannot carry. Shutdown is the one
-// action remoteForwardedThreadCapabilities names today (the controller rpc
-// thread/shutdown forwards through RemoteHubSource.ShutdownThread), so it is the
-// one flag that survives; every other staged action stays masked.
+// the mask must drop every action this source cannot carry. Shared input and
+// Shutdown survive; unrelated staged actions remain masked.
 func TestRemoteHubFromRemoteThreadMasksUnforwardedCapabilities(t *testing.T) {
 	source := NewRemoteHubSource("host", nil, nil)
 	thread, err := source.fromRemoteThread(appwire.Thread{

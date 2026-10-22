@@ -9,10 +9,11 @@ import (
 )
 
 type Registry struct {
-	mu       sync.RWMutex
-	sources  map[string]Source
-	onAdd    func(Source)
-	onRemove func(Source)
+	mu                sync.RWMutex
+	sources           map[string]Source
+	onAdd             func(Source)
+	onSessionToolsAdd func(Source)
+	onRemove          func(Source)
 }
 
 func NewRegistry() *Registry {
@@ -37,6 +38,14 @@ func (r *Registry) SetOnAdd(fn func(Source)) {
 	r.onAdd = fn
 }
 
+// SetOnSessionToolsAdd keeps runtime host registration wired to the same
+// Manager owner as startup sources, without replacing the host fan-out hook.
+func (r *Registry) SetOnSessionToolsAdd(fn func(Source)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.onSessionToolsAdd = fn
+}
+
 // SetOnRemove registers a callback invoked once for each source Remove
 // deletes, after the deletion is visible to lookups. It is how a long-lived
 // consumer — the host-notification fan-out — learns about sources removed
@@ -58,7 +67,11 @@ func (r *Registry) Add(source Source) {
 	r.mu.Lock()
 	r.sources[source.ID()] = source
 	onAdd := r.onAdd
+	onSessionToolsAdd := r.onSessionToolsAdd
 	r.mu.Unlock()
+	if onSessionToolsAdd != nil {
+		onSessionToolsAdd(source)
+	}
 	if onAdd != nil {
 		onAdd(source)
 	}

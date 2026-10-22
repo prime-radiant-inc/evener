@@ -3444,6 +3444,7 @@ export interface SessionBinding {
   instanceId: string;
   hubId: string;
   bindingId: string;
+  preferenceRevision?: number;
 }
 
 export interface SessionControlRequest {
@@ -3581,6 +3582,7 @@ export interface SessionObservationMetadata {
 export interface SessionOperationRequest {
   discover?: ThreadListParams;
   read?: ThreadReadParams;
+  create?: ThreadStartParams;
   start?: TurnStartParams;
   queue?: TurnQueueParams;
   steer?: TurnSteerParams;
@@ -3591,6 +3593,7 @@ export interface SessionOperationResponse {
   actor: SessionActor;
   discover?: SessionDiscovery;
   read?: ThreadReadResponse;
+  create?: ThreadStartResponse;
   start?: TurnStartResponse;
   queue?: TurnQueueResponse;
   steer?: TurnSteerResponse;
@@ -3683,6 +3686,20 @@ export interface SessionStatusTarget {
   ref: string;
 }
 
+export interface SessionToolsInput {
+  bindingId: string;
+  method: string;
+  params: unknown;
+}
+
+export interface SessionToolsPeerParams {
+  hubId: string;
+}
+
+export interface SessionToolsPeerResponse {
+  hubId: string;
+}
+
 export interface SessionURL {
   id: string;
   url: string;
@@ -3711,6 +3728,7 @@ export interface SessionWatchRequest {
 export interface SessionWatchUpdate {
   snapshot?: ThreadReadResponse;
   notification?: Notification;
+  event?: string;
   metadata: SessionObservationMetadata;
 }
 
@@ -4952,6 +4970,9 @@ export interface UrlsUpdatedParams {
   urls?: SessionURL[];
 }
 
+export interface Value {
+}
+
 export interface WarningParams {
   threadId: string;
   ref: string;
@@ -4972,12 +4993,14 @@ export interface WatchKey {
 export const METHOD_NAMES = [
   "initialize",
   "ping",
+  "evener/hub/session-tools/identify",
   "evener/runtime/session/bind",
   "evener/runtime/session/state",
   "evener/runtime/session/invoke",
   "evener/runtime/session/watch",
   "evener/runtime/session/unwatch",
   "evener/runtime/session/cancel",
+  "evener/hub/session-tools/input",
   "thread/list",
   "thread/read",
   "thread/unsubscribe",
@@ -5294,12 +5317,14 @@ export type ThreadItemEventKind = (typeof THREAD_ITEM_EVENT_KINDS)[number];
 export interface MethodTypes {
   "initialize": { params: InitializeParams; result: InitializeResponse };
   "ping": { params: EmptyParams; result: EmptyResponse };
+  "evener/hub/session-tools/identify": { params: SessionToolsPeerParams; result: SessionToolsPeerResponse };
   "evener/runtime/session/bind": { params: SessionBinding; result: SessionBinding };
   "evener/runtime/session/state": { params: SessionRuntimeRequest; result: ManagerView };
   "evener/runtime/session/invoke": { params: SessionRuntimeRequest; result: SessionOperationResponse };
   "evener/runtime/session/watch": { params: SessionRuntimeRequest; result: EmptyResponse };
   "evener/runtime/session/unwatch": { params: SessionRuntimeRequest; result: EmptyResponse };
   "evener/runtime/session/cancel": { params: SessionRuntimeCancel; result: EmptyResponse };
+  "evener/hub/session-tools/input": { params: SessionToolsInput; result: Value };
   "thread/list": { params: ThreadListParams; result: ThreadListResponse };
   "thread/read": { params: ThreadReadParams; result: ThreadReadResponse };
   "thread/unsubscribe": { params: ThreadUnsubscribeParams; result: EmptyResponse };

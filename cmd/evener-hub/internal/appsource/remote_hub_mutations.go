@@ -34,7 +34,7 @@ func (s *RemoteHubSource) mutationCall(ctx context.Context, method string, clien
 		// call (and it keeps a genuine caller cancellation raw).
 		return s.mapConnectError(err)
 	}
-	if err := client.Request(ctx, method, params, out); err != nil {
+	if err := s.requestOn(ctx, client, method, params, out); err != nil {
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
 		}

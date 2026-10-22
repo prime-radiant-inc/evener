@@ -42,6 +42,8 @@ type ThreadManagerSetErrorData struct {
 }
 
 const (
+	MethodHubSessionToolsIdentify         = "evener/hub/session-tools/identify"
+	MethodHubSessionToolsInput            = "evener/hub/session-tools/input"
 	MethodRuntimeSessionBind              = "evener/runtime/session/bind"
 	MethodRuntimeSessionState             = "evener/runtime/session/state"
 	MethodRuntimeSessionInvoke            = "evener/runtime/session/invoke"
@@ -51,6 +53,26 @@ const (
 	NotificationRuntimeSessionObservation = "evener/runtime/session/observation"
 )
 
+// SessionToolsPeerParams names the cooperating hub over an authenticated
+// bridge connection. A hub token authenticates access to the host, not the
+// peer's particular identity; HubID itself is nonsecret.
+type SessionToolsPeerParams struct {
+	HubID string `json:"hubId"`
+}
+
+type SessionToolsPeerResponse struct {
+	HubID string `json:"hubId"`
+}
+
+// SessionToolsInput carries one qualified mutation on the identified bridge.
+// The receiving hub selects the Manager caller from BindingID on this
+// connection, not from Params. Method is restricted to fixed input methods.
+type SessionToolsInput struct {
+	BindingID string          `json:"bindingId"`
+	Method    string          `json:"method"`
+	Params    json.RawMessage `json:"params"`
+}
+
 // SessionHubClient is private runtime transport, never a launch option.
 type SessionHubClient interface {
 	State(context.Context) (ManagerView, error)
@@ -59,10 +81,11 @@ type SessionHubClient interface {
 }
 
 type SessionBinding struct {
-	Ref        string `json:"ref"`
-	InstanceID string `json:"instanceId"`
-	HubID      string `json:"hubId"`
-	BindingID  string `json:"bindingId"`
+	Ref                string `json:"ref"`
+	InstanceID         string `json:"instanceId"`
+	HubID              string `json:"hubId"`
+	BindingID          string `json:"bindingId"`
+	PreferenceRevision uint64 `json:"preferenceRevision,omitempty"`
 }
 
 type SessionActor struct {

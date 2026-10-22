@@ -1072,6 +1072,9 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			} else if json.Unmarshal(msg.Request.Params, &params) != nil {
 				return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionInvalid}
 			}
+			if msg.Request.Method == appwire.MethodThreadRead && !params.Subscribe {
+				return notSubscribe
+			}
 			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
 			if err != nil {
 				if _, parseErr := appwire.ParseRef(strings.TrimSpace(params.Ref)); params.Ref != "" && parseErr != nil {
@@ -1083,9 +1086,6 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 					}
 				}
 				return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionUnresolved}
-			}
-			if msg.Request.Method == appwire.MethodThreadRead && !params.Subscribe && !relayOnThreadRead(source) {
-				return notSubscribe
 			}
 			// Stable refs and current IDs name one pending admission, but
 			// must not rewrite the relay's notification delivery identity.
@@ -1131,6 +1131,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			return appserver.SubscriptionAdmissionResolution{Key: key, Intent: appserver.SubscriptionAdmissionResolved}
 		},
 		Features: appwire.FeatureSet{
+			SessionTools:              cfg.SessionPreferences != nil,
 			ThreadList:                true,
 			ThreadTurnsList:           true,
 			TurnStart:                 true,
@@ -1323,7 +1324,9 @@ func registerThreadHandlers(
 	operations := &sessionOperations{cfg: cfg, sources: sources, relays: relays, server: server}
 	readThread := operations.Read
 	operations.install()
-	registerThreadManagerSetHandler(server, cfg, readThread, operations.resyncThread)
+	registerSessionToolsPeer(server, cfg)
+	operations.registerRemoteInput()
+	registerThreadManagerSetHandler(server, cfg, sources, readThread, operations.resyncThread)
 	// thread/unsubscribe drops only the calling connection's downstream
 	// subscription — the browser's own read of a thread it is navigating away
 	// from. The relay key is derived by the same helper thread/read's relay
