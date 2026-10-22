@@ -1199,6 +1199,9 @@ func (m *Manager) reinstallRetainedTarget(ctx context.Context, host hostreg.Host
 		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
 			return fmt.Errorf("%w: retained target is no longer independently missing or nonexecutable", errOwnerEvidence)
 		}
+		if facts.OS == "darwin" {
+			return m.revalidateRetainedDarwin(ctx, host, facts, prior)
+		}
 		if prior.pid != "0" && facts.OS == "linux" {
 			generation, generationErr := m.ownerGeneration(ctx, host, prior.pid)
 			if generationErr == nil {

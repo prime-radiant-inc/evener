@@ -1910,6 +1910,19 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 			return nil, errDeployDisabled
 		}
 	}
+	// A replacement can finish before its SSH reply is lost. Reconcile only
+	// independently proven successors before an unusable disk contract blocks
+	// attachment. Usable contracts retain the existing recorded recovery path.
+	// An unproven effect keeps every startup and recovery guard.
+	unusableStartup := preflight.launchErr != nil || validateStartupContract(host.Name, facts) != nil
+	if pending := m.pendingRestart(host.Name); pending.selected != nil && !pending.deployment && unusableStartup {
+		probeCtx, cancelProbe := context.WithTimeout(ctx, m.opts.attemptLimit())
+		_, complete, _ := m.proveSelectedRestartComplete(probeCtx, host, facts, pending)
+		cancelProbe()
+		if complete {
+			m.clearPendingRestart(host.Name)
+		}
+	}
 	// Settle against the intent recorded before the effect, never later disk
 	// facts. A changed file must not turn a failed deployment into a success.
 	if pending := m.pendingRestart(host.Name); runningKnown && pending.selected == nil && pending.completedBy(running, facts) {
