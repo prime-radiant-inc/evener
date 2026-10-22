@@ -1166,12 +1166,13 @@ func TestHostRestartRenewsStoppedReplacementCommand(t *testing.T) {
 					assertRestartRecoveryRecord(t, store, restart.ID, hostops.StateFailed)
 				}
 				wantStarts := 1
-				if check == "occupied-port" {
+				switch check {
+				case "occupied-port":
 					// A cold start cannot stop another owner. The new hub's own
 					// lock rejects this attempt before it publishes an incarnation.
 					assertStopped(1)
 					wantStarts++
-				} else if check == "unknown-port" {
+				case "unknown-port":
 					assertStopped(0)
 				}
 				if check != "matching" && check != "wrong-probe-process" {

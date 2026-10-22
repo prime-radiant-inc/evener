@@ -22,6 +22,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostlock"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
+	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/hubendpoint"
 )
 
@@ -267,7 +268,13 @@ func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
 			newAddr := strings.TrimPrefix(successor.URL, "http://")
 			mux := http.NewServeMux()
 			appServer := newHubAppServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, appsource.NewRegistry())
+			rpcDone, restartDone := make(chan struct{}, 1), make(chan struct{}, 1)
+			appserver.HandleTyped(appServer.Router(), appwire.MethodEvenerHubRestart, func(ctx context.Context, params appwire.HubRestartParams) (appwire.HubRestartResponse, error) {
+				defer func() { restartDone <- struct{}{} }()
+				return hubRestart(ctx, params)
+			})
 			mux.HandleFunc("/rpc", func(w http.ResponseWriter, r *http.Request) {
+				defer func() { rpcDone <- struct{}{} }()
 				rpcRequests.Add(1)
 				appServer.ServeWebSocket(w, r)
 			})
@@ -446,6 +453,21 @@ func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
 				}
 			}
 			t.Cleanup(func() { scheduleHubRestartOnly = previousSchedule })
+			t.Cleanup(func() {
+				if rpcRequests.Load() == 0 {
+					return
+				}
+				// Server.Close does not wait for hijacked handlers, and the
+				// WebSocket handler does not join its request worker. Both must
+				// finish before any cleanup restores the globals hubRestart reads.
+				for _, done := range []<-chan struct{}{restartDone, rpcDone} {
+					select {
+					case <-done:
+					case <-time.After(5 * time.Second):
+						t.Error("restart RPC did not finish before fixture cleanup")
+					}
+				}
+			})
 			deps := defaultMainDeps()
 			var stdout, stderr bytes.Buffer
 			deps.stdout = &stdout

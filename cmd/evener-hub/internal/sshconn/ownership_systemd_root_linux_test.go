@@ -62,9 +62,10 @@ func TestSystemdFallbackRequiresSelectedRootEvidence(t *testing.T) {
 				if remote == serviceLockVnodeTestCommand(currentRoot, pid) {
 					vnodeReads++
 					prefix := ""
-					if name == "lock-query-unavailable" {
+					switch name {
+					case "lock-query-unavailable":
 						prefix = "awk() { return 23; }; "
-					} else if name == "lock-query-ambiguous" {
+					case "lock-query-ambiguous":
 						// Read the real table twice to inject duplicate owner records.
 						prefix = "awk() { command awk \"$@\" /proc/locks; }; "
 					}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -239,7 +240,7 @@ func TestRecoveryEntryBindingDeploySupersession(t *testing.T) {
 			// A stopped deployment now retains its selected owner too. Superseding
 			// that effect uses the existing journal API, not an unbound new write.
 			journal := func(id int) DeploymentJournal {
-				return DeploymentJournal{OperationID: fmt.Sprint(id), Supersede: func(prior string) error {
+				return DeploymentJournal{OperationID: strconv.Itoa(id), Supersede: func(prior string) error {
 					if prior != "1" || id != 2 {
 						t.Fatalf("unexpected supersession: %s -> %d", prior, id)
 					}

@@ -122,8 +122,8 @@ func TestRemoteRestartPreservesBinding(t *testing.T) {
 				env = "export EVENER_HUB_LISTEN_ADDR=127.0.0.1:0; " + env
 			}
 			launch := "CDPATH='' cd -P -- /srv || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; " + env + "nohup /opt/evener hub" + tc.launch + " >>'" + logPath + "' 2>&1 </dev/null &"
-			commands = append(commands, ownerCommand{"kill -- 4242", ""}, ownerCommand{processAliveRemote("4242"), pidAliveMarker + "\n"}, ownerCommand{processAliveRemote("4242"), pidGoneMarker + "\n"})
-			commands = append(commands, ownerCommand{resolveDeployCommand("/opt/evener"), "/opt/evener\n"}, ownerCommand{"CDPATH='' cd -P -- /srv && pwd -P", "/srv\n"})
+			commands = append(commands, ownerCommand{"kill -- 4242", ""}, ownerCommand{processAliveRemote("4242"), pidAliveMarker + "\n"}, ownerCommand{processAliveRemote("4242"), pidGoneMarker + "\n"},
+				ownerCommand{resolveDeployCommand("/opt/evener"), "/opt/evener\n"}, ownerCommand{"CDPATH='' cd -P -- /srv && pwd -P", "/srv\n"})
 			configProbe := second[9]
 			if tc.psHeader {
 				configProbe = second[10]

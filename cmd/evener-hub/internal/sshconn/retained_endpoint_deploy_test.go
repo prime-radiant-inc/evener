@@ -116,7 +116,7 @@ func TestRetainedDeployRepairRequiresRealEndpointEvidence(t *testing.T) {
 					case "malformed":
 						want = ErrPreflightDecode
 					}
-					if !errors.Is(err, want) || isTerminal(err) != terminal || errors.Is(err, ErrEndpointMigration) != (want == ErrEndpointMigration) {
+					if !errors.Is(err, want) || isTerminal(err) != terminal || errors.Is(err, ErrEndpointMigration) != errors.Is(want, ErrEndpointMigration) {
 						t.Fatalf("unexpected report failure classification: %v", err)
 					}
 				}

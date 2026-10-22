@@ -97,8 +97,8 @@ func TestRemoteOwnerDarwinImageAssociation(t *testing.T) {
 			last := commands[len(commands)-1]
 			commands = commands[:len(commands)-1]
 			rootStat := "test ! -L /srv/state/hub.lock && test -f /srv/state/hub.lock && stat -f '%d %i' /srv/state/hub.lock"
-			commands = append(commands, ownerCommand{rootStat, "16777234 777\n"}, ownerCommand{"lsof -a -p 4242 -F pftDi", "p4242\nf3\ntREG\nD0x1000012\ni777\n"}, ownerCommand{rootStat, "16777234 777\n"})
-			commands = append(commands, ownerCommand{"canonical", "/opt/evener\n"}, ownerCommand{"stat -f '%d %i' /opt/evener", "16777234 12345\n"}, ownerCommand{"lsof -a -p 4242 -d txt -F Di", "p4242\nftxt\nD0x1000012\ni12345\n"}, ownerCommand{"/opt/evener launch-check --json", tc.capability}, ownerCommand{"stat -f '%d %i' /opt/evener", "16777234 12345\n"})
+			commands = append(commands, ownerCommand{rootStat, "16777234 777\n"}, ownerCommand{"lsof -a -p 4242 -F pftDi", "p4242\nf3\ntREG\nD0x1000012\ni777\n"}, ownerCommand{rootStat, "16777234 777\n"},
+				ownerCommand{"canonical", "/opt/evener\n"}, ownerCommand{"stat -f '%d %i' /opt/evener", "16777234 12345\n"}, ownerCommand{"lsof -a -p 4242 -d txt -F Di", "p4242\nftxt\nD0x1000012\ni12345\n"}, ownerCommand{"/opt/evener launch-check --json", tc.capability}, ownerCommand{"stat -f '%d %i' /opt/evener", "16777234 12345\n"})
 			if tc.capable {
 				commands = append(commands, last)
 			}
@@ -123,8 +123,7 @@ func TestRemoteOwnerServiceAssociationWithoutVisibleLock(t *testing.T) {
 	// independently inspect that owner and refresh the supervisor association.
 	commands := []ownerCommand{base[0], {"selected-lock", ""}, base[10], base[12], base[13]}
 	commands = append(commands, base[4:10]...)
-	commands = append(commands, ownerCommand{serviceLockVnodeRemote("/srv/state", "4242"), "match\n"})
-	commands = append(commands, base[11], base[14])
+	commands = append(commands, ownerCommand{serviceLockVnodeRemote("/srv/state", "4242"), "match\n"}, base[11], base[14])
 	commands = append(commands, base[2:17]...)
 	commands = append(commands, base[10:15]...)
 	fr, index := ownerRunner(t, commands)
@@ -154,8 +153,8 @@ func TestRemoteOwnerDarwinRejectsMismatchedSelectedDefinition(t *testing.T) {
 	host, _ := ownerCommands(t)
 	commands := darwinOwnerCommands(t, false, false)[:5]
 	commands[2].output = strings.ReplaceAll(commands[2].output, "/srv/selected.toml", "/srv/other.toml")
-	commands = append(commands, ownerCommand{ownerContext("/srv", []string{"HOME=/home/dev"}) + resolveDeployCommand("/srv/other.toml"), "/srv/other.toml\n"})
 	commands = append(commands,
+		ownerCommand{ownerContext("/srv", []string{"HOME=/home/dev"}) + resolveDeployCommand("/srv/other.toml"), "/srv/other.toml\n"},
 		ownerCommand{ownerContext("/srv", []string{"HOME=/home/dev"}) + "stat -Lc '%d %i' /srv/other.toml 2>/dev/null || stat -L -f '%d %i' /srv/other.toml", "1 200\n"},
 		ownerCommand{ownerContext("/srv", []string{"HOME=/home/dev"}) + "stat -Lc '%d %i' /srv/selected.toml 2>/dev/null || stat -L -f '%d %i' /srv/selected.toml", "1 100\n"})
 	fr, index := ownerRunner(t, commands)

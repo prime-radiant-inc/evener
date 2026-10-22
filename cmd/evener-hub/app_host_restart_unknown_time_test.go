@@ -75,8 +75,8 @@ func TestHostRestartRecoveryWithoutPredecessorTime(t *testing.T) {
 				m.cfg.recoverDeployment = func(ctx context.Context, entry hostreg.Host, holder hostops.Holder, guard func() error) (*sshconn.RestartResult, error) {
 					result, err := recoverDeployment(ctx, entry, holder, guard)
 					if err == nil && result != nil {
-						copy := *result
-						recovered = &copy
+						resultCopy := *result
+						recovered = &resultCopy
 					}
 					return result, err
 				}

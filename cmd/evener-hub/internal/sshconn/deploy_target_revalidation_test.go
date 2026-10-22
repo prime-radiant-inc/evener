@@ -171,9 +171,10 @@ func TestFreshDeployResolvedTargetFailuresAreNotAbsence(t *testing.T) {
 				t.Fatal(restoreErr)
 			}
 			want := ErrSSHStart
-			if failure == "unreadable-file" {
+			switch failure {
+			case "unreadable-file":
 				want = ErrEndpointMigration
-			} else if failure == "unsearchable-parent" {
+			case "unsearchable-parent":
 				want = ErrDeploy // The post-build target resolution refuses first.
 			}
 			if !errors.Is(err, want) || effects.installers != 0 || effects.pushes != 0 || len(fr.recordedStarts()) != 0 {

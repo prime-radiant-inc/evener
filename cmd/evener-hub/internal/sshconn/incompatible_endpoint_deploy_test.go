@@ -87,7 +87,7 @@ func TestIncompatibleDeployRequiresRealEndpointEvidence(t *testing.T) {
 				case "malformed":
 					want = ErrPreflightDecode
 				}
-				if !errors.Is(err, want) || isTerminal(err) != terminal || errors.Is(err, ErrEndpointMigration) != (want == ErrEndpointMigration) || reads != 1 {
+				if !errors.Is(err, want) || isTerminal(err) != terminal || errors.Is(err, ErrEndpointMigration) != errors.Is(want, ErrEndpointMigration) || reads != 1 {
 					t.Fatalf("bad report: err=%v reads=%d", err, reads)
 				}
 			}

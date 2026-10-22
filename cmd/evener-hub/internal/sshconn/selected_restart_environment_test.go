@@ -1,6 +1,7 @@
 package sshconn
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -202,7 +203,7 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 					return launchContract("release-selected"), nil
 				case serviceDefinitionRemote(sup):
 					got := readDefinition()
-					if string(got) != string(definition) {
+					if !bytes.Equal(got, definition) {
 						t.Fatal("fixture definition changed after selection")
 					}
 					return got, nil

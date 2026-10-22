@@ -182,7 +182,7 @@ func TestSystemdEffectiveLaunchEnvironment(t *testing.T) {
 				case "values=$(" + command + " show --property=Environment --value -- " + sup.label + ") || exit; printf '%s\\n' \"$values\" | " + narrowEnvironmentFilter:
 					return exec.CommandContext(ctx, "/bin/sh", "-c", "systemctl() { printf '%s\\n' "+shellquote.RemoteWord(unit)+"; }; "+remote).Output()
 				}
-				for _, field := range strings.Split(props, "\n") {
+				for field := range strings.SplitSeq(props, "\n") {
 					if !strings.HasPrefix(field, "EnvironmentFiles=") {
 						continue
 					}
@@ -275,7 +275,7 @@ func TestSystemdEnvironmentFileParsing(t *testing.T) {
 		{name: "nul", contents: "HOME=/home\x00suffix", refuse: true},
 		{name: "invalid-utf8", contents: "HOME=/home\xff", refuse: true},
 		{name: "unicode-path", contents: "HOME=/home/dév\n", want: "HOME=/home/dév\x00"},
-		{name: "double-quote-escapes", contents: "HOME=\"/home/\\$d/\\`b/\\\"q/\\\\s/\\other\"\n", want: "HOME=/home/$d/`b/\"q/\\s/\\other\x00"},
+		{name: "double-quote-escapes", contents: "HOME=\"/home/\\$d/\\`b/\\\"q/\\\\s/\\opaque\"\n", want: "HOME=/home/$d/`b/\"q/\\s/\\opaque\x00"},
 		{name: "single-quote-literals", contents: "HOME='/home/\\$`\"literal'\n", want: "HOME=/home/\\$`\"literal\x00"},
 		{name: "double-quote-continuation", contents: "HOME=\"/home/\\\ncontinued\"\n", want: "HOME=/home/continued\x00"},
 		{name: "literal-interior-quotes", contents: "HOME=/home/'some'\"thing\"\n", want: "HOME=/home/'some'\"thing\"\x00"},

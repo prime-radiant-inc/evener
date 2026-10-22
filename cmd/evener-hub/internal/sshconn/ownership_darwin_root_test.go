@@ -33,13 +33,13 @@ func TestDarwinUnavailableRootEvidence(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				if err := os.Symlink(filepath.Join(base, "target/inner"), filepath.Join(base, "srv/link")); err != nil {
+				if err := os.Symlink(filepath.Join(base, "target", "inner"), filepath.Join(base, "srv", "link")); err != nil {
 					t.Fatal(err)
 				}
 				// Declare startup's lexical destination independently of the remote
 				// helper. The uncleaned spelling reaches a different real lock.
-				startupLock := filepath.Join(base, "srv/state/hub.lock")
-				otherLock := filepath.Join(base, "target/state/hub.lock")
+				startupLock := filepath.Join(base, "srv", "state", "hub.lock")
+				otherLock := filepath.Join(base, "target", "state", "hub.lock")
 				for _, lock := range []string{startupLock, otherLock} {
 					if err := os.WriteFile(lock, nil, 0o600); err != nil {
 						t.Fatal(err)
