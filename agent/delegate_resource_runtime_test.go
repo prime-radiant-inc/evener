@@ -132,6 +132,23 @@ func TestRestoredDelegatePostStartPopulationEmitsTaskCorrection(t *testing.T) {
 	if update.TaskStoreOwnerSessionID != fixture.childID {
 		t.Fatalf("restored task correction owner = %q, want child %q", update.TaskStoreOwnerSessionID, fixture.childID)
 	}
+
+	// A restored child whose tasks this restore seeded must be announced to the
+	// same way a fresh spawn is: one plan message carrying every step and
+	// naming the step to work first.
+	sub.sess.mu.Lock()
+	var queued []string
+	for _, message := range sub.sess.steeringQueue {
+		queued = append(queued, message.Text)
+	}
+	sub.sess.mu.Unlock()
+	var plan string
+	for _, text := range queued {
+		if len(parseCurrentTaskElements(text)) > 0 {
+			plan = text
+		}
+	}
+	assertCurrentTaskElement(t, plan, 1, "Resume the committed workflow.")
 }
 
 func TestDelegateResourceRuntime_RunningSendDoesNotStartSuccessor(t *testing.T) {
