@@ -25,7 +25,7 @@ func TestDelegateTerminalIncidentReplay(t *testing.T) {
 		t.Fatalf("notice = %q, want the in-progress task", notice)
 	}
 
-	admitted, err := (&subagent{sess: s}).admitTerminalReport(context.Background(), &TerminalCandidate{
+	admitted, err := (&subagent{sess: s}).admitTerminalReport(context.Background(), &terminalReportCandidate{
 		Disposition: tool.CommunicateEndReasonDone,
 	})
 	if err != nil {

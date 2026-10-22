@@ -2038,10 +2038,10 @@ func (s *Session) communicateEndReason() string {
 
 // terminalCandidate is the accepted terminal communicate's disposition and
 // target, read as one value for admission.
-func (s *Session) terminalCandidate() TerminalCandidate {
+func (s *Session) terminalCandidate() terminalReportCandidate {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return TerminalCandidate{
+	return terminalReportCandidate{
 		Disposition: s.comm.endReason,
 		Blocker:     s.comm.blocker,
 		WaitingOn:   s.comm.waitingOn,

@@ -54,7 +54,7 @@ func TestTerminalAdmissionRefusesDoneWithRunningJob(t *testing.T) {
 	jm.running = map[string]*runningJob{"job-1": {}}
 	jm.mu.Unlock()
 
-	admitted, err := (&subagent{sess: s}).admitTerminalReport(context.Background(), &TerminalCandidate{
+	admitted, err := (&subagent{sess: s}).admitTerminalReport(context.Background(), &terminalReportCandidate{
 		Disposition: tool.CommunicateEndReasonDone,
 	})
 	if err != nil {
@@ -74,7 +74,7 @@ func TestTerminalAdmissionRefusesSameBatchWatchCreation(t *testing.T) {
 	}
 	jm.mu.Unlock()
 
-	admitted, err := (&subagent{sess: s}).admitTerminalReport(context.Background(), &TerminalCandidate{
+	admitted, err := (&subagent{sess: s}).admitTerminalReport(context.Background(), &terminalReportCandidate{
 		Disposition: tool.CommunicateEndReasonDone,
 	})
 	if err != nil {
@@ -92,7 +92,7 @@ func TestTerminalAdmissionRefusesPendingChildDelivery(t *testing.T) {
 	s.pendingDelegateDeliveries = []delegateDeliveryPlan{{deliveryID: "delivery-1"}}
 	s.delegateDeliveryMu.Unlock()
 
-	admitted, err := (&subagent{sess: s}).admitTerminalReport(context.Background(), &TerminalCandidate{
+	admitted, err := (&subagent{sess: s}).admitTerminalReport(context.Background(), &terminalReportCandidate{
 		Disposition: tool.CommunicateEndReasonDone,
 	})
 	if err != nil {
@@ -108,7 +108,7 @@ func TestTerminalAdmissionRefusesUnknownEvidence(t *testing.T) {
 	s, jm := newAdmissionSession(t)
 	jm.dir = t.TempDir()
 
-	admitted, err := (&subagent{sess: s}).admitTerminalReport(context.Background(), &TerminalCandidate{
+	admitted, err := (&subagent{sess: s}).admitTerminalReport(context.Background(), &terminalReportCandidate{
 		Disposition: tool.CommunicateEndReasonDone,
 	})
 	if err != nil {
@@ -122,7 +122,7 @@ func TestTerminalAdmissionRefusesUnknownEvidence(t *testing.T) {
 
 func TestTerminalAdmissionPublishesEmptyDone(t *testing.T) {
 	s, _ := newAdmissionSession(t)
-	admitted, err := (&subagent{sess: s}).admitTerminalReport(context.Background(), &TerminalCandidate{
+	admitted, err := (&subagent{sess: s}).admitTerminalReport(context.Background(), &terminalReportCandidate{
 		Disposition: tool.CommunicateEndReasonDone,
 	})
 	if err != nil {
@@ -147,7 +147,7 @@ func TestTerminalAdmissionPublishesBlockedWithLiveWork(t *testing.T) {
 	}
 	a := &subagent{sess: s}
 
-	admitted, err := a.admitTerminalReport(context.Background(), &TerminalCandidate{
+	admitted, err := a.admitTerminalReport(context.Background(), &terminalReportCandidate{
 		Disposition: tool.CommunicateEndReasonBlocked,
 		Blocker:     "repository access",
 	})
@@ -179,7 +179,7 @@ func TestTerminalAdmissionBlockedAddsWorkToEmptyMetadata(t *testing.T) {
 	jm.mu.Lock()
 	jm.running = map[string]*runningJob{"job-1": {}}
 	jm.mu.Unlock()
-	candidate := &TerminalCandidate{
+	candidate := &terminalReportCandidate{
 		Disposition: tool.CommunicateEndReasonBlocked,
 		Blocker:     "repository access",
 	}
@@ -207,7 +207,7 @@ func TestTerminalAdmissionRestartSafety(t *testing.T) {
 	jm.mu.Unlock()
 
 	packet := delegatestore.TerminalPacket{Metadata: json.RawMessage(`{"run_ended_at":"2026-01-01T00:00:00Z"}`)}
-	refused := &TerminalCandidate{Disposition: tool.CommunicateEndReasonDone, Packet: packet}
+	refused := &terminalReportCandidate{Disposition: tool.CommunicateEndReasonDone, Packet: packet}
 	admitted, err := (&subagent{sess: s}).admitTerminalReport(context.Background(), refused)
 	if err != nil {
 		t.Fatalf("admitTerminalReport: %v", err)
@@ -221,7 +221,7 @@ func TestTerminalAdmissionRestartSafety(t *testing.T) {
 
 	s.comm = communicateResult{called: true, text: "blocked", endReason: tool.CommunicateEndReasonBlocked, blocker: "access"}
 	a := &subagent{sess: s}
-	blocked := &TerminalCandidate{
+	blocked := &terminalReportCandidate{
 		Disposition: tool.CommunicateEndReasonBlocked,
 		Blocker:     "access",
 		Packet:      delegatestore.TerminalPacket{Metadata: json.RawMessage(`{"run_ended_at":"2026-01-01T00:00:00Z"}`)},
@@ -249,7 +249,7 @@ func TestDelegateWaitOnRunningJobKeepsRunOpenAndResumes(t *testing.T) {
 	jm.mu.Unlock()
 	a := &subagent{sess: s}
 
-	accepted, err := a.admitTerminalWait(context.Background(), &TerminalCandidate{
+	accepted, err := a.admitTerminalWait(context.Background(), &terminalReportCandidate{
 		Disposition: tool.CommunicateEndReasonWaitingOnWork,
 		WaitingOn:   "job-1",
 	})
@@ -271,7 +271,7 @@ func TestDelegateWaitOnRunningJobKeepsRunOpenAndResumes(t *testing.T) {
 	jm.mu.Lock()
 	jm.running = nil
 	jm.mu.Unlock()
-	admitted, err := a.admitTerminalReport(context.Background(), &TerminalCandidate{
+	admitted, err := a.admitTerminalReport(context.Background(), &terminalReportCandidate{
 		Disposition: tool.CommunicateEndReasonDone,
 	})
 	if err != nil {
@@ -284,7 +284,7 @@ func TestDelegateWaitOnRunningJobKeepsRunOpenAndResumes(t *testing.T) {
 
 func TestDelegateWaitOnSettledJobIsRefusedAndSteered(t *testing.T) {
 	s, _ := newAdmissionSession(t)
-	accepted, err := (&subagent{sess: s}).admitTerminalWait(context.Background(), &TerminalCandidate{
+	accepted, err := (&subagent{sess: s}).admitTerminalWait(context.Background(), &terminalReportCandidate{
 		Disposition: tool.CommunicateEndReasonWaitingOnWork,
 		WaitingOn:   "job-1",
 	})
@@ -308,7 +308,7 @@ func TestDelegateWaitOnRemovedWatchGetsCancellationNotice(t *testing.T) {
 	delete(jm.watches, watchKey{VisibleSessionID: s.id, Target: "job-1", ReceiverSessionID: s.id})
 	jm.mu.Unlock()
 
-	accepted, err := (&subagent{sess: s}).admitTerminalWait(context.Background(), &TerminalCandidate{
+	accepted, err := (&subagent{sess: s}).admitTerminalWait(context.Background(), &terminalReportCandidate{
 		Disposition: tool.CommunicateEndReasonWaitingOnWork,
 		WaitingOn:   "watch-1",
 	})

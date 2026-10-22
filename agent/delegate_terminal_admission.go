@@ -17,9 +17,9 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-// TerminalCandidate is one accepted terminal communicate call's disposition and
+// terminalReportCandidate is one accepted terminal communicate call's disposition and
 // target, before it is admitted or refused at finalization.
-type TerminalCandidate struct {
+type terminalReportCandidate struct {
 	Disposition string
 	Packet      delegatestore.TerminalPacket
 	Blocker     string
@@ -97,11 +97,11 @@ func (s *Session) hasQueuedWaitInput(target string) bool {
 // refusal steers the delegate once and leaves the run open; it returns
 // admitted=false with a nil error. A non-nil error means the refusal itself
 // could not be delivered.
-func (a *subagent) admitTerminalReport(ctx context.Context, candidate *TerminalCandidate) (bool, error) {
+func (a *subagent) admitTerminalReport(ctx context.Context, candidate *terminalReportCandidate) (bool, error) {
 	return a.admitTerminalReportWithInventory(ctx, candidate)
 }
 
-func (a *subagent) admitTerminalReportWithInventory(ctx context.Context, candidate *TerminalCandidate) (bool, error) {
+func (a *subagent) admitTerminalReportWithInventory(ctx context.Context, candidate *terminalReportCandidate) (bool, error) {
 	if a == nil || a.sess == nil {
 		return false, errors.New("terminal admission requires a delegate session")
 	}
@@ -161,7 +161,7 @@ func (a *subagent) admitTerminalReportWithInventory(ctx context.Context, candida
 // admitTerminalWait accepts a waiting_on_work report only when the named waker
 // is live and has an existing completion or cancellation path. An accepted wait
 // publishes no packet and leaves the run open.
-func (a *subagent) admitTerminalWait(ctx context.Context, candidate *TerminalCandidate) (bool, error) {
+func (a *subagent) admitTerminalWait(ctx context.Context, candidate *terminalReportCandidate) (bool, error) {
 	if a == nil || a.sess == nil {
 		return false, errors.New("terminal wait requires a delegate session")
 	}
