@@ -482,8 +482,29 @@ func TestManagerRemoteFanoutAndRevocation(t *testing.T) {
 	if _, err := source.SetManager(ctx, appwire.ThreadManagerSetParams{Ref: managerOne, Enabled: true}); err != nil {
 		t.Fatalf("re-enable on the same bridge: %v", err)
 	}
-	if read, err := bindings[managerOne].Invoke(ctx, appwire.SessionOperationRequest{Read: &appwire.ThreadReadParams{Ref: remoteWorker}}); err != nil || read.Read == nil || read.Actor.ManagerRef != managerOne {
-		t.Fatalf("re-enabled Manager cannot read the worker: %+v err=%v", read, err)
+	// Disabling tears down the workspace's relay transport, so the re-enable's
+	// first reads can land while it is re-dialing. That is a recovery boundary,
+	// not a failure: wait for the Manager to become usable instead of sampling
+	// one instant of it.
+	deadline := time.Now().Add(20 * time.Second)
+	var reenabled appwire.SessionOperationResponse
+	for {
+		response, err := bindings[managerOne].Invoke(ctx, appwire.SessionOperationRequest{Read: &appwire.ThreadReadParams{Ref: remoteWorker}})
+		if err == nil && response.Read != nil && response.Actor.ManagerRef == managerOne {
+			reenabled = response
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("re-enabled Manager never read the worker: %+v err=%v", response.Read, err)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("re-enabled Manager never read the worker before the test deadline")
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	if reenabled.Actor.ManagerRef != managerOne {
+		t.Fatalf("re-enabled Manager acted as %q", reenabled.Actor.ManagerRef)
 	}
 	if read, err := bindings[managerTwo].Invoke(ctx, appwire.SessionOperationRequest{Read: &appwire.ThreadReadParams{Ref: remoteWorker}}); err != nil || read.Read == nil || read.Actor.ManagerRef != managerTwo {
 		t.Fatalf("re-enable displaced an independent Manager: %+v err=%v", read, err)
