@@ -218,6 +218,14 @@ type watchConfig struct {
 	sourceDelegateID   string
 	sourceGeneration   uint64
 	stableReceiver     bool
+	hubRef             string
+	hubInstance        string
+	hubGeneration      string
+	hubID              string
+	hubRevision        uint64
+	hubCompletion      bool
+	hubSeen            map[string]bool
+	hubSuspended       bool
 	target             string
 	outputMatch        string
 	outputMatcher      *jobstore.OutputMatcher
@@ -2248,6 +2256,12 @@ func watchConfigSnapshot(cfg *watchConfig) *jobstore.WatchConfigSnapshot {
 		SourceDelegateGeneration: cfg.sourceGeneration,
 		StableReceiver:           cfg.stableReceiver,
 		Note:                     cfg.note,
+		HubRef:                   cfg.hubRef,
+		HubInstance:              cfg.hubInstance,
+		HubGeneration:            cfg.hubGeneration,
+		HubID:                    cfg.hubID,
+		HubRevision:              cfg.hubRevision,
+		HubCompletion:            cfg.hubCompletion,
 	}
 	// A timer keeps only the seconds it derived and which mode derived them, so
 	// the snapshot rebuilds the field the model actually named: inspect and
@@ -3939,12 +3953,21 @@ func (jm *jobManager) noticeUnrestoredWatchEnds() error {
 	}
 	recs := jobstore.Fold(stored)
 	spoke := watchGenerationsThatSpoke(stored)
+	ended := make(map[watchFrameOrigin]bool)
+	for _, event := range stored {
+		if event.WatchSend != nil && event.WatchSend.EndNotice {
+			ended[watchFrameOrigin{watchID: event.WatchSend.Key.WatchID, generation: event.WatchSend.Key.WatchGeneration}] = true
+		}
+	}
 	for _, watch := range jm.watchesLostAtRestore {
-		if watch.SendTo == "" || spoke[watchFrameOrigin{watchID: watch.WatchID, generation: watch.Generation}] {
+		origin := watchFrameOrigin{watchID: watch.WatchID, generation: watch.Generation}
+		if watch.SendTo == "" || ended[origin] || (!hubWatchLostAtRestart(watch) && spoke[origin]) {
 			continue
 		}
 		var trigger string
-		if watch.SourceDelegateID != "" {
+		if hubWatchLostAtRestart(watch) {
+			trigger = "watch ended: Manager runtime restarted; observation of " + watch.HubRef + " stopped, re-register if still needed"
+		} else if watch.SourceDelegateID != "" {
 			trigger = watchLostAtRestartStableDelegateMessage(watch.SourceDelegateID)
 		} else if isWatchSessionTarget(watch.Target) {
 			// A session-target watch (source "self" or "parent") has no job

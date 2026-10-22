@@ -86,7 +86,7 @@ func (s *Session) composeHubRegistry() {
 	}
 	if s.hubOrdinary == nil {
 		s.hubOrdinary = map[string]*tool.RegisteredTool{}
-		for _, name := range []string{"job_list", "job_status", "delegate_send", "session_control"} {
+		for _, name := range []string{"job_list", "job_status", "job_watch", "delegate_send", "session_control"} {
 			if base := s.reg.Get(name); base != nil {
 				copy := *base
 				s.hubOrdinary[name] = &copy
@@ -125,7 +125,53 @@ func (s *Session) composeHubRegistry() {
 		}
 		_ = s.reg.Register(registered)
 	}
+	s.composeHubWatchTool()
 	s.composeHubInputTools()
+}
+
+func managerWatchDefinition(def llm.ToolDefinition) llm.ToolDefinition {
+	var params map[string]any
+	encoded, _ := json.Marshal(def.Parameters)
+	_ = json.Unmarshal(encoded, &params)
+	params["properties"].(map[string]any)["hub"] = map[string]any{
+		"type": "object", "additionalProperties": false,
+		"properties": map[string]any{
+			"ref":        map[string]any{"type": "string"},
+			"events":     map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{"status", "question", "approval", "communicate"}}},
+			"completion": map[string]any{"type": "boolean"},
+		}, "required": []string{"ref"},
+	}
+	def.Description += " With Manager enabled, operation=create and hub={ref,events,completion} watches recorded observations on the selected hub. Accepted terminal done for the watched generation alone ends completion watches. Connection loss suspends, disable ends, and runtime restart requires re-registration."
+	def.Parameters = params
+	return def
+}
+
+func (s *Session) composeHubWatchTool() {
+	const name = "job_watch"
+	if s.hubToolDenied(name) {
+		s.reg.Remove(name)
+		return
+	}
+	base := s.hubOrdinary[name]
+	var registered tool.RegisteredTool
+	if base != nil {
+		registered = *base
+	} else {
+		registered.Definition = tool.DefJobWatchNamed(availableEventKindNames(), s.resultToolName())
+	}
+	registered.Definition = managerWatchDefinition(registered.Definition)
+	registered.Schema = nil
+	registered.Execute = nil
+	registered.Exec = func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+		if _, ok := args["hub"]; ok {
+			return s.configureHubWatchRuntime(ctx, args)
+		}
+		if !s.hubOrdinaryAvailable(name) {
+			return nil, appwire.InvalidRequest("ordinary job_watch is unavailable")
+		}
+		return base.Exec(ctx, env, args)
+	}
+	_ = s.reg.Register(registered)
 }
 
 func managerSendDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDefinition {

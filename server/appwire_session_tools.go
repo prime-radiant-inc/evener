@@ -66,6 +66,7 @@ func (s *Server) SetSessionTools(current func() *agent.Session) {
 		}
 		clients.clients[binding.HubID] = &runtimeHubClient{current: current, session: session, binding: binding, client: client, ctx: lifetime, cancel: cancel}
 		clients.revision++
+		session.HubBindingChanged()
 		return nil
 	})
 }

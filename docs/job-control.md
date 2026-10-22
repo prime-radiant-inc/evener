@@ -56,6 +56,26 @@ When present, `causal` uses the original bounded watch keys and chain, including
 its truncation marker. Recover a missed update by reading the recorded session
 instead of guessing from the last live notification.
 
+With Manager mode enabled, `job_watch(operation="create", hub={"ref":
+"local:<workspace>", "events": ["communicate"], "completion": true})` watches
+the selected hub's recorded observations. `status`, `question`, `approval`,
+and `communicate` are supported event selectors; omit `events` to watch only
+completion. A root completion means the **accepted** terminal winner for the
+watched instance and generation had `endTurn: true` and `endReason: "done"`.
+Questions, waits, rejected terminal calls, and idle state do not complete it.
+The watch removes itself before delivering a completion wake.
+
+The watch keeps its ID and pending notices through a connection interruption.
+It sends one interruption notice for the loss, then compares the authoritative
+hub and Manager setting revision before resubscribing. A changed setting,
+disabled Manager mode, replaced target, or unsupported observation ends the old
+watch with re-registration guidance; enabling Manager again never resumes an
+ended watch. A runtime restart likewise ends continuing hub watches and sends
+a re-registration notice, including watches that had already reported events.
+Unstamped replay entries remain readable in history and generate a replay-gap
+notice instead of an automatic event trigger. Human session consumers keep
+their own relay subscriptions, and watch notices never answer human questions.
+
 ## Summary
 
 Evener exposes one unified list/status/control view over two typed resource

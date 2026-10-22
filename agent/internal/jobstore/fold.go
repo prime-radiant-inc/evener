@@ -116,6 +116,7 @@ func applyWatchEvent(watches map[string]*WatchRecord, e Event) {
 		// The receiver rides the config snapshot, which rows written before it
 		// existed do not have; those fold to an empty receiver, not a fold error.
 		if e.Watch.Config != nil {
+			rec.HubRef = e.Watch.Config.HubRef
 			rec.ReceiverSessionID = e.Watch.Config.ReceiverSessionID
 			rec.ReceiverDelegateID = e.Watch.Config.ReceiverDelegateID
 			rec.Source = e.Watch.Config.Source

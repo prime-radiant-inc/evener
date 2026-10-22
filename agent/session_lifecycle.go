@@ -454,6 +454,9 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 			s.endTurnLocked() // dying turn's work counts and it ends now (Decision 4/L3)
 		}
 		s.closing = true
+		for _, cancel := range s.hubWatchCancels {
+			cancel()
+		}
 		if !retirement {
 			s.state = SessionClosed
 		}

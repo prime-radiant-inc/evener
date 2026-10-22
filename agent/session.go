@@ -110,6 +110,8 @@ type Session struct {
 	hubClient              SessionHubClient
 	hubGeneration          uint64
 	hubEnabled             bool
+	hubWatchSignal         chan struct{}
+	hubWatchCancels        map[string]context.CancelFunc
 	hubOrdinary            map[string]*tool.RegisteredTool
 	hubRegistry            *tool.Registry
 	id                     string

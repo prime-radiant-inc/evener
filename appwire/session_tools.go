@@ -209,6 +209,7 @@ type SessionObservationMetadata struct {
 type SessionWatchUpdate struct {
 	Snapshot     *ThreadReadResponse        `json:"snapshot,omitempty"`
 	Notification *Notification              `json:"notification,omitempty"`
+	Event        string                     `json:"event,omitempty"`
 	Metadata     SessionObservationMetadata `json:"metadata"`
 }
 

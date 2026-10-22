@@ -147,6 +147,9 @@ func jobWatchTool(s *Session, args map[string]any, maxChars int) (any, error) {
 }
 
 func jobWatchToolWithContext(ctx context.Context, s *Session, args map[string]any, maxChars int) (any, error) {
+	if _, hub := args["hub"]; hub {
+		return s.configureHubWatchRuntime(ctx, args)
+	}
 	jm, err := sessionJobManager(s)
 	if err != nil {
 		return "", err
@@ -213,6 +216,9 @@ func jobWatchToolWithContext(ctx context.Context, s *Session, args map[string]an
 		}
 		if local {
 			res, err = jm.clearWatchByID(a.WatchID)
+			if err == nil {
+				s.cancelHubWatch(a.WatchID)
+			}
 			break
 		}
 		if ownerRes, found, ownerErr := s.clearStableReceiverWatchByID(a.WatchID); found || ownerErr != nil {

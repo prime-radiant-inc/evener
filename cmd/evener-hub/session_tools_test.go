@@ -30,6 +30,7 @@ type managerReadAdapter struct {
 	requests []llm.Request
 	ref      string
 	step     int
+	watch    bool
 }
 type managerNamedAdapter struct {
 	*managerReadAdapter
@@ -50,6 +51,12 @@ func (a *managerReadAdapter) Complete(_ context.Context, r llm.Request) (llm.Res
 	_ = json.Unmarshal(raw, &captured)
 	a.requests = append(a.requests, captured)
 	a.step++
+	if a.watch && a.step == 1 {
+		return activityRelayTool("job_watch", map[string]any{"operation": "create", "hub": map[string]any{"ref": a.ref, "events": []string{"status"}, "completion": true}, "intent": "Watch this session's recorded completion"}), nil
+	}
+	if a.watch {
+		return activityRelayTool("communicate", map[string]any{"message": "watch registered", "end_turn": true}), nil
+	}
 	switch a.step {
 	case 1:
 		return activityRelayTool("job_list", map[string]any{"hub": map[string]any{"mode": "discovery"}}), nil
@@ -249,7 +256,7 @@ func TestSessionToolsAutomaticBindingRevocationReconnect(t *testing.T) {
 	if err != nil || response.Discover == nil {
 		t.Fatalf("enabled discovery=%+v err=%v", response, err)
 	}
-	for _, watch := range []appwire.SessionWatchRequest{{Ref: ref, Events: []string{"question"}}, {Ref: ref, Events: []string{"approval"}}, {Ref: ref, Events: []string{"communicate"}}, {Ref: ref, Completion: true}, {Ref: ref, Events: []string{"unknown"}}, {Ref: ref, Events: []string{"status", "question"}}} {
+	for _, watch := range []appwire.SessionWatchRequest{{Ref: ref, Events: []string{"unknown"}}} {
 		if _, err := first.client.Watch(ctx, watch); err == nil {
 			t.Fatalf("unsupported observation accepted: %+v", watch)
 		}
@@ -402,7 +409,7 @@ func TestManagerAdmissionRealToolRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	daemon.ReplaceAppIdentity(identity, nil)
+	daemon.ReplaceAppIdentity(identity.WithBootGeneration("7@manager"), nil)
 	daemon.SetStatus(daemonserver.StatusInfo{SessionID: session.ID(), State: "idle", WorkingDir: workDir})
 	daemon.SetSessionTools(func() *agent.Session { return session })
 	daemon.WireTranscriptHistory(session)
@@ -553,6 +560,46 @@ func TestManagerAdmissionRealToolRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertManagerRequestSurface(t, adapter.requests[len(adapter.requests)-1], false)
+	if _, err = store.SetManager(ref, hubID, true); err != nil {
+		t.Fatal(err)
+	}
+	adapter.watch, adapter.step = true, 0
+	adapter.requests = nil
+	if _, err = session.ProcessInput(ctx, "install Manager watch over real connection", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(adapter.requests) < 2 {
+		t.Fatalf("watch provider requests=%d, want tool call and result", len(adapter.requests))
+	}
+	registered := false
+	for _, request := range adapter.requests[1:] {
+		for _, message := range request.Messages {
+			for _, part := range message.Content {
+				if part.ToolResult != nil && part.ToolResult.Name == "job_watch" {
+					var payload map[string]any
+					if json.Unmarshal(part.ToolResult.ToolState, &payload) == nil {
+						id, _ := payload["watch_id"].(string)
+						watching, _ := payload["watching"].(bool)
+						registered = registered || !part.ToolResult.IsError && id != "" && watching
+					}
+				}
+			}
+		}
+	}
+	if !registered {
+		var results []any
+		for _, request := range adapter.requests[1:] {
+			for _, message := range request.Messages {
+				for _, part := range message.Content {
+					if part.ToolResult != nil && part.ToolResult.Name == "job_watch" {
+						results = append(results, part.ToolResult)
+					}
+				}
+			}
+		}
+		encoded, _ := json.Marshal(results)
+		t.Fatalf("scripted runtime job_watch has no successful registration: %s", encoded)
+	}
 }
 
 func TestSessionToolsRuntimeIdentityReplacement(t *testing.T) {

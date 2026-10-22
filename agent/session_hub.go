@@ -16,7 +16,23 @@ func (s *Session) SetHubClient(client SessionHubClient) {
 	s.mu.Lock()
 	s.hubClient = client
 	s.hubGeneration++
+	s.signalHubBindingLocked()
 	s.mu.Unlock()
+}
+
+// HubBindingChanged wakes suspended watches after the existing transport has
+// installed a new binding. It does not grant authority or select another hub.
+func (s *Session) HubBindingChanged() {
+	s.mu.Lock()
+	s.signalHubBindingLocked()
+	s.mu.Unlock()
+}
+
+func (s *Session) signalHubBindingLocked() {
+	if s.hubWatchSignal != nil {
+		close(s.hubWatchSignal)
+	}
+	s.hubWatchSignal = make(chan struct{})
 }
 
 func (s *Session) refreshHubState(ctx context.Context) {
