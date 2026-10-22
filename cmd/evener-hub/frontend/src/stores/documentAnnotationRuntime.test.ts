@@ -6,9 +6,11 @@ import type { ComposerPreparation } from "../panes/session/composer/composerCont
 import { createDocumentAnnotationRuntime } from "./documentAnnotationRuntime";
 import {
   type AnnotationFixture,
+  type AnnotationFixtureWithRuntime,
   currentPreparation,
   deferred,
   openAnnotationFixture,
+  sampleChangedContent,
 } from "./testing/annotationFixture";
 
 afterEach(() => {
@@ -287,6 +289,52 @@ test("a storage success during two direct handoffs recovers the first refusal af
   // One refused preparation, one for the applied second handoff, and one for
   // the pass that completes the refusal.
   expect(preparations).toBe(3);
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+// A changed read confirms its suppression before the outside-transaction hook
+// and fences after it. A handoff consulting inside that window sees a
+// confirmation with no durable expiry row: the fence never ran, so the verdict
+// must stay retryable and record the runtime's need. A hook rejection then
+// releases the confirmation and publishes the settle - the only trigger that
+// spends that need. Either half alone leaves the operation stalled pending.
+test("a handoff consulting during a rejected fence hook is delivered after the release", async () => {
+  const hookStarted = deferred<void>();
+  const hookGate = deferred<void>();
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-runtime-rejected-fence-hook",
+    origin: "https://runtime.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+    prepareAnnotation: currentPreparation(() => fixture),
+    beforeExpiryFence: async () => {
+      hookStarted.resolve();
+      await hookGate.promise;
+      throw new Error("hook fault");
+    },
+  });
+  const ticket = await fixture.repository.beginRead(fixture.document);
+  const acceptance = fixture.repository.acceptRead(ticket, sampleChangedContent());
+  await hookStarted.promise;
+
+  const consulting = await fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
+
+  hookGate.resolve();
+  await expect(acceptance).rejects.toThrow("hook fault");
+
+  // The release restored the epoch's eligibility and published the settle. The
+  // pass that settle spends the recorded need on must re-drive the handoff and
+  // commit the append.
+  await fixture.runtime.whenIdle();
+  const views = await fixture.repository.listAnnotations(fixture.document);
+  expect(views.find((view) => view.operation.operationId === fixture.operation.operationId)?.handoff.state).toBe(
+    "already-applied",
+  );
+  expect(fixture.acknowledge).toHaveBeenCalled();
+  expect(consulting).toEqual({ state: "pending", reason: "owner-unavailable" });
 
   fixture.repository.close();
   fixture.drafts.close();

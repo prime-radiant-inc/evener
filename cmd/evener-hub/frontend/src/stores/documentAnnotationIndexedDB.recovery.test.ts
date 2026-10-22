@@ -1200,6 +1200,35 @@ test("a rejected expiry-fence hook leaves the epoch listed and savable", async (
   }
 });
 
+// A rejecting hook proves no fence committed, so the release restores the
+// epoch's eligibility. That release is the only observation of the changed
+// listing: a reader subscribed to the document must be woken, or a handoff
+// that refused in the window waits for unrelated activity.
+test("a rejected expiry-fence hook publishes the release's document settle", async () => {
+  let rejectNext = true;
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-hook-rejection-settle",
+    origin: "https://coordination.example",
+    beforeExpiryFence: async () => {
+      if (rejectNext) {
+        rejectNext = false;
+        throw new Error("hook fault");
+      }
+    },
+  });
+  const listener = vi.fn();
+  fixture.repository.subscribe(fixture.document, listener);
+  try {
+    const ticket = await fixture.repository.beginRead(fixture.document);
+    listener.mockClear();
+    await expect(fixture.repository.acceptRead(ticket, sampleChangedContent())).rejects.toThrow("hook fault");
+    expect(listener).toHaveBeenCalled();
+  } finally {
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
+
 // The entry-time provisional a later read displaces must not be restored after
 // its owner has gone. T0 installs its provisional, T1 displaces it, T0's stale
 // completion leaves the displaced entry in T1's hands, and T0's finally retires

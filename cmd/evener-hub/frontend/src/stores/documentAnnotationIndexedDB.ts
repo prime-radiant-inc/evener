@@ -1075,7 +1075,17 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       try {
         await this.#options.beforeExpiryFence?.(ticket);
       } catch (error) {
+        // The hook proved no fence committed, so the release restores the
+        // epoch's eligibility. That release is the ONLY observation of the
+        // changed listing, and a handoff that consulted in this window answered
+        // the retryable pending outcome (the expiry row does not exist yet) and
+        // recorded the runtime's need. Publishing the document settle alone
+        // would leave that need without a trigger to spend it on, so the
+        // release announces the transition through the one emission rule: the
+        // wake re-lists this document and the signal is the storage-success
+        // boundary the runtime spends the recorded need on.
         restoreInstalledSuppression();
+        this.#settleTransition({ signal: true, documentKey });
         throw error;
       }
       try {
@@ -2320,15 +2330,42 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const suppression = () => this.#suppressedEpochs.get(epochIdentity(originalLease));
     // An unconfirmed suppression is a LOCAL comparison awaiting durable
     // validation: it can still release as a stale read, which leaves this
-    // operation's pending receipt eligible again. Only a confirmed suppression -
-    // a source change the reader proved - is the terminal cancelled outcome.
-    // Reporting the provisional state as cancelled dropped the runtime's retry
-    // intent, so a later storage success could never complete the still-pending
-    // handoff once the validation released the suppression.
-    const suppressedOutcome = (): HandoffResult | null => {
+    // operation's pending receipt eligible again. Reporting the provisional
+    // state as cancelled dropped the runtime's retry intent, so a later storage
+    // success could never complete the still-pending handoff once the
+    // validation released the suppression.
+    //
+    // A CONFIRMED suppression is terminal only when the fence behind it is
+    // durably backed: the epoch's expiry row is written by the same transaction
+    // that flips its pending rows terminal, and it is what finishExpiry deletes.
+    // An entry confirmed before its fence ran (or left behind by a fence that
+    // faulted) has no row, so a cancelled verdict would settle work on durable
+    // evidence that does not exist and drop the retry need a completed fence
+    // would have earned. Only the row - never the in-memory pending-expiry map,
+    // which a normally-completing fence does not retain - backs the verdict.
+    const expiryBacksSuppression = async (entry: SuppressionEntry): Promise<boolean> => {
+      try {
+        const row = await this.#readRow<AnnotationExpiryRow>(
+          ANNOTATION_EXPIRY_STORE,
+          annotationExpiryKey(entry.documentKey, originalLease.epoch),
+        );
+        return row !== undefined;
+      } catch {
+        // An unreadable row proves nothing durable; the retryable answer keeps
+        // the handoff recoverable.
+        return false;
+      }
+    };
+    const suppressedOutcome = async (): Promise<HandoffResult | null> => {
       const entry = suppression();
       if (!entry) return null;
-      return entry.confirmed ? { state: "cancelled" } : { state: "pending", reason: "owner-unavailable" };
+      if (!entry.confirmed) return { state: "pending", reason: "owner-unavailable" };
+      // The receipt was read before this consult, so a fence that committed
+      // answers cancelled from its row flip above; this check only sees the
+      // pre-fence window (or a failed fence), where the row is absent.
+      if (!(await expiryBacksSuppression(entry))) return { state: "pending", reason: "owner-unavailable" };
+      if (refused()) return { state: "pending", reason: "owner-unavailable" };
+      return { state: "cancelled" };
     };
     let provisionalSuppressionAtGuard = false;
     const documentStillEligible = () => {
@@ -2344,7 +2381,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       if (!entry.confirmed) provisionalSuppressionAtGuard = true;
       return false;
     };
-    const suppressed = suppressedOutcome();
+    const suppressed = await suppressedOutcome();
     if (suppressed) return suppressed;
     // A permanently unresolvable recipient settles its receipt terminal here
     // instead of answering the retryable pending outcome forever: the saved
@@ -2380,7 +2417,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       this.#forgetUncertainAppend(operationKey);
       return { state: "cancelled" };
     }
-    const suppressedAfterPreparation = suppressedOutcome();
+    const suppressedAfterPreparation = await suppressedOutcome();
     if (suppressedAfterPreparation) return suppressedAfterPreparation;
     let result: AppendAnnotationResult;
     try {

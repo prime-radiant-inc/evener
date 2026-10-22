@@ -2264,6 +2264,32 @@ test("a retained pending expiry records its need and a later storage success ret
   fixture.drafts.close();
 });
 
+// A failed fence retains its confirmed suppression, but the transaction that
+// would have written the epoch's expiry row rolled back. The verdict behind
+// that entry is unbacked: a handoff consulting it must answer the retryable
+// pending outcome, not terminal cancelled, or a retry that never succeeds
+// settles the operation on evidence that does not exist.
+test("a confirmed suppression without an expiry row keeps the handoff retryable", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-unbacked-confirmed",
+    origin: "https://coordination.example",
+    beforeCommit: (operation) => {
+      if (operation === "expiry") throw new Error("expiry fault");
+    },
+  });
+  try {
+    const ticket = await fixture.repository.beginRead(fixture.document);
+    expect(await fixture.repository.acceptRead(ticket, sampleChangedContent())).toEqual({ state: "expiry-pending" });
+    expect(await fixture.repository.handoff(fixture.document, fixture.operation.operationId)).toEqual({
+      state: "pending",
+      reason: "owner-unavailable",
+    });
+  } finally {
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
+
 // A failed fence retains its confirmed suppression and its pending expiry
 // record. When a later pass finds another fence already replaced that epoch,
 // the record is done - but the confirmed suppression it installed names a dead
