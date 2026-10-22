@@ -3,7 +3,7 @@
 import { IDBFactory } from "fake-indexeddb";
 import { expect, test } from "vitest";
 import type { ComposerPreparation } from "../panes/session/composer/composerContract";
-import { draftStorageKey } from "../panes/session/composer/draft";
+import { composerDraftStorageKey, draftStorageKey } from "../panes/session/composer/draft";
 import { MemoryStorage } from "../storageTestUtils";
 import { browserDraftKey, createBrowserDraftRepository } from "./browserDraftRepository";
 import type { MutationIntent } from "./mutationOutbox";
@@ -43,6 +43,46 @@ test("a legacy edit after the first import survives a repeated transfer", async 
   expect((await repository.load(key))?.text).toBe("draft A");
   // This scan imported nothing for ref_a, so it must not destroy draft B.
   expect(storage.getItem(legacyKey)).toBe("draft B");
+
+  repository.close();
+});
+
+// Both representations can exist at once: an older tab wrote plain v1 text
+// while a newer tab's structured v2 record is already there. The transfer
+// imports the newer representation (v2 wins the decode), so the divergent v1
+// text is the only copy of that older tab's work. Cleanup must consume only
+// the representation the import carried; the unpreserved v1 entry survives,
+// and the next scan neither re-imports it (the marker rows exist) nor deletes
+// it (this scan imported nothing for that key).
+test("a divergent v1 draft survives a transfer that imports its v2 twin", async () => {
+  const storage = new MemoryStorage();
+  const repository = createBrowserDraftRepository({
+    indexedDB: new IDBFactory(),
+    databaseName: "draft-transfer-divergent-v1",
+    storage,
+  });
+  const key = browserDraftKey("ref_a", ORIGIN);
+  const v1Key = draftStorageKey("ref_a");
+  const v2Key = composerDraftStorageKey("ref_a");
+  const structured = JSON.stringify({ text: "newer structured text", skillNames: [] });
+  storage.setItem(v2Key, structured);
+  storage.setItem(v1Key, "older tab's divergent text");
+
+  expect(await repository.transferSupportedDrafts(key.namespace)).toEqual({ state: "committed" });
+  // The durable row carries v2, the representation the import consumed.
+  expect((await repository.load(key))?.text).toBe("newer structured text");
+  // The imported representation cleans up as before.
+  expect(storage.getItem(v2Key)).toBeNull();
+  // The v1 bytes the row does not carry are user work and must survive.
+  expect(storage.getItem(v1Key)).toBe("older tab's divergent text");
+
+  // A later scan re-inspects the surviving entry. The marker rows (and the
+  // durable row) make the import initialization-only, and nothing was imported
+  // in this scan, so cleanup leaves the divergent bytes alone - no re-import,
+  // no cleanup loop.
+  expect(await repository.transferSupportedDrafts(key.namespace)).toEqual({ state: "committed" });
+  expect((await repository.load(key))?.text).toBe("newer structured text");
+  expect(storage.getItem(v1Key)).toBe("older tab's divergent text");
 
   repository.close();
 });

@@ -890,11 +890,23 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
       const importedKeys = new Set(imported.map(serializeSessionKey));
       for (const item of inspected) {
         if (!importedKeys.has(item.draftKey)) continue;
-        for (const [legacyKey, bytes] of [
-          [item.legacyKeyV2, item.structuredV2],
-          [item.legacyKeyV1, item.legacyV1],
+        // The import carried ONE representation's content into the durable
+        // row: v2 when it decoded as a structured record, v1 otherwise. Only a
+        // legacy entry whose bytes the row now carries is removable. A
+        // divergent entry from an older tab that the row does not preserve is
+        // user work, so it survives alongside its marker's inspected bytes;
+        // the next scan re-inspects it, imports nothing because the row and
+        // both markers exist, and cleans nothing because that scan imported
+        // nothing. The composer-side recovery path is what eventually
+        // disposes of it, never this cleanup.
+        const structured = item.structuredV2 === null ? null : decodeSupportedComposerDraft(item.structuredV2, null);
+        const v2Carried = structured !== null && sameDraftContent(structured, item.value);
+        const v1Carried = item.legacyV1 !== null && item.legacyV1 === item.value.text;
+        for (const [legacyKey, bytes, carried] of [
+          [item.legacyKeyV2, item.structuredV2, v2Carried],
+          [item.legacyKeyV1, item.legacyV1, v1Carried],
         ] as const) {
-          if (bytes !== null && storage.getItem(legacyKey) === bytes) storage.removeItem(legacyKey);
+          if (carried && bytes !== null && storage.getItem(legacyKey) === bytes) storage.removeItem(legacyKey);
         }
       }
     } catch {
@@ -989,6 +1001,20 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
 
 export function createBrowserDraftRepository(options: BrowserDraftRepositoryOptions = {}): BrowserDraftRepository {
   return new BrowserDraftRepositoryImpl(options);
+}
+
+// The content identity the legacy cleanup needs: the durable row carries these
+// fields, so a legacy representation whose content matches them is removable
+// without losing anything. Canonical skill and command names compare in order,
+// exactly as the imported row stores them.
+function sameDraftContent(a: ComposerDraft, b: ComposerDraft): boolean {
+  return a.text === b.text && sameNames(a.skillNames, b.skillNames) && sameNames(a.commandNames, b.commandNames);
+}
+
+function sameNames(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+  const left = a ?? [];
+  const right = b ?? [];
+  return left.length === right.length && left.every((name, index) => name === right[index]);
 }
 
 // The one lazy module singleton every production browser writer shares, so the
