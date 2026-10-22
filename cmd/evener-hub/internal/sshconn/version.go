@@ -1650,7 +1650,7 @@ func (m *Manager) restartSelectedPending(ctx context.Context, host hostreg.Host,
 	if err := m.checkEffectBinding(pending.binding); err != nil {
 		return err
 	}
-	nextEnv, err := m.checkSelectedReplacement(ctx, host, facts, *pending.selected, predecessorLive)
+	nextEnv, err := m.checkSelectedReplacement(ctx, host, facts, *pending.selected, predecessorLive, pending.nextEnv)
 	if err != nil {
 		return err
 	}
@@ -1662,6 +1662,10 @@ func (m *Manager) restartSelectedPending(ctx context.Context, host hostreg.Host,
 		}
 	}
 	pending.nextEnv = slices.Clone(nextEnv)
+	if pending.nextEnv == nil {
+		// An explicitly empty validated environment is not an unrun gate.
+		pending.nextEnv = []string{}
+	}
 	// The installation has been validated, and this command now owns only
 	// replacement of its selected predecessor, not future deployment repair.
 	pending.deployment = false

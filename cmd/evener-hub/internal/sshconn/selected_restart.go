@@ -59,7 +59,7 @@ func selectedRelaunch(owner selectedOwner) string {
 // checkSelectedReplacement is the last read-only boundary before any selected
 // stop or start. A lock holder is a locator, never stop authority. Both the live
 // predecessor and the definition that will launch its replacement must agree.
-func (m *Manager) checkSelectedReplacement(ctx context.Context, host hostreg.Host, facts Preflight, owner selectedOwner, live bool) ([]string, error) {
+func (m *Manager) checkSelectedReplacement(ctx context.Context, host hostreg.Host, facts Preflight, owner selectedOwner, live bool, nextEnv []string) ([]string, error) {
 	if live {
 		retained := owner.report.Running
 		if retained == nil || retained.BootID == "" {
@@ -129,8 +129,14 @@ func (m *Manager) checkSelectedReplacement(ctx context.Context, host hostreg.Hos
 		if err != nil {
 			return nil, err
 		}
-		if !live && !equalStrings(env, owner.env) {
-			return nil, fmt.Errorf("%w: next service environment disagrees with selection", errOwnerEvidence)
+		if !live {
+			if nextEnv == nil {
+				nextEnv = owner.env
+			}
+			if !equalStrings(env, nextEnv) {
+				return nil, fmt.Errorf("%w: next service environment disagrees with selection", errOwnerEvidence)
+			}
+			env = nextEnv
 		}
 		return env, m.checkOwnerConfig(ctx, host, owner.argv, owner.cwd, env, owner.report)
 	}
@@ -183,6 +189,11 @@ func (m *Manager) recoverSelectedRestartWithStart(ctx context.Context, host host
 			return started, fmt.Errorf("%w: pending owner intent changed", errOwnerEvidence)
 		}
 		if !sameProcess(now, prior) {
+			// A live predecessor without a report cannot pass the stop gate. A
+			// retained nextEnv still permits a later, independently stopped start.
+			if prior.pid != "0" && prior.report.Running == nil && pending.nextEnv == nil {
+				return started, fmt.Errorf("%w: pending predecessor changed before a verified stop", errOwnerEvidence)
+			}
 			env := pending.nextEnv
 			if env == nil {
 				env = prior.env
@@ -207,6 +218,13 @@ func (m *Manager) recoverSelectedRestartWithStart(ctx context.Context, host host
 		if err := pending.validateExecutable(host.Name, facts); err != nil {
 			return started, err
 		}
+		if prior.report.Running == nil && now.report.Running != nil {
+			// Only the independently matched predecessor may fill missing health
+			// evidence. Preserve launch intent and any previously retained boot.
+			refreshed := prior.clone()
+			refreshed.report = now.clone().report
+			pending.selected = &refreshed
+		}
 		return started, m.restartSelectedPending(ctx, host, facts, pending, true)
 	}
 	if err := pending.validateExecutable(host.Name, facts); err != nil {
@@ -215,7 +233,11 @@ func (m *Manager) recoverSelectedRestartWithStart(ctx context.Context, host host
 	// An absent process permits only a non-stopping start, not a restart.
 	// Recheck the service's definition and PID before replay. An ad-hoc replay
 	// checks that no newly selected supervisor owns the retained launch.
-	if err := m.checkOwnerConfig(ctx, host, prior.argv, prior.cwd, prior.env, report); err != nil {
+	env := pending.nextEnv
+	if env == nil {
+		env = prior.env
+	}
+	if err := m.checkOwnerConfig(ctx, host, prior.argv, prior.cwd, env, report); err != nil {
 		return started, err
 	}
 	if prior.supervisor.kind != supervisorNone {

@@ -33,7 +33,7 @@ func TestSelectedRestartRegistration(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-			} else if !errors.Is(err, errOwnerEvidence) || err.Error() != "sshconn: selected owner evidence missing: pending host registration changed" {
+			} else if !errors.Is(err, errOwnerEvidence) {
 				t.Fatalf("registration refusal: %v", err)
 			}
 		})

@@ -19,11 +19,8 @@ import (
 // Files, fetches and checksums are real. Process/service observations and the
 // restarted listener are modeled, with an exact remote-command allowlist.
 func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
-	for _, lostReply := range []bool{false, true} {
-		name := "verified-restart"
-		if lostReply {
-			name = "lost-reply-recovery"
-		}
+	for _, name := range []string{"verified-restart", "lost-reply-recovery", "failed-start-recovery"} {
+		lostReply, failedStart := name == "lost-reply-recovery", name == "failed-start-recovery"
 		t.Run(name, func(t *testing.T) {
 			host, oldCommands := ownerCommands(t)
 			sup := supervisor{kind: supervisorSystemd, label: "evener-hub-selected.service"}
@@ -89,9 +86,20 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 				return allowed
 			}
 			before, after := makeCommands(false), makeCommands(true)
+			stoppedCommands := map[string]string{}
+			stoppedReport := remoteEndpointFixture(host.ConfigPath, newAddr, "")
+			stoppedReport.State, stoppedReport.Running = "stopped", nil
+			stoppedReport.ConfiguredListenAddr, stoppedReport.ListenSource = newAddr, "env"
+			for command, out := range before {
+				if strings.Contains(command, " hub endpoint ") {
+					out = mustOwnerJSON(t, stoppedReport)
+				}
+				stoppedCommands[command] = strings.ReplaceAll(out, "MainPID=4242", "MainPID=0")
+			}
 			var m *Manager
 			var saved pendingRestartState
 			restarted, effects, fileReads, polls := false, 0, 0, 0
+			stopped, oldEnvConfigReads := false, 0
 			fr := &fakeRunner{runFn: func(ctx context.Context, argv []string, _ io.Reader) ([]byte, error) {
 				remote := strings.Join(argv[12:], " ")
 				switch remote {
@@ -112,8 +120,11 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 				case systemdEnvironmentFileRemote(file, false):
 					fileReads++
 					return exec.CommandContext(ctx, "/bin/sh", "-c", remote).Output()
-				case "systemctl restart " + sup.label:
+				case "systemctl restart " + sup.label, "systemctl start " + sup.label:
 					effects++
+					if (effects == 1 && remote != "systemctl restart "+sup.label) || (effects > 1 && (!failedStart || remote != "systemctl start "+sup.label)) {
+						t.Fatalf("unexpected replacement effect: %s", remote)
+					}
 					saved = m.pendingRestart(host.Name)
 					if !reflect.DeepEqual(saved.nextEnv, newEnv) {
 						t.Fatalf("replacement environment not retained before restart: %q", saved.nextEnv)
@@ -123,13 +134,23 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 					if !reflect.DeepEqual(m.pendingRestart(host.Name).nextEnv, newEnv) {
 						t.Fatal("pending snapshot aliases retained replacement environment")
 					}
-					restarted = true
+					if failedStart && effects == 1 {
+						stopped = true
+						return nil, errReplacementFixture
+					}
+					restarted, stopped = true, false
 					if lostReply {
 						return nil, errReplacementFixture
 					}
 					return nil, nil
 				}
 				allowed := before
+				if stopped {
+					allowed = stoppedCommands
+					if remote == ownerContext("/srv", oldEnv)+"/opt/evener hub endpoint --json --config /srv/selected.toml" {
+						oldEnvConfigReads++
+					}
+				}
 				if restarted {
 					allowed = after
 					if remote == "/opt/evener hub endpoint --json --config /srv/selected.toml" {
@@ -144,7 +165,7 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 			}}
 			m = newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "release-selected", sleep: func(context.Context, time.Duration) error { return nil }})
 			_, restartErr := m.RestartForOperation(t.Context(), host, selectedRestartFacts(), nil)
-			if lostReply {
+			if lostReply || failedStart {
 				if !errors.Is(restartErr, errReplacementFixture) {
 					t.Errorf("lost reply: %v", restartErr)
 				}
@@ -154,7 +175,10 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 			if effects != 1 || fileReads != 1 || !reflect.DeepEqual(saved.selected.env, oldEnv) {
 				t.Fatalf("effects=%d file reads=%d predecessor env=%q", effects, fileReads, saved.selected.env)
 			}
-			if !lostReply && restartErr == nil {
+			if failedStart && (!stopped || !m.pendingRestart(host.Name).active()) {
+				t.Fatal("failed start must leave stopped hub and pending intent")
+			}
+			if !lostReply && !failedStart && restartErr == nil {
 				if m.pendingRestart(host.Name).active() {
 					t.Fatal("verified restart left pending intent")
 				}
@@ -164,8 +188,12 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 			if _, err := m.RestartForOperation(t.Context(), host, selectedRestartFacts(), nil); err != nil {
 				t.Errorf("healthy successor recovery refused: %v", err)
 			}
-			if effects != 1 || m.pendingRestart(host.Name).active() || len(fr.recordedStarts()) != 0 {
-				t.Errorf("recovery: effects=%d pending=%v attaches=%d", effects, m.pendingRestart(host.Name).active(), len(fr.recordedStarts()))
+			wantEffects := 1
+			if failedStart {
+				wantEffects = 2
+			}
+			if effects != wantEffects || stopped || !restarted || oldEnvConfigReads != 0 || m.pendingRestart(host.Name).active() || len(fr.recordedStarts()) != 0 {
+				t.Errorf("recovery: effects=%d stopped=%v restarted=%v old-env config reads=%d pending=%v attaches=%d", effects, stopped, restarted, oldEnvConfigReads, m.pendingRestart(host.Name).active(), len(fr.recordedStarts()))
 			}
 		})
 	}
