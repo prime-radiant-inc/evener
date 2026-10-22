@@ -32,6 +32,7 @@ type MutationOutboxOperation =
   | "resendRecovery"
   | "recordAcceptedCopy"
   | "settleAbsentAcceptedCopies"
+  | "settleObservedAcceptedCopy"
   | "retireAcceptedCopies"
   | "retargetOutbox";
 
