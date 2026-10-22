@@ -35,6 +35,7 @@ import (
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/binresolve"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/internal/hubendpoint"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm/providers/tokenauth"
 	"primeradiant.com/evener/rendezvous"
@@ -145,6 +146,7 @@ type hubOptions struct {
 	// be absent and yield DefaultConfig().
 	configExplicit bool
 	addr           string
+	addrPresent    bool
 	evenerBinary   string
 	appwireTrace   string
 	// deployBinary and buildSource describe how a host needing installation gets the
@@ -173,6 +175,8 @@ type hubOptions struct {
 }
 
 type mainDeps struct {
+	// inspectFilesystem is the external fstatfs boundary, nil uses the OS.
+	inspectFilesystem hostlock.FilesystemInspector
 	// loadConfig loads the path the flag layer resolved; the bool is true when
 	// the operator named it with --config, which makes a missing file a startup
 	// refusal instead of a silent DefaultConfig() fallback.
@@ -260,6 +264,12 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	if len(args) > 0 && args[0] == "attach" {
 		return runAttach(args[1:], stderr, deps)
 	}
+	if len(args) > 0 && args[0] == "endpoint" {
+		return runEndpoint(args[1:], deps.stdout, stderr, deps)
+	}
+	if len(args) > 0 && args[0] == "login-url" {
+		return runLoginURL(args[1:], deps.stdout, stderr, deps)
+	}
 	if len(args) > 0 && args[0] == "restart" {
 		return runHubRestart(args[1:], stderr, deps)
 	}
@@ -291,23 +301,33 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] config: %v\n", err)
 		return err
 	}
+	cfg, endpoint, err := resolveLoadedEndpointConfig(cfg, opts.configPath, EndpointInput{opts.addr, opts.addrPresent})
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] config: %v\n", err)
+		return err
+	}
+	configIdentity, err := endpointConfigPath(opts.configPath, endpoint.ConfigExists)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] config: %v\n", err)
+		return err
+	}
+	if err := hostlock.CheckStorage(cfg.HubStateRoot, deps.inspectFilesystem); err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
+	}
 	// Stamp the build User-Agent once: previously every registry-client
 	// construction rewrote this process global per request, racing
 	// in-flight Codex requests. Fetch paths now bind scoped
 	// authenticators per request and never write it.
 	tokenauth.ClientVersion = buildinfo.Version()
-	if opts.addr != "" {
-		cfg.Addr = opts.addr
-	}
 	if err := deps.ensureDirs(); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
 
-	// flock to ensure single hub per host. hub.lock lives beside the other
-	// hub-level state (auth-token, index.db, deletions/) under HubStateRoot,
-	// not a raw home-dir join, so a configured hub_state_root override moves
-	// the lock too.
+	// Ownership is per selected root. hub.lock lives beside auth-token and
+	// deletions/ under HubStateRoot, not a raw home-dir join. The independently
+	// selected past index does not move with a hub_state_root override.
 	lockPath := filepath.Join(cfg.HubStateRoot, "hub.lock")
 	release, err := deps.acquireLock(lockPath)
 	if err != nil {
@@ -383,10 +403,9 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
-	// hubStateRoot holds hub-level machine state: the auth token, the
-	// deletion-fence store, hub.lock (above), and index.db (below). Provider
-	// config (providers.toml/credentials.toml) is user-editable and lives
-	// under the config root instead — see cmdutil.DefaultConfigRoot.
+	// hubStateRoot holds durable hub credentials, fences and preferences plus
+	// coordination artifacts. The past index, daemon and project paths resolve
+	// independently. Provider config remains under cmdutil.DefaultConfigRoot.
 	hubStateRoot := cfg.HubStateRoot
 	authToken, err := deps.loadAuthToken(hubStateRoot)
 	if err != nil {
@@ -487,15 +506,15 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// performing a synchronous network walk per request.
 	remoteCache := &hubcore.RemoteThreadCache{}
 
-	// Bind the listener before anything downstream (WebConfig.HubAddr, the
-	// startup log line, the advertised auth URL) reads cfg.Addr, and
-	// overwrite cfg.Addr with what actually got bound. This is what makes
-	// "-addr 127.0.0.1:0" a real ephemeral-port request instead of a literal
-	// ":0" that never resolves to anything callable: the OS hands back a
-	// free port that cannot collide with another hub, sidestepping the
-	// TOCTOU race in "probe a free port, then hope nothing else grabs it
-	// before we bind" (see docs/developing-evener/agentic-testing.md).
-	hubListener, err := deps.listen(context.Background(), "tcp", cfg.Addr)
+	// Bind the selected listener before anything downstream needs the actual
+	// bound address. endpoint retains the configured listener; cfg.Addr becomes
+	// the bound address for downstream consumers and restart publication. This
+	// makes "-addr 127.0.0.1:0" a real ephemeral-port request instead of a
+	// literal ":0" that never resolves to anything callable: the OS hands back
+	// a free port that cannot collide with another hub, sidestepping the TOCTOU
+	// race in "probe a free port, then hope nothing else grabs it before we
+	// bind" (see docs/developing-evener/agentic-testing.md).
+	hubListener, err := deps.listen(context.Background(), "tcp", endpoint.ListenAddr.String())
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] listen %s: %v\n", cfg.Addr, err)
 		return fmt.Errorf("listen %s: %w", cfg.Addr, err)
@@ -503,6 +522,8 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	hubBindWasEphemeral = isEphemeralAddr(cfg.Addr)
 	cfg.Addr = hubListener.Addr().String()
 	hubBoundAddr = cfg.Addr
+	boundAddr := cfg.Addr
+	defer func() { _ = hubListener.Close() }()
 
 	resumeLocks, err := hubcore.NewPersistentResumeLocks(hubStateRoot)
 	if err != nil {
@@ -648,9 +669,9 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 	scratchReconcile := newScratchReconciler(hubcore.WebConfig{Past: past, Archive: archive, Roster: roster})
 	web := newWebServer(hubcore.WebConfig{
-		HubAddr:                   cfg.Addr,
+		HubAddr:                   boundAddr,
 		AuthToken:                 authToken,
-		MobileBaseURL:             cfg.MobileBaseURL,
+		PublicURL:                 cfg.PublicURL,
 		HubStateRoot:              cfg.HubStateRoot,
 		LaunchConfigRoot:          cmdutil.DefaultConfigRoot(),
 		MachineRoots:              cfg.Roots,
@@ -946,22 +967,58 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 
 	srv := &listenerHTTPServer{
 		Server: &http.Server{
-			Addr:              cfg.Addr,
+			Addr:              boundAddr,
 			Handler:           web.Handler(),
 			ReadHeaderTimeout: hubHTTPReadHeaderTimeout,
 			IdleTimeout:       hubHTTPIdleTimeout,
 		},
 		ln: hubListener,
 	}
+	// Publish only after the actual listener and health handler exist. A record
+	// does not mean ready until a reader verifies this boot on the live socket.
+	record := hubendpoint.Record{
+		SchemaVersion:       hubendpoint.SchemaVersion,
+		BootID:              hubBootID,
+		PID:                 os.Getpid(),
+		StartedAt:           web.startedAt,
+		ConfigPath:          configIdentity,
+		HubStateRoot:        hubStateRoot,
+		RequestedListenAddr: endpoint.ListenAddr.String(),
+		ListenSource:        endpoint.ListenSource,
+		BoundAddr:           boundAddr,
+	}
+	if endpoint.PublicURL != nil {
+		record.PublicURL = endpoint.PublicURL.String()
+	}
+	if origin, originErr := hubendpoint.LocalOrigin(boundAddr); originErr == nil {
+		record.LocalURL = origin.String()
+		if ip := net.ParseIP(origin.Hostname()); ip != nil && ip.IsLoopback() {
+			record.LoopbackURL = origin.String()
+		}
+	}
+	removeEndpoint, err := hubendpoint.Publish(hubStateRoot, record)
+	if err != nil {
+		return fmt.Errorf("publish hub endpoint: %w", err)
+	}
+	defer func() {
+		if removeErr := removeEndpoint(); removeErr != nil {
+			_, _ = fmt.Fprintf(stderr, "[hub] retire endpoint: %v\n", removeErr)
+		}
+	}()
 
-	// Build a usable auth URL. If the bind addr is 0.0.0.0 or ::, replace
-	// it with a hostname the operator can reach the hub at.
-	authHost := advertisedHubHost(cfg.Addr, hubHostname)
-	browserAddress := "http://" + authHost
-	_, _ = fmt.Fprintf(stderr, "[hub] Browser address: %s\n", browserAddress)
-	_, _ = fmt.Fprintf(stderr, "[hub] Private sign-in link: %s\n", hubedge.AuthURLFor(browserAddress, authToken))
+	_, _ = fmt.Fprintf(stderr, "[hub] evener-hub %s listening on %s (run_dir=%s)\n", Version, boundAddr, runDir)
+	_, _ = fmt.Fprintf(stderr, "[hub] configured listener: %s (%s)\n", record.RequestedListenAddr, record.ListenSource)
+	if origin, originErr := browserLoginOrigin(record, hubHostname); originErr == nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] Browser address: %s (local: %s)\n", origin, record.LocalURL)
+		if isTerminalWriter(stderr) {
+			link := hubedge.AuthURLFor(origin, authToken)
+			_, _ = fmt.Fprintf(stderr, "[hub] Private sign-in link (treat as a password): %s\n", link)
+		}
+	} else {
+		_, _ = fmt.Fprintf(stderr, "[hub] cannot advertise browser origin: %v\n", originErr)
+	}
 	_, _ = fmt.Fprintln(stderr, "[hub] Keep this terminal running while you use Evener in the browser.")
-	_, _ = fmt.Fprintf(stderr, "[hub] evener-hub %s listening on %s (run_dir=%s)\n", Version, cfg.Addr, runDir)
+	_, _ = fmt.Fprintln(stderr, "[hub] retrieve a browser login URL deliberately with evener hub login-url [--config PATH]; treat it as a password")
 	_, _ = fmt.Fprintf(stderr, "[hub] Auth token file: %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, hubedge.TokenFileName))
 	if err := deps.serve(ctx, srv); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
@@ -1132,6 +1189,8 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 		fs.PrintDefaults()
 		_, _ = fmt.Fprintf(stderr, "\nSubcommands:\n")
 		_, _ = fmt.Fprintf(stderr, "  attach --stdio\tproxy AppWire between the hub's loopback /rpc and stdin/stdout\n")
+		_, _ = fmt.Fprintf(stderr, "  endpoint --json [--config PATH]\tinspect the selected hub without credentials\n")
+		_, _ = fmt.Fprintf(stderr, "  login-url [--config PATH]\tprint a password-like browser login link for the running hub\n")
 		_, _ = fmt.Fprintf(stderr, "\nEnvironment variables:\n")
 		printHubEnvVars(stderr)
 	}
@@ -1144,8 +1203,11 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 		// default path is allowed to be absent. fs.Visit reports the flags that
 		// were actually set, so the two are distinguishable after parsing.
 		fs.Visit(func(f *flag.Flag) {
-			if f.Name == "config" {
+			switch f.Name {
+			case "config":
 				opts.configExplicit = true
+			case "addr":
+				opts.addrPresent = true
 			}
 		})
 	}

@@ -78,6 +78,11 @@ func TestRunMainHubLockDerivesFromConfiguredHubStateRoot(t *testing.T) {
 	if gotLockPath != want {
 		t.Fatalf("lockPath = %q, want %q (must derive from cfg.HubStateRoot, not a raw home-dir join)", gotLockPath, want)
 	}
+	for _, root := range []string{hubStateRoot, filepath.Join(root, "unused-state", "evener")} {
+		if _, err := os.Lstat(filepath.Join(root, "hub-endpoint.json")); !os.IsNotExist(err) {
+			t.Fatalf("stopped hub retained a live endpoint under %s: %v", root, err)
+		}
+	}
 }
 
 // TestRunMainFixesThePluginRegistryRootBeforeLaunchingChildren proves the

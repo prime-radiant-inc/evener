@@ -109,6 +109,7 @@ func (s *WebServer) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	writeAPIJSON(w, http.StatusOK, hubapi.HealthResponse{
 		Version:          buildinfo.Version(),
+		BootID:           s.cfg.HubBootID,
 		MobileAPIVersion: hubapi.MobileAPIVersion,
 		StartedAt:        s.startedAt,
 		HubAddr:          s.cfg.HubAddr,

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -37,10 +39,13 @@ func TestRecoveryRetainsEntryBindingAcrossCommandRecording(t *testing.T) {
 			fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 				switch command := strings.Join(argv, " "); {
 				case strings.Contains(command, "list-units") && mode == "start-stopped":
+					if strings.Contains(command, "--user") {
+						return nil, nil
+					}
 					return []byte("evener-hub.service loaded inactive dead\n"), nil
 				case strings.Contains(command, "lsof -ti :9180"):
 					return []byte(noListenerMarker), nil
-				case strings.Contains(command, "systemctl restart"):
+				case strings.Contains(command, "systemctl restart"), strings.Contains(command, "systemctl start"):
 					effects++
 					if effects == 1 {
 						running = mode == "restart-alive" || mode == "completed"
@@ -61,7 +66,7 @@ func TestRecoveryRetainsEntryBindingAcrossCommandRecording(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := m.RestartForOperation(t.Context(), host, facts, guard); !errors.Is(err, ErrRestart) || effects != 1 {
+			if _, err := m.RestartForOperation(t.Context(), registeredTestHost(t, m, host), facts, guard); !errors.Is(err, ErrRestart) || effects != 1 {
 				t.Fatalf("initial command interruption: effects=%d err=%v", effects, err)
 			}
 			pending := m.pendingRestart(host.Name)
@@ -74,7 +79,7 @@ func TestRecoveryRetainsEntryBindingAcrossCommandRecording(t *testing.T) {
 				defer func() { _ = ch.Close() }()
 			}
 			if mode != "completed" {
-				if !errors.Is(err, refused) || ch != nil || effects != 1 || writes != 0 || m.pendingRestart(host.Name) != pending {
+				if !errors.Is(err, refused) || ch != nil || effects != 1 || writes != 0 || !reflect.DeepEqual(m.pendingRestart(host.Name), pending) {
 					t.Fatalf("stale-entry replay: err=%v channel=%v effects=%d writes=%d pending=%+v want=%+v", err, ch, effects, writes, m.pendingRestart(host.Name), pending)
 				}
 				entryValid = true
@@ -134,7 +139,7 @@ func TestRecoveryEntryBindingDeploymentWriteAndReplay(t *testing.T) {
 						return nil, nil
 					case strings.Contains(command, "lsof -ti :9180"):
 						return []byte(noListenerMarker), nil
-					case strings.Contains(command, "systemctl restart"), strings.Contains(command, "nohup"):
+					case strings.Contains(command, "systemctl restart"), strings.Contains(command, "systemctl start"), strings.Contains(command, "nohup"):
 						launches++
 						if launches == 1 {
 							return nil, errors.New("lost launch acknowledgement")
@@ -152,7 +157,7 @@ func TestRecoveryEntryBindingDeploymentWriteAndReplay(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, _, err := m.DeployForOperation(t.Context(), host, facts, true, guard); err == nil {
+				if _, _, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, true, guard); err == nil {
 					t.Fatal("initial deployment unexpectedly verified")
 				}
 				pending := m.pendingRestart(host.Name)
@@ -163,7 +168,7 @@ func TestRecoveryEntryBindingDeploymentWriteAndReplay(t *testing.T) {
 				if stopped {
 					running = ""
 				}
-				if _, err := m.ensureOnce(t.Context(), host, false); !errors.Is(err, refused) || writes != 1 || launches != 0 || m.pendingRestart(host.Name) != pending {
+				if _, err := m.ensureOnce(t.Context(), host, false); !errors.Is(err, refused) || writes != 1 || launches != 0 || !reflect.DeepEqual(m.pendingRestart(host.Name), pending) {
 					t.Fatalf("unauthorized recovery: err=%v writes=%d launches=%d pending=%+v", err, writes, launches, m.pendingRestart(host.Name))
 				}
 				valid = true
@@ -175,7 +180,7 @@ func TestRecoveryEntryBindingDeploymentWriteAndReplay(t *testing.T) {
 					t.Fatalf("deployment to command lost ownership: before=%+v after=%+v", pending, command)
 				}
 				valid = false
-				if _, err := m.ensureOnce(t.Context(), host, false); !errors.Is(err, refused) || launches != 1 || m.pendingRestart(host.Name) != command {
+				if _, err := m.ensureOnce(t.Context(), host, false); !errors.Is(err, refused) || launches != 1 || !reflect.DeepEqual(m.pendingRestart(host.Name), command) {
 					t.Fatalf("command replay lost binding: err=%v launches=%d pending=%+v", err, launches, m.pendingRestart(host.Name))
 				}
 				valid = true
@@ -188,7 +193,7 @@ func TestRecoveryEntryBindingDeploymentWriteAndReplay(t *testing.T) {
 				if acknowledged {
 					wantWrites = 1
 				}
-				if err != nil || ch == nil || writes != wantWrites || launches != 2 || running != "snapshot" || m.pendingRestart(host.Name) != (pendingRestartState{}) || m.resolvedTarget(host.Name) != host.EvenerPath {
+				if err != nil || ch == nil || writes != wantWrites || launches != 2 || running != "snapshot" || !reflect.DeepEqual(m.pendingRestart(host.Name), pendingRestartState{}) || m.resolvedTarget(host.Name) != host.EvenerPath {
 					t.Fatalf("recovery: err=%v writes=%d launches=%d running=%s pending=%+v target=%s", err, writes, launches, running, m.pendingRestart(host.Name), m.resolvedTarget(host.Name))
 				}
 			})
@@ -232,28 +237,38 @@ func TestRecoveryEntryBindingDeploySupersession(t *testing.T) {
 			if source == "installer" {
 				m.opts.BuildBinary = nil
 			}
+			// A stopped deployment now retains its selected owner too. Superseding
+			// that effect uses the existing journal API, not an unbound new write.
+			journal := func(id int) DeploymentJournal {
+				return DeploymentJournal{OperationID: strconv.Itoa(id), Supersede: func(prior string) error {
+					if prior != "1" || id != 2 {
+						t.Fatalf("unexpected supersession: %s -> %d", prior, id)
+					}
+					return nil
+				}}
+			}
 			// A refused first write creates neither effect ownership nor target.
-			if _, _, err := m.DeployForOperation(t.Context(), host, facts, true, validator(2)); !errors.Is(err, refused) || writes != 0 || m.pendingRestart(host.Name).active() || m.resolvedTarget(host.Name) != "" {
+			if _, _, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, true, validator(2), journal(1)); !errors.Is(err, refused) || writes != 0 || m.pendingRestart(host.Name).active() || m.resolvedTarget(host.Name) != "" {
 				t.Fatalf("refused first write: err=%v writes=%d pending=%+v", err, writes, m.pendingRestart(host.Name))
 			}
-			if _, _, err := m.DeployForOperation(t.Context(), host, facts, true, validator(1)); !errors.Is(err, ErrDeploy) || writes != 1 {
+			if _, _, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, true, validator(1), journal(1)); !errors.Is(err, ErrDeploy) || writes != 1 {
 				t.Fatalf("initial write: err=%v writes=%d", err, writes)
 			}
 			old := m.pendingRestart(host.Name)
 			entry = 2
 			m.opts.controllerVersionOverride = "new-request"
 			m.opts.BuildBinary = func(context.Context, string, string, string) error { return sourceFailure }
-			if _, _, err := m.DeployForOperation(t.Context(), host, facts, true, validator(2)); !errors.Is(err, sourceFailure) || writes != 1 || m.pendingRestart(host.Name) != old {
+			if _, _, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, true, validator(2), journal(2)); !errors.Is(err, sourceFailure) || writes != 1 || !reflect.DeepEqual(m.pendingRestart(host.Name), old) {
 				t.Fatalf("source refusal superseded intent: err=%v writes=%d pending=%+v", err, writes, m.pendingRestart(host.Name))
 			}
 			m.opts.BuildBinary = writeStageBinary
 			if source == "installer" {
 				m.opts.BuildBinary = nil
 			}
-			if _, _, err := m.DeployForOperation(t.Context(), host, facts, true, validator(1)); !errors.Is(err, refused) || writes != 1 || m.pendingRestart(host.Name) != old {
+			if _, _, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, true, validator(1), journal(2)); !errors.Is(err, refused) || writes != 1 || !reflect.DeepEqual(m.pendingRestart(host.Name), old) {
 				t.Fatalf("pre-write refusal superseded intent: err=%v writes=%d pending=%+v", err, writes, m.pendingRestart(host.Name))
 			}
-			if _, _, err := m.DeployForOperation(t.Context(), host, facts, true, validator(2)); !errors.Is(err, ErrDeploy) || writes != 2 {
+			if _, _, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, true, validator(2), journal(2)); !errors.Is(err, ErrDeploy) || writes != 2 {
 				t.Fatalf("authorized superseding write: err=%v writes=%d", err, writes)
 			}
 			newIntent := m.pendingRestart(host.Name)
@@ -262,7 +277,7 @@ func TestRecoveryEntryBindingDeploySupersession(t *testing.T) {
 			}
 			entry = 1
 			recordConnectionOperations(t, m)
-			if _, err := m.ensureOnce(t.Context(), host, false); !errors.Is(err, refused) || writes != 2 || m.pendingRestart(host.Name) != newIntent {
+			if _, err := m.ensureOnce(t.Context(), host, false); !errors.Is(err, refused) || writes != 2 || m.pendingRestart(host.Name).binding != newIntent.binding || !reflect.DeepEqual(m.pendingRestart(host.Name), newIntent) {
 				t.Fatalf("recovery adopted old binding: err=%v writes=%d pending=%+v", err, writes, m.pendingRestart(host.Name))
 			}
 		})
@@ -331,7 +346,7 @@ func TestRecoveryEntryBindingGuardsBothBareRestartMutations(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = m.RestartForOperation(t.Context(), host, facts, guard)
+			_, err = m.RestartForOperation(t.Context(), registeredTestHost(t, m, host), facts, guard)
 			wantKills := 0
 			if boundary == "launch" {
 				wantKills = 1
@@ -344,10 +359,10 @@ func TestRecoveryEntryBindingGuardsBothBareRestartMutations(t *testing.T) {
 				if pending.command == "" || pending.binding == nil || pending.expectedVersion != "original" || pending.replaced.startedAt.Format(time.RFC3339) != "2026-01-01T00:00:00Z" {
 					t.Fatalf("stopped predecessor lost recovery: %+v", pending)
 				}
-				if _, err := m.ensureOnce(t.Context(), host, false); !errors.Is(err, refused) || kills != 1 || launches != 0 || m.pendingRestart(host.Name) != pending {
+				if _, err := m.ensureOnce(t.Context(), host, false); !errors.Is(err, refused) || kills != 1 || launches != 0 || !reflect.DeepEqual(m.pendingRestart(host.Name), pending) {
 					t.Fatalf("unauthorized relaunch replay: err=%v kills=%d launches=%d", err, kills, launches)
 				}
-			} else if m.pendingRestart(host.Name) != (pendingRestartState{}) {
+			} else if !reflect.DeepEqual(m.pendingRestart(host.Name), pendingRestartState{}) {
 				t.Fatal("refused kill recorded a nonexistent effect")
 			}
 			inject = false
@@ -362,7 +377,7 @@ func TestRecoveryEntryBindingGuardsBothBareRestartMutations(t *testing.T) {
 				valid = true
 			}
 			if boundary == "kill" {
-				if _, err := m.RestartForOperation(t.Context(), host, facts, guard); err != nil {
+				if _, err := m.RestartForOperation(t.Context(), registeredTestHost(t, m, host), facts, guard); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -370,7 +385,7 @@ func TestRecoveryEntryBindingGuardsBothBareRestartMutations(t *testing.T) {
 			if ch != nil {
 				defer func() { _ = ch.Close() }()
 			}
-			if err != nil || ch == nil || kills != 1 || launches != 1 || started != "2026-01-02T00:00:00Z" || m.pendingRestart(host.Name) != (pendingRestartState{}) {
+			if err != nil || ch == nil || kills != 1 || launches != 1 || started != "2026-01-02T00:00:00Z" || !reflect.DeepEqual(m.pendingRestart(host.Name), pendingRestartState{}) {
 				t.Fatalf("bare recovery: err=%v kills=%d launches=%d pending=%+v", err, kills, launches, m.pendingRestart(host.Name))
 			}
 		})
@@ -399,7 +414,7 @@ func TestRecoveryEntryBindingReleasedAtTeardown(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := m.RestartForOperation(t.Context(), host, facts, func() error { validations++; return nil }); !errors.Is(err, ErrRestart) || effects != 1 || m.pendingRestart(host.Name).binding == nil {
+			if _, err := m.RestartForOperation(t.Context(), registeredTestHost(t, m, host), facts, func() error { validations++; return nil }); !errors.Is(err, ErrRestart) || effects != 1 || m.pendingRestart(host.Name).binding == nil {
 				t.Fatalf("initial effect: effects=%d err=%v pending=%+v", effects, err, m.pendingRestart(host.Name))
 			}
 			switch boundary {
@@ -417,7 +432,7 @@ func TestRecoveryEntryBindingReleasedAtTeardown(t *testing.T) {
 			case "close":
 				err = m.Close()
 			}
-			if err != nil || m.pendingRestart(host.Name) != (pendingRestartState{}) {
+			if err != nil || !reflect.DeepEqual(m.pendingRestart(host.Name), pendingRestartState{}) {
 				t.Fatalf("teardown retained callback: err=%v pending=%+v", err, m.pendingRestart(host.Name))
 			}
 			before := validations

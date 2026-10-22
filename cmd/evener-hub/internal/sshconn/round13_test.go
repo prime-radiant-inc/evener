@@ -29,10 +29,10 @@ func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 			return []byte("x86_64\n"), nil
 		case strings.HasSuffix(joined, "id -u"):
 			return []byte("1000\n"), nil
-		case strings.Contains(joined, "XDG_STATE_HOME"):
+		case argv[len(argv)-1] == envProbeScript:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case strings.Contains(joined, "launch-check"):
-			return []byte(`{"protocol":"evener-appwire-v7","version":"` + dirty + `","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"` + dirty + `","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "api/health"):
 			// The host already reports the controller's identical dirty version.
 			return []byte(`{"version":"` + dirty + `","started_at":"2026-01-01T00:00:00Z","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
@@ -43,6 +43,7 @@ func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 		}
 	}, startFn: goodStartFn(t)}
 	requireProtocolUpgrade(t, fr)
+	modelLegacySelectedProcess(t, fr, host)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: dirty,
 		BuildBinary: func(_ context.Context, _, _, out string) error {
@@ -100,171 +101,25 @@ func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 	}
 }
 
-// TestRound13DeployTargetPreservesTheRunningHubExecutable pins the round-thirteen
-// Medium that deployTarget ignored the executable the running hub was launched
-// from: with no evener_path it pushed to whatever `evener` resolved to on the
-// PATH (or the installer default), while the restart path proves the recovered
-// hub executable is the target it is about to relaunch (hubExecutableMatches)
-// and refuses to restart a hub running a different binary. The pushed file then
-// already matched, so the deploy/restart pair looped forever. The running hub's
-// own executable now wins, in the same order the installer fallback preserves
-// (existingInstallableEvener).
-func TestRound13DeployTargetPreservesTheRunningHubExecutable(t *testing.T) {
-	const hubExe = "/home/dev/.local/bin/evener"
-	const pathExe = "/usr/local/bin/evener"
-	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"} // no evener_path
-
-	t.Run("the running hub's executable wins over the PATH binary", func(t *testing.T) {
-		fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-			joined := strings.Join(argv, " ")
-			switch {
-			case strings.Contains(joined, "lsof -ti :9180"):
-				return []byte("4242\n"), nil
-			case strings.Contains(joined, "/proc/4242/cmdline"):
-				return []byte(hubExe + "\x00hub\x00-addr\x00127.0.0.1:9180\x00"), nil
-			case strings.Contains(joined, "command -v evener"):
-				return []byte(pathExe + "\n"), nil
-			case strings.Contains(joined, "evener_resolve"):
-				return []byte(hubExe + "\n"), nil
-			default:
-				return nil, fmt.Errorf("unexpected remote command: %v", argv)
+// Deployment follows the selected executable, never a listener's argv.
+func TestDeployTargetUsesSelectedExecutable(t *testing.T) {
+	for _, target := range []string{"", "/opt/selected/bin/evener"} {
+		t.Run(target, func(t *testing.T) {
+			host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: target}
+			want := target
+			commands := []ownerCommand{}
+			if target == "" {
+				want = "/usr/local/bin/evener"
+				commands = append(commands, ownerCommand{"command -v evener || echo __sshconn_no_evener__", want + "\n"})
+			} else {
+				commands = append(commands, ownerCommand{"test -d /opt/selected/bin", ""})
 			}
-		}}
-		m := newTestManager(t, testRegistry(t, host), fr, Options{})
-
-		got, err := m.deployTarget(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
-		if err != nil {
-			t.Fatalf("deployTarget: %v", err)
-		}
-		if got != hubExe {
-			t.Fatalf("deployTarget = %q, want the running hub's executable %q (pushing the PATH binary leaves the upgrade inert)", got, hubExe)
-		}
-		for _, argv := range fr.recordedRuns() {
-			if strings.Contains(strings.Join(argv, " "), "command -v evener") {
-				t.Fatalf("deployTarget resolved the PATH binary although the running hub named its own executable: %v", argv)
-			}
-		}
-	})
-
-	t.Run("with no running hub the PATH binary is still the target", func(t *testing.T) {
-		fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-			joined := strings.Join(argv, " ")
-			switch {
-			case strings.Contains(joined, "lsof -ti :9180"):
-				return []byte(noListenerMarker + "\n"), nil
-			case strings.Contains(joined, "command -v evener"):
-				return []byte(pathExe + "\n"), nil
-			case strings.Contains(joined, "evener_resolve"):
-				return []byte(pathExe + "\n"), nil
-			default:
-				return nil, fmt.Errorf("unexpected remote command: %v", argv)
-			}
-		}}
-		m := newTestManager(t, testRegistry(t, host), fr, Options{})
-
-		got, err := m.deployTarget(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
-		if err != nil {
-			t.Fatalf("deployTarget: %v", err)
-		}
-		if got != pathExe {
-			t.Fatalf("deployTarget = %q, want the PATH binary %q when no hub is running", got, pathExe)
-		}
-	})
-}
-
-// TestRound13WaitHealthyRequiresProofAUnverifiableRestartTook pins the
-// round-thirteen Medium that waitHealthy accepted `got.version == expected &&
-// !sameProcessAs(replaced)` for "dev" and dirty versions. sameProcessAs is false
-// both when two processes differ AND when either start time is unknown, so an
-// old process reporting the expected non-unique version with no started_at
-// satisfied a restart that never replaced anything. The strict rule is now the
-// same one the pending-restart settle path uses (differentProcessFrom): the
-// answer must prove it is a different process, with both start times known.
-func TestRound13WaitHealthyRequiresProofAUnverifiableRestartTook(t *testing.T) {
-	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
-	identity := func(version string, started time.Time) hubIdentity {
-		return hubIdentity{version: version, startedAt: started}
-	}
-	at := func(minutes int) time.Time { return time.Date(2026, 1, 1, 0, minutes, 0, 0, time.UTC) }
-	answer := func(id hubIdentity) []byte {
-		if id.startedAt.IsZero() {
-			return []byte(fmt.Sprintf(`{"version":%q,"mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`, id.version))
-		}
-		return []byte(fmt.Sprintf(`{"version":%q,"started_at":%q,"mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`,
-			id.version, id.startedAt.Format(time.RFC3339)))
-	}
-
-	cases := []struct {
-		name     string
-		expected string
-		replaced hubIdentity
-		answer   hubIdentity
-		wantErr  bool
-	}{
-		{
-			// The finding's case: the answer carries the expected "dev" version but
-			// no start time, so nothing proves the pre-restart process is gone.
-			name:     "an answer without a start time is not a replacement",
-			expected: "dev",
-			replaced: identity("dev", at(0)),
-			answer:   identity("dev", time.Time{}),
-			wantErr:  true,
-		},
-		{
-			// Fail closed on the other side: an unknown pre-restart identity proves
-			// nothing either, even when the answer carries a start time.
-			name:     "an unknown pre-restart identity fails closed",
-			expected: "dev",
-			replaced: identity("dev", time.Time{}),
-			answer:   identity("dev", at(1)),
-			wantErr:  true,
-		},
-		{
-			name:     "a proven different process is accepted",
-			expected: "dev",
-			replaced: identity("dev", at(0)),
-			answer:   identity("dev", at(1)),
-			wantErr:  false,
-		},
-		{
-			name:     "the pre-restart process itself is refused",
-			expected: "dev",
-			replaced: identity("dev", at(0)),
-			answer:   identity("dev", at(0)),
-			wantErr:  true,
-		},
-		{
-			// A stamped version is still a content identity: equality proves the
-			// deployed build is serving, whether or not any start time is known.
-			name:     "a stamped version still decides on its own",
-			expected: "newsha",
-			replaced: identity("newsha", time.Time{}),
-			answer:   identity("newsha", time.Time{}),
-			wantErr:  false,
-		},
-		{
-			name:     "a dirty version needs the same proof",
-			expected: "abc1234-dirty",
-			replaced: identity("abc1234-dirty", time.Time{}),
-			answer:   identity("abc1234-dirty", at(1)),
-			wantErr:  true,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			fr := &fakeRunner{runFn: func(_ context.Context, _ []string, _ io.Reader) ([]byte, error) {
-				return answer(tc.answer), nil
-			}}
-			m := newTestManager(t, testRegistry(t, host), fr, Options{
-				sleep: func(context.Context, time.Duration) error { return nil },
-			})
-
-			err := m.waitHealthy(context.Background(), host, tc.expected, "", tc.replaced)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("waitHealthy = %v, wantErr %v", err, tc.wantErr)
-			}
-			if err != nil && !errors.Is(err, ErrRestart) {
-				t.Fatalf("waitHealthy error = %v, want ErrRestart so the restart is retried", err)
+			commands = append(commands, ownerCommand{resolveDeployCommand(want), want + "\n"})
+			fr, index := ownerRunner(t, commands)
+			m := newTestManager(t, testRegistry(t, host), fr, Options{})
+			got, err := m.deployTarget(t.Context(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
+			if err != nil || got != want || *index != len(commands) {
+				t.Fatalf("target=%q want=%q err=%v commands=%d/%d", got, want, err, *index, len(commands))
 			}
 		})
 	}
@@ -288,10 +143,10 @@ func TestRound13BootstrapStartStillVerifiesAnUnverifiableBuild(t *testing.T) {
 			return []byte("x86_64\n"), nil
 		case strings.HasSuffix(joined, "id -u"):
 			return []byte("1000\n"), nil
-		case strings.Contains(joined, "XDG_STATE_HOME"):
+		case argv[len(argv)-1] == envProbeScript:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case strings.Contains(joined, "launch-check"):
-			return []byte(`{"protocol":"evener-appwire-v7","version":"dev","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"dev","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "api/health"):
 			if !launched {
 				return nil, errors.New("curl: (7) Failed to connect")
@@ -312,6 +167,8 @@ func TestRound13BootstrapStartStillVerifiesAnUnverifiableBuild(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}, startFn: goodStartFn(t)}
+	selected := modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "dev", "dev")
+	selected.stopped, selected.adhoc = true, true
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "dev",
 		sleep:                     func(context.Context, time.Duration) error { return nil },

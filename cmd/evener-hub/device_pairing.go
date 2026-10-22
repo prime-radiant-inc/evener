@@ -5,8 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/sha512"
 	"encoding/hex"
-	"net"
-	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -16,6 +14,7 @@ import (
 	"golang.org/x/crypto/nacl/box"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/hubendpoint"
 )
 
 const devicePairingLifetime = 10 * time.Minute
@@ -48,44 +47,24 @@ func (p *devicePairings) prune() {
 func (p *devicePairings) create(params appwire.DevicePairingCreateParams) (appwire.DevicePairingInvitation, error) {
 	origin := params.Origin
 	if origin == "" {
-		origin = p.cfg.MobileBaseURL
+		origin = p.cfg.PublicURL
 		if origin == "" {
 			origin, _ = mobilePairingOrigin(p.cfg, "")
 		}
 	}
-	u, err := url.Parse(origin)
-	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || (u.Scheme != "http" && u.Scheme != "https") {
+	parsed, err := hubendpoint.ParseOrigin(origin)
+	if err != nil {
 		return appwire.DevicePairingInvitation{}, appwire.InvalidParams("pairing requires a Hub HTTP(S) origin")
 	}
-	_, ok := safeMobileOrigin(origin)
+	origin, ok := safeMobileOrigin(origin)
 	if !ok {
 		return appwire.DevicePairingInvitation{}, appwire.InvalidParams("choose a reachable Hub origin")
 	}
-	// The invitation encoder uses the browser's URL spelling. Seal the same
-	// canonical ASCII destination so clients can compare bytes after decryption.
-	host := strings.TrimRight(u.Hostname(), ".")
-	if address, parseErr := netip.ParseAddr(host); parseErr == nil {
-		host = address.Unmap().String()
-	} else {
-		host, err = mobileHostnameProfile.ToASCII(host)
-		if err != nil {
-			return appwire.DevicePairingInvitation{}, appwire.InvalidParams("choose a reachable Hub origin")
-		}
-		host = strings.ToLower(strings.TrimRight(host, "."))
-	}
+	// Pairing keeps its narrower wire host policy above the shared origin parser.
+	host := strings.TrimRight(parsed.Hostname(), ".")
 	if len(host) == 0 || len(host) > 255 || strings.Trim(host, "abcdefghijklmnopqrstuvwxyz0123456789.:-") != "" {
 		return appwire.DevicePairingInvitation{}, appwire.InvalidParams("choose a reachable Hub origin")
 	}
-	port := u.Port()
-	if (u.Scheme == "http" && port == "80") || (u.Scheme == "https" && port == "443") {
-		port = ""
-	}
-	if port != "" {
-		host = net.JoinHostPort(host, port)
-	} else if strings.Contains(host, ":") {
-		host = "[" + host + "]"
-	}
-	origin = (&url.URL{Scheme: u.Scheme, Host: host}).String()
 	if len(p.cfg.AuthToken) == 0 || len(p.cfg.AuthToken) > 511 || strings.IndexFunc(p.cfg.AuthToken, func(c rune) bool { return c < '!' || c > '~' }) >= 0 {
 		return appwire.DevicePairingInvitation{}, appwire.Conflict("pairing requires a Hub credential of 1–511 non-space printable ASCII characters")
 	}

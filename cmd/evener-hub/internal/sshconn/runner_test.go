@@ -40,9 +40,10 @@ func TestComposeDest(t *testing.T) {
 func TestEvenerCommand(t *testing.T) {
 	cases := map[string]string{
 		"":                       "evener",
-		"   ":                    "evener",
+		"   ":                    "   ",
 		"evener":                 "evener",
-		" /usr/local/bin/evener": "/usr/local/bin/evener",
+		" /usr/local/bin/evener": " /usr/local/bin/evener",
+		"/usr/local/bin/evener ": "/usr/local/bin/evener ",
 		"/opt/evener/bin/evener": "/opt/evener/bin/evener",
 	}
 	for in, want := range cases {
@@ -118,9 +119,8 @@ func TestRawAndEvenerCommandArgv(t *testing.T) {
 	}
 }
 
-// A host with its own hub.toml or listen address must attach with them: without
-// the flags the bridge resolves defaults and addresses the wrong process.
-func TestChannelArgvCarriesConfigAndAddr(t *testing.T) {
+// Attach carries config selection, never the bootstrap listener override.
+func TestChannelArgvCarriesConfigNotAddr(t *testing.T) {
 	host := hostreg.Host{
 		Name:       "alpha",
 		SSH:        "alpha.example",
@@ -141,7 +141,6 @@ func TestChannelArgvCarriesConfigAndAddr(t *testing.T) {
 		"/opt/evener/bin/evener",
 		"hub", "attach", "--stdio",
 		"--config", "/etc/evener/hub.toml",
-		"--addr", "127.0.0.1:9180",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("channelArgv:\n got %v\nwant %v", got, want)
@@ -152,7 +151,7 @@ func TestChannelArgvCarriesConfigAndAddr(t *testing.T) {
 		host hostreg.Host
 		want []string
 	}{
-		{"addr only", hostreg.Host{Name: "a", SSH: "a.example", Addr: "10.0.0.1:1"}, []string{"--addr", "10.0.0.1:1"}},
+		{"addr only", hostreg.Host{Name: "a", SSH: "a.example", Addr: "10.0.0.1:1"}, nil},
 		{"config only", hostreg.Host{Name: "a", SSH: "a.example", ConfigPath: "/x/hub.toml"}, []string{"--config", "/x/hub.toml"}},
 		{"blank omitted", hostreg.Host{Name: "a", SSH: "a.example", ConfigPath: "  ", Addr: "\t"}, nil},
 	} {

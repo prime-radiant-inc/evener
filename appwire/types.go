@@ -3131,7 +3131,7 @@ type GitHeadResponse struct {
 
 // MobilePairingParams supplies the authenticated web application's explicit
 // origin. The hub validates it before embedding its auth token in a pairing
-// URL, unless configured MobileBaseURL takes precedence.
+// URL, unless configured PublicURL takes precedence.
 type MobilePairingParams struct {
 	Origin string `json:"origin"`
 }

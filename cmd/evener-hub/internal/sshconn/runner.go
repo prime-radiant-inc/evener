@@ -298,8 +298,8 @@ func composeDest(h hostreg.Host) string {
 // evenerCommand is the remote evener invocation: the registry's evener_path, or
 // the literal "evener" to resolve on the remote PATH when it is empty.
 func evenerCommand(path string) string {
-	if p := strings.TrimSpace(path); p != "" {
-		return p
+	if path != "" {
+		return path
 	}
 	return "evener"
 }
@@ -335,22 +335,14 @@ func evenerCommandArgv(o Options, h hostreg.Host, args ...string) []string {
 //
 //	ssh -o BatchMode=yes -o ConnectTimeout=<n> -o ServerAliveInterval=<n> \
 //	    -o ServerAliveCountMax=<n> [-i <key_path>] -- <dest> <evener_path> \
-//	    hub attach --stdio [--config <path>] [--addr <addr>]
+//	    hub attach --stdio [--config <path>]
 //
-// The optional flags carry the host's own hub.toml and the address the operator
-// configured for it (per-host Addr, else Options.HubAddr). Passing --addr from
-// the same resolution the restart and health probes use is what keeps a
-// manager-wide HubAddr from making the bridge dial a different port than the
-// probes address; with nothing configured the flag is omitted so the host
-// resolves its own hub.toml address (hostreg's EvenerPath/ConfigPath/Addr docs;
-// spec 04's corrected argv contract).
+// The remote bridge discovers the selected running instance. Host.Addr and
+// Options.HubListenAddr are server-listener intent, not connect destinations.
 func channelArgv(o Options, h hostreg.Host) []string {
 	args := []string{"hub", "attach", "--stdio"}
 	if p := strings.TrimSpace(h.ConfigPath); p != "" {
 		args = append(args, "--config", p)
-	}
-	if a := explicitHostAddr(o, h); a != "" {
-		args = append(args, "--addr", a)
 	}
 	return evenerCommandArgv(o, h, args...)
 }
@@ -358,8 +350,7 @@ func channelArgv(o Options, h hostreg.Host) []string {
 // hubBootstrapArgv builds the argv for the ad hoc first-attach launch of a host
 // hub that is not running: the resolved executable (an absolute path, so the
 // launch does not depend on the non-interactive PATH), the hub subcommand, and
-// the host's configured config path / address so the started hub matches the one
-// the probes address. It mirrors channelArgv's optional flags.
+// the host's selected config and optional bootstrap listener override.
 func hubBootstrapArgv(o Options, h hostreg.Host, target string) []string {
 	args := []string{target, "hub"}
 	if p := strings.TrimSpace(h.ConfigPath); p != "" {

@@ -34,6 +34,28 @@ func TestClientURLPreservesQueryString(t *testing.T) {
 	}
 }
 
+func TestClientRequiresOrigin(t *testing.T) {
+	t.Parallel()
+
+	for _, base := range []string{
+		"127.0.0.1:9180",
+		"http://example.test/prefix",
+		"http://0.0.0.0:9180",
+	} {
+		if _, err := hubapi.NewClient(base, nil); err == nil {
+			t.Errorf("NewClient(%q) accepted a non-origin base", base)
+		}
+	}
+
+	client, err := hubapi.NewClient("https://EXAMPLE.test:443/", nil)
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	if got, want := client.URL("/api/health?include=details"), "https://example.test/api/health?include=details"; got != want {
+		t.Fatalf("URL() = %q, want %q", got, want)
+	}
+}
+
 func TestNavigationContractsHaveNoSequenceMember(t *testing.T) {
 	values := []any{
 		hubapi.NavigationManifest{}, hubapi.NavigationSectionResource{}, hubapi.NavigationPinSectionCatalog{},

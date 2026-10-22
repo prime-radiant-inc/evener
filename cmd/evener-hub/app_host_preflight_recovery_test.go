@@ -219,6 +219,16 @@ func (r *twoInstallRecoveryRunner) Run(ctx context.Context, argv []string, stdin
 		return []byte(recoveryDefaultExecutable + "\n"), nil
 	case strings.Contains(command, "if test -x"), strings.Contains(command, "if command -v"):
 		return nil, exec.CommandContext(ctx, "sh", "-c", `test -x "$1"`, "probe", r.files[target]).Run()
+	case strings.Contains(command, "if test -e"):
+		return nil, exec.CommandContext(ctx, "sh", "-c", `test -e "$1" || test -L "$1"`, "probe", r.files[target]).Run()
+	case strings.Contains(command, " hub endpoint --json"):
+		if strings.Contains(command, "/proc/") && strings.Contains(command, "/exe hub endpoint --json") {
+			return r.restartRecoveryRunner.Run(ctx, argv, stdin)
+		}
+		if err := exec.CommandContext(ctx, "sh", "-c", `test -x "$1"`, "probe", r.files[target]).Run(); err != nil {
+			return nil, err
+		}
+		return r.restartRecoveryRunner.Run(ctx, argv, stdin)
 	case strings.Contains(command, "launch-check"):
 		if err := exec.CommandContext(ctx, "sh", "-c", `test -x "$1"`, "probe", r.files[target]).Run(); err != nil {
 			return nil, err
@@ -227,7 +237,7 @@ func (r *twoInstallRecoveryRunner) Run(ctx context.Context, argv []string, stdin
 		if err != nil {
 			return nil, err
 		}
-		return fmt.Appendf(nil, `{"protocol":%q,"version":%q,"launch_flags":["api-log"]}`, appwire.ProtocolVersion, string(data)), nil
+		return fmt.Appendf(nil, `{"hub_endpoint_schema":1,"protocol":%q,"version":%q,"launch_flags":["api-log"]}`, appwire.ProtocolVersion, string(data)), nil
 	case strings.Contains(command, "test -d"), strings.Contains(command, "evener_resolve"):
 		return []byte(target + "\n"), nil
 	case strings.Contains(command, "cat >"):

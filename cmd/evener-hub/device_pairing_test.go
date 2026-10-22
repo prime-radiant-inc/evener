@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"golang.org/x/crypto/nacl/box"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/hubendpoint"
 )
 
 func TestDevicePairingRejectsMalformedNumericHosts(t *testing.T) {
@@ -34,7 +36,7 @@ func TestDevicePairingRejectsMalformedNumericHosts(t *testing.T) {
 				cfg := hubcore.WebConfig{AuthToken: "synthetic-credential"}
 				params := appwire.DevicePairingCreateParams{Origin: "http://" + host + ":9180", Tailnet: true}
 				if viaConfig {
-					cfg.MobileBaseURL = "https://" + host + ":9180"
+					cfg.PublicURL = "https://" + host + ":9180"
 					params.Origin = ""
 				}
 				p := newDevicePairings(cfg)
@@ -43,7 +45,7 @@ func TestDevicePairingRejectsMalformedNumericHosts(t *testing.T) {
 				if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams || invite.Invitation != "" || len(p.entries) != 0 {
 					t.Fatalf("malformed host created an invitation: code=%d entries=%d err=%v", wireErr.Code, len(p.entries), err)
 				}
-				p.cfg.MobileBaseURL = ""
+				p.cfg.PublicURL = ""
 				if _, err := p.create(appwire.DevicePairingCreateParams{Origin: "http://magic-kingdom:9180", Tailnet: true}); err != nil || len(p.entries) != 1 {
 					t.Fatalf("valid destination did not recover pairing: entries=%d err=%v", len(p.entries), err)
 				}
@@ -61,7 +63,7 @@ func TestDevicePairingUsesSelectedOrigin(t *testing.T) {
 		{"edited destination", "http://magic-kingdom:9180", "https://old.example.test", "", "http://magic-kingdom:9180"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := newDevicePairings(hubcore.WebConfig{AuthToken: "synthetic-credential", HubAddr: tc.bound, MobileBaseURL: tc.configured})
+			p := newDevicePairings(hubcore.WebConfig{AuthToken: "synthetic-credential", HubAddr: tc.bound, PublicURL: tc.configured})
 			invite, err := p.create(appwire.DevicePairingCreateParams{Origin: tc.proposed})
 			if err != nil {
 				t.Fatal(err)
@@ -70,6 +72,18 @@ func TestDevicePairingUsesSelectedOrigin(t *testing.T) {
 				t.Fatalf("origin = %q, want %q", invite.Origin, tc.want)
 			}
 		})
+	}
+}
+
+func TestInvitationOverrideCanonicalOrigin(t *testing.T) {
+	p := newDevicePairings(hubcore.WebConfig{AuthToken: "synthetic-credential", PublicURL: "https://default.example.test"})
+	invitation, err := p.create(appwire.DevicePairingCreateParams{Origin: "HTTPS://BÜCHER.EXAMPLE:443/"})
+	if err != nil || invitation.Origin != "https://xn--bcher-kva.example" {
+		t.Fatalf("explicit normalized invitation: %+v, %v", invitation, err)
+	}
+	mapped, err := p.create(appwire.DevicePairingCreateParams{Origin: "http://[::ffff:192.0.2.1]"})
+	if err != nil || mapped.Origin != "http://[::ffff:c000:201]" {
+		t.Fatalf("shared IPv6 canonical form: %+v, %v", mapped, err)
 	}
 }
 
@@ -355,6 +369,7 @@ func TestDevicePairingCanonicalDestinationMatchesEnvelope(t *testing.T) {
 	for _, tc := range []struct{ input, origin string }{
 		{"http://MAGIC-KINGDOM:80/", "http://magic-kingdom"},
 		{"https://BÜCHER.example:443", "https://xn--bcher-kva.example"},
+		{"https://EXAMPLE.TEST.:443/", "https://example.test."},
 		{"https://[fd7a:115c:a1e0:0:0:0:0:1]:9180", "https://[fd7a:115c:a1e0::1]:9180"},
 	} {
 		t.Run(tc.input, func(t *testing.T) {
@@ -380,6 +395,20 @@ func TestDevicePairingCanonicalDestinationMatchesEnvelope(t *testing.T) {
 			origin, _ := url.Parse(tc.origin)
 			if string(plain[8:8+int(plain[4])]) != origin.Hostname() {
 				t.Fatal("envelope destination differs from invitation")
+			}
+			hostEnd := 8 + int(plain[4])
+			pathEnd := hostEnd + int(plain[5])
+			if plain[0] != 1 || plain[1]&1 != 1 || string(plain[hostEnd:pathEnd]) != "/rpc" || string(plain[pathEnd:]) != "credential" {
+				t.Fatal("pairing wire fields changed")
+			}
+			scheme := "http"
+			if plain[1]&2 != 0 {
+				scheme = "https"
+			}
+			port := int(plain[2])<<8 | int(plain[3])
+			decoded, err := hubendpoint.ParseOrigin(scheme + "://" + net.JoinHostPort(string(plain[8:hostEnd]), strconv.Itoa(port)))
+			if err != nil || decoded.String() != tc.origin {
+				t.Fatalf("decoded origin=%v err=%v", decoded, err)
 			}
 		})
 	}

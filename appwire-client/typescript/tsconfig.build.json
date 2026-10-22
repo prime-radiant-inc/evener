@@ -161,6 +161,7 @@
     "settingsHubGeneration.ts",
     "checkpointedDraftEditor.ts",
     "transcriptDisplayStore.ts",
-    "pairing.ts"
+    "pairing.ts",
+    "hubOrigin.ts"
   ]
 }

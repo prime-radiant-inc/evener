@@ -27,6 +27,43 @@ import (
 
 var documentFileLinksBrowser = flag.Bool("document-file-links-browser", false, "run isolated document file-links browser fixture")
 
+func TestBrowserFixtureEndpointEnvironment(t *testing.T) {
+	if !*documentFileLinksBrowser {
+		t.Skip("requires the browser fixture's Node/Vite installation")
+	}
+	t.Setenv("EVENER_HUB_ADDR", "http://127.0.0.1:1")
+	t.Setenv("EVENER_HUB_URL", "http://127.0.0.1:2")
+	const selected = "http://127.0.0.1:19371"
+	probe := func(env []string) (int, string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "node", "src/dev/hubEndpointConfigProbe.mjs", "config")
+		cmd.Dir = "frontend"
+		cmd.Env = env
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("actual Vite config loader: %v", err)
+		}
+		var result struct {
+			Status int `json:"status"`
+			Data   struct {
+				API string `json:"api"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(out, &result); err != nil {
+			t.Fatal(err)
+		}
+		return result.Status, result.Data.API
+	}
+	if status, _ := probe(os.Environ()); status != 3 {
+		t.Fatalf("production accepted retired setting: status=%d", status)
+	}
+	if status, origin := probe(browserFixtureEnv(selected)); status != 0 || origin != selected {
+		t.Fatalf("fixture status=%d origin=%q, want %q", status, origin, selected)
+	}
+}
+
 const documentFileLinksMissingPath = "docs/recovered.md"
 const documentFileLinksRecoveredContents = "Q1 RECOVERED CURRENT FILE\n"
 
@@ -289,7 +326,7 @@ func TestDocumentFileLinksBrowser(t *testing.T) {
 	}
 	defer raw.Close()
 	cmd := exec.CommandContext(context.Background(), "node", "frontend/scripts/documentfilelinksguard/run.mjs")
-	cmd.Env = append(os.Environ(), "EVENER_HUB_ADDR="+server.URL, "DOCUMENT_FILE_LINKS_CWD="+cwd, "DOCUMENT_FILE_LINKS_REF="+ref,
+	cmd.Env = append(browserFixtureEnv(server.URL), "DOCUMENT_FILE_LINKS_CWD="+cwd, "DOCUMENT_FILE_LINKS_REF="+ref,
 		"DOCUMENT_FILE_LINKS_CHILD_CWD="+childCWD, "DOCUMENT_FILE_LINKS_CHILD_REF="+childRef,
 		"DOCUMENT_FILE_LINKS_ARTIFACT_DIR="+artifacts, "DOCUMENT_FILE_LINKS_TOKEN="+token)
 	cmd.Stdout = io.MultiWriter(os.Stdout, raw)
