@@ -72,7 +72,13 @@ export interface MutationOutboxIndexedDBOptions {
   compositionOrigin?: string;
 }
 
-const BROWSER_TAB_ORIGIN = `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+// One origin per adapter. A browser tab owns one adapter; a second adapter in
+// the same realm is another tab (tests model tabs this way). Keeping the id on
+// the instance also lets a Composer remount reuse the origin while a peer
+// adapter cannot claim it.
+function newCompositionOrigin(): string {
+  return `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
 
 const DATABASE_NAME = "evener-mutation-outbox";
 // Version 4 is a compatibility fence, not a schema migration: the upgrade
@@ -221,7 +227,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     this.#beforeCommit = options.beforeCommit;
     this.#onWriteStalled = options.onWriteStalled;
     this.#onOpenDiagnostic = options.onOpenDiagnostic ?? DEFAULT_OPEN_DIAGNOSTIC;
-    this.#compositionOrigin = options.compositionOrigin ?? BROWSER_TAB_ORIGIN;
+    this.#compositionOrigin = options.compositionOrigin ?? newCompositionOrigin();
     this.#connection = new IDBConnection({
       indexedDB: factory,
       databaseName: this.#databaseName,
@@ -1090,8 +1096,11 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
           consumed = true;
           continue;
         }
-        const expected = expectedRecoveryRevisions?.[id];
         const durableRevision = (recovery as VersionedMutationRecoveryRecord).compositionRevision ?? 0;
+        // A caller that supplies no map is the legacy resend path and accepts
+        // the durable row as it stands. A supplied map stays authoritative: a
+        // missing id is a stale caller and is refused.
+        const expected = expectedRecoveryRevisions === undefined ? durableRevision : expectedRecoveryRevisions[id];
         const sameTab = (recovery as VersionedMutationRecoveryRecord).compositionOrigin === this.#compositionOrigin;
         if (
           recovery.targetRef !== intent.targetRef ||

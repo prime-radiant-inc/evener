@@ -544,10 +544,9 @@ test.each([
       await act(async () => {
         hold.release();
         await delivered.promise;
-        // The released write's own notification starts a projection refresh;
-        // settle it inside this act before the test observes the result.
-        await flushPendingTurnsProjectionForTests();
       });
+      // The released write's own notification starts a projection refresh;
+      // settle it before the test observes the result.
       await flushPendingTurnsProjectionForTests();
       expect(source.getSnapshot().activeRecoveryId).toBeNull();
       expect(source.getSnapshot().text).toBe(newer ? "Run /skill-2 " : "");
