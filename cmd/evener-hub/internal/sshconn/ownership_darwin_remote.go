@@ -381,6 +381,10 @@ func launchdIntent(def launchdDefinition) string {
 }
 
 func (m *Manager) probeDarwinImage(ctx context.Context, host hostreg.Host, pid string, facts Preflight) error {
+	return m.probeDarwinImageBuild(ctx, host, pid, facts, "")
+}
+
+func (m *Manager) probeDarwinImageBuild(ctx context.Context, host hostreg.Host, pid string, facts Preflight, version string) error {
 	exe, err := m.expectedHubExecutable(ctx, host)
 	if err != nil {
 		return err
@@ -430,6 +434,9 @@ func (m *Manager) probeDarwinImage(ctx context.Context, host hostreg.Host, pid s
 	}
 	if contract.HubEndpointSchema != hubendpoint.SchemaVersion {
 		return endpointMigration(host)
+	}
+	if version != "" && contract.Version != version {
+		return fmt.Errorf("%w: running image build differs from pending replacement", errOwnerEvidence)
 	}
 	return ctx.Err()
 }

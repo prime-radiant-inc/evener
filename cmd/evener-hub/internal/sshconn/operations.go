@@ -315,7 +315,7 @@ func (m *Manager) restartForOperation(ctx context.Context, host hostreg.Host, fa
 	}
 	var started bool
 	if pending.selected != nil {
-		started, err = m.recoverSelectedRestartWithStart(restartCtx, host, facts, &pending)
+		started, err = m.recoverSelectedRestartWithStart(restartCtx, host, facts, &pending, true)
 	} else {
 		if err := m.checkEffectBinding(binding); err != nil {
 			return result, err

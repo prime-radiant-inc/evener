@@ -544,6 +544,10 @@ func (m *Manager) ownerGeneration(ctx context.Context, host hostreg.Host, pid st
 // proof that the image is old. Callers must bracket this with owner/generation
 // checks, as resolveOwnedEndpoint does.
 func (m *Manager) probeOwnerImageCapability(ctx context.Context, host hostreg.Host, pid string) error {
+	return m.probeOwnerImageBuild(ctx, host, pid, "")
+}
+
+func (m *Manager) probeOwnerImageBuild(ctx context.Context, host hostreg.Host, pid, version string) error {
 	if _, err := numericPID(pid); err != nil {
 		return err
 	}
@@ -562,6 +566,9 @@ func (m *Manager) probeOwnerImageCapability(ctx context.Context, host hostreg.Ho
 	}
 	if contract.HubEndpointSchema != hubendpoint.SchemaVersion {
 		return endpointMigration(host)
+	}
+	if version != "" && contract.Version != version {
+		return fmt.Errorf("%w: running image build differs from pending replacement", errOwnerEvidence)
 	}
 	return nil
 }

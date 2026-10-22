@@ -167,7 +167,7 @@ func (m *Manager) checkSelectedReplacement(ctx context.Context, host hostreg.Hos
 }
 
 func (m *Manager) recoverSelectedRestart(ctx context.Context, host hostreg.Host, facts Preflight, pending pendingRestartState) error {
-	_, err := m.recoverSelectedRestartWithStart(ctx, host, facts, &pending)
+	_, err := m.recoverSelectedRestartWithStart(ctx, host, facts, &pending, false)
 	return err
 }
 
@@ -178,7 +178,7 @@ func checkSelectedRestartRegistration(host, prior hostreg.Host) error {
 	return nil
 }
 
-func (m *Manager) recoverSelectedRestartWithStart(ctx context.Context, host hostreg.Host, facts Preflight, pending *pendingRestartState) (started bool, err error) {
+func (m *Manager) recoverSelectedRestartWithStart(ctx context.Context, host hostreg.Host, facts Preflight, pending *pendingRestartState, retryUnhealthySuccessor bool) (started bool, err error) {
 	started = pending.start
 	prior := *pending.selected
 	m.applyResolvedTarget(&host)
@@ -203,6 +203,16 @@ func (m *Manager) recoverSelectedRestartWithStart(ctx context.Context, host host
 			stopped = strings.TrimSpace(string(out)) == pidGoneMarker
 		}
 	}
+	if stopped && retryUnhealthySuccessor && pending.nextEnv != nil && report.State != "stopped" {
+		// A gone predecessor does not imply a stopped installation: its replacement
+		// may own the root without answering health. Only a fresh explicit Restart
+		// may replace that independently verified successor, never an early proof
+		// of completion or an automatic reconnect.
+		now, resolveErr := m.resolveOwnedEndpoint(ctx, host, facts)
+		if resolveErr == nil && now.pid != "0" && !sameProcess(now, prior) && now.report.Running == nil {
+			return started, m.retryUnhealthySelectedSuccessor(ctx, host, facts, pending, now)
+		}
+	}
 	if !stopped {
 		now, err := m.resolveOwnedEndpoint(ctx, host, facts)
 		if err != nil {
@@ -218,6 +228,9 @@ func (m *Manager) recoverSelectedRestartWithStart(ctx context.Context, host host
 			}
 			if !sameLaunchWithEnv(now, prior, env) {
 				return started, fmt.Errorf("%w: pending owner intent changed", errOwnerEvidence)
+			}
+			if retryUnhealthySuccessor && pending.nextEnv != nil && now.report.Running == nil {
+				return started, m.retryUnhealthySelectedSuccessor(ctx, host, facts, pending, now)
 			}
 			// A successful replacement may have outlived a lost SSH response. Verify
 			// that successor instead of needlessly restarting it again.
@@ -300,6 +313,41 @@ func (m *Manager) recoverSelectedRestartWithStart(ctx context.Context, host host
 	}
 	started = pending.start
 	return started, m.restartSelectedPending(ctx, host, facts, pending, false)
+}
+
+func (m *Manager) retryUnhealthySelectedSuccessor(ctx context.Context, host hostreg.Host, facts Preflight, pending *pendingRestartState, now selectedOwner) error {
+	if err := checkSelectedRestartRegistration(now.host, pending.selected.host); err != nil {
+		return err
+	}
+	if !sameLaunchWithEnv(now, *pending.selected, pending.nextEnv) {
+		return fmt.Errorf("%w: unhealthy successor launch changed", errOwnerEvidence)
+	}
+	if err := pending.validateExecutable(host.Name, facts); err != nil {
+		return err
+	}
+	// launch-check reports buildinfo.Version, the full GitSHA with an optional
+	// dirty suffix. A distinct retained SHA pin must agree with that same image.
+	if pending.expectedGitSHA != "" && strings.TrimSuffix(pending.expectedVersion, "-dirty") != pending.expectedGitSHA {
+		return fmt.Errorf("%w: unhealthy successor build pin unavailable", errOwnerEvidence)
+	}
+	var err error
+	if facts.OS == "darwin" {
+		err = m.probeDarwinImageBuild(ctx, host, now.pid, facts, pending.expectedVersion)
+	} else {
+		err = m.probeOwnerImageBuild(ctx, host, now.pid, pending.expectedVersion)
+	}
+	if err != nil {
+		return err
+	}
+	// Bracket the image probe with independent same-owner checks, then repeat
+	// the ordinary replacement gate immediately before the stop/start command.
+	intent, err := m.selectedRestartIntentUsing(ctx, host, facts, now, pending.expectedVersion, pending.expectedGitSHA, m.resolveHostEndpoint)
+	if err != nil {
+		return err
+	}
+	previous := *pending
+	pending.selected, pending.command = intent.selected, intent.command
+	return m.restartPreparedSelectedPending(ctx, host, facts, pending, true, previous)
 }
 
 func (m *Manager) revalidateStoppedService(ctx context.Context, host hostreg.Host, facts Preflight, owner selectedOwner) error {
