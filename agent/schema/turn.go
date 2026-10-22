@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/llm"
 )
 
@@ -416,6 +417,10 @@ type Turn struct {
 	AttentionID string `json:"attention_id,omitempty"`
 	// AttentionResolution is set only on TurnAttentionResolution turns.
 	AttentionResolution *AttentionResolutionInfo `json:"attention_resolution,omitempty"`
+	// CausalKnown distinguishes a newly recorded, known-empty origin from an
+	// unstamped older entry whose ancestry is unknown. Do not infer one from nil.
+	Causal      *provenance.Causal `json:"causal,omitempty"`
+	CausalKnown bool               `json:"causal_known,omitempty"`
 	// ClientMutationID identifies retry-safe client-authored input. StableTurnID
 	// preserves the logical turn identity across live events and transcript
 	// recovery for both client input and daemon goal continuations.

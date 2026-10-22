@@ -461,7 +461,8 @@ func (s *Session) deliverCommunicate(data events.CommunicateData) error {
 		s.announceFailClosed()
 		return refusal
 	}
-	rec, err := s.recordTranscriptOnlyThrough(schema.Turn{Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message, EndReason: data.EndReason}}, transcript.DoorSynced, transcript.PlaceSession)
+	causal := s.activeCausalProvenance()
+	rec, err := s.recordTranscriptOnlyThrough(schema.Turn{Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message, EndReason: data.EndReason}, CausalKnown: true, Causal: causal}, transcript.DoorSynced, transcript.PlaceSession)
 	if !rec.Recorded && s.servedByDaemon() {
 		switch writer := s.attachedTranscript(); {
 		case writer != nil && writer.Closed():
@@ -490,7 +491,7 @@ func (s *Session) deliverCommunicate(data events.CommunicateData) error {
 	s.mu.Lock()
 	s.noteAgentMessageLocked(data.Message)
 	s.mu.Unlock()
-	s.emit(events.EventCommunicate, data)
+	s.emitWithProvenance(events.EventCommunicate, data, causal)
 	return nil
 }
 

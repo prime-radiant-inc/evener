@@ -418,6 +418,9 @@ func (b *builder) applyIdentity(ordinal uint64, offset int64, length uint32, ent
 	c := contributor{Offset: offset, Ordinal: ordinal, Length: length}
 	switch entry.Kind {
 	case schema.TurnTool, schema.TurnToolResults:
+		if err := b.completeCommunications(slot, entry, c); err != nil {
+			return err
+		}
 		if err := b.applyResults(slot, summary, entry, c); err != nil {
 			return err
 		}
@@ -667,13 +670,70 @@ func (b *builder) appendItem(item appwire.ThreadItem, part int, turnSlot uint64,
 func (b *builder) appendItemWithContext(item appwire.ThreadItem, part int, turnSlot uint64, c contributor, context strRef) (uint64, error) {
 	version := c.Ordinal + 1
 	record := itemRecord{Entry: version, Part: uint32(part), Turn: uint32(turnSlot), Version: version, Opener: c, Context: context}
-	if apptranscript.MergesByCallID(item) {
+	if apptranscript.MergesByCallID(item) || item.Type == "agentMessage" && item.Observation != nil && item.CallID != "" {
 		var err error
 		if record.Call, err = b.x.strings.putString(item.CallID); err != nil {
 			return 0, err
 		}
 	}
 	return b.x.items.append(encodeItemInto(b.itemBuf[:], record))
+}
+
+// completeCommunications links a typed result to the earlier COMMUNICATE item
+// of the same logical turn. Looking up recorded item rows rather than an
+// in-memory pending map also works after an index handle reload or catch-up.
+func (b *builder) completeCommunications(slot uint64, entry *schema.Turn, c contributor) error {
+	for _, part := range entry.Message.Content {
+		if part.Kind != llm.ContentToolResult || part.ToolResult == nil || part.ToolResult.ToolCallID == "" {
+			continue
+		}
+		id := part.ToolResult.ToolCallID
+		if part.ToolResult.Name != "" && part.ToolResult.Name != "communicate" {
+			continue
+		}
+		if apptranscript.CommunicateTerminalAccepted(*entry, id) == nil {
+			continue
+		}
+		const batch = 128
+		for end := b.x.items.n; end > 0; {
+			start := end - min(end, batch)
+			buf, err := b.x.items.read(start, int(end-start))
+			if err != nil {
+				return err
+			}
+			found := false
+			for position := end; position > start; position-- {
+				record := decodeItem(buf[(position-1-start)*itemRecordSize:])
+				if uint64(record.Turn) != slot || record.Call.Len == 0 || record.Opener.Ordinal >= c.Ordinal {
+					continue
+				}
+				call, err := b.x.strings.get(record.Call)
+				if err != nil {
+					return err
+				}
+				if string(call) != id {
+					continue
+				}
+				opener, err := b.x.readEntry(record.Opener.Offset, record.Opener.Length)
+				if err != nil {
+					return err
+				}
+				if opener.Kind != schema.TurnCommunicate || opener.Communicate == nil || opener.Communicate.CallID != id {
+					continue
+				}
+				if err := b.addContributor(position-1, c, c.Ordinal+1); err != nil {
+					return err
+				}
+				found = true
+				break
+			}
+			if found {
+				break
+			}
+			end = start
+		}
+	}
+	return nil
 }
 
 // echoesAwaiting reports whether a COMMUNICATE entry's message repeats the

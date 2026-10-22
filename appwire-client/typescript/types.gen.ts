@@ -4166,6 +4166,7 @@ export interface ThreadForkResponse {
 
 export interface ThreadItem {
   actor?: SessionActor;
+  observation?: SessionObservationMetadata;
   type: string;
   id: string;
   transcriptKey?: string;

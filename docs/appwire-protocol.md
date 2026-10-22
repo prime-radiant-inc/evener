@@ -4187,6 +4187,7 @@ Underlying Go kind: `string` (no struct fields).
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `actor` | \*[appwire.SessionActor](#sessionactor) | yes |  |
+| `observation` | \*[appwire.SessionObservationMetadata](#sessionobservationmetadata) | yes |  |
 | `type` | string |  |  |
 | `id` | string |  |  |
 | `transcriptKey` | string | yes |  |

@@ -872,6 +872,15 @@ func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, err
 			if err != nil {
 				return appwire.ThreadItem{}, err
 			}
+			if item.Observation != nil && item.Observation.EndTurn && (entry.Kind == schema.TurnToolResults || entry.Kind == schema.TurnTool) {
+				if accepted := apptranscript.CommunicateTerminalAccepted(*entry, callID); accepted != nil {
+					item.Observation.TerminalAccepted = accepted
+				}
+				// The communicate message is not a tool item. Its result can
+				// change observation evidence, but must not fold its output
+				// into the displayed message or change the item type.
+				continue
+			}
 			switch entry.Kind {
 			case schema.TurnCompletion:
 				// The execution completed with no results for the call:

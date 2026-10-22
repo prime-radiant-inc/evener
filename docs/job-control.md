@@ -42,6 +42,20 @@ need, and read retained evidence when a frame alone cannot answer the question.
 Keep application-owned logs outside session scratch when a detached process must
 outlive the session.
 
+### Manager observation evidence
+
+A Manager's session history, snapshot, and live history updates expose recorded
+`communicate` messages with `observation` metadata. `endTurn` and `endReason`
+describe the recorded request, not proof that the request ended the run.
+`terminalAccepted` is present only when the matching tool result says whether
+terminal arbitration accepted it. A missing value means **unknown**, not false;
+another concurrent terminal call may have won. `causalKnown` is true for newly
+recorded messages even when their causal chain is empty. An older unstamped
+message has `causalKnown: false`: it remains readable without invented ancestry.
+When present, `causal` uses the original bounded watch keys and chain, including
+its truncation marker. Recover a missed update by reading the recorded session
+instead of guessing from the last live notification.
+
 ## Summary
 
 Evener exposes one unified list/status/control view over two typed resource
