@@ -1,6 +1,7 @@
 import type { ComposerMention } from "@evener/appwire-client";
 import { createStore } from "zustand/vanilla";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
+import { createSecureUUID } from "../../../stores/secureUUID";
 import type { InputAttachment } from "../../../stores/threads";
 import { pushToast } from "../../../widgets/toast/store";
 import {
@@ -64,6 +65,8 @@ export interface ComposerSubmissionSnapshot {
   mentions?: readonly ComposerMention[];
   revision: number;
   draftRevision: number;
+  recoveryId?: string;
+  releaseRecoveryInFlight?: () => void;
 }
 
 export interface ComposerSourceSnapshot {
@@ -147,10 +150,27 @@ function recoveryCompositionRevision(record: MutationRecoveryRecord): number {
 /** Original conversation work belongs to its pane, not to an editor mount. */
 const defaultCompositionOwners = new Map<string, string>();
 
+/** A recovery whose submission has started is no longer available to an Edit
+ * press from a remounted composer. The submission already owns the captured
+ * composition; restoring it through a fresh source would write a new revision
+ * and race the send. */
+const recoverySubmissionsInFlight = new Set<string>();
+
+export function beginRecoverySubmission(clientMutationId: string): () => void {
+  recoverySubmissionsInFlight.add(clientMutationId);
+  return () => {
+    recoverySubmissionsInFlight.delete(clientMutationId);
+  };
+}
+
+export function recoverySubmissionInFlight(clientMutationId: string): boolean {
+  return recoverySubmissionsInFlight.has(clientMutationId);
+}
+
 /** A pane passes its lifetime token; standalone mounts fall back to one token
  * per ref so a remount outside the pane shell still reuses ownership. */
 export function createComposerSourceState(ref: string, ownerId?: string): ComposerSourceState {
-  const compositionOwnerId = ownerId ?? defaultCompositionOwners.get(ref) ?? crypto.randomUUID();
+  const compositionOwnerId = ownerId ?? defaultCompositionOwners.get(ref) ?? createSecureUUID();
   if (ownerId === undefined && !defaultCompositionOwners.has(ref))
     defaultCompositionOwners.set(ref, compositionOwnerId);
   const initial = readComposerDraftSnapshot(ref);
@@ -483,7 +503,8 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   }
 
   function activateRecovery(record: MutationRecoveryRecord): Promise<boolean> {
-    if (disposed || state.getState().recoveryActivating) return Promise.resolve(false);
+    if (disposed || state.getState().recoveryActivating || recoverySubmissionsInFlight.has(record.clientMutationId))
+      return Promise.resolve(false);
     state.setState({ recoveryActivating: true });
     const completed = runRecoveryOperation(() => {
       const operation = recoveryWrites
@@ -677,17 +698,6 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           submittedCommandNames ?? [],
           recovery.attachments as PendingAttachment[],
         );
-      } else if (
-        !recovery &&
-        currentRecoveryId() === null &&
-        textRef.current === submittedText &&
-        sameSkillSelections(skillNamesRef.current, submittedSkillNames) &&
-        sameSkillSelections(selectionMetaRef.current.commandNames, submittedCommandNames ?? [])
-      ) {
-        ownedDraftRevisionRef.current = readDraftRevision(ref);
-        updateText("");
-        updateSkillNames([]);
-        updateSelectionMeta({ text: "", skillNames: [] });
       }
     },
   );
@@ -709,6 +719,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         !disposed &&
         !boundEditor &&
         id !== null &&
+        !recoverySubmissionsInFlight.has(id) &&
         !operations.hasPending &&
         current !== committedRecoveryComposition
       )

@@ -2,6 +2,7 @@ import { type ComposerSourceState, createComposerSourceState } from "../panes/se
 import type { TranscriptReadView } from "../panes/session/transcript/transcriptReadView";
 import type { JobLogReader } from "../panes/transcript/jobLogReader";
 import { parseZoomParams } from "../panes/zoom/intent";
+import { createSecureUUID } from "../stores/secureUUID";
 import { refParam } from "./routing";
 import { type OpenPaneRecord, onPaneRetype, workspaceStore } from "./workspace";
 
@@ -38,7 +39,7 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
   const lifetime: PaneLifetime = {
     paneId: pane.id,
     serial: ++nextSerial,
-    compositionOwnerId: crypto.randomUUID(),
+    compositionOwnerId: createSecureUUID(),
     get sourceRef() {
       return sourceRef;
     },

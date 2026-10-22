@@ -122,7 +122,12 @@ import {
   serializeSkillDocument,
   skillAtomMentions,
 } from "./skillDocument";
-import { type ComposerSourceState, restoredSkillNames } from "./sourceState";
+import {
+  beginRecoverySubmission,
+  type ComposerSourceState,
+  recoverySubmissionInFlight,
+  restoredSkillNames,
+} from "./sourceState";
 import { recordStoplessComposer } from "./stoplessComposer";
 import { useInlineStopReady } from "./useInlineStopReady";
 
@@ -472,7 +477,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   }, [resumeFailure, toasts]);
 
   useEffect(() => {
-    if (activeRecoveryId === null || attachments.hasPending) return;
+    if (activeRecoveryId === null || attachments.hasPending || recoverySubmissionInFlight(activeRecoveryId)) return;
     void queueRecoveryPersistence(
       activeRecoveryId,
       text,
@@ -509,7 +514,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     const record = recoveryEntries.find(
       (entry) => entry.recoveryKind === "rejected" && entry.method !== "turn/interrupt" && !entry.preserveComposer,
     );
-    if (!record) return;
+    if (!record || recoverySubmissionInFlight(record.clientMutationId)) return;
     const recovered = recoveryComposerDraft(record);
     const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
     Object.assign(recovered, visible);
@@ -861,9 +866,14 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
 
   // QueueStrip captures this mount's payload and edit revision through
   // getComposerText before it starts the drain's durable write.
-  function handleDrainSuccess(): void {
+  function handleDrainStart(): void {
     const snapshot = lastDrainSnapshotRef.current;
     if (!snapshot || !source.alive) return;
+    if (snapshot.recoveryId) snapshot.releaseRecoveryInFlight = beginRecoverySubmission(snapshot.recoveryId);
+    clearDrainSnapshot(snapshot);
+  }
+
+  function clearDrainSnapshot(snapshot: NonNullable<typeof lastDrainSnapshotRef.current>): void {
     clearIfUnchanged(
       snapshot.text,
       snapshot.revision,
@@ -872,6 +882,38 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
       snapshot.commandNames,
     );
     clearSubmittedAttachments(snapshot.attachments);
+  }
+
+  function handleDrainSuccess(): void {
+    const snapshot = lastDrainSnapshotRef.current;
+    if (!snapshot || !source.alive) return;
+    clearDrainSnapshot(snapshot);
+    snapshot.releaseRecoveryInFlight?.();
+    snapshot.releaseRecoveryInFlight = undefined;
+  }
+
+  function handleDrainFailure(restore: boolean): void {
+    const snapshot = lastDrainSnapshotRef.current;
+    if (!snapshot || !source.alive) return;
+    snapshot.releaseRecoveryInFlight?.();
+    snapshot.releaseRecoveryInFlight = undefined;
+    if (!restore) return;
+    if (
+      draftEditRevisionRef.current !== snapshot.revision ||
+      textRef.current !== "" ||
+      source.attachments.getState().items.length > 0
+    )
+      return;
+    source.updateText(snapshot.text);
+    source.updateSkillNames([...snapshot.skillNames]);
+    source.updateSelectionMeta({
+      text: snapshot.text,
+      skillNames: [...snapshot.skillNames],
+      commandNames: [...snapshot.commandNames],
+      mentions: snapshot.mentions ? [...snapshot.mentions] : undefined,
+    });
+    attachments.replaceWithSettled(snapshot.attachments);
+    source.persistDraft(snapshot.text);
   }
 
   // A chip's details: the skill's own description, or - when the live catalog
@@ -993,6 +1035,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
       mentions: selectionMetaRef.current.mentions,
       revision: draftEditRevisionRef.current,
       draftRevision: readDraftRevision(ref),
+      recoveryId: activeRecoveryId ?? undefined,
     };
     return {
       text: textRef.current,
@@ -1062,6 +1105,34 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
       return;
     }
     setBusyAction(kind === "send" || kind === "queue" ? "submit" : "steer");
+    // The send owns the snapshot from this point. Clearing now matches the
+    // editor's own submission semantics: the textarea empties when the send
+    // starts, not when the server answers. A failed send puts the snapshot
+    // back below only when nothing newer has been typed or staged.
+    let releaseRecoveryInFlight: (() => void) | null =
+      submittedRecoveryId === null ? null : beginRecoverySubmission(submittedRecoveryId);
+    const releaseInFlightRecovery = () => {
+      releaseRecoveryInFlight?.();
+      releaseRecoveryInFlight = null;
+    };
+    let clearedForSubmission = false;
+    if (
+      clearIfUnchanged(
+        clearDraftText,
+        submittedRevision,
+        submittedDraftRevision,
+        submittedSkillNames,
+        submittedCommandNames,
+      )
+    ) {
+      clearSubmittedAttachments(submittedAttachments);
+      clearedForSubmission =
+        textRef.current === "" &&
+        skillNamesRef.current.length === 0 &&
+        selectionMetaRef.current.commandNames.length === 0 &&
+        (selectionMetaRef.current.mentions?.length ?? 0) === 0 &&
+        source.attachments.getState().items.length === 0;
+    }
     try {
       await submitWithPendingTracking(
         {
@@ -1113,6 +1184,10 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
                 recoveryAlreadySent = outcome.status === "consumed";
                 throw recoveryResendRefused ? recoveryWriteRefusal : recoveryAlreadySentRefusal;
               }
+              // The resend transaction consumed the recovery row, so a remount
+              // can no longer restore it. Keep the guard until here rather than
+              // until the network settles.
+              releaseInFlightRecovery();
             });
             return;
           }
@@ -1133,25 +1208,40 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
             .drainAsSteer(ref, submittedText, payload, submittedSkillNames, submittedCommandNames, submittedMentions);
         },
       );
-      if (!source.alive) return;
-      clearIfUnchanged(
-        clearDraftText,
-        submittedRevision,
-        submittedDraftRevision,
-        submittedSkillNames,
-        submittedCommandNames,
-      );
-      clearSubmittedAttachments(submittedAttachments);
     } catch (error) {
       // The local durable write failed. The submitted composer payload stays
       // untouched and no network request was eligible to start.
+      if (
+        source.alive &&
+        clearedForSubmission &&
+        !recoveryAlreadySent &&
+        draftEditRevisionRef.current === submittedRevision &&
+        textRef.current === "" &&
+        skillNamesRef.current.length === 0 &&
+        selectionMetaRef.current.commandNames.length === 0 &&
+        (selectionMetaRef.current.mentions?.length ?? 0) === 0 &&
+        source.attachments.getState().items.length === 0
+      ) {
+        source.updateText(submittedText);
+        source.updateSkillNames(submittedSkillNames);
+        source.updateSelectionMeta({
+          text: submittedText,
+          skillNames: submittedSkillNames,
+          commandNames: submittedCommandNames,
+          mentions: submittedMentions,
+        });
+        attachments.replaceWithSettled(submittedAttachments);
+        source.persistDraft(submittedText);
+      }
       if (source.alive && recoveryResendRefused)
         toasts.push("info", "This message changed in another tab. Refresh and try again.");
-      else if (source.alive && recoveryAlreadySent)
+      else if (source.alive && recoveryAlreadySent) {
+        source.setActiveRecoveryId(null);
         toasts.push("info", "This message was already sent in another tab.");
-      else if (error !== recoveryWriteRefusal && error !== recoveryAlreadySentRefusal) return;
+      } else if (error !== recoveryWriteRefusal && error !== recoveryAlreadySentRefusal) return;
     } finally {
       if (mountedRef.current) setBusyAction(null);
+      releaseInFlightRecovery();
       releaseRecoveryOperation();
     }
   }
@@ -1512,6 +1602,8 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
         ref={ref}
         getComposerText={getComposerText}
         onRestoreToComposer={restoreTextToComposer}
+        onDrainStart={handleDrainStart}
+        onDrainFailure={handleDrainFailure}
         activeRecoveryId={activeRecoveryId ?? undefined}
         activeRecoveryRevision={recoveryOwnerLeaseRef.current?.compositionRevision}
         onEditRecovery={activateRecovery}

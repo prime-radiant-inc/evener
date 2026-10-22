@@ -308,8 +308,11 @@ export function submitWithPendingTracking(
       onFailure: opts.onFailure,
     },
     perform,
-    ({ cleared, draftUnchanged }) => {
-      if (!cleared && !opts.recoveryId) return;
+    ({ draftUnchanged }) => {
+      // A composer that clears at send-start has already changed the draft, so
+      // settleSubmittedDraft reports cleared=false. The commit still happened,
+      // and listeners decide from the submitted snapshot whether there is
+      // anything left to clear.
       for (const listener of submissionCommittedListeners) {
         try {
           listener(
