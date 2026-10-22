@@ -340,9 +340,9 @@ func TestRetainedTargetReinstallEvidence(t *testing.T) {
 				if (mode == "live" || strings.HasPrefix(mode, "live-unresponsive")) && procReads < 2 || mode == "stopped" && procReads != 0 {
 					t.Fatalf("wrong resolver authority: proc=%d mode=%s", procReads, mode)
 				}
-				if mode == "live" && missingResolutions != 2 {
-					// Ordinary recovery and deploy's existing-file probe both refuse.
-					// Only deploy's existing parent-directory resolver may name the write.
+				if mode == "live" && missingResolutions != 3 {
+					// Ordinary recovery and both pre/post-build destination probes refuse
+					// the absent file before resolving its existing parent directory.
 					t.Fatalf("unexpected absent executable resolutions: missing-resolutions=%d", missingResolutions)
 				}
 				if realPaths {

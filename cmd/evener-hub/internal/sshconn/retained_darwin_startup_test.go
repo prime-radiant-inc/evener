@@ -145,7 +145,7 @@ func TestRetainedDarwinStartupRecordRecovery(t *testing.T) {
 				case recordRead:
 					records++
 					return run()
-				case "if test -x " + shellquote.RemoteWord(target) + "; then exit 0; else exit 1; fi", resolveDeployCommand(target), createTargetCommand(target):
+				case "if test -x " + shellquote.RemoteWord(target) + "; then exit 0; else exit 1; fi", resolveDeployCommand(target), resolveRetainedDeployCommand(target), createTargetCommand(target):
 					return run()
 				case pushBinaryRemote(target, int64(len("staged-binary"))):
 					writes++

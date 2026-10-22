@@ -28,7 +28,7 @@ func TestRetainedDeploymentInstallTargetBoundary(t *testing.T) {
 	channel, dirty, tag := buildinfo.Channel, buildinfo.GitDirty, buildinfo.ReleaseTag
 	t.Cleanup(func() { buildinfo.Channel, buildinfo.GitDirty, buildinfo.ReleaseTag = channel, dirty, tag })
 	buildinfo.Channel, buildinfo.GitDirty, buildinfo.ReleaseTag = "snapshot", "", ""
-	for _, mode := range []string{"honest-push", "redirected-recorded-target", "installer-alias", "installer-regular-target"} {
+	for _, mode := range []string{"honest-push", "redirected-recorded-target", "installer-alias", "installer-regular-target", "alias-during-build", "destination-during-build"} {
 		t.Run(mode, func(t *testing.T) {
 			root := t.TempDir()
 			target, alias, other := filepath.Join(root, "installed", "evener"), filepath.Join(root, "bin", "evener"), filepath.Join(root, "other", "evener")
@@ -143,8 +143,30 @@ func TestRetainedDeploymentInstallTargetBoundary(t *testing.T) {
 			if strings.HasPrefix(mode, "installer-") {
 				m.opts.BuildBinary = nil
 			}
+			var afterRetarget map[string]string
+			if strings.HasSuffix(mode, "during-build") {
+				m.opts.BuildBinary = func(ctx context.Context, goos, goarch, out string) error {
+					retarget := alias
+					if mode == "destination-during-build" {
+						retarget = target
+					}
+					if err := os.Remove(retarget); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink(other, retarget); err != nil {
+						t.Fatal(err)
+					}
+					afterRetarget = retainedTargetSnapshot(t, root)
+					return writeStageBinary(ctx, goos, goarch, out)
+				}
+			}
 			before := retainedTargetSnapshot(t, root)
 			got, after, err := m.DeployForOperation(t.Context(), host, facts, false, nil)
+			if strings.HasSuffix(mode, "during-build") {
+				if afterRetarget == nil || !reflect.DeepEqual(afterRetarget, retainedTargetSnapshot(t, root)) {
+					t.Errorf("push changed an installation after build-time retarget: writes=%d err=%v", writes, err)
+				}
+			}
 			if strings.HasPrefix(mode, "installer-") {
 				if !reflect.DeepEqual(before, retainedTargetSnapshot(t, root)) {
 					outsideBytes, outsideErr := os.ReadFile(outside)
@@ -163,7 +185,7 @@ func TestRetainedDeploymentInstallTargetBoundary(t *testing.T) {
 				if !errors.Is(err, errOwnerSelectionMismatch) || writes != 1 || installers != 0 || !reflect.DeepEqual(prior, m.pendingRestart(host.Name)) || !reflect.DeepEqual(recorded, []string{target}) {
 					t.Fatalf("retained retry escaped recorded install target: err=%v writes=%d installers=%d recorded=%q pending=%+v", err, writes, installers, recorded, m.pendingRestart(host.Name))
 				}
-				if mode == "redirected-recorded-target" {
+				if mode == "redirected-recorded-target" || mode == "destination-during-build" {
 					if link, err := os.Readlink(target); err != nil || link != other {
 						t.Fatalf("refusal replaced redirected target: link=%q err=%v", link, err)
 					}
@@ -180,8 +202,74 @@ func TestRetainedDeploymentInstallTargetBoundary(t *testing.T) {
 				t.Fatalf("retry changed launch intent or started a process: resolved=%q starts=%d", m.resolvedTarget(host.Name), starts)
 			}
 			link, linkErr := os.Readlink(alias)
-			if linkErr != nil || link != target {
+			wantLink := target
+			if mode == "alias-during-build" {
+				wantLink = other
+			}
+			if linkErr != nil || link != wantLink {
 				t.Fatalf("retry changed launch symlink: link=%q err=%v", link, linkErr)
+			}
+		})
+	}
+}
+
+func TestOrdinaryPushTargetDuringBuild(t *testing.T) {
+	for _, mode := range []string{"honest-push", "alias-during-build", "destination-during-build"} {
+		t.Run(mode, func(t *testing.T) {
+			root := t.TempDir()
+			target, alias, other := filepath.Join(root, "evener"), filepath.Join(root, "launch", "evener"), filepath.Join(root, "other")
+			if err := os.Mkdir(filepath.Dir(alias), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			for name, data := range map[string]string{target: "predecessor", other: "other-installation"} {
+				if err := os.WriteFile(name, []byte(data), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Symlink(target, alias); err != nil {
+				t.Fatal(err)
+			}
+			host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: alias}
+			writes, recorded := 0, 0
+			fr := &fakeRunner{runFn: func(ctx context.Context, argv []string, in io.Reader) ([]byte, error) {
+				remote := strings.Join(argv[12:], " ")
+				switch remote {
+				case "test -d " + shellquote.RemoteWord(filepath.Dir(alias)), resolveDeployCommand(alias):
+				case pushBinaryRemote(target, int64(len("staged-binary"))):
+					writes++
+				default:
+					t.Fatalf("unexpected command: %s", remote)
+				}
+				cmd := exec.CommandContext(ctx, "/bin/sh", "-c", remote)
+				cmd.Stdin = in
+				return cmd.Output()
+			}}
+			var afterBuild map[string]string
+			build := func(ctx context.Context, goos, goarch, out string) error {
+				if mode != "honest-push" {
+					retarget := alias
+					if mode == "destination-during-build" {
+						retarget = target
+					}
+					if err := os.Remove(retarget); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink(other, retarget); err != nil {
+						t.Fatal(err)
+					}
+				}
+				afterBuild = retainedTargetSnapshot(t, root)
+				return writeStageBinary(ctx, goos, goarch, out)
+			}
+			m := newTestManager(t, testRegistry(t, host), fr, Options{BuildBinary: build})
+			got, err := m.deployPush(t.Context(), host, Preflight{OS: "linux", Arch: "amd64"}, func(string) error { recorded++; return nil })
+			if mode == "honest-push" {
+				data, readErr := os.ReadFile(target)
+				if err != nil || got != target || writes != 1 || recorded != 1 || readErr != nil || string(data) != "staged-binary" {
+					t.Fatalf("honest push: target=%q writes=%d recorded=%d data=%q err=%v readErr=%v", got, writes, recorded, data, err, readErr)
+				}
+			} else if !errors.Is(err, errOwnerSelectionMismatch) || writes != 0 || recorded != 0 || !reflect.DeepEqual(afterBuild, retainedTargetSnapshot(t, root)) {
+				t.Fatalf("retargeted ordinary push was not refused before effects: err=%v writes=%d recorded=%d unchanged=%v", err, writes, recorded, reflect.DeepEqual(afterBuild, retainedTargetSnapshot(t, root)))
 			}
 		})
 	}

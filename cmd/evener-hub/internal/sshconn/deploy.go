@@ -491,6 +491,33 @@ func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Prefl
 	if err != nil {
 		return "", fmt.Errorf("%w: host %q stat staged binary: %w", ErrDeploy, host.Name, err)
 	}
+	// Staging can take long enough for either launch intent or the recorded
+	// destination to be retargeted. Do not authorize a write with pre-build paths.
+	var launchTarget string
+	if len(retainedTarget) != 0 && facts.ExecutableMissing {
+		out, readErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, resolveRetainedDeployCommand(host.EvenerPath)), nil)
+		if readErr != nil {
+			return "", errOwnerSelectionMismatch
+		}
+		launchTarget, err = ownerPathOutput(out)
+	} else {
+		launchTarget, err = m.deployTarget(ctx, host, facts)
+	}
+	if err != nil {
+		return "", err
+	}
+	if launchTarget != target {
+		return "", errOwnerSelectionMismatch
+	}
+	if len(retainedTarget) != 0 {
+		currentTarget, err := m.resolveDeployOrCreateTarget(ctx, host, retainedTarget[0])
+		if err != nil {
+			return "", err
+		}
+		if currentTarget != retainedTarget[0] || currentTarget != target {
+			return "", errOwnerSelectionMismatch
+		}
+	}
 	if beforeWrite != nil {
 		if err := beforeWrite(target); err != nil {
 			return "", err
