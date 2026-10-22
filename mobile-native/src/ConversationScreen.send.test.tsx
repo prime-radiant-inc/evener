@@ -5694,6 +5694,79 @@ describe("Send while offline (phase 6, spec 8.5)", () => {
 		]);
 	});
 
+	it("answer enqueue carries its draft capture through later Edit and Remove", async () => {
+		async function answerWithFailedConfirmation(ref: string) {
+			const { tree, route } = await mount(thread(ref, "awaiting", true));
+			vi.stubGlobal("requestAnimationFrame", (frame: (time: number) => void) => {
+				frame(0);
+				return 0;
+			});
+			await reach(tree, route, false);
+			await press(tree, "Drop them");
+			nativeDrafts();
+			const database = nativePlatform.sqlitePorts.get("evener-drafts.db") as {
+				runSync: (sql: string, ...args: unknown[]) => unknown;
+			};
+			const runSync = database.runSync;
+			let draftWrites = 0;
+			let confirmationFailed = false;
+			database.runSync = (sql, ...args) => {
+				if (sql.includes("INSERT INTO drafts")) draftWrites++;
+				if (sql.includes("DELETE FROM drafts") && draftWrites === 1) {
+					confirmationFailed = true;
+					throw new Error("draft confirmation failed");
+				}
+				return runSync(sql, ...args);
+			};
+			try {
+				await press(tree, "Send answer when you're back online");
+			} finally {
+				database.runSync = runSync;
+			}
+			expect(confirmationFailed).toBe(true);
+			const record = nativeDrafts().read({ hubId: "hub-1", sessionRef: ref });
+			expect(record.unconfirmed).toBe('[answers]\n1. [Choice] → "Drop them"');
+			expect(record.unconfirmedCaptureToken).toBeTruthy();
+			const outbox = await getNativeMutationRuntime().storage.listOutbox(nativeMutationTargetKey("hub-1", ref));
+			expect(outbox).toHaveLength(1);
+			expect(outbox[0]?.draftCaptureToken).toBe(record.unconfirmedCaptureToken);
+			return { tree, ref, outbox: outbox[0] };
+		}
+
+		const edited = await answerWithFailedConfirmation("ref-answer-capture-edit");
+		await press(edited.tree, "Retry saving");
+		const editHost = queueHosts.get(sheetKey("hub-1", edited.ref));
+		const editGhost = editHost?.ghosts.find(
+			(candidate) =>
+				candidate.origin.kind === "pending" && candidate.origin.clientMutationId === edited.outbox?.clientMutationId,
+		);
+		if (!editHost || !editGhost) throw new Error("missing queued answer ghost for Edit");
+		expect(editGhost.menu).toContain("edit");
+		let editResult: unknown;
+		await act(async () => {
+			editResult = await editHost.act(editGhost, "edit");
+		});
+		expect(editResult).toBeNull();
+		expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: edited.ref }).unconfirmed).toBeNull();
+		expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: edited.ref }).draft).toContain("[answers]");
+
+		const removed = await answerWithFailedConfirmation("ref-answer-capture-remove");
+		await press(removed.tree, "Retry saving");
+		const host = queueHosts.get(sheetKey("hub-1", removed.ref));
+		const ghost = host?.ghosts.find(
+			(candidate) =>
+				candidate.origin.kind === "pending" && candidate.origin.clientMutationId === removed.outbox?.clientMutationId,
+		);
+		if (!host || !ghost) throw new Error("missing queued answer ghost");
+		await act(async () => {
+			await host.act(ghost, "cancel");
+		});
+		expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: removed.ref }).unconfirmed).toBeNull();
+		expect(await getNativeMutationRuntime().storage.listOutbox(nativeMutationTargetKey("hub-1", removed.ref))).toEqual(
+			[],
+		);
+	});
+
 	it("offers no Send offline where the session can't take it when it arrives", async () => {
 		const ref = "ref-cannot-queue";
 		const served = thread(ref, "awaiting", true);

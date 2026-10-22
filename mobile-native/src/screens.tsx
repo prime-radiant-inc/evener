@@ -2177,15 +2177,15 @@ export function ConversationScreen({
 		setAnswerError(null);
 		let acceptedAnswers = false;
 		try {
-			await document.submitText(text, async (input) => {
+			await document.submitText(text, async (input, _images, context) => {
 				if (!questionBatches.begin(batch)) return false;
 				if (target !== null && offlineAction !== "none") {
 					await getNativeMutationRuntime().submit(
-						offlineRequest(target, offlineAction, [{ type: "text", text: input }]),
+						offlineRequest(target, offlineAction, [{ type: "text", text: input }], context),
 					);
 				} else if (online) {
 					const previous = store.getState().lastAcceptedMutation;
-					await store.getState().send(online, [{ type: "text", text: input }]);
+					await store.getState().send(online, [{ type: "text", text: input }], context);
 					const accepted = store.getState().lastAcceptedMutation;
 					if (!accepted || accepted === previous || accepted.kind !== "send") return false;
 				} else return false;
