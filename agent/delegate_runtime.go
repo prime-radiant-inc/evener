@@ -1971,6 +1971,9 @@ func populateStableDelegateSendResult(result *sendMessageResult, packet delegate
 				Dirty:   metadata.Worktree.Dirty,
 			}
 		}
+		if metadata.Report != nil {
+			result.ReportSummary = renderReportNotice(*metadata.Report)
+		}
 	}
 }
 

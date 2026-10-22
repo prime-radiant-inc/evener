@@ -89,7 +89,7 @@
       "turnId": "turn_1",
       "toolName": "delegate_send",
       "callId": "call_send_2",
-      "output": "Yes: tree settle now waits for the drain, and a test pins the order.\n[delegate_id dlg_02wMz5TxvSettleRace001 · completed · completed]",
+      "output": "Yes: tree settle now waits for the drain, and a test pins the order.\nGeneration final (done). Task list unavailable. Resume this delegate if the work is unfinished; a later supervision attention may start a new generation.\n[delegate_id dlg_02wMz5TxvSettleRace001 · completed · completed]",
       "status": "completed",
       "completedAt": 1790625602000,
       "raw": {
@@ -140,7 +140,8 @@
         "name": "settle-race",
         "run_started_at": "2026-09-28T20:00:01Z",
         "run_ended_at": "2026-09-28T20:00:02Z",
-        "latest_activity_at": "2026-09-28T20:00:01.5Z"
+        "latest_activity_at": "2026-09-28T20:00:01.5Z",
+        "report_summary": "Generation final (done). Task list unavailable. Resume this delegate if the work is unfinished; a later supervision attention may start a new generation."
       }
     },
     {

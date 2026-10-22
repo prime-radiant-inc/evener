@@ -2420,6 +2420,7 @@ type delegateTerminalPacketMetadata struct {
 	Blocker             string                         `json:"blocker,omitempty"`
 	WaitingOn           string                         `json:"waiting_on,omitempty"`
 	OutstandingWork     []string                       `json:"outstanding_work,omitempty"`
+	Report              *ReportSummary                 `json:"report,omitempty"`
 }
 
 type delegateTerminalWorktreeReport struct {
@@ -2491,6 +2492,19 @@ func stableDelegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinis
 	metadata.Blocker = inputs.blocker
 	metadata.WaitingOn = inputs.waitingOn
 	metadata.OutstandingWork = append([]string(nil), inputs.blockedWork...)
+	reportKind := inputs.disposition
+	if reportKind == "" {
+		reportKind = "done"
+	}
+	if finish.outcome == delegatestore.OutcomeFailed {
+		reportKind = "failed"
+	} else if finish.outcome == delegatestore.OutcomeCancelled {
+		reportKind = "cancelled"
+	} else if finish.outcome == delegatestore.OutcomeExhausted {
+		reportKind = "exhausted"
+	}
+	report := buildReportSummary(inputs.session, reportKind)
+	metadata.Report = &report
 	if raw, err := json.Marshal(metadata); err == nil && string(raw) != "{}" {
 		packet.Metadata = raw
 	}
