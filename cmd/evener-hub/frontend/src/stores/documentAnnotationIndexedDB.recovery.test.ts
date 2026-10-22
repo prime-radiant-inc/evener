@@ -616,7 +616,7 @@ test("a replacement-incarnation acceptance survives the held reset's own retirem
     const validationHold = holdNextWriteTransaction(ACCEPT_STORES);
     const changedTicket = await fixture.repository.beginRead(fixture.document);
     const handoff = fixture.runtime.handoff(fixture.document, operation.operationId);
-    await preparation.preparing.promise;
+    await preparation.preparing;
     const changedRead = fixture.repository.acceptRead(changedTicket, sampleChangedContent());
     await validationHold.reached;
     preparation.releasePreparation();
@@ -661,7 +661,7 @@ test("a delayed acceptance carries its evidence into the newer registration", as
     // the remembered acceptance. An overlapping handoff must refuse against it,
     // so it cannot append while the newer read's validation is in flight.
     const handoff = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
-    await preparation.preparing.promise;
+    await preparation.preparing;
     const changedValidation = holdNextWriteTransaction(ACCEPT_STORES);
     const changedRead = fixture.repository.acceptRead(laterTicket, sampleChangedContent());
     await changedValidation.reached;
@@ -727,7 +727,7 @@ test("a delayed fence carries its evidence into the newer registration", async (
     await fixture.repository.saveAnnotation(operation);
 
     const handoff = fixture.runtime.handoff(fixture.document, operation.operationId);
-    await preparation.preparing.promise;
+    await preparation.preparing;
     const changedValidation = holdNextWriteTransaction(ACCEPT_STORES);
     const thirdContent = sampleThirdContent();
     const changedRead = fixture.repository.acceptRead(laterTicket, thirdContent);
@@ -767,7 +767,7 @@ test("a non-committing reset releases only the provisional it provisioned", asyn
     // The overlapping handoff passes its entry guard and waits mid-preparation
     // BEFORE the reset provisions.
     const handoff = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
-    await preparation.preparing.promise;
+    await preparation.preparing;
 
     // The reset provisions suppression and its transaction aborts, but the
     // abort event is held so its release path has not run yet. The changed
@@ -820,7 +820,7 @@ test("a stale overlapping acceptance keeps the earlier provisional alive", async
     // The overlapping handoff passes its entry guard and waits mid-preparation
     // before either changed read installs suppression.
     const handoff = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
-    await preparation.preparing.promise;
+    await preparation.preparing;
 
     // T0's changed validation commits but its completion is held, so its
     // provisional is installed and still unconfirmed.

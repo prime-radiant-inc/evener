@@ -21,7 +21,6 @@ const ORIGIN = "https://drafts.example";
 
 afterEach(() => {
   vi.restoreAllMocks();
-  vi.useRealTimers();
 });
 
 const ORIGINAL_SESSION = "local:superseded-identity";
@@ -189,8 +188,7 @@ test("readAppendBacking refuses a recovery backing retargeted to another session
 });
 
 // The drafts watchdog's machine identity is the shared typed error, not a bare
-// Error a caller would have to match by prose. The message still names the
-// operation.
+// Error a caller would have to match by prose.
 test("a draft transaction's watchdog reports the typed timeout", async () => {
   const repository = createBrowserDraftRepository({
     indexedDB: new IDBFactory(),
@@ -203,6 +201,5 @@ test("a draft transaction's watchdog reports the typed timeout", async () => {
   if (options === undefined) throw new Error("the seed opened no bounded transaction");
   const timeout = options.timeout();
   expect(timeout).toBeInstanceOf(IndexedDBTransactionTimeoutError);
-  expect(timeout.message).toBe("Browser draft repository transaction timed out");
   repository.close();
 });

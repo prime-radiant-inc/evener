@@ -345,7 +345,7 @@ interface SuppressionEntry {
 
 interface ReadState {
   ticket: ReadTicket;
-  accepted?: { lease: AcceptedSourceLease; content: DocFileContent };
+  accepted?: { lease: AcceptedSourceLease };
   // Every comparable observation accepted for the current accepted epoch is kept
   // so an entry-time comparison sees richer prior evidence, not only the latest.
   observations: DocFileContent[];
@@ -813,7 +813,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const namespace = ticket.key.namespace;
     const documentKey = annotationDocumentKey(ticket.key);
     const issued = this.#issuedReads.get(documentKey)?.get(ticket.namespaceIncarnation);
-    if (issued === undefined || !this.#ownsRegistration(documentKey, ticket.namespaceIncarnation, ticket.requestId)) {
+    if (issued === undefined || issued.requestId !== ticket.requestId) {
       return { state: "stale-ticket" };
     }
     this.#liveAcceptances.add(ticket.requestId);
@@ -867,14 +867,14 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       }
       this.#releaseUnconfirmed([{ identity, requestId: ticket.requestId }]);
     };
-    const finishValidation = (current: boolean, fencedIdentity?: string): void => {
+    const finishValidation = (confirmFor?: string): void => {
       if (!provisional) return;
       const entry = this.#suppressedEpochs.get(provisional);
       if (entry?.requestId !== ticket.requestId) return;
       // Confirm only when the changed path fenced exactly the epoch this
       // provisional names: a peer may have advanced the head in between, and a
       // confirmation for the dead epoch would never be released.
-      if (current && (fencedIdentity === undefined || provisional === fencedIdentity)) {
+      if (confirmFor !== undefined && provisional === confirmFor) {
         entry.confirmed = true;
         return;
       }
@@ -887,7 +887,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     // already subscribes to. Without it the annotation stays pending until
     // unrelated activity starts a pass. Called after the validation transaction
     // settled, never inside it, so the pass the runtime may start is serviceable.
-    const releaseProvisional = (): void => finishValidation(false);
+    const releaseProvisional = (): void => finishValidation();
     try {
       // Validation commits before the fence: the durable identity of this ticket
       // is settled here, and the fence below is a separate transaction so a fence
@@ -1025,7 +1025,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         // no in-memory read state names an incarnation the durable row retired.
         releaseProvisional();
         if (await this.#durableIncarnationIs(namespace, validation.lease.namespaceIncarnation)) {
-          this.#installReadState(ticket, { lease: validation.lease, content }, validation.observations);
+          this.#installReadState(ticket, { lease: validation.lease }, validation.observations);
         }
         return { state: "accepted", lease: validation.lease };
       }
@@ -1059,7 +1059,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         confirmed: true,
       };
       this.#installSuppression(suppressionIdentity, installedSuppression);
-      finishValidation(true, suppressionIdentity);
+      finishValidation(suppressionIdentity);
       // The observed boundary runs before the fence. A rejection here proves no
       // fence committed, so the epoch is still live: release exactly this
       // invocation's own confirmed install (and restore what it displaced) or
@@ -1091,7 +1091,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         // completion across a reset, so installation re-checks the durable
         // incarnation the fence wrote under.
         if (await this.#durableIncarnationIs(namespace, fenced.lease.namespaceIncarnation)) {
-          this.#installReadState(ticket, { lease: fenced.lease, content }, [content]);
+          this.#installReadState(ticket, { lease: fenced.lease }, [content]);
         }
         return { state: "expiry-pending", receipt: fenced.receipt };
       } catch (error) {
@@ -1159,9 +1159,13 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     } finally {
       this.#liveAcceptances.delete(ticket.requestId);
       // Retire only this invocation's own registration: a newer read that
-      // registered while this acceptance was settling keeps its ticket.
-      if (this.#ownsRegistration(documentKey, ticket.namespaceIncarnation, ticket.requestId)) {
-        this.#deleteIncarnationSlot(this.#issuedReads, documentKey, ticket.namespaceIncarnation);
+      // registered while this acceptance was settling keeps its ticket. One
+      // lookup serves the check and the retirement; #ownsRegistration stays
+      // for callers with no local handle.
+      const issuedForDocument = this.#issuedReads.get(documentKey);
+      if (issuedForDocument?.get(ticket.namespaceIncarnation)?.requestId === ticket.requestId) {
+        issuedForDocument.delete(ticket.namespaceIncarnation);
+        if (issuedForDocument.size === 0) this.#issuedReads.delete(documentKey);
       }
     }
   }
@@ -1197,7 +1201,9 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   #pruneOtherIncarnations<Value>(slots: Map<string, Map<string, Value>>, documentKey: string, keep: string): void {
     const entries = slots.get(documentKey);
     if (entries === undefined) return;
-    for (const incarnation of [...entries.keys()]) {
+    // Deleting the current key or not-yet-visited keys during Map iteration is
+    // well-defined; only inserts are not. This loop only deletes.
+    for (const incarnation of entries.keys()) {
       if (incarnation !== keep) entries.delete(incarnation);
     }
   }
@@ -1227,7 +1233,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // and epochs are unordered identities and are never compared.
   #installReadState(
     ticket: ReadTicket,
-    accepted: { lease: AcceptedSourceLease; content: DocFileContent },
+    accepted: { lease: AcceptedSourceLease },
     observations: DocFileContent[],
   ): void {
     const documentKey = annotationDocumentKey(ticket.key);
@@ -1936,9 +1942,17 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // receipt is swept again on the next trigger while the pass continues to the
   // persisted handoffs.
   async #sweepUnfinishedExpiries(): Promise<unknown[]> {
-    const rows = await this.#transaction([ANNOTATION_EXPIRY_STORE], "readonly", async (transaction) =>
-      requestResult<AnnotationExpiryRow[]>(transaction.objectStore(ANNOTATION_EXPIRY_STORE).getAll()),
-    );
+    let rows: AnnotationExpiryRow[];
+    try {
+      rows = await this.#transaction([ANNOTATION_EXPIRY_STORE], "readonly", async (transaction) =>
+        requestResult<AnnotationExpiryRow[]>(transaction.objectStore(ANNOTATION_EXPIRY_STORE).getAll()),
+      );
+    } catch (error) {
+      // The row read is one pass step, isolated like each row's deletion: a
+      // fault here must not abort the persisted-handoff sweep later in the
+      // pass, and the runtime keeps the retained fault for the next trigger.
+      return [error];
+    }
     const faults: unknown[] = [];
     for (const row of rows) {
       if (row.receipt.phase === "deleted") {
@@ -2183,7 +2197,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // exactly one incarnation, so only registrations naming it are dead: a
       // read that registered in the NEW incarnation before this continuation
       // ran is current and must survive. Never a blanket clear.
-      for (const documentKey of [...this.#issuedReads.keys()]) {
+      for (const documentKey of this.#issuedReads.keys()) {
         if (documentKeyNamespace(documentKey) !== namespaceKey) continue;
         this.#deleteIncarnationSlot(this.#issuedReads, documentKey, expectedIncarnation);
       }
@@ -2193,7 +2207,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // expiry rows that a confirmed entry's later finishExpiry would wait for,
       // so nothing else will ever release it. Otherwise a long-lived adapter
       // retains one inert entry per pre-reset changed read.
-      for (const [identity, entry] of [...this.#suppressedEpochs]) {
+      for (const [identity, entry] of this.#suppressedEpochs) {
         if (
           entry.namespaceIncarnation === expectedIncarnation &&
           documentKeyNamespace(entry.documentKey) === namespaceKey
@@ -2204,7 +2218,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // Scope the read-state retirement exactly like the registrations above:
       // a replacement-incarnation acceptance installed while this reset's own
       // continuation was held is current and must survive.
-      for (const documentKey of [...this.#readStates.keys()]) {
+      for (const documentKey of this.#readStates.keys()) {
         if (documentKeyNamespace(documentKey) !== namespaceKey) continue;
         this.#deleteIncarnationSlot(this.#readStates, documentKey, expectedIncarnation);
       }
@@ -2503,7 +2517,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     );
   }
 
-  // The namespace's current durable incarnation (see #issuedReads); an
+  // Whether `incarnation` is the namespace's current durable identity. An
   // unreadable identity proves nothing current.
   async #durableIncarnationIs(
     namespace: Extract<DocumentKey["namespace"], { kind: "browser" }>,
