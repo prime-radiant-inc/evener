@@ -623,13 +623,18 @@ type Connection struct {
 	sessionMu       sync.Mutex
 	sessionTools    *sessionToolsConnection
 	sessionBindings map[string]*sessionToolsConnection
-	sessionNext     atomic.Uint64
-	sessionLifetime context.Context
-	id              string
-	server          *Server
-	send            chan appwire.Message
-	sendMu          sync.RWMutex
-	sendClosed      bool
+	// sessionLocalReserved marks an in-flight installation of this connection's
+	// own binding. The slot is singular, so it must be claimed before the
+	// installation wait rather than only at commit; otherwise an identified peer
+	// bind could claim the same connection while the local one is still waiting.
+	sessionLocalReserved bool
+	sessionNext          atomic.Uint64
+	sessionLifetime      context.Context
+	id                   string
+	server               *Server
+	send                 chan appwire.Message
+	sendMu               sync.RWMutex
+	sendClosed           bool
 	// requests is the bounded inbound queue between the transport's receive
 	// loop (the only producer) and the serial worker (the only consumer).
 	// Neither side ever closes it — producer teardown is "stop sending",

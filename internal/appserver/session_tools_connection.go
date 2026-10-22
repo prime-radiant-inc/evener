@@ -28,7 +28,10 @@ func IdentifySessionToolsPeer(ctx context.Context, id string) error {
 	}
 	c.sessionMu.Lock()
 	defer c.sessionMu.Unlock()
-	if c.sessionTools != nil {
+	// A local binding installation in flight has claimed this connection even
+	// though it has not committed yet, so identification must be refused for the
+	// same reason a committed local binding refuses it.
+	if c.sessionTools != nil || c.sessionLocalReserved {
 		return appwire.Conflict(sessionToolsAuthorityConflict)
 	}
 	c.peerMu.Lock()
@@ -61,7 +64,9 @@ func SessionToolsPeerBinding(ctx context.Context, bindingID string) (appwire.Ses
 	c.sessionMu.Lock()
 	defer c.sessionMu.Unlock()
 	bound := c.sessionBindings[bindingID]
-	if bound == nil || bound.ctx.Err() != nil {
+	// ctx is nil for a slot reserved by an installation still in flight: it is a
+	// claim, not a usable binding, so it must never resolve here.
+	if bound == nil || bound.ctx == nil || bound.ctx.Err() != nil {
 		return appwire.SessionBinding{}, false
 	}
 	return bound.binding, true
@@ -108,10 +113,16 @@ func (c *Connection) bindSessionTools(ctx context.Context, req appwire.Request) 
 	}
 	lifetime, cancel := context.WithCancel(ctx)
 	bound := &sessionToolsConnection{conn: c, binding: binding, ctx: lifetime, cancel: cancel, pending: map[string]chan appwire.Message{}, watches: map[string]*sessionWatchConsumer{}}
+	// The installation wait is bounded by the connection lifetime, not by this
+	// request, and the hub's callback waits for the daemon with no deadline of
+	// its own. Holding sessionMu across that wait would park the frame reader for
+	// every other frame on this connection, so the slot is reserved under the
+	// lock, the wait happens outside it, and the commit or rollback below rechecks
+	// that the reservation still holds.
 	c.sessionMu.Lock()
-	defer c.sessionMu.Unlock()
 	peerID := SessionToolsPeerID(ctx)
-	if c.sessionTools != nil {
+	if c.sessionTools != nil || c.sessionLocalReserved {
+		c.sessionMu.Unlock()
 		cancel()
 		if peerID != "" {
 			return appwire.ErrorMessage(req.ID, appwire.Conflict(sessionToolsAuthorityConflict))
@@ -119,27 +130,69 @@ func (c *Connection) bindSessionTools(ctx context.Context, req appwire.Request) 
 		return appwire.ErrorMessage(req.ID, appwire.Conflict("connection is already bound"))
 	}
 	if c.sessionBindings[binding.BindingID] != nil {
+		c.sessionMu.Unlock()
 		cancel()
 		return appwire.ErrorMessage(req.ID, appwire.Conflict("binding ID already installed"))
 	}
 	if peerID != "" && binding.HubID != peerID {
+		c.sessionMu.Unlock()
 		cancel()
 		return appwire.ErrorMessage(req.ID, appwire.Conflict(sessionToolsAuthorityConflict))
 	}
 	if len(c.sessionBindings) != 0 && peerID == "" {
+		c.sessionMu.Unlock()
 		cancel()
 		return appwire.ErrorMessage(req.ID, appwire.Conflict(sessionToolsAuthorityConflict))
 	}
-	if err := c.server.sessionToolsBind(lifetime, binding, bound); err != nil {
+	// Reserve the slot so a concurrent bind on this connection sees it taken and
+	// a concurrent frame cannot route into it. reservation is this connection's
+	// own object, so its presence is the claim.
+	reservation := &sessionToolsConnection{binding: binding}
+	if peerID == "" {
+		c.sessionLocalReserved = true
+	}
+	if c.sessionBindings == nil {
+		c.sessionBindings = map[string]*sessionToolsConnection{}
+	}
+	c.sessionBindings[binding.BindingID] = reservation
+	c.sessionMu.Unlock()
+
+	err := c.server.sessionToolsBind(lifetime, binding, bound)
+	if err != nil {
 		cancel()
+		c.sessionMu.Lock()
+		if c.sessionBindings[binding.BindingID] == reservation {
+			delete(c.sessionBindings, binding.BindingID)
+			if len(c.sessionBindings) == 0 {
+				c.sessionBindings = nil
+			}
+		}
+		if peerID == "" {
+			c.sessionLocalReserved = false
+		}
+		c.sessionMu.Unlock()
 		return appwire.ErrorMessage(req.ID, WireError(err))
 	}
-	if peerID == "" {
-		c.sessionTools = bound
-	} else {
-		if c.sessionBindings == nil {
-			c.sessionBindings = map[string]*sessionToolsConnection{}
+
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+	if c.sessionBindings[binding.BindingID] != reservation {
+		// The connection was torn down, or the slot was replaced, while the
+		// installation was in flight. The caller must not be told it succeeded.
+		cancel()
+		if peerID == "" {
+			c.sessionLocalReserved = false
 		}
+		return appwire.ErrorMessage(req.ID, appwire.Conflict("binding installation abandoned"))
+	}
+	if peerID == "" {
+		c.sessionLocalReserved = false
+		c.sessionTools = bound
+		delete(c.sessionBindings, binding.BindingID)
+		if len(c.sessionBindings) == 0 {
+			c.sessionBindings = nil
+		}
+	} else {
 		c.sessionBindings[binding.BindingID] = bound
 	}
 	return appwire.ResponseMessage(req.ID, binding)
@@ -218,6 +271,7 @@ func (c *Connection) closeSessionTools() {
 	c.sessionTools = nil
 	peers := c.sessionBindings
 	c.sessionBindings = nil
+	c.sessionLocalReserved = false
 	c.sessionMu.Unlock()
 	for _, peer := range peers {
 		closeSessionBinding(peer)
@@ -229,7 +283,11 @@ func closeSessionBinding(bound *sessionToolsConnection) {
 	if bound == nil {
 		return
 	}
-	bound.cancel()
+	// A reservation recorded during an in-flight installation has no context and
+	// no watches yet; it is a claim on a slot, not a live binding.
+	if bound.cancel != nil {
+		bound.cancel()
+	}
 	bound.mu.Lock()
 	defer bound.mu.Unlock()
 	for id, ch := range bound.watches {
