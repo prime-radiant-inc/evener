@@ -496,6 +496,13 @@ it("explains an install target that is not the running binary", async () => {
 	expect(renderedText(tree)).toContain("/opt/evener");
 });
 
+it("does not warn about the install target on a build that cannot install", async () => {
+	const { tree } = await mount({
+		check: { ...UP_TO_DATE, applicable: false, installTarget: "/opt/evener", installTargetMatchesLaunch: false },
+	});
+	expect(tree.root.findAllByProps({ testID: "hub-update-install-target" })).toHaveLength(0);
+});
+
 it("shows a dirty running build in the pending and confirm text", async () => {
 	const { tree, press } = await mount({
 		check: { ...INSTALLED, currentVersion: "abc1234-dirty" },

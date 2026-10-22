@@ -161,12 +161,14 @@ export function HubUpdates() {
         <InlineNotice tone="danger">Can't read the on-disk build: {check.onDiskError}</InlineNotice>
       )}
 
-      {check?.installTargetMatchesLaunch === false && check.installTarget !== undefined && (
-        <InlineNotice tone="danger" data-testid="hub-install-target-mismatch">
-          Install is unavailable: it would write {check.installTarget}, but this hub runs from a different binary. Use
-          the managed installation.
-        </InlineNotice>
-      )}
+      {check?.applicable === true &&
+        check.installTargetMatchesLaunch === false &&
+        check.installTarget !== undefined && (
+          <InlineNotice tone="danger" data-testid="hub-install-target-mismatch">
+            Install is unavailable: it would write {check.installTarget}, but this hub runs from a different binary. Use
+            the managed installation.
+          </InlineNotice>
+        )}
 
       {check?.restartPending === true && (
         <InlineNotice data-testid="hub-restart-pending">

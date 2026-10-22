@@ -239,6 +239,23 @@ test("disables Install when the managed target differs from the running binary",
   expect(screen.getByTestId("hub-install-target-mismatch").textContent).toContain("/opt/evener");
 });
 
+test("does not warn about the install target on a build that cannot install", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/settings/overview", () => overview("dev"));
+  fake.on("evener/update/check", () => ({
+    ...UP_TO_DATE,
+    buildChannel: "dev",
+    applicable: false,
+    installTarget: "/opt/evener",
+    installTargetMatchesLaunch: false,
+  }));
+  fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
+
+  render(<HubSection />);
+  expect(await screen.findByTestId("hub-update-dev-note")).toBeTruthy();
+  expect(screen.queryByTestId("hub-install-target-mismatch")).toBeNull();
+});
+
 test("does not fall back to the combined action on a current hub with restart disabled", async () => {
   const fake = connectFakeClient();
   fake.on("evener/settings/overview", () => overview("snapshot"));

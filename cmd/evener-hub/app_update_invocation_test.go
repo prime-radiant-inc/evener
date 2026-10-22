@@ -130,6 +130,28 @@ func TestHubRestartArgsEmptyWhenNoArgs(t *testing.T) {
 	}
 }
 
+// TestHubRestartArgsPreservesBoundPort proves an ephemeral-port hub restarts
+// on the address the listener actually bound, so clients reconnect to the
+// port they already know instead of a new random one.
+func TestHubRestartArgsPreservesBoundPort(t *testing.T) {
+	previous := hubBoundAddr
+	hubBoundAddr = "127.0.0.1:53421"
+	t.Cleanup(func() { hubBoundAddr = previous })
+
+	got := hubRestartArgs([]string{"/x/evener", "hub", "-addr", "127.0.0.1:0"})
+	if len(got) != 3 || got[0] != "hub" || got[1] != "-addr" || got[2] != "127.0.0.1:53421" {
+		t.Fatalf("hubRestartArgs = %v, want [hub -addr 127.0.0.1:53421]", got)
+	}
+	got = hubRestartArgs([]string{"/x/evener", "hub", "--addr=127.0.0.1:0"})
+	if len(got) != 2 || got[1] != "--addr=127.0.0.1:53421" {
+		t.Fatalf("equals form = %v, want [hub --addr=127.0.0.1:53421]", got)
+	}
+	got = hubRestartArgs([]string{"/x/evener", "hub", "-addr", "0.0.0.0:9180"})
+	if len(got) != 3 || got[2] != "0.0.0.0:9180" {
+		t.Fatalf("fixed port rewritten: %v", got)
+	}
+}
+
 // TestHubRestartPreservesEntrypoint proves the restart execs the original
 // argv[0] entrypoint when it resolves to the newly installed binary: a
 // custom-BINDIR hub keeps launching through its configured symlink, so

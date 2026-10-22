@@ -224,7 +224,7 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 					{`Can't read the on-disk build: ${check.onDiskError}`}
 				</GroupFooter>
 			) : null}
-			{check?.installTargetMatchesLaunch === false ? (
+			{check?.applicable === true && check.installTargetMatchesLaunch === false ? (
 				<GroupFooter tone="danger" testID="hub-update-install-target">
 					{`Install is unavailable: it would write ${check.installTarget ?? "another binary"}. Use the managed installation.`}
 				</GroupFooter>

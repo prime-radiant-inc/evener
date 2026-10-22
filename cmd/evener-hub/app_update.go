@@ -400,11 +400,31 @@ func canonicalInvocationPath(argv0 string) string {
 // hubRestartArgs returns argv[1:] for the exec-in-place restart, guarding
 // the empty-argv case the same way currentExecutable does: slicing an
 // empty slice panics, and a hub launched with no args restarts bare.
+var hubBoundAddr string
+
 func hubRestartArgs(args []string) []string {
 	if len(args) == 0 {
 		return nil
 	}
-	return args[1:]
+	out := append([]string(nil), args[1:]...)
+	if hubBoundAddr == "" {
+		return out
+	}
+	// A hub started with an ephemeral port (":0") must restart on the port it
+	// bound, or every reconnecting client keeps dialing the old one.
+	for i, arg := range out {
+		switch {
+		case (arg == "-addr" || arg == "--addr") && i+1 < len(out):
+			if strings.HasSuffix(out[i+1], ":0") {
+				out[i+1] = hubBoundAddr
+			}
+		case strings.HasPrefix(arg, "-addr=") && strings.HasSuffix(arg, ":0"):
+			out[i] = "-addr=" + hubBoundAddr
+		case strings.HasPrefix(arg, "--addr=") && strings.HasSuffix(arg, ":0"):
+			out[i] = "--addr=" + hubBoundAddr
+		}
+	}
+	return out
 }
 
 // restartBinary picks the path to exec for the in-place restart: the

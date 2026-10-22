@@ -501,6 +501,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		return fmt.Errorf("listen %s: %w", cfg.Addr, err)
 	}
 	cfg.Addr = hubListener.Addr().String()
+	hubBoundAddr = cfg.Addr
 
 	resumeLocks, err := hubcore.NewPersistentResumeLocks(hubStateRoot)
 	if err != nil {
