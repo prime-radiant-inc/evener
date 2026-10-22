@@ -568,6 +568,11 @@ every active saved registration with `runtime_lost`. Future monitoring stops,
 including declarative repeating timers whose configuration is saved. A repeating
 send watch that has already spoken can also skip an individual restart-end
 notice. Saved pending deliveries and future registrations have different lifetimes.
+The implemented **local Manager hub watch** is a narrower exception: it
+retains pending notices and ends a continuing watch on runtime restart with an
+explicit re-registration notice, even after prior event delivery. This does not
+restore general repeating timers or prove an end notice to a remotely hosted
+Manager revoked during an outage; remote Manager target watches are unsupported.
 
 **Evidence.** [newJobManagerWithStoreOpen](../../agent/jobs.go#L647) and
 [clearUnrestoredActiveWatches](../../agent/jobs.go#L1526) clear all active records;
@@ -600,7 +605,7 @@ the need to communicate that future observation ended. Preserve enough watch
 identity and intent for the session to act on the notification, and respect
 explicit Stop and the watched target's lifetime. Automatic restoration is not
 required where reliable cancellation notification provides the simpler recovery.
-Implementation remains pending.
+Implementation remains pending for ordinary watches and repeating timers.
 
 **Acceptance.** Restart with active timers and watches, including a repeating
 watch that has already delivered a result. Each continuing intent either resumes

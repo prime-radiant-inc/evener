@@ -95,6 +95,9 @@ The existing authenticated hub connection exchanges the hubs' persisted IDs befo
 
 The shared remote source carries text Send, Queue and Steer, plus skill and command input **only when the target advertises those capabilities**. Human and Manager input use the same remote mutation receipts and target validation. Unsupported input modes stay unavailable; unrelated remote mutations are not advertised. Reads, status and sandbox approval use their existing routes. Disconnecting a peer does not promote the hosting hub to Manager authority.
 
+The remote sandbox-approval route is implemented but has not been exercised
+with a live remote prompt; local no-browser approval does not prove that branch.
+
 **Remote Manager `job_watch` is not supported.** A request returns an explicit unsupported error; reads, status, input and approvals for that target remain available. The canonical Manager observation lease currently exists only for local daemons. Remote notifications reach browser subscribers through the hub's existing AppWire relay, not through that lease. Qualifying remote watches requires a shared lease over the existing remote relay with the same snapshot handoff and generation/entry evidence, not another upstream subscription or a fabricated identity. Local Manager watches continue to work.
 
 **Connect preserves a compatible running hub.** The controller verifies its live AppWire handshake and uses that same channel without replacing the binary or restarting the process. A different build label or unavailable cross-platform artifact does not prevent connection. Host details report the remote process's build, or unknown when the handshake omits build metadata.

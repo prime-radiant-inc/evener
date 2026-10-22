@@ -2345,6 +2345,7 @@ export interface ModelListResponse {
 }
 
 export interface MutationReceipt {
+  actor?: SessionActor;
   clientMutationId: string;
   disposition: string;
   threadId: string;
@@ -3405,6 +3406,21 @@ export interface SessionActivityReadParams {
   scope?: SessionActivityScope;
 }
 
+export interface SessionActivityRequest {
+  ref: string;
+  resource: SessionActivityResource;
+  scope?: SessionActivityScope;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface SessionActivityResponse {
+  summary?: SessionActivitySummary;
+  delegates?: SessionDelegatesResponse;
+  jobs?: SessionJobsResponse;
+  watches?: SessionWatchesResponse;
+}
+
 export interface SessionActivitySummary {
   /**
    * Issues identify unavailable physical sources; healthy counts retain authority.
@@ -3448,12 +3464,46 @@ export interface SessionBinding {
 }
 
 export interface SessionControlRequest {
+  action: string;
   approval?: SandboxEscalationResolveParams;
+  resume?: ThreadResumeParams;
+  fork?: ThreadForkParams;
+  clear?: ThreadClearParams;
+  model?: ThreadModelSetParams;
+  vision_model?: ThreadVisionModelSetParams;
+  reasoning_effort?: ThreadReasoningEffortSetParams;
+  compact?: ThreadCompactStartParams;
+  drain_queue?: TurnDrainAsSteerParams;
+  promote_queued?: TurnPromoteQueuedAsSteerParams;
+  cancel_queued?: TurnCancelQueuedParams;
+  rename?: ThreadNameSetParams;
+  goal?: GoalSetParams;
+  human_notes?: NotesHumanSetParams;
+  remove_url?: UrlsRemoveParams;
+  archive?: ArchiveParams;
+  delete?: SessionDeleteParams;
+  pin?: SessionPinAssignParams;
+  unpin?: SessionPinUnpinParams;
+  seen?: SessionSeenSetParams;
 }
 
 export interface SessionControlResponse {
   result: EmptyResponse;
   actor: SessionActor;
+  resume?: ThreadResumeResponse;
+  fork?: ThreadForkResponse;
+  clear?: ThreadClearResponse;
+  drain_queue?: TurnDrainAsSteerResponse;
+  promote_queued?: TurnPromoteQueuedAsSteerResponse;
+  cancel_queued?: TurnCancelQueuedResponse;
+  goal?: GoalSetResponse;
+  human_notes?: NotesHumanSetResponse;
+  remove_url?: UrlsRemoveResponse;
+  archive?: ArchiveResponse;
+  delete?: SessionDeleteResponse;
+  pin?: SessionPinAssignResponse;
+  unpin?: SessionPinUnpinResponse;
+  seen?: SessionSeenSetResponse;
 }
 
 export interface SessionDelegate {
@@ -3559,6 +3609,19 @@ export interface SessionImageResponse {
   data: string;
 }
 
+export interface SessionJobStopParams {
+  ref: string;
+  jobId: string;
+  includeChildren?: boolean;
+  maxWaitMs?: number;
+}
+
+export interface SessionJobStopResponse {
+  jobId: string;
+  status: string;
+  outcome: string;
+}
+
 export interface SessionJobsResponse {
   context: SessionActivityContext;
   scope: SessionActivityScope;
@@ -3582,23 +3645,43 @@ export interface SessionObservationMetadata {
 export interface SessionOperationRequest {
   discover?: ThreadListParams;
   read?: ThreadReadParams;
+  turns?: ThreadTurnsListParams;
+  activity?: SessionActivityRequest;
+  tasks?: SessionTasksRequest;
+  job?: JobsGetParams;
+  jobOutput?: JobsOutputParams;
+  models?: ModelListParams;
   create?: ThreadStartParams;
   start?: TurnStartParams;
   queue?: TurnQueueParams;
   steer?: TurnSteerParams;
   control?: SessionControlRequest;
+  stop?: SessionStopRequest;
 }
 
 export interface SessionOperationResponse {
   actor: SessionActor;
   discover?: SessionDiscovery;
   read?: ThreadReadResponse;
+  turns?: ThreadTurnsListResponse;
+  activity?: SessionActivityResponse;
+  tasks?: SessionTasksResponse;
+  job?: JobsGetResponse;
+  jobOutput?: JobsOutputResponse;
+  models?: ModelListResponse;
   create?: ThreadStartResponse;
   start?: TurnStartResponse;
   queue?: TurnQueueResponse;
   steer?: TurnSteerResponse;
   control?: SessionControlResponse;
+  stop?: SessionStopResponse;
   followUps?: SessionStatusFollowUp[];
+}
+
+export interface SessionOwnedDelegateStopParams {
+  ref: string;
+  delegateId: string;
+  maxWaitMs?: number;
 }
 
 export interface SessionPinAssignParams {
@@ -3684,6 +3767,48 @@ export interface SessionStatusFollowUp {
 
 export interface SessionStatusTarget {
   ref: string;
+  mode?: string;
+  resource?: SessionActivityResource;
+  scope?: SessionActivityScope;
+  cursor?: string;
+  limit?: number;
+  itemLimit?: number;
+  offset?: number;
+  snapshot?: string;
+  jobId?: string;
+  beforeBytes?: number;
+  maxBytes?: number;
+}
+
+export interface SessionStopRequest {
+  mode: string;
+  interrupt?: TurnInterruptParams;
+  delegate?: DelegateStopParams;
+  owned_delegate?: SessionOwnedDelegateStopParams;
+  job?: SessionJobStopParams;
+  shutdown?: ThreadShutdownParams;
+  force_stop?: ThreadForceStopParams;
+}
+
+export interface SessionStopResponse {
+  actor: SessionActor;
+  interrupt?: TurnInterruptResponse;
+  delegate?: DelegateStopResponse;
+  job?: SessionJobStopResponse;
+  result: EmptyResponse;
+}
+
+export interface SessionTasksRequest {
+  ref: string;
+  offset?: number;
+  limit?: number;
+  snapshot?: string;
+}
+
+export interface SessionTasksResponse {
+  data: Task[] | null;
+  snapshot?: string;
+  nextOffset?: number;
 }
 
 export interface SessionToolsInput {
@@ -4829,6 +4954,7 @@ export interface TurnCancelQueuedResponse {
 }
 
 export interface TurnDrainAsSteerParams {
+  managerProof?: SessionActorProof;
   ref: string;
   clientMutationId: string;
   expectedInstanceId: string;
@@ -4862,6 +4988,7 @@ export interface TurnInterruptResponse {
 }
 
 export interface TurnPromoteQueuedAsSteerParams {
+  managerProof?: SessionActorProof;
   ref: string;
   index: number;
   clientMutationId: string;
@@ -5122,6 +5249,7 @@ export const METHOD_NAMES = [
   "evener/settings/agentsDoc/set",
   "evener/sandbox/escalation/resolve",
   "evener/delegate/stop",
+  "evener/jobs/stop",
   "evener/host/request",
   "evener/host/attach",
   "evener/host/add",
@@ -5446,6 +5574,7 @@ export interface MethodTypes {
   "evener/settings/agentsDoc/set": { params: AgentsDocSetParams; result: AgentsDocResponse };
   "evener/sandbox/escalation/resolve": { params: SandboxEscalationResolveParams; result: EmptyResponse };
   "evener/delegate/stop": { params: DelegateStopParams; result: DelegateStopResponse };
+  "evener/jobs/stop": { params: SessionStopRequest; result: SessionStopResponse };
   "evener/host/request": { params: HostRequestParams; result: HostForwardedResult };
   "evener/host/attach": { params: HostAttachParams; result: HostAttachResponse };
   "evener/host/add": { params: HostAddParams; result: HostMutationCommitted | HostMutationTeardownFailure | HostMutationCollisionDropped | HostMutationAmbiguous };

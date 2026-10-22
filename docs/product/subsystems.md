@@ -51,6 +51,7 @@ executable provides the commands that launch these processes. See
 | Recall, correct or forget durable lessons | S24 memory | S09 session context, S14 scoped execution, S10 historical evidence |
 | Use a plugin, skill, hook, or external tool | S17–S19 extensions | S14 execution boundaries, S15 credentials |
 | Approve access beyond a selected sandbox | S14 execution boundaries | S05 approval requests and decisions; S02–S03 client controls |
+| Let one session manage another | S02–S03 human Manager switch; S06 hub preference and routing | S05 authenticated binding, S07 remote hosts, S08–S12 existing input, history and local watches |
 | Diagnose a stuck session or repair setup | S21 diagnostics; S15 settings | The affected subsystem's authority and recovery owner below |
 
 ## Clients and interaction
@@ -176,6 +177,17 @@ serves the whole file where a pane read stops at its cap. See
 [session document reads](../evener-hub-web-routing.md#session-document-reads).
 
 ## Capabilities and configuration
+
+Manager is a cross-subsystem mode, not another management subsystem. The
+hosting hub's S06 preference row stores its enabled state and selected hub;
+S02–S03 expose the human-only switch. S05 authenticates the daemon binding and
+identified remote peer. S06–S07 route source-qualified discovery, model reads
+and controls; S08–S11 own target mutations, actor-attributed history and
+approval. S12 owns the local recorded-observation lease and its bounded
+notification recovery, independently of human subscription lifetimes. Remote
+target watches lack that lease and remain unsupported. See
+[automation](../automation.md#local-manager-preference), [job control](../job-control.md#manager-observation-evidence),
+and [remote operations](../evener-hub-remote-operations.md#remote-manager-and-input-support).
 
 | ID and responsibility | Entry points and implementation | State authority and recovery ownership | Owning references |
 | --- | --- | --- | --- |

@@ -23,6 +23,17 @@ summary, or uses `resource:"delegates"`, `"jobs"` or `"watches"` and follows
 each collection's cursor. Each row retains its qualified owner, so a child
 read cannot confer the parent's writable identity. Partial and unknown counts
 keep their existing meanings; they are not inferred from navigation.
+
+The Manager's local `job_watch` belongs to its receiving session's watch
+activity, even while it observes an independent worker. Its recorded snapshot
+and live entries keep causal generation/entry evidence; accepted terminal
+completion, not an idle label or an unaccepted result, ends a completion watch.
+Pending notices survive interruption. On reconnect the watch checks the saved
+Manager revision and target generation before resuming; disabling Manager or
+restarting its runtime ends the continuing registration with re-registration
+guidance. Human subscriptions and remote relays have separate lifetimes and
+cannot substitute for that local lease. See [job control](../job-control.md#manager-observation-evidence).
+
 Opening a session (on the web, a pane opening or the page becoming visible
 with it open) marks it seen through the later of an unseen turn end and motion
 after that mark. The web reads that session's activity once per open for this,

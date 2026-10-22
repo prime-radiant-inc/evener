@@ -181,6 +181,15 @@ arguments in the same projected call. Pages remain below the result cap and
 report their continuation; an output page never starts before its retained
 start. Ordinary local reads below retain their existing format and behavior.
 
+Manager input and approval decisions use the existing human mutation owners
+and persist `actor.kind: "manager"` and the Manager's ref on the target's
+history items. A watch notification is not an answer to a question, and its
+text is not proof of completion: inspect the worker's recorded
+`observation.terminalAccepted`, `endTurn` and `endReason` for accepted terminal
+evidence. If a local Manager watch is interrupted, read retained history to
+recover missed evidence before re-registering an ended watch. This does not
+establish remote `job_watch` support.
+
 **Parameters:**
 
 | Param | Applies to | Meaning |

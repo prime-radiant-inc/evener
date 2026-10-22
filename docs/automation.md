@@ -115,6 +115,13 @@ forks start off. Saved historical instances keep their own navigation refs while
 explicit persisted workspace identity shares the preference. Legacy sessions
 without that identity use their own saved ID, not inferred earlier history.
 
+For a remotely hosted Manager, the hosting hub keeps this row while the
+enabling hub owns reachable targets. An authenticated identified bridge restores
+known enabled bindings on reconnect. Cold-start discovery can lag the first
+Manager turn after the enabling hub restarts, leaving that turn with ordinary
+tools. A row revoked while the host is offline stays revoked after reconnect,
+but no explanatory end notice is proven delivered to that remote Manager.
+
 Thread reads expose `manager`, `managerSetting` and `managerEditable`. The web
 session Details panel and native session Info sheet show the human Manager switch
 and selected hub identity. An unavailable setting is not a confirmed off value;
@@ -198,6 +205,12 @@ outcome separately. If the launch is unknown, it stays unknown: never retry
 creation automatically. Inspect any returned worker ref before deciding what
 to do next. Workers are not owned delegates; they continue independently when
 their Manager's turn ends, and their watch notices are not delegate reports.
+
+The watch-before-input loop and no-browser sandbox approval are qualified for
+**local** workers. Remote `job_watch` is unavailable; do not substitute the
+browser's remote notification stream for its recorded observation lease.
+Remote status, input and approval use their existing owners, but a sandbox
+approval caused by a live remote prompt has not been exercised end to end.
 
 ## Apply human controls from a Manager
 

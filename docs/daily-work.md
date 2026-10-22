@@ -6,6 +6,26 @@ This guide assumes you have completed [provider setup](getting-started.md#connec
 
 When you enable **Manager** for a session, that session can manage sessions reachable through the enabling hub, including connected hosts and other Managers. It sends text or typed input with `delegate_send` and a source-qualified ref, input mode (`start`, `queue`, or `steer`), client mutation ID and target instance ID. The hub uses the same guarded send and retry path as your browser; a notification cannot answer a pending question. `session_control` takes one action and its typed `arguments`: approval, resume, fork, clear, model, vision model, reasoning effort, compact, drain queue, promote or cancel a queued message, rename, goal, human notes, remove URL, archive or unarchive, delete, pin, unpin, or mark seen or unread. New queued input still belongs to `delegate_send`, not queue editing. `job_stop` uses a `hub` mode for turn interruption, `delegate` (one `dlg_` run; children survive), `owned_delegate` (a `dlg_` subtree, including descendants), `job` (one `job_` shell job; `includeChildren` also stops its immediate shell children, not grandchildren), shutdown, or force-stop. A settled `owned_delegate` answers `already_stopped` without another stop. Ordinary human `job_stop` behavior remains unchanged. Deletion remains limited to ended or confirmed-crashed local sessions. Disabling Manager removes the management branches without changing ordinary owned-delegate messages or your browser controls.
 
+Enable the switch in web **Session Details** or native **Session Info** before
+the first Manager turn. The hosting hub saves the setting across disconnect,
+restart and Clear; fresh sessions and forks start with it off. A connected
+remote Manager uses the hub that enabled it as its authority, not whichever
+machine hosts its daemon. A cold restart of that enabling hub can leave its
+first turn with ordinary tools until remote discovery completes. If the remote
+Manager is revoked while its host is offline, the next turn loses Manager tools,
+but an explanatory end notice has not been proven delivered.
+
+For an unattended local worker, have the Manager call `delegate` with
+`hub:{cwd,model,watch:{events:["question","approval"],completion:true}}`.
+It creates an independent worker, installs its watch before input, and reports
+creation, watch and input separately. The Manager can read the question or
+approval with `job_status`, answer via `delegate_send` or approve through
+`session_control`, and read accepted terminal history with `read_transcript`.
+This local approval path works without a browser subscriber. **Remote
+`job_watch` is unsupported**: do not promise the same unattended remote
+notification loop. Remote reads, input and approval remain available, but
+remote sandbox approval has not been exercised by a live remote prompt.
+
 ## Try a CLI continuation
 
 Use a fresh directory so the two files below cannot overwrite existing work. Replace `provider/model` with an available model from your configured provider:

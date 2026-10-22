@@ -13,6 +13,10 @@ changes; keep implementation history in Git and pull requests.
   points, dependencies, and recovery ownership across the product.
 - [Session activity](session-activity.md): scoped delegate, job and watch reads,
   navigation boundaries, pagination and shared recovery ownership.
+- [Manager workflow](../automation.md#local-manager-preference): human-controlled
+  authority to discover, observe and act on other sessions, with local watches
+  and explicit remote limits. Ownership stays in the existing hub, daemon,
+  input, history and watch subsystems.
 - [History content](history-content.md): selectable conversation, reasoning, tool,
   intent, system and diagnostics content on reads, pages and subscriptions.
 - [Device pairing protocol](../device-pairing.md): self-hosted invitations, device comparison, encrypted credential delivery, QR and acoustic wire formats.

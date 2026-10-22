@@ -76,6 +76,16 @@ Unstamped replay entries remain readable in history and generate a replay-gap
 notice instead of an automatic event trigger. Human session consumers keep
 their own relay subscriptions, and watch notices never answer human questions.
 
+The Manager watch lease is local-only. Remote `job_watch` is neither advertised
+nor supported: the remote subscriber stream lacks the proven generation/entry
+evidence and snapshot handoff required by that lease. Remote status reads,
+input and approval remain available, but a sandbox approval caused by a live
+remote prompt has not been exercised. A remotely hosted Manager revoked
+during an outage loses Manager tools on its next turn; an explanatory end notice
+is not proven delivered. Its first turn after a cold enabling-hub restart can
+also see ordinary tools until discovery finishes. Polling the human subscriber
+stream does not close these gaps.
+
 ## Summary
 
 Evener exposes one unified list/status/control view over two typed resource
