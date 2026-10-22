@@ -1946,6 +1946,14 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 			if !errors.Is(attachErr, ErrProtocolIncompatible) || !m.canDeploy() {
 				return nil, attachErr
 			}
+			// The live process is older, but the installed executable can already
+			// be newer: another controller may have upgraded the disk and failed
+			// before its restart. Do not answer that skew by installing this
+			// controller's older build over the newer one.
+			if facts.LaunchCheckKnown && appwire.NewerProtocolVersion(facts.Protocol) {
+				return nil, fmt.Errorf("%w: host %q's running hub speaks an older protocol, but its installed executable speaks %q, newer than this controller's %q; update the controller or restart the host into its newer build instead of downgrading it",
+					ErrHostProtocolNewer, host.Name, facts.Protocol, appwire.ProtocolVersion)
+			}
 			liveIncompatible = true
 		}
 	}
@@ -3617,12 +3625,13 @@ func (p pendingRestartState) active() bool {
 // Equal build labels do not prove an interrupted write installed its bytes.
 // Replay an unacknowledged write before settling or restarting its deployment.
 // A recorded deployment that is also authorized to restart owns its requested
-// build, so a protocol mismatch on disk is part of that unfinished effect and
-// replays the write. A deploy-only record keeps its ownership instead: it
-// surfaces the contract refusal and waits for an explicit Restart.
+// build, so an older or unparsable protocol on disk is part of that unfinished
+// effect and replays the write. A newer protocol is never overwritten, and a
+// deploy-only record keeps its ownership instead: each surfaces the contract
+// refusal and waits for an explicit Restart or a controller update.
 func (p pendingRestartState) needsDeployment(facts Preflight) bool {
 	return p.deployment && (!p.writeAcknowledged || facts.ExecutableMissing || facts.Version != p.expectedVersion ||
-		(p.restart && facts.LaunchCheckKnown && facts.Protocol != appwire.ProtocolVersion))
+		(p.restart && facts.LaunchCheckKnown && facts.Protocol != appwire.ProtocolVersion && !appwire.NewerProtocolVersion(facts.Protocol)))
 }
 
 func (p pendingRestartState) completedBy(running hubIdentity, facts Preflight) bool {

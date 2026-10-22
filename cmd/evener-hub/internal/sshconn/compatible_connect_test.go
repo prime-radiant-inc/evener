@@ -291,6 +291,94 @@ func TestEnsureNewerProtocolHostIsNotDowngraded(t *testing.T) {
 	}
 }
 
+func TestEnsureAncientDiskAndRunningHubUpgrades(t *testing.T) {
+	diskProtocol, diskVersion := "evener-appwire-v5", "old-build"
+	runningVersion := "old-build"
+	fr := deployRunner(t, func(int) ([]byte, error) {
+		return []byte(fmt.Sprintf(`{"protocol":%q,"version":%q,"launch_flags":["api-log"]}`, diskProtocol, diskVersion)), nil
+	}, func(call int) ([]byte, error) {
+		started := "2026-01-01T00:00:00Z"
+		if call > 0 {
+			started = "2026-01-02T00:00:00Z"
+		}
+		return []byte(fmt.Sprintf(`{"version":%q,"mobile_api_version":1,"hub_addr":"127.0.0.1:9180","started_at":%q}`, runningVersion, started)), nil
+	})
+	run := fr.runFn
+	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		out, err := run(ctx, argv, stdin)
+		if err == nil {
+			joined := strings.Join(argv, " ")
+			switch {
+			case strings.Contains(joined, "cat >"):
+				diskProtocol, diskVersion = appwire.ProtocolVersion, "controller-build"
+			case strings.Contains(joined, "systemctl restart"):
+				runningVersion = "controller-build"
+			}
+		}
+		return out, err
+	}
+	attempts := 0
+	fr.startFn = func(context.Context, []string, io.Writer) (Stdio, error) {
+		attempts++
+		if attempts > 1 {
+			return newFakeBridge(appwire.ProtocolVersion).stdio, nil
+		}
+		return initializeReplyBridge(func(request appwire.Request) appwire.Message {
+			return appwire.ErrorMessage(request.ID, legacyIncompatibleRefusal("evener-appwire-v5"))
+		}), nil
+	}
+	m, effects := compatibleConnectManager(t, fr, Options{controllerVersionOverride: "controller-build", BuildBinary: writeStageBinary})
+	ch, err := m.Ensure(t.Context(), "alpha")
+	if err != nil || ch == nil || attempts != 2 || effects.builds != 1 || effects.records != 1 || effects.writes != 2 {
+		t.Fatalf("ancient host upgrade: ch=%v err=%v attempts=%d effects=%+v disk=%s/%s running=%s",
+			ch, err, attempts, effects, diskProtocol, diskVersion, runningVersion)
+	}
+	if diskProtocol != appwire.ProtocolVersion || diskVersion != "controller-build" || runningVersion != "controller-build" {
+		t.Fatalf("fixture did not model the upgrade: disk=%s/%s running=%s", diskProtocol, diskVersion, runningVersion)
+	}
+}
+
+func TestEnsureLiveOlderHubWithNewerDiskRefuses(t *testing.T) {
+	fr := deployRunner(t, func(int) ([]byte, error) {
+		return []byte(`{"protocol":"evener-appwire-v99","version":"newer-build","launch_flags":["api-log"]}`), nil
+	}, func(int) ([]byte, error) {
+		return []byte(`{"version":"old-running","mobile_api_version":1,"hub_addr":"127.0.0.1:9180","started_at":"2026-01-01T00:00:00Z"}`), nil
+	})
+	attempts := 0
+	fr.startFn = func(context.Context, []string, io.Writer) (Stdio, error) {
+		attempts++
+		return initializeReplyBridge(func(request appwire.Request) appwire.Message {
+			return appwire.ErrorMessage(request.ID, legacyIncompatibleRefusal("evener-appwire-v5"))
+		}), nil
+	}
+	m, effects := compatibleConnectManager(t, fr, Options{controllerVersionOverride: "controller-build", BuildBinary: writeStageBinary})
+	ch, err := m.Ensure(t.Context(), "alpha")
+	if ch != nil || !errors.Is(err, ErrHostProtocolNewer) || !isTerminal(err) || *effects != (connectEffects{}) || attempts != 1 || m.Attached("alpha") {
+		t.Fatalf("live older hub with newer disk: ch=%v err=%v terminal=%v attempts=%d effects=%+v", ch, err, isTerminal(err), attempts, effects)
+	}
+}
+
+func TestPendingDeploymentReplayFollowsProtocolDirection(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		protocol string
+		want     bool
+	}{
+		{"older", "evener-appwire-v5", true},
+		{"unparsable", "incompatible-protocol", true},
+		{"current", appwire.ProtocolVersion, false},
+		{"newer", "evener-appwire-v99", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pending := pendingRestartState{deployment: true, restart: true, writeAcknowledged: true, expectedVersion: "build"}
+			facts := Preflight{LaunchCheckKnown: true, Protocol: tc.protocol, Version: "build"}
+			if got := pending.needsDeployment(facts); got != tc.want {
+				t.Fatalf("needsDeployment(%s) = %v, want %v", tc.protocol, got, tc.want)
+			}
+		})
+	}
+}
+
 func initializeReplyBridge(reply func(appwire.Request) appwire.Message) *fakeStdio {
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()

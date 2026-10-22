@@ -523,7 +523,7 @@ func (c *Client) Initialize(ctx context.Context, params InitializeParams) (Initi
 		return out, fmt.Errorf("appwire initialize: protocol version %q, want %q", params.ProtocolVersion, ProtocolVersion)
 	}
 	if err := c.request(ctx, MethodInitialize, params, &out); err != nil {
-		if wire, ok := errors.AsType[WireError](err); ok {
+		if wire, ok := errors.AsType[WireError](err); ok && wire.Code == CodeInvalidRequest {
 			if wanted, ok := legacyProtocolVersion(wire.Message); ok {
 				return out, ProtocolVersionMismatchError{Got: wanted, Want: ProtocolVersion}
 			}

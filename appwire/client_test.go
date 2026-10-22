@@ -303,6 +303,62 @@ func TestClientInitializeTranslatesLegacyProtocolRefusal(t *testing.T) {
 	}
 }
 
+func TestLegacyProtocolVersion(t *testing.T) {
+	prefix := `appwire initialize: protocol version "`
+	for _, tc := range []struct {
+		name    string
+		message string
+		want    string
+		ok      bool
+	}{
+		{"older", prefix + ProtocolVersion + `" is incompatible; want "evener-appwire-v5"`, "evener-appwire-v5", true},
+		{"newer", prefix + ProtocolVersion + `" is incompatible; want "evener-appwire-v99"`, "evener-appwire-v99", true},
+		{"announced-other", prefix + "evener-appwire-v6" + `" is incompatible; want "evener-appwire-v5"`, "", false},
+		{"wanted-current", prefix + ProtocolVersion + `" is incompatible; want "` + ProtocolVersion + `"`, "", false},
+		{"wanted-noncanonical", prefix + ProtocolVersion + `" is incompatible; want "evener-appwire-v05"`, "", false},
+		{"wanted-nonversion", prefix + ProtocolVersion + `" is incompatible; want "old-protocol"`, "", false},
+		{"missing-prefix", `protocol version "` + ProtocolVersion + `" is incompatible; want "evener-appwire-v5"`, "", false},
+		{"trailing-text", prefix + ProtocolVersion + `" is incompatible; want "evener-appwire-v5" extra`, "", false},
+		{"empty", "", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := legacyProtocolVersion(tc.message)
+			if got != tc.want || ok != tc.ok {
+				t.Fatalf("legacyProtocolVersion(%q) = %q, %v; want %q, %v", tc.message, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+func TestClientInitializeDoesNotTranslateAnotherErrorCode(t *testing.T) {
+	transport := newMemoryTransport()
+	client := NewClient(transport)
+	ctx := t.Context()
+	client.Start(ctx)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.Initialize(ctx, InitializeParams{ProtocolVersion: ProtocolVersion})
+		done <- err
+	}()
+
+	request := <-transport.writes
+	transport.reads <- ErrorMessage(request.Request.ID, WireError{
+		Code:    CodeInternalError,
+		Message: `protocol version "` + ProtocolVersion + `" is incompatible; want "evener-appwire-v5"`,
+		Data:    ErrorData{EvenerErrorInfo: ErrorInternal},
+	})
+	err := <-done
+	var mismatch ProtocolVersionMismatchError
+	if errors.As(err, &mismatch) {
+		t.Fatalf("a non-InvalidRequest error became a protocol mismatch: %+v", mismatch)
+	}
+	var wire WireError
+	if !errors.As(err, &wire) || wire.Code != CodeInternalError {
+		t.Fatalf("err = %v (%T), want the original InternalError", err, err)
+	}
+}
+
 func TestClientInitializeLeavesGenericInvalidRequestAlone(t *testing.T) {
 	transport := newMemoryTransport()
 	client := NewClient(transport)
