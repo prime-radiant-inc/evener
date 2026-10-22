@@ -77,6 +77,15 @@ Use `--timeout` and a CI supervisor deadline together. The first SIGINT or SIGTE
 
 After an ambiguous interruption, inspect the saved session and filesystem before starting again. Re-running the same prompt creates another attempt and can repeat shell commands or external writes. `--resume SESSION_ID` continues known work; `--resume-with SESSION_ID` creates a separate session with previous context. Neither is an exactly-once transaction.
 
+The hub's AppWire `thread/start` can spawn a session and fail before answering.
+When the spawned identity is known, its error data includes `createdRef` and
+`createdInstanceId` alongside the original `evenerErrorInfo` and error code.
+Use that ref to inspect the session rather than starting the same request again;
+for a remote host, `createdRef` is qualified in the calling hub's namespace.
+Otherwise missing evidence is an unknown launch, not proof that nothing spawned.
+Creation after a spawn is never automatically retryable. A start refused before
+spawn reports `mutationOutcome: "notAccepted"` and carries no created identity.
+
 ## Diagnose without starting a model task
 
 ```sh
@@ -134,7 +143,7 @@ surface without clearing the saved preference; reconnection restores it when
 the setting still permits it. Another connected hub cannot silently replace the
 selected authority.
 
-This slice does not expose session controls, messaging, creation, activity,
+This slice does not expose Manager session controls, messaging, creation, activity,
 transcript reads, model listing, remote enabling or Manager `job_watch`.
 The private transport supports ephemeral status observations through the existing
 relay, not durable watches or completion events. Cancellation, revocation and

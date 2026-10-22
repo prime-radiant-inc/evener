@@ -91,7 +91,7 @@ func (s *RemoteHubSource) StartThread(ctx context.Context, params appwire.Thread
 	remote.Source = ""
 	var out appwire.ThreadStartResponse
 	if err := s.call(ctx, appwire.MethodThreadStart, remote, &out); err != nil {
-		return appwire.ThreadStartResponse{}, err
+		return appwire.ThreadStartResponse{}, s.fromRemoteThreadStartError(err)
 	}
 	return out, nil
 }

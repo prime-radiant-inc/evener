@@ -3,6 +3,7 @@ package appsource
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -84,6 +85,31 @@ func (s *RemoteHubSource) fromRemoteRefString(raw string) (string, error) {
 			s.id, raw, ref.SourceID, remoteHubNamespace))
 	}
 	return appwire.Ref{SourceID: s.id, ThreadID: ref.ThreadID}.String(), nil
+}
+
+// fromRemoteThreadStartError rewrites evidence carried by a failed creation.
+// Successful response translation cannot see it: the router discards the
+// result when the owner's handler fails.
+func (s *RemoteHubSource) fromRemoteThreadStartError(err error) error {
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok {
+		return err
+	}
+	encoded, marshalErr := json.Marshal(wire.Data)
+	if marshalErr != nil {
+		return err
+	}
+	var partial appwire.ThreadStartPartialErrorData
+	if json.Unmarshal(encoded, &partial) != nil || partial.CreatedRef == "" {
+		return err
+	}
+	ref, translateErr := s.fromRemoteRefString(partial.CreatedRef)
+	if translateErr != nil {
+		// An unaddressable remote ref cannot name a controller-owned session.
+		// Preserve the refusal, but never leak a remote-local address.
+		return wire.WithThreadStartPartial("", "")
+	}
+	return wire.WithThreadStartPartial(ref, partial.CreatedInstanceID)
 }
 
 // remoteForwardedThreadCapabilities lists the thread actions this source can

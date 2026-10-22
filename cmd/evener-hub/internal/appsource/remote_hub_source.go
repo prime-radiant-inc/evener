@@ -219,7 +219,9 @@ func (s *RemoteHubSource) Online() bool {
 }
 
 // call forwards one request over the current remote client and translates any
-// refs in the response back into the controller namespace.
+// refs in the response back into the controller namespace. Errors bypass
+// response translation; StartThread translates its createdRef error evidence
+// separately, since an error has no response to translate.
 //
 // A caller cancellation or deadline stays raw at every step, exactly as
 // mutationCall and LocalDaemonSource.withClientCallMapper leave ctx.Err(): the
