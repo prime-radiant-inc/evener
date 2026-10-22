@@ -117,11 +117,11 @@ func (a *subagent) admitTerminalReportWithInventory(ctx context.Context, candida
 	}
 
 	work, err := a.sess.outstandingDelegateWorkForAdmission()
-	if err != nil || len(work.Unknown) != 0 {
+	if err != nil {
+		return false, err
+	}
+	if len(work.Unknown) != 0 {
 		reason := "The terminal report was refused because outstanding work could not be verified"
-		if err != nil {
-			reason += ": " + err.Error()
-		}
 		reason += ". Outstanding: " + strings.Join(work.IDs(), ", ")
 		if steerErr := a.sess.steerTerminalRefusal(reason); steerErr != nil {
 			return false, steerErr

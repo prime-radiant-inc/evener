@@ -111,13 +111,13 @@ func TestTerminalAdmissionRefusesUnknownEvidence(t *testing.T) {
 	admitted, err := (&subagent{sess: s}).admitTerminalReport(context.Background(), &terminalReportCandidate{
 		Disposition: tool.CommunicateEndReasonDone,
 	})
-	if err != nil {
-		t.Fatalf("admitTerminalReport: %v", err)
+	if err == nil {
+		t.Fatal("admitTerminalReport error = nil, want unreadable evidence to terminate")
 	}
 	if admitted {
 		t.Fatal("done was admitted with unreadable job evidence")
 	}
-	assertSteerMentions(t, s, "unknown:job-journal")
+	assertNoSteer(t, s)
 }
 
 func TestTerminalAdmissionPublishesEmptyDone(t *testing.T) {
