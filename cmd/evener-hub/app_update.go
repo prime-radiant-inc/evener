@@ -37,6 +37,12 @@ var (
 // const, so tests can set it to 0.
 var hubRestartDelay = 500 * time.Millisecond
 
+// hubRestartLockTimeout bounds a restart's wait for the cross-process install
+// lock. A stuck holder must abort the restart, not strand the hub past its
+// health-poll window; the bound stays well under the frontend's 30s restart
+// poll. A var, not a const, so tests can shrink it.
+var hubRestartLockTimeout = 10 * time.Second
+
 // hubUpgradeTimeout is the one overall deadline for a complete upgrade
 // operation: archive download + checksums download + verify + install.
 // The per-request http.Client timeout (selfupdate.defaultUpgradeTimeout)
@@ -116,7 +122,8 @@ func hubUpdateCheck(ctx context.Context, params appwire.UpdateCheckParams) (appw
 	resp.StartedAt = hubProcessStartedAt
 	resp.RestartSupported = hubRestartUsable() && onDiskErr == nil
 	resp.InstallTarget = expectedInstallTarget()
-	resp.InstallTargetMatchesLaunch = sameInstallTarget(resp.InstallTarget, hubLaunchEntrypoint)
+	_, installBinDir := expectedInstallDirs()
+	resp.InstallTargetMatchesLaunch = installTargetsLaunch(resp.InstallTarget, hubLaunchEntrypoint, installBinDir)
 	binaryChanged := false
 	if hubLaunchBinarySHA256 != "" {
 		if digest, err := launchBinaryDigest(hubLaunchEntrypoint); err == nil {
@@ -153,19 +160,59 @@ func hubUpdateCheck(ctx context.Context, params appwire.UpdateCheckParams) (appw
 	return resp, nil
 }
 
+// expectedInstallDirs is the managed layout selfupdate.Upgrade will write for
+// this hub's launch path. An unrecognized launch path falls back to the CLI's
+// default ~/.local prefix.
+func expectedInstallDirs() (shareBinDir, binDir string) {
+	_, binDir, shareBinDir = hubInstallDirs()
+	if shareBinDir != "" {
+		return shareBinDir, binDir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", ""
+	}
+	return filepath.Join(home, ".local", "share", "evener", "bin"), filepath.Join(home, ".local", "bin")
+}
+
 // expectedInstallTarget is where selfupdate.Upgrade will write the evener
-// binary for this hub's launch layout. An unrecognized launch path falls back
-// to the CLI's default ~/.local prefix.
+// binary for this hub's launch layout.
 func expectedInstallTarget() string {
-	_, _, shareBinDir := hubInstallDirs()
+	shareBinDir, _ := expectedInstallDirs()
 	if shareBinDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-		shareBinDir = filepath.Join(home, ".local", "share", "evener", "bin")
+		return ""
 	}
 	return filepath.Join(shareBinDir, "evener")
+}
+
+// installTargetsLaunch reports whether Upgrade updates the binary this hub
+// launched from. A launch through <prefix>/bin/evener may be a symlink to the
+// managed binary, or a copy or hardlink, which Upgrade replaces with that
+// symlink on install. The share binary may not exist before the first
+// install, so the entrypoint directory is compared as well.
+func installTargetsLaunch(target, launch, binDir string) bool {
+	if sameInstallTarget(target, launch) {
+		return true
+	}
+	if target == "" || launch == "" || binDir == "" {
+		return false
+	}
+	if filepath.Base(launch) != filepath.Base(target) {
+		return false
+	}
+	return sameDirectory(filepath.Dir(launch), binDir)
+}
+
+func sameDirectory(a, b string) bool {
+	resolvedA, err := filepath.EvalSymlinks(a)
+	if err != nil {
+		return false
+	}
+	resolvedB, err := filepath.EvalSymlinks(b)
+	if err != nil {
+		return false
+	}
+	return resolvedA == resolvedB
 }
 
 func sameInstallTarget(target, launch string) bool {
@@ -469,16 +516,19 @@ func scheduleRestartAfterResponse(ctx context.Context, pin restartPin, binary st
 			// restart still lands before the UI declares a timeout.
 			release := func() {}
 			if useInstallLock {
-				relockCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				relockCtx, cancel := context.WithTimeout(context.Background(), hubRestartLockTimeout)
 				var err error
 				release, err = selfupdate.AcquireInstallLockForVerify(relockCtx, pin.shareBinDir)
 				cancel()
 				if err != nil {
-					if label == "restart" {
+					if label == "restart" && errors.Is(err, selfupdate.ErrInstallDirReadOnly) {
 						// The hub may run from a root-owned installation it can
-						// read and exec but not write. No concurrent installer
-						// can hold the lock either; the digest re-verify below
-						// still catches a changed target.
+						// read and exec but not write, so no lock file can
+						// exist for another installer to hold. The digest
+						// re-verify below still catches a changed target.
+						// Contention, deadline expiry, and other errors abort:
+						// a live installer could swap the binary after the
+						// verify and before the exec.
 						release = func() {}
 						_, _ = fmt.Fprintf(hubUpdateStderr, "[hub] restart: install lock unavailable (%v); verifying the digest without it\n", err)
 					} else {

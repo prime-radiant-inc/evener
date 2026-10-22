@@ -347,6 +347,55 @@ func TestHubRestartOnlyContinuesWhenInstallDirIsNotWritable(t *testing.T) {
 	}
 }
 
+func TestHubRestartOnlyAbortsWhileAnotherInstallerHoldsTheLock(t *testing.T) {
+	previousDelay := hubRestartDelay
+	hubRestartDelay = 0
+	t.Cleanup(func() { hubRestartDelay = previousDelay })
+	previousLockTimeout := hubRestartLockTimeout
+	hubRestartLockTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { hubRestartLockTimeout = previousLockTimeout })
+
+	executed := false
+	previousExec := execHubBinary
+	execHubBinary = func(string, []string) error {
+		executed = true
+		return errors.New("exec failed")
+	}
+	t.Cleanup(func() { execHubBinary = previousExec })
+
+	stderr := newSyncWriter("restart aborted")
+	previousStderr := hubUpdateStderr
+	hubUpdateStderr = stderr
+	t.Cleanup(func() { hubUpdateStderr = previousStderr })
+
+	hubUpdateMu = sync.Mutex{}
+	hubUpdateMu.Lock()
+	t.Cleanup(func() { hubUpdateMu = sync.Mutex{} })
+
+	path := writeProbeScript(t, "echo 'evener abc1234 (2026-10-21T00:00:00Z)'")
+	pin, err := pinInstalledBinary(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shareDir := t.TempDir()
+	holder, err := selfupdate.AcquireInstallLockForVerify(context.Background(), shareDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(holder)
+	pin.shareBinDir = shareDir
+	scheduleHubRestartOnlyAfterResponse(context.Background(), pin, path, []string{"hub"})
+
+	select {
+	case <-stderr.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("restart did not abort while another installer held the lock")
+	}
+	if executed {
+		t.Fatal("restart proceeded while another installer held the lock")
+	}
+}
+
 func TestHubRestartOnlyAbortsWhenBinarySwapped(t *testing.T) {
 	previousDelay := hubRestartDelay
 	hubRestartDelay = 0

@@ -40,6 +40,12 @@ var defaultMaxArchiveBytes = int64(128 << 20)
 // builds from the transition window did, and those have aged out.
 var installBinaries = []string{"evener"}
 
+// ErrInstallDirReadOnly reports that the cross-process install lock cannot be
+// created because the managed directory does not permit writes. A hub running
+// against a root-owned installation can still verify and exec its binary, so
+// the restart path may proceed without the lock; an install may not.
+var ErrInstallDirReadOnly = errors.New("install directory is read-only")
+
 var (
 	copyStream = io.Copy
 	closeFile  = (*os.File).Close

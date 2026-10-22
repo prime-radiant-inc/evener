@@ -267,6 +267,59 @@ func setRestartProbe(t *testing.T, body string) {
 	t.Cleanup(func() { errHubLaunchEntrypoint = previousErr })
 }
 
+// TestHubUpdateCheckAcceptsCopiedBinEntrypoint covers an install launched
+// from <prefix>/bin/evener as a copy or hardlink rather than a symlink:
+// Upgrade replaces that entrypoint with a symlink to the managed binary, so
+// the install still updates the launch path even though the share binary
+// does not exist yet.
+func TestHubUpdateCheckAcceptsCopiedBinEntrypoint(t *testing.T) {
+	setBuild(t, "fffffff", "release")
+	stubUpdateCheck(t, func(_ context.Context, opts selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
+		return selfupdate.CheckResult{
+			Channel:         opts.Channel,
+			LatestTag:       "release",
+			LatestCommit:    "def5678" + strings.Repeat("f", 33),
+			UpdateAvailable: true,
+		}, nil
+	})
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	launch := filepath.Join(binDir, "evener")
+	body := "#!/bin/sh\necho 'evener abc1234 (2026-10-21T00:00:00Z)'\n"
+	if err := os.WriteFile(launch, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	previousSupported := hubRestartSupported
+	hubRestartSupported = func() bool { return true }
+	t.Cleanup(func() { hubRestartSupported = previousSupported })
+	previousPath := hubLaunchEntrypoint
+	hubLaunchEntrypoint = launch
+	t.Cleanup(func() { hubLaunchEntrypoint = previousPath })
+	previousErr := errHubLaunchEntrypoint
+	errHubLaunchEntrypoint = nil
+	t.Cleanup(func() { errHubLaunchEntrypoint = previousErr })
+	previousArgs := hubProcessArgs
+	hubProcessArgs = func() []string { return []string{launch, "hub"} }
+	t.Cleanup(func() { hubProcessArgs = previousArgs })
+
+	resp, err := hubUpdateCheck(context.Background(), appwire.UpdateCheckParams{})
+	if err != nil {
+		t.Fatalf("hubUpdateCheck: %v", err)
+	}
+	wantTarget := filepath.Join(root, "share", "evener", "bin", "evener")
+	if resp.InstallTarget != wantTarget {
+		t.Fatalf("install target = %q, want %q", resp.InstallTarget, wantTarget)
+	}
+	if !resp.InstallTargetMatchesLaunch {
+		t.Fatal("install target does not match a copied bin entrypoint that Upgrade replaces")
+	}
+	if !resp.InstallAvailable {
+		t.Fatal("installAvailable = false for a copied bin entrypoint")
+	}
+}
 func setManagedRestartProbe(t *testing.T, body string) string {
 	t.Helper()
 	root := t.TempDir()

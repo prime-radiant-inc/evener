@@ -32,6 +32,9 @@ func acquireInstallLock(shareBinDir string) (release func(), err error) {
 // observe cancellation and return ctx.Err instead.
 func acquireInstallLockCtx(ctx context.Context, shareBinDir string) (release func(), err error) {
 	if err := os.MkdirAll(shareBinDir, 0o755); err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return nil, fmt.Errorf("%w: mkdir install lock parent: %v", ErrInstallDirReadOnly, err)
+		}
 		return nil, fmt.Errorf("mkdir install lock parent: %w", err)
 	}
 	lockPath := filepath.Join(shareBinDir, ".install.lock")
@@ -40,6 +43,11 @@ func acquireInstallLockCtx(ctx context.Context, shareBinDir string) (release fun
 		// A hub running against a root-owned installation cannot create or
 		// write the lock file, but flock works on a read-only descriptor.
 		f, err = os.OpenFile(lockPath, os.O_RDONLY, 0)
+		if err != nil && (errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission)) {
+			// The create was refused and there is no lock file to open
+			// read-only: the managed directory does not admit a lock.
+			return nil, fmt.Errorf("%w: open install lock: %v", ErrInstallDirReadOnly, err)
+		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("open install lock: %w", err)
