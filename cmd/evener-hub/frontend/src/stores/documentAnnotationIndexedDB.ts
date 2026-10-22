@@ -463,14 +463,20 @@ async function rowsForDocumentEpoch<Row extends { documentKey: string; epoch: st
 class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotationRepository {
   readonly #connection: IDBConnection;
   readonly #options: DocumentAnnotationOptions;
-  // Adapter-local binding from each document to its one live ticket and the
-  // durable read generation it was issued at. Keying by document makes "one
-  // live ticket per document, the newest generation wins" structural: a
+  // Adapter-local binding from each document to its one live ticket, the
+  // durable read generation it was issued at and the namespace incarnation it
+  // was issued under. Keying by document makes "one live ticket per document,
+  // the newest generation within one incarnation wins" structural: a
   // continuation that runs out of issuance order (a held earlier beginRead
   // settling after a later one) can never displace the newer registration.
-  // Acceptance still requires the durable head to match, so a later beginRead
-  // in ANOTHER adapter retires this ticket too.
-  readonly #issuedReads = new Map<string, { requestId: string; readGeneration: number }>();
+  // Incarnations are random identities with no order and a reset restarts the
+  // generation, so an entry from a retired incarnation is replaced on identity,
+  // never compared by generation. Acceptance still requires the durable head to
+  // match, so a later beginRead in ANOTHER adapter retires this ticket too.
+  readonly #issuedReads = new Map<
+    string,
+    { namespaceIncarnation: string; requestId: string; readGeneration: number }
+  >();
   // The last completed current ticket and accepted source per document key, used
   // for immediate in-memory suppression (never durable, never in ComposerSourceState).
   readonly #readStates = new Map<string, ReadState>();
@@ -728,22 +734,46 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         requestId: createSecureUUID(),
       } satisfies ReadTicket;
     });
-    // Issuing a newer read supersedes every earlier unaccepted ticket for this
-    // document in this adapter: the issuance just advanced the durable read
-    // generation, so those tickets can only ever validate stale now. The map
-    // holds one live ticket per document instead of accumulating one per
-    // failed, cancelled or abandoned read for the whole application lifetime;
-    // tickets for other documents keep their own slots. The generation compare
-    // is what makes this safe when continuations settle out of order: a held
-    // earlier issuance finishes after a later one and must not replace it.
-    const live = this.#issuedReads.get(documentKey);
-    if (live === undefined || live.readGeneration < issuedGeneration) {
-      this.#issuedReads.set(documentKey, { requestId: ticket.requestId, readGeneration: issuedGeneration });
-      // Remember the completed current ticket in the same synchronous
-      // continuation, carrying the prior completed accepted source for the full
-      // document key.
-      const prior = this.#readStates.get(documentKey);
-      this.#readStates.set(documentKey, { ticket, accepted: prior?.accepted, observations: prior?.observations ?? [] });
+    // The issuance transaction may have committed in an incarnation a reset has
+    // since retired while this continuation was held. The namespace wake is
+    // best-effort, and this continuation cannot know it is dead from its own
+    // data, so registration consults the CURRENTLY durable incarnation. A
+    // retired-incarnation ticket registers nothing and writes no read state:
+    // its caller still receives the correct stale answer from the durable
+    // incarnation gate in acceptRead, and nothing here may displace a current
+    // registration.
+    if (await this.#durableIncarnationIs(namespace, ticket.namespaceIncarnation)) {
+      // Issuing a newer read supersedes every earlier unaccepted ticket for this
+      // document in this adapter: the issuance just advanced the durable read
+      // generation, so those tickets can only ever validate stale now. The map
+      // holds one live ticket per document instead of accumulating one per
+      // failed, cancelled or abandoned read for the whole application lifetime;
+      // tickets for other documents keep their own slots. Within one
+      // incarnation the generation compare makes this safe when continuations
+      // settle out of order: a held earlier issuance finishes after a later one
+      // and must not replace it. A different incarnation is replaced on identity
+      // because its generation belongs to a retired numbering.
+      const live = this.#issuedReads.get(documentKey);
+      if (
+        live === undefined ||
+        live.namespaceIncarnation !== ticket.namespaceIncarnation ||
+        live.readGeneration < issuedGeneration
+      ) {
+        this.#issuedReads.set(documentKey, {
+          namespaceIncarnation: ticket.namespaceIncarnation,
+          requestId: ticket.requestId,
+          readGeneration: issuedGeneration,
+        });
+        // Remember the completed current ticket in the same synchronous
+        // continuation, carrying the prior completed accepted source for the full
+        // document key.
+        const prior = this.#readStates.get(documentKey);
+        this.#readStates.set(documentKey, {
+          ticket,
+          accepted: prior?.accepted,
+          observations: prior?.observations ?? [],
+        });
+      }
     }
     this.#settleTransition({ signal: true });
     return ticket;
@@ -1907,6 +1937,15 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       confirmProvisioned();
       // Reset wakes every registration in its exact namespace, and no other.
       this.#settleTransition({ namespaceKey });
+      // A live ticket names its own issuance incarnation. The reset just retired
+      // exactly one incarnation, so only registrations naming it are dead: a
+      // read that registered in the NEW incarnation before this continuation
+      // ran is current and must survive. Never a blanket clear.
+      for (const [documentKey, issued] of [...this.#issuedReads]) {
+        if (issued.namespaceIncarnation === expectedIncarnation && documentKeyNamespace(documentKey) === namespaceKey) {
+          this.#issuedReads.delete(documentKey);
+        }
+      }
       // The reset deleted every row these entries named, so no consult path
       // can match them again. Retire them and the namespace's read states, or
       // a long-lived adapter retains one inert entry per suppressed epoch and
@@ -2227,6 +2266,24 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     return this.#transaction([storeName], "readonly", (transaction) =>
       requestResult<Row | undefined>(transaction.objectStore(storeName).get(key)),
     );
+  }
+
+  // Whether the namespace's CURRENTLY durable incarnation is the one a
+  // continuation issued its ticket under. Registration and read-state
+  // installation must consult this: the namespace wake is best-effort, and a
+  // continuation whose issuance committed before a reset has no other way to
+  // learn that its incarnation was retired. An unreadable identity proves
+  // nothing current, so the caller writes nothing.
+  async #durableIncarnationIs(
+    namespace: Extract<DocumentKey["namespace"], { kind: "browser" }>,
+    incarnation: string,
+  ): Promise<boolean> {
+    try {
+      const row = await this.#readRow<NamespaceRow>(ANNOTATION_NAMESPACES_STORE, annotationNamespaceKey(namespace));
+      return row?.incarnation === incarnation;
+    } catch {
+      return false;
+    }
   }
 
   // Flip one never-resolvable pending handoff to its terminal unclaimed

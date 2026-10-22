@@ -5,6 +5,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { draftStorageKey } from "../panes/session/composer/draft";
 import { MemoryStorage } from "../storageTestUtils";
 import { browserDraftKey, createBrowserDraftRepository } from "./browserDraftRepository";
+import { createDocumentAnnotationRepository } from "./documentAnnotationIndexedDB";
 import { IndexedDBTransactionTimeoutError } from "./idbConnection";
 import {
   ANNOTATION_HEADS_STORE,
@@ -88,6 +89,49 @@ test("a held earlier read does not displace the later read's ticket", async () =
     // A was superseded durably, so only its own acceptance is stale.
     expect(await repository.acceptRead(earlierTicket, content)).toEqual({ state: "stale-ticket" });
   } finally {
+    repository.close();
+    drafts.close();
+  }
+});
+
+// A held old-incarnation issuance is the other half of that ordering rule:
+// its transaction committed before a reset rotated the namespace, so when its
+// continuation finally runs it names an incarnation the durable row has
+// retired. Incarnations have no order and the new incarnation restarted the
+// generation at 1, so a generation compare alone would let the late
+// continuation displace the current registration. It must register nothing.
+test("a held old-incarnation read continuation does not displace the new incarnation's read", async () => {
+  const { drafts, repository, factory, key, document } = await openStallFixture("annotation-read-incarnation");
+  const content = { text: "reset read", binary: false, mediaType: "text/markdown", truncated: false, sizeBytes: 10 };
+  const sibling = createDocumentAnnotationRepository({
+    indexedDB: factory,
+    databaseName: "annotation-read-incarnation",
+    drafts,
+    targetFor: () => null,
+  });
+  try {
+    // Prime the namespace and head rows so the held read is not the schema writer.
+    const abandoned = await repository.beginRead(document);
+    const hold = holdNextWriteTransaction([ANNOTATION_NAMESPACES_STORE, ANNOTATION_HEADS_STORE]);
+    const earlier = repository.beginRead(document);
+    await hold.reached;
+    // A sibling rotates the namespace while the earlier issuance's completion
+    // is held: its transaction committed in the old incarnation.
+    const reset = await sibling.resetOwnedNamespace(key.namespace, abandoned.namespaceIncarnation);
+    expect(reset).toMatchObject({ committed: true });
+    const later = await repository.beginRead(document);
+    expect(later.namespaceIncarnation).toBe(reset.incarnation);
+    hold.release();
+    const earlierTicket = await earlier;
+    expect(earlierTicket.namespaceIncarnation).toBe(abandoned.namespaceIncarnation);
+
+    // The later ticket is the one the durable head validates.
+    expect(await repository.acceptRead(later, content)).toMatchObject({ state: "accepted" });
+    // The earlier continuation registered nothing: its own ticket is refused
+    // by the durable incarnation gate, exactly as a stale ticket is.
+    expect(await repository.acceptRead(earlierTicket, content)).toEqual({ state: "stale-ticket" });
+  } finally {
+    sibling.close();
     repository.close();
     drafts.close();
   }

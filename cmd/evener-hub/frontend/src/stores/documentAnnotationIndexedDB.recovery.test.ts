@@ -16,6 +16,7 @@ import {
   type AnnotationFixtureWithRuntime,
   deferred,
   openAnnotationFixture,
+  openAnnotationStore,
   sampleChangedContent,
 } from "./testing/annotationFixture";
 import { holdIndexedDBEvent, holdNextWriteTransaction, settleRealTasks } from "./testing/stalledIndexedDB";
@@ -513,4 +514,91 @@ test("a save that commits past abort during teardown announces its ownerless row
 
   fixture.repository.close();
   fixture.drafts.close();
+});
+
+// A reset rotates the namespace incarnation and deletes every head, so the
+// durable read generation restarts at 1. An abandoned old-incarnation
+// registration must not gate the new incarnation's first read: incarnation
+// identities have no order, so the reset retires exactly the registrations
+// that name the incarnation it rotated away.
+test("a reset lets the new incarnation's first read register", async () => {
+  const store = await openAnnotationStore({
+    databaseName: "annotation-reset-registration",
+    origin: "https://reset.example",
+    targetFor: () => null,
+  });
+  try {
+    const abandoned = await store.repository.beginRead(store.document);
+    expect(
+      await store.repository.resetOwnedNamespace(store.key.namespace, abandoned.namespaceIncarnation),
+    ).toMatchObject({ committed: true });
+
+    const fresh = await store.repository.beginRead(store.document);
+    expect(fresh.namespaceIncarnation).not.toBe(abandoned.namespaceIncarnation);
+    expect(await store.repository.acceptRead(fresh, sampleChangedContent())).toMatchObject({ state: "accepted" });
+  } finally {
+    store.repository.close();
+    store.drafts.close();
+  }
+});
+
+// The same retirement must hold for a sibling's reset: this adapter hears the
+// rotation only as a best-effort namespace wake, so registration itself must
+// consult the durable incarnation rather than depend on that wake arriving.
+test("a sibling's reset lets the new incarnation's first read register", async () => {
+  const store = await openAnnotationStore({
+    databaseName: "annotation-reset-registration-sibling",
+    origin: "https://reset.example",
+    targetFor: () => null,
+  });
+  const sibling = createDocumentAnnotationRepository({
+    indexedDB: store.factory,
+    databaseName: "annotation-reset-registration-sibling",
+    drafts: store.drafts,
+    targetFor: () => null,
+  });
+  try {
+    const abandoned = await store.repository.beginRead(store.document);
+    expect(await sibling.resetOwnedNamespace(store.key.namespace, abandoned.namespaceIncarnation)).toMatchObject({
+      committed: true,
+    });
+
+    const fresh = await store.repository.beginRead(store.document);
+    expect(fresh.namespaceIncarnation).not.toBe(abandoned.namespaceIncarnation);
+    expect(await store.repository.acceptRead(fresh, sampleChangedContent())).toMatchObject({ state: "accepted" });
+  } finally {
+    sibling.close();
+    store.repository.close();
+    store.drafts.close();
+  }
+});
+
+// A blind clear at reset is unsafe: a new-incarnation read can register while
+// the reset's own post-commit continuation is still pending, and retiring it
+// would leave a current ticket stale. Retirement is scoped to the incarnation
+// the reset actually rotated away - never a blanket clear.
+test("a read registered after the reset commit survives the reset's own retirement", async () => {
+  const store = await openAnnotationStore({
+    databaseName: "annotation-reset-retirement-scope",
+    origin: "https://reset.example",
+    targetFor: () => null,
+  });
+  try {
+    const abandoned = await store.repository.beginRead(store.document);
+    // The reset commits, but its completion event - and every post-commit
+    // retirement - stays held while the new incarnation's reads register.
+    const hold = holdNextWriteTransaction(RESET_STORES);
+    const reset = store.repository.resetOwnedNamespace(store.key.namespace, abandoned.namespaceIncarnation);
+    await hold.reached;
+    const first = await store.repository.beginRead(store.document);
+    const current = await store.repository.beginRead(store.document);
+    hold.release();
+    expect(await reset).toMatchObject({ committed: true });
+
+    expect(await store.repository.acceptRead(current, sampleChangedContent())).toMatchObject({ state: "accepted" });
+    expect(await store.repository.acceptRead(first, sampleChangedContent())).toEqual({ state: "stale-ticket" });
+  } finally {
+    store.repository.close();
+    store.drafts.close();
+  }
 });
