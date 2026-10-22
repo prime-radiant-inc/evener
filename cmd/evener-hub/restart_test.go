@@ -173,11 +173,21 @@ func TestHubRestartCommandUsesResponseIncarnation(t *testing.T) {
 }
 
 func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
-	for _, name := range []string{"listener-moved", "listener-moved-lost-reply", "relative-config-listener-moved", "symlink-config-listener-moved", "relative-symlink-config-listener-moved", "failed-restart", "wrong-record-config", "changed-selected-root", "changed-selected-config", "same-incarnation"} {
+	for _, name := range []string{"listener-moved", "listener-moved-lost-reply", "hardlink-listener-moved", "hardlink-listener-moved-lost-reply", "equal-content-record-config", "replaced-selected-config", "relative-config-listener-moved", "symlink-config-listener-moved", "relative-symlink-config-listener-moved", "failed-restart", "wrong-record-config", "changed-selected-root", "changed-selected-config", "same-incarnation"} {
 		t.Run(name, func(t *testing.T) {
 			dir, root := endpointTestRoot(t)
 			config := endpointTestConfig(t, dir, root, "127.0.0.1:0")
 			recordConfig := config
+			cliConfig := config
+			if strings.HasPrefix(name, "hardlink-") {
+				recordConfig, cliConfig = filepath.Join(dir, "a.toml"), filepath.Join(dir, "b.toml")
+				for _, alias := range []string{recordConfig, cliConfig} {
+					if err := os.Link(config, alias); err != nil {
+						t.Fatal(err)
+					}
+				}
+				recordConfig = restartStartupConfigPath(t, recordConfig)
+			}
 			if strings.Contains(name, "config-listener-moved") {
 				selector := "./hub.toml"
 				if strings.Contains(name, "symlink-config") {
@@ -284,6 +294,26 @@ func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
 				if name == "wrong-record-config" {
 					next.ConfigPath = filepath.Join(dir, "unrelated.toml")
 				}
+				if name == "equal-content-record-config" || name == "replaced-selected-config" {
+					var data []byte
+					data, scheduleErr = os.ReadFile(config)
+					if scheduleErr != nil {
+						return
+					}
+					other := filepath.Join(dir, "equal-content.toml")
+					scheduleErr = os.WriteFile(other, data, 0600)
+					if scheduleErr != nil {
+						return
+					}
+					if name == "replaced-selected-config" {
+						scheduleErr = os.Rename(other, config)
+						if scheduleErr != nil {
+							return
+						}
+					} else {
+						next.ConfigPath = other
+					}
+				}
 				if name == "changed-selected-root" {
 					next.HubStateRoot = filepath.Join(dir, "other-root")
 					scheduleErr = os.MkdirAll(next.HubStateRoot, 0700)
@@ -325,7 +355,7 @@ func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
 					}
 				})
 				scheduled.Store(true)
-				if name == "listener-moved-lost-reply" {
+				if strings.HasSuffix(name, "-lost-reply") {
 					select {
 					case conn := <-rpcConn:
 						scheduleErr = conn.Close()
@@ -338,14 +368,14 @@ func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
 			deps := defaultMainDeps()
 			var stdout, stderr bytes.Buffer
 			deps.stdout = &stdout
-			err = runHubRestart([]string{"--config", config, "--timeout", "1s"}, &stderr, deps)
+			err = runHubRestart([]string{"--config", cliConfig, "--timeout", "1s"}, &stderr, deps)
 			mu.Lock()
 			defer mu.Unlock()
 			if scheduleErr != nil || attempts.Load() != 1 {
 				t.Fatalf("restart scheduling: attempts=%d err=%v", attempts.Load(), scheduleErr)
 			}
 			switch name {
-			case "listener-moved", "listener-moved-lost-reply", "relative-config-listener-moved", "symlink-config-listener-moved", "relative-symlink-config-listener-moved":
+			case "listener-moved", "listener-moved-lost-reply", "hardlink-listener-moved", "hardlink-listener-moved-lost-reply", "relative-config-listener-moved", "symlink-config-listener-moved", "relative-symlink-config-listener-moved":
 				if err != nil || successorHealth.Load() == 0 {
 					t.Fatalf("moved successor not confirmed: err=%v health=%d stderr=%q", err, successorHealth.Load(), stderr.String())
 				}
@@ -454,10 +484,14 @@ func TestWaitForNewIncarnationTimesOut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	configIdentity, err := os.Stat(selected.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	if err := waitForNewIncarnation(ctx, opts, deps, selected, fixed); err == nil {
+	if err := waitForNewIncarnation(ctx, opts, deps, selected, configIdentity, fixed); err == nil {
 		t.Fatal("waitForNewIncarnation accepted an unchanged process")
 	}
 }
@@ -563,6 +597,33 @@ func TestHubRestartControlRefusesChangedIdentityBeforeSendingToken(t *testing.T)
 	}
 }
 
+func TestHubRestartCommandRequiresSelectedConfigIdentity(t *testing.T) {
+	_, root := endpointTestRoot(t) // No token: identity refusal must precede its read.
+	started := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	var controls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/health" {
+			controls.Add(1)
+			t.Error("unverified config received a control request")
+		}
+		restartFixtureHealth(t, w, r, started)
+	}))
+	defer srv.Close()
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	publishRestartFixture(t, root, addr, started)
+	if err := os.Remove(DefaultConfigPath()); err != nil {
+		t.Fatal(err)
+	}
+	deps := defaultMainDeps()
+	deps.loadConfig = func(string, bool) (Config, error) {
+		return Config{Addr: addr, HubStateRoot: root}, nil
+	}
+	err := runHubRestart([]string{"--timeout", "1s"}, io.Discard, deps)
+	if !errors.Is(err, hubendpoint.ErrIdentityMismatch) || controls.Load() != 0 {
+		t.Fatalf("missing selected config: err=%v controls=%d", err, controls.Load())
+	}
+}
+
 func restartFixtureHealth(t *testing.T, w http.ResponseWriter, r *http.Request, started time.Time) {
 	t.Helper()
 	if r.Header.Get("Authorization") != "" {
@@ -582,6 +643,10 @@ func publishRestartFixture(t *testing.T, root, addr string, started time.Time) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Dir(config), 0700); err != nil {
+		t.Fatal(err)
+	}
+	endpointTestConfig(t, filepath.Dir(config), root, "0.0.0.0:0")
 	remove, err := hubendpoint.Publish(root, hubendpoint.Record{
 		SchemaVersion: hubendpoint.SchemaVersion, BootID: "restart-fixture", PID: os.Getpid(),
 		StartedAt: started, ConfigPath: config, HubStateRoot: root,

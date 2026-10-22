@@ -96,6 +96,12 @@ func runHubRestart(args []string, stderr io.Writer, deps mainDeps) error {
 		}
 		origin = selected
 	}
+	configIdentity, err := os.Stat(report.ConfigPath)
+	if err != nil {
+		err = fmt.Errorf("%w: selected config: %w", hubendpoint.ErrIdentityMismatch, err)
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
+	}
 	token, err := readAuthToken(report.Running.HubStateRoot)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
@@ -132,7 +138,7 @@ func runHubRestart(args []string, stderr io.Writer, deps mainDeps) error {
 		}
 	}
 
-	if err := waitForNewIncarnation(ctx, endpointOpts, deps, report, baseline); err != nil {
+	if err := waitForNewIncarnation(ctx, endpointOpts, deps, report, configIdentity, baseline); err != nil {
 		confirmErr := err
 		if requestErr != nil {
 			confirmErr = fmt.Errorf("%w; %w", requestErr, err)
@@ -211,7 +217,7 @@ func readHubStartedAt(ctx context.Context, origin hubendpoint.Origin) (time.Time
 	return health.StartedAt, nil
 }
 
-func waitForNewIncarnation(ctx context.Context, opts endpointOptions, deps mainDeps, selected hubendpoint.Report, previous time.Time) error {
+func waitForNewIncarnation(ctx context.Context, opts endpointOptions, deps mainDeps, selected hubendpoint.Report, configIdentity os.FileInfo, previous time.Time) error {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -225,13 +231,13 @@ func waitForNewIncarnation(ctx context.Context, opts endpointOptions, deps mainD
 			if err != nil {
 				continue
 			}
-			if report.ConfigPath != selected.ConfigPath || report.HubStateRoot != selected.HubStateRoot {
+			if !restartConfigMatches(report.ConfigPath, configIdentity) || report.HubStateRoot != selected.HubStateRoot {
 				return hubendpoint.ErrIdentityMismatch
 			}
 			if report.Running == nil {
 				continue
 			}
-			if report.Running.ConfigPath != selected.ConfigPath || report.Running.HubStateRoot != selected.HubStateRoot {
+			if !restartConfigMatches(report.Running.ConfigPath, configIdentity) || report.Running.HubStateRoot != selected.HubStateRoot {
 				return hubendpoint.ErrIdentityMismatch
 			}
 			origin, err := attachOrigin(report.Running.LoopbackURL)
@@ -244,4 +250,9 @@ func waitForNewIncarnation(ctx context.Context, opts endpointOptions, deps mainD
 			}
 		}
 	}
+}
+
+func restartConfigMatches(path string, selected os.FileInfo) bool {
+	current, err := os.Stat(path)
+	return err == nil && os.SameFile(selected, current)
 }
