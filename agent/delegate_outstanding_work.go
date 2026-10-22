@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -67,13 +68,7 @@ func (w OutstandingDelegateWork) IDs() []string {
 	add("goal", w.Goals)
 	add("unknown", w.Unknown)
 	sort.Strings(ids)
-	out := ids[:0]
-	for _, id := range ids {
-		if len(out) == 0 || out[len(out)-1] != id {
-			out = append(out, id)
-		}
-	}
-	return out
+	return slices.Compact(ids)
 }
 
 // outstandingDelegateWork itemizes every local obligation that can wake this
@@ -137,7 +132,7 @@ func (s *Session) dropOwnedShellAttention(ids []string) []string {
 	}
 	s.jobManager.mu.Lock()
 	defer s.jobManager.mu.Unlock()
-	out := ids[:0]
+	out := make([]string, 0, len(ids))
 	for _, id := range ids {
 		if strings.HasPrefix(id, "shell:") {
 			rest := strings.TrimPrefix(id, "shell:")
