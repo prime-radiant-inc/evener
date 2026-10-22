@@ -205,7 +205,7 @@ func (m *Manager) resolveDarwinOwner(ctx context.Context, host hostreg.Host, fac
 	if err := m.checkHubOwner(ctx, host, pid); err != nil {
 		return selectedOwner{}, fmt.Errorf("%w: %w", errOwnerEvidence, err)
 	}
-	argv, err := m.recoverHubArgv(ctx, host, pid)
+	argv, err := m.recoverHubArgvRaw(ctx, host, pid)
 	if err != nil {
 		return selectedOwner{}, fmt.Errorf("%w: %w", errOwnerEvidence, err)
 	}
@@ -221,6 +221,9 @@ func (m *Manager) resolveDarwinOwner(ctx context.Context, host hostreg.Host, fac
 	}
 	if !path.IsAbs(actualCwd) {
 		return selectedOwner{}, fmt.Errorf("%w: Darwin process cwd disagrees", errOwnerEvidence)
+	}
+	if err := m.checkOwnerExecutable(ctx, host, argv[0], actualCwd); err != nil {
+		return selectedOwner{}, fmt.Errorf("%w: %w", errOwnerEvidence, err)
 	}
 	if sup.kind != supervisorNone {
 		matches, err := m.sameDirectory(ctx, host, actualCwd, def.cwd)

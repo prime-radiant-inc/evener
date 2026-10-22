@@ -3,6 +3,7 @@ package sshconn
 import (
 	"errors"
 	"os/exec"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -31,6 +32,9 @@ func TestRemoteStoppedUserEnvironmentInheritsManager(t *testing.T) {
 
 func TestRemoteOwnerNarrowEnvironmentFilters(t *testing.T) {
 	t.Run("Linux process environment", func(t *testing.T) {
+		if runtime.GOOS != "linux" {
+			t.Skip("process environment probe requires Linux /proc")
+		}
 		cmd := exec.Command("/bin/sh", "-c", ownerEnvironmentRemote("$$"))
 		cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=/private/home", "EVENER_HUB_LISTEN_ADDR=127.0.0.1:0", "PRIVATE_TEST_SECRET=must-not-cross-boundary"}
 		out, err := cmd.Output()

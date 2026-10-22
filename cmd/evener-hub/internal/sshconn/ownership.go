@@ -110,7 +110,7 @@ func (m *Manager) resolveLinuxOwner(ctx context.Context, host hostreg.Host, repo
 	if err := m.checkHubOwner(ctx, host, pid); err != nil {
 		return selectedOwner{}, fmt.Errorf("%w: %w", errOwnerEvidence, err)
 	}
-	argv, err := m.recoverHubArgv(ctx, host, pid)
+	argv, err := m.recoverHubArgvRaw(ctx, host, pid)
 	if err != nil {
 		return selectedOwner{}, fmt.Errorf("%w: %w", errOwnerEvidence, err)
 	}
@@ -121,6 +121,9 @@ func (m *Manager) resolveLinuxOwner(ctx context.Context, host hostreg.Host, repo
 	cwd, err := ownerPathOutput(cwdOut)
 	if err != nil {
 		return selectedOwner{}, fmt.Errorf("%w: process working directory unavailable", errOwnerEvidence)
+	}
+	if err := m.checkOwnerExecutable(ctx, host, argv[0], cwd); err != nil {
+		return selectedOwner{}, fmt.Errorf("%w: %w", errOwnerEvidence, err)
 	}
 	env, err := m.ownerEnvironment(ctx, host, pid)
 	if err != nil {
@@ -179,6 +182,17 @@ func (m *Manager) resolveLinuxOwner(ctx context.Context, host hostreg.Host, repo
 	}
 	m.rememberOwner(owner)
 	return owner.clone(), nil
+}
+
+// A slash-relative argv[0] is relative to the process, not the SSH login cwd.
+// Do not clean the concatenation: symlink/.. segments have filesystem meaning.
+// Keep argv itself unchanged as frozen launch intent, and keep bare PATH names
+// on the existing executable-name lookup path.
+func (m *Manager) checkOwnerExecutable(ctx context.Context, host hostreg.Host, executable, cwd string) error {
+	if !path.IsAbs(executable) && strings.Contains(executable, "/") {
+		executable = cwd + "/" + executable
+	}
+	return m.hubExecutableMatches(ctx, host, executable)
 }
 
 // revalidateOwnedEndpoint redoes ownership and original-image capability rather

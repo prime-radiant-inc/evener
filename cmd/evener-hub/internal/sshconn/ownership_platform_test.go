@@ -51,7 +51,7 @@ func darwinOwnerCommands(t *testing.T, damaged, successor bool) []ownerCommand {
 	// The unavailable case must independently inspect the service definition
 	// rather than trust a report PID.
 	listing := pid + "\t0\tcom.example.evener-hub\n"
-	commands := []ownerCommand{{linux[0].command, mustOwnerJSON(t, report)}, {"launchctl list", listing}, {launchdDefinitionRemote("1000", "com.example.evener-hub"), definition}, {"canonical", "/opt/evener\n"}, {"canonical", "/opt/evener\n"}, {linux[9].command, mustOwnerJSON(t, report)}, {"ps -p " + pid + " -o lstart=", start}, {"ps -o user= -p " + pid, "dev\n"}, {hubArgvRemote(pid), ""}, {"ps -p " + pid + " -ww -o command=", "/opt/evener hub --config=/srv/selected.toml --addr=[::]:0\n"}, {"canonical", "/opt/evener\n"}, {"canonical", "/opt/evener\n"}, {"lsof -a -p " + pid + " -d cwd -Fn", "p" + pid + "\nfcwd\nn/srv\n"}, {"ps -p " + pid + " -o lstart=", start}}
+	commands := []ownerCommand{{linux[0].command, mustOwnerJSON(t, report)}, {"launchctl list", listing}, {launchdDefinitionRemote("1000", "com.example.evener-hub"), definition}, {"canonical", "/opt/evener\n"}, {"canonical", "/opt/evener\n"}, {linux[9].command, mustOwnerJSON(t, report)}, {"ps -p " + pid + " -o lstart=", start}, {"ps -o user= -p " + pid, "dev\n"}, {hubArgvRemote(pid), ""}, {"ps -p " + pid + " -ww -o command=", "/opt/evener hub --config=/srv/selected.toml --addr=[::]:0\n"}, {"lsof -a -p " + pid + " -d cwd -Fn", "p" + pid + "\nfcwd\nn/srv\n"}, {"canonical", "/opt/evener\n"}, {"canonical", "/opt/evener\n"}, {"ps -p " + pid + " -o lstart=", start}}
 	return commands
 }
 

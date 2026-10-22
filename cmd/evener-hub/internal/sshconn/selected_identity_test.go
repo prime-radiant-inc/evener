@@ -31,7 +31,7 @@ func identityOwnerCommands(t *testing.T, platform string, stopped bool) []ownerC
 		{base[0].command, raw},
 		{systemctlListUnits, "evener-hub-selected.service loaded inactive dead\n"},
 		{base[13].command, strings.ReplaceAll(base[13].output, "MainPID=4242", "MainPID=0")},
-		base[5], base[6],
+		base[6], base[7],
 		{"systemctl show --property=User,EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- evener-hub-selected.service", "User=dev\nEnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\nSetLoginEnvironment=yes\n"},
 		{"getent passwd dev | cut -d: -f6", "/home/dev\n"},
 		{"values=$(systemctl show --property=Environment --value -- evener-hub-selected.service) || exit; printf '%s\\n' \"$values\" | " + narrowEnvironmentFilter, ""},

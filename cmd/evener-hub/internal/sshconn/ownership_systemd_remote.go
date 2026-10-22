@@ -60,7 +60,7 @@ func (m *Manager) selectedServicePID(ctx context.Context, host hostreg.Host, rep
 			if !ok {
 				return "", errOwnerEvidence
 			}
-			argv, err := m.recoverHubArgv(ctx, host, pid)
+			argv, err := m.recoverHubArgvRaw(ctx, host, pid)
 			if err != nil {
 				return "", err
 			}
@@ -70,6 +70,9 @@ func (m *Manager) selectedServicePID(ctx context.Context, host hostreg.Host, rep
 			}
 			cwd, err := ownerPathOutput(cwdOut)
 			if err != nil {
+				return "", err
+			}
+			if err := m.checkOwnerExecutable(ctx, host, argv[0], cwd); err != nil {
 				return "", err
 			}
 			env, err := m.ownerEnvironment(ctx, host, pid)
