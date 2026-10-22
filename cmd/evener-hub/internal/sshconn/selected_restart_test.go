@@ -70,16 +70,20 @@ func TestRemoteRestartUnresponsiveService(t *testing.T) {
 	damaged := remoteEndpointFixture(host.ConfigPath, "127.0.0.1:19371", "boot-one")
 	damaged.State, damaged.Reason, damaged.Running = "unavailable", "unreachable", nil
 	first[0].output, second[0].output = mustOwnerJSON(t, damaged), mustOwnerJSON(t, damaged)
+	first[9].output, second[9].output = mustOwnerJSON(t, damaged), mustOwnerJSON(t, damaged)
 	// First contact uses the original image, not the newly installed pathname.
 	first = append(first[:16], append([]ownerCommand{{"/proc/4242/exe launch-check --json", goodLaunchCheck}}, first[16:]...)...)
 	commands := first
 	commands = append(commands, second...)
+	commands = append(commands, replacementGateCommands(t, second, true)...)
+	commands = append(commands, identityRestartCommand("linux"))
+	commands = append(commands, selectedSuccessorCommands(t)...)
 	fr, index := ownerRunner(t, commands)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "release-selected"})
-	if _, err := m.RestartForOperation(t.Context(), host, selectedRestartFacts(), nil); !errors.Is(err, errOwnerEvidence) {
+	if _, err := m.RestartForOperation(t.Context(), host, selectedRestartFacts(), nil); err != nil {
 		t.Fatal(err)
 	}
-	if *index != len(commands) || m.pendingRestart(host.Name).command == "" || len(fr.recordedStarts()) != 0 {
+	if *index != len(commands) || m.pendingRestart(host.Name).active() || len(fr.recordedStarts()) != 0 {
 		t.Fatalf("commands=%d/%d pending=%+v", *index, len(commands), m.pendingRestart(host.Name))
 	}
 }

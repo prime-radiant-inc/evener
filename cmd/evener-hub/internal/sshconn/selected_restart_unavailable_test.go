@@ -30,9 +30,15 @@ func TestSelectedRestartUnavailablePredecessorRecovers(t *testing.T) {
 			process.initialUnavailable = true
 			base := fr.runFn
 			var m *Manager
+			allowReplacement := false
 			effects, writes := 0, 0
 			fr.runFn = func(ctx context.Context, argv []string, in io.Reader) ([]byte, error) {
 				remote := strings.Join(argv[12:], " ")
+				// Retain an unexecuted intent by withholding independent birth
+				// evidence at the stop boundary, not by withholding health.
+				if !allowReplacement && m.pendingRestart(host.Name).active() && remote == ownerGenerationRemote("4242") {
+					return nil, errOwnerEvidence
+				}
 				if strings.Contains(remote, "cat >") || strings.Contains(remote, "nohup ") {
 					writes++
 				}
@@ -71,12 +77,13 @@ func TestSelectedRestartUnavailablePredecessorRecovers(t *testing.T) {
 				t.Fatal(err)
 			}
 			if _, err := m.RestartForOperation(t.Context(), host, facts, nil); !errors.Is(err, errOwnerEvidence) {
-				t.Fatalf("unavailable-health refusal: %v", err)
+				t.Fatalf("unavailable independent-evidence refusal: %v", err)
 			}
 			pending := m.pendingRestart(host.Name)
 			if pending.selected == nil || pending.selected.report.Running != nil || effects != 0 || writes != 0 || process.mutated {
 				t.Fatalf("unavailable predecessor: pending=%+v effects=%d writes=%d mutated=%v", pending, effects, writes, process.mutated)
 			}
+			allowReplacement = true
 			process.initialUnavailable = false
 			process.mutated = differentProcess
 			if cold {

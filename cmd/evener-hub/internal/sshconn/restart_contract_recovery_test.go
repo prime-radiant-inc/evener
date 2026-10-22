@@ -181,10 +181,13 @@ func TestRestartRecoverySupervisedProcessProof(t *testing.T) {
 					fixture.observe = func(f *selectedProcessFixture) {
 						observe(f)
 						// Live-but-unreachable and unverifiable selected owners are not
-						// stopped roots. A missing health answer is not startup authority.
+						// stopped roots. Live recovery needs an authorized restart.
 						f.initialUnavailable = !running && mode != "dormant"
 						if f.initialUnavailable {
 							f.stopped = false
+						}
+						if mode == "live" {
+							f.mutated = effects > 0
 						}
 					}
 					run := fr.runFn
@@ -210,6 +213,9 @@ func TestRestartRecoverySupervisedProcessProof(t *testing.T) {
 							pid := "-"
 							if mode == "live" {
 								pid = "4242"
+								if effects > 0 {
+									pid = "4343"
+								}
 							}
 							return []byte(pid + " 0 com.example.evener-hub\n"), nil
 						case strings.Contains(command, "lsof -ti :9180"):
@@ -241,8 +247,8 @@ func TestRestartRecoverySupervisedProcessProof(t *testing.T) {
 							t.Fatalf("dormant startup: result=%+v effects=%d err=%v pending=%+v", result, effects, err, m.pendingRestart(host.Name))
 						}
 					case "live":
-						if !errors.Is(err, errOwnerEvidence) || effects != 0 || !result.StartedAt.IsZero() || m.pendingRestart(host.Name).start || !m.pendingRestart(host.Name).active() {
-							t.Fatalf("live unit invented startup proof: result=%+v effects=%d err=%v", result, effects, err)
+						if err != nil || effects != 1 || result.TargetVersion != label || !result.StartedAt.IsZero() || !fixture.mutated || m.pendingRestart(host.Name).active() {
+							t.Fatalf("live unit restart proof: result=%+v effects=%d err=%v", result, effects, err)
 						}
 					case "occupied":
 						if !errors.Is(err, ErrRestart) || effects != 0 || !result.StartedAt.IsZero() || m.pendingRestart(host.Name).active() {

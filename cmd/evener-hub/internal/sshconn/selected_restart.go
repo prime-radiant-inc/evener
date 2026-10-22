@@ -62,20 +62,26 @@ func selectedRelaunch(owner selectedOwner) string {
 func (m *Manager) checkSelectedReplacement(ctx context.Context, host hostreg.Host, facts Preflight, owner selectedOwner, live bool, nextEnv []string) ([]string, error) {
 	if live {
 		retained := owner.report.Running
-		if retained == nil || retained.BootID == "" {
-			return nil, fmt.Errorf("%w: stop requires a retained live report", errOwnerEvidence)
+		read := m.resolveHostEndpoint
+		if retained != nil && retained.BootID != "" {
+			read = func(ctx context.Context, host hostreg.Host, facts Preflight) (hubendpoint.Report, error) {
+				report, err := m.resolveHostEndpoint(ctx, host, facts)
+				if err != nil {
+					return report, err
+				}
+				running := report.Running
+				if running == nil || running.BootID != retained.BootID || running.PID != retained.PID || fmt.Sprint(running.PID) != owner.pid || running.ConfigPath != retained.ConfigPath || running.HubStateRoot != retained.HubStateRoot || report.ConfigPath != owner.report.ConfigPath || report.HubStateRoot != owner.report.HubStateRoot {
+					return report, fmt.Errorf("%w: stop requires the matching live report", errOwnerEvidence)
+				}
+				return report, nil
+			}
+		} else {
+			// Missing health is not missing ownership. Reprove the same process,
+			// launch, supervisor, config and original-image capability below.
+			// An absent boot cannot constrain a newly available health report.
+			owner.report.Running = nil
 		}
-		_, err := m.revalidateOwnedEndpointUsing(ctx, host, facts, owner, func(ctx context.Context, host hostreg.Host, facts Preflight) (hubendpoint.Report, error) {
-			report, err := m.resolveHostEndpoint(ctx, host, facts)
-			if err != nil {
-				return report, err
-			}
-			running := report.Running
-			if running == nil || running.BootID != retained.BootID || running.PID != retained.PID || fmt.Sprint(running.PID) != owner.pid || running.ConfigPath != retained.ConfigPath || running.HubStateRoot != retained.HubStateRoot || report.ConfigPath != owner.report.ConfigPath || report.HubStateRoot != owner.report.HubStateRoot {
-				return report, fmt.Errorf("%w: stop requires the matching live report", errOwnerEvidence)
-			}
-			return report, nil
-		})
+		_, err := m.revalidateOwnedEndpointUsing(ctx, host, facts, owner, read)
 		if err != nil {
 			return nil, err
 		}
@@ -301,8 +307,8 @@ func (m *Manager) revalidateStoppedService(ctx context.Context, host hostreg.Hos
 }
 
 func selectedSuccessor(now, prior selectedOwner, env []string, version, pin string) bool {
-	// A live predecessor without a report cannot pass the stop gate. Check the
-	// retained next environment before legacy fallback, including early proofs.
+	// Without a predecessor report, only a validated replacement gate can
+	// establish successor intent. Check before legacy fallback and early proofs.
 	if prior.pid != "0" && prior.report.Running == nil && env == nil {
 		return false
 	}

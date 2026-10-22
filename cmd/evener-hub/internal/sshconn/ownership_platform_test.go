@@ -61,6 +61,9 @@ func TestRemoteRestartDarwinRetainedWitness(t *testing.T) {
 	// Learn capability from a validated healthy generation before metadata damage.
 	commands = append(commands, darwinOwnerCommands(t, true, false)...)
 	commands = append(commands, darwinOwnerCommands(t, true, false)...)
+	commands = append(commands, replacementGateCommands(t, darwinOwnerCommands(t, true, false), true)...)
+	commands = append(commands, identityRestartCommand("darwin"))
+	commands = append(commands, darwinOwnerCommands(t, false, true)...)
 	fr, index := ownerRunner(t, commands)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{})
 	facts := selectedRestartFacts()
@@ -68,11 +71,11 @@ func TestRemoteRestartDarwinRetainedWitness(t *testing.T) {
 	if _, err := m.resolveOwnedEndpoint(t.Context(), host, facts); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.RestartForOperation(t.Context(), host, facts, nil); !errors.Is(err, errOwnerEvidence) {
+	if _, err := m.RestartForOperation(t.Context(), host, facts, nil); err != nil {
 		t.Fatal(err)
 	}
-	if *index != len(commands) || m.pendingRestart(host.Name).selected == nil || len(fr.recordedStarts()) != 0 {
-		t.Fatal("Darwin no-report refusal lost pending intent or issued an effect")
+	if *index != len(commands) || m.pendingRestart(host.Name).active() || len(fr.recordedStarts()) != 0 {
+		t.Fatal("Darwin no-report restart skipped evidence, retained pending intent or attached")
 	}
 }
 
