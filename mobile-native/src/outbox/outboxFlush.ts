@@ -26,7 +26,11 @@ export type SettleResult = "open" | "reconciled" | "blocked" | "resumed" | "retr
 export interface FlushRuntime {
 	readonly storage: {
 		listTargetRefs(): Promise<string[]>;
-		listOutbox(targetRef: string): Promise<readonly { state: string; method: string }[]>;
+		/** `attempted` separates a message certainly still owed from one whose
+		 * first attempt already went out: only the former authorizes a resume,
+		 * since the latter may already be delivered and resending could
+		 * duplicate it. */
+		listOutbox(targetRef: string): Promise<readonly { state: string; method: string; attempted?: boolean }[]>;
 	};
 	start(): Promise<void>;
 	targetClient(hubId: string, targetRef: string): AppwireClientLike | undefined;
@@ -356,13 +360,25 @@ export class OutboxFlush {
 	}
 
 	/** Whether this target holds a message that still needs delivering. This is
-	 * the resume decision, and it is narrower than `waiting`: a pending
-	 * turn/interrupt is not a reason to restart a session - the person stopped
-	 * it - so a Stop left across a reconnect must not bring it back. The Stop
-	 * still settles through `waiting`, which is what delivers it. */
+	 * the resume decision, and it is narrower than `waiting` in two ways.
+	 *
+	 * A pending turn/interrupt is not a reason to restart a session - the person
+	 * stopped it - so a Stop left across a reconnect must not bring it back. The
+	 * Stop still settles through `waiting`, which is what delivers it.
+	 *
+	 * Nor is a row whose attempt already went out. Its outcome is unknown, not
+	 * known-undelivered: the daemon may already hold that message, so resuming
+	 * to deliver it again could duplicate it. Stop deliberately preserves those
+	 * rows for exactly that reason (`enqueueInterruptAndCancel` cancels only
+	 * never-attempted work), so counting them here would restart a session the
+	 * person force-stopped, purely because the old uncertain row survived. A
+	 * never-attempted row is the only certain evidence of a message still owed,
+	 * and so the only thing that authorizes a resume. */
 	private async messageWaiting(runtime: FlushRuntime, key: string): Promise<boolean> {
 		const records = await runtime.storage.listOutbox(key);
-		return records.some((record) => record.state === "submitting" && record.method !== "turn/interrupt");
+		return records.some(
+			(record) => record.state === "submitting" && record.method !== "turn/interrupt" && record.attempted === false,
+		);
 	}
 
 	/** Lets go of this claim, and only this one: a late continuation of an
