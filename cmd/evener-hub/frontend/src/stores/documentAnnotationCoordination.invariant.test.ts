@@ -1,13 +1,15 @@
 // @vitest-environment node
 
 import type { DocumentKey, PreparedAnnotation } from "@evener/appwire-client";
-import { IDBDatabase, IDBObjectStore } from "fake-indexeddb";
+import { IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ComposerPreparation, ComposerSourceState } from "../panes/session/composer/composerContract";
 import { APPEND_STORES, browserDraftKey } from "./browserDraftRepository";
 import {
+  ACCEPT_STORES,
   annotationDocumentKey,
   createDocumentAnnotationRepository,
+  epochIdentityOf,
   RESET_STORES,
   SAVE_STORES,
 } from "./documentAnnotationIndexedDB";
@@ -29,17 +31,40 @@ import {
   openAnnotationFixture,
   sampleChangedContent,
 } from "./testing/annotationFixture";
-import {
-  holdIndexedDBEvent,
-  holdNextWriteTransaction,
-  nextRealTask,
-  settleRealTasks,
-} from "./testing/stalledIndexedDB";
+import { holdNextWriteTransaction, nextRealTask, settleRealTasks } from "./testing/stalledIndexedDB";
 
 afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
+
+// Record every string key one Map method receives, so a caller can assert on
+// the exact identities an adapter wrote or deleted without reaching its private
+// maps. restore() drops the spy; keys keeps what was recorded.
+function captureMapKeys(method: "delete" | "set"): { keys: string[]; restore: () => void } {
+  const keys: string[] = [];
+  if (method === "delete") {
+    const original = Map.prototype.delete;
+    const spy = vi.spyOn(Map.prototype, "delete").mockImplementation(function (
+      this: Map<unknown, unknown>,
+      key: unknown,
+    ) {
+      if (typeof key === "string") keys.push(key);
+      return original.call(this, key);
+    });
+    return { keys, restore: () => spy.mockRestore() };
+  }
+  const original = Map.prototype.set;
+  const spy = vi.spyOn(Map.prototype, "set").mockImplementation(function (
+    this: Map<unknown, unknown>,
+    key: unknown,
+    value: unknown,
+  ) {
+    if (typeof key === "string") keys.push(key);
+    return original.call(this, key, value);
+  });
+  return { keys, restore: () => spy.mockRestore() };
+}
 
 // A save is work whose outcome the retry runtime cannot see until it settles.
 // A storage success arriving while its transaction is in flight names the
@@ -138,31 +163,13 @@ test("a held acceptance that lands after a reset installs no read state for the 
     databaseName: "annotation-reset-accept-state",
     origin: "https://reset.example",
   });
-  const transact = IDBDatabase.prototype.transaction;
-  let acceptHold: ReturnType<typeof holdIndexedDBEvent> | undefined;
-  const transactSpy = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (
-    this: IDBDatabase,
-    ...args: Parameters<IDBDatabase["transaction"]>
-  ) {
-    const transaction = transact.apply(this, args);
-    const scope = [...transaction.objectStoreNames];
-    if (
-      !acceptHold &&
-      transaction.mode === "readwrite" &&
-      scope.length === 5 &&
-      scope.includes(ANNOTATION_EVIDENCE_STORE) &&
-      scope.includes(ANNOTATION_OPERATIONS_STORE) &&
-      scope.includes(ANNOTATION_EXPIRY_STORE)
-    ) {
-      acceptHold = holdIndexedDBEvent(transaction, "complete");
-    }
-    return transaction;
-  });
+  // Hold the acceptance's VALIDATION transaction: fake-indexeddb commits it
+  // and lets the next overlapping transaction run, but its completion event
+  // has not reached acceptRead, so its continuation is still pending.
+  const acceptHold = holdNextWriteTransaction(ACCEPT_STORES);
   try {
     const ticket = await fixture.repository.beginRead(fixture.document);
     const accepted = fixture.repository.acceptRead(ticket, fixture.content);
-    await settleRealTasks(() => acceptHold !== undefined, 100);
-    if (!acceptHold) throw new Error("acceptance did not reach IndexedDB");
     await acceptHold.reached;
     // The acceptance's validation committed, but its continuation is held
     // across the reset that retires the incarnation it validated against.
@@ -170,7 +177,6 @@ test("a held acceptance that lands after a reset installs no read state for the 
     expect(rotated).toMatchObject({ committed: true });
     acceptHold.release();
     expect(await accepted).toMatchObject({ state: "accepted" });
-    transactSpy.mockRestore();
 
     fixture.storageSuccess.mockClear();
     expect(await fixture.repository.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation)).toEqual({
@@ -179,7 +185,6 @@ test("a held acceptance that lands after a reset installs no read state for the 
     });
     expect(fixture.storageSuccess).not.toHaveBeenCalled();
   } finally {
-    transactSpy.mockRestore();
     fixture.repository.close();
     fixture.drafts.close();
   }
@@ -203,29 +208,21 @@ test("a reset retires a confirmed suppression entry with its incarnation", async
     if (acceptance.state !== "expiry-pending" || acceptance.receipt === undefined) {
       throw new Error(`changed read did not fence: ${acceptance.state}`);
     }
-    const suppressed = JSON.stringify([
+    const suppressed = epochIdentityOf(
       annotationDocumentKey(fixture.document),
       acceptance.receipt.namespaceIncarnation,
       acceptance.receipt.expiredEpoch,
-    ]);
+    );
 
-    const removed: string[] = [];
-    const remove = Map.prototype.delete;
-    const removeSpy = vi.spyOn(Map.prototype, "delete").mockImplementation(function (
-      this: Map<unknown, unknown>,
-      key: unknown,
-    ) {
-      if (typeof key === "string") removed.push(key);
-      return remove.call(this, key);
-    });
+    const removed = captureMapKeys("delete");
     try {
       expect(await fixture.repository.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation)).toMatchObject({
         committed: true,
       });
     } finally {
-      removeSpy.mockRestore();
+      removed.restore();
     }
-    expect(removed).toContain(suppressed);
+    expect(removed.keys).toContain(suppressed);
   } finally {
     fixture.repository.close();
     fixture.drafts.close();
@@ -243,36 +240,18 @@ test("a held changed-read validation that lands after a reset installs no confir
     databaseName: "annotation-reset-changed-read",
     origin: "https://reset.example",
   });
-  const transact = IDBDatabase.prototype.transaction;
-  let validationHold: ReturnType<typeof holdIndexedDBEvent> | undefined;
-  const transactSpy = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (
-    this: IDBDatabase,
-    ...args: Parameters<IDBDatabase["transaction"]>
-  ) {
-    const transaction = transact.apply(this, args);
-    const scope = [...transaction.objectStoreNames];
-    if (
-      !validationHold &&
-      transaction.mode === "readwrite" &&
-      scope.length === 5 &&
-      scope.includes(ANNOTATION_EVIDENCE_STORE) &&
-      scope.includes(ANNOTATION_OPERATIONS_STORE) &&
-      scope.includes(ANNOTATION_EXPIRY_STORE)
-    ) {
-      validationHold = holdIndexedDBEvent(transaction, "complete");
-    }
-    return transaction;
-  });
+  // Hold the changed read's VALIDATION transaction: fake-indexeddb commits it
+  // and lets the next overlapping transaction run, but its completion event
+  // has not reached acceptRead, so its continuation is still pending.
+  const validationHold = holdNextWriteTransaction(ACCEPT_STORES);
   try {
-    const retiredIdentity = JSON.stringify([
+    const retiredIdentity = epochIdentityOf(
       annotationDocumentKey(fixture.document),
       fixture.incarnation,
       fixture.operation.lease.epoch,
-    ]);
+    );
     const ticket = await fixture.repository.beginRead(fixture.document);
     const acceptance = fixture.repository.acceptRead(ticket, sampleChangedContent());
-    await settleRealTasks(() => validationHold !== undefined, 100);
-    if (!validationHold) throw new Error("changed-read validation did not reach IndexedDB");
     await validationHold.reached;
     // The validation commit is durable; the reset retires its incarnation and
     // sweeps the entries of that incarnation before the continuation runs.
@@ -280,25 +259,15 @@ test("a held changed-read validation that lands after a reset installs no confir
       committed: true,
     });
 
-    const installed: string[] = [];
-    const set = Map.prototype.set;
-    const setSpy = vi.spyOn(Map.prototype, "set").mockImplementation(function (
-      this: Map<unknown, unknown>,
-      key: unknown,
-      value: unknown,
-    ) {
-      if (typeof key === "string") installed.push(key);
-      return set.call(this, key, value);
-    });
+    const installed = captureMapKeys("set");
     validationHold.release();
     try {
       expect(await acceptance).toEqual({ state: "stale-ticket" });
     } finally {
-      setSpy.mockRestore();
+      installed.restore();
     }
-    expect(installed).not.toContain(retiredIdentity);
+    expect(installed.keys).not.toContain(retiredIdentity);
   } finally {
-    transactSpy.mockRestore();
     fixture.repository.close();
     fixture.drafts.close();
   }
@@ -331,27 +300,19 @@ test("a superseded changed read releases the confirmed suppression it installed"
     targetFor: () => null,
   });
   try {
-    const retiredIdentity = JSON.stringify([
+    const retiredIdentity = epochIdentityOf(
       annotationDocumentKey(fixture.document),
       fixture.incarnation,
       fixture.operation.lease.epoch,
-    ]);
+    );
     const ticket = await fixture.repository.beginRead(fixture.document);
-    const released: string[] = [];
-    const remove = Map.prototype.delete;
-    const removeSpy = vi.spyOn(Map.prototype, "delete").mockImplementation(function (
-      this: Map<unknown, unknown>,
-      key: unknown,
-    ) {
-      if (typeof key === "string") released.push(key);
-      return remove.call(this, key);
-    });
+    const released = captureMapKeys("delete");
     try {
       expect(await fixture.repository.acceptRead(ticket, sampleChangedContent())).toEqual({ state: "stale-ticket" });
     } finally {
-      removeSpy.mockRestore();
+      released.restore();
     }
-    expect(released).toContain(retiredIdentity);
+    expect(released.keys).toContain(retiredIdentity);
   } finally {
     sibling.close();
     fixture.repository.close();

@@ -520,54 +520,39 @@ test("a save that commits past abort during teardown announces its ownerless row
 // durable read generation restarts at 1. An abandoned old-incarnation
 // registration must not gate the new incarnation's first read: incarnation
 // identities have no order, so the reset retires exactly the registrations
-// that name the incarnation it rotated away.
-test("a reset lets the new incarnation's first read register", async () => {
+// that name the incarnation it rotated away. A sibling's reset must hold too:
+// this adapter hears the rotation only as a best-effort namespace wake, so
+// registration itself must consult the durable incarnation rather than depend
+// on that wake arriving.
+test.each([
+  ["own", "annotation-reset-registration"],
+  ["sibling's", "annotation-reset-registration-sibling"],
+] as const)("a %s reset lets the new incarnation's first read register", async (resetter, databaseName) => {
   const store = await openAnnotationStore({
-    databaseName: "annotation-reset-registration",
+    databaseName,
     origin: "https://reset.example",
     targetFor: () => null,
   });
+  const sibling =
+    resetter === "own"
+      ? undefined
+      : createDocumentAnnotationRepository({
+          indexedDB: store.factory,
+          databaseName,
+          drafts: store.drafts,
+          targetFor: () => null,
+        });
   try {
     const abandoned = await store.repository.beginRead(store.document);
     expect(
-      await store.repository.resetOwnedNamespace(store.key.namespace, abandoned.namespaceIncarnation),
+      await (sibling ?? store.repository).resetOwnedNamespace(store.key.namespace, abandoned.namespaceIncarnation),
     ).toMatchObject({ committed: true });
 
     const fresh = await store.repository.beginRead(store.document);
     expect(fresh.namespaceIncarnation).not.toBe(abandoned.namespaceIncarnation);
     expect(await store.repository.acceptRead(fresh, sampleChangedContent())).toMatchObject({ state: "accepted" });
   } finally {
-    store.repository.close();
-    store.drafts.close();
-  }
-});
-
-// The same retirement must hold for a sibling's reset: this adapter hears the
-// rotation only as a best-effort namespace wake, so registration itself must
-// consult the durable incarnation rather than depend on that wake arriving.
-test("a sibling's reset lets the new incarnation's first read register", async () => {
-  const store = await openAnnotationStore({
-    databaseName: "annotation-reset-registration-sibling",
-    origin: "https://reset.example",
-    targetFor: () => null,
-  });
-  const sibling = createDocumentAnnotationRepository({
-    indexedDB: store.factory,
-    databaseName: "annotation-reset-registration-sibling",
-    drafts: store.drafts,
-    targetFor: () => null,
-  });
-  try {
-    const abandoned = await store.repository.beginRead(store.document);
-    expect(await sibling.resetOwnedNamespace(store.key.namespace, abandoned.namespaceIncarnation)).toMatchObject({
-      committed: true,
-    });
-
-    const fresh = await store.repository.beginRead(store.document);
-    expect(fresh.namespaceIncarnation).not.toBe(abandoned.namespaceIncarnation);
-    expect(await store.repository.acceptRead(fresh, sampleChangedContent())).toMatchObject({ state: "accepted" });
-  } finally {
-    sibling.close();
+    sibling?.close();
     store.repository.close();
     store.drafts.close();
   }

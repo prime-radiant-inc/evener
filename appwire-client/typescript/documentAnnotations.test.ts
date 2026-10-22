@@ -60,12 +60,23 @@ function jsonQuoted(text: string): string[] {
 }
 
 function codeSpans(text: string): { delimiter: string; content: string }[] {
-  const spans: { delimiter: string; content: string }[] = [];
   const pattern = /(`+)([\s\S]*?)\1/g;
-  for (let match = pattern.exec(text); match !== null; match = pattern.exec(text)) {
-    spans.push({ delimiter: match[1] ?? "", content: match[2] ?? "" });
-  }
-  return spans;
+  return [...text.matchAll(pattern)].map((match) => ({ delimiter: match[1] ?? "", content: match[2] ?? "" }));
+}
+
+// The reference's captured fields round-trip through JSON in ordinary draft
+// text: the selection and note in the locator line, the revision in the
+// evidence line, and both contexts in the context line.
+function expectCapturedFieldsRoundTrip(
+  lines: [string | undefined, string | undefined, string | undefined],
+  capture: CapturedPassage,
+  note: string,
+): void {
+  const [locatorLine, evidenceLine, contextLine] = lines;
+  expect(jsonQuoted(locatorLine ?? "")).toEqual([note]);
+  expect(locatorLine).toContain(capture.selectedRenderedText);
+  expect(jsonQuoted(evidenceLine ?? "")).toEqual([capture.evidence.wholeRevision]);
+  expect(jsonQuoted(contextLine ?? "")).toEqual([capture.contextBefore, capture.contextAfter]);
 }
 
 describe("source ranges", () => {
@@ -265,11 +276,8 @@ describe("annotation reference formatting", () => {
     // The locator is the captured range in a code span, and the selection and
     // note survive as the exact bytes entered.
     expect(codeSpans(locatorLine ?? "")).toContainEqual({ delimiter: "`", content: "NOTES.md:1:19-1:22" });
-    expect(locatorLine).toContain(capture.selectedRenderedText);
-    expect(jsonQuoted(locatorLine ?? "")).toEqual([note]);
     // Every captured evidence and context field round-trips through JSON.
-    expect(jsonQuoted(evidenceLine ?? "")).toEqual([capture.evidence.wholeRevision]);
-    expect(jsonQuoted(contextLine ?? "")).toEqual([capture.contextBefore, capture.contextAfter]);
+    expectCapturedFieldsRoundTrip([locatorLine, evidenceLine, contextLine], capture, note);
   });
 
   it("uses a longer code delimiter for backtick paths and encodes control characters unambiguously", () => {
@@ -331,10 +339,7 @@ describe("annotation reference formatting", () => {
     // Removing the inserted separators restores every captured field byte for
     // byte, so neutralization neither drops nor rewrites the user's text.
     const [locatorLine, evidenceLine, contextLine] = reference.replaceAll("\u200b", "").split("\n");
-    expect(jsonQuoted(locatorLine ?? "")).toEqual([note]);
-    expect(locatorLine).toContain(capture.selectedRenderedText);
-    expect(jsonQuoted(evidenceLine ?? "")).toEqual([capture.evidence.wholeRevision]);
-    expect(jsonQuoted(contextLine ?? "")).toEqual([capture.contextBefore, capture.contextAfter]);
+    expectCapturedFieldsRoundTrip([locatorLine, evidenceLine, contextLine], capture, note);
   });
 });
 

@@ -250,7 +250,7 @@ function putTerminalOperation(
 
 const STORAGE_WAIT_MS = 10_000;
 const READ_STORES = [ANNOTATION_NAMESPACES_STORE, ANNOTATION_HEADS_STORE] as const;
-const ACCEPT_STORES = [
+export const ACCEPT_STORES = [
   ANNOTATION_NAMESPACES_STORE,
   ANNOTATION_HEADS_STORE,
   ANNOTATION_EVIDENCE_STORE,
@@ -416,7 +416,7 @@ function epochIdentity(lease: AcceptedSourceLease): string {
   return epochIdentityOf(annotationDocumentKey(lease.key), lease.namespaceIncarnation, lease.epoch);
 }
 
-function epochIdentityOf(documentKey: string, namespaceIncarnation: string, epoch: string): string {
+export function epochIdentityOf(documentKey: string, namespaceIncarnation: string, epoch: string): string {
   return JSON.stringify([documentKey, namespaceIncarnation, epoch]);
 }
 
