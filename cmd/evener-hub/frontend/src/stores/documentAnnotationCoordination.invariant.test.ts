@@ -586,6 +586,105 @@ test("a trigger during a direct handoff that refuses starts exactly one pass", a
   fixture.drafts.close();
 });
 
+// A direct handoff that REJECTS leaves an outcome the retry map cannot show
+// and the handoff never reports as pending. With no trigger latched across it,
+// the later storage success that names the commit its failure left claimable
+// finds nothing outstanding and no recorded need, so it is dropped and the
+// persisted pending row is re-driven by nothing.
+test("a rejected direct handoff records the need a later storage success spends", async () => {
+  let targetFaults = 1;
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    prepareAnnotation: currentPreparation(() => fixture),
+    // A wiring callback the repository does not wrap: its throw rejects the
+    // handoff without the repository turning it into a pending outcome.
+    targetFor: () => {
+      if (targetFaults > 0) {
+        targetFaults -= 1;
+        throw new Error("target fault");
+      }
+      return fixture?.source ?? null;
+    },
+  });
+  const passes = vi.spyOn(fixture.repository, "retryPendingWithOutcome");
+
+  await expect(fixture.runtime.handoff(fixture.document, fixture.operation.operationId)).rejects.toThrow(
+    "target fault",
+  );
+  // The rejection left the durable row pending: only the pass can re-drive it.
+  const rejected = await fixture.repository.listAnnotations(fixture.document);
+  expect(rejected.find((view) => view.operation.operationId === fixture.operation.operationId)?.handoff.state).toBe(
+    "pending",
+  );
+
+  // No trigger follows the rejection. The storage success alone must start the
+  // completing pass, which is only possible if the rejection recorded the need.
+  fixture.runtime.storageSucceeded();
+  await fixture.runtime.whenIdle();
+
+  expect(passes).toHaveBeenCalledTimes(1);
+  const views = await fixture.repository.listAnnotations(fixture.document);
+  expect(views.find((view) => view.operation.operationId === fixture.operation.operationId)?.handoff.state).toBe(
+    "already-applied",
+  );
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+// The last unit to settle reads the latch. A rejected handoff can settle FIRST
+// while a save is still outstanding, and that save can then settle clean: the
+// latch is spent on the last settlement's own clean answer, so the rejection's
+// outstanding work survives only if it recorded a need of its own.
+test("a rejected handoff settling before a clean save still spends the retained trigger", async () => {
+  let targetFaults = 1;
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    prepareAnnotation: currentPreparation(() => fixture),
+    targetFor: () => {
+      if (targetFaults > 0) {
+        targetFaults -= 1;
+        throw new Error("target fault");
+      }
+      return fixture?.source ?? null;
+    },
+  });
+  const operation: PreparedAnnotation = { ...fixture.operation, operationId: "operation-2" };
+  const passes = vi.spyOn(fixture.repository, "retryPendingWithOutcome");
+
+  const hold = holdNextWriteTransaction(SAVE_STORES);
+  const save = fixture.runtime.save(operation);
+  await hold.reached;
+  // A storage commit lands while the save and the direct handoff are both
+  // outstanding: it latches for whichever unit settles last.
+  fixture.runtime.storageSucceeded();
+  await expect(fixture.runtime.handoff(fixture.document, fixture.operation.operationId)).rejects.toThrow(
+    "target fault",
+  );
+  expect(passes).not.toHaveBeenCalled();
+
+  // The save settles clean: its own answer names no pending work, so the
+  // rejected handoff's recorded need is the only reason to spend the latch.
+  hold.release();
+  expect(await save).not.toBeNull();
+  await fixture.runtime.whenIdle();
+
+  expect(passes).toHaveBeenCalledTimes(1);
+  const views = await fixture.repository.listAnnotations(fixture.document);
+  expect(views.find((view) => view.operation.operationId === fixture.operation.operationId)?.handoff.state).toBe(
+    "already-applied",
+  );
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
 test("a trigger during a clean save starts no pass", async () => {
   const fixture = await openAnnotationFixture({
     databaseName: "annotation-coordination",

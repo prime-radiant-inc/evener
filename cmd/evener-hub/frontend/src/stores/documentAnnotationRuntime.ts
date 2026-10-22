@@ -321,6 +321,11 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
           // A rejected handoff is an unobserved outcome the retry map cannot
           // show: spend a retained trigger on the pass that can record it.
           outstandingHandoffs -= 1;
+          // The need must be recorded before the settlement reads the trigger:
+          // when another unit settles last and clean, this is the only reason
+          // left to spend the latch, and with no latch a later storage success
+          // has nothing else to start the pass for.
+          needRetry();
           settleWork(true);
           throw error;
         },
