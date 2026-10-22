@@ -766,12 +766,15 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         });
         // Remember the completed current ticket in the same synchronous
         // continuation, carrying the prior completed accepted source for the full
-        // document key.
+        // document key. A prior state from another incarnation names a lease the
+        // reset already retired; carrying it forward would let a later changed
+        // read provision inert suppression for that dead identity.
         const prior = this.#readStates.get(documentKey);
+        const sameIncarnation = prior?.ticket.namespaceIncarnation === ticket.namespaceIncarnation;
         this.#readStates.set(documentKey, {
           ticket,
-          accepted: prior?.accepted,
-          observations: prior?.observations ?? [],
+          accepted: sameIncarnation ? prior?.accepted : undefined,
+          observations: sameIncarnation ? (prior?.observations ?? []) : [],
         });
       }
     }
@@ -955,13 +958,18 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       }
       if (validation.kind === "accepted") {
         // An unchanged acceptance is not a changed read: drop any provisional the
-        // local comparison installed and record the completed acceptance.
+        // local comparison installed and record the completed acceptance. A reset
+        // can land between the validation's commit and this continuation, so the
+        // durable incarnation decides whether the state may be installed at all:
+        // no in-memory read state names an incarnation the durable row retired.
         releaseProvisional();
-        this.#readStates.set(documentKey, {
-          ticket,
-          accepted: { lease: validation.lease, content },
-          observations: validation.observations,
-        });
+        if (await this.#durableIncarnationIs(namespace, validation.lease.namespaceIncarnation)) {
+          this.#readStates.set(documentKey, {
+            ticket,
+            accepted: { lease: validation.lease, content },
+            observations: validation.observations,
+          });
+        }
         return { state: "accepted", lease: validation.lease };
       }
       // A current changed read: confirm suppression BEFORE scheduling its fence,
@@ -986,12 +994,16 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
           content,
         );
         // The replacement epoch starts with its own evidence, never inheriting the
-        // dead epoch's observations.
-        this.#readStates.set(documentKey, {
-          ticket,
-          accepted: { lease: fenced.lease, content },
-          observations: [content],
-        });
+        // dead epoch's observations. The fence can commit and then lose its
+        // completion across a reset, so installation re-checks the durable
+        // incarnation the fence wrote under.
+        if (await this.#durableIncarnationIs(namespace, fenced.lease.namespaceIncarnation)) {
+          this.#readStates.set(documentKey, {
+            ticket,
+            accepted: { lease: fenced.lease, content },
+            observations: [content],
+          });
+        }
         return { state: "expiry-pending", receipt: fenced.receipt };
       } catch (error) {
         // Closure refused the fence before it opened a connection. This adapter

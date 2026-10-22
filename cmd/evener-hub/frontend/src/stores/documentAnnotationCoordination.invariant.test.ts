@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import type { DocumentKey, PreparedAnnotation } from "@evener/appwire-client";
-import { IDBObjectStore } from "fake-indexeddb";
+import { IDBDatabase, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ComposerPreparation, ComposerSourceState } from "../panes/session/composer/composerContract";
 import { APPEND_STORES, browserDraftKey } from "./browserDraftRepository";
@@ -24,7 +24,12 @@ import {
   openAnnotationFixture,
   sampleChangedContent,
 } from "./testing/annotationFixture";
-import { holdNextWriteTransaction, nextRealTask, settleRealTasks } from "./testing/stalledIndexedDB";
+import {
+  holdIndexedDBEvent,
+  holdNextWriteTransaction,
+  nextRealTask,
+  settleRealTasks,
+} from "./testing/stalledIndexedDB";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -80,6 +85,99 @@ test("a storage success during an outstanding save starts the recovery pass its 
 
   fixture.repository.close();
   fixture.drafts.close();
+});
+
+// A foreign reset reaches this adapter only as a best-effort namespace wake, so
+// its read states keep naming the retired incarnation. The next beginRead in
+// the new incarnation must not copy that retired lease into the new read state:
+// an inert suppression entry provisioned from it is a per-document leak.
+test("a beginRead after a sibling reset does not carry a retired lease into the new read state", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-reset-read-state",
+    origin: "https://reset.example",
+  });
+  const sibling = createDocumentAnnotationRepository({
+    indexedDB: fixture.factory,
+    databaseName: "annotation-reset-read-state",
+    drafts: fixture.drafts,
+    targetFor: () => null,
+  });
+  try {
+    const rotated = await sibling.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation);
+    expect(rotated).toMatchObject({ committed: true });
+    await fixture.repository.beginRead(fixture.document);
+
+    // A stale reset provisions suppression from accepted read states. One that
+    // names the retired incarnation would be provisioned here, and its own
+    // release would signal storage success.
+    fixture.storageSuccess.mockClear();
+    expect(await fixture.repository.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation)).toEqual({
+      committed: false,
+      incarnation: rotated.incarnation,
+    });
+    expect(fixture.storageSuccess).not.toHaveBeenCalled();
+  } finally {
+    sibling.close();
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
+
+// A held acceptance's validation can commit, then lose its completion across a
+// reset. Its continuation lands after the reset's cleanup; installing its read
+// state then would name the retired incarnation and re-provision suppression
+// for it on a later reset. The durable incarnation decides, not the validation
+// that already answered.
+test("a held acceptance that lands after a reset installs no read state for the retired incarnation", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-reset-accept-state",
+    origin: "https://reset.example",
+  });
+  const transact = IDBDatabase.prototype.transaction;
+  let acceptHold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  const transactSpy = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (
+    this: IDBDatabase,
+    ...args: Parameters<IDBDatabase["transaction"]>
+  ) {
+    const transaction = transact.apply(this, args);
+    const scope = [...transaction.objectStoreNames];
+    if (
+      !acceptHold &&
+      transaction.mode === "readwrite" &&
+      scope.length === 5 &&
+      scope.includes(ANNOTATION_EVIDENCE_STORE) &&
+      scope.includes(ANNOTATION_OPERATIONS_STORE) &&
+      scope.includes(ANNOTATION_EXPIRY_STORE)
+    ) {
+      acceptHold = holdIndexedDBEvent(transaction, "complete");
+    }
+    return transaction;
+  });
+  try {
+    const ticket = await fixture.repository.beginRead(fixture.document);
+    const accepted = fixture.repository.acceptRead(ticket, fixture.content);
+    await settleRealTasks(() => acceptHold !== undefined, 100);
+    if (!acceptHold) throw new Error("acceptance did not reach IndexedDB");
+    await acceptHold.reached;
+    // The acceptance's validation committed, but its continuation is held
+    // across the reset that retires the incarnation it validated against.
+    const rotated = await fixture.repository.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation);
+    expect(rotated).toMatchObject({ committed: true });
+    acceptHold.release();
+    expect(await accepted).toMatchObject({ state: "accepted" });
+    transactSpy.mockRestore();
+
+    fixture.storageSuccess.mockClear();
+    expect(await fixture.repository.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation)).toEqual({
+      committed: false,
+      incarnation: rotated.incarnation,
+    });
+    expect(fixture.storageSuccess).not.toHaveBeenCalled();
+  } finally {
+    transactSpy.mockRestore();
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
 });
 
 // Cancellation reaches a save transaction only while it can still abort. A
