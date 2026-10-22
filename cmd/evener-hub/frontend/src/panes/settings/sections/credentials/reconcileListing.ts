@@ -1,6 +1,18 @@
 import type { InstanceEntry } from "@evener/appwire-client";
 import { credentialsStore } from "../../../../stores/credentials";
 
+// readApplied runs the bounded read retry both confirm helpers share. A
+// rejected read is one more unapplied attempt: fetch() rejects when there is no
+// client (requireClient throws outside readListing's own error handling), and
+// this helper's contract is a boolean, so the loop owns the outcome.
+async function readApplied(self: boolean): Promise<boolean> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const read = self ? credentialsStore.getState().fetchSelf() : credentialsStore.getState().fetch();
+    if (await read.catch(() => false)) return true;
+  }
+  return false;
+}
+
 // A superseded write's listing was discarded by the store's generation
 // guard, so a caller steering a flow on its own write must reconcile before
 // it reports success. fetch() resolves normally even when its response was
@@ -13,19 +25,17 @@ import { credentialsStore } from "../../../../stores/credentials";
 // may never have reflected. The bounded retry matters - under concurrent
 // refreshes an unbounded loop would spin.
 export async function confirmListingState(matches: (instances: InstanceEntry[]) => boolean): Promise<boolean> {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    // A rejected read never applied: fetch() rejects when there is no client
-    // (requireClient throws outside readListing's own error handling), and
-    // that is one more unapplied attempt, not a failure for the caller to
-    // handle. This helper's contract is a boolean, so the retry loop owns the
-    // outcome either way.
-    const applied = await credentialsStore
-      .getState()
-      .fetch()
-      .catch(() => false);
-    if (applied) return matches(credentialsStore.getState().instances);
-  }
-  return false;
+  return (await readApplied(false)) && matches(credentialsStore.getState().instances);
+}
+
+/** appliedSelfRead is the same bounded read for a caller performing it as its
+ * own work, such as a save confirming the row it wrote: the
+ * transition carries the store's self-refresh marker, so a flow watching the
+ * listing for unrelated changes does not read the caller's own confirmation as
+ * a foreign change. Resolves true when a read was applied; false when every
+ * bounded attempt was superseded or failed. */
+export function appliedSelfRead(): Promise<boolean> {
+  return readApplied(true);
 }
 
 /**

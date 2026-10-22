@@ -12,7 +12,12 @@ import type { SyncStringStorage } from "../syncStringStorage";
 export interface DocumentKey {
 	/** The session whose folder holds the file. */
 	sessionRef: string;
+	/** The path inside the root `root` names. */
 	path: string;
+	/** Which of the session's two served roots holds it. Absent means the
+	 * session's working directory, the only root this store knew before
+	 * agents filed reports in the retained artifacts directory. */
+	root?: "artifacts";
 }
 
 export interface ReadingPosition {
@@ -76,7 +81,14 @@ interface DocumentRecord {
 
 const documentsKey = (hubId: string) => `evener.native.documents.${hubId}`;
 const trailKey = (hubId: string) => `evener.native.continue-reading.${hubId}`;
-const recordKey = (key: DocumentKey) => JSON.stringify([key.sessionRef, key.path]);
+// A working-directory document keeps the key it has always had, so positions
+// and unsent comments saved before artifacts documents existed still belong to
+// it. Only a retained artifact, the newcomer, carries its root, and that is
+// what keeps it from answering for a folder file of the same name.
+const recordKey = (key: DocumentKey) =>
+	key.root === "artifacts"
+		? JSON.stringify([key.sessionRef, key.path, key.root])
+		: JSON.stringify([key.sessionRef, key.path]);
 const LIMIT = 100;
 /** How long the Board offers the way back (spec 7.1). */
 export const CONTINUE_READING_MS = 2 * 60 * 60 * 1000;
@@ -162,7 +174,13 @@ function parseTrail(value: unknown): ContinueReading | null {
 	return {
 		sessionRef,
 		path,
-		reference: { path, cwd: reference.cwd, readTarget: reference.readTarget, provenance: reference.provenance },
+		reference: {
+			path,
+			cwd: reference.cwd,
+			readTarget: reference.readTarget,
+			provenance: reference.provenance,
+			...(reference.root === "artifacts" ? { root: "artifacts" as const } : {}),
+		},
 		title,
 		sessionTitle,
 		progress,
@@ -206,7 +224,12 @@ export class DocumentMemory {
 
 	/** You opened a document: the Board's way back to it has done its job. */
 	opened(key: DocumentKey): void {
-		if (this.trail?.sessionRef === key.sessionRef && this.trail.path === key.path) this.setTrail(null);
+		if (
+			this.trail?.sessionRef === key.sessionRef &&
+			this.trail.path === key.path &&
+			this.trail.reference.root === key.root
+		)
+			this.setTrail(null);
 	}
 
 	/** You left a document: this version becomes the one you last read, and

@@ -117,7 +117,7 @@ directory, task draft, provider, and model all belong to this launch form:
    the provider you intend to use. An ordinary chat subscription is not
    necessarily an API account.
 3. For an API connection, paste the actual key into the masked field and select
-   **Save and check**. For a supported ChatGPT/Codex subscription, choose the
+   **Save and test**. For a supported ChatGPT/Codex subscription, choose the
    separate **OpenAI Codex** sign-in route instead; it is not the `openai` API-key
    connection.
 4. A successful check means Evener saved the resolved access and fetched that

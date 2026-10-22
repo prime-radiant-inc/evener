@@ -7,7 +7,11 @@ import { externalMarkdownLink } from "./markdownLinks";
 import { splitNativeSegments } from "./markdownSegments";
 import { type MarkdownRoles, markdownStyle } from "./markdownStyle";
 import { MermaidDiagram } from "./MermaidDiagram";
-import { type NativeFileOpenContext, renderMarkdownFileReferences } from "./reader/markdownFileReferences";
+import {
+	type NativeFileOpenContext,
+	namedFileTarget,
+	renderMarkdownFileReferences,
+} from "./reader/markdownFileReferences";
 import { useColors } from "./ui";
 
 // Agent prose in the phone's reading font (the serif unless Display says
@@ -100,7 +104,9 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 					? segment
 					: {
 							...segment,
-							fileRender: fileContext ? renderMarkdownFileReferences(segment.source, fileContext.cwd) : undefined,
+							fileRender: fileContext
+								? renderMarkdownFileReferences(segment.source, fileContext.cwd, fileContext.artifactsDir)
+								: undefined,
 						},
 			),
 		[segments, fileContext],
@@ -149,7 +155,7 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 							if (current.current !== rendered) return;
 							const reference = segment.fileRender?.references.get(url);
 							if (reference && fileContext) {
-								Alert.alert("File", reference.path, [
+								Alert.alert("File", namedFileTarget(reference), [
 									{
 										text: "Open file",
 										onPress: () => {
@@ -159,7 +165,7 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 									{
 										text: "Copy path",
 										onPress: () => {
-											if (current.current === rendered) void copyText(reference.path);
+											if (current.current === rendered) void copyText(namedFileTarget(reference));
 										},
 									},
 									{ text: "Cancel", style: "cancel" },
