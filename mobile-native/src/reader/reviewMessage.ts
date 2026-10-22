@@ -2,6 +2,7 @@
 // format: the verdict, each comment under the line it quotes, then the
 // overall note. A comment always quotes the words it was left on, so it
 // reads right even after its paragraph changed (ruling 14).
+import { namedFileTarget } from "./markdownFileReferences";
 
 export type Verdict = "approve" | "requestChanges" | "commentOnly";
 
@@ -21,18 +22,9 @@ export function quoteLine(text: string, max = 160): string {
 	return `${(space > max * 0.6 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
 
-/** How a review names the document it is about. The path inside the session's
- * folder identifies the document there, but an agent also files reports in the
- * session's retained artifacts directory, where the same relative path can
- * name a different file. Such a document is named by its read target instead,
- * so the agent reads the review as being about the file that was reviewed. */
-export function reviewDocumentName(document: {
-	readonly path: string;
-	readonly root?: "artifacts";
-	readonly readTarget?: string;
-}): string {
-	return document.root === "artifacts" && document.readTarget ? document.readTarget : document.path;
-}
+/** How a review names the document it is about: the file that was reviewed,
+ * rather than a relative path that could name a folder file of the same name. */
+export const reviewDocumentName = namedFileTarget;
 
 export function reviewMessage(
 	path: string,

@@ -406,6 +406,32 @@ it("keeps Copy response and external actions, but rejects unknown generated iden
 	expect(alertRequests).toHaveLength(count);
 	expect(openFile).not.toHaveBeenCalled();
 });
+// Copying a retained artifact's folder-relative path would name a different
+// file when pasted beside the session's folder, so the long-press menu names
+// and copies the file the link actually points at.
+it("copies an artifacts link's full target, and a folder file's path", () => {
+	const artifactsDir = "/state/projects/p/sessions/s1/artifacts";
+	const openFile = vi.fn();
+	const tree = render(
+		<MarkdownResponse
+			markdown={`[report](file://${artifactsDir}/report.md) and [plan](docs/plan.md)`}
+			fileContext={{ cwd: "/work/a", artifactsDir, openFile }}
+		/>,
+	);
+	const text = prose(tree);
+	const [retained, folder] = emittedURLs(text.props.markdown);
+	act(() => text.props.onLinkLongPress({ url: retained }));
+	const menu = alertRequests.at(-1)!;
+	expect(menu.message).toBe(`${artifactsDir}/report.md`);
+	act(() => menu.buttons?.[1]?.onPress?.());
+	expect(Clipboard.setStringAsync).toHaveBeenCalledWith(`${artifactsDir}/report.md`);
+	act(() => text.props.onLinkLongPress({ url: folder }));
+	const folderMenu = alertRequests.at(-1)!;
+	expect(folderMenu.message).toBe("docs/plan.md");
+	act(() => folderMenu.buttons?.[1]?.onPress?.());
+	expect(Clipboard.setStringAsync).toHaveBeenLastCalledWith("docs/plan.md");
+});
+
 it("retires old render, event and menu callbacks after stream/cwd/context replacement and unmount", () => {
 	const oldOpen = vi.fn(),
 		nextOpen = vi.fn();

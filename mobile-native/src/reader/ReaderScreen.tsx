@@ -40,6 +40,7 @@ import { type DocumentBlock, hashText, outline } from "./documentBlocks";
 import { anchorBlock, changedBlocks, changesCaption, type Place, restoreBlock } from "./documentChanges";
 import type { ReadingPosition } from "./documentMemory";
 import { documentKind, documentNotice, type LoadedDocument, truncationNote } from "./documentSource";
+import { namedFileTarget } from "./markdownFileReferences";
 import { documentMemory } from "./nativeDocumentMemory";
 import { type BlockAction, ReaderBlock, useCodeText } from "./ReaderBlock";
 import { type ReaderHost, readerHosts } from "./readerHosts";
@@ -345,7 +346,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 							label: "Open session",
 							onPress: () => returnToSession(navigation, { hubId, ref: sessionRef, title: sessionTitle }),
 						},
-						{ type: "action", label: "Copy path", onPress: () => void copyText(path) },
+						{ type: "action", label: "Copy path", onPress: () => void copyText(namedFileTarget(reference)) },
 						...(text === null
 							? []
 							: [{ type: "action" as const, label: "Copy text", onPress: () => void copyText(text) }]),

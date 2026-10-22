@@ -28,6 +28,18 @@ export interface MarkdownFileRender {
 	readonly markdown: string;
 	readonly references: ReadonlyMap<string, FileReference>;
 }
+
+/** The path that names this document to a person. A working-directory file is
+ * named by its path inside the folder. A retained artifact needs its full
+ * target: the same relative path can name a different file in the folder, so a
+ * copied path or a review naming only `report.md` would point at the wrong one. */
+export function namedFileTarget(reference: {
+	readonly path: string;
+	readonly root?: "artifacts";
+	readonly readTarget?: string;
+}): string {
+	return reference.root === "artifacts" && reference.readTarget ? reference.readTarget : reference.path;
+}
 interface Source {
 	text: string;
 	offsets: readonly number[];
