@@ -328,7 +328,7 @@ func (m *Manager) stoppedServiceEnvironment(ctx context.Context, host hostreg.Ho
 			return nil, err
 		}
 	}
-	for _, unset := range strings.Fields(properties["UnsetEnvironment"]) {
+	for unset := range strings.FieldsSeq(properties["UnsetEnvironment"]) {
 		if strings.ContainsAny(unset, "\\\"'%") {
 			return nil, fmt.Errorf("%w: unsupported UnsetEnvironment serialization", errOwnerEvidence)
 		}

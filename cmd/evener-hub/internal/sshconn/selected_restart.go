@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"strconv"
 	"strings"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
@@ -91,7 +92,7 @@ func (m *Manager) checkSelectedReplacement(ctx context.Context, host hostreg.Hos
 					report.State, report.Running = "unavailable", nil
 				}
 				running := report.Running
-				if running != nil && (running.BootID != retained.BootID || running.PID != retained.PID || fmt.Sprint(running.PID) != owner.pid || running.ConfigPath != retained.ConfigPath || running.HubStateRoot != retained.HubStateRoot || report.ConfigPath != owner.report.ConfigPath || report.HubStateRoot != owner.report.HubStateRoot) {
+				if running != nil && (running.BootID != retained.BootID || running.PID != retained.PID || strconv.Itoa(running.PID) != owner.pid || running.ConfigPath != retained.ConfigPath || running.HubStateRoot != retained.HubStateRoot || report.ConfigPath != owner.report.ConfigPath || report.HubStateRoot != owner.report.HubStateRoot) {
 					return report, fmt.Errorf("%w: stop requires the matching live report", errOwnerEvidence)
 				}
 				return report, nil

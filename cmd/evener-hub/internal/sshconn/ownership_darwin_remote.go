@@ -351,9 +351,10 @@ func darwinOpenVnode(out []byte, pid string, device uint64, inode string) bool {
 				return false
 			}
 			field := &kind
-			if line[0] == 'D' {
+			switch line[0] {
+			case 'D':
 				field = &dev
-			} else if line[0] == 'i' {
+			case 'i':
 				field = &ino
 			}
 			if *field != "" {
