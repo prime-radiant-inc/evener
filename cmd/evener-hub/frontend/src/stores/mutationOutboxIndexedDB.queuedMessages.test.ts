@@ -95,17 +95,30 @@ test.each(["put", "add", "delete", "commit"] as const)("resend rolls back at %s 
     ids.push(row.clientMutationId);
     await f.storage.transferToRecovery(row.clientMutationId, "rejected");
   }
+  const expectedRecoveryRevisions = Object.fromEntries(
+    await Promise.all(
+      ids.map(async (id) => {
+        const record = await f.storage.getRecovery(id);
+        if (!record) throw new Error(`missing recovery fixture ${id}`);
+        return [id, record.compositionRevision ?? 0] as const;
+      }),
+    ),
+  );
   if (boundary === "commit") f.fail(true);
   else
     vi.spyOn(IDBObjectStore.prototype, boundary).mockImplementation(() => {
       throw new Error("injected");
     });
-  await expect(f.storage.resendRecovery(ids, queuedIntent())).rejects.toBeDefined();
+  await expect(
+    f.storage.resendRecovery(ids, queuedIntent(), undefined, expectedRecoveryRevisions),
+  ).rejects.toBeDefined();
   vi.restoreAllMocks();
   f.fail(false);
   for (const id of ids) expect(await f.peer.getRecovery(id)).toBeDefined();
   expect(await f.peer.listOutbox()).toHaveLength(0);
-  expect(await f.peer.resendRecovery(ids, queuedIntent())).toMatchObject({ intentSequence: 3 });
+  expect(await f.peer.resendRecovery(ids, queuedIntent(), undefined, expectedRecoveryRevisions)).toMatchObject({
+    intentSequence: 3,
+  });
 });
 
 test.each(["put", "delete", "commit"] as const)(
@@ -132,6 +145,7 @@ test.each(["put", "delete", "commit"] as const)(
         [...sources, "absent"],
         undefined,
         0,
+        { [first.clientMutationId]: 0, [second.clientMutationId]: 0, [third.clientMutationId]: 0 },
       ),
     ).toBeUndefined();
     const foreign = await f.storage.enqueueIntent(queuedIntent("other:target"));
@@ -146,6 +160,7 @@ test.each(["put", "delete", "commit"] as const)(
         [foreign.clientMutationId],
         undefined,
         0,
+        { [first.clientMutationId]: 0, [foreign.clientMutationId]: 0 },
       ),
     ).toBeUndefined();
     if (boundary === "commit") f.fail(true);
@@ -162,7 +177,11 @@ test.each(["put", "delete", "commit"] as const)(
       });
     }
     await expect(
-      f.storage.updateRecoveryInput(first.clientMutationId, input, [], "combined", [], sources, undefined, 0),
+      f.storage.updateRecoveryInput(first.clientMutationId, input, [], "combined", [], sources, undefined, 0, {
+        [first.clientMutationId]: 0,
+        [second.clientMutationId]: 0,
+        [third.clientMutationId]: 0,
+      }),
     ).rejects.toBeDefined();
     vi.restoreAllMocks();
     f.fail(false);
@@ -177,6 +196,7 @@ test.each(["put", "delete", "commit"] as const)(
       sources,
       undefined,
       0,
+      { [first.clientMutationId]: 0, [second.clientMutationId]: 0, [third.clientMutationId]: 0 },
     );
     expect(saved).toMatchObject({ composerText: "combined", payload: { input }, composerMentions: [] });
     for (const id of sources) expect(await f.storage.getRecovery(id)).toBeUndefined();
@@ -199,6 +219,7 @@ test("recovery draft provenance commits with merged composition and secondary co
     [second.clientMutationId],
     "draft-revision-7",
     0,
+    { [first.clientMutationId]: 0, [second.clientMutationId]: 0 },
   );
   expect(saved).toMatchObject({ composerText: "combined", localDraftRevisionId: "draft-revision-7" });
   expect(await f.storage.getRecovery(second.clientMutationId)).toBeUndefined();
@@ -292,6 +313,7 @@ test("stale cross-adapter recovery consolidation refuses without deleting the se
     [secondaryB.clientMutationId],
     undefined,
     0,
+    { [owner.clientMutationId]: 0, [secondaryB.clientMutationId]: 0 },
   );
   expect(first).toBeDefined();
   const stale = await f.peer.updateRecoveryInput(
@@ -303,6 +325,7 @@ test("stale cross-adapter recovery consolidation refuses without deleting the se
     [secondaryC.clientMutationId],
     undefined,
     0,
+    { [owner.clientMutationId]: 0, [secondaryC.clientMutationId]: 0 },
   );
   const reopened = await f.reopen();
   expect(await reopened.getRecovery(owner.clientMutationId)).toMatchObject({

@@ -242,6 +242,62 @@ test("recovery activation keeps newer replacement text selections and attachment
   }
 });
 
+test("typing during delayed activation persists after the composer unmounts", async () => {
+  const storage = new CommitThenPauseRecoveryStorage();
+  const { fake } = await setup(false, storage);
+  const queuedRecord = await queued(storage, "B");
+  const source = createTestComposerSource("root");
+  source.editor.write("A", 1);
+  source.persistDraft("A");
+  await editQueuedMutation(queuedRecord.clientMutationId, "root");
+  const claimed = await storage.getRecovery(queuedRecord.clientMutationId);
+  if (!claimed) throw new Error("missing claimed recovery fixture");
+  const updateSpy = vi.spyOn(storage, "updateRecoveryInput");
+  const activation = source.activateRecovery(claimed);
+  const view = mount(fake, source);
+  const user = userEvent.setup();
+  let reopened: MutationOutboxIndexedDB | undefined;
+  let replacement: ReturnType<typeof createTestComposerSource> | undefined;
+
+  try {
+    await act(async () => storage.committed);
+    expect((await storage.getRecovery(queuedRecord.clientMutationId))?.composerText).toBe("A\n\nB");
+    const editor = screen.getByRole("textbox", { name: "Message" });
+    selectEditorText(editor, editor.textContent?.length ?? 0);
+    await user.keyboard(" typed");
+    act(() => view.unmount());
+    await act(async () => {
+      storage.releaseContinuation();
+      await storage.continued;
+      await activation;
+    });
+    await waitFor(async () => {
+      expect((await storage.getRecovery(queuedRecord.clientMutationId))?.composerText).toBe("A typed\n\nB");
+    });
+    const committedTexts = updateSpy.mock.calls.map((call) => call[3]);
+    expect(committedTexts.filter((text) => text === "A\n\nB")).toHaveLength(1);
+    expect(committedTexts).toContain("A typed\n\nB");
+
+    source.dispose();
+    storage.close();
+    resetThreadsStoreForTests();
+    reopened = new MutationOutboxIndexedDB();
+    await setup(false, reopened);
+    const saved = await reopened.getRecovery(queuedRecord.clientMutationId);
+    if (!saved) throw new Error("missing reopened recovery fixture");
+    expect(saved.composerText).toBe("A typed\n\nB");
+    replacement = createTestComposerSource("root");
+    await replacement.activateRecovery(saved);
+    expect(replacement.getSnapshot().text).toBe("A typed\n\nB");
+  } finally {
+    storage.releaseContinuation();
+    source.dispose();
+    replacement?.dispose();
+    reopened?.close();
+    if (!reopened) storage.close();
+  }
+});
+
 test("image encoding survives a literal-marker recovery merge while storage is pending", async () => {
   const storage = new CommitThenPauseRecoveryStorage();
   const { fake } = await setup(false, storage);

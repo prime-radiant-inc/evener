@@ -88,6 +88,7 @@ import {
 } from "./mutationOutbox";
 import {
   MutationOutboxIndexedDB,
+  type MutationRecoveryResendResult,
   MutationStorageError,
   MutationStorageTimeoutError,
   type RetargetedMutations,
@@ -3474,23 +3475,26 @@ export async function resendRecoveryMutation(
   mentions?: readonly ComposerMention[],
   barrierRead = captureRecoveryStopBarrier(targetRef),
   expectedRecoveryRevisions?: Readonly<Record<string, number>>,
-): Promise<MutationOutboxRecord | undefined> {
+): Promise<MutationRecoveryResendResult> {
   const runtime = requireMutationRuntime();
   await runtime.start;
   const intent = composerMutationIntent(targetRef, route, text, attachments, skillNames, commandNames, mentions);
   const barrier = await barrierRead;
   // Registered around the write: the resent row is undelivered work, and a
   // fallback send must see it before the async refresh can.
-  const record = await trackOutboxWrite(
+  const result = await trackOutboxWrite(
     targetRef,
-    () => runtime.storage.resendRecovery(clientMutationId, intent, barrier, expectedRecoveryRevisions),
-    // A resend mints its own row, so the id comes from the record it returns.
-    (resent) =>
-      resent === undefined
+    () => runtime.storage.resendRecoveryResult(clientMutationId, intent, barrier, expectedRecoveryRevisions),
+    (outcome) =>
+      outcome.status !== "sent"
         ? undefined
-        : { clientMutationId: resent.clientMutationId, undelivered: resent.state !== "canceled" },
+        : {
+            clientMutationId: outcome.record.clientMutationId,
+            undelivered: outcome.record.state !== "canceled",
+          },
   );
-  if (!record) return undefined;
+  if (result.status !== "sent") return result;
+  const { record } = result;
   // The resend mints a new row and removes the recovery row it came from, so
   // the old id is resolved: keep the new one (trackOutboxWrite registered it)
   // and drop the old, so a later settle of the new row or unreadable storage
@@ -3502,7 +3506,7 @@ export async function resendRecoveryMutation(
   // A resent row on the Send-resumes face parks like an ordinary send: drive the
   // resume it needs. Read after the write, which cannot have changed the face.
   if (sendResumesModel(targetRef)) void resumeFencedForSend(targetRef);
-  return record;
+  return result;
 }
 
 export function setMutationStorageForTests(storage: MutationOutboxIndexedDB): void {

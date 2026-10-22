@@ -550,15 +550,15 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
           operations.replaceWithSettled(latest.attachments);
           markRestore();
           committedRecoveryComposition = recoveryCompositionFingerprint({
-            text: latest.text,
-            attachments: latest.attachments.flatMap((item) =>
+            text: merged.text,
+            attachments: merged.attachments.flatMap((item) =>
               item.data === undefined
                 ? []
                 : [{ marker: item.marker, name: item.name, mediaType: item.mediaType, data: item.data }],
             ),
-            skillNames: restoredSkillNames(latest),
-            commandNames: latest.commandNames ?? [],
-            mentions: latest.mentions,
+            skillNames: restoredSkillNames(merged),
+            commandNames: merged.commandNames ?? [],
+            mentions: merged.mentions,
           });
           return true;
         });

@@ -1032,9 +1032,10 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     const submittedLease = recoveryOwnerLeaseRef.current;
     const submittedRecoveryId = submittedLease?.clientMutationId ?? null;
     const recoveryBarrier = submittedRecoveryId === null ? undefined : captureRecoveryStopBarrier(ref);
-    let wonRecoveryResend = true;
-    let recoveryWriteRefused = false;
+    let recoveryResendRefused = false;
+    let recoveryAlreadySent = false;
     const recoveryWriteRefusal = new Error("Recovery persistence was refused");
+    const recoveryAlreadySentRefusal = new Error("Recovery source was already consumed");
     // The UI-side half of the skillInput gate (threads.ts's composerMutationIntent
     // is the store-side half, and Task 12 gates the hub's forwarding too): a
     // target that never advertised the capability keeps the draft and hears
@@ -1058,7 +1059,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
           commandNames: submittedCommandNames,
           recoveryId: submittedRecoveryId ?? undefined,
           onFailure: (err) => {
-            if (err === recoveryWriteRefusal) return;
+            if (err === recoveryWriteRefusal || err === recoveryAlreadySentRefusal) return;
             const label = kind === "send" ? "Send" : kind === "queue" ? "Queue" : kind === "steer" ? "Steer" : "Drain";
             toasts.push("error", sessionActionError(`${label} failed`, err));
           },
@@ -1075,17 +1076,13 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
                 submittedMentions,
               );
               if (!persisted) {
-                wonRecoveryResend = false;
-                recoveryWriteRefused = true;
                 throw recoveryWriteRefusal;
               }
               const committedRevision = recoveryOwnerLeaseRef.current?.compositionRevision;
               if (committedRevision === undefined) {
-                wonRecoveryResend = false;
-                recoveryWriteRefused = true;
                 throw recoveryWriteRefusal;
               }
-              wonRecoveryResend = await resendRecoveryPendingTurn(
+              const outcome = await resendRecoveryPendingTurn(
                 submittedRecoveryId,
                 ref,
                 kind,
@@ -1097,6 +1094,11 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
                 recoveryBarrier,
                 { [submittedRecoveryId]: committedRevision },
               );
+              if (outcome.status !== "sent") {
+                recoveryResendRefused = outcome.status === "refused";
+                recoveryAlreadySent = outcome.status === "consumed";
+                throw recoveryResendRefused ? recoveryWriteRefusal : recoveryAlreadySentRefusal;
+              }
             });
             return;
           }
@@ -1118,9 +1120,6 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
         },
       );
       if (!source.alive) return;
-      if (!wonRecoveryResend && !recoveryWriteRefused)
-        toasts.push("info", "This message was already sent in another tab.");
-      if (recoveryWriteRefused) return;
       clearIfUnchanged(
         submittedText,
         submittedRevision,
@@ -1129,9 +1128,14 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
         submittedCommandNames,
       );
       clearSubmittedAttachments(submittedAttachments);
-    } catch {
+    } catch (error) {
       // The local durable write failed. The submitted composer payload stays
       // untouched and no network request was eligible to start.
+      if (source.alive && recoveryResendRefused)
+        toasts.push("info", "This message changed in another tab. Refresh and try again.");
+      else if (source.alive && recoveryAlreadySent)
+        toasts.push("info", "This message was already sent in another tab.");
+      else if (error !== recoveryWriteRefusal && error !== recoveryAlreadySentRefusal) return;
     } finally {
       if (mountedRef.current) setBusyAction(null);
     }

@@ -30,6 +30,7 @@ import {
   refreshPendingTurnsProjection,
   resetPendingTurnsStoreForTests,
   submitWithPendingTracking,
+  subscribeComposerSubmissionCommitted,
 } from "./pendingTurnsStore";
 import { QueueStrip } from "./QueueStrip";
 import { flushPendingTurnsProjectionForTests } from "./testing/flushPendingTurnsProjection";
@@ -1200,6 +1201,9 @@ test("stale recovery Drain refuses without reporting success or resending", asyn
   );
   expect(newer?.compositionRevision).toBe(1);
   const onDrainSuccess = vi.fn();
+  const onCommitted = vi.fn();
+  const unsubscribeCommitted = subscribeComposerSubmissionCommitted(onCommitted);
+  onTestFinished(unsubscribeCommitted);
   const getComposerText = vi.fn(() => ({ text: "visible recovery text", attachments: [], hasPending: false }));
   renderStrip(
     defaultProps({
@@ -1213,6 +1217,7 @@ test("stale recovery Drain refuses without reporting success or resending", asyn
   await userEvent.setup().click(await screen.findByRole("button", { name: "Steer queue now" }));
   await flushPendingTurnsProjectionForTests();
   expect(onDrainSuccess).not.toHaveBeenCalled();
+  expect(onCommitted).not.toHaveBeenCalled();
   expect(getToasts().map((toast) => toast.text)).toContain(
     "This message changed in another tab. Refresh and try again.",
   );

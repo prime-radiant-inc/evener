@@ -40,6 +40,11 @@ type MutationOutboxOperation =
 
 type VersionedMutationRecoveryRecord = MutationRecoveryRecord & { compositionRevision?: number };
 
+export type MutationRecoveryResendResult =
+  | { status: "sent"; record: MutationOutboxRecord }
+  | { status: "consumed" }
+  | { status: "refused" };
+
 // What retargetOutbox moved to the resumed ref, by store: the caller drives its
 // per-ref bookkeeping when ANY of them moved (an optimistic-only or
 // recovery-only identity change still needs the new ref pinned and armed).
@@ -889,7 +894,14 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       const outbox = transaction.objectStore(OUTBOX_STORE);
       const record = await requestResult<MutationOutboxRecord | undefined>(outbox.get(clientMutationId));
       if (!record) return undefined;
-      if (await requestResult(transaction.objectStore(RECOVERY_STORE).get(clientMutationId))) return undefined;
+      // Note saves own their recovery state and can re-transfer the same row;
+      // only a composer composition may not be replaced once edited.
+      if (record.method !== "notes/human/set") {
+        const existingRecovery = await requestResult<VersionedMutationRecoveryRecord | undefined>(
+          transaction.objectStore(RECOVERY_STORE).get(clientMutationId),
+        );
+        if (existingRecovery && (existingRecovery.compositionRevision ?? 0) > 0) return undefined;
+      }
       const recovery: VersionedMutationRecoveryRecord = {
         ...record,
         recoveryKind,
@@ -911,7 +923,15 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       const record = await requestResult<MutationOutboxRecord | undefined>(outbox.get(expected.clientMutationId));
       if (!record || !matchesQueuedMessageSnapshot(record, expected) || !canEditQueuedMessage(record)) return undefined;
       if ((await this.#stopEpochOf(transaction, record.targetRef)) !== barrier.stopEpoch) return undefined;
-      if (await requestResult(transaction.objectStore(RECOVERY_STORE).get(record.clientMutationId))) return undefined;
+      const existingRecovery = await requestResult<VersionedMutationRecoveryRecord | undefined>(
+        transaction.objectStore(RECOVERY_STORE).get(record.clientMutationId),
+      );
+      if (
+        existingRecovery &&
+        existingRecovery.method !== "notes/human/set" &&
+        (existingRecovery.compositionRevision ?? 0) > 0
+      )
+        return undefined;
       const recovery: VersionedMutationRecoveryRecord = {
         ...record,
         recoveryKind: "editing",
@@ -1037,21 +1057,38 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     barrier?: MutationStopBarrier,
     expectedRecoveryRevisions?: Readonly<Record<string, number>>,
   ): Promise<MutationOutboxRecord | undefined> {
+    const result = await this.resendRecoveryResult(sourceIds, intent, barrier, expectedRecoveryRevisions);
+    return result.status === "sent" ? result.record : undefined;
+  }
+
+  async resendRecoveryResult(
+    sourceIds: string | readonly string[],
+    intent: MutationIntent,
+    barrier?: MutationStopBarrier,
+    expectedRecoveryRevisions?: Readonly<Record<string, number>>,
+  ): Promise<MutationRecoveryResendResult> {
     if (!intent.targetRef.trim()) throw new Error("targetRef is required");
     return this.#write(ENQUEUE_STORES, "resendRecovery", async (transaction) => {
       const recoveryStore = transaction.objectStore(RECOVERY_STORE);
       const ids = [...new Set(typeof sourceIds === "string" ? [sourceIds] : sourceIds)];
-      if (ids.length === 0) return undefined;
+      if (ids.length === 0) return { status: "refused" };
+      let consumed = false;
+      let refused = false;
       for (const id of ids) {
         const recovery = await requestResult<MutationRecoveryRecord | undefined>(recoveryStore.get(id));
+        if (!recovery) {
+          consumed = true;
+          continue;
+        }
         if (
-          !recovery ||
           recovery.targetRef !== intent.targetRef ||
           expectedRecoveryRevisions?.[id] === undefined ||
           ((recovery as VersionedMutationRecoveryRecord).compositionRevision ?? 0) !== expectedRecoveryRevisions[id]
         )
-          return undefined;
+          refused = true;
       }
+      if (refused) return { status: "refused" };
+      if (consumed) return { status: "consumed" };
       const intentSequence = await this.#allocateSequence(transaction, intent.targetRef);
       const nextMutationId = this.#createMutationId();
       await this.#assertMutationIdAvailable(transaction, nextMutationId);
@@ -1081,7 +1118,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       };
       await requestResult(transaction.objectStore(OUTBOX_STORE).add(record));
       for (const id of ids) await requestResult(recoveryStore.delete(id));
-      return record;
+      return { status: "sent", record };
     });
   }
 

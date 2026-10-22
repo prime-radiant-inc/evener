@@ -14,7 +14,8 @@ export interface QueuedMessageStorage<A extends MutationAttachmentRef = Mutation
   resendRecovery(
     sourceIds: string | readonly string[],
     intent: MutationIntent<A>,
-    barrier?: MutationStopBarrier,
+    barrier: MutationStopBarrier | undefined,
+    expectedRecoveryRevisions?: Readonly<Record<string, number>>,
   ): Promise<MutationOutboxRecord<A> | undefined>;
 }
 

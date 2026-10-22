@@ -22,6 +22,7 @@ import type {
   MutationRecoveryRecord,
   MutationStopBarrier,
 } from "../../../../stores/mutationOutbox";
+import type { MutationRecoveryResendResult } from "../../../../stores/mutationOutboxIndexedDB";
 import { clearProjectionWorkForTests, trackProjectionWork } from "../../../../stores/projectionWork";
 import {
   type ComposerMutationRoute,
@@ -551,12 +552,12 @@ export function resendRecoveryPendingTurn(
   mentions?: readonly ComposerMention[],
   barrierRead?: Promise<MutationStopBarrier>,
   expectedRecoveryRevisions?: Readonly<Record<string, number>>,
-): Promise<boolean> {
+): Promise<MutationRecoveryResendResult> {
   // Resend publishes its committed handoff directly. Reading the recovery
   // tray again cannot hold up a submission that already has a durable owner.
   return trackProjectionWork(
     (async () => {
-      const record = await resendRecoveryMutation(
+      const result = await resendRecoveryMutation(
         clientMutationId,
         ref,
         route,
@@ -569,7 +570,7 @@ export function resendRecoveryPendingTurn(
         expectedRecoveryRevisions,
       );
       void refreshPendingTurnsProjection(ref);
-      return record !== undefined;
+      return result;
     })(),
   );
 }

@@ -2779,6 +2779,81 @@ it("resumes a paused session from Send, not from its error row", async () => {
 	).toEqual(["ref-error-resume"]);
 });
 
+it("resumes with the edited recovery context, consuming its source once", async () => {
+	const ref = "ref-error-resume-recovery";
+	const served = thread(ref, "idle");
+	(served as unknown as { evener: Record<string, unknown> }).evener.resumeRequired = true;
+	const { tree, hub } = await mount(served);
+	const runtime = getNativeMutationRuntime();
+	const targetKey = nativeMutationTargetKey("hub-1", ref);
+	const text = "Run /review on [image 1]";
+	const mention = { kind: "skill" as const, name: "review", offset: 4 };
+	const source = await runtime.storage.enqueueIntent({
+		targetRef: targetKey,
+		threadId: served.id,
+		instanceId: "instance",
+		method: "turn/queue",
+		payload: {
+			ref,
+			input: [
+				{ type: "text", text, mentions: [mention] },
+				{ type: "skill", name: "review" },
+				{ type: "image", mediaType: "image/png", data: "AQID", name: "sample.png" },
+			],
+		},
+		attachments: [{ presentationId: "recovery-image", marker: 1, name: "sample.png", mediaType: "image/png" }],
+		composerText: text,
+		composerMentions: [mention],
+		optimisticDisplay: { method: "turn/queue" },
+	});
+	const recovery = await runtime.editQueuedMessage(source.clientMutationId, targetKey);
+	expect(recovery).toMatchObject({ recoveryKind: "editing", clientMutationId: source.clientMutationId });
+	await settle();
+
+	const input = field(tree);
+	if (!input) throw new Error("no Message field after queued recovery Edit");
+	expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: ref }).composer?.recoveryIds).toContain(
+		source.clientMutationId,
+	);
+	act(() => input.props.onChangeText(`${text} now`));
+	await settle();
+	const observedReceipts: Array<Awaited<ReturnType<typeof runtime.storage.readRecoveryResend>>> = [];
+	const readRecoveryResend = runtime.storage.readRecoveryResend.bind(runtime.storage);
+	vi.spyOn(runtime.storage, "readRecoveryResend").mockImplementation(async (...args) => {
+		const result = await readRecoveryResend(...args);
+		if (result) observedReceipts.push(result);
+		return result;
+	});
+	const submit = vi.spyOn(runtime, "submit");
+	await press(tree, "Send and resume");
+
+	expect(await runtime.storage.listRecovery(targetKey)).toEqual([]);
+	expect(hub.requests.filter((request) => request.method === "resumeThread")).toHaveLength(1);
+	const admitted = await runtime.read(targetKey);
+	expect(admitted.outbox).toHaveLength(1);
+	expect(admitted.outbox[0]?.payload).toMatchObject({
+		input: expect.arrayContaining([
+			expect.objectContaining({ type: "skill", name: "review" }),
+			expect.objectContaining({ type: "image", mediaType: "image/png", data: "AQID" }),
+		]),
+	});
+	expect(submit.mock.calls.at(-1)?.[0]).toMatchObject({
+		recoverySourceIds: [source.clientMutationId],
+		composer: {
+			text: `${text} now`,
+			mentions: [mention],
+			skillNames: ["review"],
+			attachments: [expect.objectContaining({ marker: 1, mediaType: "image/png", data: "AQID" })],
+		},
+	});
+	expect(observedReceipts).toHaveLength(1);
+	expect(observedReceipts[0]).toMatchObject({
+		targetRef: targetKey,
+		sourceIds: [source.clientMutationId],
+		clientMutationId: expect.any(String),
+	});
+});
+
 it("names the model on the composer's chip, which opens the model sheet with the session's controls", async () => {
 	vi.mocked(navigation.navigate).mockClear();
 	const served = thread("ref-model", "idle");

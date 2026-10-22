@@ -2652,7 +2652,20 @@ export function ConversationScreen({
 				const live = store.getState();
 				const target = mutationTarget(live);
 				if (target === null || client === null) return false;
-				await getNativeMutationRuntime().submit(offlineRequest(target, "resume", buildComposerInput(text, images)));
+				await getNativeMutationRuntime().submit(
+					offlineRequest(
+						target,
+						"resume",
+						buildComposerInput(
+							text,
+							images,
+							context?.composer?.skillNames,
+							context?.composer?.commandNames,
+							context?.composer?.mentions,
+						),
+						context,
+					),
+				);
 				haptic("light");
 				// The message is durably admitted, so it is sent: the resume is the
 				// recovery it needs, not part of the send's success. Reporting a

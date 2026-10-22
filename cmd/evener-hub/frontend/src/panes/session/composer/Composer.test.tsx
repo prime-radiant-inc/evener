@@ -8,7 +8,7 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } 
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { useLayoutEffect } from "react";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { MotionProvider } from "../../../motion";
 import { ActivitySidebar } from "../../../shell/activitybar/ActivitySidebar";
 import {
@@ -3613,9 +3613,34 @@ test("a losing cross-tab recovered send does not issue a second request", async 
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const recovered = await seedRejectedRecoveryWithAttachment(storage, "ref_a");
+  const seeded = await storage.getRecovery(recovered.clientMutationId);
+  if (!seeded) throw new Error("recovery fixture missing");
+  const selected = await storage.updateRecoveryInput(
+    recovered.clientMutationId,
+    [...(seeded.payload.input as InputItem[]), { type: "skill", name: "cleanup" }],
+    seeded.attachments,
+    seeded.composerText,
+    [],
+    undefined,
+    undefined,
+    0,
+  );
+  expect(selected?.compositionRevision).toBe(1);
   const source = createTestComposerSource("ref_a");
   const user = userEvent.setup();
-  const { fake } = await mountComposerWithHandle("ref_a", { status: { type: "idle" } }, { source });
+  const { fake } = await mountComposerWithHandle(
+    "ref_a",
+    {
+      status: { type: "idle" },
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...FULL_CAPABILITIES, skillInput: true },
+        mutationStateAuthoritative: true,
+        queue: { revision: 0 },
+      },
+    },
+    { source },
+  );
   await flushPendingTurnsProjectionForTests();
   const editor = textarea();
   expect(source.getSnapshot().activeRecoveryId).toBe(recovered.clientMutationId);
@@ -3647,6 +3672,86 @@ test("a losing cross-tab recovered send does not issue a second request", async 
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
   expect(toastKinds()).toEqual(["info"]);
   otherTab.close();
+});
+
+test("a recovery Send refused after a peer revision keeps the composer and source", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const recovered = await seedRejectedRecoveryWithAttachment(storage, "ref_a");
+  const seeded = await storage.getRecovery(recovered.clientMutationId);
+  if (!seeded) throw new Error("recovery fixture missing");
+  const selectedInput = [...(seeded.payload.input as InputItem[])];
+  if (selectedInput[0]?.type !== "text") throw new Error("recovery text fixture missing");
+  selectedInput[0] = { ...selectedInput[0], text: `${selectedInput[0].text} /cleanup` };
+  const selected = await storage.updateRecoveryInput(
+    recovered.clientMutationId,
+    [...selectedInput, { type: "skill", name: "cleanup" }],
+    seeded.attachments,
+    `${seeded.composerText} /cleanup`,
+    [],
+    undefined,
+    undefined,
+    0,
+  );
+  expect(selected?.compositionRevision).toBe(1);
+  const source = createTestComposerSource("ref_a");
+  const user = userEvent.setup();
+  const { fake } = await mountComposerWithHandle(
+    "ref_a",
+    {
+      status: { type: "idle" },
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...FULL_CAPABILITIES, skillInput: true },
+        mutationStateAuthoritative: true,
+        queue: { revision: 0 },
+      },
+    },
+    { source },
+  );
+  await flushPendingTurnsProjectionForTests();
+  const editor = textarea();
+  expect(editor.textContent).toBe("edit me [image 1] /cleanup");
+  expect(screen.getByRole("button", { name: "Remove proof.png" })).toBeTruthy();
+
+  const peer = new MutationOutboxIndexedDB();
+  onTestFinished(() => peer.close());
+  let peerRevision: number | undefined;
+  const resend = storage.resendRecoveryResult.bind(storage);
+  vi.spyOn(storage, "resendRecoveryResult").mockImplementation(async (...args) => {
+    const current = await peer.getRecovery(recovered.clientMutationId);
+    if (!current) throw new Error("recovery source disappeared before resend");
+    const advanced = await peer.updateRecoveryInput(
+      recovered.clientMutationId,
+      [{ type: "text", text: "peer's newer composition" }],
+      current.attachments,
+      "peer's newer composition",
+      [],
+      [],
+      undefined,
+      current.compositionRevision ?? 0,
+    );
+    expect(advanced?.compositionRevision).toBe((current.compositionRevision ?? 0) + 1);
+    peerRevision = advanced?.compositionRevision;
+    return resend(...args);
+  });
+
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+
+  expect(storage.resendRecoveryResult).toHaveBeenCalledOnce();
+  expect(editor.textContent).toBe("edit me [image 1] /cleanup");
+  expect(screen.getByRole("button", { name: "Remove proof.png" })).toBeTruthy();
+  expect(source.getSnapshot().activeRecoveryId).toBe(recovered.clientMutationId);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+  expect(getToasts().map((toast) => toast.text)).toContain(
+    "This message changed in another tab. Refresh and try again.",
+  );
+  expect(getToasts().map((toast) => toast.text)).not.toContain("This message was already sent in another tab.");
+  expect(await peer.getRecovery(recovered.clientMutationId)).toMatchObject({
+    composerText: "peer's newer composition",
+    compositionRevision: peerRevision,
+  });
 });
 
 // An activated recovery draft republishes the projection on every durable

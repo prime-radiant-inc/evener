@@ -416,7 +416,8 @@ export function QueueStrip({
       toasts.push("error", "Command selections are not supported on this session; your draft is kept");
       return;
     }
-    let wonRecoveryResend = true;
+    let recoveryRefusal: "changed" | "consumed" | undefined;
+    const recoveryResendRefusal = new Error("Recovery resend was refused");
     onDrainBusyChange(true);
     try {
       await submitWithPendingTracking(
@@ -428,12 +429,13 @@ export function QueueStrip({
           skillNames,
           commandNames,
           onFailure: (err) => {
+            if (err === recoveryResendRefusal) return;
             toasts.push("error", sessionActionError("Drain failed", err));
           },
         },
         async () => {
           if (activeRecoveryId) {
-            wonRecoveryResend = await resendRecoveryPendingTurn(
+            const outcome = await resendRecoveryPendingTurn(
               activeRecoveryId,
               sessionRef,
               "drain",
@@ -447,6 +449,10 @@ export function QueueStrip({
                 ? { [activeRecoveryId]: activeRecoveryRevision }
                 : undefined,
             );
+            if (outcome.status !== "sent") {
+              recoveryRefusal = outcome.status === "refused" ? "changed" : "consumed";
+              throw recoveryResendRefusal;
+            }
             return;
           }
           return threadsStore
@@ -454,16 +460,14 @@ export function QueueStrip({
             .drainAsSteer(sessionRef, text, attachments, skillNames, commandNames, mentions);
         },
       );
-      if (!wonRecoveryResend && activeRecoveryId) {
-        toasts.push("info", "This message changed in another tab. Refresh and try again.");
-        return;
-      }
-      if (!wonRecoveryResend) toasts.push("info", "This message was already sent in another tab.");
       onDrainSuccess();
     } catch {
       // Already reported via onFailure above; swallow so the rejection
       // doesn't reach React as an unhandled promise rejection from this
       // fire-and-forget click handler.
+      if (recoveryRefusal === "changed")
+        toasts.push("info", "This message changed in another tab. Refresh and try again.");
+      else if (recoveryRefusal === "consumed") toasts.push("info", "This message was already sent in another tab.");
     } finally {
       onDrainBusyChange(false);
     }

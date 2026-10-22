@@ -143,13 +143,29 @@ export function describeQueuedMessageStorage(name: string, create: () => QueuedS
       const second = await f.storage.enqueueIntent(queuedIntent());
       for (const record of [first, second]) await f.storage.transferToRecovery(record.clientMutationId, "rejected");
       const ids = [first.clientMutationId, second.clientMutationId];
-      expect(await f.storage.resendRecovery([...ids, "absent"], queuedIntent())).toBeUndefined();
-      expect(await f.storage.resendRecovery(ids, queuedIntent("local:other"))).toBeUndefined();
-      expect(await f.storage.resendRecovery([], queuedIntent())).toBeUndefined();
+      const expectedRecoveryRevisions = Object.fromEntries(
+        await Promise.all(
+          ids.map(async (id) => {
+            const record = await f.storage.getRecovery(id);
+            if (!record) throw new Error(`missing recovery fixture ${id}`);
+            return [id, record.compositionRevision ?? 0] as const;
+          }),
+        ),
+      );
+      expect(
+        await f.storage.resendRecovery([...ids, "absent"], queuedIntent(), undefined, expectedRecoveryRevisions),
+      ).toBeUndefined();
+      expect(
+        await f.storage.resendRecovery(ids, queuedIntent("local:other"), undefined, expectedRecoveryRevisions),
+      ).toBeUndefined();
+      expect(await f.storage.resendRecovery([], queuedIntent(), undefined, {})).toBeUndefined();
       for (const id of ids) expect(await f.storage.getRecovery(id)).toBeDefined();
       expect(await f.storage.listOutbox()).toHaveLength(0);
       const successfulResends = (
-        await Promise.all([f.storage.resendRecovery(ids, queuedIntent()), f.peer.resendRecovery(ids, queuedIntent())])
+        await Promise.all([
+          f.storage.resendRecovery(ids, queuedIntent(), undefined, expectedRecoveryRevisions),
+          f.peer.resendRecovery(ids, queuedIntent(), undefined, expectedRecoveryRevisions),
+        ])
       ).filter((record) => record !== undefined);
       expect(successfulResends).toHaveLength(1);
       expect(successfulResends[0]?.clientMutationId).not.toBe(first.clientMutationId);
@@ -157,16 +173,25 @@ export function describeQueuedMessageStorage(name: string, create: () => QueuedS
       const reopened = await f.reopen();
       for (const id of ids) expect(await reopened.getRecovery(id)).toBeUndefined();
       expect(await reopened.listOutbox()).toHaveLength(1);
-      expect(await reopened.resendRecovery(ids, queuedIntent())).toBeUndefined();
+      expect(await reopened.resendRecovery(ids, queuedIntent(), undefined, expectedRecoveryRevisions)).toBeUndefined();
     });
 
     test("newer Stop holds an explicit recovery resend", async () => {
       const { storage, peer } = create();
       const original = await storage.enqueueIntent(queuedIntent());
       await storage.transferToRecovery(original.clientMutationId, "rejected");
+      const recovered = await storage.getRecovery(original.clientMutationId);
+      if (!recovered) throw new Error("missing recovery fixture");
       const stopEpoch = await storage.readStopEpoch(original.targetRef);
       await peer.enqueueInterruptAndCancel({ ...queuedIntent(), method: "turn/interrupt" });
-      const resent = await storage.resendRecovery(original.clientMutationId, queuedIntent(), { stopEpoch });
+      const resent = await storage.resendRecovery(
+        original.clientMutationId,
+        queuedIntent(),
+        { stopEpoch },
+        {
+          [original.clientMutationId]: recovered.compositionRevision ?? 0,
+        },
+      );
       expect(resent).toMatchObject({ state: "canceled", attempted: false });
       expect(await storage.getRecovery(original.clientMutationId)).toBeUndefined();
     });
