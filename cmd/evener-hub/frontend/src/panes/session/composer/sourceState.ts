@@ -112,6 +112,7 @@ export interface ComposerSourceState {
   refreshRecovery(): void;
   readonly compositionOwnerId: string;
   runRecoveryOperation<T>(operation: () => Promise<T>): Promise<T>;
+  flushRecoveryWrites(): Promise<void>;
   tryAcquireRecoveryOperation(): (() => void) | null;
   activateRecovery(record: MutationRecoveryRecord): Promise<boolean>;
   queueRecoveryPersistence(
@@ -773,6 +774,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     writeDraft,
     compositionOwnerId,
     runRecoveryOperation,
+    flushRecoveryWrites: () => recoveryWrites.catch(() => undefined),
     tryAcquireRecoveryOperation,
     queueRecoveryPersistence,
     activateRecovery,

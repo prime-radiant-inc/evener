@@ -186,11 +186,30 @@ export class DraftDocument {
 			this.update({ record: persisted, error: null });
 		} catch (error) {
 			this.update({
-				...(retainOnFailure ? { record: persisted } : {}),
+				...(retainOnFailure ? { record: this.failedRecord(record, persisted) } : {}),
 				error: "Your latest draft could not be saved on this device. Keep this screen open and retry saving.",
 			});
 			throw error;
 		}
+	}
+	/** A failed save has not released anything durably. Put back any ownership
+	 * that releaseEmptyComposerOwnership removed, so the screen keeps hiding
+	 * Discard for sources the saved draft still references. */
+	private failedRecord(previous: DraftRecord, attempted: DraftRecord): DraftRecord {
+		const previousOwned = previous.composer?.recoveryIds ?? [];
+		const attemptedOwned = attempted.composer?.recoveryIds ?? [];
+		const parked = new Set(attempted.unconfirmedComposer?.recoveryIds ?? []);
+		const dropped = previousOwned.filter((id) => !attemptedOwned.includes(id) && !parked.has(id));
+		if (!dropped.length) return attempted;
+		return {
+			...attempted,
+			composer: {
+				...previous.composer,
+				...attempted.composer,
+				recoveryIds: [...attemptedOwned, ...dropped],
+			},
+			releasedRecoveryIds: releasedIds(attempted).filter((id) => !dropped.includes(id)),
+		};
 	}
 	retry = () => {
 		if (this.forgotten) return;

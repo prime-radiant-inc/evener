@@ -712,6 +712,25 @@ it("failed replacement retains original durable recovery and can save the parked
 	expect(document.imagePreviews(document.getSnapshot().record.unconfirmedImages)[0]?.data).toBe("AP8H");
 });
 
+it("failed emptying keeps recovery ownership until the release save commits", () => {
+	document.appendEditedRecovery(
+		recovery("source-a", {
+			payload: { input: [{ type: "text", text: "encoded" }] },
+			attachments: [],
+			composerText: "encoded",
+			composerMentions: undefined,
+		}),
+	);
+	database.exec("PRAGMA query_only = ON");
+	document.edit("");
+	expect(document.getSnapshot().record.composer?.recoveryIds).toEqual(["source-a"]);
+	expect(document.getSnapshot().record.releasedRecoveryIds ?? []).not.toContain("source-a");
+	database.exec("PRAGMA query_only = OFF");
+	document.retry();
+	expect(document.getSnapshot().record.composer?.recoveryIds ?? []).toEqual([]);
+	expect(document.getSnapshot().record.releasedRecoveryIds).toContain("source-a");
+});
+
 it("ordinary uncertain restoration does not overwrite image-free selection or recovery-only current work", () => {
 	for (const composer of [{ skillNames: ["s"] }, { commandNames: ["c"] }, { recoveryIds: ["r"] }]) {
 		const original = { draft: "", unconfirmed: "ordinary", composer, recoveryResendAcks: ["ack"] };

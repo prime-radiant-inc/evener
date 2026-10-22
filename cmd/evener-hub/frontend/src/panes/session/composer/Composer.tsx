@@ -880,6 +880,12 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     clearSubmittedAttachments(snapshot.attachments);
   }
 
+  async function getRecoveryRevisionForDrain(): Promise<number | undefined> {
+    await source.flushRecoveryWrites();
+    if (!source.alive || source.getSnapshot().activeRecoveryId !== activeRecoveryId) return undefined;
+    return recoveryOwnerLeaseRef.current?.compositionRevision;
+  }
+
   // A chip's details: the skill's own description, or - when the live catalog
   // report no longer backs the selection - the name plus why it cannot be
   // found. Command rows never render here, so these details are skill-only by
@@ -1575,6 +1581,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
         onRestoreToComposer={restoreTextToComposer}
         activeRecoveryId={activeRecoveryId ?? undefined}
         activeRecoveryRevision={recoveryOwnerLeaseRef.current?.compositionRevision}
+        getRecoveryRevision={getRecoveryRevisionForDrain}
         onEditRecovery={activateRecovery}
         tryAcquireRecoveryOperation={source.tryAcquireRecoveryOperation}
         onDrainSuccess={handleDrainSuccess}

@@ -1225,6 +1225,38 @@ test("stale recovery Drain refuses without reporting success or resending", asyn
   expect(getComposerText).toHaveBeenCalled();
 });
 
+test("recovery Drain waits for pending autosaves and uses the committed revision", async () => {
+  const fake = connectFakeClient();
+  await hydrate(fake, "ref_a", {
+    evener: {
+      ref: "ref_a",
+      capabilities: CAPABILITIES,
+      queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+    },
+  });
+  const record = await seedRecovery("rejected", "visible recovery text");
+  await flushPendingTurnsProjectionForTests();
+  const getRecoveryRevision = vi.fn(async () => 1);
+  const resend = vi
+    .spyOn(MutationOutboxIndexedDB.prototype, "resendRecoveryResult")
+    .mockRejectedValue(new Error("scripted resend stop"));
+  onTestFinished(() => resend.mockRestore());
+  renderStrip(
+    defaultProps({
+      activeRecoveryId: record.clientMutationId,
+      activeRecoveryRevision: record.compositionRevision ?? 0,
+      getRecoveryRevision,
+      getComposerText: () => ({ text: "visible recovery text", attachments: [], hasPending: false }),
+    }),
+  );
+  await flushPendingTurnsProjectionForTests();
+  await userEvent.setup().click(await screen.findByRole("button", { name: "Steer queue now" }));
+  await flushPendingTurnsProjectionForTests();
+  expect(getRecoveryRevision).toHaveBeenCalledTimes(1);
+  expect(resend).toHaveBeenCalledTimes(1);
+  expect(resend.mock.calls[0]?.[3]).toEqual({ [record.clientMutationId]: 1 });
+});
+
 describe("row rendering", () => {
   async function hydrateWithTwoRows(fake: FakeClient) {
     await hydrate(fake, "ref_a", {

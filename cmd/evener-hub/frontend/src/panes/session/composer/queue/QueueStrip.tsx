@@ -99,6 +99,10 @@ export interface QueueStripProps {
   ): void;
   activeRecoveryId?: string;
   activeRecoveryRevision?: number;
+  // Drain waits for the composer's pending recovery autosaves and reads the
+  // committed revision here, so a delayed autosave cannot turn the drain's
+  // own resend into a stale-owner refusal.
+  getRecoveryRevision?(): Promise<number | undefined>;
   onEditRecovery?(record: MutationRecoveryRecord): void | Promise<void>;
   tryAcquireRecoveryOperation?(): (() => void) | null;
   // Called once a drain-as-steer intent commits to IndexedDB, so the
@@ -191,6 +195,7 @@ export function QueueStrip({
   onRestoreToComposer,
   activeRecoveryId,
   activeRecoveryRevision,
+  getRecoveryRevision,
   onEditRecovery,
   tryAcquireRecoveryOperation,
   onDrainSuccess,
@@ -433,6 +438,14 @@ export function QueueStrip({
     const recoveryResendRefusal = new Error("Recovery resend was refused");
     onDrainBusyChange(true);
     try {
+      let expectedRecoveryRevision = activeRecoveryRevision;
+      if (activeRecoveryId && getRecoveryRevision) {
+        expectedRecoveryRevision = await getRecoveryRevision();
+        if (expectedRecoveryRevision === undefined) {
+          toasts.push("info", "This message changed in another tab. Refresh and try again.");
+          return;
+        }
+      }
       await submitWithPendingTracking(
         {
           ref: sessionRef,
@@ -458,8 +471,8 @@ export function QueueStrip({
               commandNames,
               mentions,
               undefined,
-              activeRecoveryId && activeRecoveryRevision !== undefined
-                ? { [activeRecoveryId]: activeRecoveryRevision }
+              activeRecoveryId && expectedRecoveryRevision !== undefined
+                ? { [activeRecoveryId]: expectedRecoveryRevision }
                 : undefined,
             );
             if (outcome.status !== "sent") {
