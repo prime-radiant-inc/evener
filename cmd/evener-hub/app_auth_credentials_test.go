@@ -153,6 +153,27 @@ func (f *credentialProbeFakeClient) callCount() int {
 	return f.calls
 }
 
+// assertGenericConflict fails unless err is an appwire.WireError carrying the
+// generic Conflict discriminant. The shared assertConflict checks only the
+// numeric code, which EndpointConflict also uses; a same-destination
+// credential replacement is not an endpoint move, and clients route the two
+// discriminants differently.
+func assertGenericConflict(t *testing.T, err error) {
+	t.Helper()
+	assertConflict(t, err)
+	wireErr, ok := errors.AsType[appwire.WireError](err)
+	if !ok {
+		t.Fatalf("error = %v (%T), want appwire.WireError", err, err)
+	}
+	data, ok := wireErr.Data.(appwire.ErrorData)
+	if !ok {
+		t.Fatalf("error data = %#v, want appwire.ErrorData", wireErr.Data)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorConflict {
+		t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorConflict)
+	}
+}
+
 // clearProviderKeysFromEnvironment unsets every credential variable the
 // envvars registry declares, for the duration of the test. The credentials
 // store's Layers reads the ambient environment, so a test asserting an
@@ -433,6 +454,156 @@ func TestAuthTestCredentialsSuppressesDuplicateSameInstance(t *testing.T) {
 	if got := client.callCount(); got != 1 {
 		t.Fatalf("probe calls=%d, want one shared call", got)
 	}
+}
+
+// TestAuthTestCredentialsSupersededByStoredWrite covers a probe whose stored
+// key is replaced by another client at the same instance and destination while
+// the probe is pending. The redacted row and its configuration revision stay
+// the same - the revision deliberately excludes the secret - so only the
+// hub's per-instance write count tells the two credentials apart. The old
+// probe's success or rejection is evidence about a credential the instance no
+// longer has: it must reach neither its original caller nor a caller that
+// joined the in-flight call, and a later check must probe the replacement.
+func TestAuthTestCredentialsSupersededByStoredWrite(t *testing.T) {
+	type outcome struct {
+		resp appwire.AuthTestResponse
+		err  error
+	}
+	run := func(c *hubAuthController) <-chan outcome {
+		done := make(chan outcome, 1)
+		go func() {
+			resp, err := c.TestCredentials(context.Background(), appwire.AuthTestParams{Provider: "gateway"})
+			done <- outcome{resp: resp, err: err}
+		}()
+		return done
+	}
+
+	t.Run("stale success refuses original and joiner", func(t *testing.T) {
+		client := &credentialProbeFakeClient{started: make(chan struct{}), release: make(chan struct{})}
+		c, _ := newRejectionController(t, client)
+		before, err := c.Status(appwire.AuthStatusParams{Provider: "gateway"})
+		if err != nil {
+			t.Fatalf("Status before: %v", err)
+		}
+		if before.ActiveSource != "store" || before.ConfigRevision == "" {
+			t.Fatalf("precondition: source=%q revision=%q, want a stored key with a resolved revision", before.ActiveSource, before.ConfigRevision)
+		}
+
+		var releaseOnce sync.Once
+		release := func() { releaseOnce.Do(func() { close(client.release) }) }
+		defer release()
+
+		first := run(c)
+		<-client.started
+		after, err := c.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "gateway", Value: "sk-replacement"})
+		if err != nil {
+			t.Fatalf("ApiKeySet: %v", err)
+		}
+		if after.ActiveSource != before.ActiveSource || after.ConfigRevision != before.ConfigRevision {
+			t.Fatalf("replacement moved the selected identity: source %q->%q revision %q->%q, so this is not the unchanged-row case",
+				before.ActiveSource, after.ActiveSource, before.ConfigRevision, after.ConfigRevision)
+		}
+
+		joined := make(chan struct{})
+		c.credentialTestJoined = func() { close(joined) }
+		second := run(c)
+		select {
+		case <-joined:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the second caller did not join the pending probe; this case cannot prove joined callers see the refusal")
+		}
+		release()
+
+		for i, got := range []outcome{<-first, <-second} {
+			assertGenericConflict(t, got.err)
+			if got.resp.Status != "" {
+				t.Fatalf("caller %d returned status %q (%q); a superseded probe must not report a verdict", i, got.resp.Status, got.resp.Message)
+			}
+		}
+		if got := client.callCount(); got != 1 {
+			t.Fatalf("probe calls=%d, want one shared call", got)
+		}
+
+		// The in-flight entry is gone once it settles, so the next check is
+		// fresh work and reports the replacement's own outcome.
+		resp, err := c.TestCredentials(context.Background(), appwire.AuthTestParams{Provider: "gateway"})
+		if err != nil {
+			t.Fatalf("TestCredentials after the stale result: %v", err)
+		}
+		if resp.Status != appwire.AuthTestStatusSuccess {
+			t.Fatalf("status=%q (%q), want the replacement's success", resp.Status, resp.Message)
+		}
+		if got := client.callCount(); got != 2 {
+			t.Fatalf("probe calls=%d after a fresh check, want 2", got)
+		}
+	})
+
+	t.Run("stale rejection is neither a verdict nor recorded", func(t *testing.T) {
+		client := &credentialProbeFakeClient{
+			listErr: llm.ErrorFromHTTPStatus("gateway", 401, "bad key", nil, nil),
+			started: make(chan struct{}),
+			release: make(chan struct{}),
+		}
+		c, _ := newRejectionController(t, client)
+		var releaseOnce sync.Once
+		release := func() { releaseOnce.Do(func() { close(client.release) }) }
+		defer release()
+
+		first := run(c)
+		<-client.started
+		if _, err := c.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "gateway", Value: "sk-replacement"}); err != nil {
+			t.Fatalf("ApiKeySet: %v", err)
+		}
+		release()
+
+		got := <-first
+		assertGenericConflict(t, got.err)
+		if got.resp.Status == appwire.AuthTestStatusAuthRejected {
+			t.Fatalf("status=%q, want a conflict: the old key's rejection is not a verdict about its replacement", got.resp.Status)
+		}
+		if errText := gatewayError(t, c); errText != "" {
+			t.Fatalf("error=%q, want none: the old key's rejection was recorded against the replacement", errText)
+		}
+
+		// The replacement is the credential a fresh check now probes, so its
+		// own rejection is reported and recorded.
+		resp, err := c.TestCredentials(context.Background(), appwire.AuthTestParams{Provider: "gateway"})
+		if err != nil {
+			t.Fatalf("TestCredentials after the stale result: %v", err)
+		}
+		if resp.Status != appwire.AuthTestStatusAuthRejected {
+			t.Fatalf("status=%q (%q), want the replacement's own auth rejection", resp.Status, resp.Message)
+		}
+		if got := client.callCount(); got != 2 {
+			t.Fatalf("probe calls=%d after a fresh check, want 2", got)
+		}
+		if errText := gatewayError(t, c); errText == "" {
+			t.Fatal("the replacement's own rejection was not recorded")
+		}
+	})
+
+	t.Run("another instances write leaves the probe current", func(t *testing.T) {
+		client := &credentialProbeFakeClient{started: make(chan struct{}), release: make(chan struct{})}
+		c, _ := newRejectionController(t, client)
+		var releaseOnce sync.Once
+		release := func() { releaseOnce.Do(func() { close(client.release) }) }
+		defer release()
+
+		first := run(c)
+		<-client.started
+		if _, err := c.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "other", Value: "sk-other"}); err != nil {
+			t.Fatalf("ApiKeySet(other): %v", err)
+		}
+		release()
+
+		got := <-first
+		if got.err != nil {
+			t.Fatalf("TestCredentials: %v", got.err)
+		}
+		if got.resp.Status != appwire.AuthTestStatusSuccess {
+			t.Fatalf("status=%q (%q), want success: a write to another instance does not supersede this probe", got.resp.Status, got.resp.Message)
+		}
+	})
 }
 
 func TestAuthTestCredentialsUsesConfiguredBaseURLAndHeadersAtFakeHTTPBoundary(t *testing.T) {

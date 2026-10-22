@@ -86,6 +86,12 @@ func testHubProtocolUpgrade(t *testing.T, protocol string, cleared, cached bool)
 		if len(read.Thread.Turns) != 2 {
 			t.Errorf("saved turns=%d", len(read.Thread.Turns))
 		}
+		// The artifacts directory is where the document routes serve from, not
+		// a daemon capability, so a degraded saved read still names it: its
+		// file links can be opened even while mutations wait for an upgrade.
+		if read.Thread.Evener.ArtifactsDir == "" {
+			t.Error("restart-required saved read named no artifacts directory")
+		}
 	})
 	for _, method := range []string{appwire.MethodTurnStart, appwire.MethodTurnQueue, appwire.MethodTurnSteer} {
 		t.Run(method, func(t *testing.T) {

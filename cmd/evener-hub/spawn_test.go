@@ -826,6 +826,38 @@ exit 2
 	}
 }
 
+// TestListEvenerLaunchModelContractCarriesInstanceDefault: the launch
+// contract's instance-default marker decides whether onboarding may adopt a
+// model automatically, so the child's JSON must survive the parse instead of
+// being flattened to provider/model.
+func TestListEvenerLaunchModelContractCarriesInstanceDefault(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "fake-evener")
+	script := `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+	  printf '{"protocol":"evener-appwire-v7","models":[{"provider":"team","model":"chosen","instanceDefault":true},{"provider":"team","model":"first"}]}\n'
+  exit 0
+fi
+exit 2
+`
+	writeFakeEvener(t, bin, script)
+
+	resp, err := listEvenerLaunchModelContract(context.Background(), bin, nil)
+	if err != nil {
+		t.Fatalf("listEvenerLaunchModelContract: %v", err)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("data=%+v, want two models", resp.Data)
+	}
+	if got := resp.Data[0]; got.Provider != "team" || got.Model != "chosen" || !got.InstanceDefault {
+		t.Fatalf("descriptor=%+v, want team/chosen marked as the instance default", got)
+	}
+	if got := resp.Data[1]; got.Provider != "team" || got.Model != "first" || got.InstanceDefault {
+		t.Fatalf("descriptor=%+v, want team/first unmarked", got)
+	}
+}
+
 func TestValidateEvenerLaunchContractRejectsIncompatibleProtocolBinary(t *testing.T) {
 	evenerBinary := filepath.Join(t.TempDir(), "old-evener")
 	writeFakeEvener(t, evenerBinary, `#!/bin/sh

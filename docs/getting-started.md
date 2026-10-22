@@ -123,11 +123,14 @@ directory, task draft, provider, and model all belong to this launch form:
 4. A successful check means Evener saved the resolved access and fetched that
    provider connection's model list. It does **not** send your task, make a
    generation request, or prove quota, billing, model capability, or generation
-   access. Fix an inline failure and retry; a failed list check does not erase a
-   key that was saved successfully.
-5. Select **Choose model**, then explicitly choose the model for this session.
-   If listing fails, use **Retry models**. If the provider cannot support a list
-   check, **Continue without verification** is an unverified route, not a pass.
+   access. A temporary read failure is retried automatically; a failed list
+   check does not erase a key that was saved successfully.
+5. On success the dialog closes and returns to this draft automatically. An
+   untouched draft adopts the connected instance's configured default model
+   when its usable listing marks one; otherwise the ordinary model control
+   still asks you to choose. A model you chose yourself is kept. If the provider
+   cannot support a list check, **Continue without verification** is an
+   unverified route, not a pass.
 
 For a custom endpoint, choose **Show all providers**, then **OpenAI-compatible
 endpoint** and **Configure provider**. Enter a connection **Name** and the server's

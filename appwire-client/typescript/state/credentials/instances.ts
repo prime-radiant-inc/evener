@@ -674,6 +674,20 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     pendingRefetchSelf = undefined;
   }
 
+  // consumeScheduledRefetch folds the store's queued refresh into a read the
+  // caller is starting now, when - and only when - every request in the queue's
+  // window was this client's own. Such a read observes the same post-write
+  // listing the queued read would have, so dropping the timer loses no event,
+  // and the caller's read carries the self mark the queued read would have
+  // carried. A queued FOREIGN request stays armed: it may have been scheduled
+  // after a caller's read took its snapshot, and consuming it here would lose
+  // an unrelated change's refresh. Returns the mark to use for the read.
+  function consumeScheduledRefetch(): boolean | undefined {
+    if (pendingRefetchSelf !== true) return undefined;
+    cancelRefetch();
+    return true;
+  }
+
   // clearClientBookkeeping drops what was written under one client: a row a
   // previous client's refresh marked, or a count its late answer bumped, must
   // not decide the next client's listing, and a refresh landing before that
@@ -1064,10 +1078,11 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     refreshingInstances: new Set<string>(),
 
     async fetch() {
-      return readListing(false);
+      return readListing(consumeScheduledRefetch() ?? false);
     },
 
     async fetchSelf() {
+      consumeScheduledRefetch();
       return readListing(true);
     },
 

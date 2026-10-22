@@ -25,21 +25,35 @@ configured, choose that connection rather than adding it again.
    resolved connection, and requests the provider's **model list only**. It does
    not send your prompt or make a generation request. A returned list does not
    prove generation access, quota, billing status, or a model's tool capability.
-5. After a successful check, select **Choose model**. The model chooser opens with
-   models returned for that connection's actual instance name. Choose a model;
-   **Show all models** returns to the full catalogue. If no models are listed,
-   check the provider's model access and endpoint rather than guessing a model ID.
-6. Review your working directory, task, and explicit model. Review **Effective
+   A transient read failure is retried automatically while the dialog is open,
+   without saving the credential again. If another client replaces this
+   connection's stored credential on the hub while the check is running, the
+   hub refuses that superseded result and the dialog repeats the read and
+   check without rewriting the saved credential. A check is also refused when
+   an in-app edit changes the access it was checking: the endpoint it dials,
+   or the key its credential header selects even when the header name and the
+   visible configuration revision stay equal. The dialog then shows the
+   changed access for review instead of treating the old answer as the new
+   connection's result.
+5. On success the dialog closes by itself and returns to the draft. There is no
+   success confirmation, **Continue**, or **Choose model** step. For an untouched
+   draft, Evener adopts the connected instance's own configured default model,
+   but only when that instance's usable live listing marks exactly one row. If
+   no such default is available, the ordinary model control says the model is
+   still needed; open it and choose explicitly. A model you chose yourself,
+   including while the check was running, is preserved. Adoption is local to
+   this draft: it does not change a global provider or model default.
+6. Review your working directory, task, and explicit or adopted model. Review **Effective
    access** near Start and use **Change** if the resolved permission is not what
    you intended. Instructions in the task do not restrict tools; the access
    setting does. Then press **Start**.
-   Connecting and choosing a model do not start a session or change the global
-   provider default.
+   Connecting, checking, and adopting a model do not start a session.
 
-The task and working-directory drafts stay in New session while the provider
-dialog and model chooser open, fail, retry, and close. Check them again before
-Start. A successful credential save survives a later model-list failure; retry
-the check without pasting the key again. Cancel does not start a session.
+The task, working-directory, and attachment drafts stay in New session while the
+provider dialog opens, fails, retries, and closes. Check them again before
+Start. A successful credential save survives a later model-list failure; the
+dialog retries the read by itself, and a manual **Retry check** remains
+available. Cancel retires that flow's retries and does not start a session.
 
 **Subscriptions are not API keys.** Claude, ChatGPT, and Gemini subscriptions
 do not automatically include separately billed API access. OpenAI API keys and
@@ -67,8 +81,8 @@ pasting an API key. Availability depends on your account and provider terms.
   The guided form also offers **Use existing host access** under **Advanced
   settings**.
 - **Advanced management:** Settings → Providers & credentials → **Connect provider** uses the
-  same connector. After a successful check, **Done** returns to Settings; it does
-  not open the New session model chooser. The instance rows are the real editor, with custom instances,
+  same connector. After a successful check it closes automatically and returns to
+  Settings; it does not open the New session model chooser. The instance rows are the real editor, with custom instances,
   rename, reset overrides, replace/clear stored credentials, logout, source
   inspection, and explicit default management. In the session model chooser,
   only an explicit model pick requests a session model switch.

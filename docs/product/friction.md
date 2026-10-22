@@ -43,6 +43,7 @@ and should not be presented as reproduced production incidents.
 | [C12](#c12-remote-credential-transfer-outcomes) | Medium | Reconnecting hides a completed credential-transfer report; uncertain transfers require manual investigation | S02, S05, S07, S15 |
 | [C13](#c13-storage-unavailable-send-fallback-ordering-and-stop-fence) | High (deferred) | A storage wedge lets a web or phone send reorder, escape a Stop, or duplicate | S02, S11 |
 | [C14](#c14-staged-image-attachments-across-identity-changes) | Medium | An image staged in the composer is lost silently when the session identity changes, while the typed draft survives | S02, S11 |
+| [C15](#c15-native-file-links-open-no-document) | Low (deferred) | A phone transcript shows a report link it cannot open, while the web opens the same document | S03, S05 |
 | [R01](#r01-transcript-durability-stop) | High | A healed storage problem leaves the chat permanently stopped | S08, S09, S10 |
 | [R02](#r02-finished-turn-ownership) | High | A finished turn continues blocking new messages | S09, S11 |
 | [R03](#r03-watch-intent-after-restart) | High | Restart can end monitoring without informing the owning agent | S08, S12 |
@@ -495,6 +496,28 @@ stays and only the composer's copy makes it explicit to users.
 
 **When discussed.** Record the accepted behavior with its acceptance
 scenario here.
+
+### C15 Native file links open no document
+
+**Current behavior.** Assistant prose that links a report by `file://` URL opens
+the document pane in the web transcript when the path resolves inside the
+session's working directory or its retained artifacts directory. The phone's
+file-reference pass binds cwd only
+([markdownFileReferences.ts](../../mobile-native/src/reader/markdownFileReferences.ts)),
+so the same link on the phone is inert: it is offered no document and never
+reaches the artifacts root the hub now serves.
+
+**Evidence.** The shared resolver
+([docContent.ts](../../appwire-client/typescript/docContent.ts)) tries the
+working directory and then the artifacts root, and the web anchor pass uses it
+([fileReferenceDOM.ts](../../cmd/evener-hub/frontend/src/panes/session/transcript/messages/fileReferenceDOM.ts)).
+The native pass calls `parseFileReference` with the cwd alone, and the thread
+snapshot already carries `artifactsDir` for the phone to use.
+
+**Deferred.** The web path landed first by Jesse's direction on 2026-10-20;
+the phone is the agreed fast follow. Wire the native pass through the shared
+resolver with the thread's `artifactsDir`, and cover it with a native test that
+opens an artifacts link.
 
 ## Runtime and continuing intent
 
