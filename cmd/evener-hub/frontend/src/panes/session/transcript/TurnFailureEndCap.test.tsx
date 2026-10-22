@@ -5,13 +5,14 @@ import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { beforeEach, expect, test, vi } from "vitest";
 import { accessibleName } from "../../../accessibleNameTestUtils";
 import { connectionStore } from "../../../stores/connection";
+import { setMutationClientIdentityForTests } from "../../../stores/mutationClientIdentity";
 import type { MutationOutboxRecord } from "../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { settleProjectionWorkForTests } from "../../../stores/projectionWork";
 import { holdIndexedDBEvent } from "../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../stores/threads";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
-import { publishOutboxRecordForTests, refreshPendingTurnsProjection } from "../composer/queue/pendingTurnsStore";
+import { pendingTurnEntries, refreshPendingTurnsProjection } from "../composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../composer/queue/testing/flushPendingTurnsProjection";
 import { readResponse } from "./messages/testing/heldSteerTestUtils";
 import { TurnBlock } from "./TurnBlock";
@@ -65,23 +66,32 @@ function seedModel(turns: TurnModel[], overrides: Partial<ThreadModel> = {}, ref
   });
 }
 
-// A durable outbox row as the pending-turns projection presents it. Unattributed
-// records count as this client's own (the provenance rule), so a foreign row
-// names another origin explicitly.
-function outboxRecord(overrides: Partial<MutationOutboxRecord> = {}): MutationOutboxRecord {
-  return {
-    version: 1,
-    clientMutationId: "cmid_pending",
-    intentSequence: 1,
-    createdAt: 1,
-    targetRef: "ref_a",
-    method: "turn/start",
-    payload: { ref: "ref_a", input: [{ type: "text", text: "pending" }] },
-    attachments: [],
-    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "pending" }] },
-    state: "submitting",
-    ...overrides,
-  } as MutationOutboxRecord;
+// Allocates a REAL durable outbox row through the test's storage adapter; the
+// identity comes from the adapter, never a literal. `refresh` publishes it
+// through the real projection read. A foreign row is written while this
+// client's identity is another client's, exactly as a sibling tab writes one.
+async function enqueuePendingRow(
+  storage: MutationOutboxIndexedDB,
+  method: "turn/start" | "turn/queue" = "turn/start",
+  opts: { foreign?: boolean; canceled?: boolean; text?: string } = {},
+): Promise<MutationOutboxRecord> {
+  const text = opts.text ?? "pending";
+  if (opts.foreign) setMutationClientIdentityForTests("another-tab");
+  let record: MutationOutboxRecord;
+  try {
+    record = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method,
+      payload: { ref: "ref_a", input: [{ type: "text", text }] },
+      attachments: [],
+      optimisticDisplay: { method, input: [{ type: "text", text }] },
+    });
+  } finally {
+    if (opts.foreign) setMutationClientIdentityForTests(undefined);
+  }
+  if (opts.canceled) await storage.cancelUnattempted("ref_a");
+  await refreshPendingTurnsProjection("ref_a");
+  return record;
 }
 
 function retryButton(): HTMLButtonElement | null {
@@ -140,31 +150,49 @@ test("a newer failed turn hides the older failure's Retry", async () => {
 // --- The outbox owner: own unresolved input disables, a foreign row does not -
 
 test.each([
-  ["an own unresolved send", { method: "turn/start" }],
-  ["an own unresolved queue", { method: "turn/queue" }],
-] as const)("%s disables Retry", async (_case, overrides) => {
+  ["an own unresolved send", "turn/start"],
+  ["an own unresolved queue", "turn/queue"],
+] as const)("%s disables Retry", async (_case, method) => {
+  const { storage } = await connectedThread();
   seedModel([failedTurn()]);
   render(<TurnFailureEndCap error={{ message: "boom" }} turnId="turn_1" sessionRef="ref_a" />);
   await flushPendingTurnsProjectionForTests();
   expect(retryButton()?.disabled).toBe(false);
 
-  act(() => publishOutboxRecordForTests(outboxRecord(overrides)));
+  let row!: MutationOutboxRecord;
+  await act(async () => {
+    row = await enqueuePendingRow(storage, method);
+  });
   expect(retryButton()?.disabled).toBe(true);
+  expect(pendingTurnEntries("ref_a").map((entry) => entry.id)).toContain(row.clientMutationId);
 });
 
 test("a foreign pending send does not disable Retry", async () => {
+  const { storage } = await connectedThread();
   seedModel([failedTurn()]);
   render(<TurnFailureEndCap error={{ message: "boom" }} turnId="turn_1" sessionRef="ref_a" />);
   await flushPendingTurnsProjectionForTests();
-  act(() => publishOutboxRecordForTests(outboxRecord({ originClientId: "another-tab" })));
+  let row!: MutationOutboxRecord;
+  await act(async () => {
+    row = await enqueuePendingRow(storage, "turn/start", { foreign: true });
+  });
+  const entry = pendingTurnEntries("ref_a").find((candidate) => candidate.id === row.clientMutationId);
+  expect(entry).toBeDefined();
+  expect(entry?.fromThisClient).toBe(false);
   expect(retryButton()?.disabled).toBe(false);
 });
 
 test("a canceled own send does not disable Retry", async () => {
+  const { storage } = await connectedThread();
   seedModel([failedTurn()]);
   render(<TurnFailureEndCap error={{ message: "boom" }} turnId="turn_1" sessionRef="ref_a" />);
   await flushPendingTurnsProjectionForTests();
-  act(() => publishOutboxRecordForTests(outboxRecord({ state: "canceled" })));
+  let row!: MutationOutboxRecord;
+  await act(async () => {
+    row = await enqueuePendingRow(storage, "turn/start", { canceled: true });
+  });
+  const entry = pendingTurnEntries("ref_a").find((candidate) => candidate.id === row.clientMutationId);
+  expect(entry?.state).toBe("canceled");
   expect(retryButton()?.disabled).toBe(false);
 });
 
@@ -178,13 +206,18 @@ test("pending input appearing after render disables Retry and submits nothing", 
   // The row lands after the render the button state came from. The live
   // projection re-renders the button disabled, and its click handler is gone
   // behind the native disabled attribute.
-  act(() => publishOutboxRecordForTests(outboxRecord({ method: "turn/start" })));
+  let row!: MutationOutboxRecord;
+  await act(async () => {
+    row = await enqueuePendingRow(storage, "turn/start");
+  });
   const button = retryButton();
   expect(button?.disabled).toBe(true);
   if (button) fireEvent.click(button);
   await flushPendingTurnsProjectionForTests();
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
-  expect(await storage.listOutbox("ref_a")).toHaveLength(0);
+  // Exactly the one pending row this test allocated; the blocked Retry added
+  // no second identity.
+  expect((await storage.listOutbox("ref_a")).map((record) => record.clientMutationId)).toEqual([row.clientMutationId]);
 });
 
 test("the canonical latest turn changing after render hides the stale Retry action", async () => {
@@ -217,7 +250,13 @@ async function connectedThread(): Promise<{ fake: FakeClient; storage: MutationO
 
 test("activation rechecks the canonical latest turn and a stale callback submits nothing", async () => {
   const { fake, storage } = await connectedThread();
-  seedModel([failedTurn(), completedTurn("turn_2")]);
+  act(() => seedModel([failedTurn(), completedTurn("turn_2")]));
+  await flushPendingTurnsProjectionForTests();
+  // The oracle must fail for the latest-turn owner, not because readiness is
+  // unknown: the durable read has answered.
+  expect(threadsStore.getState().pendingProjectionLoadedRefs.has("ref_a")).toBe(true);
+  const turns = threadsStore.getState().threads.get("ref_a")?.turns ?? [];
+  expect(turns[turns.length - 1]?.id).toBe("turn_2");
   // A callback captured while turn_1 looked latest: the model advanced after
   // the render, so the activation's own recheck must refuse it.
   await threadsStore.getState().continueTurn("ref_a", "turn_1");
@@ -227,12 +266,17 @@ test("activation rechecks the canonical latest turn and a stale callback submits
 
 test("activation rechecks the outbox owner and a pending row submits nothing", async () => {
   const { fake, storage } = await connectedThread();
-  seedModel([failedTurn()]);
+  act(() => seedModel([failedTurn()]));
   await flushPendingTurnsProjectionForTests();
-  act(() => publishOutboxRecordForTests(outboxRecord({ method: "turn/start" })));
+  expect(threadsStore.getState().pendingProjectionLoadedRefs.has("ref_a")).toBe(true);
+  let row!: MutationOutboxRecord;
+  await act(async () => {
+    row = await enqueuePendingRow(storage, "turn/start");
+  });
   await threadsStore.getState().continueTurn("ref_a", "turn_1");
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
-  expect(await storage.listOutbox("ref_a")).toHaveLength(0);
+  // The pending row is untouched and no continuation row joined it.
+  expect((await storage.listOutbox("ref_a")).map((record) => record.clientMutationId)).toEqual([row.clientMutationId]);
 });
 
 // Holds the next durable pending read so a test can observe the window the
@@ -396,12 +440,19 @@ test("the hint toggle is a disclosure summary with a chevron affordance", async 
 });
 
 test("without a session ref the diagnostic still renders but the recovery action is withheld", async () => {
-  seedModel([failedTurn()]);
+  const { storage } = await connectedThread();
+  const listOutbox = vi.spyOn(storage, "listOutbox");
+  const listOptimistic = vi.spyOn(storage, "listOptimistic");
+  const listRecovery = vi.spyOn(storage, "listRecovery");
+  act(() => seedModel([failedTurn()]));
   render(<TurnFailureEndCap error={{ message: "boom" }} turnId="turn_1" sessionRef={undefined} />);
   expect(screen.getByTestId("turn-failure")).toBeTruthy();
   expect(screen.getByText("boom")).toBeTruthy();
   expect(screen.queryByRole("button")).toBe(null);
   await flushPendingTurnsProjectionForTests();
+  for (const read of [listOutbox, listOptimistic, listRecovery]) {
+    expect(read.mock.calls.some(([ref]) => ref === "")).toBe(false);
+  }
 });
 
 // --- TurnBlock integration: the end-cap is driven by turn.error presence ----

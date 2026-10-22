@@ -349,6 +349,10 @@ type ThreadsPortModel = ReturnType<typeof threadsPort.getThreadModel>;
 // unrelated writes.
 export function usePendingTurnEntries(ref: string, method?: PendingMethod): PendingTurnEntry[] {
   useEffect(() => {
+    // The end-cap passes "" when its caller has no session ref. There is no
+    // durable outbox for an empty ref, and refreshing it would send
+    // listOutbox("")/listOptimistic("")/listRecovery("") to storage for nothing.
+    if (ref === "") return;
     void refreshPendingTurnsProjection(ref);
   }, [ref]);
 
