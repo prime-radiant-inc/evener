@@ -210,9 +210,13 @@ type serveDeps struct {
 	// Injectable so a test can wedge it: the reason the tee exists is that the
 	// real one can be a pipe nobody drains, and that is not reproducible against
 	// a real terminal.
-	verboseOut       io.Writer
-	subscriberCount  func(serveServer, string) int
-	notifyContext    func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
+	verboseOut      io.Writer
+	subscriberCount func(serveServer, string) int
+	notifyContext   func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
+	// runContext derives the run's lifetime from the signal context. Its cancel
+	// is what thread/shutdown and retirement call to start the exit path, so it
+	// is injectable for a test that must gate exactly that call.
+	runContext       func(context.Context) (context.Context, context.CancelFunc)
 	startCPUProfile  func(string) (func(), error)
 	startTrace       func(string) (func(), error)
 	startLivePprof   func(logf func(format string, args ...any)) (indexURL string, stop func(), err error)
@@ -285,7 +289,8 @@ func defaultServeDeps() serveDeps {
 		},
 		drainWaitExpiry: func() <-chan time.Time { return time.After(shutdownDrainWaitBudget) },
 		subscriberCount: func(s serveServer, id string) int { return s.(*server.Server).AppSubscriberCount(id) },
-		notifyContext:   signal.NotifyContext, startCPUProfile: cmdutil.StartCPUProfile, startTrace: cmdutil.StartTrace,
+		notifyContext:   signal.NotifyContext, runContext: context.WithCancel,
+		startCPUProfile: cmdutil.StartCPUProfile, startTrace: cmdutil.StartTrace,
 		startLivePprof:       cmdutil.StartLivePprof,
 		register:             func(r *rvreg.Registration, dir string, entry rendezvous.Entry) error { return r.Register(dir, entry) },
 		rendezvousRetryPause: func() <-chan time.Time { return time.After(rendezvousRemovalRetryPause) },
@@ -479,7 +484,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// every background job it owns.
 	signalCtx, stopSignals := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
-	ctx, cancel := context.WithCancel(signalCtx)
+	ctx, cancel := deps.runContext(signalCtx)
 	defer cancel()
 
 	// Before anything that can create the user config root: the legacy-data

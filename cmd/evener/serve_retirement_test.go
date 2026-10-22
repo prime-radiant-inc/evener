@@ -1469,13 +1469,13 @@ func TestServeManualRetirementResponsePrecedesExitCancellation(t *testing.T) {
 	responseDelivered := make(chan struct{})
 	var deliveredOnce sync.Once
 	markDelivered := func() { deliveredOnce.Do(func() { close(responseDelivered) }) }
-	notifyContext := deps.notifyContext
-	deps.notifyContext = func(ctx context.Context, signals ...os.Signal) (context.Context, context.CancelFunc) {
-		next, stop := notifyContext(ctx, signals...)
+	runContext := deps.runContext
+	deps.runContext = func(ctx context.Context) (context.Context, context.CancelFunc) {
+		next, cancel := runContext(ctx)
 		var gateOnce sync.Once
 		return next, func() {
 			gateOnce.Do(func() { <-responseDelivered })
-			stop()
+			cancel()
 		}
 	}
 
