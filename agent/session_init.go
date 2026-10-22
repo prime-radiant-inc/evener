@@ -561,13 +561,13 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		if agent, ok := s.pluginAgents[agentName]; ok && len(agent.Tasks) > 0 {
 			store := s.getOrCreateTaskStore()
 			if err := store.PopulateFromTemplates(agent.Tasks, nil); err == nil {
-				// Inject the first task prompt. Its reasoning_effort applies
-				// per-round via prepareModelRequestWithError while it is in progress; it
-				// must not overwrite the session's configured effort.
-				if current, ok := store.CurrentInProgress(); ok {
-					if err := s.SteerKind(formatCurrentTaskSteering(current, s.canInstructTool("task_list")), events.SteeringKindCurrentTask); err != nil {
-						s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("steering admission failed: %v", err)})
-					}
+				// Announce the workflow the same way a delegate receives its plan:
+				// an agent's own workflow has the same property, that a later step's
+				// instructions decide what the first must build. Each task's
+				// reasoning_effort still applies per-round via
+				// prepareModelRequestWithError; this only affects the prompt.
+				if err := steerDelegatePlan(s, store); err != nil {
+					s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("steering admission failed: %v", err)})
 				}
 			}
 		}

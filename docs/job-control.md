@@ -109,6 +109,8 @@ This reference contract is not itself the runtime system prompt, but the followi
   the role has one before its `parent_tasks` slot; otherwise it is the first
   seeded step. A later step's instructions often decide what an earlier step
   must build, so write each step's prompt as if every worker can read it.
+  A root non-interactive session started from a named agent's workflow receives
+  the same announcement, since that workflow has the same cross-step property.
   Sessions start clean
   by default; use `fork_context=true` only when the assignment requires the
   parent's full context and history. It returns `dlg_...`,
