@@ -1037,6 +1037,23 @@ describe("native file URL links", () => {
 		expect([...result.references.keys()]).toHaveLength(1);
 	});
 
+	// Markdown's autolink form carries no label of its own: the angle-bracketed
+	// URL is both the destination and the visible text. An agent may use it for
+	// the same report it would otherwise link explicitly.
+	it("binds an angle-bracketed file URL autolink to the retained file", () => {
+		const result = renderMarkdownFileReferences(`Report: <${reportURL}>`, cwd, artifactsDir);
+		const reference = [...result.references.values()][0];
+		expect(reference).toMatchObject({
+			path: "docs-quality-repairs.md",
+			cwd: artifactsDir,
+			readTarget: `${artifactsDir}/docs-quality-repairs.md`,
+			root: "artifacts",
+		});
+		// The visible text stays the URL, so the message reads the same.
+		expect(result.markdown).toMatch(/^Report: \[file:\/\/[^\]]*\]\(evener-file:[\d-]+\)$/);
+		expect(result.markdown).toContain(reportURL);
+	});
+
 	it("binds a file URL inside the working directory", () => {
 		const result = renderMarkdownFileReferences(`[design](file://${cwd}/docs/plan.md)`, cwd);
 		expect([...result.references.values()][0]).toMatchObject({

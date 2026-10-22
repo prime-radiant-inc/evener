@@ -409,6 +409,30 @@ it("keeps Copy response and external actions, but rejects unknown generated iden
 // Copying a retained artifact's folder-relative path would name a different
 // file when pasted beside the session's folder, so the long-press menu names
 // and copies the file the link actually points at.
+// Markdown's autolink form is the other way an agent may name a report. It
+// must open the Reader just as an explicitly labelled link does.
+it("opens an angle-bracketed artifacts autolink when tapped", () => {
+	const artifactsDir = "/state/projects/p/sessions/s1/artifacts";
+	const openFile = vi.fn();
+	const tree = render(
+		<MarkdownResponse
+			markdown={`Report: <file://${artifactsDir}/report.md>`}
+			fileContext={{ cwd: "/work/a", artifactsDir, openFile }}
+		/>,
+	);
+	const text = prose(tree);
+	const url = emittedURLs(text.props.markdown)[0];
+	act(() => text.props.onLinkPress({ url }));
+	expect(openFile).toHaveBeenCalledWith({
+		path: "report.md",
+		cwd: artifactsDir,
+		readTarget: `${artifactsDir}/report.md`,
+		provenance: "absolute",
+		root: "artifacts",
+	});
+	expect(Linking.openURL).not.toHaveBeenCalled();
+});
+
 it("copies an artifacts link's full target, and a folder file's path", () => {
 	const artifactsDir = "/state/projects/p/sessions/s1/artifacts";
 	const openFile = vi.fn();

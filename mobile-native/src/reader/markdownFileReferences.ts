@@ -52,6 +52,9 @@ interface Candidate {
 	surface: "prose" | "code" | "link";
 	value: string;
 	label?: string;
+	// An autolink's source is `<url>`, which is not what its reader sees: the
+	// URL is its visible text, so the rewritten link shows that instead.
+	display?: string;
 	referenceSuffix?: true;
 }
 interface InlineSpan {
@@ -318,6 +321,16 @@ function collectInline(
 		const to = raw.offsets.at(-1);
 		if (from === undefined || to === undefined) continue;
 		if (token.type === "link") {
+			// An autolink has no label of its own: `<url>` is both destination
+			// and visible text, and labelEnd would reject it for the missing
+			// bracket. Only a file URL can name a served document, and only it
+			// carries a scheme the path parser refuses; anything else here
+			// (`<https://…>`, `<person@example.test>`) stays an ordinary link.
+			if (token.raw.startsWith("<") && token.raw.endsWith(">")) {
+				const url = destination(token.raw.slice(1, -1));
+				if (/^file:/iu.test(url)) found.push({ start: from, end: to + 1, surface: "link", value: url, display: url });
+				continue;
+			}
 			const close = labelEnd(token.raw, token.text);
 			if (close < 0) continue;
 			if (token.raw[close + 1] === "(") {
@@ -484,6 +497,7 @@ export function renderMarkdownFileReferences(markdown: string, cwd: string, arti
 		references.set(id, reference);
 		let replacement: string;
 		if (candidate.referenceSuffix) replacement = `(${id})`;
+		else if (candidate.display !== undefined) replacement = `[${candidate.display}](${id})`;
 		else if (candidate.label === undefined) replacement = id;
 		else
 			replacement = `[${candidate.surface === "prose" ? candidate.label : markdown.slice(candidate.start, candidate.end)}](${id})`;
