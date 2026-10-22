@@ -406,8 +406,9 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
     const incarnation = namespace?.incarnation;
     if (incarnation === undefined || row.token.namespaceIncarnation === incarnation) return publicSessionRow(row);
     const refreshed: SessionRow = { ...row, token: { ...row.token, namespaceIncarnation: incarnation } };
-    await requestResult(putSessionRow(transaction, refreshed));
+    const write = putSessionRow(transaction, refreshed);
     changed.push(key);
+    await requestResult(write);
     return publicSessionRow(refreshed);
   }
 
@@ -447,8 +448,9 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         if (existing) return { state: "conflict", current: publicSessionRow(existing) } as const;
         const incarnation = await this.#currentIncarnation(transaction, key.namespace);
         const row = newSessionRow(key, value, incarnation);
-        await requestResult(transaction.objectStore(COMPOSER_DRAFTS_STORE).add(row));
+        const write = transaction.objectStore(COMPOSER_DRAFTS_STORE).add(row);
         changed.push(key);
+        await requestResult(write);
         return { state: "committed", draft: publicSessionRow(row) } as const;
       });
     } catch {
@@ -481,8 +483,9 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         // The one choke point every explicit edit goes through, so the stamp
         // is the draft's actual last-write time.
         const next = { ...nextSessionRow(row, value), editedAt: Date.now() };
-        await requestResult(putSessionRow(transaction, next));
+        const write = putSessionRow(transaction, next);
         changed.push(key);
+        await requestResult(write);
         return { state: "committed", draft: publicSessionRow(next) } as const;
       });
     } catch {
@@ -517,8 +520,9 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         // resume-carry ordering stamp belongs to text that exists.
         const cleared = nextSessionRow(row, { text: "", skillNames: [] });
         delete cleared.editedAt;
-        await requestResult(putSessionRow(transaction, cleared));
+        const write = putSessionRow(transaction, cleared);
         changed.push(key);
+        await requestResult(write);
         return { cleared: true, draftUnchanged: true, persistence: "committed" } as const;
       });
     } catch {
@@ -551,8 +555,9 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         const carried: SessionRow = destination
           ? { ...nextSessionRow(destination, source), editedAt: Date.now() }
           : newSessionRow(to, source, await this.#currentIncarnation(transaction, to.namespace));
-        await requestResult(putSessionRow(transaction, carried));
+        const write = putSessionRow(transaction, carried);
         changed.push(to);
+        await requestResult(write);
       });
     } catch {
       // Best-effort like every draft write: the source copy stays put.
@@ -716,8 +721,8 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
             ),
           ),
         );
-        await Promise.all(writes);
         changed.push(preparation.key);
+        await Promise.all(writes);
         return {
           state: "applied",
           draftRevision: nextRow.token.sessionRevision,
@@ -811,8 +816,9 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
               const legacyStamp = incoming.value.editedAt;
               if (legacyStamp === undefined) delete imported.editedAt;
               else imported.editedAt = legacyStamp;
-              await requestResult(drafts.add(imported));
+              const write = drafts.add(imported);
               changed.push(incoming.key);
+              await requestResult(write);
             }
             await requestResult(
               transfers.put({
