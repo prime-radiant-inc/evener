@@ -7,6 +7,7 @@ import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
+import type { MutationOutboxRecord } from "../../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
 import { holdIndexedDBEvent, holdNextWriteTransaction } from "../../../../stores/testing/stalledIndexedDB";
 import {
@@ -19,7 +20,9 @@ import { useColdStartSkeleton } from "../../coldStart";
 import { readComposerDraft, writeComposerDraft } from "../draft";
 import {
   discardRecoveryPendingTurn,
+  ownPendingTurnInputFor,
   pendingTurnEntries,
+  publishOutboxRecordForTests,
   refreshPendingTurnsProjection,
   resendRecoveryPendingTurn,
   resetPendingTurnsStoreForTests,
@@ -1254,4 +1257,69 @@ test("an authoritative assistant frame retires first-frame state by model identi
   });
   const awaiting = renderHook(() => useAwaitingFirstFrameSend("ref_a"));
   expect(awaiting.result.current).toBe(false);
+});
+
+// --- The activation-time view of the outbox owner ---------------------------
+//
+// `ownPendingTurnInputFor` is what continueTurn rechecks synchronously at
+// activation: the same projected entries a render holds, read from the stores
+// as they are now. The render's disabled state is a projection; this is the
+// live answer.
+
+function durableRow(overrides: Partial<MutationOutboxRecord> = {}): MutationOutboxRecord {
+  return {
+    version: 1,
+    clientMutationId: "cmid_pending",
+    intentSequence: 1,
+    createdAt: 1,
+    targetRef: "ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "pending" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "pending" }] },
+    state: "submitting",
+    ...overrides,
+  } as MutationOutboxRecord;
+}
+
+test("the activation-time pending read follows rows published after the last render snapshot", async () => {
+  await connect();
+  await refreshPendingTurnsProjection("ref_a");
+  expect(ownPendingTurnInputFor("ref_a")).toBe(false);
+
+  publishOutboxRecordForTests(durableRow());
+  // No await: activation must see the row that appeared after the render,
+  // synchronously.
+  expect(ownPendingTurnInputFor("ref_a")).toBe(true);
+});
+
+test.each([
+  ["an own unresolved send", { method: "turn/start" }, true],
+  ["an own unresolved queue", { method: "turn/queue" }, true],
+  ["a foreign send", { method: "turn/start", originClientId: "another-tab" }, false],
+  ["a canceled own send", { method: "turn/start", state: "canceled" }, false],
+] as const)("%s reads %s from the live projection", async (_case, overrides, expected) => {
+  await connect();
+  await refreshPendingTurnsProjection("ref_a");
+  publishOutboxRecordForTests(durableRow(overrides));
+  expect(ownPendingTurnInputFor("ref_a")).toBe(expected);
+});
+
+test("the activation-time pending read clears once the durable row settles", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  await connect();
+  const record = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "pending" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "pending" }] },
+  });
+  await refreshPendingTurnsProjection("ref_a");
+  expect(ownPendingTurnInputFor("ref_a")).toBe(true);
+
+  await storage.settleApplied(record.clientMutationId);
+  await refreshPendingTurnsProjection("ref_a");
+  expect(ownPendingTurnInputFor("ref_a")).toBe(false);
 });

@@ -1,4 +1,4 @@
-import { type ComposerMention, TURN_CONTINUATION_TEXT } from "@evener/appwire-client";
+import { type ComposerMention, isLatestRetryTurn, TURN_CONTINUATION_TEXT } from "@evener/appwire-client";
 // threads.ts tracks the ThreadModel for every ref currently open in a pane,
 // refcounted across panes sharing the same ref, and routes live wire
 // notifications into the reducer for whichever tracked model(s) they target.
@@ -355,7 +355,11 @@ export interface ThreadsStoreState {
     commandNames?: readonly string[],
     mentions?: readonly ComposerMention[],
   ): Promise<void>;
-  continueTurn(ref: string): Promise<void>;
+  // Re-issues the failed turn's continuation. `expectedTurnId` is the failure
+  // the rendered action belonged to: activation rechecks the canonical latest
+  // turn and the live outbox projection before submitting, so a callback
+  // captured before the model advanced submits nothing.
+  continueTurn(ref: string, expectedTurnId: string): Promise<void>;
   steer(
     ref: string,
     text: string,
@@ -3905,6 +3909,12 @@ async function sendMutationIntent(intent: MutationIntent): Promise<void> {
   if (sendResumesModel(intent.targetRef)) void resumeFencedForSend(intent.targetRef);
 }
 
+// A repeated press in the same task can reach continueTurn before the durable
+// enqueue it just made is visible in the pending projection. The two owners
+// remain the only eligibility authority; this only stops a second concurrent
+// submission for a ref whose first one has not finished committing.
+const retryActivationsInFlight = new Set<string>();
+
 function composerMutationIntent(
   ref: string,
   route: ComposerMutationRoute,
@@ -4093,6 +4103,11 @@ interface ResumeOnlyProjection {
   // turn/start queued behind one starves at the target's FIFO, so a ref holding
   // one is not foldable.
   hasQueuedNonSend(ref: string): boolean;
+  // Retry's second owner, read at activation: whether this client has any
+  // unresolved send or queue entry for `ref`. The pending-turns projection
+  // already holds that answer, and threads.ts cannot import it back without a
+  // cycle, so it registers the read here beside the fence's own.
+  ownPendingTurnInput(ref: string): boolean;
 }
 let resumeOnlyProjection: ResumeOnlyProjection | null = null;
 
@@ -4122,6 +4137,14 @@ export function hasQueuedNonSend(ref: string): boolean {
   return (
     resumeOnlyProjection === null || !resumeOnlyProjection.isLoaded(ref) || resumeOnlyProjection.hasQueuedNonSend(ref)
   );
+}
+
+// The live outbox owner's answer for Retry, read at activation rather than
+// trusted from the render that disabled (or enabled) the button. No installed
+// projection means no durable read has been published in this page, so there
+// is no own pending entry to observe.
+function ownPendingTurnInputNow(ref: string): boolean {
+  return resumeOnlyProjection?.ownPendingTurnInput(ref) ?? false;
 }
 
 // isResumeOnly over the store's current model for ref: the ADMISSION
@@ -7511,11 +7534,23 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     );
   },
 
-  async continueTurn(ref) {
-    await sendMutationIntent({
-      ...composerMutationIntent(ref, "send", TURN_CONTINUATION_TEXT),
-      preserveComposer: true,
-    });
+  async continueTurn(ref, expectedTurnId) {
+    // Both owners are rechecked here, synchronously, at activation: the
+    // render's captured button state is not authority. A failure that is no
+    // longer the canonical latest turn submits nothing, and neither does one
+    // whose client already has unresolved send/queue input.
+    const model = threadsStore.getState().threads.get(ref);
+    if (!model || !isLatestRetryTurn(model, expectedTurnId)) return;
+    if (ownPendingTurnInputNow(ref) || retryActivationsInFlight.has(ref)) return;
+    retryActivationsInFlight.add(ref);
+    try {
+      await sendMutationIntent({
+        ...composerMutationIntent(ref, "send", TURN_CONTINUATION_TEXT),
+        preserveComposer: true,
+      });
+    } finally {
+      retryActivationsInFlight.delete(ref);
+    }
   },
 
   async steer(ref, text, attachments, skillNames, commandNames, mentions) {
@@ -8489,6 +8524,7 @@ export function resetThreadsStoreForTests(): void {
     mutationRuntime = null;
   }
   mutationStorageForTests = null;
+  retryActivationsInFlight.clear();
   createMutationBroadcastChannelForTests = () => {
     const channel = new EventTarget();
     return Object.assign(channel, {
