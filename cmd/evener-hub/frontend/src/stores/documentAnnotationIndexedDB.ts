@@ -1302,10 +1302,6 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     );
   }
 
-  // The durable fence is its own transaction so a failed fence cannot roll back
-  // validation and so the observation boundary can run between them. It rechecks
-  // the durable identity it is about to replace: an obsolete validation must not
-  // rewrite a newer epoch.
   // The durable evidence that a fence committed though its caller never saw the
   // completion: the same transaction writes the expiry row in phase "fenced"
   // under the expected document, incarnation and epoch. Any other row state, a
@@ -1331,6 +1327,10 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     return receipt;
   }
 
+  // The durable fence is its own transaction so a failed fence cannot roll back
+  // validation and so the observation boundary can run between them. It rechecks
+  // the durable identity it is about to replace: an obsolete validation must not
+  // rewrite a newer epoch.
   async #fence(
     ticketKey: DocumentKey,
     namespace: Extract<DocumentKey["namespace"], { kind: "browser" }>,
