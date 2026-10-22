@@ -27,6 +27,7 @@ const UP_TO_DATE: UpdateCheckResponse = {
   restartPending: false,
   startedAt: "2026-10-21T12:00:00Z",
   restartSupported: true,
+  installTargetMatchesLaunch: true,
 };
 const WAITING: UpdateCheckResponse = {
   ...UP_TO_DATE,
@@ -403,14 +404,20 @@ describe("install", () => {
     const hub = await checked(WAITING);
     const installing = hub.controller.install();
     hub.take("evener/upgrade").reject(new Error("socket hung up"));
-    await settle();
-    const recheck = hub.take("evener/update/check");
-    recheck.resolve({ ...WAITING, installAvailable: false, restartPending: true });
     await installing;
     expect(hub.controller.getState()).toMatchObject({
       installing: false,
       installError: null,
+      installReconcile: true,
+    });
+    expect(hub.pending.some((r) => r.method === "evener/update/check")).toBe(false);
+
+    const recheck = hub.controller.runCheck();
+    hub.take("evener/update/check").resolve({ ...WAITING, installAvailable: false, restartPending: true });
+    await recheck;
+    expect(hub.controller.getState()).toMatchObject({
       check: { installAvailable: false, restartPending: true },
+      installReconcile: false,
     });
   });
 });

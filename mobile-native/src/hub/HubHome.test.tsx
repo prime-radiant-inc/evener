@@ -65,6 +65,7 @@ const UP_TO_DATE: UpdateCheckResponse = {
 	restartPending: false,
 	startedAt: FIRST_START,
 	restartSupported: true,
+	installTargetMatchesLaunch: true,
 };
 const WAITING: UpdateCheckResponse = { ...UP_TO_DATE, updateAvailable: true, installAvailable: true };
 const INSTALLED: UpdateCheckResponse = { ...UP_TO_DATE, onDiskCommit: "def5678", restartPending: true };
@@ -428,6 +429,13 @@ it("shows the on-disk build and its probe error", async () => {
 		check: { ...UP_TO_DATE, onDiskCommit: undefined, onDiskError: "probe failed" },
 	});
 	expect(renderedText(failed.tree)).toContain("probe failed");
+});
+
+it("explains an install target that is not the running binary", async () => {
+	const { tree } = await mount({
+		check: { ...UP_TO_DATE, installTarget: "/opt/evener", installTargetMatchesLaunch: false },
+	});
+	expect(renderedText(tree)).toContain("/opt/evener");
 });
 
 it("shows a dirty running build in the pending and confirm text", async () => {

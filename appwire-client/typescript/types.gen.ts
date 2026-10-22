@@ -4760,6 +4760,8 @@ export interface UpdateCheckResponse {
   startedAt: string;
   restartSupported: boolean;
   checkError?: string;
+  installTarget?: string;
+  installTargetMatchesLaunch: boolean;
 }
 
 export interface UpgradeParams {

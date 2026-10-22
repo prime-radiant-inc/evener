@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -73,7 +74,7 @@ func TestHubUpdateCheckMarksInstallAvailableWhenOnDiskIsOlder(t *testing.T) {
 			UpdateAvailable: true,
 		}, nil
 	})
-	setRestartProbe(t, "echo 'evener abc1234 (2026-10-21T00:00:00Z)'")
+	setManagedRestartProbe(t, "echo 'evener abc1234 (2026-10-21T00:00:00Z)'")
 
 	resp, err := hubUpdateCheck(context.Background(), appwire.UpdateCheckParams{})
 	if err != nil {
@@ -97,7 +98,7 @@ func TestHubUpdateCheckInstallsSelectedChannelOverDifferentOnDisk(t *testing.T) 
 			UpdateAvailable: false,
 		}, nil
 	})
-	setRestartProbe(t, "echo 'evener def5678 (2026-10-21T00:00:00Z)'")
+	setManagedRestartProbe(t, "echo 'evener def5678 (2026-10-21T00:00:00Z)'")
 
 	resp, err := hubUpdateCheck(context.Background(), appwire.UpdateCheckParams{})
 	if err != nil {
@@ -264,4 +265,33 @@ func setRestartProbe(t *testing.T, body string) {
 	previousErr := errHubLaunchEntrypoint
 	errHubLaunchEntrypoint = nil
 	t.Cleanup(func() { errHubLaunchEntrypoint = previousErr })
+}
+
+func setManagedRestartProbe(t *testing.T, body string) string {
+	t.Helper()
+	root := t.TempDir()
+	shareBin := filepath.Join(root, "share", "evener", "bin")
+	if err := os.MkdirAll(shareBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(shareBin, "evener")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	previousSupported := hubRestartSupported
+	hubRestartSupported = func() bool { return true }
+	t.Cleanup(func() { hubRestartSupported = previousSupported })
+	previousPath := hubLaunchEntrypoint
+	hubLaunchEntrypoint = path
+	t.Cleanup(func() { hubLaunchEntrypoint = previousPath })
+	previousErr := errHubLaunchEntrypoint
+	errHubLaunchEntrypoint = nil
+	t.Cleanup(func() { errHubLaunchEntrypoint = previousErr })
+	previousArgs := hubProcessArgs
+	hubProcessArgs = func() []string { return []string{path, "hub"} }
+	t.Cleanup(func() { hubProcessArgs = previousArgs })
+	previousExe := hubExecutable
+	hubExecutable = func() (string, error) { return path, nil }
+	t.Cleanup(func() { hubExecutable = previousExe })
+	return path
 }

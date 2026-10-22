@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useConnectionStore } from "../../../stores/connection";
 import { hubUpdateStore, RESTART_TIMEOUT_MS, type UpdateChannel, useHubUpdateStore } from "../../../stores/hubUpdate";
 import { useSettingsOverviewStore } from "../../../stores/settingsOverview";
 import { Button, ConfirmDialog, InlineNotice, Loader, RadioGroup } from "../../../widgets";
@@ -47,6 +48,7 @@ export function HubUpdates() {
   const checkError = useHubUpdateStore((s) => s.checkError);
   const installing = useHubUpdateStore((s) => s.installing);
   const installError = useHubUpdateStore((s) => s.installError);
+  const installReconcile = useHubUpdateStore((s) => s.installReconcile);
   const applying = useHubUpdateStore((s) => s.applying);
   const applyError = useHubUpdateStore((s) => s.applyError);
   const restarting = useHubUpdateStore((s) => s.restarting);
@@ -56,6 +58,7 @@ export function HubUpdates() {
 
   const buildChannel = hub?.buildChannel;
   const isDev = buildChannel === "dev";
+  const connectionState = useConnectionStore((s) => s.state);
 
   // Seed the selector from the running binary once the overview is here.
   useEffect(() => {
@@ -74,6 +77,11 @@ export function HubUpdates() {
   useEffect(() => {
     if (hub && buildChannel === "dev") void hubUpdateStore.getState().runCheck();
   }, [hub, buildChannel]);
+
+  // A lost install response is reconciled once the socket is ready again.
+  useEffect(() => {
+    if (installReconcile && connectionState === "ready") void hubUpdateStore.getState().runCheck();
+  }, [installReconcile, connectionState]);
 
   if (!hub) return null;
 
@@ -138,6 +146,13 @@ export function HubUpdates() {
       )}
       {check?.onDiskError !== undefined && (
         <InlineNotice tone="danger">Can't read the on-disk build: {check.onDiskError}</InlineNotice>
+      )}
+
+      {check?.installTargetMatchesLaunch === false && check.installTarget !== undefined && (
+        <InlineNotice tone="danger" data-testid="hub-install-target-mismatch">
+          Install is unavailable: it would write {check.installTarget}, but this hub runs from a different binary. Use
+          the managed installation.
+        </InlineNotice>
       )}
 
       {check?.restartPending === true && (

@@ -33,6 +33,7 @@ const UP_TO_DATE: UpdateCheckResponse = {
   restartPending: false,
   startedAt: "2026-10-21T12:00:00Z",
   restartSupported: true,
+  installTargetMatchesLaunch: true,
 };
 
 function healthFetch(versions: string[]): typeof fetch {
@@ -598,6 +599,7 @@ describe("restart", () => {
       updateAvailable: true,
       startedAt: "2026-10-21T12:00:00Z",
       restartSupported: true,
+      installTargetMatchesLaunch: true,
     }));
     fake.on("evener/hub/restart", () => ({
       restarting: true,

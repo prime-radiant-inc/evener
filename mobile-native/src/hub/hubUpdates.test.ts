@@ -24,6 +24,7 @@ const check = (over: Partial<UpdateCheckResponse> = {}): UpdateCheckResponse => 
 	restartPending: false,
 	startedAt: FIRST_START,
 	restartSupported: true,
+	installTargetMatchesLaunch: true,
 	...over,
 });
 

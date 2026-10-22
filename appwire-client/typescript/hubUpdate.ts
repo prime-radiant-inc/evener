@@ -54,6 +54,9 @@ export interface HubUpdateState {
   checkError: string | null;
   installing: boolean;
   installError: string | null;
+  /** A lost install response still needs a fresh check; the host retries it
+   * when its connection is ready rather than racing a reconnect. */
+  installReconcile: boolean;
   /** @deprecated State for the combined apply path. */
   applying: boolean;
   /** @deprecated State for the combined apply path. */
@@ -109,6 +112,7 @@ export const INITIAL_HUB_UPDATE_STATE: HubUpdateState = {
   checkError: null,
   installing: false,
   installError: null,
+  installReconcile: false,
   applying: false,
   applyError: null,
   restarting: false,
@@ -160,7 +164,7 @@ export function createHubUpdateController(
     const seq = ++checkSequence;
     try {
       const check = await ports.client().request("evener/update/check", { channel: get().channel ?? "" });
-      if (seq === checkSequence) set({ check, checking: false });
+      if (seq === checkSequence) set({ check, checking: false, installReconcile: false });
     } catch (err) {
       if (seq === checkSequence) set({ check: null, checking: false, checkError: friendlyErrorMessage(err) });
     }
@@ -202,10 +206,9 @@ export function createHubUpdateController(
         return;
       }
       // The hub may have installed the artifact before the response frame was
-      // lost. Re-check so the section reflects the on-disk build instead of
-      // claiming a failure.
-      set({ installing: false });
-      await runCheck();
+      // lost. Ask the host to reconcile once its connection is ready; an
+      // immediate check races a reconnect and is lost with the socket.
+      set({ installing: false, installReconcile: true });
       return;
     }
     if (disposed) return;

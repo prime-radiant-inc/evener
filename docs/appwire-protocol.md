@@ -4671,6 +4671,8 @@ Underlying Go kind: `string` (no struct fields).
 | `startedAt` | time.Time |  |  |
 | `restartSupported` | bool |  |  |
 | `checkError` | string | yes |  |
+| `installTarget` | string | yes |  |
+| `installTargetMatchesLaunch` | bool |  |  |
 
 
 ### `UpgradeParams`

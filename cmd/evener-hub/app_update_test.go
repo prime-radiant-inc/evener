@@ -186,7 +186,7 @@ func TestHubUpdateCheckDevBuildIsNotApplicable(t *testing.T) {
 
 func TestHubUpdateCheckDefaultsToBuildChannelAndFillsCurrent(t *testing.T) {
 	setBuild(t, "3b1c5f8", "snapshot")
-	setRestartProbe(t, "echo 'evener 3b1c5f8 (2026-10-21T00:00:00Z)'")
+	setManagedRestartProbe(t, "echo 'evener 3b1c5f8 (2026-10-21T00:00:00Z)'")
 	var gotOpts selfupdate.CheckOptions
 	stubUpdateCheck(t, func(_ context.Context, opts selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
 		gotOpts = opts
@@ -203,6 +203,7 @@ func TestHubUpdateCheckDefaultsToBuildChannelAndFillsCurrent(t *testing.T) {
 		Channel: "snapshot", BuildChannel: "snapshot", CurrentVersion: "3b1c5f8", CurrentCommit: "3b1c5f8",
 		LatestTag: "snapshot", LatestCommit: "be70029abc", UpdateAvailable: true, Applicable: true,
 		OnDiskCommit: "3b1c5f8", InstallAvailable: true, StartedAt: hubProcessStartedAt, RestartSupported: true,
+		InstallTarget: expectedInstallTarget(), InstallTargetMatchesLaunch: true,
 	}
 	if got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
@@ -236,6 +237,23 @@ func TestHubUpdateCheckReportsChannelError(t *testing.T) {
 	}
 	if !strings.Contains(resp.CheckError, "rate limit") {
 		t.Fatalf("check error = %q, want the channel failure", resp.CheckError)
+	}
+}
+
+func TestHubUpdateApplyReportsChannelFailure(t *testing.T) {
+	setBuild(t, "3b1c5f8", "snapshot")
+	stubUpdateCheck(t, func(context.Context, selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
+		return selfupdate.CheckResult{}, errors.New("GET x: 403 Forbidden: API rate limit exceeded")
+	})
+	upgrades := stubHubSelfUpgrade(t, func(context.Context, selfupdate.Options) (selfupdate.Result, error) {
+		t.Fatal("apply installed after a failed channel check")
+		return selfupdate.Result{}, nil
+	})
+	if _, err := hubUpdateApply(context.Background(), appwire.UpdateApplyParams{}); err == nil || !strings.Contains(err.Error(), "rate limit") {
+		t.Fatalf("hubUpdateApply error = %v, want the channel failure", err)
+	}
+	if *upgrades != 0 {
+		t.Fatalf("upgrades = %d, want 0", *upgrades)
 	}
 }
 

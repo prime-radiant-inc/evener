@@ -52,6 +52,7 @@ const UP_TO_DATE: UpdateCheckResponse = {
   restartPending: false,
   startedAt: "2026-10-21T12:00:00Z",
   restartSupported: true,
+  installTargetMatchesLaunch: true,
 };
 
 const UPDATE_AVAILABLE: UpdateCheckResponse = {
@@ -86,6 +87,7 @@ test("dev build shows the rebuild note, the on-disk build, and Restart without I
     updateAvailable: false,
     installAvailable: false,
     restartSupported: true,
+    installTargetMatchesLaunch: true,
   }));
   fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
 
@@ -108,6 +110,7 @@ test("dev build shows restart progress, timeout, and failure states", async () =
     updateAvailable: false,
     installAvailable: false,
     restartSupported: true,
+    installTargetMatchesLaunch: true,
   }));
   fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
 
@@ -170,6 +173,7 @@ test("keeps Restart available when only the channel check fails", async () => {
     updateAvailable: false,
     installAvailable: false,
     restartSupported: true,
+    installTargetMatchesLaunch: true,
   }));
   fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
 
@@ -177,6 +181,23 @@ test("keeps Restart available when only the channel check fails", async () => {
   await updateStateIs("check-failed");
   expect(updateStatus().textContent).toContain("rate limit");
   expect(screen.getByRole("button", { name: "Restart hub" })).toBeTruthy();
+});
+
+test("disables Install when the managed target differs from the running binary", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/settings/overview", () => overview("snapshot"));
+  fake.on("evener/update/check", () => ({
+    ...UPDATE_AVAILABLE,
+    installAvailable: false,
+    installTarget: "/opt/evener",
+    installTargetMatchesLaunch: false,
+  }));
+  fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
+
+  render(<HubSection />);
+  await updateStateIs("update-available");
+  expect(screen.getByRole("button", { name: "Install update" })).toHaveProperty("disabled", true);
+  expect(screen.getByTestId("hub-install-target-mismatch").textContent).toContain("/opt/evener");
 });
 
 test("switching channel re-checks with the new channel", async () => {

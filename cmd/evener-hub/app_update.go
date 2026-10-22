@@ -115,6 +115,8 @@ func hubUpdateCheck(ctx context.Context, params appwire.UpdateCheckParams) (appw
 	}
 	resp.StartedAt = hubProcessStartedAt
 	resp.RestartSupported = hubRestartUsable() && onDiskErr == nil
+	resp.InstallTarget = expectedInstallTarget()
+	resp.InstallTargetMatchesLaunch = sameInstallTarget(resp.InstallTarget, hubLaunchEntrypoint)
 	binaryChanged := false
 	if hubLaunchBinarySHA256 != "" {
 		if digest, err := launchBinaryDigest(hubLaunchEntrypoint); err == nil {
@@ -144,8 +146,41 @@ func hubUpdateCheck(ctx context.Context, params appwire.UpdateCheckParams) (appw
 	resp.LatestCommit = result.LatestCommit
 	resp.UpdateAvailable = result.UpdateAvailable
 	resp.Applicable = true
-	resp.InstallAvailable = result.LatestCommit != "" && onDiskCommit != "" && !selfupdate.CommitIsCurrent(result.LatestCommit, commitToken(onDiskCommit))
+	resp.InstallAvailable = result.LatestCommit != "" &&
+		onDiskCommit != "" &&
+		!selfupdate.CommitIsCurrent(result.LatestCommit, commitToken(onDiskCommit)) &&
+		resp.InstallTargetMatchesLaunch
 	return resp, nil
+}
+
+// expectedInstallTarget is where selfupdate.Upgrade will write the evener
+// binary for this hub's launch layout. An unrecognized launch path falls back
+// to the CLI's default ~/.local prefix.
+func expectedInstallTarget() string {
+	_, _, shareBinDir := hubInstallDirs()
+	if shareBinDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		shareBinDir = filepath.Join(home, ".local", "share", "evener", "bin")
+	}
+	return filepath.Join(shareBinDir, "evener")
+}
+
+func sameInstallTarget(target, launch string) bool {
+	if target == "" || launch == "" {
+		return false
+	}
+	resolvedTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return false
+	}
+	resolvedLaunch, err := filepath.EvalSymlinks(launch)
+	if err != nil {
+		return false
+	}
+	return resolvedTarget == resolvedLaunch
 }
 
 // commitToken strips a dirty suffix for commit comparison, preserving the
@@ -202,6 +237,9 @@ func hubUpdateApply(ctx context.Context, params appwire.UpdateApplyParams) (appw
 	fresh, err := hubUpdateCheck(ctx, appwire.UpdateCheckParams{Channel: channel})
 	if err != nil {
 		return appwire.UpdateApplyResponse{}, err
+	}
+	if fresh.CheckError != "" {
+		return appwire.UpdateApplyResponse{}, errors.New(fresh.CheckError)
 	}
 	if !fresh.UpdateAvailable {
 		return appwire.UpdateApplyResponse{

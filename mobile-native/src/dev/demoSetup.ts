@@ -41,6 +41,7 @@ export function demoUpdateCheck(): MethodTypes["evener/update/check"]["result"] 
 		restartPending: false,
 		startedAt: "2026-10-21T12:00:00Z",
 		restartSupported: true,
+		installTargetMatchesLaunch: true,
 	};
 }
 // appwire/errors.go CodeConflict.

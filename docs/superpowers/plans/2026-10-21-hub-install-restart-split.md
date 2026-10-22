@@ -80,6 +80,9 @@ meaning:
   startup launch path is usable.
 - `checkError`: a channel-lookup failure. The local fields stay populated, and
   the clients keep Restart available instead of hiding it behind the failure.
+- `installTarget` and `installTargetMatchesLaunch`: where Install would write
+  the `evener` binary and whether that path resolves to the running launch
+  path. Install is unavailable when it does not.
 
 The server computes these before the dev-build early return, so dev builds get
 the on-disk build and restart state without a network request.
@@ -90,6 +93,8 @@ unknown, sets `restartPending=false`, and offers the deprecated combined
 
 After install, run a fresh check. The probe sees the new on-disk build, so
 `installAvailable` is false and `restartPending` is true.
+A lost install response sets `installReconcile`; the host runs that fresh check
+when its connection is ready, rather than racing a reconnect.
 
 ## Settings and phone
 
@@ -116,7 +121,8 @@ retained `evener/update/apply` RPC, preserving the old behavior against older
 hubs; the web and phone stop calling it. `restart()` uses the restart
 response's incarnation when it arrives, captures `currentIncarnation()` before
 the request, and falls back to the check after a lost response when the host
-has no health read.
+has no health read. A lost install response leaves `installReconcile=true` for
+the host to retry when it is ready.
 
 `evener hub restart` reuses `attach`'s config, loopback, and token resolution,
 captures `started_at`, sends the RPC, and waits for the new incarnation. It

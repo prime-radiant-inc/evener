@@ -3174,21 +3174,23 @@ type UpdateCheckParams struct {
 // at. Applicable is false for dev builds, which are never self-updated; the
 // Latest* fields are empty then and no network request was made.
 type UpdateCheckResponse struct {
-	Channel          string    `json:"channel"`
-	BuildChannel     string    `json:"buildChannel"`
-	CurrentVersion   string    `json:"currentVersion"`
-	CurrentCommit    string    `json:"currentCommit"`
-	LatestTag        string    `json:"latestTag,omitempty"`
-	LatestCommit     string    `json:"latestCommit,omitempty"`
-	UpdateAvailable  bool      `json:"updateAvailable"`
-	Applicable       bool      `json:"applicable"`
-	OnDiskCommit     string    `json:"onDiskCommit,omitempty"`
-	OnDiskError      string    `json:"onDiskError,omitempty"`
-	InstallAvailable bool      `json:"installAvailable"`
-	RestartPending   bool      `json:"restartPending"`
-	StartedAt        time.Time `json:"startedAt"`
-	RestartSupported bool      `json:"restartSupported"`
-	CheckError       string    `json:"checkError,omitempty"`
+	Channel                    string    `json:"channel"`
+	BuildChannel               string    `json:"buildChannel"`
+	CurrentVersion             string    `json:"currentVersion"`
+	CurrentCommit              string    `json:"currentCommit"`
+	LatestTag                  string    `json:"latestTag,omitempty"`
+	LatestCommit               string    `json:"latestCommit,omitempty"`
+	UpdateAvailable            bool      `json:"updateAvailable"`
+	Applicable                 bool      `json:"applicable"`
+	OnDiskCommit               string    `json:"onDiskCommit,omitempty"`
+	OnDiskError                string    `json:"onDiskError,omitempty"`
+	InstallAvailable           bool      `json:"installAvailable"`
+	RestartPending             bool      `json:"restartPending"`
+	StartedAt                  time.Time `json:"startedAt"`
+	RestartSupported           bool      `json:"restartSupported"`
+	CheckError                 string    `json:"checkError,omitempty"`
+	InstallTarget              string    `json:"installTarget,omitempty"`
+	InstallTargetMatchesLaunch bool      `json:"installTargetMatchesLaunch"`
 }
 
 // UpdateApplyParams selects the channel to install. Empty means the running
