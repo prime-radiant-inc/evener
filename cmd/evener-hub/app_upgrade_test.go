@@ -30,6 +30,22 @@ func TestHubUpgradeRefusedWhileApplyHoldsTheLock(t *testing.T) {
 	}
 }
 
+func TestHubUpgradeRefusesDevBuild(t *testing.T) {
+	setBuild(t, "", "")
+	upgrades := stubHubSelfUpgrade(t, func(context.Context, selfupdate.Options) (selfupdate.Result, error) {
+		t.Fatal("a dev build must not self-update")
+		return selfupdate.Result{}, nil
+	})
+
+	_, err := hubUpgrade(context.Background(), appwire.UpgradeParams{})
+	if !errors.Is(err, errDevBuildUpdate) {
+		t.Fatalf("hubUpgrade err = %v, want errDevBuildUpdate", err)
+	}
+	if *upgrades != 0 {
+		t.Fatalf("upgrades = %d", *upgrades)
+	}
+}
+
 func TestHubUpdateApplyRefusedWhileUpgradeHoldsTheLock(t *testing.T) {
 	setBuild(t, "3b1c5f8", "snapshot")
 	stubUpdateAvailable(t)

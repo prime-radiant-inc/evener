@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"time"
 )
 
 // ProtocolVersion is compared exactly at the handshake
@@ -110,6 +111,7 @@ const (
 	MethodEvenerUpgrade                  = "evener/upgrade"
 	MethodEvenerUpdateCheck              = "evener/update/check"
 	MethodEvenerUpdateApply              = "evener/update/apply"
+	MethodEvenerHubRestart               = "evener/hub/restart"
 	MethodEvenerAuthStatus               = "evener/auth/status"
 	MethodEvenerAuthTest                 = "evener/auth/test"
 	MethodEvenerAuthLoginStart           = "evener/auth/login/start"
@@ -3180,14 +3182,23 @@ type UpdateCheckParams struct {
 // at. Applicable is false for dev builds, which are never self-updated; the
 // Latest* fields are empty then and no network request was made.
 type UpdateCheckResponse struct {
-	Channel         string `json:"channel"`
-	BuildChannel    string `json:"buildChannel"`
-	CurrentVersion  string `json:"currentVersion"`
-	CurrentCommit   string `json:"currentCommit"`
-	LatestTag       string `json:"latestTag,omitempty"`
-	LatestCommit    string `json:"latestCommit,omitempty"`
-	UpdateAvailable bool   `json:"updateAvailable"`
-	Applicable      bool   `json:"applicable"`
+	Channel                    string    `json:"channel"`
+	BuildChannel               string    `json:"buildChannel"`
+	CurrentVersion             string    `json:"currentVersion"`
+	CurrentCommit              string    `json:"currentCommit"`
+	LatestTag                  string    `json:"latestTag,omitempty"`
+	LatestCommit               string    `json:"latestCommit,omitempty"`
+	UpdateAvailable            bool      `json:"updateAvailable"`
+	Applicable                 bool      `json:"applicable"`
+	OnDiskCommit               string    `json:"onDiskCommit,omitempty"`
+	OnDiskError                string    `json:"onDiskError,omitempty"`
+	InstallAvailable           bool      `json:"installAvailable"`
+	RestartPending             bool      `json:"restartPending"`
+	StartedAt                  time.Time `json:"startedAt"`
+	RestartSupported           bool      `json:"restartSupported"`
+	CheckError                 string    `json:"checkError,omitempty"`
+	InstallTarget              string    `json:"installTarget,omitempty"`
+	InstallTargetMatchesLaunch bool      `json:"installTargetMatchesLaunch"`
 }
 
 // UpdateApplyParams selects the channel to install. Empty means the running
@@ -3203,6 +3214,19 @@ type UpdateApplyResponse struct {
 	Channel    string   `json:"channel"`
 	Installed  []string `json:"installed"`
 	Restarting bool     `json:"restarting"`
+}
+
+// HubRestartParams selects nothing: restart the hub into the binary at its
+// recorded launch path.
+type HubRestartParams struct{}
+
+// HubRestartResponse is returned just before the hub execs the on-disk
+// binary. Incarnation is the old process's health started_at value.
+type HubRestartResponse struct {
+	Restarting     bool      `json:"restarting"`
+	Incarnation    time.Time `json:"incarnation"`
+	CurrentVersion string    `json:"currentVersion"`
+	TargetVersion  string    `json:"targetVersion"`
 }
 
 type AuthStatusParams struct {

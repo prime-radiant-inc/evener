@@ -1633,6 +1633,13 @@ func concurrentDispatchMethod(method string) bool {
 		// fail a concurrent apply fast, and the restart waits on its own
 		// response flush rather than connection order.
 		appwire.MethodEvenerUpdateApply,
+		// evener/upgrade is the install-only half of the same
+		// operation: a multi-minute download, verify, and write under
+		// the overall upgrade deadline. It takes the same hubUpdateMu
+		// and install lock, so a concurrent install fails fast rather
+		// than interleaving, and the phone's install action otherwise
+		// holds its session sends for that whole time.
+		appwire.MethodEvenerUpgrade,
 		// evener/activity/read waits up to its per-host budget on each
 		// attached host, and a phone polls it every ten seconds on the
 		// connection its sends ride. It writes nothing, and each answer

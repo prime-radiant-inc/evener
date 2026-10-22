@@ -49,6 +49,7 @@ async function mount(fleet: ScriptedFleet, name: string, options: { ready?: bool
 				applicable: true,
 			})) as never,
 		}),
+		currentIncarnation: async () => null,
 		awaitRestart: async () => true,
 	});
 	await updates.runCheck();

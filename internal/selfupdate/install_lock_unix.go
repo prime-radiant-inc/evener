@@ -17,6 +17,10 @@ import (
 // try + sleep keeps the wait cancellable without a signalfd/kqueue.
 const installLockPollInterval = 50 * time.Millisecond
 
+// openInstallLockFile opens the lock file; a var so tests can inject
+// filesystem errors (a read-only mount) the local filesystem cannot produce.
+var openInstallLockFile = os.OpenFile
+
 // acquireInstallLock takes an exclusive flock on a lock file inside
 // shareBinDir, serializing concurrent installs into one prefix across
 // processes (hub self-update vs `evener upgrade` vs another hub).
@@ -32,9 +36,26 @@ func acquireInstallLock(shareBinDir string) (release func(), err error) {
 // observe cancellation and return ctx.Err instead.
 func acquireInstallLockCtx(ctx context.Context, shareBinDir string) (release func(), err error) {
 	if err := os.MkdirAll(shareBinDir, 0o755); err != nil {
+		if errors.Is(err, os.ErrPermission) || errors.Is(err, unix.EROFS) {
+			return nil, fmt.Errorf("%w: mkdir install lock parent: %w", ErrInstallDirReadOnly, err)
+		}
 		return nil, fmt.Errorf("mkdir install lock parent: %w", err)
 	}
-	f, err := os.OpenFile(filepath.Join(shareBinDir, ".install.lock"), os.O_RDWR|os.O_CREATE, 0o644)
+	lockPath := filepath.Join(shareBinDir, ".install.lock")
+	f, err := openInstallLockFile(lockPath, os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil && (errors.Is(err, os.ErrPermission) || errors.Is(err, unix.EROFS)) {
+		// A root-owned or read-only installation cannot create or write the
+		// lock file, but flock works on a read-only descriptor when the file
+		// already exists.
+		f, err = openInstallLockFile(lockPath, os.O_RDONLY, 0)
+		if err != nil && errors.Is(err, os.ErrNotExist) {
+			// No lock file exists and none can be created: no other
+			// installer can hold one either, so the restart may proceed on
+			// its digest re-verify. An existing unreadable lock falls
+			// through to an ordinary error and aborts the restart.
+			return nil, fmt.Errorf("%w: open install lock: %w", ErrInstallDirReadOnly, err)
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("open install lock: %w", err)
 	}

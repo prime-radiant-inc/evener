@@ -53,6 +53,15 @@ func setBuild(t *testing.T, sha, channel string) {
 	// hubUpdateApply deliberately leaves hubUpdateMu locked after a
 	// successful apply; reset it so tests stay independent of run order.
 	hubUpdateMu = sync.Mutex{}
+	// The launch path and its install layout are process state; a test that
+	// ran runMain must not leave them behind for a check or restart test.
+	hubLaunchEntrypoint = ""
+	errHubLaunchEntrypoint = nil
+	hubLaunchShareBinDir = ""
+	hubLaunchBinarySHA256 = ""
+	launchDigestMu.Lock()
+	launchDigestInfo, launchDigest = nil, ""
+	launchDigestMu.Unlock()
 	// Default the check seam to an offline "update available" stub so
 	// hubUpdateApply's pre-install guard never hits live GitHub (AGENTS.md
 	// forbids network in default tests). Tests that need a specific check
@@ -177,6 +186,7 @@ func TestHubUpdateCheckDevBuildIsNotApplicable(t *testing.T) {
 
 func TestHubUpdateCheckDefaultsToBuildChannelAndFillsCurrent(t *testing.T) {
 	setBuild(t, "3b1c5f8", "snapshot")
+	setManagedRestartProbe(t, "echo 'evener 3b1c5f8 (2026-10-21T00:00:00Z)'")
 	var gotOpts selfupdate.CheckOptions
 	stubUpdateCheck(t, func(_ context.Context, opts selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
 		gotOpts = opts
@@ -192,6 +202,8 @@ func TestHubUpdateCheckDefaultsToBuildChannelAndFillsCurrent(t *testing.T) {
 	want := appwire.UpdateCheckResponse{
 		Channel: "snapshot", BuildChannel: "snapshot", CurrentVersion: "3b1c5f8", CurrentCommit: "3b1c5f8",
 		LatestTag: "snapshot", LatestCommit: "be70029abc", UpdateAvailable: true, Applicable: true,
+		OnDiskCommit: "3b1c5f8", InstallAvailable: true, StartedAt: hubProcessStartedAt, RestartSupported: true,
+		InstallTarget: expectedInstallTarget(), InstallTargetMatchesLaunch: true,
 	}
 	if got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
@@ -214,14 +226,34 @@ func TestHubUpdateCheckHonoursRequestedChannel(t *testing.T) {
 	}
 }
 
-func TestHubUpdateCheckPropagatesError(t *testing.T) {
+func TestHubUpdateCheckReportsChannelError(t *testing.T) {
 	setBuild(t, "3b1c5f8", "release")
 	stubUpdateCheck(t, func(context.Context, selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
 		return selfupdate.CheckResult{}, errors.New("GET x: 403 Forbidden: API rate limit exceeded")
 	})
-	_, err := hubUpdateCheck(context.Background(), appwire.UpdateCheckParams{})
-	if err == nil || !strings.Contains(err.Error(), "rate limit") {
-		t.Fatalf("err = %v", err)
+	resp, err := hubUpdateCheck(context.Background(), appwire.UpdateCheckParams{})
+	if err != nil {
+		t.Fatalf("hubUpdateCheck: %v", err)
+	}
+	if !strings.Contains(resp.CheckError, "rate limit") {
+		t.Fatalf("check error = %q, want the channel failure", resp.CheckError)
+	}
+}
+
+func TestHubUpdateApplyReportsChannelFailure(t *testing.T) {
+	setBuild(t, "3b1c5f8", "snapshot")
+	stubUpdateCheck(t, func(context.Context, selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
+		return selfupdate.CheckResult{}, errors.New("GET x: 403 Forbidden: API rate limit exceeded")
+	})
+	upgrades := stubHubSelfUpgrade(t, func(context.Context, selfupdate.Options) (selfupdate.Result, error) {
+		t.Fatal("apply installed after a failed channel check")
+		return selfupdate.Result{}, nil
+	})
+	if _, err := hubUpdateApply(context.Background(), appwire.UpdateApplyParams{}); err == nil || !strings.Contains(err.Error(), "rate limit") {
+		t.Fatalf("hubUpdateApply error = %v, want the channel failure", err)
+	}
+	if *upgrades != 0 {
+		t.Fatalf("upgrades = %d, want 0", *upgrades)
 	}
 }
 
@@ -242,6 +274,7 @@ func TestHubUpdateApplyDevBuildRefused(t *testing.T) {
 
 func TestHubUpdateApplyInstallsThenSchedulesRestartWithHubArgs(t *testing.T) {
 	setBuild(t, "3b1c5f8", "snapshot")
+	resetHubRestartAddr(t)
 	stubUpdateAvailable(t)
 	previousArgs := hubProcessArgs
 	hubProcessArgs = func() []string { return []string{"/old/evener", "hub", "-addr", "0.0.0.0:9180"} }

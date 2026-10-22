@@ -1625,6 +1625,16 @@ export interface HubNotice {
   affectedSessions?: number;
 }
 
+export interface HubRestartParams {
+}
+
+export interface HubRestartResponse {
+  restarting: boolean;
+  incarnation: string;
+  currentVersion: string;
+  targetVersion: string;
+}
+
 export interface InitializeParams {
   protocolVersion: string;
   clientInfo: ClientInfo;
@@ -4771,6 +4781,15 @@ export interface UpdateCheckResponse {
   latestCommit?: string;
   updateAvailable: boolean;
   applicable: boolean;
+  onDiskCommit?: string;
+  onDiskError?: string;
+  installAvailable: boolean;
+  restartPending: boolean;
+  startedAt: string;
+  restartSupported: boolean;
+  checkError?: string;
+  installTarget?: string;
+  installTargetMatchesLaunch: boolean;
 }
 
 export interface UpgradeParams {
@@ -4888,6 +4907,7 @@ export const METHOD_NAMES = [
   "evener/upgrade",
   "evener/update/check",
   "evener/update/apply",
+  "evener/hub/restart",
   "evener/auth/status",
   "evener/auth/test",
   "evener/auth/login/start",
@@ -5202,6 +5222,7 @@ export interface MethodTypes {
   "evener/upgrade": { params: UpgradeParams; result: UpgradeResponse };
   "evener/update/check": { params: UpdateCheckParams; result: UpdateCheckResponse };
   "evener/update/apply": { params: UpdateApplyParams; result: UpdateApplyResponse };
+  "evener/hub/restart": { params: HubRestartParams; result: HubRestartResponse };
   "evener/auth/status": { params: AuthStatusParams; result: AuthStatusResponse };
   "evener/auth/test": { params: AuthTestParams; result: AuthTestResponse };
   "evener/auth/login/start": { params: AuthLoginStartParams; result: AuthLoginStartResponse };

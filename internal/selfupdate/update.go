@@ -40,6 +40,12 @@ var defaultMaxArchiveBytes = int64(128 << 20)
 // builds from the transition window did, and those have aged out.
 var installBinaries = []string{"evener"}
 
+// ErrInstallDirReadOnly reports that the managed directory has no lock file and
+// does not permit creating one. No other installer can hold a lock there, so
+// a hub running against such an installation can still verify and exec its
+// binary; the restart path may proceed without the lock, an install may not.
+var ErrInstallDirReadOnly = errors.New("install directory is read-only")
+
 var (
 	copyStream = io.Copy
 	closeFile  = (*os.File).Close

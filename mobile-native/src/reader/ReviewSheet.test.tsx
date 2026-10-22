@@ -72,7 +72,14 @@ vi.mock("../nativeMutationRuntime", async (original) => ({
 const PLAN = "# Settle the race\n\nThe goal is a clean run.\n\n## Steps\n\n- Reproduce it.\n- Fix it.\n";
 const PATH = "docs/superpowers/plans/settle-race.md";
 const KEY = { sessionRef: "local:fix", path: PATH };
-const PARAMS = {
+const PARAMS: {
+	hubId: string;
+	sessionRef: string;
+	path: string;
+	sessionTitle: string;
+	root?: "artifacts";
+	readTarget?: string;
+} = {
 	hubId: "studio",
 	sessionRef: "local:fix",
 	path: PATH,
@@ -192,10 +199,10 @@ afterEach(async () => {
 	vi.restoreAllMocks();
 });
 
-async function mount() {
+async function mount(params: typeof PARAMS = PARAMS) {
 	const tree = render(
 		<ReviewSheet
-			route={{ key: "review", name: "ReviewSheet", params: PARAMS } as never}
+			route={{ key: "review", name: "ReviewSheet", params } as never}
 			navigation={sheetNavigation as never}
 		/>,
 	);
@@ -294,6 +301,27 @@ it("sends the review's message to an idle session, clears the comments, and retu
 	expect(sheetNavigation.pop).toHaveBeenCalledWith(2);
 	expect(sheetNavigation.goBack).not.toHaveBeenCalled();
 	expect(hasTestID(tree, "review-send-failed")).toBe(false);
+});
+
+// An agent files a report in the session's retained artifacts, and the folder
+// holds a report of the same name. The review must name the file that was read,
+// and sending it must not clear the other report's unsent comments.
+it("names an artifacts report by its full path and leaves a same-named folder report's drafts alone", async () => {
+	const artifactsDir = "/state/sessions/local-fix/artifacts";
+	const retainedKey = { sessionRef: "local:fix", path: "report.md", root: "artifacts" as const };
+	memory.addComment(retainedKey, { blockIndex: 1, blockHash: goal.hash, quote: goal.text, text: "Keep this." });
+	const tree = await mount({
+		...PARAMS,
+		path: "report.md",
+		root: "artifacts",
+		readTarget: `${artifactsDir}/report.md`,
+	});
+	choose(tree, "Approve");
+	const drafts = memory.comments(retainedKey);
+	await send(tree);
+	expect(sentText()).toBe(reviewMessage(`${artifactsDir}/report.md`, "approve", drafts, ""));
+	expect(memory.comments(retainedKey)).toEqual([]);
+	expect(memory.comments(KEY).map((comment) => comment.text)).toEqual(["Say which run.", "Name the fix."]);
 });
 
 it("queues the review while the session works, and never steers or interrupts it", async () => {
