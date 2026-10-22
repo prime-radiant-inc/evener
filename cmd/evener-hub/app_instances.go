@@ -62,7 +62,16 @@ type hubInstancesController struct {
 	// advances. A test uses it to settle a probe inside that window
 	// deterministically; nil in production.
 	afterAccessReload func()
+	// beforeList, when set, runs at the start of List before any lock is
+	// taken. A race test holds a post-mutation listing until a racing write
+	// completes. Nil in production.
+	beforeList func()
 }
+
+// observeInstancesController, when set, receives the instances controller the
+// app server builds, for tests that need to arm one of its seams. Nil in
+// production.
+var observeInstancesController func(*hubInstancesController)
 
 func (c *hubInstancesController) read() (*registry.Layer, bool, error) {
 	return registry.ReadConfigFile(c.providersConfigPath)
@@ -111,6 +120,9 @@ func (c *hubInstancesController) captureApplied(errp *error) {
 // credential status, plus the providers an add form can build on and the
 // diagnostics the pane shows above them.
 func (c *hubInstancesController) List() appwire.InstanceListResponse {
+	if c.beforeList != nil {
+		c.beforeList()
+	}
 	// The fingerprint key is resolved once, before either lock is taken:
 	// resolving it can repair the file (an inter-process lock and a write), and
 	// holding the credential lock across that would let a listing stall every
