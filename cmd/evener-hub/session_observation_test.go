@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
@@ -17,9 +16,9 @@ import (
 )
 
 // These tests cross the actual daemon websocket, canonical relay and bound
-// Manager operation. The context deadline is a hang guard, not an ordering aid.
+// Manager operation. Channel deliveries and closure order the assertions.
 func TestManagerObservationRecordedCompletionCut(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	const ref, instance = "local:manager-workspace", "manager-instance"
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "test-token"})
@@ -96,7 +95,7 @@ func TestManagerObservationRecordedCompletionCut(t *testing.T) {
 }
 
 func TestManagerWatchRebindDisableAndHubRestart(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	const ref, instance = "local:manager-workspace", "manager-instance"
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "test-token"})

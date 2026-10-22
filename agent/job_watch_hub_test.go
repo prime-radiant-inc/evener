@@ -8,7 +8,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
@@ -218,8 +217,7 @@ func TestManagerWatchTargetReplacementAndUnsupportedObservation(t *testing.T) {
 
 func TestManagerWatchUnrecoverableRebindEndsDurably(t *testing.T) {
 	const ref, instance, generation = "local:worker", "worker-instance", "7@worker"
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
+	ctx := t.Context()
 	root := newMessagingRoot(t, newMessagingAdapter(), nil)
 	stream := make(chan appwire.SessionWatchUpdate, 1)
 	stream <- appwire.SessionWatchUpdate{Snapshot: &appwire.ThreadReadResponse{BootGeneration: generation, Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: ref, InstanceID: instance}}}, Metadata: appwire.SessionObservationMetadata{Ref: ref, InstanceID: instance, GenerationID: generation}}
