@@ -127,13 +127,13 @@ describe("your message", () => {
 	it("labels Manager input from actor metadata instead of the message text", () => {
 		const manager = render(
 			<TimelineItem
-				item={user({ actor: { kind: "manager", managerRef: "local:manager" } })}
+				item={user({ actor: { kind: "manager", managerRef: "local:manager-origin" } })}
 				hubId="hub"
-				sessionRef="s"
+				sessionRef="local:worker"
 			/>,
 		);
-		expect(renderedText(manager)).toContain("Manager · local:manager");
-		expect(pressable(manager, "Manager · local:manager: Ship it")).toBeDefined();
+		expect(renderedText(manager)).toContain("Manager · local:manager-origin");
+		expect(pressable(manager, "Manager · local:manager-origin: Ship it")).toBeDefined();
 		const human = render(<TimelineItem item={user({ actor: { kind: "human" } })} hubId="hub" sessionRef="s" />);
 		expect(pressable(human, "You: Ship it")).toBeDefined();
 	});

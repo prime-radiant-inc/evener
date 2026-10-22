@@ -668,6 +668,11 @@ func (s *LocalDaemonSource) StartTurn(ctx context.Context, params appwire.TurnSt
 func (s *LocalDaemonSource) StartTurnAtEntry(ctx context.Context, entry rendezvous.Entry, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 	var out appwire.TurnStartResponse
 	err := s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
+		proof, err := s.targetManagerProof(entry, params.ManagerProof)
+		if err != nil {
+			return err
+		}
+		params.ManagerProof = proof
 		if err := gateSkillInputOnClient(ctx, client, params.Ref, params.ThreadID, params.Input); err != nil {
 			return err
 		}
@@ -685,6 +690,11 @@ func (s *LocalDaemonSource) SteerTurn(ctx context.Context, params appwire.TurnSt
 	}
 	var out appwire.TurnSteerResponse
 	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
+		proof, err := s.targetManagerProof(entry, params.ManagerProof)
+		if err != nil {
+			return err
+		}
+		params.ManagerProof = proof
 		if err := gateSkillInputOnClient(ctx, client, params.Ref, params.ThreadID, params.Input); err != nil {
 			return err
 		}
@@ -699,8 +709,31 @@ func (s *LocalDaemonSource) ResolveSandboxEscalation(ctx context.Context, params
 		return err
 	}
 	return s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
+		proof, err := s.targetManagerProof(entry, params.ManagerProof)
+		if err != nil {
+			return err
+		}
+		params.ManagerProof = proof
 		return client.Request(ctx, appwire.MethodEvenerSandboxEscalationResolve, params, nil)
 	})
+}
+
+// targetManagerProof binds a hub-authorized caller label to the live target
+// runtime. A missing binding must fail closed, never turn Manager input human.
+func (s *LocalDaemonSource) targetManagerProof(entry rendezvous.Entry, proof *appwire.SessionActorProof) (*appwire.SessionActorProof, error) {
+	if proof == nil {
+		return nil, nil
+	}
+	ref := localDaemonWorkspaceRef(s.sourceID, entry, entry.SessionID)
+	s.sessionToolsMu.Lock()
+	connection, ok := s.sessionToolsConnections[ref]
+	s.sessionToolsMu.Unlock()
+	if !ok || connection.binding.BindingID == "" || connection.binding.InstanceID != entry.SessionID {
+		return nil, appwire.InvalidRequest("Manager target has no live binding")
+	}
+	bound := *proof
+	bound.BindingID = connection.binding.BindingID
+	return &bound, nil
 }
 
 // StopDelegate forwards evener/delegate/stop to the root's daemon. Like every
@@ -736,6 +769,11 @@ func (s *LocalDaemonSource) QueueTurn(ctx context.Context, params appwire.TurnQu
 	}
 	var out appwire.TurnQueueResponse
 	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
+		proof, err := s.targetManagerProof(entry, params.ManagerProof)
+		if err != nil {
+			return err
+		}
+		params.ManagerProof = proof
 		if err := gateSkillInputOnClient(ctx, client, params.Ref, "", params.Input); err != nil {
 			return err
 		}

@@ -32,12 +32,14 @@ type boundSessionOperations struct {
 
 type sessionBindingContextKey struct{}
 
-func sessionInputProof(ctx context.Context) (*appwire.SessionActorProof, error) {
+func sessionInputProof(ctx context.Context, callerRef string) (*appwire.SessionActorProof, error) {
 	binding, ok := ctx.Value(sessionBindingContextKey{}).(appwire.SessionBinding)
-	if !ok || binding.BindingID == "" {
+	if !ok || binding.BindingID == "" || binding.Ref != callerRef {
 		return nil, appwire.InvalidRequest("authenticated Manager binding is required")
 	}
-	return &appwire.SessionActorProof{BindingID: binding.BindingID, Actor: appwire.SessionActor{Kind: "manager", ManagerRef: binding.Ref}}, nil
+	// The target source fills BindingID from the connection it actually uses.
+	// This binding only authenticates the caller at the hub boundary.
+	return &appwire.SessionActorProof{CallerRef: callerRef, Actor: appwire.SessionActor{Kind: "manager"}}, nil
 }
 
 func (o *sessionOperations) install() {
@@ -154,7 +156,7 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 		response.Read = &read
 		response.FollowUps = []appwire.SessionStatusFollowUp{statusFollowUp(read.Thread.Evener.Ref)}
 	} else if request.Start != nil {
-		proof, err := sessionInputProof(ctx)
+		proof, err := sessionInputProof(ctx, caller.Ref)
 		if err != nil {
 			return response, err
 		}
@@ -166,7 +168,7 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 		}
 		response.Start = &start
 	} else if request.Queue != nil {
-		proof, err := sessionInputProof(ctx)
+		proof, err := sessionInputProof(ctx, caller.Ref)
 		if err != nil {
 			return response, err
 		}
@@ -178,7 +180,7 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 		}
 		response.Queue = &queue
 	} else if request.Steer != nil {
-		proof, err := sessionInputProof(ctx)
+		proof, err := sessionInputProof(ctx, caller.Ref)
 		if err != nil {
 			return response, err
 		}
@@ -190,7 +192,7 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 		}
 		response.Steer = &steer
 	} else if request.Control != nil {
-		proof, err := sessionInputProof(ctx)
+		proof, err := sessionInputProof(ctx, caller.Ref)
 		if err != nil {
 			return response, err
 		}

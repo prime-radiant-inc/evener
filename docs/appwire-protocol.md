@@ -2961,6 +2961,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `actor` | [appwire.SessionActor](#sessionactor) |  |  |
 | `clientMutationId` | string |  |  |
 | `method` | string |  |  |
 | `input` | [][appwire.InputItem](#inputitem) | yes |  |
@@ -3251,6 +3252,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `managerProof` | \*[appwire.SessionActorProof](#sessionactorproof) | yes |  |
 | `threadId` | string | yes |  |
 | `ref` | string | yes |  |
 | `escalationId` | string |  |  |
@@ -3470,6 +3472,15 @@ Underlying Go kind: `string` (no struct fields).
 | `managerRef` | string | yes |  |
 
 
+### `SessionActorProof`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `bindingId` | string |  |  |
+| `callerRef` | string |  |  |
+| `actor` | [appwire.SessionActor](#sessionactor) |  |  |
+
+
 ### `SessionBinding`
 
 | Field | Go type | Omitempty | Embedded |
@@ -3478,6 +3489,21 @@ Underlying Go kind: `string` (no struct fields).
 | `instanceId` | string |  |  |
 | `hubId` | string |  |  |
 | `bindingId` | string |  |  |
+
+
+### `SessionControlRequest`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `approval` | \*[appwire.SandboxEscalationResolveParams](#sandboxescalationresolveparams) | yes |  |
+
+
+### `SessionControlResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `result` | [appwire.EmptyResponse](#emptyresponse) |  |  |
+| `actor` | [appwire.SessionActor](#sessionactor) |  |  |
 
 
 ### `SessionDelegate`
@@ -3619,6 +3645,10 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `discover` | \*[appwire.ThreadListParams](#threadlistparams) | yes |  |
 | `read` | \*[appwire.ThreadReadParams](#threadreadparams) | yes |  |
+| `start` | \*[appwire.TurnStartParams](#turnstartparams) | yes |  |
+| `queue` | \*[appwire.TurnQueueParams](#turnqueueparams) | yes |  |
+| `steer` | \*[appwire.TurnSteerParams](#turnsteerparams) | yes |  |
+| `control` | \*[appwire.SessionControlRequest](#sessioncontrolrequest) | yes |  |
 
 
 ### `SessionOperationResponse`
@@ -3628,6 +3658,10 @@ Underlying Go kind: `string` (no struct fields).
 | `actor` | [appwire.SessionActor](#sessionactor) |  |  |
 | `discover` | \*[appwire.SessionDiscovery](#sessiondiscovery) | yes |  |
 | `read` | \*[appwire.ThreadReadResponse](#threadreadresponse) | yes |  |
+| `start` | \*[appwire.TurnStartResponse](#turnstartresponse) | yes |  |
+| `queue` | \*[appwire.TurnQueueResponse](#turnqueueresponse) | yes |  |
+| `steer` | \*[appwire.TurnSteerResponse](#turnsteerresponse) | yes |  |
+| `control` | \*[appwire.SessionControlResponse](#sessioncontrolresponse) | yes |  |
 | `followUps` | [][appwire.SessionStatusFollowUp](#sessionstatusfollowup) | yes |  |
 
 
@@ -4152,6 +4186,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `actor` | \*[appwire.SessionActor](#sessionactor) | yes |  |
 | `type` | string |  |  |
 | `id` | string |  |  |
 | `transcriptKey` | string | yes |  |
@@ -4751,6 +4786,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `managerProof` | \*[appwire.SessionActorProof](#sessionactorproof) | yes |  |
 | `ref` | string |  |  |
 | `clientMutationId` | string |  |  |
 | `expectedInstanceId` | string |  |  |
@@ -4768,6 +4804,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `managerProof` | \*[appwire.SessionActorProof](#sessionactorproof) | yes |  |
 | `ref` | string | yes |  |
 | `threadId` | string | yes |  |
 | `clientMutationId` | string |  |  |
@@ -4787,6 +4824,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `managerProof` | \*[appwire.SessionActorProof](#sessionactorproof) | yes |  |
 | `ref` | string | yes |  |
 | `threadId` | string | yes |  |
 | `clientMutationId` | string |  |  |

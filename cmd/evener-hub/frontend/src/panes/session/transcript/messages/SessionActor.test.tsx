@@ -12,8 +12,8 @@ test("SessionActor distinguishes manager input from ordinary human input", () =>
   render(<UserMessageView item={{ ...base, actor: { kind: "human" } }} />);
   expect(screen.getByText("You")).toBeTruthy();
   cleanup();
-  render(<UserMessageView item={{ ...base, actor: { kind: "manager", managerRef: "local:manager" } }} />);
-  expect(screen.getByText(/Manager.*local:manager/)).toBeTruthy();
+  render(<UserMessageView item={{ ...base, actor: { kind: "manager", managerRef: "local:manager-origin" } }} />);
+  expect(screen.getByText(/Manager.*local:manager-origin/)).toBeTruthy();
   cleanup();
   render(
     <SteeringItem
@@ -22,12 +22,12 @@ test("SessionActor distinguishes manager input from ordinary human input", () =>
         id: "steer_1",
         type: "steering",
         source: "user",
-        actor: { kind: "manager", managerRef: "local:manager" },
+        actor: { kind: "manager", managerRef: "local:manager-origin" },
       }}
       sessionRef="local:worker"
       turn={{ id: "turn_1", status: "completed", items: [] }}
       live={false}
     />,
   );
-  expect(screen.getByText(/Manager.*local:manager/)).toBeTruthy();
+  expect(screen.getByText(/Manager.*local:manager-origin/)).toBeTruthy();
 });

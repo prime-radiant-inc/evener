@@ -106,6 +106,73 @@ func TestManagerInputToolUsesBoundTypedOperations(t *testing.T) {
 	}
 }
 
+func TestManagerModeKeepsRunningAndIdleOwnedDelegateSend(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		name := "disabled"
+		if enabled {
+			name = "enabled"
+		}
+		t.Run(name, func(t *testing.T) {
+			fixture := newColdStableDelegateFixture(t, "")
+			entered, release := make(chan struct{}), make(chan struct{})
+			defer func() {
+				select {
+				case <-release:
+				default:
+					close(release)
+				}
+			}()
+			fixture.adapter.steps = []func(llm.Request) llm.Response{
+				func(llm.Request) llm.Response {
+					close(entered)
+					<-release
+					return finalResponse("first result")
+				},
+				func(llm.Request) llm.Response { return finalResponse("steering consumed") },
+				func(llm.Request) llm.Response { return finalResponse("idle follow-up consumed") },
+			}
+			root := restoreSupervisionRoot(t, fixture, nil)
+			state := &managerStateForUnit{}
+			state.enabled.Store(enabled)
+			root.SetHubClient(state)
+			root.refreshHubState(t.Context())
+			start := (delegateRuntime{owner: root}).send(t.Context(), fixture.delegateID, "initial", 0)
+			if start.result.Err != nil || start.result.Action != "started" {
+				t.Fatalf("start owned delegate: %+v", start.result)
+			}
+			select {
+			case <-entered:
+			// TRIPWIRE: scripted model request blocks at this signal only.
+			case <-time.After(10 * time.Second):
+				t.Fatal("owned delegate never reached running state")
+			}
+			send := func(message string) {
+				t.Helper()
+				args, err := json.Marshal(map[string]any{"to": fixture.delegateID, "message": message})
+				if err != nil {
+					t.Fatal(err)
+				}
+				result := root.reg.ExecuteCall(t.Context(), root.currentEnv(), llm.ToolCallData{ID: message, Name: "delegate_send", Arguments: args})
+				if result.IsError {
+					t.Fatalf("owned delegate_send %q with Manager=%v: %+v", message, enabled, result)
+				}
+			}
+			send("while running")
+			close(release)
+			waitForStableSupervisionRun(t, root, fixture.childID)
+			before := delegateAggregateSnapshot(t, root.delegateController, fixture.delegateID).Generation
+			send("while idle")
+			if after := delegateAggregateSnapshot(t, root.delegateController, fixture.delegateID).Generation; after != before+1 {
+				t.Fatalf("idle delegate_send generation = %d, want %d", after, before+1)
+			}
+			waitForStableSupervisionRun(t, root, fixture.childID)
+			if !requestsContain(fixture.adapter.Requests(), "while running") || !requestsContain(fixture.adapter.Requests(), "while idle") {
+				t.Fatal("owned running or idle delegate did not consume ordinary message")
+			}
+		})
+	}
+}
+
 func (c *managerStateForUnit) State(context.Context) (appwire.ManagerView, error) {
 	return appwire.ManagerView{Setting: appwire.ManagerSetting{Enabled: c.enabled.Load()}}, nil
 }

@@ -3435,6 +3435,7 @@ export interface SessionActor {
 
 export interface SessionActorProof {
   bindingId: string;
+  callerRef: string;
   actor: SessionActor;
 }
 

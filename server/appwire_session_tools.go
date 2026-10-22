@@ -38,11 +38,16 @@ func (s *Server) SetSessionTools(current func() *agent.Session) {
 			s.resolveManagerActor = func(proof appwire.SessionActorProof) (schema.SessionActor, error) {
 				clients.mu.Lock()
 				defer clients.mu.Unlock()
-				client := clients.clients[clients.selected]
-				if client == nil || client.valid() != nil || proof.BindingID == "" || client.binding.BindingID != proof.BindingID || proof.Actor.Kind != "manager" || proof.Actor.ManagerRef != client.binding.Ref {
+				caller, err := appwire.ParseRef(proof.CallerRef)
+				if err != nil || caller.String() != proof.CallerRef || proof.BindingID == "" || proof.Actor.Kind != "manager" || proof.Actor.ManagerRef != "" {
 					return schema.SessionActor{}, appwire.InvalidRequest("Manager actor is not authenticated by the live binding")
 				}
-				return schema.SessionActor{Kind: "manager", ManagerRef: client.binding.Ref}, nil
+				for _, client := range clients.clients {
+					if client.binding.BindingID == proof.BindingID && client.valid() == nil && client.binding.Ref != proof.CallerRef {
+						return schema.SessionActor{Kind: "manager", ManagerRef: proof.CallerRef}, nil
+					}
+				}
+				return schema.SessionActor{}, appwire.InvalidRequest("Manager actor is not authenticated by the live binding")
 			}
 			s.mu.Unlock()
 		}

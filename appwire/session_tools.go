@@ -71,9 +71,11 @@ type SessionActor struct {
 }
 
 // SessionActorProof is private hub-to-runtime transport metadata. No tool
-// argument contains it; the runtime matches BindingID to its live binding.
+// argument contains it; BindingID authenticates the target's live binding,
+// while CallerRef labels the authenticated manager that sent the input.
 type SessionActorProof struct {
 	BindingID string       `json:"bindingId"`
+	CallerRef string       `json:"callerRef"`
 	Actor     SessionActor `json:"actor"`
 }
 
