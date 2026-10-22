@@ -608,6 +608,13 @@ func TestManagerRemoteSSHAutomaticReconnect(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		if stopHostListener(t, host, addr, hostDir+"/"+hostDeployToml) {
+			// Stopping the listener does not stop the session daemons the hub
+			// started over SSH; deleting the directory underneath them leaves
+			// them running with no owner.
+			if err := host.tryRun(hostDaemonReapCommand(hostDir)); err != nil {
+				t.Errorf("reap SSH-hosted daemons: %v", err)
+				return
+			}
 			if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
 				t.Errorf("clean up private SSH host: %v", err)
 			}

@@ -859,6 +859,95 @@ func hostHubKillCommand(addr, configPath string) string {
 		sshconn.ListenerProbeRemote(port), shellquote.RemoteWord(configPath))
 }
 
+// hostDaemonReapCommand stops every serve daemon this case started from its own
+// private host directory and proves none survived.
+//
+// Stopping the host's hub listener says nothing about the session daemons the
+// hub started over SSH: they are separate processes that outlive it. Deleting
+// hostDir while they still run leaves them serving from a directory that no
+// longer exists, and they survive until the machine they run on is rebooted —
+// one per session per run. thread/shutdown does not close that gap either: it
+// only accepts the request, so a cleanup that sends it and returns has proved
+// nothing about the daemon's exit.
+//
+// The directory reaches the script through the environment, never as text
+// inside it. A script that spelled the directory out would be matched by its
+// own process filter — the filter reads process command lines, and the shell
+// running the filter has the whole script in its command line — so it would
+// signal itself before it finished reaping.
+//
+// The match is the case's own hostDir, carried in every daemon's --dir and
+// --state-dir arguments, so a sibling run's daemons are never signalled.
+func hostDaemonReapCommand(hostDir string) string {
+	script := `ps -A >/dev/null 2>&1 || { echo 'SSH daemon cleanup: cannot list processes; refusing to conclude that none is running' >&2; exit 1; }
+reap() { ps -ww -o pid=,command= -A | awk -v bin="$EVENER_REAP_DIR/bin/evener-real" '$2==bin && $3=="serve" {print $1}'; }
+for pid in $(reap); do
+  case "$pid" in ''|*[!0-9]*) continue;; esac
+  [ "$pid" = "$$" ] && continue
+  [ "$pid" = "$PPID" ] && continue
+  kill "$pid" 2>/dev/null
+done
+i=0
+while [ $i -lt 35 ]; do
+  left=$(reap)
+  [ -z "$left" ] && exit 0
+  sleep 1
+  i=$((i+1))
+done
+for pid in $left; do
+  case "$pid" in ''|*[!0-9]*) continue;; esac
+  kill -9 "$pid" 2>/dev/null
+done
+sleep 1
+left=$(reap)
+if [ -n "$left" ]; then echo "SSH daemon cleanup: still running after SIGKILL: $left" >&2; exit 1; fi`
+	return fmt.Sprintf("env EVENER_REAP_DIR=%s bash -c %s", shellquote.RemoteWord(hostDir), shellquote.RemoteWord(script))
+}
+
+// TestHostDaemonReapCommandIsScopedToThisCase pins that the reaper signals only
+// daemons started from this case's private directory and reports a survivor
+// rather than exiting zero on it.
+func TestHostDaemonReapCommandIsScopedToThisCase(t *testing.T) {
+	const hostDir = "/tmp/evener-manager-ssh-1234-5678"
+	got := hostDaemonReapCommand(hostDir)
+	// The directory is the discriminator: a different case must produce a
+	// different command, or the reaper would signal every run's daemons.
+	if other := hostDaemonReapCommand(hostDir + "-other"); other == got {
+		t.Fatal("reap command ignores the directory, so it would signal another run's daemons")
+	}
+	// The filter reads process command lines, and the shell running the filter
+	// carries the script in its own command line. Spelling the daemon's expanded
+	// path into the script would therefore match that shell and kill the cleanup
+	// itself, which is how the first version of this failed. The directory must
+	// reach the match through the environment, so the script text holds only the
+	// unexpanded "$EVENER_REAP_DIR/bin/evener-real serve".
+	if strings.Contains(got, hostDir+"/bin/evener-real serve") {
+		t.Fatalf("reap command spells the expanded daemon path into its own command line, so its filter matches the shell running it: %q", got)
+	}
+	if !strings.Contains(got, "EVENER_REAP_DIR=") || !strings.Contains(got, `"$EVENER_REAP_DIR/bin/evener-real serve"`) {
+		t.Fatalf("reap command does not match the daemon by absolute path from the environment: %q", got)
+	}
+	// A directory prefix must not match a longer sibling path: the match requires
+	// the trailing /bin/evener-real serve, so /x and /x-other stay distinct.
+	if !strings.Contains(got, "/bin/evener-real serve") {
+		t.Fatalf("reap command matches a bare directory, so sibling run directories alias: %q", got)
+	}
+	// Escalation is part of the contract: SIGTERM, then SIGKILL for laggards.
+	if !strings.Contains(got, `kill "$pid"`) || !strings.Contains(got, "kill -9") {
+		t.Fatalf("reap command does not escalate from SIGTERM to SIGKILL: %q", got)
+	}
+	// A survivor must be a reported failure, never a silent success: the whole
+	// point is that leaving one behind goes unnoticed.
+	last := strings.LastIndex(got, "still running after SIGKILL")
+	if last < 0 || !strings.Contains(got[last:], "exit 1") {
+		t.Fatalf("reap command does not fail when a daemon survives: %q", got)
+	}
+	// Never conclude "nothing to kill" from an unreadable process table.
+	if !strings.Contains(got, "ps -A >/dev/null 2>&1 ||") {
+		t.Fatalf("reap command treats a failed ps as an empty match: %q", got)
+	}
+}
+
 // TestHostHubKillCommandTargetsOnlyThisTestsHub pins the cleanup's precision
 // without a host: the command that stops the case's hub must gate the kill on the
 // pid's command line carrying the case's own config path, so an unrelated
