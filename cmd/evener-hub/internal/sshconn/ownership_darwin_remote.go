@@ -285,7 +285,7 @@ func (m *Manager) checkDarwinRootVnode(ctx context.Context, host hostreg.Host, p
 	if !path.IsAbs(root) || strings.ContainsAny(root, "\r\n") {
 		return errOwnerEvidence
 	}
-	lock := shellquote.RemoteWord(strings.TrimRight(root, "/") + "/hub.lock")
+	lock := shellquote.RemoteWord(path.Join(root, "hub.lock"))
 	command := "test ! -L " + lock + " && test -f " + lock + " && stat -f '%d %i' " + lock
 	before, err := m.ownerRead(ctx, host, command)
 	if err != nil {

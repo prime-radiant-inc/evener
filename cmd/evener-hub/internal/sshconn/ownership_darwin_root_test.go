@@ -3,15 +3,21 @@ package sshconn
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/execsupport/shellquote"
 )
 
 // launchctl, ps and lsof are strict Darwin command fixtures, not Darwin runtime.
 func TestDarwinUnavailableRootEvidence(t *testing.T) {
-	for _, name := range []string{"config-retarget-other-lock", "regular-open-lock", "retained-witness", "changed-witness-generation", "changed-witness-registration", "changed-witness-root", "symlink-lock", "directory-lock", "changed-lock", "missing-inventory"} {
+	for _, name := range []string{"config-retarget-other-lock", "regular-open-lock", "retained-witness", "changed-witness-generation", "changed-witness-registration", "changed-witness-root", "symlink-lock", "directory-lock", "changed-lock", "missing-inventory", "lexical-root-open-lock", "lexical-root-other-lock"} {
 		t.Run(name, func(t *testing.T) {
 			host, _ := ownerCommands(t)
 			facts := selectedRestartFacts()
@@ -19,14 +25,82 @@ func TestDarwinUnavailableRootEvidence(t *testing.T) {
 			healthy := true
 			effects, rootReads := 0, 0
 			stat := "test ! -L /srv/state/hub.lock && test -f /srv/state/hub.lock && stat -f '%d %i' /srv/state/hub.lock"
+			root, rawStat, inventory := "/srv/state", "", ""
+			if strings.HasPrefix(name, "lexical-root-") {
+				base := t.TempDir()
+				for _, dir := range []string{"srv/state", "target/inner", "target/state"} {
+					if err := os.MkdirAll(filepath.Join(base, dir), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := os.Symlink(filepath.Join(base, "target/inner"), filepath.Join(base, "srv/link")); err != nil {
+					t.Fatal(err)
+				}
+				// Declare startup's lexical destination independently of the remote
+				// helper. The uncleaned spelling reaches a different real lock.
+				startupLock := filepath.Join(base, "srv/state/hub.lock")
+				otherLock := filepath.Join(base, "target/state/hub.lock")
+				for _, lock := range []string{startupLock, otherLock} {
+					if err := os.WriteFile(lock, nil, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				root = base + "/srv/link/../state"
+				startupInfo, err := os.Stat(startupLock)
+				if err != nil {
+					t.Fatal(err)
+				}
+				rawInfo, err := os.Stat(root + "/hub.lock")
+				if err != nil || os.SameFile(startupInfo, rawInfo) {
+					t.Fatalf("fixture needs distinct lexical and physical locks: %v", err)
+				}
+				statCommand := func(lock string) string {
+					quoted := shellquote.RemoteWord(lock)
+					return "test ! -L " + quoted + " && test -f " + quoted + " && stat -f '%d %i' " + quoted
+				}
+				stat, rawStat = statCommand(startupLock), statCommand(root+"/hub.lock")
+				openLock := startupLock
+				if name == "lexical-root-other-lock" {
+					openLock = otherLock
+				}
+				file, err := os.Open(openLock)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer file.Close()
+				quoted := shellquote.RemoteWord(openLock)
+				out, err := exec.Command("/bin/sh", "-c", "stat -Lc '%d %i' "+quoted+" 2>/dev/null || stat -f '%d %i' "+quoted).Output()
+				var device, inode uint64
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := fmt.Sscanf(string(out), "%d %d", &device, &inode); err != nil {
+					t.Fatal(err)
+				}
+				// lsof's inventory is modeled, using the real open file's vnode.
+				inventory = fmt.Sprintf("p4242\nf3\ntREG\nD0x%x\ni%d\n", device, inode)
+			}
 			fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 				remote := strings.Join(argv[12:], " ")
 				if remote == identityRestartCommand("darwin").command {
 					effects++
 					return nil, errors.New("unexpected restart")
 				}
-				if remote == stat {
+				if remote == stat || rawStat != "" && remote == rawStat {
 					rootReads++
+					if rawStat != "" {
+						if remote != stat {
+							t.Errorf("root inspection used uncleaned lock path: %s", remote)
+						}
+						// Run the guards and real filesystem lookup locally. Only
+						// translate BSD stat syntax when the host uses GNU stat.
+						local := strings.Replace(remote, "stat -f '%d %i'", "stat -Lc '%d %i'", 1) + " 2>/dev/null || { " + remote + "; }"
+						out, err := exec.Command("/bin/sh", "-c", local).CombinedOutput()
+						if err != nil {
+							t.Logf("local lock probe %q: %s: %v", local, out, err)
+						}
+						return out, err
+					}
 					if name == "symlink-lock" || name == "directory-lock" {
 						return nil, errors.New("not a regular nonsymlink lock")
 					}
@@ -36,6 +110,9 @@ func TestDarwinUnavailableRootEvidence(t *testing.T) {
 					return []byte("16777234 777\n"), nil
 				}
 				if remote == "lsof -a -p 4242 -F pftDi" {
+					if inventory != "" {
+						return []byte(inventory), nil
+					}
 					if name == "missing-inventory" {
 						return nil, errors.New("inventory unavailable")
 					}
@@ -67,6 +144,9 @@ func TestDarwinUnavailableRootEvidence(t *testing.T) {
 							return []byte("Fri Oct 16 11:00:00 2026\n"), nil
 						}
 						out := c.output
+						if rawStat != "" {
+							out = strings.ReplaceAll(out, "/srv/state", root)
+						}
 						if healthy && name == "config-retarget-other-lock" {
 							out = strings.ReplaceAll(out, "/srv/state", "/srv/root-a")
 						}
@@ -97,7 +177,7 @@ func TestDarwinUnavailableRootEvidence(t *testing.T) {
 				m.ownerWitnesses = nil
 			}
 			_, err = m.resolveOwnedEndpoint(t.Context(), host, facts)
-			accept := name == "regular-open-lock" || name == "retained-witness"
+			accept := name == "regular-open-lock" || name == "retained-witness" || name == "lexical-root-open-lock"
 			if accept && err != nil || !accept && !errors.Is(err, errOwnerEvidence) {
 				t.Fatalf("root association: %v, accept=%v", err, accept)
 			}
@@ -111,6 +191,9 @@ func TestDarwinUnavailableRootEvidence(t *testing.T) {
 			}
 			if name == "retained-witness" && rootReads != 0 {
 				t.Fatal("verified witness did not independently corroborate root")
+			}
+			if rawStat != "" && rootReads < 2 {
+				t.Fatal("no-witness recovery skipped root inspection")
 			}
 		})
 	}
