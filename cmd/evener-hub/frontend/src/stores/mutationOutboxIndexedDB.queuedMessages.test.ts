@@ -35,6 +35,16 @@ function fixture() {
   return {
     storage,
     peer,
+    openOtherTab: () => {
+      const other = new MutationOutboxIndexedDB({
+        indexedDB,
+        databaseName,
+        createMutationId: () => `mutation-${++id}`,
+        compositionOrigin: "other-tab",
+      });
+      opened.push(other);
+      return other;
+    },
     indexedDB,
     databaseName,
     fail: (value: boolean) => {
@@ -340,6 +350,34 @@ test("stale cross-adapter recovery consolidation refuses without deleting the se
     attachments: [expect.objectContaining({ name: "c.png" })],
   });
   expect(stale).toBeUndefined();
+});
+
+test("a different-tab resend refuses an advanced recovery revision", async () => {
+  const f = fixture();
+  const outbox = await f.storage.enqueueIntent(queuedIntent("ref_a"));
+  const recovery = await f.storage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!recovery) throw new Error("missing recovery fixture");
+  const otherTab = f.openOtherTab();
+  const edited = await otherTab.updateRecoveryInput(
+    recovery.clientMutationId,
+    [{ type: "text", text: "other tab edit" }],
+    [],
+    "other tab edit",
+    [],
+    [],
+    undefined,
+    0,
+  );
+  expect(edited).toBeDefined();
+  const result = await f.storage.resendRecoveryResult(recovery.clientMutationId, queuedIntent("ref_a"), undefined, {
+    [recovery.clientMutationId]: recovery.compositionRevision ?? 0,
+  });
+  expect(result).toEqual({ status: "refused" });
+  const reopened = await f.reopen();
+  expect(await reopened.getRecovery(recovery.clientMutationId)).toMatchObject({
+    composerText: "other tab edit",
+  });
+  expect(await reopened.listOutbox("ref_a")).toHaveLength(0);
 });
 
 test("stale secondary revision refuses consolidation, preserving newer secondary and owner", async () => {

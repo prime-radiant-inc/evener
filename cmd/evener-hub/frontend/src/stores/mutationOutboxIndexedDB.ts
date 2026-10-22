@@ -67,7 +67,12 @@ export interface MutationOutboxIndexedDBOptions {
   // failure paths. Purely observational: a throwing reporter cannot change the
   // storage outcome. Defaults to one console.warn line with a stable prefix.
   onOpenDiagnostic?: (diagnostic: MutationOutboxOpenDiagnostic) => void;
+  // Browser-tab identity for recovery composition writes. Defaults to a
+  // page-lifetime id; tests use it to act as a different tab.
+  compositionOrigin?: string;
 }
+
+const BROWSER_TAB_ORIGIN = `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
 const DATABASE_NAME = "evener-mutation-outbox";
 // Version 4 is a compatibility fence, not a schema migration: the upgrade
@@ -201,6 +206,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
   readonly #beforeCommit: ((operation: MutationOutboxOperation) => void) | undefined;
   readonly #onWriteStalled: ((waiting: boolean) => void) | undefined;
   readonly #onOpenDiagnostic: (diagnostic: MutationOutboxOpenDiagnostic) => void;
+  readonly #compositionOrigin: string;
   #supersededDiscardListener: ((targetRef: string) => void) | undefined;
   #settledListener: ((targetRef: string) => void) | undefined;
   #stalledWrites = 0;
@@ -215,6 +221,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     this.#beforeCommit = options.beforeCommit;
     this.#onWriteStalled = options.onWriteStalled;
     this.#onOpenDiagnostic = options.onOpenDiagnostic ?? DEFAULT_OPEN_DIAGNOSTIC;
+    this.#compositionOrigin = options.compositionOrigin ?? BROWSER_TAB_ORIGIN;
     this.#connection = new IDBConnection({
       indexedDB: factory,
       databaseName: this.#databaseName,
@@ -907,6 +914,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         recoveryKind,
         recoveryReason,
         compositionRevision: 0,
+        compositionOrigin: this.#compositionOrigin,
       };
       await requestResult(transaction.objectStore(RECOVERY_STORE).put(recovery));
       await requestResult(outbox.delete(clientMutationId));
@@ -936,6 +944,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         ...record,
         recoveryKind: "editing",
         compositionRevision: 0,
+        compositionOrigin: this.#compositionOrigin,
       };
       await requestResult(transaction.objectStore(RECOVERY_STORE).put(recovery));
       await requestResult(outbox.delete(record.clientMutationId));
@@ -1010,6 +1019,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       const next: VersionedMutationRecoveryRecord = {
         ...record,
         compositionRevision: (record.compositionRevision ?? 0) + 1,
+        compositionOrigin: this.#compositionOrigin,
         payload: { ...record.payload, input },
         optimisticDisplay:
           record.optimisticDisplay && typeof record.optimisticDisplay === "object"
@@ -1080,10 +1090,13 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
           consumed = true;
           continue;
         }
+        const expected = expectedRecoveryRevisions?.[id];
+        const durableRevision = (recovery as VersionedMutationRecoveryRecord).compositionRevision ?? 0;
+        const sameTab = (recovery as VersionedMutationRecoveryRecord).compositionOrigin === this.#compositionOrigin;
         if (
           recovery.targetRef !== intent.targetRef ||
-          expectedRecoveryRevisions?.[id] === undefined ||
-          ((recovery as VersionedMutationRecoveryRecord).compositionRevision ?? 0) !== expectedRecoveryRevisions[id]
+          expected === undefined ||
+          (durableRevision !== expected && !sameTab)
         )
           refused = true;
       }

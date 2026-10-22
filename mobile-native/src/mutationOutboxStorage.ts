@@ -679,9 +679,16 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 					row.client_mutation_id,
 				);
 			}
-			// Recovery rows carry no unique sequence index and no wire fence, so they
-			// move as a set.
-			this.db.runSync(`UPDATE ${TABLES.recovery} SET target_ref = ? WHERE target_ref = ?`, to.ref, ref);
+			// Recovery rows carry no unique sequence index, but they do carry the same
+			// wire identity as the outbox rows they came from: a resumed screen looks
+			// one up by ref, thread and instance, and an interrupted Edit whose columns
+			// still name the retired identity is discarded as a lost capture. Move the
+			// routing fields with the target while leaving composition and ownership
+			// untouched.
+			const recoveryRows = this.db.getAllSync<{ client_mutation_id: string; payload: string }>(
+				`SELECT client_mutation_id, payload FROM ${TABLES.recovery} WHERE target_ref = ?`,
+				ref,
+			);
 			// The destination's stop counter is its own. A row carrying the source's
 			// epoch would be compared against an unrelated counter - falsely canceled
 			// by a lower one, or un-fenced by a higher one. Starting at the
@@ -691,6 +698,22 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			// fence token is then the thread id, the same fused rule every other
 			// caller derives it by.
 			const fence = to.instanceId ?? to.threadId;
+			for (const row of recoveryRows) {
+				const payload = JSON.parse(row.payload) as Record<string, unknown>;
+				if (typeof payload.ref === "string") payload.ref = to.wireRef;
+				if (fence !== undefined) payload.expectedInstanceId = fence;
+				this.db.runSync(
+					`UPDATE ${TABLES.recovery}
+						 SET target_ref = ?, payload = ?, thread_id = COALESCE(?, thread_id),
+						     instance_id = COALESCE(?, instance_id)
+						 WHERE client_mutation_id = ?`,
+					to.ref,
+					JSON.stringify(payload),
+					to.threadId ?? null,
+					fence ?? null,
+					row.client_mutation_id,
+				);
+			}
 			for (const row of rows) {
 				// The dispatcher sends the payload verbatim as the RPC params, so the
 				// row's own wire ref and instance fence must move with it: a payload

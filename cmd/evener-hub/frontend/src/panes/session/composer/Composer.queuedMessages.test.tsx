@@ -1692,3 +1692,61 @@ test("replacing the recovery owner cancels the prior owner's cleanup retry", asy
     storage.close();
   }
 });
+
+test("the recovery-operation lease disables Send until the Edit claim releases it", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  const { fake } = await setup(false, storage);
+  const { source } = mount(fake);
+  await flushPendingTurnsProjectionForTests();
+  act(() => source.editText("A"));
+  let release: (() => void) | null = null;
+  act(() => {
+    release = source.tryAcquireRecoveryOperation();
+  });
+  if (!release) throw new Error("missing recovery-operation lease");
+  await waitFor(() => expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true));
+  await act(async () => release?.());
+  await waitFor(() => expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false));
+});
+
+test("an ordinary send cannot start while a recovery Edit claim is settling", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  const { fake } = await setup(false, storage);
+  const record = await queued(storage, "recovered while editing");
+  const { source } = mount(fake);
+  await flushPendingTurnsProjectionForTests();
+  // The user has a draft in the composer while claiming the queued edit.
+  act(() => source.editText("A"));
+  const hold = holdNextWriteTransaction(["recovery"]);
+  try {
+    // A local queue row's Edit first claims the row (outbox -> recovery); the
+    // activation has not started yet, so only the shared lease stops Send.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Edit message" }));
+      await hold.reached;
+    });
+    // The local queue row's Edit holds the shared lease for the whole claim
+    // window, before activation begins.
+    expect(source.getSnapshot().recoveryOperationBusy).toBe(true);
+    expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+      await Promise.resolve();
+    });
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+    await act(async () => hold.release());
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(record.clientMutationId));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    });
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
+    act(() => cleanup());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flushPendingTurnsProjectionForTests();
+  } finally {
+    hold.release();
+  }
+});

@@ -73,6 +73,7 @@ export interface ComposerSourceSnapshot {
   mentions?: ComposerMention[];
   activeRecoveryId: string | null;
   recoveryActivating: boolean;
+  recoveryOperationBusy: boolean;
   freshRecoveryRef: string | null;
   restoreEpoch: number;
 }
@@ -108,6 +109,7 @@ export interface ComposerSourceState {
   writeDraft(text: string, mayPersist: boolean, source?: TextEditSource): void;
   refreshRecovery(): void;
   runRecoveryOperation<T>(operation: () => Promise<T>): Promise<T>;
+  tryAcquireRecoveryOperation(): (() => void) | null;
   activateRecovery(record: MutationRecoveryRecord): Promise<boolean>;
   queueRecoveryPersistence(
     id: string,
@@ -152,6 +154,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
     mentions: initial.mentions,
     activeRecoveryId: null,
     recoveryActivating: false,
+    recoveryOperationBusy: false,
     freshRecoveryRef: null,
     restoreEpoch: 0,
   }));
@@ -183,6 +186,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
   let boundEditor: TextEditor | null = null;
   let recoveryWrites: Promise<void> = Promise.resolve();
   let recoveryOperations: Promise<void> = Promise.resolve();
+  let recoveryOperationHeld = false;
   const currentRecoveryId = () => recoveryOwnerLeaseRef.current?.clientMutationId ?? null;
   let committedRecoveryComposition: string | null = null;
   let refreshVersion = 0;
@@ -552,8 +556,12 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
           recoveryOwnsLocalDraftRef.current = true;
           // Adoption uses the transaction's committed record and revision.
           setActiveRecoveryId(updated);
-          editText(latest.text);
-          editSkillNames(restoredSkillNames(latest));
+          // Rehydrating an already-owned recovery draft is not a user edit.
+          // Counting it as one makes a submission that began before the
+          // remount look stale, so its commit observer cannot clear unchanged
+          // content or distinguish a later replacement from the restore.
+          updateText(latest.text);
+          updateSkillNames(restoredSkillNames(latest));
           updateSelectionMeta(latest);
           operations.replaceWithSettled(latest.attachments);
           markRestore();
@@ -591,42 +599,74 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
     return result;
   }
 
+  function tryAcquireRecoveryOperation(): (() => void) | null {
+    if (disposed || recoveryOperationHeld) return null;
+    recoveryOperationHeld = true;
+    state.setState({ recoveryOperationBusy: true });
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      recoveryOperationHeld = false;
+      if (!disposed) state.setState({ recoveryOperationBusy: false });
+    };
+  }
+
+  function settleRecoverySubmission(
+    clientMutationId: string,
+    draftUnchanged: boolean,
+    submittedText: string,
+    submittedSkillNames: readonly string[],
+    submittedCommandNames: readonly string[],
+    submittedAttachments: PendingAttachment[],
+  ): void {
+    if (disposed || currentRecoveryId() !== clientMutationId) return;
+    if (draftUnchanged) ownedDraftRevisionRef.current = readDraftRevision(ref);
+    const owns = ownsDraft();
+    recoveryOwnsLocalDraftRef.current = false;
+    recoveryWriteVersionRef.current += 1;
+    cancelCleanupRetry();
+    recoveryReplacementEpochRef.current += 1;
+    setActiveRecoveryId(null);
+    if (
+      draftUnchanged &&
+      textRef.current === submittedText &&
+      sameSkillSelections(skillNamesRef.current, submittedSkillNames) &&
+      sameSkillSelections(selectionMetaRef.current.commandNames, submittedCommandNames)
+    ) {
+      updateText("");
+      updateSkillNames([]);
+      updateSelectionMeta({ text: "", skillNames: [] });
+    }
+    const markers = new Set(
+      operations.items
+        .filter((item) =>
+          submittedAttachments.some(
+            (submitted) =>
+              submitted.marker === item.marker &&
+              submitted.data === item.data &&
+              submitted.name === item.name &&
+              submitted.mediaType === item.mediaType,
+          ),
+        )
+        .map((item) => item.marker),
+    );
+    operations.clearSubmitted(markers);
+    if (owns) persistDraft(textRef.current);
+  }
+
   const unsubscribeCommitted = subscribeComposerSubmissionCommitted(
     (targetRef, submittedText, submittedSkillNames, recovery, submittedCommandNames) => {
       if (disposed || targetRef !== ref) return;
       if (recovery && currentRecoveryId() === recovery.clientMutationId) {
-        if (recovery.draftUnchanged) ownedDraftRevisionRef.current = readDraftRevision(ref);
-        const owns = ownsDraft();
-        recoveryOwnsLocalDraftRef.current = false;
-        recoveryWriteVersionRef.current += 1;
-        cancelCleanupRetry();
-        recoveryReplacementEpochRef.current += 1;
-        setActiveRecoveryId(null);
-        if (
-          recovery.draftUnchanged &&
-          textRef.current === submittedText &&
-          sameSkillSelections(skillNamesRef.current, submittedSkillNames) &&
-          sameSkillSelections(selectionMetaRef.current.commandNames, submittedCommandNames ?? [])
-        ) {
-          updateText("");
-          updateSkillNames([]);
-          updateSelectionMeta({ text: "", skillNames: [] });
-        }
-        const markers = new Set(
-          operations.items
-            .filter((item) =>
-              recovery.attachments.some(
-                (submitted) =>
-                  submitted.marker === item.marker &&
-                  submitted.data === item.data &&
-                  submitted.name === item.name &&
-                  submitted.mediaType === item.mediaType,
-              ),
-            )
-            .map((item) => item.marker),
+        settleRecoverySubmission(
+          recovery.clientMutationId,
+          recovery.draftUnchanged,
+          submittedText,
+          submittedSkillNames,
+          submittedCommandNames ?? [],
+          recovery.attachments as PendingAttachment[],
         );
-        operations.clearSubmitted(markers);
-        if (owns) persistDraft(textRef.current);
       } else if (
         !recovery &&
         currentRecoveryId() === null &&
@@ -691,6 +731,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
     persistDraft,
     writeDraft,
     runRecoveryOperation,
+    tryAcquireRecoveryOperation,
     queueRecoveryPersistence,
     activateRecovery,
     bindEditor(nextEditor) {

@@ -130,6 +130,52 @@ test("offline edit and remove distinguish identical messages and restore exact I
 	expect(f.client.calls).toEqual([]);
 });
 
+test("interrupted Edit recovery restores exact composition after retarget to a different ref and instance", async () => {
+	const f = fixture();
+	const captured = await richSource(f);
+	await f.enqueue();
+	f.document.edit("current");
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, captured, f.document)).toBe("restored");
+
+	const resumedRef = "session-2";
+	const resumedKey = nativeMutationTargetKey(destination.hubId, resumedRef);
+	expect(
+		f.runtime.storage.retarget(key, {
+			ref: resumedKey,
+			wireRef: resumedRef,
+			threadId: "thread-2",
+			instanceId: "instance-2",
+		}),
+	).toHaveLength(1);
+	await f.reopen();
+	f.runtime.registerTarget(destination.hubId, resumedRef, f.client, {
+		threadId: "thread-2",
+		instanceId: "instance-2",
+	});
+	const [recovered] = (await f.runtime.read(resumedKey)).recovery;
+	expect(recovered).toMatchObject({
+		clientMutationId: captured,
+		targetRef: resumedKey,
+		threadId: "thread-2",
+		instanceId: "instance-2",
+		recoveryKind: "editing",
+		composerText: "[image 9] /skill",
+	});
+
+	const resumed = new DraftDocument(() => f.repository, { hubId: destination.hubId, sessionRef: resumedRef });
+	expect(await editQueuedMessageIntoDraft(f.runtime, resumedKey, captured, resumed)).toBe("restored");
+	expect(resumed.getSnapshot().record).toMatchObject({
+		draft: "[image 1] /skill",
+		images: [expect.objectContaining({ marker: 1 })],
+		composer: {
+			skillNames: ["skill"],
+			commandNames: ["command"],
+			mentions: [{ kind: "skill", name: "skill", offset: 10 }],
+			recoveryIds: [captured],
+		},
+	});
+});
+
 test("successful built-in completion durably cleans only captured sources without replay", async () => {
 	const f = fixture();
 	const captured = await f.enqueue();

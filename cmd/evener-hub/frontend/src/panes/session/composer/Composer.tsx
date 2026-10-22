@@ -221,6 +221,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     restoreEpoch,
     activeRecoveryId,
     recoveryActivating,
+    recoveryOperationBusy,
     freshRecoveryRef,
   } = useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
   const selectionMeta = useMemo(() => ({ commandNames, mentions }), [commandNames, mentions]);
@@ -251,7 +252,8 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     clearSubmittedAttachments,
   } = source;
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
-  const actionPending = busyAction !== null || submitting || mutationWriteStalled || recoveryActivating;
+  const actionPending =
+    busyAction !== null || submitting || mutationWriteStalled || recoveryActivating || recoveryOperationBusy;
   const mountedRef = useRef(false);
   const [pendingGoalReplacement, setPendingGoalReplacement] = useState<string | null>(null);
   // Track live focus too, so stopping does not collapse a focused editor.
@@ -1020,7 +1022,12 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   // it takes. Before this reconciliation, both sides pushed a toast for the
   // SAME failure; this is the fix, not a pre-existing split.
   async function submitAction(kind: "send" | "queue" | "steer" | "drain"): Promise<void> {
-    if (source.getSnapshot().recoveryActivating) return;
+    const releaseRecoveryOperation = source.tryAcquireRecoveryOperation();
+    if (!releaseRecoveryOperation) return;
+    if (source.getSnapshot().recoveryActivating) {
+      releaseRecoveryOperation();
+      return;
+    }
     const submittedText = textRef.current;
     const submittedAttachments = attachments.items;
     const submittedSkillNames = [...skillNamesRef.current];
@@ -1042,10 +1049,12 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     // why, instead of minting durable intent the wire would refuse.
     if (submittedSkillNames.length > 0 && !skillInputSupported) {
       toasts.push("error", "Skill selections aren't supported on this session yet; your draft is kept");
+      releaseRecoveryOperation();
       return;
     }
     if (submittedCommandNames.length > 0 && model?.capabilities.commandInput !== true) {
       toasts.push("error", "Command selections are not supported on this session; your draft is kept");
+      releaseRecoveryOperation();
       return;
     }
     setBusyAction(kind === "send" || kind === "queue" ? "submit" : "steer");
@@ -1138,6 +1147,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
       else if (error !== recoveryWriteRefusal && error !== recoveryAlreadySentRefusal) return;
     } finally {
       if (mountedRef.current) setBusyAction(null);
+      releaseRecoveryOperation();
     }
   }
 
@@ -1486,6 +1496,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
         activeRecoveryId={activeRecoveryId ?? undefined}
         activeRecoveryRevision={recoveryOwnerLeaseRef.current?.compositionRevision}
         onEditRecovery={activateRecovery}
+        tryAcquireRecoveryOperation={source.tryAcquireRecoveryOperation}
         onDrainSuccess={handleDrainSuccess}
         busy={actionPending}
         onDrainBusyChange={(draining) => {

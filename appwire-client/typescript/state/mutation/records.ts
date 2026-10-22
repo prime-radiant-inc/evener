@@ -132,6 +132,9 @@ export interface MutationRecoveryRecord<A extends MutationAttachmentRef = Mutati
   recoveryKind: MutationRecoveryKind;
   // Composition CAS version; absent on older records and interpreted as zero.
   compositionRevision?: number;
+  // Browser tab that last wrote this composition; absent on older or native
+  // records. A same-tab remount may consume an advanced revision.
+  compositionOrigin?: string;
   // Local browser draft snapshot incorporated into this recovery row. Not an
   // RPC field; absent on older rows and on native recovery records.
   localDraftRevisionId?: string;

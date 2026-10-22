@@ -100,6 +100,7 @@ export interface QueueStripProps {
   activeRecoveryId?: string;
   activeRecoveryRevision?: number;
   onEditRecovery?(record: MutationRecoveryRecord): void | Promise<void>;
+  tryAcquireRecoveryOperation?(): (() => void) | null;
   // Called once a drain-as-steer intent commits to IndexedDB, so the
   // integration can clear the unchanged composer text/attachment snapshot.
   onDrainSuccess(): void;
@@ -191,6 +192,7 @@ export function QueueStrip({
   activeRecoveryId,
   activeRecoveryRevision,
   onEditRecovery,
+  tryAcquireRecoveryOperation,
   onDrainSuccess,
   busy,
   onDrainBusyChange,
@@ -263,8 +265,11 @@ export function QueueStrip({
   async function handleLocalAction(record: MutationOutboxRecord, action: "edit" | "remove"): Promise<void> {
     const id = record.clientMutationId;
     if (localActions.current.has(id)) return;
+    const releaseRecoveryOperation = action === "edit" ? tryAcquireRecoveryOperation?.() : null;
+    if (action === "edit" && tryAcquireRecoveryOperation && !releaseRecoveryOperation) return;
     if (action === "edit" && getComposerText().hasPending) {
       toasts.push("error", "Image attachment is still processing");
+      releaseRecoveryOperation?.();
       return;
     }
     localActions.current.add(id);
@@ -282,6 +287,7 @@ export function QueueStrip({
     } finally {
       localActions.current.delete(id);
       setRowBusy(id, false);
+      releaseRecoveryOperation?.();
     }
   }
 
@@ -385,6 +391,8 @@ export function QueueStrip({
   }
 
   async function handleDrain(): Promise<void> {
+    const releaseRecoveryOperation = tryAcquireRecoveryOperation?.();
+    if (tryAcquireRecoveryOperation && !releaseRecoveryOperation) return;
     // The recovery fence, re-read live at the press: the hub refuses
     // turn/drainAsSteer for the obligation's whole window, so an offered press
     // could only mint durable intent that parks until the explicit Resume
@@ -392,16 +400,19 @@ export function QueueStrip({
     // the shared busy state.
     if (pressLocalRecoveryFenced(sessionRef)) {
       toasts.push("error", RECOVERY_ACTIONS_UNAVAILABLE_REASON);
+      releaseRecoveryOperation?.();
       return;
     }
     const refusal = pressRefusal(sessionRef, "drain");
     if (refusal !== undefined) {
       toasts.push("error", refusal);
+      releaseRecoveryOperation?.();
       return;
     }
     const { text, attachments, hasPending, skillNames, commandNames, mentions } = getComposerText();
     if (hasPending) {
       toasts.push("error", "Image attachment is still processing");
+      releaseRecoveryOperation?.();
       return;
     }
     // The UI-side half of the skillInput gate, mirroring Composer's own
@@ -410,10 +421,12 @@ export function QueueStrip({
     // the hub) would refuse.
     if ((skillNames?.length ?? 0) > 0 && model?.capabilities.skillInput !== true) {
       toasts.push("error", "Skill selections aren't supported on this session yet; your draft is kept");
+      releaseRecoveryOperation?.();
       return;
     }
     if ((commandNames?.length ?? 0) > 0 && model?.capabilities.commandInput !== true) {
       toasts.push("error", "Command selections are not supported on this session; your draft is kept");
+      releaseRecoveryOperation?.();
       return;
     }
     let recoveryRefusal: "changed" | "consumed" | undefined;
@@ -470,6 +483,7 @@ export function QueueStrip({
       else if (recoveryRefusal === "consumed") toasts.push("info", "This message was already sent in another tab.");
     } finally {
       onDrainBusyChange(false);
+      releaseRecoveryOperation?.();
     }
   }
 
@@ -820,7 +834,11 @@ export function QueueStrip({
                           ? "Wait for the current message to finish sending"
                           : ""
                     }
-                    onClick={() => onEditRecovery?.(record)}
+                    onClick={() => {
+                      const releaseRecoveryOperation = tryAcquireRecoveryOperation?.();
+                      if (tryAcquireRecoveryOperation && !releaseRecoveryOperation) return;
+                      void Promise.resolve(onEditRecovery?.(record)).finally(() => releaseRecoveryOperation?.());
+                    }}
                   />
                 )}
               </div>
