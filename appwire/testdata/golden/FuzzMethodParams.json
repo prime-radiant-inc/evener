@@ -22,26 +22,30 @@
   },
   {
     "input": "{\"includeArchived\":true}",
-    "detail": "thread/list",
+    "detail": "evener/runtime/session/bind",
     "decoded": true,
-    "output": {}
+    "output": {
+      "ref": "",
+      "instanceId": "",
+      "hubId": "",
+      "bindingId": ""
+    }
   },
   {
     "input": "{\"threadId\":\"abc\",\"subscribe\":true}",
-    "detail": "thread/read",
+    "detail": "evener/runtime/session/state",
     "decoded": true,
     "output": {
-      "threadId": "abc",
-      "includeTurns": false,
-      "subscribe": true
+      "bindingId": ""
     }
   },
   {
     "input": "{\"threadId\":\"t\",\"turnLimit\":5}",
-    "detail": "thread/start",
+    "detail": "evener/runtime/session/cancel",
     "decoded": true,
     "output": {
-      "cwd": ""
+      "bindingId": "",
+      "requestId": 0
     }
   },
   {

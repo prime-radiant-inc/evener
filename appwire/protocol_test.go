@@ -501,6 +501,9 @@ func TestThreadNotificationsRequireAuthoritativeRoutingIdentity(t *testing.T) {
 		// evener/notices/changed is hub-wide: the hub's own notices (S11),
 		// about providers, hosts and plugins rather than any one thread.
 		NotifyEvenerNoticesChanged: true,
+		// Reverse session observations stay on one bound connection; the
+		// receiver selects its watch by bindingId and watchId, not threadId/ref.
+		NotificationRuntimeSessionObservation: true,
 	}
 	for _, notification := range Notifications {
 		if global[notification.Name] {
