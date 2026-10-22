@@ -11,7 +11,13 @@ import { IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ComposerPreparation } from "../panes/session/composer/composerContract";
 import { APPEND_STORES } from "./browserDraftRepository";
-import { ACCEPT_STORES, RESET_STORES, SAVE_STORES } from "./documentAnnotationIndexedDB";
+import {
+  ACCEPT_STORES,
+  annotationDocumentKey,
+  epochIdentityOf,
+  RESET_STORES,
+  SAVE_STORES,
+} from "./documentAnnotationIndexedDB";
 import {
   ANNOTATION_EVIDENCE_STORE,
   ANNOTATION_EXPIRY_STORE,
@@ -1001,6 +1007,193 @@ test("a reverted content read keeps the live epoch's provisional after a delayed
     });
     changedHold.release();
     expect(await changedRead).toMatchObject({ state: "expiry-pending" });
+  } finally {
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
+
+// A fence can commit and then lose its completion to the watchdog. The
+// retained pending-expiry record survives, a later retry is superseded by the
+// fence's own commit, and the same pass's sweep deletes the expired epoch.
+// The deletion's commit is the only evidence left, so it owns the reader wake.
+test("a committed fence whose completion was lost wakes readers when its expiry is deleted", async () => {
+  let fenceHold: ReturnType<typeof holdNextWriteTransaction> | undefined;
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-expiry-emission",
+    origin: "https://coordination.example",
+    beforeExpiryFence: async () => {
+      if (!fenceHold) fenceHold = holdNextWriteTransaction(ACCEPT_STORES);
+    },
+  });
+  const listener = vi.fn();
+  fixture.repository.subscribe(fixture.document, listener);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const ticket = await fixture.repository.beginRead(fixture.document);
+    const acceptance = fixture.repository.acceptRead(ticket, sampleChangedContent());
+    await settleRealTasks(() => fenceHold !== undefined, 50);
+    if (!fenceHold) throw new Error("changed read did not reach its fence");
+    await fenceHold.reached;
+    await vi.advanceTimersByTimeAsync(10_001);
+    expect(await acceptance).toMatchObject({ state: "expiry-pending" });
+    fenceHold.release();
+    vi.useRealTimers();
+
+    listener.mockClear();
+    await fixture.repository.retryPending("storage-recovered");
+    expect(listener).toHaveBeenCalled();
+  } finally {
+    fenceHold?.release();
+    vi.useRealTimers();
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
+
+// The accept path's superseded arm has the same duty. A second changed read
+// validates against an epoch a peer's committed-but-lost fence then replaces;
+// its own fence is superseded. The sweep deletes the epoch on durable evidence,
+// so that deletion - not the map entry the arm used to remove - must wake.
+test("a superseded changed read leaves the expiry deletion to publish its wake", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-accept-superseded-emission",
+    origin: "https://coordination.example",
+  });
+  const sibling = openSiblingRepository(fixture);
+  const listener = vi.fn();
+  sibling.subscribe(fixture.document, listener);
+  const holds = holdNextTransactions([
+    { stores: ACCEPT_STORES, event: "complete" },
+    { stores: ACCEPT_STORES, event: "complete" },
+    { stores: ACCEPT_STORES, event: "complete" },
+  ]);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const firstTicket = await fixture.repository.beginRead(fixture.document);
+    const firstAcceptance = fixture.repository.acceptRead(firstTicket, sampleChangedContent());
+    await holds.reached[0];
+
+    const secondTicket = await sibling.beginRead(fixture.document);
+    const secondAcceptance = sibling.acceptRead(secondTicket, sampleThirdContent());
+    await holds.reached[1];
+
+    // The first fence commits; its completion stays held for the watchdog.
+    holds.releaseAt(0);
+    await holds.reached[2];
+    // The second validation resumes, fences an epoch the first already
+    // replaced, and answers superseded.
+    holds.releaseAt(1);
+    expect(await secondAcceptance).toEqual({ state: "stale-ticket" });
+    await vi.advanceTimersByTimeAsync(10_001);
+    expect(await firstAcceptance).toMatchObject({ state: "expiry-pending" });
+    holds.releaseAt(2);
+    holds.release();
+    vi.useRealTimers();
+
+    listener.mockClear();
+    await sibling.retryPending("storage-recovered");
+    expect(listener).toHaveBeenCalled();
+  } finally {
+    holds.release();
+    vi.useRealTimers();
+    sibling.close();
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
+
+// A peer reset is the publisher of its own namespace transition: the retained
+// record's incarnation is no longer durable, the peer deleted the rows, and no
+// sweep here will ever commit a deletion. Releasing the inert entry and staying
+// silent is correct - a document wake would name a listing this adapter did not
+// change.
+test("a retained fence superseded by a peer reset releases silently", async () => {
+  let fenceHold: ReturnType<typeof holdNextWriteTransaction> | undefined;
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-expiry-peer-reset",
+    origin: "https://coordination.example",
+    beforeExpiryFence: async () => {
+      if (!fenceHold) fenceHold = holdNextWriteTransaction(ACCEPT_STORES);
+    },
+  });
+  const sibling = openSiblingRepository(fixture);
+  const listener = vi.fn();
+  fixture.repository.subscribe(fixture.document, listener);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const ticket = await fixture.repository.beginRead(fixture.document);
+    const acceptance = fixture.repository.acceptRead(ticket, sampleChangedContent());
+    await settleRealTasks(() => fenceHold !== undefined, 50);
+    if (!fenceHold) throw new Error("changed read did not reach its fence");
+    await fenceHold.reached;
+    await vi.advanceTimersByTimeAsync(10_001);
+    expect(await acceptance).toMatchObject({ state: "expiry-pending" });
+    fenceHold.release();
+    vi.useRealTimers();
+
+    expect(await sibling.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation)).toMatchObject({
+      committed: true,
+    });
+    // Let the reset's best-effort namespace wake land, then measure only what
+    // this adapter's own retry pass publishes.
+    await settleRealTasks(() => false, 4);
+    const identity = epochIdentityOf(
+      annotationDocumentKey(fixture.document),
+      fixture.incarnation,
+      fixture.operation.lease.epoch,
+    );
+    const deletes: string[] = [];
+    const del = Map.prototype.delete;
+    const deleteSpy = vi.spyOn(Map.prototype, "delete").mockImplementation(function (
+      this: Map<unknown, unknown>,
+      key: unknown,
+    ) {
+      if (typeof key === "string") {
+        const value = this.get(key) as { confirmed?: unknown; requestId?: unknown } | undefined;
+        if (value !== undefined && "confirmed" in value && "requestId" in value) deletes.push(key);
+      }
+      return del.call(this, key);
+    });
+    try {
+      listener.mockClear();
+      await fixture.repository.retryPending("storage-recovered");
+    } finally {
+      deleteSpy.mockRestore();
+    }
+    expect(deletes).toContain(identity);
+    expect(listener).not.toHaveBeenCalled();
+  } finally {
+    fenceHold?.release();
+    vi.useRealTimers();
+    sibling.close();
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
+
+// A fence hook that rejects runs after this invocation installed its confirmed
+// suppression but before any fence committed. Nothing durable expired, so the
+// epoch must stay listed and savable: release exactly this invocation's install.
+test("a rejected expiry-fence hook leaves the epoch listed and savable", async () => {
+  let rejectNext = true;
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-hook-rejection",
+    origin: "https://coordination.example",
+    beforeExpiryFence: async () => {
+      if (rejectNext) {
+        rejectNext = false;
+        throw new Error("hook fault");
+      }
+    },
+  });
+  try {
+    const ticket = await fixture.repository.beginRead(fixture.document);
+    await expect(fixture.repository.acceptRead(ticket, sampleChangedContent())).rejects.toThrow("hook fault");
+
+    const views = await fixture.repository.listAnnotations(fixture.document);
+    expect(views.map((view) => view.operation.operationId)).toContain(fixture.operation.operationId);
+    await fixture.repository.saveAnnotation({ ...fixture.operation, operationId: "operation-after-hook" });
   } finally {
     fixture.repository.close();
     fixture.drafts.close();

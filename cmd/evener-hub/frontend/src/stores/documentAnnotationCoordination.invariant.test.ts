@@ -282,12 +282,10 @@ test("a held changed-read validation that lands after a reset installs no confir
 });
 
 // A peer's fence can replace the epoch between this invocation's confirmed
-// suppression and its own fence. The superseded fence never commits, so nothing
-// else releases the entry: it names an epoch that no longer heads the document
-// and that only the peer's expiry row covers. The superseded path must restore
-// the pre-invocation state rather than leave this stale read's confirmation
-// behind.
-test("a superseded changed read releases the confirmed suppression it installed", async () => {
+// suppression and its own fence. The peer committed the expiry row, so the
+// deletion path still owns the transition: the superseded arm must leave the
+// entry for that deletion instead of deleting it and making the wake silent.
+test("a superseded changed read leaves its confirmed suppression to the deletion path", async () => {
   let fixture: AnnotationFixture | undefined;
   let sibling: ReturnType<typeof createDocumentAnnotationRepository> | undefined;
   fixture = await openAnnotationFixture({
@@ -315,7 +313,7 @@ test("a superseded changed read releases the confirmed suppression it installed"
     } finally {
       released.restore();
     }
-    expect(released.keys).toContain(retiredIdentity);
+    expect(released.keys).not.toContain(retiredIdentity);
   } finally {
     sibling.close();
     fixture.repository.close();

@@ -1048,7 +1048,28 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       };
       this.#suppressedEpochs.set(suppressionIdentity, installedSuppression);
       finishValidation(true, suppressionIdentity);
-      await this.#options.beforeExpiryFence?.(ticket);
+      // The observed boundary runs before the fence. A rejection here proves no
+      // fence committed, so the epoch is still live: release exactly this
+      // invocation's own confirmed install (and restore what it displaced) or
+      // the epoch stays hidden from listing and refused by saves forever.
+      const restoreInstalledSuppression = (): void => {
+        if (this.#suppressedEpochs.get(suppressionIdentity) !== installedSuppression) return;
+        if (
+          priorSuppression === undefined ||
+          priorSuppression.requestId === ticket.requestId ||
+          this.#isRetiredIncarnation(annotationNamespaceKey(namespace), priorSuppression.namespaceIncarnation)
+        ) {
+          this.#suppressedEpochs.delete(suppressionIdentity);
+        } else {
+          this.#suppressedEpochs.set(suppressionIdentity, priorSuppression);
+        }
+      };
+      try {
+        await this.#options.beforeExpiryFence?.(ticket);
+      } catch (error) {
+        restoreInstalledSuppression();
+        throw error;
+      }
       try {
         const fenced = await this.#fence(
           ticket.key,
@@ -1074,22 +1095,21 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
           // Another fence already replaced this epoch: a peer's fence, or a
           // reset's rotation whose sweep may already have passed. This
           // invocation's confirmation now names an epoch that is no longer the
-          // durable head, so restore the pre-invocation state instead of
-          // leaving a stale read's suppression behind. A provisional this read
-          // still owned drops; an entry another invocation owned returns
-          // unchanged. Nothing is resurrected: the replacement fence wrote the
-          // epoch's expiry row and flipped its pending operations terminal.
-          if (this.#suppressedEpochs.get(suppressionIdentity) === installedSuppression) {
-            if (
-              priorSuppression === undefined ||
-              priorSuppression.requestId === ticket.requestId ||
-              this.#isRetiredIncarnation(annotationNamespaceKey(namespace), priorSuppression.namespaceIncarnation)
-            ) {
-              this.#suppressedEpochs.delete(suppressionIdentity);
-            } else {
-              this.#suppressedEpochs.set(suppressionIdentity, priorSuppression);
-            }
+          // durable head. Whether its entry may go is DURABLE evidence:
+          //   - The incarnation is still current: a fence replaced the epoch
+          //     and wrote its expiry row, so the deletion path will settle the
+          //     transition. Leave the installed entry (and the prior it
+          //     displaced) for that deletion, whose commit publishes the wake.
+          //     Removing the entry here would sever the only map state the
+          //     deletion path could still be holding.
+          //   - The incarnation is no longer current: a peer reset superseded
+          //     it, deleted the rows, and published the namespace wake. Nothing
+          //     here will ever sweep. Restore the pre-invocation state instead
+          //     of leaving an inert entry behind.
+          if (await this.#durableIncarnationIs(namespace, validation.namespaceIncarnation)) {
+            return { state: "stale-ticket" };
           }
+          restoreInstalledSuppression();
           return { state: "stale-ticket" };
         }
         // A failed fence keeps the confirmed suppression and its pending expiry for
@@ -1673,7 +1693,12 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       throw error;
     }
     if (removed) {
+      // The deletion's own commit is the evidence: this transaction performed
+      // the fenced-to-deleted phase transition, so readers must re-list even
+      // when a retry arm already removed the suppression entry. The release
+      // below is memory hygiene only.
       this.#releaseExpiredEpoch(documentKey, receipt.namespaceIncarnation, receipt.expiredEpoch);
+      this.#settleTransition({ documentKey });
     }
   }
 
@@ -1683,12 +1708,11 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // exact document+incarnation+epoch identity - listing, save validation,
   // handoff eligibility, durable validation and the revert-resurrection fence -
   // so a released entry can never legitimately match a live epoch again: the
-  // identity names a deleted UUID, never a replacement. Release it so a
-  // long-lived adapter does not retain one inert entry per proven source change.
+  // identity names a deleted UUID, never a replacement. Releasing it is pure
+  // memory hygiene: the deletion's own commit owns the wake, so this helper
+  // never publishes one.
   #releaseExpiredEpoch(documentKey: string, namespaceIncarnation: string, expiredEpoch: string): void {
-    const identity = epochIdentityOf(documentKey, namespaceIncarnation, expiredEpoch);
-    if (!this.#suppressedEpochs.delete(identity)) return;
-    this.#settleTransition({ documentKey });
+    this.#suppressedEpochs.delete(epochIdentityOf(documentKey, namespaceIncarnation, expiredEpoch));
   }
 
   // Act on the durable "deleted" phase a rejected finishExpiry left behind.
@@ -1706,6 +1730,9 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     }
     if (row?.receipt.phase !== "deleted") return false;
     this.#releaseExpiredEpoch(annotationDocumentKey(receipt.key), receipt.namespaceIncarnation, receipt.expiredEpoch);
+    // The row proves the deletion committed even though its caller never
+    // observed the completion, so this arm publishes the phase transition.
+    this.#settleTransition({ documentKey: annotationDocumentKey(receipt.key) });
     return true;
   }
 
@@ -1834,9 +1861,17 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       } catch (error) {
         if (error instanceof SupersededFenceError) {
           // Another fence already replaced this epoch: the retained work is
-          // done. Release exactly the confirmed entry this retention installed;
-          // a peer that replaced it since is left alone.
-          if (this.#suppressedEpochs.get(identity) === record.suppression) {
+          // done. Whether the entry may go is durable evidence: when the
+          // incarnation is still current, a fence replaced the epoch and its
+          // expiry row survives, so the sweep below commits the deletion and
+          // that commit publishes the wake. Deleting the entry here would make
+          // the deletion silent. Only a peer reset - an incarnation that is no
+          // longer durable, whose rows and expiry the peer deleted and whose
+          // namespace wake is the publisher - leaves the entry inert here.
+          if (
+            this.#suppressedEpochs.get(identity) === record.suppression &&
+            !(await this.#durableIncarnationIs(record.namespace, record.namespaceIncarnation))
+          ) {
             this.#suppressedEpochs.delete(identity);
           }
           this.#pendingExpiries.delete(identity);
@@ -1868,13 +1903,13 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       if (row.receipt.phase === "deleted") {
         // A deleted row this adapter still suppresses is a finishExpiry whose
         // commit its caller never observed (or whose release it never
-        // reached). The row is the durable evidence, so settle it once here
-        // instead of skipping the only arm that could publish it.
-        this.#releaseExpiredEpoch(
-          annotationDocumentKey(row.receipt.key),
-          row.receipt.namespaceIncarnation,
-          row.receipt.expiredEpoch,
-        );
+        // reached). The row is re-observed every pass, so the suppression
+        // entry is the once-only guard: the pass that finds it publishes the
+        // transition and drops it, and a later pass with no entry stays
+        // silent. The row itself cannot be the guard; it persists.
+        const documentKey = annotationDocumentKey(row.receipt.key);
+        const identity = epochIdentityOf(documentKey, row.receipt.namespaceIncarnation, row.receipt.expiredEpoch);
+        if (this.#suppressedEpochs.delete(identity)) this.#settleTransition({ documentKey });
         continue;
       }
       try {
