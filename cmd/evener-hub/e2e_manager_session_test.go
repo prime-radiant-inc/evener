@@ -3,6 +3,8 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -174,27 +176,14 @@ func TestE2E_ManagerLocalQuestionLoop(t *testing.T) {
 	}
 	beforeNotices := managerWatchNotices(beforeResult, watchID)
 	answered.RespondToolCall("communicate", communicateArgs(result))
-	var workerTurns []appwire.Turn
-	for {
-		workerTurns, err = readTranscriptTurns(ctx, client, workerRef, "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if workerTerminalAccepted(workerTurns, result) {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal("worker terminal result was not recorded")
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
+	// The Manager's completion watch is emitted only after the worker's
+	// accepted terminal record. Await that causal signal before reading history.
 	for {
 		resultRound, nextErr := provider.Next(ctx.Done())
 		if nextErr != nil || !resultRound.Contains(managerOpening) || !resultRound.Contains(watchID) {
 			t.Fatalf("Manager did not receive the worker watch after its result: err=%v, call=%v", nextErr, resultRound)
 		}
-		if strings.Contains(strings.Join(resultRound.Texts(), "\n"), ":communicate") {
+		if strings.Contains(strings.Join(resultRound.Texts(), "\n"), "completed: accepted terminal done") {
 			resultRound.RespondToolCall("communicate", communicateArgs("result observed"))
 			break
 		}
@@ -202,6 +191,10 @@ func TestE2E_ManagerLocalQuestionLoop(t *testing.T) {
 		// the answer arrived. That notice cannot answer a question or substitute
 		// for the later accepted terminal completion.
 		resultRound.RespondToolCall("communicate", communicateArgs("late question notice"))
+	}
+	workerTurns, err := readTranscriptTurns(ctx, client, workerRef, "")
+	if err != nil {
+		t.Fatal(err)
 	}
 	answerInWorkerHistory := false
 	for _, turn := range workerTurns {
@@ -219,6 +212,175 @@ func TestE2E_ManagerLocalQuestionLoop(t *testing.T) {
 	terminalAccepted := workerTerminalAccepted(workerTurns, result)
 	if !ownedReportSeen || !answerInWorkerHistory || !terminalAccepted || !resultInManagerHistory || ownedReportAcknowledged {
 		t.Fatalf("incomplete independent loop: answerInWorkerHistory=%v terminalAccepted=%v resultInManagerHistory=%v beforeNotices=%d afterNotices=%d ownedReportAcknowledged=%v worker=%v manager=%v", answerInWorkerHistory, terminalAccepted, resultInManagerHistory, beforeNotices, managerWatchNotices(managerTurns, watchID), ownedReportAcknowledged, managerItemSummary(workerTurns), managerItemSummary(managerTurns))
+	}
+}
+
+// The browser never subscribes to the worker. Its Manager watch is attached
+// before the first prompt, and is the only subscriber eligible to receive a
+// sandbox card. A real restricted file-tool denial must block until the
+// Manager resolves it through the daemon's approval owner.
+func TestE2E_ManagerNoBrowserSandboxApproval(t *testing.T) {
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
+	if testing.Short() {
+		t.Skip("live-stack e2e: builds binaries and runs a hub + daemons")
+	}
+	provider, err := fakellm.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(provider.Close)
+	stack := startHubStack(t, provider)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	client := stack.dialRPC(ctx, t)
+	// The Manager overrides this global policy to off in startManagerThread;
+	// its independently created worker inherits the real restricted backend.
+	if _, err := clientRequest[appwire.LaunchConfigResolved](ctx, client, appwire.MethodEvenerLaunchSetLayer, appwire.LaunchConfigSetLayerParams{
+		CWD: stack.workDir, Layer: "global", Config: appwire.LaunchConfigLayer{Sandbox: "restricted"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const managerOpening = "EVENER-MANAGER-APPROVAL-4D"
+	const workerTask = "EVENER-WORKER-APPROVAL-TASK-4D"
+	const approvedContent = "EVENER-MANAGER-APPROVED-WRITE-4D\n"
+	const result = "EVENER-WORKER-APPROVAL-DONE-4D"
+	outside := filepath.Join(t.TempDir(), "approval-target.txt")
+	if err := os.WriteFile(outside, []byte("before approval\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	managerRef := startManagerThread(ctx, t, client, stack, managerOpening)
+	opening, err := provider.Next(ctx.Done())
+	if err != nil || !opening.Contains(managerOpening) {
+		t.Fatalf("manager opening request: call=%v err=%v", opening, err)
+	}
+	opening.RespondToolCall("delegate", map[string]any{
+		"prompt": workerTask,
+		"hub": map[string]any{
+			"cwd": stack.workDir, "model": stack.model,
+			"watch": map[string]any{"events": []string{"approval"}, "completion": true},
+		},
+	})
+	var workerFirst *fakellm.Call
+	var workerRef, workerInstance, watchID string
+	for workerFirst == nil || workerRef == "" {
+		call, nextErr := provider.Next(ctx.Done())
+		if nextErr != nil {
+			t.Fatal(nextErr)
+		}
+		if call.Contains(workerTask) {
+			workerFirst = call
+			continue
+		}
+		if !call.Contains(managerOpening) {
+			t.Fatalf("unexpected provider request: %v", call.Texts())
+		}
+		var outcome struct {
+			Created struct {
+				Status     string `json:"status"`
+				Ref        string `json:"ref"`
+				InstanceID string `json:"instanceId"`
+			} `json:"created"`
+			Watch struct {
+				Status  string `json:"status"`
+				WatchID string `json:"watch_id"`
+			} `json:"watch"`
+			Input struct {
+				Status string `json:"status"`
+			} `json:"input"`
+		}
+		if !managerToolResult(call, &outcome) || outcome.Created.Status != "created" || outcome.Created.Ref == "" || outcome.Created.InstanceID == "" || outcome.Watch.Status != "attached" || outcome.Watch.WatchID == "" || outcome.Input.Status != "submitted" {
+			t.Fatalf("creation, watch and input did not succeed in order: %+v, messages=%v", outcome, call.Texts())
+		}
+		workerRef, workerInstance, watchID = outcome.Created.Ref, outcome.Created.InstanceID, outcome.Watch.WatchID
+		call.RespondToolCall("communicate", communicateArgs("worker launched"))
+	}
+	t.Cleanup(func() {
+		shutdownCtx, done := context.WithTimeout(context.Background(), 20*time.Second)
+		defer done()
+		if _, err := clientRequest[appwire.EmptyResponse](shutdownCtx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: workerRef}); err != nil {
+			t.Errorf("worker shutdown: %v", err)
+		}
+	})
+	var worker appwire.Thread
+	awaitThread(ctx, t, client, workerRef, "restricted independent worker", func(thread appwire.Thread) bool {
+		worker = thread
+		return thread.Evener.InstanceID == workerInstance && thread.Evener.Access != nil
+	})
+	if worker.Evener.Kind == "subagent" || worker.Evener.Manager || worker.Evener.ParentRef != "" || worker.Evener.Ref == managerRef || worker.Evener.Access.Sandbox != "restricted" {
+		t.Fatalf("worker is not an independent restricted session: %+v", worker.Evener)
+	}
+	workerFirst.RespondToolCall("write_file", map[string]any{"file_path": outside, "content": approvedContent})
+	approvalRound, err := provider.Next(ctx.Done())
+	if err != nil || !approvalRound.Contains(managerOpening) || !approvalRound.Contains(watchID) || !strings.Contains(strings.Join(approvalRound.Texts(), "\n"), ":approval") {
+		t.Fatalf("Manager did not receive the first-turn sandbox approval watch: call=%v err=%v", approvalRound, err)
+	}
+	approvalRound.RespondToolCall("job_status", map[string]any{"hub": map[string]any{"ref": workerRef}})
+	statusRound, err := provider.Next(ctx.Done())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var status appwire.SessionOperationResponse
+	if !managerToolResult(statusRound, &status) || status.Read == nil || len(status.Read.Thread.Evener.PendingEscalations) != 1 {
+		t.Fatalf("Manager status did not expose pending sandbox approval: read=%+v messages=%v", status.Read, statusRound.Texts())
+	}
+	escalation := status.Read.Thread.Evener.PendingEscalations[0]
+	if escalation.EscalationID == "" || escalation.DeniedPath != outside || escalation.Tool != "write_file" {
+		t.Fatalf("approval does not belong to worker's denied write: %+v", escalation)
+	}
+	if data, err := os.ReadFile(outside); err != nil || string(data) != "before approval\n" {
+		t.Fatalf("worker wrote before approval: data=%q err=%v", data, err)
+	}
+	statusRound.RespondToolCall("session_control", map[string]any{
+		"action": "approval", "arguments": map[string]any{"ref": workerRef, "escalationId": escalation.EscalationID, "approve": true},
+	})
+	var workerAfter *fakellm.Call
+	controlConfirmed := false
+	for workerAfter == nil || !controlConfirmed {
+		call, nextErr := provider.Next(ctx.Done())
+		if nextErr != nil {
+			t.Fatal(nextErr)
+		}
+		if call.Contains(managerOpening) {
+			var control appwire.SessionOperationResponse
+			if !managerToolResult(call, &control) || control.Control == nil || control.Control.Actor.Kind != "manager" || control.Control.Actor.ManagerRef != managerRef {
+				t.Fatalf("approval was not accepted as Manager: response=%+v messages=%v", control, call.Texts())
+			}
+			controlConfirmed = true
+			call.RespondToolCall("communicate", communicateArgs("approval granted"))
+		} else if call.Contains(workerTask) {
+			workerAfter = call
+		} else {
+			t.Fatalf("unexpected provider request after approval: %v", call.Texts())
+		}
+	}
+	if data, err := os.ReadFile(outside); err != nil || string(data) != approvedContent {
+		t.Fatalf("approved sandbox write did not execute: data=%q err=%v", data, err)
+	}
+	workerAfter.RespondToolCall("communicate", communicateArgs(result))
+	completionRound, err := provider.Next(ctx.Done())
+	if err != nil || !completionRound.Contains(managerOpening) || !completionRound.Contains(watchID) || !strings.Contains(strings.Join(completionRound.Texts(), "\n"), "completed: accepted terminal done") {
+		t.Fatalf("Manager did not receive accepted worker completion: call=%v err=%v", completionRound, err)
+	}
+	completionRound.RespondToolCall("communicate", communicateArgs("worker complete"))
+	turns, err := readTranscriptTurns(ctx, client, workerRef, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	decisions := 0
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			if item.EventKind != appwire.ThreadItemEventKindApprovalDecision {
+				continue
+			}
+			decisions++
+			if item.Actor == nil || item.Actor.Kind != "manager" || item.Actor.ManagerRef != managerRef {
+				t.Fatalf("approval decision attributed to someone other than Manager: %+v", item)
+			}
+		}
+	}
+	if decisions != 1 || !workerTerminalAccepted(turns, result) {
+		t.Fatalf("worker approval/terminal record: decisions=%d terminal=%v turns=%v", decisions, workerTerminalAccepted(turns, result), managerItemSummary(turns))
 	}
 }
 
