@@ -173,13 +173,21 @@ func TestHubRestartCommandUsesResponseIncarnation(t *testing.T) {
 }
 
 func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
-	for _, name := range []string{"listener-moved", "listener-moved-lost-reply", "hardlink-listener-moved", "hardlink-listener-moved-lost-reply", "shared-root-equal-content", "shared-root-different-config", "equal-content-record-config", "replaced-selected-config", "relative-config-listener-moved", "symlink-config-listener-moved", "relative-symlink-config-listener-moved", "failed-restart", "wrong-record-config", "changed-selected-root", "changed-selected-config", "same-incarnation"} {
+	for _, name := range []string{"listener-moved", "listener-moved-lost-reply", "hardlink-listener-moved", "hardlink-listener-moved-lost-reply", "shared-root-equal-content", "shared-root-different-config", "equal-content-record-config", "replaced-selected-config", "startup-prunes-metadata", "startup-prunes-metadata-lost-reply", "retargeted-selector-before-dispatch", "relative-config-listener-moved", "symlink-config-listener-moved", "relative-symlink-config-listener-moved", "failed-restart", "wrong-record-config", "changed-selected-root", "changed-selected-config", "same-incarnation"} {
 		t.Run(name, func(t *testing.T) {
 			dir, root := endpointTestRoot(t)
 			config := endpointTestConfig(t, dir, root, "127.0.0.1:0")
 			recordConfig := config
 			cliConfig := config
 			sharedRoot := strings.HasPrefix(name, "shared-root-")
+			pruneMetadata := strings.HasPrefix(name, "startup-prunes-metadata")
+			retargetSelector := name == "retargeted-selector-before-dispatch"
+			if retargetSelector {
+				cliConfig = filepath.Join(dir, "selector.toml")
+				if err := os.Symlink(config, cliConfig); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if sharedRoot {
 				recordConfig = filepath.Join(dir, "running.toml")
 			}
@@ -296,6 +304,21 @@ func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if pruneMetadata {
+				expired := HostTombstone{
+					Name: "gone", Entry: HostConfig{Name: "gone", SSH: "gone.example"},
+					Origin: hostOriginHubTOML, Generation: 1,
+					IncarnationID: "00000000-0000-4000-8000-000000000001", PresenceEpoch: 4,
+					RemovedAt: "2020-01-01T00:00:00Z",
+				}
+				records := hostTOMLRecords{
+					highWater:  map[string]HostGeneration{"gone": {Generation: 1, IncarnationID: expired.IncarnationID, PresenceEpoch: 4}},
+					tombstones: map[string]HostTombstone{"gone": expired},
+				}
+				if err := writeHubTOMLHostsRecords(config, nil, nil, records, false); err != nil {
+					t.Fatal(err)
+				}
+			}
 			var mu sync.Mutex
 			var scheduleErr error
 			previousSchedule := scheduleHubRestartOnly
@@ -305,6 +328,30 @@ func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
 				attempts.Add(1)
 				if name == "failed-restart" {
 					return
+				}
+				if pruneMetadata {
+					prior, err := os.Stat(config)
+					if err != nil {
+						scheduleErr = err
+						return
+					}
+					boot := bootHostManager(t, config)
+					current, err := os.Stat(config)
+					if err != nil {
+						scheduleErr = err
+						return
+					}
+					cfg, err := LoadConfig(config)
+					if err != nil {
+						scheduleErr = err
+						return
+					}
+					_, retained := cfg.Tombstones["gone"]
+					_, live := boot.cfg.store.tombstoneSnapshot()["gone"]
+					if os.SameFile(prior, current) || retained || live || cfg.HubStateRoot != root || cfg.Generations["gone"].PresenceEpoch <= 4 {
+						scheduleErr = errors.New("startup did not atomically prune expired metadata at the selected config")
+						return
+					}
 				}
 				next := record
 				next.BootID, next.StartedAt = "restart-successor", after
@@ -387,10 +434,26 @@ func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
 			deps := defaultMainDeps()
 			var stdout, stderr bytes.Buffer
 			deps.stdout = &stdout
+			if retargetSelector {
+				other := filepath.Join(dir, "retargeted.toml")
+				data, err := os.ReadFile(config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(other, data, 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(cliConfig); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(other, cliConfig); err != nil {
+					t.Fatal(err)
+				}
+			}
 			err = runHubRestart([]string{"--config", cliConfig, "--timeout", "1s"}, &stderr, deps)
 			mu.Lock()
 			defer mu.Unlock()
-			if sharedRoot {
+			if sharedRoot || retargetSelector {
 				if !errors.Is(err, hubendpoint.ErrIdentityMismatch) || rpcRequests.Load() != 0 || attempts.Load() != 0 || scheduleErr != nil {
 					t.Fatalf("different config reached restart: err=%v RPC requests=%d attempts=%d schedule=%v", err, rpcRequests.Load(), attempts.Load(), scheduleErr)
 				}
@@ -400,9 +463,15 @@ func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
 				t.Fatalf("restart scheduling: attempts=%d err=%v", attempts.Load(), scheduleErr)
 			}
 			switch name {
-			case "listener-moved", "listener-moved-lost-reply", "hardlink-listener-moved", "hardlink-listener-moved-lost-reply", "relative-config-listener-moved", "symlink-config-listener-moved", "relative-symlink-config-listener-moved":
+			case "listener-moved", "listener-moved-lost-reply", "hardlink-listener-moved", "hardlink-listener-moved-lost-reply", "relative-config-listener-moved", "symlink-config-listener-moved", "relative-symlink-config-listener-moved", "replaced-selected-config", "startup-prunes-metadata", "startup-prunes-metadata-lost-reply":
 				if err != nil || successorHealth.Load() == 0 {
 					t.Fatalf("moved successor not confirmed: err=%v health=%d stderr=%q", err, successorHealth.Load(), stderr.String())
+				}
+				if pruneMetadata {
+					confirmed, err := hubendpoint.Read(root)
+					if err != nil || confirmed.StartedAt.IsZero() || !confirmed.StartedAt.Equal(after) || confirmed.StartedAt.Equal(before) {
+						t.Fatalf("startup prune successor incarnation: record=%+v err=%v", confirmed, err)
+					}
 				}
 			case "failed-restart", "same-incarnation":
 				if !errors.Is(err, context.DeadlineExceeded) {

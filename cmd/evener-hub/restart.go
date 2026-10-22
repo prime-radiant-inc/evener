@@ -231,13 +231,13 @@ func waitForNewIncarnation(ctx context.Context, opts endpointOptions, deps mainD
 			if err != nil {
 				continue
 			}
-			if !configIdentity.matches(report.ConfigPath) || (configIdentity.file == nil && report.ConfigExists) || report.HubStateRoot != selected.HubStateRoot {
+			if !configIdentity.matchesConfirmation(report.ConfigPath) || (configIdentity.file == nil && report.ConfigExists) || report.HubStateRoot != selected.HubStateRoot {
 				return hubendpoint.ErrIdentityMismatch
 			}
 			if report.Running == nil {
 				continue
 			}
-			if !configIdentity.matches(report.Running.ConfigPath) || report.Running.HubStateRoot != selected.HubStateRoot {
+			if !configIdentity.matchesConfirmation(report.Running.ConfigPath) || report.Running.HubStateRoot != selected.HubStateRoot {
 				return hubendpoint.ErrIdentityMismatch
 			}
 			origin, err := attachOrigin(report.Running.LoopbackURL)
@@ -253,14 +253,15 @@ func waitForNewIncarnation(ctx context.Context, opts endpointOptions, deps mainD
 }
 
 type restartConfigIdentity struct {
-	file       os.FileInfo
-	absentPath string
+	file          os.FileInfo
+	canonicalPath string
+	absentPath    string
 }
 
 func selectRestartConfigIdentity(opts endpointOptions, report hubendpoint.Report) (restartConfigIdentity, error) {
 	file, err := os.Stat(report.ConfigPath)
 	if err == nil {
-		identity := restartConfigIdentity{file: file}
+		identity := restartConfigIdentity{file: file, canonicalPath: report.ConfigPath}
 		if !report.ConfigExists || report.Running == nil || !identity.matches(report.Running.ConfigPath) || report.Running.HubStateRoot != report.HubStateRoot {
 			return restartConfigIdentity{}, hubendpoint.ErrIdentityMismatch
 		}
@@ -276,6 +277,16 @@ func selectRestartConfigIdentity(opts endpointOptions, report hubendpoint.Report
 		return restartConfigIdentity{}, hubendpoint.ErrIdentityMismatch
 	}
 	return identity, nil
+}
+
+func (selected restartConfigIdentity) matchesConfirmation(path string) bool {
+	if selected.file != nil && path == selected.canonicalPath {
+		// Startup may atomically prune host metadata at the same canonical
+		// pathname. Another pathname still needs the frozen file identity.
+		_, err := os.Stat(path)
+		return err == nil
+	}
+	return selected.matches(path)
 }
 
 func (selected restartConfigIdentity) matches(path string) bool {
