@@ -3,7 +3,8 @@
 // Composer.tsx, availabilityFor):
 // - the package's send/queue table, with this client's own unreflected send
 //   as its tier 6;
-// - a paused session sends nothing until it is resumed;
+// - a recovery-fenced session sends, and so resumes, exactly as a shut-down
+//   one does: Send is the recovery action, never a separate Resume press;
 // - a shut-down session sends, and so resumes, when the hub says it can.
 import { deriveSendQueueAvailability, SHUT_DOWN_STATUSES, type ThreadModel } from "@evener/appwire-client";
 import { ownPendingSend, type PendingTurnEntry } from "@evener/appwire-client/state/mutation";
@@ -17,7 +18,30 @@ export function sendAction(
 	pendingMutations: readonly PendingTurnEntry[] | null | undefined,
 	connected: boolean,
 ): SendAction {
-	if (conversation.resumeRequired) return "none";
+	// A fenced session takes the message and resumes before it sends. Its only
+	// unrunnable shape is a restartRequired daemon, which the table answers
+	// "none" for below: its older process must be stopped first.
+	//
+	// Only the FIRST message resumes. A second one while the first is still
+	// unreflected queues behind it: two parked turn/starts would race for the
+	// same active turn once recovery lands, and the daemon rejects the loser as
+	// already active instead of running it.
+	//
+	// The queue answer still obeys the same rules any other queue does - a
+	// restart-required daemon offers nothing, and a harness that cannot queue
+	// must not be offered (or, offline, made to persist) a queue request.
+	if (conversation.resumeRequired) {
+		if (conversation.status.type === "restartRequired") return "none";
+		if (ownPendingSend(pendingMutations)) {
+			const canQueue = deriveSendQueueAvailability({
+				statusType: conversation.status.type,
+				capabilities: conversation.capabilities,
+				hasPendingSend: true,
+			}).canQueue;
+			return canQueue ? "queue" : "none";
+		}
+		return resumeOrNone(conversation);
+	}
 	if (!connected) return offlineAction(conversation, ownPendingSend(pendingMutations));
 	const status = conversation.status.type;
 	const availability = deriveSendQueueAvailability({
@@ -32,6 +56,18 @@ export function sendAction(
 	// hub's send capability whatever the status.
 	if (conversation.capabilities.send && (availability.canSend || ended)) return ended ? "resume" : "send";
 	return "none";
+}
+
+// A fenced session answers "resume" online or offline: the row parks durably
+// either way and the resume runs behind it once the connection and the fence
+// allow. The gate is the fence alone, never the send capability -
+// applyThreadResumeRequirement CLEARS send as it sets resumeRequired, so a
+// capability check here would refuse every fence the hub actually sends. The
+// one shape that keeps no action is a restartRequired daemon, whose older
+// process must be stopped first.
+function resumeOrNone(conversation: SendSource): SendAction {
+	if (conversation.status.type === "restartRequired") return "none";
+	return "resume";
 }
 
 /** Offline, a message waits in the phone's outbox (spec 8.5, phase 6

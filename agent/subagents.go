@@ -1205,8 +1205,15 @@ func (s *Session) prepareSubagentRunFromSelection(
 			// failure is observable instead of silently swallowed.
 			s.emit(events.EventWarning, warningDataFromError("failed to populate subagent tasks from templates", err))
 		}
-		// Inject the first task's prompt as a steering message.
-		if current, ok := subStore.CurrentInProgress(); ok {
+		// A shared store is the parent's list, not this child's plan. Announcing
+		// it would push every parent step and prompt into a leaf delegate's
+		// first request, so that mode keeps its single current-task reminder.
+		if subCfg.spawn.sharedTaskStore == nil {
+			if err := steerDelegatePlan(subSess, subStore); err != nil {
+				disposeUnadopted()
+				return nil, err
+			}
+		} else if current, ok := subStore.CurrentInProgress(); ok {
 			if err := subSess.SteerKind(formatCurrentTaskSteering(current, subSess.canInstructTool("task_list")), events.SteeringKindCurrentTask); err != nil {
 				disposeUnadopted()
 				return nil, err

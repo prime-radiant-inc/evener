@@ -21,14 +21,6 @@ describe("the notice in the composer's place (ruling 20)", () => {
 		expect(onPress).toHaveBeenCalledOnce();
 	});
 
-	it("offers Resume when the session is paused", () => {
-		const onPress = vi.fn();
-		const tree = render(<SessionNotice kind="paused" busy={false} onPress={onPress} />);
-		expect(markers(tree, "session-notice")).toEqual(["paused"]);
-		pressable(tree, "Resume")?.props.onPress();
-		expect(onPress).toHaveBeenCalledOnce();
-	});
-
 	it("says Restarting… and takes no second press while it restarts", () => {
 		const tree = render(<SessionNotice kind="restartNeeded" busy onPress={() => {}} />);
 		const [button] = tree.root.findAll((node) => String(node.type) === "Pressable");
@@ -36,13 +28,12 @@ describe("the notice in the composer's place (ruling 20)", () => {
 		expect(button?.props.disabled).toBe(true);
 	});
 
-	it("takes no press while it resumes, or while nothing could act on it", () => {
-		expect(pressable(render(<SessionNotice kind="paused" busy onPress={() => {}} />), "Resume")?.props.disabled).toBe(
-			true,
-		);
+	it("takes no press while nothing could act on it", () => {
 		expect(
-			pressable(render(<SessionNotice kind="paused" busy={false} disabled onPress={() => {}} />), "Resume")?.props
-				.disabled,
+			pressable(
+				render(<SessionNotice kind="restartNeeded" busy={false} disabled onPress={() => {}} />),
+				"Restart session",
+			)?.props.disabled,
 		).toBe(true);
 	});
 

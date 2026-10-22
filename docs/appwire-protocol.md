@@ -975,6 +975,7 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `provider` | string | yes |  |
 | `activeSource` | string | yes |  |
+| `reason` | string | yes |  |
 | `originClientId` | string | yes |  |
 
 
@@ -2592,6 +2593,7 @@ Underlying Go kind: `string` (no struct fields).
 | `outputCostPerMillion` | \*float64 | yes |  |
 | `reasoningEffortLevels` | []string | yes |  |
 | `warnings` | []string | yes |  |
+| `instanceDefault` | bool | yes |  |
 
 
 ### `ModelListDiagnostic`

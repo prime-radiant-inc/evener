@@ -34,6 +34,11 @@ type launchCheckModel struct {
 	// flag rows the resolver itself warns about (e.g. a global-only model under
 	// a regional Vertex location).
 	Warnings []string `json:"warnings,omitempty"`
+	// The hub decodes this contract directly into appwire.ModelDescriptor,
+	// whose wire field is camelCase (cmd/evener-hub/spawn.go resolves the
+	// launch model list). This is that fixed AppWire JSON contract, not a
+	// local naming choice.
+	InstanceDefault bool `json:"instanceDefault,omitempty"` //nolint:tagliatelle // matches appwire.ModelDescriptor's camelCase wire contract
 }
 
 // supportedLaunchFlags advertises the serve/run flags this binary accepts
@@ -154,6 +159,7 @@ func launchCheckModels() ([]launchCheckModel, []appwire.ModelListDiagnostic, err
 		if inst.Hidden {
 			continue
 		}
+		defaultModel := strings.TrimSpace(inst.DefaultModel)
 		if client.Registry().LaunchMintsCredentialCommand(inst.Name) {
 			// The hub never executes a credential command (spec
 			// §10.1): a command-credentialed instance's live listing
@@ -186,7 +192,11 @@ func launchCheckModels() ([]launchCheckModel, []appwire.ModelListDiagnostic, err
 			continue
 		}
 		for _, m := range listing.Models {
-			out = append(out, launchCheckModel{Provider: inst.Name, Model: m.ModelID, Warnings: append([]string(nil), m.Warnings...)})
+			out = append(out, launchCheckModel{
+				Provider: inst.Name, Model: m.ModelID,
+				Warnings:        append([]string(nil), m.Warnings...),
+				InstanceDefault: listing.Usable && defaultModel != "" && strings.TrimSpace(m.ModelID) == defaultModel,
+			})
 		}
 	}
 	return out, diagnostics, nil

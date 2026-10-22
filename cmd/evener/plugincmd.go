@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -109,18 +110,35 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 		fs := flag.NewFlagSet("marketplace add", flag.ContinueOnError)
 		fs.SetOutput(stderr)
 		yes := fs.Bool("yes", false, "skip the trust confirmation")
+		gitRef := fs.String("ref", "", "git branch or tag to check out")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
 		if fs.NArg() < 1 {
-			return errors.New("usage: evener plugin marketplace add <url|owner/repo|path> [--yes]")
+			return errors.New("usage: evener plugin marketplace add [--ref <branch|tag>] [--yes] <url|owner/repo|path>")
+		}
+		if fs.NArg() > 1 {
+			return fmt.Errorf("unexpected argument %q; put options before the source, e.g. marketplace add --ref <branch|tag> <source>", fs.Arg(1))
+		}
+		if strings.HasPrefix(*gitRef, "refs/") {
+			return errors.New("--ref takes a branch or tag name, not a fully qualified ref")
 		}
 		src, err := parsePluginMarketplaceSource(fs.Arg(0))
 		if err != nil {
 			return err
 		}
+		if *gitRef != "" {
+			if !src.Kind.HasRemote() {
+				return errors.New("--ref applies only to git sources, not a local directory")
+			}
+			src.Ref = *gitRef
+		}
 		if !*yes {
-			_, _ = fmt.Fprintf(stderr, "Add marketplace from %s? Marketplaces are arbitrary code repositories.\nPass --yes to confirm.\n", fs.Arg(0))
+			from := fs.Arg(0)
+			if *gitRef != "" {
+				from += " at " + *gitRef
+			}
+			_, _ = fmt.Fprintf(stderr, "Add marketplace from %s? Marketplaces are arbitrary code repositories.\nPass --yes to confirm.\n", from)
 			return errors.New("confirmation required")
 		}
 		ref, err := m.AddMarketplace(context.Background(), "", src)
@@ -273,15 +291,20 @@ func renderMarketplaces(w io.Writer, mk plugins.Marketplaces, asJSON bool) error
 }
 
 func sourceDescription(src plugins.Source) string {
+	pin := cmp.Or(src.Sha, src.Ref)
+	suffix := ""
+	if pin != "" {
+		suffix = "@" + pin
+	}
 	switch src.Kind {
 	case plugins.SourceDirectory:
 		return "directory: " + src.Path
 	case plugins.SourceGitHub:
-		return "github: " + src.Repo
+		return "github: " + src.Repo + suffix
 	case plugins.SourceURL:
-		return "url: " + src.URL
+		return "url: " + src.URL + suffix
 	case plugins.SourceGitSubdir:
-		return "git-subdir: " + src.URL + "/" + src.Path
+		return "git-subdir: " + src.URL + "/" + src.Path + suffix
 	default:
 		return "unknown: " + string(src.Kind)
 	}

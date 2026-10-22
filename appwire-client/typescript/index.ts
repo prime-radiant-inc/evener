@@ -432,7 +432,7 @@ export {
   resolvedEmptyChoice,
   schemaPathKind,
 } from "./launchSchema";
-export { marketplaceSourceLabel } from "./marketplaceSourceLabel";
+export { marketplaceSourceLabel, marketplaceSourcePin, marketplaceSourceTakesRef } from "./marketplaceSourceLabel";
 export {
   MEMORY_CONTEXT_EVENT_KIND,
   MEMORY_CONTEXT_LABEL,

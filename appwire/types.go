@@ -3362,6 +3362,11 @@ type ModelDescriptor struct {
 	// model under a regional Vertex location) so the model picker can flag a
 	// row the resolver itself warns about.
 	Warnings []string `json:"warnings,omitempty"`
+	// InstanceDefault marks the row as its instance's configured default in
+	// the instance's own usable current listing. It is not the global default
+	// and not proof of generation access; an absent marker authorizes no
+	// automatic selection.
+	InstanceDefault bool `json:"instanceDefault,omitempty"`
 }
 
 type ModelListDiagnostic struct {
@@ -3550,6 +3555,15 @@ type EvenerJobParams struct {
 type EvenerAuthUpdatedParams struct {
 	Provider     string `json:"provider,omitempty"`
 	ActiveSource string `json:"activeSource,omitempty"`
+	// Reason names a broadcast that did not change credentials or provider
+	// configuration. The only value today is "models_changed": a background
+	// launch-model refresh produced a different list than a picker was served,
+	// so clients re-read their model catalog. It is catalog-only: no credential,
+	// instance or destination changed. Every credential write and
+	// provider-instance CRUD broadcast leaves it empty, and consumers must treat
+	// those empty-reason broadcasts as changes even when they carry no other
+	// payload.
+	Reason string `json:"reason,omitempty"`
 	// OriginClientId is the echoed OriginClientId of the mutation that caused
 	// this broadcast - an auth write or a provider-instance CRUD change - the
 	// identity of the client whose change it announces, so that client can

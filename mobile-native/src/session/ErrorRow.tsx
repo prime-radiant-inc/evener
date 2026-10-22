@@ -2,13 +2,13 @@
 // as they are, and at most one action (errorAction). A warning is the same row
 // with an amber rule (attention): amber means a human is needed, red that
 // something failed (#3387). A warning reports, so it offers no action: Retry
-// and Resume answer a failure. VoiceOver hears which it is, since the rule's
+// answers a failure. VoiceOver hears which it is, since the rule's
 // colour alone can't tell it.
 import { Pressable, Text, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { ErrorAction } from "./errorAction";
 
-const ACTION_LABELS: Record<ErrorAction, string> = { resume: "Resume", signIn: "Sign in", retry: "Retry" };
+const ACTION_LABELS: Record<ErrorAction, string> = { signIn: "Sign in", retry: "Retry" };
 
 export function ErrorRow({
 	title,

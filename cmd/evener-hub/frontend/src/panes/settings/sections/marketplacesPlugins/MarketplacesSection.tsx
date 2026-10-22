@@ -7,7 +7,7 @@
 // than here.
 
 import type { MarketplaceSourceInput } from "@evener/appwire-client";
-import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
+import { errorText, marketplaceSourceLabel, marketplaceSourceTakesRef } from "@evener/appwire-client";
 import { HUB_WRITE_BUSY, isHubWriteBusy } from "@evener/appwire-client/state/extensions";
 import { type FormEvent, useId, useState } from "react";
 import {
@@ -52,12 +52,14 @@ export function MarketplacesSection({ onSelect, onBrowse }: MarketplacesSectionP
   const [urlValue, setUrlValue] = useState("");
   const [repoValue, setRepoValue] = useState("");
   const [pathValue, setPathValue] = useState("");
+  const [refValue, setRefValue] = useState("");
   const [nameValue, setNameValue] = useState("");
   const [added, setAdded] = useState(false);
 
   const urlId = useId();
   const repoId = useId();
   const pathId = useId();
+  const refId = useId();
   const nameId = useId();
 
   function resetAddForm() {
@@ -65,13 +67,15 @@ export function MarketplacesSection({ onSelect, onBrowse }: MarketplacesSectionP
     setUrlValue("");
     setRepoValue("");
     setPathValue("");
+    setRefValue("");
     setNameValue("");
   }
 
   function buildSource(): MarketplaceSourceInput {
-    if (kind === "github") return { kind: "github", repo: repoValue.trim() };
+    const ref = refValue.trim();
+    if (kind === "github") return { kind: "github", repo: repoValue.trim(), ...(ref ? { ref } : {}) };
     if (kind === "directory") return { kind: "directory", path: pathValue.trim() };
-    return { kind: "url", url: urlValue.trim() };
+    return { kind: "url", url: urlValue.trim(), ...(ref ? { ref } : {}) };
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -166,6 +170,20 @@ export function MarketplacesSection({ onSelect, onBrowse }: MarketplacesSectionP
                 kind="dir"
                 complete={(prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles)}
                 placeholder="/absolute/path"
+              />
+            </FormRow>
+          )}
+          {marketplaceSourceTakesRef(kind) && (
+            <FormRow
+              label="Branch or tag (optional)"
+              htmlFor={refId}
+              help="Defaults to the repository's default branch."
+            >
+              <Input
+                id={refId}
+                value={refValue}
+                onChange={(event) => setRefValue(event.target.value)}
+                placeholder="main"
               />
             </FormRow>
           )}

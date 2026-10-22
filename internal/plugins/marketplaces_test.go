@@ -2631,6 +2631,177 @@ func TestAddMarketplace_RefusesADirectorySourceInsideTheStore(t *testing.T) {
 	})
 }
 
+func TestAddMarketplace_RefusesAPinOnADirectorySource(t *testing.T) {
+	m := NewManager(t.TempDir())
+	source := plantCatalog(t, t.TempDir())
+	for _, src := range []Source{
+		{Kind: SourceDirectory, Path: source, Ref: "main"},
+		{Kind: SourceDirectory, Path: source, Sha: "abc1234"},
+	} {
+		if _, err := m.AddMarketplace(context.Background(), "", src); !errors.Is(err, ErrMarketplaceSourcePinned) {
+			t.Fatalf("AddMarketplace(%+v) error = %v, want ErrMarketplaceSourcePinned", src, err)
+		}
+	}
+}
+
+// git checkout treats an unmatched name as a pathspec. A ref that reuses a
+// tracked path name must fail rather than silently leave the clone on its
+// default branch while the marketplace records that ref.
+func TestAddMarketplace_RefMatchingATrackedPathIsRejected(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "pathref")
+	if err := os.MkdirAll(filepath.Join(repo, "plugins"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "plugins", "marker"), []byte("tracked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "add", "plugins")
+	gitIn(t, repo, "commit", "-qm", "track a path named like a ref")
+
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "plugins"}); err == nil {
+		t.Fatal("a ref naming a tracked path was checked out as a path instead of rejected")
+	}
+	mk, err := m.ListMarketplaces(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mk) != 0 {
+		t.Fatalf("marketplaces = %+v after a rejected ref, want none", mk)
+	}
+}
+
+// A tag named origin/plugins must not stand in for a remote branch of that
+// name: the target plugins still only matches a path and must be rejected.
+func TestAddMarketplace_RefMatchingATrackedPathAndAnOriginTagIsRejected(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "pathandtag")
+	if err := os.MkdirAll(filepath.Join(repo, "plugins"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "plugins", "marker"), []byte("tracked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "add", "plugins")
+	gitIn(t, repo, "commit", "-qm", "track a path named like a ref")
+	gitIn(t, repo, "tag", "origin/plugins")
+
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "plugins"}); err == nil {
+		t.Fatal("a tag named origin/plugins let a path-only ref through")
+	}
+}
+
+// A tag whose name embeds refs/heads/ must not stand in for the branch that
+// namespace names: the target plugins still only matches a path.
+func TestAddMarketplace_RefMatchingATrackedPathAndANamespaceTagIsRejected(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "pathandnamespacetag")
+	if err := os.MkdirAll(filepath.Join(repo, "plugins"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "plugins", "marker"), []byte("tracked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "add", "plugins")
+	gitIn(t, repo, "commit", "-qm", "track a path named like a ref")
+	gitIn(t, repo, "tag", "refs/heads/plugins")
+
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "plugins"}); err == nil {
+		t.Fatal("a tag named refs/heads/plugins let a path-only ref through")
+	}
+}
+
+// A source ref is a branch or tag name, not a fully qualified ref.
+func TestAddMarketplace_RejectsAFullyQualifiedRef(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "qualified")
+	m := NewManager(t.TempDir())
+	for _, ref := range []string{"refs/heads/main", "refs/tags/v1"} {
+		if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: ref}); !errors.Is(err, ErrSourceRefQualified) {
+			t.Fatalf("AddMarketplace(%q) error = %v, want ErrSourceRefQualified", ref, err)
+		}
+	}
+	mk, err := m.ListMarketplaces(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mk) != 0 {
+		t.Fatalf("marketplaces = %+v after a rejected qualified ref, want none", mk)
+	}
+}
+
+// A branch and a tracked path can share a name. Checkout guessing must not
+// decide which one wins: the recorded ref selects the branch even when git is
+// configured not to guess a branch for an ambiguous name.
+func TestAddMarketplace_BranchAndPathShareAName(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "checkout.guess")
+	t.Setenv("GIT_CONFIG_VALUE_0", "false")
+
+	repo := makeMarketplaceRepo(t, "branchname")
+	if err := os.MkdirAll(filepath.Join(repo, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "docs", "marker"), []byte("tracked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "add", "docs")
+	gitIn(t, repo, "commit", "-qm", "track a path named like the branch")
+	gitIn(t, repo, "checkout", "--quiet", "-b", "docs")
+	advanceGitRepo(t, repo, "README.md", "on the docs branch")
+	docsTip := gitIn(t, repo, "rev-parse", "HEAD")
+	gitIn(t, repo, "checkout", "--quiet", "-")
+
+	m := NewManager(t.TempDir())
+	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "docs"})
+	if err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != docsTip {
+		t.Fatalf("HEAD = %s, want the docs branch tip %s", got, docsTip)
+	}
+}
+
+// The clone helpers must not depend on the ambient clone.defaultRemoteName:
+// their ref resolution names origin explicitly.
+func TestAddMarketplace_NonDefaultCloneRemoteName(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "clone.defaultRemoteName")
+	t.Setenv("GIT_CONFIG_VALUE_0", "upstream")
+
+	repo := makeMarketplaceRepo(t, "remotename")
+	gitIn(t, repo, "checkout", "--quiet", "-b", "docs")
+	advanceGitRepo(t, repo, "README.md", "on the docs branch")
+	docsTip := gitIn(t, repo, "rev-parse", "HEAD")
+	gitIn(t, repo, "checkout", "--quiet", "-")
+
+	m := NewManager(t.TempDir())
+	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "docs"})
+	if err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != docsTip {
+		t.Fatalf("HEAD = %s, want the docs branch tip %s", got, docsTip)
+	}
+}
+
 // The plugin store's own directories are its to rewrite: a fetch clears
 // .staging, a swap deletes .old, the marketplaces dir holds every other
 // marketplace's clone, and the cache holds materialized plugins. A directory
@@ -3166,6 +3337,37 @@ func TestRefreshMarketplace_ARefNamingATagAndABranchIsTheTagsPin(t *testing.T) {
 	}
 	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != tagged {
 		t.Fatalf("HEAD after refresh = %s, want the tag's %s", got, tagged)
+	}
+}
+
+// A ref that names a branch is not a pin: a refresh follows the branch's tip.
+func TestRefreshMarketplace_ABranchRefFollowsItsTip(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "branching")
+	gitIn(t, repo, "checkout", "--quiet", "-b", "release")
+	advanceGitRepo(t, repo, "README.md", "release one")
+	firstTip := gitIn(t, repo, "rev-parse", "HEAD")
+	gitIn(t, repo, "checkout", "--quiet", "-")
+	m := NewManager(t.TempDir())
+	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "release"})
+	if err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != firstTip {
+		t.Fatalf("the clone is at %s, want the release branch tip %s", got, firstTip)
+	}
+
+	gitIn(t, repo, "checkout", "--quiet", "release")
+	advanceGitRepo(t, repo, "README.md", "release two")
+	nextTip := gitIn(t, repo, "rev-parse", "HEAD")
+	gitIn(t, repo, "checkout", "--quiet", "-")
+	if err := m.RefreshMarketplace(context.Background(), "branching"); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != nextTip {
+		t.Fatalf("HEAD after refresh = %s, want the moved release tip %s", got, nextTip)
 	}
 }
 
