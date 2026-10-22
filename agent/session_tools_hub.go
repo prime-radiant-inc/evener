@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
@@ -30,7 +31,9 @@ func managerReadDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDefini
 	hub := map[string]any{"type": "object", "additionalProperties": false}
 	if def.Name == "job_list" {
 		hub["properties"] = map[string]any{
-			"mode":             map[string]any{"type": "string", "enum": []string{"discovery"}},
+			"mode": map[string]any{"type": "string", "enum": []string{"discovery", "tasks", "activity"}},
+			"ref":  map[string]any{"type": "string"}, "resource": map[string]any{"type": "string", "enum": []string{"summary", "delegates", "jobs", "watches"}},
+			"scope": map[string]any{"type": "string"}, "offset": map[string]any{"type": "integer"}, "snapshot": map[string]any{"type": "string"},
 			"cursor":           map[string]any{"type": "string"},
 			"limit":            map[string]any{"type": "integer"},
 			"sortKey":          map[string]any{"type": "string"},
@@ -43,10 +46,14 @@ func managerReadDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDefini
 		}
 		hub["required"] = []string{"mode"}
 		def.Description += " Manager hub discovery lists source-qualified sessions and sources, including empty hosts. Set hub.mode to discovery. Do not combine hub with ordinary job filters."
+	} else if def.Name == "model_list" {
+		hub["properties"] = map[string]any{"host": map[string]any{"type": "string"}, "cwd": map[string]any{"type": "string"}, "refresh": map[string]any{"type": "boolean"}}
+		hub["required"] = []string{"host"}
+		def.Description += " Manager hub models lists the selected host's available models and diagnostics. refresh waits for a fresh catalog."
 	} else {
-		hub["properties"] = map[string]any{"ref": map[string]any{"type": "string"}}
+		hub["properties"] = map[string]any{"ref": map[string]any{"type": "string"}, "jobId": map[string]any{"type": "string"}, "cursor": map[string]any{"type": "string"}, "itemLimit": map[string]any{"type": "integer"}, "maxBytes": map[string]any{"type": "integer"}, "beforeBytes": map[string]any{"type": "integer"}}
 		hub["required"] = []string{"ref"}
-		def.Description += " Manager hub status reads a canonical session ref, its current state, pending questions and approvals, and supported capabilities. Do not combine hub with an owned target."
+		def.Description += " Manager hub reads a canonical owner ref. jobId selects job metadata in job_status, or bounded job output in read_transcript. read_transcript without jobId pages session history with cursor. Local JSONL, expansion, artifacts, and range arguments do not apply."
 	}
 	props["hub"] = hub
 	required := params["required"]
@@ -87,7 +94,7 @@ func (s *Session) composeHubRegistry() {
 	}
 	if s.hubOrdinary == nil {
 		s.hubOrdinary = map[string]*tool.RegisteredTool{}
-		for _, name := range []string{"job_list", "job_status", "job_watch", "delegate_send", "delegate", "session_control"} {
+		for _, name := range []string{"job_list", "job_status", "read_transcript", "model_list", "job_watch", "delegate_send", "delegate", "session_control"} {
 			if base := s.reg.Get(name); base != nil {
 				copy := *base
 				s.hubOrdinary[name] = &copy
@@ -96,7 +103,7 @@ func (s *Session) composeHubRegistry() {
 			}
 		}
 	}
-	for _, name := range []string{"job_list", "job_status"} {
+	for _, name := range []string{"job_list", "job_status", "read_transcript", "model_list"} {
 		if s.hubToolDenied(name) {
 			s.reg.Remove(name)
 			continue
@@ -107,12 +114,15 @@ func (s *Session) composeHubRegistry() {
 			registered = *base
 		} else if name == "job_list" {
 			registered.Definition = tool.DefJobListNamed(s.resultToolName())
-		} else {
+		} else if name == "job_status" {
 			registered.Definition = tool.DefJobStatus()
+		} else {
+			continue
 		}
 		ordinary := s.hubOrdinaryAvailable(name)
 		registered.Definition = managerReadDefinition(registered.Definition, ordinary)
 		registered.Schema = nil
+		registered.Limit = schema.ToolOutputLimit{MaxChars: transcriptToolMaxChars}
 		registered.ReadOnly = true
 		registered.Execute = nil
 		registered.Exec = func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
@@ -581,20 +591,64 @@ func (s *Session) invokeHubRead(ctx context.Context, name string, args map[strin
 	decoder.DisallowUnknownFields()
 	var request appwire.SessionOperationRequest
 	if name == "job_list" {
-		var p struct {
+		var mode struct {
 			Mode string `json:"mode"`
-			appwire.ThreadListParams
+		}
+		if err := json.Unmarshal(raw, &mode); err != nil {
+			return nil, appwire.InvalidParams(err.Error())
+		}
+		switch mode.Mode {
+		case "discovery":
+			var p struct {
+				Mode string `json:"mode"`
+				appwire.ThreadListParams
+			}
+			if err := decoder.Decode(&p); err != nil {
+				return nil, appwire.InvalidParams(err.Error())
+			}
+			request.Discover = &p.ThreadListParams
+		case "tasks":
+			var page struct {
+				Mode string `json:"mode"`
+				appwire.SessionTasksRequest
+			}
+			if err := decoder.Decode(&page); err != nil {
+				return nil, appwire.InvalidParams(err.Error())
+			}
+			request.Tasks = &page.SessionTasksRequest
+		case "activity":
+			var page struct {
+				Mode string `json:"mode"`
+				appwire.SessionActivityRequest
+			}
+			if err := decoder.Decode(&page); err != nil {
+				return nil, appwire.InvalidParams(err.Error())
+			}
+			request.Activity = &page.SessionActivityRequest
+		default:
+			return nil, appwire.InvalidParams("unknown Manager list mode")
+		}
+	} else if name == "model_list" {
+		var p struct {
+			Host    string `json:"host"`
+			CWD     string `json:"cwd"`
+			Refresh bool   `json:"refresh"`
 		}
 		if err := decoder.Decode(&p); err != nil {
 			return nil, appwire.InvalidParams(err.Error())
 		}
-		if p.Mode != "discovery" {
-			return nil, appwire.InvalidParams("only discovery is implemented")
+		if p.Host == "" {
+			return nil, appwire.InvalidParams("selected host is required")
 		}
-		request.Discover = &p.ThreadListParams
-	} else {
+		request.Models = &appwire.ModelListParams{Harness: p.Host, CWD: p.CWD, Refresh: p.Refresh}
+	} else if name == "read_transcript" {
 		var p struct {
-			Ref string `json:"ref"`
+			Ref         string `json:"ref"`
+			JobID       string `json:"jobId"`
+			Cursor      string `json:"cursor"`
+			ItemLimit   int    `json:"itemLimit"`
+			MaxBytes    int64  `json:"maxBytes"`
+			BeforeBytes *int64 `json:"beforeBytes"`
 		}
 		if err := decoder.Decode(&p); err != nil {
 			return nil, appwire.InvalidParams(err.Error())
@@ -602,7 +656,36 @@ func (s *Session) invokeHubRead(ctx context.Context, name string, args map[strin
 		if _, err := appwire.ParseRef(p.Ref); err != nil {
 			return nil, appwire.InvalidParams(err.Error())
 		}
-		request.Read = &appwire.ThreadReadParams{Ref: p.Ref}
+		if p.JobID != "" {
+			if p.Cursor != "" || p.ItemLimit != 0 {
+				return nil, appwire.InvalidParams("job output cannot combine history cursors")
+			}
+			request.JobOutput = &appwire.JobsOutputParams{Ref: p.Ref, JobID: p.JobID, MaxBytes: p.MaxBytes, BeforeBytes: p.BeforeBytes}
+		} else {
+			if p.MaxBytes != 0 || p.BeforeBytes != nil {
+				return nil, appwire.InvalidParams("history cannot combine job output bounds")
+			}
+			request.Turns = &appwire.ThreadTurnsListParams{Ref: p.Ref, Cursor: p.Cursor, ItemLimit: p.ItemLimit}
+		}
+	} else {
+		var p struct {
+			Ref   string `json:"ref"`
+			JobID string `json:"jobId"`
+		}
+		if err := decoder.Decode(&p); err != nil {
+			return nil, appwire.InvalidParams(err.Error())
+		}
+		if _, err := appwire.ParseRef(p.Ref); err != nil {
+			return nil, appwire.InvalidParams(err.Error())
+		}
+		if p.JobID != "" {
+			request.Job = &appwire.JobsGetParams{Ref: p.Ref, JobID: p.JobID}
+		} else {
+			request.Read = &appwire.ThreadReadParams{Ref: p.Ref}
+		}
+	}
+	if err := request.Validate(); err != nil {
+		return nil, err
 	}
 	response, err := client.Invoke(ctx, request)
 	if err != nil {

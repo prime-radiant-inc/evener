@@ -14,6 +14,15 @@ Reading a session's activity is a separate operation, so
 browsing navigation does not load every session's work tree. A session's seen
 mark lives on the hub: a live navigation row carries its `seen_through`, and
 the activity read carries when the session's tree last moved (`lastMovedAt`).
+Manager discovery is also a shallow read: it lists source-qualified sessions
+and every configured host, even if that host has no sessions or is offline.
+It does not open activity rows, mark a session seen, acknowledge reports or
+expose host credentials. A Manager calls `job_list` with
+`hub:{mode:"activity",ref,resource:"summary"}` for the existing domain-owned
+summary, or uses `resource:"delegates"`, `"jobs"` or `"watches"` and follows
+each collection's cursor. Each row retains its qualified owner, so a child
+read cannot confer the parent's writable identity. Partial and unknown counts
+keep their existing meanings; they are not inferred from navigation.
 Opening a session (on the web, a pane opening or the page becoming visible
 with it open) marks it seen through the later of an unseen turn end and motion
 after that mark. The web reads that session's activity once per open for this,

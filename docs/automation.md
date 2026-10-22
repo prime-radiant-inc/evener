@@ -127,7 +127,7 @@ subscribers. Connected refresh preserves loaded history pages when their source
 identity still matches, and preserves unsent input. Reconnect may replace stale
 pages with the latest authoritative window.
 
-## Manager discovery and status
+## Manager discovery, status and bounded reads
 
 An authenticated live runtime can use `job_list` with
 `{"hub":{"mode":"discovery"}}` to discover reachable sessions and sources,
@@ -135,6 +135,38 @@ then `job_status` with `{"hub":{"ref":"local:WORKSPACE_ID"}}` to read a
 source-qualified session's status through the existing hub read owner. Use a
 returned reference rather than constructing one. Ordinary calls keep their
 existing behavior. Explicit tool-policy denials still apply.
+
+Discovery is shallow: it lists source-qualified sessions and every configured
+host, including an empty or offline host. It does not mark a session seen,
+acknowledge a report, or reveal SSH paths, keys or host administration rows.
+Use `job_list` with `hub:{mode:"activity",ref,resource:"summary"}` for
+counts/context, or `resource:"delegates"`, `"jobs"`, or `"watches"` with
+`cursor` and `limit` for the corresponding bounded collection. The owner
+and scope come from the existing activity methods, not navigation rows.
+Activity follow-ups retain the selected resource, subtree or session scope,
+and page limit, so a later page never silently narrows the read.
+
+Use `job_list` with `hub:{mode:"tasks",ref,offset,limit,snapshot}` for the
+complete task descriptions and prompts. Omit offset/snapshot on the first page;
+its default limit is 50 and maximum is 200. Follow `nextOffset` with the
+returned snapshot and original page limit. The token is the SHA-256 identity
+of the complete ordered authoritative list, canonical ref and session instance,
+not a clock or page counter. Changes anywhere in that list return
+`snapshot_changed` instead of a mixed continuation; restart at offset zero.
+`data:null` means task data is unavailable; `data:[]` means the authoritative
+list is empty. An unknown or changing instance cannot mint a task token.
+
+`read_transcript` with `hub:{ref,itemLimit}` reads the latest bounded history;
+its returned `nextCursor` pages older items with `hub:{ref,cursor,itemLimit}`.
+`job_status` with `hub:{ref,jobId}` reads the job's full metadata, and
+`read_transcript` with `hub:{ref,jobId,maxBytes,beforeBytes}` pages its output
+backward in lifetime bytes. Each job handle names both its owner ref and job ID;
+do not route by job ID alone. `model_list` with `hub:{host:"SOURCE_ID",refresh:true}`
+reads the selected host's catalog and diagnostics, rather than the Manager's
+frozen local catalog. Ordinary local transcript JSONL, expansion, range and
+artifact arguments are rejected on hub reads, not silently interpreted there.
+Read responses stay below the tool result cap; use returned structured
+`followUps` to fetch the next page instead of treating a preview as complete.
 
 Only the human switch grants Manager mode. The hub rechecks its current setting
 on every operation, and the connection supplies caller identity. Model requests

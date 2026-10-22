@@ -193,7 +193,7 @@ Before you end a turn, check where your answer is. It reaches the person only as
 [
   {
     "name": "job_status",
-    "description": "Inspect one durable shell job or stable delegate by target. Use this for metadata-only orientation: type, lifecycle status, observable phase, running/quiet time, and transcript_ref. Delegate status never returns terminal packet contents or acknowledges delivery. Completion is notification-driven; do not poll this waiting for completed. Read raw evidence with read_transcript(transcript_ref). Manager hub status reads a canonical session ref, its current state, pending questions and approvals, and supported capabilities. Do not combine hub with an owned target.",
+    "description": "Inspect one durable shell job or stable delegate by target. Use this for metadata-only orientation: type, lifecycle status, observable phase, running/quiet time, and transcript_ref. Delegate status never returns terminal packet contents or acknowledges delivery. Completion is notification-driven; do not poll this waiting for completed. Read raw evidence with read_transcript(transcript_ref). Manager hub reads a canonical owner ref. jobId selects job metadata in job_status, or bounded job output in read_transcript. read_transcript without jobId pages session history with cursor. Local JSONL, expansion, artifacts, and range arguments do not apply.",
     "parameters": {
       "additionalProperties": false,
       "anyOf": [
@@ -222,6 +222,21 @@ Before you end a turn, check where your answer is. It reaches the person only as
         "hub": {
           "additionalProperties": false,
           "properties": {
+            "beforeBytes": {
+              "type": "integer"
+            },
+            "cursor": {
+              "type": "string"
+            },
+            "itemLimit": {
+              "type": "integer"
+            },
+            "jobId": {
+              "type": "string"
+            },
+            "maxBytes": {
+              "type": "integer"
+            },
             "ref": {
               "type": "string"
             }
@@ -287,11 +302,34 @@ Before you end a turn, check where your answer is. It reaches the person only as
             },
             "mode": {
               "enum": [
-                "discovery"
+                "discovery",
+                "tasks",
+                "activity"
               ],
               "type": "string"
             },
+            "offset": {
+              "type": "integer"
+            },
+            "ref": {
+              "type": "string"
+            },
+            "resource": {
+              "enum": [
+                "summary",
+                "delegates",
+                "jobs",
+                "watches"
+              ],
+              "type": "string"
+            },
+            "scope": {
+              "type": "string"
+            },
             "searchTerm": {
+              "type": "string"
+            },
+            "snapshot": {
               "type": "string"
             },
             "sortDirection": {

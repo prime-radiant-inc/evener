@@ -121,7 +121,13 @@ func (jm *jobManager) onHubObservation(watchID string, update appwire.SessionWat
 		jm.mu.Unlock()
 		return nil
 	}
+	complete := cfg.hubCompletion && m.CausalKnown && m.TerminalAccepted != nil && *m.TerminalAccepted && m.EndTurn && m.EndReason == "done"
 	identity := entryIdentity + ":" + update.Event
+	if complete {
+		// One recorded entry can first arrive without an acceptance verdict.
+		// Its later terminal verdict must not inherit the earlier event's dedup.
+		identity += ":completed"
+	}
 	if cfg.hubSeen == nil {
 		cfg.hubSeen = map[string]bool{}
 	}
@@ -133,7 +139,6 @@ func (jm *jobManager) onHubObservation(watchID string, update appwire.SessionWat
 	if event == "" && len(cfg.events) == 1 {
 		event = cfg.events[0]
 	}
-	complete := cfg.hubCompletion && m.TerminalAccepted != nil && *m.TerminalAccepted && m.EndTurn && m.EndReason == "done"
 	selected := false
 	for _, selector := range cfg.events {
 		if selector == event {

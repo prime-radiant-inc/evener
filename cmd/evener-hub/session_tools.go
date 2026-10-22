@@ -422,16 +422,12 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 	}
 	response.Actor = appwire.SessionActor{Kind: "manager", ManagerRef: caller.Ref}
 	if request.Discover != nil {
-		threads, err := hubThreadList(ctx, o.cfg, o.sources, *request.Discover)
+		discovery, err := o.discover(ctx, *request.Discover)
 		if err != nil {
 			return response, err
 		}
-		discovery := &appwire.SessionDiscovery{Threads: threads, Sources: []appwire.SessionSource{}}
-		for _, source := range o.sources.All() {
-			discovery.Sources = append(discovery.Sources, appwire.SessionSource{ID: source.ID()})
-		}
-		response.Discover = discovery
-		for _, thread := range threads.Data {
+		response.Discover = &discovery
+		for _, thread := range discovery.Threads.Data {
 			response.FollowUps = append(response.FollowUps, statusFollowUp(thread.Evener.Ref))
 		}
 	} else if request.Read != nil {
@@ -441,6 +437,67 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 		}
 		response.Read = &read
 		response.FollowUps = []appwire.SessionStatusFollowUp{statusFollowUp(read.Thread.Evener.Ref)}
+	} else if request.Turns != nil {
+		page, err := o.turns(ctx, *request.Turns)
+		if err != nil {
+			return response, err
+		}
+		response.Turns = &page
+		if page.NextCursor != "" {
+			response.FollowUps = []appwire.SessionStatusFollowUp{{Tool: "read_transcript", Arguments: appwire.SessionStatusArguments{Hub: appwire.SessionStatusTarget{Ref: request.Turns.Ref, Cursor: page.NextCursor, ItemLimit: request.Turns.ItemLimit}}}}
+		}
+	} else if request.Activity != nil {
+		page, err := o.activity(ctx, *request.Activity)
+		if err != nil {
+			return response, err
+		}
+		response.Activity = &page
+		cursor := ""
+		if page.Delegates != nil {
+			cursor = page.Delegates.Page.NextCursor
+		} else if page.Jobs != nil {
+			cursor = page.Jobs.Page.NextCursor
+		} else if page.Watches != nil {
+			cursor = page.Watches.Page.NextCursor
+		}
+		if cursor != "" {
+			response.FollowUps = []appwire.SessionStatusFollowUp{{Tool: "job_list", Arguments: appwire.SessionStatusArguments{Hub: appwire.SessionStatusTarget{Mode: "activity", Ref: request.Activity.Ref, Resource: request.Activity.Resource, Scope: request.Activity.Scope, Cursor: cursor, Limit: request.Activity.Limit}}}}
+		}
+	} else if request.Tasks != nil {
+		page, err := o.tasks(ctx, *request.Tasks)
+		if err != nil {
+			return response, err
+		}
+		response.Tasks = &page
+		if page.NextOffset != nil {
+			response.FollowUps = []appwire.SessionStatusFollowUp{{Tool: "job_list", Arguments: appwire.SessionStatusArguments{Hub: appwire.SessionStatusTarget{Mode: "tasks", Ref: request.Tasks.Ref, Offset: *page.NextOffset, Limit: request.Tasks.Limit, Snapshot: page.Snapshot}}}}
+		}
+	} else if request.Job != nil {
+		job, err := hubJobsGet(ctx, o.cfg, o.sources, *request.Job)
+		if err != nil {
+			return response, err
+		}
+		response.Job = &job
+		response.FollowUps = []appwire.SessionStatusFollowUp{{Tool: "read_transcript", Arguments: appwire.SessionStatusArguments{Hub: appwire.SessionStatusTarget{Ref: request.Job.Ref, JobID: request.Job.JobID}}}}
+	} else if request.JobOutput != nil {
+		output, err := hubJobsOutput(ctx, o.cfg, o.sources, *request.JobOutput)
+		if err != nil {
+			return response, err
+		}
+		if output.Data.OffsetBytes < output.Data.RetainedStartBytes {
+			return response, appwire.SessionUnavailable("job output page precedes retained start")
+		}
+		response.JobOutput = &output
+		if output.Data.OffsetBytes > output.Data.RetainedStartBytes {
+			before := output.Data.OffsetBytes
+			response.FollowUps = []appwire.SessionStatusFollowUp{{Tool: "read_transcript", Arguments: appwire.SessionStatusArguments{Hub: appwire.SessionStatusTarget{Ref: request.JobOutput.Ref, JobID: request.JobOutput.JobID, BeforeBytes: &before, MaxBytes: request.JobOutput.MaxBytes}}}}
+		}
+	} else if request.Models != nil {
+		models, err := hubModelList(ctx, o.cfg, o.sources, *request.Models)
+		if err != nil {
+			return response, err
+		}
+		response.Models = &models
 	} else if request.Create != nil {
 		created, err := hubThreadStart(ctx, o.cfg, o.sources, *request.Create)
 		if err != nil {
@@ -498,6 +555,11 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 		}
 		control.Actor = response.Actor
 		response.Control = &control
+	}
+	if request.Discover != nil || request.Read != nil || request.Turns != nil || request.Activity != nil || request.Tasks != nil || request.Job != nil || request.JobOutput != nil || request.Models != nil {
+		if err := managerReadWithinCap(response); err != nil {
+			return appwire.SessionOperationResponse{}, err
+		}
 	}
 	return response, nil
 }

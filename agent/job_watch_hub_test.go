@@ -356,6 +356,43 @@ func TestManagerWatchCompletionAndRestart(t *testing.T) {
 	}
 }
 
+func TestManagerWatchCompletionAfterEarlierSameEntryObservation(t *testing.T) {
+	root := newMessagingRoot(t, newMessagingAdapter(), nil)
+	jm := root.jobManager
+	const ref, instance, generation = "local:worker", "worker-instance", "7@worker"
+	watch, err := jm.configureHubWatch(ref, instance, generation, "hub-1", 4, []string{"communicate"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := appwire.SessionObservationMetadata{Ref: ref, InstanceID: instance, GenerationID: generation, EntryID: "result", CausalKnown: true}
+	if err := jm.onHubObservation(watch.WatchID, appwire.SessionWatchUpdate{Event: "communicate", Metadata: first}); err != nil {
+		t.Fatal(err)
+	}
+	if !managerWatchActive(jm, watch.WatchID) {
+		t.Fatal("an unaccepted entry completed the watch")
+	}
+	accepted := true
+	terminal := first
+	terminal.EndTurn, terminal.EndReason, terminal.TerminalAccepted = true, "done", &accepted
+	for i := 0; i < 2; i++ {
+		if err := jm.onHubObservation(watch.WatchID, appwire.SessionWatchUpdate{Event: "communicate", Metadata: terminal}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if managerWatchActive(jm, watch.WatchID) {
+		t.Fatal("accepted terminal evidence for an earlier entry did not complete the watch")
+	}
+	completions := 0
+	for _, event := range loadJobStoreEvents(t, jm) {
+		if event.WatchSend != nil && strings.Contains(event.WatchSend.TriggerReason, "completed") {
+			completions++
+		}
+	}
+	if completions != 1 {
+		t.Fatalf("terminal evidence delivered %d completions, want exactly one", completions)
+	}
+}
+
 func TestManagerWatchUnknownCausalityReplay(t *testing.T) {
 	root := newMessagingRoot(t, newMessagingAdapter(), nil)
 	jm := root.jobManager
