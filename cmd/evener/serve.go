@@ -469,7 +469,17 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// install or an auto-upgrade can be holding across git fetches, and an
 	// interrupt has to end that wait rather than being ignored until the
 	// daemon reaches its listener.
-	ctx, cancel := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	//
+	// The handler stays registered until serve returns, apart from the context
+	// the daemon cancels to end its run. thread/shutdown and idle retirement end
+	// the run by cancelling ctx, and teardown -- where the session closes and
+	// kills its background jobs -- comes after that. Stopping NotifyContext
+	// there would restore SIGTERM's default disposition, so a supervisor's
+	// SIGTERM landing mid-teardown would kill the daemon on the spot and orphan
+	// every background job it owns.
+	signalCtx, stopSignals := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	ctx, cancel := context.WithCancel(signalCtx)
 	defer cancel()
 
 	// Before anything that can create the user config root: the legacy-data
