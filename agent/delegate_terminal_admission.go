@@ -86,7 +86,7 @@ func (a *subagent) admitTerminalReport(ctx context.Context, candidate *TerminalC
 	a.mu.Lock()
 	a.blockedWork = append([]string(nil), ids...)
 	a.mu.Unlock()
-	if len(ids) != 0 && len(candidate.Packet.Metadata) != 0 {
+	if len(ids) != 0 {
 		candidate.Packet.Metadata = packetMetadataWithOutstandingWork(candidate.Packet.Metadata, ids)
 	}
 	return true, nil

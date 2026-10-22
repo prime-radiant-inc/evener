@@ -132,10 +132,7 @@ func taskSummaryFrom(tasks []task.Task) TaskSummary {
 }
 
 func inventorySummary(s *Session) InventorySummary {
-	work, err := s.outstandingDelegateWork()
-	if err != nil && len(work.Unknown) == 0 {
-		return InventorySummary{}
-	}
+	work, _ := s.outstandingDelegateWork()
 	byCategory := map[string][]string{}
 	for _, id := range work.IDs() {
 		category, rest, ok := strings.Cut(id, ":")

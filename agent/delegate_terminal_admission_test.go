@@ -174,6 +174,32 @@ func TestTerminalAdmissionPublishesBlockedWithLiveWork(t *testing.T) {
 	}
 }
 
+func TestTerminalAdmissionBlockedAddsWorkToEmptyMetadata(t *testing.T) {
+	s, jm := newAdmissionSession(t)
+	jm.mu.Lock()
+	jm.running = map[string]*runningJob{"job-1": {}}
+	jm.mu.Unlock()
+	candidate := &TerminalCandidate{
+		Disposition: tool.CommunicateEndReasonBlocked,
+		Blocker:     "repository access",
+	}
+	admitted, err := (&subagent{sess: s}).admitTerminalReport(context.Background(), candidate)
+	if err != nil {
+		t.Fatalf("admitTerminalReport: %v", err)
+	}
+	if !admitted {
+		t.Fatal("blocked was refused while work was live")
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal(candidate.Packet.Metadata, &metadata); err != nil {
+		t.Fatalf("candidate metadata: %v", err)
+	}
+	work, _ := metadata["outstanding_work"].([]any)
+	if !slices.ContainsFunc(work, func(value any) bool { return value == "job:job-1" }) {
+		t.Fatalf("outstanding_work = %#v, want job:job-1", work)
+	}
+}
+
 func TestTerminalAdmissionRestartSafety(t *testing.T) {
 	s, jm := newAdmissionSession(t)
 	jm.mu.Lock()
