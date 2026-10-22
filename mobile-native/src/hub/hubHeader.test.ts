@@ -28,6 +28,9 @@ it.each([
 		"Connected · evener 0.9.412 · Update available",
 	],
 	[true, null, check({ applicable: false, buildChannel: "dev" }), "Connected · evener 0.9.412"],
+	// A channel lookup failure leaves updateAvailable false; the header must
+	// not read that as a currency claim the hub could not check.
+	[true, null, check({ checkError: "github unreachable" }), "Connected · evener 0.9.412"],
 	[false, "Reconnecting…", check(), "Reconnecting… · evener 0.9.412 · up to date"],
 	[false, "Update needed", null, "Update needed"],
 	// The shared line stays quiet through a blip's first 2 seconds; the
