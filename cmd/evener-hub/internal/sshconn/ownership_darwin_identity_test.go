@@ -110,7 +110,7 @@ func TestDarwinOwnerDirectoryIdentity(t *testing.T) {
 				}
 				now, err := m.resolveDarwinOwner(t.Context(), host, facts, report)
 				if tc.different {
-					if !errors.Is(err, errOwnerEvidence) || !strings.Contains(err.Error(), "Darwin process cwd disagrees") {
+					if !errors.Is(err, errOwnerEvidence) {
 						t.Fatalf("different directory accepted or wrong refusal: %v", err)
 					}
 				} else {

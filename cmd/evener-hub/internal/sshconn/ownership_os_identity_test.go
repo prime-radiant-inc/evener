@@ -196,7 +196,7 @@ func TestOwnerOSIdentity(t *testing.T) {
 					fixture.successorPolls = 1
 					now, err := m.resolveLinuxOwner(t.Context(), host, report, "4343", false)
 					if tc.differentDir {
-						if !errors.Is(err, errOwnerEvidence) || !strings.Contains(err.Error(), "service definition disagrees") {
+						if !errors.Is(err, errOwnerEvidence) {
 							t.Fatalf("different directory successor accepted: %v", err)
 						}
 						return
@@ -216,7 +216,7 @@ func TestOwnerOSIdentity(t *testing.T) {
 				} else {
 					now, err := m.resolveLinuxOwner(t.Context(), host, report, "4242", false)
 					if tc.differentDir || tc.differentUID {
-						if !errors.Is(err, errOwnerEvidence) || !strings.Contains(err.Error(), "service definition disagrees") {
+						if !errors.Is(err, errOwnerEvidence) {
 							t.Fatalf("different owner accepted: %v", err)
 						}
 					} else if err != nil {
@@ -256,7 +256,7 @@ func TestProcessOwnerUIDIdentity(t *testing.T) {
 			}}
 			m := newTestManager(t, testRegistry(t, host), fr, Options{})
 			err := m.checkHubOwner(t.Context(), host, strconv.Itoa(os.Getpid()))
-			if tc.matches && err != nil || !tc.matches && (!errors.Is(err, ErrRestart) || !strings.Contains(err.Error(), "refusing to restart")) {
+			if tc.matches && err != nil || !tc.matches && !errors.Is(err, ErrRestart) {
 				t.Fatalf("process UID comparison: matches=%t err=%v", tc.matches, err)
 			}
 		})

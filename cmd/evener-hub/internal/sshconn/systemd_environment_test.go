@@ -15,7 +15,7 @@ import (
 )
 
 func TestSystemdEffectiveLaunchEnvironment(t *testing.T) {
-	for _, name := range []string{"default-home", "system-no-pass", "system-pass", "user-inherits", "unit-over-manager", "files-over-unit", "unset-name", "unset-match", "unset-nonmatch", "optional-missing", "required-missing", "glob-refuses", "specifier-refuses", "quoted-unset-refuses", "duplicate-metadata-refuses", "no-login-home-absent", "no-login-home-empty", "no-login-home-manager", "no-login-home-unit", "no-login-home-file", "no-login-user-inherits", "no-login-home-unset", "login-policy-invalid-refuses", "legacy-login-home", "legacy-unit-home", "legacy-home-unset", "legacy-home-empty", "legacy-home-unit", "metadata-missing-user-refuses", "login-policy-empty-refuses", "unit-home-name", "unit-home-uid", "unit-home-default", "user-home-default", "unit-home-explicit-empty"} {
+	for _, name := range []string{"default-home", "system-no-pass", "system-pass", "user-inherits", "unit-over-manager", "files-over-unit", "unset-name", "unset-match", "unset-nonmatch", "optional-missing", "required-missing", "glob-refuses", "specifier-refuses", "quoted-unset-refuses", "duplicate-metadata-refuses", "no-login-home-absent", "no-login-home-empty", "no-login-home-manager", "no-login-home-unit", "no-login-home-file", "no-login-user-inherits", "no-login-home-unset", "login-policy-invalid-refuses", "legacy-login-home", "legacy-unit-home", "legacy-home-unset", "legacy-home-empty", "legacy-home-unit", "legacy-empty-user", "legacy-user-home-default", "empty-user-home-unit", "empty-user-home-empty", "empty-user-home-file", "empty-user-home-manager", "empty-user-home-not-passed", "metadata-missing-user-refuses", "login-policy-empty-refuses", "unit-home-name", "unit-home-uid", "unit-home-root", "unit-home-default", "user-home-default", "unit-home-explicit-empty"} {
 		t.Run(name, func(t *testing.T) {
 			host, _ := ownerCommands(t)
 			sup := supervisor{kind: supervisorSystemd, label: "evener-hub-selected.service"}
@@ -120,10 +120,26 @@ func TestSystemdEffectiveLaunchEnvironment(t *testing.T) {
 				unitUser, want = "hubsvc", []string{"HOME=/home/hubsvc"}
 			case "unit-home-uid":
 				unitUser, want = "1000", []string{"HOME=/home/uid-1000"}
-			case "unit-home-default":
-				unitUser, want = "", []string{"HOME=/root"}
-			case "user-home-default":
+			case "unit-home-root":
+				unitUser, want = "root", []string{"HOME=/root"}
+			case "unit-home-default", "legacy-empty-user":
+				unitUser, want = "", nil
+			case "user-home-default", "legacy-user-home-default":
 				sup.kind, unitUser = supervisorSystemdUser, ""
+			case "empty-user-home-unit":
+				unitUser, unit, want = "", "HOME=/unit", []string{"HOME=/unit"}
+			case "empty-user-home-empty":
+				unitUser, unit, want = "", "HOME=", []string{"HOME="}
+			case "empty-user-home-file":
+				unitUser = ""
+				path := filepath.Join(t.TempDir(), "home.env")
+				files[path], unit, want = "HOME=/file\n", "HOME=/unit", []string{"HOME=/file"}
+				props = "EnvironmentFiles=" + path + " (ignore_errors=no)\nPassEnvironment=\nUnsetEnvironment=\n"
+			case "empty-user-home-manager":
+				unitUser, manager, want = "", "HOME=/manager", []string{"HOME=/manager"}
+				props = "EnvironmentFiles=\nPassEnvironment=HOME\nUnsetEnvironment=\n"
+			case "empty-user-home-not-passed":
+				unitUser, manager, want = "", "HOME=/not-passed", nil
 			case "unit-home-explicit-empty":
 				unitUser, unit, want = "hubsvc", "HOME=", []string{"HOME="}
 			}
@@ -136,9 +152,12 @@ func TestSystemdEffectiveLaunchEnvironment(t *testing.T) {
 			if sup.kind == supervisorSystemdUser {
 				command += " --user"
 			}
-			reads := 0
+			reads, passwdReads := 0, 0
 			fr := &fakeRunner{runFn: func(ctx context.Context, argv []string, in io.Reader) ([]byte, error) {
 				remote := strings.Join(argv[12:], " ")
+				if strings.HasPrefix(remote, "getent passwd ") {
+					passwdReads++
+				}
 				switch remote {
 				case "getent passwd dev | cut -d: -f6":
 					return []byte("/home/dev\n"), nil
@@ -188,6 +207,9 @@ func TestSystemdEffectiveLaunchEnvironment(t *testing.T) {
 			}
 			if err != nil || !reflect.DeepEqual(got, want) {
 				t.Fatalf("env=%q want=%q err=%v", got, want, err)
+			}
+			if sup.kind == supervisorSystemd && unitUser == "" && passwdReads != 0 {
+				t.Fatalf("empty system User queried passwd: reads=%d", passwdReads)
 			}
 			if name == "system-no-pass" && reads != 0 {
 				t.Fatalf("system manager inherited without PassEnvironment: reads=%d", reads)

@@ -19,11 +19,12 @@ import (
 // Files, fetches and checksums are real. Process/service observations and the
 // restarted listener are modeled, with an exact remote-command allowlist.
 func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
-	for _, name := range []string{"verified-restart", "lost-reply-recovery", "failed-start-recovery", "no-home-live", "no-home-cold", "legacy-home-live", "legacy-home-cold", "legacy-unset-home-live", "legacy-unset-home-cold", "unit-user-live", "unit-user-cold", "unit-user-other-uid", "repair-fresh-operation", "repair-fresh-automatic", "repair-fresh-operation-prior", "repair-fresh-automatic-prior"} {
+	for _, name := range []string{"verified-restart", "lost-reply-recovery", "failed-start-recovery", "no-home-live", "no-home-cold", "legacy-home-live", "legacy-home-cold", "legacy-unset-home-live", "legacy-unset-home-cold", "empty-user-live", "empty-user-cold", "legacy-empty-user-live", "legacy-empty-user-cold", "unit-user-live", "unit-user-cold", "unit-user-other-uid", "repair-fresh-operation", "repair-fresh-automatic", "repair-fresh-operation-prior", "repair-fresh-automatic-prior"} {
 		lostReply, failedStart := name == "lost-reply-recovery", name == "failed-start-recovery"
 		t.Run(name, func(t *testing.T) {
 			repair := strings.HasPrefix(name, "repair-fresh-")
 			noHome, cold := strings.HasPrefix(name, "no-home-"), strings.HasSuffix(name, "-cold")
+			emptyUser := strings.Contains(name, "empty-user-")
 			unitAccount, otherUID := strings.HasPrefix(name, "unit-user-"), name == "unit-user-other-uid"
 			host, oldCommands := ownerCommands(t)
 			sup := supervisor{kind: supervisorSystemd, label: "evener-hub-selected.service"}
@@ -61,6 +62,16 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 					newEnv = []string{"EVENER_HUB_LISTEN_ADDR=" + newAddr, "XDG_CONFIG_HOME=/srv/config", "XDG_STATE_HOME=/srv/state"}
 					fileEnv = strings.Join(newEnv, "\n") + "\n"
 				}
+				if cold {
+					oldEnv = newEnv
+				}
+			}
+			if emptyUser {
+				host.SSH = "root@remote"
+				noHome, unitUser, unitEnv = true, "", ""
+				oldEnv = []string{"EVENER_HUB_LISTEN_ADDR=" + oldAddr, "XDG_CONFIG_HOME=/srv/config", "XDG_STATE_HOME=/srv/state"}
+				newEnv = []string{"EVENER_HUB_LISTEN_ADDR=" + newAddr, "XDG_CONFIG_HOME=/srv/config", "XDG_STATE_HOME=/srv/state"}
+				fileEnv = strings.Join(newEnv, "\n") + "\n"
 				if cold {
 					oldEnv = newEnv
 				}
@@ -105,6 +116,9 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 				}
 				allowed := map[string]string{}
 				for _, c := range commands {
+					if emptyUser && c.command == "ps -o user= -p "+pid {
+						c.output = "root\n"
+					}
 					c.output = strings.ReplaceAll(c.output, "User=dev\n", "User="+unitUser+"\n")
 					c.command = strings.ReplaceAll(c.command, " --addr '[::]:0'", "")
 					c.output = strings.ReplaceAll(c.output, " --addr=[::]:0", "")
@@ -141,6 +155,9 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 					// Explicit XDG roots select the same config even if a caller
 					// incorrectly invents HOME. Process evidence still has none.
 					withHome := []string{newEnv[0], "HOME=/home/dev", newEnv[1], newEnv[2]}
+					if emptyUser {
+						withHome[1] = "HOME=/root"
+					}
 					allowed[ownerContext("/srv", withHome)+"/opt/evener hub endpoint --json --config /srv/selected.toml"] = mustOwnerJSON(t, report)
 				}
 				if unitAccount {
@@ -172,6 +189,7 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 			var m *Manager
 			var saved pendingRestartState
 			restarted, effects, fileReads, polls := false, 0, 0, 0
+			rootHomeReads := 0
 			stopped, oldEnvConfigReads := cold, 0
 			fr := &fakeRunner{runFn: func(ctx context.Context, argv []string, _ io.Reader) ([]byte, error) {
 				remote := strings.Join(argv[12:], " ")
@@ -188,6 +206,12 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 					return []byte("/home/dev\n"), nil
 				case "getent passwd hubsvc | cut -d: -f6":
 					return []byte("/home/hubsvc\n"), nil
+				case "getent passwd root | cut -d: -f6":
+					if !emptyUser {
+						t.Fatal("unexpected root HOME lookup")
+					}
+					rootHomeReads++
+					return []byte("/root\n"), nil
 				case "id -u dev":
 					return []byte("1000\n"), nil
 				case "id -u hubsvc":
@@ -291,6 +315,9 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 			}
 			if (noHome || unitAccount) && !reflect.DeepEqual(saved.nextEnv, newEnv) {
 				t.Errorf("replacement environment=%q, want=%q", saved.nextEnv, newEnv)
+			}
+			if emptyUser && rootHomeReads != 0 {
+				t.Errorf("empty system User queried root HOME: reads=%d", rootHomeReads)
 			}
 			wantFileReads := 1
 			if cold {

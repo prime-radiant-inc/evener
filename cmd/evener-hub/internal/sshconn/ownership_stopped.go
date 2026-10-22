@@ -247,7 +247,8 @@ func (m *Manager) stoppedServiceEnvironment(ctx context.Context, host hostreg.Ho
 		if sup.kind == supervisorSystemd {
 			user = properties["User"]
 			if user == "" {
-				user = "root"
+				// A system unit without User runs as root but has no HOME seed.
+				break
 			}
 		}
 		out, err := m.ownerRead(ctx, host, "getent passwd "+shellquote.RemoteWord(user)+" | cut -d: -f6")
