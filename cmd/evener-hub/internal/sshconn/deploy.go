@@ -1275,7 +1275,7 @@ func (m *Manager) reinstallRetainedTarget(ctx context.Context, host hostreg.Host
 				if err != nil || !slices.Equal(env, prior.env) {
 					return errOwnerSelectionMismatch
 				}
-				sup, err := m.supervisorForOwner(ctx, host, prior.pid, argv, prior.cwd)
+				sup, _, err := m.supervisorForOwner(ctx, host, prior.pid, argv, prior.cwd, prior.report)
 				if err != nil || sup != prior.supervisor {
 					return errOwnerSelectionMismatch
 				}
@@ -1321,7 +1321,7 @@ func (m *Manager) reinstallRetainedTarget(ctx context.Context, host hostreg.Host
 		if prior.supervisor.kind != supervisorNone {
 			return m.revalidateStoppedService(ctx, host, facts, prior)
 		}
-		sup, err := m.supervisorForOwner(ctx, host, "0", prior.argv, prior.cwd)
+		sup, _, err := m.supervisorForOwner(ctx, host, "0", prior.argv, prior.cwd, prior.report)
 		if err != nil || sup.kind != supervisorNone {
 			return errOwnerSelectionMismatch
 		}

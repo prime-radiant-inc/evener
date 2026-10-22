@@ -84,7 +84,7 @@ func (m *Manager) resolveStoppedOwner(ctx context.Context, host hostreg.Host, fa
 			if err != nil {
 				return selectedOwner{}, err
 			}
-			o := selectedOwner{host: host, pid: "0", supervisor: sup, argv: def.argv, cwd: def.cwd, cwdIdentity: physicalCwd, env: def.env, report: report, definition: launchdIntent(def), domainUID: facts.UID}
+			o := selectedOwner{host: host, pid: "0", supervisor: sup, argv: def.argv, launchArgv: slices.Clone(def.argv), cwd: def.cwd, cwdIdentity: physicalCwd, env: def.env, report: report, definition: launchdIntent(def), domainUID: facts.UID}
 			chosen = &o
 		}
 		if chosen == nil {
@@ -188,7 +188,7 @@ func (m *Manager) resolveStoppedOwner(ctx context.Context, host hostreg.Host, fa
 			if err != nil {
 				return selectedOwner{}, err
 			}
-			o := selectedOwner{host: host, pid: "0", supervisor: sup, argv: argv, cwd: cwd, cwdIdentity: physicalCwd, env: env, report: report, definition: definition}
+			o := selectedOwner{host: host, pid: "0", supervisor: sup, argv: argv, launchArgv: slices.Clone(argv), cwd: cwd, cwdIdentity: physicalCwd, env: env, report: report, definition: definition}
 			chosen = &o
 		}
 	}

@@ -31,6 +31,7 @@ type selectedOwner struct {
 	supervisor  supervisor
 	generation  string
 	argv        []string
+	launchArgv  []string
 	cwd         string
 	cwdIdentity string
 	report      hubendpoint.Report
@@ -43,12 +44,20 @@ type selectedOwner struct {
 func (o selectedOwner) clone() selectedOwner {
 	o.host.Roots = slices.Clone(o.host.Roots)
 	o.argv = slices.Clone(o.argv)
+	o.launchArgv = slices.Clone(o.launchArgv)
 	o.env = slices.Clone(o.env)
 	if o.report.Running != nil {
 		running := *o.report.Running
 		o.report.Running = &running
 	}
 	return o
+}
+
+func (o selectedOwner) launchArguments() []string {
+	if o.launchArgv != nil {
+		return o.launchArgv
+	}
+	return o.argv
 }
 
 // resolveOwnedEndpoint associates the selected root with independent process and
@@ -120,11 +129,11 @@ func (m *Manager) resolveLinuxOwner(ctx context.Context, host hostreg.Host, repo
 	if err := m.checkOwnerConfig(ctx, host, argv, cwd, env, report); err != nil {
 		return selectedOwner{}, err
 	}
-	sup, err := m.supervisorForOwner(ctx, host, pid, argv, cwd)
+	sup, launchArgv, err := m.supervisorForOwner(ctx, host, pid, argv, cwd, report)
 	if err != nil {
 		return selectedOwner{}, err
 	}
-	owner := selectedOwner{host: host, pid: pid, supervisor: sup, generation: before, argv: argv, cwd: cwd, cwdIdentity: cwd, env: env, report: report}
+	owner := selectedOwner{host: host, pid: pid, supervisor: sup, generation: before, argv: argv, launchArgv: launchArgv, cwd: cwd, cwdIdentity: cwd, env: env, report: report}
 	if sup.kind != supervisorNone {
 		owner.definition, err = m.serviceDefinition(ctx, host, sup)
 		if err != nil {
@@ -157,7 +166,7 @@ func (m *Manager) resolveLinuxOwner(ctx context.Context, host hostreg.Host, repo
 			return selectedOwner{}, err
 		}
 	} else {
-		currentSupervisor, err := m.supervisorForOwner(ctx, host, pid, argv, cwd)
+		currentSupervisor, _, err := m.supervisorForOwner(ctx, host, pid, argv, cwd, report)
 		if err != nil || currentSupervisor != sup || sup.kind == supervisorNone {
 			return selectedOwner{}, errOwnerEvidence
 		}
@@ -207,7 +216,13 @@ func sameLaunch(now, prior selectedOwner) bool {
 }
 
 func sameLaunchWithEnv(now, prior selectedOwner, env []string) bool {
-	return now.supervisor == prior.supervisor && now.domainUID == prior.domainUID && now.cwdIdentity == prior.cwdIdentity && slices.Equal(now.argv, prior.argv) && slices.Equal(now.env, env) && now.definition == prior.definition && now.report.ConfigPath == prior.report.ConfigPath && now.report.HubStateRoot == prior.report.HubStateRoot
+	argvMatches := slices.Equal(now.argv, prior.argv)
+	if !sameProcess(now, prior) && now.supervisor.kind != supervisorNone && now.launchArgv != nil && prior.launchArgv != nil {
+		// Each live argv has independently matched this supervisor definition.
+		// A new process starts its original intent, not an in-place bound-port argv.
+		argvMatches = slices.Equal(now.launchArgv, prior.launchArgv)
+	}
+	return now.supervisor == prior.supervisor && now.domainUID == prior.domainUID && now.cwdIdentity == prior.cwdIdentity && argvMatches && slices.Equal(now.env, env) && now.definition == prior.definition && now.report.ConfigPath == prior.report.ConfigPath && now.report.HubStateRoot == prior.report.HubStateRoot
 }
 
 func (m *Manager) hasOwnerWitness(owner selectedOwner) bool {
@@ -562,7 +577,7 @@ func supervisorShowRemote(s supervisor) string {
 // Candidate listings are not authority. Resolve every visible candidate before
 // associating the selected lock owner, including the user scope when a system
 // service is live. An unresolved listing/definition never means ad-hoc fallback.
-func (m *Manager) supervisorForOwner(ctx context.Context, host hostreg.Host, pid string, argv []string, cwd string, only ...supervisor) (supervisor, error) {
+func (m *Manager) supervisorForOwner(ctx context.Context, host hostreg.Host, pid string, argv []string, cwd string, report hubendpoint.Report, only ...supervisor) (supervisor, []string, error) {
 	var candidates []supervisor
 	for _, scope := range []struct {
 		kind   supervisorKind
@@ -571,7 +586,7 @@ func (m *Manager) supervisorForOwner(ctx context.Context, host hostreg.Host, pid
 		out, err := m.ownerRead(ctx, host, scope.remote)
 		if err != nil {
 			if !supervisorListingAbsent(out) && (scope.kind != supervisorSystemdUser || !systemdUserBusAbsent(out)) {
-				return supervisor{}, err
+				return supervisor{}, nil, err
 			}
 			continue
 		}
@@ -584,53 +599,62 @@ func (m *Manager) supervisorForOwner(ctx context.Context, host hostreg.Host, pid
 		}
 	}
 	var chosen supervisor
+	var chosenArgv []string
 	for _, candidate := range candidates {
 		out, err := m.ownerRead(ctx, host, supervisorShowRemote(candidate))
 		if err != nil {
-			return supervisor{}, err
+			return supervisor{}, nil, err
 		}
 		fields := map[string]string{}
 		for line := range strings.SplitSeq(strings.TrimSuffix(string(out), "\n"), "\n") {
 			key, value, ok := strings.Cut(line, "=")
 			if !ok {
-				return supervisor{}, fmt.Errorf("%w: malformed service definition", errOwnerEvidence)
+				return supervisor{}, nil, fmt.Errorf("%w: malformed service definition", errOwnerEvidence)
 			}
 			if _, exists := fields[key]; exists {
-				return supervisor{}, fmt.Errorf("%w: duplicate service property", errOwnerEvidence)
+				return supervisor{}, nil, fmt.Errorf("%w: duplicate service property", errOwnerEvidence)
 			}
 			fields[key] = value
 		}
 		for _, key := range []string{"Id", "MainPID", "User", "ExecStart", "WorkingDirectory"} {
 			if _, ok := fields[key]; !ok {
-				return supervisor{}, fmt.Errorf("%w: incomplete service definition", errOwnerEvidence)
+				return supervisor{}, nil, fmt.Errorf("%w: incomplete service definition", errOwnerEvidence)
 			}
 		}
 		if fields["Id"] != candidate.label || !isNumericUID(fields["MainPID"]) {
-			return supervisor{}, fmt.Errorf("%w: service identity unavailable", errOwnerEvidence)
+			return supervisor{}, nil, fmt.Errorf("%w: service identity unavailable", errOwnerEvidence)
 		}
 		if fields["MainPID"] != pid {
 			continue
 		}
 		if strings.Count(fields["ExecStart"], "{ path=") != 1 {
-			return supervisor{}, fmt.Errorf("%w: service executable association is ambiguous", errOwnerEvidence)
+			return supervisor{}, nil, fmt.Errorf("%w: service executable association is ambiguous", errOwnerEvidence)
 		}
 		// systemctl's formatted argv is not a general shell serialization. Accept
 		// only an exact corroboration of the independently recovered NUL argv with
 		// simple words. Refuse ambiguous formatting instead of inventing boundaries.
 		for _, arg := range argv {
 			if strings.ContainsAny(arg, " \t\r\n\\\"';$") {
-				return supervisor{}, fmt.Errorf("%w: service argv formatting is ambiguous", errOwnerEvidence)
+				return supervisor{}, nil, fmt.Errorf("%w: service argv formatting is ambiguous", errOwnerEvidence)
 			}
 		}
-		prefix := "{ path=" + argv[0] + " ; argv[]=" + strings.Join(argv, " ") + " ; "
-		if pid == "0" && !strings.HasPrefix(fields["ExecStart"], prefix) {
+		_, definitionArgv, err := serviceWords(out)
+		if err != nil {
+			return supervisor{}, nil, err
+		}
+		definitionPrefix := "{ path=" + definitionArgv[0] + " ; argv[]=" + strings.Join(definitionArgv, " ") + " ; "
+		if !strings.HasPrefix(fields["ExecStart"], definitionPrefix) {
+			return supervisor{}, nil, fmt.Errorf("%w: service argv formatting is ambiguous", errOwnerEvidence)
+		}
+		argvMatches := supervisorArgvMatches(argv, definitionArgv, report)
+		if pid == "0" && !argvMatches {
 			continue
 		}
 		user, ok := effectiveUserName(host)
 		if !ok {
 			userOut, err := m.ownerRead(ctx, host, "id -un")
 			if err != nil {
-				return supervisor{}, err
+				return supervisor{}, nil, err
 			}
 			user = strings.TrimSpace(string(userOut))
 		}
@@ -647,29 +671,29 @@ func (m *Manager) supervisorForOwner(ctx context.Context, host hostreg.Host, pid
 			if candidate.kind == supervisorSystemdUser {
 				out, err := m.ownerRead(ctx, host, "getent passwd "+shellquote.RemoteWord(user)+" | cut -d: -f6")
 				if err != nil {
-					return supervisor{}, fmt.Errorf("%w: user-service home unavailable", errOwnerEvidence)
+					return supervisor{}, nil, fmt.Errorf("%w: user-service home unavailable", errOwnerEvidence)
 				}
 				workingDirectory, err = ownerPathOutput(out)
 				if err != nil {
-					return supervisor{}, err
+					return supervisor{}, nil, err
 				}
 			}
 		}
 		userMatches, err := m.sameUser(ctx, host, definitionUser, user)
 		if err != nil {
-			return supervisor{}, err
+			return supervisor{}, nil, err
 		}
 		directoryMatches, err := m.sameDirectory(ctx, host, workingDirectory, cwd)
 		if err != nil {
-			return supervisor{}, err
+			return supervisor{}, nil, err
 		}
-		if !userMatches || !directoryMatches || !strings.HasPrefix(fields["ExecStart"], prefix) || !strings.HasSuffix(fields["ExecStart"], " }") {
-			return supervisor{}, fmt.Errorf("%w: service definition disagrees with selected process", errOwnerEvidence)
+		if !userMatches || !directoryMatches || !argvMatches || !strings.HasSuffix(fields["ExecStart"], " }") {
+			return supervisor{}, nil, fmt.Errorf("%w: service definition disagrees with selected process", errOwnerEvidence)
 		}
 		if chosen.kind != supervisorNone {
-			return supervisor{}, fmt.Errorf("%w: multiple services associate with selected process", errOwnerEvidence)
+			return supervisor{}, nil, fmt.Errorf("%w: multiple services associate with selected process", errOwnerEvidence)
 		}
-		chosen = candidate
+		chosen, chosenArgv = candidate, definitionArgv
 	}
-	return chosen, nil
+	return chosen, chosenArgv, nil
 }

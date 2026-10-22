@@ -117,7 +117,7 @@ func (m *Manager) checkSelectedReplacement(ctx context.Context, host hostreg.Hos
 		if live {
 			pid = owner.pid
 		}
-		sup, err := m.supervisorForOwner(ctx, host, pid, owner.argv, owner.cwd, owner.supervisor)
+		sup, _, err := m.supervisorForOwner(ctx, host, pid, owner.argv, owner.cwd, owner.report, owner.supervisor)
 		if err != nil {
 			return nil, err
 		}
@@ -152,7 +152,7 @@ func (m *Manager) checkSelectedReplacement(ctx context.Context, host hostreg.Hos
 			}
 			env = nextEnv
 		}
-		return env, m.checkOwnerConfig(ctx, host, owner.argv, owner.cwd, env, owner.report)
+		return env, m.checkOwnerConfig(ctx, host, owner.launchArguments(), owner.cwd, env, owner.report)
 	}
 	return owner.env, m.checkOwnerConfig(ctx, host, owner.argv, owner.cwd, owner.env, owner.report)
 }
@@ -246,7 +246,7 @@ func (m *Manager) recoverSelectedRestartWithStart(ctx context.Context, host host
 	if env == nil {
 		env = prior.env
 	}
-	if err := m.checkOwnerConfig(ctx, host, prior.argv, prior.cwd, env, report); err != nil {
+	if err := m.checkOwnerConfig(ctx, host, prior.launchArguments(), prior.cwd, env, report); err != nil {
 		return started, err
 	}
 	if prior.supervisor.kind != supervisorNone {
@@ -269,7 +269,7 @@ func (m *Manager) recoverSelectedRestartWithStart(ctx context.Context, host host
 			return started, fmt.Errorf("%w: stopped launch now supervised", errOwnerEvidence)
 		}
 	} else {
-		sup, err := m.supervisorForOwner(ctx, host, "0", prior.argv, prior.cwd)
+		sup, _, err := m.supervisorForOwner(ctx, host, "0", prior.argv, prior.cwd, prior.report)
 		if err != nil {
 			return started, err
 		}
@@ -297,7 +297,7 @@ func (m *Manager) revalidateStoppedService(ctx context.Context, host hostreg.Hos
 	if owner.supervisor.kind == supervisorLaunchd {
 		return m.revalidateStoppedLaunchd(ctx, host, facts, owner)
 	}
-	sup, err := m.supervisorForOwner(ctx, host, "0", owner.argv, owner.cwd, owner.supervisor)
+	sup, _, err := m.supervisorForOwner(ctx, host, "0", owner.argv, owner.cwd, owner.report, owner.supervisor)
 	if err != nil {
 		return err
 	}
