@@ -141,6 +141,19 @@ export function holdNextWriteTransaction(stores: readonly string[]) {
   return holdNextTransactionEvent(stores, "complete");
 }
 
+// The one scope predicate both hold helpers match: exact store set and mode.
+function transactionScopeMatches(
+  transaction: IDBTransaction,
+  stores: readonly string[],
+  mode: IDBTransactionMode,
+): boolean {
+  return (
+    transaction.mode === mode &&
+    transaction.objectStoreNames.length === stores.length &&
+    stores.every((store) => transaction.objectStoreNames.contains(store))
+  );
+}
+
 // Holds the named event of the next readwrite transaction opened over exactly
 // `stores` - the abort-event twin a rollback's bounded-wait coverage needs,
 // since an aborted transaction never fires "complete". The mode defaults to
@@ -162,12 +175,7 @@ export function holdNextTransactionEvent(
     ...args: Parameters<IDBDatabase["transaction"]>
   ) {
     const transaction = transact.apply(this, args);
-    if (
-      !hold &&
-      transaction.mode === mode &&
-      transaction.objectStoreNames.length === stores.length &&
-      stores.every((store) => transaction.objectStoreNames.contains(store))
-    ) {
+    if (!hold && transactionScopeMatches(transaction, stores, mode)) {
       hold = holdIndexedDBEvent(transaction, event);
       void hold.reached.then(() => markReached?.());
     }
@@ -190,45 +198,47 @@ export function holdNextTransactionEvent(
 export function holdNextTransactions(
   specs: readonly { stores: readonly string[]; event: "complete" | "abort"; mode?: IDBTransactionMode }[],
 ) {
-  const holds: (ReturnType<typeof holdIndexedDBEvent> | undefined)[] = specs.map(() => undefined);
-  const released: boolean[] = specs.map(() => false);
-  const resolvers: (() => void)[] = [];
-  const reached = specs.map(
-    () =>
-      new Promise<void>((resolve) => {
-        resolvers.push(resolve);
-      }),
-  );
+  const records = specs.map((spec) => {
+    let resolveReached!: () => void;
+    const reached = new Promise<void>((resolve) => {
+      resolveReached = resolve;
+    });
+    return {
+      spec,
+      hold: undefined as ReturnType<typeof holdIndexedDBEvent> | undefined,
+      released: false,
+      reached,
+      resolveReached,
+    };
+  });
   const transact = IDBDatabase.prototype.transaction;
   const spy = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (
     this: IDBDatabase,
     ...args: Parameters<IDBDatabase["transaction"]>
   ) {
     const transaction = transact.apply(this, args);
-    for (let index = 0; index < specs.length; index += 1) {
-      if (released[index] || holds[index] !== undefined) continue;
-      const spec = specs[index];
-      if (spec === undefined) continue;
-      if (transaction.mode !== (spec.mode ?? "readwrite")) continue;
-      if (transaction.objectStoreNames.length !== spec.stores.length) continue;
-      if (!spec.stores.every((store) => transaction.objectStoreNames.contains(store))) continue;
-      const hold = holdIndexedDBEvent(transaction, spec.event);
-      holds[index] = hold;
-      void hold.reached.then(() => resolvers[index]?.());
+    for (const record of records) {
+      if (record.released || record.hold !== undefined) continue;
+      if (!transactionScopeMatches(transaction, record.spec.stores, record.spec.mode ?? "readwrite")) continue;
+      const hold = holdIndexedDBEvent(transaction, record.spec.event);
+      record.hold = hold;
+      void hold.reached.then(() => record.resolveReached());
       break;
     }
     return transaction;
   });
   return {
-    reached,
+    reached: records.map((record) => record.reached),
     releaseAt(index: number) {
-      released[index] = true;
-      holds[index]?.release();
+      const record = records[index];
+      if (record === undefined) return;
+      record.released = true;
+      record.hold?.release();
     },
     release() {
       spy.mockRestore();
-      for (const [index, hold] of holds.entries()) {
-        if (!released[index]) hold?.release();
+      for (const record of records) {
+        if (!record.released) record.hold?.release();
       }
     },
   };

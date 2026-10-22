@@ -8,7 +8,7 @@ import { APPEND_STORES, browserDraftKey } from "./browserDraftRepository";
 import {
   ACCEPT_STORES,
   annotationDocumentKey,
-  createDocumentAnnotationRepository,
+  type createDocumentAnnotationRepository,
   epochIdentityOf,
   RESET_STORES,
   SAVE_STORES,
@@ -29,7 +29,9 @@ import {
   currentPreparation,
   deferred,
   openAnnotationFixture,
+  openSiblingRepository,
   sampleChangedContent,
+  sampleThirdContent,
 } from "./testing/annotationFixture";
 import { holdNextWriteTransaction, nextRealTask, settleRealTasks } from "./testing/stalledIndexedDB";
 
@@ -40,19 +42,30 @@ afterEach(() => {
 
 // Record every string key one Map method receives, so a caller can assert on
 // the exact identities an adapter wrote or deleted without reaching its private
-// maps. restore() drops the spy; keys keeps what was recorded.
-function captureMapKeys(method: "delete" | "set"): { keys: string[]; restore: () => void } {
+// maps. `observe` narrows what is recorded and sees the entry's value (for a
+// delete, the value the key still held when it was removed). restore() drops
+// the spy; keys and entries keep what was recorded.
+function captureMapKeys(
+  method: "delete" | "set",
+  observe?: (map: Map<unknown, unknown>, key: string, value: unknown) => boolean,
+): { keys: string[]; entries: { key: string; value: unknown }[]; restore: () => void } {
   const keys: string[] = [];
+  const entries: { key: string; value: unknown }[] = [];
+  const record = (map: Map<unknown, unknown>, key: string, value: unknown) => {
+    if (observe !== undefined && !observe(map, key, value)) return;
+    keys.push(key);
+    entries.push({ key, value });
+  };
   if (method === "delete") {
     const original = Map.prototype.delete;
     const spy = vi.spyOn(Map.prototype, "delete").mockImplementation(function (
       this: Map<unknown, unknown>,
       key: unknown,
     ) {
-      if (typeof key === "string") keys.push(key);
+      if (typeof key === "string") record(this, key, this.get(key));
       return original.call(this, key);
     });
-    return { keys, restore: () => spy.mockRestore() };
+    return { keys, entries, restore: () => spy.mockRestore() };
   }
   const original = Map.prototype.set;
   const spy = vi.spyOn(Map.prototype, "set").mockImplementation(function (
@@ -60,10 +73,10 @@ function captureMapKeys(method: "delete" | "set"): { keys: string[]; restore: ()
     key: unknown,
     value: unknown,
   ) {
-    if (typeof key === "string") keys.push(key);
+    if (typeof key === "string") record(this, key, value);
     return original.call(this, key, value);
   });
-  return { keys, restore: () => spy.mockRestore() };
+  return { keys, entries, restore: () => spy.mockRestore() };
 }
 
 // A save is work whose outcome the retry runtime cannot see until it settles.
@@ -126,12 +139,7 @@ test("a beginRead after a sibling reset does not carry a retired lease into the 
     databaseName: "annotation-reset-read-state",
     origin: "https://reset.example",
   });
-  const sibling = createDocumentAnnotationRepository({
-    indexedDB: fixture.factory,
-    databaseName: "annotation-reset-read-state",
-    drafts: fixture.drafts,
-    targetFor: () => null,
-  });
+  const sibling = openSiblingRepository(fixture);
   try {
     const rotated = await sibling.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation);
     expect(rotated).toMatchObject({ committed: true });
@@ -293,12 +301,7 @@ test("a superseded changed read releases the confirmed suppression it installed"
       expect(await sibling.acceptRead(peerTicket, sampleChangedContent())).toMatchObject({ state: "expiry-pending" });
     },
   });
-  sibling = createDocumentAnnotationRepository({
-    indexedDB: fixture.factory,
-    databaseName: "annotation-superseded-confirm",
-    drafts: fixture.drafts,
-    targetFor: () => null,
-  });
+  sibling = openSiblingRepository(fixture);
   try {
     const retiredIdentity = epochIdentityOf(
       annotationDocumentKey(fixture.document),
@@ -994,12 +997,7 @@ test("a stale validation's release reaches the runtime trigger", async () => {
   const ticket = await fixture.repository.beginRead(fixture.document);
   // A newer read in another adapter supersedes this ticket durably: its
   // validation can only answer stale, and that release restores eligibility.
-  const sibling = createDocumentAnnotationRepository({
-    indexedDB: fixture.factory,
-    databaseName: "annotation-coordination",
-    drafts: fixture.drafts,
-    targetFor: () => null,
-  });
+  const sibling = openSiblingRepository(fixture);
   await sibling.beginRead(fixture.document);
   fixture.storageSuccess.mockClear();
   fixture.runtime.registerRetryNeed();
@@ -1027,12 +1025,7 @@ test("an unchanged acceptance's release reaches the runtime trigger", async () =
   // adapter's in-memory observations still hold the old content, so its next
   // acceptance installs a provisional by local comparison; the durable
   // validation of the fresh epoch finds no change and accepts, releasing it.
-  const sibling = createDocumentAnnotationRepository({
-    indexedDB: fixture.factory,
-    databaseName: "annotation-coordination",
-    drafts: fixture.drafts,
-    targetFor: () => null,
-  });
+  const sibling = openSiblingRepository(fixture);
   const siblingTicket = await sibling.beginRead(fixture.document);
   expect(await sibling.acceptRead(siblingTicket, sampleChangedContent())).toMatchObject({ state: "expiry-pending" });
   const ticket = await fixture.repository.beginRead(fixture.document);
@@ -1128,12 +1121,7 @@ test("a stale-incarnation reset's release reaches the runtime trigger", async ()
   // A sibling rotates the namespace first, so this adapter's expected
   // incarnation is stale and its reset rotates nothing; the entries it
   // provisioned are released as an aborted reset's are.
-  const sibling = createDocumentAnnotationRepository({
-    indexedDB: fixture.factory,
-    databaseName: "annotation-coordination",
-    drafts: fixture.drafts,
-    targetFor: () => null,
-  });
+  const sibling = openSiblingRepository(fixture);
   const rotated = await sibling.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation);
   expect(rotated.committed).toBe(true);
   const passes = vi.spyOn(fixture.repository, "retryPendingWithOutcome");
@@ -1332,12 +1320,7 @@ test("a dismissed save stays terminal for a sibling adapter after close", async 
 
   // Observe the durable row through an adapter that shares no fence with the
   // dismissing one: listing excludes the row only when its flip committed.
-  const sibling = createDocumentAnnotationRepository({
-    indexedDB: fixture.factory,
-    databaseName: "annotation-coordination",
-    drafts: fixture.drafts,
-    targetFor: () => fixture?.source ?? null,
-  });
+  const sibling = openSiblingRepository(fixture, () => fixture?.source ?? null);
   let durable = false;
   for (let hop = 0; hop < 50 && !durable; hop += 1) {
     const views = await sibling.listAnnotations(fixture.document);
@@ -1429,12 +1412,7 @@ test("dispose leaves a committed save's row pending for a later runtime", async 
   // The committed row is still pending: teardown fenced and flipped nothing.
   const views = await fixture.repository.listAnnotations(fixture.document);
   expect(views.find((view) => view.operation.operationId === operation.operationId)?.handoff.state).toBe("pending");
-  const sibling = createDocumentAnnotationRepository({
-    indexedDB: fixture.factory,
-    databaseName: "annotation-coordination",
-    drafts: fixture.drafts,
-    targetFor: () => fixture?.source ?? null,
-  });
+  const sibling = openSiblingRepository(fixture, () => fixture?.source ?? null);
   const siblingViews = await sibling.listAnnotations(fixture.document);
   expect(siblingViews.find((view) => view.operation.operationId === operation.operationId)?.handoff.state).toBe(
     "pending",
@@ -1524,12 +1502,7 @@ test("a dismissal that loses the append's commit race withholds the acknowledgme
   expect(listener).toHaveBeenCalled();
 
   // The durable row is honestly applied: an adapter sharing no fence lists it.
-  const sibling = createDocumentAnnotationRepository({
-    indexedDB: fixture.factory,
-    databaseName: "annotation-coordination",
-    drafts: fixture.drafts,
-    targetFor: () => null,
-  });
+  const sibling = openSiblingRepository(fixture);
   const views = await sibling.listAnnotations(fixture.document);
   expect(views.find((view) => view.operation.operationId === fixture.operation.operationId)?.handoff.state).toBe(
     "already-applied",
@@ -1768,12 +1741,7 @@ test("a sweep that meets an already-deleted expiry releases the suppression it s
 
   // A sibling adapter completes the deletion; this adapter never runs its own
   // finishExpiry, so it keeps the suppressed epoch.
-  const sibling = createDocumentAnnotationRepository({
-    indexedDB: fixture.factory,
-    databaseName: "annotation-coordination",
-    drafts: fixture.drafts,
-    targetFor: () => null,
-  });
+  const sibling = openSiblingRepository(fixture);
   await sibling.finishExpiry(acceptance.receipt);
   // The sibling's own wake reaches this adapter as a peer message; retire that
   // channel and let any in-flight peer delivery land before measuring what
@@ -2316,12 +2284,7 @@ test("a superseded retained fence releases the suppression it installed", async 
       }
     },
   });
-  const sibling = createDocumentAnnotationRepository({
-    indexedDB: fixture.factory,
-    databaseName: "annotation-superseded-retained",
-    drafts: fixture.drafts,
-    targetFor: () => null,
-  });
+  const sibling = openSiblingRepository(fixture);
   try {
     const ticket = await fixture.repository.beginRead(fixture.document);
     const acceptance = await fixture.repository.acceptRead(ticket, sampleChangedContent());
@@ -2345,24 +2308,15 @@ test("a superseded retained fence releases the suppression it installed", async 
 
     // The pending-expiry record is keyed by the same identity, so only record a
     // delete whose map holds a suppression entry.
-    const deletes: string[] = [];
-    const del = Map.prototype.delete;
-    const deleteSpy = vi.spyOn(Map.prototype, "delete").mockImplementation(function (
-      this: Map<unknown, unknown>,
-      key: unknown,
-    ) {
-      if (typeof key === "string") {
-        const value = this.get(key) as { confirmed?: unknown; requestId?: unknown } | undefined;
-        if (value !== undefined && "confirmed" in value && "requestId" in value) deletes.push(key);
-      }
-      return del.call(this, key);
+    const deletes = captureMapKeys("delete", (_map, _key, value) => {
+      return typeof value === "object" && value !== null && "confirmed" in value && "requestId" in value;
     });
     try {
       await fixture.repository.retryPending("storage-recovered");
     } finally {
-      deleteSpy.mockRestore();
+      deletes.restore();
     }
-    expect(deletes).toContain(identity);
+    expect(deletes.keys).toContain(identity);
   } finally {
     sibling.close();
     fixture.repository.close();
@@ -2380,12 +2334,7 @@ test("a changed read confirms only the epoch its fence replaces", async () => {
     databaseName: "annotation-confirm-mismatch",
     origin: "https://coordination.example",
   });
-  const sibling = createDocumentAnnotationRepository({
-    indexedDB: fixture.factory,
-    databaseName: "annotation-confirm-mismatch",
-    drafts: fixture.drafts,
-    targetFor: () => null,
-  });
+  const sibling = openSiblingRepository(fixture);
   try {
     // The peer replaces the remembered epoch first.
     const peerTicket = await sibling.beginRead(fixture.document);
@@ -2397,28 +2346,14 @@ test("a changed read confirms only the epoch its fence replaces", async () => {
       fixture.operation.lease.epoch,
     );
     const localTicket = await fixture.repository.beginRead(fixture.document);
-    const thirdContent = {
-      text: "Third content\n",
-      binary: false,
-      mediaType: "text/markdown",
-      truncated: false,
-      sizeBytes: 15,
-    };
-    const installed = new Map<string, { confirmed?: boolean }>();
-    const set = Map.prototype.set;
-    const setSpy = vi.spyOn(Map.prototype, "set").mockImplementation(function (
-      this: Map<unknown, unknown>,
-      key: unknown,
-      value: unknown,
-    ) {
-      if (typeof key === "string") set.call(installed, key, value as { confirmed?: boolean });
-      return set.call(this, key, value);
-    });
+    const thirdContent = sampleThirdContent();
+    const writes = captureMapKeys("set");
     try {
       expect(await fixture.repository.acceptRead(localTicket, thirdContent)).toMatchObject({ state: "expiry-pending" });
     } finally {
-      setSpy.mockRestore();
+      writes.restore();
     }
+    const installed = new Map(writes.entries.map(({ key, value }) => [key, value as { confirmed?: boolean }]));
     expect(installed.get(rememberedIdentity)?.confirmed).not.toBe(true);
   } finally {
     sibling.close();

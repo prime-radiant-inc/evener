@@ -1,16 +1,11 @@
 // @vitest-environment node
 
 import type { HandoffResult, PreparedAnnotation } from "@evener/appwire-client";
-import { IDBDatabase, IDBObjectStore } from "fake-indexeddb";
+import { IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ComposerPreparation } from "../panes/session/composer/composerContract";
 import { APPEND_STORES } from "./browserDraftRepository";
-import {
-  ACCEPT_STORES,
-  createDocumentAnnotationRepository,
-  RESET_STORES,
-  SAVE_STORES,
-} from "./documentAnnotationIndexedDB";
+import { ACCEPT_STORES, RESET_STORES, SAVE_STORES } from "./documentAnnotationIndexedDB";
 import {
   ANNOTATION_EVIDENCE_STORE,
   ANNOTATION_EXPIRY_STORE,
@@ -20,11 +15,13 @@ import {
 import {
   type AnnotationFixtureWithRuntime,
   buildAnnotationOperation,
-  currentPreparation,
   deferred,
+  holdFirstPreparation,
   openAnnotationFixture,
   openAnnotationStore,
+  openSiblingRepository,
   sampleChangedContent,
+  sampleThirdContent,
 } from "./testing/annotationFixture";
 import {
   holdIndexedDBEvent,
@@ -74,12 +71,7 @@ test("a stale validation that releases provisional suppression signals the pendi
   const ticket = await fixture.repository.beginRead(fixture.document);
   // Another adapter's read supersedes that ticket durably: the validation can
   // only answer stale, which releases the provisional entry.
-  const sibling = createDocumentAnnotationRepository({
-    indexedDB: fixture.factory,
-    databaseName: "annotation-recovery",
-    drafts: fixture.drafts,
-    targetFor: () => null,
-  });
+  const sibling = openSiblingRepository(fixture);
   await sibling.beginRead(fixture.document);
 
   fixture.storageSuccess.mockClear();
@@ -367,36 +359,17 @@ test("an overlapping handoff completes automatically after an aborted namespace 
   // Hold the aborted reset's abort event: the rollback is real, but the reset
   // call cannot observe it until the watchdog's deadline, which keeps the
   // provisional suppression installed while the handoff refuses against it.
-  const transact = IDBDatabase.prototype.transaction;
-  let resetHold: ReturnType<typeof holdIndexedDBEvent> | undefined;
-  const transactSpy = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (
-    this: IDBDatabase,
-    ...args: Parameters<IDBDatabase["transaction"]>
-  ) {
-    const transaction = transact.apply(this, args);
-    const scope = [...transaction.objectStoreNames];
-    if (
-      !resetHold &&
-      transaction.mode === "readwrite" &&
-      scope.length === RESET_STORES.length &&
-      RESET_STORES.every((store) => scope.includes(store))
-    ) {
-      resetHold = holdIndexedDBEvent(transaction, "abort");
-    }
-    return transaction;
-  });
+  const holds = holdNextTransactions([{ stores: RESET_STORES, event: "abort" }]);
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const reset = fixture.repository.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation);
   let resetFailure: unknown;
   const resetSettled = reset.catch((error: unknown) => {
     resetFailure = error;
   });
-  await settleRealTasks(() => resetHold !== undefined, 100);
-  if (!resetHold) throw new Error("reset transaction did not reach IndexedDB");
   // The reset has ABORTED - its rollback is durable - but the held event keeps
   // the reset call from observing it, so provisional suppression is still
   // installed when the handoff runs.
-  await resetHold.reached;
+  await holds.reached[0];
 
   const handoff = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
   let handoffResult: HandoffResult | undefined;
@@ -409,8 +382,7 @@ test("an overlapping handoff completes automatically after an aborted namespace 
   await vi.advanceTimersByTimeAsync(10_001);
   await resetSettled;
   expect(resetFailure).toBeDefined();
-  resetHold.release();
-  transactSpy.mockRestore();
+  holds.release();
   vi.useRealTimers();
 
   // No external trigger follows the rollback's release.
@@ -545,15 +517,7 @@ test.each([
     origin: "https://reset.example",
     targetFor: () => null,
   });
-  const sibling =
-    resetter === "own"
-      ? undefined
-      : createDocumentAnnotationRepository({
-          indexedDB: store.factory,
-          databaseName,
-          drafts: store.drafts,
-          targetFor: () => null,
-        });
+  const sibling = resetter === "own" ? undefined : openSiblingRepository(store);
   try {
     const abandoned = await store.repository.beginRead(store.document);
     expect(
@@ -606,22 +570,13 @@ test("a read registered after the reset commit survives the reset's own retireme
 // read's entry-time provisional suppression is what protects an overlapping
 // handoff's append window, and losing this state reopens that window.
 test("a replacement-incarnation acceptance survives the held reset's own retirement", async () => {
-  const preparing = deferred<void>();
-  const preparationReleased = deferred<void>();
-  let preparations = 0;
   let fixture: AnnotationFixtureWithRuntime | undefined;
+  const preparation = holdFirstPreparation(() => fixture);
   fixture = await openAnnotationFixture({
     databaseName: "annotation-reset-read-state-scope",
     origin: "https://reset.example",
     runtime: true,
-    prepareAnnotation: async () => {
-      preparations += 1;
-      if (preparations === 1) {
-        preparing.resolve();
-        await preparationReleased.promise;
-      }
-      return currentPreparation(() => fixture)();
-    },
+    prepareAnnotation: preparation.prepareAnnotation,
   });
   const resetHold = holdNextWriteTransaction(RESET_STORES);
   const reset = fixture.repository.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation);
@@ -649,10 +604,10 @@ test("a replacement-incarnation acceptance survives the held reset's own retirem
     const validationHold = holdNextWriteTransaction(ACCEPT_STORES);
     const changedTicket = await fixture.repository.beginRead(fixture.document);
     const handoff = fixture.runtime.handoff(fixture.document, operation.operationId);
-    await preparing.promise;
+    await preparation.preparing.promise;
     const changedRead = fixture.repository.acceptRead(changedTicket, sampleChangedContent());
     await validationHold.reached;
-    preparationReleased.resolve();
+    preparation.releasePreparation();
 
     expect(await handoff).toEqual({ state: "pending", reason: "owner-unavailable" });
     validationHold.release();
@@ -671,22 +626,13 @@ test("a replacement-incarnation acceptance survives the held reset's own retirem
 // handoff appends into the dying epoch. The delayed completion carries the
 // newest durable evidence and must be merged into the newer identity instead.
 test("a delayed acceptance carries its evidence into the newer registration", async () => {
-  const preparing = deferred<void>();
-  const preparationReleased = deferred<void>();
-  let preparations = 0;
   let fixture: AnnotationFixtureWithRuntime | undefined;
+  const preparation = holdFirstPreparation(() => fixture);
   fixture = await openAnnotationFixture({
     databaseName: "annotation-accept-registration-order",
     origin: "https://coordination.example",
     runtime: true,
-    prepareAnnotation: async () => {
-      preparations += 1;
-      if (preparations === 1) {
-        preparing.resolve();
-        await preparationReleased.promise;
-      }
-      return currentPreparation(() => fixture)();
-    },
+    prepareAnnotation: preparation.prepareAnnotation,
   });
   try {
     // The earlier acceptance's validation commits, but its continuation stays
@@ -703,11 +649,11 @@ test("a delayed acceptance carries its evidence into the newer registration", as
     // the remembered acceptance. An overlapping handoff must refuse against it,
     // so it cannot append while the newer read's validation is in flight.
     const handoff = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
-    await preparing.promise;
+    await preparation.preparing.promise;
     const changedValidation = holdNextWriteTransaction(ACCEPT_STORES);
     const changedRead = fixture.repository.acceptRead(laterTicket, sampleChangedContent());
     await changedValidation.reached;
-    preparationReleased.resolve();
+    preparation.releasePreparation();
 
     expect(await handoff).toEqual({ state: "pending", reason: "owner-unavailable" });
     changedValidation.release();
@@ -725,30 +671,25 @@ test("a delayed acceptance carries its evidence into the newer registration", as
 // replacement epoch's append window.
 test("a delayed fence carries its evidence into the newer registration", async () => {
   let fenceHold: ReturnType<typeof holdNextWriteTransaction> | undefined;
-  const preparing = deferred<void>();
-  const preparationReleased = deferred<void>();
-  let preparations = 0;
+  const fenceInstalled = deferred<void>();
   let fixture: AnnotationFixtureWithRuntime | undefined;
+  const preparation = holdFirstPreparation(() => fixture);
   fixture = await openAnnotationFixture({
     databaseName: "annotation-fence-registration-order",
     origin: "https://coordination.example",
     runtime: true,
     beforeExpiryFence: async () => {
-      if (!fenceHold) fenceHold = holdNextWriteTransaction(ACCEPT_STORES);
-    },
-    prepareAnnotation: async () => {
-      preparations += 1;
-      if (preparations === 1) {
-        preparing.resolve();
-        await preparationReleased.promise;
+      if (!fenceHold) {
+        fenceHold = holdNextWriteTransaction(ACCEPT_STORES);
+        fenceInstalled.resolve();
       }
-      return currentPreparation(() => fixture)();
     },
+    prepareAnnotation: preparation.prepareAnnotation,
   });
   try {
     const earlierTicket = await fixture.repository.beginRead(fixture.document);
     const earlierAcceptance = fixture.repository.acceptRead(earlierTicket, sampleChangedContent());
-    await settleRealTasks(() => fenceHold !== undefined, 50);
+    await fenceInstalled.promise;
     if (!fenceHold) throw new Error("changed read did not reach its fence");
     await fenceHold.reached;
     const laterTicket = await fixture.repository.beginRead(fixture.document);
@@ -774,18 +715,12 @@ test("a delayed fence carries its evidence into the newer registration", async (
     await fixture.repository.saveAnnotation(operation);
 
     const handoff = fixture.runtime.handoff(fixture.document, operation.operationId);
-    await preparing.promise;
+    await preparation.preparing.promise;
     const changedValidation = holdNextWriteTransaction(ACCEPT_STORES);
-    const thirdContent = {
-      text: "Third content\n",
-      binary: false,
-      mediaType: "text/markdown",
-      truncated: false,
-      sizeBytes: 15,
-    };
+    const thirdContent = sampleThirdContent();
     const changedRead = fixture.repository.acceptRead(laterTicket, thirdContent);
     await changedValidation.reached;
-    preparationReleased.resolve();
+    preparation.releasePreparation();
 
     expect(await handoff).toEqual({ state: "pending", reason: "owner-unavailable" });
     changedValidation.release();
@@ -802,11 +737,9 @@ test("a delayed fence carries its evidence into the newer registration", async (
 // entry it provisioned: releasing by identity alone deletes the live
 // acceptance's provisional and reopens the append window it protects.
 test("a non-committing reset releases only the provisional it provisioned", async () => {
-  const preparing = deferred<void>();
-  const preparationReleased = deferred<void>();
   const resetAttempted = deferred<void>();
-  let preparations = 0;
   let fixture: AnnotationFixtureWithRuntime | undefined;
+  const preparation = holdFirstPreparation(() => fixture);
   fixture = await openAnnotationFixture({
     databaseName: "annotation-reset-provisional-owner",
     origin: "https://reset.example",
@@ -816,20 +749,13 @@ test("a non-committing reset releases only the provisional it provisioned", asyn
       resetAttempted.resolve();
       throw new Error("reset fault");
     },
-    prepareAnnotation: async () => {
-      preparations += 1;
-      if (preparations === 1) {
-        preparing.resolve();
-        await preparationReleased.promise;
-      }
-      return currentPreparation(() => fixture)();
-    },
+    prepareAnnotation: preparation.prepareAnnotation,
   });
   try {
     // The overlapping handoff passes its entry guard and waits mid-preparation
     // BEFORE the reset provisions.
     const handoff = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
-    await preparing.promise;
+    await preparation.preparing.promise;
 
     // The reset provisions suppression and its transaction aborts, but the
     // abort event is held so its release path has not run yet. The changed
@@ -852,7 +778,7 @@ test("a non-committing reset releases only the provisional it provisioned", asyn
     // The reset releases while the acceptance's provisional is unconfirmed.
     holds.releaseAt(0);
     await expect(reset).rejects.toThrow("reset fault");
-    preparationReleased.resolve();
+    preparation.releasePreparation();
 
     expect(await handoff).toEqual({ state: "pending", reason: "owner-unavailable" });
     holds.release();
@@ -869,34 +795,20 @@ test("a non-committing reset releases only the provisional it provisioned", asyn
 // its release then deleted the first invocation's protection. The displaced
 // owner's protection must survive the second invocation's release.
 test("a stale overlapping acceptance keeps the earlier provisional alive", async () => {
-  const preparing = deferred<void>();
-  const preparationReleased = deferred<void>();
-  let preparations = 0;
   let fixture: AnnotationFixtureWithRuntime | undefined;
+  const preparation = holdFirstPreparation(() => fixture);
   fixture = await openAnnotationFixture({
     databaseName: "annotation-entry-provisional-owner",
     origin: "https://coordination.example",
     runtime: true,
-    prepareAnnotation: async () => {
-      preparations += 1;
-      if (preparations === 1) {
-        preparing.resolve();
-        await preparationReleased.promise;
-      }
-      return currentPreparation(() => fixture)();
-    },
+    prepareAnnotation: preparation.prepareAnnotation,
   });
-  const sibling = createDocumentAnnotationRepository({
-    indexedDB: fixture.factory,
-    databaseName: "annotation-entry-provisional-owner",
-    drafts: fixture.drafts,
-    targetFor: () => null,
-  });
+  const sibling = openSiblingRepository(fixture);
   try {
     // The overlapping handoff passes its entry guard and waits mid-preparation
     // before either changed read installs suppression.
     const handoff = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
-    await preparing.promise;
+    await preparation.preparing.promise;
 
     // T0's changed validation commits but its completion is held, so its
     // provisional is installed and still unconfirmed.
@@ -915,7 +827,7 @@ test("a stale overlapping acceptance keeps the earlier provisional alive", async
     });
 
     // T0's provisional must still protect the window T1's release touched.
-    preparationReleased.resolve();
+    preparation.releasePreparation();
 
     expect(await handoff).toEqual({ state: "pending", reason: "owner-unavailable" });
     firstHold.release();

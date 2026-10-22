@@ -72,6 +72,18 @@ export function sampleChangedContent(): DocFileContent {
   };
 }
 
+// The third source a changed-read suite accepts after a replacement lease:
+// byte-identical to the "Third content\n" fixture the suites spelled out.
+export function sampleThirdContent(): DocFileContent {
+  return {
+    text: "Third content\n",
+    binary: false,
+    mediaType: "text/markdown",
+    truncated: false,
+    sizeBytes: 15,
+  };
+}
+
 export function buildAnnotationOperation(
   lease: AcceptedSourceLease,
   content: DocFileContent,
@@ -126,6 +138,7 @@ export interface AnnotationStoreOptions {
 
 export interface AnnotationStore {
   factory: IDBFactory;
+  databaseName: string;
   drafts: BrowserDraftRepository;
   repository: BrowserDocumentAnnotationRepository;
   key: BrowserDraftKey;
@@ -159,7 +172,21 @@ export async function openAnnotationStore(options: AnnotationStoreOptions): Prom
     onCancelledDiscardRetained: options.onCancelledDiscardRetained,
     onUncertainAppendRetained: options.onUncertainAppendRetained,
   });
-  return { factory, drafts, repository, key, document, preparation };
+  return { factory, databaseName: options.databaseName, drafts, repository, key, document, preparation };
+}
+
+// A second adapter over the same database: the sibling a suite uses to prove a
+// durable fact landed without depending on this adapter's own in-memory state.
+export function openSiblingRepository(
+  store: AnnotationStore,
+  targetFor: DocumentAnnotationOptions["targetFor"] = () => null,
+): BrowserDocumentAnnotationRepository {
+  return createDocumentAnnotationRepository({
+    indexedDB: store.factory,
+    databaseName: store.databaseName,
+    drafts: store.drafts,
+    targetFor,
+  });
 }
 
 export interface AnnotationFixtureOptions
@@ -231,6 +258,37 @@ export function currentPreparation(fixture: () => AnnotationFixture | undefined)
     if (current === undefined) return null;
     const loaded = await current.drafts.load(current.key);
     return loaded ? { key: loaded.key, token: loaded.token, backing: { kind: "draft" }, localGeneration: 0 } : null;
+  };
+}
+
+export interface PreparationGate {
+  // Resolves once the first preparation has been served and parked.
+  preparing: Promise<void>;
+  // Lets the parked first preparation finish.
+  releasePreparation: () => void;
+  // The fixture's prepareAnnotation seam: the first call parks, later calls
+  // prepare against the fixture's current token.
+  prepareAnnotation: () => Promise<ComposerPreparation | null>;
+}
+
+// Park a fixture's FIRST preparation so an overlapping handoff stays between
+// its entry guard and its post-preparation guard while the test drives the
+// acceptance that owns the preparation.
+export function holdFirstPreparation(fixture: () => AnnotationFixture | undefined): PreparationGate {
+  const preparing = deferred<void>();
+  const released = deferred<void>();
+  let preparations = 0;
+  return {
+    preparing: preparing.promise,
+    releasePreparation: () => released.resolve(undefined),
+    prepareAnnotation: async () => {
+      preparations += 1;
+      if (preparations === 1) {
+        preparing.resolve(undefined);
+        await released.promise;
+      }
+      return currentPreparation(fixture)();
+    },
   };
 }
 
