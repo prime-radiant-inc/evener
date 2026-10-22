@@ -158,6 +158,9 @@ interface InspectedDraft {
   legacyKeyV2: string;
   legacyV1: string | null;
   structuredV2: string | null;
+  // Which legacy representation the decoded value came from. The import carries
+  // exactly this one's content, so only its bytes are removable.
+  carried: "v1" | "v2";
   value: ComposerDraft;
 }
 
@@ -864,6 +867,13 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
       const legacyV1 = storage.getItem(legacyKeyV1);
       const structuredV2 = storage.getItem(legacyKeyV2);
       const draftKey: BrowserDraftKey = { namespace: { ...namespace }, sessionRef };
+      const value = decodeSupportedComposerDraft(structuredV2, legacyV1);
+      // The structured record wins whenever it decodes to the value the import
+      // carries; otherwise the v1 literal is what the row now holds.
+      const carried =
+        structuredV2 !== null && sameComposerValue(decodeSupportedComposerDraft(structuredV2, null), value)
+          ? "v2"
+          : "v1";
       return {
         key: draftKey,
         draftKey: serializeSessionKey(draftKey),
@@ -871,7 +881,8 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         legacyKeyV2,
         legacyV1,
         structuredV2,
-        value: decodeSupportedComposerDraft(structuredV2, legacyV1),
+        carried,
+        value,
       };
     });
   }
@@ -899,8 +910,7 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         // both markers exist, and cleans nothing because that scan imported
         // nothing. The composer-side recovery path is what eventually
         // disposes of it, never this cleanup.
-        const structured = item.structuredV2 === null ? null : decodeSupportedComposerDraft(item.structuredV2, null);
-        const v2Carried = structured !== null && sameDraftContent(structured, item.value);
+        const v2Carried = item.carried === "v2";
         const v1Carried = item.legacyV1 !== null && item.legacyV1 === item.value.text;
         for (const [legacyKey, bytes, carried] of [
           [item.legacyKeyV2, item.structuredV2, v2Carried],
@@ -1001,20 +1011,6 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
 
 export function createBrowserDraftRepository(options: BrowserDraftRepositoryOptions = {}): BrowserDraftRepository {
   return new BrowserDraftRepositoryImpl(options);
-}
-
-// The content identity the legacy cleanup needs: the durable row carries these
-// fields, so a legacy representation whose content matches them is removable
-// without losing anything. Canonical skill and command names compare in order,
-// exactly as the imported row stores them.
-function sameDraftContent(a: ComposerDraft, b: ComposerDraft): boolean {
-  return a.text === b.text && sameNames(a.skillNames, b.skillNames) && sameNames(a.commandNames, b.commandNames);
-}
-
-function sameNames(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
-  const left = a ?? [];
-  const right = b ?? [];
-  return left.length === right.length && left.every((name, index) => name === right[index]);
 }
 
 // The one lazy module singleton every production browser writer shares, so the
