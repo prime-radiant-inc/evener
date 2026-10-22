@@ -377,7 +377,7 @@ test("selected source skill chips survive a view remount without sending", async
 });
 
 // Comparing only prose and skills would clear the newly inert command token.
-test("held acceptance clears the submitted command draft and keeps the submitted identity", async () => {
+test("held acceptance preserves a same-text command edit through source Return", async () => {
   const text = "🙂 /same /same /same";
   const mentions = [
     { kind: "command" as const, name: "same", offset: 3 },
@@ -424,10 +424,13 @@ test("held acceptance clears the submitted command draft and keeps the submitted
     expect(durable).toHaveLength(1);
     const mutationId = durable[0]?.clientMutationId;
     const editor = screen.getByRole("textbox", { name: "Message" });
-    expect(editor.textContent).toBe("");
+    expect(editor.querySelectorAll("[data-command-name]")).toHaveLength(1);
+    selectEditorText(editor, 3, 8);
+    await user.keyboard("{Backspace}");
+    await user.type(editor, "/same", { skipClick: true });
+    expect(editor.textContent).toBe(text);
     expect(editor.querySelectorAll("[data-command-name]")).toHaveLength(0);
-    expect(editor.querySelectorAll("[data-skill-name]")).toHaveLength(0);
-    await user.type(editor, "follow up");
+    expect(editor.querySelectorAll("[data-skill-name]")).toHaveLength(1);
     cleanup();
     await act(async () => {
       hold.release();
@@ -437,10 +440,14 @@ test("held acceptance clears the submitted command draft and keeps the submitted
     render(<Composer ref="root" source={source} focused={false} />);
     await flushPendingTurnsProjectionForTests();
     const returned = screen.getByRole("textbox", { name: "Message" });
-    expect(returned.textContent).toBe("follow up");
+    expect(returned.textContent).toBe(text);
     expect(returned.querySelectorAll("[data-command-name]")).toHaveLength(0);
-    expect(returned.querySelectorAll("[data-skill-name]")).toHaveLength(0);
-    expect(readComposerDraft("root")).toEqual({ text: "follow up", skillNames: [] });
+    expect(returned.querySelectorAll("[data-skill-name]")).toHaveLength(1);
+    expect(readComposerDraft("root")).toEqual({
+      text,
+      skillNames: ["same"],
+      mentions: [{ kind: "skill", name: "same", offset: 9 }],
+    });
     expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([
       {
         method: "turn/start",
@@ -1027,7 +1034,7 @@ test.each(["other control", "sibling Composer", "replacement Composer"] as const
       await user.click(send);
       await storage.commitStarted;
       expect(send.disabled).toBe(true);
-      expect(message.textContent).toBe("");
+      expect(message.textContent).toBe("df");
       expect(document.activeElement).toBe(message);
       expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
       fireEvent.submit(message.closest("form")!);
@@ -1156,7 +1163,7 @@ test("ordinary Send empty form no-op leaves another control focused", async () =
   expect(document.activeElement).toBe(elsewhere);
 });
 
-test("an unconfirmed storage commit clears the composer and repeated Steer clicks cannot duplicate it", async () => {
+test("an unconfirmed storage commit stays visible and repeated Steer clicks cannot duplicate it", async () => {
   const consoleError = vi.spyOn(console, "error");
   const fake = await mountComposer("ref_a");
   let deliveryObserved: (() => void) | undefined;
@@ -1187,7 +1194,7 @@ test("an unconfirmed storage commit clears the composer and repeated Steer click
       await vi.runOnlyPendingTimersAsync();
     });
     expect(screen.getByRole("status", { name: "Message storage" }).textContent).toBeTruthy();
-    expect(textarea()?.textContent).toBe("");
+    expect(textarea()?.textContent).toBe("one message only");
     expect(textarea()?.getAttribute("contenteditable")).toBe("true");
     expect(composerSteerButton().disabled).toBe(true);
     fireEvent.click(composerSteerButton());

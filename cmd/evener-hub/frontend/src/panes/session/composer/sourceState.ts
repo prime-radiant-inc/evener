@@ -65,8 +65,6 @@ export interface ComposerSubmissionSnapshot {
   mentions?: readonly ComposerMention[];
   revision: number;
   draftRevision: number;
-  recoveryId?: string;
-  releaseRecoveryInFlight?: () => void;
 }
 
 export interface ComposerSourceSnapshot {
@@ -698,6 +696,17 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           submittedCommandNames ?? [],
           recovery.attachments as PendingAttachment[],
         );
+      } else if (
+        !recovery &&
+        currentRecoveryId() === null &&
+        textRef.current === submittedText &&
+        sameSkillSelections(skillNamesRef.current, submittedSkillNames) &&
+        sameSkillSelections(selectionMetaRef.current.commandNames, submittedCommandNames ?? [])
+      ) {
+        ownedDraftRevisionRef.current = readDraftRevision(ref);
+        updateText("");
+        updateSkillNames([]);
+        updateSelectionMeta({ text: "", skillNames: [] });
       }
     },
   );

@@ -104,12 +104,6 @@ export interface QueueStripProps {
   // Called once a drain-as-steer intent commits to IndexedDB, so the
   // integration can clear the unchanged composer text/attachment snapshot.
   onDrainSuccess(): void;
-  // Called when the durable drain starts, before its transaction settles, so
-  // the composer empties with the send rather than with the server.
-  onDrainStart?(): void;
-  // Called when the drain fails before it commits, so the integration can put
-  // the submitted snapshot back if the user has not typed something newer.
-  onDrainFailure?(restore: boolean): void;
   // True while EITHER surface has an in-flight submit/steer/queue/drain -
   // the shared busy gate (Composer.tsx's own busyAction, extended with a
   // "drain" value this stream's own onDrainBusyChange sets). Disables the
@@ -200,8 +194,6 @@ export function QueueStrip({
   onEditRecovery,
   tryAcquireRecoveryOperation,
   onDrainSuccess,
-  onDrainStart,
-  onDrainFailure,
   busy,
   onDrainBusyChange,
 }: QueueStripProps): ReactNode {
@@ -440,7 +432,6 @@ export function QueueStrip({
     let recoveryRefusal: "changed" | "consumed" | undefined;
     const recoveryResendRefusal = new Error("Recovery resend was refused");
     onDrainBusyChange(true);
-    onDrainStart?.();
     try {
       await submitWithPendingTracking(
         {
@@ -484,9 +475,6 @@ export function QueueStrip({
       );
       onDrainSuccess();
     } catch {
-      // A drain consumed in another tab has nothing left to restore here, but
-      // the integration still has to release the submission guard it took.
-      onDrainFailure?.(recoveryRefusal !== "consumed");
       // Already reported via onFailure above; swallow so the rejection
       // doesn't reach React as an unhandled promise rejection from this
       // fire-and-forget click handler.
