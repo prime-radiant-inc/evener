@@ -13,6 +13,18 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
+const (
+	// hubWatchRetryDelay bounds how long a suspended watch waits before trying
+	// its binding again. The cost of an unnecessary retry is one state read
+	// against a healthy connection; the cost of waiting only for a rebind is an
+	// observation that never resumes.
+	hubWatchRetryDelay = 2 * time.Second
+	// hubWatchStateFailureLimit ends the watch durably after consecutive failed
+	// state reads, so a genuinely broken connection produces a notice instead of
+	// an indefinite retry loop.
+	hubWatchStateFailureLimit = 5
+)
+
 func hubObservationSelector(event string) bool {
 	switch event {
 	case "status", "question", "approval", "communicate":
@@ -376,6 +388,7 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 	s.mu.Lock()
 	boundSignal := s.hubWatchSignal
 	s.mu.Unlock()
+	stateFailures := 0
 	for {
 		if err := jm.onHubObservation(id, initial); err != nil {
 			_ = jm.endHubWatch(id, "observation snapshot failed: "+err.Error(), nil)
@@ -418,10 +431,17 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 			if client == nil {
 				return
 			}
+			// A failed state read leaves it undetermined whether the stream died
+			// with the connection or ended on a healthy one. Resolve that with a
+			// bounded retry: a healthy connection then reaches the same
+			// "ended unexpectedly" arm a successful read would have reached,
+			// instead of parking on a signal that only fires on a rebind.
+			var stateErr error
 			stateCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			state, err := client.State(stateCtx)
 			cancel()
 			if err == nil {
+				stateFailures = 0
 				if !state.Setting.Enabled || state.Setting.HubID != setting.HubID || state.Setting.Revision != setting.Revision {
 					_ = jm.endHubWatch(id, "Manager setting disabled or changed; re-register", nil)
 					return
@@ -449,11 +469,23 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 					_ = jm.endHubWatch(id, "observation subscription rejected: "+watchErr.Error(), nil)
 					return
 				}
+			} else {
+				stateErr = err
+				stateFailures++
 			}
+			// A rebind resolves the ambiguity immediately; otherwise retry after a
+			// bounded delay. Repeated failures end the watch durably rather than
+			// retrying a broken read forever: the Manager gets a notice it can act
+			// on instead of an observation that silently stopped.
 			select {
 			case <-ctx.Done():
 				return
 			case <-signal:
+			case <-time.After(hubWatchRetryDelay):
+			}
+			if stateErr != nil && stateFailures >= hubWatchStateFailureLimit {
+				_ = jm.endHubWatch(id, "observation unreachable: "+stateErr.Error()+"; re-register", nil)
+				return
 			}
 		}
 		if ctx.Err() != nil || !managerHubWatchPresent(jm, id) {
