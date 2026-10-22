@@ -658,3 +658,135 @@ test("a replacement-incarnation acceptance survives the held reset's own retirem
     fixture.drafts.close();
   }
 });
+
+// A validation can commit and then lose its completion while a newer beginRead
+// registers. Letting the delayed acceptance write its own ticket into the
+// incarnation slot displaces the newer registration's identity, so the newer
+// ticket's changed read skips its entry-time provisional and an overlapping
+// handoff appends into the dying epoch. The delayed completion carries the
+// newest durable evidence and must be merged into the newer identity instead.
+test("a delayed acceptance carries its evidence into the newer registration", async () => {
+  const preparing = deferred<void>();
+  const preparationReleased = deferred<void>();
+  let preparations = 0;
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-accept-registration-order",
+    origin: "https://coordination.example",
+    runtime: true,
+    prepareAnnotation: async () => {
+      preparations += 1;
+      if (preparations === 1) {
+        preparing.resolve();
+        await preparationReleased.promise;
+      }
+      return currentPreparation(() => fixture)();
+    },
+  });
+  try {
+    // The earlier acceptance's validation commits, but its continuation stays
+    // held while a newer read registers.
+    const validationHold = holdNextWriteTransaction(ACCEPT_STORES);
+    const earlierTicket = await fixture.repository.beginRead(fixture.document);
+    const earlierAcceptance = fixture.repository.acceptRead(earlierTicket, fixture.content);
+    await validationHold.reached;
+    const laterTicket = await fixture.repository.beginRead(fixture.document);
+    validationHold.release();
+    expect(await earlierAcceptance).toMatchObject({ state: "accepted" });
+
+    // The newer ticket's changed read installs its entry-time provisional from
+    // the remembered acceptance. An overlapping handoff must refuse against it,
+    // so it cannot append while the newer read's validation is in flight.
+    const handoff = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
+    await preparing.promise;
+    const changedValidation = holdNextWriteTransaction(ACCEPT_STORES);
+    const changedRead = fixture.repository.acceptRead(laterTicket, sampleChangedContent());
+    await changedValidation.reached;
+    preparationReleased.resolve();
+
+    expect(await handoff).toEqual({ state: "pending", reason: "owner-unavailable" });
+    changedValidation.release();
+    expect(await changedRead).toMatchObject({ state: "expiry-pending" });
+  } finally {
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
+
+// The same ordering rule holds on the fenced path. A fence commits and loses
+// its completion while a newer beginRead registers; the delayed fence's read
+// state must not displace the newer ticket's identity either, or the newer
+// ticket's changed read loses the entry-time provisional that protects the
+// replacement epoch's append window.
+test("a delayed fence carries its evidence into the newer registration", async () => {
+  let fenceHold: ReturnType<typeof holdNextWriteTransaction> | undefined;
+  const preparing = deferred<void>();
+  const preparationReleased = deferred<void>();
+  let preparations = 0;
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-fence-registration-order",
+    origin: "https://coordination.example",
+    runtime: true,
+    beforeExpiryFence: async () => {
+      if (!fenceHold) fenceHold = holdNextWriteTransaction(ACCEPT_STORES);
+    },
+    prepareAnnotation: async () => {
+      preparations += 1;
+      if (preparations === 1) {
+        preparing.resolve();
+        await preparationReleased.promise;
+      }
+      return currentPreparation(() => fixture)();
+    },
+  });
+  try {
+    const earlierTicket = await fixture.repository.beginRead(fixture.document);
+    const earlierAcceptance = fixture.repository.acceptRead(earlierTicket, sampleChangedContent());
+    await settleRealTasks(() => fenceHold !== undefined, 50);
+    if (!fenceHold) throw new Error("changed read did not reach its fence");
+    await fenceHold.reached;
+    const laterTicket = await fixture.repository.beginRead(fixture.document);
+    fenceHold.release();
+    const fenced = await earlierAcceptance;
+    if (fenced.state !== "expiry-pending" || fenced.receipt === undefined) {
+      throw new Error(`changed read did not fence: ${fenced.state}`);
+    }
+
+    // An operation saved on the replacement lease is what the provisional
+    // suppression protects while the newer ticket's changed read validates.
+    const replacementLease = {
+      key: fixture.document,
+      namespaceIncarnation: fenced.receipt.namespaceIncarnation,
+      epoch: fenced.receipt.replacementEpoch,
+      headRevision: 1,
+      displayedSnapshotId: "fenced-snapshot",
+    };
+    const operation: PreparedAnnotation = {
+      ...buildAnnotationOperation(replacementLease, sampleChangedContent()),
+      operationId: "operation-2",
+    };
+    await fixture.repository.saveAnnotation(operation);
+
+    const handoff = fixture.runtime.handoff(fixture.document, operation.operationId);
+    await preparing.promise;
+    const changedValidation = holdNextWriteTransaction(ACCEPT_STORES);
+    const thirdContent = {
+      text: "Third content\n",
+      binary: false,
+      mediaType: "text/markdown",
+      truncated: false,
+      sizeBytes: 15,
+    };
+    const changedRead = fixture.repository.acceptRead(laterTicket, thirdContent);
+    await changedValidation.reached;
+    preparationReleased.resolve();
+
+    expect(await handoff).toEqual({ state: "pending", reason: "owner-unavailable" });
+    changedValidation.release();
+    expect(await changedRead).toMatchObject({ state: "expiry-pending" });
+  } finally {
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});

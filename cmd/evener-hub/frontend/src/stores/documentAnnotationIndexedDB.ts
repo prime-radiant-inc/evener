@@ -985,13 +985,13 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         // no in-memory read state names an incarnation the durable row retired.
         releaseProvisional();
         if (await this.#durableIncarnationIs(namespace, validation.lease.namespaceIncarnation)) {
-          const statesForDocument = this.#readStates.get(documentKey) ?? new Map<string, ReadState>();
-          this.#readStates.set(documentKey, statesForDocument);
-          statesForDocument.set(validation.lease.namespaceIncarnation, {
+          this.#installReadState(
+            documentKey,
+            validation.lease.namespaceIncarnation,
             ticket,
-            accepted: { lease: validation.lease, content },
-            observations: validation.observations,
-          });
+            { lease: validation.lease, content },
+            validation.observations,
+          );
         }
         return { state: "accepted", lease: validation.lease };
       }
@@ -1040,13 +1040,13 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         // completion across a reset, so installation re-checks the durable
         // incarnation the fence wrote under.
         if (await this.#durableIncarnationIs(namespace, fenced.lease.namespaceIncarnation)) {
-          const statesForDocument = this.#readStates.get(documentKey) ?? new Map<string, ReadState>();
-          this.#readStates.set(documentKey, statesForDocument);
-          statesForDocument.set(fenced.lease.namespaceIncarnation, {
+          this.#installReadState(
+            documentKey,
+            fenced.lease.namespaceIncarnation,
             ticket,
-            accepted: { lease: fenced.lease, content },
-            observations: [content],
-          });
+            { lease: fenced.lease, content },
+            [content],
+          );
         }
         return { state: "expiry-pending", receipt: fenced.receipt };
       } catch (error) {
@@ -1123,6 +1123,30 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // registration they own.
   #ownsRegistration(documentKey: string, namespaceIncarnation: string, requestId: string): boolean {
     return this.#issuedReads.get(documentKey)?.get(namespaceIncarnation)?.requestId === requestId;
+  }
+
+  // Record a completed acceptance (accepted or fenced) in the ticket's own
+  // incarnation slot. A newer registration in that slot keeps its identity: the
+  // delayed completion stores its durable evidence into it instead of replacing
+  // it. Skipping the write would leave the newer ticket's state without the
+  // newest accepted lease and observations, reopening the append window this
+  // evidence closes.
+  #installReadState(
+    documentKey: string,
+    namespaceIncarnation: string,
+    ticket: ReadTicket,
+    accepted: { lease: AcceptedSourceLease; content: DocFileContent },
+    observations: DocFileContent[],
+  ): void {
+    const statesForDocument = this.#readStates.get(documentKey) ?? new Map<string, ReadState>();
+    this.#readStates.set(documentKey, statesForDocument);
+    const existing = statesForDocument.get(namespaceIncarnation);
+    statesForDocument.set(
+      namespaceIncarnation,
+      existing === undefined || existing.ticket.requestId === ticket.requestId
+        ? { ticket, accepted, observations }
+        : { ticket: existing.ticket, accepted, observations },
+    );
   }
 
   // The durable fence is its own transaction so a failed fence cannot roll back
