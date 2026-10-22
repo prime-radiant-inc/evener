@@ -2009,3 +2009,52 @@ test("a successor blocked behind an expiring operation completes when the fence 
   fixture.repository.close();
   fixture.drafts.close();
 });
+
+// A failed expiry fence is retained work that no failed save and no pending
+// handoff names: the repository's retention hook is the only thing that tells
+// the runtime, and a later storage success is the only trigger that can spend
+// it. This walks the real chain - the faulted fence retains its expiry, the
+// routed hook records the need, the storage success starts the pass, and the
+// pass retries the fence - with no explicit registerRetryNeed call.
+test("a retained pending expiry records its need and a later storage success retries the fence", async () => {
+  let expiryAttempts = 0;
+  let faultNextExpiry = true;
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    routePendingExpiryIntoRuntime: true,
+    beforeCommit: (operation) => {
+      if (operation !== "expiry") return;
+      expiryAttempts += 1;
+      if (faultNextExpiry) {
+        faultNextExpiry = false;
+        throw new Error("expiry fault");
+      }
+    },
+  });
+  const passes = vi.spyOn(fixture.repository, "retryPendingWithOutcome");
+  const ticket = await fixture.repository.beginRead(fixture.document);
+
+  // The fence faults after its validation confirmed the change: the expiry is
+  // retained and the hook fires.
+  expect(await fixture.repository.acceptRead(ticket, sampleChangedContent())).toEqual({ state: "expiry-pending" });
+  expect(expiryAttempts).toBe(1);
+  expect(fixture.pendingExpiryRetained).toHaveBeenCalledTimes(1);
+
+  // Nothing else names this work: the routed hook recorded the need, and this
+  // storage success alone must start the pass that retries the fence.
+  fixture.runtime.storageSucceeded();
+  await fixture.runtime.whenIdle();
+  expect(passes).toHaveBeenCalledTimes(1);
+  expect(expiryAttempts).toBe(2);
+
+  // The committed fence cleared the retained work; a later trigger finds no
+  // need and starts no second pass.
+  fixture.runtime.storageSucceeded();
+  await fixture.runtime.whenIdle();
+  expect(passes).toHaveBeenCalledTimes(1);
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});

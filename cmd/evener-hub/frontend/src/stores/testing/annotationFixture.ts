@@ -195,6 +195,10 @@ export interface AnnotationFixtureOptions
   // over an applied receipt) into the runtime's retry need, so the handoff's
   // own settlement spends the trigger that pass needs.
   routeUncertainAppendIntoRuntime?: boolean;
+  // Production wiring routes a retained pending expiry (a faulted fence) into
+  // the runtime's retry need: no failed save or pending handoff names that
+  // work, so a later storage success is the only trigger that can complete it.
+  routePendingExpiryIntoRuntime?: boolean;
   // The recovery suite drives the runtime the fixture builds; the other suites
   // build their own or use none.
   runtime?: boolean;
@@ -251,7 +255,9 @@ export async function openAnnotationFixture(options: AnnotationFixtureOptions): 
   const storageSuccess = vi.fn(() => {
     if (options.routeStorageSuccessIntoRuntime === true) runtime?.storageSucceeded();
   });
-  const pendingExpiryRetained = vi.fn();
+  const pendingExpiryRetained = vi.fn(() => {
+    if (options.routePendingExpiryIntoRuntime === true) runtime?.registerRetryNeed();
+  });
   const cancelledDiscardRetained = vi.fn(() => {
     if (options.routeCancelledDiscardIntoRuntime === true) runtime?.registerRetryNeed();
   });
