@@ -947,11 +947,14 @@ func TestHostRestartStartsStoppedDeployOnlyInstallation(t *testing.T) {
 				}
 				runner.mu.Unlock()
 				failedStarts := 1
-				if scenario == "occupied-port" || scenario == "unknown-port" {
+				if scenario == "unknown-port" {
 					failedStarts = 0
 				}
 				if starts != failedStarts || writes != 1 {
 					t.Fatalf("failed recovery effects: starts=%d writes=%d, want %d/1", starts, writes, failedStarts)
+				}
+				if scenario == "occupied-port" || scenario == "unknown-port" {
+					assertPublicRecoveryEffects(t, runner, 1, 1, 0, "", "")
 				}
 				if retryStart {
 					buildinfo.GitSHA = restartBuildA
@@ -973,8 +976,12 @@ func TestHostRestartStartsStoppedDeployOnlyInstallation(t *testing.T) {
 					starts = runner.starts
 					runner.selectedFault = ""
 					runner.mu.Unlock()
-					if starts != 1 {
-						t.Fatalf("blocked recorded startup ran again: starts=%d", starts)
+					blockedStarts := 1
+					if scenario == "start-retry-occupied-port" {
+						blockedStarts++ // The new hub's own lock refuses the cold start.
+					}
+					if starts != blockedStarts {
+						t.Fatalf("blocked recorded startup attempts=%d, want %d", starts, blockedStarts)
 					}
 				}
 				params.OperationID = "retry-start-deployed-installation"
@@ -985,6 +992,9 @@ func TestHostRestartStartsStoppedDeployOnlyInstallation(t *testing.T) {
 				m.cfg.opsWG.Wait()
 				if retryStart {
 					wantStarts = 2
+				}
+				if scenario == "occupied-port" || scenario == "start-retry-occupied-port" {
+					wantStarts++
 				}
 			}
 			if strings.Contains(scenario, "identity-") {
@@ -1039,7 +1049,15 @@ func TestHostRestartStartsStoppedDeployOnlyInstallation(t *testing.T) {
 			assertPublicRecoveryEffects(t, runner, wantWrites, wantWrites, 0, target, wantStart)
 			runner.mu.Lock()
 			starts, epochs := runner.starts, append([]appwire.FencingEpoch(nil), runner.probeEpochs...)
+			kills, lockRefusals := runner.kills, runner.startLockRefusals
 			runner.mu.Unlock()
+			wantLockRefusals := 0
+			if scenario == "occupied-port" || scenario == "start-retry-occupied-port" {
+				wantLockRefusals = 1
+			}
+			if kills != 0 || lockRefusals != wantLockRefusals {
+				t.Fatalf("stopped startup: kills=%d lock refusals=%d, want 0/%d", kills, lockRefusals, wantLockRefusals)
+			}
 			record, _ := store.Record(restart.ID)
 			if starts != wantStarts || len(epochs) == 0 || epochs[len(epochs)-1] != epochOf(record) {
 				t.Fatalf("startup/epoch: starts=%d epochs=%v record=%+v", starts, epochs, record)
@@ -1107,21 +1125,21 @@ func TestHostRestartRenewsStoppedReplacementCommand(t *testing.T) {
 				if mode == "systemd" {
 					wantKills, wantRestarts = 0, 1
 				}
-				assertStopped := func() {
+				assertStopped := func(wantStarts int) {
 					t.Helper()
 					assertPublicRecoveryEffects(t, runner, 0, 0, wantRestarts, "", "")
 					runner.mu.Lock()
 					defer runner.mu.Unlock()
-					if runner.kills != wantKills || runner.starts != 0 {
+					if runner.kills != wantKills || runner.starts != wantStarts {
 						t.Fatalf("stopped effect: kills=%d starts=%d", runner.kills, runner.starts)
 					}
 				}
-				assertStopped()
+				assertStopped(0)
 				if err := ch.Close(); err != nil {
 					t.Fatal(err)
 				}
 				waitPublicRecoveryEvent(t, events, sshconn.EventFailed)
-				assertStopped() // Automatic recovery must retain the original entry binding.
+				assertStopped(0) // Automatic recovery must retain the original entry binding.
 				buildinfo.GitSHA = restartBuildB
 				runner.mu.Lock()
 				runner.afterStop, runner.failRestart = nil, false
@@ -1147,8 +1165,14 @@ func TestHostRestartRenewsStoppedReplacementCommand(t *testing.T) {
 				if check != "matching" {
 					assertRestartRecoveryRecord(t, store, restart.ID, hostops.StateFailed)
 				}
-				if check == "occupied-port" || check == "unknown-port" {
-					assertStopped()
+				wantStarts := 1
+				if check == "occupied-port" {
+					// A cold start cannot stop another owner. The new hub's own
+					// lock rejects this attempt before it publishes an incarnation.
+					assertStopped(1)
+					wantStarts++
+				} else if check == "unknown-port" {
+					assertStopped(0)
 				}
 				if check != "matching" && check != "wrong-probe-process" {
 					// Clear only the injected observation. Recovery must retain the
@@ -1177,12 +1201,24 @@ func TestHostRestartRenewsStoppedReplacementCommand(t *testing.T) {
 				record, _ := store.Record(restart.ID)
 				runner.mu.Lock()
 				defer runner.mu.Unlock()
-				wantCommand := "systemctl restart evener-hub.service"
+				wantCommand := "systemctl start evener-hub.service"
 				if mode == "bare" {
 					wantCommand = "CDPATH='' cd -P -- /home/ops || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/ops; nohup /opt/evener/bin/evener hub -addr 127.0.0.1:9180 -config /srv/recovered.toml >>/srv/recovered.log 2>&1 </dev/null &"
 				}
-				if runner.kills != wantKills || runner.starts != 1 || len(runner.launchCommands) != 1 || runner.launchCommands[0] != wantCommand {
+				if runner.kills != wantKills || runner.starts != wantStarts || len(runner.launchCommands) != wantStarts {
 					t.Fatalf("saved replacement replay: kills=%d starts=%d commands=%q", runner.kills, runner.starts, runner.launchCommands)
+				}
+				for _, command := range runner.launchCommands {
+					if command != wantCommand {
+						t.Fatalf("saved replacement command: got %q, want %q", command, wantCommand)
+					}
+				}
+				wantLockRefusals := 0
+				if check == "occupied-port" {
+					wantLockRefusals = 1
+				}
+				if runner.startLockRefusals != wantLockRefusals {
+					t.Fatalf("start lock refusals=%d, want %d", runner.startLockRefusals, wantLockRefusals)
 				}
 				if len(runner.probeEpochs) == 0 || runner.probeEpochs[len(runner.probeEpochs)-1] != epochOf(record) || runner.afterProbes != 1 {
 					t.Fatalf("replacement process proof: epochs=%v probes=%d record=%+v", runner.probeEpochs, runner.afterProbes, record)
@@ -1369,6 +1405,7 @@ type restartRecoveryRunner struct {
 	delayBridgeExit               bool
 	writes, restarts, afterProbes int
 	builds, starts                int
+	startLockRefusals             int
 	buildVersion                  string
 	buildError                    error
 	acknowledgeFirstWrite         bool
@@ -1484,8 +1521,6 @@ func (r *restartRecoveryRunner) Run(ctx context.Context, argv []string, stdin io
 		return []byte("ops\n"), nil
 	case r.bareProcess && strings.Contains(command, "lsof -p 4242 -a -d 1,2"):
 		return []byte("evener 4242 ops 1w REG 8,1 123 456 /srv/recovered.log\nevener 4242 ops 2w REG 8,1 123 456 /srv/recovered.log\n"), nil
-	case r.bareProcess && strings.Contains(command, "kill -s 0 -- 4242"):
-		return []byte("__sshconn_pid_gone__\n"), nil
 	case r.bareProcess && strings.Contains(command, "kill -- 4242"):
 		if r.observeMutation != nil {
 			r.observeMutation()
@@ -1503,6 +1538,10 @@ func (r *restartRecoveryRunner) Run(ctx context.Context, argv []string, stdin io
 		}
 		r.starts++
 		r.launchCommands = append(r.launchCommands, argv[len(argv)-1])
+		if r.selectedFault == "occupied-port" {
+			r.startLockRefusals++
+			return nil, errors.New("new hub refused occupied selected root")
+		}
 		if r.failStart {
 			return nil, errors.New("startup interrupted")
 		}
@@ -1604,6 +1643,14 @@ func (r *restartRecoveryRunner) selectedEvidenceLocked(command string) ([]byte, 
 	config := "/home/ops/.config/evener/hub.toml"
 	if r.bareProcess {
 		config = "/srv/recovered.toml"
+	}
+	for _, probePID := range []string{"4242", pid} {
+		if command == "if kill -s 0 -- "+probePID+" 2>/dev/null; then echo __sshconn_pid_alive__; else echo __sshconn_pid_gone__; fi" {
+			if r.runningVersion != "" && probePID == pid {
+				return []byte("__sshconn_pid_alive__\n"), true, nil
+			}
+			return []byte("__sshconn_pid_gone__\n"), true, nil
+		}
 	}
 	switch {
 	case strings.Contains(command, " hub endpoint --json"):
