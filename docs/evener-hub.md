@@ -471,7 +471,8 @@ flowchart TD
     B -->|Authentication, transport or malformed response| E[Report connection failure]
     B -->|No hub listening| F{Installed launch contract usable}
     F -->|Yes| G[Start installed build and verify connection]
-    F -->|Verified missing or incompatible| D
+    F -->|Verified missing or older| D
+    F -->|Verified newer| N
     F -->|Malformed or unknown| E
 ```
 

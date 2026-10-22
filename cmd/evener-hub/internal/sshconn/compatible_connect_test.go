@@ -362,20 +362,53 @@ func TestPendingDeploymentReplayFollowsProtocolDirection(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		protocol string
+		version  string
 		want     bool
 	}{
-		{"older", "evener-appwire-v5", true},
-		{"unparsable", "incompatible-protocol", true},
-		{"current", appwire.ProtocolVersion, false},
-		{"newer", "evener-appwire-v99", false},
+		{"older", "evener-appwire-v5", "build", true},
+		{"older-different-version", "evener-appwire-v5", "older-build", true},
+		{"unparsable", "incompatible-protocol", "build", true},
+		{"current", appwire.ProtocolVersion, "build", false},
+		{"newer", "evener-appwire-v99", "build", false},
+		{"newer-different-version", "evener-appwire-v99", "newer-build", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pending := pendingRestartState{deployment: true, restart: true, writeAcknowledged: true, expectedVersion: "build"}
-			facts := Preflight{LaunchCheckKnown: true, Protocol: tc.protocol, Version: "build"}
+			facts := Preflight{LaunchCheckKnown: true, Protocol: tc.protocol, Version: tc.version}
 			if got := pending.needsDeployment(facts); got != tc.want {
-				t.Fatalf("needsDeployment(%s) = %v, want %v", tc.protocol, got, tc.want)
+				t.Fatalf("needsDeployment(%s, %s) = %v, want %v", tc.protocol, tc.version, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestPendingDeploymentDoesNotOverwriteNewerDisk(t *testing.T) {
+	diskProtocol, diskVersion := "evener-appwire-v99", "newer-build"
+	fr := deployRunner(t, func(int) ([]byte, error) {
+		return []byte(fmt.Sprintf(`{"protocol":%q,"version":%q,"launch_flags":["api-log"]}`, diskProtocol, diskVersion)), nil
+	}, func(int) ([]byte, error) {
+		return nil, errors.New("no listener")
+	})
+	run := fr.runFn
+	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		if strings.Contains(strings.Join(argv, " "), "lsof -ti :9180") {
+			return []byte(noListenerMarker), nil
+		}
+		return run(ctx, argv, stdin)
+	}
+	m, effects := compatibleConnectManager(t, fr, Options{controllerVersionOverride: "controller-build", BuildBinary: writeStageBinary})
+	host, _ := m.reg.Get("alpha")
+	m.mu.Lock()
+	m.pendingRestarts[host.Name] = pendingRestartState{
+		deployment: true, restart: true, writeAcknowledged: true, expectedVersion: "controller-build",
+	}
+	m.mu.Unlock()
+
+	ch, err := m.ensureOnce(t.Context(), host, false)
+	if ch != nil || !errors.Is(err, ErrHostProtocolNewer) || !isTerminal(err) || *effects != (connectEffects{}) ||
+		!m.pendingRestart(host.Name).active() || diskProtocol != "evener-appwire-v99" || diskVersion != "newer-build" {
+		t.Fatalf("newer pending disk: ch=%v err=%v terminal=%v effects=%+v pending=%+v disk=%s/%s",
+			ch, err, isTerminal(err), effects, m.pendingRestart(host.Name), diskProtocol, diskVersion)
 	}
 }
 

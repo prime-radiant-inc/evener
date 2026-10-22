@@ -1943,7 +1943,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 			if attachErr == nil {
 				return channel, nil
 			}
-			if !errors.Is(attachErr, ErrProtocolIncompatible) || !m.canDeploy() {
+			if !errors.Is(attachErr, ErrProtocolIncompatible) {
 				return nil, attachErr
 			}
 			// The live process is older, but the installed executable can already
@@ -1953,6 +1953,9 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 			if facts.LaunchCheckKnown && appwire.NewerProtocolVersion(facts.Protocol) {
 				return nil, fmt.Errorf("%w: host %q's running hub speaks an older protocol, but its installed executable speaks %q, newer than this controller's %q; update the controller or restart the host into its newer build instead of downgrading it",
 					ErrHostProtocolNewer, host.Name, facts.Protocol, appwire.ProtocolVersion)
+			}
+			if !m.canDeploy() {
+				return nil, attachErr
 			}
 			liveIncompatible = true
 		}
@@ -3630,8 +3633,11 @@ func (p pendingRestartState) active() bool {
 // deploy-only record keeps its ownership instead: each surfaces the contract
 // refusal and waits for an explicit Restart or a controller update.
 func (p pendingRestartState) needsDeployment(facts Preflight) bool {
+	if p.deployment && facts.LaunchCheckKnown && appwire.NewerProtocolVersion(facts.Protocol) {
+		return false
+	}
 	return p.deployment && (!p.writeAcknowledged || facts.ExecutableMissing || facts.Version != p.expectedVersion ||
-		(p.restart && facts.LaunchCheckKnown && facts.Protocol != appwire.ProtocolVersion && !appwire.NewerProtocolVersion(facts.Protocol)))
+		(p.restart && facts.LaunchCheckKnown && facts.Protocol != appwire.ProtocolVersion))
 }
 
 func (p pendingRestartState) completedBy(running hubIdentity, facts Preflight) bool {
