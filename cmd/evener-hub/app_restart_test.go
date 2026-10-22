@@ -337,7 +337,11 @@ func TestHubRestartOnlyContinuesWhenInstallDirIsNotWritable(t *testing.T) {
 	pin.shareBinDir = shareDir
 	scheduleHubRestartOnlyAfterResponse(context.Background(), pin, path, []string{"hub"})
 
-	<-stderr.done
+	select {
+	case <-stderr.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("restart did not report a failure")
+	}
 	if !executed {
 		t.Fatal("restart did not reach exec without a writable install lock")
 	}
