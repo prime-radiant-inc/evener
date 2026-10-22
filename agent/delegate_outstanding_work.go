@@ -343,14 +343,14 @@ func (s *Session) pendingAttentionIDs() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if s.pendingRootDelegateAttention() {
-		s.attentionMu.Lock()
+	parked := s.rootAttentionRailParked()
+	s.attentionMu.Lock()
+	deferred := s.rootAttentionPaused && !s.rootAttentionWake && !s.rootAttentionRetry.active
+	if len(s.rootAttentionWakeIDs) != 0 && !parked && !deferred {
 		for id := range s.rootAttentionWakeIDs {
 			ids = append(ids, id)
 		}
-		s.attentionMu.Unlock()
 	}
-	s.attentionMu.Lock()
 	for id := range s.delegateAttentionArmIDs {
 		ids = append(ids, id)
 	}
