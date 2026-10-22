@@ -2,7 +2,6 @@ package appserver
 
 import (
 	"context"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -83,8 +82,6 @@ func TestRequestAdmissionFailureKeepsConnectionUsable(t *testing.T) {
 
 func TestRecoveryConnectionReachesHandlerWhilePrimaryQueueIsFull(t *testing.T) {
 	server := NewServer(ServerConfig{})
-	blocked := make(chan struct{})
-	server.blockedEnqueue = sync.OnceFunc(func() { close(blocked) })
 	started, release := parkThreadList(t, server)
 	enteredRecovery := make(chan struct{})
 	HandleTyped(server.Router(), appwire.MethodEvenerThreadForceStop, func(context.Context, appwire.ThreadForceStopParams) (appwire.EmptyResponse, error) {
@@ -94,11 +91,12 @@ func TestRecoveryConnectionReachesHandlerWhilePrimaryQueueIsFull(t *testing.T) {
 	hub := serveWebSocketHTTP(t, server)
 	primary := dialRawAppWire(t, hub)
 	initializeRaw(t, primary)
+	frames := collectFrames(primary)
 	for id := int64(2); id < 68; id++ {
 		sendRaw(t, primary, rawRequest(t, id, appwire.MethodThreadList, appwire.ThreadListParams{}))
 	}
 	waitFor(t, "stalled primary worker", started)
-	waitFor(t, "full 64-entry queue blocking primary receive loop", blocked)
+	requireQueueRefusal(t, "full primary queue", waitForFrameID(t, frames, 67), 67, "", appwire.RetryDispositionNone)
 	recovery := dialAppWireClient(t, hub)
 	if err := recovery.Request(t.Context(), appwire.MethodEvenerThreadForceStop, appwire.ThreadForceStopParams{Ref: "local:owner"}, nil); err != nil {
 		t.Fatal(err)
@@ -112,8 +110,6 @@ func TestConnectionAdmissionPrecedesUnreadBacklog(t *testing.T) {
 	server := NewServer(ServerConfig{ConnectionAdmissionContext: func(ctx context.Context) context.Context {
 		return context.WithValue(ctx, requestAdmissionTestKey{}, generation.Load())
 	}})
-	blocked := make(chan struct{})
-	server.blockedEnqueue = sync.OnceFunc(func() { close(blocked) })
 	started, release := parkThreadList(t, server)
 	var resumed, mutated atomic.Int32
 	check := func(ctx context.Context) error {
@@ -143,25 +139,26 @@ func TestConnectionAdmissionPrecedesUnreadBacklog(t *testing.T) {
 	hub := serveWebSocketHTTP(t, server)
 	primary := dialRawAppWire(t, hub)
 	initializeRaw(t, primary)
+	frames := collectFrames(primary)
 	for id := int64(2); id < 68; id++ {
 		sendRaw(t, primary, rawRequest(t, id, appwire.MethodThreadList, appwire.ThreadListParams{}))
 	}
 	waitFor(t, "stalled worker", started)
-	waitFor(t, "full queue", blocked)
+	requireQueueRefusal(t, "full queue before recovery", waitForFrameID(t, frames, 67), 67, "", appwire.RetryDispositionNone)
 	sendRaw(t, primary, rawRequest(t, 68, appwire.MethodThreadResume, appwire.ThreadResumeParams{Ref: "local:owner"}))
 	sendRaw(t, primary, rawRequest(t, 69, appwire.MethodThreadReasoningEffortSet, appwire.ThreadReasoningEffortSetParams{Ref: "local:owner", ReasoningEffort: "high"}))
+	for _, id := range []int64{68, 69} {
+		requireQueueRefusal(t, "unadmitted action before recovery", waitForFrameID(t, frames, id), id, "", appwire.RetryDispositionNone)
+	}
 	recovery := dialAppWireClient(t, hub)
 	if err := recovery.Request(t.Context(), appwire.MethodEvenerThreadForceStop, appwire.ThreadForceStopParams{Ref: "local:owner"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	release()
-	for id := int64(2); id <= 69; id++ {
-		message, err := primary.Recv(t.Context())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if id >= 68 && message.Error == nil {
-			t.Fatalf("unread request %d admitted after recovery: %+v", id, message)
+	for id := int64(2); id <= 66; id++ {
+		message := waitForFrameID(t, frames, id)
+		if message.Response == nil {
+			t.Fatalf("admitted request %d did not answer: %+v", id, message)
 		}
 	}
 	if resumed.Load() != 0 || mutated.Load() != 0 {

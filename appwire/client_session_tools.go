@@ -4,10 +4,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
+	"time"
 )
 
 const SessionToolsPendingLimit = 32
+
+// Chosen independently to match internal/appserver's webSocketWriteTimeout.
+// Each phase receives its own full budget; these packages share no constant.
+const (
+	sessionReplySlotTimeout  = 30 * time.Second
+	sessionReplyWriteTimeout = 30 * time.Second
+)
 
 type clientSessionTools struct {
 	ctx     context.Context
@@ -43,17 +52,54 @@ func (c *Client) BindSessionTools(ctx context.Context) error {
 }
 
 func (c *Client) sendSessionFrame(ctx context.Context, message Message) error {
-	if err := c.acquireSendSlot(ctx); err != nil {
-		return err
+	return c.sendSessionFrameWithBudgets(ctx, message, sessionReplySlotTimeout, sessionReplyWriteTimeout)
+}
+
+func (c *Client) sendSessionFrameWithBudgets(ctx context.Context, message Message, slotBudget, writeBudget time.Duration) error {
+	slotCtx, cancelSlot := context.WithTimeout(ctx, slotBudget)
+	defer cancelSlot()
+	select {
+	case c.sendSlotChan() <- struct{}{}:
+	case <-slotCtx.Done():
+		return RequestNotSentError{Err: slotCtx.Err()}
+	case <-c.closed:
+		return RequestNotSentError{Err: c.closedError()}
 	}
 	defer c.releaseSendSlot()
-	return c.transport.Send(ctx, message)
+	if err := slotCtx.Err(); err != nil {
+		return RequestNotSentError{Err: err}
+	}
+	select {
+	case <-c.closed:
+		return RequestNotSentError{Err: c.closedError()}
+	default:
+	}
+	writeCtx, cancelWrite := context.WithTimeout(ctx, writeBudget)
+	defer cancelWrite()
+	return c.transport.Send(writeCtx, message)
+}
+
+// Failed replies cannot be silently dropped: the connection owns all calls
+// and watches, so its existing close/read-loop failure path releases them.
+// A cancelled watch owns no further observations and does not retire its peer.
+func (c *Client) sendSessionFrameOrClose(ctx context.Context, message Message) error {
+	err := c.sendSessionFrame(ctx, message)
+	if err == nil {
+		return nil
+	}
+	if ctx.Err() != nil && c.sessionTools != nil && c.sessionTools.ctx.Err() == nil && errors.Is(err, context.Canceled) {
+		return err
+	}
+	c.markClosed(err)
+	c.failPending(err)
+	_ = c.Close()
+	return err
 }
 
 func (c *Client) receiveSessionRequest(ctx context.Context, req Request) {
 	state := c.sessionTools
 	if state == nil {
-		_ = c.sendSessionFrame(ctx, ErrorMessage(req.ID, MethodNotFound(req.Method)))
+		c.sendSessionFrameOrClose(ctx, ErrorMessage(req.ID, MethodNotFound(req.Method)))
 		return
 	}
 	if req.Method == MethodRuntimeSessionCancel {
@@ -85,11 +131,11 @@ func (c *Client) receiveSessionRequest(ctx context.Context, req Request) {
 	decoder := json.NewDecoder(bytes.NewReader(req.Params))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&p); err != nil {
-		_ = c.sendSessionFrame(ctx, ErrorMessage(req.ID, InvalidParams(err.Error())))
+		c.sendSessionFrameOrClose(ctx, ErrorMessage(req.ID, InvalidParams(err.Error())))
 		return
 	}
 	if p.BindingID == "" || p.BindingID != state.binding.BindingID {
-		_ = c.sendSessionFrame(ctx, ErrorMessage(req.ID, InvalidRequest("stale runtime binding")))
+		c.sendSessionFrameOrClose(ctx, ErrorMessage(req.ID, InvalidRequest("stale runtime binding")))
 		return
 	}
 	// Cleanup must remain available even when all operation slots are occupied.
@@ -101,7 +147,7 @@ func (c *Client) receiveSessionRequest(ctx context.Context, req Request) {
 	select {
 	case state.slots <- struct{}{}:
 	default:
-		_ = c.sendSessionFrame(ctx, ErrorMessage(req.ID, Unavailable("session request limit reached")))
+		c.sendSessionFrameOrClose(ctx, ErrorMessage(req.ID, Unavailable("session request limit reached")))
 		return
 	}
 	var watchCtx context.Context
@@ -171,9 +217,9 @@ func (c *Client) respondSessionRequest(ctx context.Context, id ID, value any, er
 		if !ok {
 			wire = Unavailable(err.Error())
 		}
-		_ = c.sendSessionFrame(ctx, ErrorMessage(id, wire))
+		c.sendSessionFrameOrClose(ctx, ErrorMessage(id, wire))
 	} else {
-		_ = c.sendSessionFrame(ctx, ResponseMessage(id, value))
+		c.sendSessionFrameOrClose(ctx, ResponseMessage(id, value))
 	}
 }
 
@@ -216,7 +262,7 @@ func (c *Client) handleSessionRequest(ctx context.Context, method string, p Sess
 					if ok {
 						observation.Update = &update
 					}
-					if err := c.sendSessionFrame(watchCtx, NotificationMessage(NotificationRuntimeSessionObservation, observation)); err != nil || !ok {
+					if err := c.sendSessionFrameOrClose(watchCtx, NotificationMessage(NotificationRuntimeSessionObservation, observation)); err != nil || !ok {
 						return
 					}
 				}

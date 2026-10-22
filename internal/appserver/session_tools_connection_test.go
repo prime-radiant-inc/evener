@@ -2,7 +2,6 @@ package appserver
 
 import (
 	"context"
-	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +10,21 @@ import (
 
 type blockedSessionInvokeOwner struct {
 	started chan context.Context
+}
+
+type lifetimeSessionWatchOwner struct {
+	started chan context.Context
+}
+
+func (*lifetimeSessionWatchOwner) State(context.Context) (appwire.ManagerView, error) {
+	return appwire.ManagerView{}, nil
+}
+func (*lifetimeSessionWatchOwner) Invoke(context.Context, appwire.SessionOperationRequest) (appwire.SessionOperationResponse, error) {
+	return appwire.SessionOperationResponse{}, nil
+}
+func (o *lifetimeSessionWatchOwner) Watch(ctx context.Context, _ appwire.SessionWatchRequest) (<-chan appwire.SessionWatchUpdate, error) {
+	o.started <- ctx
+	return make(chan appwire.SessionWatchUpdate), nil
 }
 
 func (*blockedSessionInvokeOwner) State(context.Context) (appwire.ManagerView, error) {
@@ -74,13 +88,129 @@ func TestSessionToolsCancelledInvokeReleasesOwner(t *testing.T) {
 	}
 }
 
+func TestSessionToolsFailedCancelOutputEndsRemoteOwner(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	server := NewServer(ServerConfig{})
+	gate := &gateReaderReplyTransport{armed: make(chan struct{}), blocked: make(chan struct{}, 1), release: make(chan struct{})}
+	server.wrapWebSocketTransport = func(inner webSocketTransport) webSocketTransport {
+		gate.webSocketTransport = inner
+		return gate
+	}
+	bound := make(chan appwire.SessionHubClient, 1)
+	server.InstallSessionTools(func(_ context.Context, _ appwire.SessionBinding, client appwire.SessionHubClient) error {
+		bound <- client
+		return nil
+	})
+	transport := dialRawAppWire(t, serveWebSocketHTTP(t, server))
+	client := appwire.NewClient(transport)
+	defer client.Close()
+	owner := &blockedSessionInvokeOwner{started: make(chan context.Context, 1)}
+	client.SetSessionTools(appwire.SessionBinding{Ref: "local:workspace", InstanceID: "instance", HubID: "hub", BindingID: "binding"}, owner)
+	client.Start(ctx)
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.BindSessionTools(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { close(gate.release) })
+	runtime := (<-bound).(*sessionToolsConnection)
+	callCtx, stop := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() {
+		_, err := runtime.Invoke(callCtx, appwire.SessionOperationRequest{Read: &appwire.ThreadReadParams{Ref: "local:workspace"}})
+		done <- err
+	}()
+	ownerCtx := waitFor(t, "remote invoke owner", owner.started)
+	close(gate.armed)
+	conn := registeredConnection(t, server)
+	if !conn.enqueue(appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, struct{}{})) {
+		t.Fatal("could not park send loop")
+	}
+	waitFor(t, "send loop parked", gate.blocked)
+	for conn.enqueue(appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, struct{}{})) {
+	}
+	stop()
+	if err := waitFor(t, "canceled caller", done); err == nil {
+		t.Fatal("canceled caller succeeded")
+	}
+	waitFor(t, "remote owner cancellation after failed output admission", ownerCtx.Done())
+	waitUnregistered(t, server)
+	runtime.mu.Lock()
+	pending := len(runtime.pending)
+	runtime.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("pending reverse calls after failed cleanup = %d", pending)
+	}
+}
+
+func TestSessionToolsFailedUnwatchOutputEndsRemoteOwner(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	server := NewServer(ServerConfig{})
+	gate := &gateReaderReplyTransport{armed: make(chan struct{}), blocked: make(chan struct{}, 1), release: make(chan struct{})}
+	server.wrapWebSocketTransport = func(inner webSocketTransport) webSocketTransport {
+		gate.webSocketTransport = inner
+		return gate
+	}
+	bound := make(chan appwire.SessionHubClient, 1)
+	server.InstallSessionTools(func(_ context.Context, _ appwire.SessionBinding, client appwire.SessionHubClient) error {
+		bound <- client
+		return nil
+	})
+	transport := dialRawAppWire(t, serveWebSocketHTTP(t, server))
+	client := appwire.NewClient(transport)
+	defer client.Close()
+	owner := &lifetimeSessionWatchOwner{started: make(chan context.Context, 1)}
+	client.SetSessionTools(appwire.SessionBinding{Ref: "local:workspace", InstanceID: "instance", HubID: "hub", BindingID: "binding"}, owner)
+	client.Start(ctx)
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.BindSessionTools(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { close(gate.release) })
+	runtime := (<-bound).(*sessionToolsConnection)
+	watchCtx, stop := context.WithCancel(ctx)
+	updates, err := runtime.Watch(watchCtx, appwire.SessionWatchRequest{Ref: "local:workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerCtx := waitFor(t, "remote watch owner", owner.started)
+	close(gate.armed)
+	conn := registeredConnection(t, server)
+	if !conn.enqueue(appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, struct{}{})) {
+		t.Fatal("could not park send loop")
+	}
+	waitFor(t, "send loop parked", gate.blocked)
+	for conn.enqueue(appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, struct{}{})) {
+	}
+	stop()
+	waitFor(t, "remote watch cancellation after failed output admission", ownerCtx.Done())
+	waitUnregistered(t, server)
+	select {
+	case _, ok := <-updates:
+		if ok {
+			t.Fatal("watch updates remained open after failed cleanup")
+		}
+	case <-ctx.Done():
+		t.Fatal("watch updates remained open after failed cleanup")
+	}
+	runtime.mu.Lock()
+	remaining := len(runtime.watches)
+	runtime.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("remaining local watches = %d", remaining)
+	}
+}
+
 func TestSessionToolsReverseResponseWithSaturatedIngress(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	server := NewServer(ServerConfig{})
 	server.requestQueueCapacity = 1
-	blocked := make(chan struct{})
-	server.blockedEnqueue = sync.OnceFunc(func() { close(blocked) })
 	started, release := parkThreadList(t, server)
 	defer release()
 	bound := make(chan appwire.SessionHubClient, 1)
@@ -114,11 +244,19 @@ func TestSessionToolsReverseResponseWithSaturatedIngress(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	conn := registeredConnection(t, server)
+	frames := collectFrames(transport)
 	sendRaw(t, transport, rawRequest(t, 3, appwire.MethodThreadList, appwire.ThreadListParams{}))
 	waitFor(t, "blocked serial handler", started)
 	sendRaw(t, transport, rawRequest(t, 4, appwire.MethodThreadList, appwire.ThreadListParams{}))
+	waitForQueueDepth(t, conn, 1)
 	sendRaw(t, transport, rawRequest(t, 5, appwire.MethodThreadList, appwire.ThreadListParams{}))
-	waitFor(t, "full queue blocking receive loop", blocked)
+	// The refusal of request 5 is the fence: the sole socket reader read past
+	// the full queue instead of parking on it. Only after that refusal proves
+	// the reader advanced do we send the reverse response that request 3's
+	// waiter needs.
+	refusal := waitForFrameID(t, frames, 5)
+	requireQueueRefusal(t, "the hard-cap refusal", refusal, 5, "", appwire.RetryDispositionNone)
 	sendRaw(t, transport, appwire.ResponseMessage(reverse.Request.ID, appwire.ManagerView{}))
 	select {
 	case err := <-result:

@@ -3,6 +3,7 @@ package appwire
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -172,5 +173,169 @@ func TestSessionToolsUnwatchCancelsPendingSetupAtCapacity(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatal("missing fixed response")
 		}
+	}
+}
+
+type gatedSessionReplyTransport struct {
+	started chan struct{}
+	closed  chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	sends   int
+	closes  int
+}
+
+type failedSessionReplyTransport struct{ *gatedSessionReplyTransport }
+
+func (*failedSessionReplyTransport) Send(context.Context, Message) error {
+	return errors.New("reply write failed")
+}
+
+func (g *gatedSessionReplyTransport) Send(ctx context.Context, _ Message) error {
+	g.mu.Lock()
+	g.sends++
+	g.mu.Unlock()
+	select {
+	case g.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+func (g *gatedSessionReplyTransport) Recv(ctx context.Context) (Message, error) {
+	select {
+	case <-ctx.Done():
+		return Message{}, ctx.Err()
+	case <-g.closed:
+		return Message{}, errClientClosed
+	}
+}
+func (g *gatedSessionReplyTransport) Close() error {
+	g.once.Do(func() { close(g.closed) })
+	g.mu.Lock()
+	g.closes++
+	g.mu.Unlock()
+	return nil
+}
+
+func TestSessionToolsReplyWriteBudgetClassifiesTransmissionBoundary(t *testing.T) {
+	transport := &gatedSessionReplyTransport{started: make(chan struct{}, 1), closed: make(chan struct{})}
+	client := NewClient(transport)
+	frame := ResponseMessage(NewIntID(-1), EmptyResponse{})
+	if err := client.acquireSendSlot(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	err := client.sendSessionFrameWithBudgets(t.Context(), frame, 20*time.Millisecond, 20*time.Millisecond)
+	client.releaseSendSlot()
+	var notSent RequestNotSentError
+	if !errors.As(err, &notSent) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("slot budget error = %T %v, want not-sent deadline", err, err)
+	}
+	transport.mu.Lock()
+	sends := transport.sends
+	transport.mu.Unlock()
+	if sends != 0 {
+		t.Fatalf("slot-expired reply reached transport %d times", sends)
+	}
+	err = client.sendSessionFrameWithBudgets(t.Context(), frame, time.Second, 20*time.Millisecond)
+	if !errors.Is(err, context.DeadlineExceeded) || errors.As(err, &notSent) {
+		t.Fatalf("after-send budget error = %T %v, want uncertain in-flight deadline", err, err)
+	}
+	transport.mu.Lock()
+	sends = transport.sends
+	transport.mu.Unlock()
+	if sends != 1 {
+		t.Fatalf("after-send reply reached transport %d times, want 1", sends)
+	}
+}
+
+func TestSessionToolsFailedReplyRetiresClientAndPendingCalls(t *testing.T) {
+	inner := &gatedSessionReplyTransport{started: make(chan struct{}, 1), closed: make(chan struct{})}
+	client := NewClient(&failedSessionReplyTransport{gatedSessionReplyTransport: inner})
+	client.SetSessionTools(SessionBinding{BindingID: "binding"}, nil)
+	client.pendingMu.Lock()
+	pending := make(chan pendingResult, 1)
+	client.pending["7"] = pendingRequest{id: NewIntID(7), ch: pending}
+	client.pendingMu.Unlock()
+	err := client.sendSessionFrameOrClose(t.Context(), ResponseMessage(NewIntID(-1), EmptyResponse{}))
+	if err == nil || err.Error() != "reply write failed" {
+		t.Fatalf("failed reply = %v", err)
+	}
+	select {
+	case <-client.closed:
+	default:
+		t.Fatal("failed reply did not retire client")
+	}
+	if client.sessionTools.ctx.Err() == nil {
+		t.Fatal("failed reply left reverse owners running")
+	}
+	select {
+	case result := <-pending:
+		if !result.local || result.msg.Error == nil {
+			t.Fatalf("pending call received %+v, want local failure", result)
+		}
+	default:
+		t.Fatal("failed reply did not fail pending call")
+	}
+	select {
+	case <-inner.closed:
+	default:
+		t.Fatal("failed reply did not close transport")
+	}
+}
+
+func TestSessionToolsCanceledObservationDoesNotRetireHealthyConnection(t *testing.T) {
+	transport := &gatedSessionReplyTransport{started: make(chan struct{}, 1), closed: make(chan struct{})}
+	client := NewClient(transport)
+	client.SetSessionTools(SessionBinding{BindingID: "binding"}, nil)
+	defer client.sessionTools.cancel()
+	if err := client.acquireSendSlot(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	err := client.sendSessionFrameOrClose(ctx, NotificationMessage(NotificationRuntimeSessionObservation, struct{}{}))
+	client.releaseSendSlot()
+	var notSent RequestNotSentError
+	if !errors.As(err, &notSent) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled observation = %T %v, want not-sent cancellation", err, err)
+	}
+	transport.mu.Lock()
+	closes, sends := transport.closes, transport.sends
+	transport.mu.Unlock()
+	if closes != 0 || sends != 0 {
+		t.Fatalf("healthy connection: closes=%d sends=%d, want both zero", closes, sends)
+	}
+}
+
+func TestSessionToolsReplyWaitingForSlotStopsOnClientClose(t *testing.T) {
+	transport := &gatedSessionReplyTransport{started: make(chan struct{}, 1), closed: make(chan struct{})}
+	client := NewClient(transport)
+	client.Start(t.Context())
+	if err := client.acquireSendSlot(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	defer client.releaseSendSlot()
+	done := make(chan error, 1)
+	go func() {
+		done <- client.sendSessionFrameWithBudgets(t.Context(), ResponseMessage(NewIntID(-1), EmptyResponse{}), time.Second, time.Second)
+	}()
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		var notSent RequestNotSentError
+		if !errors.As(err, &notSent) {
+			t.Fatalf("reply after close = %T %v, want not-sent", err, err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("closed connection left reply waiting for send slot")
+	}
+	transport.mu.Lock()
+	sends := transport.sends
+	transport.mu.Unlock()
+	if sends != 0 {
+		t.Fatalf("closed connection wrote %d replies", sends)
 	}
 }

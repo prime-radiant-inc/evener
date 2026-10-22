@@ -882,10 +882,8 @@ func MutationUnknown(clientMutationID, message string) WireError {
 	}
 }
 
-// BackpressureCauseQueueSaturated is the one cause a connectionBackpressure
-// refusal carries: the connection's inbound request queue was at or beyond
-// its high-water depth when the mutation arrived, so the hub refused the
-// mutation without queueing it.
+// BackpressureCauseQueueSaturated marks a request refused before admission at
+// either the retry-safe mutation high-water mark or the full queue's hard cap.
 const BackpressureCauseQueueSaturated = "queueSaturated"
 
 // BackpressureRefusal is the hub's in-band refusal of a retry-safe mutation
@@ -898,17 +896,28 @@ const BackpressureCauseQueueSaturated = "queueSaturated"
 // do, because the direct-send fallback does not retry
 // automatically.
 func BackpressureRefusal(clientMutationID, message string) WireError {
-	return WireError{
+	return backpressureRefusal(clientMutationID, message, RetryDispositionAutomatic)
+}
+
+// HardCapRefusal reports that a full connection queue did not accept a request.
+// Its caller must not infer automatic retry safety from that fact alone.
+func HardCapRefusal(clientMutationID, message string) WireError {
+	return backpressureRefusal(clientMutationID, message, RetryDispositionNone)
+}
+
+func backpressureRefusal(clientMutationID, message string, retry RetryDisposition) WireError {
+	wire := WireError{
 		Code:    CodeUnavailable,
 		Message: message,
 		Data: ErrorData{
-			EvenerErrorInfo:  ErrorConnectionBackpressure,
-			ClientMutationID: clientMutationID,
-			MutationOutcome:  MutationOutcomeNotAccepted,
-			RetryDisposition: RetryDispositionAutomatic,
-			Cause:            BackpressureCauseQueueSaturated,
+			EvenerErrorInfo: ErrorConnectionBackpressure,
+			Cause:           BackpressureCauseQueueSaturated,
 		},
-	}
+	}.NotAccepted(clientMutationID)
+	data := wire.Data.(ErrorData)
+	data.RetryDisposition = retry
+	wire.Data = data
+	return wire
 }
 
 // retrySafeMutationMethods is the wire contract the hub and the shared

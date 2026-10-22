@@ -154,6 +154,7 @@ func (b *sessionToolsConnection) request(ctx context.Context, method string, p a
 	default:
 	}
 	if !b.conn.enqueue(appwire.RequestMessage(id, method, p)) {
+		b.conn.cancelContext()
 		return appwire.Unavailable("runtime connection unavailable")
 	}
 	select {
@@ -163,7 +164,9 @@ func (b *sessionToolsConnection) request(ctx context.Context, method string, p a
 		// A local waiter ending must also release the remote owner. This fixed
 		// cleanup request needs no pending slot, even when all calls are busy.
 		cancelID := appwire.NewIntID(-int64(b.next.Add(1)))
-		b.conn.enqueue(appwire.RequestMessage(cancelID, appwire.MethodRuntimeSessionCancel, appwire.SessionRuntimeCancel{BindingID: b.binding.BindingID, RequestID: requestID}))
+		if !b.conn.enqueue(appwire.RequestMessage(cancelID, appwire.MethodRuntimeSessionCancel, appwire.SessionRuntimeCancel{BindingID: b.binding.BindingID, RequestID: requestID})) {
+			b.conn.cancelContext()
+		}
 		return ctx.Err()
 	case msg := <-ch:
 		if msg.Error != nil {
@@ -236,5 +239,7 @@ func (b *sessionToolsConnection) unwatch(watchID string) {
 		return
 	}
 	id := appwire.NewIntID(-int64(b.next.Add(1)))
-	b.conn.enqueue(appwire.RequestMessage(id, appwire.MethodRuntimeSessionUnwatch, appwire.SessionRuntimeRequest{BindingID: b.binding.BindingID, WatchID: watchID}))
+	if !b.conn.enqueue(appwire.RequestMessage(id, appwire.MethodRuntimeSessionUnwatch, appwire.SessionRuntimeRequest{BindingID: b.binding.BindingID, WatchID: watchID})) {
+		b.conn.cancelContext()
+	}
 }

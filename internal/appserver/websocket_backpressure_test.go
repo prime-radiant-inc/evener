@@ -14,9 +14,8 @@ import (
 // backpressureFixture builds a captureLogf server with the given inbound queue
 // capacity, parks its serial worker on the first thread/list request (so a
 // test owns the queue's depth exactly), and returns the raw transport with a
-// frame collector. blockedEnqueue, when non-nil, is installed before the
-// connection exists, so a test can wait for the receive loop to park on a
-// full queue. release unparks one worker handler call at a time; closing it
+// frame collector. blockedEnqueue, when non-nil, observes a hard-cap refusal
+// before the reader continues. release unparks one worker handler call at a time; closing it
 // at cleanup unparks every present and future call.
 func backpressureFixture(t *testing.T, queueCapacity int, blockedEnqueue func()) (
 	*Server, func() string, *Connection, *appwire.WSTransport, <-chan appwire.Message, chan<- struct{},
@@ -118,13 +117,7 @@ func countAdvisoryLines(logged func() string, marker string) int {
 // later full queue still fires the operator-critical full-queue advisory
 // exactly once — the refusal cannot consume it.
 func TestServeWebSocketHighWaterRefusalAnswersMutationsInBand(t *testing.T) {
-	blocked := make(chan struct{}, 4)
-	_, logged, conn, transport, frames, _ := backpressureFixture(t, 8, func() {
-		select {
-		case blocked <- struct{}{}:
-		default:
-		}
-	})
+	_, logged, conn, transport, frames, _ := backpressureFixture(t, 8, nil)
 
 	// Reads fill the queue to the high-water depth; none is ever refused.
 	for id := int64(2); id <= 5; id++ {
@@ -177,7 +170,7 @@ func TestServeWebSocketHighWaterRefusalAnswersMutationsInBand(t *testing.T) {
 		sendRaw(t, transport, rawRequest(t, id, appwire.MethodThreadList, appwire.ThreadListParams{}))
 	}
 	sendRaw(t, transport, rawRequest(t, 12, appwire.MethodThreadList, appwire.ThreadListParams{}))
-	waitFor(t, "the receive loop to park on the full queue", blocked)
+	requireQueueRefusal(t, "hard-cap refusal after high-water refusal", waitForFrameID(t, frames, 12), 12, "", appwire.RetryDispositionNone)
 	if lines := countAdvisoryLines(logged, "request queue is full"); lines != 1 {
 		t.Fatalf("full-queue advisories = %d, want exactly 1:\n%s", lines, logged())
 	}
@@ -239,38 +232,22 @@ func TestServeWebSocketHighWaterRefusalWithoutClientMutationID(t *testing.T) {
 // advisory — the two one-shots are independent flags, and neither consumes
 // the other.
 func TestServeWebSocketFullQueueAdvisoryDoesNotSuppressHighWaterRefusal(t *testing.T) {
-	blocked := make(chan struct{}, 4)
-	_, logged, _, transport, frames, release := backpressureFixture(t, 8, func() {
-		select {
-		case blocked <- struct{}{}:
-		default:
-		}
-	})
+	_, logged, _, transport, frames, _ := backpressureFixture(t, 8, nil)
 
-	// Fill the queue completely and park the receive loop on one more read.
+	// Fill the queue completely and refuse one more read without parking.
 	for id := int64(2); id <= 9; id++ {
 		sendRaw(t, transport, rawRequest(t, id, appwire.MethodThreadList, appwire.ThreadListParams{}))
 	}
 	sendRaw(t, transport, rawRequest(t, 10, appwire.MethodThreadList, appwire.ThreadListParams{}))
-	waitFor(t, "the receive loop to park on the full queue", blocked)
+	requireQueueRefusal(t, "full queue", waitForFrameID(t, frames, 10), 10, "", appwire.RetryDispositionNone)
 	if lines := countAdvisoryLines(logged, "request queue is full"); lines != 1 {
 		t.Fatalf("full-queue advisories = %d, want exactly 1:\n%s", lines, logged())
 	}
 
-	// The mutation waits unread behind the parked loop.
+	// The reader continues past the hard-cap refusal. A mutation at high water
+	// still gets the automatic disposition before the hard-cap check.
 	sendRaw(t, transport, rawRequest(t, 11, appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "cmid-11"}))
-	// One release frees a slot: the parked read enqueues, the loop reads the
-	// mutation at a depth still far beyond high water, and refuses it. The
-	// released read's own response can arrive first, so wait for the
-	// refusal's frame specifically.
-	release <- struct{}{}
-	for {
-		msg := waitFor(t, "the high-water refusal after the release", frames)
-		if msg.Error != nil && msg.Error.ID.Int64() == 11 {
-			requireBackpressureRefusal(t, "the refusal after the full-queue advisory", msg, 11, "cmid-11")
-			break
-		}
-	}
+	requireBackpressureRefusal(t, "high-water after hard-cap", waitForFrameID(t, frames, 11), 11, "cmid-11")
 
 	if lines := countAdvisoryLines(logged, "request queue is full"); lines != 1 {
 		t.Fatalf("full-queue advisories = %d after the refusal, want 1:\n%s", lines, logged())
@@ -342,12 +319,10 @@ func TestServeWebSocketRefusedMutationRetriesIntoAFreedHub(t *testing.T) {
 	}
 }
 
-// TestConnectionHighWaterRefusalParksBoundedOnFullOutboundBuffer pins the
-// acknowledged liveness trade at unit level: when the outbound buffer is
-// full, the inline refusal's delivery parks like the inline ping's — bounded
-// by the connection context, never a wedge — and the refused mutation never
-// joins the queue.
-func TestConnectionHighWaterRefusalParksBoundedOnFullOutboundBuffer(t *testing.T) {
+// TestConnectionHighWaterRefusalOnFullOutboundBufferCancels pins the
+// nonblocking reply rule: full output cancels the connection and leaves the
+// rejected mutation out of the request queue.
+func TestConnectionHighWaterRefusalOnFullOutboundBufferCancels(t *testing.T) {
 	server, logged := captureLogfServer()
 	server.requestQueueCapacity = 2 // high water at 1 frame
 	conn := server.NewConnection("test-conn")
@@ -361,27 +336,23 @@ func TestConnectionHighWaterRefusalParksBoundedOnFullOutboundBuffer(t *testing.T
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	conn.setCancel(cancel)
 	done := make(chan bool, 1)
 	go func() {
 		done <- conn.enqueueRequest(ctx, rawRequest(t, 6, appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "cmid-6"}))
 	}()
 
-	// The refusal cannot enter the full outbound buffer: the call parks.
+	// The refusal cannot enter the full outbound buffer: the reader returns.
 	select {
 	case ok := <-done:
-		t.Fatalf("enqueueRequest returned %v while the outbound buffer was full", ok)
-	case <-time.After(150 * time.Millisecond):
-	}
-	// The park is bounded by the context: canceling ends it, the call
-	// reports the connection as alive, and the mutation never queued.
-	cancel()
-	select {
-	case ok := <-done:
-		if !ok {
-			t.Fatal("enqueueRequest reported the connection dead after the refusal's bounded park")
+		if ok {
+			t.Fatal("enqueueRequest kept the connection alive after refusing full output")
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("the refusal's delivery never returned after the context ended")
+		t.Fatal("reader parked on full outbound buffer")
+	}
+	if ctx.Err() == nil {
+		t.Fatal("failed refusal did not cancel the connection")
 	}
 	if depth := len(conn.requests); depth != 1 {
 		t.Fatalf("queue depth = %d, want 1 (the refused mutation never queued)", depth)
