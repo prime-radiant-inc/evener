@@ -667,15 +667,16 @@ async function exerciseDirectoryField() {
 
 window.exerciseDirectoryField = exerciseDirectoryField;
 
-async function onboardingButton(name: string): Promise<HTMLButtonElement> {
+async function onboardingButton(name: string, { last = false } = {}): Promise<HTMLButtonElement> {
   const deadline = performance.now() + 10_000;
   for (;;) {
-    const button = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
+    const matches = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).filter(
       (candidate) =>
         (candidate.getAttribute("aria-label") ?? candidate.textContent?.trim()) === name &&
         isElementVisible(candidate) &&
         !candidate.disabled,
     );
+    const button = last ? matches.at(-1) : matches[0];
     if (button) return button;
     if (performance.now() > deadline) throw new Error(`Onboarding did not expose ${name}`);
     await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -703,14 +704,16 @@ async function exerciseProviderOnboarding(): Promise<string[]> {
   const key = await directoryElement<HTMLInputElement>("#provider-credential");
   if (key.type !== "password") failures.push("credential is not masked");
   const advanced = Array.from(document.querySelectorAll("details")).find(
-    (element) => element.querySelector("summary")?.textContent === "Advanced settings",
+    (element) => element.querySelector("summary")?.textContent === "All connection settings",
   );
   if (!advanced || advanced.open) failures.push("advanced settings not collapsed");
-  (await onboardingButton("Save and check")).click();
+  (await onboardingButton("Save and test")).click();
   await directoryElement("#provider-credential-error");
   if (document.activeElement !== key) failures.push("missing-key error did not focus the key");
   failures.push(...scanHorizontalOverflow());
-  (await onboardingButton("Cancel")).click();
+  // Two controls are named Cancel while the key row is open: the row's edit
+  // cancel and the dialog footer's. The footer's is LAST in the dialog.
+  (await onboardingButton("Cancel", { last: true })).click();
   (await onboardingButton("Connect provider")).click();
   (await onboardingButton("OpenAI")).click();
   const freshKey = await directoryElement<HTMLInputElement>("#provider-credential");
@@ -720,7 +723,7 @@ async function exerciseProviderOnboarding(): Promise<string[]> {
   setter.call(freshKey, "fixture-not-a-real-key");
   freshKey.dispatchEvent(new Event("input", { bubbles: true }));
   await new Promise((resolve) => requestAnimationFrame(resolve));
-  (await onboardingButton("Save and check")).click();
+  (await onboardingButton("Save and test")).click();
   // A successful check closes the guided dialog and returns to the preserved
   // draft on its own: there is no success continuation, and it must not force
   // the model picker open. The model choice below is the deliberate regular-UI

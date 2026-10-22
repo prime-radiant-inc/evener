@@ -535,7 +535,17 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 			} catch {
 				return "retry";
 			}
-			if (!mayResume) return "blocked";
+			// Declining the resume must not throw away the read this settle
+			// already made. That read is the only proof the caller gets about
+			// what landed: skipping it would leave an attempted row "submitting"
+			// forever instead of surfacing it as the uncertain send it is. The
+			// target stays fenced, so reconciliation settles what the read proves
+			// without dispatching anything.
+			if (!mayResume) {
+				if (!this.#isCurrentRead(lease)) return "stale";
+				await this.reconcileAuthoritativeRead(lease, response);
+				return "blocked";
+			}
 			// The predicate reads storage, so it is an await of its own: a newer
 			// read can clear the fence and start healthy work inside it. Acting on
 			// this older answer then would recycle the transport out from under that

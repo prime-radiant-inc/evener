@@ -2563,6 +2563,47 @@ export function ConversationScreen({
 	}, [service, ready, controls, unconfirmedSend, store]);
 	// Sends or queues one message the way Send does, and says whether the hub
 	// took it.
+	// The one recovery step both delivery paths take once a message is durably
+	// admitted: resume the fenced session through the runtime's settle, follow
+	// an identity change, and clear a fence the settle's own read proves gone.
+	// Shared rather than inlined per branch - the queue path originally copied
+	// only the settle call and so skipped the follow-through, leaving a stale
+	// fence that sent the next message down the resume path while a turn ran.
+	const recoverFenced = useCallback(
+		async (through: NonNullable<typeof service>, hubId: string, ref: string): Promise<boolean> => {
+			if (client === null) return false;
+			const answered = await getNativeMutationRuntime()
+				.settleTarget(hubId, ref, client, {
+					mayResumeFenced: async () => true,
+					// The rows followed the resume; the pane has to as well, or the
+					// message and the work it starts land on a ref nobody is showing.
+					onResolvedIdentity: (resolved) => {
+						navigation.replace("Conversation", {
+							hubId: route.params.hubId,
+							ref: resolved,
+							title: route.params.title,
+							openedBy: route.params.openedBy,
+							slideFrom: route.params.slideFrom,
+						});
+					},
+				})
+				.catch(() => undefined);
+			if (answered === "reconciled" || answered === "open") {
+				// The store's conversation can still read resumeRequired: a
+				// reconnect's hydration may have landed before the resume's
+				// acknowledgement, and status notifications never clear that field.
+				// A stale fence would send every later message down this path
+				// instead of queueing behind the turn this one starts.
+				await store
+					.getState()
+					.rehydrate(through, activitySink)
+					.catch(() => undefined);
+				return true;
+			}
+			return false;
+		},
+		[store, client, navigation, route.params, activitySink],
+	);
 	const deliver = useCallback(
 		async (
 			through: NonNullable<typeof service>,
@@ -2592,34 +2633,8 @@ export function ConversationScreen({
 				// row when the resume returns a different identity, and its read is
 				// what releases the message. A refusal or failure is reported here,
 				// so a parked message is never left unexplained.
-				const answered = await getNativeMutationRuntime()
-					.settleTarget(target.hubId, target.ref, client, {
-						mayResumeFenced: async () => true,
-						// The rows followed the resume; the pane has to as well, or the
-						// message and the work it starts land on a ref nobody is showing.
-						onResolvedIdentity: (resolved) => {
-							navigation.replace("Conversation", {
-								hubId: route.params.hubId,
-								ref: resolved,
-								title: route.params.title,
-								openedBy: route.params.openedBy,
-								slideFrom: route.params.slideFrom,
-							});
-						},
-					})
-					.catch(() => undefined);
-				if (answered === "reconciled" || answered === "open") {
-					// The store's conversation can still read resumeRequired: a
-					// reconnect's hydration may have landed before the resume's
-					// acknowledgement, and status notifications never clear that field.
-					// A stale fence would send every later message down this path
-					// instead of queueing behind the turn this one starts.
-					await store
-						.getState()
-						.rehydrate(through, activitySink)
-						.catch(() => undefined);
-					return true;
-				}
+				const settled = await recoverFenced(through, target.hubId, target.ref);
+				if (settled) return true;
 				showToast({ text: "Your message is saved and will send once the session resumes." });
 				return true;
 			}
@@ -2629,12 +2644,22 @@ export function ConversationScreen({
 			const admitted = accepted != null && accepted !== previous && accepted.kind === kind;
 			// Spec 16.6: a light impact on send, Send's and an error row's Retry's.
 			if (admitted) haptic("light");
+			// A fenced session whose resume already failed leaves its message
+			// parked, so this Send queues behind it instead of resuming. The
+			// queue route must still drive recovery: the parked message can only
+			// go out once the session resumes, so waiting on the fence alone
+			// would strand this message behind one that can never move.
+			const live = store.getState();
+			if (live.conversation?.resumeRequired) {
+				const target = mutationTarget(live);
+				if (target !== null) await recoverFenced(through, target.hubId, target.ref);
+			}
 			return admitted;
 		},
 		// `controls` belongs here: the resume it drives must be the live instance,
 		// not one a re-render already disposed. showToast reports a resume it
 		// could not finish.
-		[store, controls, showToast],
+		[store, controls, showToast, recoverFenced],
 	);
 	// Continuation uses Send's routing without consuming the current draft.
 	const retryFailedTurn = useCallback(async () => {

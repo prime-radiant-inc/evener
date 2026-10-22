@@ -927,6 +927,16 @@ func (c *hubInstancesController) refuseWhenBroken() error {
 // read or write failure) stays a plain error: that is not the caller's to
 // fix.
 func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) (err error) {
+	return c.create(params, nil)
+}
+
+// create applies a create. When out is non-nil it receives the listing captured
+// while this create's write lock is still held, so the answer describes the
+// state this create authored rather than a later List() a concurrent edit can
+// slip into. The RPC handler uses it that way for its response, exactly as
+// edit's captured answer does: a create's response is the only proof a client
+// has of which endpoint its credential belongs to.
+func (c *hubInstancesController) create(params appwire.InstanceCreateParams, out *appwire.InstanceListResponse) (err error) {
 	if err := c.refuseWhenBroken(); err != nil {
 		return err
 	}
@@ -953,6 +963,17 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) (er
 	}
 	if err := validVarNames(params.Vars); err != nil {
 		return invalidParamsFor(err)
+	}
+	// Resolved before the locks, as Edit resolves its own: resolving can repair
+	// the key file (an inter-process lock and a write), so doing it while c.mu
+	// and credMu are held would hold every listing and credential op behind it.
+	// Only a capture needs it: a plain Create is a write that installs no
+	// listing, and the controller's other callers must keep the pre-existing
+	// property that creating an entry does not touch the fingerprint key.
+	var key []byte
+	var keyErr error
+	if out != nil {
+		key, keyErr = resolveEndpointFingerprintKey(c.authStateDir())
 	}
 	c.lockForWrite()
 	defer c.mu.Unlock()
@@ -1018,6 +1039,13 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) (er
 		c.applied.resetApplied()
 		_ = c.reg.Reload() // best-effort: put the last-good registry view back
 		return invalidParamsFor(fmt.Errorf("instance %q %w: %w", name, errInstanceUnloadable, err))
+	}
+	if out != nil {
+		// Still under this create's write locks, so no concurrent edit can land
+		// between the write and this read. The row (and its immutable endpoint
+		// fingerprint) is the one this create authored, not a destination that
+		// replaced it before the handler answered.
+		*out = c.listLocked(key, keyErr)
 	}
 	return nil
 }

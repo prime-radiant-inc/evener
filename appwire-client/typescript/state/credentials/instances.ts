@@ -150,8 +150,11 @@ export interface CredentialInstancesState {
   // the one the store now holds, false when a newer request superseded it.
   // Callers that steer a flow on the strength of their own write (the sheet,
   // the add dialog, the removal report) act on the store's verdict, never on
-  // the raw response.
-  create(params: InstanceCreateParams): Promise<boolean>;
+  // the raw response. create takes the same reconcile hook as edit: a create
+  // whose answer a newer request superseded still carries the row it authored
+  // under the hub's write lock, which is the only proof a caller has of the
+  // created endpoint.
+  create(params: InstanceCreateParams, reconcile?: EditSupersededReconcile): Promise<boolean>;
   edit(params: InstanceEditParams, reconcile?: EditSupersededReconcile): Promise<boolean>;
   remove(name: string, expectedEndpointFingerprint?: string): Promise<boolean>;
   setDefault(name: string): Promise<boolean>;
@@ -1086,12 +1089,13 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
       return readListing(true);
     },
 
-    async create(params) {
+    async create(params, reconcile) {
       const client = requireWritableClient();
       const applied = await applyMutation(
         (origin) => client.request("evener/instance/create", { ...params, ...origin }),
         {
           instance: params.name,
+          supersededFor: reconcile?.onSuperseded,
         },
       );
       // Like setDefault: a superseded response lost the store's ordering race,
