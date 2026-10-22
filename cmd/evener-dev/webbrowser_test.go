@@ -260,15 +260,15 @@ func TestBrowserGuardIncludesMemoryGuard(t *testing.T) {
 	}
 }
 
-// The full-stack guard selects the onboarding browser journey and its evidence
-// rejection tests alongside every existing skill-composer guard. A selector
-// replacement that registers onboarding by dropping the older checks is not a
-// gate expansion.
+// The full-stack guard selects the automatic and OAuth onboarding browser
+// journeys and their evidence rejection tests alongside every existing
+// skill-composer guard. A selector replacement that registers onboarding by
+// dropping the older checks is not a gate expansion.
 func TestSkillGuardIncludesOnboardingSelection(t *testing.T) {
 	spec := browserGuardSpec(skillGuard, filepath.Join(t.TempDir(), "root"))
 	want := []string{
 		"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run",
-		"^TestSkillComposerBrowser$|^TestSkillGuard|^TestOnboardingBrowser$|^TestOnboardingEvidence",
+		"^TestSkillComposerBrowser$|^TestSkillGuard|^TestOnboardingBrowser$|^TestOnboardingOAuthBrowser$|^TestOnboardingEvidence",
 		"-count=1",
 	}
 	if !slices.Equal(spec.argv, want) {

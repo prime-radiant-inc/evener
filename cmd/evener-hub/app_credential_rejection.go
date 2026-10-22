@@ -96,6 +96,15 @@ type credentialRejections struct {
 	// replaced by the time the provider answers.
 	writes map[string]uint64
 	byName map[string]credentialRejection
+	// settlementEntered, when set, runs in settleCredentialProbe immediately
+	// before credMu is taken, after the fingerprint-key resolution and the
+	// rejection classification above it. A test that parks an instance edit
+	// between its publication and its fence uses it to know the probe's
+	// outcome is back and settlement has reached the shared lock, so the
+	// bounded observation that follows watches the narrowest interval this
+	// seam can mark. It is an acknowledgment of position, not a
+	// synchronization guarantee. Nil in production.
+	settlementEntered func()
 }
 
 type credentialRejection struct {
@@ -104,47 +113,69 @@ type credentialRejection struct {
 }
 
 // credentialProbeStart is what a probe captures before it dials: the
-// instance, the configuration revision it is probing, and the instance's
-// write count.
+// instance, the configuration revision it is probing, the instance's write
+// count, and whether an outcome may be recorded as a credential rejection.
 type credentialProbeStart struct {
 	name     string
 	revision string
 	writes   uint64
+	// recordable separates configuration identity from rejection eligibility:
+	// a keyless instance still has an identity to compare (its endpoint or
+	// auth scheme can move while the probe is in flight), but a 401 it receives
+	// is no credential the provider rejected and nothing the user could
+	// replace.
+	recordable bool
 }
 
 // beginCredentialProbe captures name's probe start. A probe begins before
 // anything reads the credential it sends (the client is built after), so a
-// write that lands in between voids it. It resolves the configuration
-// revision, so the caller must not hold credMu (currentCredentialRevision).
-// A nil controller begins a probe that settles to nothing, for a caller with
-// no hub credential state to feed.
+// write or access edit that lands in between voids it.
+//
+// The fingerprint key is resolved before credMu is taken (a resolution can
+// repair the key file); the capture itself takes credMu's shared side, so it
+// cannot interleave with an instance edit's privileged section. That is what
+// makes an edit's published access and its probe fence one boundary for a
+// capture: the capture sees the old state before the edit or the new state
+// after it, never a new revision with an unfenced old counter. A nil
+// controller begins a probe that settles to nothing, for a caller with no hub
+// credential state to feed.
 func (c *hubAuthController) beginCredentialProbe(name string) credentialProbeStart {
 	if c == nil {
 		return credentialProbeStart{}
 	}
-	revision := c.currentCredentialRevision(name)
+	key, _ := resolveEndpointFingerprintKey(c.stateDir)
+	c.credMu.RLock()
+	defer c.credMu.RUnlock()
+	revision, recordable := c.currentCredentialRevisionForKey(key, name)
 	c.rejections.mu.Lock()
 	defer c.rejections.mu.Unlock()
-	return credentialProbeStart{name: name, revision: revision, writes: c.rejections.writes[name]}
+	return credentialProbeStart{name: name, revision: revision, writes: c.rejections.writes[name], recordable: recordable}
 }
 
-// currentCredentialRevision is name's credential configuration revision now,
-// the one its status reports, or empty when name sends no credential: a
-// keyless instance's 401 or 403 is no credential the provider rejected, and
-// nothing the user could replace. An empty revision records nothing
-// (settleCredentialProbe). It resolves the fingerprint key, which can repair
-// the key file, so the caller must not hold credMu.
-func (c *hubAuthController) currentCredentialRevision(name string) string {
+// currentCredentialRevisionForKey is name's credential configuration revision
+// now, the one its status reports, and whether an outcome may be recorded as a
+// credential rejection. The revision describes a resolved keyless instance
+// too: its endpoint, protocol and auth scheme can all move while a probe is in
+// flight, and the probe's answer is only about the configuration it read. An
+// empty revision means the hub could not establish an identity at all (no
+// registry, no resolution, or no fingerprint key), not that the access is
+// unchanged; it records nothing (settleCredentialProbe). A keyless instance's
+// 401 or 403 is no credential the provider rejected, so recordable is false
+// even though its identity is real.
+//
+// The caller holds credMu (shared or exclusive) and has already resolved key;
+// that shared side orders this read against an instance edit's privileged
+// publish-and-fence section.
+func (c *hubAuthController) currentCredentialRevisionForKey(key []byte, name string) (revision string, recordable bool) {
 	r := c.registry()
 	if r == nil {
-		return ""
+		return "", false
 	}
 	res, err := r.ResolveInstancePresence(name)
-	if err != nil || res.Credential.Source == "none" {
-		return ""
+	if err != nil {
+		return "", false
 	}
-	key, _ := resolveEndpointFingerprintKey(c.stateDir)
-	return c.credentialConfigRevisionForKey(key, name, res)
+	return c.credentialConfigRevisionForKey(key, name, res), res.Credential.Source != "none"
 }
 
 // settleCredentialProbe records what a probe's model listing says about the
@@ -157,26 +188,53 @@ func (c *hubAuthController) currentCredentialRevision(name string) string {
 // credentialRejectionChanged; the caller must not hold credMu, since the
 // announcement reads the instance's status.
 //
-// A probe with no revision records nothing: either the instance sent no
-// credential, or the hub could not resolve its fingerprint key and the
-// rejection could not tell the configuration it was about from any other.
-func (c *hubAuthController) settleCredentialProbe(start credentialProbeStart, listing llm.ModelListing, err error) {
+// It reports whether the probe is still current. A false verdict means the
+// outcome describes neither the credential nor the configuration the instance
+// has now, so a caller that publishes the outcome as a verdict must refuse it;
+// callers that only feed rejection state may ignore the result, which they
+// already did. Freshness is not "a rejection was recorded": a keyless probe or
+// an inconclusive one is still a valid answer about the same state.
+//
+// A probe with no revision records nothing: the hub could not resolve the
+// configuration identity or its fingerprint key, and the rejection could not
+// tell the configuration it was about from any other. A keyless probe has an
+// identity and is compared like any other, but records nothing: it sent no
+// credential to reject.
+//
+// The freshness comparison and the write-count check take credMu's shared
+// side together. An instance edit holds the exclusive side from its write
+// through the probe fence, so a probe cannot read the replacement access while
+// the fence is still at the old value. The key is resolved before the lock,
+// and the change callback runs after both mutexes are released.
+func (c *hubAuthController) settleCredentialProbe(start credentialProbeStart, listing llm.ModelListing, err error) bool {
 	if c == nil {
-		return
+		return true
 	}
+	key, _ := resolveEndpointFingerprintKey(c.stateDir)
 	status, rejected := credentialRejectionStatus(err)
 	verified := err == nil && listing.Live
-	if (!rejected && !verified) || start.revision == "" {
-		return
+	if c.rejections.settlementEntered != nil {
+		c.rejections.settlementEntered()
 	}
-	if c.currentCredentialRevision(start.name) != start.revision {
-		return
+	c.credMu.RLock()
+	if start.revision != "" {
+		current, _ := c.currentCredentialRevisionForKey(key, start.name)
+		if current != start.revision {
+			c.credMu.RUnlock()
+			return false
+		}
 	}
 	r := &c.rejections
 	r.mu.Lock()
 	if r.writes[start.name] != start.writes {
 		r.mu.Unlock()
-		return
+		c.credMu.RUnlock()
+		return false
+	}
+	if (!rejected && !verified) || start.revision == "" || !start.recordable {
+		r.mu.Unlock()
+		c.credMu.RUnlock()
+		return true
 	}
 	previous, had := r.byName[start.name]
 	changed := false
@@ -192,9 +250,11 @@ func (c *hubAuthController) settleCredentialProbe(start credentialProbeStart, li
 		changed = true
 	}
 	r.mu.Unlock()
+	c.credMu.RUnlock()
 	if changed && c.credentialRejectionChanged != nil {
 		c.credentialRejectionChanged(start.name)
 	}
+	return true
 }
 
 // forgetCredentialRejection drops name's rejection and voids name's probes in

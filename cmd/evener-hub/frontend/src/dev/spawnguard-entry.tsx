@@ -682,6 +682,16 @@ async function onboardingButton(name: string): Promise<HTMLButtonElement> {
   }
 }
 
+async function onboardingDialogClosed(): Promise<void> {
+  const deadline = performance.now() + 10_000;
+  for (;;) {
+    const dialog = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"]')).find(isElementVisible);
+    if (!dialog) return;
+    if (performance.now() > deadline) throw new Error("Provider setup dialog did not close automatically");
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+}
+
 async function exerciseProviderOnboarding(): Promise<string[]> {
   const failures: string[] = [];
   const prompt = await directoryElement<HTMLElement>('[role="textbox"][aria-label="Prompt"]');
@@ -711,10 +721,19 @@ async function exerciseProviderOnboarding(): Promise<string[]> {
   freshKey.dispatchEvent(new Event("input", { bubbles: true }));
   await new Promise((resolve) => requestAnimationFrame(resolve));
   (await onboardingButton("Save and check")).click();
-  const continuation = await onboardingButton("Choose model");
+  // A successful check closes the guided dialog and returns to the preserved
+  // draft on its own: there is no success continuation, and it must not force
+  // the model picker open. The model choice below is the deliberate regular-UI
+  // interaction, not a required handoff.
+  await onboardingDialogClosed();
+  if (prompt.textContent !== "onboarding-draft") failures.push("completion lost the prompt draft");
+  const forcedPicker = Array.from(document.querySelectorAll<HTMLElement>('[role="listbox"][aria-label="Model"]')).some(
+    isElementVisible,
+  );
+  if (forcedPicker) failures.push("completion forced the model picker open");
   if (fake.calls.some((call) => call.method === "thread/start")) failures.push("save started a session");
   failures.push(...scanHorizontalOverflow());
-  continuation.click();
+  (await directoryElement<HTMLButtonElement>('[data-testid="spawn-model-trigger"]')).click();
   const deadline = performance.now() + 10_000;
   let option: HTMLElement | undefined;
   while (!option) {
@@ -725,7 +744,7 @@ async function exerciseProviderOnboarding(): Promise<string[]> {
     if (!option) await new Promise((resolve) => requestAnimationFrame(resolve));
   }
   failures.push(...scanHorizontalOverflow());
-  if (fake.calls.some((call) => call.method === "thread/start")) failures.push("continuation started a session");
+  if (fake.calls.some((call) => call.method === "thread/start")) failures.push("model selection started a session");
   option.click();
   (await onboardingButton("Start")).click();
   while (!fake.calls.some((call) => call.method === "thread/start")) {

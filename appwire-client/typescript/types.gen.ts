@@ -562,6 +562,17 @@ export interface EvenerAuthUpdatedParams {
   provider?: string;
   activeSource?: string;
   /**
+   * Reason names a broadcast that did not change credentials or provider
+   * configuration. The only value today is "models_changed": a background
+   * launch-model refresh produced a different list than a picker was served,
+   * so clients re-read their model catalog. It is catalog-only: no credential,
+   * instance or destination changed. Every credential write and
+   * provider-instance CRUD broadcast leaves it empty, and consumers must treat
+   * those empty-reason broadcasts as changes even when they carry no other
+   * payload.
+   */
+  reason?: string;
+  /**
    * OriginClientId is the echoed OriginClientId of the mutation that caused
    * this broadcast - an auth write or a provider-instance CRUD change - the
    * identity of the client whose change it announces, so that client can
@@ -2280,6 +2291,13 @@ export interface ModelDescriptor {
    * row the resolver itself warns about.
    */
   warnings?: string[];
+  /**
+   * InstanceDefault marks the row as its instance's configured default in
+   * the instance's own usable current listing. It is not the global default
+   * and not proof of generation access; an absent marker authorizes no
+   * automatic selection.
+   */
+  instanceDefault?: boolean;
 }
 
 export interface ModelListDiagnostic {
