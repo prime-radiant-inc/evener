@@ -68,6 +68,14 @@ func taskReminderFullWithPrompts(tasks []taskpkg.Task) string {
 // each task's prompt under its line, which the spawn-time plan needs and the
 // post-compaction reminder does not.
 func renderTaskListReminder(tasks []taskpkg.Task, withPrompts bool) string {
+	return renderTaskListReminderSkippingPrompt(tasks, withPrompts, 0)
+}
+
+// renderTaskListReminderSkippingPrompt is renderTaskListReminder with one
+// task's prompt left out. The startup plan uses it for the task the
+// CURRENT-TASK element in the same message already spells out, so the delegate
+// is not charged for that prompt twice.
+func renderTaskListReminderSkippingPrompt(tasks []taskpkg.Task, withPrompts bool, skipPromptID int) string {
 	if len(tasks) == 0 {
 		return ""
 	}
@@ -83,7 +91,7 @@ func renderTaskListReminder(tasks []taskpkg.Task, withPrompts bool) string {
 			fmt.Fprintf(b, " (depends_on: %v)", t.DependsOn)
 		}
 		b.WriteString("\n")
-		if withPrompts {
+		if withPrompts && t.ID != skipPromptID {
 			if prompt := strings.TrimSpace(t.Prompt); prompt != "" {
 				for line := range strings.SplitSeq(prompt, "\n") {
 					fmt.Fprintf(b, "    prompt: %s\n", line)
@@ -131,7 +139,11 @@ func steerDelegatePlan(sess *Session, store *taskpkg.TaskStore) error {
 			break
 		}
 	}
-	plan := taskReminderFullWithPrompts(tasks)
+	skipPromptID := 0
+	if current != nil {
+		skipPromptID = current.ID
+	}
+	plan := renderTaskListReminderSkippingPrompt(tasks, true, skipPromptID)
 	if current != nil {
 		plan = withCurrentStep(plan, *current)
 	}

@@ -125,6 +125,23 @@ func TestDelegatePlanNamesTheInProgressStep(t *testing.T) {
 	}
 }
 
+// The startup message carries the current step's prompt once: in the
+// CURRENT-TASK element. Repeating it in the plan list charges the delegate
+// twice for the same text.
+func TestDelegateStartupCarriesTheCurrentPromptOnce(t *testing.T) {
+	t.Parallel()
+	root, adapter := newDelegateStartupFixture(t)
+	spawnDelegateWithPlan(t, root, "do one step", []taskpkg.TaskTemplate{
+		{Title: "Only step", Prompt: "ONLY_PROMPT"},
+	})
+
+	first := messagesText(adapter.waitFirstRequest(t).Messages)
+	if got := strings.Count(first, "ONLY_PROMPT"); got != 1 {
+		t.Fatalf("current step's prompt appears %d times, want once:\n%s", got, first)
+	}
+	assertCurrentTaskElement(t, first, 1, "ONLY_PROMPT")
+}
+
 // A restored delegate whose task file survived is not announced to again: its
 // queue still holds the spawn-time plan. Re-announcing would duplicate it.
 func TestRestoreDoesNotRepeatPersistedPlanSteering(t *testing.T) {
