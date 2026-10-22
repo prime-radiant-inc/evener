@@ -21,15 +21,15 @@ it("shifts mention offsets around a multi-digit marker using UTF-16 positions", 
 	repository.write(
 		destination,
 		{
-			draft: "😀 tail",
+			draft: "😀/before /after",
 			unconfirmed: null,
 			composer: {
-				skillNames: ["keep-skill"],
-				commandNames: ["keep-command"],
+				skillNames: ["before"],
+				commandNames: ["after"],
 				recoveryIds: ["keep-recovery"],
 				mentions: [
-					{ kind: "skill", name: "before", offset: 0 },
-					{ kind: "command", name: "after", offset: 3 },
+					{ kind: "skill", name: "before", offset: 2 },
+					{ kind: "command", name: "after", offset: 10 },
 				],
 			},
 		},
@@ -37,31 +37,31 @@ it("shifts mention offsets around a multi-digit marker using UTF-16 positions", 
 	);
 	const document = new DraftDocument(() => repository, destination);
 	const image = { id: "tile", marker: 12, mediaType: "image/png", data: "AQID" };
-	document.addImage(image, 2);
+	document.addImage(image, 9);
 
 	expect(repository.read(destination)).toMatchObject({
-		draft: "😀[image 12] tail",
+		draft: "😀/before[image 12] /after",
 		images: [{ id: "tile", marker: 12 }],
 		composer: {
-			skillNames: ["keep-skill"],
-			commandNames: ["keep-command"],
+			skillNames: ["before"],
+			commandNames: ["after"],
 			recoveryIds: ["keep-recovery"],
 			mentions: [
-				{ kind: "skill", name: "before", offset: 0 },
-				{ kind: "command", name: "after", offset: 13 },
+				{ kind: "skill", name: "before", offset: 2 },
+				{ kind: "command", name: "after", offset: 20 },
 			],
 		},
 	});
 	document.removeImage("tile");
 	expect(repository.read(destination)).toMatchObject({
-		draft: "😀 tail",
+		draft: "😀/before /after",
 		composer: {
-			skillNames: ["keep-skill"],
-			commandNames: ["keep-command"],
+			skillNames: ["before"],
+			commandNames: ["after"],
 			recoveryIds: ["keep-recovery"],
 			mentions: [
-				{ kind: "skill", name: "before", offset: 0 },
-				{ kind: "command", name: "after", offset: 3 },
+				{ kind: "skill", name: "before", offset: 2 },
+				{ kind: "command", name: "after", offset: 10 },
 			],
 		},
 	});
