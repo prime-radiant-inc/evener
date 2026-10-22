@@ -28,7 +28,7 @@ func TestRetainedDeploymentInstallTargetBoundary(t *testing.T) {
 	channel, dirty, tag := buildinfo.Channel, buildinfo.GitDirty, buildinfo.ReleaseTag
 	t.Cleanup(func() { buildinfo.Channel, buildinfo.GitDirty, buildinfo.ReleaseTag = channel, dirty, tag })
 	buildinfo.Channel, buildinfo.GitDirty, buildinfo.ReleaseTag = "snapshot", "", ""
-	for _, mode := range []string{"honest-push", "redirected-recorded-target", "installer-alias", "installer-regular-target", "alias-during-build", "destination-during-build"} {
+	for _, mode := range []string{"honest-push", "redirected-recorded-target", "installer-alias", "installer-regular-target", "alias-during-build", "destination-during-build", "stopped-honest-push", "stopped-alias-retarget"} {
 		t.Run(mode, func(t *testing.T) {
 			root := t.TempDir()
 			target, alias, other := filepath.Join(root, "installed", "evener"), filepath.Join(root, "bin", "evener"), filepath.Join(root, "other", "evener")
@@ -66,6 +66,10 @@ func TestRetainedDeploymentInstallTargetBoundary(t *testing.T) {
 				return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180","started_at":"2026-01-01T00:00:00Z"}`), nil
 			})
 			selected.exe = launch
+			selected.stopped = strings.HasPrefix(mode, "stopped-")
+			if selected.stopped {
+				selected.observe = nil
+			}
 			base := fr.runFn
 			writes, installers, starts := 0, 0, 0
 			var recorded []string
@@ -126,7 +130,14 @@ func TestRetainedDeploymentInstallTargetBoundary(t *testing.T) {
 			}
 			prior := m.pendingRestart(host.Name)
 			if !prior.deployment || prior.selected == nil || prior.installTarget != target || prior.writeAcknowledged {
-				t.Fatalf("missing retained deployment: %+v", prior)
+				if selected.stopped {
+					t.Errorf("missing retained stopped deployment: %+v", prior)
+				} else {
+					t.Fatalf("missing retained deployment: %+v", prior)
+				}
+			}
+			if selected.stopped && prior.selected != nil && prior.selected.pid != "0" {
+				t.Fatalf("stopped deployment retained a live owner: %+v", prior.selected)
 			}
 			data, err := os.ReadFile(target)
 			if err != nil || string(data) != "predecessor" {
@@ -137,6 +148,14 @@ func TestRetainedDeploymentInstallTargetBoundary(t *testing.T) {
 					t.Fatal(err)
 				}
 				if err := os.Symlink(other, target); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode == "stopped-alias-retarget" {
+				if err := os.Remove(alias); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(other, alias); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -180,7 +199,7 @@ func TestRetainedDeploymentInstallTargetBoundary(t *testing.T) {
 			if readErr != nil || string(otherBytes) != "other-installation" {
 				t.Errorf("retained retry overwrote another installation: data=%q err=%v", otherBytes, readErr)
 			}
-			refuse := mode != "honest-push"
+			refuse := mode != "honest-push" && mode != "stopped-honest-push"
 			if refuse {
 				if !errors.Is(err, errOwnerSelectionMismatch) || writes != 1 || installers != 0 || !reflect.DeepEqual(prior, m.pendingRestart(host.Name)) || !reflect.DeepEqual(recorded, []string{target}) {
 					t.Fatalf("retained retry escaped recorded install target: err=%v writes=%d installers=%d recorded=%q pending=%+v", err, writes, installers, recorded, m.pendingRestart(host.Name))
@@ -203,7 +222,7 @@ func TestRetainedDeploymentInstallTargetBoundary(t *testing.T) {
 			}
 			link, linkErr := os.Readlink(alias)
 			wantLink := target
-			if mode == "alias-during-build" {
+			if mode == "alias-during-build" || mode == "stopped-alias-retarget" {
 				wantLink = other
 			}
 			if linkErr != nil || link != wantLink {

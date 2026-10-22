@@ -236,28 +236,38 @@ func TestRecoveryEntryBindingDeploySupersession(t *testing.T) {
 			if source == "installer" {
 				m.opts.BuildBinary = nil
 			}
+			// A stopped deployment now retains its selected owner too. Superseding
+			// that effect uses the existing journal API, not an unbound new write.
+			journal := func(id int) DeploymentJournal {
+				return DeploymentJournal{OperationID: fmt.Sprint(id), Supersede: func(prior string) error {
+					if prior != "1" || id != 2 {
+						t.Fatalf("unexpected supersession: %s -> %d", prior, id)
+					}
+					return nil
+				}}
+			}
 			// A refused first write creates neither effect ownership nor target.
-			if _, _, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, true, validator(2)); !errors.Is(err, refused) || writes != 0 || m.pendingRestart(host.Name).active() || m.resolvedTarget(host.Name) != "" {
+			if _, _, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, true, validator(2), journal(1)); !errors.Is(err, refused) || writes != 0 || m.pendingRestart(host.Name).active() || m.resolvedTarget(host.Name) != "" {
 				t.Fatalf("refused first write: err=%v writes=%d pending=%+v", err, writes, m.pendingRestart(host.Name))
 			}
-			if _, _, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, true, validator(1)); !errors.Is(err, ErrDeploy) || writes != 1 {
+			if _, _, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, true, validator(1), journal(1)); !errors.Is(err, ErrDeploy) || writes != 1 {
 				t.Fatalf("initial write: err=%v writes=%d", err, writes)
 			}
 			old := m.pendingRestart(host.Name)
 			entry = 2
 			m.opts.controllerVersionOverride = "new-request"
 			m.opts.BuildBinary = func(context.Context, string, string, string) error { return sourceFailure }
-			if _, _, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, true, validator(2)); !errors.Is(err, sourceFailure) || writes != 1 || !reflect.DeepEqual(m.pendingRestart(host.Name), old) {
+			if _, _, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, true, validator(2), journal(2)); !errors.Is(err, sourceFailure) || writes != 1 || !reflect.DeepEqual(m.pendingRestart(host.Name), old) {
 				t.Fatalf("source refusal superseded intent: err=%v writes=%d pending=%+v", err, writes, m.pendingRestart(host.Name))
 			}
 			m.opts.BuildBinary = writeStageBinary
 			if source == "installer" {
 				m.opts.BuildBinary = nil
 			}
-			if _, _, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, true, validator(1)); !errors.Is(err, refused) || writes != 1 || !reflect.DeepEqual(m.pendingRestart(host.Name), old) {
+			if _, _, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, true, validator(1), journal(2)); !errors.Is(err, refused) || writes != 1 || !reflect.DeepEqual(m.pendingRestart(host.Name), old) {
 				t.Fatalf("pre-write refusal superseded intent: err=%v writes=%d pending=%+v", err, writes, m.pendingRestart(host.Name))
 			}
-			if _, _, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, true, validator(2)); !errors.Is(err, ErrDeploy) || writes != 2 {
+			if _, _, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, true, validator(2), journal(2)); !errors.Is(err, ErrDeploy) || writes != 2 {
 				t.Fatalf("authorized superseding write: err=%v writes=%d", err, writes)
 			}
 			newIntent := m.pendingRestart(host.Name)
@@ -266,7 +276,7 @@ func TestRecoveryEntryBindingDeploySupersession(t *testing.T) {
 			}
 			entry = 1
 			recordConnectionOperations(t, m)
-			if _, err := m.ensureOnce(t.Context(), host, false); !errors.Is(err, refused) || writes != 2 || m.pendingRestart(host.Name).binding != newIntent.binding || m.pendingRestart(host.Name).selected != newIntent.selected || !reflect.DeepEqual(m.pendingRestart(host.Name), newIntent) {
+			if _, err := m.ensureOnce(t.Context(), host, false); !errors.Is(err, refused) || writes != 2 || m.pendingRestart(host.Name).binding != newIntent.binding || !reflect.DeepEqual(m.pendingRestart(host.Name), newIntent) {
 				t.Fatalf("recovery adopted old binding: err=%v writes=%d pending=%+v", err, writes, m.pendingRestart(host.Name))
 			}
 		})

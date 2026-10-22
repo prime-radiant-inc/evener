@@ -19,9 +19,10 @@ import (
 // Files, fetches and checksums are real. Process/service observations and the
 // restarted listener are modeled, with an exact remote-command allowlist.
 func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
-	for _, name := range []string{"verified-restart", "lost-reply-recovery", "failed-start-recovery", "no-home-live", "no-home-cold", "unit-user-live", "unit-user-cold", "unit-user-other-uid"} {
+	for _, name := range []string{"verified-restart", "lost-reply-recovery", "failed-start-recovery", "no-home-live", "no-home-cold", "unit-user-live", "unit-user-cold", "unit-user-other-uid", "repair-fresh-operation", "repair-fresh-automatic", "repair-fresh-operation-prior", "repair-fresh-automatic-prior"} {
 		lostReply, failedStart := name == "lost-reply-recovery", name == "failed-start-recovery"
 		t.Run(name, func(t *testing.T) {
+			repair := strings.HasPrefix(name, "repair-fresh-")
 			noHome, cold := strings.HasPrefix(name, "no-home-"), strings.HasSuffix(name, "-cold")
 			unitAccount, otherUID := strings.HasPrefix(name, "unit-user-"), name == "unit-user-other-uid"
 			host, oldCommands := ownerCommands(t)
@@ -53,7 +54,11 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 			file := filepath.Join(t.TempDir(), "hub.env")
 			// This definition already names the next listener before selection. The
 			// predecessor still has its original process environment and listener.
-			if err := os.WriteFile(file, []byte(fileEnv), 0600); err != nil {
+			initialFileEnv := fileEnv
+			if repair {
+				initialFileEnv += "XDG_STATE_HOME=/other\n"
+			}
+			if err := os.WriteFile(file, []byte(initialFileEnv), 0600); err != nil {
 				t.Fatal(err)
 			}
 			readDefinition := func() []byte {
@@ -107,6 +112,13 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 				// The pre-stop gate inspects the next environment against the same
 				// config/root while the original process still owns that root.
 				allowed[ownerContext("/srv", newEnv)+"/opt/evener hub endpoint --json --config /srv/selected.toml"] = mustOwnerJSON(t, report)
+				if repair {
+					wrong := report
+					wrong.HubStateRoot, wrong.Running = "/other", nil
+					wrong.State = "stopped"
+					wrongEnv := append(append([]string(nil), newEnv...), "XDG_STATE_HOME=/other")
+					allowed[ownerContext("/srv", wrongEnv)+"/opt/evener hub endpoint --json --config /srv/selected.toml"] = mustOwnerJSON(t, wrong)
+				}
 				if noHome {
 					// Explicit XDG roots select the same config even if a caller
 					// incorrectly invents HOME. Process evidence still has none.
@@ -220,7 +232,29 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 				return nil, errOwnerEvidence
 			}}
 			m = newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "release-selected", sleep: func(context.Context, time.Duration) error { return nil }})
-			_, restartErr := m.RestartForOperation(t.Context(), host, selectedRestartFacts(), nil)
+			if strings.HasSuffix(name, "-prior") {
+				m.pendingRestarts[host.Name] = pendingRestartState{command: "previous-command", expectedVersion: "release-selected", restart: true}
+			}
+			restart := func() error {
+				if strings.HasPrefix(name, "repair-fresh-automatic") {
+					_, err := m.restartHubWithStartProof(t.Context(), host, selectedRestartFacts(), "release-selected", "", hubIdentity{}, nil)
+					return err
+				}
+				_, err := m.RestartForOperation(t.Context(), host, selectedRestartFacts(), nil)
+				return err
+			}
+			if repair {
+				previous := m.pendingRestart(host.Name)
+				if err := restart(); !errors.Is(err, errOwnerSelectionMismatch) || effects != 0 || !reflect.DeepEqual(m.pendingRestart(host.Name), previous) {
+					t.Errorf("read-only refusal: err=%v effects=%d pending restored=%v", err, effects, reflect.DeepEqual(m.pendingRestart(host.Name), previous))
+				}
+				if err := os.WriteFile(file, []byte(fileEnv), 0600); err != nil {
+					t.Fatal(err)
+				}
+				definition = readDefinition()
+				fileReads = 0
+			}
+			restartErr := restart()
 			if otherUID {
 				if !errors.Is(restartErr, errOwnerEvidence) || effects != 0 || len(fr.recordedStarts()) != 0 || m.pendingRestart(host.Name).active() {
 					t.Fatalf("different UID: err=%v effects=%d attaches=%d pending=%v", restartErr, effects, len(fr.recordedStarts()), m.pendingRestart(host.Name).active())

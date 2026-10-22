@@ -80,7 +80,7 @@ func TestSelectedRestartWithoutPredecessorHealth(t *testing.T) {
 			_, err = m.RestartForOperation(t.Context(), host, facts, nil)
 			if name == "retry-unavailable-predecessor" {
 				pending := m.pendingRestart(host.Name)
-				if !errors.Is(err, errOwnerEvidence) || effects != 0 || pending.selected == nil || pending.selected.report.Running != nil || pending.nextEnv != nil || !process.initialUnavailable {
+				if !errors.Is(err, errOwnerEvidence) || effects != 0 || !reflect.DeepEqual(pending, pendingRestartState{}) || !process.initialUnavailable {
 					t.Fatalf("independent-evidence failure: err=%v effects=%d pending=%+v", err, effects, pending)
 				}
 				retryReady = true
@@ -89,8 +89,8 @@ func TestSelectedRestartWithoutPredecessorHealth(t *testing.T) {
 			pending := m.pendingRestart(host.Name)
 			switch name {
 			case "different-pid", "different-birth":
-				if !errors.Is(err, errOwnerEvidence) || effects != 0 || selected.selected == nil || !reflect.DeepEqual(selected, pending) {
-					t.Fatalf("changed predecessor: err=%v effects=%d pending preserved=%v", err, effects, reflect.DeepEqual(selected, pending))
+				if !errors.Is(err, errOwnerEvidence) || effects != 0 || selected.selected == nil || !reflect.DeepEqual(pending, pendingRestartState{}) {
+					t.Fatalf("changed predecessor: err=%v effects=%d pending restored=%v", err, effects, reflect.DeepEqual(pending, pendingRestartState{}))
 				}
 			case "missing-capability":
 				if !errors.Is(err, errOwnerEvidence) || effects != 0 || pending.active() {

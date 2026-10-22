@@ -76,7 +76,17 @@ func TestSelectedRestartUnavailablePredecessorRecovers(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := m.RestartForOperation(t.Context(), host, facts, nil); !errors.Is(err, errOwnerEvidence) {
+			// Model a previously retained unexecuted intent explicitly. A fresh
+			// read-only refusal now restores its prior state instead of retaining one.
+			owner, err := m.resolveOwnedEndpoint(t.Context(), host, facts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			retained, err := m.prepareSelectedRestart(t.Context(), host, facts, owner, "same-sha", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := m.restartSelectedPending(t.Context(), host, facts, &retained, true); !errors.Is(err, errOwnerEvidence) {
 				t.Fatalf("unavailable independent-evidence refusal: %v", err)
 			}
 			pending := m.pendingRestart(host.Name)

@@ -346,7 +346,7 @@ func (m *Manager) restartForOperation(ctx context.Context, host hostreg.Host, fa
 			m.mu.Unlock()
 			return result, err
 		}
-		err = m.restartSelectedPending(restartCtx, host, facts, &pending, owner.pid != "0")
+		err = m.restartPreparedSelectedPending(restartCtx, host, facts, &pending, owner.pid != "0", previous)
 	}
 	if err != nil {
 		return result, err

@@ -534,6 +534,7 @@ func (m *Manager) restartHubWithStartProof(ctx context.Context, host hostreg.Hos
 	if pending.selected != nil {
 		return pending.start, m.recoverSelectedRestart(ctx, host, facts, pending)
 	}
+	previous := pending
 	if err := m.checkEffectBinding(binding); err != nil {
 		return false, err
 	}
@@ -553,7 +554,7 @@ func (m *Manager) restartHubWithStartProof(ctx context.Context, host hostreg.Hos
 	m.mu.Lock()
 	m.pendingRestarts[host.Name] = pending
 	m.mu.Unlock()
-	return pending.start, m.restartSelectedPending(ctx, host, facts, &pending, owner.pid != "0")
+	return pending.start, m.restartPreparedSelectedPending(ctx, host, facts, &pending, owner.pid != "0", previous)
 }
 
 // checkHubOwner proves the identified listener runs as the host's effective SSH
@@ -1647,6 +1648,23 @@ func firstLine(s string) string {
 }
 
 func (m *Manager) restartSelectedPending(ctx context.Context, host hostreg.Host, facts Preflight, pending *pendingRestartState, predecessorLive bool) error {
+	return m.dispatchSelectedRestart(ctx, host, facts, pending, predecessorLive, nil)
+}
+
+// Only a newly prepared restart may roll back a read-only refusal. Once a
+// mutation is dispatched, even a failed SSH reply must retain its intent.
+func (m *Manager) restartPreparedSelectedPending(ctx context.Context, host hostreg.Host, facts Preflight, pending *pendingRestartState, predecessorLive bool, previous pendingRestartState) error {
+	dispatched := false
+	err := m.dispatchSelectedRestart(ctx, host, facts, pending, predecessorLive, func() { dispatched = true })
+	if err != nil && !dispatched {
+		m.mu.Lock()
+		m.pendingRestarts[host.Name] = previous
+		m.mu.Unlock()
+	}
+	return err
+}
+
+func (m *Manager) dispatchSelectedRestart(ctx context.Context, host hostreg.Host, facts Preflight, pending *pendingRestartState, predecessorLive bool, onDispatch func()) error {
 	if err := m.checkEffectBinding(pending.binding); err != nil {
 		return err
 	}
@@ -1683,6 +1701,9 @@ func (m *Manager) restartSelectedPending(ctx context.Context, host hostreg.Host,
 		return fmt.Errorf("%w: selected launchd domain changed", errOwnerEvidence)
 	}
 	if owner.supervisor.kind == supervisorNone && predecessorLive {
+		if onDispatch != nil {
+			onDispatch()
+		}
 		out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "kill -- "+owner.pid), nil)
 		if err != nil {
 			return fmt.Errorf("%w: selected stop: %w: %s", ErrRestart, err, tail(out))
@@ -1710,6 +1731,9 @@ func (m *Manager) restartSelectedPending(ctx context.Context, host hostreg.Host,
 	}
 	if err := m.checkEffectBinding(pending.binding); err != nil {
 		return err
+	}
+	if onDispatch != nil {
+		onDispatch()
 	}
 	out, runErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, command), nil)
 	if ctx.Err() != nil {

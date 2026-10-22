@@ -1156,7 +1156,7 @@ func (m *Manager) deploySelectedWithSupersession(ctx context.Context, host hostr
 				if err != nil {
 					return err
 				}
-			} else if owner.pid != "0" && m.pendingRestart(host.Name).selected == nil {
+			} else if m.pendingRestart(host.Name).selected == nil {
 				if _, err := m.prepareSelectedRestartUsing(ctx, host, facts, owner, m.opts.controllerVersion(), snapshotPinGitSHA(), readEndpoint); err != nil {
 					return err
 				}

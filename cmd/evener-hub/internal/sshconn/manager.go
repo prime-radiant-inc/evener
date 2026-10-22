@@ -1896,7 +1896,9 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	if pending := m.pendingRestart(host.Name); pending.deployment {
 		if preflight.launchErr != nil && !facts.ExecutableMissing {
 			if pending.selected != nil {
-				repairUnusableTarget, err = m.recordedTargetUnusable(ctx, host)
+				probeCtx, cancelProbe := context.WithTimeout(ctx, m.opts.attemptLimit())
+				repairUnusableTarget, err = m.recordedTargetUnusable(probeCtx, host)
+				cancelProbe()
 			}
 			if err != nil || !repairUnusableTarget {
 				return nil, preflight.launchErr
