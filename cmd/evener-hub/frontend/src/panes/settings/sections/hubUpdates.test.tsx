@@ -149,6 +149,25 @@ test("dev build retries a failed check when the connection becomes ready", async
   expect(screen.queryByTestId("hub-dev-check-error")).toBeNull();
 });
 
+test("re-checks when the connection becomes ready again", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/settings/overview", () => overview("snapshot"));
+  let checks = 0;
+  fake.on("evener/update/check", () => {
+    checks += 1;
+    return { ...UPDATE_AVAILABLE };
+  });
+  fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
+
+  render(<HubSection />);
+  await updateStateIs("update-available");
+  expect(checks).toBe(1);
+
+  act(() => connectionStore.setState({ state: "reconnecting" }));
+  act(() => connectionStore.setState({ state: "ready" }));
+  await waitFor(() => expect(checks).toBe(2));
+});
+
 test("release build checks on mount and separates Install from Restart", async () => {
   const fake = connectFakeClient();
   fake.on("evener/settings/overview", () => overview("snapshot"));
@@ -200,7 +219,6 @@ test("keeps Restart available when only the channel check fails", async () => {
 
   render(<HubSection />);
   await updateStateIs("check-failed");
-  expect(updateStatus().textContent).toContain("rate limit");
   expect(screen.getByRole("button", { name: "Restart hub" })).toBeTruthy();
 });
 

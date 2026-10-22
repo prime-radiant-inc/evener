@@ -67,10 +67,12 @@ export function HubUpdates() {
     }
   }, [channel, buildChannel]);
 
-  // Check whenever a channel is selected (mount and every change).
+  // Check whenever a channel is selected (mount and every change), and when
+  // the connection becomes ready again: the cached answer belongs to the
+  // previous connection and may name a different hub's build.
   useEffect(() => {
-    if (channel !== null) void hubUpdateStore.getState().runCheck();
-  }, [channel]);
+    if (channel !== null && connectionState === "ready") void hubUpdateStore.getState().runCheck();
+  }, [channel, connectionState]);
 
   // Dev builds have no channel, but the check is still what reports the
   // on-disk build and whether restart is available. Retry when the
