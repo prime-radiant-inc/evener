@@ -19,7 +19,7 @@ import (
 // Files, fetches and checksums are real. Process/service observations and the
 // restarted listener are modeled, with an exact remote-command allowlist.
 func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
-	for _, name := range []string{"verified-restart", "lost-reply-recovery", "failed-start-recovery", "no-home-live", "no-home-cold", "legacy-home-live", "legacy-home-cold", "legacy-unset-home-live", "legacy-unset-home-cold", "empty-user-live", "empty-user-cold", "legacy-empty-user-live", "legacy-empty-user-cold", "unit-user-live", "unit-user-cold", "unit-user-other-uid", "repair-fresh-operation", "repair-fresh-automatic", "repair-fresh-operation-prior", "repair-fresh-automatic-prior"} {
+	for _, name := range []string{"verified-restart", "lost-reply-recovery", "failed-start-recovery", "unrelated-multiline-live", "unrelated-multiline-cold", "no-home-live", "no-home-cold", "legacy-home-live", "legacy-home-cold", "legacy-unset-home-live", "legacy-unset-home-cold", "empty-user-live", "empty-user-cold", "legacy-empty-user-live", "legacy-empty-user-cold", "unit-user-live", "unit-user-cold", "unit-user-other-uid", "repair-fresh-operation", "repair-fresh-automatic", "repair-fresh-operation-prior", "repair-fresh-automatic-prior"} {
 		lostReply, failedStart := name == "lost-reply-recovery", name == "failed-start-recovery"
 		t.Run(name, func(t *testing.T) {
 			repair := strings.HasPrefix(name, "repair-fresh-")
@@ -35,6 +35,12 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 			unset := ""
 			unitUser := "dev"
 			fileEnv := "HOME=/home/dev\nEVENER_HUB_LISTEN_ADDR=" + newAddr + "\n"
+			if strings.HasPrefix(name, "unrelated-multiline-") {
+				fileEnv += "PRIVATE_FIXTURE_SECRET='-----BEGIN FIXTURE-----\nHOME=/not-an-assignment\n-----END FIXTURE-----'\n"
+				if cold {
+					oldEnv = newEnv
+				}
+			}
 			if noHome {
 				policy, unitEnv = "no", ""
 				oldEnv = []string{"EVENER_HUB_LISTEN_ADDR=" + oldAddr, "XDG_CONFIG_HOME=/srv/config", "XDG_STATE_HOME=/srv/state"}

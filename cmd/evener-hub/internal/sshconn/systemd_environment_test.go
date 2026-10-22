@@ -297,6 +297,14 @@ func TestSystemdEnvironmentFileParsing(t *testing.T) {
 		{name: "noncharacter-plane-end", contents: "HOME=/home/\U0010ffff\n", refuse: true},
 		{name: "noncharacter-unrelated", contents: "PRIVATE_FIXTURE_SECRET=\ufffe\nHOME=/home\n", refuse: true},
 		{name: "unrelated-malformed-quote", contents: "PRIVATE_FIXTURE_SECRET='unclosed\nHOME=/home\n", refuse: true},
+		{name: "unrelated-multiline-single", contents: "HOME=/before\nPRIVATE_FIXTURE_SECRET='-----BEGIN FIXTURE-----\nHOME=/not-an-assignment\n-----END FIXTURE-----'\nXDG_STATE_HOME=/after\n", want: "HOME=/before\x00XDG_STATE_HOME=/after\x00"},
+		{name: "unrelated-multiline-double", contents: "PRIVATE_FIXTURE_SECRET=\"-----BEGIN FIXTURE-----\nquoted \\\" marker\nXDG_STATE_HOME=/not-an-assignment\n-----END FIXTURE-----\"\nHOME=/after\n", want: "HOME=/after\x00"},
+		{name: "unrelated-multiline-backslashes", contents: "PRIVATE_FIXTURE_SECRET=\"first\\\ncontinued\nlast\\\\\"\nHOME=/after\n", want: "HOME=/after\x00"},
+		{name: "unrelated-multiline-large", contents: "PRIVATE_FIXTURE_SECRET='first\n" + strings.Repeat("x", 16385) + "\nlast'\nHOME=/after\n", want: "HOME=/after\x00"},
+		{name: "unrelated-multiline-suffix", contents: "PRIVATE_FIXTURE_SECRET='first\nlast'garbage\nHOME=/after\n", refuse: true},
+		{name: "multiline-config-home", contents: "XDG_CONFIG_HOME='/one\ntwo'\n", refuse: true},
+		{name: "multiline-state-home", contents: "XDG_STATE_HOME=\"/one\ntwo\"\n", refuse: true},
+		{name: "multiline-listener", contents: "EVENER_HUB_LISTEN_ADDR='127.0.0.1:\n0'\n", refuse: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "env")

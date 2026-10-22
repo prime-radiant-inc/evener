@@ -23,7 +23,8 @@ var systemdEnvironmentAssignment = regexp.MustCompile(`^[ \t\r\f\v]*([A-Za-z_][A
 
 // Parse EnvironmentFile syntax without evaluating shell expressions. Return only
 // the four identity inputs, never unrelated credentials or file contents in errors.
-// Quotes delimit only at the beginning of a value. Multiline quoted values refuse.
+// Quotes delimit only at the beginning of a value. Consume unrelated multiline
+// values as one assignment, but identity values must still resolve to one line.
 func parseSystemdEnvironmentFile(text []byte) ([]byte, error) {
 	if len(text) > 65536 || !utf8.Valid(text) {
 		return nil, errOwnerEvidence
@@ -41,12 +42,36 @@ func parseSystemdEnvironmentFile(text []byte) ([]byte, error) {
 			continue // Blank lines, comments and lines without an assignment.
 		}
 		key, raw := assignment[1], strings.TrimLeft(assignment[2], " \t\r")
-		for !strings.HasPrefix(raw, "'") && (len(raw)-len(strings.TrimRight(raw, "\\")))%2 != 0 {
+		var quote byte
+		scan := 1
+		if strings.HasPrefix(raw, "'") || strings.HasPrefix(raw, "\"") {
+			quote = raw[0]
+		}
+		for {
+			for quote != 0 && scan < len(raw) {
+				c := raw[scan]
+				scan++
+				if c == '\\' && quote == '"' && scan < len(raw) {
+					scan++ // An escaped quote does not close the assignment.
+				} else if c == quote {
+					quote = 0
+				}
+			}
+			continuation := !strings.HasPrefix(raw, "'") && (len(raw)-len(strings.TrimRight(raw, "\\")))%2 != 0
+			if !continuation && quote == 0 {
+				break
+			}
 			i++
 			if i == len(lines) {
 				return nil, errOwnerEvidence
 			}
-			raw = raw[:len(raw)-1] + lines[i]
+			if continuation {
+				raw = raw[:len(raw)-1]
+				scan = min(scan, len(raw))
+			} else {
+				raw += "\n"
+			}
+			raw += lines[i]
 		}
 		value, err := systemdEnvironmentValue(raw)
 		if err != nil {
