@@ -197,6 +197,13 @@ the returned ref, `input_mode:"start"`, `message`, a fresh
 alone never answers a question. Resolve a pending approval with
 `session_control` and the approval's `escalationId` instead.
 
+Creation is local. `hub` accepts only `cwd`, `model` and `watch`, and an
+unknown field such as a source or host name is rejected rather than ignored.
+A Manager can discover an empty remote host and read its model catalog, but it
+cannot create the first worker there: start that worker from the remote host's
+own client, then address it by its `HOST:WORKSPACE_ID` reference. Remote
+creation is a planned follow-up, not a supported mode.
+
 The `delegate` result reports `created`, `watch` and `input` separately. A
 successful creation followed by a failed watch returns the worker ref, leaves
 the worker empty, and does not submit its prompt. A successful watch followed
