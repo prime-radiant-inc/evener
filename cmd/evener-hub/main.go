@@ -502,12 +502,13 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	remoteCache := &hubcore.RemoteThreadCache{}
 
 	// Bind the selected listener before anything downstream needs the actual
-	// bound address. Leave cfg.Addr as the configured value. This makes
-	// "-addr 127.0.0.1:0" a real ephemeral-port request instead of a literal
-	// ":0" that never resolves to anything callable: the OS hands back a
-	// free port that cannot collide with another hub, sidestepping the
-	// TOCTOU race in "probe a free port, then hope nothing else grabs it
-	// before we bind" (see docs/developing-evener/agentic-testing.md).
+	// bound address. endpoint retains the configured listener; cfg.Addr becomes
+	// the bound address for downstream consumers and restart publication. This
+	// makes "-addr 127.0.0.1:0" a real ephemeral-port request instead of a
+	// literal ":0" that never resolves to anything callable: the OS hands back
+	// a free port that cannot collide with another hub, sidestepping the TOCTOU
+	// race in "probe a free port, then hope nothing else grabs it before we
+	// bind" (see docs/developing-evener/agentic-testing.md).
 	hubListener, err := deps.listen(context.Background(), "tcp", endpoint.ListenAddr.String())
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] listen %s: %v\n", cfg.Addr, err)
