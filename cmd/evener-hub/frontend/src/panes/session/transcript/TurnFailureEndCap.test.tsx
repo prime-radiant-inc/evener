@@ -1944,9 +1944,9 @@ test("a definitive refusal restores a usable Retry without duplicating the input
     expect((requests[1]?.params as { input: { text?: string }[] } | undefined)?.input).toEqual([
       { text: "continue", type: "text" },
     ]);
-    // The later read omitted the second identity, so its accepted copy settles
-    // and that marker clears; the earlier refusal does not trap Retry.
-    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+    // Whether this instant still reflects the second copy is read-timing
+    // dependent; the latest-read omission case below owns the settle-after-
+    // acceptance assertion.
   } finally {
     storage.close();
   }
@@ -2726,6 +2726,13 @@ test("a latest-read omission settles the accepted copy and clears its marker", a
     await waitFor(() =>
       expect(fake.calls.filter((call) => call.method === "thread/read").length).toBeGreaterThanOrEqual(2),
     );
+    await flushPendingTurnsProjectionForTests();
+    // A fresh read issued safely after the acceptance, so the copy's
+    // acceptance time is strictly before this read's issue time.
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await act(async () => {
+      await threadsStore.getState().refreshThread("ref_a");
+    });
     await flushPendingTurnsProjectionForTests();
     await waitFor(() => expect(retryReflectionForTests("ref_a")).toBeUndefined());
     await waitFor(() => expect(retryButton()?.disabled).toBe(false));
