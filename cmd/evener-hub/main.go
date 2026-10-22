@@ -306,6 +306,11 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] config: %v\n", err)
 		return err
 	}
+	configIdentity, err := endpointConfigPath(opts.configPath, endpoint.ConfigExists)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] config: %v\n", err)
+		return err
+	}
 	if err := hostlock.CheckStorage(cfg.HubStateRoot, deps.inspectFilesystem); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
@@ -976,7 +981,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		BootID:              hubBootID,
 		PID:                 os.Getpid(),
 		StartedAt:           web.startedAt,
-		ConfigPath:          opts.configPath,
+		ConfigPath:          configIdentity,
 		HubStateRoot:        hubStateRoot,
 		RequestedListenAddr: endpoint.ListenAddr.String(),
 		ListenSource:        endpoint.ListenSource,

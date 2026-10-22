@@ -75,16 +75,7 @@ func resolveHubEndpoint(ctx context.Context, opts endpointOptions, deps mainDeps
 	if err != nil {
 		return hubendpoint.Report{}, err
 	}
-	configPath := opts.configPath
-	if endpoint.ConfigExists {
-		// Resolve before Abs: cleaning link/.. first would select a different
-		// file from the one the kernel opened in this process's working directory.
-		configPath, err = filepath.EvalSymlinks(configPath)
-		if err != nil {
-			return hubendpoint.Report{}, err
-		}
-	}
-	configPath, err = filepath.Abs(configPath)
+	configPath, err := endpointConfigPath(opts.configPath, endpoint.ConfigExists)
 	if err != nil {
 		return hubendpoint.Report{}, err
 	}
@@ -167,6 +158,19 @@ func resolveHubEndpoint(ctx context.Context, opts endpointOptions, deps mainDeps
 	report.State = "running"
 	report.Running = &record
 	return report, nil
+}
+
+// endpointConfigPath is shared by publication and inspection. Resolve in the
+// owning process's cwd, before Abs can clean symlink/.. into a different file.
+func endpointConfigPath(path string, exists bool) (string, error) {
+	if exists {
+		var err error
+		path, err = filepath.EvalSymlinks(path)
+		if err != nil {
+			return "", err
+		}
+	}
+	return filepath.Abs(path)
 }
 
 func unavailableEndpoint(report hubendpoint.Report, reason string) (hubendpoint.Report, error) {

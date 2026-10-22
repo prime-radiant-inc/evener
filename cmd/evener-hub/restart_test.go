@@ -173,8 +173,30 @@ func TestHubRestartCommandUsesResponseIncarnation(t *testing.T) {
 }
 
 func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
-	for _, name := range []string{"listener-moved", "listener-moved-lost-reply", "failed-restart", "wrong-record-config", "changed-selected-root", "changed-selected-config", "same-incarnation"} {
+	for _, name := range []string{"listener-moved", "listener-moved-lost-reply", "relative-config-listener-moved", "symlink-config-listener-moved", "relative-symlink-config-listener-moved", "failed-restart", "wrong-record-config", "changed-selected-root", "changed-selected-config", "same-incarnation"} {
 		t.Run(name, func(t *testing.T) {
+			dir, root := endpointTestRoot(t)
+			config := endpointTestConfig(t, dir, root, "127.0.0.1:0")
+			recordConfig := config
+			if strings.Contains(name, "config-listener-moved") {
+				selector := "./hub.toml"
+				if strings.Contains(name, "symlink-config") {
+					selector = filepath.Join(dir, "hub-link.toml")
+					if err := os.Symlink(config, selector); err != nil {
+						t.Fatal(err)
+					}
+					if strings.HasPrefix(name, "relative-") {
+						selector = "./hub-link.toml"
+					}
+				}
+				t.Chdir(dir)
+				recordConfig = restartStartupConfigPath(t, selector)
+				// The CLI must not resolve the owner's relative selector in its
+				// own cwd, where the same basename names a different config.
+				clientDir := t.TempDir()
+				endpointTestConfig(t, clientDir, t.TempDir(), "127.0.0.1:1")
+				t.Chdir(clientDir)
+			}
 			setBuild(t, "abc1234", "release")
 			t.Cleanup(func() { hubUpdateMu = sync.Mutex{} })
 			previousSupported := hubRestartSupported
@@ -191,7 +213,6 @@ func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
 			if name == "same-incarnation" {
 				after = before
 			}
-			dir, root := endpointTestRoot(t)
 			token, err := hubedge.LoadOrCreateAuthToken(root)
 			if err != nil {
 				t.Fatal(err)
@@ -228,13 +249,13 @@ func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
 			predecessor.Start()
 			defer predecessor.Close()
 			oldAddr := strings.TrimPrefix(predecessor.URL, "http://")
-			config := endpointTestConfig(t, dir, root, oldAddr)
+			endpointTestConfig(t, dir, root, oldAddr)
 			release, err := hostlock.AcquireLock(filepath.Join(root, "hub.lock"))
 			if err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(release)
-			record := hubendpoint.Record{SchemaVersion: hubendpoint.SchemaVersion, BootID: "restart-fixture", PID: os.Getpid(), StartedAt: before, ConfigPath: config, HubStateRoot: root, RequestedListenAddr: oldAddr, ListenSource: "config", BoundAddr: oldAddr, LocalURL: predecessor.URL, LoopbackURL: predecessor.URL}
+			record := hubendpoint.Record{SchemaVersion: hubendpoint.SchemaVersion, BootID: "restart-fixture", PID: os.Getpid(), StartedAt: before, ConfigPath: recordConfig, HubStateRoot: root, RequestedListenAddr: oldAddr, ListenSource: "config", BoundAddr: oldAddr, LocalURL: predecessor.URL, LoopbackURL: predecessor.URL}
 			remove, err := hubendpoint.Publish(root, record)
 			if err != nil {
 				t.Fatal(err)
@@ -324,7 +345,7 @@ func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
 				t.Fatalf("restart scheduling: attempts=%d err=%v", attempts.Load(), scheduleErr)
 			}
 			switch name {
-			case "listener-moved", "listener-moved-lost-reply":
+			case "listener-moved", "listener-moved-lost-reply", "relative-config-listener-moved", "symlink-config-listener-moved", "relative-symlink-config-listener-moved":
 				if err != nil || successorHealth.Load() == 0 {
 					t.Fatalf("moved successor not confirmed: err=%v health=%d stderr=%q", err, successorHealth.Load(), stderr.String())
 				}
@@ -339,6 +360,27 @@ func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Read the real startup publication rather than duplicating its config-path
+// policy in the restart fixture. Serving/prefetches are hermetic test seams.
+func restartStartupConfigPath(t *testing.T, selector string) string {
+	t.Helper()
+	_, cfg, deps := newTraceMainTestDeps(t)
+	var record hubendpoint.Record
+	deps.serve = func(context.Context, hubHTTPServer) error {
+		var err error
+		record, err = hubendpoint.Read(cfg.HubStateRoot)
+		return err
+	}
+	var stderr bytes.Buffer
+	if err := runMain([]string{"--config", selector, "--evener", "/bin/evener"}, &stderr, deps); err != nil {
+		t.Fatalf("startup publication: %v stderr=%q", err, stderr.String())
+	}
+	if record.ConfigPath == "" {
+		t.Fatal("startup did not publish a config path")
+	}
+	return record.ConfigPath
 }
 
 func TestHubRestartSubcommandDispatch(t *testing.T) {
