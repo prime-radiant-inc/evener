@@ -12100,8 +12100,8 @@ func TestHubRPCInstanceCreateAnswersWithItsOwnState(t *testing.T) {
 	if err := holder.Reload(); err != nil {
 		t.Fatalf("registry: %v", err)
 	}
-	// The seam has to be installed before the server builds its controller,
-	// and it reports the controller this test then arms for the edit.
+	// The observer reports the controller the server builds, so the test can
+	// arm that controller's List gate rather than a process-wide one.
 	var ctl *hubInstancesController
 	previousObserver := observeInstancesController
 	observeInstancesController = func(observed *hubInstancesController) { ctl = observed }
@@ -12153,26 +12153,20 @@ func TestHubRPCInstanceCreateAnswersWithItsOwnState(t *testing.T) {
 		t.Fatal("Create never reached its reload, so the loader was not paused")
 	}
 
-	// The seam fires just before a mutation takes the write lock, so the
-	// signal says the edit has reached the lock the paused create holds. The
-	// create already took its lock before the hook is armed. Waiting for it,
-	// rather than sleeping, is what makes the create's release race an edit
-	// that is actually in flight.
-	editAtLock := make(chan struct{})
-	ctl.beforeWriteLock = sync.OnceFunc(func() { close(editAtLock) })
+	// Hold any post-mutation List() until the racing edit has finished, so the
+	// listing a regressed handler reads is the edit's state. The correct
+	// handler returns its captured listing and never reaches this seam.
+	editFinished := make(chan struct{})
+	ctl.beforeList = func() { <-editFinished }
 	editDone := make(chan outcome, 1)
 	go func() {
+		defer close(editFinished)
 		var resp appwire.InstanceListResponse
 		err := editClient.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{
 			Name: "work", BaseURL: racedURL,
 		}, &resp)
 		editDone <- outcome{resp: resp, err: err}
 	}()
-	select {
-	case <-editAtLock:
-	case <-time.After(10 * time.Second):
-		t.Fatal("Edit never reached its write lock, so the create was not raced")
-	}
 	release()
 
 	created := <-createDone
@@ -12192,7 +12186,7 @@ func TestHubRPCInstanceCreateAnswersWithItsOwnState(t *testing.T) {
 		t.Fatalf("fixture drift: both destinations need fingerprints, got %q and %q", createdRow.EndpointFingerprint, editedRow.EndpointFingerprint)
 	}
 	if createdRow.EndpointFingerprint == editedRow.EndpointFingerprint {
-		t.Fatalf("fixture drift: the raced edit must move the fingerprint, still %q", createdRow.EndpointFingerprint)
+		t.Fatalf("create answered with the edit's destination %q: the response was not the listing captured under the create's write lock", createdRow.EndpointFingerprint)
 	}
 }
 
