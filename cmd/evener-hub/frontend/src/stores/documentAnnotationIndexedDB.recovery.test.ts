@@ -26,7 +26,12 @@ import {
   openAnnotationStore,
   sampleChangedContent,
 } from "./testing/annotationFixture";
-import { holdIndexedDBEvent, holdNextWriteTransaction, settleRealTasks } from "./testing/stalledIndexedDB";
+import {
+  holdIndexedDBEvent,
+  holdNextTransactions,
+  holdNextWriteTransaction,
+  settleRealTasks,
+} from "./testing/stalledIndexedDB";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -786,6 +791,137 @@ test("a delayed fence carries its evidence into the newer registration", async (
     changedValidation.release();
     expect(await changedRead).toMatchObject({ state: "expiry-pending" });
   } finally {
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
+
+// A reset provisions unconfirmed suppression for the leases it is about to
+// delete, and an in-flight changed acceptance may install its own provisional
+// for the same epoch. When the reset does NOT commit, its release must name the
+// entry it provisioned: releasing by identity alone deletes the live
+// acceptance's provisional and reopens the append window it protects.
+test("a non-committing reset releases only the provisional it provisioned", async () => {
+  const preparing = deferred<void>();
+  const preparationReleased = deferred<void>();
+  const resetAttempted = deferred<void>();
+  let preparations = 0;
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-reset-provisional-owner",
+    origin: "https://reset.example",
+    runtime: true,
+    beforeCommit: (operation) => {
+      if (operation !== "reset") return;
+      resetAttempted.resolve();
+      throw new Error("reset fault");
+    },
+    prepareAnnotation: async () => {
+      preparations += 1;
+      if (preparations === 1) {
+        preparing.resolve();
+        await preparationReleased.promise;
+      }
+      return currentPreparation(() => fixture)();
+    },
+  });
+  try {
+    // The overlapping handoff passes its entry guard and waits mid-preparation
+    // BEFORE the reset provisions.
+    const handoff = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
+    await preparing.promise;
+
+    // The reset provisions suppression and its transaction aborts, but the
+    // abort event is held so its release path has not run yet. The changed
+    // acceptance's validation is held in the same window.
+    const holds = holdNextTransactions([
+      { stores: RESET_STORES, event: "abort" },
+      { stores: ACCEPT_STORES, event: "complete" },
+    ]);
+    const reset = fixture.repository.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation);
+    await resetAttempted.promise;
+    await holds.reached[0];
+
+    // The changed acceptance installs its own provisional for the same epoch
+    // and holds its validation completion, so that provisional stays
+    // unconfirmed while the reset's abort resolves.
+    const changedTicket = await fixture.repository.beginRead(fixture.document);
+    const changedAcceptance = fixture.repository.acceptRead(changedTicket, sampleChangedContent());
+    await holds.reached[1];
+
+    // The reset releases while the acceptance's provisional is unconfirmed.
+    holds.releaseAt(0);
+    await expect(reset).rejects.toThrow("reset fault");
+    preparationReleased.resolve();
+
+    expect(await handoff).toEqual({ state: "pending", reason: "owner-unavailable" });
+    holds.release();
+    expect(await changedAcceptance).toMatchObject({ state: "expiry-pending" });
+  } finally {
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
+
+// Two changed reads of the same accepted epoch overlap. The first installs the
+// provisional that protects its in-flight validation. A second, later read's
+// entry install used to replace that entry; when its validation answers stale,
+// its release then deleted the first invocation's protection. The displaced
+// owner's protection must survive the second invocation's release.
+test("a stale overlapping acceptance keeps the earlier provisional alive", async () => {
+  const preparing = deferred<void>();
+  const preparationReleased = deferred<void>();
+  let preparations = 0;
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-entry-provisional-owner",
+    origin: "https://coordination.example",
+    runtime: true,
+    prepareAnnotation: async () => {
+      preparations += 1;
+      if (preparations === 1) {
+        preparing.resolve();
+        await preparationReleased.promise;
+      }
+      return currentPreparation(() => fixture)();
+    },
+  });
+  const sibling = createDocumentAnnotationRepository({
+    indexedDB: fixture.factory,
+    databaseName: "annotation-entry-provisional-owner",
+    drafts: fixture.drafts,
+    targetFor: () => null,
+  });
+  try {
+    // The overlapping handoff passes its entry guard and waits mid-preparation
+    // before either changed read installs suppression.
+    const handoff = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
+    await preparing.promise;
+
+    // T0's changed validation commits but its completion is held, so its
+    // provisional is installed and still unconfirmed.
+    const firstHold = holdNextWriteTransaction(ACCEPT_STORES);
+    const firstTicket = await fixture.repository.beginRead(fixture.document);
+    const firstAcceptance = fixture.repository.acceptRead(firstTicket, sampleChangedContent());
+    await firstHold.reached;
+
+    // T1 installs its own entry over T0's, then a sibling's read supersedes T1
+    // durably without touching this adapter's remembered registration, so T1's
+    // validation can only answer stale.
+    const secondTicket = await fixture.repository.beginRead(fixture.document);
+    await sibling.beginRead(fixture.document);
+    expect(await fixture.repository.acceptRead(secondTicket, sampleChangedContent())).toEqual({
+      state: "stale-ticket",
+    });
+
+    // T0's provisional must still protect the window T1's release touched.
+    preparationReleased.resolve();
+
+    expect(await handoff).toEqual({ state: "pending", reason: "owner-unavailable" });
+    firstHold.release();
+    expect(await firstAcceptance).toMatchObject({ state: "expiry-pending" });
+  } finally {
+    sibling.close();
     fixture.repository.close();
     fixture.drafts.close();
   }

@@ -811,12 +811,16 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const remembered = this.#readStates.get(documentKey)?.get(ticket.namespaceIncarnation);
     const previous = remembered?.accepted;
     let provisional: string | undefined;
+    // The entry this invocation displaced, restored when its validation says
+    // not-current so another owner's provisional survives this release.
+    let displacedEntry: SuppressionEntry | undefined;
     if (remembered?.ticket.requestId === ticket.requestId && previous) {
       const changed = contentChangedAgainst(remembered.observations, content);
       if (changed) {
         const identity = epochIdentity(previous.lease);
         const entry = this.#suppressedEpochs.get(identity);
         if (!entry?.confirmed) {
+          displacedEntry = entry;
           this.#suppressedEpochs.set(identity, {
             documentKey,
             namespaceIncarnation: previous.lease.namespaceIncarnation,
@@ -838,7 +842,11 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         entry.confirmed = true;
         return;
       }
-      this.#releaseUnconfirmed([{ identity: provisional, requestId: ticket.requestId }]);
+      if (displacedEntry === undefined) {
+        this.#releaseUnconfirmed([{ identity: provisional, requestId: ticket.requestId }]);
+      } else {
+        this.#suppressedEpochs.set(provisional, displacedEntry);
+      }
     };
     // A stale or unchanged validation releases the provisional restriction a
     // concurrent handoff may have refused against. That refusal only records
@@ -1951,7 +1959,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     // and let an unchanged reread treat the epoch as expired, deleting
     // payloads the reset never removed. An independently confirmed expiry (a
     // changed read's proof) keeps its own entry untouched.
-    const provisioned: string[] = [];
+    const provisioned: { identity: string; requestId: string }[] = [];
     for (const [documentKey, states] of this.#readStates) {
       if (documentKeyNamespace(documentKey) !== namespaceKey) continue;
       const state = states.get(expectedIncarnation);
@@ -1966,13 +1974,13 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
           requestId: state.ticket.requestId,
           confirmed: false,
         });
-        provisioned.push(identity);
+        provisioned.push({ identity, requestId: state.ticket.requestId });
       }
     }
     const confirmProvisioned = (): void => {
-      for (const identity of provisioned) {
+      for (const { identity, requestId } of provisioned) {
         const entry = this.#suppressedEpochs.get(identity);
-        if (entry && !entry.confirmed) entry.confirmed = true;
+        if (entry && !entry.confirmed && entry.requestId === requestId) entry.confirmed = true;
       }
     };
     // An aborted or non-rotating reset releases what it provisioned. The release
@@ -1982,7 +1990,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     // transaction settled, so the storage-success signal the release helper
     // fires cannot start a pass inside a transaction.
     const releaseProvisioned = (): void => {
-      this.#releaseUnconfirmed(provisioned.map((identity) => ({ identity })));
+      this.#releaseUnconfirmed(provisioned);
     };
     const newIncarnation = createSecureUUID();
     let result: { committed: boolean; incarnation: string };

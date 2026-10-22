@@ -182,6 +182,58 @@ export function holdNextTransactionEvent(
   };
 }
 
+// Hold several distinct transactions through ONE spy. Two separate
+// holdNextTransactionEvent spies cannot wrap each other: vi.spyOn returns the
+// existing mock and the second call's captured original becomes itself. A case
+// that must hold two transactions at once (an aborting reset and a concurrent
+// validation) names both here, in match order.
+export function holdNextTransactions(
+  specs: readonly { stores: readonly string[]; event: "complete" | "abort"; mode?: IDBTransactionMode }[],
+) {
+  const holds: (ReturnType<typeof holdIndexedDBEvent> | undefined)[] = specs.map(() => undefined);
+  const released: boolean[] = specs.map(() => false);
+  const resolvers: (() => void)[] = [];
+  const reached = specs.map(
+    () =>
+      new Promise<void>((resolve) => {
+        resolvers.push(resolve);
+      }),
+  );
+  const transact = IDBDatabase.prototype.transaction;
+  const spy = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (
+    this: IDBDatabase,
+    ...args: Parameters<IDBDatabase["transaction"]>
+  ) {
+    const transaction = transact.apply(this, args);
+    for (let index = 0; index < specs.length; index += 1) {
+      if (released[index] || holds[index] !== undefined) continue;
+      const spec = specs[index];
+      if (spec === undefined) continue;
+      if (transaction.mode !== (spec.mode ?? "readwrite")) continue;
+      if (transaction.objectStoreNames.length !== spec.stores.length) continue;
+      if (!spec.stores.every((store) => transaction.objectStoreNames.contains(store))) continue;
+      const hold = holdIndexedDBEvent(transaction, spec.event);
+      holds[index] = hold;
+      void hold.reached.then(() => resolvers[index]?.());
+      break;
+    }
+    return transaction;
+  });
+  return {
+    reached,
+    releaseAt(index: number) {
+      released[index] = true;
+      holds[index]?.release();
+    },
+    release() {
+      spy.mockRestore();
+      for (const [index, hold] of holds.entries()) {
+        if (!released[index]) hold?.release();
+      }
+    },
+  };
+}
+
 // Main's entry-backed-transcripts seam: the complete-event hold over an
 // explicit mode (the session cache's four-store write passes "readwrite").
 // See holdNextTransactionEvent.
