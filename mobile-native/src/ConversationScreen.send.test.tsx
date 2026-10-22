@@ -2763,6 +2763,29 @@ it("resumes a paused session from Send, not from its error row", async () => {
 	).toEqual(["ref-error-resume"]);
 });
 
+// A resume that fails leaves its message parked, which makes the next Send
+// route to queue instead of resuming again. The queued message must still
+// drive recovery: otherwise the session stays fenced, and every later message
+// piles up behind one that can never go out.
+it("still resumes from a later Send that queues behind a failed resume", async () => {
+	const { tree } = await mount(failedTurn("ref-resume-retry", "go test exited 1", true));
+	const runtime = getNativeMutationRuntime();
+	const settle = vi.spyOn(runtime, "settleTarget");
+	// The first resume cannot run, as when the daemon is still shutting down.
+	settle.mockRejectedValueOnce(new Error("resume failed"));
+
+	act(() => field(tree)?.props.onChangeText("first"));
+	await press(tree, "Send and resume");
+	expect(settle).toHaveBeenCalledTimes(1);
+
+	// The first message is still parked, so this Send queues behind it rather
+	// than resuming. It must nevertheless try the resume again.
+	act(() => field(tree)?.props.onChangeText("second"));
+	await press(tree, "Queue message");
+	expect(settle).toHaveBeenCalledTimes(2);
+	expect(settle.mock.calls[1]?.[3]).toMatchObject({ mayResumeFenced: expect.any(Function) });
+});
+
 it("names the model on the composer's chip, which opens the model sheet with the session's controls", async () => {
 	vi.mocked(navigation.navigate).mockClear();
 	const served = thread("ref-model", "idle");

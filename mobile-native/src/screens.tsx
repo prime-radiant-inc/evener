@@ -2617,6 +2617,21 @@ export function ConversationScreen({
 			const admitted = accepted != null && accepted !== previous && accepted.kind === kind;
 			// Spec 16.6: a light impact on send, Send's and an error row's Retry's.
 			if (admitted) haptic("light");
+			// A fenced session whose resume already failed leaves its message
+			// parked, so this Send queues behind it instead of resuming. The
+			// queue route must still drive recovery: the parked message can only
+			// go out once the session resumes, so waiting on the fence alone
+			// would strand this message behind one that can never move. The
+			// resume runs through the runtime's settle, which is also what
+			// retargets the parked rows when it returns a different identity.
+			const live = store.getState();
+			if (live.conversation?.resumeRequired) {
+				const target = mutationTarget(live);
+				if (target !== null && client !== null)
+					await getNativeMutationRuntime()
+						.settleTarget(target.hubId, target.ref, client, { mayResumeFenced: async () => true })
+						.catch(() => undefined);
+			}
 			return admitted;
 		},
 		// `controls` belongs here: the resume it drives must be the live instance,
