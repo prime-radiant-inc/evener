@@ -100,6 +100,16 @@ import type { ConversationMutationPendingPort, ConversationMutationSubmitter } f
 
 export type ConversationStatus = "idle" | "opening" | "open" | "error" | "closed";
 
+// Store-owned canonical-read validity. `unknown` means no accepted
+// latest-window read currently backs the model (before the first read, after an
+// invalidation, or after a read was discarded); `reading` means one is
+// required/in flight; `ready` means the published model is the accepted current
+// latest window; `error` means the required read failed. Only an accepted
+// current latest-window publication sets `ready` — a returned promise, paging,
+// display reprojection, pending emptiness or a discarded/superseded read must
+// not. Display rows stay readable in every state.
+export type LatestReadState = "unknown" | "reading" | "ready" | "error";
+
 // The wire's nil/non-nil-empty/non-empty rule (reducer.ts's own
 // ITEM_OMISSION_TOLERANT_FIELDS, mirrored here for the mobile-only merges
 // that fall outside the shared reducer's per-turn mergeHistory): an omitted
@@ -383,6 +393,8 @@ export interface ConversationState {
 	readonly loadingOlder: boolean;
 	readonly status: ConversationStatus;
 	readonly error: string | null;
+	// Canonical read validity owned by this store (see LatestReadState).
+	readonly latestReadState: LatestReadState;
 
 	readonly draft: string;
 	readonly pendingSend: string | null;
@@ -391,7 +403,17 @@ export interface ConversationState {
 	// a seam is bound (LiveConversationState.bindPendingMutations); never a
 	// per-process memory fact, so it survives a cold reopen.
 	readonly pendingMutations?: readonly PendingTurnEntry[] | null;
+	// Whether `pendingMutations` is the verified current durable projection.
+	// False before the first durable read, after a target storage notification
+	// (synchronously, before its read starts), and after a failed read. Rows may
+	// still be displayed while false; they are never a verified snapshot then.
+	readonly pendingMutationsReady: boolean;
 	readonly lastAcceptedMutation?: AcceptedConversationMutation | null;
+
+	// The canonical session model, returned only while this store holds an
+	// accepted current latest-window publication. Read-only: it derives from
+	// latestReadState and the display model, and never restores validity.
+	canonicalSession(): MobileConversation | null;
 
 	// The non-projected compatibility surface, kept for screen test mocks; no
 	// production screen calls it (they open through openProjected /
@@ -439,6 +461,15 @@ export interface LiveConversationState extends ConversationState {
 	// suspend/rehydrate generation bump that did not retire the seam leaves the
 	// live subscription untouched. Returns null when a seam is already bound.
 	bindPendingMutationsIfUnbound(port: ConversationMutationPendingPort): (() => void) | null;
+	// Requests the store's one authoritative latest-window read through the
+	// existing drain scheduler and resolves when that request settles (or
+	// immediately when there is no live binding). Resolving proves the request
+	// ran, never that the read was accepted; only publication sets `ready`.
+	ensureLatest(): Promise<void>;
+	// Demands a fresh current durable pending read and resolves when it settles.
+	// Readiness is false synchronously before the read starts and stays false if
+	// it fails. Retirement resolves the wait without undoing a commit.
+	refreshPendingMutations(): Promise<void>;
 	openProjected(
 		service: LiveConversationService,
 		activitySink: LiveActivitySink,
@@ -469,6 +500,16 @@ export interface LiveConversationState extends ConversationState {
 // pattern used by isHubLaunchError.
 function isActionUnavailableError(err: unknown): boolean {
 	return err instanceof WireError && err.evenerErrorInfo === "actionUnavailable";
+}
+
+// Whether a model's held history can back canonical latest-turn authority. An
+// invalidated history is awaiting a newer incarnation, and a failed one carries
+// a read diagnostic; neither is an accepted current latest-window publication.
+// A model with no versioned history at all (a legacy hydrate) has no such
+// marker and stays eligible — the read that published it was still accepted.
+function historySupportsCanonicalRead(conversation: MobileConversation | null | undefined): boolean {
+	const history = conversation?.history;
+	return history === undefined || (history.invalidatedAtGeneration === undefined && history.failed === undefined);
 }
 
 // A mutation's precondition, re-evaluated at the mutation boundary rather than
@@ -1316,6 +1357,10 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 	// Late-bound store getter — assigned inside create() so requestRehydrate
 	// (called from applyNotification) can access get().rehydrate.
 	let storeGet: (() => LiveConversationState) | null = null;
+	// Late-bound canonical-read invalidation — assigned inside create() so a
+	// request made here (a frame's resync/gap, a page's invalidation) drops
+	// live-tail authority synchronously, before the scheduler's effect starts.
+	let markLatestReadState: ((state: LatestReadState) => void) | null = null;
 
 	// I1: Capture the current binding snapshot at request time. The effect
 	// verifies ALL fields (epoch+ref+generation+service+sink object identities)
@@ -1394,6 +1439,10 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			return;
 		}
 		if (service === null || sink === null) return;
+		// A read request invalidates live-tail authority at once: the model on
+		// screen stays readable, but it is no longer the verified canonical
+		// session until this read (or a newer accepted one) publishes.
+		markLatestReadState?.("reading");
 		scheduler.request(ref, async () => {
 			// I1: Suppress stale work BEFORE any read — if the binding changed,
 			// do not call rehydrate (serviceA must never be called with refB).
@@ -1550,6 +1599,17 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 	let pendingPort: ConversationMutationPendingPort | null = null;
 	let pendingUnsubscribe: (() => void) | null = null;
 	let pendingGeneration = 0;
+	// The bound seam's "demand a fresh current read" operation and the waiters
+	// an awaitable refresh is holding. Retirement resolves those waiters (it
+	// cancels the wait, never the commit) so no caller is left awaiting a read
+	// from a seam that no longer exists.
+	let pendingDemandRead: (() => Promise<void>) | null = null;
+	const pendingRefreshWaiters = new Set<() => void>();
+	function settlePendingRefreshes(): void {
+		const waiters = [...pendingRefreshWaiters];
+		pendingRefreshWaiters.clear();
+		for (const waiter of waiters) waiter();
+	}
 	// Advanced only by forgetPendingProvenance (close/reset). A read's provenance
 	// write is fenced on THIS, not on pendingGeneration: a read in flight across a
 	// same-target rebind or a thread open still observed a durable record of this
@@ -1626,6 +1686,8 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 	// same-target rebind keeps it and a still-authoritative entry stays honest.
 	function detachPendingRows(): void {
 		++pendingGeneration;
+		pendingDemandRead = null;
+		settlePendingRefreshes();
 		pendingUnsubscribe?.();
 		pendingUnsubscribe = null;
 		pendingPort = null;
@@ -1673,11 +1735,30 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			rawSet(partial);
 		};
 		storeGet = get;
+		// The one chokepoint for canonical-read validity transitions. Guarded so
+		// a repeated request does not churn subscribers.
+		const markLatest = (next: LatestReadState) => {
+			if (get().latestReadState !== next) set({ latestReadState: next });
+		};
+		markLatestReadState = markLatest;
 		// Re-projects the durable rows against the current model and publishes
 		// them only when they changed, so subscribers keep a stable reference.
-		const republishPendingRows = () => {
+		// `ready`, when supplied, rides the same write: a read that certifies the
+		// projection publishes its rows and readiness atomically.
+		const republishPendingRows = (ready?: boolean) => {
 			const next = reconcilePendingMutations();
-			if (!samePendingRows(get().pendingMutations, next)) set({ pendingMutations: next });
+			const current = get();
+			const readyChanged = ready !== undefined && current.pendingMutationsReady !== ready;
+			const rowsChanged = !samePendingRows(current.pendingMutations, next);
+			if (rowsChanged || readyChanged) {
+				set({
+					// A readiness-only change reuses the published rows array, so the
+					// stability contract (an unchanged projection keeps its reference)
+					// holds across a re-served read.
+					...(rowsChanged ? { pendingMutations: next } : {}),
+					...(ready === undefined ? {} : { pendingMutationsReady: ready }),
+				});
+			}
 		};
 		// What a publish records when its cap trimmed rows from the top. An older
 		// page in flight asked from above rows the trim just dropped: merged, it
@@ -1704,12 +1785,21 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			loadingOlder: false,
 			status: "idle",
 			error: null,
+			latestReadState: "unknown",
 
 			draft: "",
 			pendingSend: null,
 			pendingMutation: null,
 			pendingMutations: null,
+			pendingMutationsReady: false,
 			lastAcceptedMutation: null,
+
+			canonicalSession() {
+				const current = get();
+				return current.latestReadState === "ready" && historySupportsCanonicalRead(current.conversation)
+					? current.conversation
+					: null;
+			},
 
 			setDisplayConfig(config) {
 				const current = get();
@@ -1808,6 +1898,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					status: "opening",
 					ref,
 					error: null,
+					latestReadState: "reading",
 					conversation: null,
 					olderCursor: null,
 					trimmedAbove: false,
@@ -1818,6 +1909,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					pendingSend: null,
 					pendingMutation: null,
 					pendingMutations: null,
+					pendingMutationsReady: false,
 					lastAcceptedMutation: null,
 					conversationGeneration: gen,
 				});
@@ -1832,6 +1924,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						...trimmedState(trimmed),
 						status: "open",
 						olderCursor: null,
+						latestReadState: historySupportsCanonicalRead(bounded) ? "ready" : "unknown",
 					});
 					// C1: Track the plain-open service as boundService with a null
 					// sink so loadOlder/mutations validate exact service
@@ -1847,6 +1940,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					set({
 						status: "error",
 						error: err instanceof Error ? err.message : String(err),
+						latestReadState: "error",
 					});
 				}
 			},
@@ -1878,6 +1972,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					status: "opening",
 					ref,
 					error: null,
+					latestReadState: "reading",
 					conversation: null,
 					olderCursor: null,
 					trimmedAbove: false,
@@ -1886,6 +1981,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					pendingSend: null,
 					pendingMutation: null,
 					pendingMutations: null,
+					pendingMutationsReady: false,
 					lastAcceptedMutation: null,
 					conversationGeneration: gen,
 				});
@@ -1913,7 +2009,12 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// do not commit the conversation projection — the two stores stay
 					// atomically consistent under the same exact identity tuple.
 					const accepted = sink.setLiveView(activity, identity);
-					if (!accepted) return;
+					if (!accepted) {
+						// Nothing was committed as this generation's canonical
+						// projection; no read backs the display.
+						markLatest("unknown");
+						return;
+					}
 					adoptRead(conversation);
 					const { conversation: bounded, trimmed } = capAndTruncate(conversation);
 					set({
@@ -1923,6 +2024,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						olderCursor,
 						hasEarlierItems: hasEarlierItems ?? false,
 						hasLaterItems: hasLaterItems ?? false,
+						latestReadState: historySupportsCanonicalRead(bounded) ? "ready" : "unknown",
 					});
 					liveHandler = (n) => {
 						if (gen !== conversationGen) return;
@@ -1933,6 +2035,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					set({
 						status: "error",
 						error: err instanceof Error ? err.message : String(err),
+						latestReadState: "error",
 					});
 				} finally {
 					if (!liveHandler) {
@@ -1956,6 +2059,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				set({
 					status: "opening",
 					error: null,
+					latestReadState: "unknown",
 					pendingMutation: null,
 					pendingSend: null,
 					loadingOlder: false,
@@ -1984,6 +2088,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				set({
 					status: "opening",
 					error: null,
+					latestReadState: "reading",
 					pendingMutation: null,
 					pendingSend: null,
 					loadingOlder: false,
@@ -2014,6 +2119,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						set({
 							status: "error",
 							error: current.error ?? "Could not load the session. Try again.",
+							latestReadState: "error",
 						});
 						return;
 					}
@@ -2056,6 +2162,9 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				const state = get();
 				if (state.ref === null) return;
 				acceptedRehydrate = null;
+				// A read is now required: the model on screen stops being canonical
+				// authority until this read publishes an accepted latest window.
+				markLatest("reading");
 				const ref = state.ref;
 				const gen = state.conversationGeneration;
 				// I1: If the service or sink objects differ from the current binding,
@@ -2136,6 +2245,9 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						}
 						// Preserve current draft only — do not publish projection.
 						set({ draft: currentSnapshot.draft });
+						// This read's answer predates the newer mutation owner, so it
+						// certifies nothing; the trailing reread will.
+						markLatest("unknown");
 						return;
 					}
 					// The snapshot is authoritative for every row it carries (the
@@ -2202,6 +2314,10 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 							generation: gen,
 						});
 						if (discardAccepted) acceptedRehydrate = { generation: gen, sink };
+						// The wire answered but this model declined the read by its own
+						// identity rules: a discarded read never restores canonical
+						// authority.
+						markLatest("unknown");
 						return;
 					}
 					// A fresh read can reissue a paged/retained item under a DIFFERENT
@@ -2366,7 +2482,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 							mergedTurns,
 						),
 					);
-					const commitBase = {
+					const commitBase: Partial<ConversationState> = {
 						conversation: committedConversation,
 						// A read of another instance replaces the window, and with it
 						// any trim above it; the same instance keeps its trim.
@@ -2375,6 +2491,10 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						hasEarlierItems: hasEarlierItems ?? currentSnapshot.hasEarlierItems,
 						hasLaterItems: hasLaterItems ?? currentSnapshot.hasLaterItems,
 						draft: currentState.draft,
+						// Only this accepted latest-window publication restores canonical
+						// authority — and only if the merged history is not itself
+						// invalidated or failed.
+						latestReadState: historySupportsCanonicalRead(committedConversation) ? "ready" : "unknown",
 					};
 					if (errorUnchanged && !mutationOwnsError && currentState.error !== null) {
 						// I1: Only include error: null when the current error is actually
@@ -2402,6 +2522,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					) {
 						set({
 							error: err instanceof Error ? err.message : String(err),
+							latestReadState: "error",
 						});
 					}
 				}
@@ -2583,6 +2704,11 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 								heldHistory.pendingIncarnation !== mergedHistory.pendingIncarnation;
 							if (newlyInvalidated) {
 								requestRehydrate(currentConv.ref);
+							} else {
+								// An already-invalid thread with no newer signal owes no
+								// scheduled read of its own: no accepted current window
+								// backs the display, and none is in flight.
+								markLatest("unknown");
 							}
 							return { status: "ignored" };
 						}
@@ -2712,8 +2838,9 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				detachPendingRows();
 				// Replacing the binding retires the prior target's published rows at
 				// once: they belong to the seam being replaced, and a replacement whose
-				// own first read never lands must not leave them standing.
-				set({ pendingMutations: null });
+				// own first read never lands must not leave them standing. Nothing is
+				// certified for the new seam until its own read answers.
+				set({ pendingMutations: null, pendingMutationsReady: false });
 				const generation = pendingGeneration;
 				pendingPort = port;
 				// Within one binding, only a read newer than the last PUBLISHED one may
@@ -2724,8 +2851,14 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// nothing.
 				let readRequest = 0;
 				let lastPublishedRequest = 0;
+				// Readiness fence, separate from the publish fence above: a read
+				// started at or below this point predates the newest freshness demand
+				// (a target storage notification or an admission handoff) and cannot
+				// certify readiness for it — though it may still publish display rows
+				// when a newer read failed, exactly as before.
+				let readinessFloor = 0;
 
-				const read = () => {
+				const read = (): Promise<void> => {
 					const request = ++readRequest;
 					const provenanceGeneration = pendingProvenanceGeneration;
 					let pending: ReturnType<ConversationMutationPendingPort["read"]>;
@@ -2734,9 +2867,9 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					} catch {
 						// A synchronous refusal is the read's failure: keep the last
 						// durable projection, exactly as an async rejection does.
-						return;
+						return Promise.resolve();
 					}
-					void pending.then(
+					return Promise.resolve(pending).then(
 						(snapshot) => {
 							let recordedProvenance = false;
 							// The provenance scan is fenced only on a forget (close/reset):
@@ -2778,23 +2911,44 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 							pendingSnapshot = snapshot;
 							// The same stability check the conversation-write path uses: a
 							// storage read that re-serves identical rows must not churn
-							// subscribers with a fresh array.
-							republishPendingRows();
+							// subscribers with a fresh array. Readiness is set only by a
+							// read started after the newest demand; a pre-notification read
+							// answering late leaves it false.
+							republishPendingRows(request > readinessFloor ? true : undefined);
 						},
 						() => {
 							// A failed read leaves the last durable projection standing: the
 							// shared projection fence's own rule, so a storage hiccup never
-							// blanks rows the user is watching. A later read retries.
+							// blanks rows the user is watching, and readiness stays false
+							// until a read answers. A later read retries.
 						},
 					);
 				};
 
-				pendingUnsubscribe = port.subscribe(read);
-				read();
+				// Demand a fresh current read: mark the projection not current
+				// synchronously, then start the read that may certify it. Every read
+				// already in flight predates this demand.
+				const demandFreshRead = (): Promise<void> => {
+					readinessFloor = readRequest;
+					if (get().pendingMutationsReady) set({ pendingMutationsReady: false });
+					return read();
+				};
+				pendingDemandRead = demandFreshRead;
+
+				pendingUnsubscribe = port.subscribe(() => {
+					// A target storage transition: readiness drops before this read
+					// starts (prior rows stay for display, never as a verified empty
+					// snapshot), and the shared canonical latest-window read is
+					// requested through the store's one scheduler, so a settled row
+					// leaving storage cannot leave the old model looking current.
+					void demandFreshRead();
+					void get().ensureLatest();
+				});
+				void read();
 				return () => {
 					if (generation !== pendingGeneration) return;
 					detachPendingRows();
-					set({ pendingMutations: null });
+					set({ pendingMutations: null, pendingMutationsReady: false });
 				};
 			},
 
@@ -2804,6 +2958,33 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// rehydrate) does not churn a live subscription.
 				if (pendingPort !== null) return null;
 				return get().bindPendingMutations(port);
+			},
+
+			ensureLatest() {
+				const binding = captureBinding();
+				if (binding === null) return Promise.resolve();
+				// Requested authority is not authority: drop `ready` now, and let only
+				// the accepted publication below restore it.
+				markLatest("reading");
+				return scheduler.request(binding.ref, async () => {
+					if (!isBindingCurrent(binding)) return;
+					if (binding.sink === null) return;
+					await storeGet?.().rehydrate(binding.service, binding.sink);
+				});
+			},
+
+			refreshPendingMutations() {
+				const demand = pendingDemandRead;
+				if (demand === null) return Promise.resolve();
+				const completion = demand();
+				return new Promise<void>((resolve) => {
+					const finish = () => {
+						pendingRefreshWaiters.delete(finish);
+						resolve();
+					};
+					pendingRefreshWaiters.add(finish);
+					void completion.then(finish, finish);
+				});
 			},
 
 			async send(service, input) {
@@ -3075,12 +3256,14 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				boundSink = null;
 				set({
 					status: "closed",
+					latestReadState: "unknown",
 					conversation: null,
 					ref: null,
 					draft: "",
 					pendingSend: null,
 					pendingMutation: null,
 					pendingMutations: null,
+					pendingMutationsReady: false,
 					lastAcceptedMutation: null,
 					olderCursor: null,
 					trimmedAbove: false,
@@ -3311,10 +3494,12 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					loadingOlder: false,
 					status: "idle",
 					error: null,
+					latestReadState: "unknown",
 					draft: "",
 					pendingSend: null,
 					pendingMutation: null,
 					pendingMutations: null,
+					pendingMutationsReady: false,
 					lastAcceptedMutation: null,
 					conversationGeneration: conversationGen,
 				});

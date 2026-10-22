@@ -29,6 +29,7 @@ import {
 } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import type {
+	MutationAttachmentRef,
 	MutationOptimisticRecord,
 	MutationOutboxRecord,
 	MutationPersistenceSnapshot,
@@ -19711,5 +19712,423 @@ describe("ConversationStore", () => {
 
 			unsubscribe2();
 		});
+	});
+});
+
+// Task 5a: the store owns canonical-read validity and pending readiness so a
+// shared native store can answer "is this model the accepted current latest
+// window, and are its durable pending rows the verified current ones?" before
+// a second view borrows either. These tests drive the real store through its
+// real scheduler, pending port and service seams; nothing here fabricates a
+// durable identity or drains a fixed number of microtasks.
+describe("store-owned canonical read validity and pending readiness", () => {
+	const TARGET = "hub-1::ref-1";
+
+	function projectionOf(
+		conversation: MobileConversation,
+		olderCursor: string | null = null,
+	): ConversationReadProjection {
+		return {
+			conversation,
+			activity: {
+				tasks: [],
+				work: [],
+				usage: {},
+				capabilities: ALL_TRUE_CAPS,
+			},
+			olderCursor,
+		};
+	}
+
+	function outbox(over: Partial<MutationOutboxRecord> = {}): MutationOutboxRecord {
+		return {
+			version: 1,
+			clientMutationId: "cmid-1",
+			targetRef: TARGET,
+			method: "turn/start",
+			payload: {},
+			attachments: [],
+			optimisticDisplay: { method: "turn/start", input: textInput("hello") },
+			intentSequence: 0,
+			createdAt: 7,
+			state: "submitting",
+			...over,
+		};
+	}
+
+	type PendingRows = Pick<MutationPersistenceSnapshot<MutationAttachmentRef>, "outbox" | "optimistic">;
+
+	// A real port shape over a scripted durable store: reads answer at a
+	// callers-chosen boundary (holdReads) or immediately, and a notification
+	// fires the exact listener the store subscribed. This is the storage edge,
+	// not a store stand-in.
+	function createStorage(initial: PendingRows = { outbox: [], optimistic: [] }) {
+		let snapshot: PendingRows = { outbox: initial.outbox, optimistic: initial.optimistic };
+		const listeners = new Set<() => void>();
+		const reads: {
+			promise: Promise<PendingRows>;
+			resolve: (value: PendingRows) => void;
+			reject: (reason: unknown) => void;
+		}[] = [];
+		let holdReads = false;
+		let failNext = false;
+		const port = {
+			targetRef: TARGET,
+			read: (): Promise<PendingRows> => {
+				if (failNext) {
+					failNext = false;
+					return Promise.reject(new Error("storage unavailable"));
+				}
+				if (!holdReads) return Promise.resolve(snapshot);
+				const read = deferred<PendingRows>();
+				reads.push(read);
+				return read.promise;
+			},
+			subscribe: (listener: () => void) => {
+				listeners.add(listener);
+				return () => {
+					listeners.delete(listener);
+				};
+			},
+			isOwnMutationRecord: () => true,
+		} satisfies ConversationMutationPendingPort;
+		return {
+			port,
+			reads,
+			hold() {
+				holdReads = true;
+			},
+			failNextRead() {
+				failNext = true;
+			},
+			notify(next?: Partial<PendingRows>) {
+				if (next !== undefined) {
+					snapshot = { outbox: next.outbox ?? [], optimistic: next.optimistic ?? [] };
+				}
+				for (const listener of [...listeners]) listener();
+			},
+			snapshot: () => snapshot,
+		};
+	}
+
+	it("canonical readiness is unknown before the first read", () => {
+		const store = createConversationStore();
+		expect(store.getState().latestReadState).toBe("unknown");
+		expect(store.getState().canonicalSession()).toBeNull();
+	});
+
+	it("is reading through the initial open and ready only on its accepted publication", async () => {
+		const service = new FakeConversationService();
+		const read = deferred<ConversationReadProjection>();
+		service.readProjectionBlock = read.promise;
+		const store = createConversationStore();
+		const opening = store.getState().openProjected(service, createFakeSink(), "ref-1");
+		expect(store.getState().latestReadState).toBe("reading");
+		expect(store.getState().canonicalSession()).toBeNull();
+
+		read.resolve(projectionOf(makeConversation()));
+		await opening;
+		expect(store.getState().latestReadState).toBe("ready");
+		expect(store.getState().canonicalSession()).toBe(store.getState().conversation);
+	});
+
+	it("a failed latest read is error and never canonical", async () => {
+		const service = new FakeConversationService();
+		const read = deferred<ConversationReadProjection>();
+		service.readProjectionBlock = read.promise;
+		const store = createConversationStore();
+		const opening = store.getState().openProjected(service, createFakeSink(), "ref-1");
+		read.reject(new Error("read failed"));
+		await opening;
+		expect(store.getState().latestReadState).toBe("error");
+		expect(store.getState().canonicalSession()).toBeNull();
+	});
+
+	it("ensureLatest reads through the scheduler, coalesces concurrent asks, and restores only on publication", async () => {
+		const service = new FakeConversationService();
+		const store = createConversationStore();
+		await store.getState().openProjected(service, createFakeSink(), "ref-1");
+		expect(store.getState().latestReadState).toBe("ready");
+
+		const read = deferred<ConversationReadProjection>();
+		service.readProjectionBlock = read.promise;
+		const first = store.getState().ensureLatest();
+		const second = store.getState().ensureLatest();
+		expect(store.getState().latestReadState).toBe("reading");
+		expect(store.getState().canonicalSession()).toBeNull();
+
+		read.resolve(projectionOf(store.getState().conversation!));
+		await Promise.all([first, second]);
+		// One coalesced read: the open's read plus exactly one ensureLatest read.
+		expect(service.readProjectionCalls).toHaveLength(2);
+		expect(store.getState().latestReadState).toBe("ready");
+		expect(store.getState().canonicalSession()).toBe(store.getState().conversation);
+	});
+
+	it("a discarded read does not restore canonical readiness", async () => {
+		const service = new FakeConversationService();
+		service.openConv = makeConversation({}, true);
+		const sink = createFakeSink();
+		const store = createConversationStore();
+		await store.getState().openProjected(service, sink, "ref-1");
+		expect(store.getState().latestReadState).toBe("ready");
+
+		// The held model claims a longer same-incarnation history, so the next
+		// read (length 0) is applyReadModel's own "discard" disposition.
+		const held = store.getState().conversation!;
+		store.setState({ conversation: { ...held, history: held.history && { ...held.history, length: 10 } } });
+		await store.getState().rehydrate(service, sink);
+		expect(store.getState().latestReadState).not.toBe("ready");
+		expect(store.getState().canonicalSession()).toBeNull();
+	});
+
+	it("an invalidated or failed history is not canonical until an accepted read replaces it", async () => {
+		const base = makeConversation({}, true);
+		const heldHistory = base.history!;
+		for (const marker of [
+			{ invalidatedAtGeneration: 0, awaited: { bootGeneration: "1", epoch: 1 } },
+			{ failed: "transcript unavailable" },
+		]) {
+			const service = new FakeConversationService();
+			service.openConv = { ...base, history: { ...heldHistory, ...marker } };
+			const store = createConversationStore();
+			await store.getState().openProjected(service, createFakeSink(), "ref-1");
+			expect(store.getState().latestReadState).toBe("unknown");
+			expect(store.getState().canonicalSession()).toBeNull();
+
+			// A newer accepted latest-window read replaces the invalidated history
+			// (and an accepted merge clears the failed marker), restoring authority.
+			service.readProjectionBlock = Promise.resolve(
+				projectionOf({ ...makeConversation({}, true), history: { ...heldHistory, epoch: 2 } }),
+			);
+			await store.getState().ensureLatest();
+			expect(store.getState().latestReadState).toBe("ready");
+			expect(store.getState().canonicalSession()).not.toBeNull();
+		}
+	});
+
+	it("paging and display reprojection never restore an invalidated canonical read", async () => {
+		const service = new FakeConversationService();
+		service.olderCursor = "cursor-1";
+		service.olderItems = {
+			turnsPage: turnsPage([wireTurnFragment("t2", [{ type: "userMessage", id: "old-1", text: "old" }])]),
+		};
+		const store = createConversationStore();
+		await store.getState().openProjected(service, createFakeSink(), "ref-1");
+		expect(store.getState().latestReadState).toBe("ready");
+
+		const read = deferred<ConversationReadProjection>();
+		service.readProjectionBlock = read.promise;
+		const latest = store.getState().ensureLatest();
+		expect(store.getState().latestReadState).toBe("reading");
+
+		store.getState().setDisplayConfig(makeTranscriptDisplayConfig({ kind: "preset", level: "intent" }));
+		const page = await store.getState().loadOlder(service);
+		expect(page.status).toBe("loaded");
+		expect(store.getState().latestReadState).toBe("reading");
+		expect(store.getState().canonicalSession()).toBeNull();
+
+		read.resolve(projectionOf(store.getState().conversation!));
+		await latest;
+		expect(store.getState().latestReadState).toBe("ready");
+	});
+
+	it("a resync frame loses canonical readiness synchronously and the accepted read restores it", async () => {
+		const service = new FakeConversationService();
+		const store = createConversationStore();
+		await store.getState().openProjected(service, createFakeSink(), "ref-1");
+		expect(store.getState().latestReadState).toBe("ready");
+
+		const read = deferred<ConversationReadProjection>();
+		service.readProjectionBlock = read.promise;
+		store.getState().applyNotification({
+			method: "evener/thread/resync",
+			params: { threadId: "thread-1", ref: "ref-1" },
+		} as AnyNotification);
+		expect(store.getState().latestReadState).toBe("reading");
+		expect(store.getState().canonicalSession()).toBeNull();
+
+		read.resolve(projectionOf(store.getState().conversation!));
+		await store.getState().ensureLatest();
+		expect(store.getState().latestReadState).toBe("ready");
+	});
+
+	it("a reconnect loses canonical readiness until the resumed read publishes", async () => {
+		const service = new FakeConversationService();
+		const sink = createFakeSink();
+		const store = createConversationStore();
+		await store.getState().openProjected(service, sink, "ref-1");
+		expect(store.getState().latestReadState).toBe("ready");
+
+		store.getState().suspendProjected();
+		expect(store.getState().latestReadState).toBe("unknown");
+		expect(store.getState().canonicalSession()).toBeNull();
+
+		const read = deferred<ConversationReadProjection>();
+		service.readProjectionBlock = read.promise;
+		const resuming = store.getState().resumeProjected(service, sink, "ref-1");
+		expect(store.getState().latestReadState).toBe("reading");
+		read.resolve(projectionOf(service.openConv));
+		await resuming;
+		expect(store.getState().latestReadState).toBe("ready");
+	});
+
+	it("pending readiness is unknown before the first durable read", async () => {
+		const storage = createStorage({ outbox: [outbox()], optimistic: [] });
+		storage.hold();
+		const service = new FakeConversationService();
+		const store = createConversationStore();
+		await store.getState().openProjected(service, createFakeSink(), "ref-1");
+		store.getState().bindPendingMutations(storage.port);
+
+		expect(store.getState().pendingMutationsReady).toBe(false);
+		expect(store.getState().pendingMutations).toBeNull();
+
+		storage.reads[0]!.resolve({ outbox: [outbox()], optimistic: [] });
+		await storage.reads[0]!.promise;
+		expect(store.getState().pendingMutationsReady).toBe(true);
+	});
+
+	it("a pending read failure stays unknown and keeps the prior rows", async () => {
+		const storage = createStorage({ outbox: [outbox()], optimistic: [] });
+		const service = new FakeConversationService();
+		const store = createConversationStore();
+		await store.getState().openProjected(service, createFakeSink(), "ref-1");
+		store.getState().bindPendingMutations(storage.port);
+		await store.getState().refreshPendingMutations();
+		expect(store.getState().pendingMutationsReady).toBe(true);
+
+		storage.failNextRead();
+		await store.getState().refreshPendingMutations();
+		expect(store.getState().pendingMutationsReady).toBe(false);
+		expect(store.getState().pendingMutations?.map((row) => row.id)).toEqual(["cmid-1"]);
+	});
+
+	it("a target storage notification clears readiness synchronously before its read starts", async () => {
+		const storage = createStorage({ outbox: [outbox()], optimistic: [] });
+		const service = new FakeConversationService();
+		const canonicalRead = deferred<ConversationReadProjection>();
+		const store = createConversationStore();
+		await store.getState().openProjected(service, createFakeSink(), "ref-1");
+		store.getState().bindPendingMutations(storage.port);
+		await store.getState().refreshPendingMutations();
+		expect(store.getState().pendingMutationsReady).toBe(true);
+		const priorRows = store.getState().pendingMutations;
+		expect(priorRows).toHaveLength(1);
+
+		// Hold both the canonical read the notification requests and the
+		// pending read it starts.
+		service.readProjectionBlock = canonicalRead.promise;
+		storage.hold();
+		storage.notify({ outbox: [], optimistic: [] });
+
+		expect(store.getState().pendingMutationsReady).toBe(false);
+		// Prior rows stay readable for display, never as a verified empty set.
+		expect(store.getState().pendingMutations).toBe(priorRows);
+		expect(store.getState().latestReadState).toBe("reading");
+		expect(store.getState().canonicalSession()).toBeNull();
+
+		storage.reads[0]!.resolve({ outbox: [], optimistic: [] });
+		await storage.reads[0]!.promise;
+		expect(store.getState().pendingMutationsReady).toBe(true);
+		expect(store.getState().pendingMutations).toEqual([]);
+		// The pending read alone never restores canonical authority.
+		expect(store.getState().latestReadState).toBe("reading");
+
+		canonicalRead.resolve(projectionOf(store.getState().conversation!));
+		await store.getState().ensureLatest();
+		expect(store.getState().latestReadState).toBe("ready");
+	});
+
+	it("a pre-notification read cannot certify a later write", async () => {
+		const storage = createStorage({ outbox: [], optimistic: [] });
+		storage.hold();
+		const service = new FakeConversationService();
+		const store = createConversationStore();
+		await store.getState().openProjected(service, createFakeSink(), "ref-1");
+		store.getState().bindPendingMutations(storage.port);
+		expect(store.getState().pendingMutationsReady).toBe(false);
+
+		// Read #1 starts before the write; the notification starts read #2.
+		const preNotification = storage.reads[0]!;
+		storage.notify({ outbox: [outbox({ clientMutationId: "cmid-later" })], optimistic: [] });
+		const notificationRead = storage.reads[1]!;
+		expect(store.getState().pendingMutationsReady).toBe(false);
+
+		// The stale read answers first: its rows display, its answer certifies
+		// nothing about the later write.
+		preNotification.resolve({ outbox: [outbox({ clientMutationId: "cmid-stale" })], optimistic: [] });
+		await preNotification.promise;
+		expect(store.getState().pendingMutations?.map((row) => row.id)).toEqual(["cmid-stale"]);
+		expect(store.getState().pendingMutationsReady).toBe(false);
+
+		notificationRead.resolve({ outbox: [outbox({ clientMutationId: "cmid-later" })], optimistic: [] });
+		await notificationRead.promise;
+		expect(store.getState().pendingMutationsReady).toBe(true);
+		expect(store.getState().pendingMutations?.map((row) => row.id)).toEqual(["cmid-later"]);
+	});
+
+	it("a failed refresh leaves readiness false and the durable row intact", async () => {
+		const storage = createStorage({ outbox: [outbox()], optimistic: [] });
+		const service = new FakeConversationService();
+		const store = createConversationStore();
+		await store.getState().openProjected(service, createFakeSink(), "ref-1");
+		store.getState().bindPendingMutations(storage.port);
+		await store.getState().refreshPendingMutations();
+		expect(store.getState().pendingMutationsReady).toBe(true);
+
+		storage.failNextRead();
+		await store.getState().refreshPendingMutations();
+		expect(store.getState().pendingMutationsReady).toBe(false);
+		expect(store.getState().pendingMutations?.map((row) => row.id)).toEqual(["cmid-1"]);
+		expect(storage.snapshot().outbox.map((record) => record.clientMutationId)).toEqual(["cmid-1"]);
+	});
+
+	it("retirement resolves an awaited refresh without undoing the commit", async () => {
+		const storage = createStorage({ outbox: [outbox()], optimistic: [] });
+		const service = new FakeConversationService();
+		const store = createConversationStore();
+		await store.getState().openProjected(service, createFakeSink(), "ref-1");
+		const unbind = store.getState().bindPendingMutations(storage.port);
+		await store.getState().refreshPendingMutations();
+		expect(store.getState().pendingMutationsReady).toBe(true);
+
+		storage.hold();
+		const refreshed = store.getState().refreshPendingMutations();
+		expect(store.getState().pendingMutationsReady).toBe(false);
+
+		// Retirement resolves the waiter even though the held storage read
+		// never answers, and the committed durable record stands.
+		unbind();
+		await refreshed;
+		expect(store.getState().pendingMutationsReady).toBe(false);
+		expect(storage.snapshot().outbox.map((record) => record.clientMutationId)).toEqual(["cmid-1"]);
+	});
+
+	it("ordinary Send and Queue routing ignores canonical and pending readiness", async () => {
+		// Send: an idle session routes turn/start even while canonical is
+		// unready and the durable projection is not certified.
+		const sendService = new FakeConversationService();
+		const sendStore = createConversationStore();
+		await sendStore.getState().openProjected(sendService, createFakeSink(), "ref-1");
+		const storage = createStorage({ outbox: [outbox()], optimistic: [] });
+		storage.hold();
+		sendStore.getState().bindPendingMutations(storage.port);
+		const canonicalRead = deferred<ConversationReadProjection>();
+		sendService.readProjectionBlock = canonicalRead.promise;
+		void sendStore.getState().ensureLatest();
+		sendStore.getState().setDraft("hello");
+		await sendStore.getState().send(sendService, textInput("hello"));
+		expect(sendService.sendCallCount).toBe(1);
+		expect(sendStore.getState().lastAcceptedMutation?.kind).toBe("send");
+
+		// Queue: an active session routes the same input as a queue entry.
+		const queueService = new FakeConversationService();
+		queueService.openConv = makeConversation({ status: { type: "active" } });
+		const queueStore = createConversationStore();
+		await queueStore.getState().openProjected(queueService, createFakeSink(), "ref-1");
+		await queueStore.getState().queue(queueService, textInput("queued"));
+		expect(queueService.queueCallCount).toBe(1);
+		expect(queueStore.getState().lastAcceptedMutation?.kind).toBe("queue");
 	});
 });
