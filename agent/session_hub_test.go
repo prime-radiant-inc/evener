@@ -246,8 +246,8 @@ func TestManagerRequestActualPolicyMatrix(t *testing.T) {
 						props := control.Parameters["properties"].(map[string]any)
 						actions := props["action"].(map[string]any)["enum"]
 						encoded, _ := json.Marshal(actions)
-						if string(encoded) != `["approval"]` {
-							t.Fatalf("session_control exposes unimplemented actions: %s", encoded)
+						if string(encoded) != `["approval","resume","fork","clear","model","vision_model","reasoning_effort","compact","drain_queue","promote_queued","cancel_queued","rename","goal","human_notes","remove_url","archive","delete","pin","unpin","seen"]` {
+							t.Fatalf("session_control actions differ from the twenty implemented owners: %s", encoded)
 						}
 					}
 					if name == "job_list" && mode == "present" {

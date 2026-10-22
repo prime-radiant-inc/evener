@@ -1189,7 +1189,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	if observeHubRelayFunctions != nil {
 		observeHubRelayFunctions(relayFunctions)
 	}
-	registerThreadHandlers(server, cfg, sources, relayFunctions, hubLogf)
+	registerThreadHandlers(server, cfg, sources, relayFunctions, hubLogf, sessionControlOwners{navigation: navigation, resolve: resolve})
 	registerThreadNameSetHandler(server, cfg, sources, navigation)
 	registerAuthHandlers(server, authController)
 	registerInstanceHandlers(server, instancesController)
@@ -1299,12 +1299,18 @@ func normalizedAdmissionRef(params appwire.ThreadReadParams) string {
 // on the server. The relay closures (startRelay, startTurn, startRelayForThread)
 // are constructed by newHubAppServer and passed in so the handlers close over
 // the same relay state.
+type sessionControlOwners struct {
+	navigation *NavigationService
+	resolve    topLevelSessionResolver
+}
+
 func registerThreadHandlers(
 	server *appserver.Server,
 	cfg hubcore.WebConfig,
 	sources *appsource.Registry,
 	relays hubRelayFunctions,
 	logf func(format string, args ...any),
+	owners ...sessionControlOwners,
 ) {
 	// evener/session/image is the AppWire counterpart of the local image routes:
 	// the controller's host-qualified image routes proxy through it to the hub
@@ -1322,6 +1328,9 @@ func registerThreadHandlers(
 		return hubThreadList(ctx, cfg, sources, params)
 	})
 	operations := &sessionOperations{cfg: cfg, sources: sources, relays: relays, server: server}
+	if len(owners) > 0 {
+		operations.navigation, operations.resolve = owners[0].navigation, owners[0].resolve
+	}
 	readThread := operations.Read
 	operations.install()
 	registerSessionToolsPeer(server, cfg)
@@ -1497,18 +1506,7 @@ func registerThreadHandlers(
 		return operations.Steer(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnInterrupt, func(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
-		if strings.TrimSpace(params.ClientMutationID) == "" {
-			return appwire.TurnInterruptResponse{}, appwire.InvalidParams("clientMutationId is required")
-		}
-		resp, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnInterruptResponse, error) {
-			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
-			if err != nil {
-				return appwire.TurnInterruptResponse{}, err
-			}
-			return source.InterruptTurn(ctx, params)
-		})
-		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
-		return resp, err
+		return interruptTurnControl(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSandboxEscalationResolve, func(ctx context.Context, params appwire.SandboxEscalationResolveParams) (appwire.EmptyResponse, error) {
 		if params.ManagerProof != nil {
@@ -1517,20 +1515,13 @@ func registerThreadHandlers(
 		return operations.resolveApproval(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerDelegateStop, func(ctx context.Context, params appwire.DelegateStopParams) (appwire.DelegateStopResponse, error) {
-		return withSessionActionOwnership(ctx, cfg, params.Ref, params.ThreadID, func() (appwire.DelegateStopResponse, error) {
-			if err := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, params.ThreadID, ""); err != nil {
-				return appwire.DelegateStopResponse{}, err
-			}
-			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
-			if err != nil {
-				return appwire.DelegateStopResponse{}, err
-			}
-			stopper, ok := source.(appsource.DelegateStopSource)
-			if !ok {
-				return appwire.DelegateStopResponse{}, appwire.Unavailable("this session's source cannot stop a subagent")
-			}
-			return stopper.StopDelegate(ctx, params)
-		})
+		return stopDelegateControl(ctx, cfg, sources, params)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerJobsStop, func(ctx context.Context, request appwire.SessionStopRequest) (appwire.SessionStopResponse, error) {
+		if request.Job == nil && request.OwnedDelegate == nil {
+			return appwire.SessionStopResponse{}, appwire.InvalidParams("job or owned_delegate mode required")
+		}
+		return operations.Stop(ctx, request)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnQueue, func(ctx context.Context, params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
 		if params.ManagerProof != nil {
@@ -1539,78 +1530,16 @@ func registerThreadHandlers(
 		return operations.Queue(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnDrainAsSteer, func(ctx context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
-		if err := validateAppWireInputItems(params.Input); err != nil {
-			return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
-		}
-		if strings.TrimSpace(params.ClientMutationID) == "" {
-			return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
-		}
-		resp, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnDrainAsSteerResponse, error) {
-			source, err := sourceForThread(sources, params.Ref, "")
-			if err != nil {
-				return appwire.TurnDrainAsSteerResponse{}, err
-			}
-			if err := ensureSkillInputSupported(ctx, source, params.Ref, "", params.Input); err != nil {
-				return appwire.TurnDrainAsSteerResponse{}, err
-			}
-			return source.DrainAsSteer(ctx, params)
-		})
-		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
-		return resp, err
+		return drainQueueControl(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnPromoteQueuedAsSteer, func(ctx context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
-		if params.Index < 0 {
-			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("index must be >= 0")
-		}
-		if strings.TrimSpace(params.ClientMutationID) == "" {
-			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
-		}
-		if strings.TrimSpace(params.ExpectedEntryID) == "" {
-			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("expectedEntryId is required")
-		}
-		resp, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnPromoteQueuedAsSteerResponse, error) {
-			source, err := sourceForThread(sources, params.Ref, "")
-			if err != nil {
-				return appwire.TurnPromoteQueuedAsSteerResponse{}, err
-			}
-			return source.PromoteQueuedAsSteer(ctx, params)
-		})
-		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
-		return resp, err
+		return promoteQueuedControl(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnCancelQueued, func(ctx context.Context, params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
-		if params.Index < 0 {
-			return appwire.TurnCancelQueuedResponse{}, appwire.InvalidParams("index must be >= 0")
-		}
-		if strings.TrimSpace(params.ClientMutationID) == "" {
-			return appwire.TurnCancelQueuedResponse{}, appwire.InvalidParams("clientMutationId is required")
-		}
-		if strings.TrimSpace(params.ExpectedEntryID) == "" {
-			return appwire.TurnCancelQueuedResponse{}, appwire.InvalidParams("expectedEntryId is required")
-		}
-		resp, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnCancelQueuedResponse, error) {
-			source, err := sourceForThread(sources, params.Ref, "")
-			if err != nil {
-				return appwire.TurnCancelQueuedResponse{}, err
-			}
-			return source.CancelQueued(ctx, params)
-		})
-		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
-		return resp, err
+		return cancelQueuedControl(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadClear, func(ctx context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
-		if strings.TrimSpace(params.ClientMutationID) == "" {
-			return appwire.ThreadClearResponse{}, appwire.InvalidParams("clientMutationId is required")
-		}
-		if strings.TrimSpace(params.ExpectedInstanceID) == "" {
-			return appwire.ThreadClearResponse{}, appwire.InvalidParams("expectedInstanceId is required")
-		}
-		resp, err := clearThreadWithResume(ctx, cfg, sources, params)
-		err = adoptCallerMutationResult(&resp.Receipt, err, params.ClientMutationID)
-		if err == nil {
-			resp.Thread = applyHubCapabilities(cfg, resp.Thread)
-		}
-		return resp, err
+		return clearThreadControl(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadCompactStart, func(ctx context.Context, params appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
 		return appwire.EmptyResponse{}, compactThreadWithResume(ctx, cfg, sources, params)
@@ -1628,19 +1557,7 @@ func registerThreadHandlers(
 		return appwire.EmptyResponse{}, setThreadVisionModelWithResume(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadReasoningEffortSet, func(ctx context.Context, params appwire.ThreadReasoningEffortSetParams) (appwire.EmptyResponse, error) {
-		return withSessionActionOwnership(ctx, cfg, params.Ref, "", func() (appwire.EmptyResponse, error) {
-			if err := refreshDaemonRestartRequiredError(ctx, cfg, params.Ref, "", ""); err != nil {
-				return appwire.EmptyResponse{}, err
-			}
-			source, err := sourceForThread(sources, params.Ref, "")
-			if err != nil {
-				return appwire.EmptyResponse{}, err
-			}
-			// No capability gate: there is no reasoning-effort thread capability, and
-			// the daemon/source already reject the call when it is unsupported (a
-			// non-evener source, or a daemon without the effort hook).
-			return appwire.EmptyResponse{}, source.SetThreadReasoningEffort(ctx, params)
-		})
+		return setReasoningEffortControl(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodGoalSet, func(ctx context.Context, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
 		return setGoalWithResume(ctx, cfg, sources, params)

@@ -768,8 +768,8 @@ func assertManagerRequestSurface(t *testing.T, request llm.Request, enabled bool
 				t.Fatalf("session_control action schema = %#v", properties["action"])
 			}
 			values, ok := action["enum"].([]any)
-			if !ok || len(values) != 1 || values[0] != "approval" {
-				t.Fatalf("session_control actions = %#v, want only approval", action)
+			if !ok || len(values) != 20 || values[0] != "approval" || values[19] != "seen" {
+				t.Fatalf("session_control actions = %#v, want all 20 human controls", action)
 			}
 			continue
 		}

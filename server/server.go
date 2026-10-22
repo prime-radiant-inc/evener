@@ -48,7 +48,9 @@ type RetrySafeTurnFunctions struct {
 	Queue     func(appwire.TurnQueueParams) (appwire.TurnQueueResponse, error)
 	QueueAs   func(appwire.TurnQueueParams, schema.SessionActor) (appwire.TurnQueueResponse, error)
 	Drain     func(appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error)
+	DrainAs   func(appwire.TurnDrainAsSteerParams, schema.SessionActor) (appwire.TurnDrainAsSteerResponse, error)
 	Promote   func(appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error)
+	PromoteAs func(appwire.TurnPromoteQueuedAsSteerParams, schema.SessionActor) (appwire.TurnPromoteQueuedAsSteerResponse, error)
 	Cancel    func(appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error)
 	Interrupt func(context.Context, appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error)
 }
@@ -462,6 +464,7 @@ type Server struct {
 	// delegateStopFunc ends one delegate's current run at the user's request
 	// (S6). nil when no session is attached.
 	delegateStopFunc func(delegateID string) (appwire.DelegateStopOutcome, error)
+	jobStopFunc      func(context.Context, appwire.SessionStopRequest) (appwire.SessionStopResponse, error)
 	processing       bool
 	// appMutationGate serializes retry-safe turn mutations with thread/clear.
 	// A clear must not rotate the live instance while an old-generation turn
@@ -682,6 +685,13 @@ func (s *Server) SetSandboxEscalationResolveAsFunc(fn func(string, bool, schema.
 func (s *Server) SetDelegateStopFunc(fn func(delegateID string) (appwire.DelegateStopOutcome, error)) {
 	s.mu.Lock()
 	s.delegateStopFunc = fn
+	s.mu.Unlock()
+}
+
+// SetJobStopFunc binds the existing human job_stop owner to the typed AppWire route.
+func (s *Server) SetJobStopFunc(fn func(context.Context, appwire.SessionStopRequest) (appwire.SessionStopResponse, error)) {
+	s.mu.Lock()
+	s.jobStopFunc = fn
 	s.mu.Unlock()
 }
 

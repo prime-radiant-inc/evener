@@ -171,6 +171,9 @@ const (
 	// ScopeBoth (the root's daemon serves it; the hub relays). A UI-only
 	// request, never advertised to the model.
 	MethodEvenerDelegateStop = "evener/delegate/stop"
+	// MethodEvenerJobsStop asks the owning session to run its existing job_stop
+	// owner for one typed job or stable owned-delegate target. ScopeBoth.
+	MethodEvenerJobsStop = "evener/jobs/stop"
 	// MethodEvenerHostRequest forwards one hub-scoped admin RPC to a named
 	// remote host's hub (component 07a). Host is the component-03 source ID;
 	// Method must be in the proxy's exact allow-list. See HostRequestParams.
@@ -2628,6 +2631,7 @@ const (
 )
 
 type MutationReceipt struct {
+	Actor            SessionActor            `json:"actor,omitzero"`
 	ClientMutationID string                  `json:"clientMutationId"`
 	Disposition      MutationDisposition     `json:"disposition"`
 	ThreadID         string                  `json:"threadId"`
@@ -2690,11 +2694,12 @@ type GoalSetResponse struct {
 // them to the in-flight turn as a single STEERING message. Input lets clients
 // atomically append the current composer payload before the drain.
 type TurnDrainAsSteerParams struct {
-	Ref                   string      `json:"ref"`
-	ClientMutationID      string      `json:"clientMutationId"`
-	ExpectedInstanceID    string      `json:"expectedInstanceId"`
-	ExpectedQueueRevision uint64      `json:"expectedQueueRevision"`
-	Input                 []InputItem `json:"input,omitempty"`
+	ManagerProof          *SessionActorProof `json:"managerProof,omitempty"`
+	Ref                   string             `json:"ref"`
+	ClientMutationID      string             `json:"clientMutationId"`
+	ExpectedInstanceID    string             `json:"expectedInstanceId"`
+	ExpectedQueueRevision uint64             `json:"expectedQueueRevision"`
+	Input                 []InputItem        `json:"input,omitempty"`
 }
 
 type TurnDrainAsSteerResponse struct {
@@ -2716,11 +2721,12 @@ type TurnDrainAsSteerResponse struct {
 // matches. Unlike turn/steer, no turn needs to be in flight: a queue a Stop
 // parked is promoteable as the queue strip's "run this now".
 type TurnPromoteQueuedAsSteerParams struct {
-	Ref                string `json:"ref"`
-	Index              int    `json:"index"`
-	ClientMutationID   string `json:"clientMutationId"`
-	ExpectedInstanceID string `json:"expectedInstanceId"`
-	ExpectedEntryID    string `json:"expectedEntryId"`
+	ManagerProof       *SessionActorProof `json:"managerProof,omitempty"`
+	Ref                string             `json:"ref"`
+	Index              int                `json:"index"`
+	ClientMutationID   string             `json:"clientMutationId"`
+	ExpectedInstanceID string             `json:"expectedInstanceId"`
+	ExpectedEntryID    string             `json:"expectedEntryId"`
 }
 
 type TurnPromoteQueuedAsSteerResponse struct {

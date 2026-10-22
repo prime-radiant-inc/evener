@@ -12893,6 +12893,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodTurnInterrupt,
 		appwire.MethodEvenerSandboxEscalationResolve,
 		appwire.MethodEvenerDelegateStop,
+		appwire.MethodEvenerJobsStop, // Manager stop surface.
 		appwire.MethodTurnQueue,
 		appwire.MethodTurnDrainAsSteer,
 		appwire.MethodTurnPromoteQueuedAsSteer,

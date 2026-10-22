@@ -180,6 +180,31 @@ func (s *RemoteHubSource) StopDelegate(ctx context.Context, params appwire.Deleg
 	return out, err
 }
 
+func (s *RemoteHubSource) StopJob(ctx context.Context, request appwire.SessionStopRequest) (appwire.SessionStopResponse, error) {
+	ref := ""
+	if request.Job != nil {
+		ref = request.Job.Ref
+	} else if request.OwnedDelegate != nil {
+		ref = request.OwnedDelegate.Ref
+	}
+	remoteRef, err := s.toRemoteRef(ref, "")
+	if err != nil {
+		return appwire.SessionStopResponse{}, err
+	}
+	if request.Job != nil {
+		copy := *request.Job
+		copy.Ref = remoteRef.String()
+		request.Job = &copy
+	} else if request.OwnedDelegate != nil {
+		copy := *request.OwnedDelegate
+		copy.Ref = remoteRef.String()
+		request.OwnedDelegate = &copy
+	}
+	var out appwire.SessionStopResponse
+	err = s.call(ctx, appwire.MethodEvenerJobsStop, request, &out)
+	return out, err
+}
+
 func (s *RemoteHubSource) InterruptTurn(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
 	ref, err := s.toRemoteRef(params.Ref, params.ThreadID)
 	if err != nil {

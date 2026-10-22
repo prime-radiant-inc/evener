@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 
 	"primeradiant.com/evener/agent/provenance"
 )
@@ -118,14 +119,15 @@ type SessionOperationRequest struct {
 	Queue     *TurnQueueParams        `json:"queue,omitempty"`
 	Steer     *TurnSteerParams        `json:"steer,omitempty"`
 	Control   *SessionControlRequest  `json:"control,omitempty"`
+	Stop      *SessionStopRequest     `json:"stop,omitempty"`
 }
 
 func (r SessionOperationRequest) Validate() error {
-	if r.Start != nil && r.Start.ManagerProof != nil || r.Queue != nil && r.Queue.ManagerProof != nil || r.Steer != nil && r.Steer.ManagerProof != nil || r.Control != nil && r.Control.Approval != nil && r.Control.Approval.ManagerProof != nil {
+	if r.Start != nil && r.Start.ManagerProof != nil || r.Queue != nil && r.Queue.ManagerProof != nil || r.Steer != nil && r.Steer.ManagerProof != nil || r.Control != nil && (r.Control.Approval != nil && r.Control.Approval.ManagerProof != nil || r.Control.DrainQueue != nil && r.Control.DrainQueue.ManagerProof != nil || r.Control.PromoteQueued != nil && r.Control.PromoteQueued.ManagerProof != nil) {
 		return InvalidParams("actor metadata is not a tool argument")
 	}
 	count := 0
-	for _, present := range []bool{r.Discover != nil, r.Read != nil, r.Turns != nil, r.Activity != nil, r.Tasks != nil, r.Job != nil, r.JobOutput != nil, r.Models != nil, r.Create != nil, r.Start != nil, r.Queue != nil, r.Steer != nil, r.Control != nil} {
+	for _, present := range []bool{r.Discover != nil, r.Read != nil, r.Turns != nil, r.Activity != nil, r.Tasks != nil, r.Job != nil, r.JobOutput != nil, r.Models != nil, r.Create != nil, r.Start != nil, r.Queue != nil, r.Steer != nil, r.Control != nil, r.Stop != nil} {
 		if present {
 			count++
 		}
@@ -138,6 +140,9 @@ func (r SessionOperationRequest) Validate() error {
 	}
 	if r.Control != nil {
 		return r.Control.Validate()
+	}
+	if r.Stop != nil {
+		return r.Stop.Validate()
 	}
 	if r.Read != nil && (r.Read.Subscribe || r.Read.IncludeTurns) {
 		return InvalidParams("status reads do not subscribe or include history")
@@ -233,17 +238,59 @@ type SessionOperationResponse struct {
 	Queue     *TurnQueueResponse       `json:"queue,omitempty"`
 	Steer     *TurnSteerResponse       `json:"steer,omitempty"`
 	Control   *SessionControlResponse  `json:"control,omitempty"`
+	Stop      *SessionStopResponse     `json:"stop,omitempty"`
 	FollowUps []SessionStatusFollowUp  `json:"followUps,omitempty"`
 }
 
 // SessionControlRequest exposes only implemented, typed Manager controls.
 type SessionControlRequest struct {
-	Approval *SandboxEscalationResolveParams `json:"approval,omitempty"`
+	Action          string                          `json:"action"`
+	Approval        *SandboxEscalationResolveParams `json:"approval,omitempty"`
+	Resume          *ThreadResumeParams             `json:"resume,omitempty"`
+	Fork            *ThreadForkParams               `json:"fork,omitempty"`
+	Clear           *ThreadClearParams              `json:"clear,omitempty"`
+	Model           *ThreadModelSetParams           `json:"model,omitempty"`
+	VisionModel     *ThreadVisionModelSetParams     `json:"vision_model,omitempty"`
+	ReasoningEffort *ThreadReasoningEffortSetParams `json:"reasoning_effort,omitempty"`
+	Compact         *ThreadCompactStartParams       `json:"compact,omitempty"`
+	DrainQueue      *TurnDrainAsSteerParams         `json:"drain_queue,omitempty"`
+	PromoteQueued   *TurnPromoteQueuedAsSteerParams `json:"promote_queued,omitempty"`
+	CancelQueued    *TurnCancelQueuedParams         `json:"cancel_queued,omitempty"`
+	Rename          *ThreadNameSetParams            `json:"rename,omitempty"`
+	Goal            *GoalSetParams                  `json:"goal,omitempty"`
+	HumanNotes      *NotesHumanSetParams            `json:"human_notes,omitempty"`
+	RemoveURL       *UrlsRemoveParams               `json:"remove_url,omitempty"`
+	Archive         *ArchiveParams                  `json:"archive,omitempty"`
+	Delete          *SessionDeleteParams            `json:"delete,omitempty"`
+	Pin             *SessionPinAssignParams         `json:"pin,omitempty"`
+	Unpin           *SessionPinUnpinParams          `json:"unpin,omitempty"`
+	Seen            *SessionSeenSetParams           `json:"seen,omitempty"`
 }
 
 func (r SessionControlRequest) Validate() error {
-	if r.Approval == nil {
-		return InvalidParams("exactly one session control action is required")
+	matching := 0
+	for action, present := range map[string]bool{
+		"approval": r.Approval != nil, "resume": r.Resume != nil, "fork": r.Fork != nil,
+		"clear": r.Clear != nil, "model": r.Model != nil, "vision_model": r.VisionModel != nil,
+		"reasoning_effort": r.ReasoningEffort != nil, "compact": r.Compact != nil,
+		"drain_queue": r.DrainQueue != nil, "promote_queued": r.PromoteQueued != nil,
+		"cancel_queued": r.CancelQueued != nil, "rename": r.Rename != nil, "goal": r.Goal != nil,
+		"human_notes": r.HumanNotes != nil, "remove_url": r.RemoveURL != nil,
+		"archive": r.Archive != nil, "delete": r.Delete != nil, "pin": r.Pin != nil,
+		"unpin": r.Unpin != nil, "seen": r.Seen != nil,
+	} {
+		if present {
+			matching++
+			if r.Action != action {
+				return InvalidParams("session control payload does not match action")
+			}
+		}
+	}
+	if matching != 1 {
+		return InvalidParams("exactly one matching session control payload is required")
+	}
+	if r.Archive != nil && r.Archive.Kind != ArchiveTargetSession {
+		return InvalidParams("Manager archive controls sessions only")
 	}
 	return nil
 }
@@ -261,8 +308,100 @@ func (r *SessionControlRequest) UnmarshalJSON(data []byte) error {
 }
 
 type SessionControlResponse struct {
-	Result EmptyResponse `json:"result"`
-	Actor  SessionActor  `json:"actor"`
+	Result        EmptyResponse                     `json:"result"`
+	Actor         SessionActor                      `json:"actor"`
+	Resume        *ThreadResumeResponse             `json:"resume,omitempty"`
+	Fork          *ThreadForkResponse               `json:"fork,omitempty"`
+	Clear         *ThreadClearResponse              `json:"clear,omitempty"`
+	DrainQueue    *TurnDrainAsSteerResponse         `json:"drain_queue,omitempty"`
+	PromoteQueued *TurnPromoteQueuedAsSteerResponse `json:"promote_queued,omitempty"`
+	CancelQueued  *TurnCancelQueuedResponse         `json:"cancel_queued,omitempty"`
+	Goal          *GoalSetResponse                  `json:"goal,omitempty"`
+	HumanNotes    *NotesHumanSetResponse            `json:"human_notes,omitempty"`
+	RemoveURL     *UrlsRemoveResponse               `json:"remove_url,omitempty"`
+	Archive       *ArchiveResponse                  `json:"archive,omitempty"`
+	Delete        *SessionDeleteResponse            `json:"delete,omitempty"`
+	Pin           *SessionPinAssignResponse         `json:"pin,omitempty"`
+	Unpin         *SessionPinUnpinResponse          `json:"unpin,omitempty"`
+	Seen          *SessionSeenSetResponse           `json:"seen,omitempty"`
+}
+
+// SessionJobStopParams names a shell job on an addressed session. The flag
+// mirrors the human stopChildren owner: immediate children only, not grandchildren.
+type SessionJobStopParams struct {
+	Ref             string `json:"ref"`
+	JobID           string `json:"jobId"`
+	IncludeChildren bool   `json:"includeChildren,omitempty"`
+	MaxWaitMS       int    `json:"maxWaitMs,omitempty"`
+}
+
+type SessionOwnedDelegateStopParams struct {
+	Ref        string `json:"ref"`
+	DelegateID string `json:"delegateId"`
+	MaxWaitMS  int    `json:"maxWaitMs,omitempty"`
+}
+
+type SessionJobStopResponse struct {
+	JobID   string `json:"jobId"`
+	Status  string `json:"status"`
+	Outcome string `json:"outcome"`
+}
+
+// SessionStopRequest keeps single-run delegate, recursive owned-delegate,
+// and one-level shell-child stop as distinct typed controls.
+type SessionStopRequest struct {
+	Mode          string                          `json:"mode"`
+	Interrupt     *TurnInterruptParams            `json:"interrupt,omitempty"`
+	Delegate      *DelegateStopParams             `json:"delegate,omitempty"`
+	OwnedDelegate *SessionOwnedDelegateStopParams `json:"owned_delegate,omitempty"`
+	Job           *SessionJobStopParams           `json:"job,omitempty"`
+	Shutdown      *ThreadShutdownParams           `json:"shutdown,omitempty"`
+	ForceStop     *ThreadForceStopParams          `json:"force_stop,omitempty"`
+}
+
+func (r SessionStopRequest) Validate() error {
+	count := 0
+	for mode, present := range map[string]bool{"interrupt": r.Interrupt != nil, "delegate": r.Delegate != nil, "owned_delegate": r.OwnedDelegate != nil, "job": r.Job != nil, "shutdown": r.Shutdown != nil, "force_stop": r.ForceStop != nil} {
+		if present {
+			count++
+			if r.Mode != mode {
+				return InvalidParams("session stop payload does not match mode")
+			}
+		}
+	}
+	if count != 1 {
+		return InvalidParams("exactly one matching session stop payload is required")
+	}
+	if r.Delegate != nil && !strings.HasPrefix(r.Delegate.DelegateID, "dlg_") {
+		return InvalidParams("delegate stop requires a dlg_ target")
+	}
+	if r.OwnedDelegate != nil && (!strings.HasPrefix(r.OwnedDelegate.DelegateID, "dlg_") || r.OwnedDelegate.MaxWaitMS < 0) {
+		return InvalidParams("owned delegate stop requires a dlg_ target and non-negative maxWaitMs")
+	}
+	if r.Job != nil && (!strings.HasPrefix(r.Job.JobID, "job_") || r.Job.MaxWaitMS < 0) {
+		return InvalidParams("job stop requires a job_ target and non-negative maxWaitMs")
+	}
+	return nil
+}
+
+func (r *SessionStopRequest) UnmarshalJSON(data []byte) error {
+	type plain SessionStopRequest
+	var decoded plain
+	d := json.NewDecoder(bytes.NewReader(data))
+	d.DisallowUnknownFields()
+	if err := d.Decode(&decoded); err != nil {
+		return InvalidParams(err.Error())
+	}
+	*r = SessionStopRequest(decoded)
+	return r.Validate()
+}
+
+type SessionStopResponse struct {
+	Actor     SessionActor            `json:"actor"`
+	Interrupt *TurnInterruptResponse  `json:"interrupt,omitempty"`
+	Delegate  *DelegateStopResponse   `json:"delegate,omitempty"`
+	Job       *SessionJobStopResponse `json:"job,omitempty"`
+	Result    EmptyResponse           `json:"result"`
 }
 
 // SessionStatusFollowUp names the currently implemented status tool, not a

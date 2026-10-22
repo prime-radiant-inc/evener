@@ -13,13 +13,15 @@ import (
 )
 
 type sessionOperations struct {
-	cfg     hubcore.WebConfig
-	sources *appsource.Registry
-	relays  hubRelayFunctions
-	server  *appserver.Server
-	mu      sync.Mutex
-	watches map[*sessionObservation]struct{}
-	remote  map[string]*remoteSessionOwner
+	cfg        hubcore.WebConfig
+	sources    *appsource.Registry
+	navigation *NavigationService
+	resolve    topLevelSessionResolver
+	relays     hubRelayFunctions
+	server     *appserver.Server
+	mu         sync.Mutex
+	watches    map[*sessionObservation]struct{}
+	remote     map[string]*remoteSessionOwner
 }
 
 // remoteSessionOwner is a proxy to the enabling hub's reverse-call owner on
@@ -546,15 +548,58 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 			return response, err
 		}
 		params := *request.Control
-		approval := *params.Approval
-		approval.ManagerProof = proof
-		params.Approval = &approval
+		if params.Approval != nil {
+			approval := *params.Approval
+			approval.ManagerProof = proof
+			params.Approval = &approval
+		}
+		if params.DrainQueue != nil {
+			if params.DrainQueue.ManagerProof != nil {
+				return response, appwire.InvalidParams("actor metadata is not a control argument")
+			}
+			drain := *params.DrainQueue
+			drain.ManagerProof = proof
+			params.DrainQueue = &drain
+		}
+		if params.PromoteQueued != nil {
+			if params.PromoteQueued.ManagerProof != nil {
+				return response, appwire.InvalidParams("actor metadata is not a control argument")
+			}
+			promote := *params.PromoteQueued
+			promote.ManagerProof = proof
+			params.PromoteQueued = &promote
+		}
 		control, err := o.Control(ctx, params)
 		if err != nil {
 			return response, err
 		}
 		control.Actor = response.Actor
+		if control.Clear != nil {
+			control.Clear.Receipt.Actor = response.Actor
+		}
+		if control.DrainQueue != nil {
+			control.DrainQueue.Receipt.Actor = response.Actor
+		}
+		if control.PromoteQueued != nil {
+			control.PromoteQueued.Receipt.Actor = response.Actor
+		}
+		if control.CancelQueued != nil {
+			control.CancelQueued.Receipt.Actor = response.Actor
+		}
+		if control.HumanNotes != nil {
+			control.HumanNotes.Receipt.Actor = response.Actor
+		}
 		response.Control = &control
+	} else if request.Stop != nil {
+		stop, err := o.Stop(ctx, *request.Stop)
+		if err != nil {
+			return response, err
+		}
+		stop.Actor = response.Actor
+		if stop.Interrupt != nil {
+			stop.Interrupt.Receipt.Actor = response.Actor
+		}
+		response.Stop = &stop
 	}
 	if request.Discover != nil || request.Read != nil || request.Turns != nil || request.Activity != nil || request.Tasks != nil || request.Job != nil || request.JobOutput != nil || request.Models != nil {
 		if err := managerReadWithinCap(response); err != nil {

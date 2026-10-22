@@ -1481,6 +1481,23 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	srv.SetDelegateStopFunc(func(delegateID string) (appwire.DelegateStopOutcome, error) {
 		return getSession().StopDelegateRun(delegateID)
 	})
+	if jobsStop, ok := srv.(interface {
+		SetJobStopFunc(func(context.Context, appwire.SessionStopRequest) (appwire.SessionStopResponse, error))
+	}); ok {
+		jobsStop.SetJobStopFunc(func(ctx context.Context, request appwire.SessionStopRequest) (appwire.SessionStopResponse, error) {
+			var result appwire.SessionJobStopResponse
+			var err error
+			if request.Job != nil {
+				result, err = getSession().StopJobForManager(ctx, *request.Job)
+			} else {
+				result, err = getSession().StopOwnedDelegateForManager(ctx, *request.OwnedDelegate)
+			}
+			if err != nil {
+				return appwire.SessionStopResponse{}, err
+			}
+			return appwire.SessionStopResponse{Job: &result}, nil
+		})
+	}
 	srv.SetCompactFunc(func(ctx context.Context) error { return getSession().Compact(ctx) })
 	srv.SetGoalFunc(func(objective string) (bool, error) {
 		if strings.TrimSpace(objective) == "" {
@@ -1516,8 +1533,14 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		Drain: func(params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
 			return getSession().AcceptClientMutationDrainAsSteer(params)
 		},
+		DrainAs: func(params appwire.TurnDrainAsSteerParams, actor schema.SessionActor) (appwire.TurnDrainAsSteerResponse, error) {
+			return getSession().AcceptClientMutationDrainAsSteerAs(params, actor)
+		},
 		Promote: func(params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 			return getSession().AcceptClientMutationPromoteQueuedAsSteer(params)
+		},
+		PromoteAs: func(params appwire.TurnPromoteQueuedAsSteerParams, actor schema.SessionActor) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+			return getSession().AcceptClientMutationPromoteQueuedAsSteerAs(params, actor)
 		},
 		Cancel: func(params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
 			return getSession().AcceptClientMutationCancelQueued(params)

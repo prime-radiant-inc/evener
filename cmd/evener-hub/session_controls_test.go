@@ -19,7 +19,7 @@ func TestManagerApprovalClosedUnionAndRealOwner(t *testing.T) {
 		}
 	}
 	owner := &sessionOperations{cfg: hubcore.WebConfig{SessionPreferences: hubcore.NewSessionPreferencesStore(filepath.Join(t.TempDir(), "index.db"))}, sources: appsource.NewRegistry()}
-	result, err := owner.Control(context.Background(), appwire.SessionControlRequest{Approval: &appwire.SandboxEscalationResolveParams{Ref: "local:missing", EscalationID: "esc", Approve: true}})
+	result, err := owner.Control(context.Background(), appwire.SessionControlRequest{Action: "approval", Approval: &appwire.SandboxEscalationResolveParams{Ref: "local:missing", EscalationID: "esc", Approve: true}})
 	if err == nil {
 		t.Fatalf("missing target approval falsely succeeded: %+v", result)
 	}

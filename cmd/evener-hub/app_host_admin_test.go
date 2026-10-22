@@ -539,6 +539,7 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/jobs/list":                        false,
 		"evener/jobs/output":                      false,
 		"evener/jobs/get":                         false,
+		"evener/jobs/stop":                        false, // Local Manager stop authority; never forward to a peer hub.
 		"evener/launch/getLayer":                  true,
 		"evener/launch/resolve":                   true,
 		"evener/launch/schema":                    true,

@@ -817,6 +817,24 @@ func (s *LocalDaemonSource) StopDelegate(ctx context.Context, params appwire.Del
 	return out, err
 }
 
+func (s *LocalDaemonSource) StopJob(ctx context.Context, request appwire.SessionStopRequest) (appwire.SessionStopResponse, error) {
+	ref := ""
+	if request.Job != nil {
+		ref = request.Job.Ref
+	} else if request.OwnedDelegate != nil {
+		ref = request.OwnedDelegate.Ref
+	}
+	entry, err := s.entryForRef(ref, "")
+	if err != nil {
+		return appwire.SessionStopResponse{}, err
+	}
+	var out appwire.SessionStopResponse
+	err = s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
+		return client.Request(ctx, appwire.MethodEvenerJobsStop, request, &out)
+	})
+	return out, err
+}
+
 func (s *LocalDaemonSource) InterruptTurn(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
 	entry, err := s.entryForRef(params.Ref, params.ThreadID)
 	if err != nil {
@@ -856,6 +874,11 @@ func (s *LocalDaemonSource) DrainAsSteer(ctx context.Context, params appwire.Tur
 	}
 	var out appwire.TurnDrainAsSteerResponse
 	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
+		proof, err := s.targetManagerProof(entry, params.ManagerProof)
+		if err != nil {
+			return err
+		}
+		params.ManagerProof = proof
 		if err := gateSkillInputOnClient(ctx, client, params.Ref, "", params.Input); err != nil {
 			return err
 		}
@@ -871,6 +894,11 @@ func (s *LocalDaemonSource) PromoteQueuedAsSteer(ctx context.Context, params app
 	}
 	var out appwire.TurnPromoteQueuedAsSteerResponse
 	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) error {
+		proof, err := s.targetManagerProof(entry, params.ManagerProof)
+		if err != nil {
+			return err
+		}
+		params.ManagerProof = proof
 		return client.Request(ctx, appwire.MethodTurnPromoteQueuedAsSteer, params, &out)
 	})
 	return out, err

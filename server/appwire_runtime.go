@@ -1214,6 +1214,7 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodTurnSteer, s.handleAppTurnSteer)
 	appserver.HandleTyped(router, appwire.MethodEvenerSandboxEscalationResolve, s.handleAppSandboxEscalationResolve)
 	appserver.HandleTyped(router, appwire.MethodEvenerDelegateStop, s.handleAppDelegateStop)
+	appserver.HandleTyped(router, appwire.MethodEvenerJobsStop, s.handleAppJobsStop)
 	appserver.HandleTyped(router, appwire.MethodTurnInterrupt, s.handleAppTurnInterrupt)
 	appserver.HandleTyped(router, appwire.MethodTurnQueue, s.handleAppTurnQueue)
 	appserver.HandleTyped(router, appwire.MethodTurnDrainAsSteer, s.handleAppTurnDrainAsSteer)
@@ -1768,6 +1769,30 @@ func (s *Server) handleAppDelegateStop(_ context.Context, params appwire.Delegat
 	return appwire.DelegateStopResponse{Outcome: outcome}, nil
 }
 
+func (s *Server) handleAppJobsStop(ctx context.Context, request appwire.SessionStopRequest) (appwire.SessionStopResponse, error) {
+	if err := request.Validate(); err != nil {
+		return appwire.SessionStopResponse{}, err
+	}
+	ref := ""
+	if request.Job != nil {
+		ref = request.Job.Ref
+	} else if request.OwnedDelegate != nil {
+		ref = request.OwnedDelegate.Ref
+	} else {
+		return appwire.SessionStopResponse{}, appwire.InvalidParams("job or owned_delegate mode required")
+	}
+	if err := s.requireRootMutationTarget(ref, ""); err != nil {
+		return appwire.SessionStopResponse{}, err
+	}
+	s.mu.RLock()
+	fn := s.jobStopFunc
+	s.mu.RUnlock()
+	if fn == nil {
+		return appwire.SessionStopResponse{}, appwire.Unavailable("job stop not available")
+	}
+	return fn(ctx, request)
+}
+
 func (s *Server) handleAppTurnInterrupt(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
 	params.ClientMutationID = strings.TrimSpace(params.ClientMutationID)
 	params.ExpectedInstanceID = strings.TrimSpace(params.ExpectedInstanceID)
@@ -1837,7 +1862,12 @@ func (s *Server) handleAppTurnQueue(ctx context.Context, params appwire.TurnQueu
 	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 }
 
-func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+func (s *Server) handleAppTurnDrainAsSteer(ctx context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+	actor, manager, err := s.inputActor(ctx, params.ManagerProof)
+	if err != nil {
+		return appwire.TurnDrainAsSteerResponse{}, err
+	}
+	params.ManagerProof = nil
 	params.ClientMutationID = strings.TrimSpace(params.ClientMutationID)
 	params.ExpectedInstanceID = strings.TrimSpace(params.ExpectedInstanceID)
 	unlock, err := s.lockRetrySafeMutation(params.Ref, "", params.ExpectedInstanceID, params.ClientMutationID)
@@ -1851,22 +1881,31 @@ func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.Tur
 	}
 	s.mu.RLock()
 	fn := s.retrySafeTurns.Drain
+	as := s.retrySafeTurns.DrainAs
 	s.mu.RUnlock()
+	if manager && as == nil {
+		return appwire.TurnDrainAsSteerResponse{}, appwire.Unavailable("Manager drain not available")
+	}
 	// Drained entries keep their selections, consumed with the combined
 	// steering at its actual delivery; the support verdict is this endpoint's
 	// own wiring. See the turn/start gate.
-	if err := appwire.ValidateSkillInputSupport(input.Items, fn != nil); err != nil {
+	if err := appwire.ValidateSkillInputSupport(input.Items, fn != nil || manager && as != nil); err != nil {
 		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
 	}
-	if err := appwire.ValidateCommandInputSupport(input.Items, fn != nil); err != nil {
+	if err := appwire.ValidateCommandInputSupport(input.Items, fn != nil || manager && as != nil); err != nil {
 		return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams(err.Error())
 
 	}
 	params.Input = input.Items
-	if fn == nil {
+	if !manager && fn == nil {
 		return appwire.TurnDrainAsSteerResponse{}, appwire.Unavailable("drain-as-steer not available")
 	}
-	response, err := fn(params)
+	var response appwire.TurnDrainAsSteerResponse
+	if manager {
+		response, err = as(params, actor)
+	} else {
+		response, err = fn(params)
+	}
 	s.refreshFacets(facetQueue)
 	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 }
@@ -1874,7 +1913,12 @@ func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.Tur
 // handleAppTurnPromoteQueuedAsSteer validates static request shape and leaves
 // queue compare-and-commit decisions to the Session callback. No turn in
 // flight is required.
-func (s *Server) handleAppTurnPromoteQueuedAsSteer(_ context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+func (s *Server) handleAppTurnPromoteQueuedAsSteer(ctx context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+	actor, manager, err := s.inputActor(ctx, params.ManagerProof)
+	if err != nil {
+		return appwire.TurnPromoteQueuedAsSteerResponse{}, err
+	}
+	params.ManagerProof = nil
 	params.ClientMutationID = strings.TrimSpace(params.ClientMutationID)
 	params.ExpectedInstanceID = strings.TrimSpace(params.ExpectedInstanceID)
 	unlock, err := s.lockRetrySafeMutation(params.Ref, "", params.ExpectedInstanceID, params.ClientMutationID)
@@ -1890,11 +1934,20 @@ func (s *Server) handleAppTurnPromoteQueuedAsSteer(_ context.Context, params app
 	}
 	s.mu.RLock()
 	fn := s.retrySafeTurns.Promote
+	as := s.retrySafeTurns.PromoteAs
 	s.mu.RUnlock()
-	if fn == nil {
+	if manager && as == nil {
+		return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.Unavailable("Manager promote not available")
+	}
+	if !manager && fn == nil {
 		return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.Unavailable("promote-queued-as-steer not available")
 	}
-	response, err := fn(params)
+	var response appwire.TurnPromoteQueuedAsSteerResponse
+	if manager {
+		response, err = as(params, actor)
+	} else {
+		response, err = fn(params)
+	}
 	s.refreshFacets(facetQueue)
 	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 }

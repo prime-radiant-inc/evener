@@ -94,7 +94,7 @@ func (s *Session) composeHubRegistry() {
 	}
 	if s.hubOrdinary == nil {
 		s.hubOrdinary = map[string]*tool.RegisteredTool{}
-		for _, name := range []string{"job_list", "job_status", "read_transcript", "model_list", "job_watch", "delegate_send", "delegate", "session_control"} {
+		for _, name := range []string{"job_list", "job_status", "read_transcript", "model_list", "job_watch", "delegate_send", "delegate", "job_stop", "session_control"} {
 			if base := s.reg.Get(name); base != nil {
 				copy := *base
 				s.hubOrdinary[name] = &copy
@@ -139,6 +139,7 @@ func (s *Session) composeHubRegistry() {
 	s.composeHubWatchTool()
 	s.composeHubInputTools()
 	s.composeHubDelegateTool()
+	s.composeHubStopTool()
 }
 
 // managerDelegateDefinition keeps the owned-delegate contract on calls without
@@ -456,13 +457,8 @@ func (s *Session) composeHubInputTools() {
 	}
 	registered := tool.RegisteredTool{}
 	registered.Definition = llm.ToolDefinition{
-		Name: control, Description: "Resolve a pending approval on a session reachable through your Manager hub. Only approval is implemented. The decision is attributed to the authenticated Manager session.",
-		Parameters: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
-			"action": map[string]any{"type": "string", "enum": []string{"approval"}},
-			"arguments": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
-				"ref": map[string]any{"type": "string"}, "escalationId": map[string]any{"type": "string"}, "approve": map[string]any{"type": "boolean"},
-			}, "required": []string{"ref", "escalationId", "approve"}},
-		}, "required": []string{"action", "arguments"}},
+		Name: control, Description: "Apply one typed human session control on the Manager hub. Returns the existing owner's result and authenticated Manager attribution.",
+		Parameters: managerControlSchema(),
 	}
 	registered.Exec = func(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 		for key := range args {
@@ -470,21 +466,13 @@ func (s *Session) composeHubInputTools() {
 				return nil, appwire.InvalidParams("unsupported session_control argument")
 			}
 		}
-		if args["action"] != "approval" {
-			return nil, appwire.InvalidParams("only approval is implemented")
-		}
 		raw, err := json.Marshal(args["arguments"])
 		if err != nil {
 			return nil, err
 		}
-		var p appwire.SandboxEscalationResolveParams
-		dec := json.NewDecoder(bytes.NewReader(raw))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&p); err != nil || p.ManagerProof != nil || p.ThreadID != "" {
-			return nil, appwire.InvalidParams("invalid approval arguments")
-		}
-		if _, err := appwire.ParseRef(p.Ref); err != nil {
-			return nil, appwire.InvalidParams(err.Error())
+		request, err := decodeManagerControl(args["action"], raw)
+		if err != nil {
+			return nil, err
 		}
 		s.mu.Lock()
 		client, enabled := s.hubClient, s.hubEnabled
@@ -492,7 +480,7 @@ func (s *Session) composeHubInputTools() {
 		if !enabled || client == nil {
 			return nil, appwire.InvalidRequest("Manager tool unavailable")
 		}
-		response, err := client.Invoke(ctx, appwire.SessionOperationRequest{Control: &appwire.SessionControlRequest{Approval: &p}})
+		response, err := client.Invoke(ctx, appwire.SessionOperationRequest{Control: &request})
 		if err != nil {
 			return nil, err
 		}

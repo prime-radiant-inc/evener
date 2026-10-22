@@ -889,6 +889,10 @@ func (s *Session) AcceptClientMutationSteerAs(params appwire.TurnSteerParams, ac
 }
 
 func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+	return s.clientMutationDrainAs(params, schema.SessionActor{Kind: "human"})
+}
+
+func (s *Session) clientMutationDrainAs(params appwire.TurnDrainAsSteerParams, actor schema.SessionActor) (appwire.TurnDrainAsSteerResponse, error) {
 	release, err := s.beginRetirementMutation("input")
 	if err != nil {
 		return appwire.TurnDrainAsSteerResponse{}, err
@@ -906,6 +910,7 @@ func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (ap
 	if err != nil {
 		return appwire.TurnDrainAsSteerResponse{}, err
 	}
+	request.Actor = actor
 	request.Preconditions.ExpectedQueueRevision = &params.ExpectedQueueRevision
 	var response appwire.TurnDrainAsSteerResponse
 	var consumedClientMutationIDs []string
@@ -997,7 +1002,11 @@ func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (ap
 // AcceptClientMutationDrainAsSteer durably accepts or replays one queued-input
 // drain into steering.
 func (s *Session) AcceptClientMutationDrainAsSteer(params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
-	return s.clientMutationDrain(params)
+	return s.AcceptClientMutationDrainAsSteerAs(params, schema.SessionActor{Kind: "human"})
+}
+
+func (s *Session) AcceptClientMutationDrainAsSteerAs(params appwire.TurnDrainAsSteerParams, actor schema.SessionActor) (appwire.TurnDrainAsSteerResponse, error) {
+	return s.clientMutationDrainAs(params, actor)
 }
 
 func combineClientMutationInputs(entries []clientMutationQueueEntry, extra []appwire.InputItem) []appwire.InputItem {
@@ -1033,6 +1042,10 @@ func combineClientMutationInputs(entries []clientMutationQueueEntry, extra []app
 }
 
 func (s *Session) clientMutationPromote(params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+	return s.clientMutationPromoteAs(params, schema.SessionActor{Kind: "human"})
+}
+
+func (s *Session) clientMutationPromoteAs(params appwire.TurnPromoteQueuedAsSteerParams, actor schema.SessionActor) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 	release, err := s.beginRetirementMutation("input")
 	if err != nil {
 		return appwire.TurnPromoteQueuedAsSteerResponse{}, err
@@ -1045,6 +1058,7 @@ func (s *Session) clientMutationPromote(params appwire.TurnPromoteQueuedAsSteerP
 	if err != nil {
 		return appwire.TurnPromoteQueuedAsSteerResponse{}, err
 	}
+	request.Actor = actor
 	request.Preconditions.ExpectedEntryID = params.ExpectedEntryID
 	var response appwire.TurnPromoteQueuedAsSteerResponse
 	lookup, err := s.clientMutations.executeAtomic(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
@@ -1127,7 +1141,11 @@ func (s *Session) clientMutationPromote(params appwire.TurnPromoteQueuedAsSteerP
 // AcceptClientMutationPromoteQueuedAsSteer durably accepts or replays one
 // queued-input promotion into steering.
 func (s *Session) AcceptClientMutationPromoteQueuedAsSteer(params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
-	return s.clientMutationPromote(params)
+	return s.AcceptClientMutationPromoteQueuedAsSteerAs(params, schema.SessionActor{Kind: "human"})
+}
+
+func (s *Session) AcceptClientMutationPromoteQueuedAsSteerAs(params appwire.TurnPromoteQueuedAsSteerParams, actor schema.SessionActor) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+	return s.clientMutationPromoteAs(params, actor)
 }
 
 func (s *Session) clientMutationCancel(params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {

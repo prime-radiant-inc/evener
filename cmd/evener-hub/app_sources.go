@@ -452,6 +452,16 @@ func admitSessionRecovery(ctx context.Context, cfg hubcore.WebConfig, message ap
 			return ctx
 		}
 		rawRef, id = params.Ref, strings.TrimSpace(params.ThreadID)
+	case appwire.MethodEvenerJobsStop:
+		var request appwire.SessionStopRequest
+		if json.Unmarshal(message.Request.Params, &request) != nil {
+			return ctx
+		}
+		if request.Job != nil {
+			rawRef = request.Job.Ref
+		} else if request.OwnedDelegate != nil {
+			rawRef = request.OwnedDelegate.Ref
+		}
 	case appwire.MethodThreadFork, appwire.MethodEvenerThreadNameSet, appwire.MethodThreadModelSet, appwire.MethodThreadVisionModelSet,
 		appwire.MethodThreadReasoningEffortSet, appwire.MethodThreadCompactStart,
 		appwire.MethodThreadClear, appwire.MethodThreadShutdown, appwire.MethodGoalSet,
