@@ -475,13 +475,15 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// interrupt has to end that wait rather than being ignored until the
 	// daemon reaches its listener.
 	//
-	// The handler stays registered until serve returns, apart from the context
-	// the daemon cancels to end its run. thread/shutdown and idle retirement end
-	// the run by cancelling ctx, and teardown -- where the session closes and
+	// The handler stays registered until serve returns, so the run gets its own
+	// context. thread/shutdown and idle retirement end the run by cancelling
+	// ctx, and teardown -- where the session closes and
 	// kills its background jobs -- comes after that. Stopping NotifyContext
 	// there would restore SIGTERM's default disposition, so a supervisor's
 	// SIGTERM landing mid-teardown would kill the daemon on the spot and orphan
-	// every background job it owns.
+	// every background job it owns. A repeat SIGTERM during teardown is
+	// swallowed on purpose: exiting on it would orphan the jobs the same way,
+	// and the drain-wait budget already bounds a wedged teardown.
 	signalCtx, stopSignals := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
 	ctx, cancel := deps.runContext(signalCtx)
