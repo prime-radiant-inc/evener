@@ -143,6 +143,28 @@ func TestSystemdEnvironmentFileParsing(t *testing.T) {
 		{name: "nul", contents: "HOME=/home\x00suffix", refuse: true},
 		{name: "invalid-utf8", contents: "HOME=/home\xff", refuse: true},
 		{name: "unicode-path", contents: "HOME=/home/dév\n", want: "HOME=/home/dév\x00"},
+		{name: "double-quote-escapes", contents: "HOME=\"/home/\\$d/\\`b/\\\"q/\\\\s/\\other\"\n", want: "HOME=/home/$d/`b/\"q/\\s/\\other\x00"},
+		{name: "single-quote-literals", contents: "HOME='/home/\\$`\"literal'\n", want: "HOME=/home/\\$`\"literal\x00"},
+		{name: "double-quote-continuation", contents: "HOME=\"/home/\\\ncontinued\"\n", want: "HOME=/home/continued\x00"},
+		{name: "literal-interior-quotes", contents: "HOME=/home/'some'\"thing\"\n", want: "HOME=/home/'some'\"thing\"\x00"},
+		{name: "spacing", contents: " \t# ignored\n\t; ignored\n \tHOME \t= \t/home/dev \t\r\n", want: "HOME=/home/dev\x00"},
+		{name: "invalid-key-ignored", contents: "1BAD=ignored\nHOME=/home\n", want: "HOME=/home\x00"},
+		{name: "empty-quoted", contents: "HOME=''\nXDG_STATE_HOME=\"\"\n", want: "HOME=\x00XDG_STATE_HOME=\x00"},
+		{name: "double-backslash", contents: "HOME=/home/\\\\\n", want: "HOME=/home/\\\x00"},
+		{name: "max-file", contents: strings.Repeat("#", 65536)},
+		{name: "bounded-fetch", contents: strings.Repeat("#", 131072), refuse: true},
+		{name: "max-value", contents: "HOME=" + strings.Repeat("x", 16384), want: "HOME=" + strings.Repeat("x", 16384) + "\x00"},
+		{name: "single-quote-suffix", contents: "HOME='/home'garbage\n", refuse: true},
+		{name: "double-quote-suffix", contents: "HOME=\"/home\"garbage\n", refuse: true},
+		{name: "double-multiline-quote", contents: "HOME=\"/one\ntwo\"\n", refuse: true},
+		{name: "single-quoted-backslash-newline", contents: "HOME='/one\\\ntwo'\n", refuse: true},
+		{name: "dangling-continuation", contents: "HOME=/home\\", refuse: true},
+		{name: "carriage-return-value", contents: "HOME='/home\rdev'\n", refuse: true},
+		{name: "bom", contents: "\ufeffHOME=/home\n", refuse: true},
+		{name: "noncharacter-range", contents: "HOME=/home/\ufdd0\n", refuse: true},
+		{name: "noncharacter-plane-end", contents: "HOME=/home/\U0010ffff\n", refuse: true},
+		{name: "noncharacter-unrelated", contents: "PRIVATE_FIXTURE_SECRET=\ufffe\nHOME=/home\n", refuse: true},
+		{name: "unrelated-malformed-quote", contents: "PRIVATE_FIXTURE_SECRET='unclosed\nHOME=/home\n", refuse: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "env")
@@ -150,9 +172,20 @@ func TestSystemdEnvironmentFileParsing(t *testing.T) {
 				t.Fatal(err)
 			}
 			cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", systemdEnvironmentFileRemote(path, false))
-			out, err := cmd.Output()
+			fetched, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("file fetch failed: %v", err)
+			}
+			wantFetched := tc.contents
+			if len(wantFetched) > 65537 {
+				wantFetched = wantFetched[:65537]
+			}
+			if string(fetched) != wantFetched {
+				t.Fatalf("file fetch altered bytes or exceeded its bound: got bytes=%d want=%d", len(fetched), len(wantFetched))
+			}
+			out, err := parseSystemdEnvironmentFile(fetched)
 			if tc.refuse {
-				if err == nil || len(out) != 0 {
+				if !errors.Is(err, errOwnerEvidence) || len(out) != 0 {
 					t.Fatalf("unresolvable file: err=%v output bytes=%d", err, len(out))
 				}
 				return

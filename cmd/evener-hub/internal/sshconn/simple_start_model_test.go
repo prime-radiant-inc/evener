@@ -18,7 +18,7 @@ import (
 // not an inferred error or the number of read-only inspections.
 func TestSelectedRestartBoundary(t *testing.T) {
 	for _, platform := range []string{"linux", "darwin"} {
-		for _, name := range []string{"matching-live", "no-live-report", "different-boot", "different-pid", "different-config", "different-root", "live-A-definition-B", "stopped-A-definition-B", "binding-during-ad-hoc-gate", "live-environment-file", "changed-environment-file", "cold-environment-file", "stable-B-environment-file", "stable-B-unit-environment"} {
+		for _, name := range []string{"matching-live", "no-live-report", "different-boot", "different-pid", "different-config", "different-root", "live-A-definition-B", "stopped-A-definition-B", "binding-during-ad-hoc-gate", "live-environment-file", "changed-environment-file", "cold-environment-file", "stable-B-environment-file", "stable-B-unit-environment", "minimal-path-environment-file"} {
 			environmentFile := strings.HasSuffix(name, "environment-file")
 			if platform == "darwin" && (name == "binding-during-ad-hoc-gate" || environmentFile || name == "stable-B-unit-environment") {
 				continue
@@ -44,7 +44,19 @@ func TestSelectedRestartBoundary(t *testing.T) {
 				if stopped {
 					owner.pid, owner.report.State, owner.report.Running = "0", "stopped", nil
 				}
-				var envFile string
+				var envFile, remotePath string
+				if name == "minimal-path-environment-file" {
+					remotePath = t.TempDir()
+					for _, tool := range []string{"awk", "sed", "cksum", "grep", "sort", "head"} {
+						path, err := exec.LookPath(tool)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Symlink(path, filepath.Join(remotePath, tool)); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
 				if environmentFile {
 					envFile = filepath.Join(t.TempDir(), "hub.env")
 					contents := "HOME=/home/dev\n"
@@ -54,7 +66,7 @@ func TestSelectedRestartBoundary(t *testing.T) {
 					if err := os.WriteFile(envFile, []byte(contents), 0o600); err != nil {
 						t.Fatal(err)
 					}
-					owner.definition = strings.Join(strings.Fields(string(environmentFileDefinition(t, owner.supervisor, envFile))), " ")
+					owner.definition = strings.Join(strings.Fields(string(environmentFileDefinition(t, owner.supervisor, envFile, remotePath))), " ")
 					if name == "changed-environment-file" {
 						if err := os.WriteFile(envFile, []byte("HOME=/home/changed\n"), 0o600); err != nil {
 							t.Fatal(err)
@@ -77,16 +89,23 @@ func TestSelectedRestartBoundary(t *testing.T) {
 				mutations, definitionReads, coldEnvironmentReads, nextRootReads := 0, 0, 0, 0
 				fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 					remote := strings.Join(argv[12:], " ")
+					if name == "minimal-path-environment-file" && strings.Contains(remote, "perl") {
+						t.Error("remote command stream depends on Perl")
+					}
 					if environmentFile && remote == serviceDefinitionRemote(owner.supervisor) {
 						definitionReads++
-						return environmentFileDefinition(t, owner.supervisor, envFile), nil
+						return environmentFileDefinition(t, owner.supervisor, envFile, remotePath), nil
 					}
 					if environmentFile && remote == "systemctl show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment -- evener-hub-selected.service" {
 						coldEnvironmentReads++
 						return []byte("EnvironmentFiles=" + envFile + " (ignore_errors=no)\nPassEnvironment=\nUnsetEnvironment=\n"), nil
 					}
 					if environmentFile && remote == systemdEnvironmentFileRemote(envFile, false) {
-						return exec.CommandContext(t.Context(), "/bin/sh", "-c", remote).Output()
+						cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", remote)
+						if remotePath != "" {
+							cmd.Env = []string{"PATH=" + remotePath}
+						}
+						return cmd.Output()
 					}
 					if platform == "linux" && strings.HasSuffix(name, "definition-B") && remote == serviceDefinitionRemote(owner.supervisor) {
 						return []byte("9999 567"), nil
@@ -183,7 +202,7 @@ func TestSelectedRestartBoundary(t *testing.T) {
 				if bindingCase {
 					refusal = errEntryBinding
 				}
-				if name == "matching-live" || name == "live-environment-file" || name == "cold-environment-file" {
+				if name == "matching-live" || name == "live-environment-file" || name == "cold-environment-file" || name == "minimal-path-environment-file" {
 					if mutations != 1 || !errors.Is(err, errReplacementFixture) {
 						t.Fatalf("mutations=%d err=%v, want one authorized restart", mutations, err)
 					}
@@ -209,12 +228,15 @@ func TestSelectedRestartBoundary(t *testing.T) {
 
 // Execute the production checksum command over a real EnvironmentFile. Only
 // systemctl metadata is modeled; changing file contents must change the proof.
-func environmentFileDefinition(t *testing.T, sup supervisor, envFile string) []byte {
+func environmentFileDefinition(t *testing.T, sup supervisor, envFile string, remotePath ...string) []byte {
 	t.Helper()
 	properties := "User=dev\nExecStart=/opt/evener hub --config=/srv/selected.toml --addr=[::]:0\nWorkingDirectory=/srv\nEnvironment=HOME=/home/dev\nEnvironmentFiles=" + envFile + " (ignore_errors=no)\nPassEnvironment=\nUnsetEnvironment=\n"
 	show := "show --property=User,ExecStart,WorkingDirectory,Environment,EnvironmentFiles,PassEnvironment,UnsetEnvironment -- " + sup.label
 	stub := "systemctl() { case \"$*\" in " + shellquote.RemoteWord(show) + ") printf '%s' " + shellquote.RemoteWord(properties) + ";; show-environment) :;; *) return 1;; esac; }; "
 	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", stub+serviceDefinitionRemote(sup))
+	if len(remotePath) != 0 && remotePath[0] != "" {
+		cmd.Env = []string{"PATH=" + remotePath[0]}
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("service definition checksum: %v: %s", err, out)

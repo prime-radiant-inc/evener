@@ -1,66 +1,121 @@
 package sshconn
 
-import "primeradiant.com/evener/execsupport/shellquote"
+import (
+	"regexp"
+	"slices"
+	"strings"
+	"unicode/utf8"
 
-// Read at most 64 KiB and return only the four identity inputs, never unrelated
-// credentials. This is an EnvironmentFile parser, not shell evaluation: dollar
-// signs are literal, quotes only delimit a value when they begin it, and an
-// unquoted backslash escapes the next byte. Multiline quoted values refuse.
-const systemdEnvironmentFileFilter = `use strict;
-use Encode qw(decode FB_CROAK LEAVE_SRC);
-my ($path, $optional) = @ARGV;
-open my $f, '<', $path or do { exit 0 if $optional eq 'yes' && !-e $path; exit 1 };
--f $f or exit 1;
-my $text = ''; my $n = read($f, $text, 65537);
-defined($n) && $n <= 65536 && !($text =~ /\x00/) or exit 1;
-close($f) or exit 1;
-my $decoded = eval { decode('UTF-8', $text, FB_CROAK | LEAVE_SRC) };
-defined($decoded) or exit 1;
-for (split //, $decoded) {
- my $c = ord($_);
- exit 1 if $c == 0xfeff || ($c >= 0xfdd0 && $c <= 0xfdef) || ($c & 0xffff) >= 0xfffe;
-}
-my %env;
-my @lines = split /\n/, $text, -1;
-while (@lines) {
- my $line = shift @lines;
- next if $line =~ /^\s*(?:[#;]|$)/;
- next unless $line =~ /^\s*([A-Za-z_][A-Za-z_0-9]*)\s*=(.*)$/s;
- my ($key, $raw) = ($1, $2);
- $raw =~ s/^[ \t\r]+//;
- while ($raw !~ /^'/ && $raw =~ /(\\+)$/ && length($1) % 2) {
-  @lines or exit 1;
-  chop $raw; $raw .= shift @lines;
- }
- my $value = '';
- if ($raw =~ /^'/) {
-  $raw =~ /^'([^']*)'[ \t\r]*$/s or exit 1; $value = $1;
- } elsif ($raw =~ /^"/) {
-  $raw =~ /^"((?:[^"\\]|\\.)*)"[ \t\r]*$/s or exit 1; $value = $1;
-  $value =~ s/\\([\$\x60"\\])/$1/g;
- } else {
-  my $white = '';
-  while (length $raw) {
-   my $c = substr($raw, 0, 1, '');
-   if ($c eq "\\") {
-    length($raw) or exit 1;
-    $value .= $white . substr($raw, 0, 1, ''); $white = '';
-   } elsif ($c =~ /[ \t\r]/) { $white .= $c }
-   else { $value .= $white . $c; $white = '' }
-  }
- }
- if ($key =~ /^(HOME|XDG_CONFIG_HOME|XDG_STATE_HOME|EVENER_HUB_LISTEN_ADDR)$/) {
-  length($value) <= 16384 && $value !~ /[\r\n\x00]/ or exit 1;
-  $env{$key} = $value;
- }
-}
-print "$_=$env{$_}\0" for sort keys %env;
-`
+	"primeradiant.com/evener/execsupport/shellquote"
+)
 
+// Fetch one byte beyond the limit so the local parser can reject oversized files.
+// The runner preserves raw bytes; no remote interpreter or shell evaluation is used.
 func systemdEnvironmentFileRemote(path string, optional bool) string {
-	mode := "no"
+	missing := "exit 1"
 	if optional {
-		mode = "yes"
+		missing = "exit 0"
 	}
-	return "perl -e " + shellquote.RemoteWord(systemdEnvironmentFileFilter) + " -- " + shellquote.RemoteWord(path) + " " + mode
+	return "file=" + shellquote.RemoteWord(path) + "; if [ ! -e \"$file\" ]; then " + missing + "; fi; [ -f \"$file\" ] || exit 1; head -c 65537 < \"$file\""
+}
+
+var systemdEnvironmentAssignment = regexp.MustCompile(`^[ \t\r\f\v]*([A-Za-z_][A-Za-z_0-9]*)[ \t\r\f\v]*=(.*)$`)
+
+// Parse EnvironmentFile syntax without evaluating shell expressions. Return only
+// the four identity inputs, never unrelated credentials or file contents in errors.
+// Quotes delimit only at the beginning of a value. Multiline quoted values refuse.
+func parseSystemdEnvironmentFile(text []byte) ([]byte, error) {
+	if len(text) > 65536 || !utf8.Valid(text) {
+		return nil, errOwnerEvidence
+	}
+	for _, c := range string(text) {
+		if c == 0 || c == 0xfeff || (c >= 0xfdd0 && c <= 0xfdef) || c&0xffff >= 0xfffe {
+			return nil, errOwnerEvidence
+		}
+	}
+	env := map[string]string{}
+	lines := strings.Split(string(text), "\n")
+	for i := 0; i < len(lines); i++ {
+		assignment := systemdEnvironmentAssignment.FindStringSubmatch(lines[i])
+		if assignment == nil {
+			continue // Blank lines, comments and lines without an assignment.
+		}
+		key, raw := assignment[1], strings.TrimLeft(assignment[2], " \t\r")
+		for !strings.HasPrefix(raw, "'") && (len(raw)-len(strings.TrimRight(raw, "\\")))%2 != 0 {
+			i++
+			if i == len(lines) {
+				return nil, errOwnerEvidence
+			}
+			raw = raw[:len(raw)-1] + lines[i]
+		}
+		value, err := systemdEnvironmentValue(raw)
+		if err != nil {
+			return nil, err
+		}
+		if slices.Contains(ownerEnvKeys, key) {
+			if len(value) > 16384 || strings.ContainsAny(value, "\r\n\x00") {
+				return nil, errOwnerEvidence
+			}
+			env[key] = value
+		}
+	}
+	var entries []string
+	for key, value := range env {
+		entries = append(entries, key+"="+value+"\x00")
+	}
+	slices.Sort(entries)
+	return []byte(strings.Join(entries, "")), nil
+}
+
+func systemdEnvironmentValue(raw string) (string, error) {
+	if strings.HasPrefix(raw, "'") {
+		end := strings.IndexByte(raw[1:], '\'')
+		if end < 0 || strings.Trim(raw[end+2:], " \t\r") != "" {
+			return "", errOwnerEvidence
+		}
+		return raw[1 : end+1], nil
+	}
+	var value strings.Builder
+	if strings.HasPrefix(raw, "\"") {
+		for i := 1; i < len(raw); i++ {
+			switch raw[i] {
+			case '"':
+				if strings.Trim(raw[i+1:], " \t\r") != "" {
+					return "", errOwnerEvidence
+				}
+				return value.String(), nil
+			case '\\':
+				i++
+				if i == len(raw) {
+					return "", errOwnerEvidence
+				}
+				if !strings.ContainsRune("$`\"\\", rune(raw[i])) {
+					value.WriteByte('\\')
+				}
+				value.WriteByte(raw[i])
+			default:
+				value.WriteByte(raw[i])
+			}
+		}
+		return "", errOwnerEvidence
+	}
+	// Keep escaped trailing whitespace, but discard unescaped trailing whitespace.
+	white := 0
+	for i := 0; i < len(raw); i++ {
+		switch raw[i] {
+		case ' ', '\t', '\r':
+			continue
+		case '\\':
+			value.WriteString(raw[white:i])
+			i++
+			if i == len(raw) {
+				return "", errOwnerEvidence
+			}
+			value.WriteByte(raw[i])
+		default:
+			value.WriteString(raw[white : i+1])
+		}
+		white = i + 1
+	}
+	return value.String(), nil
 }

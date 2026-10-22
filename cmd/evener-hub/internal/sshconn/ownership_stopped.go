@@ -299,6 +299,10 @@ func (m *Manager) stoppedServiceEnvironment(ctx context.Context, host hostreg.Ho
 		if err != nil {
 			return nil, fmt.Errorf("%w: cannot resolve EnvironmentFile: %w", errOwnerEvidence, err)
 		}
+		out, err = parseSystemdEnvironmentFile(out)
+		if err != nil {
+			return nil, err
+		}
 		if err := merge(out, nil); err != nil {
 			return nil, err
 		}
