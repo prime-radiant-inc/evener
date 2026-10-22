@@ -311,6 +311,25 @@ function documentKeyNamespace(documentKey: string): string | undefined {
   return undefined;
 }
 
+// Whether a suppression identity names an epoch of one exact namespace
+// incarnation. The identity is [documentKey, namespaceIncarnation, epoch], so
+// it carries the incarnation that a reset retired; the document key scopes the
+// match to the reset's own namespace.
+function identityNamesIncarnation(identity: string, namespaceKey: string, incarnation: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(identity);
+    if (!Array.isArray(parsed) || parsed.length !== 3) return false;
+    const [documentKey, identityIncarnation] = parsed;
+    return (
+      typeof documentKey === "string" &&
+      identityIncarnation === incarnation &&
+      documentKeyNamespace(documentKey) === namespaceKey
+    );
+  } catch {
+    return false;
+  }
+}
+
 // Raised when the durable identity a fence intended to replace has already moved,
 // so an obsolete validation must not rewrite newer state.
 class SupersededFenceError extends Error {}
@@ -1959,10 +1978,16 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         }
       }
       // The reset deleted every row these entries named, so no consult path
-      // can match them again. Retire them and the namespace's read states, or
-      // a long-lived adapter retains one inert entry per suppressed epoch and
-      // a later reset re-provisions from reads whose rows are gone.
-      for (const identity of provisioned) this.#suppressedEpochs.delete(identity);
+      // can match them again. Retire every suppression entry of the retired
+      // incarnation, provisioned or CONFIRMED: the reset also deleted the
+      // expiry rows that a confirmed entry's later finishExpiry would wait for,
+      // so nothing else will ever release it. Otherwise a long-lived adapter
+      // retains one inert entry per pre-reset changed read.
+      for (const identity of [...this.#suppressedEpochs.keys()]) {
+        if (identityNamesIncarnation(identity, namespaceKey, expectedIncarnation)) {
+          this.#suppressedEpochs.delete(identity);
+        }
+      }
       for (const documentKey of [...this.#readStates.keys()]) {
         if (documentKeyNamespace(documentKey) === namespaceKey) this.#readStates.delete(documentKey);
       }

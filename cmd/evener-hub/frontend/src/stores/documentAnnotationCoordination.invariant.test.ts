@@ -5,7 +5,12 @@ import { IDBDatabase, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ComposerPreparation, ComposerSourceState } from "../panes/session/composer/composerContract";
 import { APPEND_STORES, browserDraftKey } from "./browserDraftRepository";
-import { createDocumentAnnotationRepository, RESET_STORES, SAVE_STORES } from "./documentAnnotationIndexedDB";
+import {
+  annotationDocumentKey,
+  createDocumentAnnotationRepository,
+  RESET_STORES,
+  SAVE_STORES,
+} from "./documentAnnotationIndexedDB";
 import { IndexedDBTransactionTimeoutError } from "./idbConnection";
 import {
   ANNOTATION_EVIDENCE_STORE,
@@ -175,6 +180,53 @@ test("a held acceptance that lands after a reset installs no read state for the 
     expect(fixture.storageSuccess).not.toHaveBeenCalled();
   } finally {
     transactSpy.mockRestore();
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
+
+// A changed read confirms suppression for the epoch it fences, and only the
+// epoch's finishExpiry releases it. A reset deletes the namespace's expiry rows
+// in its own transaction, so that finishExpiry can never run; the confirmed
+// entry must retire with the incarnation the reset rotated away or every
+// pre-reset changed read leaks an inert entry for the adapter's lifetime. The
+// identity carries the retired incarnation, so no reader behavior observes the
+// entry: the retirement's own delete is the only oracle.
+test("a reset retires a confirmed suppression entry with its incarnation", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-reset-confirmed-suppression",
+    origin: "https://reset.example",
+  });
+  try {
+    const ticket = await fixture.repository.beginRead(fixture.document);
+    const acceptance = await fixture.repository.acceptRead(ticket, sampleChangedContent());
+    if (acceptance.state !== "expiry-pending" || acceptance.receipt === undefined) {
+      throw new Error(`changed read did not fence: ${acceptance.state}`);
+    }
+    const suppressed = JSON.stringify([
+      annotationDocumentKey(fixture.document),
+      acceptance.receipt.namespaceIncarnation,
+      acceptance.receipt.expiredEpoch,
+    ]);
+
+    const removed: string[] = [];
+    const remove = Map.prototype.delete;
+    const removeSpy = vi.spyOn(Map.prototype, "delete").mockImplementation(function (
+      this: Map<unknown, unknown>,
+      key: unknown,
+    ) {
+      if (typeof key === "string") removed.push(key);
+      return remove.call(this, key);
+    });
+    try {
+      expect(await fixture.repository.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation)).toMatchObject({
+        committed: true,
+      });
+    } finally {
+      removeSpy.mockRestore();
+    }
+    expect(removed).toContain(suppressed);
+  } finally {
     fixture.repository.close();
     fixture.drafts.close();
   }
