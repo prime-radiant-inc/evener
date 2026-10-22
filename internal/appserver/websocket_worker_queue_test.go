@@ -544,10 +544,9 @@ func TestServeWebSocketQueueSaturationAdvisoryFiresOncePerConnection(t *testing.
 	server.requestQueueCapacity = 1
 
 	releases := make(chan struct{}, 8)
-	started := make(chan struct{})
-	var once sync.Once
+	started := make(chan struct{}, 4)
 	HandleTyped(server.Router(), appwire.MethodEvenerThreadNameSet, func(_ context.Context, _ appwire.ThreadNameSetParams) (appwire.EmptyResponse, error) {
-		once.Do(func() { close(started) })
+		started <- struct{}{}
 		<-releases
 		return appwire.EmptyResponse{}, nil
 	})
@@ -573,6 +572,25 @@ func TestServeWebSocketQueueSaturationAdvisoryFiresOncePerConnection(t *testing.
 		msg := waitFor(t, fmt.Sprintf("response %d", i), frames)
 		if msg.Response == nil || msg.Response.ID.Int64() != i {
 			t.Fatalf("response out of order: got %+v, want id %d", msg, i)
+		}
+	}
+	// The first two admitted handlers finished, so the queue drained. Fill
+	// it again behind another parked handler and check the same advisory flag.
+	waitForQueueDepth(t, conn, 0)
+	waitFor(t, "second admitted handler", started)
+	sendRaw(t, transport, rawRequest(t, 8, appwire.MethodEvenerThreadNameSet, appwire.ThreadNameSetParams{Ref: "local:th_1", Name: "n"}))
+	waitFor(t, "handler in second saturation cycle", started)
+	sendRaw(t, transport, rawRequest(t, 9, appwire.MethodEvenerThreadNameSet, appwire.ThreadNameSetParams{Ref: "local:th_1", Name: "n"}))
+	waitForQueueDepth(t, conn, 1)
+	sendRaw(t, transport, rawRequest(t, 10, appwire.MethodEvenerThreadNameSet, appwire.ThreadNameSetParams{Ref: "local:th_1", Name: "n"}))
+	requireQueueRefusal(t, "refusal after drain and refill", waitForFrameID(t, frames, 10), 10, "", appwire.RetryDispositionNone)
+	for range 2 {
+		releases <- struct{}{}
+	}
+	for i := int64(8); i <= 9; i++ {
+		msg := waitFor(t, fmt.Sprintf("response %d", i), frames)
+		if msg.Response == nil || msg.Response.ID.Int64() != i {
+			t.Fatalf("response out of order after refill: got %+v, want id %d", msg, i)
 		}
 	}
 

@@ -116,10 +116,6 @@ func TestTranscriptItemCursorError(t *testing.T) {
 	if marshalErr != nil {
 		t.Fatalf("marshal WireError: %v", marshalErr)
 	}
-	const originalWire = `{"code":-32014,"message":"the hub's inbound queue is busy and did not accept this message","data":{"evenerErrorInfo":"connectionBackpressure","clientMutationId":"cmid-7","mutationOutcome":"notAccepted","retryDisposition":"automatic","cause":"queueSaturated"}}`
-	if string(encoded) != originalWire {
-		t.Fatalf("automatic refusal wire = %s, want %s", encoded, originalWire)
-	}
 	if bytes.Contains(encoded, []byte(opaqueCursor)) {
 		t.Fatalf("serialized WireError echoes opaque cursor bytes: %s", encoded)
 	}
@@ -253,6 +249,10 @@ func TestBackpressureRefusalCarriesTheTransientEnvelope(t *testing.T) {
 	encoded, marshalErr := json.Marshal(err)
 	if marshalErr != nil {
 		t.Fatalf("marshal WireError: %v", marshalErr)
+	}
+	const originalWire = `{"code":-32014,"message":"the hub's inbound queue is busy and did not accept this message","data":{"evenerErrorInfo":"connectionBackpressure","clientMutationId":"cmid-7","mutationOutcome":"notAccepted","retryDisposition":"automatic","cause":"queueSaturated"}}`
+	if string(encoded) != originalWire {
+		t.Fatalf("automatic refusal wire = %s, want %s", encoded, originalWire)
 	}
 	for _, part := range []string{
 		`"evenerErrorInfo":"connectionBackpressure"`,

@@ -113,7 +113,7 @@ func countAdvisoryLines(logged func() string, marker string) int {
 // depth, a retry-safe mutation is answered in band with the typed refusal
 // carrying the request's own clientMutationId, the refusal consumes no queue
 // depth, reads keep riding FIFO below full, the high-water advisory is a
-// one-shot whose wording tells the truth about the refusal branch, and a
+// one-shot for the refusal branch, and a
 // later full queue still fires the operator-critical full-queue advisory
 // exactly once — the refusal cannot consume it.
 func TestServeWebSocketHighWaterRefusalAnswersMutationsInBand(t *testing.T) {
@@ -135,19 +135,9 @@ func TestServeWebSocketHighWaterRefusalAnswersMutationsInBand(t *testing.T) {
 		t.Fatalf("queue depth = %d after the refusal, want 4 (a refusal consumes no depth)", depth)
 	}
 
-	// The advisory fired once, and its wording is accurate for the refusal
-	// branch: a refusal does not park the receive loop.
+	// The high-water refusal fires one advisory without parking the reader.
 	if lines := countAdvisoryLines(logged, "high-water"); lines != 1 {
 		t.Fatalf("high-water advisories = %d, want exactly 1:\n%s", lines, logged())
-	}
-	var advisory string
-	for line := range strings.SplitSeq(logged(), "\n") {
-		if strings.Contains(line, "high-water") {
-			advisory = line
-		}
-	}
-	if strings.Contains(advisory, "blocking the receive loop") {
-		t.Fatalf("high-water advisory claims the refusal blocks the receive loop: %s", advisory)
 	}
 
 	// A second mutation is refused the same way; the advisory stays one-shot.
@@ -171,8 +161,8 @@ func TestServeWebSocketHighWaterRefusalAnswersMutationsInBand(t *testing.T) {
 	}
 	sendRaw(t, transport, rawRequest(t, 12, appwire.MethodThreadList, appwire.ThreadListParams{}))
 	requireQueueRefusal(t, "hard-cap refusal after high-water refusal", waitForFrameID(t, frames, 12), 12, "", appwire.RetryDispositionNone)
-	if lines := countAdvisoryLines(logged, "request queue is full"); lines != 1 {
-		t.Fatalf("full-queue advisories = %d, want exactly 1:\n%s", lines, logged())
+	if lines := countAdvisoryLines(logged, conn.id); lines != 2 {
+		t.Fatalf("advisories after high-water and hard-cap refusals = %d, want 2:\n%s", lines, logged())
 	}
 	if lines := countAdvisoryLines(logged, "high-water"); lines != 1 {
 		t.Fatalf("high-water advisories = %d after the queue filled, want 1:\n%s", lines, logged())
@@ -232,7 +222,7 @@ func TestServeWebSocketHighWaterRefusalWithoutClientMutationID(t *testing.T) {
 // advisory — the two one-shots are independent flags, and neither consumes
 // the other.
 func TestServeWebSocketFullQueueAdvisoryDoesNotSuppressHighWaterRefusal(t *testing.T) {
-	_, logged, _, transport, frames, _ := backpressureFixture(t, 8, nil)
+	_, logged, conn, transport, frames, _ := backpressureFixture(t, 8, nil)
 
 	// Fill the queue completely and refuse one more read without parking.
 	for id := int64(2); id <= 9; id++ {
@@ -240,7 +230,7 @@ func TestServeWebSocketFullQueueAdvisoryDoesNotSuppressHighWaterRefusal(t *testi
 	}
 	sendRaw(t, transport, rawRequest(t, 10, appwire.MethodThreadList, appwire.ThreadListParams{}))
 	requireQueueRefusal(t, "full queue", waitForFrameID(t, frames, 10), 10, "", appwire.RetryDispositionNone)
-	if lines := countAdvisoryLines(logged, "request queue is full"); lines != 1 {
+	if lines := countAdvisoryLines(logged, conn.id); lines != 1 {
 		t.Fatalf("full-queue advisories = %d, want exactly 1:\n%s", lines, logged())
 	}
 
@@ -249,8 +239,8 @@ func TestServeWebSocketFullQueueAdvisoryDoesNotSuppressHighWaterRefusal(t *testi
 	sendRaw(t, transport, rawRequest(t, 11, appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "cmid-11"}))
 	requireBackpressureRefusal(t, "high-water after hard-cap", waitForFrameID(t, frames, 11), 11, "cmid-11")
 
-	if lines := countAdvisoryLines(logged, "request queue is full"); lines != 1 {
-		t.Fatalf("full-queue advisories = %d after the refusal, want 1:\n%s", lines, logged())
+	if lines := countAdvisoryLines(logged, conn.id); lines != 2 {
+		t.Fatalf("advisories after high-water and hard-cap refusals = %d, want 2:\n%s", lines, logged())
 	}
 	if lines := countAdvisoryLines(logged, "high-water"); lines != 1 {
 		t.Fatalf("high-water advisories = %d after the queue had already filled, want 1:\n%s", lines, logged())

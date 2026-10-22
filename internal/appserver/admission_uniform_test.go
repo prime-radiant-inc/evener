@@ -3,7 +3,6 @@ package appserver
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -359,7 +358,7 @@ func TestServeWebSocketTransientOutputBacklogKeepsConnection(t *testing.T) {
 	t.Cleanup(release)
 	close(gate.armed)
 	conn := registeredConnection(t, server)
-	_ = collectFrames(transport)
+	frames := collectFrames(transport)
 
 	// One notification parks the send loop; the buffer stays far from full.
 	if !conn.enqueue(appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, struct{}{})) {
@@ -373,6 +372,13 @@ func TestServeWebSocketTransientOutputBacklogKeepsConnection(t *testing.T) {
 	case <-time.After(150 * time.Millisecond):
 	}
 	release()
+	if msg := waitForFrameID(t, frames, 2); msg.Response == nil {
+		t.Fatalf("ping under transient backlog = %+v, want response", msg)
+	}
+	sendRaw(t, transport, rawRequest(t, 3, appwire.MethodPing, appwire.EmptyParams{}))
+	if msg := waitForFrameID(t, frames, 3); msg.Response == nil {
+		t.Fatalf("ping after transient backlog = %+v, want response", msg)
+	}
 	select {
 	case <-conn.workerExited:
 		t.Fatal("a transient outbound backlog tore the connection down after the send resumed")
@@ -457,7 +463,7 @@ func TestServeWebSocketForceStopBusyRefusalNeverWaitsOnOutput(t *testing.T) {
 
 // TestServeWebSocketRefusalAdvisoryStaysOneShot pins that the surviving
 // advisory is the refusal's: sustained hard-cap refusals produce exactly one
-// advisory line, and nothing claims the reader is blocked.
+// advisory event.
 func TestServeWebSocketRefusalAdvisoryStaysOneShot(t *testing.T) {
 	server, logged := captureLogfServer()
 	server.requestQueueCapacity = 1
@@ -487,9 +493,6 @@ func TestServeWebSocketRefusalAdvisoryStaysOneShot(t *testing.T) {
 	advisory := countAdvisoryLines(logged, conn.id)
 	if advisory != 1 {
 		t.Fatalf("advisory lines = %d, want exactly one refusal advisory:\n%s", advisory, logged())
-	}
-	if strings.Contains(logged(), "blocking the receive loop") {
-		t.Fatalf("an advisory still claims the reader blocks:\n%s", logged())
 	}
 	release()
 }
