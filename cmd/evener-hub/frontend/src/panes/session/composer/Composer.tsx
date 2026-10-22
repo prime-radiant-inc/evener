@@ -1032,6 +1032,8 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     const submittedRecoveryId = activeRecoveryIdRef.current;
     const recoveryBarrier = submittedRecoveryId === null ? undefined : captureRecoveryStopBarrier(ref);
     let wonRecoveryResend = true;
+    let recoveryWriteRefused = false;
+    const recoveryWriteRefusal = new Error("Recovery persistence was refused");
     // The UI-side half of the skillInput gate (threads.ts's composerMutationIntent
     // is the store-side half, and Task 12 gates the hub's forwarding too): a
     // target that never advertised the capability keeps the draft and hears
@@ -1055,6 +1057,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
           commandNames: submittedCommandNames,
           recoveryId: submittedRecoveryId ?? undefined,
           onFailure: (err) => {
+            if (err === recoveryWriteRefusal) return;
             const label = kind === "send" ? "Send" : kind === "queue" ? "Queue" : kind === "steer" ? "Steer" : "Drain";
             toasts.push("error", sessionActionError(`${label} failed`, err));
           },
@@ -1062,7 +1065,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
         async () => {
           if (submittedRecoveryId !== null) {
             await source.runRecoveryOperation(async () => {
-              await queueRecoveryPersistence(
+              const persisted = await queueRecoveryPersistence(
                 submittedRecoveryId,
                 submittedText,
                 payload,
@@ -1070,6 +1073,11 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
                 submittedCommandNames,
                 submittedMentions,
               );
+              if (!persisted) {
+                wonRecoveryResend = false;
+                recoveryWriteRefused = true;
+                throw recoveryWriteRefusal;
+              }
               wonRecoveryResend = await resendRecoveryPendingTurn(
                 submittedRecoveryId,
                 ref,
@@ -1102,7 +1110,9 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
         },
       );
       if (!source.alive) return;
-      if (!wonRecoveryResend) toasts.push("info", "This message was already sent in another tab.");
+      if (!wonRecoveryResend && !recoveryWriteRefused)
+        toasts.push("info", "This message was already sent in another tab.");
+      if (recoveryWriteRefused) return;
       clearIfUnchanged(
         submittedText,
         submittedRevision,

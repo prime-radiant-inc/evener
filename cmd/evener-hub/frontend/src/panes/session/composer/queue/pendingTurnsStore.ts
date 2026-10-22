@@ -492,6 +492,7 @@ export function updateRecoveryPendingTurn(
   mentions?: readonly ComposerMention[],
   consumeRecoveryIds?: readonly string[],
   localDraftRevisionId?: string,
+  expectedCompositionRevision?: number,
 ): Promise<boolean> {
   // Composer serializes edits before resending. A committed edit must release
   // that chain even when the recovery tray cannot refresh yet.
@@ -507,6 +508,7 @@ export function updateRecoveryPendingTurn(
         mentions,
         consumeRecoveryIds,
         localDraftRevisionId,
+        expectedCompositionRevision,
       );
       void refreshPendingTurnsProjection(ref);
       return updated;

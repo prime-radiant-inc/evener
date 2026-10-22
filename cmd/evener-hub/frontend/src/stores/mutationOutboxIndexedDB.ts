@@ -38,6 +38,8 @@ type MutationOutboxOperation =
   | "removeQueuedMessage"
   | "retargetOutbox";
 
+type VersionedMutationRecoveryRecord = MutationRecoveryRecord & { compositionRevision?: number };
+
 // What retargetOutbox moved to the resumed ref, by store: the caller drives its
 // per-ref bookkeeping when ANY of them moved (an optimistic-only or
 // recovery-only identity change still needs the new ref pinned and armed).
@@ -884,7 +886,12 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       const outbox = transaction.objectStore(OUTBOX_STORE);
       const record = await requestResult<MutationOutboxRecord | undefined>(outbox.get(clientMutationId));
       if (!record) return undefined;
-      const recovery: MutationRecoveryRecord = { ...record, recoveryKind, recoveryReason };
+      const recovery: VersionedMutationRecoveryRecord = {
+        ...record,
+        recoveryKind,
+        recoveryReason,
+        compositionRevision: 0,
+      };
       await requestResult(transaction.objectStore(RECOVERY_STORE).put(recovery));
       await requestResult(outbox.delete(clientMutationId));
       return recovery;
@@ -900,7 +907,11 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       const record = await requestResult<MutationOutboxRecord | undefined>(outbox.get(expected.clientMutationId));
       if (!record || !matchesQueuedMessageSnapshot(record, expected) || !canEditQueuedMessage(record)) return undefined;
       if ((await this.#stopEpochOf(transaction, record.targetRef)) !== barrier.stopEpoch) return undefined;
-      const recovery: MutationRecoveryRecord = { ...record, recoveryKind: "editing" };
+      const recovery: VersionedMutationRecoveryRecord = {
+        ...record,
+        recoveryKind: "editing",
+        compositionRevision: 0,
+      };
       await requestResult(transaction.objectStore(RECOVERY_STORE).put(recovery));
       await requestResult(outbox.delete(record.clientMutationId));
       return recovery;
@@ -943,18 +954,28 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     composerMentions?: readonly ComposerMention[],
     consumeRecoveryIds?: readonly string[],
     localDraftRevisionId?: string,
+    expectedCompositionRevision?: number,
   ): Promise<MutationRecoveryRecord | undefined> {
     return this.#write(RECOVERY_STORE, "updateRecoveryInput", async (transaction) => {
       const store = transaction.objectStore(RECOVERY_STORE);
-      const record = await requestResult<MutationRecoveryRecord | undefined>(store.get(clientMutationId));
+      const record = await requestResult<VersionedMutationRecoveryRecord | undefined>(store.get(clientMutationId));
       if (!record) return undefined;
       const sources = [...new Set(consumeRecoveryIds)].filter((id) => id !== clientMutationId);
+      // A consolidation must be based on the exact durable owner snapshot the
+      // caller merged. Compare inside this transaction, before either writing
+      // the replacement or deleting any secondary recovery rows.
+      if (
+        (sources.length > 0 && expectedCompositionRevision === undefined) ||
+        (expectedCompositionRevision !== undefined && (record.compositionRevision ?? 0) !== expectedCompositionRevision)
+      )
+        return undefined;
       for (const id of sources) {
         const source = await requestResult<MutationRecoveryRecord | undefined>(store.get(id));
         if (!source || source.targetRef !== record.targetRef) return undefined;
       }
-      const next: MutationRecoveryRecord = {
+      const next: VersionedMutationRecoveryRecord = {
         ...record,
+        compositionRevision: (record.compositionRevision ?? 0) + 1,
         payload: { ...record.payload, input },
         optimisticDisplay:
           record.optimisticDisplay && typeof record.optimisticDisplay === "object"

@@ -594,7 +594,7 @@ test.each([
     pending === "recovery edit" ? ["recovery"] : ["outbox", "optimistic", "recovery", "sequences"],
   );
   try {
-    let completion: Promise<void> | undefined;
+    let completion: Promise<boolean> | undefined;
     if (pending === "recovery edit") {
       completion = source.queueRecoveryPersistence(original.clientMutationId, "Run /skill-1 ", [], ["skill-1"]);
     } else {

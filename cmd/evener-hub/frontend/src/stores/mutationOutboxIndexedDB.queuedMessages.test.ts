@@ -123,7 +123,16 @@ test.each(["put", "delete", "commit"] as const)(
     const sources = [second.clientMutationId, third.clientMutationId];
     const input = [{ type: "text" as const, text: "combined" }];
     expect(
-      await f.storage.updateRecoveryInput(first.clientMutationId, input, [], "combined", [], [...sources, "absent"]),
+      await f.storage.updateRecoveryInput(
+        first.clientMutationId,
+        input,
+        [],
+        "combined",
+        [],
+        [...sources, "absent"],
+        undefined,
+        0,
+      ),
     ).toBeUndefined();
     const foreign = await f.storage.enqueueIntent(queuedIntent("other:target"));
     await f.storage.transferToRecovery(foreign.clientMutationId, "rejected");
@@ -135,6 +144,8 @@ test.each(["put", "delete", "commit"] as const)(
         "combined",
         [],
         [foreign.clientMutationId],
+        undefined,
+        0,
       ),
     ).toBeUndefined();
     if (boundary === "commit") f.fail(true);
@@ -151,13 +162,22 @@ test.each(["put", "delete", "commit"] as const)(
       });
     }
     await expect(
-      f.storage.updateRecoveryInput(first.clientMutationId, input, [], "combined", [], sources),
+      f.storage.updateRecoveryInput(first.clientMutationId, input, [], "combined", [], sources, undefined, 0),
     ).rejects.toBeDefined();
     vi.restoreAllMocks();
     f.fail(false);
     for (const row of rows)
       expect(await f.peer.getRecovery(row.clientMutationId)).toMatchObject({ composerText: "same input @inspect" });
-    const saved = await f.peer.updateRecoveryInput(first.clientMutationId, input, [], "combined", [], sources);
+    const saved = await f.peer.updateRecoveryInput(
+      first.clientMutationId,
+      input,
+      [],
+      "combined",
+      [],
+      sources,
+      undefined,
+      0,
+    );
     expect(saved).toMatchObject({ composerText: "combined", payload: { input }, composerMentions: [] });
     for (const id of sources) expect(await f.storage.getRecovery(id)).toBeUndefined();
     expect(await f.storage.getRecovery(foreign.clientMutationId)).toBeDefined();
@@ -178,6 +198,7 @@ test("recovery draft provenance commits with merged composition and secondary co
     [],
     [second.clientMutationId],
     "draft-revision-7",
+    0,
   );
   expect(saved).toMatchObject({ composerText: "combined", localDraftRevisionId: "draft-revision-7" });
   expect(await f.storage.getRecovery(second.clientMutationId)).toBeUndefined();
@@ -186,6 +207,91 @@ test("recovery draft provenance commits with merged composition and secondary co
     composerText: "combined",
     localDraftRevisionId: "draft-revision-7",
   });
+});
+
+test("stale cross-adapter recovery consolidation refuses without deleting the secondary", async () => {
+  const f = fixture();
+  const seedImageRecovery = async (text: string, imageName: string) => {
+    const input = [
+      { type: "text" as const, text },
+      { type: "image" as const, mediaType: "image/png", data: "AQID", name: imageName },
+    ];
+    const intent = queuedIntent("ref_a");
+    const outbox = await f.storage.enqueueIntent({
+      ...intent,
+      payload: { ...intent.payload, input },
+      attachments: [
+        {
+          presentationId: `presentation-${imageName}`,
+          marker: 1,
+          name: imageName,
+          mediaType: "image/png",
+          blob: new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }),
+        },
+      ],
+    });
+    const record = await f.storage.transferToRecovery(outbox.clientMutationId, "rejected");
+    if (!record) throw new Error(`failed to seed ${text}`);
+    return record;
+  };
+  const owner = await seedImageRecovery("owner A", "a.png");
+  const secondaryB = await seedImageRecovery("secondary B", "b.png");
+  const secondaryC = await seedImageRecovery("secondary C", "c.png");
+  const snapshotFromAdapterA = await f.storage.getRecovery(owner.clientMutationId);
+  const snapshotFromAdapterB = await f.peer.getRecovery(owner.clientMutationId);
+  if (!snapshotFromAdapterA || !snapshotFromAdapterB) throw new Error("missing owner snapshot");
+
+  const makeComposition = (text: string, imageName: string) => ({
+    input: [
+      { type: "text" as const, text },
+      { type: "image" as const, mediaType: "image/png", data: "AQID", name: imageName },
+    ],
+    attachments: [
+      {
+        presentationId: `merged-${imageName}`,
+        marker: 1,
+        name: imageName,
+        mediaType: "image/png",
+        blob: new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }),
+      },
+    ],
+  });
+  const compositionAB = makeComposition("owner A + secondary B", "b.png");
+  const compositionAC = makeComposition("owner A + secondary C", "c.png");
+  const first = await f.storage.updateRecoveryInput(
+    owner.clientMutationId,
+    compositionAB.input,
+    compositionAB.attachments,
+    "owner A + secondary B",
+    [],
+    [secondaryB.clientMutationId],
+    undefined,
+    0,
+  );
+  expect(first).toBeDefined();
+  const stale = await f.peer.updateRecoveryInput(
+    owner.clientMutationId,
+    compositionAC.input,
+    compositionAC.attachments,
+    "owner A + secondary C",
+    [],
+    [secondaryC.clientMutationId],
+    undefined,
+    0,
+  );
+  const reopened = await f.reopen();
+  expect(await reopened.getRecovery(owner.clientMutationId)).toMatchObject({
+    composerText: "owner A + secondary B",
+    payload: { input: compositionAB.input },
+    attachments: [expect.objectContaining({ name: "b.png" })],
+  });
+  expect(await reopened.getRecovery(secondaryB.clientMutationId)).toBeUndefined();
+  expect(await reopened.getRecovery(secondaryC.clientMutationId)).toMatchObject({
+    composerText: secondaryC.composerText,
+    payload: { input: secondaryC.payload.input },
+    attachments: [expect.objectContaining({ name: "c.png" })],
+  });
+  expect(stale).toBeUndefined();
 });
 
 test("legacy reopen preserves unknown attempts and editing image bytes", async () => {

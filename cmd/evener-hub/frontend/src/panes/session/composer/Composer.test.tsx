@@ -5461,13 +5461,17 @@ test.each(["keep marker", "delete marker", "add attachment", "replace attachment
         await screen.findByRole("button", { name: `View ${name}` });
       }
       if (edit === "merge recovery") {
+        // A send is already pending, so this branch proves the Edit refusal
+        // and unchanged recovery payload; the other variants prove retirement.
         await seedRejectedRecovery(storage, "ref_a", "merge me");
         await act(async () => {
           await refreshPendingTurnsProjection("ref_a");
         });
         const row = screen.getByText("merge me").closest("li");
         if (!row) throw new Error("missing rejected queue row");
-        fireEvent.click(within(row).getByRole("button", { name: "Edit message" }));
+        const editRecovery = within(row).getByRole("button", { name: "Edit message" });
+        expect(editRecovery.getAttribute("aria-disabled")).toBe("true");
+        fireEvent.click(editRecovery);
       }
     } finally {
       await act(async () => hold.release());
@@ -5477,7 +5481,8 @@ test.each(["keep marker", "delete marker", "add attachment", "replace attachment
     expect(screen.queryByRole("button", { name: "Remove replacement.png" }) !== null).toBe(edit === "add attachment");
     expect(textarea().textContent).toContain("follow up");
     if (edit === "merge recovery") {
-      expect((await storage.listRecovery("ref_a"))[0]?.composerText).toBe(textarea().textContent);
+      const [recovery] = await storage.listRecovery("ref_a");
+      expect(recovery?.payload.input).toEqual([{ type: "text", text: "merge me" }]);
     } else {
       expect(readDraft("ref_a")).toBe(textarea().textContent);
     }

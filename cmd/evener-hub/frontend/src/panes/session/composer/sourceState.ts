@@ -98,7 +98,7 @@ export interface ComposerSourceState {
     names: readonly string[],
     commands?: readonly string[],
     mentions?: readonly ComposerMention[],
-  ): Promise<void>;
+  ): Promise<boolean>;
   clearIfUnchanged(
     text: string,
     revision: number,
@@ -116,6 +116,11 @@ export function sameSkillSelections(left: readonly string[], right: readonly str
 
 export function restoredSkillNames(value: SkillEditorValue): string[] {
   return serializeSkillDocument(parseSkillDocument(value)).skillNames;
+}
+
+function recoveryCompositionRevision(record: MutationRecoveryRecord): number {
+  const revision = (record as MutationRecoveryRecord & { compositionRevision?: unknown }).compositionRevision;
+  return typeof revision === "number" && Number.isSafeInteger(revision) && revision >= 0 ? revision : 0;
 }
 
 /** Original conversation work belongs to its pane, not to an editor mount. */
@@ -160,6 +165,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
   let boundEditor: TextEditor | null = null;
   let recoveryWrites: Promise<void> = Promise.resolve();
   let recoveryOperations: Promise<void> = Promise.resolve();
+  let activeRecoveryCompositionRevision = 0;
   let refreshVersion = 0;
   let persistenceScheduled = false;
   let cleanupRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -253,7 +259,10 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
   }
   function setActiveRecoveryId(activeRecoveryId: string | null): void {
     if (disposed) return;
-    if (activeRecoveryIdRef.current !== activeRecoveryId) cancelCleanupRetry();
+    if (activeRecoveryIdRef.current !== activeRecoveryId) {
+      cancelCleanupRetry();
+      if (activeRecoveryId === null) activeRecoveryCompositionRevision = 0;
+    }
     activeRecoveryIdRef.current = activeRecoveryId;
     state.setState({ activeRecoveryId });
   }
@@ -312,8 +321,8 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
     nextSkillNames: readonly string[],
     nextCommandNames: readonly string[] = selectionMetaRef.current.commandNames,
     nextMentions: readonly ComposerMention[] | undefined = selectionMetaRef.current.mentions,
-  ): Promise<void> {
-    if (disposed) return Promise.resolve();
+  ): Promise<boolean> {
+    if (disposed) return Promise.resolve(false);
     const isEmptyCleanup =
       nextText.trim() === "" &&
       nextAttachments.length === 0 &&
@@ -336,7 +345,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
           activeRecoveryIdRef.current !== clientMutationId ||
           recoveryReplacementEpochRef.current !== replacementEpoch
         )
-          return;
+          return true;
         if (
           nextText.trim() === "" &&
           nextAttachments.length === 0 &&
@@ -354,7 +363,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
               hasEmptyComposition() &&
               (localDraftRevisionId === undefined || readComposerDraftRevisionId(ref) === localDraftRevisionId),
           );
-          if (!discarded) return;
+          if (!discarded) return false;
           cancelCleanupRetry();
           if (
             !disposed &&
@@ -368,7 +377,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
             setActiveRecoveryId(null);
             if (localDraftRevisionId) clearPersistedDraftIfRevisionMatches(ref, localDraftRevisionId);
           }
-          return;
+          return true;
         }
         const updated = await updateRecoveryPendingTurn(
           clientMutationId,
@@ -380,10 +389,17 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
           nextMentions,
           [],
           localDraftRevisionId,
+          activeRecoveryCompositionRevision,
         );
+        if (!updated) {
+          if (!disposed && activeRecoveryIdRef.current === clientMutationId) {
+            pushToast("info", "This message changed in another tab. Refresh and try again.");
+          }
+          return false;
+        }
+        activeRecoveryCompositionRevision += 1;
         if (
           !disposed &&
-          updated &&
           recoveryOwnsLocalDraftRef.current &&
           recoveryWriteVersionRef.current === version &&
           readDraftRevision(ref) === draftRevision &&
@@ -393,8 +409,12 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
           recoveryOwnsLocalDraftRef.current = false;
           if (localDraftRevisionId) clearPersistedDraftIfRevisionMatches(ref, localDraftRevisionId);
         }
+        return true;
       });
-    recoveryWrites = operation;
+    recoveryWrites = operation.then(
+      () => undefined,
+      () => undefined,
+    );
     void operation.catch((error) => {
       if (disposed || activeRecoveryIdRef.current !== clientMutationId) return;
       if (isEmptyCleanup) scheduleCleanupRetry(clientMutationId, replacementEpoch);
@@ -441,6 +461,10 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
           };
           const merged = merge();
           const ownerId = activeRecoveryIdRef.current ?? record.clientMutationId;
+          const expectedCompositionRevision =
+            ownerId === record.clientMutationId
+              ? recoveryCompositionRevision(record)
+              : activeRecoveryCompositionRevision;
           const replacementEpoch = recoveryReplacementEpochRef.current;
           cancelCleanupRetry();
           const updated = await updateRecoveryPendingTurn(
@@ -457,8 +481,10 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
             merged.mentions,
             ownerId === record.clientMutationId ? [] : [record.clientMutationId],
             incorporatedSnapshotIsCurrent() ? incorporatedRevisionId : includedDraftRevisionId,
+            expectedCompositionRevision,
           );
           if (!updated || disposed || recoveryReplacementEpochRef.current !== replacementEpoch) return false;
+          activeRecoveryCompositionRevision = expectedCompositionRevision + 1;
           if (incorporatedSnapshotIsCurrent() && incorporatedRevisionId !== undefined) {
             incorporatedSnapshotCleared = clearPersistedDraftIfRevisionMatches(ref, incorporatedRevisionId);
           }

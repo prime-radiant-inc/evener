@@ -1,7 +1,7 @@
 import type { InputItem, Thread } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -1077,6 +1077,105 @@ test("recovery activation during a paused resend preserves the secondary image r
   } finally {
     barrier.resolve({ stopEpoch: 0 });
     source.dispose();
+    storage.close();
+  }
+});
+
+test("stale recovery persistence refusal preserves the unsent draft and attachment", async () => {
+  class RefusedRecoveryStorage extends MutationOutboxIndexedDB {
+    readonly refused = deferred<void>();
+    readonly releaseRefusal = deferred<void>();
+
+    override async updateRecoveryInput(
+      ...args: Parameters<MutationOutboxIndexedDB["updateRecoveryInput"]>
+    ): ReturnType<MutationOutboxIndexedDB["updateRecoveryInput"]> {
+      const saved = await super.updateRecoveryInput(...args);
+      if (!saved) {
+        this.refused.resolve();
+        await this.releaseRefusal.promise;
+      }
+      return saved;
+    }
+  }
+  const storage = new RefusedRecoveryStorage();
+  const { fake } = await setup(false, storage);
+  const text = "keep this [image 1]";
+  const input: InputItem[] = [
+    { type: "text", text },
+    { type: "image", mediaType: "image/png", data: "AQID", name: "recovered.png" },
+  ];
+  const queuedRecord = await storage.enqueueIntent({
+    targetRef: "root",
+    threadId: "thread-a",
+    method: "turn/queue",
+    attachments: [
+      {
+        presentationId: "recovered-presentation",
+        marker: 1,
+        name: "recovered.png",
+        mediaType: "image/png",
+        blob: new Blob([Uint8Array.of(1, 2, 3)], { type: "image/png" }),
+      },
+    ],
+    composerText: text,
+    payload: { input },
+    optimisticDisplay: { input },
+  });
+  await editQueuedMutation(queuedRecord.clientMutationId, "root");
+  const source = createTestComposerSource("root");
+  const peer = new MutationOutboxIndexedDB();
+  const user = userEvent.setup();
+  const recoveryPersistenceSettled = deferred<void>();
+  const queueRecoveryPersistence = source.queueRecoveryPersistence.bind(source);
+  vi.spyOn(source, "queueRecoveryPersistence").mockImplementation(async (...args) => {
+    const saved = await queueRecoveryPersistence(...args);
+    if (!saved) recoveryPersistenceSettled.resolve();
+    return saved;
+  });
+
+  try {
+    mount(fake, source);
+    await flushPendingTurnsProjectionForTests();
+    await user.click(screen.getByRole("button", { name: "Edit message" }));
+    await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(queuedRecord.clientMutationId));
+    await screen.findByRole("button", { name: "Remove recovered.png" });
+    const submittedText = source.getSnapshot().text;
+
+    // A second tab commits a newer durable composition after this Composer
+    // loaded its owner revision. Its own recovery composition stays available.
+    let competingWrite: Awaited<ReturnType<MutationOutboxIndexedDB["updateRecoveryInput"]>>;
+    await act(async () => {
+      competingWrite = await peer.updateRecoveryInput(
+        queuedRecord.clientMutationId,
+        [{ type: "text", text: "newer composition in another tab" }],
+        undefined,
+        "newer composition in another tab",
+      );
+    });
+    expect(competingWrite).toBeDefined();
+    await flushPendingTurnsProjectionForTests();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+      await storage.refused.promise;
+      storage.releaseRefusal.resolve();
+      await recoveryPersistenceSettled.promise;
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+    expect(source.getSnapshot().text).toBe(submittedText);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Send" }).hasAttribute("disabled")).toBe(false));
+    expect((screen.getByRole("textbox", { name: "Message" }) as HTMLElement).textContent).toBe(submittedText);
+    expect(screen.getByRole("button", { name: "Remove recovered.png" })).toBeDefined();
+    expect(source.getSnapshot().activeRecoveryId).toBe(queuedRecord.clientMutationId);
+    expect(await peer.getRecovery(queuedRecord.clientMutationId)).toMatchObject({
+      composerText: "newer composition in another tab",
+      payload: { input: [{ type: "text", text: "newer composition in another tab" }] },
+      attachments: [expect.objectContaining({ name: "recovered.png" })],
+    });
+  } finally {
+    act(() => source.dispose());
+    peer.close();
     storage.close();
   }
 });
