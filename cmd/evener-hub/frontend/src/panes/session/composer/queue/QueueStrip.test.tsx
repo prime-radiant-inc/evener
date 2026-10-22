@@ -1254,6 +1254,7 @@ test("recovery Drain waits for pending autosaves and uses the committed revision
   await flushPendingTurnsProjectionForTests();
   expect(getRecoveryRevision).toHaveBeenCalledTimes(1);
   expect(resend).toHaveBeenCalledTimes(1);
+  expect(resend.mock.calls[0]?.[2]).toMatchObject({ stopEpoch: expect.any(Number) });
   expect(resend.mock.calls[0]?.[3]).toEqual({ [record.clientMutationId]: 1 });
 });
 

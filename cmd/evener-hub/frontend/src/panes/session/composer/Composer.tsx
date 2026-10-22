@@ -1184,8 +1184,10 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
           updateSkillNames([]);
           updateSelectionMeta({ text: "", skillNames: [] });
         }
-        clearDraft(ref);
-        ownedDraftRevisionRef.current = readDraftRevision(ref);
+        if (ownedDraftRevisionRef.current === readDraftRevision(ref)) {
+          clearDraft(ref);
+          ownedDraftRevisionRef.current = readDraftRevision(ref);
+        }
       }
       clearSubmittedAttachments(submittedAttachments);
     } catch (error) {

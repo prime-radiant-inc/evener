@@ -17,6 +17,7 @@ import { controlsFor, pressLocalRecoveryFenced, pressRefusal } from "../../../..
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { InputAttachment } from "../../../../stores/threads";
 import {
+  captureRecoveryStopBarrier,
   retryBlockedBySnapshot,
   threadsStore,
   useEditableQueuedMutationEntries,
@@ -436,6 +437,9 @@ export function QueueStrip({
     }
     let recoveryRefusal: "changed" | "consumed" | undefined;
     const recoveryResendRefusal = new Error("Recovery resend was refused");
+    // Capture the Stop fence before any await: a Stop during the autosave
+    // wait must still land between this submission and its mutation.
+    const recoveryBarrier = activeRecoveryId ? captureRecoveryStopBarrier(sessionRef) : undefined;
     onDrainBusyChange(true);
     try {
       let expectedRecoveryRevision = activeRecoveryRevision;
@@ -470,7 +474,7 @@ export function QueueStrip({
               skillNames,
               commandNames,
               mentions,
-              undefined,
+              recoveryBarrier,
               activeRecoveryId && expectedRecoveryRevision !== undefined
                 ? { [activeRecoveryId]: expectedRecoveryRevision }
                 : undefined,
