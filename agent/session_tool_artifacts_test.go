@@ -155,6 +155,23 @@ func TestRetainToolArtifactUsesRecoverableOutput(t *testing.T) {
 	}
 }
 
+func TestRetainToolArtifactWithNoStoreReportsFailure(t *testing.T) {
+	t.Parallel()
+	s := &Session{}
+	res := tool.ExecResult{
+		Output:            "preview",
+		RecoverableOutput: "model full",
+		Truncated:         true,
+	}
+
+	if ref := s.retainToolArtifact(&res); ref != "" {
+		t.Fatalf("ref = %q, want no handle with no store", ref)
+	}
+	if !strings.Contains(res.Output, "retention_failed") {
+		t.Fatalf("output = %q, want the reader told full output is missing", res.Output)
+	}
+}
+
 func TestRetainToolArtifactFailureIsAvailabilityNeutralAndPreservesError(t *testing.T) {
 	t.Parallel()
 	store := newFakeArtifactStore()

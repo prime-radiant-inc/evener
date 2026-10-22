@@ -37,7 +37,7 @@ func TestDirtyControllerRefusesABuildSource(t *testing.T) {
 		BuildSource:               "/some/evener/checkout",
 	})
 
-	_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
+	_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
 	if !errors.Is(err, errControllerDirty) {
 		t.Fatalf("err = %v, want errControllerDirty", err)
 	}
@@ -59,7 +59,7 @@ func TestDirtyControllerRefusesANamedBuildBinary(t *testing.T) {
 		},
 	})
 
-	_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
+	_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
 	if !errors.Is(err, errControllerDirty) {
 		t.Fatalf("err = %v, want errControllerDirty", err)
 	}
@@ -103,7 +103,7 @@ func TestCleanControllerDeploysANamedBuildBinary(t *testing.T) {
 		},
 	})
 
-	target, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"})
+	target, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil)
 	if err != nil {
 		t.Fatalf("a clean controller refused a named binary artifact: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestDefaultSourceCrossTargetFallsBackToTheInstaller(t *testing.T) {
 		},
 	})
 
-	_, err := m.deploy(context.Background(), host, Preflight{OS: goos, Arch: goarch, Home: "/home/dev"})
+	_, err := m.deploy(context.Background(), host, Preflight{OS: goos, Arch: goarch, Home: "/home/dev"}, nil)
 	if err == nil {
 		t.Fatal("the cross-target deploy reported success")
 	}
@@ -218,7 +218,7 @@ func TestDefaultSourceCrossTargetUnpinnableRefusesTerminally(t *testing.T) {
 		},
 	})
 
-	_, err := m.deploy(context.Background(), host, Preflight{OS: goos, Arch: goarch, Home: "/home/dev"})
+	_, err := m.deploy(context.Background(), host, Preflight{OS: goos, Arch: goarch, Home: "/home/dev"}, nil)
 	if !errors.Is(err, errOwnExecutableCannotServe) {
 		t.Fatalf("err = %v, want errOwnExecutableCannotServe", err)
 	}
@@ -276,7 +276,7 @@ func TestNamedArtifactCrossTargetKeepsThePushRefusal(t *testing.T) {
 		},
 	})
 
-	_, err := m.deploy(context.Background(), host, Preflight{OS: goos, Arch: goarch, Home: "/home/dev"})
+	_, err := m.deploy(context.Background(), host, Preflight{OS: goos, Arch: goarch, Home: "/home/dev"}, nil)
 	if !errors.Is(err, ErrDeployArtifactUnusable) {
 		t.Fatalf("err = %v, want the terminal artifact-mismatch refusal", err)
 	}
@@ -324,7 +324,7 @@ func TestDefaultSourceSameTargetStillPushes(t *testing.T) {
 		},
 	})
 
-	target, err := m.deploy(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH})
+	target, err := m.deploy(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH}, nil)
 	if err != nil {
 		t.Fatalf("same-target deploy of the own executable: %v", err)
 	}
@@ -348,7 +348,7 @@ func TestDirtyControllerRefusesWhenTheStagingPathIsNotTheOwnExecutable(t *testin
 		BuildSource:               "/some/evener/checkout",
 	})
 
-	_, err := m.deploy(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH, Home: "/home/dev"})
+	_, err := m.deploy(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH, Home: "/home/dev"}, nil)
 	if !errors.Is(err, errControllerDirty) {
 		t.Fatalf("err = %v, want errControllerDirty (a build source cannot reproduce a dirty controller)", err)
 	}
@@ -394,7 +394,7 @@ func TestDirtyControllerDeploysItsOwnExecutable(t *testing.T) {
 		},
 	})
 
-	target, err := m.deploy(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH})
+	target, err := m.deploy(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH}, nil)
 	if err != nil {
 		t.Fatalf("deploy of the controller's own executable from a dirty controller: %v", err)
 	}
@@ -442,7 +442,7 @@ func TestDirtyControllerOwnExecutableDeployConvergesThroughTheOperation(t *testi
 		BuildBinary:               writeStageBinary,
 	})
 
-	target, after, err := m.DeployForOperation(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH})
+	target, after, err := m.DeployForOperation(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH}, true, nil)
 	if err != nil {
 		t.Fatalf("DeployForOperation: %v", err)
 	}
@@ -489,13 +489,13 @@ func TestDeployDisabledRefusesEveryDeployPath(t *testing.T) {
 	if m.canDeploy() {
 		t.Fatal("DeployDisabled left canDeploy true, so the installer fallback could still write to a host")
 	}
-	if m.deployRequired(host.Name, facts, "controller-sha") {
+	if m.deployRequired(facts) {
 		t.Fatal("DeployDisabled still required a deploy this controller has turned off")
 	}
 
 	// The explicit operation reaches deploy directly; it must be refused rather
 	// than silently converted into the installer fallback.
-	_, err := m.deploy(context.Background(), host, facts)
+	_, err := m.deploy(context.Background(), host, facts, nil)
 	if !errors.Is(err, errDeployDisabled) {
 		t.Fatalf("deploy err = %v, want errDeployDisabled", err)
 	}
@@ -508,7 +508,7 @@ func TestDeployDisabledRefusesEveryDeployPath(t *testing.T) {
 	if !strings.Contains(err.Error(), help) {
 		t.Fatalf("refusal does not name the remedy: %v", err)
 	}
-	if _, _, err := m.DeployForOperation(context.Background(), host, facts); !errors.Is(err, errDeployDisabled) {
+	if _, _, err := m.DeployForOperation(context.Background(), host, facts, true, nil); !errors.Is(err, errDeployDisabled) {
 		t.Fatalf("DeployForOperation err = %v, want errDeployDisabled", err)
 	}
 	if runs := fr.recordedRuns(); len(runs) != 0 {
@@ -543,6 +543,7 @@ func TestDirtyControllerOwnExecutableMismatchRefusesUnstamped(t *testing.T) {
 			return []byte(`{"version":"othersha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		},
 	)
+	requireProtocolUpgrade(t, fr)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: dirtyControllerVersion,
 		OwnExecutable:             true,

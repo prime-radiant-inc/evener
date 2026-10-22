@@ -440,13 +440,15 @@ type bundledStaging struct {
 // inside that window.
 var stageBundledCopy = newBundledStaging
 
-// newBundledStaging opens a staging directory for base inside store and marks
-// it as this code's to reclaim before anything is copied in, so a publish
-// killed at any moment leaves an orphan a later sweep recognizes. release is
-// the bundled cache's lock the caller holds, handed over for the staging to
-// carry.
-func newBundledStaging(store, base, digest string, release func()) (*bundledStaging, error) {
-	dir, err := os.MkdirTemp(store, stagingPrefix+base+"-")
+// newBundledStaging opens a staging directory for base inside the private
+// publishing area and marks it as this code's to reclaim before anything is
+// copied in, so a publish killed at any moment leaves an orphan a later sweep
+// recognizes. The staging parent is outside the granted bundled root, so an
+// embedded payload's bytes are never visible to a session while they are being
+// audited. release is the bundled cache's lock the caller holds, handed over
+// for the staging to carry.
+func newBundledStaging(stagingParent, base, digest string, release func()) (*bundledStaging, error) {
+	dir, err := os.MkdirTemp(stagingParent, stagingPrefix+base+"-")
 	if err != nil {
 		return nil, err
 	}
@@ -500,7 +502,10 @@ func (m *Manager) materializeBundledPlugin(ctx context.Context, name string) (st
 	if err := copyBundledPayload(staging.payload, mustSubFS(bundled.Plugins(), name)); err != nil {
 		return failed(warnings, fmt.Errorf("materialize bundled plugin %s: %w", name, err))
 	}
-	if err := os.Rename(staging.payload, dest); err != nil {
+	if err := auditBundledPayload(staging.payload); err != nil {
+		return failed(warnings, fmt.Errorf("materialize bundled plugin %s: %w", name, err))
+	}
+	if err := publishStaged(staging.payload, dest, os.Rename); err != nil {
 		// The cache's lock keeps every other publisher out, so a destination
 		// that filled since it was classified was filled by something outside
 		// this package. An identical copy is adopted; anything else is set
@@ -522,7 +527,7 @@ func (m *Manager) materializeBundledPlugin(ctx context.Context, name string) (st
 			return failed(warnings, asideErr)
 		}
 		setAside = true
-		if err := os.Rename(staging.payload, dest); err != nil {
+		if err := publishStaged(staging.payload, dest, os.Rename); err != nil {
 			return failed(warnings, fmt.Errorf("publish bundled plugin %s: %w", name, err))
 		}
 	}
@@ -634,7 +639,7 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, intent b
 		// something to sweep, and the scan that answers that needs no lock.
 		// Taking one on every launch would park a routine one behind whatever
 		// publisher is filling its staging.
-		if publishing && (len(m.abandonedStaging(store)) > 0 || len(m.reclaimableBundledConflicts(store)) > 0) {
+		if publishing && (len(m.abandonedStaging(store)) > 0 || len(m.abandonedStaging(m.bundledPublishingDir())) > 0 || len(m.reclaimableBundledConflicts(store)) > 0) {
 			// Housekeeping for a launch that is otherwise done: it waits the
 			// housekeeping wait, not the wait a publish is entitled to — the
 			// wait acquireLock is given here is the whole of it. A lock it
@@ -642,7 +647,7 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, intent b
 			// making this one queue behind whatever holds it. Whether the
 			// orphans are really abandoned is decided again under the lock.
 			if release, lockErr := m.acquireBundledLock(ctx, bundledSweepLockWait); lockErr == nil {
-				m.reclaimBundledStoreDebt(store)
+				m.reclaimBundledStoreDebt()
 				release()
 			}
 			// A lock failure the sweep is entitled to ignore is also how the
@@ -670,7 +675,7 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, intent b
 	// publisher that lost a rename and died only ever meets callers taking the
 	// published path.
 	if publishing {
-		m.reclaimBundledStoreDebt(store)
+		m.reclaimBundledStoreDebt()
 	}
 	state, err := classifyBundledDestination(dest, digest)
 	if err != nil {
@@ -702,7 +707,14 @@ func (m *Manager) prepareBundledStore(ctx context.Context, name string, intent b
 				dest, dest+conflictSuffix))
 		}
 	}
-	staging, err := stageBundledCopy(store, filepath.Base(dest), digest, release)
+	if err := os.MkdirAll(m.bundledPublishingDir(), 0o700); err != nil {
+		if setAside {
+			warnings = append(warnings, restoreBundledConflict(dest)...)
+		}
+		release()
+		return "", nil, warnings, fmt.Errorf("stage bundled plugin %s: %w", name, err)
+	}
+	staging, err := stageBundledCopy(m.bundledPublishingDir(), filepath.Base(dest), digest, release)
 	if err != nil {
 		// The destination is empty at this point and nothing is going to fill
 		// it, so what was moved out of the name goes back into it.
@@ -839,13 +851,20 @@ func setAsideBundledConflict(dest string) ([]string, error) {
 // anything, and old enough that no publish in flight could still be filling
 // it. Anything else at that name is someone else's data, however old it is.
 func (m *Manager) abandonedStaging(dir string) []string {
+	return m.abandonedStagingWithPrefix(dir, stagingPrefix)
+}
+
+// abandonedStagingWithPrefix is abandonedStaging with the staging name prefix
+// as a parameter, so the marketplace publishing area's own containers can be
+// swept with exactly the same proof and age rule.
+func (m *Manager) abandonedStagingWithPrefix(dir, prefix string) []string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
 	var abandoned []string
 	for _, entry := range entries {
-		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), stagingPrefix) {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) {
 			continue
 		}
 		staging := filepath.Join(dir, entry.Name())
@@ -953,12 +972,12 @@ func splitBundledDigestName(base string) (name, digest string, ok bool) {
 // what tells staging nobody will come back for from staging a slow publisher
 // is still filling, and what tells a conflict.previous nobody is mid-swap on
 // it.
-func (m *Manager) reclaimBundledStoreDebt(dir string) {
-	for _, staging := range m.abandonedStaging(dir) {
+func (m *Manager) reclaimBundledStoreDebt() {
+	for _, staging := range append(m.abandonedStaging(m.bundledDir()), m.abandonedStaging(m.bundledPublishingDir())...) {
 		// Best effort: a concurrent publisher may be reclaiming the same orphan.
 		_ = os.RemoveAll(staging)
 	}
-	for _, conflict := range m.reclaimableBundledConflicts(dir) {
+	for _, conflict := range m.reclaimableBundledConflicts(m.bundledDir()) {
 		// Best effort, for the same reason: a concurrent publisher may already
 		// be reclaiming the same stale or parked conflict slot.
 		_ = os.RemoveAll(conflict)

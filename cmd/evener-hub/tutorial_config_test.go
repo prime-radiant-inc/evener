@@ -355,8 +355,18 @@ func runConfigWeb(t *testing.T, out string) {
 	url := "http://" + stack.addr
 	assertHubServesBuiltSPA(t, stack.addr, stack.token)
 	driver := openTutorialDriver(ctx, t, map[string]any{"url": url, "authURL": url + "/auth/" + stack.token, "workspace": stack.workDir, "workspaces": []string{other}, "model": stack.model, "scenario": "configuration", "viewport": map[string]int{"width": 1280, "height": 900}, "outputDir": out})
+	// A real session makes the second project reachable from the sidebar. No
+	// settings route or project layer is seeded to manufacture that entry.
+	const otherPrompt = "CONFIG_OTHER_PROJECT_61d"
+	driver.act(t, "start", map[string]any{"prompt": otherPrompt, "workspace": other})
+	otherCall := dailyNext(ctx, t, p)
+	otherThread := configRunningThread(ctx, t, observer, other, otherPrompt, otherCall)
+	otherCall.RespondToolCall("communicate", communicateArgs("CONFIG_OTHER_DONE_61d"))
+	awaitThread(ctx, t, observer, otherThread.Evener.Ref, "other project available", func(thread appwire.Thread) bool {
+		return thread.Evener.ActiveTurnID == "" && thread.Status.Type != "active"
+	})
 	oldPrompt := "Keep this original session active while project defaults change."
-	driver.act(t, "start", map[string]any{"prompt": oldPrompt})
+	driver.act(t, "start", map[string]any{"prompt": oldPrompt, "workspace": stack.workDir})
 	held := dailyNext(ctx, t, p)
 	state := filepath.Join(stack.home, "state")
 	oldThread := configRunningThread(ctx, t, observer, stack.workDir, oldPrompt, held)
@@ -371,14 +381,35 @@ func runConfigWeb(t *testing.T, out string) {
 	awaitThread(ctx, t, observer, oldRef, "original session active", active)
 	checkpoint(t, "entry", []tourEvidence{{"original unlimited effective session", true}}, driver.capture(t, out, "entry"))
 	configure := func(work string, n int) {
-		driver.act(t, "configure", map[string]any{"scope": "project", "field": "max_rounds", "value": n, "workspace": work})
+		data := driver.act(t, "configure", map[string]any{"scope": "project", "field": "max_rounds", "value": n, "workspace": work})
+		var result struct {
+			Events []struct {
+				Kind    string `json:"kind"`
+				Trusted bool   `json:"trusted"`
+				Visible bool   `json:"visible"`
+			} `json:"events"`
+		}
+		if err := json.Unmarshal(data, &result); err != nil {
+			t.Fatal("invalid configuration driver data")
+		}
+		var kinds []string
+		for _, event := range result.Events {
+			if !event.Trusted || !event.Visible {
+				t.Fatal("configuration navigation event was not a visible browser activation")
+			}
+			kinds = append(kinds, event.Kind)
+		}
+		if !reflect.DeepEqual(kinds, []string{"menu", "project", "edit"}) {
+			t.Fatalf("configuration browser navigation events=%v, want menu, project, edit", kinds)
+		}
 		layer, err := clientRequest[appwire.LaunchConfigLayer](ctx, observer, appwire.MethodEvenerLaunchGetLayer, appwire.LaunchConfigGetLayerParams{CWD: work, Layer: "project"})
 		if err != nil {
 			t.Fatal(err)
 		}
 		resolved := resolve(work)
 		if layer.MaxRounds == nil || *layer.MaxRounds != n || resolved.Effective.MaxRounds == nil || *resolved.Effective.MaxRounds != n || resolved.Provenance["max_rounds"] != "project" {
-			t.Fatal("project UI save not persisted/resolved")
+			got, _ := json.Marshal(map[string]any{"layer": layer.MaxRounds, "effective": resolved.Effective.MaxRounds, "provenance": resolved.Provenance["max_rounds"]})
+			t.Fatalf("project UI save not persisted/resolved: want=%d got=%s", n, got)
 		}
 	}
 	configure(other, 7)

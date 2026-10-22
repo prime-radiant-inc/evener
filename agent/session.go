@@ -871,15 +871,17 @@ type Session struct {
 	pendingPluginEvents []events.PluginLoadedData
 	pendingHookWarnings []events.WarningData
 	pendingMCPWarnings  []events.WarningData
-	// pendingTranscriptWarnings holds construction-time transcript-health
-	// warnings (transcript creation failing open in NewSession; a held
-	// SessionStart-hook turn failing to flush in attachTranscript) until
-	// emitSessionStartEnvelope releases them, same as the three plugin/hook/MCP
-	// buffers above and for the same reason (kata et0x): SESSION_START is the
-	// stream's promised first event, so nothing construction-time may reach a
-	// client before it. Flushed via s.emit (not emitDiagnosticWarning) because
-	// these are genuine, model-facing warnings — unlike the other three, which
-	// are config diagnostics that must not fire the Notification hook.
+	// pendingTranscriptWarnings holds construction-time warnings that are
+	// genuine and model-facing (transcript creation failing open in NewSession,
+	// a held SessionStart-hook turn failing to flush in attachTranscript, and
+	// full output retention being unavailable because the artifact store could
+	// not be created) until emitSessionStartEnvelope releases them, same as the
+	// three plugin/hook/MCP buffers above and for the same reason (kata et0x):
+	// SESSION_START is the stream's promised first event, so nothing
+	// construction-time may reach a client before it. Flushed via s.emit (not
+	// emitDiagnosticWarning) because these are genuine, model-facing warnings —
+	// unlike the other three, which are config diagnostics that must not fire
+	// the Notification hook.
 	pendingTranscriptWarnings []events.WarningData
 	hookRunner                *hooks.Runner
 	// pluginCommands is the union of every loaded plugin's slash commands
@@ -1636,6 +1638,12 @@ func (s *Session) SetModel(model string) error {
 		return admissionErr
 	}
 	defer release()
+	// A named Codex model may exist only in the target instance's live
+	// roster. List it before s.mu: the strict cross-provider resolve below
+	// runs under the lock and must stay a pure registry lookup, while the
+	// live rows this applies are what let it accept a model the bundled
+	// roster lags.
+	primedInstance, primedListing := s.primeCodexRoster(model)
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
@@ -1663,7 +1671,7 @@ func (s *Session) SetModel(model string) error {
 	// the membership preflight below (see resolveModelSwitchTarget) — this
 	// rejects before any state changes when the target instance can
 	// enumerate its models and the requested model isn't among them.
-	nextProfile, err = resolveModelSwitchTarget(client, nextProfile, s.id, *s.providerAdapterTimeout())
+	nextProfile, err = resolveModelSwitchTarget(client, nextProfile, s.id, *s.providerAdapterTimeout(), primedInstance, primedListing)
 	if err != nil {
 		return err
 	}
@@ -1755,6 +1763,48 @@ func (s *Session) SetModel(model string) error {
 	s.maybeAutoSave()
 	s.resumeRootAttentionAfterModelSwitch()
 	return nil
+}
+
+// primeCodexRoster applies the target instance's live listing when a named
+// model is a Codex id the bundled roster does not carry. The switch's own
+// resolve runs under s.mu, so the network call lives here instead, outside the
+// lock; a failure leaves the resolve to report its authoritative error.
+func (s *Session) primeCodexRoster(ref string) (string, *llm.ModelListing) {
+	ref = strings.TrimSpace(ref)
+	instance, model, ok := strings.Cut(ref, "/")
+	if !ok || instance == "" || s.client == nil {
+		return "", nil
+	}
+	s.mu.Lock()
+	base := s.profile
+	s.mu.Unlock()
+	if base != nil && strings.EqualFold(instance, base.ID()) {
+		return "", nil
+	}
+	r := s.client.Registry()
+	if base != nil {
+		if res, err := r.ResolveInstanceModelFacts(base.ID(), ref); err == nil && !res.Synthesized && !registry.BoolValue(res.Model.Disabled) {
+			// The current instance already serves this namespaced id; the
+			// first segment is a model namespace, not a provider switch.
+			return "", nil
+		}
+	}
+	if !r.HasInstance(instance) {
+		// A namespaced model on the current instance (an OpenRouter
+		// "anthropic/..." id) is not a provider switch. Resolving the raw
+		// ref would name the anthropic instance and mint its credential.
+		return "", nil
+	}
+	if _, err := r.ResolveInstanceModelFacts(instance, model); err == nil || !errors.Is(err, registry.ErrCodexModelNotListed) {
+		return "", nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), llm.LiveModelListTimeout)
+	defer cancel()
+	listing, err := s.client.Models(s.apiLogContext(ctx), instance)
+	if err != nil || !listing.Usable {
+		return "", nil
+	}
+	return instance, &listing
 }
 
 // SetVisionModel changes the vision side-channel routing for future image

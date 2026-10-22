@@ -31,7 +31,7 @@ func (p *Protocol) call(operation, method, url string, body map[string]any, req 
 func (p *Protocol) completionCall(operation, method, url string, body map[string]any, req llm.Request, res registry.Resolved) *protocolhttp.Call {
 	call := p.call(operation, method, url, body, req, res)
 	call.FinalizeBody = func(_ context.Context, finalBody map[string]any) error {
-		reconcilePreparedOutput(finalBody, req, res.Caps)
+		reconcilePreparedOutput(finalBody, req, res)
 		return nil
 	}
 	return call

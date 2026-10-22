@@ -40,6 +40,25 @@ const settle = () => new Promise((resolve) => setImmediate(resolve));
 afterEach(() => vi.useRealTimers());
 
 describe("the hosts controller", () => {
+	it("keeps remote or unknown build identity through Connect and refresh", async () => {
+		const h = hub();
+		const hosts = new HostsController(h.client);
+		for (const hubVersion of ["remote-build-a", undefined, "remote-build-b"]) {
+			const connecting = hosts.connect("attic");
+			h.take("evener/host/attach").resolve({ host: "attic", attached: true, hubVersion });
+			await settle();
+			h.take("evener/host/list").resolve({ hosts: [row("attic", { attached: true, hubVersion })] });
+			await connecting;
+			const refreshing = hosts.read();
+			h.take("evener/host/list").resolve({ hosts: [row("attic", { attached: true, hubVersion })] });
+			await refreshing;
+			expect(hosts.getSnapshot().rows?.[0]).toMatchObject({ attached: true, hubVersion });
+			expect(hosts.getSnapshot().connecting.size).toBe(0);
+			expect(h.pending).toEqual([]);
+		}
+		hosts.dispose();
+	});
+
 	it("reads the hub's hosts and leaves removed ones out", async () => {
 		const h = hub();
 		const hosts = new HostsController(h.client);

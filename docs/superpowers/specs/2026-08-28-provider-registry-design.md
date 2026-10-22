@@ -444,15 +444,19 @@ overlay field-wise.
 The live layer establishes existence of models the catalog lacks and
 supplies the model facts it explicitly advertises (`Tools`,
 `InputModalities`, `ContextWindow`, `MaxOutputTokens`, `EffortValues`,
-`Cost`, `Reasoning`) plus one structural cap, `ThinkingAlwaysOn`, set only
+`Cost`, `Reasoning`) plus the structural caps `ThinkingAlwaysOn`, set only
 when OpenRouter's `reasoning.mandatory` is `true` (today's rule,
-`openaicompat/models.go:118-120`; a listed `false` sets nothing), with
+`openaicompat/models.go:118-120`; a listed `false` sets nothing), and the
+gateway's per-model `ReasoningControls`, `ThinkingFormat`, and
+`MaxTokensField` from its `client_compat` block, with
 `Provenance = "live"`. Sitting after layer 3 and before layer 4, it
 overrides catalog and curated facts (today's rule that OpenRouter's
 `supported_parameters` is authoritative over the catalog,
 `llm/model_catalog.go:297-330`) but **never a field the user layer set**
 (today's `WithLiveModelInfo` rule that `providers.toml` rows beat live
-enrichment). It never touches any other wire-shaping cap. Live rows whose
+enrichment). It never touches any other wire-shaping cap, and `MaxTokensField`
+is followed to a body path only on `openai-chat`, the protocol that spells
+the output limit that way (§8.2). Live rows whose
 id matches the non-chat pattern list (`embedding`, `whisper`, `tts`,
 `dall-e`, `moderation`, `audio`, `transcribe`, `image`, `realtime`,
 `davinci`, `babbage`, `sora`; one list in `registry`, replacing

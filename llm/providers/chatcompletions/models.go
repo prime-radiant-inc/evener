@@ -85,8 +85,7 @@ func (m modelEntry) row() registry.Model {
 		}
 		caps.EffortValues = requestutil.DedupStrings(m.Reasoning.SupportedEfforts)
 	}
-	requestutil.ApplyGatewayReasoning(&caps, m.Capabilities, m.ClientCompat)
-	caps.InputModalities = requestutil.GatewayInputModalities(m.Architecture, m.Capabilities)
+	requestutil.ApplyGatewayFacts(&caps, m.Architecture, m.Capabilities, m.ClientCompat)
 	if in, ok := perTokenCostToPerMillion(m.Pricing.Prompt); ok {
 		if out, ok := perTokenCostToPerMillion(m.Pricing.Completion); ok {
 			caps.Cost = &registry.Cost{Input: in, Output: out}

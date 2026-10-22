@@ -10,31 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 )
 
-// TestRound13DirtyControllerDeployRefusalIsTerminal pins the round-thirteen
-// Medium that a dirty controller with a build source entered an infinite deploy
-// loop. `deployRequired` forces a deploy for a dirty "<sha>-dirty" version (a
-// dirty version is not an identity: another dirty checkout at the same commit
-// reports it too), but the production build path refuses to compile a dirty
-// controller's tree (verifyBuildRevision), and the installer fallback refuses
-// dirty before it can pin an artifact. `markDevDeployed` was therefore never
-// reached, the forced deploy stayed forced, and the refusal was returned as a
-// retryable ErrDeploy — so the supervisor cross-compiled forever while the host
-// was never attached.
-//
-// The fix keeps round twelve's property (a dirty version is never treated as an
-// identity match, so the deploy is still forced) and makes the refusal terminal
-// instead of ErrDeploy: the supervisor stops, the cause is reported, and no
-// build, restart, or attach is attempted. The test drives the decision and the
-// supervisor's own per-iteration path (reconnectOnce), not BuildBinary alone —
-// which is how the round-twelve test missed the loop. The build source here is a
-// BuildBinary that is not the controller's own executable (an embedder's own
-// compile of the controller's tree, or an operator's -deploy-binary); the
-// controller's own executable is deployable from a dirty controller and is
-// pinned by TestDirtyControllerDeploysItsOwnExecutable.
+// A required protocol upgrade cannot compile an unrepeatable dirty controller
+// tree. That source refusal is terminal, so reconnect does not retry forever.
+// The own-executable exception is covered by TestDirtyControllerDeploysItsOwnExecutable.
 func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 	const dirty = "abc1234-dirty"
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
@@ -61,6 +42,7 @@ func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}, startFn: goodStartFn(t)}
+	requireProtocolUpgrade(t, fr)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: dirty,
 		BuildBinary: func(_ context.Context, _, _, out string) error {
@@ -72,16 +54,15 @@ func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 	testDeployRecorder(t, m)
 	testRestartRecorder(t, m)
 
-	// Round twelve's rule stands: the identical dirty version on both sides is not
-	// a match, so the deploy is still required.
-	if !m.deployRequired(host.Name, Preflight{
+	// An incompatible protocol still requires deployment, regardless of build labels.
+	if !m.deployRequired(Preflight{
 		Host:             host.Name,
 		LaunchCheckKnown: true,
-		Protocol:         appwire.ProtocolVersion,
+		Protocol:         "evener-appwire-v5",
 		Version:          dirty,
 		LaunchFlags:      []string{requiredLaunchFlag},
-	}, dirty) {
-		t.Fatal("a dirty controller stopped forcing the deploy, so it could attach to a host whose code equality cannot prove")
+	}) {
+		t.Fatal("an incompatible protocol did not require deployment")
 	}
 
 	_, err := m.Ensure(context.Background(), "alpha")
@@ -100,9 +81,7 @@ func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 	if builds != 0 {
 		t.Fatalf("build attempts = %d, want 0 (a dirty controller has no deployable source build)", builds)
 	}
-	if got := len(fr.recordedStarts()); got != 0 {
-		t.Fatalf("bridge Start calls = %d, want 0 (never attach to a host the dirty version cannot verify)", got)
-	}
+	requireNoAttach(t, fr)
 	for _, argv := range fr.recordedRuns() {
 		if strings.Contains(strings.Join(argv, " "), "systemctl restart") {
 			t.Fatalf("the refused deploy still restarted the host: %v", argv)
@@ -514,7 +493,7 @@ func TestRound13RestartBareRefusesAnIPv6WildcardListenerForAnIPv4Endpoint(t *tes
 			sleep: func(context.Context, time.Duration) error { return nil },
 		})
 
-		err := m.restartBare(context.Background(), host, hubIdentity{})
+		err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}, nil)
 		if !errors.Is(err, ErrRestart) {
 			t.Fatalf("err = %v, want ErrRestart for an IPv6-wildcard listener on an IPv4 endpoint", err)
 		}
@@ -530,7 +509,7 @@ func TestRound13RestartBareRefusesAnIPv6WildcardListenerForAnIPv4Endpoint(t *tes
 			sleep: func(context.Context, time.Duration) error { return nil },
 		})
 
-		if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
+		if err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}, nil); err != nil {
 			t.Fatalf("restartBare: %v (an IPv6 wildcard owns the IPv6 endpoint it was configured for)", err)
 		}
 		if !killed {

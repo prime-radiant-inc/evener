@@ -16,6 +16,7 @@ import (
 
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
@@ -1034,9 +1035,10 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	}
 	hubLogf := hubLogfFor(cfg)
 	server := appserver.NewServer(appserver.ServerConfig{
-		ServerName: "evener-hub",
-		Version:    Version,
-		SourceID:   "local",
+		ServerName:   "evener-hub",
+		Version:      Version,
+		BuildVersion: buildinfo.Version(),
+		SourceID:     "local",
 		// The hub's own machine: its system and architecture from the running
 		// binary, and its project roots from hub.toml's top-level `roots`, so a
 		// client showing the hub's own machine beside its SSH hosts has the
@@ -1163,6 +1165,9 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			reg:                 cfg.Registry,
 			providersConfigPath: cfg.ProvidersConfigPath,
 			auth:                authController,
+		}
+		if observeInstancesController != nil {
+			observeInstancesController(instancesController)
 		}
 	}
 	// cfg.PluginManager, when the caller (newWebServer) already set it, is the
@@ -2109,9 +2114,9 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 	// its own success - the broadcast can beat the failing reply, and consuming
 	// the marker then would suppress the invalidation a failed operation owes.
 	// apply performs the mutation and returns the listing to answer with, so
-	// the notify-and-answer block below is shared by every instance write. An
-	// edit passes its lock-scoped capture (see edit); the rest answer with a
-	// fresh List() via listAfter.
+	// the notify-and-answer block below is shared by every instance write. A
+	// create or edit passes its lock-scoped capture (see create and edit); the
+	// rest answer with a fresh List() via listAfter.
 	instanceWrite := func(originClientId string, apply func() (appwire.InstanceListResponse, error)) (appwire.InstanceListResponse, error) {
 		list, err := apply()
 		if writeDidApply(err) {
@@ -2135,7 +2140,13 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 		}
 	}
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceCreate, func(_ context.Context, params appwire.InstanceCreateParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, listAfter(func() error { return instancesController.Create(params) }))
+		return instanceWrite(params.OriginClientId, func() (appwire.InstanceListResponse, error) {
+			var list appwire.InstanceListResponse
+			if err := instancesController.create(params, &list); err != nil {
+				return appwire.InstanceListResponse{}, err
+			}
+			return list, nil
+		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceEdit, func(_ context.Context, params appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
 		return instanceWrite(params.OriginClientId, func() (appwire.InstanceListResponse, error) {
@@ -2313,6 +2324,7 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerUpgrade, hubUpgrade)
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerUpdateCheck, hubUpdateCheck)
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerUpdateApply, hubUpdateApply)
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHubRestart, hubRestart)
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSearch, func(ctx context.Context, params appwire.SearchParams) (appwire.SearchResponse, error) {
 		return hubSearch(ctx, cfg, params, time.Now())
 	})

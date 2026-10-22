@@ -284,9 +284,15 @@ export type {
   HubUpdatePorts,
   HubUpdateState,
   HubUpdateStateStore,
+  RestartBaseline,
   UpdateChannel,
 } from "./hubUpdate";
-export { APPLY_TIMEOUT_MS, createHubUpdateController, INITIAL_HUB_UPDATE_STATE } from "./hubUpdate";
+export {
+  APPLY_TIMEOUT_MS,
+  createHubUpdateController,
+  INITIAL_HUB_UPDATE_STATE,
+  RESTART_REQUEST_TIMEOUT_MS,
+} from "./hubUpdate";
 export type { ItemFailureSignals } from "./itemFailure";
 export {
   displayTurnStatus,
@@ -415,7 +421,7 @@ export {
   resolvedEmptyChoice,
   schemaPathKind,
 } from "./launchSchema";
-export { marketplaceSourceLabel } from "./marketplaceSourceLabel";
+export { marketplaceSourceLabel, marketplaceSourcePin, marketplaceSourceTakesRef } from "./marketplaceSourceLabel";
 export {
   MEMORY_CONTEXT_EVENT_KIND,
   MEMORY_CONTEXT_LABEL,

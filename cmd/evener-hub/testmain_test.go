@@ -28,6 +28,54 @@ var testEnv *hubtestenv.Env
 
 const detachHelperRunDirEnv = "EVENER_HUB_DETACH_HELPER_RUN_DIR"
 
+// liveStackWarmEnv marks a process whose suite has already warmed the
+// live-stack binaries. The parent sets it in its own environment, so every
+// descendant that inherits the environment (however a test launches it — the
+// shell, a daemon, a fixture) can tell that the build is done and must not
+// repeat it.
+//
+// A name list of helper variables was the obvious first cut and it failed
+// twice: TestHostDeployFilesystemSafety re-invokes this binary 16 times, and
+// TestBackgroundJobsBrowser launches its paging producer through the real
+// shell from a session workspace, which inherits no test variable at all. A
+// child that ran the warm build from there resolved the repo root to nothing
+// and died before producing a byte, so the browser journey waited out its
+// tripwire.
+const liveStackWarmEnv = "EVENER_HUB_LIVE_STACK_WARM"
+
+// outsideCheckoutHelperEnv marks the subprocess TestTestMainWarmsNothingOutside-…
+// launches. That case proves TestMain does not need a checkout to start a
+// helper: it is what the browser guard's paging producer looked like when the
+// warm build killed it.
+const outsideCheckoutHelperEnv = "EVENER_HUB_OUTSIDE_CHECKOUT_HELPER"
+
+// TestTestMainSurvivesOutsideTheCheckout runs this binary from a temp directory
+// with the warm marker unset, as a helper launched from a session workspace is.
+// TestMain must not fail there: a build it cannot locate is not a helper's
+// problem, and failing killed a producer that only needed to write bytes.
+func TestTestMainSurvivesOutsideTheCheckout(t *testing.T) {
+	if os.Getenv(outsideCheckoutHelperEnv) == "1" {
+		// Reached only if TestMain let this process boot. Reaching here is the
+		// assertion.
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe, "-test.run=^TestTestMainSurvivesOutsideTheCheckout$")
+	cmd.Dir = t.TempDir()
+	cmd.Env = append(os.Environ(),
+		outsideCheckoutHelperEnv+"=1",
+		// Unset the marker the parent set, so this really exercises the
+		// no-warm-build path.
+		liveStackWarmEnv+"=",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("helper outside the checkout failed to run: %v\n%s", err, out)
+	}
+}
+
 func TestMain(m *testing.M) {
 	// The remote startup probe must observe its supplied environment before
 	// the suite redirects HOME and XDG roots.
@@ -73,6 +121,26 @@ func TestMain(m *testing.M) {
 		testEnv.Discard()
 		_ = hostTemp.Discard()
 		os.Exit(1)
+	}
+	// Build the live-stack binaries before any test runs. liveStackBinaries
+	// guards the build with a sync.Once, so without this the first test that
+	// starts a stack pays for it: 1.77s of one test's 2.50s here, and on a
+	// contended CI runner that build is what pushed
+	// TestE2E_RetireOverlappedByAnotherOwnershipAction over its strict
+	// per-test ceiling. That test builds a stack per subtest, so the cost
+	// landed entirely on its first one.
+	//
+	// The parent warms once and marks the environment so descendants skip it.
+	// The build also refuses where no repo root resolves, which is what a
+	// helper running from a session workspace sees.
+	if os.Getenv(liveStackWarmEnv) == "" {
+		if err := warmLiveStackBinaries(repoRootForTestMain()); err != nil {
+			fmt.Fprintf(os.Stderr, "evener-hub TestMain: warm live-stack binaries: %v\n", err)
+			testEnv.Discard()
+			_ = hostTemp.Discard()
+			os.Exit(1)
+		}
+		_ = os.Setenv(liveStackWarmEnv, "1")
 	}
 
 	code := m.Run()

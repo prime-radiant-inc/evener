@@ -66,6 +66,144 @@ func TestPluginMarketplaceAdd_RequiresConfirmation(t *testing.T) {
 	}
 }
 
+// marketplaceAddCapture records the source the add command hands the manager.
+// The embedded interface supplies the methods this path never calls.
+type marketplaceAddCapture struct {
+	pluginManager
+	src   plugins.Source
+	calls int
+}
+
+func (m *marketplaceAddCapture) SeedDefaultMarketplaces(context.Context) (bool, error) {
+	return false, nil
+}
+
+func (m *marketplaceAddCapture) AddMarketplace(_ context.Context, _ string, src plugins.Source) (plugins.MarketplaceRef, error) {
+	m.calls++
+	m.src = src
+	return plugins.MarketplaceRef{InstallLocation: "/tmp/marketplace"}, nil
+}
+
+func captureAdd(t *testing.T) *marketplaceAddCapture {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	m := &marketplaceAddCapture{}
+	oldManager := newPluginManager
+	newPluginManager = func() pluginManager { return m }
+	t.Cleanup(func() { newPluginManager = oldManager })
+	return m
+}
+
+func TestPluginMarketplaceAdd_RefFlag(t *testing.T) {
+	cases := []struct {
+		name string
+		arg  string
+		want plugins.Source
+	}{
+		{
+			name: "github shorthand",
+			arg:  "acme/plugins",
+			want: plugins.Source{Kind: plugins.SourceGitHub, Repo: "acme/plugins", Ref: "release/next"},
+		},
+		{
+			name: "git url",
+			arg:  "https://example.com/plugins.git",
+			want: plugins.Source{Kind: plugins.SourceURL, URL: "https://example.com/plugins.git", Ref: "release/next"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := captureAdd(t)
+
+			var out, errb bytes.Buffer
+			if err := runPlugin([]string{"marketplace", "add", "--ref", "release/next", "--yes", tc.arg}, nil, &out, &errb); err != nil {
+				t.Fatalf("marketplace add --ref: %v\n%s", err, errb.String())
+			}
+			if m.calls != 1 {
+				t.Fatalf("AddMarketplace called %d times, want 1", m.calls)
+			}
+			if m.src != tc.want {
+				t.Errorf("AddMarketplace source = %+v, want %+v", m.src, tc.want)
+			}
+		})
+	}
+}
+
+func TestPluginMarketplaceAdd_RefFlagRejectsDirectorySource(t *testing.T) {
+	m := captureAdd(t)
+
+	var out, errb bytes.Buffer
+	err := runPlugin([]string{"marketplace", "add", "--ref", "main", "--yes", t.TempDir()}, nil, &out, &errb)
+	if err == nil {
+		t.Fatal("marketplace add --ref with a local directory should fail")
+	}
+	if m.calls != 0 {
+		t.Fatalf("AddMarketplace called %d times for a rejected directory source, want 0", m.calls)
+	}
+}
+
+func TestPluginMarketplaceAdd_RefAfterSourceIsRejected(t *testing.T) {
+	m := captureAdd(t)
+
+	var out, errb bytes.Buffer
+	err := runPlugin([]string{"marketplace", "add", "--yes", "acme/plugins", "--ref", "main"}, nil, &out, &errb)
+	if err == nil {
+		t.Fatal("a --ref after the source should be rejected rather than silently ignored")
+	}
+	if m.calls != 0 {
+		t.Fatalf("AddMarketplace called %d times with a trailing --ref, want 0", m.calls)
+	}
+}
+
+func TestPluginMarketplaceAdd_RefFlagRejectsAQualifiedRef(t *testing.T) {
+	m := captureAdd(t)
+
+	var out, errb bytes.Buffer
+	err := runPlugin([]string{"marketplace", "add", "--ref", "refs/heads/main", "--yes", "acme/plugins"}, nil, &out, &errb)
+	if err == nil {
+		t.Fatal("marketplace add --ref with a fully qualified ref should fail")
+	}
+	if m.calls != 0 {
+		t.Fatalf("AddMarketplace called %d times for a rejected qualified ref, want 0", m.calls)
+	}
+}
+
+func TestSourceDescription_ShowsThePin(t *testing.T) {
+	cases := []struct {
+		name string
+		src  plugins.Source
+		want string
+	}{
+		{
+			name: "github ref",
+			src:  plugins.Source{Kind: plugins.SourceGitHub, Repo: "acme/plugins", Ref: "release/next"},
+			want: "github: acme/plugins@release/next",
+		},
+		{
+			name: "url sha",
+			src:  plugins.Source{Kind: plugins.SourceURL, URL: "https://example.com/plugins.git", Sha: "abc1234"},
+			want: "url: https://example.com/plugins.git@abc1234",
+		},
+		{
+			name: "git-subdir ref",
+			src:  plugins.Source{Kind: plugins.SourceGitSubdir, URL: "https://example.com/plugins.git", Path: "sub", Ref: "v2"},
+			want: "git-subdir: https://example.com/plugins.git/sub@v2",
+		},
+		{
+			name: "directory has no pin",
+			src:  plugins.Source{Kind: plugins.SourceDirectory, Path: "/srv/plugins"},
+			want: "directory: /srv/plugins",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sourceDescription(tc.src); got != tc.want {
+				t.Errorf("sourceDescription(%+v) = %q, want %q", tc.src, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPluginMarketplaceRemove(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	m := plugins.NewManager("")
@@ -659,6 +797,40 @@ func TestPluginGc_JSON(t *testing.T) {
 	}
 	if got := strings.TrimSpace(out.String()); got != "[]" {
 		t.Fatalf("gc --json with nothing to remove = %q, want []", got)
+	}
+}
+
+func TestPluginGc_JSONPreservesPublishedRevisionAndRemovesClone(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	m := plugins.NewManager("")
+	revision := filepath.Join(m.Root, "cache", "acme", "widget", "historical")
+	clone := filepath.Join(m.Root, "marketplaces", "leftover")
+	for _, dir := range []string{revision, clone} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data := []byte("selected companion")
+	companion := filepath.Join(revision, "companion.bin")
+	if err := os.WriteFile(companion, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if err := runPlugin([]string{"gc", "--json"}, nil, &out, &errb); err != nil {
+		t.Fatalf("plugin gc --json: %v", err)
+	}
+	var removed []string
+	if err := json.Unmarshal(out.Bytes(), &removed); err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 1 || removed[0] != clone {
+		t.Fatalf("removed = %v, want clone %s only", removed, clone)
+	}
+	if got, err := os.ReadFile(companion); err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("published companion after CLI GC = %q, %v", got, err)
+	}
+	if _, err := os.Stat(clone); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("clone remains after CLI GC: %v", err)
 	}
 }
 

@@ -374,16 +374,68 @@
 
 /* The tool-KIND glyph in the RAIL beside the rationale line (Jesse's review
  * call: icons out of the text, into the gutter - the kind is ambient
- * context, not content). The row's first flex item, seated by the shared
- * icon-rail seat (styles/railseat.module.css): the avatar-column slot
- * geometry and the breakpoint-gated gutter pull are composed, not restated
- * here, so this row's seat cannot drift from the notification head's status
- * glyph or the Loader's rail row. The line-height override below is this
- * row's one seat rule of its own. */
+ * context, not content). The glyph is seated by the shared icon-rail seat
+ * (styles/railseat.module.css) - the avatar-column slot geometry is
+ * composed, not restated here, so this row's seat cannot drift from the
+ * notification head's status glyph or the Loader's rail row. The line-height
+ * override below is this row's one seat rule of its own.
+ *
+ * The gutter PULL belongs to .rowIconSlot instead: the pull has to ride the
+ * row's flex item, and that is the slot now that a failed call hangs its
+ * cross off the icon's corner. */
 .rowIcon {
   composes: seat from "../../../styles/railseat.module.css";
-  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+}
+
+/* The kind icon's positioning context: the row's first flex item, carrying
+ * the breakpoint-gated gutter pull, with the failure cross (Jesse, 2026-10-20)
+ * absolutely pinned to its bottom-right corner. A clean row renders the slot
+ * with only the seat inside it, so success costs no extra column. */
+.rowIconSlot {
   composes: gutterPull from "../../../styles/railseat.module.css";
+  /* ToolRow's ROW_ICON_SIZE, which it also passes to ToolIcon. The seat
+   * centres that square box in its wider avatar column, and the badge anchors
+   * to the GLYPH's corner rather than the seat's. Two spellings of one number
+   * (this stylesheet and the component constant) are unavoidable across the
+   * CSS/TS boundary; toolRowGrammar.test.ts pins them equal. */
+  --tool-row-icon-size: 14px;
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-self: flex-start;
+}
+
+/* The failure cross's overlay seat on the icon: pinned to the ICON's
+ * bottom-right corner, outside the 50%-opacity seat (see ToolRow's
+ * failureNode - the danger tone must read at full strength). Decorative to
+ * pointer input: the row's own triggers own every click.
+ *
+ * The pin is the glyph's box, not the seat's: the seat is an avatar-column
+ * square (--speaker-avatar-size wide, 1lh tall) with the 14px icon centred
+ * inside it, so its own corner sits 5px right of and about 1px below the
+ * icon's - anchoring there drew the cross beside the icon at mid-height
+ * instead of on its corner (roborev on PR review, 2026-10-20). Each axis
+ * therefore subtracts half the difference between the glyph and the box it is
+ * being pinned to: vertically the icon's 14px box against the 10px cross,
+ * horizontally the avatar column against the icon, plus the seat's
+ * margin-right which is part of the slot's width. */
+.failureBadge {
+  position: absolute;
+  /* The glyph draws a 10px cross centred in its own 1lh line box, and that
+   * box aligns to flex-start, so the badge is sized to the glyph box (no
+   * explicit height - it takes the child's) and shifted by half the icon/cross
+   * difference. That lands the drawn ink, not the line box, on the icon's
+   * corner, and the offset is independent of the line-height: both the seat
+   * and the badge are 1lh tall, so their half-differences cancel. */
+  inset-block-end: calc((10px - var(--tool-row-icon-size)) / 2);
+  inset-inline-end: calc(
+    var(--speaker-gap) - var(--space-2) + (var(--speaker-avatar-size) - var(--tool-row-icon-size)) / 2
+  );
+  /* Width-only: the box shrink-wraps the glyph horizontally and takes the
+   * glyph's own height, so no rule here reaches into the widget's DOM. */
+  width: 10px;
+  display: inline-flex;
+  pointer-events: none;
 }
 
 /* On intent-bearing rows the first line is the rationale text, whose

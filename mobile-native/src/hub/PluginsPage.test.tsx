@@ -19,6 +19,7 @@ import {
 	ErrorMarketplaceRemoveApplied,
 	WireError,
 	type MarketplaceEntry,
+	type MarketplaceAddParams,
 	type PluginEntry,
 } from "@evener/appwire-client";
 import { HubWriteBusyError, MARKETPLACE_REFETCH_DEBOUNCE_MS } from "@evener/appwire-client/state/extensions";
@@ -106,17 +107,17 @@ function cloneLitterError(applied: unknown, includeApplied = true): WireError {
 function marketplaceClient(options: {
 	list?: () => Promise<{ marketplaces: MarketplaceEntry[] }>;
 	remove?: () => Promise<unknown>;
-	add?: () => Promise<{ marketplaces: MarketplaceEntry[] }>;
+	add?: (params: MarketplaceAddParams) => Promise<{ marketplaces: MarketplaceEntry[] }>;
 }) {
 	const methods: string[] = [];
 	const listeners = new Set<(notification: AnyNotification) => void>();
 	const client = Object.assign(new FakeClient("ready"), {
-		request: async (method: string) => {
+		request: async (method: string, params: MarketplaceAddParams) => {
 			methods.push(method);
 			if (method === "evener/marketplace/list") return options.list?.() ?? { marketplaces: [marketplace] };
 			if (method === "evener/marketplace/browse") return { name: marketplace.name, plugins: [] };
 			if (method === "evener/marketplace/remove") return options.remove?.();
-			if (method === "evener/marketplace/add") return options.add?.() ?? { marketplaces: [marketplace] };
+			if (method === "evener/marketplace/add") return options.add?.(params) ?? { marketplaces: [marketplace] };
 			if (method === "evener/plugin/list") return { plugins: [] };
 			return { marketplaces: [marketplace] };
 		},
@@ -130,6 +131,39 @@ function marketplaceClient(options: {
 	};
 	return { client, methods, notify };
 }
+
+it("sends a branch or tag with a github add request", async () => {
+	const seen: MarketplaceAddParams[] = [];
+	const { tree } = mountAdd(vi.fn(), async (params) => {
+		seen.push(params);
+	});
+	act(() => tree.root.findByProps({ accessibilityLabel: "GitHub" }).props.onPress());
+	act(() => tree.root.findByProps({ accessibilityLabel: "Marketplace source" }).props.onChangeText("acme/plugins"));
+	act(() => tree.root.findByProps({ accessibilityLabel: "Branch or tag" }).props.onChangeText("release/next"));
+	await act(async () => {
+		tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Add" }).props.onPress();
+		await Promise.resolve();
+	});
+	expect(seen).toEqual([{ name: "", source: { kind: "github", repo: "acme/plugins", ref: "release/next" } }]);
+});
+
+it("sends a branch or tag with a git url add request", async () => {
+	const seen: MarketplaceAddParams[] = [];
+	const { tree } = mountAdd(vi.fn(), async (params) => {
+		seen.push(params);
+	});
+	act(() =>
+		tree.root
+			.findByProps({ accessibilityLabel: "Marketplace source" })
+			.props.onChangeText("https://example.com/plugins.git"),
+	);
+	act(() => tree.root.findByProps({ accessibilityLabel: "Branch or tag" }).props.onChangeText("v2"));
+	await act(async () => {
+		tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Add" }).props.onPress();
+		await Promise.resolve();
+	});
+	expect(seen).toEqual([{ name: "", source: { kind: "url", url: "https://example.com/plugins.git", ref: "v2" } }]);
+});
 
 /** The hub says its marketplaces changed, as it does to every client after
  * any change: the page's store reads the list again once its debounce
@@ -3482,7 +3516,7 @@ it("waits for the installed list in the same padded space every Hub page waits i
 	expect(spinner.props.style).toEqual({ padding: 32 });
 });
 
-function mountAdd(onClose = vi.fn()) {
+function mountAdd(onClose = vi.fn(), onAdd: (params: MarketplaceAddParams) => Promise<void> = async () => {}) {
 	const tree = render(
 		<AddMarketplace
 			client={pluginsClient([]).client}
@@ -3491,7 +3525,7 @@ function mountAdd(onClose = vi.fn()) {
 			ready
 			canUseConnection={() => true}
 			onClose={onClose}
-			onAdd={async () => {}}
+			onAdd={onAdd}
 		/>,
 	);
 	return { tree, onClose };

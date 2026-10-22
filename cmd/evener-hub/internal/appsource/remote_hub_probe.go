@@ -44,8 +44,8 @@ type CapabilitySource interface {
 
 var _ CapabilitySource = (*RemoteHubSource)(nil)
 
-// HostFacts is the preflight half of HostCapabilities: the facts AppWire cannot
-// supply on an already-initialized connection. Component 04 produces them.
+// HostFacts combines the connection's captured handshake metadata with host
+// platform facts. The connection manager produces it without reinitializing.
 type HostFacts struct {
 	ProtocolVersion string
 	HubVersion      string
@@ -53,7 +53,7 @@ type HostFacts struct {
 	Features        appwire.FeatureSet
 }
 
-// HostFactsFunc returns the preflight facts for a remote host's AppWire
+// HostFactsFunc returns the captured facts for a remote host's AppWire
 // connection. client is the exact generation HostCapabilities resolved and ran
 // its wire reads on, so an implementation must answer from that same generation
 // (or report that it changed) instead of racing a component-04 reconnect and
@@ -167,8 +167,7 @@ func (s *RemoteHubSource) HostCapabilities(ctx context.Context) (HostCapabilitie
 		caps.LaunchResolved[root] = resolved
 	}
 
-	// No facts seam means no preflight was wired; the preflight-owned fields
-	// stay zero-valued rather than being guessed from the wire.
+	// Without the facts seam, platform and build identity stay unknown.
 	if factsFn != nil {
 		facts, err := factsFn(ctx, s.id, client)
 		if err != nil {
@@ -181,12 +180,10 @@ func (s *RemoteHubSource) HostCapabilities(ctx context.Context) (HostCapabilitie
 		caps.Features = facts.Features
 	}
 	// The attach handshake carries the connection's own ProtocolVersion,
-	// SourceID, and Features. When component 04 exposed it, those three are
-	// authoritative — they describe this exact generation — while OS/Arch and
-	// HubVersion stay preflight-owned: the handshake's ServerInfo.Version is the
-	// hub's package constant, not its running build, so the facts seam's
-	// buildinfo value is the single version source. Without the seam the
-	// preflight-owned fields above stand and the remote namespace is fixed.
+	// SourceID, and Features. They describe this exact generation. OS/Arch and
+	// HubVersion come through the facts seam, whose production adapter reads the
+	// build from this connection's ServerInfo.BuildVersion. ServerInfo.Version
+	// remains the package version and must not replace that build identity.
 	//
 	// A false answer means the seam could not answer from the generation the
 	// probe resolved — no live channel, or one that is not this client's — so

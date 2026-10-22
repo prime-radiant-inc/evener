@@ -1,13 +1,13 @@
 Rendered command transcript
 Streams are recorded separately, not interleaved.
 
-$ evener --model fake/fake-test-model --timeout 2m --max-rounds 8 --sandbox off --resume 034iIGJjq9S52QR7AHkF3G 'Continue by writing continued.json with nonce c9f65e71 and a receipts array containing that nonce once.'
+$ evener --model fake/fake-test-model --timeout 2m --max-rounds 8 --sandbox off --resume 034jWjI05FkpB71idpl729 'Continue by writing continued.json with nonce c9f65e71 and a receipts array containing that nonce once.'
 cwd: daily-workspace
 stdout:
 Wrote continued.json. Review its receipt before continuing.
 
 stderr:
-[resumed] session 034iIGJjq9S52QR7AHkF3G with model override fake/fake-test-model (was fake/fake-test-model)
+[resumed] session 034jWjI05FkpB71idpl729 with model override fake/fake-test-model (was fake/fake-test-model)
 [model] fake-test-model (fake)
 [prompt] embedded:prompts/system.md.tmpl (26228B)
 [prompt] agent:default (0B)

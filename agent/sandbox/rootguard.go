@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 // RootGuard decides whether a host-derived path may become a sandbox grant root.
@@ -192,14 +194,7 @@ func CanonicalDir(path string) string {
 // the canonical "/Users/<user>" home, so it would pass both checks while
 // granting every home on the machine.
 func StripDataVolumeAlias(p string) string {
-	c := filepath.Clean(p)
-	if c == dataVolumePrefix {
-		return "/"
-	}
-	if rest, ok := strings.CutPrefix(c, dataVolumePrefix+"/"); ok {
-		return filepath.Clean("/" + rest)
-	}
-	return c
+	return userdirs.StripDataVolumeAlias(p)
 }
 
 // PathDepth counts a cleaned absolute path's components ("/" is 0, "/Users" is

@@ -150,8 +150,11 @@ export interface CredentialInstancesState {
   // the one the store now holds, false when a newer request superseded it.
   // Callers that steer a flow on the strength of their own write (the sheet,
   // the add dialog, the removal report) act on the store's verdict, never on
-  // the raw response.
-  create(params: InstanceCreateParams): Promise<boolean>;
+  // the raw response. create takes the same reconcile hook as edit: a create
+  // whose answer a newer request superseded still carries the row it authored
+  // under the hub's write lock, which is the only proof a caller has of the
+  // created endpoint.
+  create(params: InstanceCreateParams, reconcile?: EditSupersededReconcile): Promise<boolean>;
   edit(params: InstanceEditParams, reconcile?: EditSupersededReconcile): Promise<boolean>;
   remove(name: string, expectedEndpointFingerprint?: string): Promise<boolean>;
   setDefault(name: string): Promise<boolean>;
@@ -674,6 +677,20 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     pendingRefetchSelf = undefined;
   }
 
+  // consumeScheduledRefetch folds the store's queued refresh into a read the
+  // caller is starting now, when - and only when - every request in the queue's
+  // window was this client's own. Such a read observes the same post-write
+  // listing the queued read would have, so dropping the timer loses no event,
+  // and the caller's read carries the self mark the queued read would have
+  // carried. A queued FOREIGN request stays armed: it may have been scheduled
+  // after a caller's read took its snapshot, and consuming it here would lose
+  // an unrelated change's refresh. Returns the mark to use for the read.
+  function consumeScheduledRefetch(): boolean | undefined {
+    if (pendingRefetchSelf !== true) return undefined;
+    cancelRefetch();
+    return true;
+  }
+
   // clearClientBookkeeping drops what was written under one client: a row a
   // previous client's refresh marked, or a count its late answer bumped, must
   // not decide the next client's listing, and a refresh landing before that
@@ -1064,19 +1081,21 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     refreshingInstances: new Set<string>(),
 
     async fetch() {
-      return readListing(false);
+      return readListing(consumeScheduledRefetch() ?? false);
     },
 
     async fetchSelf() {
+      consumeScheduledRefetch();
       return readListing(true);
     },
 
-    async create(params) {
+    async create(params, reconcile) {
       const client = requireWritableClient();
       const applied = await applyMutation(
         (origin) => client.request("evener/instance/create", { ...params, ...origin }),
         {
           instance: params.name,
+          supersededFor: reconcile?.onSuperseded,
         },
       );
       // Like setDefault: a superseded response lost the store's ordering race,

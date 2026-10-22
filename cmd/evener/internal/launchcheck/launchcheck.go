@@ -10,7 +10,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/appwire"
@@ -26,7 +25,7 @@ var launchCheckLoadClient = cmdutil.LoadClient
 
 // launchCheckListTimeout bounds one instance's model listing. It is per
 // instance, not per command, so a slow endpoint costs only its own budget.
-const launchCheckListTimeout = 8 * time.Second
+const launchCheckListTimeout = llm.LiveModelListTimeout
 
 type launchCheckModel struct {
 	Provider string `json:"provider"`
@@ -35,6 +34,11 @@ type launchCheckModel struct {
 	// flag rows the resolver itself warns about (e.g. a global-only model under
 	// a regional Vertex location).
 	Warnings []string `json:"warnings,omitempty"`
+	// The hub decodes this contract directly into appwire.ModelDescriptor,
+	// whose wire field is camelCase (cmd/evener-hub/spawn.go resolves the
+	// launch model list). This is that fixed AppWire JSON contract, not a
+	// local naming choice.
+	InstanceDefault bool `json:"instanceDefault,omitempty"` //nolint:tagliatelle // matches appwire.ModelDescriptor's camelCase wire contract
 }
 
 // supportedLaunchFlags advertises the serve/run flags this binary accepts
@@ -128,8 +132,16 @@ func validateLaunchCheckProfile(ref cmdutil.ModelRef) error {
 	if pr.Model == "" {
 		return fmt.Errorf("%q: empty model reference", ref.Qualified())
 	}
-	_, err = client.Registry().ResolveInstanceModelFacts(pr.Instance, pr.Model)
-	return err
+	if _, err := client.Registry().ResolveInstanceModelFacts(pr.Instance, pr.Model); err != nil {
+		if !errors.Is(err, registry.ErrCodexModelNotListed) {
+			return err
+		}
+		// The bundled Codex roster lags the backend. The model check below
+		// owns the live-roster judgment (and the child repeats it with the
+		// real credential), so this network-free facts read defers instead of
+		// refusing a model the provider may serve.
+	}
+	return nil
 }
 
 // launchCheckModels lists what every visible instance can launch. Each
@@ -147,6 +159,7 @@ func launchCheckModels() ([]launchCheckModel, []appwire.ModelListDiagnostic, err
 		if inst.Hidden {
 			continue
 		}
+		defaultModel := strings.TrimSpace(inst.DefaultModel)
 		if client.Registry().LaunchMintsCredentialCommand(inst.Name) {
 			// The hub never executes a credential command (spec
 			// §10.1): a command-credentialed instance's live listing
@@ -179,7 +192,11 @@ func launchCheckModels() ([]launchCheckModel, []appwire.ModelListDiagnostic, err
 			continue
 		}
 		for _, m := range listing.Models {
-			out = append(out, launchCheckModel{Provider: inst.Name, Model: m.ModelID, Warnings: append([]string(nil), m.Warnings...)})
+			out = append(out, launchCheckModel{
+				Provider: inst.Name, Model: m.ModelID,
+				Warnings:        append([]string(nil), m.Warnings...),
+				InstanceDefault: listing.Usable && defaultModel != "" && strings.TrimSpace(m.ModelID) == defaultModel,
+			})
 		}
 	}
 	return out, diagnostics, nil
@@ -292,6 +309,12 @@ func validateLaunchCheckModel(ref cmdutil.ModelRef) error {
 		// fetched with a credential the hub cannot materialize here.
 		res, ferr := client.Registry().ResolveInstanceModelFacts(ref.Provider, ref.Model)
 		if ferr != nil {
+			if errors.Is(ferr, registry.ErrCodexModelNotListed) {
+				// The child mints the command credential and can read the
+				// instance's live roster; this process cannot without
+				// minting, so leave the verdict to the launch itself.
+				return nil
+			}
 			return ferr
 		}
 		if registry.BoolValue(res.Model.Disabled) {
@@ -299,20 +322,37 @@ func validateLaunchCheckModel(ref cmdutil.ModelRef) error {
 		}
 		return nil
 	}
+	// The registry's verdict is not final for a Codex id: the bundled roster
+	// lags the backend, and the instance's live listing is the authority the
+	// child applies before launching. On that refusal, fetch the listing and
+	// judge membership in what the instance actually advertises.
+	var resolveErr error
 	if !client.CanServe(ref.Provider, ref.Model) {
-		if _, resolveErr := client.Resolve(ref.Qualified()); resolveErr != nil {
+		if _, resolveErr = client.Resolve(ref.Qualified()); resolveErr == nil {
+			return fmt.Errorf("model %s is not available from provider %s", ref.Qualified(), ref.Provider)
+		}
+		if !errors.Is(resolveErr, registry.ErrCodexModelNotListed) {
 			return resolveErr
 		}
-		return fmt.Errorf("model %s is not available from provider %s", ref.Qualified(), ref.Provider)
 	}
 	listing, err := client.Models(ctx, ref.Provider)
 	if err != nil || !listing.Usable {
-		return nil
+		// No live evidence either way: a registry refusal stands, and an
+		// accepted reference passes.
+		return resolveErr
 	}
 	for _, m := range listing.Models {
 		if m.ModelID == ref.Model {
 			return nil
 		}
+	}
+	if resolveErr != nil {
+		// The listing has been applied, so resolving again describes what the
+		// instance actually advertises in the refusal's valid-model list.
+		if _, err := client.Resolve(ref.Qualified()); err != nil {
+			return err
+		}
+		return resolveErr
 	}
 	return fmt.Errorf("model %s is not available from provider %s", ref.Qualified(), ref.Provider)
 }

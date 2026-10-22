@@ -17,6 +17,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 
@@ -56,7 +57,21 @@ type hubInstancesController struct {
 	// remember to attach. Cleared when a mutation takes mu, and again when a
 	// rollback puts the previous file back.
 	applied appliedWrites
+	// afterAccessReload, when set, runs after an access-affecting edit's
+	// reload has published the replacement access and before the probe fence
+	// advances. A test uses it to settle a probe inside that window
+	// deterministically; nil in production.
+	afterAccessReload func()
+	// beforeList, when set, runs at the start of List before any lock is
+	// taken. A race test holds a post-mutation listing until a racing write
+	// completes. Nil in production.
+	beforeList func()
 }
+
+// observeInstancesController, when set, receives the instances controller the
+// app server builds, for tests that need to arm one of its seams. Nil in
+// production.
+var observeInstancesController func(*hubInstancesController)
 
 func (c *hubInstancesController) read() (*registry.Layer, bool, error) {
 	return registry.ReadConfigFile(c.providersConfigPath)
@@ -105,6 +120,9 @@ func (c *hubInstancesController) captureApplied(errp *error) {
 // credential status, plus the providers an add form can build on and the
 // diagnostics the pane shows above them.
 func (c *hubInstancesController) List() appwire.InstanceListResponse {
+	if c.beforeList != nil {
+		c.beforeList()
+	}
 	// The fingerprint key is resolved once, before either lock is taken:
 	// resolving it can repair the file (an inter-process lock and a write), and
 	// holding the credential lock across that would let a listing stall every
@@ -921,6 +939,16 @@ func (c *hubInstancesController) refuseWhenBroken() error {
 // read or write failure) stays a plain error: that is not the caller's to
 // fix.
 func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) (err error) {
+	return c.create(params, nil)
+}
+
+// create applies a create. When out is non-nil it receives the listing captured
+// while this create's write lock is still held, so the answer describes the
+// state this create authored rather than a later List() a concurrent edit can
+// slip into. The RPC handler uses it that way for its response, exactly as
+// edit's captured answer does: a create's response is the only proof a client
+// has of which endpoint its credential belongs to.
+func (c *hubInstancesController) create(params appwire.InstanceCreateParams, out *appwire.InstanceListResponse) (err error) {
 	if err := c.refuseWhenBroken(); err != nil {
 		return err
 	}
@@ -947,6 +975,17 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) (er
 	}
 	if err := validVarNames(params.Vars); err != nil {
 		return invalidParamsFor(err)
+	}
+	// Resolved before the locks, as Edit resolves its own: resolving can repair
+	// the key file (an inter-process lock and a write), so doing it while c.mu
+	// and credMu are held would hold every listing and credential op behind it.
+	// Only a capture needs it: a plain Create is a write that installs no
+	// listing, and the controller's other callers must keep the pre-existing
+	// property that creating an entry does not touch the fingerprint key.
+	var key []byte
+	var keyErr error
+	if out != nil {
+		key, keyErr = resolveEndpointFingerprintKey(c.authStateDir())
 	}
 	c.lockForWrite()
 	defer c.mu.Unlock()
@@ -1012,6 +1051,13 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) (er
 		c.applied.resetApplied()
 		_ = c.reg.Reload() // best-effort: put the last-good registry view back
 		return invalidParamsFor(fmt.Errorf("instance %q %w: %w", name, errInstanceUnloadable, err))
+	}
+	if out != nil {
+		// Still under this create's write locks, so no concurrent edit can land
+		// between the write and this read. The row (and its immutable endpoint
+		// fingerprint) is the one this create authored, not a destination that
+		// replaced it before the handler answered.
+		*out = c.listLocked(key, keyErr)
 	}
 	return nil
 }
@@ -1277,9 +1323,38 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	} else {
 		l.Providers[name] = p
 	}
+	// An access-affecting edit replaces the access a credential probe is about
+	// even when the public credential-configuration revision cannot show it:
+	// that revision deliberately omits the credential-header expressions, and a
+	// probe of this instance must not have its old answer accepted for the
+	// replacement. effectiveAccessIdentity compares the resolved public
+	// identity plus those authored expressions and the resolved transport
+	// variables the instance's auth scheme reads, so re-authoring values the
+	// instance already resolved to is no change while a real endpoint,
+	// protocol, credential-header, api_key_env or scheme-read vars change is.
+	// This is the same per-instance fence a hub credential write advances
+	// (forgetCredentialRejection), so unrelated instances and the registry's
+	// global generation stay out of it. A rename is not this case: its name,
+	// and so the revision identity, moves, and moveCredentials already retires
+	// the old and new names when it lands.
+	var beforeProvider registry.Provider
+	var beforeAuthored bool
+	beforeAccess := ""
+	if !renaming {
+		beforeProvider, beforeAuthored = before.Providers[name]
+		beforeAccess = effectiveAccessIdentity(key, c.reg.Get(), name, beforeProvider, beforeAuthored)
+	}
 	// writeAndReload restores before when the reload fails (see #711
 	// on its comment); a rename continues below on success.
 	if err := c.writeAndReload(before, l, name, "edit"); err != nil {
+		// A write that landed although its rollback could not run is standing:
+		// retire the probes of the access it replaced. A clean rollback leaves
+		// the old access in place, and its probes remain current. The reload
+		// failed, so the intended access cannot be resolved against the live
+		// registry; the authored comparison is deliberately conservative here.
+		if !renaming && c.applied.peekApplied() && authoredAccessDiffers(beforeProvider, beforeAuthored, p) {
+			c.auth.forgetCredentialRejection(name)
+		}
 		// A rename whose reload failed and whose rollback write also failed
 		// is an applied write: providers.toml carries the new name, so the
 		// rename is as persisted as one that ended cleanly and gets the same
@@ -1292,6 +1367,20 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 			return renamePersistedError{err}
 		}
 		return err
+	}
+	if !renaming {
+		afterAccess := effectiveAccessIdentity(key, c.reg.Get(), name, p, true)
+		// An edit that only re-authored values the instance already resolved to
+		// is no access change: pending probes and a standing rejection describe
+		// the same access and stay.
+		if effectiveAccessChanged(beforeAccess, afterAccess, beforeProvider, beforeAuthored, p) {
+			if c.afterAccessReload != nil {
+				c.afterAccessReload()
+			}
+			// The replacement stands: void probes that dialed the old access and
+			// drop a rejection recorded for the configuration the edit replaced.
+			c.auth.forgetCredentialRejection(name)
+		}
 	}
 	if renaming {
 		moveErr := c.moveCredentials(name, newName)
@@ -1346,6 +1435,96 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 // writing it back would only add an empty [providers.<name>] shadow (#1024).
 func providerIsBare(p registry.Provider) bool {
 	return reflect.DeepEqual(p, registry.Provider{ID: p.ID})
+}
+
+// authoredAccessDiffers is the conservative fallback for a write that stands
+// although its reload failed: the intended access cannot be resolved against
+// the live registry, so any difference in the authored record retires the
+// probe rather than risk publishing an answer about the old access.
+func authoredAccessDiffers(before registry.Provider, beforeAuthored bool, after registry.Provider) bool {
+	return !beforeAuthored || !reflect.DeepEqual(before, after)
+}
+
+// effectiveAccessChanged answers whether an edit changed what a credential
+// probe would send. beforeAccess and afterAccess come from
+// effectiveAccessIdentity; when either could not be established (no
+// fingerprint key, or the name does not resolve), the authored record
+// comparison is the fallback. That fallback can over-invalidate, but it never
+// reads two different access states as equal.
+func effectiveAccessChanged(beforeAccess, afterAccess string, before registry.Provider, beforeAuthored bool, after registry.Provider) bool {
+	if beforeAccess == "" || afterAccess == "" {
+		return authoredAccessDiffers(before, beforeAuthored, after)
+	}
+	return beforeAccess != afterAccess
+}
+
+// authSchemeReadVars lists, per authentication scheme, the resolved transport
+// variables that scheme's authenticator reads after resolution (in the order
+// they are appended to the identity): the variables whose disappearance or
+// change alters request bytes even though every resolved destination - and so
+// the public revision - stays equal. A scheme not listed reads none, and a
+// template variable no listed scheme reads is not compared: literalizing a
+// URL template to the value it already resolved to drops such a variable
+// from the resolution without changing any request. Maintenance contract: an
+// authenticator that starts reading a resolved variable must add its name
+// here, because this identity fences stale probe outcomes.
+var authSchemeReadVars = map[string][]string{
+	registry.AuthGCPADC: {"GOOGLE_VERTEX_PROJECT"},
+}
+
+// effectiveAccessIdentity is the access a probe would read, resolved from the
+// registry and the authored entry: the public credential-configuration
+// revision (destination, protocol, surface, auth, resolved source, authored
+// layer, credential-header names) plus the authored credential-header
+// expressions and the resolved transport variables the instance's auth
+// scheme reads (authSchemeReadVars). The public revision deliberately omits
+// those expressions so a reader cannot tell one secret reference from
+// another, and it carries the resolved destinations only: a URL template and
+// the literal that resolves to the same bytes hash equally there, while
+// buildTransport exposes a variable only while some URL template references
+// it, so literalizing the template drops its vars from the resolution even
+// though every destination stays byte-identical. Only the variables an
+// authenticator actually reads are request inputs of that shape (the GCP
+// authenticator's quota-project header comes from the resolved project
+// variable); a variable no scheme reads changed no request, and its
+// disappearance must not retire a probe or a rejection. Like the whole string
+// this identity is internal to the edit-fence decision and is never exported,
+// logged or sent. An implicit instance with no authored entry contributes no
+// expression.
+func effectiveAccessIdentity(key []byte, r *registry.Registry, name string, authored registry.Provider, authoredOK bool) string {
+	if len(key) == 0 || r == nil {
+		return ""
+	}
+	res, err := r.ResolveInstancePresence(name)
+	if err != nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(hubcore.CredentialConfigRevisionResolved(key, res))
+	if authoredOK && len(authored.CredentialHeaders) > 0 {
+		keys := make([]string, 0, len(authored.CredentialHeaders))
+		for header := range authored.CredentialHeaders {
+			keys = append(keys, header)
+		}
+		sort.Strings(keys)
+		b.WriteString("\x00credentialHeaders")
+		for _, header := range keys {
+			b.WriteByte(0)
+			b.WriteString(header)
+			b.WriteByte('=')
+			b.WriteString(authored.CredentialHeaders[header])
+		}
+	}
+	if names := authSchemeReadVars[res.Transport.Auth]; len(names) > 0 {
+		b.WriteString("\x00vars")
+		for _, n := range names {
+			b.WriteByte(0)
+			b.WriteString(n)
+			b.WriteByte('=')
+			b.WriteString(res.Transport.Vars[n])
+		}
+	}
+	return b.String()
 }
 
 // credentialsUnder names the credentials already filed under name, in the

@@ -40,6 +40,12 @@ type SessionConfig struct {
 	// Empty lets NewSession mint one. Not persisted.
 	SessionID string `json:"-"`
 
+	// StartupModelListing is a live listing the launcher already fetched for
+	// the session's model instance. NewSession reuses it instead of asking the
+	// provider again, so a transient empty second response cannot clear the
+	// rows the initial resolve applied. Not persisted.
+	StartupModelListing *StartupModelListing `json:"-"`
+
 	// LifetimeContext owns this session tree: `evener run` supplies its run
 	// context (SIGINT- and --timeout-derived) and `evener serve` its shutdown
 	// context, so cancelling either ends the tree's own context immediately
@@ -47,6 +53,11 @@ type SessionConfig struct {
 	// the tree roots at Background and only Close can cancel it. Not persisted.
 	LifetimeContext context.Context `json:"-"`
 	artifactStore   artifactStore
+	// artifactStoreInherited marks a store handed down by the parent runtime,
+	// which may be nil when the tree's retention is degraded. A child shares
+	// its tree's retention either way: minting its own store would hand back
+	// artifact refs the root cannot read and delete them on the child's close.
+	artifactStoreInherited bool
 
 	// MemoryStateRoot is the owning runtime host's binding, never persisted.
 	// An empty state root leaves library sessions without memory access.

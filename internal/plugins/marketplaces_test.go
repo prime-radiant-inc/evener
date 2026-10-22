@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -298,7 +299,7 @@ func makeDirectoryMarketplace(t *testing.T, name, plugin string) string {
 	return dir
 }
 
-func TestEditMarketplace_RenameMovesCloneCacheAndRegistry(t *testing.T) {
+func TestEditMarketplace_RenameMovesCloneAndRekeysRegistry(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")
 	}
@@ -308,7 +309,8 @@ func TestEditMarketplace_RenameMovesCloneCacheAndRegistry(t *testing.T) {
 	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	if _, err := m.Install(ctx, "widget", name); err != nil {
+	entry, err := m.Install(ctx, "widget", name)
+	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -357,9 +359,8 @@ func TestEditMarketplace_RenameMovesCloneCacheAndRegistry(t *testing.T) {
 	if _, still := reg.Plugins[registryKey("widget", name)]; still {
 		t.Fatal("the old registry key survived")
 	}
-	wantPrefix := filepath.Join(m.cacheDir(), "acme2") + string(filepath.Separator)
-	if !strings.HasPrefix(entries[0].InstallPath, wantPrefix) {
-		t.Fatalf("InstallPath = %q, want it under %q", entries[0].InstallPath, wantPrefix)
+	if entries[0].InstallPath != entry.InstallPath {
+		t.Fatalf("InstallPath changed: %q, want %q", entries[0].InstallPath, entry.InstallPath)
 	}
 	if _, err := os.Stat(entries[0].InstallPath); err != nil {
 		t.Fatalf("the re-keyed install path does not exist: %v", err)
@@ -1620,10 +1621,9 @@ func TestEditMarketplace_ResourceToGitReplacesItsOwnLegacyCloneSource(t *testing
 	}
 }
 
-// The rename moves the plugin cache as well as the clone, so a registered
-// source living under the old cache must refuse the rename rather than be moved
-// out from under its record.
-func TestEditMarketplace_RenameRefusesASourceUnderTheOldCache(t *testing.T) {
+// The cache stays in place, so another registered source under that cache
+// remains readable after the clone and logical name move.
+func TestEditMarketplace_RenamePreservesASourceUnderTheOldCache(t *testing.T) {
 	m := NewManager(t.TempDir())
 	clone := m.marketplaceDir("acme")
 	if err := os.MkdirAll(clone, 0o755); err != nil {
@@ -1640,18 +1640,17 @@ func TestEditMarketplace_RenameRefusesASourceUnderTheOldCache(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := m.EditMarketplace(context.Background(), "acme", "gamma", nil); err == nil {
-		t.Fatal("expected the rename to refuse moving a cache another marketplace sources")
+	if _, err := m.EditMarketplace(context.Background(), "acme", "gamma", nil); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := os.Stat(cacheEntry); err != nil {
 		t.Fatalf("the cache another marketplace sources was moved: %v", err)
 	}
 }
 
-// The same cache move must refuse an incoming directory source that sits inside
-// the old cache, since the rename would carry it to the new name while
-// Source.Path still names the old location.
-func TestEditMarketplace_RenameRefusesAnIncomingSourceUnderTheOldCache(t *testing.T) {
+// A link anchored in the stationary cache to an external directory source is
+// safe: neither the link nor its external target moves with the clone.
+func TestEditMarketplace_RenamePreservesAnIncomingSourceLinkUnderTheOldCache(t *testing.T) {
 	m := NewManager(t.TempDir())
 	clone := m.marketplaceDir("acme")
 	if err := os.MkdirAll(clone, 0o755); err != nil {
@@ -1673,17 +1672,16 @@ func TestEditMarketplace_RenameRefusesAnIncomingSourceUnderTheOldCache(t *testin
 		t.Fatal(err)
 	}
 
-	if _, err := m.EditMarketplace(context.Background(), "acme", "gamma", &Source{Kind: SourceDirectory, Path: link}); err == nil {
-		t.Fatal("expected the rename to refuse an incoming source inside the old cache")
+	if _, err := m.EditMarketplace(context.Background(), "acme", "gamma", &Source{Kind: SourceDirectory, Path: link}); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := os.Lstat(link); err != nil {
-		t.Fatalf("the cache or its incoming source moved despite the refusal: %v", err)
+		t.Fatalf("the cache or its incoming source moved during rename: %v", err)
 	}
 }
 
-// A combined rename and re-source replaces the edited record's own source, so
-// that source must not block the cache move: only other records' sources, and
-// the incoming source, are data to protect.
+// A combined rename and re-source may replace a legacy cache-backed source
+// while retaining its original cache path.
 func TestEditMarketplace_RenameAndResourceReplacesASourceUnderTheOldCache(t *testing.T) {
 	m := NewManager(t.TempDir())
 	clone := m.marketplaceDir("acme")
@@ -1784,7 +1782,7 @@ func TestEditMarketplace_FetchFailureChangesNothing(t *testing.T) {
 	}
 }
 
-func TestEditMarketplace_RestoresDirectoriesWhenARenameStepFails(t *testing.T) {
+func TestEditMarketplace_RestoresCloneWhenRegistrySaveFails(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")
 	}
@@ -1798,21 +1796,22 @@ func TestEditMarketplace_RestoresDirectoriesWhenARenameStepFails(t *testing.T) {
 		t.Fatalf("Install: %v", err)
 	}
 
-	// The clone directory renames; the cache directory refuses. The undo
-	// then runs through the same seam, so only the second call fails.
-	orig := marketplaceRename
+	// The clone moves, then a registry save fails. Its undo must restore the
+	// clone without touching any published cache path.
+	originalSave, orig := installSaveRegistry, marketplaceRename
+	t.Cleanup(func() { installSaveRegistry, marketplaceRename = originalSave, orig })
+	installSaveRegistry = func(string, Registry) error { return os.ErrPermission }
 	calls := 0
 	marketplaceRename = func(from, to string) error {
 		calls++
-		if calls == 2 {
-			return errors.New("boom")
-		}
 		return orig(from, to)
 	}
-	t.Cleanup(func() { marketplaceRename = orig })
 
 	if _, err := m.EditMarketplace(ctx, name, "beta", nil); err == nil {
 		t.Fatal("expected the rename to fail")
+	}
+	if calls != 2 {
+		t.Fatalf("clone move and rollback calls = %d, want 2", calls)
 	}
 	if _, err := os.Stat(m.marketplaceDir(name)); err != nil {
 		t.Fatalf("the clone was not restored: %v", err)
@@ -1849,18 +1848,19 @@ func TestEditMarketplace_FailedUndoNamesWhatItCouldNotRestore(t *testing.T) {
 		t.Fatalf("Install: %v", err)
 	}
 
-	// The clone directory renames; the cache directory refuses, and so does
-	// the undo that would carry the clone back to its old name.
-	orig := marketplaceRename
+	// The clone moves, then a registry save fails. Its undo must restore the
+	// clone without touching any published cache path.
+	originalSave, orig := installSaveRegistry, marketplaceRename
+	t.Cleanup(func() { installSaveRegistry, marketplaceRename = originalSave, orig })
+	installSaveRegistry = func(string, Registry) error { return os.ErrPermission }
 	calls := 0
 	marketplaceRename = func(from, to string) error {
 		calls++
 		if calls >= 2 {
-			return fmt.Errorf("rename %d refused", calls)
+			return os.ErrPermission
 		}
 		return orig(from, to)
 	}
-	t.Cleanup(func() { marketplaceRename = orig })
 
 	_, err := m.EditMarketplace(ctx, name, "beta", nil)
 	marketplaceRename = orig
@@ -2131,7 +2131,7 @@ func readStoreFile(t *testing.T, path string) string {
 	return string(body)
 }
 
-func TestEditMarketplace_RefusesALeftoverPluginCache(t *testing.T) {
+func TestEditMarketplace_PreservesALeftoverPluginCache(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")
 	}
@@ -2151,42 +2151,35 @@ func TestEditMarketplace_RefusesALeftoverPluginCache(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := m.EditMarketplace(ctx, name, "beta", nil)
-	if err == nil {
-		t.Fatal("expected the rename to be refused")
+	before := snapshotMigrationTree(t, leftover)
+	regBefore, err := m.loadRegistry()
+	if err != nil {
+		t.Fatal(err)
 	}
-	// A name a leftover still occupies is taken, exactly as one the
-	// marketplaces file records is: the caller's conflict, not a store failure.
-	if !errors.Is(err, ErrMarketplaceExists) {
-		t.Fatalf("error = %v, want ErrMarketplaceExists", err)
+	selected := installedAt(t, regBefore, "widget@"+name)
+	if _, err := m.EditMarketplace(ctx, name, "beta", nil); err != nil {
+		t.Fatal(err)
 	}
-	// Where an os.Rename LinkError said only "directory not empty" - and
-	// without naming the absolute store path the leftover sits at (#1854).
-	if want := `plugin cache for "beta" already exists`; !strings.Contains(err.Error(), want) {
-		t.Fatalf("error = %v, want it to contain %q", err, want)
+	assertMigrationTree(t, before)
+	reg, err := m.loadRegistry()
+	if err != nil || !reflect.DeepEqual(reg.Plugins["widget@beta"], []InstallEntry{selected}) {
+		t.Fatalf("renamed selection = %+v, %v", reg, err)
 	}
-	if strings.Contains(err.Error(), leftover) {
-		t.Fatalf("error = %v, want no absolute path in the client-facing error", err)
+	if _, err := os.Stat(selected.InstallPath); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(m.marketplaceDir(name)); err != nil {
-		t.Fatalf("the clone was not restored: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(m.cacheDir(), name)); err != nil {
-		t.Fatalf("the plugin cache moved anyway: %v", err)
-	}
-	list, _ := m.ListMarketplaces(context.Background())
-	if _, ok := list[name]; !ok || len(list) != 1 {
-		t.Fatalf("list changed after a refused rename: %v", list)
+	list, err := m.ListMarketplaces(ctx)
+	if err != nil || len(list) != 1 || list["beta"].InstallLocation != m.marketplaceDir("beta") {
+		t.Fatalf("renamed marketplace = %+v, %v", list, err)
 	}
 }
 
 // RemoveMarketplace drops a marketplace's clone and its registration but never
 // its plugin cache or its registry entries, and a failed edit can strand a
 // clone, so any of the three can outlive the marketplace that made it. The
-// rename is refused for each of them whether or not the marketplace being
-// renamed has anything of its own to move — an install-free one moves neither
-// a cache nor a registry entry, and used to walk straight past the check.
-func TestEditMarketplace_RenameRefusesEveryLeftoverUnderTheNewName(t *testing.T) {
+// rename accepts cache-only residue, but refuses clone and registry residue even
+// when the marketplace being renamed has no installed plugins.
+func TestEditMarketplace_RenameChecksLeftoversUnderTheNewName(t *testing.T) {
 	leftovers := map[string]func(t *testing.T, m *Manager){
 		"plugin cache": func(t *testing.T, m *Manager) {
 			if err := os.MkdirAll(filepath.Join(m.cacheDir(), "beta", "widget", "deadsha"), 0o755); err != nil {
@@ -2224,15 +2217,27 @@ func TestEditMarketplace_RenameRefusesEveryLeftoverUnderTheNewName(t *testing.T)
 			regBefore := readStoreFileIfAny(m.registryPath())
 			mkBefore := readStoreFileIfAny(m.marketplacesFile())
 
+			var cacheTree migrationTree
+			if what == "plugin cache" {
+				cacheTree = snapshotMigrationTree(t, filepath.Join(m.cacheDir(), "beta"))
+			}
 			_, err := m.EditMarketplace(ctx, "acme", "beta", nil)
+			if what == "plugin cache" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertMigrationTree(t, cacheTree)
+				mk, err := m.ListMarketplaces(ctx)
+				if err != nil || len(mk) != 1 || mk["beta"].InstallLocation != dir {
+					t.Fatalf("cache-only rename = %+v, %v", mk, err)
+				}
+				return
+			}
 			if err == nil {
 				t.Fatal("expected the rename to be refused")
 			}
 			if !errors.Is(err, ErrMarketplaceExists) {
 				t.Fatalf("error = %v, want ErrMarketplaceExists", err)
-			}
-			if want := `before "beta" can be reused`; !strings.Contains(err.Error(), want) {
-				t.Fatalf("error = %v, want it to contain %q", err, want)
 			}
 			if got := readStoreFileIfAny(m.registryPath()); got != regBefore {
 				t.Fatalf("%s changed after a refused rename:\n%s", registryFileName, got)
@@ -2248,17 +2253,17 @@ func TestEditMarketplace_RenameRefusesEveryLeftoverUnderTheNewName(t *testing.T)
 // os.Stat follows it and reports the missing target, so a check built on Stat
 // alone reads the name as free and commits the store files over residue an
 // interrupted cleanup left behind.
-func TestEditMarketplace_RenameRefusesADanglingLinkUnderTheNewName(t *testing.T) {
+func TestEditMarketplace_RenameRefusesADanglingCloneLinkUnderTheNewName(t *testing.T) {
 	dir := makeDirectoryMarketplace(t, "acme", "widget")
 	m := NewManager(t.TempDir())
 	ctx := context.Background()
 	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceDirectory, Path: dir}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	if err := os.MkdirAll(m.cacheDir(), 0o755); err != nil {
+	if err := os.MkdirAll(m.marketplacesDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	leftover := filepath.Join(m.cacheDir(), "beta")
+	leftover := m.marketplaceDir("beta")
 	if err := os.Symlink(filepath.Join(m.cacheDir(), "gone"), leftover); err != nil {
 		t.Fatal(err)
 	}
@@ -2266,9 +2271,6 @@ func TestEditMarketplace_RenameRefusesADanglingLinkUnderTheNewName(t *testing.T)
 	_, err := m.EditMarketplace(ctx, "acme", "beta", nil)
 	if !errors.Is(err, ErrMarketplaceExists) {
 		t.Fatalf("error = %v, want ErrMarketplaceExists", err)
-	}
-	if want := `plugin cache for "beta" already exists`; !strings.Contains(err.Error(), want) {
-		t.Fatalf("error = %v, want it to contain %q", err, want)
 	}
 	if strings.Contains(err.Error(), leftover) {
 		t.Fatalf("error = %v, want no absolute path in the client-facing error", err)
@@ -2288,7 +2290,7 @@ func TestEditMarketplace_RenameOntoALeftoverIsRefusedBeforeTheFetch(t *testing.T
 	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceDirectory, Path: dir}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Join(m.cacheDir(), "beta", "widget", "deadsha"), 0o755); err != nil {
+	if err := os.MkdirAll(m.marketplaceDir("beta"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	origClone := marketplaceGitClone
@@ -2314,7 +2316,7 @@ func TestEditMarketplace_RenameOntoALeftoverIsRefusedBeforeTheFetch(t *testing.T
 // A stat that fails for any reason but "not there" leaves the edit unable to
 // say whether a directory is present, and a check that read such an error as
 // absence walked straight past what it could not see: the rename skipped a
-// clone or a plugin cache and committed both files under the new name anyway,
+// clone and committed both files under the new name anyway,
 // stranding the directory under the old one while the store's paths named a
 // directory that is not there; the leftover check waved a removed
 // marketplace's residue through to be buried under a live name; and the swap
@@ -2343,7 +2345,7 @@ func TestEditMarketplace_TreatsOnlyAMissingPathAsAbsent(t *testing.T) {
 		}
 	}
 	// installed registers the git marketplace "acme" with one plugin
-	// installed, so a rename has both a clone and a plugin cache to move.
+	// installed, so a rename moves its clone but must leave its cache fixed.
 	installed := func(t *testing.T) *Manager {
 		t.Helper()
 		mktRepo, name := makeInstallableMarketplace(t)
@@ -2404,34 +2406,33 @@ func TestEditMarketplace_TreatsOnlyAMissingPathAsAbsent(t *testing.T) {
 		checkStore()
 	})
 
-	// The plugin cache is checked after the clone has already been renamed, so
-	// this refusal has that rename to carry back.
-	t.Run("plugin cache", func(t *testing.T) {
+	// A stationary cache is not inspected or moved by a logical rename.
+	t.Run("stationary unreadable plugin cache", func(t *testing.T) {
 		m := installed(t)
 		cache := filepath.Join(m.cacheDir(), "acme")
 		loopAt(t, cache)
-		checkStore := storeUnchanged(t, m)
-
-		_, err := m.EditMarketplace(ctx, "acme", "beta", nil)
-		if err == nil {
-			t.Fatal("expected the rename to be refused")
+		before, err := os.Lstat(cache)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if strings.Contains(err.Error(), cache) {
-			t.Fatalf("error = %v, want no absolute path in the client-facing error", err)
+		regBefore, err := m.loadRegistry()
+		if err != nil {
+			t.Fatal(err)
 		}
-		if !strings.Contains(err.Error(), "acme") {
-			t.Fatalf("error = %v, want the marketplace named", err)
+		if _, err := m.EditMarketplace(ctx, "acme", "beta", nil); err != nil {
+			t.Fatal(err)
 		}
-		if _, err := os.Stat(m.marketplaceDir("acme")); err != nil {
-			t.Fatalf("the clone was not carried back: %v", err)
+		after, err := os.Lstat(cache)
+		if err != nil || !os.SameFile(before, after) {
+			t.Fatalf("stationary cache changed: %v", err)
 		}
-		if _, err := os.Stat(m.marketplaceDir("beta")); !os.IsNotExist(err) {
-			t.Fatal("a beta clone remained")
+		reg, err := m.loadRegistry()
+		if err != nil || !reflect.DeepEqual(reg.Plugins["widget@beta"], regBefore.Plugins["widget@acme"]) {
+			t.Fatalf("selection changed: %+v, %v", reg, err)
 		}
-		if _, err := os.Lstat(cache); err != nil {
-			t.Fatalf("the plugin cache path changed: %v", err)
+		if _, err := os.Stat(m.marketplaceDir("beta")); err != nil {
+			t.Fatal(err)
 		}
-		checkStore()
 	})
 
 	// A leftover the check cannot read is not a leftover it can declare
@@ -2443,10 +2444,10 @@ func TestEditMarketplace_TreatsOnlyAMissingPathAsAbsent(t *testing.T) {
 		if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceDirectory, Path: dir}); err != nil {
 			t.Fatalf("AddMarketplace: %v", err)
 		}
-		if err := os.MkdirAll(m.cacheDir(), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(m.marketplaceDir("beta")), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		leftover := filepath.Join(m.cacheDir(), "beta")
+		leftover := m.marketplaceDir("beta")
 		loopAt(t, leftover)
 		checkStore := storeUnchanged(t, m)
 
@@ -2628,6 +2629,177 @@ func TestAddMarketplace_RefusesADirectorySourceInsideTheStore(t *testing.T) {
 			t.Fatalf("ref = %+v, want it sourced at %q", ref, dir)
 		}
 	})
+}
+
+func TestAddMarketplace_RefusesAPinOnADirectorySource(t *testing.T) {
+	m := NewManager(t.TempDir())
+	source := plantCatalog(t, t.TempDir())
+	for _, src := range []Source{
+		{Kind: SourceDirectory, Path: source, Ref: "main"},
+		{Kind: SourceDirectory, Path: source, Sha: "abc1234"},
+	} {
+		if _, err := m.AddMarketplace(context.Background(), "", src); !errors.Is(err, ErrMarketplaceSourcePinned) {
+			t.Fatalf("AddMarketplace(%+v) error = %v, want ErrMarketplaceSourcePinned", src, err)
+		}
+	}
+}
+
+// git checkout treats an unmatched name as a pathspec. A ref that reuses a
+// tracked path name must fail rather than silently leave the clone on its
+// default branch while the marketplace records that ref.
+func TestAddMarketplace_RefMatchingATrackedPathIsRejected(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "pathref")
+	if err := os.MkdirAll(filepath.Join(repo, "plugins"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "plugins", "marker"), []byte("tracked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "add", "plugins")
+	gitIn(t, repo, "commit", "-qm", "track a path named like a ref")
+
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "plugins"}); err == nil {
+		t.Fatal("a ref naming a tracked path was checked out as a path instead of rejected")
+	}
+	mk, err := m.ListMarketplaces(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mk) != 0 {
+		t.Fatalf("marketplaces = %+v after a rejected ref, want none", mk)
+	}
+}
+
+// A tag named origin/plugins must not stand in for a remote branch of that
+// name: the target plugins still only matches a path and must be rejected.
+func TestAddMarketplace_RefMatchingATrackedPathAndAnOriginTagIsRejected(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "pathandtag")
+	if err := os.MkdirAll(filepath.Join(repo, "plugins"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "plugins", "marker"), []byte("tracked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "add", "plugins")
+	gitIn(t, repo, "commit", "-qm", "track a path named like a ref")
+	gitIn(t, repo, "tag", "origin/plugins")
+
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "plugins"}); err == nil {
+		t.Fatal("a tag named origin/plugins let a path-only ref through")
+	}
+}
+
+// A tag whose name embeds refs/heads/ must not stand in for the branch that
+// namespace names: the target plugins still only matches a path.
+func TestAddMarketplace_RefMatchingATrackedPathAndANamespaceTagIsRejected(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "pathandnamespacetag")
+	if err := os.MkdirAll(filepath.Join(repo, "plugins"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "plugins", "marker"), []byte("tracked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "add", "plugins")
+	gitIn(t, repo, "commit", "-qm", "track a path named like a ref")
+	gitIn(t, repo, "tag", "refs/heads/plugins")
+
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "plugins"}); err == nil {
+		t.Fatal("a tag named refs/heads/plugins let a path-only ref through")
+	}
+}
+
+// A source ref is a branch or tag name, not a fully qualified ref.
+func TestAddMarketplace_RejectsAFullyQualifiedRef(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "qualified")
+	m := NewManager(t.TempDir())
+	for _, ref := range []string{"refs/heads/main", "refs/tags/v1"} {
+		if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: ref}); !errors.Is(err, ErrSourceRefQualified) {
+			t.Fatalf("AddMarketplace(%q) error = %v, want ErrSourceRefQualified", ref, err)
+		}
+	}
+	mk, err := m.ListMarketplaces(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mk) != 0 {
+		t.Fatalf("marketplaces = %+v after a rejected qualified ref, want none", mk)
+	}
+}
+
+// A branch and a tracked path can share a name. Checkout guessing must not
+// decide which one wins: the recorded ref selects the branch even when git is
+// configured not to guess a branch for an ambiguous name.
+func TestAddMarketplace_BranchAndPathShareAName(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "checkout.guess")
+	t.Setenv("GIT_CONFIG_VALUE_0", "false")
+
+	repo := makeMarketplaceRepo(t, "branchname")
+	if err := os.MkdirAll(filepath.Join(repo, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "docs", "marker"), []byte("tracked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "add", "docs")
+	gitIn(t, repo, "commit", "-qm", "track a path named like the branch")
+	gitIn(t, repo, "checkout", "--quiet", "-b", "docs")
+	advanceGitRepo(t, repo, "README.md", "on the docs branch")
+	docsTip := gitIn(t, repo, "rev-parse", "HEAD")
+	gitIn(t, repo, "checkout", "--quiet", "-")
+
+	m := NewManager(t.TempDir())
+	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "docs"})
+	if err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != docsTip {
+		t.Fatalf("HEAD = %s, want the docs branch tip %s", got, docsTip)
+	}
+}
+
+// The clone helpers must not depend on the ambient clone.defaultRemoteName:
+// their ref resolution names origin explicitly.
+func TestAddMarketplace_NonDefaultCloneRemoteName(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "clone.defaultRemoteName")
+	t.Setenv("GIT_CONFIG_VALUE_0", "upstream")
+
+	repo := makeMarketplaceRepo(t, "remotename")
+	gitIn(t, repo, "checkout", "--quiet", "-b", "docs")
+	advanceGitRepo(t, repo, "README.md", "on the docs branch")
+	docsTip := gitIn(t, repo, "rev-parse", "HEAD")
+	gitIn(t, repo, "checkout", "--quiet", "-")
+
+	m := NewManager(t.TempDir())
+	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "docs"})
+	if err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != docsTip {
+		t.Fatalf("HEAD = %s, want the docs branch tip %s", got, docsTip)
+	}
 }
 
 // The plugin store's own directories are its to rewrite: a fetch clears
@@ -3165,6 +3337,37 @@ func TestRefreshMarketplace_ARefNamingATagAndABranchIsTheTagsPin(t *testing.T) {
 	}
 	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != tagged {
 		t.Fatalf("HEAD after refresh = %s, want the tag's %s", got, tagged)
+	}
+}
+
+// A ref that names a branch is not a pin: a refresh follows the branch's tip.
+func TestRefreshMarketplace_ABranchRefFollowsItsTip(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repo := makeMarketplaceRepo(t, "branching")
+	gitIn(t, repo, "checkout", "--quiet", "-b", "release")
+	advanceGitRepo(t, repo, "README.md", "release one")
+	firstTip := gitIn(t, repo, "rev-parse", "HEAD")
+	gitIn(t, repo, "checkout", "--quiet", "-")
+	m := NewManager(t.TempDir())
+	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "release"})
+	if err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != firstTip {
+		t.Fatalf("the clone is at %s, want the release branch tip %s", got, firstTip)
+	}
+
+	gitIn(t, repo, "checkout", "--quiet", "release")
+	advanceGitRepo(t, repo, "README.md", "release two")
+	nextTip := gitIn(t, repo, "rev-parse", "HEAD")
+	gitIn(t, repo, "checkout", "--quiet", "-")
+	if err := m.RefreshMarketplace(context.Background(), "branching"); err != nil {
+		t.Fatalf("RefreshMarketplace: %v", err)
+	}
+	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != nextTip {
+		t.Fatalf("HEAD after refresh = %s, want the moved release tip %s", got, nextTip)
 	}
 }
 

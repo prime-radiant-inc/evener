@@ -49,13 +49,13 @@ host has no usable provider access, the prerequisite appears before the task
 composer and opens the existing Connect provider dialog. Remote targets name the
 missing remote setup but do not expose the controller's credential editor.
 
-**Save and check** persists resolved host access and requests only that
-connection's model list. A failed check keeps a successfully saved credential and
-offers retry; unsupported listing has an explicit unverified continuation. A
-successful check hands the connection's actual instance name to **Choose model**,
-which scopes the first view to that instance. Failed or empty model reads offer a
-cache-bypassing retry. Local launches may reopen connection settings; remote
-launches cannot write controller credentials.
+**Save and test** persists the credential or resolved host access and requests
+only that connection's model list. A failed check keeps a successfully saved
+credential and offers retry; unsupported listing has an explicit unverified
+continuation. A successful check hands the connection's actual instance name to
+**Choose model**, which scopes the first view to that instance. Failed or empty
+model reads offer a cache-bypassing retry. Local launches may reopen connection
+settings; remote launches cannot write controller credentials.
 
 Provider connection and model choice never start a session. A person explicitly
 chooses the session model and selects **Start**. Start may also create a blank

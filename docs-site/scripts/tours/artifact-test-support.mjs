@@ -11,24 +11,24 @@ const hash = b => createHash('sha256').update(b).digest('hex');
 // Cached buffers stay private. Return copies so callers cannot mutate the cache.
 const pngCache = new Map();
 
+export function chunk(type, data) {
+  const body = Buffer.concat([Buffer.from(type), data]);
+  let crc = 0xffffffff;
+  for (const b of body) {
+    crc ^= b;
+    for (let i = 0; i < 8; i++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+  }
+  const size = Buffer.alloc(4);
+  size.writeUInt32BE(data.length);
+  const end = Buffer.alloc(4);
+  end.writeUInt32BE((crc ^ 0xffffffff) >>> 0);
+  return Buffer.concat([size, body, end]);
+}
+
 // Independent PNG fixture encoder, producing real RGB scanlines.
 export function independentPNG(width, height) {
   const key = `${width}x${height}`;
   if (pngCache.has(key)) return Buffer.from(pngCache.get(key));
-
-  function chunk(type, data) {
-    const body = Buffer.concat([Buffer.from(type), data]);
-    let crc = 0xffffffff;
-    for (const b of body) {
-      crc ^= b;
-      for (let i = 0; i < 8; i++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
-    }
-    const size = Buffer.alloc(4);
-    size.writeUInt32BE(data.length);
-    const end = Buffer.alloc(4);
-    end.writeUInt32BE((crc ^ 0xffffffff) >>> 0);
-    return Buffer.concat([size, body, end]);
-  }
 
   const header = Buffer.alloc(13);
   header.writeUInt32BE(width);

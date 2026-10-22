@@ -175,15 +175,18 @@ func seedFields(c *Caps, protocol string) {
 // Prune deletes from body every prunable path whose caps.Fields flag is
 // false and returns the paths it removed, sorted (spec §8.2 step 2). Keys
 // absent from the body are not reported; developer_role is never a body
-// path; max_tokens maps to caps.MaxTokensField's spelling.
-func Prune(body map[string]any, caps Caps) []string {
+// path; max_tokens maps to caps.MaxTokensField's spelling on the protocols
+// that spell the output limit that way. The cap is a model fact, and a chat
+// listing can advertise it for a row that resolves to another protocol, where
+// following it would prune a path that protocol never writes.
+func Prune(body map[string]any, caps Caps, protocol string) []string {
 	var pruned []string
 	for key, send := range caps.Fields {
 		if send || key == FieldDeveloperRole {
 			continue
 		}
 		path := key
-		if key == FieldMaxTokens && caps.MaxTokensField != nil && *caps.MaxTokensField != "" {
+		if key == FieldMaxTokens && protocol == ProtocolOpenAIChat && caps.MaxTokensField != nil && *caps.MaxTokensField != "" {
 			path = *caps.MaxTokensField
 		}
 		if deletePath(body, path) {

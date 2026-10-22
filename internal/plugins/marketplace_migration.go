@@ -21,18 +21,17 @@ import (
 // its lock (lockStore), so that under the lock every recorded name is valid
 // and no operation has to ask which evener wrote the name.
 //
-// One rename moves up to two directories and writes two files, so a process
+// One rename moves an owned clone and writes two files, so a process
 // that exits in the middle of one leaves a store half renamed. What names the
-// rename in flight is a marker every rename writes before it changes anything
+// rename in flight is a marker every automatic rename writes before changing anything
 // and removes once both files record the new name (renameMarker): the next
 // lock holder finishes exactly the rename the marker names, whether that
-// rename had directories of its own to move or only the two files to write,
+// rename had a clone of its own to move or only the two files to write,
 // and without one there is no rename in flight, so a removed marketplace's
 // residue under the same derived name is never mistaken for one. The merge
-// that folds a second record of one marketplace into the first writes the
-// same marker, saying that is what it names: it writes two files too, and the
-// keys its first write moves look exactly like that residue to a run with no
-// marker to read.
+// that folds an alias into its family's existing record needs no new marker:
+// the recorded exact-source family and the refused alias survive until both
+// logical writes finish. Older merge markers still recover physical moves.
 
 // loadMigratedMarketplaces reads the marketplaces file without the store lock
 // and hands back what a lock holder would see. A name the store refuses, or a
@@ -123,7 +122,7 @@ func (m *Manager) migrateMarketplaceNames() error {
 	owners := registryKeyOwners(reg, mk)
 	recordedThisRun := map[recordedAlias]string{}
 	// The families earlier runs recorded, so an alias still waiting for the
-	// marketplace they migrated knows which record its directories became. An
+	// marketplace they migrated knows which logical record owns the family. An
 	// entry whose destination the store no longer records names nothing left to
 	// merge into, so loading drops it.
 	rec, err := m.loadMigrationRecord()
@@ -163,11 +162,10 @@ func (m *Manager) migrateMarketplaceNames() error {
 			return fmt.Errorf("renaming marketplace %q, recorded under a name the store no longer accepts: %w", name, err)
 		}
 		if alias {
-			// The record it merges into is where that rename put the
-			// marketplace, which is the derived base only when the base was
-			// free: the clone and the cache both names derive moved with it.
+			// The family records the actual logical destination, including any
+			// collision suffix. Retained caches still occupy their old paths.
 			into := recordedThisRun[key]
-			if reg, err = m.mergeIntoMigrated(mk, owners, reg, name, into); err != nil {
+			if reg, err = m.mergeIntoMigrated(mk, owners, reg, name, into, false); err != nil {
 				return fmt.Errorf("merging marketplace %q, recorded under a name the store no longer accepts, into %q: %w", name, into, err)
 			}
 			_, _ = fmt.Fprintf(m.stderr(), "warning: marketplace %q was recorded under a name the store no longer accepts, and names the same marketplace as %q; merged its plugins into that record and dropped the duplicate\n", name, into)
@@ -196,26 +194,13 @@ func (m *Manager) migrateMarketplaceNames() error {
 	return nil
 }
 
-// recoverMarkedRename finishes the rename a marker names, which is the one a
-// run that exited partway through had in flight: whatever of the clone and
-// the cache is still under the old name moves, whatever keys are still under
-// it are re-keyed, and the entry is recorded under the new name. A step that
-// rename already took is one this finds nothing left to do for, and a rename
-// whose directories are another marketplace's moves nothing here either:
-// marketplaceDirsAreItsOwn asks about the recorded names, so the store
-// answers it after the crash the way it answered the rename before it.
-//
-// A marker naming an old name nothing records is a run that exited between
-// the marketplaces write and the marker's removal — the rename is recorded,
-// so only the marker is left to drop — and one naming no rename at all
-// (namesNoRename) goes the same way. A marker naming a merge goes to
-// finishMarkedMerge, which moves no directories and folds into a record that
-// is there by design. A destination another marketplace is recorded under is
-// the one thing this refuses rather than finishes: that record was made
-// between the crash and now, what sits under the name is a mix of what the
-// rename moved there and what the user put there, and nothing left in the
-// store tells the two apart, so the acquisition fails naming both names and
-// the marker. The caller must hold the store lock.
+// recoverMarkedRename finishes the operation named by the existing marker.
+// Clones keep their separate rename/rollback policy, while published caches
+// never move. Logical keys follow the new name, valid InstallPaths stay, and
+// reconcileMigrationPaths handles missing paths left by the older move-based
+// writer. A taken rename destination is refused, not overwritten. A marker
+// whose source record is already gone needs only removal. The caller holds
+// the store lock.
 func (m *Manager) recoverMarkedRename() error {
 	marker, err := m.loadRenameMarker()
 	if err != nil || marker == nil {
@@ -254,7 +239,7 @@ func (m *Manager) recoverMarkedRename() error {
 	}
 	registryAsFound := reg
 	owners := registryKeyOwners(reg, mk)
-	itsOwn, owner, err := m.marketplaceDirsAreItsOwn(mk, reg, marker.From)
+	itsOwn, _, err := m.marketplaceDirsAreItsOwn(mk, reg, marker.From)
 	if err != nil {
 		return fail(err)
 	}
@@ -267,7 +252,7 @@ func (m *Manager) recoverMarkedRename() error {
 		// rename leaves it — recording that clone would have a later Browse or
 		// Install parse a partial clone instead of clearing and re-cloning.
 		recordedLocation := ref.InstallLocation
-		if ref, reg, undo, err = m.moveMarketplace(marker.From, marker.To, ref, mk, reg, owners, false); err != nil {
+		if ref, undo, err = m.moveMarketplaceClone(marker.From, marker.To, ref, mk); err != nil {
 			return fail(err)
 		}
 		if ref.Source.Kind != SourceDirectory && recordedLocation != "" {
@@ -286,23 +271,17 @@ func (m *Manager) recoverMarkedRename() error {
 				ref.InstallLocation = clone
 			}
 		}
-	} else {
-		// The rename left the other marketplace's directories where they are
-		// and moved only the plugin caches the entry's own keys reference, so
-		// finishing it repeats those moves — each presence-checked, so one
-		// the rename already made is skipped — and makes the same two writes:
-		// whatever keys are still under the old name follow their install
-		// paths to the new one, and a git-backed entry is left unfetched, for
-		// the next fetch to clone under the new name.
-		if ref.Source.Kind != SourceDirectory {
-			ref.InstallLocation = ""
-		}
-		if owner == "" {
-			reg = rekeyRegistry(reg, owners, marker.From, marker.To, "", "")
-		} else if reg, undo, err = m.movePluginCachesToNewName(reg, marker.From, marker.To, owners); err != nil {
-			return fail(err)
-		}
+	} else if ref.Source.Kind != SourceDirectory {
+		// Another record owns the derived directories. Leave them alone and
+		// leave a git-backed entry unfetched under its new logical name.
+		ref.InstallLocation = ""
 	}
+	reg, err = m.reconcileMigrationPaths(mk, reg, owners, *marker)
+	if err != nil {
+		return fail(errors.Join(err, runUndo(undo)))
+	}
+	reg = rekeyRegistry(reg, owners, marker.From, marker.To, "", "")
+
 	if err := m.saveRename(mk, marker.From, marker.To, ref, reg, registryAsFound); err != nil {
 		undoErr := runUndo(undo)
 		if undoErr == nil && !errors.Is(err, errStoreBetweenNames) {
@@ -329,15 +308,9 @@ func (m *Manager) recoverMarkedRename() error {
 	return nil
 }
 
-// finishMarkedMerge finishes the merge a marker names: whatever keys are
-// still under the duplicate's name move to the record it folds into, their
-// install paths rewritten onto that record's cache, and the duplicate's
-// record goes (mergeIntoMigrated, which finds nothing left to do for a step
-// the merge already took). The record it folds into is recorded by design —
-// both records stand until the one save that drops the duplicate — so where a
-// rename refuses a destination something else holds, this expects one and
-// refuses a marker naming a record nothing holds, rather than merging into a
-// record it would have to invent. The caller must hold the store lock.
+// finishMarkedMerge finishes a marked alias merge into an existing record.
+// It preserves valid paths and uses the same source/ownership checks as a
+// normal alias merge. The caller must hold the store lock.
 func (m *Manager) finishMarkedMerge(mk Marketplaces, marker renameMarker) error {
 	fail := func(err error) error {
 		return m.migrationFailed(marker.From, marker.To, err)
@@ -354,30 +327,116 @@ func (m *Manager) finishMarkedMerge(mk Marketplaces, marker renameMarker) error 
 		return fail(err)
 	}
 	owners := registryKeyOwners(reg, mk)
-	// The merge names itself in the marker again and drops it once both files
-	// record it, so what is left to say here is that it was finished.
-	if _, err := m.mergeIntoMigrated(mk, owners, reg, marker.From, marker.To); err != nil {
+	// Keep this existing recovery marker until both logical files record the
+	// merge. Fresh merges never create one.
+	if _, err := m.mergeIntoMigrated(mk, owners, reg, marker.From, marker.To, true); err != nil {
 		return fail(err)
 	}
 	_, _ = fmt.Fprintf(m.stderr(), "warning: marketplace %q was being merged into %q when an earlier run stopped; finished the merge\n", marker.From, marker.To)
 	return nil
 }
 
-// renameMarker names the operation the migration has in flight: the rename of
-// a marketplace to a name the store accepts, or the merge of a second record
-// of that one marketplace into the record the rename made (Merge). Both write
-// it before they change anything and remove it once both store files record
-// the result, and the rename removes it once a failed save has put the store
-// back at one of the two names — which the merge cannot do, having no
-// directories to put back and so no rollback to judge, so its marker stays
-// until the merge is finished. A marker on disk therefore means an operation
-// that got somewhere in between, and recoverMarkedRename finishes it. Which
-// of the two it names decides how: a rename may have directories of its own
-// to move and refuses a destination another marketplace took, while a merge
-// moves nothing and folds into a record that is there by design. The rename
-// an edit makes writes none: it refuses the leftovers a stopped run left
-// under the new name and says so, and the user retrying it is there to read
-// that.
+// reconcileMigrationPaths reads only. A marker from the older move-based
+// migration can leave a missing recorded path whose exact destination exists.
+// Existing paths always win, even when both namespaces contain files. Neither
+// missing files nor a new logical name authorize moving or replacing a tree.
+func (m *Manager) reconcileMigrationPaths(mk Marketplaces, reg Registry, owners map[string]string, marker renameMarker) (Registry, error) {
+	itsOwn, _, err := m.marketplaceDirsAreItsOwn(mk, reg, marker.From)
+	if err != nil {
+		return Registry{}, err
+	}
+	oldCache := filepath.Join(m.cacheDir(), marker.From)
+	newCache := filepath.Join(m.cacheDir(), marker.To)
+	// When another marketplace owns the derived directories, the older writer
+	// moved only plugin directories owned exclusively by this record.
+	moves := m.pluginCacheMoves(reg, marker.From, marker.To, owners)
+	// Only these registry/source lists are immutable. Filesystem ownership
+	// evidence is still checked in its original order for every candidate.
+	var foreignEntries [][]InstallEntry
+	for key, entries := range reg.Plugins {
+		if owners[key] != marker.From && owners[key] != marker.To {
+			foreignEntries = append(foreignEntries, entries)
+		}
+	}
+	protectionPaths := marketplaceProtectionPaths(mk)
+	canReconcile := func(path string) (string, bool, error) {
+		rel, under := pathUnder(oldCache, path)
+		if !under || !nameCanHaveDirectories(marker.From) {
+			return "", false, nil
+		}
+		if !pathWithinDir(resolveBestEffort(oldCache), resolveBestEffort(path)) {
+			return "", false, nil
+		}
+		if !itsOwn && !slices.ContainsFunc(moves, func(move pluginCacheMove) bool {
+			_, under := pathUnder(move.from, path)
+			return under
+		}) {
+			return "", false, nil
+		}
+		// Physical containment and ownership still apply after a crash. In
+		// particular a symlink out, or another record using the destination,
+		// is not evidence of this marker's move.
+		for _, name := range []string{marker.From, marker.To} {
+			inStore, err := m.marketplaceDirsInStore(name)
+			if err != nil || !inStore {
+				return "", false, err
+			}
+		}
+		for _, entries := range foreignEntries {
+			if installedUnder(newCache, entries) {
+				return "", false, nil
+			}
+		}
+		// Cleanup treats inspection errors as protection and continues. Recovery
+		// must retain its marker and fail instead of committing unknown ownership.
+		present, err := pathPresentNoFollow(newCache)
+		if err != nil || !present {
+			return "", false, err
+		}
+		for _, source := range protectionPaths {
+			protect, err := m.sourceTouchesPath(source, newCache)
+			if err != nil || protect {
+				return "", false, err
+			}
+		}
+		destination := filepath.Join(newCache, rel)
+		present, err = pathPresent(destination)
+		if err == nil && present && !pathWithinDir(resolveBestEffort(newCache), resolveBestEffort(destination)) {
+			return "", false, nil
+		}
+		return destination, present, err
+	}
+	out := Registry{Version: reg.Version, Plugins: make(map[string][]InstallEntry, len(reg.Plugins))}
+	for key, entries := range reg.Plugins {
+		out.Plugins[key] = slices.Clone(entries)
+		if owner, ok := owners[key]; !ok || (owner != marker.From && owner != marker.To) {
+			continue
+		}
+		for i, entry := range entries {
+			present, err := pathPresent(entry.InstallPath)
+			if err != nil {
+				return Registry{}, err
+			}
+			if present {
+				continue
+			}
+			destination, moved, err := canReconcile(entry.InstallPath)
+			if err != nil {
+				return Registry{}, err
+			}
+			if moved {
+				out.Plugins[key][i].InstallPath = destination
+			}
+		}
+	}
+	return out, nil
+}
+
+// renameMarker names an automatic rename in flight, or an older interrupted
+// alias merge (Merge). Fresh merges use idempotent logical writes without a
+// marker, so they cannot manufacture physical-move recovery evidence. Rename
+// and old-marker recovery retain their existing clone rollback and journal
+// rules. Explicit edits write none and refuse interrupted-operation leftovers.
 type renameMarker struct {
 	From  string `json:"from"`
 	To    string `json:"to"`
@@ -833,42 +892,13 @@ func (m *Manager) marketplaceDirsKey(name string) (marketplaceDirs, error) {
 	return marketplaceDirs{clone: clone, cache: cache}, nil
 }
 
-// migratedUnderAnAlias reports whether the marketplace the entry deriving dirs
-// records is already migrated: an alias of its name — one of the several
-// refused names deriving the one clone directory and the one plugin cache for
-// the one source — went first, and this record is that marketplace's second.
-//
-// Naming the same source is half of what makes two records one marketplace,
-// because the directories are only the other half: a directory source keeps
-// neither of them in the store, so "a/./b" pointing at one directory and
-// "a/b" pointing at another derive the one absent pair while naming two
-// marketplaces. Two records deriving the same directories and naming
-// different sources contradict each other, whatever kind the sources are, and
-// keeping both under numbered names loses nothing — the second comes out
-// unfetched, or, for a directory source, referenced at its own path — where a
-// merge would drop its source and key its plugins under a marketplace that is
-// not its own.
-//
-// The record an alias belongs to is the one this run made for a name deriving
-// the same two directories (recordedThisRun, marketplaceDirs), under
-// whatever name that rename took: residue under the derived base pushes the
-// first of two aliases onto a numbered name, and the second follows it there,
-// because the clone and the cache both names derive went with it. Nothing in
-// the store tells a base name a rename left from one the user added — their
-// sources differ either way, and a record outlives the process that made it —
-// so anything else recorded there is a stranger, and merging into it would
-// drop this entry's source and key its plugins under a marketplace that is
-// not its own. A run that exits between two aliases
-// leaves the user a duplicate record instead, which is the safer failure.
-//
-// Its own directories gone is the other half: they are what a rename moves,
-// so a marketplace still holding either of them is one no rename has taken
-// from here — an entry whose directories another marketplace owns keeps them
-// and is nobody's alias. An entry the store fetched records where it put the
-// clone, so that path answers with them. One it never fetched has neither
-// directory to have lost, so nothing of it was ever moved and it is nobody's
-// second record: what it has of its own is a source, which a merge would drop
-// and a numbered name keeps.
+// migratedUnderAnAlias uses the recorded physical family and exact source,
+// not old-cache absence: retained revisions intentionally still live there.
+// A git record with a surviving clone, or one never fetched, has not lost its
+// own clone to that family's rename and remains a separate marketplace.
+// Directory sources are identified by their source and recorded family alone.
+// The destination must still hold marketplace data or keys, so stale records
+// cannot absorb a new source into an empty name.
 func (m *Manager) migratedUnderAnAlias(dirs marketplaceDirs, ref MarketplaceRef, mk Marketplaces, reg Registry, recordedThisRun map[recordedAlias]string) (bool, error) {
 	into, madeHere := recordedThisRun[recordedAlias{dirs: dirs, src: ref.Source}]
 	if !madeHere {
@@ -880,7 +910,7 @@ func (m *Manager) migratedUnderAnAlias(dirs marketplaceDirs, ref MarketplaceRef,
 	if ref.Source.Kind != SourceDirectory && ref.InstallLocation == "" {
 		return false, nil
 	}
-	gone := []string{dirs.clone, dirs.cache}
+	gone := []string{dirs.clone}
 	// A directory source's install location is the user's own source path and
 	// says nothing about what the store holds.
 	if ref.Source.Kind != SourceDirectory && ref.InstallLocation != "" {
@@ -907,26 +937,34 @@ func (m *Manager) migratedUnderAnAlias(dirs marketplaceDirs, ref MarketplaceRef,
 	return false, err
 }
 
-// mergeIntoMigrated folds a duplicate record into the marketplace already
-// recorded under the name both of them derive: its keys move there, their
-// install paths rewritten from its cache directory onto the recorded name's,
-// where the rename that migrated first put the files, and its record goes.
-// One record per marketplace is what the two names always described.
-func (m *Manager) mergeIntoMigrated(mk Marketplaces, owners map[string]string, reg Registry, name, recorded string) (Registry, error) {
+// mergeIntoMigrated folds an alias into its recorded family's marketplace.
+// Only logical ownership changes. Existing InstallPaths stay, including paths
+// in the retained original cache. Only finishMarkedMerge sets recovering: an
+// older physical-move marker may reconcile missing paths. Fresh merges write
+// no marker: the existing alias-family record and refused source name make
+// registry-first logical writes idempotent, including a split-write retry.
+func (m *Manager) mergeIntoMigrated(mk Marketplaces, owners map[string]string, reg Registry, name, recorded string, recovering bool) (Registry, error) {
 	registryAsFound := reg
-	// The marker names this merge before any of it happens, for the reason a
-	// rename's does: the two writes below can be interrupted between, and the
-	// keys the first of them moves are what a run with no marker to read takes
-	// for a removed marketplace's residue.
-	if err := m.writeRenameMarker(renameMarker{From: name, To: recorded, Merge: true}); err != nil {
-		return registryAsFound, err
+	if mk[name].Source != mk[recorded].Source {
+		return registryAsFound, fmt.Errorf("marketplaces %q and %q name different sources: %w", name, recorded, ErrMarketplaceExists)
 	}
-	oldCache, newCache := filepath.Join(m.cacheDir(), name), filepath.Join(m.cacheDir(), recorded)
-	reg = rekeyRegistry(reg, owners, name, recorded, oldCache, newCache)
-	// Where both records hold the same plugin, the entry already keyed under
-	// the recorded name stays: the cache moved under that name, so that entry
-	// is the one naming an install path that is there.
-	for key, entries := range registryAsFound.Plugins {
+	if recovering {
+		var err error
+		reg, err = m.reconcileMigrationPaths(mk, reg, owners, renameMarker{From: name, To: recorded, Merge: true})
+		if err != nil {
+			return registryAsFound, err
+		}
+	}
+	// A fresh logical merge must not create evidence of an older cache move.
+	// Until the final marketplaces write, the refused alias remains recorded
+	// and its exact source/family identifies the same destination on retry.
+	// Re-keying again preserves InstallPaths, even if the first registry
+	// write succeeded. An existing recovery marker stays until both writes do.
+	existing := reg
+	reg = rekeyRegistry(reg, owners, name, recorded, "", "")
+	// Keep the existing installed selection when both aliases name the same
+	// plugin. Both physical trees remain available to existing sessions.
+	for key, entries := range existing.Plugins {
 		if owner, ok := owners[key]; ok && owner == recorded {
 			reg.Plugins[key] = entries
 		}
@@ -934,35 +972,24 @@ func (m *Manager) mergeIntoMigrated(mk Marketplaces, owners map[string]string, r
 	// The recorded marketplace is written back as it stands, so what this
 	// save records is the duplicate's removal and the keys that moved.
 	if err := m.saveRename(mk, name, recorded, mk[recorded], reg, registryAsFound); err != nil {
-		// A merge moves nothing, so there is no undo to judge and nothing to
-		// tell a save that reached neither file from one that reached both:
-		// the marker stays, and the next lock holder makes the merge from
-		// whatever this left.
-		return registryAsFound, m.migrationFailed(name, recorded, errors.Join(err, m.markerLeftForRecovery("merge")))
+		if recovering {
+			return registryAsFound, m.migrationFailed(name, recorded, errors.Join(err, m.markerLeftForRecovery("merge")))
+		}
+		return registryAsFound, m.migrationFailed(name, recorded, err)
 	}
 	m.removeRenameMarker()
 	return reg, nil
 }
 
-// migrateMarketplaceName renames one recorded marketplace the way an edit
-// does — directories, registry keys, both files, with the same rollback —
-// and returns the registry as saved. Whether there is anything to move is
-// decided by where the old name's directories are, not by the shape of the
-// name: a name carrying a separator ("a/b") nests them inside the store,
-// where they are this marketplace's clone and plugin cache and move like any
-// other rename's, while a traversing name ("../../escape") joins them outside
-// the store, where nothing is the store's to move and no install path
-// changes. A non-directory source's InstallLocation is that outside path, so
-// it goes: the entry is then unfetched, and the next fetch clones under the
-// new name inside the store instead of pulling and swapping outside it. A
-// directory source's install location is its own source path and stays.
-// Directories another recorded marketplace owns go the same way as outside
-// ones — see marketplaceDirsAreItsOwn — except that the entry's own plugin
-// caches, which sit inside them, move under the new name
-// (movePluginCachesToNewName).
+// migrateMarketplaceName changes one refused logical name under the store
+// lock. Only an owned clone moves; published caches and InstallPaths stay.
+// A clone outside the store or owned by another record stays untouched and a
+// git-backed entry becomes unfetched, while directory sources keep their live
+// location. Registry and marketplace writes retain the existing journal and
+// rollback order.
 func (m *Manager) migrateMarketplaceName(mk Marketplaces, owners map[string]string, reg Registry, name, newName string) (Registry, error) {
 	ref, registryAsFound := mk[name], reg
-	itsOwn, owner, err := m.marketplaceDirsAreItsOwn(mk, reg, name)
+	itsOwn, _, err := m.marketplaceDirsAreItsOwn(mk, reg, name)
 	if err != nil {
 		return registryAsFound, err
 	}
@@ -977,24 +1004,19 @@ func (m *Manager) migrateMarketplaceName(mk Marketplaces, owners map[string]stri
 	}
 	var undo []func() error
 	if itsOwn {
-		if ref, reg, undo, err = m.moveMarketplace(name, newName, ref, mk, reg, owners, false); err != nil {
-			return registryAsFound, m.markerAfterFailedMove(name, newName, err)
+		if ref, undo, err = m.moveMarketplaceClone(name, newName, ref, mk); err != nil {
+			m.removeRenameMarker()
+			return registryAsFound, m.migrationFailed(name, newName, err)
 		}
 	} else {
-		// An entry whose directories another marketplace owns leaves that
-		// marketplace every one of them and takes only its own plugins'
-		// caches, which sit inside them one level below the layout Gc reads
-		// (movePluginCachesToNewName). A name whose directories fall outside
-		// the store has nothing in the store to take, so it only re-keys.
+		// Derived directories outside the store or held by another record
+		// are not this rename's clone to move. All published caches stay.
 		if ref.Source.Kind != SourceDirectory {
 			ref.InstallLocation = ""
 		}
-		if owner == "" {
-			reg = rekeyRegistry(reg, owners, name, newName, "", "")
-		} else if reg, undo, err = m.movePluginCachesToNewName(reg, name, newName, owners); err != nil {
-			return registryAsFound, m.markerAfterFailedMove(name, newName, err)
-		}
 	}
+	reg = rekeyRegistry(reg, owners, name, newName, "", "")
+
 	if err := m.saveRename(mk, name, newName, ref, reg, registryAsFound); err != nil {
 		// A marker means the store may be between the two names, so only a
 		// rollback that provably brought it to one may drop it: the registry
@@ -1011,20 +1033,6 @@ func (m *Manager) migrateMarketplaceName(mk Marketplaces, owners map[string]stri
 	}
 	m.removeRenameMarker()
 	return reg, nil
-}
-
-// markerAfterFailedMove decides the marker's fate after one of the move helpers
-// failed. A helper that put every directory back (no
-// errRenameRollbackIncomplete) leaves the store at the old name with nothing to
-// resume, so the marker goes and the failure is reported as it stands; one that
-// could not leaves the store between the two names, which is what the marker is
-// for, so it stays and the error names it for the next lock holder.
-func (m *Manager) markerAfterFailedMove(from, to string, err error) error {
-	if !errors.Is(err, errRenameRollbackIncomplete) {
-		m.removeRenameMarker()
-		return m.migrationFailed(from, to, err)
-	}
-	return m.migrationFailed(from, to, errors.Join(err, m.markerLeftForRecovery("rename")))
 }
 
 // dirsUnder reports whether either directory a name derives is in the store. A
@@ -1044,92 +1052,13 @@ func (m *Manager) dirsUnder(name string) (bool, error) {
 	return false, nil
 }
 
-// pluginCacheMove is one plugin's cache directory moving with the name of an
-// entry whose derived directories another marketplace owns:
+// pluginCacheMove describes the exact move an older writer could have made
+// for an entry whose derived directories another marketplace owns:
 // cache/<old>/<plugin> to cache/<new>/<plugin>.
 type pluginCacheMove struct{ plugin, from, to string }
 
-// movePluginCachesToNewName moves what such a rename has of its own. The
-// marketplace that owns the directories keeps every one of them, but the
-// entry's own installs sit at cache/<old>/<plugin>/<sha> — one level below the
-// cache/<marketplace>/<plugin>/<sha> layout Gc reads, so Gc takes
-// cache/<old>/<plugin> for an unreferenced sha directory and reclaims the
-// installs the rename just carried over. Each plugin directory the entry's own
-// keys reference moves to the same place under the new name, where Gc reads it
-// as the install it is, and the paths follow. Everything else stays: the
-// owner's own plugins, the clone the entry's name derives, which is the
-// owner's too, and an install path outside the cache, which is a directory
-// source's own and is referenced where the user put it.
-//
-// A directory that is not there has already moved — the run this is finishing
-// made that rename and stopped before the registry write — so each move is
-// presence-checked and the path rewritten either way, as a rename with no
-// cache to move still records the new name.
-func (m *Manager) movePluginCachesToNewName(reg Registry, name, newName string, owners map[string]string) (Registry, []func() error, error) {
-	moves := m.pluginCacheMoves(reg, name, newName, owners)
-	if len(moves) == 0 {
-		return rekeyRegistry(reg, owners, name, newName, "", ""), nil, nil
-	}
-	var undo []func() error
-	fail := func(err error) (Registry, []func() error, error) {
-		if undoErr := runUndo(undo); undoErr != nil {
-			return Registry{}, nil, errors.Join(err, undoErr, errRenameRollbackIncomplete)
-		}
-		return Registry{}, nil, err
-	}
-	newCache := filepath.Join(m.cacheDir(), newName)
-	// Nothing occupies the new name (refuseLeftoversUnder), so the cache
-	// directory is this rename's to create — and to remove again where the
-	// rename rolls back, so a retry finds the name free instead of stepping
-	// to the next numbered one. One the run this is finishing created is not
-	// this rename's to remove.
-	haveNewCache, err := pathPresent(newCache)
-	if err != nil {
-		return fail(err)
-	}
-	if !haveNewCache {
-		if err := marketplaceMkdirAll(newCache, 0o755); err != nil {
-			return fail(fmt.Errorf("creating plugin cache %s: %w", newCache, err))
-		}
-		undo = append(undo, func() error {
-			// Empty once the moves above are undone; a directory a failed
-			// restore left something in is reported rather than removed.
-			if err := marketplaceRemove(newCache); err != nil {
-				return fmt.Errorf("removing plugin cache %s: %w", newCache, err)
-			}
-			return nil
-		})
-	}
-	for _, move := range moves {
-		present, err := pathPresent(move.from)
-		if err != nil {
-			return fail(err)
-		}
-		if !present {
-			continue
-		}
-		if err := marketplaceRename(move.from, move.to); err != nil {
-			return fail(fmt.Errorf("renaming plugin cache: %w", err))
-		}
-		undo = append(undo, m.renameUndo("plugin cache", move.to, move.from, StoreChanged{Plugins: true}))
-	}
-	reg = rekeyRegistry(reg, owners, name, newName, "", "")
-	for _, move := range moves {
-		entries := reg.Plugins[registryKey(move.plugin, newName)]
-		for i, entry := range entries {
-			if rel, under := pathUnder(move.from, entry.InstallPath); under {
-				entries[i].InstallPath = filepath.Join(move.to, rel)
-			}
-		}
-	}
-	return reg, undo, nil
-}
-
-// pluginCacheMoves is what the entry recorded under name has of its own inside
-// the owner's cache: for each of its keys, the cache/<old>/<plugin> directory
-// that key's installs sit under, against the same directory under the new
-// name. A key with nothing installed under that directory has nothing there to
-// move.
+// pluginCacheMoves describes the older writer's per-plugin moves for recovery,
+// without performing them. Only exclusively owned plugin directories qualify.
 //
 // A directory another key installs into is the owner's rather than this
 // entry's: a name cleaning to the owner's own cache ("./x" beside "x") derives

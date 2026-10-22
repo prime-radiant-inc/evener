@@ -177,7 +177,7 @@ type serveDeps struct {
 	resolveMeta      func(string, string, bool) (schema.SessionMeta, error)
 	newClient        func(string, io.Writer) (*llm.Client, func() error, error)
 	attachAPILogger  func(*llm.Client, string, io.Writer, bool) (func(string) error, func() error, error)
-	buildProfile     func(*llm.Client, cmdutil.ModelRef, string) (*provider.Profile, error)
+	buildProfile     func(context.Context, *llm.Client, cmdutil.ModelRef, string) (*provider.Profile, *agent.StartupModelListing, error)
 	applyCheap       func(*provider.Profile, string, *llm.Client) (*provider.Profile, error)
 	newSession       func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error)
 	restoreSession   func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, agent.RestoreSessionConfig) (*agent.Session, error)
@@ -210,9 +210,13 @@ type serveDeps struct {
 	// Injectable so a test can wedge it: the reason the tee exists is that the
 	// real one can be a pipe nobody drains, and that is not reproducible against
 	// a real terminal.
-	verboseOut       io.Writer
-	subscriberCount  func(serveServer, string) int
-	notifyContext    func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
+	verboseOut      io.Writer
+	subscriberCount func(serveServer, string) int
+	notifyContext   func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
+	// runContext derives the run's lifetime from the signal context. Its cancel
+	// is what thread/shutdown and retirement call to start the exit path, so it
+	// is injectable for a test that must gate exactly that call.
+	runContext       func(context.Context) (context.Context, context.CancelFunc)
 	startCPUProfile  func(string) (func(), error)
 	startTrace       func(string) (func(), error)
 	startLivePprof   func(logf func(format string, args ...any)) (indexURL string, stop func(), err error)
@@ -285,7 +289,8 @@ func defaultServeDeps() serveDeps {
 		},
 		drainWaitExpiry: func() <-chan time.Time { return time.After(shutdownDrainWaitBudget) },
 		subscriberCount: func(s serveServer, id string) int { return s.(*server.Server).AppSubscriberCount(id) },
-		notifyContext:   signal.NotifyContext, startCPUProfile: cmdutil.StartCPUProfile, startTrace: cmdutil.StartTrace,
+		notifyContext:   signal.NotifyContext, runContext: context.WithCancel,
+		startCPUProfile: cmdutil.StartCPUProfile, startTrace: cmdutil.StartTrace,
 		startLivePprof:       cmdutil.StartLivePprof,
 		register:             func(r *rvreg.Registration, dir string, entry rendezvous.Entry) error { return r.Register(dir, entry) },
 		rendezvousRetryPause: func() <-chan time.Time { return time.After(rendezvousRemovalRetryPause) },
@@ -469,7 +474,19 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// install or an auto-upgrade can be holding across git fetches, and an
 	// interrupt has to end that wait rather than being ignored until the
 	// daemon reaches its listener.
-	ctx, cancel := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	//
+	// The handler stays registered until serve returns, so the run gets its own
+	// context. thread/shutdown and idle retirement end the run by cancelling
+	// ctx, and teardown -- where the session closes and
+	// kills its background jobs -- comes after that. Stopping NotifyContext
+	// there would restore SIGTERM's default disposition, so a supervisor's
+	// SIGTERM landing mid-teardown would kill the daemon on the spot and orphan
+	// every background job it owns. A repeat SIGTERM during teardown is
+	// swallowed on purpose: exiting on it would orphan the jobs the same way,
+	// and the drain-wait budget already bounds a wedged teardown.
+	signalCtx, stopSignals := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	ctx, cancel := deps.runContext(signalCtx)
 	defer cancel()
 
 	// Before anything that can create the user config root: the legacy-data
@@ -635,7 +652,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return err
 		}
 	}
-	profile, err := deps.buildProfile(client, modelRef, *outputSchema)
+	profileCtx := ctx
+	if resuming {
+		profileCtx = llm.WithAPILogContext(ctx, resumedMeta.ID)
+	}
+	profile, startupListing, err := deps.buildProfile(profileCtx, client, modelRef, *outputSchema)
 	if err != nil {
 		return err
 	}
@@ -697,6 +718,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,
 		ProviderIdleTimeout:         *providerIdleTimeout,
 		ResolveProfile:              cmdutil.BuildResolveProfile(client),
+		StartupModelListing:         startupListing,
 	}
 	if *maxSubagentDepth >= 0 {
 		sessionCfg.MaxSubagentDepth = *maxSubagentDepth
@@ -742,6 +764,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			StateDir:                    sd,
 			Project:                     project,
 			ResolveProfile:              sessionCfg.ResolveProfile,
+			StartupModelListing:         startupListing,
 			AcquireSessionOwnership:     reserveSession,
 			OwnershipAlreadyAcquired:    true,
 			ModelFallbacks:              sessionCfg.ModelFallbacks,
@@ -2102,20 +2125,49 @@ func printServeEnvVars(w io.Writer) {
 // same facts. outputSchemaJSON and EVENER_ALLOWED_DECISIONS are applied in
 // this app layer so callers see the same communicate-tool schema regardless of
 // model.
-func buildInitialProfile(client *llm.Client, modelRef cmdutil.ModelRef, outputSchemaJSON string) (*provider.Profile, error) {
-	raw, err := cmdutil.ResolveProfile(client, modelRef.Qualified())
+func buildInitialProfile(ctx context.Context, client *llm.Client, modelRef cmdutil.ModelRef, outputSchemaJSON string) (*provider.Profile, *agent.StartupModelListing, error) {
+	raw, startupListing, err := resolveInitialProfile(ctx, client, modelRef)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var outputSchema map[string]any
 	if trimmed := strings.TrimSpace(outputSchemaJSON); trimmed != "" {
 		if jsonErr := json.Unmarshal([]byte(trimmed), &outputSchema); jsonErr != nil {
-			return nil, fmt.Errorf("invalid --output-schema: %w", jsonErr)
+			return nil, nil, fmt.Errorf("invalid --output-schema: %w", jsonErr)
 		}
 	}
 	p := provider.WithCommunicateOutputSchema(raw, outputSchema)
 	allowedDecisions := cmdutil.ParseAllowedDecisions(envvars.EVENERAllowedDecisions.Getenv())
-	return provider.WithAllowedDecisions(p, allowedDecisions), nil
+	return provider.WithAllowedDecisions(p, allowedDecisions), startupListing, nil
+}
+
+// resolveInitialProfile resolves modelRef on the client's registry. The Codex
+// transport rejects an id absent from its roster instead of synthesizing a
+// row, and the bundled roster lags the models the backend serves. A session
+// restarted after selecting such a model (or a fresh launch with a model the
+// picker just listed) resolves before any listing exists in this process, so
+// the catalog-only gate would reject a model the provider itself advertises.
+// On exactly that rejection, consult the instance's live listing once and
+// resolve again; every other failure is returned unchanged.
+func resolveInitialProfile(ctx context.Context, client *llm.Client, modelRef cmdutil.ModelRef) (*provider.Profile, *agent.StartupModelListing, error) {
+	raw, err := cmdutil.ResolveProfile(client, modelRef.Qualified())
+	if err == nil || !errors.Is(err, registry.ErrCodexModelNotListed) {
+		return raw, nil, err
+	}
+	listCtx, cancel := context.WithTimeout(ctx, llm.LiveModelListTimeout)
+	defer cancel()
+	listing, listErr := client.Models(listCtx, modelRef.Provider)
+	if listErr != nil {
+		return nil, nil, fmt.Errorf("%w; the provider's live model list could not be read: %w", err, listErr)
+	}
+	profile, err := cmdutil.ResolveProfile(client, modelRef.Qualified())
+	if err != nil {
+		return nil, nil, err
+	}
+	if !listing.Usable {
+		return profile, nil, nil
+	}
+	return profile, &agent.StartupModelListing{Instance: modelRef.Provider, Listing: listing}, nil
 }
 
 // errFastCheapProviderUnavailable identifies a --fast-cheap-model provider the
@@ -2368,13 +2420,9 @@ type liveThreadEnvelopeSource struct {
 	session func() agent.EnvelopeSampling
 }
 
-func (l liveThreadEnvelopeSource) ContextPressure() float64 {
-	return l.session().ContextPressure()
-}
-
-func (l liveThreadEnvelopeSource) ContextMetrics() server.ContextMetrics {
-	metrics := l.session().ContextMetrics()
-	return server.ContextMetrics{Used: metrics.Used, Window: metrics.Window, Remaining: metrics.Remaining, Assumed: metrics.Assumed}
+func (l liveThreadEnvelopeSource) ContextStatus() (server.ContextMetrics, float64) {
+	metrics, pressure := l.session().ContextStatus()
+	return server.ContextMetrics{Used: metrics.Used, Window: metrics.Window, Remaining: metrics.Remaining, Assumed: metrics.Assumed}, pressure
 }
 
 func (l liveThreadEnvelopeSource) DetailedStatus() server.DetailedStatus {

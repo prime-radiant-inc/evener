@@ -2493,7 +2493,7 @@ test.each(["output", "metadata"] as const)("fences obsolete job %s after readine
 // on the resumed identity cancels the stale post-resume publish". forceStop
 // closes the window with stoppingRefs; a graceful shutdown must NOT, because
 // that fence also refuses a Send the user makes during the window
-// (isLocalRecoveryFenced and isSendResumesLocal read it). This dispatch-only
+// (isRecoveryFenced and isSendResumes read it). This dispatch-only
 // gate keeps the cancelled row off the wire while leaving every Send face
 // untouched.
 //

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -25,6 +26,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -46,40 +48,44 @@ func TestOnboardingBrowser(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires Chrome and production frontend")
 	}
-	requireFreshDist(t)
-	// Read before isolation. Only video and sanitized visual evidence escape TempDir.
-	recordVideo := os.Getenv("EVENER_ONBOARDING_VIDEO")
-	root := t.TempDir()
-	repo := skillGuardRepoRoot(t)
-	binary := filepath.Join(root, "evener")
-	build := exec.CommandContext(t.Context(), "go", "build", "-o", binary, "./cmd/evener")
-	build.Dir = repo
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
+	for _, view := range onboardingViews() {
+		view := view
+		t.Run(view.name, func(t *testing.T) { testOnboardingBrowserAt(t, view) })
 	}
-	// Serial: environment is process-wide. Clear inherited access/config, keeping
-	// only tool discovery and Go caches. No personal provider or OAuth state.
-	for _, item := range os.Environ() {
-		key, _, _ := strings.Cut(item, "=")
-		switch key {
-		case "PATH", "TMPDIR", "GOCACHE", "GOMODCACHE", "GOROOT", "CGO_ENABLED":
-		default:
-			t.Setenv(key, "")
-		}
+}
+
+// onboardingView is one real production layout the acquisition journey runs
+// in from before setup opens, not a post-completion resize.
+type onboardingView struct {
+	name          string
+	width, height int
+	theme         string
+}
+
+func onboardingViews() []onboardingView {
+	return []onboardingView{
+		{name: "desktop-light", width: 1440, height: 1000, theme: "light"},
+		{name: "desktop-dark", width: 1440, height: 1000, theme: "dark"},
+		{name: "mobile-light", width: 390, height: 844, theme: "light"},
+		{name: "mobile-dark", width: 390, height: 844, theme: "dark"},
 	}
-	for key, value := range map[string]string{"HOME": filepath.Join(root, "home"), "XDG_CONFIG_HOME": filepath.Join(root, "config"), "XDG_STATE_HOME": filepath.Join(root, "state"), "XDG_CACHE_HOME": filepath.Join(root, "cache"), "EVENER_PROVIDERS_CONFIG": filepath.Join(root, "providers.toml"), "EVENER_CREDENTIALS_CONFIG": filepath.Join(root, "credentials.toml")} {
-		t.Setenv(key, value)
-	}
-	work := filepath.Join(root, "project")
-	run := filepath.Join(root, "run")
-	for _, dir := range []string{work, run, os.Getenv("HOME")} {
-		if err := os.MkdirAll(dir, 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
+}
+
+func testOnboardingBrowserAt(t *testing.T, view onboardingView) {
+	t.Helper()
+	guard := newOnboardingGuardEnv(t)
+	recordVideo, evidenceDir := guard.recordVideo, guard.evidenceDir
+	root, repo, work, run := guard.root, guard.repo, guard.work, guard.run
 	var mu sync.Mutex
 	var requests []map[string]any
 	checks := 0
+	failedChecks := 0
+	successfulChecks := 0
+	// Healthy listings are withheld until the browser reports the connector's
+	// own failed evener/auth/test reply. A bare first-request failure can be
+	// consumed by any catalog reader, which would let this journey pass without
+	// the connector's automatic retry actually recovering.
+	modelsReleased := false
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedAt := time.Now()
 		mu.Lock()
@@ -96,10 +102,12 @@ func TestOnboardingBrowser(t *testing.T) {
 				t.Error("model-list check must be a bodyless GET")
 			}
 			checks++
-			if checks == 1 {
+			if !modelsReleased {
+				failedChecks++
 				http.Error(w, `{"error":{"message":"fixture unavailable"}}`, http.StatusServiceUnavailable)
 				return
 			}
+			successfulChecks++
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"object":"list","data":[{"id":"gpt-4o-mini","object":"model","owned_by":"onboarding"},{"id":"gpt-4o","object":"model","owned_by":"onboarding"}]}`)
 			return
@@ -131,33 +139,16 @@ func TestOnboardingBrowser(t *testing.T) {
 	t.Setenv("EVENER_OFFLINE", "1")
 	// An endpoint definition is not configured access: no key/default/model is
 	// seeded. The browser must save access through the real connection dialog.
-	config := fmt.Sprintf("[providers.openai]\nprotocol = \"openai-chat\"\nbase_url = %q\n", provider.URL+"/v1")
+	// The configured default is the fixture's SECOND listed model. The browser
+	// may adopt only that row from the instance's own usable live listing; the
+	// first row must not win by position.
+	config := fmt.Sprintf("[providers.openai]\nprotocol = \"openai-chat\"\nbase_url = %q\ndefault_model = \"gpt-4o\"\n", provider.URL+"/v1")
 	if err := os.WriteFile(os.Getenv("EVENER_PROVIDERS_CONFIG"), []byte(config), 0600); err != nil {
 		t.Fatal(err)
 	}
-	reg := hubcore.NewProviderRegistry(func(opts ...registry.Option) (*registry.Registry, *credentials.Store, error) {
-		return cmdutil.LoadRegistry(append(opts, registry.WithOffline(true))...)
-	})
-	if err := reg.Reload(); err != nil {
-		t.Fatal(err)
-	}
-	_, store, err := cmdutil.LoadRegistry(registry.WithOffline(true))
-	if err != nil {
-		t.Fatal(err)
-	}
-	state := cmdutil.DefaultStateRoot()
-	roster := hubcore.NewRoster(run, &hubcore.StatusProber{Timeout: time.Second})
-	past := hubcore.NewPastIndex(filepath.Join(state, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-	const token = "onboarding-disposable-auth"
-	spawner := &HubSpawner{EvenerBinary: binary, RunDir: run, HubToken: token, Registry: reg, ProvidersConfigPath: os.Getenv("EVENER_PROVIDERS_CONFIG"), CredentialsPath: os.Getenv("EVENER_CREDENTIALS_CONFIG")}
-	web := newWebServer(hubcore.WebConfig{AuthToken: token, HubStateRoot: filepath.Join(root, "hub"), LaunchConfigRoot: filepath.Join(root, "launch"), RunDir: run, StateDir: state, Past: past, Roster: roster, Spawner: spawner, Registry: reg, CredsStore: store, ProvidersConfigPath: spawner.ProvidersConfigPath, CredentialsPath: spawner.CredentialsPath}, nil)
-	past.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
-	roster.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
-	hub := httptest.NewServer(web.Handler())
-	defer hub.Close()
+	fixture := newOnboardingGuardHub(t, guard, nil)
+	token := guard.token
+	hub := fixture.server
 	// Observe actual child launch commands so every spawned process is reaped on
 	// every failure path, without touching unrelated rendezvous/service roots.
 	oldCommand := daemonProcessCommand
@@ -208,6 +199,13 @@ func TestOnboardingBrowser(t *testing.T) {
 	checkpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
+		if r.URL.Query().Get("stage") == "auto-check-failed" {
+			// The browser observed the real failed check on the connector's
+			// automatic flow. Only now do model-list calls answer healthy, so
+			// the completion below can only come from the connector's own
+			// retry timer.
+			modelsReleased = true
+		}
 		entries, err := rendezvous.List(run)
 		childMu.Lock()
 		attempts := len(launches)
@@ -221,9 +219,22 @@ func TestOnboardingBrowser(t *testing.T) {
 	defer checkpoint.Close()
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "node", "scripts/onboardingguard/run.mjs", "--url", hubedge.AuthURLFor(hub.URL, token), "--artifact-dir", root, "--work", work, "--checkpoint", checkpoint.URL)
+	cmd := exec.CommandContext(ctx, "node", "scripts/onboardingguard/run.mjs",
+		"--url", hubedge.AuthURLFor(hub.URL, token),
+		"--artifact-dir", root,
+		"--work", work,
+		"--checkpoint", checkpoint.URL,
+		"--adopted-model", "openai/gpt-4o",
+		"--scenario", "auto",
+		"--width", strconv.Itoa(view.width),
+		"--height", strconv.Itoa(view.height),
+		"--theme", view.theme,
+	)
 	if recordVideo != "" {
 		cmd.Args = append(cmd.Args, "--record-video", recordVideo)
+	}
+	if evidenceDir != "" {
+		cmd.Args = append(cmd.Args, "--evidence-dir", evidenceDir)
 	}
 	cmd.Dir = filepath.Join(repo, "cmd/evener-hub/frontend")
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
@@ -238,13 +249,25 @@ func TestOnboardingBrowser(t *testing.T) {
 		t.Fatal(err)
 	}
 	stopChildren()
-	if len(children) != 2 {
-		t.Fatalf("spawned %d daemons, want task and blank sessions", len(children))
+	wantSessions := 2
+	if view.width <= 390 {
+		// The narrow journey proves acquisition/Start/focus/reply; the blank
+		// second-session check is the desktop journey's.
+		wantSessions = 1
+	}
+	if len(children) != wantSessions {
+		t.Fatalf("spawned %d daemons, want %d", len(children), wantSessions)
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	if checks < 2 {
 		t.Errorf("model-list requests=%d, want failure and retry", checks)
+	}
+	if !modelsReleased {
+		t.Error("the browser never reported the automatic check's failed reply")
+	}
+	if failedChecks == 0 || successfulChecks == 0 {
+		t.Errorf("model-list outcomes: failed=%d successful=%d, want the transient failure followed by a healthy automatic retry", failedChecks, successfulChecks)
 	}
 	var starts []time.Time
 	var refs []string
@@ -268,7 +291,7 @@ func TestOnboardingBrowser(t *testing.T) {
 			refs = append(refs, detail.Ref)
 		}
 	}
-	if len(refs) != 2 || refs[0] == refs[1] {
+	if len(refs) != wantSessions || (wantSessions == 2 && refs[0] == refs[1]) {
 		t.Fatalf("browser session identities: %v", refs)
 	}
 	var generations []time.Time
@@ -283,18 +306,25 @@ func TestOnboardingBrowser(t *testing.T) {
 			turns = append(turns, req)
 		}
 	}
-	if err := onboardingStarts(starts, launches, generations); err != nil {
-		t.Fatal(err)
+	if wantSessions == 2 {
+		if err := onboardingStarts(starts, launches, generations); err != nil {
+			t.Fatal(err)
+		}
+	} else if len(starts) != 1 || len(launches) != 1 || launches[0].Before(starts[0]) || len(generations) == 0 || generations[0].Before(starts[0]) {
+		t.Fatalf("mobile start/launch/generation order: starts=%v launches=%v generations=%v", starts, launches, generations)
 	}
 	if len(turns) != 1 {
 		t.Fatalf("streamed user turns=%d, want 1 (total generations=%d)", len(turns), len(requests))
 	}
-	if turns[0]["model"] != "gpt-4o-mini" {
+	if turns[0]["model"] != "gpt-4o" {
 		t.Errorf("model=%v", turns[0]["model"])
 	}
 	encoded, _ := json.Marshal(turns[0]["messages"])
 	if !strings.Contains(string(encoded), "ONBOARDING_TASK_72e") {
 		t.Error("provider request lost draft")
+	}
+	if !strings.Contains(string(encoded), `"image_url"`) {
+		t.Error("provider request lost the staged attachment")
 	}
 
 	for i, ref := range refs {
@@ -315,7 +345,7 @@ func TestOnboardingBrowser(t *testing.T) {
 		defer f.Close()
 		scanner := bufio.NewScanner(f)
 		scanner.Buffer(make([]byte, 4096), 4*1024*1024)
-		var input, reply, finished bool
+		var input, reply, finished, attached bool
 		userTurns := 0
 		var header transcript.Header
 		for scanner.Scan() {
@@ -336,7 +366,10 @@ func TestOnboardingBrowser(t *testing.T) {
 			}
 			if record.Turn.Kind == schema.TurnUserInput {
 				userTurns++
-				input = input || record.Turn.Message.Text() == "ONBOARDING_TASK_72e"
+				input = input || strings.Contains(record.Turn.Message.Text(), "ONBOARDING_TASK_72e")
+				for _, part := range record.Turn.Message.Content {
+					attached = attached || part.Kind == llm.ContentImage
+				}
 			}
 			if c := record.Turn.Communicate; c != nil {
 				reply = reply || (c.Message == "ONBOARDING_REPLY_72e" && c.EndTurn)
@@ -351,7 +384,7 @@ func TestOnboardingBrowser(t *testing.T) {
 		if err := onboardingIdentity(ref, work, entry, header); err != nil {
 			t.Fatalf("launch %d: %v", i, err)
 		}
-		if i == 0 && !(input && reply && finished && userTurns == 1) {
+		if i == 0 && !(input && attached && reply && finished && userTurns == 1) {
 			t.Fatal("active task session missing completed input/reply")
 		}
 		if i == 1 && (userTurns != 0 || reply || finished) {
@@ -430,4 +463,96 @@ func TestOnboardingEvidenceRejectsPreStartObservation(t *testing.T) {
 			}
 		})
 	}
+}
+
+// onboardingGuardEnv is the disposable process environment both production
+// browser journeys share: an isolated HOME/config/state/cache, a fresh
+// production binary, and the optional evidence destinations read before
+// isolation. The environment is process-wide, so these guards run serially.
+type onboardingGuardEnv struct {
+	root, repo, work, run, binary, token string
+	recordVideo, evidenceDir             string
+}
+
+func newOnboardingGuardEnv(t *testing.T) *onboardingGuardEnv {
+	t.Helper()
+	requireFreshDist(t)
+	// Read before isolation. Only video and sanitized visual evidence escape TempDir.
+	g := &onboardingGuardEnv{
+		root:        t.TempDir(),
+		recordVideo: os.Getenv("EVENER_ONBOARDING_VIDEO"),
+		evidenceDir: os.Getenv("EVENER_ONBOARDING_EVIDENCE_DIR"),
+		repo:        skillGuardRepoRoot(t),
+		token:       "onboarding-disposable-auth",
+	}
+	g.binary = filepath.Join(g.root, "evener")
+	build := exec.CommandContext(t.Context(), "go", "build", "-o", g.binary, "./cmd/evener")
+	build.Dir = g.repo
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	// Serial: environment is process-wide. Clear inherited access/config, keeping
+	// only tool discovery and Go caches. No personal provider or OAuth state.
+	for _, item := range os.Environ() {
+		key, _, _ := strings.Cut(item, "=")
+		switch key {
+		case "PATH", "TMPDIR", "GOCACHE", "GOMODCACHE", "GOROOT", "CGO_ENABLED":
+		default:
+			t.Setenv(key, "")
+		}
+	}
+	for key, value := range map[string]string{"HOME": filepath.Join(g.root, "home"), "XDG_CONFIG_HOME": filepath.Join(g.root, "config"), "XDG_STATE_HOME": filepath.Join(g.root, "state"), "XDG_CACHE_HOME": filepath.Join(g.root, "cache"), "EVENER_PROVIDERS_CONFIG": filepath.Join(g.root, "providers.toml"), "EVENER_CREDENTIALS_CONFIG": filepath.Join(g.root, "credentials.toml")} {
+		t.Setenv(key, value)
+	}
+	g.work = filepath.Join(g.root, "project")
+	g.run = filepath.Join(g.root, "run")
+	for _, dir := range []string{g.work, g.run, os.Getenv("HOME")} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return g
+}
+
+// onboardingGuardHub is the real hub (production registry, credentials store,
+// roster, past index and web AppWire) both journeys drive. oauthSetup may
+// redirect only the issuer base URL and HTTP client; every OAuth function,
+// persistence write and registry reload stays production code.
+type onboardingGuardHub struct {
+	server  *httptest.Server
+	reg     *hubcore.ProviderRegistry
+	store   *credentials.Store
+	state   string
+	spawner *HubSpawner
+}
+
+func newOnboardingGuardHub(t *testing.T, g *onboardingGuardEnv, oauthSetup func(*hubAuthController)) *onboardingGuardHub {
+	t.Helper()
+	if oauthSetup != nil {
+		hubAuthControllerSetup = oauthSetup
+		t.Cleanup(func() { hubAuthControllerSetup = nil })
+	}
+	reg := hubcore.NewProviderRegistry(func(opts ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		return cmdutil.LoadRegistry(append(opts, registry.WithOffline(true))...)
+	})
+	if err := reg.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	_, store, err := cmdutil.LoadRegistry(registry.WithOffline(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := cmdutil.DefaultStateRoot()
+	roster := hubcore.NewRoster(g.run, &hubcore.StatusProber{Timeout: time.Second})
+	past := hubcore.NewPastIndex(filepath.Join(state, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	spawner := &HubSpawner{EvenerBinary: g.binary, RunDir: g.run, HubToken: g.token, Registry: reg, ProvidersConfigPath: os.Getenv("EVENER_PROVIDERS_CONFIG"), CredentialsPath: os.Getenv("EVENER_CREDENTIALS_CONFIG")}
+	web := newWebServer(hubcore.WebConfig{AuthToken: g.token, HubStateRoot: filepath.Join(g.root, "hub"), LaunchConfigRoot: filepath.Join(g.root, "launch"), RunDir: g.run, StateDir: state, Past: past, Roster: roster, Spawner: spawner, Registry: reg, CredsStore: store, ProvidersConfigPath: spawner.ProvidersConfigPath, CredentialsPath: spawner.CredentialsPath}, nil)
+	past.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
+	roster.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
+	server := httptest.NewServer(web.Handler())
+	t.Cleanup(server.Close)
+	return &onboardingGuardHub{server: server, reg: reg, store: store, state: state, spawner: spawner}
 }

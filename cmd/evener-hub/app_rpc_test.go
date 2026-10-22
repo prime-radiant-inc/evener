@@ -26,6 +26,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/auth/openai/oaitest"
+	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -43,6 +44,32 @@ import (
 	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 )
+
+func TestHubInitializeReportsBuildVersion(t *testing.T) {
+	server := newHubAppServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, appsource.NewRegistry())
+	message := server.NewConnection("test").HandleMessage(t.Context(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	if message.Response == nil || message.Error != nil {
+		t.Fatalf("initialize = %#v", message)
+	}
+	raw, err := json.Marshal(message.Response.Result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &response); err != nil {
+		t.Fatal(err)
+	}
+	var serverInfo map[string]string
+	if err := json.Unmarshal(response["serverInfo"], &serverInfo); err != nil {
+		t.Fatal(err)
+	}
+	if got := serverInfo["buildVersion"]; got == "" || got != buildinfo.Version() {
+		t.Fatalf("live build = %q, want %q", got, buildinfo.Version())
+	}
+	if got := serverInfo["version"]; got != Version {
+		t.Fatalf("package version = %q, want %q", got, Version)
+	}
+}
 
 // A hub thread/list child alias must carry the child's own watches, which the
 // daemon prober samples into LiveEntry.ChildWatches, while the root alias keeps
@@ -1570,6 +1597,7 @@ func (s *deletionFenceMutationSource) recordCall(method string) {
 }
 
 func TestHubRPCUpgradeRunsSelfUpdater(t *testing.T) {
+	setBuild(t, "3b1c5f8", "snapshot")
 	var got selfupdate.Options
 	previous := runHubSelfUpgrade
 	runHubSelfUpgrade = func(_ context.Context, opts selfupdate.Options) (selfupdate.Result, error) {
@@ -12039,6 +12067,129 @@ func TestHubRPCInstanceCreateBroadcastsAuthUpdated(t *testing.T) {
 	}
 }
 
+// TestHubRPCInstanceCreateAnswersWithItsOwnState: a create's response must be
+// the listing the create itself produced, captured under its write lock, not a
+// later List() a concurrent edit can slip into. The two destinations differ
+// only in their query string, so the sanitized display URL is identical and
+// the immutable fingerprint is the only thing that tells them apart - exactly
+// the case a client comparing display URLs misreads as its own creation.
+func TestHubRPCInstanceCreateAnswersWithItsOwnState(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	writeMinimalProvidersToml(t, tomlPath)
+	credsStore := newTestCredentialsStore(t)
+
+	// Pause the create inside its held write lock, so a concurrent edit is
+	// guaranteed to be waiting for that lock when the create releases it. Go's
+	// RWMutex admits a waiting writer before a new reader, which puts the edit
+	// between the create's write and the listing its handler answers with.
+	armed := atomic.Bool{}
+	loadEntered := make(chan struct{})
+	releaseLoad := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseLoad) }) }
+	baseLoader := testRegistryLoader(dir, tomlPath, credsStore, nil)
+	holder := hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		if armed.CompareAndSwap(true, false) {
+			close(loadEntered)
+			<-releaseLoad
+		}
+		return baseLoader(extra...)
+	})
+	if err := holder.Reload(); err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	// The observer reports the controller the server builds, so the test can
+	// arm that controller's List gate rather than a process-wide one.
+	var ctl *hubInstancesController
+	previousObserver := observeInstancesController
+	observeInstancesController = func(observed *hubInstancesController) { ctl = observed }
+	t.Cleanup(func() { observeInstancesController = previousObserver })
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		Registry:            holder,
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+		CredsStore:          credsStore,
+	})
+	defer hub.Close()
+	if ctl == nil {
+		t.Fatal("the app server built no instances controller")
+	}
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	// A second connection: AppWire requests on one client are serialized, and
+	// the create is still in flight while the edit must reach the hub.
+	editClient := dialHubRPC(t, hub)
+	defer editClient.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := editClient.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize(edit client): %v", err)
+	}
+
+	const (
+		authoredURL = "http://127.0.0.1:9/v1?tenant=authored"
+		racedURL    = "http://127.0.0.1:9/v1?tenant=raced"
+	)
+	type outcome struct {
+		resp appwire.InstanceListResponse
+		err  error
+	}
+	createDone := make(chan outcome, 1)
+	armed.Store(true)
+	go func() {
+		var resp appwire.InstanceListResponse
+		err := client.Request(context.Background(), appwire.MethodEvenerInstanceCreate, appwire.InstanceCreateParams{
+			Name: "work", Base: "anthropic", BaseURL: authoredURL,
+		}, &resp)
+		createDone <- outcome{resp: resp, err: err}
+	}()
+	select {
+	case <-loadEntered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Create never reached its reload, so the loader was not paused")
+	}
+
+	// Hold any post-mutation List() until the racing edit has finished, so the
+	// listing a regressed handler reads is the edit's state. The correct
+	// handler returns its captured listing and never reaches this seam.
+	editFinished := make(chan struct{})
+	ctl.beforeList = func() { <-editFinished }
+	editDone := make(chan outcome, 1)
+	go func() {
+		defer close(editFinished)
+		var resp appwire.InstanceListResponse
+		err := editClient.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{
+			Name: "work", BaseURL: racedURL,
+		}, &resp)
+		editDone <- outcome{resp: resp, err: err}
+	}()
+	release()
+
+	created := <-createDone
+	if created.err != nil {
+		t.Fatalf("create: %v", created.err)
+	}
+	edited := <-editDone
+	if edited.err != nil {
+		t.Fatalf("edit: %v", edited.err)
+	}
+	createdRow := entry(t, created.resp, "work")
+	editedRow := entry(t, edited.resp, "work")
+	if createdRow.BaseURL != editedRow.BaseURL {
+		t.Fatalf("fixture drift: query-only destinations should show the same sanitized URL, got %q and %q", createdRow.BaseURL, editedRow.BaseURL)
+	}
+	if createdRow.EndpointFingerprint == "" || editedRow.EndpointFingerprint == "" {
+		t.Fatalf("fixture drift: both destinations need fingerprints, got %q and %q", createdRow.EndpointFingerprint, editedRow.EndpointFingerprint)
+	}
+	if createdRow.EndpointFingerprint == editedRow.EndpointFingerprint {
+		t.Fatalf("create answered with the edit's destination %q: the response was not the listing captured under the create's write lock", createdRow.EndpointFingerprint)
+	}
+}
+
 // TestHubRPCInstanceBroadcastEchoesOriginClientId is the instance-side
 // counterpart of TestAuthApiKeySetBroadcastEchoesOriginClientId: a mutation
 // from a client that names itself must broadcast an evener/auth/updated
@@ -12921,6 +13072,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerUpgrade,
 		appwire.MethodEvenerUpdateCheck,
 		appwire.MethodEvenerUpdateApply,
+		appwire.MethodEvenerHubRestart,
 		appwire.MethodModelList,
 		appwire.MethodEvenerTasksList,
 		appwire.MethodEvenerJobsList,

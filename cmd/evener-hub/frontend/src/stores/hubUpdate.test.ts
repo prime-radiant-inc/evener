@@ -28,6 +28,12 @@ const UP_TO_DATE: UpdateCheckResponse = {
   latestCommit: "be7002918fdc60dbdeab71d9dd17e00d3d006c56",
   updateAvailable: false,
   applicable: true,
+  onDiskCommit: "be70029",
+  installAvailable: false,
+  restartPending: false,
+  startedAt: "2026-10-21T12:00:00Z",
+  restartSupported: true,
+  installTargetMatchesLaunch: true,
 };
 
 function healthFetch(versions: string[]): typeof fetch {
@@ -37,6 +43,15 @@ function healthFetch(versions: string[]): typeof fetch {
     i += 1;
     if (version === "DOWN") throw new TypeError("Failed to fetch");
     return new Response(JSON.stringify({ version }), { status: 200 });
+  }) as unknown as typeof fetch;
+}
+
+function healthIdentityFetch(identities: { version: string; started_at: string }[]): typeof fetch {
+  let i = 0;
+  return vi.fn(async () => {
+    const identity = identities[Math.min(i, identities.length - 1)];
+    i += 1;
+    return new Response(JSON.stringify(identity), { status: 200 });
   }) as unknown as typeof fetch;
 }
 
@@ -566,5 +581,49 @@ describe("stale check invalidation", () => {
 
     expect(hubUpdateStore.getState().applyError).toBe("That result is stale; run a fresh check first");
     expect(fake.calls.some((c) => c.method === "evener/update/apply")).toBe(false);
+  });
+});
+
+describe("restart", () => {
+  test("polls started_at, so a same-version restart still reloads", async () => {
+    vi.useFakeTimers();
+    const reload = vi.fn();
+    const fetchImpl = healthIdentityFetch([
+      { version: "be70029", started_at: "2026-10-21T12:00:00Z" },
+      { version: "be70029", started_at: "2026-10-21T12:00:01Z" },
+    ]);
+    resetHubUpdateStoreForTests({ fetchImpl, reload });
+    const fake = connectFakeClient();
+    fake.on("evener/update/check", () => ({
+      ...UP_TO_DATE,
+      updateAvailable: true,
+      startedAt: "2026-10-21T12:00:00Z",
+      restartSupported: true,
+      installTargetMatchesLaunch: true,
+    }));
+    fake.on("evener/hub/restart", () => ({
+      restarting: true,
+      incarnation: "2026-10-21T12:00:00Z",
+      currentVersion: "be70029",
+      targetVersion: "be70029",
+    }));
+    hubUpdateStore.getState().setChannel("snapshot");
+    await act(() => hubUpdateStore.getState().runCheck());
+
+    let restarting: Promise<void>;
+    act(() => {
+      restarting = hubUpdateStore.getState().restart();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(hubUpdateStore.getState().restarting).toBe(true);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RESTART_POLL_MS);
+      await restarting!;
+    });
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(hubUpdateStore.getState().restartTimedOut).toBe(false);
   });
 });

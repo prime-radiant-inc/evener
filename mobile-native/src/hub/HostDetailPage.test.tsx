@@ -49,6 +49,7 @@ async function mount(fleet: ScriptedFleet, name: string, options: { ready?: bool
 				applicable: true,
 			})) as never,
 		}),
+		currentIncarnation: async () => null,
 		awaitRestart: async () => true,
 	});
 	await updates.runCheck();
@@ -189,6 +190,33 @@ it("drops Connecting… as soon as the rows say the host is attached", async () 
 	expect(page.status()).toEqual(["connected"]);
 	expect(page.button("Connecting…")).toBeNull();
 	await act(async () => fleet.releaseAttach());
+});
+
+it("keeps the remote build separate from the controller through Connect and refresh", async () => {
+	const fleet = scriptedFleet([hostRow("attic", { attached: false })]);
+	const page = await mount(fleet, "attic");
+	for (const hubVersion of ["remote-build-a", undefined, "remote-build-b"]) {
+		fleet.hosts = [hostRow("attic", { attached: false, hubVersion })];
+		await act(async () => page.hosts.read());
+		await act(async () => page.button("Connect")?.props.onPress());
+		await settle();
+		await act(async () => page.hosts.read());
+		expect(page.status()).toEqual(["connected"]);
+		expect(page.hosts.getSnapshot().rows?.[0]?.hubVersion).toBe(hubVersion);
+		const [valueNode] = page.labelled("Version")?.findAllByProps({ testID: "row-value" }) ?? [];
+		if (!valueNode) throw new Error("version value missing");
+		// RowValue renders the host value before its separate controller tag.
+		const [versionText] = valueNode.findAll((node) => node.type === ("Text" as never));
+		if (!versionText) throw new Error("version text missing");
+		if (hubVersion !== undefined) expect(textOf(versionText)).toBe(hubVersion);
+		else {
+			expect(textOf(versionText)).not.toContain("remote-build-a");
+			expect(page.footers()).not.toContain("drift");
+		}
+		expect(textOf(versionText)).not.toContain("0.9.412");
+	}
+	expect(fleet.calls.filter((call) => call.method === "evener/host/attach")).toHaveLength(3);
+	expect(fleet.calls.some((call) => call.method === "evener/host/deploy")).toBe(false);
 });
 
 it("says why the hub refused to connect a host", async () => {

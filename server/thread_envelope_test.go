@@ -585,6 +585,54 @@ func TestSessionTurnCheckpointRecoversOldTaskAndGoalProducer(t *testing.T) {
 	}
 }
 
+// contextStatusCallSource embeds the stub, so every method except ContextStatus
+// is non-counting: calls is exactly the number of combined context samples.
+type contextStatusCallSource struct {
+	stubThreadEnvelopeSource
+	calls int
+}
+
+func (c *contextStatusCallSource) ContextStatus() (ContextMetrics, float64) {
+	c.calls++
+	return ContextMetrics{Used: 75, Window: 100, Remaining: 25}, 0.75
+}
+
+// TestThreadEnvelopeContextFacetSamplesOnce proves the seam asks the session
+// for its context pair exactly once per context-moving event and carries the
+// returned pair to the wire. The all-method counter cannot make this claim:
+// ASSISTANT_TEXT_END also samples facetWork and QUEUE_CHANGED samples
+// facetQueue, so that counter moves for reasons unrelated to context.
+func TestThreadEnvelopeContextFacetSamplesOnce(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	src := &contextStatusCallSource{}
+	srv.SetThreadEnvelopeSource(src)
+	srv.RefreshThreadEnvelope()
+	src.calls = 0 // seeding is setup, not the behavior under test
+
+	feedBridge(srv, events.SessionEvent{
+		Kind: events.EventAssistantTextEnd, SessionID: "th_1",
+		Data: events.AssistantTextEndData{Text: "done"},
+	})
+	if src.calls != 1 {
+		t.Fatalf("ContextStatus calls after ASSISTANT_TEXT_END = %d, want exactly 1", src.calls)
+	}
+	thread := readThreadOverWire(t, srv, "local:th_1")
+	if thread.Evener.ContextUsed != 75 || thread.Evener.ContextWindow != 100 ||
+		thread.Evener.ContextRemaining != 25 || thread.Evener.ContextPressure != 0.75 {
+		t.Fatalf("wire context = (used %d, window %d, remaining %d, pressure %v), want the source's pair (75, 100, 25, 0.75)",
+			thread.Evener.ContextUsed, thread.Evener.ContextWindow, thread.Evener.ContextRemaining, thread.Evener.ContextPressure)
+	}
+
+	feedBridge(srv, events.SessionEvent{
+		Kind: events.EventQueueChanged, SessionID: "th_1",
+		Data: events.QueueChangedData{Depth: 1},
+	})
+	if src.calls != 1 {
+		t.Fatalf("ContextStatus calls moved to %d on QUEUE_CHANGED, want no context sample", src.calls)
+	}
+}
+
 // TestThreadReadUnderTheCutReachesNoSession is the structural claim, asserted
 // behaviorally: a subscribing thread/read touches the materialized envelope and
 // nothing else.
@@ -832,10 +880,9 @@ func (c *countingThreadEnvelopeSource) calls() int {
 	return c.n
 }
 
-func (c *countingThreadEnvelopeSource) ContextPressure() float64 { c.hit(); return 0 }
-func (c *countingThreadEnvelopeSource) ContextMetrics() ContextMetrics {
+func (c *countingThreadEnvelopeSource) ContextStatus() (ContextMetrics, float64) {
 	c.hit()
-	return ContextMetrics{}
+	return ContextMetrics{}, 0
 }
 func (c *countingThreadEnvelopeSource) DetailedStatus() DetailedStatus {
 	c.hit()

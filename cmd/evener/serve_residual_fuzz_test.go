@@ -153,8 +153,7 @@ func exerciseResidualCallbacks(t *testing.T, s *residualServeServer, sessionID s
 	}
 	// Every envelope facet now enters the daemon through one seam. Exercising
 	// each method keeps the residual sweep's coverage of the live producers.
-	_ = s.envelopeSource.ContextPressure()
-	_ = s.envelopeSource.ContextMetrics()
+	_, _ = s.envelopeSource.ContextStatus()
 	_ = s.envelopeSource.DetailedStatus()
 	_, _ = s.envelopeSource.ClientMutationProjection()
 	_ = s.envelopeSource.TaskAggregate()
@@ -270,7 +269,9 @@ func TestRunServeResidualCoverage(t *testing.T) {
 			}
 		}},
 		{"build profile", func(_ *testing.T, d *serveDeps, _ *[]string) {
-			d.buildProfile = func(*llm.Client, cmdutil.ModelRef, string) (*provider.Profile, error) { return nil, boom }
+			d.buildProfile = func(context.Context, *llm.Client, cmdutil.ModelRef, string) (*provider.Profile, *agent.StartupModelListing, error) {
+				return nil, nil, boom
+			}
 		}},
 		{"cheap profile", func(_ *testing.T, d *serveDeps, _ *[]string) {
 			d.applyCheap = func(*provider.Profile, string, *llm.Client) (*provider.Profile, error) { return nil, boom }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"time"
 )
 
 // ProtocolVersion is compared exactly at the handshake
@@ -110,6 +111,7 @@ const (
 	MethodEvenerUpgrade                  = "evener/upgrade"
 	MethodEvenerUpdateCheck              = "evener/update/check"
 	MethodEvenerUpdateApply              = "evener/update/apply"
+	MethodEvenerHubRestart               = "evener/hub/restart"
 	MethodEvenerAuthStatus               = "evener/auth/status"
 	MethodEvenerAuthTest                 = "evener/auth/test"
 	MethodEvenerAuthLoginStart           = "evener/auth/login/start"
@@ -947,11 +949,14 @@ type NoticesListResponse struct {
 // does not report them; Roots is the machine's project roots, absent when it
 // has none.
 type ServerInfo struct {
-	Name    string   `json:"name"`
-	Version string   `json:"version"`
-	OS      string   `json:"os,omitempty"`
-	Arch    string   `json:"arch,omitempty"`
-	Roots   []string `json:"roots,omitempty"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	// BuildVersion identifies the running executable, independently of the
+	// server package version. Absence means the build is unknown.
+	BuildVersion string   `json:"buildVersion,omitempty"`
+	OS           string   `json:"os,omitempty"`
+	Arch         string   `json:"arch,omitempty"`
+	Roots        []string `json:"roots,omitempty"`
 }
 
 type FeatureSet struct {
@@ -1091,6 +1096,14 @@ type EvenerThread struct {
 	// nil. Empty/nil means no links. It is read from the already-fetched
 	// thread snapshot like HumanNote.
 	SessionURLs []SessionURL `json:"sessionUrls,omitempty"`
+	// ArtifactsDir is the session's retained artifacts directory on the hub
+	// that serves it, empty when no local path names one (a remote thread, an
+	// unknown ref, or a hub serving no state directory). Agent reports filed
+	// there are linked by file:// URL in assistant prose; the transcript turns
+	// such a link into a document-pane request, and this is the directory the
+	// hub's doc route serves that request out of. Clients compare a link
+	// against it rather than guessing whether the hub can open it.
+	ArtifactsDir string `json:"artifactsDir,omitempty"`
 	// Usage, WorkMillis, and ActiveTurnStartedAt are the daemon's live
 	// working-state/token metrics (WS2), served from the daemon's materialized
 	// thread envelope, which is refreshed at the turn boundaries that move
@@ -3169,14 +3182,23 @@ type UpdateCheckParams struct {
 // at. Applicable is false for dev builds, which are never self-updated; the
 // Latest* fields are empty then and no network request was made.
 type UpdateCheckResponse struct {
-	Channel         string `json:"channel"`
-	BuildChannel    string `json:"buildChannel"`
-	CurrentVersion  string `json:"currentVersion"`
-	CurrentCommit   string `json:"currentCommit"`
-	LatestTag       string `json:"latestTag,omitempty"`
-	LatestCommit    string `json:"latestCommit,omitempty"`
-	UpdateAvailable bool   `json:"updateAvailable"`
-	Applicable      bool   `json:"applicable"`
+	Channel                    string    `json:"channel"`
+	BuildChannel               string    `json:"buildChannel"`
+	CurrentVersion             string    `json:"currentVersion"`
+	CurrentCommit              string    `json:"currentCommit"`
+	LatestTag                  string    `json:"latestTag,omitempty"`
+	LatestCommit               string    `json:"latestCommit,omitempty"`
+	UpdateAvailable            bool      `json:"updateAvailable"`
+	Applicable                 bool      `json:"applicable"`
+	OnDiskCommit               string    `json:"onDiskCommit,omitempty"`
+	OnDiskError                string    `json:"onDiskError,omitempty"`
+	InstallAvailable           bool      `json:"installAvailable"`
+	RestartPending             bool      `json:"restartPending"`
+	StartedAt                  time.Time `json:"startedAt"`
+	RestartSupported           bool      `json:"restartSupported"`
+	CheckError                 string    `json:"checkError,omitempty"`
+	InstallTarget              string    `json:"installTarget,omitempty"`
+	InstallTargetMatchesLaunch bool      `json:"installTargetMatchesLaunch"`
 }
 
 // UpdateApplyParams selects the channel to install. Empty means the running
@@ -3192,6 +3214,19 @@ type UpdateApplyResponse struct {
 	Channel    string   `json:"channel"`
 	Installed  []string `json:"installed"`
 	Restarting bool     `json:"restarting"`
+}
+
+// HubRestartParams selects nothing: restart the hub into the binary at its
+// recorded launch path.
+type HubRestartParams struct{}
+
+// HubRestartResponse is returned just before the hub execs the on-disk
+// binary. Incarnation is the old process's health started_at value.
+type HubRestartResponse struct {
+	Restarting     bool      `json:"restarting"`
+	Incarnation    time.Time `json:"incarnation"`
+	CurrentVersion string    `json:"currentVersion"`
+	TargetVersion  string    `json:"targetVersion"`
 }
 
 type AuthStatusParams struct {
@@ -3351,6 +3386,11 @@ type ModelDescriptor struct {
 	// model under a regional Vertex location) so the model picker can flag a
 	// row the resolver itself warns about.
 	Warnings []string `json:"warnings,omitempty"`
+	// InstanceDefault marks the row as its instance's configured default in
+	// the instance's own usable current listing. It is not the global default
+	// and not proof of generation access; an absent marker authorizes no
+	// automatic selection.
+	InstanceDefault bool `json:"instanceDefault,omitempty"`
 }
 
 type ModelListDiagnostic struct {
@@ -3539,6 +3579,15 @@ type EvenerJobParams struct {
 type EvenerAuthUpdatedParams struct {
 	Provider     string `json:"provider,omitempty"`
 	ActiveSource string `json:"activeSource,omitempty"`
+	// Reason names a broadcast that did not change credentials or provider
+	// configuration. The only value today is "models_changed": a background
+	// launch-model refresh produced a different list than a picker was served,
+	// so clients re-read their model catalog. It is catalog-only: no credential,
+	// instance or destination changed. Every credential write and
+	// provider-instance CRUD broadcast leaves it empty, and consumers must treat
+	// those empty-reason broadcasts as changes even when they carry no other
+	// payload.
+	Reason string `json:"reason,omitempty"`
 	// OriginClientId is the echoed OriginClientId of the mutation that caused
 	// this broadcast - an auth write or a provider-instance CRUD change - the
 	// identity of the client whose change it announces, so that client can
