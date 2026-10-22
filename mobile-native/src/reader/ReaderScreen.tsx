@@ -78,7 +78,6 @@ function rowsOf(document: LoadedDocument | null): Row[] {
 
 export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Routes, "Reader">) {
 	const { hubId, sessionRef, path, sessionTitle, updatedAt } = route.params;
-	const key = useMemo(() => ({ sessionRef, path }), [sessionRef, path]);
 	const memory = documentMemory(hubId);
 	const { client, activeProfile, state } = useConnection();
 	const inFront = useScreenInFront(route.key);
@@ -91,6 +90,12 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 				? rebindFileReference(routeReference, publication.cwd)
 				: routeReference,
 		[publication, source, routeReference],
+	);
+	// A retained artifact is a different document from a folder file of the same
+	// name, so its root is part of its identity here and in the memory store.
+	const key = useMemo(
+		() => ({ sessionRef, path, ...(reference.root === "artifacts" ? { root: "artifacts" as const } : {}) }),
+		[sessionRef, path, reference.root],
 	);
 	const { document, notice: refreshNotice, imageAttempt, reload } = useDocument(hubId, sessionRef, reference, inFront);
 	// Banners wait while you read (spec 13.3); Back counts what waits.
@@ -424,7 +429,13 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		if (index !== null) setSelecting((current) => (current === index ? current : null));
 	}, []);
 	const endSelection = useCallback(() => setSelecting(null), []);
-	const sheetParams = { hubId, sessionRef, path, sessionTitle };
+	const sheetParams = {
+		hubId,
+		sessionRef,
+		path,
+		sessionTitle,
+		...(reference.root === "artifacts" ? { root: "artifacts" as const, readTarget: reference.readTarget } : {}),
+	};
 	// The rows keep one callback; it reaches this render's values through the ref.
 	const act = useRef((_action: BlockAction, _block: DocumentBlock, _words?: string) => {});
 	act.current = (action, block, words) => {
@@ -436,6 +447,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 					hubId,
 					sessionRef,
 					path,
+					...(reference.root === "artifacts" ? { root: "artifacts" as const } : {}),
 					blockIndex: block.index,
 					blockHash: block.hash,
 					quote: selected,

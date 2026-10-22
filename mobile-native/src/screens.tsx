@@ -309,6 +309,8 @@ export type Routes = {
 		hubId: string;
 		sessionRef: string;
 		path: string;
+		/** Set for a document the session filed in its retained artifacts. */
+		root?: "artifacts";
 		blockIndex: number;
 		blockHash: string;
 		/** The words the comment is on: a selection, or its block's words. */
@@ -329,8 +331,17 @@ export type Routes = {
 };
 
 /** A document's comments and its review: the document, and its session's title,
- * which the review goes to (ruling 16). */
-type ReviewSheetParams = { hubId: string; sessionRef: string; path: string; sessionTitle: string };
+ * which the review goes to (ruling 16). `root` and `readTarget` identify a
+ * document the session filed in its retained artifacts, where the path inside
+ * the folder alone would name a different file of the same name. */
+type ReviewSheetParams = {
+	hubId: string;
+	sessionRef: string;
+	path: string;
+	sessionTitle: string;
+	root?: "artifacts";
+	readTarget?: string;
+};
 
 // Refocuses the composer after a modal closes, on AppState's "focus" event.
 // That event is Android-only (react-native's AppState "focus"/"blur" pair

@@ -21,6 +21,19 @@ export function quoteLine(text: string, max = 160): string {
 	return `${(space > max * 0.6 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
 
+/** How a review names the document it is about. The path inside the session's
+ * folder identifies the document there, but an agent also files reports in the
+ * session's retained artifacts directory, where the same relative path can
+ * name a different file. Such a document is named by its read target instead,
+ * so the agent reads the review as being about the file that was reviewed. */
+export function reviewDocumentName(document: {
+	readonly path: string;
+	readonly root?: "artifacts";
+	readonly readTarget?: string;
+}): string {
+	return document.root === "artifacts" && document.readTarget ? document.readTarget : document.path;
+}
+
 export function reviewMessage(
 	path: string,
 	verdict: Verdict,
