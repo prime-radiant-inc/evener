@@ -133,6 +133,10 @@ export function createHubUpdateController(
   // may write its result, so a slow earlier check cannot clobber a later one.
   // setChannel bumps it too, which retires any check still in flight.
   let checkSequence = 0;
+  // restartClaimed covers the window before state.restarting turns true:
+  // without it, two calls started together both await a baseline check and
+  // then both send evener/hub/restart.
+  let restartClaimed = false;
 
   function isStale(check: UpdateCheckResponse): boolean {
     return get().channel !== null && check.channel !== get().channel;
@@ -220,6 +224,16 @@ export function createHubUpdateController(
 
   async function restart(): Promise<void> {
     if (disposed || get().restarting || get().installing || get().applying) return;
+    if (restartClaimed) return;
+    restartClaimed = true;
+    try {
+      await restartOnce();
+    } finally {
+      restartClaimed = false;
+    }
+  }
+
+  async function restartOnce(): Promise<void> {
     let check = get().check;
     if (!check) {
       // A restart needs a baseline; the check is also what tells the app

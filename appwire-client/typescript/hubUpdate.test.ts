@@ -454,6 +454,27 @@ describe("restart", () => {
     expect(hub.controller.getState().restarting).toBe(false);
   });
 
+  test("two restarts started together send one request", async () => {
+    const hub = scripted();
+    const first = hub.controller.restart();
+    const second = hub.controller.restart();
+    // The operation is claimed before the baseline check, so the second call
+    // returns without starting a check of its own.
+    expect(hub.pending.filter((r) => r.method === "evener/update/check")).toHaveLength(1);
+
+    hub.take("evener/update/check").resolve({ ...WAITING, restartSupported: true });
+    await settle();
+    await settle();
+    const request = hub.take("evener/hub/restart");
+    expect(hub.pending.some((r) => r.method === "evener/hub/restart")).toBe(false);
+
+    request.resolve({ restarting: true });
+    await settle();
+    hub.restarts[0]?.resolve(true);
+    await Promise.all([first, second]);
+    expect(hub.controller.getState()).toMatchObject({ restarting: false, restartError: null });
+  });
+
   test("refuses when the hub does not report restart support", async () => {
     const hub = await checked({ ...WAITING, restartSupported: undefined as unknown as boolean });
     await hub.controller.restart();
