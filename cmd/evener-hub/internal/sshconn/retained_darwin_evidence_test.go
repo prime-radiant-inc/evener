@@ -50,7 +50,7 @@ func TestRetainedDarwinReinstallOwnership(t *testing.T) {
 							return []byte("1234 999 100600\n"), nil
 						}
 						return []byte("1234 678 100600\n"), nil
-					case "lsof -nP -F pftDik 2>&1":
+					case "lsof -nP -F pftDil 2>&1":
 						lockReads++
 						if mode == "lock-unavailable" {
 							return nil, probeErr
@@ -59,7 +59,7 @@ func TestRetainedDarwinReinstallOwnership(t *testing.T) {
 							return []byte("not lsof evidence\n"), nil
 						}
 						if mode == "stopped-free" || mode == "launchd-stopped" || mode == "absence-unavailable" || mode == "absence-malformed" || (mode == "stopped-lock-owner-at-write" && !boundary) {
-							return []byte("p99\nf1\ntREG\nD0x4d2\ni123\n"), nil
+							return []byte("p99\nf1\ntREG\nD0x4d2\ni123\nl \n"), nil
 						}
 						pid, lock := "4242", "W"
 						if mode == "other-lock-owner" || ((mode == "lock-owner-at-write" || mode == "stopped-lock-owner-at-write") && boundary) {
@@ -68,7 +68,7 @@ func TestRetainedDarwinReinstallOwnership(t *testing.T) {
 						if mode == "lock-unlocked" {
 							lock = " "
 						}
-						return []byte("p" + pid + "\nf3\ntREG\nD0x4d2\ni678\nk" + lock + "\n"), nil
+						return []byte("p" + pid + "\nf3\ntREG\nD0x4d2\ni678\nl" + lock + "\n"), nil
 					case "ps -p 4242 -o lstart=":
 						generations++
 						if mode == "stopped-free" || mode == "launchd-stopped" || mode == "stopped-lock-owner-at-write" || mode == "other-lock-owner" || mode == "absence-unavailable" || mode == "absence-malformed" || mode == "generation-unavailable" {

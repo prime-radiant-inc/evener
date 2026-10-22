@@ -6,6 +6,7 @@ on:
     paths:
       - .github/workflows/hub-lock-proof.yml
       - cmd/evener-hub/internal/hostlock/**
+      - cmd/evener-hub/internal/sshconn/**
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
@@ -17,7 +18,7 @@ permissions:
 jobs:
   darwin-flock-query:
     runs-on: macos-26
-    # Deadman for checkout, toolchain setup, compilation and the 60s proof.
+    # Deadman for checkout, toolchain setup, compilation and focused proofs.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -36,3 +37,8 @@ jobs:
 
       - name: Prove production lock queries and storage checks
         run: go test -v -count=1 -timeout=60s ./cmd/evener-hub/internal/hostlock
+
+      - name: Prove real lsof lock fields and retained live-owner repair
+        run: >-
+          go test -v -count=1 -timeout=180s ./cmd/evener-hub/internal/sshconn
+          -run '^(TestDarwinRetainedLockSnapshot|TestDarwinLsofLockStateRuntime|TestRetainedDarwinLsofRecoveryRuntime)$'

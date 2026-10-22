@@ -45,7 +45,7 @@ func (m *Manager) darwinSelectedLockPID(ctx context.Context, host hostreg.Host, 
 	if err != nil || mode&0170000 != 0100000 {
 		return "", errOwnerEvidence
 	}
-	out, err := m.ownerRead(ctx, host, "lsof -nP -F pftDik 2>&1")
+	out, err := m.ownerRead(ctx, host, "lsof -nP -F pftDil 2>&1")
 	if err != nil {
 		return "", err
 	}
@@ -63,7 +63,7 @@ func (m *Manager) darwinSelectedLockPID(ctx context.Context, host hostreg.Host, 
 func darwinLockSnapshot(out []byte, dev, ino uint64) (string, error) {
 	var pid, selected, lock, kind string
 	var file, observed bool
-	var deviceSeen, inodeSeen bool
+	var deviceSeen, inodeSeen, lockSeen bool
 	var fileDev, fileIno uint64
 	finish := func() error {
 		if file && (kind == "" || kind == "unknown" || (kind == "REG" && (!deviceSeen || !inodeSeen))) {
@@ -90,7 +90,7 @@ func darwinLockSnapshot(out []byte, dev, ino uint64) (string, error) {
 				return "", err
 			}
 			file, fileDev, fileIno, lock = false, 0, 0, ""
-			kind, deviceSeen, inodeSeen = "", false, false
+			kind, deviceSeen, inodeSeen, lockSeen = "", false, false, false
 			if line[0] == 'p' {
 				pid = line[1:]
 				if _, err := numericPID(pid); err != nil || pid == "0" {
@@ -110,7 +110,13 @@ func darwinLockSnapshot(out []byte, dev, ino uint64) (string, error) {
 			inodeSeen = true
 		case 't':
 			kind = line[1:]
-		case 'k':
+		case 'l':
+			// l is lock status, not k (link count). Only documented single
+			// characters are evidence; only W authorizes the selected vnode.
+			if lockSeen || len(line) != 2 || !strings.ContainsRune(" rRwWuUNxX", rune(line[1])) {
+				return "", errOwnerEvidence
+			}
+			lockSeen = true
 			lock = line[1:]
 		default:
 			return "", errOwnerEvidence

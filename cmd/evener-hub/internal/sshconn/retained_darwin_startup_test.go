@@ -26,10 +26,19 @@ import (
 // Publication, discovery/health enrichment and atomic target repair are real.
 // Darwin lock/process/launchd observations remain strict modeled evidence.
 func TestRetainedDarwinStartupRecordRecovery(t *testing.T) {
+	testRetainedDarwinStartupRecordRecovery(t, false)
+}
+
+// The Darwin-only runtime test replaces only lock stat/lsof with real commands.
+func testRetainedDarwinStartupRecordRecovery(t *testing.T, realLock bool) {
+	t.Helper()
 	resolver := buildConfigIdentityResolver(t)
 	for _, mode := range []string{"deleted", "nonexecutable", "persisted-mismatch", "version-mismatch", "sha-mismatch", "persisted-at-write", "build-at-write"} {
 		t.Run(mode, func(t *testing.T) {
-			root := t.TempDir()
+			root, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
 			config, target := filepath.Join(root, "hub.toml"), filepath.Join(root, "evener")
 			if err := os.WriteFile(config, fmt.Appendf(nil, "addr = \"127.0.0.1:0\"\nhub_state_root = %q\n", root), 0o600); err != nil {
 				t.Fatal(err)
@@ -128,10 +137,16 @@ func TestRetainedDarwinStartupRecordRecovery(t *testing.T) {
 				}
 				switch remote {
 				case "stat -L -f '%d %i %p' " + shellquote.RemoteWord(filepath.Join(root, "hub.lock")):
+					if realLock {
+						return run()
+					}
 					return []byte("1234 678 100600\n"), nil
-				case "lsof -nP -F pftDik 2>&1":
+				case "lsof -nP -F pftDil 2>&1":
 					locks++
-					return []byte("p" + pid + "\nf3\ntREG\nD0x4d2\ni678\nkW\n"), nil
+					if realLock {
+						return run()
+					}
+					return []byte("p" + pid + "\nf3\ntREG\nD0x4d2\ni678\nlW\n"), nil
 				case "ps -p " + pid + " -o lstart=":
 					return []byte("recorded-birth\n"), nil
 				case "launchctl list":
