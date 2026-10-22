@@ -1090,6 +1090,9 @@ function SelectedConnection({
     targetName = name,
     contextBaseline: InstanceEntry | undefined = baseline,
   ) {
+    // The source the acquisition produced belongs to the flow, not to a ref a
+    // caller happened to set: a later manual retry reads it from here.
+    acquisitionSource.current = expectedSource;
     setPhase("refreshing");
     setError(null);
     pendingRecovery.current = { expectedSource };
@@ -1569,7 +1572,6 @@ function SelectedConnection({
     // the check returns.
     setSaved(true);
     setStoredAccess(true);
-    acquisitionSource.current = "oauth";
     const token = ++operation.current;
     void refreshAndCheck(token, "oauth");
   }
