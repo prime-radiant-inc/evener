@@ -221,8 +221,14 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 	// A launch model list a picker was served stale has been refreshed with a
 	// different one. evener/auth/updated's no-data form is the broadcast the
 	// hub sends when a model listing changes what clients show, and every
-	// client re-reads its model list on it.
-	web.launchModelsChanged = func() { notifyInstanceUpdated(server, "") }
+	// client re-reads its model list on it. The explicit catalog-only reason
+	// distinguishes this publication from a credential or instance change that
+	// shares the same empty payload shape: no credential, destination or
+	// instance changed here, only what a picker should display.
+	const launchModelsChangedReason = "models_changed"
+	web.launchModelsChanged = func() {
+		server.BroadcastAll(appwire.NotifyEvenerAuthUpdated, appwire.EvenerAuthUpdatedParams{Reason: launchModelsChangedReason})
+	}
 	web.auth = auth
 	web.hostAdmin = hostAdmin
 	web.hostManage = hostManage
