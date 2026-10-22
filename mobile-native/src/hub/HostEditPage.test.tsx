@@ -66,6 +66,7 @@ async function mount(fleet: ScriptedFleet, name: string, options_: { ready?: boo
 			client: () => {
 				throw new Error("not in this test");
 			},
+			currentIncarnation: async () => null,
 			awaitRestart: async () => true,
 		}),
 		hosts,

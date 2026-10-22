@@ -260,6 +260,7 @@ no router (reserved).
 | `evener/upgrade` | hub | [UpgradeParams](#upgradeparams) | [UpgradeResponse](#upgraderesponse) | Performs or reports an Evener binary upgrade. |
 | `evener/update/check` | hub | [UpdateCheckParams](#updatecheckparams) | [UpdateCheckResponse](#updatecheckresponse) | Compares the running hub build against a release channel's current commit; dev builds report applicable=false without a network request. |
 | `evener/update/apply` | hub | [UpdateApplyParams](#updateapplyparams) | [UpdateApplyResponse](#updateapplyresponse) | Downloads and installs a channel's build, then execs it in place of the running hub; refused on dev builds. |
+| `evener/hub/restart` | hub | [HubRestartParams](#hubrestartparams) | [HubRestartResponse](#hubrestartresponse) | Execs the binary at the hub's recorded launch path in place, after verifying it is a working Evener binary; refused when the platform has no in-place exec or the launch path is unusable. |
 | `evener/auth/status` | hub | [AuthStatusParams](#authstatusparams) | [AuthStatusResponse](#authstatusresponse) | Reports auth/credential status for a provider. |
 | `evener/auth/test` | hub | [AuthTestParams](#authtestparams) | [AuthTestResponse](#authtestresponse) | Tests the effective credentials for one configured provider instance without starting a session. |
 | `evener/auth/login/start` | hub | [AuthLoginStartParams](#authloginstartparams) | [AuthLoginStartResponse](#authloginstartresponse) | Begins an OAuth login flow; returns a flow ID and URL. |
@@ -1905,6 +1906,21 @@ Underlying Go kind: `string` (no struct fields).
 | `subject` | string |  |  |
 | `marketplace` | string | yes |  |
 | `affectedSessions` | int | yes |  |
+
+
+### `HubRestartParams`
+
+Underlying Go kind: `struct` (no struct fields).
+
+
+### `HubRestartResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `restarting` | bool |  |  |
+| `incarnation` | time.Time |  |  |
+| `currentVersion` | string |  |  |
+| `targetVersion` | string |  |  |
 
 
 ### `InitializeParams`
@@ -4651,6 +4667,15 @@ Underlying Go kind: `string` (no struct fields).
 | `latestCommit` | string | yes |  |
 | `updateAvailable` | bool |  |  |
 | `applicable` | bool |  |  |
+| `onDiskCommit` | string | yes |  |
+| `onDiskError` | string | yes |  |
+| `installAvailable` | bool |  |  |
+| `restartPending` | bool |  |  |
+| `startedAt` | time.Time |  |  |
+| `restartSupported` | bool |  |  |
+| `checkError` | string | yes |  |
+| `installTarget` | string | yes |  |
+| `installTargetMatchesLaunch` | bool |  |  |
 
 
 ### `UpgradeParams`

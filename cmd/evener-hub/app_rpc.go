@@ -2315,6 +2315,7 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerUpgrade, hubUpgrade)
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerUpdateCheck, hubUpdateCheck)
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerUpdateApply, hubUpdateApply)
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHubRestart, hubRestart)
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSearch, func(ctx context.Context, params appwire.SearchParams) (appwire.SearchResponse, error) {
 		return hubSearch(ctx, cfg, params, time.Now())
 	})
