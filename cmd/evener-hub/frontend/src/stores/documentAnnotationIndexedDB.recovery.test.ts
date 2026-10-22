@@ -1,6 +1,12 @@
 // @vitest-environment node
 
-import type { HandoffResult, PreparedAnnotation } from "@evener/appwire-client";
+import type {
+  AcceptedSourceLease,
+  DocumentKey,
+  ExpiryReceipt,
+  HandoffResult,
+  PreparedAnnotation,
+} from "@evener/appwire-client";
 import { IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ComposerPreparation } from "../panes/session/composer/composerContract";
@@ -834,6 +840,168 @@ test("a stale overlapping acceptance keeps the earlier provisional alive", async
     expect(await firstAcceptance).toMatchObject({ state: "expiry-pending" });
   } finally {
     sibling.close();
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
+
+function replacementLease(key: DocumentKey, receipt: ExpiryReceipt, headRevision: number): AcceptedSourceLease {
+  return {
+    key,
+    namespaceIncarnation: receipt.namespaceIncarnation,
+    epoch: receipt.replacementEpoch,
+    headRevision,
+    displayedSnapshotId: `snapshot-${receipt.replacementEpoch}`,
+  };
+}
+
+// Introduce the ordering inversion the merge must rank away: a newer changed
+// read's fence commits first, a third ticket registers, then the fence's held
+// completion lands and an older unchanged acceptance's held completion follows
+// it into the same slot. Returns an operation saved on the fence's live
+// replacement lease, so the caller can assert which epoch the next changed
+// read's entry-time provisional protects.
+async function seedRegressedReadState(databaseName: string) {
+  const fixture = await openAnnotationFixture({
+    databaseName,
+    origin: "https://coordination.example",
+  });
+  const holds = holdNextTransactions([
+    { stores: ACCEPT_STORES, event: "complete" },
+    { stores: ACCEPT_STORES, event: "complete" },
+    { stores: ACCEPT_STORES, event: "complete" },
+  ]);
+  try {
+    const olderTicket = await fixture.repository.beginRead(fixture.document);
+    const olderAcceptance = fixture.repository.acceptRead(olderTicket, fixture.content);
+    await holds.reached[0];
+
+    const newerTicket = await fixture.repository.beginRead(fixture.document);
+    const newerAcceptance = fixture.repository.acceptRead(newerTicket, sampleChangedContent());
+    await holds.reached[1];
+    holds.releaseAt(1);
+    await holds.reached[2];
+
+    const thirdTicket = await fixture.repository.beginRead(fixture.document);
+    holds.releaseAt(2);
+    const fenced = await newerAcceptance;
+    if (fenced.state !== "expiry-pending" || fenced.receipt === undefined) {
+      throw new Error(`changed read did not fence: ${fenced.state}`);
+    }
+    const operation: PreparedAnnotation = {
+      ...buildAnnotationOperation(replacementLease(fixture.document, fenced.receipt, 2), sampleChangedContent()),
+      operationId: "operation-live",
+    };
+    await fixture.repository.saveAnnotation(operation);
+
+    holds.releaseAt(0);
+    expect(await olderAcceptance).toMatchObject({ state: "accepted" });
+    return { fixture, ticket: thirdTicket, operation };
+  } finally {
+    holds.release();
+  }
+}
+
+// Two held completions can resume newer-then-older. The older acceptance is
+// older durable evidence and must not overwrite the newer fence's lease, or the
+// next changed read suppresses the dead epoch while an operation on the live
+// epoch appends into the changed read's window.
+test("a delayed older acceptance does not regress the newer fence's read state", async () => {
+  const seeded = await seedRegressedReadState("annotation-read-state-rank");
+  const { fixture, ticket, operation } = seeded;
+  try {
+    const changedHold = holdNextWriteTransaction(ACCEPT_STORES);
+    const changedRead = fixture.repository.acceptRead(ticket, sampleThirdContent());
+    await changedHold.reached;
+    expect(await fixture.repository.handoff(fixture.document, operation.operationId)).toEqual({
+      state: "pending",
+      reason: "owner-unavailable",
+    });
+    changedHold.release();
+    expect(await changedRead).toMatchObject({ state: "expiry-pending" });
+  } finally {
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
+
+// The fenced path has the same rule: two fences lose their completions and
+// resume newer-then-older. The older fence's replacement epoch is older durable
+// evidence and must not overwrite the newer fence's lease.
+test("delayed fences released out of order keep the newer replacement lease", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-fence-read-state-rank",
+    origin: "https://coordination.example",
+  });
+  const holds = holdNextTransactions([
+    { stores: ACCEPT_STORES, event: "complete" },
+    { stores: ACCEPT_STORES, event: "complete" },
+    { stores: ACCEPT_STORES, event: "complete" },
+    { stores: ACCEPT_STORES, event: "complete" },
+  ]);
+  try {
+    const firstTicket = await fixture.repository.beginRead(fixture.document);
+    const firstAcceptance = fixture.repository.acceptRead(firstTicket, sampleChangedContent());
+    await holds.reached[0];
+    holds.releaseAt(0);
+    await holds.reached[1];
+
+    const secondTicket = await fixture.repository.beginRead(fixture.document);
+    const secondAcceptance = fixture.repository.acceptRead(secondTicket, sampleThirdContent());
+    await holds.reached[2];
+    holds.releaseAt(2);
+    await holds.reached[3];
+
+    const thirdTicket = await fixture.repository.beginRead(fixture.document);
+    holds.releaseAt(3);
+    const newerFence = await secondAcceptance;
+    if (newerFence.state !== "expiry-pending" || newerFence.receipt === undefined) {
+      throw new Error(`second changed read did not fence: ${newerFence.state}`);
+    }
+    const operation: PreparedAnnotation = {
+      ...buildAnnotationOperation(replacementLease(fixture.document, newerFence.receipt, 3), sampleThirdContent()),
+      operationId: "operation-live",
+    };
+    await fixture.repository.saveAnnotation(operation);
+
+    holds.releaseAt(1);
+    expect(await firstAcceptance).toMatchObject({ state: "expiry-pending" });
+    holds.release();
+
+    const changedHold = holdNextWriteTransaction(ACCEPT_STORES);
+    const changedRead = fixture.repository.acceptRead(thirdTicket, fixture.content);
+    await changedHold.reached;
+    expect(await fixture.repository.handoff(fixture.document, operation.operationId)).toEqual({
+      state: "pending",
+      reason: "owner-unavailable",
+    });
+    changedHold.release();
+    expect(await changedRead).toMatchObject({ state: "expiry-pending" });
+  } finally {
+    holds.release();
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
+
+// The revert route: with the slot regressed, a content revert compares
+// "unchanged" against the older acceptance's observations and installs no
+// provisional, while the durable evidence says changed. The local verdict must
+// match the durable one, so the live epoch stays protected.
+test("a reverted content read keeps the live epoch's provisional after a delayed older acceptance", async () => {
+  const seeded = await seedRegressedReadState("annotation-read-state-revert");
+  const { fixture, ticket, operation } = seeded;
+  try {
+    const changedHold = holdNextWriteTransaction(ACCEPT_STORES);
+    const changedRead = fixture.repository.acceptRead(ticket, fixture.content);
+    await changedHold.reached;
+    expect(await fixture.repository.handoff(fixture.document, operation.operationId)).toEqual({
+      state: "pending",
+      reason: "owner-unavailable",
+    });
+    changedHold.release();
+    expect(await changedRead).toMatchObject({ state: "expiry-pending" });
+  } finally {
     fixture.repository.close();
     fixture.drafts.close();
   }

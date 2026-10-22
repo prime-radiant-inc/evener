@@ -1013,13 +1013,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         // no in-memory read state names an incarnation the durable row retired.
         releaseProvisional();
         if (await this.#durableIncarnationIs(namespace, validation.lease.namespaceIncarnation)) {
-          this.#installReadState(
-            documentKey,
-            validation.lease.namespaceIncarnation,
-            ticket,
-            { lease: validation.lease, content },
-            validation.observations,
-          );
+          this.#installReadState(ticket, { lease: validation.lease, content }, validation.observations);
         }
         return { state: "accepted", lease: validation.lease };
       }
@@ -1068,13 +1062,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         // completion across a reset, so installation re-checks the durable
         // incarnation the fence wrote under.
         if (await this.#durableIncarnationIs(namespace, fenced.lease.namespaceIncarnation)) {
-          this.#installReadState(
-            documentKey,
-            fenced.lease.namespaceIncarnation,
-            ticket,
-            { lease: fenced.lease, content },
-            [content],
-          );
+          this.#installReadState(ticket, { lease: fenced.lease, content }, [content]);
         }
         return { state: "expiry-pending", receipt: fenced.receipt };
       } catch (error) {
@@ -1165,21 +1153,34 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   }
 
   // Record a completed acceptance (accepted or fenced) in the ticket's own
-  // incarnation slot. A newer registration in that slot keeps its identity: the
-  // delayed completion stores its durable evidence into it instead of replacing
-  // it. Skipping the write would leave the newer ticket's state without the
-  // newest accepted lease and observations, reopening the append window this
-  // evidence closes.
+  // incarnation slot. Within one incarnation validations commit in strict
+  // ticket-generation order, so the durable read generation already orders
+  // them; two held completions can still RESUME in the opposite order. A
+  // newer registration in the slot keeps its identity, and its slot accepts
+  // the delayed completion's durable evidence unless that evidence is OLDER
+  // than what the slot holds: an acceptance whose lease headRevision is lower
+  // is older evidence and must never overwrite it. Equal headRevision is the
+  // same epoch and identical evidence (a preserved acceptance copies epoch,
+  // headRevision and evidence key), so the overwrite is harmless. Incarnations
+  // and epochs are unordered identities and are never compared.
   #installReadState(
-    documentKey: string,
-    namespaceIncarnation: string,
     ticket: ReadTicket,
     accepted: { lease: AcceptedSourceLease; content: DocFileContent },
     observations: DocFileContent[],
   ): void {
+    const documentKey = annotationDocumentKey(ticket.key);
+    const namespaceIncarnation = ticket.namespaceIncarnation;
     const statesForDocument = this.#readStates.get(documentKey) ?? new Map<string, ReadState>();
     this.#readStates.set(documentKey, statesForDocument);
     const existing = statesForDocument.get(namespaceIncarnation);
+    if (
+      existing !== undefined &&
+      existing.ticket.requestId !== ticket.requestId &&
+      existing.accepted !== undefined &&
+      accepted.lease.headRevision < existing.accepted.lease.headRevision
+    ) {
+      return;
+    }
     statesForDocument.set(
       namespaceIncarnation,
       existing === undefined || existing.ticket.requestId === ticket.requestId
