@@ -319,15 +319,16 @@ func TestSessionToolsReplyWaitingForSlotStopsOnClientClose(t *testing.T) {
 	done := make(chan error, 1)
 	atSlot := make(chan struct{}, 1)
 	go func() {
-		done <- client.sendSessionFrameWithBudgetsAtSlot(t.Context(), ResponseMessage(NewIntID(-1), EmptyResponse{}), time.Second, time.Second, atSlot)
+		atSlot <- struct{}{}
+		done <- client.sendSessionFrameWithBudgets(t.Context(), ResponseMessage(NewIntID(-1), EmptyResponse{}), time.Second, time.Second)
 	}()
 	select {
 	case <-atSlot:
 	case <-time.After(2 * time.Second):
-		t.Fatal("reply did not reach the occupied send slot")
+		t.Fatal("reply did not start while the send slot was occupied")
 	}
-	// The writer reached the slot wait while the slot was held and the client
-	// was still open. Its result must stay blocked until Close wakes it.
+	// The writer started the send while the slot was held and the client was
+	// still open. Its result must stay blocked until the client closes.
 	select {
 	case err := <-done:
 		t.Fatalf("reply finished before client close: %v", err)

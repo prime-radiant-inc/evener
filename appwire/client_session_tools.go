@@ -56,16 +56,8 @@ func (c *Client) sendSessionFrame(ctx context.Context, message Message) error {
 }
 
 func (c *Client) sendSessionFrameWithBudgets(ctx context.Context, message Message, slotBudget, writeBudget time.Duration) error {
-	return c.sendSessionFrameWithBudgetsAtSlot(ctx, message, slotBudget, writeBudget, nil)
-}
-
-// atSlot is an optional test fence immediately before slot acquisition.
-func (c *Client) sendSessionFrameWithBudgetsAtSlot(ctx context.Context, message Message, slotBudget, writeBudget time.Duration, atSlot chan<- struct{}) error {
 	slotCtx, cancelSlot := context.WithTimeout(ctx, slotBudget)
 	defer cancelSlot()
-	if atSlot != nil {
-		atSlot <- struct{}{}
-	}
 	select {
 	case c.sendSlotChan() <- struct{}{}:
 	case <-slotCtx.Done():
