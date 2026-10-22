@@ -500,9 +500,12 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   readonly #suppressedEpochs = new Map<string, SuppressionEntry>();
   // Incarnations this adapter itself has retired, one per namespace. Guards
   // asynchronous no-await writes that would otherwise reinstate state naming a
-  // retired incarnation. A reset prunes the namespace's older record before it
-  // adds the incarnation it just retired, so the set stays bounded.
-  readonly #retiredIncarnations = new Set<string>();
+  // retired incarnation. Keyed by namespace, so one record per namespace: a
+  // reset replaces the entry structurally. Known latent bound: a lease naming
+  // an incarnation two resets ago does not match the record (no caller reaches
+  // that case today; suppressEpochForExpiry has no caller, and the restores
+  // only touch entries this adapter installed while the incarnation was live).
+  readonly #retiredIncarnations = new Map<string, string>();
   // Retained pending expiry fences awaiting real completion.
   readonly #pendingExpiries = new Map<string, PendingExpiry>();
   // Operation identities whose save was dismissed but whose durable discard has
@@ -776,9 +779,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       const current =
         !hasForeignIncarnation || (await this.#durableIncarnationIs(namespace, ticket.namespaceIncarnation));
       if (current) {
-        for (const incarnation of [...issuedForDocument.keys()]) {
-          if (incarnation !== ticket.namespaceIncarnation) issuedForDocument.delete(incarnation);
-        }
+        this.#pruneOtherIncarnations(this.#issuedReads, documentKey, ticket.namespaceIncarnation);
       }
       // Within one incarnation the generation compare keeps a held earlier
       // issuance from replacing a newer one.
@@ -791,9 +792,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         const statesForDocument = this.#readStates.get(documentKey) ?? new Map<string, ReadState>();
         this.#readStates.set(documentKey, statesForDocument);
         if (current) {
-          for (const incarnation of [...statesForDocument.keys()]) {
-            if (incarnation !== ticket.namespaceIncarnation) statesForDocument.delete(incarnation);
-          }
+          this.#pruneOtherIncarnations(this.#readStates, documentKey, ticket.namespaceIncarnation);
         }
         // Carry only this same incarnation's prior state: another incarnation's
         // lease was retired by the reset.
@@ -835,7 +834,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         const entry = this.#suppressedEpochs.get(identity);
         if (!entry?.confirmed) {
           displacedEntry = entry;
-          this.#suppressedEpochs.set(identity, {
+          this.#installSuppression(identity, {
             documentKey,
             namespaceIncarnation: previous.lease.namespaceIncarnation,
             requestId: ticket.requestId,
@@ -862,9 +861,8 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         displacedEntry.requestId !== null &&
         (this.#ownsRegistration(documentKey, ticket.namespaceIncarnation, displacedEntry.requestId) ||
           this.#liveAcceptances.has(displacedEntry.requestId)) &&
-        !this.#isRetiredIncarnation(annotationNamespaceKey(namespace), displacedEntry.namespaceIncarnation)
+        this.#installSuppression(identity, displacedEntry)
       ) {
-        this.#suppressedEpochs.set(identity, displacedEntry);
         return;
       }
       this.#releaseUnconfirmed([{ identity, requestId: ticket.requestId }]);
@@ -1060,7 +1058,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         requestId: ticket.requestId,
         confirmed: true,
       };
-      this.#suppressedEpochs.set(suppressionIdentity, installedSuppression);
+      this.#installSuppression(suppressionIdentity, installedSuppression);
       finishValidation(true, suppressionIdentity);
       // The observed boundary runs before the fence. A rejection here proves no
       // fence committed, so the epoch is still live: release exactly this
@@ -1068,14 +1066,10 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // the epoch stays hidden from listing and refused by saves forever.
       const restoreInstalledSuppression = (): void => {
         if (this.#suppressedEpochs.get(suppressionIdentity) !== installedSuppression) return;
-        if (
-          priorSuppression === undefined ||
-          priorSuppression.requestId === ticket.requestId ||
-          this.#isRetiredIncarnation(annotationNamespaceKey(namespace), priorSuppression.namespaceIncarnation)
-        ) {
+        if (priorSuppression === undefined || priorSuppression.requestId === ticket.requestId) {
           this.#suppressedEpochs.delete(suppressionIdentity);
-        } else {
-          this.#suppressedEpochs.set(suppressionIdentity, priorSuppression);
+        } else if (!this.#installSuppression(suppressionIdentity, priorSuppression)) {
+          this.#suppressedEpochs.delete(suppressionIdentity);
         }
       };
       try {
@@ -1167,9 +1161,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // Retire only this invocation's own registration: a newer read that
       // registered while this acceptance was settling keeps its ticket.
       if (this.#ownsRegistration(documentKey, ticket.namespaceIncarnation, ticket.requestId)) {
-        const issuedForDocument = this.#issuedReads.get(documentKey);
-        issuedForDocument?.delete(ticket.namespaceIncarnation);
-        if (issuedForDocument?.size === 0) this.#issuedReads.delete(documentKey);
+        this.#deleteIncarnationSlot(this.#issuedReads, documentKey, ticket.namespaceIncarnation);
       }
     }
   }
@@ -1184,7 +1176,42 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // Whether a prior reset in this adapter retired the incarnation. Guards the
   // synchronous restores and confirmed writes that cannot re-check durability.
   #isRetiredIncarnation(namespaceKey: string, incarnation: string): boolean {
-    return this.#retiredIncarnations.has(`${namespaceKey}\u0000${incarnation}`);
+    return this.#retiredIncarnations.get(namespaceKey) === incarnation;
+  }
+
+  // The ONE suppression write point. A write naming an incarnation this
+  // adapter retired is inert: a reset already deleted its rows, and the entry
+  // would leak with nothing able to release it. Returns false when refused, so
+  // a restore can fall back to releasing its own install.
+  #installSuppression(identity: string, entry: SuppressionEntry): boolean {
+    const namespaceKey = documentKeyNamespace(entry.documentKey);
+    if (namespaceKey !== undefined && this.#isRetiredIncarnation(namespaceKey, entry.namespaceIncarnation)) {
+      return false;
+    }
+    this.#suppressedEpochs.set(identity, entry);
+    return true;
+  }
+
+  // Drop every incarnation slot but `keep` for one document. A slot names a
+  // retired incarnation once a fresh read proves a new one current.
+  #pruneOtherIncarnations<Value>(slots: Map<string, Map<string, Value>>, documentKey: string, keep: string): void {
+    const entries = slots.get(documentKey);
+    if (entries === undefined) return;
+    for (const incarnation of [...entries.keys()]) {
+      if (incarnation !== keep) entries.delete(incarnation);
+    }
+  }
+
+  // Delete one document's incarnation slot and its document entry when empty.
+  #deleteIncarnationSlot<Value>(
+    slots: Map<string, Map<string, Value>>,
+    documentKey: string,
+    incarnation: string,
+  ): void {
+    const entries = slots.get(documentKey);
+    if (entries === undefined) return;
+    entries.delete(incarnation);
+    if (entries.size === 0) slots.delete(documentKey);
   }
 
   // Record a completed acceptance (accepted or fenced) in the ticket's own
@@ -1831,8 +1858,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // lives like the changed-read suppression: until the expiry's fence and
   // deletion complete, and inert once the epoch's rows are gone.
   suppressEpochForExpiry(lease: AcceptedSourceLease): void {
-    if (this.#isRetiredIncarnation(annotationNamespaceKey(lease.key.namespace), lease.namespaceIncarnation)) return;
-    this.#suppressedEpochs.set(epochIdentity(lease), {
+    this.#installSuppression(epochIdentity(lease), {
       documentKey: annotationDocumentKey(lease.key),
       namespaceIncarnation: lease.namespaceIncarnation,
       requestId: null,
@@ -2056,7 +2082,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       if (accepted && accepted.lease.namespaceIncarnation === expectedIncarnation) {
         const identity = epochIdentity(accepted.lease);
         if (this.#suppressedEpochs.has(identity)) continue;
-        this.#suppressedEpochs.set(identity, {
+        this.#installSuppression(identity, {
           documentKey,
           namespaceIncarnation: expectedIncarnation,
           requestId: state.ticket.requestId,
@@ -2148,23 +2174,18 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     }
     if (result.committed) {
       confirmProvisioned();
-      // Remember what this adapter retired. One record per namespace: an older
-      // tombstone is pruned before the incarnation just retired is added.
-      const retiredPrefix = `${namespaceKey}\u0000`;
-      for (const key of [...this.#retiredIncarnations]) {
-        if (key.startsWith(retiredPrefix)) this.#retiredIncarnations.delete(key);
-      }
-      this.#retiredIncarnations.add(`${retiredPrefix}${expectedIncarnation}`);
+      // Remember what this adapter retired. One record per namespace: setting
+      // it replaces the older tombstone structurally.
+      this.#retiredIncarnations.set(namespaceKey, expectedIncarnation);
       // Reset wakes every registration in its exact namespace, and no other.
       this.#settleTransition({ namespaceKey });
       // A live ticket names its own issuance incarnation. The reset just retired
       // exactly one incarnation, so only registrations naming it are dead: a
       // read that registered in the NEW incarnation before this continuation
       // ran is current and must survive. Never a blanket clear.
-      for (const [documentKey, issued] of [...this.#issuedReads]) {
+      for (const documentKey of [...this.#issuedReads.keys()]) {
         if (documentKeyNamespace(documentKey) !== namespaceKey) continue;
-        issued.delete(expectedIncarnation);
-        if (issued.size === 0) this.#issuedReads.delete(documentKey);
+        this.#deleteIncarnationSlot(this.#issuedReads, documentKey, expectedIncarnation);
       }
       // The reset deleted every row these entries named, so no consult path
       // can match them again. Retire every suppression entry of the retired
@@ -2183,10 +2204,9 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // Scope the read-state retirement exactly like the registrations above:
       // a replacement-incarnation acceptance installed while this reset's own
       // continuation was held is current and must survive.
-      for (const [documentKey, states] of [...this.#readStates]) {
+      for (const documentKey of [...this.#readStates.keys()]) {
         if (documentKeyNamespace(documentKey) !== namespaceKey) continue;
-        states.delete(expectedIncarnation);
-        if (states.size === 0) this.#readStates.delete(documentKey);
+        this.#deleteIncarnationSlot(this.#readStates, documentKey, expectedIncarnation);
       }
       for (const [identity, record] of [...this.#pendingExpiries]) {
         if (
