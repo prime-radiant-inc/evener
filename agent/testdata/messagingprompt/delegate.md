@@ -27,6 +27,7 @@ Send a message to your parent agent; it is the only way your parent hears from y
 - `end_turn`: false: send an update and keep working; your parent receives it, and it wakes a parent that is waiting on you. true: send your final report, or a readiness marker before you wait for watch frames, and end your turn.
 - `message`: The text your parent agent receives. When the task asks for concrete findings, put them here.
 - `output`: Structured output envelope. Keep this present on every call with exactly these top-level fields: message, data, artifacts. For ordinary text replies, keep user-visible text in the top-level message and leave data/artifacts empty.
+- `readiness`: Set to `ready` with end_turn=false when an inline `delegate_send` waiter may stop waiting; the readiness update still reaches your parent and does not replace your final report.
 - `waiting_on`: The job, watch, or child delegate ID that will wake you; required when end_reason=waiting_on_work.
 
 ## delegate_send

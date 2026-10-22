@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/transcript"
 )
 
@@ -28,10 +29,11 @@ type delegateInlineWaiter struct {
 }
 
 type delegateInlineResolution struct {
-	packet   *delegatestore.TerminalPacket
-	commit   *delegateToolResultCommit
-	earlier  []delegateInlineEarlier
-	fallback bool
+	packet    *delegatestore.TerminalPacket
+	commit    *delegateToolResultCommit
+	earlier   []delegateInlineEarlier
+	fallback  bool
+	readiness string
 }
 
 // delegateInlineEarlier is an earlier result of the same delegate that the
@@ -89,6 +91,7 @@ type delegateDeliveryPlan struct {
 	deliveryID      string
 	ownerDelegateID string
 	waiter          *delegateInlineWaiter
+	readiness       string
 	packet          delegatestore.TerminalPacket
 	claim           delegateDeliveryClaimToken
 	receiver        delegateDeliveryReceiver
@@ -391,7 +394,7 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 // settlement claim is taken, and the fold refuses an update from then on. It
 // refuses a run that is no longer current, a delegate that is stopping or
 // settling, and a blank message; the update is then not queued anywhere.
-func (c *delegateTreeController) PostUpdate(actor delegateActor, message string) (string, delegateMutationPlans, error) {
+func (c *delegateTreeController) PostUpdate(actor delegateActor, message, readiness string) (string, delegateMutationPlans, error) {
 	release, err := c.beginRetirementMutation()
 	if err != nil {
 		return "", delegateMutationPlans{}, err
@@ -415,7 +418,7 @@ func (c *delegateTreeController) PostUpdate(actor delegateActor, message string)
 		Kind:         delegatestore.EventDelegateUpdatePosted,
 		TS:           c.now(),
 		DelegateID:   lease.delegateID,
-		UpdatePosted: &delegatestore.UpdatePosted{Generation: lease.generation, Message: message},
+		UpdatePosted: &delegatestore.UpdatePosted{Generation: lease.generation, Message: message, Readiness: readiness},
 	})
 	if err != nil {
 		return "", delegateMutationPlans{}, err
@@ -716,11 +719,19 @@ func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryI
 	}
 	c.nextToken++
 	claimToken := delegateDeliveryClaimToken{processID: c.nextToken, deliveryID: deliveryID}
-	// An update never answers an inline wait: the waiting caller wants the
-	// generation's report, so the waiter stays registered for it, and the
-	// report's reply carries the update ahead of itself
-	// (carriableHeldClaimLocked).
+	// A readiness update answers an inline wait without consuming the
+	// generation's report: the waiter learns the delegate is ready, and the
+	// terminal delivery still travels to the parent on its own.
 	var waiter *delegateInlineWaiter
+	readiness := ""
+	if head.Packet.Kind == delegatestore.PacketUpdate {
+		readiness = delegateUpdateReadiness(head.Packet)
+		if readiness == tool.DelegateReadinessReady {
+			if readyWaiter := c.claimDelegateWaiterLocked(delegateID, head.Generation); readyWaiter != nil {
+				resolveDelegateInlineClaim(readyWaiter, delegateInlineResolution{readiness: readiness})
+			}
+		}
+	}
 	if head.Packet.Kind != delegatestore.PacketUpdate {
 		waiter = c.claimDelegateWaiterLocked(delegateID, head.Generation)
 	}
@@ -745,6 +756,7 @@ func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryI
 		deliveryID:      head.DeliveryID,
 		ownerDelegateID: head.OwnerDelegateID,
 		waiter:          waiter,
+		readiness:       readiness,
 		packet:          cloneDelegateTerminalPacket(head.Packet),
 		claim:           claimToken,
 		receiver:        receiver,
@@ -1223,6 +1235,19 @@ func delegateUpdateMessage(packet delegatestore.TerminalPacket) (string, error) 
 	return message, nil
 }
 
+func delegateUpdateReadiness(packet delegatestore.TerminalPacket) string {
+	if len(packet.Metadata) == 0 {
+		return ""
+	}
+	var metadata struct {
+		Readiness string `json:"readiness"`
+	}
+	if err := json.Unmarshal(packet.Metadata, &metadata); err != nil {
+		return ""
+	}
+	return metadata.Readiness
+}
+
 func delegateNotificationContent(plan delegateDeliveryPlan) (string, error) {
 	// The name attribute is display-only: the frame stays addressable by
 	// delegate_id alone, and an unnamed delegate renders no name attribute.
@@ -1242,6 +1267,9 @@ func delegateNotificationContent(plan delegateDeliveryPlan) (string, error) {
 		// types (say "&amp;") decodes once on clients, a known remainder that
 		// issue #4245 tracks for every notification body.
 		kind, body = "update", escapeNotificationBody(message)
+		if readiness := delegateUpdateReadiness(plan.packet); readiness != "" {
+			attrs = append(attrs, notificationAttr("readiness", readiness))
+		}
 	} else {
 		packet, err := json.Marshal(plan.packet)
 		if err != nil {

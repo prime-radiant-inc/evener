@@ -486,12 +486,21 @@ func applyUpdatePosted(state State, event Event) error {
 	if strings.TrimSpace(payload.Message) == "" {
 		return fmt.Errorf("delegate %q update message is empty", event.DelegateID)
 	}
+	if payload.Readiness != "" && payload.Readiness != "ready" {
+		return fmt.Errorf("delegate %q update readiness %q is not supported", event.DelegateID, payload.Readiness)
+	}
 	message, err := json.Marshal(payload.Message)
 	if err != nil {
 		return fmt.Errorf("delegate %q update message: %w", event.DelegateID, err)
 	}
+	var metadata json.RawMessage
+	if payload.Readiness != "" {
+		metadata, _ = json.Marshal(struct {
+			Readiness string `json:"readiness"`
+		}{Readiness: payload.Readiness})
+	}
 	return queueDelivery(aggregate, UpdateDeliveryID(event.DelegateID, event.Seq), payload.Generation,
-		&TerminalPacket{Kind: PacketUpdate, Message: message})
+		&TerminalPacket{Kind: PacketUpdate, Message: message, Metadata: metadata})
 }
 
 // applyIntentStated records a running generation's newest tool-call intent.

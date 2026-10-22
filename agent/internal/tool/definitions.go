@@ -767,6 +767,10 @@ var CommunicateEndReasons = []string{CommunicateEndReasonDone, CommunicateEndRea
 // so it names what it is blocked on or what will wake it instead.
 var DelegateCommunicateEndReasons = []string{CommunicateEndReasonDone, CommunicateEndReasonBlocked, CommunicateEndReasonWaitingOnWork}
 
+// DelegateReadinessReady is the non-terminal readiness value a delegate sends
+// with communicate(end_turn=false) to tell an inline waiter it may proceed.
+const DelegateReadinessReady = "ready"
+
 // WithCommunicateEndReason returns a copy of a communicate definition that
 // also offers end_reason. Only a root someone can answer gets it: nobody
 // responds to a delegate's or a headless root's resting state.
@@ -794,6 +798,11 @@ func WithDelegateCommunicateEndReason(def llm.ToolDefinition) llm.ToolDefinition
 	props["waiting_on"] = map[string]any{
 		"type":        "string",
 		"description": "The job, watch, or child delegate ID that will wake you; required when end_reason=waiting_on_work.",
+	}
+	props["readiness"] = map[string]any{
+		"type":        "string",
+		"enum":        []string{DelegateReadinessReady},
+		"description": "Set to `ready` with end_turn=false when an inline `delegate_send` waiter may stop waiting; the readiness update still reaches your parent and does not replace your final report.",
 	}
 	def.Parameters = params
 	return def

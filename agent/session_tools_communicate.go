@@ -174,7 +174,11 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 			// fails the call; the result says where the update stands.
 			var update *delegateUpdateDelivery
 			if !endTurn && deps.postDelegateUpdate != nil {
-				update = deps.postDelegateUpdate(ctx, message)
+				readiness := ""
+				if deps.delegate {
+					readiness, _ = args["readiness"].(string)
+				}
+				update = deps.postDelegateUpdate(ctx, message, readiness)
 			}
 
 			inbox := []string{}
@@ -230,6 +234,9 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 				if update.Reason != "" {
 					resp["reason"] = update.Reason
 				}
+				if update.Readiness != "" {
+					resp["readiness"] = update.Readiness
+				}
 			}
 			if endTurn && deps.runningJobIDs != nil {
 				if ids := deps.runningJobIDs(); len(ids) > 0 {
@@ -259,8 +266,9 @@ type communicateEndState struct {
 // delegateUpdateDelivery is where a delegate's update stands when its
 // communicate(end_turn=false) call returns: the result's delivery and reason.
 type delegateUpdateDelivery struct {
-	Status string
-	Reason string
+	Status    string
+	Reason    string
+	Readiness string
 }
 
 const (
@@ -285,7 +293,7 @@ const (
 // bounded the same way for updates as for reports: the update is a communicate
 // event, which the watch on the sender counts toward watchDeliveryBudget, and
 // the watch auto-clears at the budget (TestWatchDeliveryCounterAndBudget).
-func (s *Session) postDelegateUpdate(ctx context.Context, message string) *delegateUpdateDelivery {
+func (s *Session) postDelegateUpdate(ctx context.Context, message, readiness string) *delegateUpdateDelivery {
 	if !s.reportsToParent() {
 		return nil
 	}
@@ -296,7 +304,7 @@ func (s *Session) postDelegateUpdate(ctx context.Context, message string) *deleg
 	if err != nil {
 		return notDeliveredUpdate(err)
 	}
-	deliveryID, plans, err := s.delegateController.PostUpdate(actor, message)
+	deliveryID, plans, err := s.delegateController.PostUpdate(actor, message, readiness)
 	if err != nil {
 		return notDeliveredUpdate(err)
 	}
@@ -309,9 +317,9 @@ func (s *Session) postDelegateUpdate(ctx context.Context, message string) *deleg
 	// A missing aggregate reads as not pending: it cannot occur while the run
 	// that just posted is open.
 	if s.delegateController.deliveryPending(s.owningDelegateID, deliveryID) {
-		return &delegateUpdateDelivery{Status: delegateUpdateQueued}
+		return &delegateUpdateDelivery{Status: delegateUpdateQueued, Readiness: readiness}
 	}
-	return &delegateUpdateDelivery{Status: delegateUpdateDelivered}
+	return &delegateUpdateDelivery{Status: delegateUpdateDelivered, Readiness: readiness}
 }
 
 // notDeliveredUpdate says, for the delegate's model, why its update was

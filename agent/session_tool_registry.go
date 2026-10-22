@@ -37,7 +37,7 @@ type toolDeps struct {
 
 	// postDelegateUpdate hands a delegate's end_turn=false message to its
 	// parent (Session.postDelegateUpdate); it returns nil for a root.
-	postDelegateUpdate func(ctx context.Context, message string) *delegateUpdateDelivery
+	postDelegateUpdate func(ctx context.Context, message, readiness string) *delegateUpdateDelivery
 
 	// steering queue access for the communicate handler.
 	steer               func(msg, kind string) error

@@ -100,6 +100,7 @@ type sendMessageResult struct {
 	RunningInBackground      bool
 	TimedOut                 bool
 	Action                   string
+	Readiness                string
 	TranscriptRef            string
 	Output                   string
 	Truncated                bool

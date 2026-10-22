@@ -1691,6 +1691,7 @@ type delegateSendResult struct {
 	RunningInBackground    bool                    `json:"running_in_background"`
 	TimedOut               bool                    `json:"timed_out,omitempty"`
 	Action                 string                  `json:"action"`
+	Readiness              string                  `json:"readiness,omitempty"`
 	TranscriptRef          string                  `json:"transcript_ref,omitempty"`
 	Output                 *string                 `json:"output,omitempty"`
 	Truncated              *bool                   `json:"truncated,omitempty"`
@@ -1829,6 +1830,7 @@ func delegateSendResultFrom(res sendMessageResult) delegateSendResult {
 		RunningInBackground: res.RunningInBackground,
 		TimedOut:            res.TimedOut,
 		Action:              res.Action,
+		Readiness:           res.Readiness,
 		TranscriptRef:       res.TranscriptRef,
 		Warnings:            append([]string(nil), res.Warnings...),
 		Task:                res.Task,

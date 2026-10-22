@@ -30,7 +30,7 @@ func TestDelegateControllerPostUpdateQueuesInDeliveryOrder(t *testing.T) {
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	actor := delegateActor{lease: &delegateLease{delegateID: "dlg_target", generation: 1}}
 
-	first, firstPlans, err := c.PostUpdate(actor, "first question")
+	first, firstPlans, err := c.PostUpdate(actor, "first question", "")
 	if err != nil {
 		t.Fatalf("PostUpdate first: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestDelegateControllerPostUpdateQueuesInDeliveryOrder(t *testing.T) {
 		firstPlans.deliveries[0].deliveryID != first || firstPlans.deliveries[0].packet.Kind != delegatestore.PacketUpdate {
 		t.Fatalf("first update %q planned %#v, want its own head plan", first, firstPlans.deliveries)
 	}
-	second, secondPlans, err := c.PostUpdate(actor, "second question")
+	second, secondPlans, err := c.PostUpdate(actor, "second question", "")
 	if err != nil {
 		t.Fatalf("PostUpdate second: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestDelegateControllerPostedUpdateHeadLeavesTheInlineWaiter(t *testing.T) {
 	if _, err := c.AdmitStartInput(lease, func() error { return nil }); err != nil {
 		t.Fatalf("AdmitStartInput: %v", err)
 	}
-	_, plans, err := c.PostUpdate(delegateActor{lease: &lease}, "which table?")
+	_, plans, err := c.PostUpdate(delegateActor{lease: &lease}, "which table?", "")
 	if err != nil {
 		t.Fatalf("PostUpdate: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestDelegateControllerPostUpdateRefusals(t *testing.T) {
 			t.Parallel()
 			c, _ := newDelegateControllerTestHarness(t, 1, 1)
 			seedDelegateControllerRunning(t, c, "dlg_target", "")
-			_, plans, err := c.PostUpdate(tc.actor(t, c), tc.message)
+			_, plans, err := c.PostUpdate(tc.actor(t, c), tc.message, "")
 			if err == nil || (tc.want != nil && !errors.Is(err, tc.want)) || len(plans.deliveries) != 0 {
 				t.Fatalf("PostUpdate = plans %#v err %v, want %v", plans.deliveries, err, tc.want)
 			}
@@ -233,7 +233,7 @@ func TestDelegateUpdateNotDeliveredStillSucceeds(t *testing.T) {
 			ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
 			// The refusal the controller gives this lease, which the result's
 			// reason must explain.
-			_, _, refusal := c.PostUpdate(delegateActor{lease: &lease}, "need the schema")
+			_, _, refusal := c.PostUpdate(delegateActor{lease: &lease}, "need the schema", "")
 			if refusal == nil {
 				t.Fatal("the controller accepted an update it should refuse")
 			}
