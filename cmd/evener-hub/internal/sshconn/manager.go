@@ -2821,6 +2821,7 @@ func isTerminal(err error) bool {
 		errors.Is(err, errOwnExecutableCannotServe),
 		errors.Is(err, errDeployUnstamped),
 		errors.Is(err, errDeployDisabled),
+		errors.Is(err, errRetainedInstaller),
 		errors.Is(err, errEntryBinding),
 		errors.Is(err, ErrManagerClosed):
 		return true

@@ -376,6 +376,11 @@ func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight
 	if m.canBuild() && !m.ownExecutableCannotServe(facts) {
 		return m.deployPush(ctx, host, facts, beforeWrite, retainedTarget...)
 	}
+	if len(retainedTarget) != 0 {
+		// The installer writes a share directory and replaces the launch path
+		// with a symlink, so its run target cannot pin the retained write.
+		return "", fmt.Errorf("%w: host %q: installer layout cannot preserve recorded install target %q; %s", errRetainedInstaller, host.Name, retainedTarget[0], m.installerRemedy())
+	}
 	if m.ownExecutableCannotServe(facts) {
 		// The only source is the own executable, the host runs another target, and
 		// the installer fallback is the one remaining path. If it has no published
@@ -542,6 +547,9 @@ var errOwnExecutableCannotServe = errors.New("sshconn: this controller's own exe
 // the explicit host-deploy operation does, which is why the sentinel exists at
 // all.
 var errDeployDisabled = errors.New("sshconn: deploying is disabled on this controller")
+
+// Retrying an installer cannot preserve the retained deployment's pinned target.
+var errRetainedInstaller = fmt.Errorf("%w: retained deployment cannot use the installer fallback", errOwnerSelectionMismatch)
 
 // checkRunTarget refuses a configured evener_path that cannot be the host hub's
 // run target. Only the shipped `evener` binary can serve a hub: `evener-dev` is

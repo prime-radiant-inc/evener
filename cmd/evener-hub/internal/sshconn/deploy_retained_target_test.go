@@ -3,12 +3,15 @@ package sshconn
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -19,12 +22,13 @@ import (
 )
 
 // Target resolution, short-transfer rejection and atomic push writes use the real
-// filesystem. Process, systemd and installer observations are modeled, not SSH.
+// filesystem. The embedded installer runs with local archive/checksum downloads;
+// process and systemd observations are modeled, not SSH.
 func TestRetainedDeploymentInstallTargetBoundary(t *testing.T) {
 	channel, dirty, tag := buildinfo.Channel, buildinfo.GitDirty, buildinfo.ReleaseTag
 	t.Cleanup(func() { buildinfo.Channel, buildinfo.GitDirty, buildinfo.ReleaseTag = channel, dirty, tag })
 	buildinfo.Channel, buildinfo.GitDirty, buildinfo.ReleaseTag = "snapshot", "", ""
-	for _, mode := range []string{"honest-push", "redirected-recorded-target", "installer-different-target", "installer-same-target"} {
+	for _, mode := range []string{"honest-push", "redirected-recorded-target", "installer-alias", "installer-regular-target"} {
 		t.Run(mode, func(t *testing.T) {
 			root := t.TempDir()
 			target, alias, other := filepath.Join(root, "installed", "evener"), filepath.Join(root, "bin", "evener"), filepath.Join(root, "other", "evener")
@@ -42,9 +46,11 @@ func TestRetainedDeploymentInstallTargetBoundary(t *testing.T) {
 				t.Fatal(err)
 			}
 			launch := alias
-			if mode == "installer-same-target" {
+			if mode == "installer-regular-target" {
 				launch = target
 			}
+			installerEnv := retainedInstallerFixture(t)
+			outside := filepath.Join(root, "share", "evener", "bin", "evener")
 			host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: launch}
 			fr, selected := deployRunnerForFixture(t, "linux", "amd64", func(int) ([]byte, error) {
 				data, err := os.ReadFile(target)
@@ -96,8 +102,10 @@ func TestRetainedDeploymentInstallTargetBoundary(t *testing.T) {
 					}
 					installers++
 					recorded = append(recorded, m.pendingRestart(host.Name).installTarget)
-					// Do not execute an installer that would fetch external artifacts.
-					return nil, os.WriteFile(target, []byte("staged-binary"), 0o755)
+					cmd := exec.CommandContext(ctx, "/bin/sh", "-c", remote)
+					cmd.Env = installerEnv
+					cmd.Stdin = bytes.NewReader(data)
+					return cmd.CombinedOutput()
 				}
 				if strings.Contains(remote, "cat >") {
 					t.Fatalf("unexpected write command: %s", remote)
@@ -135,12 +143,22 @@ func TestRetainedDeploymentInstallTargetBoundary(t *testing.T) {
 			if strings.HasPrefix(mode, "installer-") {
 				m.opts.BuildBinary = nil
 			}
+			before := retainedTargetSnapshot(t, root)
 			got, after, err := m.DeployForOperation(t.Context(), host, facts, false, nil)
+			if strings.HasPrefix(mode, "installer-") {
+				if !reflect.DeepEqual(before, retainedTargetSnapshot(t, root)) {
+					outsideBytes, outsideErr := os.ReadFile(outside)
+					t.Errorf("retained installer changed files: installers=%d outside-target=%q read-error=%v", installers, outsideBytes, outsideErr)
+				}
+				if !Terminal(err) || !strings.Contains(fmt.Sprint(err), "installer fallback") {
+					t.Errorf("retained installer must refuse terminally with a clear cause: %v", err)
+				}
+			}
 			otherBytes, readErr := os.ReadFile(other)
 			if readErr != nil || string(otherBytes) != "other-installation" {
 				t.Errorf("retained retry overwrote another installation: data=%q err=%v", otherBytes, readErr)
 			}
-			refuse := mode == "redirected-recorded-target" || mode == "installer-different-target"
+			refuse := mode != "honest-push"
 			if refuse {
 				if !errors.Is(err, errOwnerSelectionMismatch) || writes != 1 || installers != 0 || !reflect.DeepEqual(prior, m.pendingRestart(host.Name)) || !reflect.DeepEqual(recorded, []string{target}) {
 					t.Fatalf("retained retry escaped recorded install target: err=%v writes=%d installers=%d recorded=%q pending=%+v", err, writes, installers, recorded, m.pendingRestart(host.Name))
@@ -154,9 +172,6 @@ func TestRetainedDeploymentInstallTargetBoundary(t *testing.T) {
 				}
 			} else {
 				wantWrites, wantInstallers := 2, 0
-				if mode == "installer-same-target" {
-					wantWrites, wantInstallers = 1, 1
-				}
 				if err != nil || got != launch || after.Version != "newsha" || writes != wantWrites || installers != wantInstallers || m.pendingRestart(host.Name).active() || !reflect.DeepEqual(recorded, []string{target, target}) {
 					t.Fatalf("honest retained retry failed: launch=%q err=%v writes=%d installers=%d recorded=%q pending=%+v", got, err, writes, installers, recorded, m.pendingRestart(host.Name))
 				}
@@ -170,4 +185,92 @@ func TestRetainedDeploymentInstallTargetBoundary(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRetainedInstallerFallbackRefusesBeforeRecording(t *testing.T) {
+	for _, source := range []string{"no-build-source", "cross-target-own-executable"} {
+		t.Run(source, func(t *testing.T) {
+			host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/prefix/installed/evener"}
+			fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+				t.Errorf("retained installer refusal issued a remote command: %q", argv)
+				return nil, errors.New("unexpected command")
+			}}
+			opts := Options{controllerVersionOverride: "newsha"}
+			if source == "cross-target-own-executable" {
+				opts.BuildBinary, opts.OwnExecutable = writeStageBinary, true
+			}
+			m := newTestManager(t, testRegistry(t, host), fr, opts)
+			recorded := 0
+			_, err := m.deploy(t.Context(), host, Preflight{OS: "other-os", Arch: "other-arch"}, func(string) error {
+				recorded++
+				return nil
+			}, host.EvenerPath)
+			if !Terminal(err) || !strings.Contains(fmt.Sprint(err), "installer fallback") || recorded != 0 || len(fr.recordedRuns()) != 0 {
+				t.Fatalf("retained installer dispatch was not refused before effects: err=%v recorded=%d commands=%q", err, recorded, fr.recordedRuns())
+			}
+		})
+	}
+}
+
+// Only curl is substituted. The real installer verifies/extracts the archive,
+// installs into share_bindir and replaces the launch path with a symlink.
+func retainedInstallerFixture(t *testing.T) []string {
+	t.Helper()
+	dir := t.TempDir()
+	archiveRoot := "evener_" + runtime.GOOS + "_" + runtime.GOARCH
+	if err := os.Mkdir(filepath.Join(dir, archiveRoot), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, archiveRoot, "evener"), []byte("staged-binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(dir, archiveRoot+".tar.gz")
+	if out, err := exec.Command("tar", "-czf", archive, "-C", dir, archiveRoot).CombinedOutput(); err != nil {
+		t.Fatalf("create installer archive: %v: %s", err, out)
+	}
+	data, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "checksums.txt"), fmt.Appendf(nil, "%x  %s.tar.gz\n", sha256.Sum256(data), archiveRoot), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	base := "https://github.com/prime-radiant-inc/evener/releases/download/snapshot/"
+	curl := "#!/bin/sh\nset -eu\n" +
+		"if [ \"$#\" = 6 ] && [ \"$1\" = -fsSL ] && [ \"$2\" = -w ] && [ \"$3\" = '%{http_code}' ] && [ \"$4\" = " + shellquote.RemoteWord(base+archiveRoot+".tar.gz") + " ] && [ \"$5\" = -o ]; then\n" +
+		"cp " + shellquote.RemoteWord(archive) + " \"$6\"; printf 200\n" +
+		"elif [ \"$#\" = 4 ] && [ \"$1\" = -fsSL ] && [ \"$2\" = " + shellquote.RemoteWord(base+"checksums.txt") + " ] && [ \"$3\" = -o ]; then\n" +
+		"cp " + shellquote.RemoteWord(filepath.Join(dir, "checksums.txt")) + " \"$4\"\n" +
+		"else echo 'unexpected fixture curl arguments' >&2; exit 1; fi\n"
+	if err := os.WriteFile(filepath.Join(dir, "curl"), []byte(curl), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return []string{"HOME=" + dir, "TMPDIR=" + dir, "PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH")}
+}
+
+func retainedTargetSnapshot(t *testing.T, root string) map[string]string {
+	t.Helper()
+	got := make(map[string]string)
+	if err := filepath.WalkDir(root, func(name string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		var data []byte
+		if info.Mode().IsRegular() {
+			data, err = os.ReadFile(name)
+		} else if info.Mode()&os.ModeSymlink != 0 {
+			var link string
+			link, err = os.Readlink(name)
+			data = []byte(link)
+		}
+		got[name] = fmt.Sprintf("%s:%s", info.Mode(), data)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return got
 }

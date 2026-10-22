@@ -329,6 +329,15 @@ func TestEnsureRecoversDeploymentBeforeRestartMarker(t *testing.T) {
 				t.Fatalf("interrupted deployment: err=%v writes=%d restarts=%d", err, writes, restarts)
 			}
 			inject = false
+			if phase == "installer-write-ack" {
+				pending := m.pendingRestart(host.Name)
+				ch, err := m.Ensure(t.Context(), host.Name)
+				if !errors.Is(err, errRetainedInstaller) || !Terminal(err) || ch != nil || writes != wantWrites || restarts != 0 || running != initialRunning || !requestedInstalled || !reflect.DeepEqual(pending, m.pendingRestart(host.Name)) {
+					t.Fatalf("retained installer recovery was not refused before effects: channel=%v err=%v writes=%d restarts=%d pending=%+v", ch, err, writes, restarts, m.pendingRestart(host.Name))
+				}
+				// Supplying a push source can complete the original pinned write.
+				m.opts.BuildBinary = writeStageBinary
+			}
 			ch, err := m.Ensure(t.Context(), host.Name)
 			wantRunning, wantRestarts := requested, 1
 			if strings.HasPrefix(phase, "deploy-only") || phase == "source-refusal" {
