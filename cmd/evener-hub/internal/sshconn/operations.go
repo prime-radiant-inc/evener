@@ -259,9 +259,8 @@ func (m *Manager) restartForOperation(ctx context.Context, host hostreg.Host, fa
 	registration := host
 	m.applyResolvedTarget(&host)
 	if pending := m.pendingRestart(host.Name); pending.selected != nil {
-		prior := pending.selected.host
-		if !host.Equal(prior) || host.Generation != prior.Generation || host.IncarnationID != prior.IncarnationID || host.PresenceEpoch != prior.PresenceEpoch {
-			return RestartResult{}, fmt.Errorf("%w: pending host registration changed", errOwnerEvidence)
+		if err := checkSelectedRestartRegistration(host, pending.selected.host); err != nil {
+			return RestartResult{}, err
 		}
 	}
 	// Refresh is read-only. A refusal may not suppress independent proof of an

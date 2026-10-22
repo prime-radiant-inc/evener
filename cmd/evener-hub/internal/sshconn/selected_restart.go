@@ -60,12 +60,19 @@ func (m *Manager) recoverSelectedRestart(ctx context.Context, host hostreg.Host,
 	return err
 }
 
+func checkSelectedRestartRegistration(host, prior hostreg.Host) error {
+	if !host.Equal(prior) || host.Generation != prior.Generation || host.IncarnationID != prior.IncarnationID || host.PresenceEpoch != prior.PresenceEpoch {
+		return fmt.Errorf("%w: pending host registration changed", errOwnerEvidence)
+	}
+	return nil
+}
+
 func (m *Manager) recoverSelectedRestartWithStart(ctx context.Context, host hostreg.Host, facts Preflight, pending pendingRestartState) (started bool, err error) {
 	started = pending.start
 	prior := *pending.selected
 	m.applyResolvedTarget(&host)
-	if !host.Equal(prior.host) || host.Generation != prior.host.Generation || host.IncarnationID != prior.host.IncarnationID || host.PresenceEpoch != prior.host.PresenceEpoch {
-		return started, fmt.Errorf("%w: pending host registration changed", errOwnerEvidence)
+	if err := checkSelectedRestartRegistration(host, prior.host); err != nil {
+		return started, err
 	}
 	report, err := m.resolveHostEndpoint(ctx, host, facts)
 	if err != nil {
@@ -184,6 +191,7 @@ func selectedSuccessor(now, prior selectedOwner, version, pin string) bool {
 // proveSelectedRestartComplete never starts or retries an effect. It permits an
 // already-recorded replacement to settle despite a later unusable disk contract,
 // but still requires capability and the independent selected successor proof.
+// Callers must first check the retained registration, even without an effect binding.
 func (m *Manager) proveSelectedRestartComplete(ctx context.Context, host hostreg.Host, facts Preflight, pending pendingRestartState) (selectedOwner, bool, error) {
 	if err := m.checkEffectBinding(pending.binding); err != nil {
 		return selectedOwner{}, false, err

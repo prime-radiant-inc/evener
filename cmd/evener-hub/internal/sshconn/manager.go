@@ -1916,6 +1916,9 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	// An unproven effect keeps every startup and recovery guard.
 	unusableStartup := preflight.launchErr != nil || validateStartupContract(host.Name, facts) != nil
 	if pending := m.pendingRestart(host.Name); pending.selected != nil && !pending.deployment && unusableStartup {
+		if err := checkSelectedRestartRegistration(host, pending.selected.host); err != nil {
+			return nil, err
+		}
 		probeCtx, cancelProbe := context.WithTimeout(ctx, m.opts.attemptLimit())
 		_, complete, _ := m.proveSelectedRestartComplete(probeCtx, host, facts, pending)
 		cancelProbe()

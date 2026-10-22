@@ -13,9 +13,36 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 )
 
+func TestSelectedRestartRegistration(t *testing.T) {
+	prior := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener", Generation: 1, IncarnationID: "original", PresenceEpoch: 1}
+	for _, field := range []string{"unchanged", "host", "generation", "incarnation", "presence"} {
+		t.Run(field, func(t *testing.T) {
+			host := prior
+			switch field {
+			case "host":
+				host.ConfigPath = "/different/hub.toml"
+			case "generation":
+				host.Generation++
+			case "incarnation":
+				host.IncarnationID = "replacement"
+			case "presence":
+				host.PresenceEpoch++
+			}
+			err := checkSelectedRestartRegistration(host, prior)
+			if field == "unchanged" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if !errors.Is(err, errOwnerEvidence) || err.Error() != "sshconn: selected owner evidence missing: pending host registration changed" {
+				t.Fatalf("registration refusal: %v", err)
+			}
+		})
+	}
+}
+
 func TestEnsureReconcilesSelectedRestartBeforeStartupContract(t *testing.T) {
 	for _, contract := range []string{"missing-flag", "incompatible"} {
-		for _, mode := range []string{"completed", "old-process", "same-boot", "wrong-build", "unavailable"} {
+		for _, mode := range []string{"completed", "generation-changed", "old-process", "same-boot", "wrong-build", "unavailable"} {
 			t.Run(contract+"/"+mode, func(t *testing.T) {
 				host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 				recovery := false
@@ -77,8 +104,24 @@ func TestEnsureReconcilesSelectedRestartBeforeStartupContract(t *testing.T) {
 				if pending.selected == nil || !selected.mutated || restarts != 1 {
 					t.Fatalf("missing completed selected restart: pending=%+v restarts=%d", pending, restarts)
 				}
+				if pending.binding != nil {
+					t.Fatal("restart without callback retained an effect binding")
+				}
+				retained := pending.selected.clone()
+				pending.selected = &retained
 				recovery = true
 				switch mode {
+				case "generation-changed":
+					if err := m.reg.Update(host); err != nil {
+						t.Fatal(err)
+					}
+					updated, _ := m.reg.Get(host.Name)
+					before := host
+					before.Generation = updated.Generation
+					if updated.Generation <= host.Generation || !reflect.DeepEqual(before, updated) {
+						t.Fatalf("update must change only generation: before=%+v after=%+v", host, updated)
+					}
+					host = updated
 				case "old-process":
 					selected.mutated = false
 				case "wrong-build":
@@ -100,8 +143,14 @@ func TestEnsureReconcilesSelectedRestartBeforeStartupContract(t *testing.T) {
 					if contract == "incompatible" {
 						want = ErrProtocolIncompatible
 					}
+					if mode == "generation-changed" {
+						want = errOwnerEvidence
+					}
 					if !errors.Is(err, want) || ch != nil || !reflect.DeepEqual(pending, m.pendingRestart(host.Name)) {
 						t.Fatalf("unproven reconnect: channel=%v err=%v want=%v pending=%+v", ch, err, want, m.pendingRestart(host.Name))
+					}
+					if reads.Load() != 0 {
+						t.Fatalf("refused reconnect performed %d authenticated reads", reads.Load())
 					}
 				}
 				if restarts != 1 || writes != 0 {
