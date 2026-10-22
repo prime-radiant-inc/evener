@@ -277,11 +277,17 @@ func (m *Manager) collectPreflight(ctx context.Context, host hostreg.Host) (pref
 		// executable for its own contract: refusal prose alone cannot authorize
 		// replacing a stopped installation or reconcile an interrupted write.
 		described, out, describeErr := m.describeLaunchContract(ctx, probeHost)
-		if describeErr != nil {
+		switch {
+		case describeErr == nil:
+			lc, err = described, nil
+		case errors.Is(describeErr, ErrPreflightDecode):
+			// Keep a malformed contract's own classification; it is not an SSH
+			// failure and the caller handles it as an unusable launch contract.
+			lc, err = described, describeErr
+		default:
 			// Unreadable disk metadata must not prevent a compatible live attach.
 			return preflightResult{facts: pf, launchErr: sshRunFailure(host.Name, "launch-check", describeErr, tail(out))}, nil
 		}
-		lc, err = described, nil
 	}
 	if err != nil {
 		pf.ExecutableMissing = errors.Is(err, errExecutableMissing)
