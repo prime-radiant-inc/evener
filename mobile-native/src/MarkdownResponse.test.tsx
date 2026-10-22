@@ -371,6 +371,24 @@ it("opens files through actual TimelineItem event props and preserves ordinary r
 	act(() => choose(options.options.indexOf("Copy")));
 	expect(Clipboard.setStringAsync).toHaveBeenCalledWith(original);
 });
+it("opens a report link filed in the session artifacts instead of the browser", () => {
+	const openFile = vi.fn();
+	const artifactsDir = "/state/projects/p/sessions/s1/artifacts";
+	const original = `[Full report](file://${artifactsDir}/docs-quality-repairs.md)`;
+	const tree = render(
+		<MarkdownResponse markdown={original} fileContext={{ cwd: "/work/a", artifactsDir, openFile }} />,
+	);
+	const url = emittedURLs(prose(tree).props.markdown)[0];
+	act(() => prose(tree).props.onLinkPress({ url }));
+	expect(openFile).toHaveBeenCalledWith({
+		path: "docs-quality-repairs.md",
+		cwd: artifactsDir,
+		readTarget: `${artifactsDir}/docs-quality-repairs.md`,
+		provenance: "absolute",
+		root: "artifacts",
+	});
+	expect(Linking.openURL).not.toHaveBeenCalled();
+});
 it("keeps Copy response and external actions, but rejects unknown generated identifiers", () => {
 	const openFile = vi.fn();
 	const original = "docs/a.md [web](https://example.test/x)";

@@ -54,8 +54,9 @@ describe("the documents a message names (spec 8.2)", () => {
 		]);
 	});
 
-	it("reads local targets, but excludes schemes and existing external anchor labels", () => {
-		expect(messageDocuments("[plan](file:///home/jesse/git/evener/docs/plan.md)", cwd, none)).toEqual([]);
+	it("reads local targets, including a file URL inside the folder, but excludes paths outside it", () => {
+		expect(messageDocuments("[plan](file:///home/jesse/git/evener/docs/plan.md)", cwd, none)).toEqual(["docs/plan.md"]);
+		expect(messageDocuments("[hosts](file:///etc/hosts)", cwd, none)).toEqual([]);
 		expect(messageDocuments("[`plan.md`](docs/plan.md)", cwd, none)).toEqual(["docs/plan.md"]);
 		expect(
 			messageDocuments(

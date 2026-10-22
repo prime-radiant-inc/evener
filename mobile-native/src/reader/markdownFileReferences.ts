@@ -1,4 +1,9 @@
-import { findFileReferences, parseFileReference, type FileReference } from "@evener/appwire-client/docContent";
+import {
+	findFileReferences,
+	parseFileReference,
+	type FileReference,
+	resolveFileLink,
+} from "@evener/appwire-client/docContent";
 import { Marked, type Token, type Tokens } from "marked";
 
 // The installed native parser uses NOHTML. Keep marked's Markdown grammar and
@@ -13,6 +18,10 @@ const nativeMarkdown = new Marked({
 
 export interface NativeFileOpenContext {
 	readonly cwd: string;
+	/** The session's retained artifacts directory, the second root the hub
+	 * serves. A link inside it opens as a document just as one inside `cwd`
+	 * does. Absent until the thread snapshot advertises one. */
+	readonly artifactsDir?: string;
 	openFile(reference: FileReference): void;
 }
 export interface MarkdownFileRender {
@@ -433,23 +442,32 @@ function candidates(markdown: string): readonly Candidate[] {
 	return found;
 }
 
-function boundCandidates(markdown: string, cwd: string) {
+function boundCandidates(markdown: string, cwd: string, artifactsDir?: string) {
 	return candidates(markdown).flatMap((candidate) => {
-		const reference = parseFileReference(candidate.value, candidate.surface, cwd);
+		// A link destination may be a file URL, which the path parser refuses,
+		// so links bind through the shared resolver the web transcript uses.
+		const reference =
+			candidate.surface === "link"
+				? resolveFileLink(candidate.value, cwd, artifactsDir)
+				: parseFileReference(candidate.value, candidate.surface, cwd);
 		return reference ? [{ candidate, reference }] : [];
 	});
 }
 export function markdownFileReferences(
 	markdown: string,
 	cwd: string,
+	artifactsDir?: string,
 ): Array<{ reference: FileReference; surface: "prose" | "code" | "link" }> {
-	return boundCandidates(markdown, cwd).map(({ candidate, reference }) => ({ reference, surface: candidate.surface }));
+	return boundCandidates(markdown, cwd, artifactsDir).map(({ candidate, reference }) => ({
+		reference,
+		surface: candidate.surface,
+	}));
 }
 let renderGeneration = 0;
-export function renderMarkdownFileReferences(markdown: string, cwd: string): MarkdownFileRender {
+export function renderMarkdownFileReferences(markdown: string, cwd: string, artifactsDir?: string): MarkdownFileRender {
 	const generation = ++renderGeneration;
 	const references = new Map<string, FileReference>();
-	const replacements = boundCandidates(markdown, cwd).map(({ candidate, reference }, index) => {
+	const replacements = boundCandidates(markdown, cwd, artifactsDir).map(({ candidate, reference }, index) => {
 		const id = `evener-file:${generation}-${index}`;
 		references.set(id, reference);
 		let replacement: string;

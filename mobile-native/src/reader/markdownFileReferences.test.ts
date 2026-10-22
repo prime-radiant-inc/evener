@@ -245,7 +245,6 @@ it.each([
 	"[x](./docs/a%ZZ.md)",
 	"[x](./docs/a&bsol;b.md)",
 	"[x](./docs/a&Tab;b.md)",
-	"[x](file:///work/b/docs/a.md)",
 	"[x](https&colon;//example.test/docs/a.md)",
 	"../**docs/a.md**",
 	"docs/`README.md`/other",
@@ -1016,5 +1015,48 @@ describe("large adjoining prose spans", () => {
 		expect(entries.map(([, reference]) => reference.readTarget)).toEqual(["/work/tree/docs/a.md"]);
 		expect(result.markdown).toBe(`[docs/a.md](${entries[0]?.[0]})${markdown.slice("docs/a.md".length)}`);
 		expect(result.markdown.split(entries[0]?.[0] ?? "missing-generated-id")).toHaveLength(2);
+	});
+});
+
+// C15: an agent files a report in the session's retained artifacts directory
+// and links it by file:// URL. The hub serves that directory, and the thread
+// snapshot names it, so the phone must bind the link the same way the web does.
+describe("native file URL links", () => {
+	const artifactsDir = "/state/projects/p/sessions/s1/artifacts";
+	const reportURL = `file://${artifactsDir}/docs-quality-repairs.md`;
+
+	it("binds a file URL inside the session artifacts to the retained file", () => {
+		const result = renderMarkdownFileReferences(`[Full report](${reportURL})`, cwd, artifactsDir);
+		const reference = [...result.references.values()][0];
+		expect(reference).toMatchObject({
+			path: "docs-quality-repairs.md",
+			cwd: artifactsDir,
+			readTarget: `${artifactsDir}/docs-quality-repairs.md`,
+			root: "artifacts",
+		});
+		expect([...result.references.keys()]).toHaveLength(1);
+	});
+
+	it("binds a file URL inside the working directory", () => {
+		const result = renderMarkdownFileReferences(`[design](file://${cwd}/docs/plan.md)`, cwd);
+		expect([...result.references.values()][0]).toMatchObject({
+			path: "docs/plan.md",
+			cwd,
+		});
+	});
+
+	it("leaves a file URL outside both roots as an ordinary link", () => {
+		for (const target of ["file:///etc/passwd", "file:///state/other/artifacts/r.md"]) {
+			const result = renderMarkdownFileReferences(`[report](${target})`, cwd, artifactsDir);
+			expect(result.references.size).toBe(0);
+			expect(result.markdown).toContain(target);
+		}
+	});
+
+	it("mentions the file reference the same way for chips and prose", () => {
+		const references = markdownFileReferences(`[Full report](${reportURL})`, cwd, artifactsDir);
+		expect(references.map(({ reference }) => reference.readTarget)).toEqual([
+			`${artifactsDir}/docs-quality-repairs.md`,
+		]);
 	});
 });

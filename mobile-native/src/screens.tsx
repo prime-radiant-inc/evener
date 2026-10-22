@@ -1423,9 +1423,9 @@ export function ConversationScreen({
 	const fileContext = useMemo<NativeFileOpenContext | undefined>(
 		() =>
 			documentCwd && route.params.hubId && isValidTranscriptRef(route.params.ref)
-				? { cwd: documentCwd, openFile }
+				? { cwd: documentCwd, artifactsDir: conversation?.artifactsDir, openFile }
 				: undefined,
-		[documentCwd, route.params.hubId, route.params.ref, openFile],
+		[documentCwd, route.params.hubId, route.params.ref, conversation?.artifactsDir, openFile],
 	);
 	const openDocument = useCallback(
 		(path: string, updatedAt: string | undefined) => {
