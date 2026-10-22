@@ -389,9 +389,11 @@ func TestServeWebSocketTeardownUnderQueueSaturationCompletesAfterHandlerRelease(
 	if err := transport.Close(); err != nil {
 		t.Fatal(err)
 	}
+	// Unregistration follows receive-loop cancellation and queue purge. Keep
+	// the handler parked until then so queued work cannot run before cancel.
+	waitUnregistered(t, server)
 	release()
 	waitFor(t, "worker to exit after teardown", conn.workerExited)
-	waitUnregistered(t, server)
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("calls after teardown = %d, want only the parked handler", got)
 	}
