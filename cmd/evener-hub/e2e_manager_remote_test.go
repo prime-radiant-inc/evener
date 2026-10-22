@@ -475,6 +475,19 @@ func TestManagerRemoteFanoutAndRevocation(t *testing.T) {
 	if _, err := bindings[managerOne].Invoke(ctx, appwire.SessionOperationRequest{Read: &appwire.ThreadReadParams{Ref: remoteWorker}}); err == nil {
 		t.Fatal("revoked Manager still admitted")
 	}
+	// Disabling and re-enabling on the same bridge must give a usable Manager
+	// again. The hosting hub only learns a binding is finished when its context
+	// ends, and this bridge never disconnects, so nothing retires the old one
+	// unless the re-enable itself supersedes it.
+	if _, err := source.SetManager(ctx, appwire.ThreadManagerSetParams{Ref: managerOne, Enabled: true}); err != nil {
+		t.Fatalf("re-enable on the same bridge: %v", err)
+	}
+	if read, err := bindings[managerOne].Invoke(ctx, appwire.SessionOperationRequest{Read: &appwire.ThreadReadParams{Ref: remoteWorker}}); err != nil || read.Read == nil || read.Actor.ManagerRef != managerOne {
+		t.Fatalf("re-enabled Manager cannot read the worker: %+v err=%v", read, err)
+	}
+	if read, err := bindings[managerTwo].Invoke(ctx, appwire.SessionOperationRequest{Read: &appwire.ThreadReadParams{Ref: remoteWorker}}); err != nil || read.Read == nil || read.Actor.ManagerRef != managerTwo {
+		t.Fatalf("re-enable displaced an independent Manager: %+v err=%v", read, err)
+	}
 	if read, err := bindings[managerTwo].Invoke(ctx, appwire.SessionOperationRequest{Read: &appwire.ThreadReadParams{Ref: remoteWorker}}); err != nil || read.Read == nil || read.Actor.ManagerRef != managerTwo {
 		t.Fatalf("revocation displaced independent Manager: %+v err=%v", read, err)
 	}

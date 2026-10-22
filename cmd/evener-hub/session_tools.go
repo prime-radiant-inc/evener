@@ -30,7 +30,35 @@ type remoteSessionOwner struct {
 	hubID   string
 	owner   appwire.SessionHubClient
 	ctx     context.Context
+	cancel  context.CancelFunc
 	binding appwire.SessionBinding
+}
+
+// retire ends this proxy's binding at its source: the context its installation
+// was given, which the installation's own cleanup waits on.
+func (r *remoteSessionOwner) retire() {
+	if r.cancel != nil {
+		r.cancel()
+	}
+}
+
+// supersededRemoteProxy reports whether previous is a stale binding that an
+// installation carrying next may replace.
+//
+// Turning Manager off and on again keeps the same enabling hub, so a re-enable
+// presents a fresh binding ID and a newer preference revision. Nothing told the
+// hosting hub the old binding was finished: the disconnect it waits for never
+// comes, because the bridge carried on. A newer revision for this hub and
+// instance is that proof, and the host rechecks the preference row before
+// installing, so replacing on it cannot outrun a human's disable.
+func supersededRemoteProxy(previous *remoteSessionOwner, next appwire.SessionBinding) bool {
+	if previous == nil || previous.ctx.Err() != nil {
+		return false
+	}
+	if previous.binding.HubID != next.HubID || previous.binding.InstanceID != next.InstanceID {
+		return false
+	}
+	return next.PreferenceRevision > previous.binding.PreferenceRevision
 }
 
 func (r *remoteSessionOwner) SessionToolsHubID() string     { return r.hubID }
@@ -117,17 +145,26 @@ func (o *sessionOperations) install() {
 		if !setting.Enabled || setting.HubID != peer || setting.Revision != binding.PreferenceRevision {
 			return appwire.InvalidRequest("saved Manager authority differs from identified peer")
 		}
-		proxy := &remoteSessionOwner{hubID: peer, owner: upstream, ctx: ctx, binding: binding}
+		proxyCtx, proxyCancel := context.WithCancel(ctx)
+		proxy := &remoteSessionOwner{hubID: peer, owner: upstream, ctx: proxyCtx, cancel: proxyCancel, binding: binding}
 		o.mu.Lock()
 		if o.remote == nil {
 			o.remote = map[string]*remoteSessionOwner{}
 		}
-		if previous := o.remote[binding.Ref]; previous != nil && previous.ctx.Err() == nil {
+		previous := o.remote[binding.Ref]
+		superseded := supersededRemoteProxy(previous, binding)
+		if previous != nil && previous.ctx.Err() == nil && !superseded {
 			o.mu.Unlock()
 			return appwire.Conflict("workspace already has an enabling hub binding")
 		}
 		o.remote[binding.Ref] = proxy
 		o.mu.Unlock()
+		if superseded {
+			// Retire the old binding before installing over it: its cleanup removes
+			// it from o.remote only while it is still the current entry, so the new
+			// proxy above is never deleted by the old binding's teardown.
+			previous.retire()
+		}
 		local.ReconcileSessionTools()
 		if err := local.AwaitSessionToolsBinding(ctx, binding); err != nil {
 			o.mu.Lock()
