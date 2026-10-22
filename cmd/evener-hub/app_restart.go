@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -154,9 +155,20 @@ func regularLaunchTarget(path string) (os.FileInfo, error) {
 // runs on every Settings load; reading and hashing a large binary each time is
 // avoidable when its size and mtime have not moved.
 func launchBinaryDigest(path string) (string, error) {
-	info, err := regularLaunchTarget(path)
+	f, err := openInstalledRead(path)
 	if err != nil {
 		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	// Validate the opened descriptor, not an earlier path lookup: a target
+	// swapped for a FIFO between the stat and the read must not block here
+	// while launchDigestMu is held.
+	if !info.Mode().IsRegular() {
+		return "", errors.New("launch path is not a regular file")
 	}
 	key := fmt.Sprintf("%s:%d:%d", path, info.Size(), info.ModTime().UnixNano())
 	launchDigestMu.Lock()
@@ -164,7 +176,7 @@ func launchBinaryDigest(path string) (string, error) {
 	if key == launchDigestKey {
 		return launchDigest, nil
 	}
-	data, err := os.ReadFile(path)
+	data, err := io.ReadAll(f)
 	if err != nil {
 		return "", err
 	}

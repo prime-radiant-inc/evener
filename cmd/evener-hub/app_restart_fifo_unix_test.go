@@ -49,3 +49,32 @@ func TestVerifyPinnedBinaryRejectsFIFOSwap(t *testing.T) {
 		t.Fatal("verification blocked on a FIFO")
 	}
 }
+
+// TestLaunchBinaryDigestRejectsFIFO pins that the Settings digest path fails
+// on a FIFO instead of parking a read while launchDigestMu is held.
+func TestLaunchBinaryDigestRejectsFIFO(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "evener")
+	if err := unix.Mkfifo(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if w, err := os.OpenFile(path, os.O_WRONLY|unix.O_NONBLOCK, 0); err == nil {
+			_ = w.Close()
+		}
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := launchBinaryDigest(path)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("digested a FIFO")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("digest blocked on a FIFO")
+	}
+}
