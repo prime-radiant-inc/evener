@@ -1253,15 +1253,43 @@ func (r *Roster) SubagentState(sessionID string) (string, bool) {
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	entry, ok := r.subagentOwnerLocked(sessionID)
+	if !ok {
+		return "", false
+	}
+	return entry.RunningSubagentStates[sessionID], true
+}
+
+// SubagentOwner returns the live entry that currently runs sessionID as an
+// in-process child, or false when no live daemon lists it. The answer is a
+// clone of that owner, and the scan runs under the read lock without the
+// clones and sort a Snapshot pays.
+func (r *Roster) SubagentOwner(sessionID string) (LiveEntry, bool) {
+	if sessionID == "" {
+		return LiveEntry{}, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	entry, ok := r.subagentOwnerLocked(sessionID)
+	if !ok {
+		return LiveEntry{}, false
+	}
+	return CloneLiveEntry(entry), true
+}
+
+// subagentOwnerLocked returns the entry that lists sessionID as a running
+// child. The caller holds the read lock, so the result must not escape
+// uncloned.
+func (r *Roster) subagentOwnerLocked(sessionID string) (LiveEntry, bool) {
 	for _, entry := range r.byPID {
 		if entry.Crashed {
 			continue
 		}
 		if slices.Contains(entry.RunningSubagentIDs, sessionID) {
-			return entry.RunningSubagentStates[sessionID], true
+			return entry, true
 		}
 	}
-	return "", false
+	return LiveEntry{}, false
 }
 
 func preferLiveEntry(candidate, current LiveEntry) bool {

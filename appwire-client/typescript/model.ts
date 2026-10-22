@@ -497,6 +497,12 @@ export interface ThreadModel {
   // location cluster and doc-pane cwd-relativization. Snapshot-only - a
   // reconnect re-hydrates them; nothing pushes them live.
   cwd: string;
+  // The session's retained artifacts directory on the hub that serves it
+  // (wire Thread.evener.artifactsDir), absent when no local path names one. A
+  // file: link is openable through the doc pane only when it resolves inside
+  // cwd or inside this directory, so a link's destination is checked against
+  // both rather than guessed at.
+  artifactsDir?: string;
   gitBranch?: string;
   projectPath?: string;
   // When the session began and when its state was last written, as ISO
