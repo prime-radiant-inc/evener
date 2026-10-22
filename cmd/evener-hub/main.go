@@ -500,6 +500,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] listen %s: %v\n", cfg.Addr, err)
 		return fmt.Errorf("listen %s: %w", cfg.Addr, err)
 	}
+	hubBindWasEphemeral = strings.HasSuffix(cfg.Addr, ":0")
 	cfg.Addr = hubListener.Addr().String()
 	hubBoundAddr = cfg.Addr
 

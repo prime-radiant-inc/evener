@@ -401,6 +401,7 @@ func canonicalInvocationPath(argv0 string) string {
 // the empty-argv case the same way currentExecutable does: slicing an
 // empty slice panics, and a hub launched with no args restarts bare.
 var hubBoundAddr string
+var hubBindWasEphemeral bool
 
 func hubRestartArgs(args []string) []string {
 	if len(args) == 0 {
@@ -412,17 +413,26 @@ func hubRestartArgs(args []string) []string {
 	}
 	// A hub started with an ephemeral port (":0") must restart on the port it
 	// bound, or every reconnecting client keeps dialing the old one.
+	rewrote := false
 	for i, arg := range out {
 		switch {
 		case (arg == "-addr" || arg == "--addr") && i+1 < len(out):
 			if strings.HasSuffix(out[i+1], ":0") {
 				out[i+1] = hubBoundAddr
+				rewrote = true
 			}
 		case strings.HasPrefix(arg, "-addr=") && strings.HasSuffix(arg, ":0"):
 			out[i] = "-addr=" + hubBoundAddr
+			rewrote = true
 		case strings.HasPrefix(arg, "--addr=") && strings.HasSuffix(arg, ":0"):
 			out[i] = "--addr=" + hubBoundAddr
+			rewrote = true
 		}
+	}
+	if !rewrote && hubBindWasEphemeral {
+		// The ephemeral address came from configuration, so there is no
+		// argument to rewrite; supply the bound one explicitly.
+		out = append(out, "-addr", hubBoundAddr)
 	}
 	return out
 }
