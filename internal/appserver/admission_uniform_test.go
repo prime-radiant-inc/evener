@@ -3,6 +3,7 @@ package appserver
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -132,14 +133,8 @@ func TestServeWebSocketHardCapRefusalPrecedesAdmittedOrdering(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	want := []int64{2, 3, 4}
-	if len(executed) != len(want) {
-		t.Fatalf("executed requests = %v, want %v (the refused one must never run)", executed, want)
-	}
-	for i, id := range want {
-		if executed[i] != id {
-			t.Fatalf("execution order = %v, want %v", executed, want)
-		}
+	if !slices.Equal(executed, []int64{2, 3, 4}) {
+		t.Fatalf("executed requests = %v, want [2 3 4] (the refused one must never run)", executed)
 	}
 }
 

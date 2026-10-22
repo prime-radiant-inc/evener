@@ -13,10 +13,11 @@ import (
 )
 
 func managerReadDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDefinition {
-	data, _ := json.Marshal(def.Parameters)
 	var params map[string]any
-	_ = json.Unmarshal(data, &params)
-	if !ordinary {
+	if ordinary {
+		data, _ := json.Marshal(def.Parameters)
+		_ = json.Unmarshal(data, &params)
+	} else {
 		params = map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}
 	}
 	props, _ := params["properties"].(map[string]any)

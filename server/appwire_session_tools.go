@@ -38,6 +38,10 @@ func (s *Server) SetSessionTools(current func() *agent.Session) {
 		clients.mu.Lock()
 		defer clients.mu.Unlock()
 		if previous := clients.clients[binding.HubID]; previous != nil {
+			if previous.ctx.Err() == nil {
+				cancel()
+				return appwire.Conflict("hub already has a live runtime binding")
+			}
 			previous.cancel()
 		} else if len(clients.clients) >= appwire.SessionToolsPendingLimit {
 			cancel()
@@ -70,13 +74,19 @@ func (c *runtimeHubClients) close() {
 func (c *runtimeHubClients) State(ctx context.Context) (appwire.ManagerView, error) {
 	c.mu.Lock()
 	selected, revision := c.selected, c.revision
-	clients := maps.Clone(c.clients)
+	var selectedClient *runtimeHubClient
+	var clients map[string]*runtimeHubClient
+	if selected != "" {
+		selectedClient = c.clients[selected]
+	} else {
+		clients = maps.Clone(c.clients)
+	}
 	c.mu.Unlock()
 	var view appwire.ManagerView
 	chosen := ""
 	if selected != "" {
 		var err error
-		view, err = clients[selected].State(ctx)
+		view, err = selectedClient.State(ctx)
 		if err != nil {
 			return view, err
 		}
@@ -85,6 +95,35 @@ func (c *runtimeHubClients) State(ctx context.Context) (appwire.ManagerView, err
 				return view, appwire.Conflict("hub returned another authority")
 			}
 			chosen = selected
+			// Capture the other clients without holding the lock across hub RPCs.
+			// A revision change is rejected below, not silently reselected.
+			type hubClient struct {
+				hub    string
+				client *runtimeHubClient
+			}
+			c.mu.Lock()
+			var others []hubClient
+			for hub, client := range c.clients {
+				if hub != selected {
+					others = append(others, hubClient{hub, client})
+				}
+			}
+			c.mu.Unlock()
+			for _, other := range others {
+				if other.client.valid() != nil {
+					continue
+				}
+				state, err := other.client.State(ctx)
+				if err != nil {
+					return view, err
+				}
+				if state.Setting.Enabled {
+					if state.Setting.HubID != other.hub {
+						return view, appwire.Conflict("hub returned another authority")
+					}
+					return view, appwire.Conflict("multiple hubs claim Manager authority")
+				}
+			}
 		}
 	} else {
 		for hub, client := range clients {
