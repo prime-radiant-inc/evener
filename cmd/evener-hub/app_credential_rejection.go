@@ -96,11 +96,14 @@ type credentialRejections struct {
 	// replaced by the time the provider answers.
 	writes map[string]uint64
 	byName map[string]credentialRejection
-	// settlementEntered, when set, runs at the entry of settleCredentialProbe,
-	// before credMu is taken. A test that parks an instance edit between its
-	// publication and its fence uses it to know the probe's outcome is back
-	// and settlement has begun, so the fence's blocking can be observed
-	// without guessing at scheduling. Nil in production.
+	// settlementEntered, when set, runs in settleCredentialProbe immediately
+	// before credMu is taken, after the fingerprint-key resolution and the
+	// rejection classification above it. A test that parks an instance edit
+	// between its publication and its fence uses it to know the probe's
+	// outcome is back and settlement has reached the shared lock, so the
+	// bounded observation that follows watches the narrowest interval this
+	// seam can mark. It is an acknowledgment of position, not a
+	// synchronization guarantee. Nil in production.
 	settlementEntered func()
 }
 
@@ -207,12 +210,12 @@ func (c *hubAuthController) settleCredentialProbe(start credentialProbeStart, li
 	if c == nil {
 		return true
 	}
-	if c.rejections.settlementEntered != nil {
-		c.rejections.settlementEntered()
-	}
 	key, _ := resolveEndpointFingerprintKey(c.stateDir)
 	status, rejected := credentialRejectionStatus(err)
 	verified := err == nil && listing.Live
+	if c.rejections.settlementEntered != nil {
+		c.rejections.settlementEntered()
+	}
 	c.credMu.RLock()
 	if start.revision != "" {
 		current, _ := c.currentCredentialRevisionForKey(key, start.name)

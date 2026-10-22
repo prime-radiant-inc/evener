@@ -260,6 +260,13 @@ func headerTOML(baseURL, header string) string {
 	return fmt.Sprintf("[providers.local]\nbase = \"openai-compatible\"\nbase_url = %q\n\n[providers.local.credential_headers]\nAuthorization = %q\n", baseURL, header)
 }
 
+// templatedHeaderTOML is one credential-header instance whose base URL is a
+// template over a resolved variable: the ordinary supported shape whose
+// literalization to the URL it already resolves to changes no request byte.
+func templatedHeaderTOML(baseURL string) string {
+	return fmt.Sprintf("[providers.local]\nbase = \"openai-compatible\"\nbase_url = \"{BASE_URL}\"\n\n[providers.local.vars]\n\"BASE_URL\" = %q\n\n[providers.local.credential_headers]\nAuthorization = \"Bearer $KEY_A\"\n", baseURL)
+}
+
 func headerEnv() map[string]string {
 	return map[string]string{"KEY_A": "fixture-key-a", "KEY_B": "fixture-key-b"}
 }
@@ -454,10 +461,10 @@ func TestCredentialProbeAccessTransitions(t *testing.T) {
 		b := newProbeBoundary(t, true)
 		f := newAccessProbeFixture(t, headerTOML(b.server.URL+"/v1", "Bearer $KEY_A"), headerEnv())
 		before := f.status(t, "local")
-		// The settlement-entry acknowledgment: once the provider's answer is
-		// back, the fence is the only thing between settlement and a published
-		// outcome, so the observation below cannot be escaped by a probe that
-		// merely never reached settlement.
+		// The settlement-entry acknowledgment: it fires in
+		// settleCredentialProbe immediately before the shared lock, so the
+		// bounded observation below starts once the probe's outcome is back
+		// and settlement is at credMu.
 		settled := make(chan struct{})
 		var settleOnce sync.Once
 		f.auth.rejections.settlementEntered = func() { settleOnce.Do(func() { close(settled) }) }
@@ -484,21 +491,22 @@ func TestCredentialProbeAccessTransitions(t *testing.T) {
 		}
 		// The replacement is current but the edit has not advanced the fence,
 		// and the edit holds credMu exclusively while it is parked here.
-		// Release the provider's answer: the probe's outcome is back and
-		// settlement has begun, so the probe goroutine is inside
-		// settleCredentialProbe and runnable.
+		// Release the provider's answer and wait for the acknowledgment: the
+		// probe's outcome is back and settlement has reached credMu.
 		b.unleash()
 		select {
 		case <-settled:
 		case <-time.After(10 * time.Second):
 			t.Fatal("the probe's outcome never reached settlement")
 		}
-		// Settlement has been entered and needs credMu's shared side, which
-		// the parked edit holds exclusively, so the probe's answer — about
-		// key A — cannot be published until the edit advances the fence. The
-		// bound below is a tripwire, not the mechanism: a settlement that
-		// took no lock would finish while the edit is still parked, the probe
-		// goroutine being the only runnable work left.
+		// Bounded observation, in line with the repository's existing lock
+		// test (TestInstances_MutationsWaitForAnInFlightCredentialWrite): no
+		// outcome about key A is expected while the edit holds credMu between
+		// its publication and its fence. An outcome inside the window is a
+		// settlement that published without the lock; a silent window is the
+		// repaired behavior. The window cannot distinguish blocked settlement
+		// from an unlocked settlement delayed past it, and is not a proof of
+		// blocking.
 		select {
 		case got := <-original:
 			t.Fatalf("the probe settled between the edit's publication and its fence: resp=%+v err=%v", got.resp, got.err)
@@ -984,6 +992,74 @@ func TestCredentialProbeAccessTransitions(t *testing.T) {
 		reqs := b.requests()
 		if len(reqs) != 1 || reqs[0].quotaProject != "fixture-project" {
 			t.Fatalf("probe requests = %+v, want the one held check still carrying the quota-project header", reqs)
+		}
+	})
+
+	t.Run("literal url edit that changes no request keeps the probe and rejection", func(t *testing.T) {
+		b := newProbeBoundary(t, false)
+		b.status.Store(http.StatusUnauthorized)
+		f := newAccessProbeFixture(t, templatedHeaderTOML(b.server.URL+"/v1"), headerEnv())
+		if resp := f.freshCheck(t, "local"); resp.Status != appwire.AuthTestStatusAuthRejected {
+			t.Fatalf("precondition: first check = %q (%q), want auth_rejected", resp.Status, resp.Message)
+		}
+		before := f.status(t, "local")
+		if before.Error == "" {
+			t.Fatal("precondition: the first 401 was not recorded")
+		}
+		if before.ConfigRevision == "" || before.ActiveSource != "credential_headers" {
+			t.Fatalf("precondition: status = %+v, want a resolved credential_headers identity", before)
+		}
+
+		b.hold.Store(true)
+		original := startProbe(f.auth, "local")
+		b.acknowledge(t)
+		held := b.requests()
+		if len(held) != 2 || held[1].authorization != "Bearer fixture-key-a" {
+			t.Fatalf("precondition: held request = %+v, want the authored key A on it", held)
+		}
+
+		// Supported edit: author the exact literal URL the {BASE_URL} template
+		// already resolves to. The resolved destination, the credential
+		// source, the authored header and the request bytes are all unchanged;
+		// only the template's variable provenance disappears from the
+		// resolution, and no authentication scheme reads it.
+		res, err := f.auth.reg.Get().ResolveInstancePresence("local")
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		f.edit(t, appwire.InstanceEditParams{Name: "local", BaseURL: res.Transport.BaseURL})
+		after := f.status(t, "local")
+		if after.ConfigRevision != before.ConfigRevision || after.ActiveSource != before.ActiveSource {
+			t.Fatalf("precondition: the edit moved the public identity %+v -> %+v; this case must exercise an unchanged revision", before, after)
+		}
+		if after.Error == "" {
+			t.Fatal("an edit that changed no request dropped the standing rejection")
+		}
+		b.unleash()
+
+		got := waitProbe(t, original)
+		if got.err != nil {
+			t.Fatalf("an edit that changed no request refused the pending probe: %v", got.err)
+		}
+		if got.resp.Status != appwire.AuthTestStatusAuthRejected {
+			t.Fatalf("probe status = %q (%q), want the standing rejection's own answer", got.resp.Status, got.resp.Message)
+		}
+		if f.status(t, "local").Error == "" {
+			t.Fatal("the standing rejection disappeared after the probe settled")
+		}
+
+		// The replacement's own request is identical to the one the held probe
+		// made: same path, same Authorization, no changed byte.
+		fresh := f.freshCheck(t, "local")
+		if fresh.Status != appwire.AuthTestStatusAuthRejected {
+			t.Fatalf("fresh check = %q (%q), want the same rejection", fresh.Status, fresh.Message)
+		}
+		reqs := b.requests()
+		if len(reqs) != 3 {
+			t.Fatalf("probe requests = %+v, want the precondition check, the held check, and the fresh check", reqs)
+		}
+		if reqs[1].path != reqs[2].path || reqs[1].authorization != reqs[2].authorization || reqs[1].authorization != "Bearer fixture-key-a" {
+			t.Fatalf("requests = %+v, want identical path and Authorization before and after the edit", reqs)
 		}
 	})
 }
