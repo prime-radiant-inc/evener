@@ -155,6 +155,19 @@ func TestPluginMarketplaceAdd_RefAfterSourceIsRejected(t *testing.T) {
 	}
 }
 
+func TestPluginMarketplaceAdd_RefFlagRejectsAQualifiedRef(t *testing.T) {
+	m := captureAdd(t)
+
+	var out, errb bytes.Buffer
+	err := runPlugin([]string{"marketplace", "add", "--ref", "refs/heads/main", "--yes", "acme/plugins"}, nil, &out, &errb)
+	if err == nil {
+		t.Fatal("marketplace add --ref with a fully qualified ref should fail")
+	}
+	if m.calls != 0 {
+		t.Fatalf("AddMarketplace called %d times for a rejected qualified ref, want 0", m.calls)
+	}
+}
+
 func TestSourceDescription_ShowsThePin(t *testing.T) {
 	cases := []struct {
 		name string

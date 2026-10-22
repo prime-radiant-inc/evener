@@ -2720,75 +2720,24 @@ func TestAddMarketplace_RefMatchingATrackedPathAndANamespaceTagIsRejected(t *tes
 	}
 }
 
-// An explicitly qualified ref wins over namespace expansion: a tag named
-// refs/heads/main must not replace the branch the caller named.
-func TestAddMarketplace_QualifiedRefWinsOverNamespaceExpansion(t *testing.T) {
+// A source ref is a branch or tag name, not a fully qualified ref.
+func TestAddMarketplace_RejectsAFullyQualifiedRef(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")
 	}
 	repo := makeMarketplaceRepo(t, "qualified")
-	mainTip := gitIn(t, repo, "rev-parse", "HEAD")
-	gitIn(t, repo, "checkout", "--quiet", "-b", "other")
-	advanceGitRepo(t, repo, "README.md", "other branch")
-	gitIn(t, repo, "tag", "refs/heads/main")
-	gitIn(t, repo, "checkout", "--quiet", "-")
-
 	m := NewManager(t.TempDir())
-	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "refs/heads/main"})
+	for _, ref := range []string{"refs/heads/main", "refs/tags/v1"} {
+		if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: ref}); !errors.Is(err, ErrSourceRefQualified) {
+			t.Fatalf("AddMarketplace(%q) error = %v, want ErrSourceRefQualified", ref, err)
+		}
+	}
+	mk, err := m.ListMarketplaces(context.Background())
 	if err != nil {
-		t.Fatalf("AddMarketplace: %v", err)
+		t.Fatal(err)
 	}
-	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != mainTip {
-		t.Fatalf("HEAD = %s, want the explicitly named main tip %s", got, mainTip)
-	}
-}
-
-// A qualified branch is still a branch: refresh follows its tip rather than
-// treating the clone as pinned.
-func TestRefreshMarketplace_AQualifiedBranchFollowsItsTip(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
-	repo := makeMarketplaceRepo(t, "qualifiedbranch")
-	m := NewManager(t.TempDir())
-	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "refs/heads/main"})
-	if err != nil {
-		t.Fatalf("AddMarketplace: %v", err)
-	}
-	advanceGitRepo(t, repo, "README.md", "main advanced")
-	nextTip := gitIn(t, repo, "rev-parse", "HEAD")
-	if err := m.RefreshMarketplace(context.Background(), "qualifiedbranch"); err != nil {
-		t.Fatalf("RefreshMarketplace: %v", err)
-	}
-	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != nextTip {
-		t.Fatalf("HEAD after refresh = %s, want the moved main tip %s", got, nextTip)
-	}
-}
-
-// A branch whose name itself starts with refs/ is still shorthand for a local
-// branch under refs/heads/, so refresh must follow it.
-func TestRefreshMarketplace_ABranchNameStartingWithRefsFollowsItsTip(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
-	repo := makeMarketplaceRepo(t, "refsbranch")
-	gitIn(t, repo, "checkout", "--quiet", "-b", "refs/releases/v2")
-	advanceGitRepo(t, repo, "README.md", "v2")
-	gitIn(t, repo, "checkout", "--quiet", "-")
-	m := NewManager(t.TempDir())
-	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "refs/releases/v2"})
-	if err != nil {
-		t.Fatalf("AddMarketplace: %v", err)
-	}
-	gitIn(t, repo, "checkout", "--quiet", "refs/releases/v2")
-	advanceGitRepo(t, repo, "README.md", "v3")
-	nextTip := gitIn(t, repo, "rev-parse", "HEAD")
-	gitIn(t, repo, "checkout", "--quiet", "-")
-	if err := m.RefreshMarketplace(context.Background(), "refsbranch"); err != nil {
-		t.Fatalf("RefreshMarketplace: %v", err)
-	}
-	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != nextTip {
-		t.Fatalf("HEAD after refresh = %s, want the moved branch tip %s", got, nextTip)
+	if len(mk) != 0 {
+		t.Fatalf("marketplaces = %+v after a rejected qualified ref, want none", mk)
 	}
 }
 
@@ -3419,31 +3368,6 @@ func TestRefreshMarketplace_ABranchRefFollowsItsTip(t *testing.T) {
 	}
 	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != nextTip {
 		t.Fatalf("HEAD after refresh = %s, want the moved release tip %s", got, nextTip)
-	}
-}
-
-// A tag named refs/heads/release is the same target checkout selects and pin
-// verification must resolve. An intact clone of it must not be recloned.
-func TestRefreshMarketplace_ATagInTheBranchNamespaceStaysIntact(t *testing.T) {
-	if !gitAvailable() {
-		t.Skip("git not available")
-	}
-	repo := makeMarketplaceRepo(t, "namespacedtag")
-	tagTip := gitIn(t, repo, "rev-parse", "HEAD")
-	gitIn(t, repo, "tag", "refs/heads/release")
-	m := NewManager(t.TempDir())
-	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "refs/heads/release"})
-	if err != nil {
-		t.Fatalf("AddMarketplace: %v", err)
-	}
-	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != tagTip {
-		t.Fatalf("HEAD = %s, want the tag tip %s", got, tagTip)
-	}
-	if err := os.Rename(repo, repo+".gone"); err != nil {
-		t.Fatal(err)
-	}
-	if err := m.RefreshMarketplace(context.Background(), "namespacedtag"); err != nil {
-		t.Fatalf("refreshing an intact pinned clone contacted the remote: %v", err)
 	}
 }
 

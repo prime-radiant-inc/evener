@@ -86,6 +86,16 @@ func guardGitArg(name, val string) error {
 	return nil
 }
 
+// validateRef rejects a fully qualified ref and a flag-like value. Source refs
+// are branch or tag names; accepting refs/... would make checkout, refresh,
+// and remote lookup disagree about which ref the name selects.
+func validateRef(name, val string) error {
+	if strings.HasPrefix(val, "refs/") {
+		return fmt.Errorf("%w: git %s %q", ErrSourceRefQualified, name, val)
+	}
+	return guardGitArg(name, val)
+}
+
 // checkoutRevision checks out target only after proving it names a commit.
 // git checkout treats an unmatched name as a pathspec, so without this a ref
 // that matches a tracked file or directory would leave the clone on its
@@ -137,20 +147,6 @@ type resolvedRef struct {
 func resolveRef(ctx context.Context, dir, target string) (resolvedRef, error) {
 	if target == "HEAD" {
 		return resolvedRef{ref: "HEAD", name: "HEAD", kind: refRevision}, nil
-	}
-	// An explicit fully qualified ref wins over shorthand expansion. Without
-	// this, refs/heads/main could resolve to a tag named refs/heads/main.
-	if strings.HasPrefix(target, "refs/") && exactRefNamesCommit(ctx, dir, target) {
-		if branch, ok := strings.CutPrefix(target, "refs/heads/"); ok {
-			return resolvedRef{ref: target, name: branch, kind: refLocalBranch}, nil
-		}
-		if strings.HasPrefix(target, "refs/tags/") {
-			return resolvedRef{ref: target, name: target, kind: refTag}, nil
-		}
-		return resolvedRef{ref: target, name: target, kind: refRevision}, nil
-	}
-	if branch, ok := strings.CutPrefix(target, "refs/heads/"); ok && exactRefNamesCommit(ctx, dir, "refs/remotes/origin/"+branch) {
-		return resolvedRef{ref: "refs/remotes/origin/" + branch, name: branch, kind: refRemoteBranch}, nil
 	}
 	switch {
 	case exactRefNamesCommit(ctx, dir, "refs/heads/"+target):
@@ -205,10 +201,14 @@ func revNamesCommit(ctx context.Context, dir, rev string) bool {
 
 // gitClone clones url into dir, then checks out ref and/or sha when set.
 func gitClone(ctx context.Context, url, dir, ref, sha string) error {
-	for _, g := range []struct{ n, v string }{{"url", url}, {"ref", ref}, {"sha", sha}} {
-		if err := guardGitArg(g.n, g.v); err != nil {
-			return err
-		}
+	if err := guardGitArg("url", url); err != nil {
+		return err
+	}
+	if err := validateRef("ref", ref); err != nil {
+		return err
+	}
+	if err := validateRef("sha", sha); err != nil {
+		return err
 	}
 	if err := gitMkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return err
@@ -237,10 +237,17 @@ func gitClone(ctx context.Context, url, dir, ref, sha string) error {
 // gitSparseClone does a blobless, sparse clone of url into dir limited to
 // subdir, then pins ref/sha. Falls back to a full checkout of subdir contents.
 func gitSparseClone(ctx context.Context, url, dir, subdir, ref, sha string) error {
-	for _, g := range []struct{ n, v string }{{"url", url}, {"subdir", subdir}, {"ref", ref}, {"sha", sha}} {
-		if err := guardGitArg(g.n, g.v); err != nil {
-			return err
-		}
+	if err := guardGitArg("url", url); err != nil {
+		return err
+	}
+	if err := guardGitArg("subdir", subdir); err != nil {
+		return err
+	}
+	if err := validateRef("ref", ref); err != nil {
+		return err
+	}
+	if err := validateRef("sha", sha); err != nil {
+		return err
 	}
 	if err := gitMkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return err
@@ -291,11 +298,7 @@ func gitRefNamesBranch(ctx context.Context, dir, name string) (bool, error) {
 	if err := guardGitArg("ref", name); err != nil {
 		return false, err
 	}
-	ref := name
-	if !strings.HasPrefix(ref, "refs/heads/") {
-		ref = "refs/heads/" + ref
-	}
-	return gitRefExists(ctx, dir, ref)
+	return gitRefExists(ctx, dir, "refs/heads/"+name)
 }
 
 // gitRefExists reports whether ref exists in the clone at dir. Git's exit
@@ -354,10 +357,11 @@ func gitPathTree(ctx context.Context, dir, path string) (string, error) {
 // answers with the tag. A tag named like the default branch is too rare to be
 // worth a second query.
 func gitRemoteHead(ctx context.Context, url, ref string) (string, error) {
-	for _, g := range []struct{ n, v string }{{"url", url}, {"ref", ref}} {
-		if err := guardGitArg(g.n, g.v); err != nil {
-			return "", err
-		}
+	if err := guardGitArg("url", url); err != nil {
+		return "", err
+	}
+	if err := validateRef("ref", ref); err != nil {
+		return "", err
 	}
 	if ref == "" {
 		ref = "HEAD"
@@ -372,17 +376,9 @@ func gitRemoteHead(ctx context.Context, url, ref string) (string, error) {
 			shas[name] = sha
 		}
 	}
-	// An explicit fully qualified ref wins over shorthand expansion. A short
-	// name is looked up as a tag, then a branch; a full refname (or HEAD)
-	// matches itself. Either way a peeled line beats the tag object.
-	lookup := []string{"refs/tags/" + ref + "^{}", "refs/tags/" + ref, "refs/heads/" + ref, ref + "^{}", ref}
-	if strings.HasPrefix(ref, "refs/") {
-		lookup = []string{ref}
-		if strings.HasPrefix(ref, "refs/tags/") {
-			lookup = []string{ref + "^{}", ref}
-		}
-	}
-	for _, name := range lookup {
+	// A branch or tag name is looked up as a tag, then a branch; HEAD matches
+	// itself. Either way a peeled line beats the tag object.
+	for _, name := range []string{"refs/tags/" + ref + "^{}", "refs/tags/" + ref, "refs/heads/" + ref, ref + "^{}", ref} {
 		if sha := shas[name]; sha != "" {
 			return sha, nil
 		}

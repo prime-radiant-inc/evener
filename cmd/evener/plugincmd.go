@@ -120,6 +120,9 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 		if fs.NArg() > 1 {
 			return fmt.Errorf("unexpected argument %q; put options before the source, e.g. marketplace add --ref <branch|tag> <source>", fs.Arg(1))
 		}
+		if strings.HasPrefix(*gitRef, "refs/") {
+			return errors.New("--ref takes a branch or tag name, not a fully qualified ref")
+		}
 		src, err := parsePluginMarketplaceSource(fs.Arg(0))
 		if err != nil {
 			return err

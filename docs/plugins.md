@@ -82,9 +82,10 @@ evener plugin list --effective
 A marketplace source may be a supported repository URL, `owner/repo`, or a local
 path. For a repository URL or `owner/repo`, `--ref BRANCH_OR_TAG` checks out that
 branch or tag; a branch follows its tip when the marketplace refreshes, while a
-tag stays at the commit it names. The hub's Add marketplace form and the mobile
-Add marketplace sheet offer the same optional Branch or tag field. Installed
-state lives under `$XDG_CONFIG_HOME/evener/plugins/`, with
+tag stays at the commit it names. Name the branch or tag itself: a fully
+qualified ref such as `refs/heads/main` is rejected. The hub's Add marketplace
+form and the mobile Add marketplace sheet offer the same optional Branch or tag
+field. Installed state lives under `$XDG_CONFIG_HOME/evener/plugins/`, with
 `~/.config/evener/plugins/` as the fallback. Use the CLI rather than editing the
 registry or cache directly.
 

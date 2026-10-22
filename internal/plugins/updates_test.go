@@ -337,15 +337,12 @@ func TestGitRemoteHead_ResolvesTheCommitACheckoutOfRefLandsOn(t *testing.T) {
 	gitIn(t, repo, "tag", "-a", "v1", "-m", "release")
 	gitIn(t, repo, "branch", "feature")
 	head := advanceRepo(t, repo)
-	gitIn(t, repo, "tag", "refs/heads/feature")
 
 	for _, tc := range []struct{ ref, want string }{
 		{"", head},
 		{"main", head},
 		{"feature", first},
 		{"v1", first},
-		{"refs/tags/v1", first},
-		{"refs/heads/feature", first},
 	} {
 		got, err := gitRemoteHead(context.Background(), repo, tc.ref)
 		if err != nil {
@@ -357,6 +354,9 @@ func TestGitRemoteHead_ResolvesTheCommitACheckoutOfRefLandsOn(t *testing.T) {
 	}
 	if _, err := gitRemoteHead(context.Background(), repo, "nope"); err == nil {
 		t.Error("gitRemoteHead of a missing ref succeeded")
+	}
+	if _, err := gitRemoteHead(context.Background(), repo, "refs/heads/feature"); err == nil {
+		t.Error("gitRemoteHead accepted a fully qualified ref")
 	}
 }
 
