@@ -22,9 +22,12 @@ If the task needs a tool listed as unavailable in this session, or an Evener cap
 
 Send a message to your parent agent; it is the only way your parent hears from you. Put the text your parent should read in `message`. With `end_turn=false` the message is an update: your parent receives it, and it wakes a parent that is waiting on you, so send one only when your parent needs to know something or act on it, never to narrate progress, and keep working in the following round. The result's `delivery` says whether your parent has the update (`delivered`), will get it at its next step (`queued`), or cannot get it (`not_delivered`, with a `reason`); the call succeeds either way. With `end_turn=true` the message is your final report and ends your turn: put the complete result in it. A readiness marker you send before waiting for watch frames also uses `end_turn=true`. Always include `output` in the shape its schema gives; when you hand back completed work or machine-readable results, fill it with the evidence and structured data your parent needs. To message one of your delegates, use `delegate_send`.
 
+- `blocker`: What you are blocked on; required when end_reason=blocked.
+- `end_reason`: Why this report ends your turn; read only when end_turn=true, and done when omitted. `done`: you finished the work and nothing will wake you later. `blocked`: you cannot continue without something you name in `blocker`; your parent decides whether to unblock you. `waiting_on_work`: a job, watch, or child delegate named in `waiting_on` will wake you; your parent must not retire you.
 - `end_turn`: false: send an update and keep working; your parent receives it, and it wakes a parent that is waiting on you. true: send your final report, or a readiness marker before you wait for watch frames, and end your turn.
 - `message`: The text your parent agent receives. When the task asks for concrete findings, put them here.
 - `output`: 
+- `waiting_on`: The job, watch, or child delegate ID that will wake you; required when end_reason=waiting_on_work.
 
 ## delegate_send
 

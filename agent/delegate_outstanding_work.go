@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/goal"
@@ -80,6 +81,17 @@ func (w OutstandingDelegateWork) IDs() []string {
 // the returned error; the snapshot is still returned so a caller can report
 // what it did see.
 func (s *Session) outstandingDelegateWork() (OutstandingDelegateWork, error) {
+	return s.outstandingDelegateWorkInventory(true)
+}
+
+// outstandingDelegateWorkForAdmission omits the attention fold. Finalization
+// resolves attention under its own claim, and reading the fold here would make
+// admission race that resolution.
+func (s *Session) outstandingDelegateWorkForAdmission() (OutstandingDelegateWork, error) {
+	return s.outstandingDelegateWorkInventory(false)
+}
+
+func (s *Session) outstandingDelegateWorkInventory(includeAttention bool) (OutstandingDelegateWork, error) {
 	var work OutstandingDelegateWork
 	if s == nil {
 		return work, nil
@@ -102,16 +114,41 @@ func (s *Session) outstandingDelegateWork() (OutstandingDelegateWork, error) {
 	work.ChildRuns = s.pendingChildRunIDs()
 	work.ChildDeliveries = s.pendingChildDeliveryIDs()
 
-	attention, err := s.pendingAttentionIDs()
-	work.Attention = attention
-	if err != nil {
-		work.Unknown = append(work.Unknown, "attention-fold")
-		errs = append(errs, err)
+	if includeAttention {
+		attention, err := s.pendingAttentionIDs()
+		work.Attention = s.dropOwnedShellAttention(attention)
+		if err != nil {
+			work.Unknown = append(work.Unknown, "attention-fold")
+			errs = append(errs, err)
+		}
 	}
 
 	work.Goals = s.activeGoalIDs()
 
 	return work, errors.Join(errs...)
+}
+
+// dropOwnedShellAttention removes attention that names a stable delegate's
+// owned shell: the run's finalization resolves that attention, so it is not a
+// waker that can leave the run idle. A shell the run does not own stays.
+func (s *Session) dropOwnedShellAttention(ids []string) []string {
+	if s == nil || s.jobManager == nil || len(ids) == 0 {
+		return ids
+	}
+	s.jobManager.mu.Lock()
+	defer s.jobManager.mu.Unlock()
+	out := ids[:0]
+	for _, id := range ids {
+		if strings.HasPrefix(id, "shell:") {
+			rest := strings.TrimPrefix(id, "shell:")
+			jobID, _, _ := strings.Cut(rest, ":")
+			if job := s.jobManager.running[jobID]; job != nil && job.delegateShell != nil {
+				continue
+			}
+		}
+		out = append(out, id)
+	}
+	return out
 }
 
 // outstandingWork itemizes the job manager's own obligations. A missing or
@@ -122,7 +159,12 @@ func (jm *jobManager) outstandingWork() (jobs, watches, notifications, unknown [
 	}
 
 	jm.mu.Lock()
-	for id := range jm.running {
+	for id, job := range jm.running {
+		// A stable delegate's owned shell is settled by the run's own
+		// finalization drain, so it is not a waker that can leave the run idle.
+		if job != nil && job.delegateShell != nil {
+			continue
+		}
 		jobs = append(jobs, id)
 	}
 	for key, cfg := range jm.watches {
@@ -220,17 +262,18 @@ func (s *Session) pendingChildRunIDs() []string {
 	if s == nil || s.delegateController == nil {
 		return nil
 	}
-	return s.delegateController.pendingChildRunIDs()
+	return s.delegateController.pendingChildRunIDs(s.owningDelegateID)
 }
 
-func (c *delegateTreeController) pendingChildRunIDs() []string {
+func (c *delegateTreeController) pendingChildRunIDs(owner string) []string {
 	if c == nil {
 		return nil
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var ids []string
-	for id, aggregate := range c.durable {
+	for id := range c.delegateSubtreeIDsLocked(owner) {
+		aggregate := c.durable[id]
 		if aggregate == nil {
 			continue
 		}
@@ -256,7 +299,8 @@ func (s *Session) pendingChildDeliveryIDs() []string {
 	s.delegateDeliveryMu.Unlock()
 	if s.delegateController != nil {
 		s.delegateController.mu.Lock()
-		for _, aggregate := range s.delegateController.durable {
+		for id := range s.delegateController.delegateSubtreeIDsLocked(s.owningDelegateID) {
+			aggregate := s.delegateController.durable[id]
 			if aggregate == nil {
 				continue
 			}
@@ -266,6 +310,33 @@ func (s *Session) pendingChildDeliveryIDs() []string {
 		}
 		s.delegateController.mu.Unlock()
 	}
+	return ids
+}
+
+// delegateSubtreeIDsLocked is every delegate under owner (all root-level
+// delegates when owner is empty), excluding owner itself. The caller holds
+// c.mu.
+func (c *delegateTreeController) delegateSubtreeIDsLocked(owner string) map[string]struct{} {
+	ids := map[string]struct{}{}
+	if owner == "" {
+		for id, aggregate := range c.durable {
+			if aggregate != nil && aggregate.Descriptor.ParentDelegateID == "" {
+				ids[id] = struct{}{}
+			}
+		}
+		return ids
+	}
+	var walk func(string)
+	walk = func(parent string) {
+		for child := range c.delegateChildren[parent] {
+			if _, seen := ids[child]; seen {
+				continue
+			}
+			ids[child] = struct{}{}
+			walk(child)
+		}
+	}
+	walk(owner)
 	return ids
 }
 

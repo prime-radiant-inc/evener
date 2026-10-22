@@ -113,6 +113,7 @@ type subagent struct {
 	driving               bool                      // a drive-down notification turn (§3), or a committed delegate start not yet handed to its run, is in flight on this idle child
 	fatalRunGated         bool                      // terminal run error freezes automatic drives until an explicit resume
 	finalizing            bool                      // the run accepts no input while owned work drains and terminal state/notify ownership are handed off
+	blockedWork           []string                  // itemized live work admitted beside a blocked report
 	// disposeGated freezes a quiescent, retained TERMINAL child while a dispose op
 	// (spec §P1 step 4) evaluates and evicts it: no wake-edge drive may launch and
 	// no delegate_send may resume the child while it is set. Guarded by sub.mu; set
@@ -1839,6 +1840,28 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		restoreParentDriveNotify = nil
 		if err == nil {
 			res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
+			if errors.Is(err, errTerminalReportRefused) {
+				if restoreParentDriveNotify != nil {
+					a.sess.SetNotifyFunc(restoreParentDriveNotify)
+				}
+				a.mu.Lock()
+				a.finalizing = false
+				a.settlementClaimed = false
+				a.mu.Unlock()
+				input = "Continue with the newly received steering before settling."
+				kind = EntryContinuation
+				continue
+			}
+			if errors.Is(err, errDelegateWaitAccepted) {
+				if restoreParentDriveNotify != nil {
+					a.sess.SetNotifyFunc(restoreParentDriveNotify)
+				}
+				a.mu.Lock()
+				a.finalizing = false
+				a.running = false
+				a.mu.Unlock()
+				return
+			}
 		}
 		if stableRun && a.sess.delegateController != nil && nudgeAvailable && !cancelRequested && !budgetExhausted && a.nudgeEnabled &&
 			(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted)) {
@@ -1872,6 +1895,28 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				}
 				if err == nil {
 					res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
+					if errors.Is(err, errTerminalReportRefused) {
+						if restoreParentDriveNotify != nil {
+							a.sess.SetNotifyFunc(restoreParentDriveNotify)
+						}
+						a.mu.Lock()
+						a.finalizing = false
+						a.settlementClaimed = false
+						a.mu.Unlock()
+						input = "Continue with the newly received steering before settling."
+						kind = EntryContinuation
+						continue
+					}
+					if errors.Is(err, errDelegateWaitAccepted) {
+						if restoreParentDriveNotify != nil {
+							a.sess.SetNotifyFunc(restoreParentDriveNotify)
+						}
+						a.mu.Lock()
+						a.finalizing = false
+						a.running = false
+						a.mu.Unlock()
+						return
+					}
 				}
 			}
 		}
@@ -1929,6 +1974,30 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		}
 		if attentionErr != nil {
 			err = errors.Join(err, attentionErr)
+		}
+		if err == nil && attentionErr == nil && a.sess.Communicated() {
+			candidate := a.sess.terminalCandidate()
+			if candidate.Disposition == "" {
+				candidate.Disposition = tool.CommunicateEndReasonDone
+			}
+			if candidate.Disposition == tool.CommunicateEndReasonDone || candidate.Disposition == tool.CommunicateEndReasonBlocked {
+				admitted, admitErr := a.admitTerminalReport(ctx, &candidate)
+				if admitErr != nil {
+					err = errors.Join(err, admitErr)
+				} else if !admitted {
+					a.sess.delegateController.ReleaseSettlementClaim(settlementClaim)
+					if restoreParentDriveNotify != nil {
+						a.sess.SetNotifyFunc(restoreParentDriveNotify)
+					}
+					a.mu.Lock()
+					a.finalizing = false
+					a.settlementClaimed = false
+					a.mu.Unlock()
+					input = "Continue with the newly received steering before settling."
+					kind = EntryContinuation
+					continue
+				}
+			}
 		}
 		if settlementClaim.mode == delegateSettlementTerminal {
 			if stableDelegateFatalRun(err) {
@@ -2111,6 +2180,31 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 	if err != nil {
 		return result, parentDriveNotify, err
 	}
+	if a.sess.delegateController != nil && a.sess.Communicated() {
+		candidate := a.sess.terminalCandidate()
+		if candidate.Disposition == "" {
+			candidate.Disposition = tool.CommunicateEndReasonDone
+		}
+		switch candidate.Disposition {
+		case tool.CommunicateEndReasonWaitingOnWork:
+			accepted, err := a.admitTerminalWait(ctx, &candidate)
+			if err != nil {
+				return result, parentDriveNotify, err
+			}
+			if accepted {
+				return result, parentDriveNotify, errDelegateWaitAccepted
+			}
+			return result, parentDriveNotify, errTerminalReportRefused
+		case tool.CommunicateEndReasonDone, tool.CommunicateEndReasonBlocked:
+			admitted, err := a.admitTerminalReport(ctx, &candidate)
+			if err != nil {
+				return result, parentDriveNotify, err
+			}
+			if !admitted {
+				return result, parentDriveNotify, errTerminalReportRefused
+			}
+		}
+	}
 	// The report is the latest one the session accepted, taken whole: its
 	// text and its structured output come from the same source, whatever
 	// text the drain's turns returned.
@@ -2216,6 +2310,9 @@ func (a *subagent) stableDelegateFinish(result string, runErr error) delegateFin
 		usage:            cumulativeUsageSnapshot(a.sess.CumulativeUsageSnapshot()),
 		stoppedByUser:    stoppedByUser,
 	}
+	a.mu.Lock()
+	inputs.blockedWork = append([]string(nil), a.blockedWork...)
+	a.mu.Unlock()
 	inputs.captureCommunicateReport(a.sess)
 	reporter := a.sess
 	if controller := a.sess.delegateController; controller != nil {
@@ -2255,6 +2352,10 @@ type delegateTerminalRunInputs struct {
 	communicated            bool
 	structuredResult        any
 	structuredResultPresent bool
+	disposition             string
+	blocker                 string
+	waitingOn               string
+	blockedWork             []string
 	descriptor              delegatestore.Descriptor
 	startedAt               time.Time
 	endedAt                 time.Time
@@ -2279,6 +2380,9 @@ func (inputs *delegateTerminalRunInputs) captureCommunicateReport(sess *Session)
 	inputs.communicated = sess.comm.called
 	inputs.structuredResult = sess.comm.structured
 	inputs.structuredResultPresent = sess.comm.structured != nil
+	inputs.disposition = sess.comm.endReason
+	inputs.blocker = sess.comm.blocker
+	inputs.waitingOn = sess.comm.waitingOn
 	if inputs.communicated && inputs.runErr == nil {
 		inputs.result = sess.comm.text
 	}
@@ -2312,6 +2416,10 @@ type delegateTerminalPacketMetadata struct {
 	ExhaustionBudget    delegatestore.ExhaustionBudget `json:"exhaustion_budget,omitempty"`
 	ExhaustionLimit     int                            `json:"exhaustion_limit,omitempty"`
 	ExhaustionResumable *bool                          `json:"resumable,omitempty"`
+	Disposition         string                         `json:"disposition,omitempty"`
+	Blocker             string                         `json:"blocker,omitempty"`
+	WaitingOn           string                         `json:"waiting_on,omitempty"`
+	OutstandingWork     []string                       `json:"outstanding_work,omitempty"`
 }
 
 type delegateTerminalWorktreeReport struct {
@@ -2379,6 +2487,10 @@ func stableDelegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinis
 	metadata.Outcome = finish.outcome
 	metadata.Reason = finish.reason
 	metadata.Error = finish.errorText
+	metadata.Disposition = inputs.disposition
+	metadata.Blocker = inputs.blocker
+	metadata.WaitingOn = inputs.waitingOn
+	metadata.OutstandingWork = append([]string(nil), inputs.blockedWork...)
 	if raw, err := json.Marshal(metadata); err == nil && string(raw) != "{}" {
 		packet.Metadata = raw
 	}
