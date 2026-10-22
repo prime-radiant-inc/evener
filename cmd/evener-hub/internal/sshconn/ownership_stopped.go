@@ -158,10 +158,13 @@ func (m *Manager) resolveStoppedOwner(ctx context.Context, host hostreg.Host, fa
 			if cwd == "" {
 				cwd = "/"
 				if scope.kind == supervisorSystemdUser {
-					for _, v := range env {
-						if home, ok := strings.CutPrefix(v, "HOME="); ok {
-							cwd = home
-						}
+					out, err := m.ownerRead(ctx, host, "getent passwd "+shellquote.RemoteWord(user)+" | cut -d: -f6")
+					if err != nil {
+						return selectedOwner{}, fmt.Errorf("%w: user-service home unavailable", errOwnerEvidence)
+					}
+					cwd, err = ownerPathOutput(out)
+					if err != nil {
+						return selectedOwner{}, err
 					}
 				}
 			}

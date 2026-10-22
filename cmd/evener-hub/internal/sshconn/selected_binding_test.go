@@ -166,6 +166,9 @@ func TestRemoteRestartRejectsUnselectedSuccessor(t *testing.T) {
 			case "wrong config":
 				next[0].output = strings.ReplaceAll(next[0].output, "/srv/selected.toml", "/srv/other.toml")
 				next = append(next[:1], ownerCommand{resolveDeployCommand("/srv/selected.toml"), "/srv/selected.toml\n"})
+				next = append(next,
+					ownerCommand{"stat -Lc '%d %i' /srv/selected.toml 2>/dev/null || stat -L -f '%d %i' /srv/selected.toml", "1 100\n"},
+					ownerCommand{"stat -Lc '%d %i' /srv/other.toml 2>/dev/null || stat -L -f '%d %i' /srv/other.toml", "1 200\n"})
 			}
 			commands := first
 			commands = append(commands, second...)

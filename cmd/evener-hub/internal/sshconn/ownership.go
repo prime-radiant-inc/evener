@@ -359,7 +359,14 @@ func (m *Manager) checkOwnerConfigUsing(ctx context.Context, host hostreg.Host, 
 	if err != nil {
 		return fmt.Errorf("%w: process selection report is invalid", errOwnerEvidence)
 	}
-	if report.ConfigPath != selected.ConfigPath || report.HubStateRoot != selected.HubStateRoot {
+	if report.HubStateRoot != selected.HubStateRoot {
+		return fmt.Errorf("%w: process config/root disagrees with selection", errOwnerSelectionMismatch)
+	}
+	matches, err := m.configPathMatches(ctx, host, report.ConfigPath, selected.ConfigPath, ownerContext(cwd, env))
+	if err != nil {
+		return err
+	}
+	if !matches {
 		return fmt.Errorf("%w: process config/root disagrees with selection", errOwnerSelectionMismatch)
 	}
 	for _, check := range checks {

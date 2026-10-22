@@ -195,6 +195,9 @@ func TestRemoteOwnerRejectsWrongAssociation(t *testing.T) {
 			}
 			if tc.name == "wrong config" {
 				commands = append(commands[:9], ownerCommand{ownerContext("/srv", []string{"HOME=/home/dev"}) + resolveDeployCommand("/srv/other.toml"), "/srv/other.toml\n"})
+				commands = append(commands,
+					ownerCommand{ownerContext("/srv", []string{"HOME=/home/dev"}) + "stat -Lc '%d %i' /srv/other.toml 2>/dev/null || stat -L -f '%d %i' /srv/other.toml", "1 200\n"},
+					ownerCommand{ownerContext("/srv", []string{"HOME=/home/dev"}) + "stat -Lc '%d %i' /srv/selected.toml 2>/dev/null || stat -L -f '%d %i' /srv/selected.toml", "1 100\n"})
 			}
 			switch tc.name {
 			case "wrong effective user":

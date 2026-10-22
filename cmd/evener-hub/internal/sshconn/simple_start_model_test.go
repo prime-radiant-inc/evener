@@ -136,6 +136,14 @@ func TestSelectedRestartBoundary(t *testing.T) {
 							return []byte(config + "\n"), nil
 						}
 					}
+					if name == "different-config" {
+						switch remote {
+						case "stat -Lc '%d %i' /srv/B.toml 2>/dev/null || stat -L -f '%d %i' /srv/B.toml":
+							return []byte("1 200\n"), nil
+						case "stat -Lc '%d %i' /srv/selected.toml 2>/dev/null || stat -L -f '%d %i' /srv/selected.toml":
+							return []byte("1 100\n"), nil
+						}
+					}
 					if strings.HasPrefix(remote, "values=$(systemctl show --property=Environment ") && (strings.HasSuffix(name, "definition-B") || name == "stable-B-unit-environment") {
 						return []byte("XDG_STATE_HOME=/srv/B\x00"), nil
 					}

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/internal/hubendpoint"
 )
 
@@ -106,5 +107,30 @@ func (m *Manager) configPathMatches(ctx context.Context, host hostreg.Host, sele
 		return false, err
 	}
 	resolved, err := ownerPathOutput(out)
-	return resolved == canonical && err == nil, err
+	if err != nil || resolved == canonical {
+		return err == nil, err
+	}
+	if _, err := ownerPathOutput([]byte(canonical + "\n")); err != nil {
+		return false, err
+	}
+	// Realpath preserves hard-link names. Only owning-host device/inode
+	// evidence can distinguish those aliases from distinct equal-content files.
+	identity := func(filename string) (string, error) {
+		quoted := shellquote.RemoteWord(filename)
+		out, err := m.ownerRead(ctx, host, prefix+"stat -Lc '%d %i' "+quoted+" 2>/dev/null || stat -L -f '%d %i' "+quoted)
+		if err != nil {
+			return "", err
+		}
+		fields := strings.Fields(string(out))
+		if len(fields) != 2 || !isNumericUID(fields[0]) || !isNumericUID(fields[1]) {
+			return "", fmt.Errorf("%w: config file identity unavailable", errOwnerEvidence)
+		}
+		return strings.Join(fields, " "), nil
+	}
+	a, err := identity(resolved)
+	if err != nil {
+		return false, err
+	}
+	b, err := identity(canonical)
+	return a == b && err == nil, err
 }

@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/execsupport/shellquote"
 )
 
 // SSH alone is replaced by a local shell. The generated commands execute the
@@ -181,6 +182,11 @@ func TestSystemdConfigFileIdentity(t *testing.T) {
 	for _, live := range []bool{false, true} {
 		for _, selector := range []string{alias, filepath.Join(root, "other.toml")} {
 			t.Run(fmt.Sprintf("live=%t/%s", live, filepath.Base(selector)), func(t *testing.T) {
+				statCommands := map[string]bool{}
+				for _, filename := range []string{selector, config} {
+					quoted := shellquote.RemoteWord(filename)
+					statCommands[ownerContext(cwd, []string{"HOME=" + root})+"stat -Lc '%d %i' "+quoted+" 2>/dev/null || stat -L -f '%d %i' "+quoted] = true
+				}
 				fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 					return nil, fmt.Errorf("unexpected remote command: %v", argv)
 				}}
@@ -212,7 +218,7 @@ func TestSystemdConfigFileIdentity(t *testing.T) {
 						return []byte(root + "\n"), nil
 					case remote == freshOwnerEnvironmentRemote:
 						return []byte("HOME=" + root + "\x00"), nil
-					case strings.Contains(remote, " hub endpoint --json"), strings.Contains(remote, "evener_resolve"), strings.HasSuffix(remote, " && pwd -P"):
+					case statCommands[remote], strings.Contains(remote, " hub endpoint --json"), strings.Contains(remote, "evener_resolve"), strings.HasSuffix(remote, " && pwd -P"):
 						cmd := exec.CommandContext(ctx, "/bin/sh", "-c", remote)
 						cmd.Dir = root
 						cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + root}
