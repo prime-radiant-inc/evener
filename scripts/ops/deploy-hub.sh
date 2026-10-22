@@ -186,7 +186,8 @@ config_path "$1"`;
 async function configMatches(selector, canonical, options) {
     need(string(selector) && string(canonical), 'missing config path evidence');
     if (selector === canonical) return true;
-    return pathname(await rawText('bash', ['-c', configIdentityScript, 'config-identity', selector], options)) === canonical;
+    const resolved = pathname(await rawText('bash', ['-c', configIdentityScript, 'config-identity', selector], options));
+    return resolved === canonical || sameFile(resolved, canonical);
 }
 function sameFile(a, b) {
     try {

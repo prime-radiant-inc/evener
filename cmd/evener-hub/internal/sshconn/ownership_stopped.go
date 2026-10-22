@@ -50,7 +50,7 @@ func (m *Manager) launchdOwnerMatches(ctx context.Context, host hostreg.Host, de
 	if err == nil {
 		err = m.checkOwnerConfig(ctx, host, def.argv, def.cwd, def.env, report)
 	}
-	if errors.Is(err, errOwnerSelectionMismatch) {
+	if errors.Is(err, errOwnerSelectionMismatch) && !errors.Is(err, errOwnerRootMismatch) {
 		return false, nil
 	}
 	return err == nil, err
@@ -169,7 +169,7 @@ func (m *Manager) resolveStoppedOwner(ctx context.Context, host hostreg.Host, fa
 				}
 			}
 			if err := m.checkOwnerConfig(ctx, host, argv, cwd, env, report); err != nil {
-				if errors.Is(err, errOwnerSelectionMismatch) {
+				if errors.Is(err, errOwnerSelectionMismatch) && !errors.Is(err, errOwnerRootMismatch) {
 					continue
 				}
 				return selectedOwner{}, err

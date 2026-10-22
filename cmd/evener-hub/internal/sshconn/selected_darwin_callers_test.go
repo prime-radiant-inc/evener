@@ -95,6 +95,12 @@ func (f *darwinBootstrapFixture) runner(t *testing.T, host hostreg.Host) *fakeRu
 			return []byte("/opt/evener\n"), nil
 		case resolveDeployCommand("/other/evener"):
 			return []byte("/other/evener\n"), nil
+		case ownerContext("/candidate", []string{"HOME=/home/dev"}) + resolveDeployCommand("/srv/other.toml"):
+			return []byte("/srv/other.toml\n"), nil
+		case ownerContext("/candidate", []string{"HOME=/home/dev"}) + "stat -Lc '%d %i' /srv/other.toml 2>/dev/null || stat -L -f '%d %i' /srv/other.toml":
+			return []byte("1 200\n"), nil
+		case ownerContext("/candidate", []string{"HOME=/home/dev"}) + "stat -Lc '%d %i' /srv/selected.toml 2>/dev/null || stat -L -f '%d %i' /srv/selected.toml":
+			return []byte("1 100\n"), nil
 		case "CDPATH='' cd -P -- /srv || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; /opt/evener hub endpoint --json --config /srv/selected.toml":
 			return report(false), nil
 		case "CDPATH='' cd -P -- /candidate || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; /opt/evener hub endpoint --json --config /srv/selected.toml":

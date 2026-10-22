@@ -83,7 +83,7 @@ def config_selector():
     if f.get('config_newline_link'): return str(p/'newline-config-alias.toml')
     if f.get('config_newline_parent'): return str(p/'newline-parent-alias/selected.toml')
     if f.get('config_space'): return str(p/'space-config-alias.toml')
-    return {'alias':str(p/'alias.toml'),'relative':'../alias.toml','dotdot':'../link/../../selected.toml','different':'../link/../selected.toml'}.get(f.get('config_selector'),str(p/'selected.toml'))
+    return {'alias':str(p/'alias.toml'),'hardlink':str(p/'hardlink.toml'),'relative':'../alias.toml','dotdot':'../link/../../selected.toml','different':'../link/../selected.toml'}.get(f.get('config_selector'),str(p/'selected.toml'))
 def program(): return str(p/'alias-bin/evener' if f.get('program_alias') else (p/'other/evener' if f.get('different_program') else p/'repo/evener'))
 def argv():
     flags=[] if f.get('default_config') else ['--config='+config_selector()]
@@ -213,6 +213,7 @@ elif cmd == 'evener':
             local='http://'+f.get('local_host','[::1]')+':'+str(port)
             running_config=str(config)
             if f.get('running_alias'): running_config=str(p/'alias.toml')
+            elif f.get('running_hardlink'): running_config=str(p/'hardlink.toml')
             elif f.get('running_relative'): running_config='../alias.toml'
             report['running']={'schema_version':1,'pid':pid,'boot_id':boot,'started_at':'2026-10-16T08:00:00Z','config_path':running_config,'hub_state_root':str(root),'requested_listen_addr':f.get('listener','[::]:0'),'listen_source':source,'bound_addr':f.get('bound_host','[::]')+':'+str(port),'local_url':local,'loopback_url':local,'version':f['version'] if new else 'old','backend_git_sha':f['sha'] if new else 'old'}
             if f.get('inplace') and not new:
@@ -279,6 +280,11 @@ cases=[
  ('config_newline_parent_collision',{'config_newline_parent':True},[],False,(0,0)),
  ('service_config_symlink',{'config_selector':'alias'},[],True,(1,1)),
  ('explicit_config_symlink',{},['--config','@alias'],True,(1,1)),
+ ('explicit_config_hardlink',{},['--config','@hardlink'],True,(1,1)),
+ ('relative_explicit_config_hardlink',{'service_cwd':True},['--config','../hardlink.toml'],True,(1,1)),
+ ('service_config_hardlink',{'config_selector':'hardlink'},[],True,(1,1)),
+ ('running_config_hardlink',{'running_hardlink':True},[],True,(1,1)),
+ ('explicit_config_equal_content',{},['--config','@equal-content'],False,(0,0)),
  ('running_config_symlink',{'running_alias':True},[],True,(1,1)),
  ('relative_service_config',{'config_selector':'relative','service_cwd':True},[],True,(1,1)),
  ('relative_explicit_config',{'service_cwd':True},['--config','../alias.toml'],True,(1,1)),
@@ -380,6 +386,11 @@ with tempfile.TemporaryDirectory(prefix='task7c-', dir=os.environ.get('EVENER_SC
         if facts.get('custom_root'): original+='hub_state_root = "'+str(p/'custom-root')+'"\n'
         (p/'selected.toml').write_text(original); (p/'config/evener/hub.toml').write_text(original); (p/'other.toml').write_text('addr = "127.0.0.1:9180"\n')
         (p/'alias.toml').symlink_to(p/'selected.toml')
+        os.link(p/'selected.toml',p/'hardlink.toml')
+        (p/'equal-content.toml').write_text(original)
+        assert os.path.samefile(p/'hardlink.toml',p/'selected.toml')
+        assert not os.path.samefile(p/'equal-content.toml',p/'selected.toml')
+        assert (p/'equal-content.toml').read_bytes()==(p/'selected.toml').read_bytes()
         (p/'selected.toml ').write_text(original)
         (p/'space-config-alias.toml').symlink_to(p/'selected.toml ')
         assert os.path.samefile(p/'space-config-alias.toml',p/'selected.toml ')
@@ -436,7 +447,7 @@ with tempfile.TemporaryDirectory(prefix='task7c-', dir=os.environ.get('EVENER_SC
         if '@raw' in args: args=[a for a in args if a!='@raw']; base=[]
         elif '@auto' in args: args=[]; base=['--timeout',budget]
         elif '@help' in args: args=['--help']; base=[]
-        substitutions={'@alias':str(p/'alias.toml'),'@config':str(p/'selected.toml'),'@default':str(p/'config/evener/hub.toml'),'@other':str(p/'other.toml')}
+        substitutions={'@alias':str(p/'alias.toml'),'@hardlink':str(p/'hardlink.toml'),'@equal-content':str(p/'equal-content.toml'),'@config':str(p/'selected.toml'),'@default':str(p/'config/evener/hub.toml'),'@other':str(p/'other.toml')}
         argv=['bash',str(script)]+base+[substitutions.get(a,a) for a in args]
         returncode,out,err,timed_out,leaks=invoke(argv,p,env)
         if facts.get('retry_stopped'):

@@ -21,6 +21,10 @@ var errOwnerEvidence = errors.New("sshconn: selected owner evidence missing")
 
 var errOwnerSelectionMismatch = fmt.Errorf("%w: different selected owner", errOwnerEvidence)
 
+// A service selecting this config under a different root is not unrelated.
+// In particular, a cwd-relative root must never permit a second fresh launch.
+var errOwnerRootMismatch = fmt.Errorf("%w: same config selects a different state root", errOwnerSelectionMismatch)
+
 // selectedOwner is a read-only live-owner snapshot, not a restart command or
 // durable operation record. It grants no authority after any field changes.
 // Call revalidateOwnedEndpoint immediately before consuming it for mutation.
@@ -394,15 +398,15 @@ func (m *Manager) checkOwnerConfigUsing(ctx context.Context, host hostreg.Host, 
 	if err != nil {
 		return fmt.Errorf("%w: process selection report is invalid", errOwnerEvidence)
 	}
-	if report.HubStateRoot != selected.HubStateRoot {
-		return fmt.Errorf("%w: process config/root disagrees with selection", errOwnerSelectionMismatch)
-	}
 	matches, err := m.configPathMatches(ctx, host, report.ConfigPath, selected.ConfigPath, ownerContext(cwd, env))
 	if err != nil {
 		return err
 	}
 	if !matches {
 		return fmt.Errorf("%w: process config/root disagrees with selection", errOwnerSelectionMismatch)
+	}
+	if report.HubStateRoot != selected.HubStateRoot {
+		return errOwnerRootMismatch
 	}
 	for _, check := range checks {
 		if err := check(report); err != nil {
