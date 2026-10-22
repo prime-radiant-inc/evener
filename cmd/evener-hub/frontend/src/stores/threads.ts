@@ -231,6 +231,12 @@ export interface ThreadsStoreState {
   // notification) lingers invisibly until the ref's next refusal replaces
   // it.
   transientRefusalPaces: ReadonlyMap<string, { clientMutationId: string; attempt: number }>;
+  // Refs whose durable pending/outbox projection has published a read. The
+  // pending-turns projection owns the answer; it is published here so a
+  // consumer React-renders on the loaded/unloaded transition instead of
+  // reading a plain Set it does not subscribe to. Retry fails closed for a ref
+  // outside this set.
+  pendingProjectionLoadedRefs: ReadonlySet<string>;
   // The resumed identity when a store-driven resume (resumeFencedForSend)
   // returned a different ref than it started with, keyed by the ref the pane
   // was showing. The pane reads this and follows the new identity (Session.tsx)
@@ -4115,6 +4121,21 @@ export function installResumeOnlyProjection(projection: ResumeOnlyProjection): v
   resumeOnlyProjection = projection;
 }
 
+// The pending-turns projection publishes a ref's durable-read readiness here
+// at the same moment it records it for the fence's own predicate: one
+// authority, a reactive copy for consumers. A transition notifies subscribers,
+// so a mounted Retry action re-renders unloaded -> loaded (or back) rather than
+// reading a stale plain Set.
+export function setPendingProjectionLoaded(ref: string, loaded: boolean): void {
+  threadsStore.setState((state) => {
+    if (state.pendingProjectionLoadedRefs.has(ref) === loaded) return {};
+    const pendingProjectionLoadedRefs = new Set(state.pendingProjectionLoadedRefs);
+    if (loaded) pendingProjectionLoadedRefs.add(ref);
+    else pendingProjectionLoadedRefs.delete(ref);
+    return { pendingProjectionLoadedRefs };
+  });
+}
+
 // Whether ref's durable outbox holds delivery-uncertain (blockedUnknown) rows,
 // as the pending-turns projection last published them. True when no projection
 // is installed OR the ref's own durable outbox has not loaded yet (failing
@@ -4140,11 +4161,13 @@ export function hasQueuedNonSend(ref: string): boolean {
 }
 
 // The live outbox owner's answer for Retry, read at activation rather than
-// trusted from the render that disabled (or enabled) the button. No installed
-// projection means no durable read has been published in this page, so there
-// is no own pending entry to observe.
+// trusted from the render that disabled (or enabled) the button. A ref whose
+// durable pending read has not resolved is UNKNOWN, not empty: activation
+// fails closed, exactly as the rendered action stays disabled. No installed
+// projection is likewise unknown.
 function ownPendingTurnInputNow(ref: string): boolean {
-  return resumeOnlyProjection?.ownPendingTurnInput(ref) ?? false;
+  if (!threadsStore.getState().pendingProjectionLoadedRefs.has(ref)) return true;
+  return resumeOnlyProjection?.ownPendingTurnInput(ref) ?? true;
 }
 
 // isResumeOnly over the store's current model for ref: the ADMISSION
@@ -6887,6 +6910,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   restartBlockingObligations: new Map(),
   mutationAuthorityRefs: new Set(),
   transientRefusalPaces: new Map(),
+  pendingProjectionLoadedRefs: new Set(),
   resumedIdentities: new Map(),
   resumeFailures: new Map(),
   stoppingRefs: new Set(),

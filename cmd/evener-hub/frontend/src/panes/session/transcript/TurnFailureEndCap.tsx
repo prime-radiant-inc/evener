@@ -7,12 +7,11 @@
 // continueTurn rechecks both at activation.
 import type { TurnError } from "@evener/appwire-client";
 import { isLatestRetryTurn, sessionActionError } from "@evener/appwire-client";
-import { ownPendingTurnInput } from "@evener/appwire-client/state/mutation";
 import { useState } from "react";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Button, Chip, Disclosure, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { usePendingTurnEntries } from "../composer/queue/pendingTurnsStore";
+import { useRetryPendingState } from "../composer/queue/pendingTurnsStore";
 import { classifyTurnError } from "./turnFailure";
 import styles from "./turnfailure.module.css";
 
@@ -40,9 +39,11 @@ export function TurnFailureEndCap({
   const model = useThreadsStore((state) => (sessionRef === undefined ? undefined : state.threads.get(sessionRef)));
   // Always called: hooks cannot depend on whether the caller passed a ref.
   // An empty ref simply has no projected entries.
-  const entries = usePendingTurnEntries(sessionRef ?? "");
+  const pending = useRetryPendingState(sessionRef ?? "");
   const isLatest = model !== undefined && isLatestRetryTurn(model, turnId);
-  const ownInputUnresolved = ownPendingTurnInput(entries);
+  // An unloaded durable read is unknown, not empty: Retry stays inactive until
+  // the outbox owner answers for this ref.
+  const retryBlocked = !pending.loaded || pending.unresolved;
 
   async function retry() {
     if (sessionRef === undefined) return;
@@ -64,7 +65,7 @@ export function TurnFailureEndCap({
           </Disclosure>
         )}
         {sessionRef !== undefined && isLatest && (
-          <Button variant="primary" size="sm" disabled={ownInputUnresolved} onClick={() => void retry()}>
+          <Button variant="primary" size="sm" disabled={retryBlocked} onClick={() => void retry()}>
             {info.recoveryLabel}
           </Button>
         )}

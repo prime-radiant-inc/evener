@@ -32,6 +32,7 @@ import {
   useBlockedMutationEntries,
   usePendingTurnEntries,
   useRecoveryEntries,
+  useRetryPendingState,
 } from "./pendingTurnsStore";
 import {
   flushPendingTurnsProjectionForTests,
@@ -1322,4 +1323,49 @@ test("the activation-time pending read clears once the durable row settles", asy
   await storage.settleApplied(record.clientMutationId);
   await refreshPendingTurnsProjection("ref_a");
   expect(ownPendingTurnInputFor("ref_a")).toBe(false);
+});
+
+test("useRetryPendingState stays unloaded until the ref's durable read resolves", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  await connect();
+  await flushPendingTurnsProjectionForTests();
+
+  const getAll = IDBObjectStore.prototype.getAll;
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  let announceRead: (() => void) | undefined;
+  const readStarted = new Promise<void>((resolve) => {
+    announceRead = resolve;
+  });
+  const spy = vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function (this: IDBObjectStore, ...args) {
+    const request = getAll.apply(this, args);
+    if (this.name === "recovery" && !hold) {
+      hold = holdIndexedDBEvent(request, "success");
+      void hold.reached.then(() => announceRead?.());
+    }
+    return request;
+  });
+  const pending = renderHook(() => useRetryPendingState("ref_a"));
+  try {
+    await readStarted;
+    // Unknown, not empty.
+    expect(pending.result.current).toEqual({ loaded: false, unresolved: false });
+  } finally {
+    spy.mockRestore();
+    await act(async () => {
+      hold?.release();
+    });
+  }
+  await flushPendingTurnsProjectionForTests();
+  expect(pending.result.current).toEqual({ loaded: true, unresolved: false });
+});
+
+test("useRetryPendingState reports own unresolved input when loaded", async () => {
+  await connect();
+  const pending = renderHook(() => useRetryPendingState("ref_a"));
+  await flushPendingTurnsProjectionForTests();
+  expect(pending.result.current).toEqual({ loaded: true, unresolved: false });
+
+  act(() => publishOutboxRecordForTests(durableRow()));
+  expect(pending.result.current).toEqual({ loaded: true, unresolved: true });
 });

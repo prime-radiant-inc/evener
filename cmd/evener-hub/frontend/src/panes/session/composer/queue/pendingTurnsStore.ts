@@ -32,6 +32,7 @@ import {
   readMutationPersistence,
   resendRecoveryMutation,
   retryBlockedMutation,
+  setPendingProjectionLoaded,
   subscribeMutationPersistence,
   threadsStore,
   transientRefusalRetryPending,
@@ -141,9 +142,13 @@ export function refreshPendingTurnsProjection(ref?: string): Promise<boolean> {
 function invalidateProjectionLoaded(ref?: string): void {
   if (ref !== undefined) {
     loadedRefs.delete(ref);
+    setPendingProjectionLoaded(ref, false);
     return;
   }
-  for (const target of threadsStore.getState().threads.keys()) loadedRefs.delete(target);
+  for (const target of threadsStore.getState().threads.keys()) {
+    loadedRefs.delete(target);
+    setPendingProjectionLoaded(target, false);
+  }
 }
 
 async function readProjectionIntoStore(ref?: string): Promise<boolean> {
@@ -210,6 +215,7 @@ function markProjectionLoaded(
   const mark = (target: string): void => {
     if (!refresh.stillOwns(target) || loadedRefs.has(target)) return;
     loadedRefs.add(target);
+    setPendingProjectionLoaded(target, true);
     loaded.push(target);
   };
   if (ref !== undefined) {
@@ -393,6 +399,17 @@ export function usePendingTurnEntries(ref: string, method?: PendingMethod): Pend
   return useSyncExternalStore(subscribe, getSnapshot);
 }
 
+// Retry's reactive view of the outbox owner. `loaded` is published by the
+// projection when the ref's durable read resolves (and drops when a newer read
+// invalidates it), so the action re-renders across the transition. `unresolved`
+// is the live own-send/queue predicate over the projected entries. Retry is
+// disabled until loaded, because an unloaded read is unknown, not empty.
+export function useRetryPendingState(ref: string): { loaded: boolean; unresolved: boolean } {
+  const entries = usePendingTurnEntries(ref);
+  const loaded = useThreadsStore((state) => state.pendingProjectionLoadedRefs.has(ref));
+  return { loaded, unresolved: ownPendingTurnInput(entries) };
+}
+
 // The same projection read from the stores as they are now, not as a component
 // rendered them: for the press handlers that re-derive their verdict at the
 // press (stores/liveControls.ts is the rule; this is its pending-send input).
@@ -544,6 +561,7 @@ export function resetPendingTurnsStoreForTests(): void {
   // The epoch bump already voids anything still running against the previous
   // test's storage, so it is not this test's projection work to wait for.
   clearProjectionWorkForTests();
+  for (const ref of loadedRefs) setPendingProjectionLoaded(ref, false);
   loadedRefs.clear();
   pendingTurnsStore.setState({
     outbox: new Map(),
