@@ -158,7 +158,7 @@ The following subagent types are available for `delegate` with the `agent_type` 
 <agent>
 Name: `default`
 Description: General-purpose agent. Handles a wide range of tasks directly with the broadest non-delegation toolset.
-Capabilities: Default tools: `apply_patch`, `communicate`, `compact_context`, `delegate`, `delegate_send`, `doctor_evener`, `edit_file`, `exec_command`, `find_files`, `find_session_transcripts`, `grep_files`, `job_list`, `job_status`, `job_stop`, `job_watch`, `list_dir`, `manage_worktree`, `model_list`, `notes_agent_set`, `notes_read`, `read_file`, `read_transcript`, `task_list`, `update_goal`, `urls_add`, `urls_remove`, `use_skill`, `web_fetch`, `write_file`
+Capabilities: Default tools: `apply_patch`, `communicate`, `compact_context`, `delegate`, `delegate_send`, `doctor_evener`, `edit_file`, `exec_command`, `find_files`, `find_session_transcripts`, `grep_files`, `job_list`, `job_status`, `job_stop`, `job_watch`, `list_dir`, `manage_worktree`, `model_list`, `notes_agent_set`, `notes_read`, `read_file`, `read_transcript`, `session_control`, `task_list`, `update_goal`, `urls_add`, `urls_remove`, `use_skill`, `web_fetch`, `write_file`
 Default task list:
 - none
 </agent>

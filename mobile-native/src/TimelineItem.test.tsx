@@ -124,6 +124,20 @@ describe("your message", () => {
 		...over,
 	});
 
+	it("labels Manager input from actor metadata instead of the message text", () => {
+		const manager = render(
+			<TimelineItem
+				item={user({ actor: { kind: "manager", managerRef: "local:manager" } })}
+				hubId="hub"
+				sessionRef="s"
+			/>,
+		);
+		expect(renderedText(manager)).toContain("Manager · local:manager");
+		expect(pressable(manager, "Manager · local:manager: Ship it")).toBeDefined();
+		const human = render(<TimelineItem item={user({ actor: { kind: "human" } })} hubId="hub" sessionRef="s" />);
+		expect(pressable(human, "You: Ship it")).toBeDefined();
+	});
+
 	it("sits right-aligned in a bubble at most 85% wide with an 18pt continuous radius", () => {
 		expect(userBubbleStyle()).toMatchObject({
 			maxWidth: "85%",

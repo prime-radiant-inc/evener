@@ -705,9 +705,26 @@ func TestSessionToolsRuntimeIdentityReplacement(t *testing.T) {
 func assertManagerRequestSurface(t *testing.T, request llm.Request, enabled bool) {
 	t.Helper()
 	found := 0
+	control := 0
 	for _, definition := range request.Tools {
 		if definition.Name == "session_control" {
-			t.Fatal("unfinished control tool exposed")
+			control++
+			if !enabled {
+				t.Fatal("session_control exposed while Manager is disabled")
+			}
+			properties, ok := definition.Parameters["properties"].(map[string]any)
+			if !ok {
+				t.Fatal("session_control has no typed properties")
+			}
+			action, ok := properties["action"].(map[string]any)
+			if !ok {
+				t.Fatalf("session_control action schema = %#v", properties["action"])
+			}
+			values, ok := action["enum"].([]any)
+			if !ok || len(values) != 1 || values[0] != "approval" {
+				t.Fatalf("session_control actions = %#v, want only approval", action)
+			}
+			continue
 		}
 		if definition.Name != "job_list" && definition.Name != "job_status" {
 			continue
@@ -720,5 +737,8 @@ func assertManagerRequestSurface(t *testing.T, request llm.Request, enabled bool
 	}
 	if found != 2 {
 		t.Fatalf("implemented job tools=%d, want 2", found)
+	}
+	if enabled && control != 1 {
+		t.Fatalf("Manager request has %d session_control tools, want one", control)
 	}
 }

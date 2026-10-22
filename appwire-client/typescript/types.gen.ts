@@ -2881,6 +2881,7 @@ export interface PathsCompleteResponse {
 }
 
 export interface PendingMutation {
+  actor?: SessionActor;
   clientMutationId: string;
   method: string;
   input?: InputItem[];
@@ -3159,6 +3160,7 @@ export interface SandboxEscalationRequested {
 }
 
 export interface SandboxEscalationResolveParams {
+  managerProof?: SessionActorProof;
   threadId?: string;
   ref?: string;
   escalationId: string;
@@ -3431,11 +3433,25 @@ export interface SessionActor {
   managerRef?: string;
 }
 
+export interface SessionActorProof {
+  bindingId: string;
+  actor: SessionActor;
+}
+
 export interface SessionBinding {
   ref: string;
   instanceId: string;
   hubId: string;
   bindingId: string;
+}
+
+export interface SessionControlRequest {
+  approval?: SandboxEscalationResolveParams;
+}
+
+export interface SessionControlResponse {
+  result: EmptyResponse;
+  actor: SessionActor;
 }
 
 export interface SessionDelegate {
@@ -3564,12 +3580,20 @@ export interface SessionObservationMetadata {
 export interface SessionOperationRequest {
   discover?: ThreadListParams;
   read?: ThreadReadParams;
+  start?: TurnStartParams;
+  queue?: TurnQueueParams;
+  steer?: TurnSteerParams;
+  control?: SessionControlRequest;
 }
 
 export interface SessionOperationResponse {
   actor: SessionActor;
   discover?: SessionDiscovery;
   read?: ThreadReadResponse;
+  start?: TurnStartResponse;
+  queue?: TurnQueueResponse;
+  steer?: TurnSteerResponse;
+  control?: SessionControlResponse;
   followUps?: SessionStatusFollowUp[];
 }
 
@@ -4140,6 +4164,7 @@ export interface ThreadForkResponse {
 }
 
 export interface ThreadItem {
+  actor?: SessionActor;
   type: string;
   id: string;
   transcriptKey?: string;
@@ -4829,6 +4854,7 @@ export interface TurnPromoteQueuedAsSteerResponse {
 }
 
 export interface TurnQueueParams {
+  managerProof?: SessionActorProof;
   ref: string;
   clientMutationId: string;
   expectedInstanceId: string;
@@ -4840,6 +4866,7 @@ export interface TurnQueueResponse {
 }
 
 export interface TurnStartParams {
+  managerProof?: SessionActorProof;
   ref?: string;
   threadId?: string;
   clientMutationId: string;
@@ -4853,6 +4880,7 @@ export interface TurnStartResponse {
 }
 
 export interface TurnSteerParams {
+  managerProof?: SessionActorProof;
   ref?: string;
   threadId?: string;
   clientMutationId: string;

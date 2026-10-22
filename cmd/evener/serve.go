@@ -1471,6 +1471,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	srv.SetSandboxEscalationResolveFunc(func(id string, approve bool) error {
 		return getSession().ResolveSandboxEscalation(id, approve)
 	})
+	if managerApproval, ok := srv.(interface {
+		SetSandboxEscalationResolveAsFunc(func(string, bool, schema.SessionActor) error)
+	}); ok {
+		managerApproval.SetSandboxEscalationResolveAsFunc(func(id string, approve bool, actor schema.SessionActor) error {
+			return getSession().ResolveSandboxEscalationAs(id, approve, actor)
+		})
+	}
 	srv.SetDelegateStopFunc(func(delegateID string) (appwire.DelegateStopOutcome, error) {
 		return getSession().StopDelegateRun(delegateID)
 	})
@@ -1491,11 +1498,20 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		Start: func(params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 			return getSession().AcceptClientMutationStart(params)
 		},
+		StartAs: func(params appwire.TurnStartParams, actor schema.SessionActor) (appwire.TurnStartResponse, error) {
+			return getSession().AcceptClientMutationStartAs(params, actor)
+		},
 		Steer: func(params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
 			return getSession().AcceptClientMutationSteer(params)
 		},
+		SteerAs: func(params appwire.TurnSteerParams, actor schema.SessionActor) (appwire.TurnSteerResponse, error) {
+			return getSession().AcceptClientMutationSteerAs(params, actor)
+		},
 		Queue: func(params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
 			return getSession().AcceptClientMutationQueue(params)
+		},
+		QueueAs: func(params appwire.TurnQueueParams, actor schema.SessionActor) (appwire.TurnQueueResponse, error) {
+			return getSession().AcceptClientMutationQueueAs(params, actor)
 		},
 		Drain: func(params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
 			return getSession().AcceptClientMutationDrainAsSteer(params)

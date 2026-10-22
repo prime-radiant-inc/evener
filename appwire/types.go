@@ -1515,10 +1515,11 @@ type DelegateStopResponse struct {
 // pending escalation. Approve re-runs the single denied invocation with the one
 // path granted; deny returns the typed error to the model.
 type SandboxEscalationResolveParams struct {
-	ThreadID     string `json:"threadId,omitempty"`
-	Ref          string `json:"ref,omitempty"`
-	EscalationID string `json:"escalationId"`
-	Approve      bool   `json:"approve"`
+	ManagerProof *SessionActorProof `json:"managerProof,omitempty"`
+	ThreadID     string             `json:"threadId,omitempty"`
+	Ref          string             `json:"ref,omitempty"`
+	EscalationID string             `json:"escalationId"`
+	Approve      bool               `json:"approve"`
 }
 
 type ThreadCapabilities struct {
@@ -2031,6 +2032,7 @@ var AllThreadItemEventKinds = []string{
 }
 
 type ThreadItem struct {
+	Actor                *SessionActor       `json:"actor,omitempty"`
 	Type                 string              `json:"type"`
 	ID                   string              `json:"id"`
 	TranscriptKey        string              `json:"transcriptKey,omitempty"`
@@ -2559,11 +2561,12 @@ type ThreadForkResponse struct {
 }
 
 type TurnStartParams struct {
-	Ref                string      `json:"ref,omitempty"`
-	ThreadID           string      `json:"threadId,omitempty"`
-	ClientMutationID   string      `json:"clientMutationId"`
-	ExpectedInstanceID string      `json:"expectedInstanceId"`
-	Input              []InputItem `json:"input,omitempty"`
+	ManagerProof       *SessionActorProof `json:"managerProof,omitempty"`
+	Ref                string             `json:"ref,omitempty"`
+	ThreadID           string             `json:"threadId,omitempty"`
+	ClientMutationID   string             `json:"clientMutationId"`
+	ExpectedInstanceID string             `json:"expectedInstanceId"`
+	Input              []InputItem        `json:"input,omitempty"`
 }
 
 type TurnStartResponse struct {
@@ -2579,11 +2582,12 @@ type TurnStartResponse struct {
 // can survive thread/clear while its live session instance changes, and a
 // delayed old-generation intent must not run against the replacement.
 type TurnSteerParams struct {
-	Ref                string      `json:"ref,omitempty"`
-	ThreadID           string      `json:"threadId,omitempty"`
-	ClientMutationID   string      `json:"clientMutationId"`
-	ExpectedInstanceID string      `json:"expectedInstanceId"`
-	Input              []InputItem `json:"input,omitempty"`
+	ManagerProof       *SessionActorProof `json:"managerProof,omitempty"`
+	Ref                string             `json:"ref,omitempty"`
+	ThreadID           string             `json:"threadId,omitempty"`
+	ClientMutationID   string             `json:"clientMutationId"`
+	ExpectedInstanceID string             `json:"expectedInstanceId"`
+	Input              []InputItem        `json:"input,omitempty"`
 }
 
 // TurnInterruptParams cancels whatever turn the session is running. The receipt
@@ -2600,10 +2604,11 @@ type TurnInterruptParams struct {
 // after the active turn completes. The daemon enqueues immediately and returns;
 // no turn id is reserved or returned.
 type TurnQueueParams struct {
-	Ref                string      `json:"ref"`
-	ClientMutationID   string      `json:"clientMutationId"`
-	ExpectedInstanceID string      `json:"expectedInstanceId"`
-	Input              []InputItem `json:"input,omitempty"`
+	ManagerProof       *SessionActorProof `json:"managerProof,omitempty"`
+	Ref                string             `json:"ref"`
+	ClientMutationID   string             `json:"clientMutationId"`
+	ExpectedInstanceID string             `json:"expectedInstanceId"`
+	Input              []InputItem        `json:"input,omitempty"`
 }
 
 type MutationProjectionState string
@@ -2640,6 +2645,7 @@ type MutationReceipt struct {
 }
 
 type PendingMutation struct {
+	Actor            SessionActor            `json:"actor,omitzero"`
 	ClientMutationID string                  `json:"clientMutationId"`
 	Method           string                  `json:"method"`
 	Input            []InputItem             `json:"input,omitempty"`

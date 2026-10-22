@@ -77,6 +77,7 @@ func (s *Session) ClientMutationProjection() (appwire.QueueState, []appwire.Pend
 		}
 		record := snapshot.Journal[entry.ClientMutationID]
 		pendingByID[entry.ClientMutationID] = appwire.PendingMutation{
+			Actor:            wireSessionActor(record.Actor),
 			ClientMutationID: entry.ClientMutationID,
 			Method:           record.Method,
 			Input:            cloneClientMutationInput(entry.Input),
@@ -110,6 +111,13 @@ func (s *Session) ensureClientMutationStore() error {
 }
 
 func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+	return s.clientMutationQueueAs(params, schema.SessionActor{Kind: "human"})
+}
+
+func (s *Session) clientMutationQueueAs(params appwire.TurnQueueParams, actor schema.SessionActor) (appwire.TurnQueueResponse, error) {
+	if err := validateSessionActor(actor); err != nil {
+		return appwire.TurnQueueResponse{}, err
+	}
 	release, err := s.beginRetirementMutation("input")
 	if err != nil {
 		return appwire.TurnQueueResponse{}, err
@@ -127,6 +135,7 @@ func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.T
 	if err != nil {
 		return appwire.TurnQueueResponse{}, err
 	}
+	request.Actor = actor
 
 	var response appwire.TurnQueueResponse
 	lookup, err := s.clientMutations.executeAtomic(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
@@ -161,6 +170,7 @@ func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.T
 		// Re-engaging releases the parked steer too (issue #174).
 		snapshot.SteeringHeld = false
 		snapshot.InputQueue = append(snapshot.InputQueue, clientMutationQueueEntry{
+			Actor:            record.Actor,
 			ID:               record.StableQueueEntryIDs[0],
 			ClientMutationID: record.ClientMutationID,
 			Input:            cloneClientMutationInput(params.Input),
@@ -564,7 +574,11 @@ func (s *Session) resetSteeringCarrierStoodDown() {
 // AcceptClientMutationQueue durably accepts or replays one client-authored
 // queued input.
 func (s *Session) AcceptClientMutationQueue(params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
-	return s.clientMutationQueue(params)
+	return s.AcceptClientMutationQueueAs(params, schema.SessionActor{Kind: "human"})
+}
+
+func (s *Session) AcceptClientMutationQueueAs(params appwire.TurnQueueParams, actor schema.SessionActor) (appwire.TurnQueueResponse, error) {
+	return s.clientMutationQueueAs(params, actor)
 }
 
 func rejectClientMutation(record *clientMutationRecord, err error) {
@@ -740,6 +754,13 @@ func clientMutationInputWithMentions(text string, images []ImageAttachment, skil
 }
 
 func (s *Session) clientMutationSteer(params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+	return s.clientMutationSteerAs(params, schema.SessionActor{Kind: "human"})
+}
+
+func (s *Session) clientMutationSteerAs(params appwire.TurnSteerParams, actor schema.SessionActor) (appwire.TurnSteerResponse, error) {
+	if err := validateSessionActor(actor); err != nil {
+		return appwire.TurnSteerResponse{}, err
+	}
 	release, err := s.beginRetirementMutation("input")
 	if err != nil {
 		return appwire.TurnSteerResponse{}, err
@@ -757,6 +778,7 @@ func (s *Session) clientMutationSteer(params appwire.TurnSteerParams) (appwire.T
 	if err != nil {
 		return appwire.TurnSteerResponse{}, err
 	}
+	request.Actor = actor
 	var response appwire.TurnSteerResponse
 	lookup, err := s.clientMutations.executeAtomic(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
 		if snapshot.InterruptFence != nil {
@@ -859,7 +881,11 @@ func (s *Session) wakeForPendingQueuedInput() {
 // AcceptClientMutationSteer durably accepts or replays one client-authored
 // steering input.
 func (s *Session) AcceptClientMutationSteer(params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
-	return s.clientMutationSteer(params)
+	return s.AcceptClientMutationSteerAs(params, schema.SessionActor{Kind: "human"})
+}
+
+func (s *Session) AcceptClientMutationSteerAs(params appwire.TurnSteerParams, actor schema.SessionActor) (appwire.TurnSteerResponse, error) {
+	return s.clientMutationSteerAs(params, actor)
 }
 
 func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
@@ -1252,6 +1278,7 @@ func applyClientMutationRecord(
 
 func addPendingSteering(snapshot *clientMutationSnapshot, record *clientMutationRecord, input []appwire.InputItem) {
 	snapshot.PendingExecutions[record.ClientMutationID] = appwire.PendingMutation{
+		Actor:            wireSessionActor(record.Actor),
 		ClientMutationID: record.ClientMutationID,
 		Method:           record.Method,
 		Input:            cloneClientMutationInput(input),
@@ -1400,6 +1427,7 @@ func clientSteeringFromSnapshot(snapshot clientMutationSnapshot) []steeringMessa
 		queued := queuedInputFromClientMutation(clientMutationQueueEntry{Input: pending.Input})
 		origin := steeringOriginFromJournal(snapshot.Journal, id)
 		client = append(client, steeringMessage{
+			Actor: schema.SessionActor{Kind: pending.Actor.Kind, ManagerRef: pending.Actor.ManagerRef},
 			// A journal written before the write-path strip can carry controls in
 			// a note-origin pending text: the rebuilt entry reaches the model and
 			// the transcript, so that text is stripped like every other load path,

@@ -138,7 +138,9 @@ export function UserMessageView({
       </span>
       <div className={CLASS.content}>
         <div className={CLASS.header}>
-          <span className={CLASS.name}>{name}</span>
+          <span className={CLASS.name}>
+            {item.actor?.kind === "manager" ? `Manager · ${item.actor.managerRef ?? ""}` : name}
+          </span>
           {provisional !== undefined ? (
             <span className={CLASS.time}>{provisional}</span>
           ) : (

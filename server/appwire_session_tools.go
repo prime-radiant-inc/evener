@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -33,6 +34,17 @@ func (s *Server) SetSessionTools(current func() *agent.Session) {
 			selectedSession = session
 			clients = &runtimeHubClients{clients: map[string]*runtimeHubClient{}}
 			session.SetHubClient(clients)
+			s.mu.Lock()
+			s.resolveManagerActor = func(proof appwire.SessionActorProof) (schema.SessionActor, error) {
+				clients.mu.Lock()
+				defer clients.mu.Unlock()
+				client := clients.clients[clients.selected]
+				if client == nil || client.valid() != nil || proof.BindingID == "" || client.binding.BindingID != proof.BindingID || proof.Actor.Kind != "manager" || proof.Actor.ManagerRef != client.binding.Ref {
+					return schema.SessionActor{}, appwire.InvalidRequest("Manager actor is not authenticated by the live binding")
+				}
+				return schema.SessionActor{Kind: "manager", ManagerRef: client.binding.Ref}, nil
+			}
+			s.mu.Unlock()
 		}
 		lifetime, cancel := context.WithCancel(ctx)
 		clients.mu.Lock()
@@ -194,6 +206,34 @@ type runtimeHubClient struct {
 	client  appwire.SessionHubClient
 	ctx     context.Context
 	cancel  context.CancelFunc
+}
+
+type sessionActorContextKey struct{}
+
+// withSessionActor marks an internally authenticated input request. Incoming
+// AppWire requests cannot set this key; hub-to-runtime requests use a proof.
+func withSessionActor(ctx context.Context, actor schema.SessionActor) context.Context {
+	return context.WithValue(ctx, sessionActorContextKey{}, actor)
+}
+
+func (s *Server) inputActor(ctx context.Context, proof *appwire.SessionActorProof) (schema.SessionActor, bool, error) {
+	if proof != nil {
+		s.mu.RLock()
+		resolve := s.resolveManagerActor
+		s.mu.RUnlock()
+		if resolve == nil {
+			return schema.SessionActor{}, false, appwire.InvalidRequest("Manager input has no live binding")
+		}
+		actor, err := resolve(*proof)
+		return actor, err == nil, err
+	}
+	if actor, ok := ctx.Value(sessionActorContextKey{}).(schema.SessionActor); ok {
+		if actor.Kind != "manager" || actor.ManagerRef == "" {
+			return schema.SessionActor{}, false, appwire.InvalidRequest("invalid internal Manager actor")
+		}
+		return actor, true, nil
+	}
+	return schema.SessionActor{Kind: "human"}, false, nil
 }
 
 func (c *runtimeHubClient) valid() error {

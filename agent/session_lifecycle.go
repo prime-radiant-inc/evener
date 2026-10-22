@@ -2770,6 +2770,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 		}
 		turn.ClientMutationID = queuedIdentity.ClientMutationID
 		turn.StableTurnID = queuedIdentity.StableTurnID
+		turn.Actor = s.clientMutationActor(queuedIdentity.ClientMutationID)
 		if skillInput != nil {
 			turn.SkillState = &schema.SkillTurnState{Input: skillInput}
 		}

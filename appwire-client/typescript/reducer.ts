@@ -372,6 +372,7 @@ function wireItemToModel(item: ThreadItem, imageSessionRoute?: string): ItemMode
   // affordance must be able to tell apart from a real index.
   if (item.transcriptEntryIndex !== undefined) model.transcriptEntryIndex = item.transcriptEntryIndex;
   if (item.clientMutationId) model.clientMutationId = item.clientMutationId;
+  if (item.actor) model.actor = item.actor;
   // Versioned-history fields, set only when the wire carried them (a v6 read,
   // history/updated, or an overlay item), so pre-v6 items keep their shape.
   if (item.version) model.version = item.version;
@@ -841,6 +842,7 @@ function mergePageItem(older: ItemModel, newer: ItemModel): ItemModel {
       ...older,
       ...newer,
       text: textSource.text,
+      ...((newer.actor ?? older.actor) ? { actor: newer.actor ?? older.actor } : {}),
       toolName: newer.toolName ?? older.toolName,
       callId: newer.callId ?? older.callId,
       argumentsJSON: newer.argumentsJSON ?? older.argumentsJSON,
@@ -1420,6 +1422,15 @@ function validPosition(value: unknown): value is ThreadItemPosition {
   );
 }
 
+function validSessionActor(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ["kind", "managerRef"]) &&
+    (value.kind === "human" || value.kind === "manager") &&
+    (value.managerRef === undefined || typeof value.managerRef === "string")
+  );
+}
+
 const ITEM_MODEL_KEYS = new Set([
   "id",
   "turnId",
@@ -1427,6 +1438,7 @@ const ITEM_MODEL_KEYS = new Set([
   "position",
   "transcriptEntryIndex",
   "clientMutationId",
+  "actor",
   "type",
   "text",
   "pendingText",
@@ -1469,6 +1481,7 @@ function validItem(value: unknown): value is CachedSessionItem {
   )
     return false;
   if (value.position !== undefined && !validPosition(value.position)) return false;
+  if (value.actor !== undefined && !validSessionActor(value.actor)) return false;
   for (const key of [
     "transcriptKey",
     "clientMutationId",
@@ -1624,6 +1637,7 @@ function validWireItem(value: unknown): value is ThreadItem {
     "source",
     "steeringKind",
     "clientMutationId",
+    "actor",
     "version",
     "roundId",
     "completedAtEntry",
@@ -1655,6 +1669,7 @@ function validWireItem(value: unknown): value is ThreadItem {
   )
     return false;
   if (value.position !== undefined && !validPosition(value.position)) return false;
+  if (value.actor !== undefined && !validSessionActor(value.actor)) return false;
   for (const key of [
     "transcriptEntryIndex",
     "startedAt",
@@ -2867,6 +2882,7 @@ const itemNullishMergedFields = new Set([
   "images",
   "outputImages",
   "source",
+  "actor",
   "startedAt",
   "completedAt",
 ]);

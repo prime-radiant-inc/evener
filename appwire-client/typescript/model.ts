@@ -62,6 +62,7 @@ export interface ItemModel {
   // guess (see UserMessageItem.tsx).
   transcriptEntryIndex?: number;
   clientMutationId?: string;
+  actor?: import("./types.gen").SessionActor;
   type: string; // wire ThreadItem.type verbatim
   text: string; // settled text
   pendingText?: string[]; // in-flight delta chunks (join on complete)

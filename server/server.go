@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/internal/appprojector"
@@ -41,8 +42,11 @@ type InputMessage struct {
 // per-session client-mutation state machine.
 type RetrySafeTurnFunctions struct {
 	Start     func(appwire.TurnStartParams) (appwire.TurnStartResponse, error)
+	StartAs   func(appwire.TurnStartParams, schema.SessionActor) (appwire.TurnStartResponse, error)
 	Steer     func(appwire.TurnSteerParams) (appwire.TurnSteerResponse, error)
+	SteerAs   func(appwire.TurnSteerParams, schema.SessionActor) (appwire.TurnSteerResponse, error)
 	Queue     func(appwire.TurnQueueParams) (appwire.TurnQueueResponse, error)
+	QueueAs   func(appwire.TurnQueueParams, schema.SessionActor) (appwire.TurnQueueResponse, error)
 	Drain     func(appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error)
 	Promote   func(appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error)
 	Cancel    func(appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error)
@@ -410,10 +414,12 @@ type Server struct {
 	appDescendantLiveWatchesFunc func(threadIDs []string) map[string][]agent.WatchStatusInfo
 	// appSubagentTallyFunc reads the root session's whole-tree subagent tally
 	// for the thread list's root row (S3); nil disables it.
-	appSubagentTallyFunc func() (appwire.SubagentTally, bool)
-	retrySafeTurns       RetrySafeTurnFunctions
-	cancelFunc           context.CancelFunc
-	goalFunc             func(objective string) (bool, error)
+	appSubagentTallyFunc       func() (appwire.SubagentTally, bool)
+	retrySafeTurns             RetrySafeTurnFunctions
+	resolveManagerActor        func(appwire.SessionActorProof) (schema.SessionActor, error)
+	sandboxEscalationResolveAs func(string, bool, schema.SessionActor) error
+	cancelFunc                 context.CancelFunc
+	goalFunc                   func(objective string) (bool, error)
 	// notesHumanSetFunc is called by the appwire notes/human/set method. The
 	// callback returns the full atomic acceptance result, including its receipt.
 	notesHumanSetFunc func(outerID, note string) (appwire.NotesHumanSetResponse, error)
@@ -662,6 +668,12 @@ func (s *Server) SetCancelFunc(cancel context.CancelFunc) {
 func (s *Server) SetSandboxEscalationResolveFunc(fn func(escalationID string, approve bool) error) {
 	s.mu.Lock()
 	s.sandboxEscalationResolveFunc = fn
+	s.mu.Unlock()
+}
+
+func (s *Server) SetSandboxEscalationResolveAsFunc(fn func(string, bool, schema.SessionActor) error) {
+	s.mu.Lock()
+	s.sandboxEscalationResolveAs = fn
 	s.mu.Unlock()
 }
 

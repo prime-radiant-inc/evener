@@ -91,8 +91,9 @@ func WithQueuedInputDrainOnInterruptHandler(ctx context.Context, rootCtx context
 // watch origin (nil for human/system-authored steering) so consuming the
 // message folds its watch keys into the turn's active provenance.
 type steeringMessage struct {
-	Text   string            `json:"text,omitempty"`
-	Images []ImageAttachment `json:"images,omitempty"`
+	Actor  schema.SessionActor `json:"actor,omitzero"`
+	Text   string              `json:"text,omitempty"`
+	Images []ImageAttachment   `json:"images,omitempty"`
 	// SkillNames carries the canonical skill identities a durable client
 	// steering input selected. Identities only, never bodies: the complete
 	// instructions load from the recorded sources at consumption.
@@ -1245,6 +1246,7 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 	t.SteeringSource = msg.Source
 	t.SteeringKind = msg.Kind
 	t.ClientMutationID = msg.ClientMutationID
+	t.Actor = msg.Actor
 	t.StableTurnID = msg.StableTurnID
 	if len(msg.SkillNames) > 0 {
 		t.SkillState = &schema.SkillTurnState{Input: selectionRecord}

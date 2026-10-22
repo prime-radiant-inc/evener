@@ -403,6 +403,7 @@ function YourMessage({
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const entryIndex = item.transcriptEntryIndex;
+	const speaker = item.actor?.kind === "manager" ? `Manager · ${item.actor.managerRef ?? ""}` : "You";
 	const menu: MenuItem[] = [
 		{ name: "copy", label: "Copy", run: () => void copyText(item.text) },
 		...(fork && entryIndex !== undefined
@@ -418,8 +419,16 @@ function YourMessage({
 	];
 	return (
 		<View style={{ alignItems: "flex-end", gap: 4 }}>
+			{item.actor?.kind === "manager" ? (
+				<Text
+					allowFontScaling={allowFontScaling}
+					style={{ fontSize: 12 * scale, lineHeight: 16 * scale, color: palette.inkLow }}
+				>
+					{speaker}
+				</Text>
+			) : null}
 			<Pressable
-				accessibilityLabel={`You: ${item.text}`}
+				accessibilityLabel={`${speaker}: ${item.text}`}
 				{...menuAccessibility(menu)}
 				onLongPress={() => showMenu(menu, menuPreview(item.text))}
 				style={{
@@ -432,7 +441,7 @@ function YourMessage({
 					paddingVertical: 10,
 				}}
 			>
-				<Copy variant="yourMessage" selectable={false} label={`You: ${item.text}`}>
+				<Copy variant="yourMessage" selectable={false} label={`${speaker}: ${item.text}`}>
 					{item.text}
 				</Copy>
 			</Pressable>

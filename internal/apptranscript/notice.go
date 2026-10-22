@@ -68,8 +68,16 @@ func NoticeItem(turnID string, entryIndex int, entry schema.Turn) (appwire.Threa
 		return appwire.ThreadItem{}, false
 	}
 	item.TranscriptEntryIndex = entryIndex
+	item.Actor = projectedActor(entry.Notice.Actor)
 	item.StartedAt = entryStartedAt(entry)
 	return item, true
+}
+
+func projectedActor(actor schema.SessionActor) *appwire.SessionActor {
+	if actor.Kind == "" {
+		return nil
+	}
+	return &appwire.SessionActor{Kind: actor.Kind, ManagerRef: actor.ManagerRef}
 }
 
 func noticeAnnouncement(notice schema.NoticeInfo) (NoticeAnnouncement, bool) {

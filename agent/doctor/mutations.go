@@ -172,6 +172,7 @@ type clientMutationStoreFile struct {
 }
 
 type clientMutationStoreRecord struct {
+	Actor               clientMutationStoreActor                `json:"actor"`
 	ClientMutationID    string                                  `json:"client_mutation_id"`
 	Method              string                                  `json:"method"`
 	Payload             json.RawMessage                         `json:"payload"`
@@ -202,20 +203,34 @@ type clientMutationStoreRejection struct {
 	Data    json.RawMessage `json:"data"`
 }
 
+// The forensic reader mirrors the persisted actor shape, rather than dropping
+// a field whose identity distinguishes Manager input from human input.
+type clientMutationStoreActor struct {
+	Kind       string `json:"kind"`
+	ManagerRef string `json:"manager_ref"`
+}
+
 type clientMutationStoreQueueEntry struct {
-	ID               string            `json:"id"`
-	ClientMutationID string            `json:"client_mutation_id"`
-	Input            []json.RawMessage `json:"input"`
+	Actor            clientMutationStoreActor `json:"actor"`
+	ID               string                   `json:"id"`
+	ClientMutationID string                   `json:"client_mutation_id"`
+	Input            []json.RawMessage        `json:"input"`
 }
 
 type clientMutationStorePending struct {
-	ClientMutationID string            `json:"client_mutation_id"`
-	Method           string            `json:"method"`
-	Input            []json.RawMessage `json:"input"`
-	ExecutionState   string            `json:"execution_state"`
-	TurnID           string            `json:"turn_id"`
-	QueueEntryIDs    []string          `json:"queue_entry_ids"`
-	ProjectionState  string            `json:"projection_state"`
+	Actor            clientMutationStoreWireActor `json:"actor"`
+	ClientMutationID string                       `json:"client_mutation_id"`
+	Method           string                       `json:"method"`
+	Input            []json.RawMessage            `json:"input"`
+	ExecutionState   string                       `json:"execution_state"`
+	TurnID           string                       `json:"turn_id"`
+	QueueEntryIDs    []string                     `json:"queue_entry_ids"`
+	ProjectionState  string                       `json:"projection_state"`
+}
+
+type clientMutationStoreWireActor struct {
+	Kind       string `json:"kind"`
+	ManagerRef string `json:"managerRef"`
 }
 
 func decodeClientMutationStore(data []byte, path, sessionID string) (clientMutationStoreFile, error) {

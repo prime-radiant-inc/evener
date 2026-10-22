@@ -4,6 +4,8 @@ A useful Evener session ends with a result you can inspect, not just a convincin
 
 This guide assumes you have completed [provider setup](getting-started.md#connect-a-provider-in-new-session). The browser instructions use your hub, normally `http://127.0.0.1:9180`. The CLI runs one request at a time and resumes saved sessions explicitly. It does not offer the browser's interactive Send, Steer, and Stop controls.
 
+When you enable **Manager** for a session, that session can send text or typed input to local sessions on its hub using `delegate_send` with a source-qualified session ref, an input mode (`start`, `queue`, or `steer`), a client mutation ID, and the target instance ID. The hub uses the same guarded send and retry path as your browser; retries preserve the first accepted speaker. A notification cannot answer a pending question. Manager can also approve or deny a pending sandbox request with `session_control`'s `approval` action. These actions appear in history as Manager input or decisions, with the Manager's session ref. Disabling Manager removes these tool branches; it does not change ordinary messages to owned delegates or your browser controls. Manager input to remote hosts, creation, stops, and watches are not part of this slice.
+
 ## Try a CLI continuation
 
 Use a fresh directory so the two files below cannot overwrite existing work. Replace `provider/model` with an available model from your configured provider:
@@ -127,9 +129,11 @@ returning restores it.
 An approval is different: it gates one specific action. Outside a sandbox,
 `read_file`, `write_file`, and `edit_file` denials can be escalated to a card
 with **Allow** and **Deny**, and the tool call waits until you answer. The model
-cannot trigger, approve, or later see that decision. Shell and kernel denials,
-patches, and browse calls stay final, as they do without a UI. See
-[sandbox escalation](sandboxing.md) for exactly which denials are eligible.
+cannot approve its own request or later see that decision. An enabled Manager
+session can act for it through `session_control`; that decision is attributed
+to the Manager. Shell and kernel denials, patches, and browse calls stay final,
+as they do without a UI. See [sandbox escalation](sandboxing.md) for exactly
+which denials are eligible.
 
 A pending question and a pending approval both raise the sidebar's attention
 badge and appear in the session's own attention, so you can leave a session and

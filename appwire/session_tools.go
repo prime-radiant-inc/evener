@@ -70,16 +70,39 @@ type SessionActor struct {
 	ManagerRef string `json:"managerRef,omitempty"`
 }
 
+// SessionActorProof is private hub-to-runtime transport metadata. No tool
+// argument contains it; the runtime matches BindingID to its live binding.
+type SessionActorProof struct {
+	BindingID string       `json:"bindingId"`
+	Actor     SessionActor `json:"actor"`
+}
+
 // SessionOperationRequest is closed. Future tasks add members only when their
 // owner exists, rather than advertising reserved operations.
 type SessionOperationRequest struct {
-	Discover *ThreadListParams `json:"discover,omitempty"`
-	Read     *ThreadReadParams `json:"read,omitempty"`
+	Discover *ThreadListParams      `json:"discover,omitempty"`
+	Read     *ThreadReadParams      `json:"read,omitempty"`
+	Start    *TurnStartParams       `json:"start,omitempty"`
+	Queue    *TurnQueueParams       `json:"queue,omitempty"`
+	Steer    *TurnSteerParams       `json:"steer,omitempty"`
+	Control  *SessionControlRequest `json:"control,omitempty"`
 }
 
 func (r SessionOperationRequest) Validate() error {
-	if (r.Discover == nil) == (r.Read == nil) {
+	if r.Start != nil && r.Start.ManagerProof != nil || r.Queue != nil && r.Queue.ManagerProof != nil || r.Steer != nil && r.Steer.ManagerProof != nil || r.Control != nil && r.Control.Approval != nil && r.Control.Approval.ManagerProof != nil {
+		return InvalidParams("actor metadata is not a tool argument")
+	}
+	count := 0
+	for _, present := range []bool{r.Discover != nil, r.Read != nil, r.Start != nil, r.Queue != nil, r.Steer != nil, r.Control != nil} {
+		if present {
+			count++
+		}
+	}
+	if count != 1 {
 		return InvalidParams("exactly one session operation is required")
+	}
+	if r.Control != nil {
+		return r.Control.Validate()
 	}
 	if r.Read != nil && (r.Read.Subscribe || r.Read.IncludeTurns) {
 		return InvalidParams("status reads do not subscribe or include history")
@@ -112,7 +135,40 @@ type SessionOperationResponse struct {
 	Actor     SessionActor            `json:"actor"`
 	Discover  *SessionDiscovery       `json:"discover,omitempty"`
 	Read      *ThreadReadResponse     `json:"read,omitempty"`
+	Start     *TurnStartResponse      `json:"start,omitempty"`
+	Queue     *TurnQueueResponse      `json:"queue,omitempty"`
+	Steer     *TurnSteerResponse      `json:"steer,omitempty"`
+	Control   *SessionControlResponse `json:"control,omitempty"`
 	FollowUps []SessionStatusFollowUp `json:"followUps,omitempty"`
+}
+
+// SessionControlRequest exposes only implemented, typed Manager controls.
+type SessionControlRequest struct {
+	Approval *SandboxEscalationResolveParams `json:"approval,omitempty"`
+}
+
+func (r SessionControlRequest) Validate() error {
+	if r.Approval == nil {
+		return InvalidParams("exactly one session control action is required")
+	}
+	return nil
+}
+
+func (r *SessionControlRequest) UnmarshalJSON(data []byte) error {
+	type plain SessionControlRequest
+	var decoded plain
+	d := json.NewDecoder(bytes.NewReader(data))
+	d.DisallowUnknownFields()
+	if err := d.Decode(&decoded); err != nil {
+		return InvalidParams(err.Error())
+	}
+	*r = SessionControlRequest(decoded)
+	return r.Validate()
+}
+
+type SessionControlResponse struct {
+	Result EmptyResponse `json:"result"`
+	Actor  SessionActor  `json:"actor"`
 }
 
 // SessionStatusFollowUp names the currently implemented status tool, not a

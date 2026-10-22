@@ -101,6 +101,22 @@ const emptyStore = `{
   "pending_executions": {}
 }`
 
+func TestMutations_AcceptsPersistedActorWithoutDroppingStrictness(t *testing.T) {
+	actor := `"actor":{"kind":"manager","manager_ref":"local:manager"},`
+	body := strings.Replace(storeWithBothOutcomes, `"client_mutation_id": "cm-start"`, actor+`"client_mutation_id": "cm-start"`, 2)
+	body = strings.Replace(body, `"client_mutation_id": "cm-queued"`, actor+`"client_mutation_id": "cm-queued"`, 2)
+	start := strings.LastIndex(body, actor+`"client_mutation_id": "cm-start"`)
+	body = body[:start] + strings.Replace(body[start:], actor, `"actor":{"kind":"manager","managerRef":"local:manager"},`, 1)
+	report, err := decodeClientMutationStore([]byte(strings.ReplaceAll(body, "%SID%", sidA)), "mutation.json", sidA)
+	if err != nil || len(report.Journal) != 3 || len(report.InputQueue) != 1 {
+		t.Fatalf("actor-bearing store must decode: report=%+v err=%v", report, err)
+	}
+	body = strings.Replace(body, `"manager_ref":"local:manager"`, `"manager_ref":"local:manager","forged":"value"`, 1)
+	if _, err := decodeClientMutationStore([]byte(strings.ReplaceAll(body, "%SID%", sidA)), "mutation.json", sidA); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("unknown actor field accepted: %v", err)
+	}
+}
+
 func TestMutations_EmptyStoreIsPresentWithNoRecords(t *testing.T) {
 	base := t.TempDir()
 	bucket := stateHomeBucket(base, hash1)

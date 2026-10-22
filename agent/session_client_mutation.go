@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/afero"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -23,6 +24,36 @@ var (
 	errClientMutationMismatch = errors.New("client mutation ID reused with a different method or payload")
 	errClientMutationOwner    = errors.New("client mutation owner is no longer active")
 )
+
+func validateSessionActor(actor schema.SessionActor) error {
+	switch actor.Kind {
+	case "human":
+		if actor.ManagerRef == "" {
+			return nil
+		}
+	case "manager":
+		if ref, err := appwire.ParseRef(actor.ManagerRef); err == nil && ref.String() == actor.ManagerRef {
+			return nil
+		}
+	}
+	return appwire.InvalidParams("invalid session actor")
+}
+
+func wireSessionActor(actor schema.SessionActor) appwire.SessionActor {
+	if actor.Kind == "" {
+		actor.Kind = "human"
+	} // transcripts predating actor metadata
+	return appwire.SessionActor{Kind: actor.Kind, ManagerRef: actor.ManagerRef}
+}
+
+func (s *Session) clientMutationActor(id string) schema.SessionActor {
+	if id != "" && s.clientMutations != nil {
+		if record, ok := s.clientMutations.snapshot().Journal[id]; ok && record.Actor.Kind != "" {
+			return record.Actor
+		}
+	}
+	return schema.SessionActor{Kind: "human"}
+}
 
 // NormalizeClientMutationError converts Session mutation failures into the
 // structured AppWire contract at the daemon boundary. Existing WireErrors are
@@ -90,6 +121,7 @@ type clientMutationRejection struct {
 }
 
 type clientMutationRecord struct {
+	Actor               schema.SessionActor             `json:"actor,omitzero"`
 	ClientMutationID    string                          `json:"client_mutation_id"`
 	Method              string                          `json:"method"`
 	Payload             json.RawMessage                 `json:"payload,omitempty"`
@@ -115,6 +147,7 @@ type clientMutationFailure struct {
 }
 
 type clientMutationQueueEntry struct {
+	Actor            schema.SessionActor `json:"actor,omitzero"`
 	ID               string              `json:"id"`
 	ClientMutationID string              `json:"client_mutation_id"`
 	Input            []appwire.InputItem `json:"input"`
@@ -227,6 +260,7 @@ type clientMutationSnapshot struct {
 }
 
 type clientMutationRequest struct {
+	Actor            schema.SessionActor
 	ClientMutationID string
 	Method           string
 	Payload          json.RawMessage
@@ -253,6 +287,7 @@ func newClientMutationRequest(method, id string, payload any) (clientMutationReq
 	}
 	sum := sha256.Sum256(canonical)
 	return clientMutationRequest{
+		Actor:            schema.SessionActor{Kind: "human"},
 		ClientMutationID: id,
 		Method:           method,
 		Payload:          canonical,
@@ -265,6 +300,13 @@ func newClientMutationRequest(method, id string, payload any) (clientMutationReq
 // accepted pending execution in the journal, and an identical retry returns
 // the same stable turn rather than creating another logical turn.
 func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+	return s.AcceptClientMutationStartAs(params, schema.SessionActor{Kind: "human"})
+}
+
+func (s *Session) AcceptClientMutationStartAs(params appwire.TurnStartParams, actor schema.SessionActor) (appwire.TurnStartResponse, error) {
+	if err := validateSessionActor(actor); err != nil {
+		return appwire.TurnStartResponse{}, err
+	}
 	release, err := s.beginRetirementMutation("input")
 	if err != nil {
 		return appwire.TurnStartResponse{}, err
@@ -282,6 +324,7 @@ func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (app
 	if err != nil {
 		return appwire.TurnStartResponse{}, err
 	}
+	request.Actor = actor
 
 	var response appwire.TurnStartResponse
 	lookup, err := s.clientMutations.executeAtomic(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
@@ -355,6 +398,7 @@ func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (app
 			snapshot.ActiveTurnID = record.StableTurnID
 		}
 		snapshot.PendingExecutions[record.ClientMutationID] = appwire.PendingMutation{
+			Actor:            wireSessionActor(record.Actor),
 			ClientMutationID: record.ClientMutationID,
 			Method:           record.Method,
 			Input:            cloneClientMutationInput(params.Input),
@@ -1572,6 +1616,7 @@ func (s *clientMutationStore) executeAtomic(
 	if !exists {
 		next := cloneClientMutationSnapshot(s.state)
 		current = clientMutationRecord{
+			Actor:            request.Actor,
 			ClientMutationID: request.ClientMutationID,
 			Method:           request.Method,
 			Payload:          append(json.RawMessage(nil), request.Payload...),

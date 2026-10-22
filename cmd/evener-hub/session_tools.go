@@ -30,6 +30,16 @@ type boundSessionOperations struct {
 	binding appwire.SessionBinding
 }
 
+type sessionBindingContextKey struct{}
+
+func sessionInputProof(ctx context.Context) (*appwire.SessionActorProof, error) {
+	binding, ok := ctx.Value(sessionBindingContextKey{}).(appwire.SessionBinding)
+	if !ok || binding.BindingID == "" {
+		return nil, appwire.InvalidRequest("authenticated Manager binding is required")
+	}
+	return &appwire.SessionActorProof{BindingID: binding.BindingID, Actor: appwire.SessionActor{Kind: "manager", ManagerRef: binding.Ref}}, nil
+}
+
 func (o *sessionOperations) install() {
 	if o.cfg.SessionPreferences == nil {
 		return
@@ -95,7 +105,7 @@ func (b *boundSessionOperations) Invoke(ctx context.Context, request appwire.Ses
 	if err != nil {
 		return appwire.SessionOperationResponse{}, err
 	}
-	return b.owner.Invoke(ctx, view, request)
+	return b.owner.Invoke(context.WithValue(ctx, sessionBindingContextKey{}, b.binding), view, request)
 }
 
 func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerView, request appwire.SessionOperationRequest) (appwire.SessionOperationResponse, error) {
@@ -136,13 +146,64 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 		for _, thread := range threads.Data {
 			response.FollowUps = append(response.FollowUps, statusFollowUp(thread.Evener.Ref))
 		}
-	} else {
+	} else if request.Read != nil {
 		read, err := o.read(ctx, *request.Read, false)
 		if err != nil {
 			return response, err
 		}
 		response.Read = &read
 		response.FollowUps = []appwire.SessionStatusFollowUp{statusFollowUp(read.Thread.Evener.Ref)}
+	} else if request.Start != nil {
+		proof, err := sessionInputProof(ctx)
+		if err != nil {
+			return response, err
+		}
+		params := *request.Start
+		params.ManagerProof = proof
+		start, err := o.Start(ctx, params)
+		if err != nil {
+			return response, err
+		}
+		response.Start = &start
+	} else if request.Queue != nil {
+		proof, err := sessionInputProof(ctx)
+		if err != nil {
+			return response, err
+		}
+		params := *request.Queue
+		params.ManagerProof = proof
+		queue, err := o.Queue(ctx, params)
+		if err != nil {
+			return response, err
+		}
+		response.Queue = &queue
+	} else if request.Steer != nil {
+		proof, err := sessionInputProof(ctx)
+		if err != nil {
+			return response, err
+		}
+		params := *request.Steer
+		params.ManagerProof = proof
+		steer, err := o.Steer(ctx, params)
+		if err != nil {
+			return response, err
+		}
+		response.Steer = &steer
+	} else if request.Control != nil {
+		proof, err := sessionInputProof(ctx)
+		if err != nil {
+			return response, err
+		}
+		params := *request.Control
+		approval := *params.Approval
+		approval.ManagerProof = proof
+		params.Approval = &approval
+		control, err := o.Control(ctx, params)
+		if err != nil {
+			return response, err
+		}
+		control.Actor = response.Actor
+		response.Control = &control
 	}
 	return response, nil
 }

@@ -26,6 +26,7 @@ func TestManagerAdmissionOrdinaryForgedDiscovery(t *testing.T) {
 		return toolCallResponse(llm.ToolCallData{ID: "forged-discovery", Name: "job_list", Arguments: json.RawMessage(`{"hub":{"mode":"discovery"}}`), Type: "function"})
 	}, func(req llm.Request) llm.Response { return finalResponse("done") })
 	root := newMessagingRoot(t, adapter, nil)
+	// TRIPWIRE: scripted responses complete immediately; this only guards a hung request.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
@@ -50,6 +51,60 @@ func TestManagerAdmissionOrdinaryForgedDiscovery(t *testing.T) {
 }
 
 type managerStateForUnit struct{ enabled atomic.Bool }
+
+type managerInputForUnit struct {
+	managerStateForUnit
+	requests []appwire.SessionOperationRequest
+}
+
+func (c *managerInputForUnit) Invoke(_ context.Context, request appwire.SessionOperationRequest) (appwire.SessionOperationResponse, error) {
+	c.requests = append(c.requests, request)
+	if request.Start != nil {
+		return appwire.SessionOperationResponse{Start: &appwire.TurnStartResponse{Receipt: appwire.MutationReceipt{ClientMutationID: request.Start.ClientMutationID}}}, nil
+	}
+	return appwire.SessionOperationResponse{Control: &appwire.SessionControlResponse{Actor: appwire.SessionActor{Kind: "manager", ManagerRef: "local:manager"}}}, nil
+}
+
+func TestManagerInputToolUsesBoundTypedOperations(t *testing.T) {
+	root := newMessagingRoot(t, newMessagingAdapter(), nil)
+	client := &managerInputForUnit{}
+	client.enabled.Store(true)
+	root.SetHubClient(client)
+	ctx := t.Context()
+	root.refreshHubState(ctx)
+	call := func(name, args string) {
+		t.Helper()
+		result := root.reg.ExecuteCall(ctx, root.currentEnv(), llm.ToolCallData{ID: name, Name: name, Arguments: json.RawMessage(args)})
+		if result.IsError {
+			t.Fatalf("%s refused implemented Manager action: %+v", name, result)
+		}
+	}
+	call("delegate_send", `{"to":"local:worker","input_mode":"start","message":"reply","client_mutation_id":"reply-1","expected_instance_id":"instance-1","intent":"Answering the worker question"}`)
+	if len(client.requests) != 1 || client.requests[0].Start == nil || client.requests[0].Start.ClientMutationID != "reply-1" || client.requests[0].Start.ManagerProof != nil || len(client.requests[0].Start.Input) != 1 || client.requests[0].Start.Input[0].Text != "reply" {
+		t.Fatalf("input tool did not forward typed request: %+v", client.requests)
+	}
+	call("session_control", `{"action":"approval","arguments":{"ref":"local:worker","escalationId":"esc-1","approve":false},"intent":"Denying the pending sandbox request"}`)
+	if len(client.requests) != 2 || client.requests[1].Control == nil || client.requests[1].Control.Approval == nil || client.requests[1].Control.Approval.EscalationID != "esc-1" || client.requests[1].Control.Approval.Approve {
+		t.Fatalf("approval tool did not forward typed decision: %+v", client.requests)
+	}
+	for _, forged := range []struct{ name, args string }{
+		{"session_control", `{"action":"approval","arguments":{"ref":"local:worker","escalationId":"esc-1","approve":true},"actor":{"kind":"human"}}`},
+		{"delegate_send", `{"to":"local:worker","input_mode":"start","message":1,"client_mutation_id":"reply-2","expected_instance_id":"instance-1"}`},
+	} {
+		result := root.reg.ExecuteCall(ctx, root.currentEnv(), llm.ToolCallData{ID: "forged", Name: forged.name, Arguments: json.RawMessage(forged.args)})
+		if !result.IsError || len(client.requests) != 2 {
+			t.Fatalf("forged Manager argument reached hub: %+v, requests=%+v", result, client.requests)
+		}
+	}
+	client.enabled.Store(false)
+	root.refreshHubState(ctx)
+	if root.reg.Get("session_control") != nil {
+		t.Fatal("approval tool survived Manager disable")
+	}
+	if result := root.reg.ExecuteCall(ctx, root.currentEnv(), llm.ToolCallData{ID: "disabled", Name: "delegate_send", Arguments: json.RawMessage(`{"to":"local:worker","message":"reply","intent":"Answering a worker question"}`)}); !result.IsError {
+		t.Fatal("session input fell back to ordinary owned-delegate messaging")
+	}
+}
 
 func (c *managerStateForUnit) State(context.Context) (appwire.ManagerView, error) {
 	return appwire.ManagerView{Setting: appwire.ManagerSetting{Enabled: c.enabled.Load()}}, nil
@@ -86,6 +141,7 @@ func TestManagerRequestActualPolicyMatrix(t *testing.T) {
 				root.mu.Unlock()
 				state := &managerStateForUnit{}
 				root.SetHubClient(state)
+				// TRIPWIRE: three scripted responses finish promptly; this guards a hung request.
 				ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 				defer cancel()
 				for _, enabled := range []bool{false, true, false} {
@@ -109,6 +165,24 @@ func TestManagerRequestActualPolicyMatrix(t *testing.T) {
 				}
 				requests := adapter.waitForRequests(t, "root", 3)
 				for index, req := range requests {
+					var control *llm.ToolDefinition
+					for _, definition := range req.Tools {
+						if definition.Name == "session_control" {
+							copy := definition
+							control = &copy
+						}
+					}
+					if (control != nil) != (index == 1 && mode != "allowlist") {
+						t.Fatalf("stage %d: session_control exposure = %v", index, control != nil)
+					}
+					if control != nil {
+						props := control.Parameters["properties"].(map[string]any)
+						actions := props["action"].(map[string]any)["enum"]
+						encoded, _ := json.Marshal(actions)
+						if string(encoded) != `["approval"]` {
+							t.Fatalf("session_control exposes unimplemented actions: %s", encoded)
+						}
+					}
 					if name == "job_list" && mode == "present" {
 						stage := []string{"off", "on", "disabled"}[index]
 						agenttest.CheckGolden(t, filepath.Join("testdata", "messagingprompt", "manager-"+stage+".md"), managerRequestGolden(req), *updatePromptGoldens, "Regenerate with go test ./ -run TestManagerRequestActualPolicyMatrix -update-prompt and inspect the diff.")

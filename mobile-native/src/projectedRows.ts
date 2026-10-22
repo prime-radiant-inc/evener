@@ -218,7 +218,14 @@ export type MobileTimelineItem =
 	// (the message was steered into the transcript mid-turn); a userMessage
 	// row never carries it.
 	(
-		| { kind: "user"; id: string; text: string; transcriptEntryIndex?: number; origin?: "steered" }
+		| {
+				kind: "user";
+				id: string;
+				text: string;
+				transcriptEntryIndex?: number;
+				origin?: "steered";
+				actor?: ItemModel["actor"];
+		  }
 		// A shared-notes update, steered in by the app itself (spec 8.8). Kept
 		// apart from "user" rows so it never renders as a message bubble.
 		| { kind: "note"; id: string; text: string }
@@ -438,6 +445,7 @@ function rowForItem(it: ItemModel, context: ProjectedRowContext): MobileTimeline
 		return {
 			kind: "user",
 			id: it.id,
+			...(it.actor ? { actor: it.actor } : {}),
 			text: it.text,
 			...(it.type === "userMessage" && it.transcriptEntryIndex !== undefined
 				? { transcriptEntryIndex: it.transcriptEntryIndex }

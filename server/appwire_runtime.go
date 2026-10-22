@@ -1589,7 +1589,12 @@ func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.Thre
 	return response, nil
 }
 
-func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+func (s *Server) handleAppTurnStart(ctx context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+	actor, manager, err := s.inputActor(ctx, params.ManagerProof)
+	if err != nil {
+		return appwire.TurnStartResponse{}, err
+	}
+	params.ManagerProof = nil
 	params.ClientMutationID = strings.TrimSpace(params.ClientMutationID)
 	params.ExpectedInstanceID = strings.TrimSpace(params.ExpectedInstanceID)
 	unlock, err := s.lockRetrySafeMutation(params.Ref, params.ThreadID, params.ExpectedInstanceID, params.ClientMutationID)
@@ -1603,7 +1608,11 @@ func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartP
 	}
 	s.mu.RLock()
 	fn := s.retrySafeTurns.Start
+	as := s.retrySafeTurns.StartAs
 	s.mu.RUnlock()
+	if manager && as == nil {
+		return appwire.TurnStartResponse{}, appwire.Unavailable("Manager turn start not available")
+	}
 	// Skill selections are consumed at the input's actual claim: this endpoint
 	// prepares them against the durable input identity and delivers the
 	// complete bodies at dispatch. The support verdict is this endpoint's own
@@ -1612,20 +1621,25 @@ func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartP
 	// them here with the typed unsupported-input error instead of asserting
 	// support it cannot deliver. Exact catalog identity and invocation policy
 	// remain consumption-time checks in the session.
-	if err := appwire.ValidateSkillInputSupport(input.Items, fn != nil); err != nil {
+	if err := appwire.ValidateSkillInputSupport(input.Items, fn != nil || manager && as != nil); err != nil {
 		return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
 	}
-	if err := appwire.ValidateCommandInputSupport(input.Items, fn != nil); err != nil {
+	if err := appwire.ValidateCommandInputSupport(input.Items, fn != nil || manager && as != nil); err != nil {
 		return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
 	}
 	if !input.HasContent() {
 		return appwire.TurnStartResponse{}, appwire.InvalidParams("input is required")
 	}
 	params.Input = input.Items
-	if fn == nil {
+	if !manager && fn == nil {
 		return appwire.TurnStartResponse{}, appwire.Unavailable("turn start not available")
 	}
-	response, err := fn(params)
+	var response appwire.TurnStartResponse
+	if manager {
+		response, err = as(params, actor)
+	} else {
+		response, err = fn(params)
+	}
 	// turn/start accepts a durable mutation intent and emits NOTHING: unlike
 	// steer/queue/drain/promote/cancel, it does not reflect the durable queue, so
 	// no QUEUE_CHANGED announces the pending execution it just recorded. The
@@ -1641,7 +1655,12 @@ func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartP
 	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 }
 
-func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+func (s *Server) handleAppTurnSteer(ctx context.Context, params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+	actor, manager, err := s.inputActor(ctx, params.ManagerProof)
+	if err != nil {
+		return appwire.TurnSteerResponse{}, err
+	}
+	params.ManagerProof = nil
 	params.ClientMutationID = strings.TrimSpace(params.ClientMutationID)
 	params.ExpectedInstanceID = strings.TrimSpace(params.ExpectedInstanceID)
 	unlock, err := s.lockRetrySafeMutation(params.Ref, params.ThreadID, params.ExpectedInstanceID, params.ClientMutationID)
@@ -1655,28 +1674,41 @@ func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerP
 	}
 	s.mu.RLock()
 	fn := s.retrySafeTurns.Steer
+	as := s.retrySafeTurns.SteerAs
 	s.mu.RUnlock()
+	if manager && as == nil {
+		return appwire.TurnSteerResponse{}, appwire.Unavailable("Manager steer not available")
+	}
 	// Skill selections are consumed at the steering's actual delivery: the
 	// support verdict is this endpoint's own wiring. See the turn/start gate.
-	if err := appwire.ValidateSkillInputSupport(input.Items, fn != nil); err != nil {
+	if err := appwire.ValidateSkillInputSupport(input.Items, fn != nil || manager && as != nil); err != nil {
 		return appwire.TurnSteerResponse{}, appwire.InvalidParams(err.Error())
 	}
-	if err := appwire.ValidateCommandInputSupport(input.Items, fn != nil); err != nil {
+	if err := appwire.ValidateCommandInputSupport(input.Items, fn != nil || manager && as != nil); err != nil {
 		return appwire.TurnSteerResponse{}, appwire.InvalidParams(err.Error())
 	}
 	if !input.HasContent() {
 		return appwire.TurnSteerResponse{}, appwire.InvalidParams("input is required")
 	}
 	params.Input = input.Items
-	if fn == nil {
+	if !manager && fn == nil {
 		return appwire.TurnSteerResponse{}, appwire.Unavailable("steer not available")
 	}
-	response, err := fn(params)
+	var response appwire.TurnSteerResponse
+	if manager {
+		response, err = as(params, actor)
+	} else {
+		response, err = fn(params)
+	}
 	s.refreshFacets(facetQueue)
 	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 }
 
-func (s *Server) handleAppSandboxEscalationResolve(_ context.Context, params appwire.SandboxEscalationResolveParams) (appwire.EmptyResponse, error) {
+func (s *Server) handleAppSandboxEscalationResolve(ctx context.Context, params appwire.SandboxEscalationResolveParams) (appwire.EmptyResponse, error) {
+	actor, manager, err := s.inputActor(ctx, params.ManagerProof)
+	if err != nil {
+		return appwire.EmptyResponse{}, err
+	}
 	if err := s.requireRootMutationTarget(params.Ref, params.ThreadID); err != nil {
 		return appwire.EmptyResponse{}, err
 	}
@@ -1686,11 +1718,20 @@ func (s *Server) handleAppSandboxEscalationResolve(_ context.Context, params app
 	}
 	s.mu.RLock()
 	fn := s.sandboxEscalationResolveFunc
+	as := s.sandboxEscalationResolveAs
 	s.mu.RUnlock()
-	if fn == nil {
+	if manager && as == nil {
+		return appwire.EmptyResponse{}, appwire.Unavailable("Manager approval not available")
+	}
+	if !manager && fn == nil {
 		return appwire.EmptyResponse{}, appwire.Unavailable("sandbox escalation resolve not available")
 	}
-	if err := fn(escalationID, params.Approve); err != nil {
+	if manager {
+		err = as(escalationID, params.Approve, actor)
+	} else {
+		err = fn(escalationID, params.Approve)
+	}
+	if err != nil {
 		// The escalation is unknown or already resolved (a stale card, a double
 		// click, or a race with turn-interrupt/close). Surface it as a conflict so
 		// the client can drop the card rather than retry.
@@ -1746,7 +1787,12 @@ func (s *Server) handleAppTurnInterrupt(ctx context.Context, params appwire.Turn
 	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 }
 
-func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+func (s *Server) handleAppTurnQueue(ctx context.Context, params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+	actor, manager, err := s.inputActor(ctx, params.ManagerProof)
+	if err != nil {
+		return appwire.TurnQueueResponse{}, err
+	}
+	params.ManagerProof = nil
 	params.ClientMutationID = strings.TrimSpace(params.ClientMutationID)
 	params.ExpectedInstanceID = strings.TrimSpace(params.ExpectedInstanceID)
 	unlock, err := s.lockRetrySafeMutation(params.Ref, "", params.ExpectedInstanceID, params.ClientMutationID)
@@ -1760,24 +1806,33 @@ func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueP
 	}
 	s.mu.RLock()
 	fn := s.retrySafeTurns.Queue
+	as := s.retrySafeTurns.QueueAs
 	s.mu.RUnlock()
+	if manager && as == nil {
+		return appwire.TurnQueueResponse{}, appwire.Unavailable("Manager queue not available")
+	}
 	// Skill selections ride the queued entry and are consumed at its actual
 	// claim; the support verdict is this endpoint's own wiring. See the
 	// turn/start gate.
-	if err := appwire.ValidateSkillInputSupport(input.Items, fn != nil); err != nil {
+	if err := appwire.ValidateSkillInputSupport(input.Items, fn != nil || manager && as != nil); err != nil {
 		return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
 	}
-	if err := appwire.ValidateCommandInputSupport(input.Items, fn != nil); err != nil {
+	if err := appwire.ValidateCommandInputSupport(input.Items, fn != nil || manager && as != nil); err != nil {
 		return appwire.TurnQueueResponse{}, appwire.InvalidParams(err.Error())
 	}
 	if !input.HasContent() {
 		return appwire.TurnQueueResponse{}, appwire.InvalidParams("input required")
 	}
 	params.Input = input.Items
-	if fn == nil {
+	if !manager && fn == nil {
 		return appwire.TurnQueueResponse{}, appwire.Unavailable("queue not available")
 	}
-	response, err := fn(params)
+	var response appwire.TurnQueueResponse
+	if manager {
+		response, err = as(params, actor)
+	} else {
+		response, err = fn(params)
+	}
 	s.refreshFacets(facetQueue)
 	return response, agent.NormalizeClientMutationError(params.ClientMutationID, err)
 }
