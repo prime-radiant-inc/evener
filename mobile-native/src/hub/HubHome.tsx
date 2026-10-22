@@ -39,11 +39,7 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 		!!check.applicable &&
 		!!check.updateAvailable;
 	const installWaiting =
-		!legacyUpdate &&
-		!!check?.applicable &&
-		(check.installAvailable ?? check.updateAvailable) &&
-		!update.restarting &&
-		!update.installing;
+		!legacyUpdate && !!check?.applicable && (check.installAvailable ?? check.updateAvailable) && !update.restarting;
 	const restartAvailable = check?.restartSupported === true;
 	const confirmInstall = () =>
 		Alert.alert(

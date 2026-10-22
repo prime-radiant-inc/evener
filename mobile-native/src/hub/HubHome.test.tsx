@@ -74,12 +74,23 @@ const INSTALLED: UpdateCheckResponse = { ...UP_TO_DATE, onDiskCommit: "def5678",
  * on upgrade, and restarts on restart. */
 function hub(check: UpdateCheckResponse | Error) {
 	const calls: string[] = [];
-	const script = { failChecks: false, failUpgrade: false, startedAt: undefined as string | undefined };
+	const script = {
+		failChecks: false,
+		failUpgrade: false,
+		holdUpgrade: false,
+		releaseUpgrade: undefined as (() => void) | undefined,
+		startedAt: undefined as string | undefined,
+	};
 	const client = {
 		request: (async (method: string) => {
 			calls.push(method);
 			if (method === "evener/upgrade") {
 				if (script.failUpgrade) throw new Error("socket hung up");
+				if (script.holdUpgrade) {
+					return new Promise<void>((resolve) => {
+						script.releaseUpgrade = resolve;
+					});
+				}
 				return {};
 			}
 			if (method === "evener/hub/restart") return { restarting: true };
@@ -392,6 +403,23 @@ it("offers a waiting install, confirms it, and sends evener/upgrade without rest
 	});
 	expect(calls).toContain("evener/upgrade");
 	expect(calls).not.toContain("evener/hub/restart");
+});
+
+it("keeps the install row visible while the upgrade is pending", async () => {
+	const { find, press, script } = await mount({ check: WAITING });
+	script.holdUpgrade = true;
+	press("Install update");
+	await act(async () => {
+		alertRequests[0]?.buttons?.find((button) => button.text === "Install")?.onPress?.();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+	const row = find("Install update");
+	expect(row).not.toBeNull();
+	expect(row?.props.disabled).toBe(true);
+	await act(async () => {
+		script.releaseUpgrade?.();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
 });
 
 it("holds the update while the hub isn't ready", async () => {

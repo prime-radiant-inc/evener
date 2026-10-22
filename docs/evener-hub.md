@@ -423,6 +423,10 @@ Install and Restart are separate actions:
 - A current hub that reports restart disabled keeps the two-step controls; the
   combined action is only for a hub whose response has no restart capability
   field at all.
+- A channel-lookup failure is reported in `checkError` while the local build,
+  incarnation, and restart facts stay populated. Clients older than that field
+  read the answer as "up to date" during the failure; the hub does not
+  negotiate a separate error shape for them.
 
 The install targets the prefix the running hub was launched from (derived
 from its own binary path, e.g. `/usr/local` for a system install), not

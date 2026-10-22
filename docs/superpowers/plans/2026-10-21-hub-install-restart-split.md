@@ -82,6 +82,10 @@ meaning:
   startup launch path is usable.
 - `checkError`: a channel-lookup failure. The local fields stay populated, and
   the clients keep Restart available instead of hiding it behind the failure.
+  A client older than `checkError` reads `applicable=true` with
+  `updateAvailable=false` as "up to date" during the failure. That
+  degradation is accepted; the response shape is not negotiated for older
+  clients.
 - `installTarget` and `installTargetMatchesLaunch`: where Install would write
   the `evener` binary and whether that path resolves to the running launch
   path. Install is unavailable when it does not.
