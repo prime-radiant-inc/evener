@@ -688,3 +688,30 @@ it("reads the hub and ref out of a composite target key", () => {
 	expect(parseTargetKey("local:thread-1")).toBeNull();
 	expect(parseTargetKey(JSON.stringify(["hub-1"]))).toBeNull();
 });
+
+// An identity-changing resume registers the resolved identity for the
+// runtime's lifetime. The runtime outlives an ordinary connection replacement,
+// so that entry can be left holding a client nobody serves. A registration is
+// not an owner when its client is gone: the replacement flush must claim the
+// target and deliver what is queued there, not skip it forever.
+it("claims a target whose registration belongs to a replaced client", async () => {
+	const outbox = runtime();
+	await outbox.submit(message());
+	const replaced = new FakeClient("closed");
+	const live = new FakeClient("ready");
+	live.on("thread/read", () => read("ref-1"));
+	live.on("turn/start", applied);
+
+	// The runtime holds the target for the dead client, as a stale resume
+	// registration would.
+	const release = outbox.registerTarget("hub-1", "ref-1", replaced);
+	try {
+		const flush = new OutboxFlush(() => outbox);
+		flush.bind("hub-1", live);
+		await vi.waitFor(() => expect(methods(live)).toContain("turn/start"));
+		flush.dispose();
+	} finally {
+		release();
+		await outbox.stop();
+	}
+});

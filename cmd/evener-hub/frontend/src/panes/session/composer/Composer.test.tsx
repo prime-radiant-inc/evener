@@ -4623,7 +4623,7 @@ test("a reconciliation-failed Send-resumes face offers Send and parks the row", 
 });
 
 // The submit re-derivation reads delivery uncertainty LIVE, like stopInFlight
-// and queuedNonSend beside it (and like resumeOnlyLocalModel, which enqueue and
+// and queuedNonSend beside it (and like resumeOnlyModel, which enqueue and
 // dispatch use): a blockedUnknown row published between the render and the
 // press must route the press to the Send-resumes face - the store drives the
 // resume rather than folding it into the send ahead of the uncertain row. The

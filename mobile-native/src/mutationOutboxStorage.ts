@@ -598,6 +598,97 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 
 	// Read methods required by MutationOutboxStorage.
 
+	/** Moves every waiting row from one ref to the ref a resume returned, in
+	 * one savepoint, keeping each clientMutationId (the daemon's reconciliation
+	 * keys on it) and rewriting the thread/instance fence the row dispatches
+	 * with. Returns the ids that moved. A resume that returns a new identity
+	 * makes the old ref useless: a row left there would dispatch against an
+	 * instance the daemon no longer serves. */
+	retarget(ref: string, to: { ref: string; wireRef: string; threadId?: string; instanceId?: string }): string[] {
+		if (!to.ref.trim()) throw new Error("retarget ref is required");
+		if (ref === to.ref) return [];
+		return this.transaction("mutation_outbox_retarget", () => {
+			// Source order matters: the moved rows keep their relative order at the
+			// destination, so the FIFO the daemon saw is the FIFO it keeps seeing.
+			const rows = this.db.getAllSync<{ client_mutation_id: string; payload: string }>(
+				`SELECT client_mutation_id, payload FROM ${TABLES.outbox}
+				 WHERE target_ref = ? AND state IN ('submitting', 'blockedUnknown')
+				 ORDER BY intent_sequence`,
+				ref,
+			);
+			if (rows.length === 0) return [];
+			const ids = rows.map((row) => row.client_mutation_id);
+			// Each row's target and sequence move in ONE write. Moving the target
+			// first would keep the source sequence, and both refs can already hold
+			// that number: the unique (target_ref, intent_sequence) index would
+			// reject the move and roll the whole retarget back.
+			//
+			// Only the rows this move knows how to finish take part. A canceled row
+			// left behind is harmless - it can never dispatch - while one carried
+			// over without the rewrite below would reopen under the new target still
+			// naming the retired identity.
+			//
+			// The optimistic table has the same unique index and the same risk, so
+			// it moves the same way.
+			//
+			// The OUTBOX move is restricted to `ids` - exactly the rows this method
+			// rewrites below. Moving a canceled row here would give it the new target
+			// while its payload still named the retired identity, and its "Send now"
+			// action would release a request addressing a session that no longer
+			// exists. A canceled row left on the old ref can never dispatch, which is
+			// the safe resting place for it.
+			const destinationEpoch = this.stopEpochOf(to.ref);
+			const optimistic = this.db.getAllSync<{ client_mutation_id: string }>(
+				`SELECT client_mutation_id FROM ${TABLES.optimistic} WHERE target_ref = ? ORDER BY intent_sequence`,
+				ref,
+			);
+			for (const row of optimistic) {
+				this.db.runSync(
+					`UPDATE ${TABLES.optimistic} SET target_ref = ?, intent_sequence = ? WHERE client_mutation_id = ?`,
+					to.ref,
+					this.allocateSequence(to.ref),
+					row.client_mutation_id,
+				);
+			}
+			// Recovery rows carry no unique sequence index and no wire fence, so they
+			// move as a set.
+			this.db.runSync(`UPDATE ${TABLES.recovery} SET target_ref = ? WHERE target_ref = ?`, to.ref, ref);
+			// The destination's stop counter is its own. A row carrying the source's
+			// epoch would be compared against an unrelated counter - falsely canceled
+			// by a lower one, or un-fenced by a higher one. Starting at the
+			// destination's current epoch (read above, before any move) keeps every
+			// existing stop effective.
+			// A resume that names no instance still changed identity: the daemon's
+			// fence token is then the thread id, the same fused rule every other
+			// caller derives it by.
+			const fence = to.instanceId ?? to.threadId;
+			for (const row of rows) {
+				// The dispatcher sends the payload verbatim as the RPC params, so the
+				// row's own wire ref and instance fence must move with it: a payload
+				// still naming the old identity is refused as stale however the
+				// columns read. Sequences are allocated per destination so a later
+				// send cannot take a lower number and overtake a moved row.
+				const payload = JSON.parse(row.payload) as Record<string, unknown>;
+				if (typeof payload.ref === "string") payload.ref = to.wireRef;
+				if (fence !== undefined) payload.expectedInstanceId = fence;
+				this.db.runSync(
+					`UPDATE ${TABLES.outbox}
+					 SET target_ref = ?, payload = ?, intent_sequence = ?, stop_epoch_at_enqueue = ?,
+					     thread_id = COALESCE(?, thread_id), instance_id = COALESCE(?, instance_id)
+					 WHERE client_mutation_id = ?`,
+					to.ref,
+					JSON.stringify(payload),
+					this.allocateSequence(to.ref),
+					destinationEpoch,
+					to.threadId ?? null,
+					fence ?? null,
+					row.client_mutation_id,
+				);
+			}
+			return ids;
+		});
+	}
+
 	async listTargetRefs(): Promise<string[]> {
 		// UNION (not UNION ALL) already removes duplicates, so a DISTINCT under
 		// each arm would only repeat what the merge already guarantees. The

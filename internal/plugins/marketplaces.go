@@ -393,6 +393,8 @@ func editFailureIdentity(err error) error {
 		context.Canceled,
 		context.DeadlineExceeded,
 		ErrMarketplaceSourceInStore,
+		ErrMarketplaceSourcePinned,
+		ErrSourceRefQualified,
 		ErrMarketplaceExists,
 		ErrMarketplaceNotFound,
 		ErrInvalidName,
