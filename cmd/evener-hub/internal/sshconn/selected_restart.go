@@ -2,6 +2,7 @@ package sshconn
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -66,11 +67,18 @@ func (m *Manager) checkSelectedReplacement(ctx context.Context, host hostreg.Hos
 		if retained != nil && retained.BootID != "" {
 			read = func(ctx context.Context, host hostreg.Host, facts Preflight) (hubendpoint.Report, error) {
 				report, err := m.resolveHostEndpoint(ctx, host, facts)
+				if errors.Is(err, ErrPreflightDecode) {
+					return report, err // Invalid or mismatched identity is not unavailable health.
+				}
 				if err != nil {
-					return report, err
+					// Retained config/root are locators, not health or stop authority.
+					// Independent process, launch, config and capability checks below
+					// must still succeed even when this endpoint read fails.
+					report = owner.clone().report
+					report.State, report.Running = "unavailable", nil
 				}
 				running := report.Running
-				if running == nil || running.BootID != retained.BootID || running.PID != retained.PID || fmt.Sprint(running.PID) != owner.pid || running.ConfigPath != retained.ConfigPath || running.HubStateRoot != retained.HubStateRoot || report.ConfigPath != owner.report.ConfigPath || report.HubStateRoot != owner.report.HubStateRoot {
+				if running != nil && (running.BootID != retained.BootID || running.PID != retained.PID || fmt.Sprint(running.PID) != owner.pid || running.ConfigPath != retained.ConfigPath || running.HubStateRoot != retained.HubStateRoot || report.ConfigPath != owner.report.ConfigPath || report.HubStateRoot != owner.report.HubStateRoot) {
 					return report, fmt.Errorf("%w: stop requires the matching live report", errOwnerEvidence)
 				}
 				return report, nil

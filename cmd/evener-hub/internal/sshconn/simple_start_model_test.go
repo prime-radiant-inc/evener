@@ -18,7 +18,7 @@ import (
 // not an inferred error or the number of read-only inspections.
 func TestSelectedRestartBoundary(t *testing.T) {
 	for _, platform := range []string{"linux", "darwin"} {
-		for _, name := range []string{"matching-live", "no-retained-report", "no-retained-boot", "no-live-report", "different-boot", "different-pid", "different-config", "different-root", "live-A-definition-B", "stopped-A-definition-B", "binding-during-ad-hoc-gate", "live-environment-file", "changed-environment-file", "cold-environment-file", "stable-B-environment-file", "stable-B-unit-environment", "minimal-path-environment-file"} {
+		for _, name := range []string{"matching-live", "no-retained-report", "no-retained-boot", "no-live-report", "live-report-error", "different-boot", "different-pid", "different-config", "different-root", "live-A-definition-B", "stopped-A-definition-B", "binding-during-ad-hoc-gate", "live-environment-file", "changed-environment-file", "cold-environment-file", "stable-B-environment-file", "stable-B-unit-environment", "minimal-path-environment-file"} {
 			environmentFile := strings.HasSuffix(name, "environment-file")
 			if platform == "darwin" && (name == "binding-during-ad-hoc-gate" || environmentFile || name == "stable-B-unit-environment") {
 				continue
@@ -94,6 +94,9 @@ func TestSelectedRestartBoundary(t *testing.T) {
 				mutations, definitionReads, coldEnvironmentReads, nextRootReads := 0, 0, 0, 0
 				fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 					remote := strings.Join(argv[12:], " ")
+					if name == "live-report-error" && remote == "/opt/evener hub endpoint --json --config /srv/selected.toml" {
+						return nil, errReplacementFixture
+					}
 					if name == "minimal-path-environment-file" && strings.Contains(remote, "perl") {
 						t.Error("remote command stream depends on Perl")
 					}
@@ -133,7 +136,7 @@ func TestSelectedRestartBoundary(t *testing.T) {
 					if remote == ownerGenerationRemote("4242") {
 						return []byte("kernel-boot\n12500\n"), nil
 					}
-					if name == "no-retained-report" {
+					if name == "no-retained-report" || name == "no-live-report" || name == "live-report-error" {
 						switch remote {
 						case "/proc/4242/exe launch-check --json", "/opt/evener launch-check --json":
 							return []byte(goodLaunchCheck), nil
@@ -225,7 +228,7 @@ func TestSelectedRestartBoundary(t *testing.T) {
 				if bindingCase {
 					refusal = errEntryBinding
 				}
-				if name == "matching-live" || name == "no-retained-report" || name == "no-retained-boot" || name == "live-environment-file" || name == "cold-environment-file" || name == "minimal-path-environment-file" {
+				if name == "matching-live" || name == "no-retained-report" || name == "no-retained-boot" || name == "no-live-report" || name == "live-report-error" || name == "live-environment-file" || name == "cold-environment-file" || name == "minimal-path-environment-file" {
 					if mutations != 1 || !errors.Is(err, errReplacementFixture) {
 						t.Fatalf("mutations=%d err=%v, want one authorized restart", mutations, err)
 					}
