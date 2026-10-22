@@ -133,7 +133,12 @@ async function build(repo) {
     }
 }
 const rawText = async (file, args, options) => (await run(file, args, options)).text;
-const text = async (file, args, options) => (await rawText(file, args, options)).trim();
+// Normalize only the command-boundary framing newline. Argument bytes are
+// pathname or flag data and may legitimately end in spaces.
+const text = async (file, args, options) => {
+    const raw = await rawText(file, args, options);
+    return raw.endsWith('\n') ? raw.slice(0, -1) : raw;
+};
 function object(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 function string(value) { return typeof value === 'string' && value.length > 0 && !/[\x00-\x1f\x7f]/.test(value); }
 function pathname(raw) {
@@ -277,8 +282,10 @@ function processArgvMatches(actual, def, report) {
         const configured = report.listen_source === 'config' && ephemeral(report.configured_listen_addr);
         const published = r.listen_source === 'config' && ephemeral(r.requested_listen_addr);
         const env = def.env.EVENER_HUB_LISTEN_ADDR;
-        const fromEnv = ephemeral(env) && ((report.listen_source === 'env' && report.configured_listen_addr === env) ||
-            (r.listen_source === 'env' && r.requested_listen_addr === env));
+        // The endpoint report carries the normalized spelling of the environment
+        // listener, so compare its ephemeral shape rather than the raw value.
+        const fromEnv = ephemeral(env) && ((report.listen_source === 'env' && ephemeral(report.configured_listen_addr)) ||
+            (r.listen_source === 'env' && ephemeral(r.requested_listen_addr)));
         if (!configured && !published && !fromEnv) return false;
         expected.push('-addr', bound);
     } else if (inline) expected[index] = def.argv[index].split('=')[0]+'='+bound;
