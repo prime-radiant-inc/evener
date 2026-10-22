@@ -457,10 +457,14 @@ async function rowsForDocumentEpoch<Row extends { documentKey: string; epoch: st
 class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotationRepository {
   readonly #connection: IDBConnection;
   readonly #options: DocumentAnnotationOptions;
-  // Adapter-local binding from an issued ticket to the durable read generation
-  // it was issued at. Acceptance still requires the durable head to match, so a
-  // later beginRead in ANOTHER adapter retires this ticket.
-  readonly #issuedReads = new Map<string, { documentKey: string; readGeneration: number }>();
+  // Adapter-local binding from each document to its one live ticket and the
+  // durable read generation it was issued at. Keying by document makes "one
+  // live ticket per document, the newest generation wins" structural: a
+  // continuation that runs out of issuance order (a held earlier beginRead
+  // settling after a later one) can never displace the newer registration.
+  // Acceptance still requires the durable head to match, so a later beginRead
+  // in ANOTHER adapter retires this ticket too.
+  readonly #issuedReads = new Map<string, { requestId: string; readGeneration: number }>();
   // The last completed current ticket and accepted source per document key, used
   // for immediate in-memory suppression (never durable, never in ComposerSourceState).
   readonly #readStates = new Map<string, ReadState>();
@@ -720,18 +724,21 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     });
     // Issuing a newer read supersedes every earlier unaccepted ticket for this
     // document in this adapter: the issuance just advanced the durable read
-    // generation, so those tickets can only ever validate stale now. Dropping
-    // them here bounds the map to one live ticket per document instead of
-    // accumulating one per failed, cancelled or abandoned read for the whole
-    // application lifetime; tickets for other documents keep their own slots.
-    for (const [requestId, issued] of this.#issuedReads) {
-      if (issued.documentKey === documentKey) this.#issuedReads.delete(requestId);
+    // generation, so those tickets can only ever validate stale now. The map
+    // holds one live ticket per document instead of accumulating one per
+    // failed, cancelled or abandoned read for the whole application lifetime;
+    // tickets for other documents keep their own slots. The generation compare
+    // is what makes this safe when continuations settle out of order: a held
+    // earlier issuance finishes after a later one and must not replace it.
+    const live = this.#issuedReads.get(documentKey);
+    if (live === undefined || live.readGeneration < issuedGeneration) {
+      this.#issuedReads.set(documentKey, { requestId: ticket.requestId, readGeneration: issuedGeneration });
+      // Remember the completed current ticket in the same synchronous
+      // continuation, carrying the prior completed accepted source for the full
+      // document key.
+      const prior = this.#readStates.get(documentKey);
+      this.#readStates.set(documentKey, { ticket, accepted: prior?.accepted, observations: prior?.observations ?? [] });
     }
-    this.#issuedReads.set(ticket.requestId, { documentKey, readGeneration: issuedGeneration });
-    // Remember the completed current ticket in the same synchronous continuation,
-    // carrying the prior completed accepted source for the full document key.
-    const prior = this.#readStates.get(documentKey);
-    this.#readStates.set(documentKey, { ticket, accepted: prior?.accepted, observations: prior?.observations ?? [] });
     this.#settleTransition({ signal: true });
     return ticket;
   }
@@ -740,8 +747,8 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     if (ticket.key.namespace.kind !== "browser") return { state: "stale-ticket" };
     const namespace = ticket.key.namespace;
     const documentKey = annotationDocumentKey(ticket.key);
-    const issued = this.#issuedReads.get(ticket.requestId);
-    if (!issued || issued.documentKey !== documentKey) return { state: "stale-ticket" };
+    const issued = this.#issuedReads.get(documentKey);
+    if (!issued || issued.requestId !== ticket.requestId) return { state: "stale-ticket" };
     // Entry, before the first await: a locally current read of changed content
     // installs or transfers unconfirmed suppression for the original accepted
     // epoch, so an overlapping append sees it at its own final guard. A confirmed
@@ -995,7 +1002,9 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       releaseProvisional();
       throw error;
     } finally {
-      this.#issuedReads.delete(ticket.requestId);
+      // Retire only this invocation's own registration: a newer read that
+      // registered while this acceptance was settling keeps its ticket.
+      if (this.#issuedReads.get(documentKey)?.requestId === ticket.requestId) this.#issuedReads.delete(documentKey);
     }
   }
 

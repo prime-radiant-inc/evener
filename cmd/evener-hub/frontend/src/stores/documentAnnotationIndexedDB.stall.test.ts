@@ -61,6 +61,37 @@ test("a stalled annotation transaction stops waiting and the same adapter can re
   drafts.close();
 });
 
+// Ticket publication must follow the durable read generation, not the order
+// two beginRead continuations happen to run in. Read A's transaction commits,
+// but its completion event is held; read B is issued meanwhile and advances
+// the durable generation. When A's continuation finally runs it must not
+// prune B's registration or replace B's remembered ticket: B owns the newest
+// generation and is still acceptable, while A alone is stale.
+test("a held earlier read does not displace the later read's ticket", async () => {
+  const { drafts, repository, document } = await openStallFixture("annotation-read-order");
+  const content = { text: "ordered read", binary: false, mediaType: "text/markdown", truncated: false, sizeBytes: 12 };
+  try {
+    // Prime the namespace and head rows so the held read is not the schema writer.
+    await repository.beginRead(document);
+    const hold = holdNextWriteTransaction([ANNOTATION_NAMESPACES_STORE, ANNOTATION_HEADS_STORE]);
+    const earlier = repository.beginRead(document);
+    await hold.reached;
+    // B is issued while A's completion is still held, and completes first.
+    const later = await repository.beginRead(document);
+    hold.release();
+    const earlierTicket = await earlier;
+    expect(earlierTicket.requestId).not.toBe(later.requestId);
+
+    // B owns the latest durable generation: accepting it must succeed.
+    expect(await repository.acceptRead(later, content)).toMatchObject({ state: "accepted" });
+    // A was superseded durably, so only its own acceptance is stale.
+    expect(await repository.acceptRead(earlierTicket, content)).toEqual({ state: "stale-ticket" });
+  } finally {
+    repository.close();
+    drafts.close();
+  }
+});
+
 // The repository's watchdog bounds the happy path; the rollback the error
 // path awaits must share that bound. A body that rejects before the deadline
 // enters the catch, whose completed-wait used to sit OUTSIDE the deadline
