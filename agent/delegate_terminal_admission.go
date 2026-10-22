@@ -117,8 +117,13 @@ func (a *subagent) admitTerminalReportWithInventory(ctx context.Context, candida
 	}
 
 	work, err := a.sess.outstandingDelegateWorkForAdmission()
-	for attempt := 0; err != nil && attempt < 2; attempt++ {
-		time.Sleep(25 * time.Millisecond)
+	for attempt := 0; err != nil && attempt < 4; attempt++ {
+		delay := time.Duration(25*(1<<attempt)) * time.Millisecond
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(delay):
+		}
 		work, err = a.sess.outstandingDelegateWorkForAdmission()
 	}
 	if err != nil {
@@ -150,51 +155,6 @@ func (a *subagent) admitTerminalReportWithInventory(ctx context.Context, candida
 		return true, nil
 	}
 
-	if strings.TrimSpace(candidate.Blocker) == "" {
-		return false, appwire.InvalidParams("communicate end_reason blocked requires blocker")
-	}
-	ids := work.IDs()
-	a.mu.Lock()
-	a.blockedWork = append([]string(nil), ids...)
-	a.mu.Unlock()
-	if len(ids) != 0 {
-		candidate.Packet.Metadata = packetMetadataWithOutstandingWork(candidate.Packet.Metadata, ids)
-	}
-	return true, nil
-}
-
-// admitTerminalReportWithAttention is the publication-time admission: it
-// includes transcript attention finalization has not resolved, except owned
-// shell attention.
-func (a *subagent) admitTerminalReportWithAttention(ctx context.Context, candidate *terminalReportCandidate) (bool, error) {
-	work, err := a.sess.outstandingDelegateWorkForPublication()
-	if err != nil {
-		return false, err
-	}
-	if len(work.Unknown) != 0 {
-		reason := "The terminal report was refused because outstanding work could not be verified"
-		reason += ". Outstanding: " + strings.Join(work.IDs(), ", ")
-		if steerErr := a.sess.steerTerminalRefusal(reason); steerErr != nil {
-			return false, steerErr
-		}
-		return false, nil
-	}
-	if candidate.Disposition == tool.CommunicateEndReasonDone {
-		work.Jobs = a.sess.dropOwnedShellJobs(work.Jobs)
-		if !work.Empty() {
-			reason := "The terminal report was refused because this run still has outstanding work: " +
-				strings.Join(work.IDs(), ", ") +
-				". Finish or settle that work, then report done."
-			if steerErr := a.sess.steerTerminalRefusal(reason); steerErr != nil {
-				return false, steerErr
-			}
-			return false, nil
-		}
-		a.mu.Lock()
-		a.blockedWork = nil
-		a.mu.Unlock()
-		return true, nil
-	}
 	if strings.TrimSpace(candidate.Blocker) == "" {
 		return false, appwire.InvalidParams("communicate end_reason blocked requires blocker")
 	}

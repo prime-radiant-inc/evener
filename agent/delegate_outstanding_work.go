@@ -98,26 +98,6 @@ func (s *Session) outstandingDelegateWorkForAdmission() (OutstandingDelegateWork
 	return work, err
 }
 
-// outstandingDelegateWorkForPublication includes transcript attention that
-// finalization did not resolve, except owned shell attention the drain already
-// settled.
-func (s *Session) outstandingDelegateWorkForPublication() (OutstandingDelegateWork, error) {
-	work, err := s.outstandingDelegateWork()
-	work.Attention = dropShellAttention(work.Attention)
-	return work, err
-}
-
-func dropShellAttention(ids []string) []string {
-	kept := make([]string, 0, len(ids))
-	for _, id := range ids {
-		if strings.HasPrefix(id, "shell:") {
-			continue
-		}
-		kept = append(kept, id)
-	}
-	return kept
-}
-
 func (s *Session) outstandingDelegateWorkInventory(includeAttention bool) (OutstandingDelegateWork, error) {
 	var work OutstandingDelegateWork
 	if s == nil {

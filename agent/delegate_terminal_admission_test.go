@@ -229,26 +229,6 @@ func TestTerminalAdmissionBlockedKeepsOwnedShell(t *testing.T) {
 	}
 }
 
-func TestTerminalAdmissionWithAttentionRefusesUnresolvedReport(t *testing.T) {
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	s := &Session{id: "root-session", stateDir: c.stateDir, transcriptReady: true}
-	writeDelegateAttentionTranscript(t, transcriptPath(s.stateDir, s.id), s.id, "attention-1")
-	if ids, err := s.pendingDelegateAttentionIDs(); err != nil || len(ids) == 0 {
-		t.Fatalf("pending attention = %v, err = %v", ids, err)
-	}
-
-	admitted, err := (&subagent{sess: s}).admitTerminalReportWithAttention(context.Background(), &terminalReportCandidate{
-		Disposition: tool.CommunicateEndReasonDone,
-	})
-	if err != nil {
-		t.Fatalf("admitTerminalReportWithAttention: %v", err)
-	}
-	if admitted {
-		t.Fatal("done was admitted with unresolved delegate attention")
-	}
-	assertSteerMentions(t, s, "attention:attention-1")
-}
-
 func TestTerminalAdmissionRestartSafety(t *testing.T) {
 	s, jm := newAdmissionSession(t)
 	jm.mu.Lock()
