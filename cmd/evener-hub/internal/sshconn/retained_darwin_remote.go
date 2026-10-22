@@ -250,8 +250,17 @@ func (m *Manager) retainedDarwinRecord(ctx context.Context, host hostreg.Host, p
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return errOwnerEvidence
 	}
-	// Compare the entire credential-free record, not a PID or boot ID alone.
-	before, err := json.Marshal(prior.report.Running)
+	// Discovery enriches its copy with health-derived build fields, while the
+	// startup publication legitimately omits them. Compare available build
+	// evidence separately, then require every persisted identity field to match.
+	expected := *prior.report.Running
+	if (expected.Version != "" && record.Version != "" && expected.Version != record.Version) ||
+		(expected.BackendGitSHA != "" && record.BackendGitSHA != "" && expected.BackendGitSHA != record.BackendGitSHA) {
+		return errOwnerSelectionMismatch
+	}
+	expected.Version, record.Version = "", ""
+	expected.BackendGitSHA, record.BackendGitSHA = "", ""
+	before, err := json.Marshal(expected)
 	if err != nil {
 		return err
 	}
