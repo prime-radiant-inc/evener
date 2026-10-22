@@ -143,8 +143,26 @@ surface without clearing the saved preference; reconnection restores it when
 the setting still permits it. Another connected hub cannot silently replace the
 selected authority.
 
-This slice does not expose Manager session controls, messaging, creation, activity,
-transcript reads, model listing, remote enabling or Manager `job_watch`.
-The private transport supports ephemeral status observations through the existing
-relay, not durable watches or completion events. Cancellation, revocation and
-connection loss close those consumers.
+## Start an independent worker from a Manager
+
+A Manager can call `delegate` with `prompt` and
+`hub:{cwd,model,watch:{events,completion}}`. This creates an empty, independent
+top-level session on the Manager's local hub. It attaches the requested
+`job_watch` and reads its initial state **before** submitting the prompt with
+`turn/start`. Use `events:["question","communicate"]` and `completion:true` to
+receive question and terminal-result notices even when no browser is open.
+Read a pending question with `job_status` and
+`hub:{ref:"local:WORKSPACE_ID"}`, then send an answer with `delegate_send` using
+the returned ref, `input_mode:"start"`, `message`, a fresh
+`client_mutation_id`, and the returned `expected_instance_id`. A notification
+alone never answers a question. Resolve a pending approval with
+`session_control` and the approval's `escalationId` instead.
+
+The `delegate` result reports `created`, `watch` and `input` separately. A
+successful creation followed by a failed watch returns the worker ref, leaves
+the worker empty, and does not submit its prompt. A successful watch followed
+by failed or uncertain input keeps the watch attached and reports that input
+outcome separately. If the launch is unknown, it stays unknown: never retry
+creation automatically. Inspect any returned worker ref before deciding what
+to do next. Workers are not owned delegates; they continue independently when
+their Manager's turn ends, and their watch notices are not delegate reports.

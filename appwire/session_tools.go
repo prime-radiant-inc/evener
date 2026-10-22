@@ -84,6 +84,7 @@ type SessionActorProof struct {
 type SessionOperationRequest struct {
 	Discover *ThreadListParams      `json:"discover,omitempty"`
 	Read     *ThreadReadParams      `json:"read,omitempty"`
+	Create   *ThreadStartParams     `json:"create,omitempty"`
 	Start    *TurnStartParams       `json:"start,omitempty"`
 	Queue    *TurnQueueParams       `json:"queue,omitempty"`
 	Steer    *TurnSteerParams       `json:"steer,omitempty"`
@@ -95,13 +96,16 @@ func (r SessionOperationRequest) Validate() error {
 		return InvalidParams("actor metadata is not a tool argument")
 	}
 	count := 0
-	for _, present := range []bool{r.Discover != nil, r.Read != nil, r.Start != nil, r.Queue != nil, r.Steer != nil, r.Control != nil} {
+	for _, present := range []bool{r.Discover != nil, r.Read != nil, r.Create != nil, r.Start != nil, r.Queue != nil, r.Steer != nil, r.Control != nil} {
 		if present {
 			count++
 		}
 	}
 	if count != 1 {
 		return InvalidParams("exactly one session operation is required")
+	}
+	if r.Create != nil && len(r.Create.Input) != 0 {
+		return InvalidParams("Manager creation must start an empty session")
 	}
 	if r.Control != nil {
 		return r.Control.Validate()
@@ -137,6 +141,7 @@ type SessionOperationResponse struct {
 	Actor     SessionActor            `json:"actor"`
 	Discover  *SessionDiscovery       `json:"discover,omitempty"`
 	Read      *ThreadReadResponse     `json:"read,omitempty"`
+	Create    *ThreadStartResponse    `json:"create,omitempty"`
 	Start     *TurnStartResponse      `json:"start,omitempty"`
 	Queue     *TurnQueueResponse      `json:"queue,omitempty"`
 	Steer     *TurnSteerResponse      `json:"steer,omitempty"`

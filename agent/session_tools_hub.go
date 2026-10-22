@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
 
@@ -86,7 +87,7 @@ func (s *Session) composeHubRegistry() {
 	}
 	if s.hubOrdinary == nil {
 		s.hubOrdinary = map[string]*tool.RegisteredTool{}
-		for _, name := range []string{"job_list", "job_status", "job_watch", "delegate_send", "session_control"} {
+		for _, name := range []string{"job_list", "job_status", "job_watch", "delegate_send", "delegate", "session_control"} {
 			if base := s.reg.Get(name); base != nil {
 				copy := *base
 				s.hubOrdinary[name] = &copy
@@ -127,6 +128,200 @@ func (s *Session) composeHubRegistry() {
 	}
 	s.composeHubWatchTool()
 	s.composeHubInputTools()
+	s.composeHubDelegateTool()
+}
+
+// managerDelegateDefinition keeps the owned-delegate contract on calls without
+// hub. A hub call creates a top-level session instead; none of its result is an
+// owned delegate report or an acknowledgement of one.
+func managerDelegateDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDefinition {
+	var params map[string]any
+	if ordinary {
+		data, _ := json.Marshal(def.Parameters)
+		_ = json.Unmarshal(data, &params)
+	} else {
+		params = map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"prompt": map[string]any{"type": "string"}}}
+	}
+	props := params["properties"].(map[string]any)
+	props["hub"] = map[string]any{
+		"type": "object", "additionalProperties": false,
+		"properties": map[string]any{
+			"cwd":   map[string]any{"type": "string"},
+			"model": map[string]any{"type": "string"},
+			"watch": map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
+				"events":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"completion": map[string]any{"type": "boolean"},
+			}, "required": []string{"events"}},
+		}, "required": []string{"cwd", "model", "watch"},
+	}
+	params["required"] = []string{"prompt"}
+	if ordinary {
+		params["anyOf"] = []any{
+			map[string]any{"not": map[string]any{"required": []string{"hub"}}},
+			map[string]any{"required": []string{"hub"}, "properties": map[string]any{"hub": map[string]any{}, "prompt": map[string]any{}, "intent": map[string]any{}}, "additionalProperties": false},
+		}
+	} else {
+		params["required"] = []string{"prompt", "hub"}
+	}
+	def.Description += " With Manager enabled, hub={cwd,model,watch} creates an independent top-level session, attaches the requested watch and reads its initial state before sending prompt. Creation, watch and input are reported separately. A failed watch leaves the created session empty; an unknown launch is never retried. Hub results are not owned delegate reports."
+	def.Parameters = params
+	return def
+}
+
+func (s *Session) composeHubDelegateTool() {
+	const name = "delegate"
+	if s.hubToolDenied(name) || s.delegationAllowance <= 0 || s.hubOrdinary[name] == nil {
+		s.reg.Remove(name)
+		return
+	}
+	base := s.hubOrdinary[name]
+	registered := *base
+	ordinary := s.hubOrdinaryAvailable(name)
+	registered.Definition = managerDelegateDefinition(registered.Definition, ordinary)
+	registered.Schema = nil
+	registered.Execute = nil
+	registered.Exec = func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+		if _, ok := args["hub"]; ok {
+			return s.createHubDelegate(ctx, args)
+		}
+		if !ordinary {
+			return nil, appwire.InvalidRequest("ordinary delegation is unavailable")
+		}
+		return base.Exec(ctx, env, args)
+	}
+	_ = s.reg.Register(registered)
+}
+
+type managerCreateStage struct {
+	Status     string `json:"status"`
+	Ref        string `json:"ref,omitempty"`
+	InstanceID string `json:"instanceId,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+type managerWatchStage struct {
+	Status  string `json:"status"`
+	WatchID string `json:"watch_id,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+type managerInputStage struct {
+	Status      string                      `json:"status"`
+	Disposition appwire.MutationDisposition `json:"disposition,omitempty"`
+	Error       string                      `json:"error,omitempty"`
+}
+
+type managerCreateOutcome struct {
+	Created managerCreateStage `json:"created"`
+	Watch   managerWatchStage  `json:"watch"`
+	Input   managerInputStage  `json:"input"`
+}
+
+func (s *Session) createHubDelegate(ctx context.Context, args map[string]any) (any, error) {
+	for key := range args {
+		if key != "prompt" && key != "hub" && key != "intent" {
+			return nil, appwire.InvalidParams("hub creation cannot combine owned delegate arguments")
+		}
+	}
+	prompt, _ := args["prompt"].(string)
+	if strings.TrimSpace(prompt) == "" {
+		return nil, appwire.InvalidParams("prompt is required")
+	}
+	raw, err := json.Marshal(args["hub"])
+	if err != nil {
+		return nil, err
+	}
+	var hub struct {
+		CWD   string                      `json:"cwd"`
+		Model string                      `json:"model"`
+		Watch appwire.SessionWatchRequest `json:"watch"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&hub); err != nil || hub.CWD == "" || hub.Model == "" {
+		return nil, appwire.InvalidParams("hub creation requires cwd, model and watch")
+	}
+	s.mu.Lock()
+	client, enabled := s.hubClient, s.hubEnabled
+	s.mu.Unlock()
+	if client == nil || !enabled {
+		return nil, appwire.InvalidRequest("Manager tool unavailable")
+	}
+	out := managerCreateOutcome{Created: managerCreateStage{Status: "unknown"}, Watch: managerWatchStage{Status: "notAttached"}, Input: managerInputStage{Status: "notSubmitted"}}
+	created, err := client.Invoke(ctx, appwire.SessionOperationRequest{Create: &appwire.ThreadStartParams{
+		Harness: "evener", Source: "local", CWD: hub.CWD, Model: hub.Model,
+	}})
+	if err != nil {
+		out.Created.Error = err.Error()
+		var wire appwire.WireError
+		if errors.As(err, &wire) {
+			var partial appwire.ThreadStartPartialErrorData
+			if body, marshalErr := json.Marshal(wire.Data); marshalErr == nil && json.Unmarshal(body, &partial) == nil {
+				out.Created.Ref, out.Created.InstanceID = partial.CreatedRef, partial.CreatedInstanceID
+				if partial.CreatedRef != "" {
+					out.Created.Status = "created"
+				} else if partial.MutationOutcome == appwire.MutationOutcomeNotAccepted {
+					out.Created.Status = "notAccepted"
+				}
+			}
+		}
+		return out, nil
+	}
+	if created.Create == nil || created.Create.Thread.Evener.Ref == "" || created.Create.Thread.Evener.InstanceID == "" {
+		out.Created.Error = "creation returned no authoritative identity"
+		return out, nil
+	}
+	out.Created = managerCreateStage{Status: "created", Ref: created.Create.Thread.Evener.Ref, InstanceID: created.Create.Thread.Evener.InstanceID}
+	// The watch owner subscribes, reads an authoritative initial snapshot and
+	// persists the watch before this adapter may submit any task input.
+	hub.Watch.Ref = out.Created.Ref
+	watch, err := s.configureHubWatchRuntime(ctx, map[string]any{"operation": "create", "hub": hub.Watch})
+	if err != nil {
+		out.Watch = managerWatchStage{Status: "failed", Error: err.Error()}
+		return out, nil
+	}
+	out.Watch.Status = "attached"
+	if result, ok := watch.(tool.StateResult); ok {
+		watch = result.State
+	}
+	if encoded, marshalErr := json.Marshal(watch); marshalErr == nil {
+		var registered struct {
+			WatchID string `json:"watch_id"`
+		}
+		if json.Unmarshal(encoded, &registered) == nil {
+			out.Watch.WatchID = registered.WatchID
+		}
+	}
+	if out.Watch.WatchID == "" {
+		out.Watch = managerWatchStage{Status: "failed", Error: "watch returned no durable identity"}
+		return out, nil
+	}
+	id, err := identifier.NewClientMutationID()
+	if err != nil {
+		out.Input = managerInputStage{Status: "notSubmitted", Error: err.Error()}
+		return out, nil
+	}
+	input, err := client.Invoke(ctx, appwire.SessionOperationRequest{Start: &appwire.TurnStartParams{
+		Ref: out.Created.Ref, ExpectedInstanceID: out.Created.InstanceID, ClientMutationID: id,
+		Input: []appwire.InputItem{{Type: "text", Text: prompt}},
+	}})
+	if err != nil {
+		out.Input = managerInputStage{Status: "unknown", Error: err.Error()}
+		var wire appwire.WireError
+		if errors.As(err, &wire) {
+			var detail appwire.ErrorData
+			if raw, marshalErr := json.Marshal(wire.Data); marshalErr == nil && json.Unmarshal(raw, &detail) == nil && detail.MutationOutcome == appwire.MutationOutcomeNotAccepted {
+				out.Input.Status = "notAccepted"
+			}
+		}
+		return out, nil
+	}
+	if input.Start == nil {
+		out.Input = managerInputStage{Status: "unknown", Error: "input returned no receipt"}
+		return out, nil
+	}
+	out.Input = managerInputStage{Status: "submitted", Disposition: input.Start.Receipt.Disposition}
+	return out, nil
 }
 
 func managerWatchDefinition(def llm.ToolDefinition) llm.ToolDefinition {

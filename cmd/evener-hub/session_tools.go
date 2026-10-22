@@ -155,6 +155,12 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 		}
 		response.Read = &read
 		response.FollowUps = []appwire.SessionStatusFollowUp{statusFollowUp(read.Thread.Evener.Ref)}
+	} else if request.Create != nil {
+		created, err := hubThreadStart(ctx, o.cfg, o.sources, *request.Create)
+		if err != nil {
+			return response, err
+		}
+		response.Create = &created
 	} else if request.Start != nil {
 		proof, err := sessionInputProof(ctx, caller.Ref)
 		if err != nil {

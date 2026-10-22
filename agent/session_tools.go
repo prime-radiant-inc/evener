@@ -1575,7 +1575,11 @@ func (s *Session) rebuildToolDefsCache() {
 	for _, td := range s.profile.ToolDefinitions() {
 		if registered[td.Name] {
 			if td.Name == "delegate" {
-				td = s.delegateToolDefinition()
+				if s.hubEnabled {
+					td = s.reg.Get("delegate").Definition
+				} else {
+					td = s.delegateToolDefinition()
+				}
 				// When this session can only grant allowance 0 (own allowance 1),
 				// delegation_allowance has a single legal value — a no-op knob. Hide it
 				// so the model is not offered a parameter it cannot meaningfully set.
