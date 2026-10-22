@@ -442,6 +442,7 @@ export function NotificationCard({
     Boolean(
       notification.message ||
         notification.prose ||
+        notification.reportNotice ||
         notification.excerpt ||
         hasStructuredResult ||
         notification.structuredResultValid === false ||
@@ -574,6 +575,11 @@ export function NotificationCard({
                   </div>
                 )}
                 <NotificationMetadata notification={notification} />
+                {notification.reportNotice && (
+                  <div className={CLASS.prose} data-testid="notification-report-notice">
+                    {notification.reportNotice}
+                  </div>
+                )}
                 {notification.prose && (
                   <pre className={CLASS.prose} data-testid="notification-prose">
                     {notification.prose}

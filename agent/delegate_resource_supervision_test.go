@@ -48,7 +48,7 @@ func TestRouteNoToolCalls(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := routeNoToolCalls(tt.kind, tt.noContent, tt.afterTerminal); got != tt.want {
+			if got := routeNoToolCalls(tt.kind, tt.noContent, tt.afterTerminal, false); got != tt.want {
 				t.Fatalf("routeNoToolCalls() = %v, want %v", got, tt.want)
 			}
 		})

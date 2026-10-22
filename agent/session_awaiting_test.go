@@ -88,7 +88,27 @@ func endReasonResponse(message, reason string) llm.Response {
 	if reason != "" {
 		args["end_reason"] = reason
 	}
+	if reason == "waiting_on_work" {
+		args["waiting_on"] = "wait-watch"
+	}
 	return toolCallResponse(communicateCallArgs("communicate_test_call", args))
+}
+
+func seedWaitWatch(t *testing.T, sess *Session) {
+	t.Helper()
+	if sess.jobManager == nil {
+		t.Fatal("wait target requires a job manager")
+	}
+	key := watchKey{VisibleSessionID: sess.id, Target: "timer", ReceiverSessionID: sess.id, Slot: "wait-watch"}
+	cfg := &watchConfig{id: "wait-watch", watchID: "wait-watch", receiverSessionID: sess.id, target: "timer", timer: true, slot: "wait-watch"}
+	sess.jobManager.mu.Lock()
+	sess.jobManager.watches[key] = cfg
+	sess.jobManager.mu.Unlock()
+	t.Cleanup(func() {
+		sess.jobManager.mu.Lock()
+		delete(sess.jobManager.watches, key)
+		sess.jobManager.mu.Unlock()
+	})
 }
 
 // A clean completion rests by the reason its communicate gave: awaiting only
@@ -115,6 +135,7 @@ func TestProcessInput_CleanCompletionRestsByEndReason(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			seedWaitWatch(t, sess)
 			eventsPtr, mu, doneCh := collectEvents(sess)
 			// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -353,6 +374,7 @@ func TestRestore_RestsByEndReason(t *testing.T) {
 			_, restored := restoreAfter(t, []func(llm.Request) llm.Response{
 				func(llm.Request) llm.Response { return endReasonResponse("answer", tc.reason) },
 			}, func(ctx context.Context, sess *Session) {
+				seedWaitWatch(t, sess)
 				if _, err := sess.ProcessInput(ctx, "question", nil); err != nil {
 					t.Fatal(err)
 				}

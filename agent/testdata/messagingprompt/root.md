@@ -26,6 +26,7 @@ Send a user-facing message. Use this tool for every message, readiness marker, r
 - `end_turn`: Set to false only for visible narration/status before immediate continued work. Set to true when this message ends the current activation: final answer, completed result, blocking input request, or readiness marker that waits for future user/caller/watch-frame input.
 - `message`: Exact user-facing message text. Fill this with the text the user or caller should see. When the task asks for concrete findings, put the concrete findings here.
 - `output`: Structured output envelope. Keep this present on every call with exactly these top-level fields: message, data, artifacts. For ordinary text replies, keep user-visible text in the top-level message and leave data/artifacts empty.
+- `waiting_on`: The job, watch, child delegate, or queued input ID that will wake you; required when end_reason=waiting_on_work.
 
 ## delegate
 

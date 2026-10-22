@@ -754,6 +754,7 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 const (
 	CommunicateEndReasonDone          = "done"
 	CommunicateEndReasonNeedsResponse = "needs_response"
+	CommunicateEndReasonBlocked       = "blocked"
 	CommunicateEndReasonWaitingOnWork = "waiting_on_work"
 )
 
@@ -761,10 +762,56 @@ const (
 // parameter advertises them.
 var CommunicateEndReasons = []string{CommunicateEndReasonDone, CommunicateEndReasonNeedsResponse, CommunicateEndReasonWaitingOnWork}
 
+// DelegateCommunicateEndReasons lists the dispositions a delegate's final
+// report can carry. A delegate has no human partner to answer needs_response,
+// so it names what it is blocked on or what will wake it instead.
+var DelegateCommunicateEndReasons = []string{CommunicateEndReasonDone, CommunicateEndReasonBlocked, CommunicateEndReasonWaitingOnWork}
+
+// DelegateReadinessReady is the non-terminal readiness value a delegate sends
+// with communicate(end_turn=false) to tell an inline waiter it may proceed.
+const DelegateReadinessReady = "ready"
+
 // WithCommunicateEndReason returns a copy of a communicate definition that
 // also offers end_reason. Only a root someone can answer gets it: nobody
 // responds to a delegate's or a headless root's resting state.
 func WithCommunicateEndReason(def llm.ToolDefinition) llm.ToolDefinition {
+	return withCommunicateEndReason(def, CommunicateEndReasons,
+		"Why this message ends your turn; read only when end_turn=true, and done when omitted. `done`: you finished or answered, and nothing waits on your human partner; the session rests idle. `needs_response`: you cannot go on until your human partner answers or acts, such as a decision, a review, or something only they can do; the session shows it is waiting on them. `waiting_on_work`: you are waiting on delegates or background jobs that will wake you; the session rests idle and asks nobody for attention.")
+}
+
+// WithDelegateCommunicateEndReason returns a copy of a delegate's communicate
+// definition that offers the delegate dispositions and the target each one
+// needs. The blocker and waiting_on arguments are peers of end_turn, never
+// fields inside the caller's output schema.
+func WithDelegateCommunicateEndReason(def llm.ToolDefinition) llm.ToolDefinition {
+	def = withCommunicateEndReason(def, DelegateCommunicateEndReasons,
+		"Why this report ends your turn; read only when end_turn=true, and done when omitted. `done`: you finished the work and nothing will wake you later. `blocked`: you cannot continue without something you name in `blocker`; your parent decides whether to unblock you. `waiting_on_work`: a job, watch, or child delegate named in `waiting_on` will wake you; your parent must not retire you.")
+	params := CloneSchemaMap(def.Parameters)
+	props, _ := params["properties"].(map[string]any)
+	if props == nil {
+		return def
+	}
+	props["blocker"] = map[string]any{
+		"type":        "string",
+		"description": "What you are blocked on; required when end_reason=blocked.",
+	}
+	props["waiting_on"] = map[string]any{
+		"type":        "string",
+		"description": "The job, watch, or child delegate ID that will wake you; required when end_reason=waiting_on_work.",
+	}
+	props["readiness"] = map[string]any{
+		"type":        "string",
+		"enum":        []string{DelegateReadinessReady},
+		"description": "Set to `ready` with end_turn=false when an inline `delegate_send` waiter may stop waiting; the readiness update still reaches your parent and does not replace your final report.",
+	}
+	if required, ok := params["required"].([]string); ok {
+		params["required"] = slices.DeleteFunc(required, func(name string) bool { return name == "output" })
+	}
+	def.Parameters = params
+	return def
+}
+
+func withCommunicateEndReason(def llm.ToolDefinition, reasons []string, description string) llm.ToolDefinition {
 	params := CloneSchemaMap(def.Parameters)
 	props, _ := params["properties"].(map[string]any)
 	if props == nil {
@@ -772,8 +819,12 @@ func WithCommunicateEndReason(def llm.ToolDefinition) llm.ToolDefinition {
 	}
 	props["end_reason"] = map[string]any{
 		"type":        "string",
-		"enum":        slices.Clone(CommunicateEndReasons),
-		"description": "Why this message ends your turn; read only when end_turn=true, and done when omitted. `done`: you finished or answered, and nothing waits on your human partner; the session rests idle. `needs_response`: you cannot go on until your human partner answers or acts, such as a decision, a review, or something only they can do; the session shows it is waiting on them. `waiting_on_work`: you are waiting on delegates or background jobs that will wake you; the session rests idle and asks nobody for attention.",
+		"enum":        slices.Clone(reasons),
+		"description": description,
+	}
+	props["waiting_on"] = map[string]any{
+		"type":        "string",
+		"description": "The job, watch, child delegate, or queued input ID that will wake you; required when end_reason=waiting_on_work.",
 	}
 	def.Parameters = params
 	return def
@@ -793,7 +844,7 @@ func ObserverReporting(resultTool string) string {
 const communicateDelegateDescription = "Send a message to your parent agent; it is the only way your parent hears from you. Put the text your parent should read in `message`. " +
 	"With `end_turn=false` the message is an update: your parent receives it, and it wakes a parent that is waiting on you, so send one only when your parent needs to know something or act on it, never to narrate progress, and keep working in the following round. " +
 	"The result's `delivery` says whether your parent has the update (`delivered`), will get it at its next step (`queued`), or cannot get it (`not_delivered`, with a `reason`); the call succeeds either way. " +
-	"With `end_turn=true` the message is your final report and ends your turn: put the complete result in it. A readiness marker you send before waiting for watch frames also uses `end_turn=true`. " +
+	"With `end_turn=true` the message is your final report and ends your turn: put the complete result in it. An observer readiness marker uses `end_turn=false` with `readiness=\"ready\"`, so an inline waiter can proceed without consuming your terminal delivery. " +
 	"Always include `output` in the shape its schema gives; when you hand back completed work or machine-readable results, fill it with the evidence and structured data your parent needs."
 
 // WithCommunicateDelegateUpdates returns a copy of a communicate definition
@@ -807,7 +858,7 @@ func WithCommunicateDelegateUpdates(def llm.ToolDefinition) llm.ToolDefinition {
 		message["description"] = "The text your parent agent receives. When the task asks for concrete findings, put them here."
 	}
 	if endTurn, ok := props["end_turn"].(map[string]any); ok {
-		endTurn["description"] = "false: send an update and keep working; your parent receives it, and it wakes a parent that is waiting on you. true: send your final report, or a readiness marker before you wait for watch frames, and end your turn."
+		endTurn["description"] = "false: send an update and keep working; your parent receives it, and it wakes a parent that is waiting on you. true: send your final report and end your turn."
 	}
 	def.Description = communicateDelegateDescription
 	def.Parameters = params

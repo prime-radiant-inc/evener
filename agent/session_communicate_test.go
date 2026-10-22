@@ -58,6 +58,11 @@ func communicateCallArgs(id string, args map[string]any) llm.ToolCallData {
 	if reason, ok := args["end_reason"]; ok {
 		normalized["end_reason"] = reason
 	}
+	for _, key := range []string{"blocker", "waiting_on"} {
+		if value, ok := args[key]; ok {
+			normalized[key] = value
+		}
+	}
 
 	raw, _ := json.Marshal(normalized)
 	return llm.ToolCallData{

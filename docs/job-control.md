@@ -127,6 +127,16 @@ This reference contract is not itself the runtime system prompt, but the followi
   and may be woken by: delegates send one only when the parent needs to know
   something or act, never as narration, and finish with
   `communicate(end_turn=true)`.
+- A delegate's terminal `communicate` carries an explicit disposition:
+  `done` (the assignment is complete and nothing will wake it), `blocked`
+  (it names a `blocker` and may carry live work), or `waiting_on_work` (it
+  names a live `waiting_on` job, watch, child delegate, or queued input and
+  publishes no packet). A `done` report is admitted only from an empty
+  outstanding-work inventory; the parent sees a versioned task and inventory
+  summary on the durable notification and on inline and earlier
+  `delegate_send` results. A bare-text parent acknowledgement of a delegate
+  report gets one steering round, then settles without creating a Needs You
+  entry.
 - When an observer readiness delegate result includes `watching:true` and `watches`, the observer is watching. Continue with the planned watched action and use the later observer `communicate(end_turn=true)` as the callback.
 - After starting a background job, continue useful work or respond to the user. Do not immediately wait, poll `job_list`, or loop on `job_status`.
 - Evener injects typed terminal attention: `<job-notification>` for owner shell

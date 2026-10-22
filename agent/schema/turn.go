@@ -161,9 +161,15 @@ type CommunicateInfo struct {
 	EndTurn bool   `json:"end_turn"`
 	Message string `json:"message"`
 	// EndReason is why a root session's call ended its turn (one of
-	// tool.CommunicateEndReasons); empty on a call that kept the turn going
-	// and wherever end_reason is not offered (delegates, headless roots).
+	// tool.CommunicateEndReasons, or a delegate's disposition); empty on a
+	// call that kept the turn going and on a headless root, which is offered
+	// no end_reason.
 	EndReason string `json:"end_reason,omitempty"`
+	// Blocker is what a delegate's blocked report waits on.
+	Blocker string `json:"blocker,omitempty"`
+	// WaitingOn is the job, watch, or child delegate that will wake a
+	// delegate whose report carries waiting_on_work.
+	WaitingOn string `json:"waiting_on,omitempty"`
 }
 
 // NoticeKind names a presentational notice.

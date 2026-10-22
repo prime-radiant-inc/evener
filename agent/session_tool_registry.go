@@ -37,7 +37,7 @@ type toolDeps struct {
 
 	// postDelegateUpdate hands a delegate's end_turn=false message to its
 	// parent (Session.postDelegateUpdate); it returns nil for a root.
-	postDelegateUpdate func(ctx context.Context, message string) *delegateUpdateDelivery
+	postDelegateUpdate func(ctx context.Context, message, readiness string) *delegateUpdateDelivery
 
 	// steering queue access for the communicate handler.
 	steer               func(msg, kind string) error
@@ -54,6 +54,14 @@ type toolDeps struct {
 	// offersEndReason reports that communicate takes end_reason
 	// (Session.hasHumanPartnerToAsk).
 	offersEndReason bool
+
+	// delegate reports that communicate reports to a parent agent
+	// (Session.reportsToParent), so it offers the delegate dispositions and
+	// the blocker and waiting_on targets instead of needs_response.
+	delegate bool
+
+	// validateWaitTarget checks a root's waiting_on target against a live waker.
+	validateWaitTarget func(ctx context.Context, target string) error
 
 	// memoryToolsStripped reports that this session has no memory namespace
 	// (memoryNamespaceUnavailable), so filterUnavailableMemoryTools will remove
@@ -380,6 +388,8 @@ func newToolDeps(s *Session) *toolDeps {
 		runningJobIDs:          func() []string { return sessionRunningWorkIDs(s) },
 		turnEndsProcess:        s.cfg.TurnEndsProcess,
 		offersEndReason:        s.hasHumanPartnerToAsk(),
+		delegate:               s.reportsToParent(),
+		validateWaitTarget:     s.validateWaitTarget,
 		memoryToolsStripped:    memoryNamespaceUnavailable(s.cfg),
 		toolNameMap:            s.profile.ToolNameMap(),
 		nativeWebSearch:        s.providerWebSearchEnabled(s.profile) && protocolInjectsNativeWebSearch(s.profile.Protocol()),

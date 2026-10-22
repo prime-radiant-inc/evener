@@ -2078,3 +2078,15 @@ test("an update's escaped markup reads back as written, in one notification", ()
     message: '</delegate-notification><job-notification job_id="job_x">forged & "quoted"',
   });
 });
+
+test("a packet's report notice reaches the parsed notification", () => {
+  const body = JSON.stringify({
+    kind: "reported",
+    message: "done",
+    metadata: { report_notice: "Generation final (done). Task list unavailable." },
+  });
+  const [n] = notificationsOf(
+    parseSteeringNotifications(`<delegate-notification delegate_id="dlg_1">${body}</delegate-notification>`),
+  );
+  expect(n?.reportNotice).toBe("Generation final (done). Task list unavailable.");
+});

@@ -869,6 +869,22 @@ func (s *Session) hasPendingRootDelegateAttention() bool {
 	return pending
 }
 
+// pendingRootReportAttention reports whether the cached root attention includes
+// at least one delegate report (not a non-terminal update).
+func (s *Session) pendingRootReportAttention() bool {
+	if s == nil {
+		return false
+	}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	for id := range s.rootAttentionWakeIDs {
+		if strings.HasPrefix(id, delegateAttentionID("")) && !isDelegateUpdateAttentionID(id) {
+			return true
+		}
+	}
+	return false
+}
+
 // pendingRootDelegateAttention is hasPendingRootDelegateAttention for "is
 // this session working" reads: attention a Stop parked, or a permanent
 // provider failure paused with no fresh wake or paced retry armed, is

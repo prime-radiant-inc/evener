@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"slices"
+	"strings"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
@@ -356,6 +358,7 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		WorkMillis:               s.workMillis,
 		LastTurnEndedAt:          s.lastTurnEndedAt,
 		LastMessage:              s.lastMessage,
+		RetirementReason:         s.retirementReason,
 		CumulativeUsage:          cumulativeUsageSnapshot(s.contextMgr.CumulativeUsage()),
 		JobTreeRootSessionID:     jobTreeRootSessionID,
 		ScratchTempDir:           sandbox.ProcessScratchTempDir(),
@@ -373,6 +376,18 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 // locking, meta-FS and flush sequence.
 func (s *Session) saveMeta() error {
 	return s.autoSaveMeta()
+}
+
+// RecordRetirementReason stamps why this session retired and persists it. The
+// record time is UpdatedAt; no second timestamp is added.
+func (s *Session) RecordRetirementReason(reason string) error {
+	if s == nil {
+		return errors.New("retirement reason: no session")
+	}
+	s.mu.Lock()
+	s.retirementReason = strings.TrimSpace(reason)
+	s.mu.Unlock()
+	return s.saveMeta()
 }
 
 // goalSnapshotForMeta calls PersistSnapshot on the goal store and maps the

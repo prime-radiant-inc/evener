@@ -104,6 +104,7 @@ type DelegateAttentionChanged struct {
 type UpdatePosted struct {
 	Generation uint64 `json:"generation"`
 	Message    string `json:"message"`
+	Readiness  string `json:"readiness,omitempty"`
 }
 
 // IntentStated is a running generation's newest tool-call intent, journaled

@@ -434,6 +434,8 @@ type Session struct {
 	turnStartedAt                 time.Time // wall-clock instant the current turn began (stamped at the processing-begin transition); zero when no turn is in flight. Guarded by mu, like workMillis.
 	lastTurnEndedAt               time.Time // when the last turn ended (stamped by endTurnLocked); seeded from SessionMeta on restore, mapped out via Meta(). Guarded by mu, like workMillis.
 	lastMessage                   string    // the opening of the last agent message the session wrote (S1d, noteAgentMessageLocked); seeded from SessionMeta on restore, mapped out via Meta(). Guarded by mu.
+	retirementReason              string    // why this session retired (idle, manual, archive); guarded by mu
+	carriedDelegateReport         bool      // the current notification turn presents a delegate report; guarded by mu
 	turnHistoryBaseline           int       // history index of the first turn belonging to the in-flight turn (captured at round 0, adjusted for mid-turn compaction). Turns at or after it are exempt from N4 replay-provenance filtering (fallback rounds keep today's replay semantics). Guarded by mu.
 	history                       []schema.Turn
 	historyRevision               int           // bumped by every publishFoldedHistory publish and every other non-append history mutation (orphaned-tool-result repair, attention-turn replace/remove — see bumpHistoryRevisionLocked), never by an ordinary append. Lets a fold snapshot detect whether a competing publish OR mutation already happened since it started, distinct from the ordinary concurrent appends publishFoldedHistory's merge-back already tolerates. Guarded by mu.
@@ -1447,7 +1449,9 @@ type communicateResult struct {
 	reply      string
 	output     string // canonical structured output (CommunicateOutput)
 	structured any    // raw args["output"] object before communicate canonicalization
-	endReason  string // why the terminal call ended the turn (tool.CommunicateEndReasons); "" on a delegate
+	endReason  string // why the terminal call ended the turn (a root or delegate disposition)
+	blocker    string // what a delegate's blocked report waits on
+	waitingOn  string // the job, watch, child, or input that will wake a waiting delegate
 }
 
 // sessionName holds the session's auto-generated display name and its
@@ -2025,11 +2029,23 @@ func (s *Session) communicateStructuredResult() (any, bool) {
 }
 
 // communicateEndReason is why this input's terminal communicate call ended
-// the turn: "" when none was accepted, or on a delegate.
+// the turn: "" when none was accepted.
 func (s *Session) communicateEndReason() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.comm.endReason
+}
+
+// terminalCandidate is the accepted terminal communicate's disposition and
+// target, read as one value for admission.
+func (s *Session) terminalCandidate() terminalReportCandidate {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return terminalReportCandidate{
+		Disposition: s.comm.endReason,
+		Blocker:     s.comm.blocker,
+		WaitingOn:   s.comm.waitingOn,
+	}
 }
 
 // acceptCommunicateTerminal is the atomic terminal-result writer for the
@@ -2046,6 +2062,8 @@ func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply,
 		s.mu.Unlock()
 		return false
 	}
+	blocker := s.comm.blocker
+	waitingOn := s.comm.waitingOn
 	s.comm = communicateResult{
 		called:     true,
 		text:       message,
@@ -2053,6 +2071,8 @@ func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply,
 		output:     output,
 		structured: structured,
 		endReason:  endReason,
+		blocker:    blocker,
+		waitingOn:  waitingOn,
 	}
 	s.latestReport = s.comm
 	s.mu.Unlock()

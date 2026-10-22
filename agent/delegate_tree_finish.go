@@ -104,6 +104,17 @@ func (c *delegateTreeController) CompleteSettlement(claim *delegateSettlementCla
 	return plans, err
 }
 
+// ReleaseSettlementClaim drops a claim whose terminal candidate was refused
+// before publication, leaving the generation open for the next report.
+func (c *delegateTreeController) ReleaseSettlementClaim(claim *delegateSettlementClaim) {
+	if c == nil || claim == nil {
+		return
+	}
+	c.mu.Lock()
+	c.releaseSettlementClaimLocked(claim.token)
+	c.mu.Unlock()
+}
+
 func (c *delegateTreeController) AttentionResolutionsForFinalization(claim *delegateSettlementClaim) (delegateMutationPlans, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

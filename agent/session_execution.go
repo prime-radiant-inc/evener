@@ -461,7 +461,7 @@ func (s *Session) deliverCommunicate(data events.CommunicateData) error {
 		s.announceFailClosed()
 		return refusal
 	}
-	rec, err := s.recordTranscriptOnlyThrough(schema.Turn{Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message, EndReason: data.EndReason}}, transcript.DoorSynced, transcript.PlaceSession)
+	rec, err := s.recordTranscriptOnlyThrough(schema.Turn{Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message, EndReason: data.EndReason, Blocker: data.Blocker, WaitingOn: data.WaitingOn}}, transcript.DoorSynced, transcript.PlaceSession)
 	if !rec.Recorded && s.servedByDaemon() {
 		switch writer := s.attachedTranscript(); {
 		case writer != nil && writer.Closed():
@@ -488,6 +488,10 @@ func (s *Session) deliverCommunicate(data events.CommunicateData) error {
 		return refusal
 	}
 	s.mu.Lock()
+	if !s.comm.called {
+		s.comm.blocker = data.Blocker
+		s.comm.waitingOn = data.WaitingOn
+	}
 	s.noteAgentMessageLocked(data.Message)
 	s.mu.Unlock()
 	s.emit(events.EventCommunicate, data)

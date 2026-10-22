@@ -1892,6 +1892,13 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		}
 	}
 	resolution := s.delegateController.waitForDelegateInline(waitCtx, waiter)
+	if resolution.readiness != "" {
+		result.Readiness = resolution.readiness
+		result.Action = "ready"
+		result.Status = jobstore.StatusRunning
+		result.RunningInBackground = false
+		return stableDelegateSendOutcome{result: result}
+	}
 	if resolution.fallback || resolution.packet == nil || resolution.commit == nil {
 		result.TimedOut = true
 		return stableDelegateSendOutcome{result: result}
@@ -1963,6 +1970,9 @@ func populateStableDelegateSendResult(result *sendMessageResult, packet delegate
 				Ahead:   metadata.Worktree.Ahead,
 				Dirty:   metadata.Worktree.Dirty,
 			}
+		}
+		if metadata.Report != nil {
+			result.ReportSummary = renderReportNotice(*metadata.Report)
 		}
 	}
 }

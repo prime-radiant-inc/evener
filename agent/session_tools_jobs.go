@@ -1691,6 +1691,7 @@ type delegateSendResult struct {
 	RunningInBackground    bool                    `json:"running_in_background"`
 	TimedOut               bool                    `json:"timed_out,omitempty"`
 	Action                 string                  `json:"action"`
+	Readiness              string                  `json:"readiness,omitempty"`
 	TranscriptRef          string                  `json:"transcript_ref,omitempty"`
 	Output                 *string                 `json:"output,omitempty"`
 	Truncated              *bool                   `json:"truncated,omitempty"`
@@ -1716,6 +1717,7 @@ type delegateSendResult struct {
 	// lifecycle step 3); nil for a non-isolated delegate.
 	Worktree          *delegateWorktreeToolResult `json:"worktree,omitempty"`
 	WaitIgnoredReason string                      `json:"wait_ignored_reason,omitempty"`
+	ReportSummary     string                      `json:"report_summary,omitempty"`
 	// EarlierResults are results of the same delegate the caller had not
 	// yet received, oldest first, carried ahead of this one by a wait that
 	// collected them (#3906).
@@ -1829,6 +1831,7 @@ func delegateSendResultFrom(res sendMessageResult) delegateSendResult {
 		RunningInBackground: res.RunningInBackground,
 		TimedOut:            res.TimedOut,
 		Action:              res.Action,
+		Readiness:           res.Readiness,
 		TranscriptRef:       res.TranscriptRef,
 		Warnings:            append([]string(nil), res.Warnings...),
 		Task:                res.Task,
@@ -1846,6 +1849,7 @@ func delegateSendResultFrom(res sendMessageResult) delegateSendResult {
 		CumulativeUsage:     res.CumulativeUsage,
 		Worktree:            delegateWorktreeToolResultFrom(res.Worktree),
 		WaitIgnoredReason:   res.WaitIgnoredReason,
+		ReportSummary:       res.ReportSummary,
 	}
 	if !res.RunningInBackground || res.TimedOut {
 		out.Output = &res.Output
@@ -1908,6 +1912,10 @@ func formatDelegateSend(out delegateSendResult) string {
 		if !strings.HasSuffix(*out.Output, "\n") {
 			b.WriteByte('\n')
 		}
+	}
+	if out.ReportSummary != "" {
+		b.WriteString(out.ReportSummary)
+		b.WriteByte('\n')
 	}
 	foot := []string{out.Action}
 	if out.DelegateID != "" {
