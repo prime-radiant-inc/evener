@@ -13,13 +13,18 @@ import (
 )
 
 func TestSelectedRestartUnavailablePredecessorRecovers(t *testing.T) {
-	for _, name := range []string{"restart/same-predecessor", "restart/different-process", "ensure/same-predecessor", "ensure/different-process", "restart/stopped-after-unavailable"} {
-		differentProcess, viaEnsure := strings.HasSuffix(name, "different-process"), strings.HasPrefix(name, "ensure/")
-		cold := strings.HasSuffix(name, "stopped-after-unavailable")
+	for _, name := range []string{"restart/same-predecessor", "restart/different-process", "ensure/same-predecessor", "ensure/different-process", "restart/stopped-after-unavailable", "restart/different-process-missing-flag", "ensure/different-process-missing-flag", "restart/stopped-after-unavailable-missing-flag", "ensure/stopped-after-unavailable-missing-flag"} {
+		differentProcess, viaEnsure := strings.Contains(name, "/different-process"), strings.HasPrefix(name, "ensure/")
+		cold, badContract := strings.Contains(name, "/stopped-after-unavailable"), strings.HasSuffix(name, "-missing-flag")
 		t.Run(name, func(t *testing.T) {
 			host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+			unusable := false
 			fr, process := deployRunnerForFixture(t, "linux", "amd64", func(int) ([]byte, error) {
-				return launchContract("same-sha"), nil
+				out := launchContract("same-sha")
+				if unusable {
+					out = []byte(strings.ReplaceAll(string(out), `"api-log"`, `"not-api-log"`))
+				}
+				return out, nil
 			}, func(int) ([]byte, error) { return nil, errors.New("no legacy health probe") })
 			process.observe, process.before, process.after = nil, "same-sha", "same-sha"
 			process.initialUnavailable = true
@@ -83,6 +88,7 @@ func TestSelectedRestartUnavailablePredecessorRecovers(t *testing.T) {
 					t.Fatalf("cold start not retained: effects=%d process=%+v pending=%+v", effects, process, m.pendingRestart(host.Name))
 				}
 			}
+			unusable = badContract
 			if viaEnsure {
 				ch, ensureErr := m.ensureOnce(t.Context(), host, false)
 				err = ensureErr
@@ -103,7 +109,11 @@ func TestSelectedRestartUnavailablePredecessorRecovers(t *testing.T) {
 				_, err = m.RestartForOperation(t.Context(), host, facts, nil)
 			}
 			if differentProcess {
-				if !errors.Is(err, errOwnerEvidence) || effects != 0 || !reflect.DeepEqual(pending, m.pendingRestart(host.Name)) {
+				want := errOwnerEvidence
+				if badContract {
+					want = ErrLaunchContract
+				}
+				if !errors.Is(err, want) || effects != 0 || !reflect.DeepEqual(pending, m.pendingRestart(host.Name)) {
 					t.Fatalf("different process: err=%v effects=%d retained=%v", err, effects, reflect.DeepEqual(pending, m.pendingRestart(host.Name)))
 				}
 			} else if err != nil || effects != 1 || !process.mutated || m.pendingRestart(host.Name).active() {

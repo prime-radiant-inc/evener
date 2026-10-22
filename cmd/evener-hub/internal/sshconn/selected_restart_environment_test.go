@@ -200,7 +200,7 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 }
 
 func TestSelectedSuccessorExpectedEnvironment(t *testing.T) {
-	for _, name := range []string{"expected-change", "unexpected-env", "legacy-unchanged", "legacy-changed", "explicit-empty", "empty-mismatch", "definition", "argv", "cwd", "supervisor", "config", "root", "same-process", "old-boot", "wrong-build"} {
+	for _, name := range []string{"expected-change", "unexpected-env", "legacy-unchanged", "legacy-changed", "explicit-empty", "empty-mismatch", "unexecuted-live", "unexecuted-empty-live", "validated-stopped-start", "validated-empty-stopped-start", "legacy-stopped", "definition", "argv", "cwd", "supervisor", "config", "root", "same-process", "old-boot", "wrong-build"} {
 		t.Run(name, func(t *testing.T) {
 			host, _ := ownerCommands(t)
 			prior := selectedOwner{host: host, pid: "4242", generation: "old", supervisor: supervisor{kind: supervisorSystemd, label: "evener-hub-selected.service"}, argv: []string{"/opt/evener", "hub"}, cwdIdentity: "/srv", env: []string{"HOME=/home/dev"}, definition: "stable-definition", report: remoteEndpointFixture(host.ConfigPath, "127.0.0.1:19371", "old-boot")}
@@ -225,6 +225,16 @@ func TestSelectedSuccessorExpectedEnvironment(t *testing.T) {
 				pending.nextEnv, now.env, want = []string{}, nil, true
 			case "empty-mismatch":
 				pending.nextEnv = []string{}
+			case "unexecuted-live":
+				prior.report.Running, pending.nextEnv, now.env = nil, nil, prior.env
+			case "unexecuted-empty-live":
+				prior.report.Running, prior.env, pending.nextEnv, now.env = nil, nil, nil, nil
+			case "validated-stopped-start":
+				prior.report.Running, want = nil, true
+			case "validated-empty-stopped-start":
+				prior.report.Running, pending.nextEnv, now.env, want = nil, []string{}, nil, true
+			case "legacy-stopped":
+				prior.pid, prior.report.Running, pending.nextEnv, now.env, want = "0", nil, nil, prior.env, true
 			case "definition":
 				now.definition = "changed-definition"
 			case "argv":

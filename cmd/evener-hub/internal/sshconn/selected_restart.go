@@ -189,11 +189,6 @@ func (m *Manager) recoverSelectedRestartWithStart(ctx context.Context, host host
 			return started, fmt.Errorf("%w: pending owner intent changed", errOwnerEvidence)
 		}
 		if !sameProcess(now, prior) {
-			// A live predecessor without a report cannot pass the stop gate. A
-			// retained nextEnv still permits a later, independently stopped start.
-			if prior.pid != "0" && prior.report.Running == nil && pending.nextEnv == nil {
-				return started, fmt.Errorf("%w: pending predecessor changed before a verified stop", errOwnerEvidence)
-			}
 			env := pending.nextEnv
 			if env == nil {
 				env = prior.env
@@ -306,6 +301,11 @@ func (m *Manager) revalidateStoppedService(ctx context.Context, host hostreg.Hos
 }
 
 func selectedSuccessor(now, prior selectedOwner, env []string, version, pin string) bool {
+	// A live predecessor without a report cannot pass the stop gate. Check the
+	// retained next environment before legacy fallback, including early proofs.
+	if prior.pid != "0" && prior.report.Running == nil && env == nil {
+		return false
+	}
 	if env == nil {
 		env = prior.env
 	}
