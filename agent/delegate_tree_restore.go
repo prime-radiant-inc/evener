@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
-	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 )
@@ -797,10 +796,6 @@ func (c *delegateTreeController) reconcileRuntimeLostFromEvidenceLocked() (deleg
 			remaining = append(remaining, lease)
 			continue
 		}
-		if _, live := c.openWaitTargetLocked(aggregate); live {
-			remaining = append(remaining, lease)
-			continue
-		}
 		endedAt := c.now()
 		var events []delegatestore.Event
 		switch aggregate.Phase {
@@ -847,66 +842,6 @@ func (c *delegateTreeController) reconcileRuntimeLostFromEvidenceLocked() (deleg
 	}
 	c.reconcileOrder = remaining
 	return plans, nil
-}
-
-// openWaitTargetLocked reports the persisted waiting_on_work target of an open
-// generation and whether it is still live. A live target keeps the generation
-// open across a restore instead of closing it as runtime_lost.
-func (c *delegateTreeController) openWaitTargetLocked(aggregate *delegatestore.Aggregate) (string, bool) {
-	if aggregate == nil || aggregate.Descriptor.TranscriptRef == "" {
-		return "", false
-	}
-	path, _, err := delegateTranscriptPathFromRef(c.stateDir, aggregate.Descriptor.TranscriptRef)
-	if err != nil {
-		return "", false
-	}
-	data, err := readTranscriptFull(path, c.stateDir)
-	if err != nil {
-		return "", false
-	}
-	target := ""
-	for _, entry := range slices.Backward(data.Entries) {
-		turn := entry.Turn
-		if turn.Kind != schema.TurnCommunicate || turn.Communicate == nil {
-			continue
-		}
-		if turn.Communicate.EndReason == "waiting_on_work" {
-			target = strings.TrimSpace(turn.Communicate.WaitingOn)
-		}
-		break
-	}
-	if target == "" {
-		return "", false
-	}
-	kind, id := splitWaitTarget(target)
-	if kind == "" || kind == "child" {
-		if child := c.durable[id]; child != nil &&
-			(child.CurrentRunOpen || child.Phase == delegatestore.PhaseRunning ||
-				child.Phase == delegatestore.PhaseSettling || child.Phase == delegatestore.PhaseStopping ||
-				len(child.PendingDeliveries) != 0) {
-			return target, true
-		}
-	}
-	if kind == "" || kind == "job" || kind == "watch" {
-		events, journalErr := retirementColdJobJournal(jobsDir(c.stateDir, aggregate.Descriptor.ChildSessionID))
-		if journalErr == nil {
-			if kind == "" || kind == "job" {
-				for _, record := range jobstore.Fold(events) {
-					if record.JobID == id && !record.Status.IsTerminal() {
-						return target, true
-					}
-				}
-			}
-			if kind == "" || kind == "watch" {
-				for _, watch := range jobstore.FoldWatches(events) {
-					if watch.Active && watch.WatchID == id {
-						return target, true
-					}
-				}
-			}
-		}
-	}
-	return "", false
 }
 
 func delegateOpenRunOrder(events []delegatestore.Event, state delegatestore.State) []delegateLease {

@@ -98,6 +98,26 @@ func (s *Session) outstandingDelegateWorkForAdmission() (OutstandingDelegateWork
 	return work, err
 }
 
+// outstandingDelegateWorkForPublication includes transcript attention that
+// finalization did not resolve, except owned shell attention the drain already
+// settled.
+func (s *Session) outstandingDelegateWorkForPublication() (OutstandingDelegateWork, error) {
+	work, err := s.outstandingDelegateWork()
+	work.Attention = dropShellAttention(work.Attention)
+	return work, err
+}
+
+func dropShellAttention(ids []string) []string {
+	kept := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if strings.HasPrefix(id, "shell:") {
+			continue
+		}
+		kept = append(kept, id)
+	}
+	return kept
+}
+
 func (s *Session) outstandingDelegateWorkInventory(includeAttention bool) (OutstandingDelegateWork, error) {
 	var work OutstandingDelegateWork
 	if s == nil {
@@ -154,9 +174,43 @@ func (s *Session) receiverWatchIDs() []string {
 				ids = append(ids, watchConfigID(cfg))
 			}
 		}
+		for cfg, flushing := range holder.jobManager.terminalFlush {
+			if flushing && watchConfigMatchesReceiver(cfg, s.id, s.owningDelegateID) {
+				ids = append(ids, watchConfigID(cfg))
+			}
+		}
+		for _, receipt := range holder.jobManager.stableWatchReceipts {
+			if receipt != nil && s.owningDelegateID != "" && receipt.receiverDelegateID == s.owningDelegateID {
+				ids = append(ids, receipt.deliveryID)
+			}
+		}
+		for _, retry := range holder.jobManager.stableWatchSettlementRetries {
+			if retry.cfg != nil && watchConfigMatchesReceiver(retry.cfg, s.id, s.owningDelegateID) {
+				ids = append(ids, retry.state.DeliveryID)
+			}
+		}
 		holder.jobManager.mu.Unlock()
 	}
 	return ids
+}
+
+// dropOwnedShellJobs removes stable-delegate-owned shells from a done
+// report's inventory: the finalization drain settles them. A blocked report
+// keeps them, because it bypasses that drain.
+func (s *Session) dropOwnedShellJobs(jobs []string) []string {
+	if s == nil || s.jobManager == nil || len(jobs) == 0 {
+		return jobs
+	}
+	s.jobManager.mu.Lock()
+	defer s.jobManager.mu.Unlock()
+	kept := make([]string, 0, len(jobs))
+	for _, id := range jobs {
+		if job := s.jobManager.running[id]; job != nil && job.delegateShell != nil {
+			continue
+		}
+		kept = append(kept, id)
+	}
+	return kept
 }
 
 // dropOwnedShellAttention removes attention that names a stable delegate's
@@ -189,12 +243,7 @@ func (jm *jobManager) outstandingWork() (jobs, watches, notifications, unknown [
 	}
 
 	jm.mu.Lock()
-	for id, job := range jm.running {
-		// A stable delegate's owned shell is settled by the run's own
-		// finalization drain, so it is not a waker that can leave the run idle.
-		if job != nil && job.delegateShell != nil {
-			continue
-		}
+	for id := range jm.running {
 		jobs = append(jobs, id)
 	}
 	for key, cfg := range jm.watches {

@@ -2246,7 +2246,7 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 			}
 			return result, parentDriveNotify, nil
 		case tool.CommunicateEndReasonDone:
-			admitted, err := a.admitTerminalReport(ctx, &candidate)
+			admitted, err := a.admitTerminalReportWithAttention(ctx, &candidate)
 			if err != nil {
 				return result, parentDriveNotify, err
 			}

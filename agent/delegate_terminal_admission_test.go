@@ -200,6 +200,55 @@ func TestTerminalAdmissionBlockedAddsWorkToEmptyMetadata(t *testing.T) {
 	}
 }
 
+func TestTerminalAdmissionBlockedKeepsOwnedShell(t *testing.T) {
+	s, jm := newAdmissionSession(t)
+	jm.mu.Lock()
+	jm.running = map[string]*runningJob{"job-1": {delegateShell: &stableDelegateShellReceipt{jobID: "job-1"}}}
+	jm.mu.Unlock()
+	a := &subagent{sess: s}
+
+	work, err := s.outstandingDelegateWork()
+	if err != nil {
+		t.Fatalf("outstandingDelegateWork: %v", err)
+	}
+	if !slices.Contains(work.Jobs, "job-1") {
+		t.Fatalf("jobs = %v, want the owned shell", work.Jobs)
+	}
+	admitted, err := a.admitTerminalReport(context.Background(), &terminalReportCandidate{
+		Disposition: tool.CommunicateEndReasonBlocked,
+		Blocker:     "access",
+	})
+	if err != nil || !admitted {
+		t.Fatalf("blocked admission = %v, %v; want admitted", admitted, err)
+	}
+	admitted, err = a.admitTerminalReport(context.Background(), &terminalReportCandidate{
+		Disposition: tool.CommunicateEndReasonDone,
+	})
+	if err != nil || !admitted {
+		t.Fatalf("done admission = %v, %v; want the owned shell drained", admitted, err)
+	}
+}
+
+func TestTerminalAdmissionWithAttentionRefusesUnresolvedReport(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	s := &Session{id: "root-session", stateDir: c.stateDir, transcriptReady: true}
+	writeDelegateAttentionTranscript(t, transcriptPath(s.stateDir, s.id), s.id, "attention-1")
+	if ids, err := s.pendingDelegateAttentionIDs(); err != nil || len(ids) == 0 {
+		t.Fatalf("pending attention = %v, err = %v", ids, err)
+	}
+
+	admitted, err := (&subagent{sess: s}).admitTerminalReportWithAttention(context.Background(), &terminalReportCandidate{
+		Disposition: tool.CommunicateEndReasonDone,
+	})
+	if err != nil {
+		t.Fatalf("admitTerminalReportWithAttention: %v", err)
+	}
+	if admitted {
+		t.Fatal("done was admitted with unresolved delegate attention")
+	}
+	assertSteerMentions(t, s, "attention:attention-1")
+}
+
 func TestTerminalAdmissionRestartSafety(t *testing.T) {
 	s, jm := newAdmissionSession(t)
 	jm.mu.Lock()
