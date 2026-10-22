@@ -119,6 +119,7 @@ func TestRemoteOwnerServiceAssociationWithoutVisibleLock(t *testing.T) {
 	// independently inspect that owner and refresh the supervisor association.
 	commands := []ownerCommand{base[0], {"selected-lock", ""}, base[10], base[12], base[13]}
 	commands = append(commands, base[4:10]...)
+	commands = append(commands, ownerCommand{serviceLockVnodeRemote("/srv/state", "4242"), "match\n"})
 	commands = append(commands, base[11], base[14])
 	commands = append(commands, base[2:17]...)
 	commands = append(commands, base[10:15]...)

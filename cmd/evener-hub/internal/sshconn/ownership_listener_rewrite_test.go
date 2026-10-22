@@ -28,6 +28,11 @@ func TestSupervisedInPlaceListenerRewrite(t *testing.T) {
 			{"long-equals", "--addr=127.0.0.1:0", "--addr=127.0.0.1:19371", false},
 			{"long-equals-empty-port", "--addr=127.0.0.1:", "--addr=127.0.0.1:19371", false},
 			{"config-ephemeral", "", "-addr 127.0.0.1:19371", false},
+			{"env-ephemeral", "", "-addr 127.0.0.1:19371", false},
+			{"env-missing", "", "-addr 127.0.0.1:19371", true},
+			{"env-fixed", "", "-addr 127.0.0.1:19371", true},
+			{"env-bound-mismatch", "", "-addr 127.0.0.1:19372", true},
+			{"env-second-listener", "", "-addr 127.0.0.1:19371 -addr 127.0.0.1:19371", true},
 			{"fixed-exact", "-addr 127.0.0.1:19371", "-addr 127.0.0.1:19371", false},
 			{"non-listener-change", "-addr 127.0.0.1:0", "-addr 127.0.0.1:19371 --public-url=https://other.example", true},
 			{"fixed-change", "-addr 127.0.0.1:9180", "-addr 127.0.0.1:19371", true},
@@ -46,6 +51,20 @@ func TestSupervisedInPlaceListenerRewrite(t *testing.T) {
 				facts.OS, facts.UID = platform, "1000"
 				mutated, effects, writes := false, 0, 0
 				report := remoteEndpointFixture(host.ConfigPath, "127.0.0.1:19371", "boot-one")
+				ownerEnv := []string{"HOME=/home/dev"}
+				envAddr := ""
+				if strings.HasPrefix(tc.name, "env-") {
+					report.ListenSource, report.ConfiguredListenAddr = "env", "127.0.0.1:0"
+					report.Running.ListenSource, report.Running.RequestedListenAddr = "flag", "127.0.0.1:19371"
+					if tc.name != "env-missing" {
+						envAddr = "127.0.0.1:0"
+						if tc.name == "env-fixed" {
+							envAddr = "127.0.0.1:9180"
+						}
+						ownerEnv = append(ownerEnv, "EVENER_HUB_LISTEN_ADDR="+envAddr)
+						slices.Sort(ownerEnv)
+					}
+				}
 				if tc.name == "fixed-config" {
 					report.ConfiguredListenAddr = "127.0.0.1:9180"
 					report.Running.RequestedListenAddr = "127.0.0.1:9180"
@@ -62,6 +81,10 @@ func TestSupervisedInPlaceListenerRewrite(t *testing.T) {
 						current = definition // The manager starts the original supervisor argv.
 						currentReport = remoteEndpointFixture(host.ConfigPath, "127.0.0.1:24519", "boot-two")
 						currentReport.Running.PID, currentReport.Running.Version = 4343, "release-selected"
+						if strings.HasPrefix(tc.name, "env-") {
+							currentReport.ListenSource, currentReport.ConfiguredListenAddr = "env", envAddr
+							currentReport.Running.ListenSource, currentReport.Running.RequestedListenAddr = "env", envAddr
+						}
 						if tc.name == "fixed-exact" {
 							currentReport = remoteEndpointFixture(host.ConfigPath, "127.0.0.1:19371", "boot-two")
 							currentReport.Running.PID, currentReport.Running.Version = 4343, "release-selected"
@@ -100,6 +123,9 @@ func TestSupervisedInPlaceListenerRewrite(t *testing.T) {
 					if remote == "ps -p "+pid+" -ww -o command=" {
 						return []byte(strings.Join(current, " ") + "\n"), nil
 					}
+					if remote == ownerEnvironmentRemote(pid) || remote == darwinEnvironmentRemote(pid) {
+						return []byte(strings.Join(ownerEnv, "\x00") + "\x00"), nil
+					}
 					for _, args := range [][]string{live, definition} {
 						endpoint := []string{"/opt/evener", "hub", "endpoint", "--json", "--config", "/srv/selected.toml"}
 						if addr, ok := hubAddrFlag(args); ok {
@@ -108,7 +134,7 @@ func TestSupervisedInPlaceListenerRewrite(t *testing.T) {
 						for i := range endpoint {
 							endpoint[i] = shellquote.RemoteWord(endpoint[i])
 						}
-						if remote == ownerContext("/srv", []string{"HOME=/home/dev"})+strings.Join(endpoint, " ") {
+						if remote == ownerContext("/srv", ownerEnv)+strings.Join(endpoint, " ") {
 							return []byte(mustOwnerJSON(t, currentReport)), nil
 						}
 					}
@@ -122,6 +148,9 @@ func TestSupervisedInPlaceListenerRewrite(t *testing.T) {
 						return []byte("/home/dev\n"), nil
 					}
 					if remote == "values=$(systemctl show --property=Environment --value -- evener-hub-selected.service) || exit; printf '%s\\n' \"$values\" | "+narrowEnvironmentFilter {
+						if envAddr != "" {
+							return []byte("EVENER_HUB_LISTEN_ADDR=" + envAddr + "\x00"), nil
+						}
 						return nil, nil
 					}
 					if mutated {
@@ -146,6 +175,9 @@ func TestSupervisedInPlaceListenerRewrite(t *testing.T) {
 						if strings.HasPrefix(remote, "launchctl print ") {
 							out = strings.ReplaceAll(out, "--addr=[::]:0\n", strings.Join(strings.Fields(tc.definition), "\n")+"\n")
 							out = strings.ReplaceAll(out, "selected.toml\n\n}", "selected.toml\n}")
+							if envAddr != "" {
+								out = strings.ReplaceAll(out, "HOME => /home/dev", "HOME => /home/dev\nEVENER_HUB_LISTEN_ADDR => "+envAddr)
+							}
 						}
 						return []byte(out), nil
 					}
@@ -202,7 +234,7 @@ func TestSupervisorArgvRewriteLimits(t *testing.T) {
 			report := remoteEndpointFixture("/srv/selected.toml", tc.bound, "boot-one")
 			beforeDefinition, beforeLive := slices.Clone(definition), slices.Clone(live)
 			beforeReport := mustOwnerJSON(t, report)
-			if got := supervisorArgvMatches(live, definition, report); got != tc.want {
+			if got := supervisorArgvMatches(live, definition, report, nil); got != tc.want {
 				t.Fatalf("rewrite match=%v, want %v", got, tc.want)
 			}
 			if !slices.Equal(definition, beforeDefinition) || !slices.Equal(live, beforeLive) || mustOwnerJSON(t, report) != beforeReport {

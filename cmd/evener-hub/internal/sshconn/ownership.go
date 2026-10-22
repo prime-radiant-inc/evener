@@ -129,7 +129,7 @@ func (m *Manager) resolveLinuxOwner(ctx context.Context, host hostreg.Host, repo
 	if err := m.checkOwnerConfig(ctx, host, argv, cwd, env, report); err != nil {
 		return selectedOwner{}, err
 	}
-	sup, launchArgv, err := m.supervisorForOwner(ctx, host, pid, argv, cwd, report)
+	sup, launchArgv, err := m.supervisorForOwner(ctx, host, pid, argv, cwd, env, report)
 	if err != nil {
 		return selectedOwner{}, err
 	}
@@ -166,7 +166,7 @@ func (m *Manager) resolveLinuxOwner(ctx context.Context, host hostreg.Host, repo
 			return selectedOwner{}, err
 		}
 	} else {
-		currentSupervisor, _, err := m.supervisorForOwner(ctx, host, pid, argv, cwd, report)
+		currentSupervisor, _, err := m.supervisorForOwner(ctx, host, pid, argv, cwd, env, report)
 		if err != nil || currentSupervisor != sup || sup.kind == supervisorNone {
 			return selectedOwner{}, errOwnerEvidence
 		}
@@ -577,7 +577,7 @@ func supervisorShowRemote(s supervisor) string {
 // Candidate listings are not authority. Resolve every visible candidate before
 // associating the selected lock owner, including the user scope when a system
 // service is live. An unresolved listing/definition never means ad-hoc fallback.
-func (m *Manager) supervisorForOwner(ctx context.Context, host hostreg.Host, pid string, argv []string, cwd string, report hubendpoint.Report, only ...supervisor) (supervisor, []string, error) {
+func (m *Manager) supervisorForOwner(ctx context.Context, host hostreg.Host, pid string, argv []string, cwd string, env []string, report hubendpoint.Report, only ...supervisor) (supervisor, []string, error) {
 	var candidates []supervisor
 	for _, scope := range []struct {
 		kind   supervisorKind
@@ -646,7 +646,7 @@ func (m *Manager) supervisorForOwner(ctx context.Context, host hostreg.Host, pid
 		if !strings.HasPrefix(fields["ExecStart"], definitionPrefix) {
 			return supervisor{}, nil, fmt.Errorf("%w: service argv formatting is ambiguous", errOwnerEvidence)
 		}
-		argvMatches := supervisorArgvMatches(argv, definitionArgv, report)
+		argvMatches := supervisorArgvMatches(argv, definitionArgv, report, env)
 		if pid == "0" && !argvMatches {
 			continue
 		}

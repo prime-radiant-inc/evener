@@ -244,7 +244,7 @@ func (m *Manager) resolveDarwinOwner(ctx context.Context, host hostreg.Host, fac
 		if err := m.checkOwnerConfig(ctx, host, argv, def.cwd, def.env, report); err != nil {
 			return selectedOwner{}, err
 		}
-	} else if !supervisorArgvMatches(argv, def.argv, report) {
+	} else if !supervisorArgvMatches(argv, def.argv, report, def.env) {
 		return selectedOwner{}, errOwnerEvidence
 	}
 	owner := selectedOwner{host: host, pid: pid, supervisor: sup, generation: generation, argv: argv, cwd: def.cwd, cwdIdentity: actualCwd, env: def.env, report: report}

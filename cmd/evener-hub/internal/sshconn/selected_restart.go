@@ -117,7 +117,7 @@ func (m *Manager) checkSelectedReplacement(ctx context.Context, host hostreg.Hos
 		if live {
 			pid = owner.pid
 		}
-		sup, _, err := m.supervisorForOwner(ctx, host, pid, owner.argv, owner.cwd, owner.report, owner.supervisor)
+		sup, _, err := m.supervisorForOwner(ctx, host, pid, owner.argv, owner.cwd, owner.env, owner.report, owner.supervisor)
 		if err != nil {
 			return nil, err
 		}
@@ -269,7 +269,7 @@ func (m *Manager) recoverSelectedRestartWithStart(ctx context.Context, host host
 			return started, fmt.Errorf("%w: stopped launch now supervised", errOwnerEvidence)
 		}
 	} else {
-		sup, _, err := m.supervisorForOwner(ctx, host, "0", prior.argv, prior.cwd, prior.report)
+		sup, _, err := m.supervisorForOwner(ctx, host, "0", prior.argv, prior.cwd, prior.env, prior.report)
 		if err != nil {
 			return started, err
 		}
@@ -297,7 +297,7 @@ func (m *Manager) revalidateStoppedService(ctx context.Context, host hostreg.Hos
 	if owner.supervisor.kind == supervisorLaunchd {
 		return m.revalidateStoppedLaunchd(ctx, host, facts, owner)
 	}
-	sup, _, err := m.supervisorForOwner(ctx, host, "0", owner.argv, owner.cwd, owner.report, owner.supervisor)
+	sup, _, err := m.supervisorForOwner(ctx, host, "0", owner.argv, owner.cwd, owner.env, owner.report, owner.supervisor)
 	if err != nil {
 		return err
 	}

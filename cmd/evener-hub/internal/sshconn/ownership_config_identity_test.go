@@ -218,6 +218,8 @@ func TestSystemdConfigFileIdentity(t *testing.T) {
 						return []byte(root + "\n"), nil
 					case remote == freshOwnerEnvironmentRemote:
 						return []byte("HOME=" + root + "\x00"), nil
+					case remote == serviceLockVnodeRemote(filepath.Join(root, "state"), "4242"):
+						return []byte("match\n"), nil // Declared process holds this selected root's lock.
 					case statCommands[remote], strings.Contains(remote, " hub endpoint --json"), strings.Contains(remote, "evener_resolve"), strings.HasSuffix(remote, " && pwd -P"):
 						cmd := exec.CommandContext(ctx, "/bin/sh", "-c", remote)
 						cmd.Dir = root

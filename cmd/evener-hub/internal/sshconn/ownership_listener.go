@@ -10,7 +10,7 @@ import (
 
 // supervisorArgvMatches admits only hubRestartArgs' port-zero rewrite. It does
 // not change either snapshot: live argv and the supervisor's next launch differ.
-func supervisorArgvMatches(live, definition []string, report hubendpoint.Report) bool {
+func supervisorArgvMatches(live, definition []string, report hubendpoint.Report, env []string) bool {
 	if slices.Equal(live, definition) {
 		return true
 	}
@@ -51,7 +51,14 @@ func supervisorArgvMatches(live, definition []string, report hubendpoint.Report)
 	if index == -1 {
 		configured := report.ListenSource == "config" && ephemeral(report.ConfiguredListenAddr)
 		published := report.Running.ListenSource == "config" && ephemeral(report.Running.RequestedListenAddr)
-		if !configured && !published {
+		fromEnv := false
+		for _, value := range env {
+			addr, ok := strings.CutPrefix(value, "EVENER_HUB_LISTEN_ADDR=")
+			if ok && ephemeral(addr) {
+				fromEnv = (report.ListenSource == "env" && report.ConfiguredListenAddr == addr) || (report.Running.ListenSource == "env" && report.Running.RequestedListenAddr == addr)
+			}
+		}
+		if !configured && !published && !fromEnv {
 			return false
 		}
 		expected = append(expected, "-addr", bound)

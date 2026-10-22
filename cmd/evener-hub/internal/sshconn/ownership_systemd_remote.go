@@ -1,17 +1,21 @@
 package sshconn
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"path"
 	"strconv"
 	"strings"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/internal/hubendpoint"
 )
 
-// When /proc/locks cannot locate an owner, a service's current MainPID and
-// complete process/config/root association are independent restart authority.
+// When /proc/locks cannot locate an owner, MainPID is only a candidate. Current
+// TOML cannot prove the root a process started with, so corroborate that root
+// with its open lock vnode or a previously verified same-process/root witness.
 // Never fall back to a listener or use the report PID as authority by itself.
 func (m *Manager) selectedServicePID(ctx context.Context, host hostreg.Host, report hubendpoint.Report) (string, error) {
 	var selected string
@@ -75,6 +79,9 @@ func (m *Manager) selectedServicePID(ctx context.Context, host hostreg.Host, rep
 			if err := m.checkOwnerConfig(ctx, host, argv, cwd, env, report); err != nil {
 				continue
 			}
+			if err := m.checkServiceRoot(ctx, host, pid, report); err != nil {
+				return "", err
+			}
 			if selected != "" && selected != pid {
 				return "", fmt.Errorf("%w: multiple selected service PIDs", errOwnerEvidence)
 			}
@@ -85,4 +92,40 @@ func (m *Manager) selectedServicePID(ctx context.Context, host hostreg.Host, rep
 		return "", fmt.Errorf("%w: no selected lock or service owner", errOwnerEvidence)
 	}
 	return selected, nil
+}
+
+func (m *Manager) checkServiceRoot(ctx context.Context, host hostreg.Host, pid string, report hubendpoint.Report) error {
+	m.mu.Lock()
+	witness, ok := m.ownerWitnesses[host.Name]
+	m.mu.Unlock()
+	if ok && witness.pid == pid && checkSelectedRestartRegistration(host, witness.host) == nil && witness.report.ConfigPath == report.ConfigPath && witness.report.HubStateRoot == report.HubStateRoot {
+		generation, err := m.ownerGeneration(ctx, host, pid)
+		if err != nil {
+			return err
+		}
+		if generation == witness.generation {
+			return nil
+		}
+	}
+	if !path.IsAbs(report.HubStateRoot) {
+		return errOwnerEvidence
+	}
+	out, err := m.ownerRead(ctx, host, serviceLockVnodeRemote(report.HubStateRoot, pid))
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(out, []byte("match\n")) {
+		return fmt.Errorf("%w: service has no selected root witness", errOwnerEvidence)
+	}
+	return nil
+}
+
+// An open descriptor names the process's actual vnode, not a re-resolution of
+// its launch arguments against mutable TOML. Pin the selected vnode on both
+// sides of the read. This observes only, without creating or acquiring a lock.
+func serviceLockVnodeRemote(root, pid string) string {
+	return "lock=" + shellquote.RemoteWord(path.Join(root, "hub.lock")) + "; [ -f \"$lock\" ] || exit 1; identity=$(stat -Lc '%d %i' \"$lock\") || exit; found=; " +
+		"[ -r /proc/" + pid + "/fd ] && [ -x /proc/" + pid + "/fd ] || exit 1; for fd in /proc/" + pid + "/fd/*; do current=$(stat -Lc '%d %i' \"$fd\" 2>/dev/null) || continue; " +
+		"if [ \"$current\" = \"$identity\" ]; then found=yes; break; fi; done; current=$(stat -Lc '%d %i' \"$lock\") || exit; " +
+		"[ \"$current\" = \"$identity\" ] && [ \"$found\" = yes ] || exit 1; printf 'match\\n'"
 }
