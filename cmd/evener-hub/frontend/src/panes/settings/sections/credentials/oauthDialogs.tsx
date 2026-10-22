@@ -38,11 +38,23 @@ export interface OAuthRedirectDialogProps {
   flowId: string;
   authUrl: string;
   onCancel: () => void;
+  /** Called once authorization is confirmed and before the interruptible
+   * listing reconciliation: a guided parent records the acquired source and
+   * its recovery ownership here, so a transport change during that read does
+   * not lose the handoff. Shared Settings callers omit it. */
+  onAuthorized?: () => void;
   onSuccess: () => void;
 }
 
 /** The browser-redirect fallback flow's paste-back editor. */
-export function OAuthRedirectDialog({ name, flowId, authUrl, onCancel, onSuccess }: OAuthRedirectDialogProps) {
+export function OAuthRedirectDialog({
+  name,
+  flowId,
+  authUrl,
+  onCancel,
+  onAuthorized,
+  onSuccess,
+}: OAuthRedirectDialogProps) {
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -61,6 +73,7 @@ export function OAuthRedirectDialog({ name, flowId, authUrl, onCancel, onSuccess
     try {
       await credentialsStore.getState().loginComplete(name, flowId, trimmed);
       if (!active.current) return;
+      onAuthorized?.();
       await refreshListingAfterMutation();
       if (!active.current) return;
       toast.push("success", `Signed in to ${name}`);
@@ -133,6 +146,8 @@ export interface DeviceCodeDialogProps {
    * plain devicePoll. */
   host?: string;
   onCancel: () => void;
+  /** See OAuthRedirectDialogProps.onAuthorized. */
+  onAuthorized?: () => void;
   onSuccess: () => void;
   /** "Start again" - re-runs the same start-flow handler CredentialsSection
    * uses for the row's own "Sign in…" button. */
@@ -149,6 +164,7 @@ export function DeviceCodeDialog({
   intervalSeconds,
   host,
   onCancel,
+  onAuthorized,
   onSuccess,
   onRestart,
 }: DeviceCodeDialogProps) {
@@ -222,6 +238,9 @@ export function DeviceCodeDialog({
       // the status line goes back to what the flow itself is doing.
       setWaitingForConnection(false);
       if (resp.state === "authorized") {
+        // The authorization is confirmed before this read: hand ownership over
+        // first so a reconnect during the read cannot lose the completion.
+        onAuthorized?.();
         // The listing that proves the sign-in is the one belonging to the hub
         // that ran the flow: the remote host's own partition, never this hub's.
         if (host === undefined) {
@@ -254,7 +273,7 @@ export function DeviceCodeDialog({
     // caller-supplied onSuccess WOULD restart this poll's timer on every
     // parent re-render, which is the actual bug this dependency list guards
     // against, not just a lint nicety.
-  }, [name, flowId, intervalSeconds, host, onSuccess, toast.push, active]);
+  }, [name, flowId, intervalSeconds, host, onAuthorized, onSuccess, toast.push, active]);
 
   async function handleCopy(): Promise<void> {
     const ok = await copyText(userCode);

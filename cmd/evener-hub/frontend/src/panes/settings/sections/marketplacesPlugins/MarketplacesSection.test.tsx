@@ -75,14 +75,17 @@ test("only the field matching the checked source radio is shown", async () => {
   render(<MarketplacesSection onSelect={vi.fn()} />);
   await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
   expect(screen.getByPlaceholderText("https://github.com/owner/repo.git")).toBeTruthy();
+  expect(screen.getByLabelText("Branch or tag (optional)")).toBeTruthy();
   expect(screen.queryByPlaceholderText("owner/repo")).toBeNull();
 
   await user.click(screen.getByRole("radio", { name: "owner/repo" }));
   expect(screen.getByPlaceholderText("owner/repo")).toBeTruthy();
+  expect(screen.getByLabelText("Branch or tag (optional)")).toBeTruthy();
   expect(screen.queryByPlaceholderText("https://github.com/owner/repo.git")).toBeNull();
 
   await user.click(screen.getByRole("radio", { name: "Local path" }));
   expect(screen.getByText("/absolute/path")).toBeTruthy(); // the picker's own empty-value marker
+  expect(screen.queryByLabelText("Branch or tag (optional)")).toBeNull();
 });
 
 test("the local-path field browses real directories and sends the picked one", async () => {
@@ -129,6 +132,49 @@ test("submitting the github kind sends {kind:github,repo} and closes on success"
   await user.click(screen.getByRole("button", { name: "Add" }));
   await waitFor(() => expect(screen.queryByRole("radiogroup", { name: "Source" })).toBeNull());
   expect(getToasts().some((t) => t.kind === "success" && t.text === "Added marketplace")).toBe(true);
+});
+
+test("a branch or tag is sent as the git source's ref", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  extensionsStore.setState({ marketplaces: [] });
+  fake.on("evener/marketplace/add", (params) => {
+    expect(params).toEqual({
+      name: "",
+      source: { kind: "github", repo: "acme/plugins", ref: "release/next" },
+    });
+    return { marketplaces: [MARKETPLACE_A] };
+  });
+  render(<MarketplacesSection onSelect={vi.fn()} />);
+  await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
+  await user.click(screen.getByRole("radio", { name: "owner/repo" }));
+  await user.type(screen.getByPlaceholderText("owner/repo"), "acme/plugins");
+  await user.type(screen.getByLabelText("Branch or tag (optional)"), "release/next");
+  await user.click(screen.getByRole("button", { name: "Add" }));
+  await waitFor(() =>
+    expect(getToasts().some((t) => t.kind === "success" && t.text === "Added marketplace")).toBe(true),
+  );
+});
+
+test("a branch or tag is sent for a git url source", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  extensionsStore.setState({ marketplaces: [] });
+  fake.on("evener/marketplace/add", (params) => {
+    expect(params).toEqual({
+      name: "",
+      source: { kind: "url", url: "https://example.com/x.git", ref: "v2" },
+    });
+    return { marketplaces: [] };
+  });
+  render(<MarketplacesSection onSelect={vi.fn()} />);
+  await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
+  await user.type(screen.getByPlaceholderText("https://github.com/owner/repo.git"), "https://example.com/x.git");
+  await user.type(screen.getByLabelText("Branch or tag (optional)"), "v2");
+  await user.click(screen.getByRole("button", { name: "Add" }));
+  await waitFor(() =>
+    expect(getToasts().some((t) => t.kind === "success" && t.text === "Added marketplace")).toBe(true),
+  );
 });
 
 test("a non-empty name is appended to the success toast and sent in the payload", async () => {

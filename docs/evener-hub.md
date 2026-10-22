@@ -397,22 +397,42 @@ per `hub_state_root` — one per user under the default layout.
 
 ### Updating the hub from Settings
 
-Settings → Hub → Updates shows the running build (version, commit, channel),
-a channel selector (release or snapshot), and whether that channel is ahead
-of the running build. "Update and restart" downloads and installs the
-channel's archive with the same code as `evener upgrade`, then, once the
-apply response has been written to the websocket, the hub `exec`s the
-installed binary in place: same PID, same arguments, same
-environment. That is why it works the same under launchd, systemd, or a
-plain shell, and why nothing needs `KeepAlive`. The `hub.lock` flock and the
-listener are released by the exec and re-acquired by the new process; the
-page polls `/api/health` until the new version answers, then reloads.
+Settings → Hub → Updates shows the running build (commit and channel), the
+build on disk, and whether the selected channel is ahead of the on-disk build.
+Install and Restart are separate actions:
+
+- **Install update** downloads and installs the channel's archive with the
+  same code as `evener upgrade`. It does not restart the hub. The section then
+  shows "Installed `<build>`, running `<build>`" until Restart is used.
+- **Restart hub** execs the binary at the hub's launch path in place: same PID,
+  arguments, working directory, environment, and stdio. Before answering, the
+  hub probes that binary with `--version` and refuses a missing, unreadable, or
+  non-Evener target; the running hub stays up on a refusal. On Unix the
+  `hub.lock` flock and listener are released by the exec and re-acquired by
+  the new process. A root-owned installation without a writable lock file is
+  restarted with the final digest check alone.
+- A restart is confirmed by process incarnation (`/api/health` `started_at`),
+  not by version. A rebuild at the same commit still reloads the page.
+- `evener hub restart` runs the same restart from a terminal and waits for the
+  new process to answer. A lost response is ambiguous: the command succeeds
+  only when the new incarnation appears, and fails on a refusal or timeout.
+- `evener/update/apply` remains for older installed clients; the Settings UI
+  no longer calls it.
+- A hub that predates separate restart shows the original combined **Update and
+  restart** action instead.
+- A current hub that reports restart disabled keeps the two-step controls; the
+  combined action is only for a hub whose response has no restart capability
+  field at all.
+- A channel-lookup failure is reported in `checkError` while the local build,
+  incarnation, and restart facts stay populated. Clients older than that field
+  read the answer as "up to date" during the failure; the hub does not
+  negotiate a separate error shape for them.
 
 The install targets the prefix the running hub was launched from (derived
 from its own binary path, e.g. `/usr/local` for a system install), not
 always `~/.local`. The whole operation runs under a 4-minute overall
 deadline (both downloads, verification, install) so a stalled server fails
-the apply instead of blocking later updates. Before
+the install instead of blocking later updates. Before
 extraction, the archive's SHA-256 is checked against the release's
 `checksums.txt` entry (same fail-closed guarantee as `install.sh`); a
 mismatch or missing entry refuses the install. Note the limit: the
@@ -424,10 +444,11 @@ The channel selector has no stored setting. It defaults to the channel the
 running binary was built for, and after an update the installed binary's
 channel becomes the new default.
 
-Dev builds (a worktree `make build-hub`, channel `dev`) are excluded:
-Settings shows a rebuild note instead of the controls, and
-`evener/update/apply` is refused. Use `make build-hub` or
-`scripts/ops/deploy-hub.sh` for those.
+Dev builds (a worktree `make build-hub`, channel `dev`) hide Install, because
+a worktree build must never be silently replaced by a release binary. Restart
+is available so the rebuilt binary can be run without a download.
+`evener/update/apply` is refused on a dev build. Use `make build-hub` or
+`scripts/ops/deploy-hub.sh` for the build.
 
 Running session daemons keep the binary they were spawned from (see the
 [upgrade procedure](#upgrading-and-migrating-safely) below). Shut down the

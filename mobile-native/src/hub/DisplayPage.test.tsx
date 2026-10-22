@@ -63,6 +63,7 @@ const context: HubSheetContextValue = {
 		client: () => {
 			throw new Error("not in this test");
 		},
+		currentIncarnation: async () => null,
 		awaitRestart: async () => true,
 	}),
 	hosts: null,

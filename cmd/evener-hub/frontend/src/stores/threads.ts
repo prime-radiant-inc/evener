@@ -252,7 +252,7 @@ export interface ThreadsStoreState {
   // Stopping > 0 for exactly that window and refuses even turn/start for the
   // drain (cmd/evener-hub's sessionActionRecoveryError), so a notLoaded snapshot
   // taken mid-drain must not be read as the merely-resumable shape
-  // (isResumeOnlyLocal). Cleared when the RPC settles. A stop another client
+  // (isResumeOnly). Cleared when the RPC settles. A stop another client
   // started is not observable here (no wire signal carries Stopping), so that
   // rare window degrades to the same bounded refusal the normal fence covers.
   stoppingRefs: ReadonlySet<string>;
@@ -2273,10 +2273,10 @@ function currentDispatchClient(
       // exemption is the readiness answer they always were. Every other
       // obligation (Stop drain, restartRequired) still blocks it.
       //
-      // This gate reads resumeOnlyLocalDispatchable, NOT resumeOnlyLocalModel:
+      // This gate reads resumeOnlyDispatchable, NOT resumeOnlyModel:
       // dispatch asks "is this exact head record admissible?". At the
       // head-of-loop lookup the named record may itself be the turn/start with
-      // nothing ahead of it, while resumeOnlyLocalModel's hasQueuedNonSend
+      // nothing ahead of it, while resumeOnlyModel's hasQueuedNonSend
       // clause answers the ADMISSION question ("may a NEW send be minted behind
       // this queue?"), where a queued non-send row is genuinely ahead of the
       // candidate. Used here that clause refused the head turn/start before the
@@ -2284,7 +2284,7 @@ function currentDispatchClient(
       // turn/queue] could neither resume nor drain its outbox. The method check
       // below still parks the tail non-send row.
       (state.restartBlockingObligations.has(targetRef) &&
-        !(resumeOnlyLocalDispatchable(targetRef) && (method === undefined || method === "turn/start"))) ||
+        !(resumeOnlyDispatchable(targetRef) && (method === undefined || method === "turn/start"))) ||
       state.mutationReconciliationFailures.has(targetRef))
   )
     return null;
@@ -2733,6 +2733,10 @@ function markStopping(ref: string, stopping: boolean): void {
     else stoppingRefs.delete(ref);
     return { stoppingRefs };
   });
+  // A drain that just ended settles everything waiting on it. Reading the
+  // store rather than `stopping` here is deliberate: a concurrent Stop for the
+  // same ref can leave the flag set, and those waiters must keep waiting.
+  if (!threadsStore.getState().stoppingRefs.has(ref)) settleDrainWaiters(ref);
 }
 
 // The refcounted group of Force stops this module has in flight for a ref.
@@ -2823,7 +2827,7 @@ function endStop(ref: string, signalled: boolean): void {
 // ref can be admitted in that window and put the row the Stop is cancelling on
 // the wire. forceStop closes the window with stoppingRefs; a graceful shutdown
 // must NOT, because that fence also refuses a Send the user makes during the
-// window (isLocalRecoveryFenced and isSendResumesLocal read it). This gate is
+// window (isRecoveryFenced and isSendResumes read it). This gate is
 // read by currentDispatchClient ALONE, never by the Send faces, so only the
 // cancelled row is kept off the wire. The named ref's arm is held for the whole
 // shutdown; the resume-swap target's is released as soon as its own write
@@ -2919,6 +2923,31 @@ let resumeFailureSeq = 0;
 // hydration, and publication instead of starting a second resumeThread.
 const inFlightResumes = new Map<string, Promise<void>>();
 
+// Waiters parked on a ref's Stop drain, settled by markStopping when the drain
+// ends. A resolver is not a store subscription: the only write that can end a
+// drain is markStopping's, so the waiters belong to that writer instead of
+// riding every unrelated store change for the drain's whole length.
+const drainWaiters = new Map<string, Set<() => void>>();
+
+function settleDrainWaiters(ref: string): void {
+  const waiters = drainWaiters.get(ref);
+  if (waiters === undefined) return;
+  drainWaiters.delete(ref);
+  for (const resolve of waiters) resolve();
+}
+
+// Resolves once no Stop this page started is still draining for ref. The
+// caller re-reads the drain state rather than trusting a timer, because the
+// hub's admission turns on the drain itself.
+function waitForStopDrain(ref: string): Promise<void> {
+  if (!threadsStore.getState().stoppingRefs.has(ref)) return Promise.resolve();
+  return new Promise((resolve) => {
+    const waiters = drainWaiters.get(ref);
+    if (waiters === undefined) drainWaiters.set(ref, new Set([resolve]));
+    else waiters.add(resolve);
+  });
+}
+
 async function resumeFencedForSend(ref: string): Promise<void> {
   const existing = inFlightResumes.get(ref);
   if (existing !== undefined) return existing;
@@ -2943,7 +2972,18 @@ async function runResumeFencedForSend(ref: string): Promise<void> {
     const client = wiredClient;
     if (client === null || client.state !== "ready")
       throw new Error("Connect to the hub before resuming this session.");
+    // The baseline is taken BEFORE the drain wait: a Stop that lands during the
+    // wait is a person canceling the message this drive would send, and a
+    // baseline captured after it would treat that Stop as already accounted for
+    // and resume anyway.
     const stopBaseline = resumeStopBaseline();
+    // A Stop this page started holds Stopping > 0 and the hub refuses even
+    // turn/start for that window, so wait the drain out before resuming. Send
+    // stays the single recovery action: the press parks its row and this drive
+    // runs once the drain settles, instead of the user meeting a Resume button.
+    // Only a drain in progress defers the RPC; with none, the resume starts in
+    // this same tick so a Send still issues it on the press's own turn.
+    while (threadsStore.getState().stoppingRefs.has(ref)) await waitForStopDrain(ref);
     const { thread } = await client.resumeThread(ref, { beforeRequest: stopBaseline });
     resumedRef = thread.evener.ref;
     // The token the daemon's instance fence compares (appwire_runtime's
@@ -3367,7 +3407,7 @@ export async function resendRecoveryMutation(
   handleDiscoveredMutations(runtime, [targetRef]);
   // A resent row on the Send-resumes face parks like an ordinary send: drive the
   // resume it needs. Read after the write, which cannot have changed the face.
-  if (sendResumesLocalModel(targetRef)) void resumeFencedForSend(targetRef);
+  if (sendResumesModel(targetRef)) void resumeFencedForSend(targetRef);
   return record;
 }
 
@@ -3862,7 +3902,7 @@ async function sendMutationIntent(intent: MutationIntent): Promise<void> {
   // flight is the snapshot the admission saw, and re-reading here keeps the
   // drive from being skipped (or spuriously started) across that window.
   await enqueueMutationIntent(intent);
-  if (sendResumesLocalModel(intent.targetRef)) void resumeFencedForSend(intent.targetRef);
+  if (sendResumesModel(intent.targetRef)) void resumeFencedForSend(intent.targetRef);
 }
 
 function composerMutationIntent(
@@ -3935,14 +3975,14 @@ function composerMutationIntent(
   };
 }
 
-// The local recovery fence. A LOCAL session carrying a restart-blocking
+// The recovery fence. A session carrying a restart-blocking
 // obligation (a Stop in flight, or a snapshot the daemon reports as
 // restartRequired/resumeRequired) admits no session action at all while the
 // obligation stands: the hub's recovery admission refuses turn/steer,
 // turn/queue and every other fenced mutation for exactly that window
 // (cmd/evener-hub's sessionActionRecoveryError reads the resume locks, never
 // the projected status), with turn/start carved out only for the merely-
-// resumable shape isResumeOnlyLocal names, so even a still-ACTIVE snapshot is
+// resumable shape isResumeOnly names, so even a still-ACTIVE snapshot is
 // fenced while
 // a Stop drains - a live read relays the daemon's active status with
 // resumeRequired overlaid beside it (applyThreadResumeRequirement), and the
@@ -3952,8 +3992,11 @@ function composerMutationIntent(
 // state it reads, and where the store's own mutation admission enforces it
 // (enqueueMutationIntent) without an import cycle - and liveControls
 // re-exports it for the surfaces.
-export function isLocalRecoveryFenced(ref: string, restartObligated: boolean): boolean {
-  return ref.startsWith("local:") && restartObligated;
+// Every ref shape carries the fence: a remote session's hub overlays
+// resumeRequired on the read it proxies back, so the same obligation reaches
+// this predicate.
+export function isRecoveryFenced(restartObligated: boolean): boolean {
+  return restartObligated;
 }
 
 // A LOCAL session the hub admits a folded send for. The authority is the hub's
@@ -4014,13 +4057,8 @@ export interface ResumeOnlySignals {
   mutationStateAuthoritative?: boolean;
 }
 
-export function isResumeOnlyLocal(
-  ref: string,
-  model: Pick<ThreadModel, "resumeOnlyFoldable">,
-  signals: ResumeOnlySignals = {},
-): boolean {
+export function isResumeOnly(model: Pick<ThreadModel, "resumeOnlyFoldable">, signals: ResumeOnlySignals = {}): boolean {
   return (
-    ref.startsWith("local:") &&
     model.resumeOnlyFoldable === true &&
     signals.uncertainMessages !== true &&
     signals.stopInFlight !== true &&
@@ -4086,27 +4124,27 @@ export function hasQueuedNonSend(ref: string): boolean {
   );
 }
 
-// isResumeOnlyLocal over the store's current model for ref: the ADMISSION
+// isResumeOnly over the store's current model for ref: the ADMISSION
 // predicate the press (liveControls) and enqueue (enqueueMutationIntent) paths
-// share. Unlike isResumeOnlyLocal it reads the delivery-uncertain signal
+// share. Unlike isResumeOnly it reads the delivery-uncertain signal
 // itself, from the pending-turns projection (hasBlockedUnknown), and the
 // queued-non-send signal (hasQueuedNonSend), so a direct caller that bypassed
 // the composer's own reads - the palette's slash fallthrough, the ask dock's
 // batch send, a failed turn's Retry - still keeps the fence while blockedUnknown
 // rows or a queued non-send row stand. It can also read the store's own
 // in-flight Stop (stoppingRefs). Dispatch reads its sibling instead:
-// resumeOnlyLocalDispatchable omits the queued-non-send clause because at
+// resumeOnlyDispatchable omits the queued-non-send clause because at
 // dispatch the named head record may itself be the send, with no non-send row
 // ahead of it (currentDispatchClient).
-export function resumeOnlyLocalModel(ref: string): boolean {
+export function resumeOnlyModel(ref: string): boolean {
   const model = threadsStore.getState().threads.get(ref);
-  return model !== undefined && isResumeOnlyLocal(ref, model, localFenceSignals(ref));
+  return model !== undefined && isResumeOnly(model, localFenceSignals(ref));
 }
 
 // The store's client-side fence signals, read once from the current state: the
 // delivery-uncertain rows, the in-flight Stop, the queued non-send row, and the
-// mutation-recency mark. resumeOnlyLocalModel, sendResumesLocalModel and
-// sendDrivenLocalModel all share this one literal.
+// mutation-recency mark. resumeOnlyModel, sendResumesModel and
+// sendDrivenModel all share this one literal.
 function localFenceSignals(ref: string): ResumeOnlySignals {
   const state = threadsStore.getState();
   return {
@@ -4117,11 +4155,12 @@ function localFenceSignals(ref: string): ResumeOnlySignals {
   };
 }
 
-// A local snapshot the pane shows as retained by its owning session: its
-// uncertain rows are the owner's to reconcile, and the pane offers the owner's
-// link and a Refresh - never a resume. The ONE definition, consumed by the
-// Send-resumes face here, Session.tsx's notice, and SessionChrome.tsx's
-// force-stop eligibility.
+// A snapshot the pane shows as retained by its owning session: its uncertain
+// rows are the owner's to reconcile, and the pane offers the owner's link and a
+// Refresh - never a resume, because the hub refuses to resume a session another
+// session still owns. Any parent ref counts, local or remote. The ONE
+// definition, consumed by the Send-resumes face here, the session notice, and
+// SessionChrome's force-stop eligibility.
 export function ownerRetainedRef(
   model: Pick<ThreadModel, "status" | "parentRef">,
   mutationStateAuthoritative: boolean,
@@ -4129,45 +4168,41 @@ export function ownerRetainedRef(
   return !mutationStateAuthoritative &&
     model.status.type !== "notLoaded" &&
     model.status.type !== "restartRequired" &&
-    model.parentRef?.startsWith("local:") === true
+    model.parentRef !== undefined &&
+    model.parentRef !== ""
     ? model.parentRef
     : undefined;
 }
 
-// The recovery fence's Send-driven face (R09): a LOCAL session carrying a
-// restart-blocking obligation whose only recovery action used to be the
-// standalone Resume button. Broad by design - it is everything the merely-
-// resumable fold is NOT, minus the two shapes that keep their own controls:
-//   - a restartRequired daemon still needs its older process stopped first,
-//     which Send cannot do;
-//   - an owner-retained snapshot's rows belong to its owner;
-//   - a draining Stop is still the wire's own fence (the hub holds Stopping > 0
-//     and refuses even turn/start).
-// Everything else - delivery-uncertain rows, a queued non-send row, an
-// unconfirmed exit, the connection fence - offers Send, and the store's driver
-// resumes before the parked send dispatches.
-export function isSendResumesLocal(
-  ref: string,
+// The recovery fence's Send-driven face: any session carrying a
+// restart-blocking obligation. Send is the single recovery action; the store's
+// driver resumes before the parked send dispatches. Two shapes keep their own
+// controls because Send cannot complete them:
+//   - a restartRequired daemon needs its older process stopped first, which
+//     Send cannot do;
+//   - an owner-retained snapshot's rows belong to its owner.
+// Everything else - every ref shape, delivery-uncertain rows, a queued
+// non-send row, an unconfirmed exit, the connection fence, and a draining Stop
+// (the driver waits the drain out) - offers Send.
+export function isSendResumes(
   model: Pick<ThreadModel, "resumeOnlyFoldable" | "status" | "parentRef">,
   restartObligated: boolean,
   signals: ResumeOnlySignals = {},
 ): boolean {
-  if (!ref.startsWith("local:")) return false;
   if (!restartObligated) return false;
   if (model.status.type === "restartRequired") return false;
-  if (signals.stopInFlight === true) return false;
   if (ownerRetainedRef(model, signals.mutationStateAuthoritative === true) !== undefined) return false;
-  return !isResumeOnlyLocal(ref, model, signals);
+  return !isResumeOnly(model, signals);
 }
 
-// isSendResumesLocal over the store's current model for ref: the ADMISSION
+// isSendResumes over the store's current model for ref: the ADMISSION
 // predicate enqueueMutationIntent and the press (liveControls) share, read from
-// the same store-wide signals resumeOnlyLocalModel reads.
-export function sendResumesLocalModel(ref: string): boolean {
+// the same store-wide signals resumeOnlyModel reads.
+export function sendResumesModel(ref: string): boolean {
   const model = threadsStore.getState().threads.get(ref);
   return (
     model !== undefined &&
-    isSendResumesLocal(ref, model, threadsStore.getState().restartBlockingObligations.has(ref), localFenceSignals(ref))
+    isSendResumes(model, threadsStore.getState().restartBlockingObligations.has(ref), localFenceSignals(ref))
   );
 }
 
@@ -4175,14 +4210,14 @@ export function sendResumesLocalModel(ref: string): boolean {
 // and the Send-resumes face. The admission (enqueueMutationIntent) and the press
 // (liveControls' pressRefusal) both admit turn/start for exactly this union, so
 // they read this one helper rather than recombining the pair.
-export function sendDrivenLocalModel(ref: string): boolean {
-  return resumeOnlyLocalModel(ref) || sendResumesLocalModel(ref);
+export function sendDrivenModel(ref: string): boolean {
+  return resumeOnlyModel(ref) || sendResumesModel(ref);
 }
 
 // The DISPATCH reading of the resume-only carve-out, used by
 // currentDispatchClient when it names the exact head record it is about to
-// send. It is deliberately NOT resumeOnlyLocalModel: the two callers ask
-// genuinely different questions. resumeOnlyLocalModel answers ADMISSION - "may
+// send. It is deliberately NOT resumeOnlyModel: the two callers ask
+// genuinely different questions. resumeOnlyModel answers ADMISSION - "may
 // a new send be minted behind this queue?" - where any queued non-send row is
 // genuinely ahead of the candidate, so hasQueuedNonSend belongs. Dispatch asks
 // "is this exact head record admissible?", and the head record is the next
@@ -4192,12 +4227,12 @@ export function sendDrivenLocalModel(ref: string): boolean {
 // names a queued non-send method itself and parks it; this reading only stops
 // a tail non-send row from refusing the head send. The delivery-uncertain and
 // in-flight-Stop signals stay, because both fence the head record too.
-export function resumeOnlyLocalDispatchable(ref: string): boolean {
+export function resumeOnlyDispatchable(ref: string): boolean {
   const state = threadsStore.getState();
   const model = state.threads.get(ref);
   return (
     model !== undefined &&
-    isResumeOnlyLocal(ref, model, {
+    isResumeOnly(model, {
       stopInFlight: state.stoppingRefs.has(ref),
       uncertainMessages: hasBlockedUnknown(ref),
     })
@@ -4220,9 +4255,9 @@ export function resumeOnlyLocalDispatchable(ref: string): boolean {
 // still enqueues and settles after Resume rather than refusing here. Any
 // method absent from this table is therefore not fenced at admission - the
 // table is the whole policy. turn/start is carved out for BOTH Send-driven
-// shapes (sendDrivenLocalModel): the merely-resumable fold
-// (isResumeOnlyLocal), whose resume the hub folds into turn/start, and the
-// Send-resumes face (isSendResumesLocal), whose send parks and drives the
+// shapes (sendDrivenModel): the merely-resumable fold
+// (isResumeOnly), whose resume the hub folds into turn/start, and the
+// Send-resumes face (isSendResumes), whose send parks and drives the
 // store's resume. A live Stop drain or a restartRequired daemon is neither and
 // still refuses it.
 const RECOVERY_FENCE_REFUSALS: Record<string, string> = {
@@ -4372,20 +4407,17 @@ async function enqueueMutationIntent(
     // drains, and the hub holds Stopping > 0 (refusing even turn/start) for
     // that whole window - so stopInFlight is an independent fence here, not
     // only a blocker of the resume-only carve-out below.
-    isLocalRecoveryFenced(
-      ref,
-      admissionState.restartBlockingObligations.has(ref) || admissionState.stoppingRefs.has(ref),
-    ) &&
+    isRecoveryFenced(admissionState.restartBlockingObligations.has(ref) || admissionState.stoppingRefs.has(ref)) &&
     // Two shapes admit turn/start at this funnel. A merely-resumable session
     // folds its resume into the send - the hub admits it (cmd/evener-hub's
     // sessionActionRecoveryError turn/start carve-out). The Send-resumes face
-    // (isSendResumesLocal) is the broad complement: its only recovery action
+    // (isSendResumes) is the broad complement: its only recovery action
     // used to be the standalone Resume button, and a send now drives that
     // resume in the store (resumeFencedForSend) with the button's protections,
     // so its intent must be admitted to park rather than refused. turn/start on
     // a live Stop drain or a restartRequired daemon is neither; every other
     // fenced verb keeps the refusal unchanged.
-    !(intent.method === "turn/start" && sendDrivenLocalModel(ref))
+    !(intent.method === "turn/start" && sendDrivenModel(ref))
   )
     throw new Error(fenceRefusal);
   const client = requireClient();

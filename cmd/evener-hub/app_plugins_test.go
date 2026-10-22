@@ -134,6 +134,31 @@ func TestPlugins_Marketplace_AddInvalidKind_Errors(t *testing.T) {
 	}
 }
 
+func TestPlugins_Marketplace_AddDirectoryWithPin_Errors(t *testing.T) {
+	ctl := newTestPluginsController(t)
+	dir := t.TempDir()
+	writeTestMarketplace(t, dir)
+	_, err := ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
+		Name:   "pinned-dir",
+		Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: dir, Ref: "main"},
+	})
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("AddMarketplace with a pinned directory error = %v, want InvalidParams", err)
+	}
+}
+
+func TestPlugins_Marketplace_AddQualifiedRef_Errors(t *testing.T) {
+	ctl := newTestPluginsController(t)
+	_, err := ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
+		Source: appwire.MarketplaceSourceInput{Kind: "url", URL: "https://example.invalid/x.git", Ref: "refs/heads/main"},
+	})
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("AddMarketplace with a qualified ref error = %v, want InvalidParams", err)
+	}
+}
+
 func TestPlugins_Marketplace_RemoveUnknown_Errors(t *testing.T) {
 	ctl := newTestPluginsController(t)
 	_, err := ctl.RemoveMarketplace(context.Background(), appwire.MarketplaceNameParams{Name: "nope"})
@@ -486,6 +511,14 @@ func TestPlugins_Marketplace_EditRefusalsAreWireErrors(t *testing.T) {
 	})
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
 		t.Fatalf("a source in the store's scratch directory = %v, want an InvalidParams wire error", err)
+	}
+	_, err = ctl.EditMarketplace(context.Background(), appwire.MarketplaceEditParams{
+		Name:   "acme",
+		Source: &appwire.MarketplaceSourceInput{Kind: "url", URL: "https://example.invalid/x.git", Ref: "refs/heads/main"},
+	})
+	var qualifiedWire appwire.WireError
+	if !errors.As(err, &qualifiedWire) || qualifiedWire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("a qualified source ref = %v, want an InvalidParams wire error", err)
 	}
 	// A clone a removed marketplace left behind still occupies gamma, so that
 	// name is taken on disk though no marketplace records it.

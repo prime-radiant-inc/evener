@@ -562,6 +562,17 @@ export interface EvenerAuthUpdatedParams {
   provider?: string;
   activeSource?: string;
   /**
+   * Reason names a broadcast that did not change credentials or provider
+   * configuration. The only value today is "models_changed": a background
+   * launch-model refresh produced a different list than a picker was served,
+   * so clients re-read their model catalog. It is catalog-only: no credential,
+   * instance or destination changed. Every credential write and
+   * provider-instance CRUD broadcast leaves it empty, and consumers must treat
+   * those empty-reason broadcasts as changes even when they carry no other
+   * payload.
+   */
+  reason?: string;
+  /**
    * OriginClientId is the echoed OriginClientId of the mutation that caused
    * this broadcast - an auth write or a provider-instance CRUD change - the
    * identity of the client whose change it announces, so that client can
@@ -880,6 +891,16 @@ export interface EvenerThread {
    * thread snapshot like HumanNote.
    */
   sessionUrls?: SessionURL[];
+  /**
+   * ArtifactsDir is the session's retained artifacts directory on the hub
+   * that serves it, empty when no local path names one (a remote thread, an
+   * unknown ref, or a hub serving no state directory). Agent reports filed
+   * there are linked by file:// URL in assistant prose; the transcript turns
+   * such a link into a document-pane request, and this is the directory the
+   * hub's doc route serves that request out of. Clients compare a link
+   * against it rather than guessing whether the hub can open it.
+   */
+  artifactsDir?: string;
   /**
    * Usage, WorkMillis, and ActiveTurnStartedAt are the daemon's live
    * working-state/token metrics (WS2), served from the daemon's materialized
@@ -1604,6 +1625,16 @@ export interface HubNotice {
   affectedSessions?: number;
 }
 
+export interface HubRestartParams {
+}
+
+export interface HubRestartResponse {
+  restarting: boolean;
+  incarnation: string;
+  currentVersion: string;
+  targetVersion: string;
+}
+
 export interface InitializeParams {
   protocolVersion: string;
   clientInfo: ClientInfo;
@@ -2270,6 +2301,13 @@ export interface ModelDescriptor {
    * row the resolver itself warns about.
    */
   warnings?: string[];
+  /**
+   * InstanceDefault marks the row as its instance's configured default in
+   * the instance's own usable current listing. It is not the global default
+   * and not proof of generation access; an absent marker authorizes no
+   * automatic selection.
+   */
+  instanceDefault?: boolean;
 }
 
 export interface ModelListDiagnostic {
@@ -4743,6 +4781,15 @@ export interface UpdateCheckResponse {
   latestCommit?: string;
   updateAvailable: boolean;
   applicable: boolean;
+  onDiskCommit?: string;
+  onDiskError?: string;
+  installAvailable: boolean;
+  restartPending: boolean;
+  startedAt: string;
+  restartSupported: boolean;
+  checkError?: string;
+  installTarget?: string;
+  installTargetMatchesLaunch: boolean;
 }
 
 export interface UpgradeParams {
@@ -4860,6 +4907,7 @@ export const METHOD_NAMES = [
   "evener/upgrade",
   "evener/update/check",
   "evener/update/apply",
+  "evener/hub/restart",
   "evener/auth/status",
   "evener/auth/test",
   "evener/auth/login/start",
@@ -5174,6 +5222,7 @@ export interface MethodTypes {
   "evener/upgrade": { params: UpgradeParams; result: UpgradeResponse };
   "evener/update/check": { params: UpdateCheckParams; result: UpdateCheckResponse };
   "evener/update/apply": { params: UpdateApplyParams; result: UpdateApplyResponse };
+  "evener/hub/restart": { params: HubRestartParams; result: HubRestartResponse };
   "evener/auth/status": { params: AuthStatusParams; result: AuthStatusResponse };
   "evener/auth/test": { params: AuthTestParams; result: AuthTestResponse };
   "evener/auth/login/start": { params: AuthLoginStartParams; result: AuthLoginStartResponse };

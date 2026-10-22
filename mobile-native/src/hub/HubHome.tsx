@@ -6,7 +6,7 @@ import type { HostRow } from "@evener/appwire-client";
 import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { nativeApplicationVersion, nativeBuildVersion } from "expo-application";
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { Alert, Text } from "react-native";
 import { useConnection } from "../ConnectionProvider";
 import { useConnectionStatusText } from "../board/connectionStatus";
@@ -33,18 +33,47 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 	const connectionLine = useConnectionStatusText();
 	const line = hubStatusLine(ready, connectionLine, update.check);
 	const check = update.check;
-	const updateWaiting = !!check?.applicable && check.updateAvailable && !update.restarting;
-	const confirmUpdate = () =>
+	const legacyUpdate =
+		!!check &&
+		(check as { restartSupported?: boolean }).restartSupported === undefined &&
+		!!check.applicable &&
+		!!check.updateAvailable;
+	const installWaiting =
+		!legacyUpdate && !!check?.applicable && (check.installAvailable ?? check.updateAvailable) && !update.restarting;
+	const restartAvailable = check?.restartSupported === true;
+	const confirmInstall = () =>
+		Alert.alert(
+			`Install an update on ${hubName}?`,
+			`Download and install evener ${check?.latestTag ?? "the latest release"} on ${hubName}. The running hub is not restarted; use Restart hub when you are ready.`,
+			[
+				{ text: "Cancel", style: "cancel" },
+				// The alert can outlive the connection it opened on.
+				{ text: "Install", onPress: whenReady(canUseConnection, () => void updates.install()) },
+			],
+		);
+	const confirmRestart = () =>
+		Alert.alert(
+			`Restart ${hubName}?`,
+			`Restart into ${check?.onDiskCommit ?? "the binary on disk"} (running ${check?.currentVersion ?? "the current build"}). The app reconnects on its own; running sessions keep going.`,
+			[
+				{ text: "Cancel", style: "cancel" },
+				{ text: "Restart", onPress: whenReady(canUseConnection, () => void updates.restart()) },
+			],
+		);
+	const confirmLegacyUpdate = () =>
 		Alert.alert(
 			`Update ${hubName}?`,
 			`Install evener ${check?.latestTag ?? "the latest release"} on ${hubName}. The hub restarts, and the app reconnects on its own.`,
 			[
 				{ text: "Cancel", style: "cancel" },
-				// The alert can outlive the connection it opened on.
 				{ text: "Update", onPress: whenReady(canUseConnection, () => void updates.apply()) },
 			],
 		);
-	const updateProblem = update.applyError ?? update.checkError;
+	const updateProblem =
+		update.installError ?? update.restartError ?? update.applyError ?? update.checkError ?? check?.checkError;
+	useEffect(() => {
+		if (update.installReconcile && ready) void updates.runCheck();
+	}, [update.installReconcile, ready, updates]);
 	// The home reads the hosts and the providers each time it shows; only the
 	// Hosts pages poll, and the provider list follows the hub's own
 	// notifications while the home is up.
@@ -159,25 +188,56 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 					label="Evener for iPhone"
 					value={appVersionText(nativeApplicationVersion, nativeBuildVersion)}
 				/>
-				{updateWaiting ? (
+				{installWaiting ? (
 					<Row
-						label={update.applying ? "Updating…" : "Update hub"}
-						accessibilityLabel="Update hub"
+						label={update.installing ? "Installing…" : "Install update"}
+						accessibilityLabel="Install update"
+						tone="accent"
+						disabled={!ready || update.installing || update.restarting}
+						onPress={confirmInstall}
+					/>
+				) : null}
+				{legacyUpdate ? (
+					<Row
+						label={update.applying ? "Updating…" : "Update and restart"}
+						accessibilityLabel="Update and restart"
 						tone="accent"
 						disabled={!ready || update.applying}
-						onPress={confirmUpdate}
+						onPress={confirmLegacyUpdate}
+					/>
+				) : null}
+				{restartAvailable ? (
+					<Row
+						label={update.restarting ? "Restarting…" : "Restart hub"}
+						accessibilityLabel="Restart hub"
+						tone="accent"
+						disabled={!ready || update.restarting || update.installing}
+						onPress={confirmRestart}
 					/>
 				) : null}
 			</Group>
-			{update.restarting ? (
-				<GroupFooter testID="hub-update-restarting">{`Restarting into ${check?.latestTag ?? "the new release"}…`}</GroupFooter>
+			{check?.onDiskCommit ? (
+				<GroupFooter testID="hub-update-on-disk">{`On disk ${check.onDiskCommit}`}</GroupFooter>
 			) : null}
+			{check?.onDiskError ? (
+				<GroupFooter tone="danger" testID="hub-update-on-disk-error">
+					{`Can't read the on-disk build: ${check.onDiskError}`}
+				</GroupFooter>
+			) : null}
+			{check?.applicable === true && check.installTargetMatchesLaunch === false ? (
+				<GroupFooter tone="danger" testID="hub-update-install-target">
+					{`Install is unavailable: it would write ${check.installTarget ?? "another binary"}. Use the managed installation.`}
+				</GroupFooter>
+			) : null}
+			{check?.restartPending ? (
+				<GroupFooter testID="hub-update-pending">
+					{`Installed ${check.onDiskCommit ?? "a new build"}, running ${check.currentVersion}. Restart to apply.`}
+				</GroupFooter>
+			) : null}
+			{update.restarting ? <GroupFooter testID="hub-update-restarting">Restarting the hub…</GroupFooter> : null}
 			{update.restartTimedOut ? (
-				<GroupFooter tone="danger" testID={check ? "hub-update-not-taken" : "hub-update-unconfirmed"}>
-					{/* With no answer since the restart, the app can't say which version the hub runs. */}
-					{check
-						? "The hub restarted without the update. Check its logs."
-						: "Couldn't confirm the update. Check the hub's version."}
+				<GroupFooter tone="danger" testID="hub-update-restart-timeout">
+					The hub didn't come back. Check its version.
 				</GroupFooter>
 			) : null}
 			{updateProblem ? <GroupFooter tone="danger">{updateProblem}</GroupFooter> : null}

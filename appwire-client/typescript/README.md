@@ -113,10 +113,18 @@ actions (`refresh`, `loadMore`, `refreshLoaded`, `reset`) over a
 `request`-only port: each opened project's archived sessions from
 `evener/archived/list`, paged by cursor and refreshed in place (a refresh
 sends the list's revision and keeps its rows when the hub answers
-unchanged); the host resets it when its connection is replaced or recovers. The hub's own update
-check and apply,
+unchanged); the host resets it when its connection is replaced or recovers.
+The hub's own update check, install, and restart,
 `createHubUpdateController({ client, awaitRestart })`, is the same triple
 with the restart wait as a port: each app says how it notices the new hub.
+`install()` writes the channel's verified artifact and re-checks;
+`restart()` execs the binary already on disk. `awaitRestart` receives
+`{ version, incarnation }` and resolves true when a different process answers,
+which is what makes a same-version rebuild visible. `currentIncarnation()`
+captures the process immediately before the restart so a lost response still
+has a fresh baseline; a host without a health read may return null and fall
+back to the check. The deprecated `apply()` still calls the combined
+`evener/update/apply` RPC for older hubs.
 
 The slash-completion module is ported from Beautiful UI's prompt-bar
 completion affordance and ships its MIT attribution at

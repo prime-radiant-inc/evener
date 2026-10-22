@@ -2751,12 +2751,74 @@ function failedTurn(ref: string, message: string, resumeRequired = false): Threa
 	return served;
 }
 
-it("resumes a paused session from its error", async () => {
+// Send is the single recovery action: a fenced session's error row offers no
+// Resume of its own, and the composer's Send carries that resume.
+it("resumes a paused session from Send, not from its error row", async () => {
 	const { tree, hub } = await mount(failedTurn("ref-error-resume", "go test exited 1", true));
-	await press(tree, "Resume");
+	expect(pressable(tree, "Resume")).toBeUndefined();
+	act(() => field(tree)?.props.onChangeText("carry on"));
+	await press(tree, "Send and resume");
 	expect(
 		hub.requests.filter((request) => request.method === "resumeThread").map((request) => request.params.ref),
 	).toEqual(["ref-error-resume"]);
+});
+
+// A resume that fails leaves its message parked, which makes the next Send
+// route to queue instead of resuming again. The queued message must still
+// drive recovery: otherwise the session stays fenced, and every later message
+// piles up behind one that can never go out.
+it("still resumes from a later Send that queues behind a failed resume", async () => {
+	const { tree } = await mount(failedTurn("ref-resume-retry", "go test exited 1", true));
+	const runtime = getNativeMutationRuntime();
+	// The runtime is a singleton shared by every test in this file, so a spy
+	// keeps whatever calls earlier tests made. Scope this test's view to its own
+	// target rather than trusting a call index.
+	const settle = vi.spyOn(runtime, "settleTarget");
+	settle.mockClear();
+	const settlesFor = () => settle.mock.calls.filter(([, ref]) => ref === "ref-resume-retry");
+	// The first resume cannot run, as when the daemon is still shutting down.
+	settle.mockRejectedValueOnce(new Error("resume failed"));
+
+	act(() => field(tree)?.props.onChangeText("first"));
+	await press(tree, "Send and resume");
+	expect(settlesFor()).toHaveLength(1);
+
+	// The first message is still parked, so this Send queues behind it rather
+	// than resuming. It must nevertheless try the resume again.
+	act(() => field(tree)?.props.onChangeText("second"));
+	await press(tree, "Queue message");
+	expect(settlesFor()).toHaveLength(2);
+	expect(settlesFor()[1]?.[3]).toMatchObject({ mayResumeFenced: expect.any(Function) });
+	settle.mockRestore();
+});
+
+// The queued retry must follow an identity-changing resume, or the work it
+// dispatches lands on a ref the mounted screen is not showing.
+it("follows an identity-changing resume driven by a queued Send", async () => {
+	vi.mocked(navigation.replace).mockClear();
+	const { tree } = await mount(failedTurn("ref-queued-identity", "go test exited 1", true));
+	const runtime = getNativeMutationRuntime();
+	const settle = vi.spyOn(runtime, "settleTarget");
+	settle.mockClear();
+	const settlesFor = () => settle.mock.calls.filter(([, ref]) => ref === "ref-queued-identity");
+	settle.mockRejectedValueOnce(new Error("resume failed"));
+
+	act(() => field(tree)?.props.onChangeText("first"));
+	await press(tree, "Send and resume");
+	act(() => field(tree)?.props.onChangeText("second"));
+	await press(tree, "Queue message");
+
+	// The queued retry passes the same identity-following callback the resume
+	// branch does, so a resolved ref moves the pane with the work.
+	expect(settlesFor()).toHaveLength(2);
+	const options = settlesFor()[1]?.[3] as { onResolvedIdentity?: (ref: string) => void } | undefined;
+	if (!options?.onResolvedIdentity) throw new Error("queued recovery passed no identity callback");
+	act(() => options.onResolvedIdentity?.("ref-queued-identity-resolved"));
+	expect(navigation.replace).toHaveBeenCalledWith(
+		"Conversation",
+		expect.objectContaining({ ref: "ref-queued-identity-resolved" }),
+	);
+	settle.mockRestore();
 });
 
 it("names the model on the composer's chip, which opens the model sheet with the session's controls", async () => {
@@ -2938,13 +3000,14 @@ describe("a session that can't take a message yet (ruling 20)", () => {
 		expect(hasTestID(tree, "session-notice-error")).toBe(true);
 	});
 
-	it("offers Resume in the composer's place for a paused session", async () => {
+	it("keeps the composer for a paused session, so Send is how it resumes", async () => {
 		const served = thread("ref-paused", "idle");
 		(served as unknown as { evener: Record<string, unknown> }).evener.resumeRequired = true;
 		const { tree, hub } = await mount(served);
-		expect(markers(tree, "session-notice")).toEqual(["paused"]);
-		expect(field(tree)).toBeUndefined();
-		await press(tree, "Resume");
+		expect(markers(tree, "session-notice")).toEqual([]);
+		expect(field(tree)).toBeDefined();
+		act(() => field(tree)?.props.onChangeText("carry on"));
+		await press(tree, "Send and resume");
 		expect(
 			hub.requests.filter((request) => request.method === "resumeThread").map((request) => request.params.ref),
 		).toEqual(["ref-paused"]);

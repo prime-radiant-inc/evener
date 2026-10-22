@@ -1,8 +1,16 @@
-// Resume and Sign in take priority over continuation on the latest failure.
+// Sign in takes priority over Retry on the latest failure. A recovery-fenced
+// session offers no Resume row: Send carries that resume.
+//
+// The one action an error row in the transcript offers (spec 8.2, "Error";
+// rulings 24 and 26): Sign in when a sign-in failed, and otherwise Retry on
+// the latest turn's own failure while Send can act AND the input that opened
+// the turn can be re-issued. Retry re-sends that input — the person's own
+// words and images (turnRetryInput.ts), never a sentence put in their mouth;
+// with no input to re-send, the row offers no Retry at all.
 import type { ThreadModel } from "@evener/appwire-client";
 import { failureRowIdentity } from "../projectedRows";
 
-export type ErrorAction = "resume" | "signIn" | "retry";
+export type ErrorAction = "signIn" | "retry";
 
 // Credentials that expired or are invalid, in either word order.
 const SIGN_IN_FAILURE =
@@ -10,10 +18,9 @@ const SIGN_IN_FAILURE =
 
 export function errorAction(
 	row: { id: string; title: string; detail: string; turnId?: string },
-	session: Pick<ThreadModel, "resumeRequired" | "turns">,
+	session: Pick<ThreadModel, "turns">,
 	canSend: boolean,
 ): ErrorAction | null {
-	if (session.resumeRequired) return "resume";
 	if (SIGN_IN_FAILURE.test(row.title) || SIGN_IN_FAILURE.test(row.detail)) return "signIn";
 	// Only a turn's own failure row, and only the latest turn's: the sentence
 	// speaks about where the session is now.

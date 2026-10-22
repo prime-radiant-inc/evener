@@ -179,13 +179,18 @@ export async function readSendAction(
 /** Admits the message durably, then releases the session's target if a
  * reconnect left it waiting for a read its own screen isn't making (Review
  * Focus 2). A release that can't run leaves the message in the outbox, and
- * the session's next read sends it. */
+ * the session's next read sends it.
+ *
+ * A fenced session (`resume` first) parks the message and then resumes: the
+ * resume's own read is what releases the parked message, so the release runs
+ * once, after it, and never against the still-fenced session. */
 export async function submitSessionMessage(
 	runtime: Pick<NativeMutationRuntime, "submit" | "settleTarget">,
 	client: AppwireClientLike | null,
 	target: SessionTarget,
 	kind: SessionMessageKind,
 	text: string,
+	resumeFirst = false,
 ): Promise<void> {
 	await runtime.submit({
 		kind,
@@ -195,5 +200,23 @@ export async function submitSessionMessage(
 		instanceId: target.instanceId,
 		input: [{ type: "text", text }],
 	});
-	if (client) await runtime.settleTarget(target.hubId, target.ref, client).catch(() => "blocked" as const);
+	if (!client) return;
+	if (resumeFirst) {
+		// The message is already durably admitted, so a failed resume is not a
+		// failed send: throwing here would report one to a caller whose retry
+		// mints a second message. The row stays parked for the next resume or
+		// settle to dispatch.
+		//
+		// The resume runs through the runtime's settle, not client.resumeThread:
+		// that is the one path that also retargets the parked row when the resume
+		// hands back a different identity. Calling resumeThread here would leave
+		// this message addressing the identity the daemon just retired.
+		await runtime
+			.settleTarget(target.hubId, target.ref, client, {
+				mayResumeFenced: async () => true,
+			})
+			.catch(() => undefined);
+		return;
+	}
+	await runtime.settleTarget(target.hubId, target.ref, client).catch(() => "blocked" as const);
 }

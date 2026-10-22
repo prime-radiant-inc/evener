@@ -200,6 +200,28 @@ is now "is this instance's transport `oauth-openai-codex`," not a
 name-equals-`openai` check, so a custom instance can carry Codex OAuth too
 (`[providers.work] base = "openai-codex"`).
 
+In the browser's guided connector, a completed sign-in and the token exchange
+write the same `auth/<instance>.json` record the CLI writes. The connector then
+runs its model-list check automatically, with the saved record, and closes on
+success; there is no separate completion or model-picker step. Cancelling the
+sign-in editor retires its poll, and a later token exchange must not complete
+the dismissed flow. A pending sign-in is refused if the instance's destination
+moves before it finishes; the flow reports the changed connection and does not
+write the record.
+
+### Configured instance defaults in New session
+
+`default_model` on an instance (or the curated provider default it inherits)
+authorises adoption only for that instance. After an automatic check returns to
+an untouched New session draft, the Spawn owner accepts exactly one model row
+whose provider is the connected instance and whose `instanceDefault` marker is
+true, and only from a fresh usable live listing. The marker comes from the
+launch-check resolver, so a static or cached row cannot claim it. A saved
+choice, an explicit pick made while the check was running, another provider's
+default, an absent marker, or a failed fresh read leaves the draft's model as
+the person left it. Adoption writes no global default and does not start the
+session; Start stays the explicit launch action.
+
 A stray record — `auth/<name>.json` where `<name>` isn't an instance on the
 Codex transport (including one left over from `evener openai login
 --instance work` under the old scheme) — produces a one-line startup notice

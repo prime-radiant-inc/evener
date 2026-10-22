@@ -47,6 +47,36 @@ func TestProtocolPrunablePathsMatchRegistry(t *testing.T) {
 	}
 }
 
+// A row stating the no-effort verdict takes no effort parameter, so the level
+// shape must spell no thinkingLevel even when the ladder is empty. The budget
+// shape is unaffected: a numeric budget is not an effort name.
+//
+// The verdict rejects the level NAME, not thinking itself: the row still
+// reasons, so the config keeps includeThoughts and the live-thinking backend
+// still gets thought parts to render. Dropping the whole object would remove
+// the summaries as well.
+func TestBuildBody_NoEffortVerdictSendsNoLevel(t *testing.T) {
+	unsupported := true
+	levelShape := func(c *registry.Caps) {
+		c.ThinkingShape = new("level")
+		c.EffortValues = []string{}
+		c.ReasoningControls = []string{"toggle"}
+		c.EffortParameterUnsupported = &unsupported
+	}
+	body := protoBuild(t, protoReq("high"), protoRes(levelShape))
+	gen, _ := body["generationConfig"].(map[string]any)
+	cfg, _ := gen["thinkingConfig"].(map[string]any)
+	if cfg == nil {
+		t.Fatal("thinkingConfig missing: the row still reasons and still asks for thought summaries")
+	}
+	if _, has := cfg["thinkingLevel"]; has {
+		t.Fatalf("thinkingConfig = %v, want no level on a no-effort row", cfg)
+	}
+	if cfg["includeThoughts"] != true {
+		t.Fatalf("thinkingConfig = %v, want includeThoughts kept", cfg)
+	}
+}
+
 func TestProtocolBuildBody(t *testing.T) {
 	req := protoReq("high")
 	req.WebSearch = true

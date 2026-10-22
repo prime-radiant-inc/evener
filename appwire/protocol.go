@@ -231,6 +231,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerUpgrade, UpgradeParams{}, UpgradeResponse{}, ScopeHub, "Performs or reports an Evener binary upgrade."},
 	{MethodEvenerUpdateCheck, UpdateCheckParams{}, UpdateCheckResponse{}, ScopeHub, "Compares the running hub build against a release channel's current commit; dev builds report applicable=false without a network request."},
 	{MethodEvenerUpdateApply, UpdateApplyParams{}, UpdateApplyResponse{}, ScopeHub, "Downloads and installs a channel's build, then execs it in place of the running hub; refused on dev builds."},
+	{MethodEvenerHubRestart, HubRestartParams{}, HubRestartResponse{}, ScopeHub, "Execs the binary at the hub's recorded launch path in place, after verifying it is a working Evener binary; refused when the platform has no in-place exec or the launch path is unusable."},
 	{MethodEvenerAuthStatus, AuthStatusParams{}, AuthStatusResponse{}, ScopeHub, "Reports auth/credential status for a provider."},
 	{MethodEvenerAuthTest, AuthTestParams{}, AuthTestResponse{}, ScopeHub, "Tests the effective credentials for one configured provider instance without starting a session."},
 	{MethodEvenerAuthLoginStart, AuthLoginStartParams{}, AuthLoginStartResponse{}, ScopeHub, "Begins an OAuth login flow; returns a flow ID and URL."},

@@ -59,7 +59,7 @@ import { useIsMobile } from "../../../shell/useIsMobile";
 import { useMountAutofocus } from "../../../shell/useMountAutofocus";
 import {
   controlsFor,
-  isLocalRecoveryFenced,
+  isRecoveryFenced,
   liveThreadModel,
   pressLocalRecoveryFenced,
   pressRefusal,
@@ -189,7 +189,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
   const recoveryRequired = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
   // Delivery-uncertain rows do NOT fence Send here: they clear the resume-only
-  // fold's uncertainMessages clause (isResumeOnlyLocal, read from
+  // fold's uncertainMessages clause (isResumeOnly, read from
   // hasBlockedUnknown), so a local fenced session falls to the Send-resumes
   // face, where the press parks its send and the store drives the resume.
   const blockedMutations = useBlockedMutationEntries(ref);
@@ -197,7 +197,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   // turn/start for that window, so the resume-only carve-out does not apply.
   const stopping = useThreadsStore((s) => s.stoppingRefs.has(ref));
   // The mutation-recency mark the Send-resumes face reads (stores/liveControls
-  // .ts's isSendResumesLocal): a local snapshot whose parent still owns its
+  // .ts's isSendResumes): a local snapshot whose parent still owns its
   // uncertain rows is not Send-driven. Read reactively, like the fence around
   // it, so the badge clears when a resume makes the snapshot authoritative.
   const mutationAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(ref));
@@ -683,7 +683,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     queuedNonSend: hasQueuedNonSend(ref),
     mutationStateAuthoritative: mutationAuthoritative,
   };
-  const fence = recoveryFence(ref, model, recoveryRequired, resumeOnlySignals);
+  const fence = recoveryFence(model, recoveryRequired, resumeOnlySignals);
   const queueDepth = model.queue?.depth ?? 0;
   // What this session may be asked to do now: one derivation for every control
   // surface (stores/liveControls.ts), with the rationale (status alone, never
@@ -729,7 +729,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     // intent that parks. turn/start is the exception the hub now admits: a
     // merely-resumable session (shut-down snapshot, no Stop in flight) folds
     // the resume into the send, so Send is offered while Queue is not.
-    const targetFence = recoveryFence(target.ref, target, restartObligated, signals);
+    const targetFence = recoveryFence(target, restartObligated, signals);
     // The Send-resumes face offers Send and only Send, and a parked send in
     // front of it does NOT suppress it: the store's driver resumes behind
     // whichever rows are parked and the dispatcher drains them FIFO, so there
@@ -774,7 +774,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   // obligation's whole window, so the control must not offer a press that
   // could only park durable intent. Read from the subscribed obligation here
   // for the render; the press re-reads it live.
-  const steerRecoveryFenced = isLocalRecoveryFenced(ref, recoveryRequired);
+  const steerRecoveryFenced = isRecoveryFenced(recoveryRequired);
   // The one state kata 5gdv is about, described by the only code that can see
   // it happen. Diagnostic only -- see stoplessComposer.ts for why a breadcrumb
   // rather than another attempt to provoke it.
@@ -1242,7 +1242,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
           // Read live, like stopInFlight and queuedNonSend beside it: the
           // render-time blockedMutations snapshot cannot have caught a row
           // published between the render and the press, while the store-wide
-          // predicate resumeOnlyLocalModel (which enqueue and dispatch use) reads
+          // predicate resumeOnlyModel (which enqueue and dispatch use) reads
           // hasBlockedUnknown fresh. Routing both sides through the same live
           // read keeps the press from folding a resume ahead of an uncertain row.
           uncertainMessages: hasBlockedUnknown(ref),

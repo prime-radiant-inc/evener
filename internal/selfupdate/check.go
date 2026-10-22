@@ -22,6 +22,12 @@ const defaultAPIURL = "https://api.github.com"
 // anything shorter matches exponentially more full SHAs. See Check.
 const minCurrentSHALen = 7
 
+// CommitIsCurrent reports whether current names latest, using the same short
+// commit prefix rule Check applies to a running build.
+func CommitIsCurrent(latest, current string) bool {
+	return current != "" && len(current) >= minCurrentSHALen && strings.HasPrefix(latest, current)
+}
+
 // snapshotVersionAsset is the file the release workflow stamps with the
 // commit the snapshot channel's archives were built from. CI refreshes the
 // mutable "snapshot" prerelease on every green main build and rewrites this
@@ -117,7 +123,7 @@ func Check(ctx context.Context, opts CheckOptions) (CheckResult, error) {
 		Channel:         opts.Channel,
 		LatestTag:       tag,
 		LatestCommit:    latestCommit,
-		UpdateAvailable: opts.CurrentSHA == "" || len(opts.CurrentSHA) < minCurrentSHALen || !strings.HasPrefix(latestCommit, opts.CurrentSHA),
+		UpdateAvailable: !CommitIsCurrent(latestCommit, opts.CurrentSHA),
 	}, nil
 }
 

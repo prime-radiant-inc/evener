@@ -309,6 +309,8 @@ export type Routes = {
 		hubId: string;
 		sessionRef: string;
 		path: string;
+		/** Set for a document the session filed in its retained artifacts. */
+		root?: "artifacts";
 		blockIndex: number;
 		blockHash: string;
 		/** The words the comment is on: a selection, or its block's words. */
@@ -329,8 +331,17 @@ export type Routes = {
 };
 
 /** A document's comments and its review: the document, and its session's title,
- * which the review goes to (ruling 16). */
-type ReviewSheetParams = { hubId: string; sessionRef: string; path: string; sessionTitle: string };
+ * which the review goes to (ruling 16). `root` and `readTarget` identify a
+ * document the session filed in its retained artifacts, where the path inside
+ * the folder alone would name a different file of the same name. */
+type ReviewSheetParams = {
+	hubId: string;
+	sessionRef: string;
+	path: string;
+	sessionTitle: string;
+	root?: "artifacts";
+	readTarget?: string;
+};
 
 // Refocuses the composer after a modal closes, on AppState's "focus" event.
 // That event is Android-only (react-native's AppState "focus"/"blur" pair
@@ -1400,6 +1411,7 @@ export function ConversationScreen({
 	// keyed by their content: a publish that changed no write keeps the same
 	// Map, and each message's chips skip re-reading its markdown.
 	const documentCwd = conversation?.cwd ?? "";
+	const artifactsDir = conversation?.artifactsDir;
 	const turns = conversation?.turns;
 	const writesKey = useMemo(() => JSON.stringify([...fileWrites(turns ?? [], documentCwd)]), [turns, documentCwd]);
 	const writes = useMemo(() => new Map<string, string>(JSON.parse(writesKey) as [string, string][]), [writesKey]);
@@ -1423,9 +1435,9 @@ export function ConversationScreen({
 	const fileContext = useMemo<NativeFileOpenContext | undefined>(
 		() =>
 			documentCwd && route.params.hubId && isValidTranscriptRef(route.params.ref)
-				? { cwd: documentCwd, openFile }
+				? { cwd: documentCwd, artifactsDir, openFile }
 				: undefined,
-		[documentCwd, route.params.hubId, route.params.ref, openFile],
+		[documentCwd, route.params.hubId, route.params.ref, artifactsDir, openFile],
 	);
 	const openDocument = useCallback(
 		(path: string, updatedAt: string | undefined) => {
@@ -1896,8 +1908,8 @@ export function ConversationScreen({
 	// every affordance and submission below reads it, never a raw capability.
 	const permitted = conversation ? conversationControls(conversation) : null;
 	const canCompose =
-		(!conversation || (!conversation.resumeRequired && conversation.status.type !== "restartRequired")) &&
-		(!conversation || canComposeFor(conversation));
+		(!conversation || conversation.status.type !== "restartRequired") &&
+		(!conversation || canComposeFor(conversation) || conversation.resumeRequired === true);
 	const goalCommand = goalObjective(draft.record.draft, draft.record.images?.length);
 	const command = composerCommand(draft.record.draft, draft.record.images?.length);
 	// The draft's whole shape, said once: how many images it holds. The composer
@@ -2352,9 +2364,9 @@ export function ConversationScreen({
 		if (controls) knownCatalog.current = catalog;
 	}, [controls, catalog]);
 	// What takes the composer's place when the session can't take a message
-	// yet (ruling 20).
-	const notice =
-		conversation?.status.type === "restartRequired" ? "restartNeeded" : conversation?.resumeRequired ? "paused" : null;
+	// yet (ruling 20). A recovery-fenced session keeps the composer: Send is
+	// how it resumes, so it shows no Resume notice of its own.
+	const notice = conversation?.status.type === "restartRequired" ? "restartNeeded" : null;
 	const restart = useSessionRestart(controls, snapshot.status);
 	const notesPreview = conversation ? notesBarPreview(conversation) : null;
 	const [stopping, setStopping] = useState(false);
@@ -2528,11 +2540,11 @@ export function ConversationScreen({
 			if (document.getSnapshot().record.draft === text) document.edit("");
 		}
 	}
-	// Whether a message can go out right now, and whether it sends or queues:
-	// routed on what is true at the press, the way the web composer re-derives
-	// at submit, since a turn may have started or ended since render. Send and
-	// an error row's Retry both ask.
-	const liveSendKind = useCallback((): "send" | "queue" | null => {
+	// Whether a message can go out right now, and whether it sends, queues or
+	// resumes: routed on what is true at the press, the way the web composer
+	// re-derives at submit, since a turn may have started or ended since render.
+	// Send and an error row's Retry both ask.
+	const liveSendKind = useCallback((): "send" | "queue" | "resume" | null => {
 		const live = store.getState();
 		if (
 			!service ||
@@ -2547,26 +2559,107 @@ export function ConversationScreen({
 			return null;
 		const liveAction = sendAction(live.conversation, live.pendingMutations, connectionReady.current);
 		if (liveAction === "none") return null;
-		return liveAction === "queue" ? "queue" : "send";
+		return liveAction;
 	}, [service, ready, controls, unconfirmedSend, store]);
 	// Sends or queues one message the way Send does, and says whether the hub
 	// took it.
+	// The one recovery step both delivery paths take once a message is durably
+	// admitted: resume the fenced session through the runtime's settle, follow
+	// an identity change, and clear a fence the settle's own read proves gone.
+	// Shared rather than inlined per branch - the queue path originally copied
+	// only the settle call and so skipped the follow-through, leaving a stale
+	// fence that sent the next message down the resume path while a turn ran.
+	const recoverFenced = useCallback(
+		async (through: NonNullable<typeof service>, hubId: string, ref: string): Promise<boolean> => {
+			if (client === null) return false;
+			const answered = await getNativeMutationRuntime()
+				.settleTarget(hubId, ref, client, {
+					mayResumeFenced: async () => true,
+					// The rows followed the resume; the pane has to as well, or the
+					// message and the work it starts land on a ref nobody is showing.
+					onResolvedIdentity: (resolved) => {
+						navigation.replace("Conversation", {
+							hubId: route.params.hubId,
+							ref: resolved,
+							title: route.params.title,
+							openedBy: route.params.openedBy,
+							slideFrom: route.params.slideFrom,
+						});
+					},
+				})
+				.catch(() => undefined);
+			if (answered === "reconciled" || answered === "open") {
+				// The store's conversation can still read resumeRequired: a
+				// reconnect's hydration may have landed before the resume's
+				// acknowledgement, and status notifications never clear that field.
+				// A stale fence would send every later message down this path
+				// instead of queueing behind the turn this one starts.
+				await store
+					.getState()
+					.rehydrate(through, activitySink)
+					.catch(() => undefined);
+				return true;
+			}
+			return false;
+		},
+		[store, client, navigation, route.params, activitySink],
+	);
 	const deliver = useCallback(
 		async (
 			through: NonNullable<typeof service>,
-			kind: "send" | "queue",
+			kind: "send" | "queue" | "resume",
 			text: string,
 			images: Parameters<typeof buildComposerInput>[1],
 		) => {
+			// A fenced session takes the message durably first, with the same
+			// request an offline send writes, and only then resumes: the resume's
+			// read is what opens the dispatch gate, and the parked row follows it.
+			// The store's own send() refuses here - the fence clears its send
+			// capability - so this path must not go through it.
+			if (kind === "resume") {
+				const live = store.getState();
+				const target = mutationTarget(live);
+				if (target === null || client === null) return false;
+				await getNativeMutationRuntime().submit(offlineRequest(target, "resume", buildComposerInput(text, images)));
+				haptic("light");
+				// The message is durably admitted, so it is sent: the resume is the
+				// recovery it needs, not part of the send's success. Reporting a
+				// failed resume as a failed send would leave a ghost of a message
+				// that is already parked, and re-sending that ghost would duplicate
+				// it.
+				//
+				// The resume runs through the runtime's settle rather than
+				// controls.resume(): that is the path that also retargets the parked
+				// row when the resume returns a different identity, and its read is
+				// what releases the message. A refusal or failure is reported here,
+				// so a parked message is never left unexplained.
+				const settled = await recoverFenced(through, target.hubId, target.ref);
+				if (settled) return true;
+				showToast({ text: "Your message is saved and will send once the session resumes." });
+				return true;
+			}
 			const previous = store.getState().lastAcceptedMutation;
 			await store.getState()[kind](through, buildComposerInput(text, images));
 			const accepted = store.getState().lastAcceptedMutation;
 			const admitted = accepted != null && accepted !== previous && accepted.kind === kind;
 			// Spec 16.6: a light impact on send, Send's and an error row's Retry's.
 			if (admitted) haptic("light");
+			// A fenced session whose resume already failed leaves its message
+			// parked, so this Send queues behind it instead of resuming. The
+			// queue route must still drive recovery: the parked message can only
+			// go out once the session resumes, so waiting on the fence alone
+			// would strand this message behind one that can never move.
+			const live = store.getState();
+			if (live.conversation?.resumeRequired) {
+				const target = mutationTarget(live);
+				if (target !== null) await recoverFenced(through, target.hubId, target.ref);
+			}
 			return admitted;
 		},
-		[store],
+		// `controls` belongs here: the resume it drives must be the live instance,
+		// not one a re-render already disposed. showToast reports a resume it
+		// could not finish.
+		[store, controls, showToast, recoverFenced],
 	);
 	// Continuation uses Send's routing without consuming the current draft.
 	const retryFailedTurn = useCallback(async () => {
@@ -2582,13 +2675,12 @@ export function ConversationScreen({
 
 	const runErrorAction = useCallback(
 		(errorAction: ErrorAction) => {
-			if (errorAction === "resume") void controls?.resume();
-			else if (errorAction === "signIn")
+			if (errorAction === "signIn")
 				// The error doesn't name the provider, so the Hub opens at Providers.
 				openProviders(navigation, route.params.hubId);
 			else void retryFailedTurn();
 		},
-		[controls, navigation, route.params.hubId, retryFailedTurn],
+		[navigation, route.params.hubId, retryFailedTurn],
 	);
 	function openCommands() {
 		Keyboard.dismiss();
@@ -3483,13 +3575,10 @@ export function ConversationScreen({
 						) : notice ? (
 							<SessionNotice
 								kind={notice}
-								busy={restart.busy || controlsState?.pending === "forceStop" || controlsState?.pending === "resume"}
+								busy={restart.busy || controlsState?.pending === "forceStop"}
 								disabled={!controls}
-								error={notice === "restartNeeded" ? restart.error : null}
-								onPress={() => {
-									if (notice === "paused") void controls?.resume();
-									else void restart.restart();
-								}}
+								error={restart.error}
+								onPress={() => void restart.restart()}
 							/>
 						) : null}
 					</BarFrame>

@@ -1,4 +1,5 @@
 import {
+  bindArtifactPath,
   bindFilePath,
   DOC_FILE_MAX_BYTES,
   type DocFileContent,
@@ -150,7 +151,13 @@ export default function DocPane({ params, paneId, focused }: PaneProps<DocParams
   const panes = useWorkspaceStore((state) => state.panes);
   const pane = panes.find((candidate) => candidate.id === paneId);
   const retained = pane && documentPaneState(pane);
-  const cwd = useThreadsStore((state) => state.threads.get(params.session)?.cwd);
+  const thread = useThreadsStore((state) => state.threads.get(params.session));
+  const cwd = thread?.cwd;
+  const artifactsDir = thread?.artifactsDir;
+  // A cached shell publishes before its authoritative read, and a shell carries
+  // no artifacts root yet. A missing root proves nothing until that read
+  // lands, so the pane stays pending rather than declaring the file gone.
+  const shellOnly = useThreadsStore((state) => state.cacheLifetimes.get(params.session)?.shell === true);
 
   useEffect(() => {
     let started = false;
@@ -174,12 +181,41 @@ export default function DocPane({ params, paneId, focused }: PaneProps<DocParams
   if (retained) {
     if (cwd && cwd !== retained.reference.cwd) reference = rebindFileReference(retained.reference, cwd);
     else reference = retained.reference;
+  } else if (params.root === "artifacts") {
+    // A restored artifacts document: bind the concrete target this pane
+    // opened, not the filename, so a stable ref that now names a replacement
+    // session cannot substitute a different file of the same name.
+    reference =
+      artifactsDir === undefined || params.artifactTarget === undefined
+        ? undefined
+        : bindArtifactPath(params.artifactTarget, artifactsDir);
   } else if (cwd) reference = bindFilePath(params.path, cwd);
   useLayoutEffect(() => {
     if (!pane || !reference || retained?.reference === reference) return;
     recordDocumentPaneState(pane, { reference, origin: retained?.origin, reopen: retained?.reopen ?? 0 });
   }, [pane, reference, retained]);
 
+  // A restored artifacts document whose recorded target the loaded snapshot
+  // rejects (Clear moved the ref to another session) is unavailable for good,
+  // not still loading: the snapshot has arrived and does not contain it. A
+  // snapshot that advertises no artifacts root at all counts the same way,
+  // which is a supported answer rather than a missing field.
+  const targetRejected =
+    !retained &&
+    !shellOnly &&
+    params.root === "artifacts" &&
+    thread !== undefined &&
+    params.artifactTarget !== undefined;
+  if (targetRejected && !reference)
+    return (
+      <PaneScaffold title={filenameOf(params.path)} paneId={paneId} focused={focused}>
+        <EmptyState
+          title="File not available"
+          hint="This report belonged to an earlier session and is not in this one."
+          reason="unavailable"
+        />
+      </PaneScaffold>
+    );
   if (!reference)
     return (
       <PaneScaffold title={filenameOf(params.path)} paneId={paneId} focused={focused}>

@@ -153,10 +153,11 @@ func TestProvider_ClonesNestedReferenceValues(t *testing.T) {
 			},
 		},
 		Caps: Caps{
-			ContextWindow:     new(1000),
-			ReasoningControls: []string{"effort"},
-			Fields:            map[string]bool{"reasoning.effort": true},
-			Cost:              &Cost{Tiers: []CostTier{{InputTokensAbove: 100}}},
+			ContextWindow:              new(1000),
+			ReasoningControls:          []string{"effort"},
+			EffortParameterUnsupported: new(false),
+			Fields:                     map[string]bool{"reasoning.effort": true},
+			Cost:                       &Cost{Tiers: []CostTier{{InputTokensAbove: 100}}},
 			ChatTemplateKwargs: map[string]any{
 				"options": map[string]any{"mode": "fast"},
 			},
@@ -190,6 +191,7 @@ func TestProvider_ClonesNestedReferenceValues(t *testing.T) {
 	got.Transport.Body["tables"].([]map[string]any)[0]["name"] = "changed"
 	*got.Caps.ContextWindow = 2000
 	got.Caps.ReasoningControls[0] = "changed"
+	*got.Caps.EffortParameterUnsupported = true
 	got.Caps.Fields["reasoning.effort"] = false
 	got.Caps.Cost.Tiers[0].InputTokensAbove = 200
 	got.Caps.ChatTemplateKwargs["options"].(map[string]any)["mode"] = "slow"

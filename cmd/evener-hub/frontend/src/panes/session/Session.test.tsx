@@ -37,7 +37,7 @@ import { holdIndexedDBEvent } from "../../stores/testing/stalledIndexedDB";
 import {
   acquireBackgroundThread,
   resetThreadsStoreForTests,
-  sendResumesLocalModel,
+  sendResumesModel,
   setMutationStorageForTests,
   setProductionEntryCacheForTests,
   settleEntryTranscriptForTests,
@@ -3412,6 +3412,106 @@ test("a reconnect recovers the degraded pane without any resync notification", a
   );
 });
 
+// Send is the single recovery action on every resumable shape, remote
+// sessions included: pressing it parks the message, drives thread/resume, and
+// dispatches the parked send once. No standalone Resume control exists.
+test("a fenced remote session's Send drives the resume and then dispatches", async ({ onTestFinished }) => {
+  onTestFinished(stubSessionSlots);
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  const ref = "remote:stable";
+  const resumedRef = "remote:current";
+  const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const client = new AppwireClient({
+    url: "ws://hub/rpc",
+    socketFactory: () => {
+      const socket = new FakeSocket({ autoInitialize: true });
+      const send = socket.send.bind(socket);
+      socket.send = (raw) => {
+        send(raw);
+        const request = JSON.parse(raw);
+        if (!request.id || request.method === "initialize" || request.method === "ping") return;
+        requests.push(request);
+        let result: unknown = {};
+        switch (request.method) {
+          case "thread/read":
+            result =
+              request.params.ref === resumedRef
+                ? readResponse(resumedRef, {
+                    status: { type: "idle" },
+                    evener: {
+                      ref: resumedRef,
+                      capabilities: CAPABILITIES,
+                      mutationStateAuthoritative: true,
+                      queue: { revision: 1 },
+                    },
+                  })
+                : readResponse(ref, {
+                    status: { type: "notLoaded" },
+                    evener: {
+                      ref,
+                      capabilities: CAPABILITIES,
+                      resumeRequired: true,
+                      mutationStateAuthoritative: false,
+                      queue: { revision: 0 },
+                    },
+                  });
+            break;
+          case "thread/resume":
+            result = readResponse(resumedRef, { status: { type: "idle" } });
+            break;
+          case "thread/turns/list":
+            result = { data: [], nextCursor: null };
+            break;
+          case "turn/start":
+            result = {
+              turn: { id: "resumed-turn", status: "inProgress", itemsView: "full" },
+              receipt: {
+                clientMutationId: request.params.clientMutationId,
+                disposition: "applied",
+                threadId: `thr_${resumedRef}`,
+                projectionState: "reflected",
+              },
+            };
+            break;
+        }
+        socket.receive({ id: request.id, result });
+      };
+      queueMicrotask(() => socket.open());
+      return socket;
+    },
+  });
+  onTestFinished(() => client.close());
+  connectionStore.getState().connect(client);
+  await client.connect();
+  window.history.replaceState({}, "", `/s/${encodeURIComponent(ref)}`);
+  const subscribe = (notify: () => void) => {
+    window.addEventListener("popstate", notify);
+    return () => window.removeEventListener("popstate", notify);
+  };
+  function RoutedSession() {
+    const pathname = useSyncExternalStore(subscribe, () => window.location.pathname);
+    const route = urlToPane(pathname);
+    if (route?.type !== "session") throw new Error("expected session route");
+    return <Session params={route.params as { ref: string }} paneId="p1" focused={true} />;
+  }
+  render(
+    <ClientProvider client={client}>
+      <RoutedSession />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  // No standalone Resume control: Send is the recovery action.
+  expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
+  await resumeViaSend(ref, "the pressed text");
+  await waitFor(() => expect(window.location.pathname).toBe(`/s/${encodeURIComponent(resumedRef)}`));
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(requests.filter(({ method }) => method === "turn/start")).toHaveLength(1));
+  expect(requests.filter(({ method }) => method === "thread/resume")).toHaveLength(1);
+  const starts = requests.filter(({ method }) => method === "turn/start");
+  expect(starts[0]?.params).toEqual(expect.objectContaining({ ref: resumedRef }));
+});
+
 // A merely-resumable local session needs no special UI: sending a prompt resumes
 // it (the hub folds the resume into turn/start), so its standalone Resume notice
 // and button are dropped. The two other causes of the obligation keep the
@@ -3505,10 +3605,9 @@ test("a failed notice resume surfaces as the composer toast, not an inline error
       <Toast />
     </ClientProvider>,
   );
-  const user = userEvent.setup();
-  await user.click(await screen.findByRole("button", { name: "Resume session" }));
-  // One channel: the resumeFailures slice, toasted by the composer. The notice
-  // keeps no inline error of its own.
+  // Send is the recovery action; its failed resume reaches the same one
+  // channel - the resumeFailures slice, toasted by the composer.
+  await resumeViaSend("ref_a");
   await waitFor(() =>
     expect(
       getToasts().filter((toast) => toast.kind === "error" && toast.text.includes("resume rejected")),
@@ -3720,8 +3819,8 @@ test("a newer draft typed during the notice's Resume follows the resumed identit
   );
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(stableRef)).toBe(true));
   const user = userEvent.setup();
-  // The notice's own Resume control: a non-local fenced shape keeps it.
-  await user.click(await screen.findByRole("button", { name: "Resume session" }));
+  // Send drives the resume on every ref shape, non-local included.
+  await resumeViaSend(stableRef, "notice send");
   await act(async () => {
     await requested;
   });
@@ -4056,9 +4155,13 @@ test("offers explicit resume after restart even without pending messages", async
   await screen.findByRole("alert");
   status = "notLoaded";
   await emitDaemonGoneResync(fake);
-  const resume = await screen.findByRole("button", { name: "Resume session" });
-  await waitFor(() => expect((resume as HTMLButtonElement).disabled).toBe(false));
-  fireEvent.click(resume);
+  // Send is the single recovery action: the fence it leaves behind is the
+  // Send-resumes face, and no standalone Resume control exists.
+  await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("notLoaded"));
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
+  await resumeViaSend("ref_a");
   await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle"));
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   expect(resumeTransport).toHaveBeenCalledWith("ref_a", { beforeRequest: expect.any(Function) });
@@ -4106,7 +4209,7 @@ test.each(["success", "refused"])(
       });
       // R09: confirmed recovery now surfaces as Send on the Send-resumes face,
       // not a standalone Resume control.
-      expect(sendResumesLocalModel(ref)).toBe(true);
+      expect(sendResumesModel(ref)).toBe(true);
       expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
       // Hydration publishes Resume before storage reconciliation completes.
       // The dialog closes only when the complete refresh promise settles.
@@ -4185,7 +4288,7 @@ test.each(["success", "refused"])("hydrated restart recovery works without navig
     await act(async () => {
       await refresh.mock.results[0]?.value;
     });
-    expect(sendResumesLocalModel(ref)).toBe(true);
+    expect(sendResumesModel(ref)).toBe(true);
     expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
     // Hydration publishes Resume before storage reconciliation completes.
     // The dialog closes only when the complete refresh promise settles.
@@ -4231,7 +4334,7 @@ test("confirmed force stop refreshes the session and surfaces the Send face", as
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
   // R09: the recovered session offers Send on the Send-resumes face; the send
   // drives the resume - no standalone Resume control.
-  expect(sendResumesLocalModel(ref)).toBe(true);
+  expect(sendResumesModel(ref)).toBe(true);
   expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
   await resumeViaSend(ref);
   await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("idle"));
@@ -4308,18 +4411,16 @@ test.each(["notLoaded", "active", "idle"])(
         fake.emitNotification({ method: "evener/thread/resync", params: { ref: "ref_a", threadId: "thr_ref_a" } });
         await readHeld;
       });
-      const resume = await screen.findByRole("button", { name: "Resume session" });
       expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
       expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
       releaseReads();
-      // The old empty act left the settle to chance. The held read's storage
-      // chain is tracked projection work, so the flush drains it fully before
-      // the click. (The disabled-true/false pins this test used to carry here
-      // belonged to the removed Refresh button's in-flight state; the
-      // resync-driven read is automatic, so the Resume control has no
-      // disabled window to pin.)
       await flushPendingTurnsProjectionForTests();
-      fireEvent.click(resume);
+      // The retired standalone Resume control's sequence lives on as the
+      // store's own action; no Send is pressed here, so the resume reconciles
+      // the uncertain row without dispatching a turn.
+      await act(async () => {
+        await threadsStore.getState().resumeSession("ref_a");
+      });
       await flushPendingTurnsProjectionForTests();
       // Reconciliation of the resumed, uncertain send drains the outbox row
       // through an asynchronous storage pass on the ordinary entry route.
@@ -4397,7 +4498,36 @@ test("a reconciliation-failed Send-resumes face keeps its recovery notice", asyn
   act(() => threadsStore.setState({ mutationReconciliationFailures: new Set([ref]) }));
   expect(await screen.findByTestId("message-recovery-pending")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
-  expect(sendResumesLocalModel(ref)).toBe(true);
+  expect(sendResumesModel(ref)).toBe(true);
+});
+
+// Every descendant read carries mutationStateAuthoritative=false, so a plain
+// "is this ref retained?" test would put the owner notice on every subagent
+// pane. The notice belongs only to a child that actually has work its owner
+// must reconcile.
+test.each(["active", "idle"])("a retained %s child with nothing uncertain shows no owner alert", async (status) => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("local:quiet-child", {
+      status: { type: status },
+      evener: {
+        ref: "local:quiet-child",
+        capabilities: CAPABILITIES,
+        kind: "subagent",
+        parentRef: "local:parent",
+        mutationStateAuthoritative: false,
+        queue: { revision: 1 },
+      },
+    }),
+  );
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "local:quiet-child" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().threads.has("local:quiet-child")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
 test.each(["active", "idle"])("retained %s child preserves uncertainty until its owner releases it", async (status) => {
@@ -4459,9 +4589,12 @@ test.each(["active", "idle"])("retained %s child preserves uncertainty until its
   await user.keyboard("{Escape}");
   owned = false;
   fireEvent.click(refresh);
-  const resume = await screen.findByRole("button", { name: "Resume session" });
-  await waitFor(() => expect((resume as HTMLButtonElement).disabled).toBe(false));
-  fireEvent.click(resume);
+  await waitFor(() =>
+    expect(threadsStore.getState().threads.get("local:retained-child")?.status.type).not.toBe("notLoaded"),
+  );
+  await act(async () => {
+    await threadsStore.getState().resumeSession("local:retained-child");
+  });
   await flushPendingTurnsProjectionForTests();
   await waitFor(async () => expect(await mutationStorage.getOutbox(mutationId)).toBeUndefined());
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
@@ -4511,7 +4644,7 @@ test.each(["idle", "active"])(
     await confirmForceStop(user);
     // R09: recovery surfaces as Send on the Send-resumes face after the force
     // stop, with no standalone Resume control.
-    expect(sendResumesLocalModel(ref)).toBe(true);
+    expect(sendResumesModel(ref)).toBe(true);
     expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
       { method: "evener/thread/forceStop", params: { ref } },
@@ -4588,7 +4721,7 @@ test.each(["pending", "failed"])(
       // R09: the recovered session offers Send on the Send-resumes face; the
       // send drives the resume - no standalone Resume control.
       expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
-      expect(sendResumesLocalModel(ref)).toBe(true);
+      expect(sendResumesModel(ref)).toBe(true);
       await resumeViaSend(ref);
       expect(daemonStarted).toBe(true);
       if (outcome === "failed") {
@@ -4599,7 +4732,7 @@ test.each(["pending", "failed"])(
       } else {
         // The resumed daemon read is still in flight: the pane keeps the Send
         // surface it drives recovery from.
-        expect(sendResumesLocalModel(ref)).toBe(true);
+        expect(sendResumesModel(ref)).toBe(true);
       }
       expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
       await openForceStopDialog(user);
@@ -4698,7 +4831,7 @@ test("recovery rejection blocks durable dispatch and surfaces the Send face", as
     // R09: the fenced session offers Send on the Send-resumes face instead of a
     // standalone Resume control; the uncertain row stays parked and no resume
     // fires until a send drives it.
-    expect(sendResumesLocalModel(ref)).toBe(true);
+    expect(sendResumesModel(ref)).toBe(true);
     expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
     expect(reads).toBeGreaterThan(1);
     await act(async () => {
@@ -4789,7 +4922,7 @@ test.each(["pending", "failed"])(
       // R09: the force-stopped session offers Send on the Send-resumes face; the
       // pressed text stands as the parked outbox row and a later press re-drives
       // the resume.
-      expect(sendResumesLocalModel(ref)).toBe(true);
+      expect(sendResumesModel(ref)).toBe(true);
       expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
         { method: "evener/thread/forceStop", params: { ref } },
@@ -4865,7 +4998,7 @@ test.each(["model", "compact"])(
       await settled;
       // R09: the force-stopped session offers Send on the Send-resumes face, not
       // a standalone Resume control.
-      expect(sendResumesLocalModel(ref)).toBe(true);
+      expect(sendResumesModel(ref)).toBe(true);
       expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
       await user.click(screen.getByRole("button", { name: /session actions/i }));
       expect(screen.getByRole("menuitem", { name: "Force shutdown…" })).toBeTruthy();
@@ -4932,7 +5065,7 @@ test.each(["idle", "active"])(
       await confirmForceStop(user);
       // R09: the force-stopped fork offers Send on the Send-resumes face, not a
       // standalone Resume control.
-      expect(sendResumesLocalModel(ref)).toBe(true);
+      expect(sendResumesModel(ref)).toBe(true);
       expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
         { method: "evener/thread/forceStop", params: { ref } },

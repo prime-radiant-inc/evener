@@ -260,6 +260,22 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	if len(args) > 0 && args[0] == "attach" {
 		return runAttach(args[1:], stderr, deps)
 	}
+	if len(args) > 0 && args[0] == "restart" {
+		return runHubRestart(args[1:], stderr, deps)
+	}
+
+	// Record the launch entrypoint once, before any request can resolve it
+	// against a changed PATH or working directory. A failure disables restart
+	// without preventing the hub from starting.
+	hubLaunchEntrypoint, errHubLaunchEntrypoint = resolveLaunchEntrypoint(hubProcessArgs(), hubExecutable)
+	if errHubLaunchEntrypoint != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] launch path: %v\n", errHubLaunchEntrypoint)
+	} else {
+		_, _, hubLaunchShareBinDir = hubInstallDirs()
+		if digest, err := launchBinaryDigest(hubLaunchEntrypoint); err == nil {
+			hubLaunchBinarySHA256 = digest
+		}
+	}
 
 	opts, err := parseHubOptions(args, stderr)
 	if err != nil {
@@ -484,7 +500,9 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] listen %s: %v\n", cfg.Addr, err)
 		return fmt.Errorf("listen %s: %w", cfg.Addr, err)
 	}
+	hubBindWasEphemeral = isEphemeralAddr(cfg.Addr)
 	cfg.Addr = hubListener.Addr().String()
+	hubBoundAddr = cfg.Addr
 
 	resumeLocks, err := hubcore.NewPersistentResumeLocks(hubStateRoot)
 	if err != nil {
