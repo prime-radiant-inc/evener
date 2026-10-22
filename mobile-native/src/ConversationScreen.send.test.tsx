@@ -2770,20 +2770,26 @@ it("resumes a paused session from Send, not from its error row", async () => {
 it("still resumes from a later Send that queues behind a failed resume", async () => {
 	const { tree } = await mount(failedTurn("ref-resume-retry", "go test exited 1", true));
 	const runtime = getNativeMutationRuntime();
+	// The runtime is a singleton shared by every test in this file, so a spy
+	// keeps whatever calls earlier tests made. Scope this test's view to its own
+	// target rather than trusting a call index.
 	const settle = vi.spyOn(runtime, "settleTarget");
+	settle.mockClear();
+	const settlesFor = () => settle.mock.calls.filter(([, ref]) => ref === "ref-resume-retry");
 	// The first resume cannot run, as when the daemon is still shutting down.
 	settle.mockRejectedValueOnce(new Error("resume failed"));
 
 	act(() => field(tree)?.props.onChangeText("first"));
 	await press(tree, "Send and resume");
-	expect(settle).toHaveBeenCalledTimes(1);
+	expect(settlesFor()).toHaveLength(1);
 
 	// The first message is still parked, so this Send queues behind it rather
 	// than resuming. It must nevertheless try the resume again.
 	act(() => field(tree)?.props.onChangeText("second"));
 	await press(tree, "Queue message");
-	expect(settle).toHaveBeenCalledTimes(2);
-	expect(settle.mock.calls[1]?.[3]).toMatchObject({ mayResumeFenced: expect.any(Function) });
+	expect(settlesFor()).toHaveLength(2);
+	expect(settlesFor()[1]?.[3]).toMatchObject({ mayResumeFenced: expect.any(Function) });
+	settle.mockRestore();
 });
 
 // The queued retry must follow an identity-changing resume, or the work it
@@ -2793,6 +2799,8 @@ it("follows an identity-changing resume driven by a queued Send", async () => {
 	const { tree } = await mount(failedTurn("ref-queued-identity", "go test exited 1", true));
 	const runtime = getNativeMutationRuntime();
 	const settle = vi.spyOn(runtime, "settleTarget");
+	settle.mockClear();
+	const settlesFor = () => settle.mock.calls.filter(([, ref]) => ref === "ref-queued-identity");
 	settle.mockRejectedValueOnce(new Error("resume failed"));
 
 	act(() => field(tree)?.props.onChangeText("first"));
@@ -2802,13 +2810,15 @@ it("follows an identity-changing resume driven by a queued Send", async () => {
 
 	// The queued retry passes the same identity-following callback the resume
 	// branch does, so a resolved ref moves the pane with the work.
-	const options = settle.mock.calls[1]?.[3] as { onResolvedIdentity?: (ref: string) => void } | undefined;
+	expect(settlesFor()).toHaveLength(2);
+	const options = settlesFor()[1]?.[3] as { onResolvedIdentity?: (ref: string) => void } | undefined;
 	if (!options?.onResolvedIdentity) throw new Error("queued recovery passed no identity callback");
 	act(() => options.onResolvedIdentity?.("ref-queued-identity-resolved"));
 	expect(navigation.replace).toHaveBeenCalledWith(
 		"Conversation",
 		expect.objectContaining({ ref: "ref-queued-identity-resolved" }),
 	);
+	settle.mockRestore();
 });
 
 it("names the model on the composer's chip, which opens the model sheet with the session's controls", async () => {

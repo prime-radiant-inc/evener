@@ -754,6 +754,31 @@ it("does not resume a fenced session for an attempted send the person already st
 	await outbox.stop();
 });
 
+// Declining the resume must not skip the read it already made. That read is
+// the only proof the flush gets about what landed: without reconciling it, an
+// attempted row stays "submitting" forever instead of surfacing as the
+// uncertain send it actually is.
+it("surfaces an uncertain attempted send when the resume is declined", async () => {
+	const outbox = runtime();
+	await outbox.submit(message());
+	await outbox.storage.markAttempted("mutation-1");
+
+	const client = new FakeClient("ready");
+	client.on("thread/read", () => fencedRead("ref-1"));
+	client.on("thread/start", applied);
+	const flush = new OutboxFlush(() => outbox);
+	flush.bind("hub-1", client);
+	await vi.waitFor(() => expect(methods(client)).toContain("thread/read"));
+	await flush.flush();
+
+	// The session stays fenced, so nothing dispatches, but the row must stop
+	// claiming to be in flight: its outcome is unknown, and that is what the
+	// recovery surface shows.
+	expect(await outbox.storage.getOutbox("mutation-1")).toMatchObject({ state: "blockedUnknown" });
+	flush.dispose();
+	await outbox.stop();
+});
+
 // The other side of that rule: a send the person pressed while the app was
 // offline was never attempted, so it is certainly still owed, and reconnecting
 // must resume the fenced session to deliver it.
