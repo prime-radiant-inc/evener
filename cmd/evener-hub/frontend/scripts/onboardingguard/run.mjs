@@ -297,7 +297,7 @@ try {
     await button("Connect provider");
     await button("OpenAI");
     await fill("#provider-credential", "onboarding-fixture-key-not-a-secret");
-    await button("Save and check");
+    await button("Save and test");
     // The automatic path must survive a real failed check: observe the
     // connector's own evener/auth/test reply as a failure, then let the
     // fixture answer healthy, so completion requires the connector's own

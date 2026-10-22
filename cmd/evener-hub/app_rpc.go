@@ -2111,9 +2111,9 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 	// its own success - the broadcast can beat the failing reply, and consuming
 	// the marker then would suppress the invalidation a failed operation owes.
 	// apply performs the mutation and returns the listing to answer with, so
-	// the notify-and-answer block below is shared by every instance write. An
-	// edit passes its lock-scoped capture (see edit); the rest answer with a
-	// fresh List() via listAfter.
+	// the notify-and-answer block below is shared by every instance write. A
+	// create or edit passes its lock-scoped capture (see create and edit); the
+	// rest answer with a fresh List() via listAfter.
 	instanceWrite := func(originClientId string, apply func() (appwire.InstanceListResponse, error)) (appwire.InstanceListResponse, error) {
 		list, err := apply()
 		if writeDidApply(err) {
@@ -2137,7 +2137,13 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 		}
 	}
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceCreate, func(_ context.Context, params appwire.InstanceCreateParams) (appwire.InstanceListResponse, error) {
-		return instanceWrite(params.OriginClientId, listAfter(func() error { return instancesController.Create(params) }))
+		return instanceWrite(params.OriginClientId, func() (appwire.InstanceListResponse, error) {
+			var list appwire.InstanceListResponse
+			if err := instancesController.create(params, &list); err != nil {
+				return appwire.InstanceListResponse{}, err
+			}
+			return list, nil
+		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceEdit, func(_ context.Context, params appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
 		return instanceWrite(params.OriginClientId, func() (appwire.InstanceListResponse, error) {

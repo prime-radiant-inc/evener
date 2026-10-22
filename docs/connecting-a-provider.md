@@ -21,7 +21,7 @@ configured, choose that connection rather than adding it again.
    [OpenAI](https://platform.openai.com/api-keys),
    [Gemini](https://aistudio.google.com/apikey),
    [OpenRouter](https://openrouter.ai/settings/keys).
-4. Select **Save and check**. Evener saves access on the Evener host, reloads the
+4. Select **Save and test**. Evener saves access on the Evener host, reloads the
    resolved connection, and requests the provider's **model list only**. It does
    not send your prompt or make a generation request. A returned list does not
    prove generation access, quota, billing status, or a model's tool capability.
@@ -64,11 +64,15 @@ pasting an API key. Availability depends on your account and provider terms.
 ## Other access routes
 
 - **Cloud providers:** use **Show all providers**, choose Azure, Vertex, Bedrock, or
-  another provider, then **Configure provider** when offered. Supply the required
-  project/resource/region or endpoint variables. The full editor retains
-  protocol, surface, header, and custom-name controls. Vertex can use credential
-  JSON or existing Application Default Credentials; follow the selected
-  provider's access instructions rather than substituting an API key.
+  another provider. A provider whose base URL is unset opens the new-connection
+  card: enter the name, endpoint URL, and key or credential JSON, then save and
+  test. A provider whose registry entry declares template variables also shows
+  those inputs on the card, labelled by their environment-variable names (for
+  example `GOOGLE_VERTEX_PROJECT` and `GOOGLE_VERTEX_LOCATION`); fill them so the
+  created instance carries the values its request headers need. **All connection
+  settings** holds protocol, surface, API key env, and credential header. Vertex
+  can use credential JSON or existing Application Default Credentials; follow the
+  selected provider's access instructions rather than substituting an API key.
 - **Local/custom endpoints:** start the server on a host reachable from the
   Evener host and use the local/custom route. Configure its actual URL and any
   required credentials. An empty optional key means keep resolved host access,
@@ -78,8 +82,7 @@ pasting an API key. Availability depends on your account and provider terms.
   closes and Settings → Providers & credentials opens; each instance row there
   opens the complete inspector, where you can review the displayed destination
   and credential source and test current access before contacting the provider.
-  The guided form also offers **Use existing host access** under **Advanced
-  settings**.
+  The guided form's key row also offers **use this host's access instead**.
 - **Advanced management:** Settings → Providers & credentials → **Connect provider** uses the
   same connector. After a successful check it closes automatically and returns to
   Settings; it does not open the New session model chooser. The instance rows are the real editor, with custom instances,

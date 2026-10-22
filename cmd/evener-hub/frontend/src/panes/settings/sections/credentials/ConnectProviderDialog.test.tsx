@@ -165,7 +165,7 @@ test.each(["dialog", "settings"])("%s completes without navigating away from its
   if (surface === "settings") await user.click(await screen.findByRole("button", { name: "Connect provider" }));
   await user.click(await screen.findByRole("button", { name: "Anthropic" }));
   await user.type(screen.getByLabelText("API key"), "sk-guided");
-  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  await user.click(screen.getByRole("button", { name: "Save and test" }));
 
   if (surface === "dialog") {
     await waitFor(() => expect(onConnected).toHaveBeenCalledExactlyOnceWith("anthropic"));

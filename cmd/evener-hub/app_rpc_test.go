@@ -12067,6 +12067,120 @@ func TestHubRPCInstanceCreateBroadcastsAuthUpdated(t *testing.T) {
 	}
 }
 
+// TestHubRPCInstanceCreateAnswersWithItsOwnState: a create's response must be
+// the listing the create itself produced, captured under its write lock, not a
+// later List() a concurrent edit can slip into. The two destinations differ
+// only in their query string, so the sanitized display URL is identical and
+// the immutable fingerprint is the only thing that tells them apart - exactly
+// the case a client comparing display URLs misreads as its own creation.
+func TestHubRPCInstanceCreateAnswersWithItsOwnState(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	writeMinimalProvidersToml(t, tomlPath)
+	credsStore := newTestCredentialsStore(t)
+
+	// Pause the create inside its held write lock, so a concurrent edit is
+	// guaranteed to be waiting for that lock when the create releases it. Go's
+	// RWMutex admits a waiting writer before a new reader, which puts the edit
+	// between the create's write and the listing its handler answers with.
+	armed := atomic.Bool{}
+	loadEntered := make(chan struct{})
+	releaseLoad := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseLoad) }) }
+	baseLoader := testRegistryLoader(dir, tomlPath, credsStore, nil)
+	holder := hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		if armed.CompareAndSwap(true, false) {
+			close(loadEntered)
+			<-releaseLoad
+		}
+		return baseLoader(extra...)
+	})
+	if err := holder.Reload(); err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		Registry:            holder,
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+		CredsStore:          credsStore,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	// A second connection: AppWire requests on one client are serialized, and
+	// the create is still in flight while the edit must reach the hub.
+	editClient := dialHubRPC(t, hub)
+	defer editClient.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := editClient.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize(edit client): %v", err)
+	}
+
+	const (
+		authoredURL = "http://127.0.0.1:9/v1?tenant=authored"
+		racedURL    = "http://127.0.0.1:9/v1?tenant=raced"
+	)
+	type outcome struct {
+		resp appwire.InstanceListResponse
+		err  error
+	}
+	createDone := make(chan outcome, 1)
+	armed.Store(true)
+	go func() {
+		var resp appwire.InstanceListResponse
+		err := client.Request(context.Background(), appwire.MethodEvenerInstanceCreate, appwire.InstanceCreateParams{
+			Name: "work", Base: "anthropic", BaseURL: authoredURL,
+		}, &resp)
+		createDone <- outcome{resp: resp, err: err}
+	}()
+	select {
+	case <-loadEntered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Create never reached its reload, so the loader was not paused")
+	}
+
+	editStarted := make(chan struct{})
+	editDone := make(chan outcome, 1)
+	go func() {
+		close(editStarted)
+		var resp appwire.InstanceListResponse
+		err := editClient.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{
+			Name: "work", BaseURL: racedURL,
+		}, &resp)
+		editDone <- outcome{resp: resp, err: err}
+	}()
+	<-editStarted
+	// The edit's request has to reach the handler, where it blocks on the
+	// create's lock, before the create is released.
+	time.Sleep(100 * time.Millisecond)
+	release()
+
+	created := <-createDone
+	if created.err != nil {
+		t.Fatalf("create: %v", created.err)
+	}
+	edited := <-editDone
+	if edited.err != nil {
+		t.Fatalf("edit: %v", edited.err)
+	}
+	createdRow := entry(t, created.resp, "work")
+	editedRow := entry(t, edited.resp, "work")
+	if createdRow.BaseURL != editedRow.BaseURL {
+		t.Fatalf("fixture drift: query-only destinations should show the same sanitized URL, got %q and %q", createdRow.BaseURL, editedRow.BaseURL)
+	}
+	if createdRow.EndpointFingerprint == "" || editedRow.EndpointFingerprint == "" {
+		t.Fatalf("fixture drift: both destinations need fingerprints, got %q and %q", createdRow.EndpointFingerprint, editedRow.EndpointFingerprint)
+	}
+	if createdRow.EndpointFingerprint == editedRow.EndpointFingerprint {
+		t.Fatalf("fixture drift: the raced edit must move the fingerprint, still %q", createdRow.EndpointFingerprint)
+	}
+}
+
 // TestHubRPCInstanceBroadcastEchoesOriginClientId is the instance-side
 // counterpart of TestAuthApiKeySetBroadcastEchoesOriginClientId: a mutation
 // from a client that names itself must broadcast an evener/auth/updated

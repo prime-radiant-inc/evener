@@ -1518,7 +1518,7 @@ async function openTeamProvider(user: ReturnType<typeof userEvent.setup>): Promi
 }
 
 async function saveAndCheckProvider(): Promise<void> {
-  fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save and test" }));
   await settled();
 }
 
@@ -2108,8 +2108,8 @@ test("automatic connection completion restores the composer after its own busy b
   await setWorkingDir(user, "/tmp/busy-blur");
 
   await openTeamProvider(user);
-  fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
-  await waitFor(() => expect(screen.getByRole("button", { name: "Checking model list…" })).toBeTruthy());
+  fireEvent.click(screen.getByRole("button", { name: "Save and test" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Testing…" })).toBeTruthy());
   // Disabling the submit blurs it to the document body. That internal busy
   // transition is not the person moving focus away from setup.
   await act(async () => {
@@ -2189,7 +2189,7 @@ test.each(["draft", "harness", "host"])(
     const origin = completionDraft("/tmp/auto-round-a");
 
     await openTeamProvider(user);
-    fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save and test" }));
 
     if (kind === "draft") {
       await visitSpawnURL("/new?dir=/tmp/auto-round-b");
@@ -2248,8 +2248,8 @@ test("navigation during a pending connection check dismisses its dialog and a fr
   const origin = completionDraft("/tmp/revoke-a");
 
   await openTeamProvider(user);
-  fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
-  await waitFor(() => expect(screen.getByRole("button", { name: "Checking model list…" })).toBeTruthy());
+  fireEvent.click(screen.getByRole("button", { name: "Save and test" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Testing…" })).toBeTruthy());
 
   // The check is still pending: the person visits another draft and returns.
   await visitSpawnURL("/new?dir=/tmp/revoke-b");
@@ -2669,7 +2669,7 @@ test("successful keyless testing refreshes availability without an auth notifica
   });
   await user.click(await screen.findByText("Show all providers"));
   await user.click(screen.getByRole("button", { name: "Local endpoint" }));
-  const testConnection = await screen.findByRole("button", { name: "Check connection" });
+  const testConnection = await screen.findByRole("button", { name: "Test connection" });
   available = true;
   fireEvent.click(testConnection);
   await settled();
@@ -5289,7 +5289,7 @@ test("an Advanced-options model override after onboarding satisfies the requirem
   });
   await user.click(await screen.findByRole("button", { name: "OpenAI" }));
   await user.type(screen.getByLabelText("API key"), "fixture-only-key");
-  fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save and test" }));
   await settled();
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
