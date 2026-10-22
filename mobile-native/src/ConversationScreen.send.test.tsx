@@ -2786,6 +2786,31 @@ it("still resumes from a later Send that queues behind a failed resume", async (
 	expect(settle.mock.calls[1]?.[3]).toMatchObject({ mayResumeFenced: expect.any(Function) });
 });
 
+// The queued retry must follow an identity-changing resume, or the work it
+// dispatches lands on a ref the mounted screen is not showing.
+it("follows an identity-changing resume driven by a queued Send", async () => {
+	vi.mocked(navigation.replace).mockClear();
+	const { tree } = await mount(failedTurn("ref-queued-identity", "go test exited 1", true));
+	const runtime = getNativeMutationRuntime();
+	const settle = vi.spyOn(runtime, "settleTarget");
+	settle.mockRejectedValueOnce(new Error("resume failed"));
+
+	act(() => field(tree)?.props.onChangeText("first"));
+	await press(tree, "Send and resume");
+	act(() => field(tree)?.props.onChangeText("second"));
+	await press(tree, "Queue message");
+
+	// The queued retry passes the same identity-following callback the resume
+	// branch does, so a resolved ref moves the pane with the work.
+	const options = settle.mock.calls[1]?.[3] as { onResolvedIdentity?: (ref: string) => void } | undefined;
+	if (!options?.onResolvedIdentity) throw new Error("queued recovery passed no identity callback");
+	act(() => options.onResolvedIdentity?.("ref-queued-identity-resolved"));
+	expect(navigation.replace).toHaveBeenCalledWith(
+		"Conversation",
+		expect.objectContaining({ ref: "ref-queued-identity-resolved" }),
+	);
+});
+
 it("names the model on the composer's chip, which opens the model sheet with the session's controls", async () => {
 	vi.mocked(navigation.navigate).mockClear();
 	const served = thread("ref-model", "idle");
