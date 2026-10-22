@@ -6,6 +6,8 @@ Evener is a coding agent that works in your project: it reads files, runs comman
 
 These guides track **main**. The first-run guide uses the latest successful snapshot from main; tagged releases can lag the behavior described here.
 
+Start the service with `evener hub`. Its listener (`--addr`, `EVENER_HUB_LISTEN_ADDR`, or TOML `addr`), a client's destination (`--hub-url` or `EVENER_HUB_URL` where supported), and the advertised `public_url` are separate settings. See [hub endpoints](docs/evener-hub-endpoints.md) for discovery and migration.
+
 ## Find your next step
 
 | You want to… | Read |

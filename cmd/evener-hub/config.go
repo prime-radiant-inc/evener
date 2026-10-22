@@ -3,18 +3,16 @@ package hub
 import (
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
-	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/hubendpoint"
 )
 
 var configUserHomeDir = os.UserHomeDir
@@ -43,9 +41,8 @@ type HostConfig struct {
 	// ConfigPath is the host hub's hub.toml, when it is not at the default
 	// location, so the bridge attaches with the host's own configuration.
 	ConfigPath string `toml:"config_path,omitempty"`
-	// Addr is the host hub's listen address, when it is not the default. The
-	// manager needs it to restart the hub and to health-check it after a deploy,
-	// where a wrong default would probe or kill the wrong listener.
+	// Addr is a listener override only for explicitly authorized fresh bootstrap.
+	// Existing service definitions and selected connection endpoints ignore it.
 	Addr  string   `toml:"addr,omitempty"`
 	Roots []string `toml:"roots,omitempty"`
 	// KeyPath is the SSH private-key file for this host, when it is not the
@@ -59,7 +56,8 @@ type HostConfig struct {
 // DefaultConfigPath).
 type Config struct {
 	Addr               string           `toml:"addr"`
-	MobileBaseURL      string           `toml:"mobile_base_url"`
+	PublicURL          string           `toml:"public_url"`
+	addrPresent        bool             `toml:"-"`
 	HubStateRoot       string           `toml:"hub_state_root"`
 	StateGlob          string           `toml:"state_glob"`
 	RunDir             string           `toml:"run_dir"`
@@ -451,14 +449,18 @@ func loadConfig(path string, explicit bool) (Config, error) {
 func decodeConfig(name, data string) (Config, error) {
 	cfg := DefaultConfig()
 	metadata, decodeErr := toml.Decode(data, &cfg)
+	if decodeErr != nil {
+		return cfg, fmt.Errorf("parse config %s: %w", name, decodeErr)
+	}
+	if metadata.IsDefined("mobile_base_url") {
+		return cfg, &EndpointMigrationError{Retired: "mobile_base_url", Replacement: "public_url"}
+	}
 	for _, key := range []string{"codex_sources", "codex_launches"} {
 		if metadata.IsDefined(key) {
 			return cfg, fmt.Errorf("config section %q is no longer supported because Codex agent integration has been removed; remove it from hub.toml", key)
 		}
 	}
-	if decodeErr != nil {
-		return cfg, fmt.Errorf("parse config %s: %w", name, decodeErr)
-	}
+	cfg.addrPresent = metadata.IsDefined("addr")
 	// The retired crash-fencing bootstrap keys decode into HostRecord's retired
 	// fields (the type documents them) so a hub.toml the bootstrap build wrote
 	// still loads: the reserved-record rule below refuses a reserved field this
@@ -583,8 +585,8 @@ func decodeConfig(name, data string) (Config, error) {
 			return cfg, fmt.Errorf("config %s: reserved record %s carries a field this build does not decode; refusing rather than dropping it on the next rewrite", name, key.String())
 		}
 	}
-	if err := validateMobileBaseURL(cfg.MobileBaseURL); err != nil {
-		return cfg, fmt.Errorf("validate mobile_base_url: %w", err)
+	if err := validatePublicURL(cfg.PublicURL); err != nil {
+		return cfg, &EndpointValidationError{Source: "config", Err: fmt.Errorf("validate public_url: %w", err)}
 	}
 	return cfg, nil
 }
@@ -593,18 +595,7 @@ func decodeConfig(name, data string) (Config, error) {
 // validateHostConfigs. They are named sentinels so tests and callers can match
 // them with errors.Is.
 var (
-	// ErrHostAddrPair marks a [[hosts]] entry that sets exactly one of
-	// config_path and addr. The pair describes one host hub layout — the bridge
-	// resolves the hub's address and token from config_path, while the SSH
-	// manager's restart and health path probes addr — so a half-specified entry
-	// would attach through one layout while the manager probes another.
-	ErrHostAddrPair = errors.New("host config_path and addr must be set together")
-	// ErrHostAddr marks an addr the controller cannot use: malformed, missing a
-	// usable port, or not a loopback/wildcard bind. addr is interpolated into an
-	// SSH-side health probe and restart identity check, so a non-loopback value
-	// could let those paths reach an arbitrary host; the wildcard spellings are
-	// accepted because the manager normalizes them to loopback for its own dial
-	// and probe.
+	// ErrHostAddr marks a malformed fresh-bootstrap listener override.
 	ErrHostAddr = errors.New("host addr unusable")
 	// errIntegerDuration refuses a duration knob written as a bare integer,
 	// which TOML decodes as a nanosecond count.
@@ -628,8 +619,7 @@ func normalizeMachineRoots(roots []string) []string {
 // throwaway registry, so name grammar, duplicate names, reserved "local", the
 // ".." rule, ssh presence, the user/ssh-user conflict, and empty roots are all
 // checked by the single source of truth in hostreg. Each entry also runs
-// validateHostEntry — the pair and addr rules spec 03's "config_path / addr"
-// contract requires, the same function the runtime add/update paths run — so a
+// validateHostEntry — including optional fresh-bootstrap listener intent, the same function the runtime add/update paths run — so a
 // hub.toml entry and a UI-added entry are validated by one code path. No host
 // is registered anywhere: this is pure validation.
 //
@@ -672,8 +662,8 @@ func validateHostConfigs(hosts []HostConfig) error {
 
 // validateHostEntry runs every entry check the host surfaces share: hostreg's
 // own shape validation (name grammar, reserved name, ssh destination, user/ssh
-// agreement, non-empty roots) plus the config_path/addr pair and addr host
-// rules hub.toml loading applies (validateHostAddr). hub.toml loading and the
+// agreement, non-empty roots) plus optional bootstrap listener
+// validation hub.toml loading applies (validateHostAddr). hub.toml loading and the
 // runtime evener/host/add and evener/host/update paths all call it, so an entry
 // one surface refuses can never be stored by another.
 func validateHostEntry(entry hostreg.Host) error {
@@ -683,79 +673,29 @@ func validateHostEntry(entry hostreg.Host) error {
 	return validateHostAddr(entry)
 }
 
-// validateHostAddr refuses an entry whose config_path/addr pair is
-// half-specified, or whose addr the controller cannot use. It checks the
-// normalized values the registry would store.
-//
-// The pair describes ONE host hub layout (component 04, "Address, config path,
-// token"): the bridge resolves the hub's listen address and token state root
-// from config_path, while the manager's restart and health path probes addr. A
-// half-specified entry attaches through one layout while the manager probes
-// another — a silent split-brain, not a clean failure.
-//
-// addr is interpolated into an SSH-side curl probe and the restart identity
-// check, so a non-loopback value could let those paths reach an arbitrary
-// reachable host. The address half delegates to sshconn.ValidateHubAddrShape —
-// the SSH probe's own accepted-address rule — and wraps its refusal in this
-// package's ErrHostAddr, so load-time validation and the use-time probe cannot
-// drift on what an address may be: a loopback host literal, "localhost", the
-// wildcard spellings the manager normalizes to loopback (0.0.0.0, ::, and the
-// empty host of ":port"), and a usable port.
+// validateHostAddr validates optional fresh-bootstrap listener intent.
 func validateHostAddr(entry hostreg.Host) error {
-	if (entry.ConfigPath == "") != (entry.Addr == "") {
-		return fmt.Errorf("%w: host %q sets exactly one of config_path and addr; set both or neither", ErrHostAddrPair, entry.Name)
-	}
 	if entry.Addr == "" {
 		return nil
 	}
-	if err := sshconn.ValidateHubAddrShape(entry.Addr); err != nil {
+	if _, err := hubendpoint.ParseListenAddr(entry.Addr); err != nil {
 		return fmt.Errorf("%w: host %q %w", ErrHostAddr, entry.Name, err)
 	}
 	return nil
 }
 
-// validateMobileBaseURL accepts only an HTTP(S) origin. The pairing endpoint
+// validatePublicURL accepts only an HTTP(S) origin. The pairing endpoint
 // appends the capability path and token itself, so a configured path or query
 // would either be discarded or accidentally extend the public contract.
-func validateMobileBaseURL(raw string) error {
+func validatePublicURL(raw string) error {
 	if raw == "" {
 		return nil
 	}
-	u, err := url.ParseRequestURI(raw)
-	if err != nil {
-		return fmt.Errorf("must be an http(s) origin: %w", err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return errors.New("must use http or https")
-	}
-	if u.Host == "" || u.Hostname() == "" || u.User != nil || u.Opaque != "" {
-		return errors.New("must be an origin without userinfo")
-	}
-	if u.Path != "" && u.Path != "/" {
-		return errors.New("must not include a path")
-	}
-	if u.RawQuery != "" || u.ForceQuery {
-		return errors.New("must not include a query")
-	}
-	if u.Fragment != "" {
-		return errors.New("must not include a fragment")
-	}
-	if strings.HasSuffix(u.Host, ":") {
-		return errors.New("port must not be empty")
-	}
-	if port := u.Port(); port != "" {
-		p, err := strconv.Atoi(port)
-		if err != nil || p < 1 || p > 65535 {
-			return errors.New("port must be between 1 and 65535")
-		}
-	}
-	return nil
+	_, err := hubendpoint.ParseOrigin(raw)
+	return err
 }
 
 func applyConfigDefaults(cfg *Config) {
-	if cfg.Addr == "" {
-		cfg.Addr = "127.0.0.1:9180"
-	}
 	if cfg.StatusPollInterval == 0 {
 		cfg.StatusPollInterval = 2 * time.Second
 	}

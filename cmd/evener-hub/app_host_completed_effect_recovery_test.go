@@ -100,7 +100,7 @@ func TestHostRestartSettlesCompletedEffectWithUnusableContract(t *testing.T) {
 				if scenario.incompatible {
 					protocol, flags = "other-protocol", `["api-log"]`
 				}
-				runner.launchResponse = fmt.Appendf(nil, `{"protocol":%q,"version":%q,"launch_flags":%s}`, protocol, restartBuildB, flags)
+				runner.launchResponse = fmt.Appendf(nil, `{"hub_endpoint_schema":1,"protocol":%q,"version":%q,"launch_flags":%s}`, protocol, restartBuildB, flags)
 				version, started := restartBuildB, restartStartB
 				switch scenario.control {
 				case "predecessor":

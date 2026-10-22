@@ -241,7 +241,7 @@ func deployTestHub(t *testing.T, configPath string, entries []hostreg.Host, seam
 		HubBootID:                  "test-boot",
 	}
 	m := newHubHostManager(nil, nil, cfg, configPath, registry, func(string, ...any) {})
-	m.cfg.deployHost = func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight, _ bool, _ func() error) (string, sshconn.Preflight, error) {
+	m.cfg.deployHost = func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight, _ bool, _ func() error, _ ...sshconn.DeploymentJournal) (string, sshconn.Preflight, error) {
 		return deploy(ctx, host, facts)
 	}
 	m.cfg.restartHost = func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight, _ func() error) (string, error) {

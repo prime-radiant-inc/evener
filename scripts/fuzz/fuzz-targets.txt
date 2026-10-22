@@ -190,6 +190,7 @@ native:agent:./internal/worktree:FuzzSidecarNameRoundtrip
 native:agent:./internal/worktree:FuzzValidateName
 native:.:./frontmatter:FuzzParse
 native:.:./hubapi:FuzzParseRef
+native:.:./internal/hubendpoint:FuzzParseOrigin
 native:.:./rendezvous:FuzzList
 native:.:./internal/appserver:FuzzHandleMessage
 native:.:./server:FuzzDecodeSubscriptionAdmissionParams

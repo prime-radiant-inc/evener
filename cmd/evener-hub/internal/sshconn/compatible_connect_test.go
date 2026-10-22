@@ -106,7 +106,7 @@ func TestEnsureCompatibleDiscoveredBridgeSurvivesRejectedLaunchCheck(t *testing.
 		switch {
 		case strings.Contains(command, "launch-check"):
 			if strings.Contains(command, target) {
-				return []byte(`unsupported appwire protocol`), errors.New("exit status 1")
+				return []byte(`unsupported appwire protocol`), exitStatus(t, 1)
 			}
 			return nil, absent
 		case strings.Contains(command, "command -v evener"):
@@ -293,9 +293,10 @@ func TestEnsureNewerProtocolHostIsNotDowngraded(t *testing.T) {
 
 func TestEnsureAncientDiskAndRunningHubUpgrades(t *testing.T) {
 	diskProtocol, diskVersion := "evener-appwire-v5", "old-build"
+	diskSchema := 0
 	runningVersion := "old-build"
 	fr := deployRunner(t, func(int) ([]byte, error) {
-		return []byte(fmt.Sprintf(`{"protocol":%q,"version":%q,"launch_flags":["api-log"]}`, diskProtocol, diskVersion)), nil
+		return []byte(fmt.Sprintf(`{"hub_endpoint_schema":%d,"protocol":%q,"version":%q,"launch_flags":["api-log"]}`, diskSchema, diskProtocol, diskVersion)), nil
 	}, func(call int) ([]byte, error) {
 		started := "2026-01-01T00:00:00Z"
 		if call > 0 {
@@ -310,7 +311,7 @@ func TestEnsureAncientDiskAndRunningHubUpgrades(t *testing.T) {
 			joined := strings.Join(argv, " ")
 			switch {
 			case strings.Contains(joined, "cat >"):
-				diskProtocol, diskVersion = appwire.ProtocolVersion, "controller-build"
+				diskProtocol, diskVersion, diskSchema = appwire.ProtocolVersion, "controller-build", 1
 			case strings.Contains(joined, "systemctl restart"):
 				runningVersion = "controller-build"
 			}
@@ -340,7 +341,7 @@ func TestEnsureAncientDiskAndRunningHubUpgrades(t *testing.T) {
 
 func TestEnsureLiveOlderHubWithNewerDiskRefuses(t *testing.T) {
 	fr := deployRunner(t, func(int) ([]byte, error) {
-		return []byte(`{"protocol":"evener-appwire-v99","version":"newer-build","launch_flags":["api-log"]}`), nil
+		return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v99","version":"newer-build","launch_flags":["api-log"]}`), nil
 	}, func(int) ([]byte, error) {
 		return []byte(`{"version":"old-running","mobile_api_version":1,"hub_addr":"127.0.0.1:9180","started_at":"2026-01-01T00:00:00Z"}`), nil
 	})
@@ -385,7 +386,7 @@ func TestPendingDeploymentReplayFollowsProtocolDirection(t *testing.T) {
 func TestPendingDeploymentDoesNotOverwriteNewerDisk(t *testing.T) {
 	diskProtocol, diskVersion := "evener-appwire-v99", "newer-build"
 	fr := deployRunner(t, func(int) ([]byte, error) {
-		return []byte(fmt.Sprintf(`{"protocol":%q,"version":%q,"launch_flags":["api-log"]}`, diskProtocol, diskVersion)), nil
+		return []byte(fmt.Sprintf(`{"hub_endpoint_schema":1,"protocol":%q,"version":%q,"launch_flags":["api-log"]}`, diskProtocol, diskVersion)), nil
 	}, func(int) ([]byte, error) {
 		return nil, errors.New("no listener")
 	})

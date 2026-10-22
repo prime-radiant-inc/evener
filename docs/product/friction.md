@@ -1047,7 +1047,7 @@ then loses the original explanation before the health check reports failure.
 
 **Evidence.** [bootstrapHub](../../cmd/evener-hub/internal/sshconn/manager.go#L2182)
 passes an empty log path to
-[relaunchCommand](../../cmd/evener-hub/internal/sshconn/version.go#L1862).
+[relaunchCommand](../../cmd/evener-hub/internal/sshconn/version.go#L1689).
 Manual host access or a separate supervisor/log setup is the remaining diagnosis
 path; an existing configured log path does not have this issue.
 
