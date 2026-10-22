@@ -78,6 +78,8 @@ func TestRemoteRestartUnresponsiveService(t *testing.T) {
 	commands = append(commands, replacementGateCommands(t, second, true)...)
 	commands = append(commands, identityRestartCommand("linux"))
 	commands = append(commands, selectedSuccessorCommands(t)...)
+	// No predecessor time exists, so return a freshly verified successor time.
+	commands = append(commands, selectedSuccessorCommands(t)...)
 	fr, index := ownerRunner(t, commands)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "release-selected"})
 	if _, err := m.RestartForOperation(t.Context(), host, selectedRestartFacts(), nil); err != nil {

@@ -186,8 +186,8 @@ func (m *Manager) deployForOperationWithSupersession(ctx context.Context, host h
 type RestartResult struct {
 	TargetVersion     string
 	ReplacedStartedAt time.Time
-	// StartedAt is the verified identity of an owned free-port startup, not a
-	// substitute predecessor. Ordinary replacements leave it zero.
+	// StartedAt identifies the verified successor for an owned startup or a
+	// replacement whose predecessor start time is unknown. It is not a predecessor.
 	StartedAt time.Time
 }
 
@@ -271,7 +271,7 @@ func (m *Manager) restartForOperation(ctx context.Context, host hostreg.Host, fa
 			return RestartResult{}, err
 		} else if complete {
 			result := RestartResult{TargetVersion: pending.expectedVersion, ReplacedStartedAt: pending.replaced.startedAt}
-			if pending.start {
+			if pending.start || result.ReplacedStartedAt.IsZero() {
 				result.StartedAt = successor.report.Running.StartedAt
 			}
 			m.clearPendingRestart(host.Name)
@@ -351,7 +351,7 @@ func (m *Manager) restartForOperation(ctx context.Context, host hostreg.Host, fa
 	if err != nil {
 		return result, err
 	}
-	if started {
+	if started || result.ReplacedStartedAt.IsZero() {
 		final, finalErr := m.resolveOwnedEndpoint(restartCtx, host, facts)
 		actual, known := identityFromReport(final.report)
 		if finalErr != nil || !known || actual.startedAt.IsZero() || !selectedSuccessor(final, *pending.selected, pending.nextEnv, version, pin) {

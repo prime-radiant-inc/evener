@@ -1056,8 +1056,8 @@ func (m *hubHostManager) refreshOperation(ctx context.Context, id string, work o
 		return fmt.Errorf("the post-operation probe reports the host unhealthy (build %q), so the operation is not a verified success", probe.Version)
 	}
 	if !startedAt.IsZero() {
-		// An owned free-port start can have no predecessor. Its proof is the
-		// actual process sshconn verified, independently observed at this epoch.
+		// An owned start or unavailable predecessor can lack a start time. The
+		// proof is sshconn's verified successor, independently observed at this epoch.
 		if probe.ProcessStartTime == nil || !probe.ProcessStartTime.Equal(startedAt) {
 			return errors.New("the post-operation probe did not identify the verified startup process")
 		}

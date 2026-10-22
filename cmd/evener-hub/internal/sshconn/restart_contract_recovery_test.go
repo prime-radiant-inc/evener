@@ -251,7 +251,7 @@ func TestRestartRecoverySupervisedProcessProof(t *testing.T) {
 							t.Fatalf("dormant startup: result=%+v effects=%d err=%v pending=%+v", result, effects, err, m.pendingRestart(host.Name))
 						}
 					case "live":
-						if err != nil || effects != 1 || result.TargetVersion != label || !result.StartedAt.IsZero() || !fixture.mutated || m.pendingRestart(host.Name).active() {
+						if err != nil || effects != 1 || result.TargetVersion != label || !result.ReplacedStartedAt.IsZero() || result.StartedAt.Format(time.RFC3339) != "2026-01-02T00:00:00Z" || !fixture.mutated || m.pendingRestart(host.Name).active() {
 							t.Fatalf("live unit restart proof: result=%+v effects=%d err=%v", result, effects, err)
 						}
 					case "occupied":

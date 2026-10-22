@@ -351,7 +351,7 @@ func (m *Manager) proveSelectedRestartComplete(ctx context.Context, host hostreg
 	if !selectedSuccessor(now, *pending.selected, pending.nextEnv, pending.expectedVersion, pending.expectedGitSHA) {
 		return selectedOwner{}, false, nil
 	}
-	if pending.start {
+	if pending.start || pending.replaced.startedAt.IsZero() {
 		final, err := m.resolveOwnedEndpoint(ctx, host, facts)
 		if err != nil || !selectedSuccessor(final, *pending.selected, pending.nextEnv, pending.expectedVersion, pending.expectedGitSHA) || final.report.Running.StartedAt.IsZero() {
 			return selectedOwner{}, false, fmt.Errorf("%w: host %q startup identity could not be verified", ErrRestart, host.Name)

@@ -64,6 +64,8 @@ func TestRemoteRestartDarwinRetainedWitness(t *testing.T) {
 	commands = append(commands, replacementGateCommands(t, darwinOwnerCommands(t, true, false), true)...)
 	commands = append(commands, identityRestartCommand("darwin"))
 	commands = append(commands, darwinOwnerCommands(t, false, true)...)
+	// No predecessor time exists, so return a freshly verified successor time.
+	commands = append(commands, darwinOwnerCommands(t, false, true)...)
 	fr, index := ownerRunner(t, commands)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{})
 	facts := selectedRestartFacts()
