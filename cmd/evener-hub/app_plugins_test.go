@@ -512,6 +512,14 @@ func TestPlugins_Marketplace_EditRefusalsAreWireErrors(t *testing.T) {
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
 		t.Fatalf("a source in the store's scratch directory = %v, want an InvalidParams wire error", err)
 	}
+	_, err = ctl.EditMarketplace(context.Background(), appwire.MarketplaceEditParams{
+		Name:   "acme",
+		Source: &appwire.MarketplaceSourceInput{Kind: "url", URL: "https://example.invalid/x.git", Ref: "refs/heads/main"},
+	})
+	var qualifiedWire appwire.WireError
+	if !errors.As(err, &qualifiedWire) || qualifiedWire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("a qualified source ref = %v, want an InvalidParams wire error", err)
+	}
 	// A clone a removed marketplace left behind still occupies gamma, so that
 	// name is taken on disk though no marketplace records it.
 	if err := os.MkdirAll(filepath.Join(marketplaces, "gamma"), 0o755); err != nil {
