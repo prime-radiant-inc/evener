@@ -183,3 +183,47 @@ func TestProbeLaunchCheckStillRejectsStoppedProtocolOld(t *testing.T) {
 		t.Fatalf("strict deployment probe: err=%v descriptions=%d", err, s.descriptions)
 	}
 }
+
+func TestRestartForOperationRefusesNewerDisk(t *testing.T) {
+	for _, pendingDeployment := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pending=%t", pendingDeployment), func(t *testing.T) {
+			host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+			fr := deployRunner(t, func(int) ([]byte, error) {
+				return []byte(`{"protocol":"evener-appwire-v99","version":"newer-build","launch_flags":["api-log"]}`), nil
+			}, func(int) ([]byte, error) {
+				return nil, errors.New("no listener")
+			})
+			run := fr.runFn
+			refused := exitStatus(t, 1)
+			fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+				joined := strings.Join(argv, " ")
+				if strings.Contains(joined, "launch-check") && strings.Contains(joined, "--protocol") {
+					// The newer binary refuses the imposed controller protocol
+					// before emitting JSON, then describes its own contract.
+					return []byte(`unsupported appwire protocol "evener-appwire-v7" (supported "evener-appwire-v99")`), refused
+				}
+				return run(ctx, argv, stdin)
+			}
+			m := newTestManager(t, testRegistry(t, host), fr, Options{
+				controllerVersionOverride: "controller-build",
+				BuildBinary:               writeStageBinary,
+			})
+			if pendingDeployment {
+				m.mu.Lock()
+				m.pendingRestarts[host.Name] = pendingRestartState{
+					deployment: true, writeAcknowledged: true, expectedVersion: "controller-build",
+				}
+				m.mu.Unlock()
+			}
+			_, err := m.RestartForOperation(t.Context(), host, Preflight{OS: "linux"}, nil)
+			if !errors.Is(err, ErrHostProtocolNewer) || !isTerminal(err) {
+				t.Fatalf("RestartForOperation = %v, want ErrHostProtocolNewer", err)
+			}
+			for _, argv := range fr.recordedRuns() {
+				if strings.Contains(strings.Join(argv, " "), "cat >") {
+					t.Fatalf("RestartForOperation wrote over the newer disk: %v", argv)
+				}
+			}
+		})
+	}
+}

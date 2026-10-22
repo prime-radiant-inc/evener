@@ -2354,6 +2354,18 @@ func validateStartupContract(hostName string, facts Preflight) error {
 func (m *Manager) refreshLaunchContract(ctx context.Context, host hostreg.Host, facts Preflight) (Preflight, error) {
 	refreshed, err := m.probeLaunchCheck(ctx, host)
 	if err != nil {
+		if errors.Is(err, ErrProtocolIncompatible) {
+			// The strict probe refuses before answering, so read the executable's
+			// own contract: callers still need to tell an older installation from
+			// a newer one. The refusal itself stays authoritative.
+			if described, _, describeErr := m.describeLaunchContract(ctx, host); describeErr == nil {
+				facts.ExecutableMissing = false
+				facts.LaunchCheckKnown = true
+				facts.Protocol = described.Protocol
+				facts.LaunchFlags = described.LaunchFlags
+				facts.Version = described.Version
+			}
+		}
 		return facts, err
 	}
 	facts.ExecutableMissing = false
