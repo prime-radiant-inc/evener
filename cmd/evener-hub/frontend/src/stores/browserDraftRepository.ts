@@ -623,10 +623,17 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
           input.document.namespace.kind !== "browser" ||
           input.document.namespace.origin !== preparation.key.namespace.origin ||
           input.document.sessionRef !== preparation.key.sessionRef ||
-          operation.destination.kind !== "browser-origin" ||
-          operation.destination.compositionOwnerId !== input.sourceId
+          operation.destination.kind !== "browser-origin"
         ) {
           return { state: "cancelled" };
+        }
+        // A source resolved for the destination, but not the operation's
+        // captured composition owner: a pane remount can hand this append the
+        // current source while the durable row is still pending. No terminal
+        // row backs a cancelled verdict, so answer the retryable outcome and
+        // let the durable arbiter decide on a later attempt.
+        if (operation.destination.compositionOwnerId !== input.sourceId) {
+          return { state: "pending", reason: "owner-unavailable" };
         }
         // Strict FIFO scoped to the captured recipient: only an earlier PENDING
         // handoff to the SAME destination identity blocks this append, so a

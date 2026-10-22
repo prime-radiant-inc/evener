@@ -2508,3 +2508,39 @@ test("a peer dismissal's wake delivers a local FIFO-blocked successor", async ()
     fixture.drafts.close();
   }
 });
+
+// A resolved source whose identity is not the operation's captured composition
+// owner must never answer terminal cancelled while the operation's durable row
+// is still pending. A pane remount between save and handoff can resolve the
+// current source for the destination; the captured owner is gone, but nothing
+// durable says the operation is terminal. The retryable pending answer keeps
+// the work recoverable and enforces the terminal-verdict invariant at the site.
+test("an owner mismatch at the append's destination guard answers pending", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-owner-mismatch",
+    origin: "https://coordination.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+    destination: { kind: "browser-origin", paneId: "pane-1", compositionOwnerId: "source-retired" },
+  });
+  fixture.acknowledge.mockClear();
+  try {
+    expect(await fixture.runtime.handoff(fixture.document, fixture.operation.operationId)).toEqual({
+      state: "pending",
+      reason: "owner-unavailable",
+    });
+    expect(fixture.acknowledge).not.toHaveBeenCalled();
+
+    // A fresh adapter holds no fence: the durable row is still pending, never
+    // terminal.
+    const sibling = openSiblingRepository(fixture);
+    const views = await sibling.listAnnotations(fixture.document);
+    expect(views.find((view) => view.operation.operationId === fixture.operation.operationId)?.handoff.state).toBe(
+      "pending",
+    );
+    sibling.close();
+  } finally {
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
