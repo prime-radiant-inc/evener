@@ -8643,3 +8643,39 @@ test("a held Next demand released after unmount cannot navigate and a fresh shel
     owners.restore();
   }
 });
+
+// The real browser guard measured the floating Next-needs-you control at seven
+// widths after a phone/desktop host swap and found it only at 1024 and 1400.
+// This reproduces the swap half in the shell: one focused live session, a
+// populated needs-you tier, a desktop mount (whose composer mount autofocus
+// hides the control until the reader clicks away), then StackHost in its
+// place. The control's mount gate lives in ConversationBody; nothing about it
+// may depend on which host is showing the pane.
+test("phone host swap keeps attention navigation over the focused session", async () => {
+  vi.stubGlobal("innerWidth", 1000);
+  const setMobile = installSwitchableViewport();
+  const client = navClient();
+  client.on("thread/read", ({ ref }) => {
+    if (!ref) throw new Error("thread/read requires ref");
+    return { thread: { ...threadStartResponse(ref).thread, name: ref } };
+  });
+  client.on("thread/unsubscribe", () => ({}));
+  client.on("evener/thread/activity/read", answerActivityRead);
+  installNeedsYouRows(["local:ny1", "local:ny2"]);
+  window.history.pushState({}, "", "/s/local%3Aowner");
+  installLocationForRoute("local:owner");
+  render(<AppShell client={client} />);
+
+  const editor = await screen.findByRole("textbox", { name: "Message" });
+  // The desktop mount autofocuses this editor. Focus alone no longer hides the
+  // control, so the same conversation offers it without a reader's click.
+  await waitFor(() => expect(document.activeElement).toBe(editor));
+  await screen.findByTestId("next-needs-you-next");
+
+  act(() => setMobile(true));
+  await screen.findByRole("button", { name: "Back" });
+  await screen.findByRole("textbox", { name: "Message" });
+  const owner = paneFor("local:owner");
+  expect(workspaceStore.getState().focusedPaneId).toBe(owner?.id);
+  await screen.findByTestId("next-needs-you-next");
+});

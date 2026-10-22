@@ -135,6 +135,11 @@ export interface ComposerProps {
   // yank keyboard focus away from what the reader is doing.
   focused: boolean;
   source: ComposerSourceState;
+  // An in-progress IME composition, reported for the floating attention
+  // control's visibility. Focus alone never counts: a session open autofocuses
+  // this editor, and hiding the control then would take it away before the
+  // reader could use it. Draft content alone is never editing either.
+  onEditingChange?: (editing: boolean) => void;
 }
 
 const CLASS = {
@@ -186,7 +191,7 @@ type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
 // shallow-equality bailout for a value that carries no information.
 const NO_TURN_VERBS: SessionMenuTurnVerbs = Object.freeze({});
 
-export function Composer({ ref, paneId, focused, source }: ComposerProps) {
+export function Composer({ ref, paneId, focused, source, onEditingChange }: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
   const recoveryRequired = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
   // Delivery-uncertain rows do NOT fence Send here: they clear the resume-only
@@ -208,6 +213,31 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   const toasts = useToasts();
   const isMobile = useIsMobile();
   const editorRef = useRef<SkillEditorHandle>(null);
+  // An in-progress IME composition drives the floating attention control's
+  // editing suppression. Editor focus never counts: a session open autofocuses
+  // this editor, and hiding the control then would take it away before the
+  // reader could use it. Draft content alone is never "editing" either, and
+  // broad footer focus (attachment buttons, the session menu) does not count.
+  const composingRef = useRef(false);
+  const editingReportedRef = useRef(false);
+  const onEditingChangeRef = useRef(onEditingChange);
+  onEditingChangeRef.current = onEditingChange;
+  const reportEditing = useCallback(() => {
+    const editing = composingRef.current;
+    if (editingReportedRef.current === editing) return;
+    editingReportedRef.current = editing;
+    onEditingChangeRef.current?.(editing);
+  }, []);
+  // A composer that unmounts mid-composition (a loading face replaces the live
+  // subtree) must not leave the seat believing a composition is still running.
+  useEffect(
+    () => () => {
+      if (!editingReportedRef.current) return;
+      editingReportedRef.current = false;
+      onEditingChangeRef.current?.(false);
+    },
+    [],
+  );
   const fileInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
   const submitButtonRef = useRef<HTMLButtonElement>(null);
@@ -580,6 +610,15 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     wasAskPendingRef.current = askPending;
     if (wasPending && !askPending) setReadyAnnouncement("Message composer ready.");
   }, [askPending]);
+
+  // A pending question removes the editor from the surface without a
+  // composition end; clear the composition report so the control returns
+  // automatically when the batch resolves.
+  useEffect(() => {
+    if (!askPending) return;
+    composingRef.current = false;
+    reportEditing();
+  }, [askPending, reportEditing]);
 
   // Runs in the commit that carries a scheduled edit, after any text it
   // changed has reached the DOM through React's own controlled-value
@@ -1441,8 +1480,25 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
 
   // Slash options prevent mousedown's default focus transfer, so only leaving
   // the editor closes its completion menu. The card owns collapse separately.
+  function isEditorEvent(target: EventTarget | null): boolean {
+    const element = target instanceof Element ? target : null;
+    return element !== null && element.closest('[role="textbox"]') !== null && !!formRef.current?.contains(element);
+  }
+
   function handleEditorBlur(): void {
     setSlashToken(null);
+  }
+
+  function handleEditorCompositionStart(event: { target: EventTarget | null }): void {
+    if (!isEditorEvent(event.target)) return;
+    composingRef.current = true;
+    reportEditing();
+  }
+
+  function handleEditorCompositionEnd(event: { target: EventTarget | null }): void {
+    if (!isEditorEvent(event.target)) return;
+    composingRef.current = false;
+    reportEditing();
   }
 
   return (
@@ -1558,6 +1614,8 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
             onSubmit={handleFormSubmit}
             data-testid="composer-form"
             data-mode={ended ? "follow-up" : "message"}
+            onCompositionStart={handleEditorCompositionStart}
+            onCompositionEnd={handleEditorCompositionEnd}
           >
             <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
               <PromptCard

@@ -29,7 +29,7 @@ The control floats over the reading area, as selected. Provide enough transcript
 
 Show the control only for the actual focused conversation. A cascade's focused leaf may participate, but parent columns and other visible panes must not duplicate the affordance. Do not use viewport width or a desktop-only header/footer as the availability gate.
 
-Hide it while the composer is being edited, while a question or approval needs action in the focused conversation, and while transcript Find or another blocking modal owns interaction. A saved but unfocused draft alone does not hide it. Return it automatically when the suppressing condition clears. These visibility rules are proposed implementation choices, based on native behavior, rather than additional decisions Jesse specified.
+Hide it only while an IME composition is in progress, while a question or approval needs action in the focused conversation, and while transcript Find or another blocking modal owns interaction. Editor focus never hides it, and neither does a saved draft: a session open autofocuses its composer, so hiding on focus would take the control away before the reader could use it. Return it automatically when the suppressing condition clears. Jesse's later product ruling replaced the original editing rule.
 
 ### Next and More
 
@@ -96,7 +96,7 @@ Follow `docs/developing-evener/testing.md`. Tests assert behavior, identity, foc
 
 1. **Shared action:** server ordering, current-session exclusion, wrap, cold data, page boundaries, valid empty results, failed reads, explicit retry, reconnect/invalidation recovery, and loaded-count versus total handling.
 2. **Interaction:** tap, keyboard, More list, hold, movement/cancel/unmount, post-hold click suppression, stale selection, focus restoration, and leaving-then-returning while a request is pending.
-3. **Visibility:** only the focused reader at every width; typing, question, approval, Find and modal suppression; automatic return afterward; a saved draft without editor focus.
+3. **Visibility:** only the focused reader at every width; IME composition, question, approval, Find and modal suppression; automatic return afterward; a focused composer and a saved draft stay visible.
 4. **Preservation:** a real Next → Next → Back → Forward journey retains structured draft and image bytes, pending attachment work, away-reading position and independent panes. Include existing targets, secondary/cascade origins, explicit source closure, and phone/desktop host swaps.
 5. **Geometry:** 320, 390, 700, 899, 900, 1024 and 1400 CSS-pixel widths; long titles, list bounds, viewport/keyboard resize, unchanged Send/Stop hit targets, interaction with the New Content control, and reachable transcript-end content beneath the floating controls.
 6. **Producer/recovery journey:** use the existing production-browser harness with real daemon/hub/SPA and only a scripted LLM. Include later-page targets, real reconnect after multiple pages, and no late navigation after explicit user movement.

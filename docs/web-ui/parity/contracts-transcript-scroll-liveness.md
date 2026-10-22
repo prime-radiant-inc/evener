@@ -49,6 +49,20 @@ destination anchor geometry. They also check source structured draft text,
 skill/command mentions and that restoration does not focus the editor.
 Browser layout and keyboard behavior require separate browser verification.
 
+## Floating attention control end clearance
+
+- The floating Next-needs-you control and the New Content affordance are one
+  measured stack above the composer, with New Content above Next. The stack's
+  committed height is rendered as end clearance inside the virtual list, as a
+  synthetic trailing row that the list's row count includes, so the final
+  transcript row scrolls clear of both controls.
+- A reader following the end stays at the end as the control appears and
+  disappears; a reader scrolled away keeps the same away-reading position. The
+  clearance is scrollable content inside the scroll port, not chrome floating
+  over it.
+- The clearance changes no transcript item or turn count, so it neither raises
+  the unseen-content count nor toggles the New Content pill's visibility.
+
 ## 1. Base event-replay contract
 
 - A cold event replay renders exactly one user message with its text and any inline data-URL image thumbnail. (test-renderer.js)

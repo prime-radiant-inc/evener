@@ -1,0 +1,385 @@
+// The floating Next-needs-you control. One per focused conversation, rendered
+// above the composer by FlowOverlay (or by ConversationBody's dormant dock).
+// It owns only "the list is open" and "a pointer hold is in progress"; every
+// session list, ordering, validity and navigation decision belongs to the
+// shared needs-you controller.
+import type { NavigationSessionSummary } from "@evener/appwire-client";
+import type {
+  ReactElement,
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+} from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useNeedsYou } from "../../shell/NeedsYouProvider";
+import { Button, IconButton, ListRow, Popover } from "../../widgets";
+import { requireClass } from "../../widgets/internal/requireClass";
+import styles from "./nextNeedsYou.module.css";
+
+export interface NextNeedsYouProps {
+  sessionRef: string;
+  viewId: string;
+  hidden: boolean;
+}
+
+// Same hold contract as widgets/hovercard's long press: 500ms with 10 CSS
+// pixels of drift tolerance. The click window that follows a lifted press is
+// the same 350ms backstop HoverCard arms.
+const HOLD_MS = 500;
+const HOLD_SLOP_PX = 10;
+const CLICK_SUPPRESS_BACKSTOP_MS = 350;
+
+const CLASS = {
+  root: requireClass(styles.root, "nextNeedsYou.module.css", "root"),
+  nextSlot: requireClass(styles.nextSlot, "nextNeedsYou.module.css", "nextSlot"),
+  nextLead: requireClass(styles.nextLead, "nextNeedsYou.module.css", "nextLead"),
+  nextLabel: requireClass(styles.nextLabel, "nextNeedsYou.module.css", "nextLabel"),
+  ellipsis: requireClass(styles.ellipsis, "nextNeedsYou.module.css", "ellipsis"),
+  list: requireClass(styles.list, "nextNeedsYou.module.css", "list"),
+};
+
+function attentionReason(summary: NavigationSessionSummary): string | undefined {
+  if (summary.approval_pending) return "approval";
+  if (summary.ask_pending) return "question";
+  if (summary.failure) return "failure";
+  return undefined;
+}
+
+function attentionReasonLabel(reason: string | undefined): string | undefined {
+  if (reason === "approval") return "Approval pending";
+  if (reason === "question") return "Question pending";
+  if (reason === "failure") return "Failed";
+  return undefined;
+}
+
+export function NextNeedsYou({ sessionRef, viewId, hidden }: NextNeedsYouProps): ReactElement | null {
+  const { controller, snapshot } = useNeedsYou();
+  const [listOpen, setListOpen] = useState(false);
+  const listOpenRef = useRef(listOpen);
+  listOpenRef.current = listOpen;
+
+  const nextChoice = snapshot.choices.find((choice) => choice.summary.ref === snapshot.nextRef);
+  const nextTitle = nextChoice?.summary.title?.trim() ?? "";
+  const otherChoices = snapshot.choices.filter((choice) => choice.summary.ref !== sessionRef);
+  // A loaded page holding only the current session is not the whole queue:
+  // keep the demand control visible while another page may exist, a read
+  // failed, or a page is already loading. With nothing known at all (no
+  // manifest, no rows), stay hidden until the queue can say anything real.
+  const visible =
+    !hidden &&
+    !snapshot.blocked &&
+    (snapshot.nextRef !== null ||
+      snapshot.readFailed ||
+      (snapshot.canLoadMore && (snapshot.choices.length > 0 || snapshot.loading)));
+
+  const moreRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLElement>(null);
+  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const suppressBackstopRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const pressRef = useRef<{ x: number; y: number; pointerId: number } | null>(null);
+  const holdCompletedRef = useRef(false);
+  const suppressClickRef = useRef(false);
+  const restoreFocusRef = useRef(false);
+  const gestureCleanupRef = useRef<(() => void) | null>(null);
+  const visibilityCleanupRef = useRef<(() => void) | null>(null);
+
+  const clearHoldTimer = useCallback(() => {
+    clearTimeout(holdTimerRef.current);
+    holdTimerRef.current = undefined;
+    // The visibility watch exists only while a hold is pending. Completing,
+    // cancelling or unmounting a hold all pass through here.
+    const detachVisibility = visibilityCleanupRef.current;
+    visibilityCleanupRef.current = null;
+    detachVisibility?.();
+  }, []);
+
+  const clearSuppressBackstop = useCallback(() => {
+    clearTimeout(suppressBackstopRef.current);
+    suppressBackstopRef.current = undefined;
+  }, []);
+
+  const detachGesture = useCallback(() => {
+    const cleanup = gestureCleanupRef.current;
+    if (cleanup === null) return;
+    gestureCleanupRef.current = null;
+    cleanup();
+  }, []);
+
+  // A pending hold ends without opening anything. A hold that already
+  // completed keeps its one-click suppression until the release click or the
+  // backstop consumes it.
+  const cancelHold = useCallback(() => {
+    clearHoldTimer();
+    pressRef.current = null;
+    detachGesture();
+    if (!holdCompletedRef.current) {
+      suppressClickRef.current = false;
+      clearSuppressBackstop();
+    }
+  }, [clearHoldTimer, clearSuppressBackstop, detachGesture]);
+
+  const armGesture = useCallback(() => {
+    if (gestureCleanupRef.current !== null) return;
+    const owns = (event: PointerEvent) => {
+      const press = pressRef.current;
+      return press !== null && press.pointerId === event.pointerId;
+    };
+    const onMove = (event: PointerEvent) => {
+      if (!owns(event)) return;
+      const press = pressRef.current;
+      if (!press) return;
+      if (Math.hypot(event.clientX - press.x, event.clientY - press.y) > HOLD_SLOP_PX) cancelHold();
+    };
+    const onUp = (event: PointerEvent) => {
+      if (!owns(event)) return;
+      cancelHold();
+    };
+    const onCancel = (event: PointerEvent) => {
+      if (!owns(event)) return;
+      holdCompletedRef.current = false;
+      cancelHold();
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    gestureCleanupRef.current = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+    };
+  }, [cancelHold]);
+
+  const closeList = useCallback((restoreFocus: boolean) => {
+    restoreFocusRef.current = restoreFocus;
+    setListOpen(false);
+  }, []);
+
+  const openList = useCallback(() => {
+    restoreFocusRef.current = false;
+    setListOpen(true);
+  }, []);
+
+  function handleNextPointerDown(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (event.button !== 0 || listOpenRef.current) return;
+    // A second pointer never takes over an active gesture.
+    if (pressRef.current !== null) return;
+    holdCompletedRef.current = false;
+    suppressClickRef.current = false;
+    clearSuppressBackstop();
+    pressRef.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
+    armGesture();
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // jsdom has no pointer capture; the window listeners own the gesture.
+    }
+    holdTimerRef.current = setTimeout(() => {
+      clearHoldTimer();
+      holdCompletedRef.current = true;
+      suppressClickRef.current = true;
+      openList();
+      clearSuppressBackstop();
+      suppressBackstopRef.current = setTimeout(() => {
+        suppressBackstopRef.current = undefined;
+        suppressClickRef.current = false;
+      }, CLICK_SUPPRESS_BACKSTOP_MS);
+    }, HOLD_MS);
+    // A page that goes hidden loses the pointer, so the pending hold ends like
+    // an early release: the timer never fires and the next click is not
+    // consumed as the completed hold's.
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "hidden") return;
+      holdCompletedRef.current = false;
+      cancelHold();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    visibilityCleanupRef.current = () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }
+
+  function handleNextClick(event: ReactMouseEvent<HTMLButtonElement>) {
+    if (suppressClickRef.current) {
+      // The one click a completed hold still emits belongs to the hold.
+      suppressClickRef.current = false;
+      clearSuppressBackstop();
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    if (listOpenRef.current) closeList(false);
+    void controller.next();
+  }
+
+  function handleLostPointerCapture() {
+    if (holdTimerRef.current === undefined) return;
+    holdCompletedRef.current = false;
+    cancelHold();
+  }
+
+  function handleListKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeList(true);
+  }
+
+  // A visible-to-hidden transition cancels the pending UI intent. A later
+  // keyboard action is still governed by the shell's editable-target policy;
+  // this component installs no global shortcut handler.
+  const wasVisibleRef = useRef(visible);
+  useLayoutEffect(() => {
+    const wasVisible = wasVisibleRef.current;
+    wasVisibleRef.current = visible;
+    if (!wasVisible || visible) return;
+    // The control's own pending intent (a hold, an open list) ends here. The
+    // shared controller additionally drops any deferred navigation it owns so
+    // a late reply cannot act for a control the reader can no longer see.
+    controller.cancel();
+    holdCompletedRef.current = false;
+    suppressClickRef.current = false;
+    clearSuppressBackstop();
+    cancelHold();
+    restoreFocusRef.current = false;
+    if (listOpenRef.current) setListOpen(false);
+  }, [visible, controller, cancelHold, clearSuppressBackstop]);
+
+  // Focus moves into the independent list when it opens.
+  useEffect(() => {
+    if (!listOpen) return;
+    const list = listRef.current;
+    if (!list) return;
+    const first = list.querySelector<HTMLElement>("button:not([disabled])");
+    (first ?? list).focus();
+  }, [listOpen]);
+
+  // Escape restores the trigger once the panel has unmounted. Outside and
+  // scroll dismissal leave focus wherever the click or scroll put it.
+  useEffect(() => {
+    if (listOpen) return;
+    if (!restoreFocusRef.current) return;
+    restoreFocusRef.current = false;
+    moreRef.current?.focus();
+  }, [listOpen]);
+
+  // closeOnScroll=false preserves the list's own scrolling, so outer scroll
+  // and resize dismissal is this component's. The anchor disappearing ends
+  // the panel with the component.
+  useEffect(() => {
+    if (!listOpen) return;
+    const onScroll = (event: Event) => {
+      const target = event.target;
+      if (target instanceof Node && listRef.current?.contains(target)) return;
+      closeList(false);
+    };
+    const onResize = () => closeList(false);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [listOpen, closeList]);
+
+  useEffect(
+    () => () => {
+      holdCompletedRef.current = false;
+      clearHoldTimer();
+      clearSuppressBackstop();
+      detachGesture();
+    },
+    [clearHoldTimer, clearSuppressBackstop, detachGesture],
+  );
+
+  if (!visible) return null;
+
+  const nextAccessibleName = nextTitle ? `Next needs you: ${nextTitle}` : "Next needs you";
+
+  return (
+    <div className={CLASS.root} data-testid="next-needs-you" data-view-id={viewId} data-session-ref={sessionRef}>
+      <div className={CLASS.nextSlot}>
+        <Button
+          variant="secondary"
+          size="md"
+          data-testid="next-needs-you-next"
+          aria-label={nextAccessibleName}
+          onPointerDown={handleNextPointerDown}
+          onPointerCancel={() => {
+            holdCompletedRef.current = false;
+            cancelHold();
+          }}
+          onLostPointerCapture={handleLostPointerCapture}
+          onClick={handleNextClick}
+        >
+          <span className={CLASS.nextLead}>Next</span>
+          {nextTitle !== "" && <span className={CLASS.nextLabel}>{nextTitle}</span>}
+        </Button>
+      </div>
+      <Popover
+        open={listOpen}
+        onClose={() => closeList(false)}
+        autoFocus={false}
+        closeOnScroll={false}
+        data-testid="next-needs-you-list"
+        trigger={
+          <IconButton
+            ref={moreRef}
+            data-testid="next-needs-you-more"
+            label="More needs-you sessions"
+            aria-haspopup="true"
+            aria-expanded={listOpen}
+            icon={
+              <span className={CLASS.ellipsis} aria-hidden="true">
+                …
+              </span>
+            }
+            variant="secondary"
+            size="md"
+            onClick={() => {
+              if (listOpenRef.current) closeList(false);
+              else openList();
+            }}
+          />
+        }
+      >
+        <section
+          ref={listRef}
+          className={CLASS.list}
+          aria-label="Needs you sessions"
+          tabIndex={-1}
+          onKeyDown={handleListKeyDown}
+        >
+          {otherChoices.map((choice) => {
+            const reason = attentionReason(choice.summary);
+            return (
+              <ListRow
+                key={choice.summary.ref}
+                data-testid="next-needs-you-row"
+                data-ref={choice.summary.ref}
+                data-reason={reason}
+                variant="plain"
+                label={choice.summary.title || choice.summary.ref}
+                meta={attentionReasonLabel(reason)}
+                onSelect={() => {
+                  closeList(false);
+                  controller.select(choice.summary.ref);
+                }}
+              />
+            );
+          })}
+          {snapshot.canLoadMore && (
+            <Button
+              variant="quiet"
+              size="sm"
+              data-testid="next-needs-you-load-more"
+              disabled={snapshot.loading}
+              onClick={() => void controller.loadMore()}
+            >
+              Load more
+            </Button>
+          )}
+        </section>
+      </Popover>
+    </div>
+  );
+}
