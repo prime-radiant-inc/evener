@@ -396,6 +396,49 @@ func TestHubRestartOnlyAbortsWhileAnotherInstallerHoldsTheLock(t *testing.T) {
 	}
 }
 
+// TestLaunchBinaryDigestInvalidatesOnSameSizeReplacement proves the digest
+// cache notices a replaced executable even when the new bytes have the same
+// size and the old mtime: the path now names a different file.
+func TestLaunchBinaryDigestInvalidatesOnSameSizeReplacement(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "evener")
+	first := []byte("#!/bin/sh\necho first\n")
+	second := []byte("#!/bin/sh\necho secnd\n")
+	if len(first) != len(second) {
+		t.Fatalf("test data lengths differ: %d != %d", len(first), len(second))
+	}
+	if err := os.WriteFile(path, first, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstDigest, err := launchBinaryDigest(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tmp := filepath.Join(dir, "replacement")
+	if err := os.WriteFile(tmp, second, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(tmp, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatal(err)
+	}
+
+	secondDigest, err := launchBinaryDigest(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondDigest == firstDigest {
+		t.Fatal("digest cache returned the pre-replacement bytes")
+	}
+}
+
 func TestHubRestartOnlyAbortsWhenBinarySwapped(t *testing.T) {
 	previousDelay := hubRestartDelay
 	hubRestartDelay = 0

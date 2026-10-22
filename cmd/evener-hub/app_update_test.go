@@ -60,7 +60,7 @@ func setBuild(t *testing.T, sha, channel string) {
 	hubLaunchShareBinDir = ""
 	hubLaunchBinarySHA256 = ""
 	launchDigestMu.Lock()
-	launchDigestKey, launchDigest = "", ""
+	launchDigestInfo, launchDigest = nil, ""
 	launchDigestMu.Unlock()
 	// Default the check seam to an offline "update available" stub so
 	// hubUpdateApply's pre-install guard never hits live GitHub (AGENTS.md
@@ -274,6 +274,7 @@ func TestHubUpdateApplyDevBuildRefused(t *testing.T) {
 
 func TestHubUpdateApplyInstallsThenSchedulesRestartWithHubArgs(t *testing.T) {
 	setBuild(t, "3b1c5f8", "snapshot")
+	resetHubRestartAddr(t)
 	stubUpdateAvailable(t)
 	previousArgs := hubProcessArgs
 	hubProcessArgs = func() []string { return []string{"/old/evener", "hub", "-addr", "0.0.0.0:9180"} }

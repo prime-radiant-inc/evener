@@ -27,9 +27,9 @@ var hubLaunchShareBinDir string
 var hubLaunchBinarySHA256 string
 
 var (
-	launchDigestMu  sync.Mutex
-	launchDigestKey string
-	launchDigest    string
+	launchDigestMu   sync.Mutex
+	launchDigestInfo os.FileInfo
+	launchDigest     string
 )
 
 var errHubRestartLaunchPath = errors.New("hub launch path is unavailable")
@@ -170,10 +170,12 @@ func launchBinaryDigest(path string) (string, error) {
 	if !info.Mode().IsRegular() {
 		return "", errors.New("launch path is not a regular file")
 	}
-	key := fmt.Sprintf("%s:%d:%d", path, info.Size(), info.ModTime().UnixNano())
 	launchDigestMu.Lock()
 	defer launchDigestMu.Unlock()
-	if key == launchDigestKey {
+	// Compare file identity as well as size and mtime: a replacement through a
+	// new inode with the same size and preserved mtime must be rehashed.
+	if launchDigestInfo != nil && os.SameFile(launchDigestInfo, info) &&
+		launchDigestInfo.Size() == info.Size() && launchDigestInfo.ModTime().Equal(info.ModTime()) {
 		return launchDigest, nil
 	}
 	data, err := io.ReadAll(f)
@@ -181,7 +183,7 @@ func launchBinaryDigest(path string) (string, error) {
 		return "", err
 	}
 	sum := sha256.Sum256(data)
-	launchDigestKey, launchDigest = key, hex.EncodeToString(sum[:])
+	launchDigestInfo, launchDigest = info, hex.EncodeToString(sum[:])
 	return launchDigest, nil
 }
 

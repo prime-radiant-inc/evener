@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -403,6 +404,16 @@ func canonicalInvocationPath(argv0 string) string {
 var hubBoundAddr string
 var hubBindWasEphemeral bool
 
+// isEphemeralAddr reports a listen address that asks the OS for a port: an
+// empty port or port 0, for a host name, IPv4, or bracketed IPv6.
+func isEphemeralAddr(addr string) bool {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	return port == "" || port == "0"
+}
+
 func hubRestartArgs(args []string) []string {
 	if len(args) == 0 {
 		return nil
@@ -417,14 +428,14 @@ func hubRestartArgs(args []string) []string {
 	for i, arg := range out {
 		switch {
 		case (arg == "-addr" || arg == "--addr") && i+1 < len(out):
-			if strings.HasSuffix(out[i+1], ":0") {
+			if isEphemeralAddr(out[i+1]) {
 				out[i+1] = hubBoundAddr
 				rewrote = true
 			}
-		case strings.HasPrefix(arg, "-addr=") && strings.HasSuffix(arg, ":0"):
+		case strings.HasPrefix(arg, "-addr=") && isEphemeralAddr(strings.TrimPrefix(arg, "-addr=")):
 			out[i] = "-addr=" + hubBoundAddr
 			rewrote = true
-		case strings.HasPrefix(arg, "--addr=") && strings.HasSuffix(arg, ":0"):
+		case strings.HasPrefix(arg, "--addr=") && isEphemeralAddr(strings.TrimPrefix(arg, "--addr=")):
 			out[i] = "--addr=" + hubBoundAddr
 			rewrote = true
 		}
