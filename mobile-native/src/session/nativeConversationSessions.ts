@@ -14,7 +14,7 @@ import type { AppwireClientLike, TranscriptDisplayConfigV1 } from "@evener/appwi
 import { createActivityStore } from "../../../mobile/src/state/activity";
 import { createConversationStore, type LiveActivitySink } from "../../../mobile/src/state/conversation";
 import { createConversationMutationPendingPort } from "../../../mobile/src/state/conversationMutation";
-import { createConversationService, type LiveConversationService } from "../../../mobile/src/services/conversation";
+import { createConversationService } from "../../../mobile/src/services/conversation";
 import { createDurableSubmitter, createNativeMutationHost, type NativeMutationHost } from "../nativeMutationHost";
 import {
 	getNativeMutationRuntime,
@@ -28,6 +28,10 @@ import { detailLevels as levelsForHub } from "./nativeDetailLevels";
 
 export type NativeConversationStore = ReturnType<typeof createConversationStore>;
 export type NativeConversationActivity = ReturnType<typeof createActivityStore>;
+/** The service factory's complete return type: screens need the recovery,
+ * catalog, clear and fork actions as well as the base conversation verbs. The
+ * entry hands out this exact object; no per-view adapter narrows it. */
+export type NativeConversationService = ReturnType<typeof createConversationService<NativeMutationReadLease>>;
 
 /** Placeholder for Task 5d: the one entry-owned read-retry actor. It owns no
  * timer yet; views never create their own. Retirement cancels it before the
@@ -50,19 +54,23 @@ export interface NativeConversationSession {
 	/** The one live host/target registration, or null while offline. */
 	readonly liveHost: NativeMutationHost | null;
 	/** The one live service for the current client binding, or null offline. */
-	readonly service: LiveConversationService | null;
+	readonly service: NativeConversationService | null;
 	readonly displayConfig: TranscriptDisplayConfigV1 | null;
 	readonly readActor: NativeConversationReadActor;
 	readonly retired: boolean;
 	readonly attachmentCount: number;
-	/** Settles when the latest binding's authoritative read settles, including
-	 * one a retirement fenced: a test or the future read actor can await the
-	 * exact late reply instead of draining arbitrary microtasks. */
+	/** Settles when every authoritative read this entry has started settles,
+	 * including one a retirement or client replacement fenced: a test or the
+	 * future read actor can await the exact late reply instead of draining
+	 * arbitrary microtasks. */
 	readSettled(): Promise<void>;
 }
 
 export interface NativeConversationAttachment {
 	readonly entry: NativeConversationSession;
+	/** Whether this exact handle still owns its entry. A released handle is
+	 * dead while a sibling's attachment keeps the entry alive. */
+	readonly live: boolean;
 	/** Retention demand only: the store follows the live end while every
 	 * attached reader does. */
 	setFollowingLiveEnd(following: boolean): void;
@@ -104,7 +112,7 @@ class SessionEntry implements NativeConversationSession {
 	#unsubscribeStore: () => void;
 	#attachments = new Map<symbol, AttachmentState>();
 	#liveHost: NativeMutationHost | null = null;
-	#service: LiveConversationService | null = null;
+	#service: NativeConversationService | null = null;
 	#bindingClient: AppwireClientLike | null = null;
 	#readSettled: Promise<void> = Promise.resolve();
 	#retired = false;
@@ -155,7 +163,7 @@ class SessionEntry implements NativeConversationSession {
 		return this.#liveHost;
 	}
 
-	get service(): LiveConversationService | null {
+	get service(): NativeConversationService | null {
 		return this.#service;
 	}
 
@@ -183,10 +191,14 @@ class SessionEntry implements NativeConversationSession {
 			// restoration settles.
 			following: false,
 		};
+		const attached = () => !this.#retired && this.#attachments.get(token) === state;
 		const handle: NativeConversationAttachment = {
 			entry: this,
+			get live() {
+				return attached();
+			},
 			setFollowingLiveEnd: (following) => {
-				if (this.#retired || this.#attachments.get(token) !== state) return;
+				if (!attached()) return;
 				state.following = following;
 				this.#applyFollowing();
 			},
@@ -271,7 +283,6 @@ class SessionEntry implements NativeConversationSession {
 		this.#bindingClient = null;
 		this.#liveHost = null;
 		this.#service = null;
-		this.#readSettled = Promise.resolve();
 		// Fence the store binding before releasing the service/host, so a late
 		// response from the old client can never reconcile the replacement.
 		this.store.getState().suspendProjected();
@@ -306,7 +317,9 @@ class SessionEntry implements NativeConversationSession {
 			state.ref === this.ref && state.conversation !== null
 				? state.resumeProjected(service, this.activitySink, this.ref)
 				: state.openProjected(service, this.activitySink, this.ref);
-		this.#readSettled = read.catch(() => undefined);
+		// Keep every read this entry started in the settle chain: a replaced or
+		// retired binding's late reply is exactly what a caller may need to await.
+		this.#readSettled = Promise.allSettled([this.#readSettled, read]).then(() => undefined);
 		// openProjected/resumeProjected retire the durable pending seam; the
 		// entry reinstalls it for the binding that just started (and the store
 		// subscription below covers later thread opens, including /clear).

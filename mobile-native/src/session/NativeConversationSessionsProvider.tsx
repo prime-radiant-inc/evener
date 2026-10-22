@@ -42,13 +42,21 @@ export function useNativeConversationSessions(): NativeConversationSessions {
  * the first attachment and commits a fresh one, with no leaked refcount. */
 export function useNativeConversationAttachment(hubId: string, ref: string): NativeConversationAttachment | null {
 	const sessions = useNativeConversationSessions();
-	const [attachment, setAttachment] = useState<NativeConversationAttachment | null>(null);
+	// The committed handle AND the key it belongs to. A key-change render still
+	// has the previous render's state until its own layout effect runs; handing
+	// that handle out would let the new session's view act against the old
+	// entry. Only an exact key match is a live attachment for this caller.
+	const [committed, setCommitted] = useState<{
+		hubId: string;
+		ref: string;
+		handle: NativeConversationAttachment;
+	} | null>(null);
 	useLayoutEffect(() => {
 		const handle = sessions.attach(hubId, ref);
-		setAttachment(handle);
+		setCommitted({ hubId, ref, handle });
 		return () => {
 			handle.release();
 		};
 	}, [sessions, hubId, ref]);
-	return attachment;
+	return committed !== null && committed.hubId === hubId && committed.ref === ref ? committed.handle : null;
 }
