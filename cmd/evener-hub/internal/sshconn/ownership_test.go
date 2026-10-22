@@ -63,11 +63,11 @@ func ownerRunner(t *testing.T, commands []ownerCommand) (*fakeRunner, *int) {
 			if want.command == "other-lock" {
 				root = "/srv/other-state"
 			}
-			exact := "lock=" + root + "/hub.lock; identity=$(stat -Lc '%d %i' \"$lock\") || exit; set -- $identity; [ \"$#\" -eq 2 ] || exit 1; " +
+			exact := "lock=" + root + "/hub.lock; identity=$(test ! -L \"$lock\" && test -f \"$lock\" && stat -Lc '%d %i' \"$lock\") || exit; set -- $identity; [ \"$#\" -eq 2 ] || exit 1; " +
 				"dev=$1; ino=$2; major=$(( ((dev >> 8) & 4095) | ((dev >> 32) & 4294963200) )); minor=$(( (dev & 255) | ((dev >> 12) & 4294967040) )); key=$(printf '%02x:%02x:%s' \"$major\" \"$minor\" \"$ino\"); " +
-				"for attempt in 1 2 3; do current=$(stat -Lc '%d %i' \"$lock\") || exit; [ \"$current\" = \"$identity\" ] || exit 1; " +
+				"for attempt in 1 2 3; do current=$(test ! -L \"$lock\" && test -f \"$lock\" && stat -Lc '%d %i' \"$lock\") || exit; [ \"$current\" = \"$identity\" ] || exit 1; " +
 				"owners=$(awk -v key=\"$key\" '$2 == \"FLOCK\" && $3 == \"ADVISORY\" && $4 == \"WRITE\" && $6 == key { print $5 }' /proc/locks && printf '.') || exit; owners=${owners%.}; " +
-				"current=$(stat -Lc '%d %i' \"$lock\") || exit; [ \"$current\" = \"$identity\" ] || exit 1; if [ -n \"$owners\" ]; then printf '%s' \"$owners\"; exit; fi; done"
+				"current=$(test ! -L \"$lock\" && test -f \"$lock\" && stat -Lc '%d %i' \"$lock\") || exit; [ \"$current\" = \"$identity\" ] || exit 1; if [ -n \"$owners\" ]; then printf '%s' \"$owners\"; exit; fi; done"
 			if got != exact {
 				t.Fatalf("not a selected-root lock probe: %s", got)
 			}

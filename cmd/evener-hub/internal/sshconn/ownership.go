@@ -488,15 +488,15 @@ func (m *Manager) ownerRead(ctx context.Context, host hostreg.Host, remote strin
 // This mitigates availability, not snapshot completeness. Pin the original
 // identity before/after each read, including immediately before acceptance.
 func selectedLockRemote(root string) string {
-	return "lock=" + shellquote.RemoteWord(path.Join(root, "hub.lock")) + "; identity=$(stat -Lc '%d %i' \"$lock\") || exit; set -- $identity; [ \"$#\" -eq 2 ] || exit 1; " +
+	return "lock=" + shellquote.RemoteWord(path.Join(root, "hub.lock")) + "; identity=$(test ! -L \"$lock\" && test -f \"$lock\" && stat -Lc '%d %i' \"$lock\") || exit; set -- $identity; [ \"$#\" -eq 2 ] || exit 1; " +
 		"dev=$1; ino=$2; major=$(( ((dev >> 8) & 4095) | ((dev >> 32) & 4294963200) )); minor=$(( (dev & 255) | ((dev >> 12) & 4294967040) )); " +
 		"key=$(printf '%02x:%02x:%s' \"$major\" \"$minor\" \"$ino\"); " +
 		"for attempt in 1 2 3; do " +
-		"current=$(stat -Lc '%d %i' \"$lock\") || exit; [ \"$current\" = \"$identity\" ] || exit 1; " +
+		"current=$(test ! -L \"$lock\" && test -f \"$lock\" && stat -Lc '%d %i' \"$lock\") || exit; [ \"$current\" = \"$identity\" ] || exit 1; " +
 		// The sentinel preserves trailing newlines so malformed nonempty output
 		// cannot become empty through command substitution and trigger a retry.
 		"owners=$(awk -v key=\"$key\" '$2 == \"FLOCK\" && $3 == \"ADVISORY\" && $4 == \"WRITE\" && $6 == key { print $5 }' /proc/locks && printf '.') || exit; owners=${owners%.}; " +
-		"current=$(stat -Lc '%d %i' \"$lock\") || exit; [ \"$current\" = \"$identity\" ] || exit 1; " +
+		"current=$(test ! -L \"$lock\" && test -f \"$lock\" && stat -Lc '%d %i' \"$lock\") || exit; [ \"$current\" = \"$identity\" ] || exit 1; " +
 		"if [ -n \"$owners\" ]; then printf '%s' \"$owners\"; exit; fi; done"
 }
 

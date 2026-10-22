@@ -21,7 +21,7 @@ import (
 // The process, service and endpoint are strict command fixtures. The selected
 // lock files, flock and /proc fd device/inode comparison are real Linux evidence.
 func TestSystemdFallbackRequiresSelectedRootEvidence(t *testing.T) {
-	for _, name := range []string{"retarget-invalid-lock", "retarget-other-lock", "retarget-symlink-lock", "unlocked-read-only", "shared-lock", "lock-query-unavailable", "lock-query-ambiguous", "candidate-holds-selected-lock", "retained-witness", "same-root-invalid-no-witness", "changed-birth-witness", "changed-registration-witness", "healthy-fallback", "primary-lock-path"} {
+	for _, name := range []string{"retarget-invalid-lock", "retarget-other-lock", "retarget-symlink-lock", "retarget-primary-symlink-lock", "unlocked-read-only", "shared-lock", "lock-query-unavailable", "lock-query-ambiguous", "candidate-holds-selected-lock", "retained-witness", "same-root-invalid-no-witness", "changed-birth-witness", "changed-registration-witness", "healthy-fallback", "primary-lock-path"} {
 		t.Run(name, func(t *testing.T) {
 			rootA, rootB := filepath.Join(t.TempDir(), "root A"), filepath.Join(t.TempDir(), "root B")
 			for _, root := range []string{rootA, rootB} {
@@ -54,6 +54,9 @@ func TestSystemdFallbackRequiresSelectedRootEvidence(t *testing.T) {
 					report.State, report.Running = "unavailable", nil
 				}
 				if remote == selectedLockRemote(currentRoot) {
+					if name == "retarget-primary-symlink-lock" {
+						return exec.CommandContext(ctx, "/bin/sh", "-c", remote).Output()
+					}
 					if fallback && name != "primary-lock-path" {
 						return nil, errOwnerEvidence
 					}
@@ -162,7 +165,7 @@ func TestSystemdFallbackRequiresSelectedRootEvidence(t *testing.T) {
 				if err := os.Mkdir(filepath.Join(rootB, "hub.lock"), 0700); err != nil {
 					t.Fatal(err)
 				}
-			} else if name == "retarget-symlink-lock" {
+			} else if strings.HasSuffix(name, "symlink-lock") {
 				if err := os.Symlink(filepath.Join(rootA, "hub.lock"), filepath.Join(rootB, "hub.lock")); err != nil {
 					t.Fatal(err)
 				}
@@ -177,12 +180,16 @@ func TestSystemdFallbackRequiresSelectedRootEvidence(t *testing.T) {
 			selected.report.HubStateRoot, selected.report.Running = rootB, nil
 			pending := m.setSelectedRestart(host, selected, "systemctl restart evener-hub-selected.service", "release-selected", "")
 			before := m.pendingRestart(host.Name)
+			witness := m.ownerWitnesses[host.Name]
 			got, selectionErr := m.resolveOwnedEndpoint(t.Context(), host, facts)
 			wantRefusal := retarget || name == "unlocked-read-only" || name == "shared-lock" || strings.HasPrefix(name, "lock-query-") || name == "same-root-invalid-no-witness" || name == "changed-birth-witness" || name == "changed-registration-witness"
 			if wantRefusal {
 				gateErr := m.restartSelectedPending(t.Context(), host, facts, &pending, true)
 				if !errors.Is(selectionErr, errOwnerEvidence) || !errors.Is(gateErr, errOwnerEvidence) || effects != 0 || !reflect.DeepEqual(before, m.pendingRestart(host.Name)) {
 					t.Fatalf("root association/stop accepted: selected=%+v selection=%v gate=%v effects=%d pendingPreserved=%v", got, selectionErr, gateErr, effects, reflect.DeepEqual(before, m.pendingRestart(host.Name)))
+				}
+				if name == "retarget-primary-symlink-lock" && !reflect.DeepEqual(witness, m.ownerWitnesses[host.Name]) {
+					t.Fatal("refused root replay changed the verified owner witness")
 				}
 			} else if selectionErr != nil || got.pid != pid || got.report.HubStateRoot != rootB {
 				t.Fatalf("honest association refused: owner=%+v err=%v", got, selectionErr)
