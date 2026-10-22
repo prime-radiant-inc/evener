@@ -69,6 +69,11 @@ func TestHubRPCMutationReceiptEcho(t *testing.T) {
 			Capabilities: appwire.ThreadCapabilities{Send: true, Clear: true, SharedNotes: true},
 		},
 	}
+	// applyHubCapabilities adds page-before and projects Manager mode on clear.
+	// This fixture has no preferences, so the Manager toggle is not editable.
+	wantClearThread := thread
+	wantClearThread.Evener.Capabilities.PageBefore = true
+	wantClearThread.Evener.ManagerEditable = false
 	input := []appwire.InputItem{{Type: "text", Text: "receipt-route-input"}}
 	cases := []mutationReceiptEchoRoute{
 		mutationReceiptEchoRouteFor(appwire.MethodTurnStart,
@@ -97,7 +102,7 @@ func TestHubRPCMutationReceiptEcho(t *testing.T) {
 		mutationReceiptEchoRouteFor(appwire.MethodThreadClear,
 			appwire.ThreadClearParams{Ref: ref, ClientMutationID: callerID, ExpectedInstanceID: sessionID},
 			appwire.ThreadClearResponse{Thread: thread, Ref: ref, Receipt: receipt},
-			appwire.ThreadClearResponse{Thread: thread, Ref: ref, Receipt: wantReceipt}),
+			appwire.ThreadClearResponse{Thread: wantClearThread, Ref: ref, Receipt: wantReceipt}),
 		mutationReceiptEchoRouteFor(appwire.MethodNotesHumanSet,
 			appwire.NotesHumanSetParams{Ref: ref, ClientMutationID: callerID, ExpectedInstanceID: sessionID, Note: "whiteboard input"},
 			appwire.NotesHumanSetResponse{Note: "canonical whiteboard", Receipt: receipt},

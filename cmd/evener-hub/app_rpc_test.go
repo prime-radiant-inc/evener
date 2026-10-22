@@ -12896,6 +12896,8 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodTurnDrainAsSteer,
 		appwire.MethodTurnPromoteQueuedAsSteer,
 		appwire.MethodTurnCancelQueued,
+		// The human Manager toggle is a controller-local handler.
+		appwire.MethodEvenerThreadManagerSet,
 		appwire.MethodThreadClear,
 		appwire.MethodThreadCompactStart,
 		appwire.MethodThreadShutdown,

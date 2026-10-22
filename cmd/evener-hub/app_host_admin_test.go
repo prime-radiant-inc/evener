@@ -589,6 +589,7 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/thread/delegates/list":            false,
 		"evener/thread/forceStop":                 false,
 		"evener/thread/jobs/list":                 false,
+		"evener/thread/manager/set":               false, // Local Manager authority; remote toggle belongs to Task 5.
 		"evener/thread/name/set":                  false,
 		"evener/thread/transcripts/list":          false,
 		"evener/thread/watches/list":              false,
