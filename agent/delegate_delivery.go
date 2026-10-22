@@ -424,6 +424,11 @@ func (c *delegateTreeController) PostUpdate(actor delegateActor, message, readin
 		return "", delegateMutationPlans{}, err
 	}
 	deliveryID := delegatestore.UpdateDeliveryID(lease.delegateID, appended[0].Seq)
+	if readiness == tool.DelegateReadinessReady {
+		if readyWaiter := c.claimDelegateWaiterLocked(lease.delegateID, lease.generation); readyWaiter != nil {
+			resolveDelegateInlineClaim(readyWaiter, delegateInlineResolution{readiness: readiness})
+		}
+	}
 	c.evidenceVersion++
 	var plans delegateMutationPlans
 	// Only the head is planned; an update behind an earlier delivery waits for

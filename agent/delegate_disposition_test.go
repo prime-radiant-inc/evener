@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 func delegateDispositionRegistry(t *testing.T, delegate, offersEndReason bool) (*tool.Registry, *[]events.CommunicateData) {
@@ -150,6 +152,42 @@ func TestDelegateCommunicateRequiresBlockerAndWaitTarget(t *testing.T) {
 			t.Fatalf("delivered = %+v, want nothing delivered on a refusal", *delivered)
 		}
 	})
+}
+
+func TestDelegateBlockedAndWaitingDoNotRequireOutput(t *testing.T) {
+	rawCall := func(args map[string]any) llm.ToolCallData {
+		raw, err := json.Marshal(args)
+		if err != nil {
+			t.Fatalf("marshal call: %v", err)
+		}
+		return llm.ToolCallData{ID: "comm-1", Name: "communicate", Arguments: raw, Type: "function"}
+	}
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+	}{
+		{name: "blocked", args: map[string]any{"message": "blocked", "end_turn": true, "end_reason": "blocked", "blocker": "access"}},
+		{name: "waiting", args: map[string]any{"message": "waiting", "end_turn": true, "end_reason": "waiting_on_work", "waiting_on": "job-1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg, delivered := delegateDispositionRegistry(t, true, false)
+			res := reg.ExecuteCall(context.Background(), nil, rawCall(tc.args))
+			if res.IsError {
+				t.Fatalf("%s without output: %s", tc.name, res.Output)
+			}
+			if len(*delivered) != 1 {
+				t.Fatalf("delivered = %+v, want one report", *delivered)
+			}
+		})
+	}
+
+	reg, _ := delegateDispositionRegistry(t, true, false)
+	res := reg.ExecuteCall(context.Background(), nil, rawCall(map[string]any{
+		"message": "done", "end_turn": true, "end_reason": "done",
+	}))
+	if !res.IsError {
+		t.Fatalf("done without output was accepted: %+v", res)
+	}
 }
 
 func TestDelegateDispositionWorksWithClosedResultSchema(t *testing.T) {

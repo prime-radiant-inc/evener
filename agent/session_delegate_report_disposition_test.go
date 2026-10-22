@@ -42,6 +42,18 @@ func TestDelegateReportBareTextGetsOneSteeringRound(t *testing.T) {
 	}
 }
 
+func TestDelegateReportAcknowledgementSpendsOneRound(t *testing.T) {
+	if delegateReportAcknowledgementExhausted(EntryNotification, true, retryTracker{}) {
+		t.Fatal("the first bare-text acknowledgement was treated as spent")
+	}
+	if !delegateReportAcknowledgementExhausted(EntryNotification, true, retryTracker{consecutiveBareText: 1}) {
+		t.Fatal("the second bare-text acknowledgement was not treated as spent")
+	}
+	if delegateReportAcknowledgementExhausted(EntryUserInput, true, retryTracker{consecutiveBareText: 1}) {
+		t.Fatal("a user-input turn was treated as a report acknowledgement")
+	}
+}
+
 func TestDelegateReportExplicitDoneSettles(t *testing.T) {
 	reg, delivered := rootDispositionRegistry(t, nil)
 	res := reg.ExecuteCall(context.Background(), nil, communicateCallArgs("comm-1", map[string]any{

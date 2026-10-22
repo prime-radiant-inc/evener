@@ -1852,15 +1852,16 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				kind = EntryContinuation
 				continue
 			}
-			if errors.Is(err, errDelegateWaitAccepted) {
+			if errors.Is(err, errDelegateWaitResolved) {
 				if restoreParentDriveNotify != nil {
 					a.sess.SetNotifyFunc(restoreParentDriveNotify)
 				}
 				a.mu.Lock()
 				a.finalizing = false
-				a.running = false
 				a.mu.Unlock()
-				return
+				input = "The work you waited on has settled. Continue the assignment and report your result."
+				kind = EntryContinuation
+				continue
 			}
 		}
 		if stableRun && a.sess.delegateController != nil && nudgeAvailable && !cancelRequested && !budgetExhausted && a.nudgeEnabled &&
@@ -1907,15 +1908,16 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 						kind = EntryContinuation
 						continue
 					}
-					if errors.Is(err, errDelegateWaitAccepted) {
+					if errors.Is(err, errDelegateWaitResolved) {
 						if restoreParentDriveNotify != nil {
 							a.sess.SetNotifyFunc(restoreParentDriveNotify)
 						}
 						a.mu.Lock()
 						a.finalizing = false
-						a.running = false
 						a.mu.Unlock()
-						return
+						input = "The work you waited on has settled. Continue the assignment and report your result."
+						kind = EntryContinuation
+						continue
 					}
 				}
 			}
@@ -2173,6 +2175,35 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 	a.sess.mu.Lock()
 	parentDriveNotify := a.sess.notifyFunc
 	a.sess.mu.Unlock()
+	if a.sess.delegateController != nil && a.sess.Communicated() {
+		candidate := a.sess.terminalCandidate()
+		if candidate.Disposition == "" {
+			candidate.Disposition = tool.CommunicateEndReasonDone
+		}
+		switch candidate.Disposition {
+		case tool.CommunicateEndReasonBlocked:
+			admitted, err := a.admitTerminalReport(ctx, &candidate)
+			if err != nil {
+				return result, parentDriveNotify, err
+			}
+			if !admitted {
+				return result, parentDriveNotify, errTerminalReportRefused
+			}
+			return result, parentDriveNotify, nil
+		case tool.CommunicateEndReasonWaitingOnWork:
+			accepted, err := a.admitTerminalWait(ctx, &candidate)
+			if err != nil {
+				return result, parentDriveNotify, err
+			}
+			if accepted {
+				if err := a.waitForTerminalTarget(ctx, candidate.WaitingOn); err != nil {
+					return result, parentDriveNotify, err
+				}
+				return result, parentDriveNotify, errDelegateWaitResolved
+			}
+			return result, parentDriveNotify, errTerminalReportRefused
+		}
+	}
 	a.mu.Lock()
 	a.finalizing = true
 	a.mu.Unlock()
@@ -2185,17 +2216,7 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 		if candidate.Disposition == "" {
 			candidate.Disposition = tool.CommunicateEndReasonDone
 		}
-		switch candidate.Disposition {
-		case tool.CommunicateEndReasonWaitingOnWork:
-			accepted, err := a.admitTerminalWait(ctx, &candidate)
-			if err != nil {
-				return result, parentDriveNotify, err
-			}
-			if accepted {
-				return result, parentDriveNotify, errDelegateWaitAccepted
-			}
-			return result, parentDriveNotify, errTerminalReportRefused
-		case tool.CommunicateEndReasonDone, tool.CommunicateEndReasonBlocked:
+		if candidate.Disposition == tool.CommunicateEndReasonDone {
 			admitted, err := a.admitTerminalReport(ctx, &candidate)
 			if err != nil {
 				return result, parentDriveNotify, err

@@ -993,6 +993,12 @@ func (s *Session) carriedDelegateReportSnapshot() bool {
 	return s.carriedDelegateReport
 }
 
+// delegateReportAcknowledgementExhausted reports that a notification turn
+// carrying a delegate report already spent its one steering round.
+func delegateReportAcknowledgementExhausted(kind EntryKind, carriedDelegateReport bool, tracker retryTracker) bool {
+	return kind == EntryNotification && carriedDelegateReport && tracker.consecutiveBareText > 0
+}
+
 // drainInputs is the snapshot the drain loop feeds selectDrainNextAction after a
 // completed (non-error) turn: the kind of the turn that just ran, whether a goal
 // continuation is already deferred, the popped follow-up text and queued message
@@ -2457,7 +2463,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 					}
 				}
 			}
-			route := routeNoToolCalls(kind, noContent, s.hasAcceptedTerminalCommunicate(), s.carriedDelegateReportSnapshot())
+			carriedDelegateReport := s.carriedDelegateReportSnapshot()
+			if delegateReportAcknowledgementExhausted(kind, carriedDelegateReport, tracker) {
+				s.finishProcessingAtBoundary(ctx, SessionIdle)
+				return "", progressed, nil
+			}
+			route := routeNoToolCalls(kind, noContent, s.hasAcceptedTerminalCommunicate(), carriedDelegateReport)
 			if route == finishIdle {
 				s.finishProcessingAtBoundary(ctx, SessionIdle)
 				return "", progressed, nil

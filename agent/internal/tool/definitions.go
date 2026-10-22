@@ -804,6 +804,9 @@ func WithDelegateCommunicateEndReason(def llm.ToolDefinition) llm.ToolDefinition
 		"enum":        []string{DelegateReadinessReady},
 		"description": "Set to `ready` with end_turn=false when an inline `delegate_send` waiter may stop waiting; the readiness update still reaches your parent and does not replace your final report.",
 	}
+	if required, ok := params["required"].([]string); ok {
+		params["required"] = slices.DeleteFunc(required, func(name string) bool { return name == "output" })
+	}
 	def.Parameters = params
 	return def
 }

@@ -76,6 +76,33 @@ func TestDelegateReadinessResolvesInlineWaiter(t *testing.T) {
 	}
 }
 
+func TestDelegateReadinessResolvesBehindAHeldUpdate(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	lease, waiter := startDelegateDeliveryGeneration(t, c, "dlg_target", true)
+	if err := c.AttachRuntime(lease, &Session{}); err != nil {
+		t.Fatalf("AttachRuntime: %v", err)
+	}
+	if _, err := c.AdmitStartInput(lease, func() error { return nil }); err != nil {
+		t.Fatalf("AdmitStartInput: %v", err)
+	}
+	actor := delegateActor{lease: &lease}
+	if _, _, err := c.PostUpdate(actor, "first update", ""); err != nil {
+		t.Fatalf("PostUpdate first: %v", err)
+	}
+	_, plans, err := c.PostUpdate(actor, "ready", tool.DelegateReadinessReady)
+	if err != nil {
+		t.Fatalf("PostUpdate ready: %v", err)
+	}
+	if len(plans.deliveries) != 0 {
+		t.Fatalf("ready update planned while an earlier update was held: %#v", plans.deliveries)
+	}
+	resolution := c.waitForDelegateInline(context.Background(), waiter)
+	if resolution.readiness != tool.DelegateReadinessReady {
+		t.Fatalf("resolution readiness = %q, want %q", resolution.readiness, tool.DelegateReadinessReady)
+	}
+}
+
 func TestDelegateReadinessDoesNotSupersedeTerminalDelivery(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")

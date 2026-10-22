@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -26,8 +27,59 @@ type TerminalCandidate struct {
 
 var (
 	errTerminalReportRefused = errors.New("terminal report refused")
-	errDelegateWaitAccepted  = errors.New("delegate wait accepted")
+	errDelegateWaitResolved  = errors.New("delegate wait resolved")
 )
+
+// waitForTerminalTarget keeps the run alive until the named waker signals or
+// disappears. Any session notification counts: a job completion, a watch
+// frame, or a child delivery all wake the run to inspect the new evidence.
+func (a *subagent) waitForTerminalTarget(ctx context.Context, target string) error {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if a.sess.terminalWaitSatisfied(ctx, target) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *Session) terminalWaitSatisfied(ctx context.Context, target string) bool {
+	if s == nil {
+		return true
+	}
+	if s.peekNotifications() > 0 {
+		return true
+	}
+	if s.hasQueuedWaitInput(target) {
+		return true
+	}
+	return s.validateWaitTarget(ctx, target) != nil
+}
+
+func (s *Session) hasQueuedWaitInput(target string) bool {
+	kind, id := splitWaitTarget(target)
+	if kind != "" && kind != "input" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, input := range s.inputQueue {
+		if input.ID == id {
+			return true
+		}
+	}
+	for _, steering := range s.steeringQueue {
+		if steering.StableTurnID == id || steering.ClientMutationID == id {
+			return true
+		}
+	}
+	return false
+}
 
 // admitTerminalReport decides whether a done or blocked report may publish.
 // A done report requires an empty, known outstanding-work inventory. A blocked
@@ -166,8 +218,9 @@ func (s *Session) validateWaitTarget(ctx context.Context, target string) error {
 	if kind == "" || kind == "child" {
 		if s.delegateController != nil {
 			s.delegateController.mu.Lock()
+			_, descendant := s.delegateController.delegateSubtreeIDsLocked(s.owningDelegateID)[id]
 			aggregate := s.delegateController.durable[id]
-			live := aggregate != nil && (aggregate.CurrentRunOpen ||
+			live := descendant && aggregate != nil && (aggregate.CurrentRunOpen ||
 				aggregate.Phase == delegatestore.PhaseRunning ||
 				aggregate.Phase == delegatestore.PhaseSettling ||
 				aggregate.Phase == delegatestore.PhaseStopping ||

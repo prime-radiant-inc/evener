@@ -320,3 +320,42 @@ func TestDelegateWaitOnRemovedWatchGetsCancellationNotice(t *testing.T) {
 	}
 	assertSteerMentions(t, s, "watch-1")
 }
+
+func TestDelegateWaitOnChildMustBeDescendant(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_self", "")
+	seedDelegateControllerRunning(t, c, "dlg_child", "dlg_self")
+	seedDelegateControllerRunning(t, c, "dlg_sibling", "")
+	s := &Session{id: "child-session", delegateController: c, owningDelegateID: "dlg_self"}
+
+	if err := s.validateWaitTarget(context.Background(), "dlg_sibling"); err == nil {
+		t.Fatal("a sibling delegate was accepted as a wait target")
+	}
+	if err := s.validateWaitTarget(context.Background(), "dlg_self"); err == nil {
+		t.Fatal("the caller itself was accepted as a wait target")
+	}
+	if err := s.validateWaitTarget(context.Background(), "dlg_child"); err != nil {
+		t.Fatalf("descendant child wait target: %v", err)
+	}
+}
+
+func TestDelegateWaitSatisfiedByJobWatchAndInput(t *testing.T) {
+	s, jm := newAdmissionSession(t)
+	jm.mu.Lock()
+	jm.running = map[string]*runningJob{"job-1": {}}
+	jm.mu.Unlock()
+	if s.terminalWaitSatisfied(context.Background(), "job-1") {
+		t.Fatal("a running job satisfied the wait")
+	}
+	jm.mu.Lock()
+	delete(jm.running, "job-1")
+	jm.mu.Unlock()
+	if !s.terminalWaitSatisfied(context.Background(), "job-1") {
+		t.Fatal("a settled job did not satisfy the wait")
+	}
+
+	s.inputQueue = []queuedInput{{ID: "input-1"}}
+	if !s.terminalWaitSatisfied(context.Background(), "input-1") {
+		t.Fatal("queued input did not satisfy the wait")
+	}
+}
