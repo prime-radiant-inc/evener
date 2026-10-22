@@ -1021,14 +1021,18 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   // toast) - so a failure surfaces exactly once regardless of which branch
   // it takes. Before this reconciliation, both sides pushed a toast for the
   // SAME failure; this is the fix, not a pre-existing split.
-  async function submitAction(kind: "send" | "queue" | "steer" | "drain"): Promise<void> {
+  async function submitAction(
+    kind: "send" | "queue" | "steer" | "drain",
+    options: { text?: string; clearDraftText?: string } = {},
+  ): Promise<void> {
     const releaseRecoveryOperation = source.tryAcquireRecoveryOperation();
     if (!releaseRecoveryOperation) return;
     if (source.getSnapshot().recoveryActivating) {
       releaseRecoveryOperation();
       return;
     }
-    const submittedText = textRef.current;
+    const submittedText = options.text ?? textRef.current;
+    const clearDraftText = options.clearDraftText ?? submittedText;
     const submittedAttachments = attachments.items;
     const submittedSkillNames = [...skillNamesRef.current];
     const submittedCommandNames = [...selectionMetaRef.current.commandNames];
@@ -1102,6 +1106,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
                 submittedMentions,
                 recoveryBarrier,
                 { [submittedRecoveryId]: committedRevision },
+                source.compositionOwnerId,
               );
               if (outcome.status !== "sent") {
                 recoveryResendRefused = outcome.status === "refused";
@@ -1130,7 +1135,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
       );
       if (!source.alive) return;
       clearIfUnchanged(
-        submittedText,
+        clearDraftText,
         submittedRevision,
         submittedDraftRevision,
         submittedSkillNames,
@@ -1176,6 +1181,20 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     // refusal never reports busy state.
     if (match.command.recoveryFenced && pressLocalRecoveryFenced(ref)) {
       toasts.push("error", `/${match.command.id} isn't available until this session is resumed`);
+      return;
+    }
+    // A message-producing built-in typed over an active recovery is the same
+    // submit the user could have made with Send/Queue/Steer: route its parsed
+    // body through the one recovery transaction instead of enqueueing a second
+    // mutation beside the recovery. The literal command text is what gets
+    // cleared from the editor when the resend succeeds.
+    if (
+      (match.command.id === "queue" || match.command.id === "steer") &&
+      activeRecoveryId !== null &&
+      match.argsText.trim()
+    ) {
+      const literal = textRef.current;
+      await submitAction(match.command.id, { text: match.argsText, clearDraftText: literal });
       return;
     }
     const submittedText = textRef.current;

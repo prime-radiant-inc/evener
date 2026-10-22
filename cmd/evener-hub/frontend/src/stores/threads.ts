@@ -3425,6 +3425,7 @@ export async function updateRecoveryMutation(
   localDraftRevisionId?: string,
   expectedCompositionRevision?: number,
   expectedRecoveryRevisions?: Readonly<Record<string, number>>,
+  compositionOwnerId?: string,
 ): Promise<MutationRecoveryRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
@@ -3438,6 +3439,7 @@ export async function updateRecoveryMutation(
     localDraftRevisionId,
     expectedCompositionRevision,
     expectedRecoveryRevisions,
+    compositionOwnerId,
   );
   if (!record) return undefined;
   notifyMutationPersistence([targetRef]);
@@ -3475,6 +3477,7 @@ export async function resendRecoveryMutation(
   mentions?: readonly ComposerMention[],
   barrierRead = captureRecoveryStopBarrier(targetRef),
   expectedRecoveryRevisions?: Readonly<Record<string, number>>,
+  compositionOwnerId?: string,
 ): Promise<MutationRecoveryResendResult> {
   const runtime = requireMutationRuntime();
   await runtime.start;
@@ -3484,7 +3487,14 @@ export async function resendRecoveryMutation(
   // fallback send must see it before the async refresh can.
   const result = await trackOutboxWrite(
     targetRef,
-    () => runtime.storage.resendRecoveryResult(clientMutationId, intent, barrier, expectedRecoveryRevisions),
+    () =>
+      runtime.storage.resendRecoveryResult(
+        clientMutationId,
+        intent,
+        barrier,
+        expectedRecoveryRevisions,
+        compositionOwnerId,
+      ),
     (outcome) =>
       outcome.status !== "sent"
         ? undefined

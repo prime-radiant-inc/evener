@@ -108,6 +108,7 @@ export interface ComposerSourceState {
   persistDraft(text: string): void;
   writeDraft(text: string, mayPersist: boolean, source?: TextEditSource): void;
   refreshRecovery(): void;
+  readonly compositionOwnerId: string;
   runRecoveryOperation<T>(operation: () => Promise<T>): Promise<T>;
   tryAcquireRecoveryOperation(): (() => void) | null;
   activateRecovery(record: MutationRecoveryRecord): Promise<boolean>;
@@ -144,7 +145,14 @@ function recoveryCompositionRevision(record: MutationRecoveryRecord): number {
 }
 
 /** Original conversation work belongs to its pane, not to an editor mount. */
-export function createComposerSourceState(ref: string): ComposerSourceState {
+const defaultCompositionOwners = new Map<string, string>();
+
+/** A pane passes its lifetime token; standalone mounts fall back to one token
+ * per ref so a remount outside the pane shell still reuses ownership. */
+export function createComposerSourceState(ref: string, ownerId?: string): ComposerSourceState {
+  const compositionOwnerId = ownerId ?? defaultCompositionOwners.get(ref) ?? crypto.randomUUID();
+  if (ownerId === undefined && !defaultCompositionOwners.has(ref))
+    defaultCompositionOwners.set(ref, compositionOwnerId);
   const initial = readComposerDraftSnapshot(ref);
   let currentDraftRevisionId = initial.revisionId;
   const state = createStore<ComposerSourceSnapshot>(() => ({
@@ -422,6 +430,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
           localDraftRevisionId,
           lease.compositionRevision,
           { [clientMutationId]: lease.compositionRevision },
+          compositionOwnerId,
         );
         if (!updated) {
           if (!disposed && currentRecoveryId() === clientMutationId) {
@@ -540,6 +549,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
                 ? {}
                 : { [record.clientMutationId]: recoveryCompositionRevision(record) }),
             },
+            compositionOwnerId,
           );
           if (!updated || disposed || recoveryReplacementEpochRef.current !== replacementEpoch) return false;
           recoveryOwnerLeaseRef.current = {
@@ -730,6 +740,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
     markRestore,
     persistDraft,
     writeDraft,
+    compositionOwnerId,
     runRecoveryOperation,
     tryAcquireRecoveryOperation,
     queueRecoveryPersistence,

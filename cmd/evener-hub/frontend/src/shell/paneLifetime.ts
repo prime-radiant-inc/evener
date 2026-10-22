@@ -10,6 +10,7 @@ export interface PaneLifetime {
   readonly serial: number;
   readonly sourceRef: string;
   readonly sourceType: "session" | "transcript";
+  readonly compositionOwnerId: string;
   readonly alive: boolean;
   readonly composer: ComposerSourceState | null;
   readonly composers: Map<string, ComposerSourceState>;
@@ -37,6 +38,7 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
   const lifetime: PaneLifetime = {
     paneId: pane.id,
     serial: ++nextSerial,
+    compositionOwnerId: crypto.randomUUID(),
     get sourceRef() {
       return sourceRef;
     },
@@ -52,7 +54,7 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
       if (!alive || sourceType !== "session") return null;
       let state = lifetime.composers.get(sourceRef);
       if (state === undefined) {
-        state = createComposerSourceState(sourceRef);
+        state = createComposerSourceState(sourceRef, lifetime.compositionOwnerId);
         lifetime.composers.set(sourceRef, state);
       }
       return state;

@@ -67,17 +67,6 @@ export interface MutationOutboxIndexedDBOptions {
   // failure paths. Purely observational: a throwing reporter cannot change the
   // storage outcome. Defaults to one console.warn line with a stable prefix.
   onOpenDiagnostic?: (diagnostic: MutationOutboxOpenDiagnostic) => void;
-  // Browser-tab identity for recovery composition writes. Defaults to a
-  // page-lifetime id; tests use it to act as a different tab.
-  compositionOrigin?: string;
-}
-
-// One origin per adapter. A browser tab owns one adapter; a second adapter in
-// the same realm is another tab (tests model tabs this way). Keeping the id on
-// the instance also lets a Composer remount reuse the origin while a peer
-// adapter cannot claim it.
-function newCompositionOrigin(): string {
-  return `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
 const DATABASE_NAME = "evener-mutation-outbox";
@@ -212,7 +201,6 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
   readonly #beforeCommit: ((operation: MutationOutboxOperation) => void) | undefined;
   readonly #onWriteStalled: ((waiting: boolean) => void) | undefined;
   readonly #onOpenDiagnostic: (diagnostic: MutationOutboxOpenDiagnostic) => void;
-  readonly #compositionOrigin: string;
   #supersededDiscardListener: ((targetRef: string) => void) | undefined;
   #settledListener: ((targetRef: string) => void) | undefined;
   #stalledWrites = 0;
@@ -227,7 +215,6 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     this.#beforeCommit = options.beforeCommit;
     this.#onWriteStalled = options.onWriteStalled;
     this.#onOpenDiagnostic = options.onOpenDiagnostic ?? DEFAULT_OPEN_DIAGNOSTIC;
-    this.#compositionOrigin = options.compositionOrigin ?? newCompositionOrigin();
     this.#connection = new IDBConnection({
       indexedDB: factory,
       databaseName: this.#databaseName,
@@ -920,7 +907,6 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         recoveryKind,
         recoveryReason,
         compositionRevision: 0,
-        compositionOrigin: this.#compositionOrigin,
       };
       await requestResult(transaction.objectStore(RECOVERY_STORE).put(recovery));
       await requestResult(outbox.delete(clientMutationId));
@@ -950,7 +936,6 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         ...record,
         recoveryKind: "editing",
         compositionRevision: 0,
-        compositionOrigin: this.#compositionOrigin,
       };
       await requestResult(transaction.objectStore(RECOVERY_STORE).put(recovery));
       await requestResult(outbox.delete(record.clientMutationId));
@@ -996,6 +981,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     localDraftRevisionId?: string,
     expectedCompositionRevision?: number,
     expectedRecoveryRevisions?: Readonly<Record<string, number>>,
+    compositionOwnerId?: string,
   ): Promise<MutationRecoveryRecord | undefined> {
     return this.#write(RECOVERY_STORE, "updateRecoveryInput", async (transaction) => {
       const store = transaction.objectStore(RECOVERY_STORE);
@@ -1025,7 +1011,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       const next: VersionedMutationRecoveryRecord = {
         ...record,
         compositionRevision: (record.compositionRevision ?? 0) + 1,
-        compositionOrigin: this.#compositionOrigin,
+        compositionOwnerId,
         payload: { ...record.payload, input },
         optimisticDisplay:
           record.optimisticDisplay && typeof record.optimisticDisplay === "object"
@@ -1072,8 +1058,15 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     intent: MutationIntent,
     barrier?: MutationStopBarrier,
     expectedRecoveryRevisions?: Readonly<Record<string, number>>,
+    compositionOwnerId?: string,
   ): Promise<MutationOutboxRecord | undefined> {
-    const result = await this.resendRecoveryResult(sourceIds, intent, barrier, expectedRecoveryRevisions);
+    const result = await this.resendRecoveryResult(
+      sourceIds,
+      intent,
+      barrier,
+      expectedRecoveryRevisions,
+      compositionOwnerId,
+    );
     return result.status === "sent" ? result.record : undefined;
   }
 
@@ -1082,6 +1075,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     intent: MutationIntent,
     barrier?: MutationStopBarrier,
     expectedRecoveryRevisions?: Readonly<Record<string, number>>,
+    compositionOwnerId?: string,
   ): Promise<MutationRecoveryResendResult> {
     if (!intent.targetRef.trim()) throw new Error("targetRef is required");
     return this.#write(ENQUEUE_STORES, "resendRecovery", async (transaction) => {
@@ -1101,11 +1095,13 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         // the durable row as it stands. A supplied map stays authoritative: a
         // missing id is a stale caller and is refused.
         const expected = expectedRecoveryRevisions === undefined ? durableRevision : expectedRecoveryRevisions[id];
-        const sameTab = (recovery as VersionedMutationRecoveryRecord).compositionOrigin === this.#compositionOrigin;
+        const sameOwner =
+          compositionOwnerId !== undefined &&
+          (recovery as VersionedMutationRecoveryRecord).compositionOwnerId === compositionOwnerId;
         if (
           recovery.targetRef !== intent.targetRef ||
           expected === undefined ||
-          (durableRevision !== expected && !sameTab)
+          (durableRevision !== expected && !sameOwner)
         )
           refused = true;
       }

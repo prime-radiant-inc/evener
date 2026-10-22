@@ -3907,6 +3907,23 @@ test.each([
   expect(await storage.listOutbox("ref_a")).toHaveLength(2);
 });
 
+test("a /queue typed over a recovered edit resends its body atomically", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "retry me");
+  await mountComposer("ref_a");
+  await flushPendingTurnsProjectionForTests();
+  expect(textarea().textContent).toBe("retry me");
+
+  replaceEditorText(textarea(), "/queue replacement");
+  fireEvent.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(async () => expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined());
+  const rows = await storage.listOutbox("ref_a");
+  expect(rows.at(-1)?.payload).toMatchObject({ input: [{ type: "text", text: "replacement" }] });
+  expect(textarea().textContent).toBe("");
+});
+
 test("blanking an attachment-free recovered draft discards it durably", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);

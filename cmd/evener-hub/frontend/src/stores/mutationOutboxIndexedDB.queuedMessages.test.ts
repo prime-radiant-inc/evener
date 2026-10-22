@@ -40,7 +40,6 @@ function fixture() {
         indexedDB,
         databaseName,
         createMutationId: () => `mutation-${++id}`,
-        compositionOrigin: "other-tab",
       });
       opened.push(other);
       return other;
@@ -350,6 +349,51 @@ test("stale cross-adapter recovery consolidation refuses without deleting the se
     attachments: [expect.objectContaining({ name: "c.png" })],
   });
   expect(stale).toBeUndefined();
+});
+
+test("a stale pane on one adapter is refused while the owning pane may advance", async () => {
+  const f = fixture();
+  const outbox = await f.storage.enqueueIntent(queuedIntent("ref_a"));
+  const recovery = await f.storage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!recovery) throw new Error("missing recovery fixture");
+  const owner = "pane-a";
+  const revision = recovery.compositionRevision ?? 0;
+  const advanced = await f.storage.updateRecoveryInput(
+    recovery.clientMutationId,
+    [{ type: "text", text: "newer work" }],
+    [],
+    "newer work",
+    [],
+    [],
+    undefined,
+    revision,
+    undefined,
+    owner,
+  );
+  expect(advanced?.compositionRevision).toBe(revision + 1);
+  const intent = queuedIntent("ref_a");
+  expect(
+    await f.storage.resendRecoveryResult(
+      recovery.clientMutationId,
+      intent,
+      undefined,
+      {
+        [recovery.clientMutationId]: revision,
+      },
+      "pane-b",
+    ),
+  ).toEqual({ status: "refused" });
+  expect(
+    await f.storage.resendRecoveryResult(
+      recovery.clientMutationId,
+      intent,
+      undefined,
+      {
+        [recovery.clientMutationId]: revision,
+      },
+      owner,
+    ),
+  ).toMatchObject({ status: "sent" });
 });
 
 test("a different-tab resend refuses an advanced recovery revision", async () => {
