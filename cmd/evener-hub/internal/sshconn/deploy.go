@@ -1061,13 +1061,7 @@ func (m *Manager) deploySelectedWithSupersession(ctx context.Context, host hostr
 	}
 	readEndpoint := m.resolveHostEndpoint
 	if realEndpointAuthority {
-		readEndpoint = func(ctx context.Context, host hostreg.Host, facts Preflight) (hubendpoint.Report, error) {
-			report, err := m.readHostEndpoint(ctx, host, facts)
-			if err != nil {
-				return report, fmt.Errorf("%w: %w", endpointMigration(host), err)
-			}
-			return report, nil
-		}
+		readEndpoint = m.readHostEndpoint
 	}
 	var owner selectedOwner
 	if !facts.ExecutableMissing {

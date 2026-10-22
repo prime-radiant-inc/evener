@@ -3,6 +3,7 @@ package sshconn
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path"
@@ -70,7 +71,16 @@ func (m *Manager) readHostEndpoint(ctx context.Context, host hostreg.Host, facts
 	}
 	report, err := hubendpoint.DecodeReport(bytes.NewReader(out))
 	if err != nil {
-		return hubendpoint.Report{}, fmt.Errorf("%w: host %q endpoint report: %w", ErrPreflightDecode, host.Name, err)
+		failure := fmt.Errorf("%w: host %q endpoint report: %w", ErrPreflightDecode, host.Name, err)
+		// Only completed, explicit schema evidence establishes unsupported
+		// capability. Transport, malformed output and identity failures do not.
+		var envelope struct {
+			SchemaVersion *int `json:"schema_version"`
+		}
+		if json.Unmarshal(out, &envelope) == nil && envelope.SchemaVersion != nil && *envelope.SchemaVersion != hubendpoint.SchemaVersion {
+			return hubendpoint.Report{}, fmt.Errorf("%w: %w", endpointMigration(host), failure)
+		}
+		return hubendpoint.Report{}, failure
 	}
 	// New reports canonicalize ConfigPath, while old reports and running records
 	// can retain invocation spelling. Only absolute paths can be independently

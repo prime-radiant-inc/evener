@@ -108,8 +108,17 @@ func TestRetainedDeployRepairRequiresRealEndpointEvidence(t *testing.T) {
 				if err == nil || writes != 1 || !reflect.DeepEqual(m.pendingRestart(host.Name), retained) {
 					t.Fatalf("refusal lost retained intent: err=%v writes=%d reads=%d pending=%+v", err, writes, reads, m.pendingRestart(host.Name))
 				}
-				if !strings.HasSuffix(mode, "-at-write") && (!errors.Is(err, ErrEndpointMigration) || !isTerminal(err)) {
-					t.Fatalf("report failure is not terminal migration: %v", err)
+				if !strings.HasSuffix(mode, "-at-write") {
+					want, terminal := ErrEndpointMigration, true
+					switch mode {
+					case "missing-command", "command-failed":
+						want, terminal = ErrSSHStart, false
+					case "malformed":
+						want = ErrPreflightDecode
+					}
+					if !errors.Is(err, want) || isTerminal(err) != terminal || errors.Is(err, ErrEndpointMigration) != (want == ErrEndpointMigration) {
+						t.Fatalf("unexpected report failure classification: %v", err)
+					}
 				}
 				if mode == "binding-at-write" && !errors.Is(err, refused) {
 					t.Fatalf("lost binding failure: %v", err)

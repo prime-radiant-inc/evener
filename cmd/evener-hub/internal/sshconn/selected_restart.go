@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"strings"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
@@ -55,6 +56,18 @@ func (m *Manager) selectedRestartIntentUsing(ctx context.Context, host hostreg.H
 
 func selectedRelaunch(owner selectedOwner) string {
 	return ownerContext(owner.cwd, owner.env) + relaunchCommand(owner.argv, owner.logPath)
+}
+
+func (m *Manager) selectedRelaunchTarget(ctx context.Context, host hostreg.Host, owner selectedOwner) (string, error) {
+	executable := owner.argv[0]
+	if !path.IsAbs(executable) && strings.Contains(executable, "/") {
+		executable = owner.cwd + "/" + executable
+	}
+	executable, err := m.resolveExecutableName(ctx, host, executable)
+	if err != nil {
+		return "", err
+	}
+	return m.resolveRemotePath(ctx, host, executable)
 }
 
 // checkSelectedReplacement is the last read-only boundary before any selected

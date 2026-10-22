@@ -1668,6 +1668,16 @@ func (m *Manager) dispatchSelectedRestart(ctx context.Context, host hostreg.Host
 	if err := m.checkEffectBinding(pending.binding); err != nil {
 		return err
 	}
+	if pending.selected.supervisor.kind == supervisorNone {
+		target, err := m.selectedRelaunchTarget(ctx, host, *pending.selected)
+		if err != nil {
+			return err
+		}
+		if pending.relaunchTarget != "" && target != pending.relaunchTarget {
+			return fmt.Errorf("%w: retained relaunch executable changed", errOwnerEvidence)
+		}
+		pending.relaunchTarget = target
+	}
 	nextEnv, err := m.checkSelectedReplacement(ctx, host, facts, *pending.selected, predecessorLive, pending.nextEnv)
 	if err != nil {
 		return err
@@ -1717,6 +1727,20 @@ func (m *Manager) dispatchSelectedRestart(ctx context.Context, host hostreg.Host
 	var command string
 	// Reconstruct from revalidated intent on every replay, never trust stored text.
 	if owner.supervisor.kind == supervisorNone {
+		// Graceful drain can outlast the live gate. Freeze the executable above
+		// and recheck all stopped launch inputs before starting another process.
+		target, err := m.selectedRelaunchTarget(ctx, host, owner)
+		if err != nil {
+			return err
+		}
+		if target != pending.relaunchTarget {
+			return fmt.Errorf("%w: retained relaunch executable changed", errOwnerEvidence)
+		}
+		if predecessorLive {
+			if _, err := m.checkSelectedReplacement(ctx, host, facts, owner, false, pending.nextEnv); err != nil {
+				return err
+			}
+		}
 		command = selectedRelaunch(owner)
 	} else {
 		var ok bool

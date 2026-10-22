@@ -79,8 +79,17 @@ func TestIncompatibleDeployRequiresRealEndpointEvidence(t *testing.T) {
 				if err == nil || reads < 2 {
 					t.Fatalf("changed owner was not rejected: err=%v reads=%d", err, reads)
 				}
-			} else if !errors.Is(err, ErrEndpointMigration) || !isTerminal(err) || reads != 1 {
-				t.Fatalf("bad report: err=%v reads=%d", err, reads)
+			} else {
+				want, terminal := ErrEndpointMigration, true
+				switch mode {
+				case "missing-command", "command-failed":
+					want, terminal = ErrSSHStart, false
+				case "malformed":
+					want = ErrPreflightDecode
+				}
+				if !errors.Is(err, want) || isTerminal(err) != terminal || errors.Is(err, ErrEndpointMigration) != (want == ErrEndpointMigration) || reads != 1 {
+					t.Fatalf("bad report: err=%v reads=%d", err, reads)
+				}
 			}
 			if ch != nil || writes != 0 || lifecycle != 0 || len(fr.recordedStarts()) != 1 || m.pendingRestart(host.Name).active() {
 				t.Fatalf("refusal effects: channel=%v writes=%d lifecycle=%d bridges=%d pending=%+v", ch, writes, lifecycle, len(fr.recordedStarts()), m.pendingRestart(host.Name))

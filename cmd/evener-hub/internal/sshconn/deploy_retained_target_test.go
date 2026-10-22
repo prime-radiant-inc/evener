@@ -28,7 +28,7 @@ func TestRetainedDeploymentInstallTargetBoundary(t *testing.T) {
 	channel, dirty, tag := buildinfo.Channel, buildinfo.GitDirty, buildinfo.ReleaseTag
 	t.Cleanup(func() { buildinfo.Channel, buildinfo.GitDirty, buildinfo.ReleaseTag = channel, dirty, tag })
 	buildinfo.Channel, buildinfo.GitDirty, buildinfo.ReleaseTag = "snapshot", "", ""
-	for _, mode := range []string{"honest-push", "redirected-recorded-target", "installer-alias", "installer-regular-target", "alias-during-build", "destination-during-build", "stopped-honest-push", "stopped-alias-retarget"} {
+	for _, mode := range []string{"honest-push", "redirected-recorded-target", "installer-alias", "installer-regular-target", "alias-during-build", "destination-during-build", "stopped-honest-push", "stopped-alias-retarget", "endpoint-transport", "endpoint-cancelled", "endpoint-schema"} {
 		t.Run(mode, func(t *testing.T) {
 			root := t.TempDir()
 			target, alias, other := filepath.Join(root, "installed", "evener"), filepath.Join(root, "bin", "evener"), filepath.Join(root, "other", "evener")
@@ -180,6 +180,42 @@ func TestRetainedDeploymentInstallTargetBoundary(t *testing.T) {
 				}
 			}
 			before := retainedTargetSnapshot(t, root)
+			if strings.HasPrefix(mode, "endpoint-") {
+				saved := fr.runFn
+				transport := errors.New("endpoint transport sentinel")
+				ctx, cancel := context.WithCancel(t.Context())
+				fr.runFn = func(ctx context.Context, argv []string, in io.Reader) ([]byte, error) {
+					if strings.Contains(strings.Join(argv[12:], " "), "hub endpoint --json") {
+						if mode == "endpoint-schema" {
+							return []byte(`{"schema_version":2}`), nil
+						}
+						if mode == "endpoint-cancelled" {
+							cancel()
+						}
+						return nil, transport
+					}
+					return saved(ctx, argv, in)
+				}
+				_, _, failure := m.DeployForOperation(ctx, host, facts, false, nil)
+				cancel()
+				if mode == "endpoint-schema" {
+					if !errors.Is(failure, ErrEndpointMigration) || !isTerminal(failure) {
+						t.Errorf("unsupported schema is not terminal migration: %v", failure)
+					}
+				} else {
+					want := transport
+					if mode == "endpoint-cancelled" {
+						want = context.Canceled
+					}
+					if !errors.Is(failure, want) || errors.Is(failure, ErrEndpointMigration) || isTerminal(failure) {
+						t.Errorf("endpoint failure became terminal: %v", failure)
+					}
+				}
+				if writes != 1 || starts != 0 || !reflect.DeepEqual(prior, m.pendingRestart(host.Name)) || !reflect.DeepEqual(before, retainedTargetSnapshot(t, root)) {
+					t.Fatalf("endpoint failure changed retained deployment: writes=%d starts=%d pending=%+v", writes, starts, m.pendingRestart(host.Name))
+				}
+				fr.runFn = saved
+			}
 			got, after, err := m.DeployForOperation(t.Context(), host, facts, false, nil)
 			if strings.HasSuffix(mode, "during-build") {
 				if afterRetarget == nil || !reflect.DeepEqual(afterRetarget, retainedTargetSnapshot(t, root)) {
@@ -199,7 +235,7 @@ func TestRetainedDeploymentInstallTargetBoundary(t *testing.T) {
 			if readErr != nil || string(otherBytes) != "other-installation" {
 				t.Errorf("retained retry overwrote another installation: data=%q err=%v", otherBytes, readErr)
 			}
-			refuse := mode != "honest-push" && mode != "stopped-honest-push"
+			refuse := mode != "honest-push" && mode != "stopped-honest-push" && !strings.HasPrefix(mode, "endpoint-")
 			if refuse {
 				if !errors.Is(err, errOwnerSelectionMismatch) || writes != 1 || installers != 0 || !reflect.DeepEqual(prior, m.pendingRestart(host.Name)) || !reflect.DeepEqual(recorded, []string{target}) {
 					t.Fatalf("retained retry escaped recorded install target: err=%v writes=%d installers=%d recorded=%q pending=%+v", err, writes, installers, recorded, m.pendingRestart(host.Name))

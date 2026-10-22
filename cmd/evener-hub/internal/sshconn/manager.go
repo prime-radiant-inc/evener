@@ -486,6 +486,9 @@ func (h hubIdentity) differentProcessFrom(other hubIdentity) bool {
 type pendingRestartState struct {
 	command  string
 	selected *selectedOwner
+	// relaunchTarget pins the executable destination across an ad-hoc drain
+	// and subsequent stopped retries, separately from a deployment write target.
+	relaunchTarget string
 	// nextEnv is the validated replacement environment, separate from the live
 	// predecessor's selected.env. Nil retains legacy predecessor-env semantics.
 	nextEnv         []string

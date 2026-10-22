@@ -115,13 +115,20 @@ func TestRemoteRestartPreservesBinding(t *testing.T) {
 			commands := first
 			commands = append(commands, ownerCommand{"lsof -p 4242 -a -d 1,2", "evener 4242 dev 1w REG 1,2 123 456 " + logPath + "\nevener 4242 dev 2w REG 1,2 123 456 " + logPath + "\n"})
 			commands = append(commands, second...)
+			commands = append(commands, ownerCommand{resolveDeployCommand("/opt/evener"), "/opt/evener\n"})
 			commands = append(commands, replacementGateCommands(t, second, true)...)
 			env := "export HOME=/home/dev; "
 			if strings.Contains(tc.env, "EVENER_HUB_LISTEN_ADDR=") {
 				env = "export EVENER_HUB_LISTEN_ADDR=127.0.0.1:0; " + env
 			}
 			launch := "CDPATH='' cd -P -- /srv || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; " + env + "nohup /opt/evener hub" + tc.launch + " >>'" + logPath + "' 2>&1 </dev/null &"
-			commands = append(commands, ownerCommand{"kill -- 4242", ""}, ownerCommand{processAliveRemote("4242"), pidAliveMarker + "\n"}, ownerCommand{processAliveRemote("4242"), pidGoneMarker + "\n"}, ownerCommand{launch, ""})
+			commands = append(commands, ownerCommand{"kill -- 4242", ""}, ownerCommand{processAliveRemote("4242"), pidAliveMarker + "\n"}, ownerCommand{processAliveRemote("4242"), pidGoneMarker + "\n"})
+			commands = append(commands, ownerCommand{resolveDeployCommand("/opt/evener"), "/opt/evener\n"}, ownerCommand{"CDPATH='' cd -P -- /srv && pwd -P", "/srv\n"})
+			configProbe := second[9]
+			if tc.psHeader {
+				configProbe = second[10]
+			}
+			commands = append(commands, configProbe, ownerCommand{launch, ""})
 			commands = append(commands, prepare(true)...)
 			fr, index := ownerRunner(t, commands)
 			// Model a genuinely absent systemctl, not an empty listing being used to
