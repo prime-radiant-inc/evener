@@ -830,12 +830,24 @@ func hubForkIdentityFenced(cfg hubcore.WebConfig, threadID string, owner forkThr
 
 // applyHubCapabilities stamps the capability bits the hub owns, not the
 // daemon, on a thread it serves: fork (applyHubForkCapability) and pageBefore
-// (hubPagesBefore). Every path that serves a thread applies it, so a session
-// reads the same from thread/list and thread/read (#1840).
+// (hubPagesBefore), plus the session's retained artifacts directory. Every
+// path that serves a thread applies it, so a session reads the same from
+// thread/list and thread/read (#1840).
 func applyHubCapabilities(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
 	thread = applyHubForkCapability(cfg, thread)
 	thread.Evener.Capabilities.PageBefore = hubPagesBefore(cfg, thread.Evener.Ref)
+	thread.Evener.ArtifactsDir = hubArtifactsDir(cfg, thread.Evener.Ref)
 	return thread
+}
+
+// hubArtifactsDir is the session's retained artifacts directory, announced on
+// the thread so a client can tell an openable file:// link from one this hub
+// would refuse. It answers from sessionArtifactsRoot (doc_serve.go), the same
+// resolver the doc routes serve from, so the advertised directory and the
+// served one cannot drift apart. A remote or unparseable ref names nothing on
+// this hub and stays empty.
+func hubArtifactsDir(cfg hubcore.WebConfig, ref string) string {
+	return sessionArtifactsRoot(context.Background(), cfg, ref)
 }
 
 // hubPagesBefore is the hub's answer to ThreadCapabilities.PageBefore: whether
@@ -1154,6 +1166,18 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 		thread.Evener.Capabilities = readablePastCapabilities()
 	} else {
 		thread = applyHubCapabilities(cfg, thread)
+	}
+	// The artifacts directory is a place the hub serves, not a capability of
+	// the daemon: a saved read whose daemon is unavailable or on an older build
+	// still names the root the document routes serve from, so its links work.
+	thread.Evener.ArtifactsDir = hubArtifactsDir(cfg, thread.Evener.Ref)
+	if thread.Evener.ArtifactsDir == "" {
+		// An incompatible daemon is not in the roster's live set, so resolving
+		// the stable ref finds nothing. The saved entry's own state directory
+		// is the same root the document route serves these files from.
+		if dir, dirErr := schema.SessionArtifactsDir(entry.StateDir, entry.Meta.ID); dirErr == nil {
+			thread.Evener.ArtifactsDir = dir
+		}
 	}
 	thread.Evener.VisionModel = entry.Meta.VisionModel
 	thread.Evener.Access = appwire.SessionAccess(entry.Meta.Config.Sandbox, entry.Meta.Config.SandboxNet)
