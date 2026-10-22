@@ -366,6 +366,9 @@ interface PendingExpiry {
   expiredEpoch: string;
   content: DocFileContent;
   ticketKey: DocumentKey;
+  // The confirmed entry this retention installed, so the superseded arm can
+  // release exactly that object and nothing a peer installed since.
+  suppression: SuppressionEntry;
 }
 
 // A dismissed save whose durable flip has not committed. The operation identity
@@ -490,6 +493,11 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // Suppression ownership per original accepted epoch; a confirmed entry is
   // irreversible for that old lease.
   readonly #suppressedEpochs = new Map<string, SuppressionEntry>();
+  // Incarnations this adapter itself has retired, one per namespace. Guards
+  // asynchronous no-await writes that would otherwise reinstate state naming a
+  // retired incarnation. A reset prunes the namespace's older record before it
+  // adds the incarnation it just retired, so the set stays bounded.
+  readonly #retiredIncarnations = new Set<string>();
   // Retained pending expiry fences awaiting real completion.
   readonly #pendingExpiries = new Map<string, PendingExpiry>();
   // Operation identities whose save was dismissed but whose durable discard has
@@ -834,19 +842,31 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     // Confirm or release ONLY this invocation's still-owned provisional entry,
     // from the real durable validation result, never a caller-supplied
     // boolean. The release helper signals the boundary.
-    const finishValidation = (current: boolean): void => {
+    // Restore the entry this invocation displaced, unless its incarnation is
+    // one this adapter has retired: a reset's sweep already deleted it and
+    // reinstating it would leak an entry nothing can ever release.
+    const restoreDisplacedOrRelease = (identity: string): void => {
+      if (
+        displacedEntry !== undefined &&
+        !this.#isRetiredIncarnation(annotationNamespaceKey(namespace), displacedEntry.namespaceIncarnation)
+      ) {
+        this.#suppressedEpochs.set(identity, displacedEntry);
+        return;
+      }
+      this.#releaseUnconfirmed([{ identity, requestId: ticket.requestId }]);
+    };
+    const finishValidation = (current: boolean, fencedIdentity?: string): void => {
       if (!provisional) return;
       const entry = this.#suppressedEpochs.get(provisional);
       if (entry?.requestId !== ticket.requestId) return;
-      if (current) {
+      // Confirm only when the changed path fenced exactly the epoch this
+      // provisional names: a peer may have advanced the head in between, and a
+      // confirmation for the dead epoch would never be released.
+      if (current && (fencedIdentity === undefined || provisional === fencedIdentity)) {
         entry.confirmed = true;
         return;
       }
-      if (displacedEntry === undefined) {
-        this.#releaseUnconfirmed([{ identity: provisional, requestId: ticket.requestId }]);
-      } else {
-        this.#suppressedEpochs.set(provisional, displacedEntry);
-      }
+      restoreDisplacedOrRelease(provisional);
     };
     // A stale or unchanged validation releases the provisional restriction a
     // concurrent handoff may have refused against. That refusal only records
@@ -1033,7 +1053,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         confirmed: true,
       };
       this.#suppressedEpochs.set(suppressionIdentity, installedSuppression);
-      finishValidation(true);
+      finishValidation(true, suppressionIdentity);
       await this.#options.beforeExpiryFence?.(ticket);
       try {
         const fenced = await this.#fence(
@@ -1072,7 +1092,11 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
           // unchanged. Nothing is resurrected: the replacement fence wrote the
           // epoch's expiry row and flipped its pending operations terminal.
           if (this.#suppressedEpochs.get(suppressionIdentity) === installedSuppression) {
-            if (priorSuppression === undefined || priorSuppression.requestId === ticket.requestId) {
+            if (
+              priorSuppression === undefined ||
+              priorSuppression.requestId === ticket.requestId ||
+              this.#isRetiredIncarnation(annotationNamespaceKey(namespace), priorSuppression.namespaceIncarnation)
+            ) {
               this.#suppressedEpochs.delete(suppressionIdentity);
             } else {
               this.#suppressedEpochs.set(suppressionIdentity, priorSuppression);
@@ -1089,6 +1113,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
           expiredEpoch: validation.head.epoch,
           content,
           ticketKey: ticket.key,
+          suppression: installedSuppression,
         });
         // Observational, after the retention is recorded: the runtime's retry
         // health learns about this work here, because no failed save or pending
@@ -1131,6 +1156,12 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // registration they own.
   #ownsRegistration(documentKey: string, namespaceIncarnation: string, requestId: string): boolean {
     return this.#issuedReads.get(documentKey)?.get(namespaceIncarnation)?.requestId === requestId;
+  }
+
+  // Whether a prior reset in this adapter retired the incarnation. Guards the
+  // synchronous restores and confirmed writes that cannot re-check durability.
+  #isRetiredIncarnation(namespaceKey: string, incarnation: string): boolean {
+    return this.#retiredIncarnations.has(`${namespaceKey}\u0000${incarnation}`);
   }
 
   // Record a completed acceptance (accepted or fenced) in the ticket's own
@@ -1757,6 +1788,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // lives like the changed-read suppression: until the expiry's fence and
   // deletion complete, and inert once the epoch's rows are gone.
   suppressEpochForExpiry(lease: AcceptedSourceLease): void {
+    if (this.#isRetiredIncarnation(annotationNamespaceKey(lease.key.namespace), lease.namespaceIncarnation)) return;
     this.#suppressedEpochs.set(epochIdentity(lease), {
       documentKey: annotationDocumentKey(lease.key),
       namespaceIncarnation: lease.namespaceIncarnation,
@@ -1800,7 +1832,12 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         this.#pendingExpiries.delete(identity);
       } catch (error) {
         if (error instanceof SupersededFenceError) {
-          // Another fence already replaced this epoch: the retained work is done.
+          // Another fence already replaced this epoch: the retained work is
+          // done. Release exactly the confirmed entry this retention installed;
+          // a peer that replaced it since is left alone.
+          if (this.#suppressedEpochs.get(identity) === record.suppression) {
+            this.#suppressedEpochs.delete(identity);
+          }
           this.#pendingExpiries.delete(identity);
         } else {
           retainedFaults.push(error);
@@ -2060,6 +2097,13 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     }
     if (result.committed) {
       confirmProvisioned();
+      // Remember what this adapter retired. One record per namespace: an older
+      // tombstone is pruned before the incarnation just retired is added.
+      const retiredPrefix = `${namespaceKey}\u0000`;
+      for (const key of [...this.#retiredIncarnations]) {
+        if (key.startsWith(retiredPrefix)) this.#retiredIncarnations.delete(key);
+      }
+      this.#retiredIncarnations.add(`${retiredPrefix}${expectedIncarnation}`);
       // Reset wakes every registration in its exact namespace, and no other.
       this.#settleTransition({ namespaceKey });
       // A live ticket names its own issuance incarnation. The reset just retired

@@ -2297,3 +2297,163 @@ test("a retained pending expiry records its need and a later storage success ret
   fixture.repository.close();
   fixture.drafts.close();
 });
+
+// A failed fence retains its confirmed suppression and its pending expiry
+// record. When a later pass finds another fence already replaced that epoch,
+// the record is done - but the confirmed suppression it installed names a dead
+// epoch no expiry will ever release. The superseded arm must release exactly
+// the entry it installed, leaving any peer replacement alone.
+test("a superseded retained fence releases the suppression it installed", async () => {
+  let faultNextExpiry = true;
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-superseded-retained",
+    origin: "https://coordination.example",
+    beforeCommit: (operation) => {
+      if (operation !== "expiry") return;
+      if (faultNextExpiry) {
+        faultNextExpiry = false;
+        throw new Error("expiry fault");
+      }
+    },
+  });
+  const sibling = createDocumentAnnotationRepository({
+    indexedDB: fixture.factory,
+    databaseName: "annotation-superseded-retained",
+    drafts: fixture.drafts,
+    targetFor: () => null,
+  });
+  try {
+    const ticket = await fixture.repository.beginRead(fixture.document);
+    const acceptance = await fixture.repository.acceptRead(ticket, sampleChangedContent());
+    // The fence faulted, so the read answers expiry-pending with no receipt and
+    // retains its confirmed suppression for retry.
+    if (acceptance.state !== "expiry-pending" || acceptance.receipt !== undefined) {
+      throw new Error(`changed read did not fence: ${acceptance.state}`);
+    }
+    const identity = epochIdentityOf(
+      annotationDocumentKey(fixture.document),
+      fixture.incarnation,
+      fixture.operation.lease.epoch,
+    );
+    // A sibling reset retires the incarnation before this adapter's retry runs.
+    // It deletes the namespace's rows without writing an expiry row for the
+    // retained epoch, and this adapter's map is not swept: only the superseded
+    // arm can release the suppression the retention installed.
+    expect(await sibling.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation)).toMatchObject({
+      committed: true,
+    });
+
+    // The pending-expiry record is keyed by the same identity, so only record a
+    // delete whose map holds a suppression entry.
+    const deletes: string[] = [];
+    const del = Map.prototype.delete;
+    const deleteSpy = vi.spyOn(Map.prototype, "delete").mockImplementation(function (
+      this: Map<unknown, unknown>,
+      key: unknown,
+    ) {
+      if (typeof key === "string") {
+        const value = this.get(key) as { confirmed?: unknown; requestId?: unknown } | undefined;
+        if (value !== undefined && "confirmed" in value && "requestId" in value) deletes.push(key);
+      }
+      return del.call(this, key);
+    });
+    try {
+      await fixture.repository.retryPending("storage-recovered");
+    } finally {
+      deleteSpy.mockRestore();
+    }
+    expect(deletes).toContain(identity);
+  } finally {
+    sibling.close();
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
+
+// A changed read installs its entry provisional for the epoch it remembered,
+// but a peer may advance the head before its validation runs. Confirming the
+// remembered epoch then confirms an epoch the fence never replaced, and no
+// expiry will ever release it. Only the epoch the fence actually replaces may
+// be confirmed.
+test("a changed read confirms only the epoch its fence replaces", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-confirm-mismatch",
+    origin: "https://coordination.example",
+  });
+  const sibling = createDocumentAnnotationRepository({
+    indexedDB: fixture.factory,
+    databaseName: "annotation-confirm-mismatch",
+    drafts: fixture.drafts,
+    targetFor: () => null,
+  });
+  try {
+    // The peer replaces the remembered epoch first.
+    const peerTicket = await sibling.beginRead(fixture.document);
+    expect(await sibling.acceptRead(peerTicket, sampleChangedContent())).toMatchObject({ state: "expiry-pending" });
+
+    const rememberedIdentity = epochIdentityOf(
+      annotationDocumentKey(fixture.document),
+      fixture.incarnation,
+      fixture.operation.lease.epoch,
+    );
+    const localTicket = await fixture.repository.beginRead(fixture.document);
+    const thirdContent = {
+      text: "Third content\n",
+      binary: false,
+      mediaType: "text/markdown",
+      truncated: false,
+      sizeBytes: 15,
+    };
+    const installed = new Map<string, { confirmed?: boolean }>();
+    const set = Map.prototype.set;
+    const setSpy = vi.spyOn(Map.prototype, "set").mockImplementation(function (
+      this: Map<unknown, unknown>,
+      key: unknown,
+      value: unknown,
+    ) {
+      if (typeof key === "string") set.call(installed, key, value as { confirmed?: boolean });
+      return set.call(this, key, value);
+    });
+    try {
+      expect(await fixture.repository.acceptRead(localTicket, thirdContent)).toMatchObject({ state: "expiry-pending" });
+    } finally {
+      setSpy.mockRestore();
+    }
+    expect(installed.get(rememberedIdentity)?.confirmed).not.toBe(true);
+  } finally {
+    sibling.close();
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
+
+// suppressEpochForExpiry is synchronous and has no retirement knowledge. After
+// a reset retires an incarnation, a late caller naming one of its epochs would
+// install a confirmed entry nothing can release. The retired record refuses it.
+test("suppressEpochForExpiry refuses an epoch of a retired incarnation", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-retired-expiry",
+    origin: "https://reset.example",
+  });
+  try {
+    expect(await fixture.repository.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation)).toMatchObject({
+      committed: true,
+    });
+    const retiredLease = fixture.operation.lease;
+    const identity = epochIdentityOf(
+      annotationDocumentKey(fixture.document),
+      retiredLease.namespaceIncarnation,
+      retiredLease.epoch,
+    );
+    const writes = captureMapKeys("set");
+    try {
+      fixture.repository.suppressEpochForExpiry(retiredLease);
+    } finally {
+      writes.restore();
+    }
+    expect(writes.keys).not.toContain(identity);
+  } finally {
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
