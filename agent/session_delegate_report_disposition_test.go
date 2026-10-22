@@ -112,4 +112,8 @@ func TestDelegateReportCreatesNoAttentionEntry(t *testing.T) {
 	if s.pendingRootReportAttention() {
 		t.Fatal("an update delivery was mistaken for report attention")
 	}
+	s.rootAttentionWakeIDs = map[string]struct{}{"watch:job-1": {}}
+	if s.pendingRootReportAttention() {
+		t.Fatal("a watch wake was mistaken for report attention")
+	}
 }

@@ -878,7 +878,7 @@ func (s *Session) pendingRootReportAttention() bool {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	for id := range s.rootAttentionWakeIDs {
-		if !isDelegateUpdateAttentionID(id) {
+		if strings.HasPrefix(id, delegateAttentionID("")) && !isDelegateUpdateAttentionID(id) {
 			return true
 		}
 	}

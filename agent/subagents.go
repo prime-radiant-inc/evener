@@ -2216,7 +2216,29 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 		if candidate.Disposition == "" {
 			candidate.Disposition = tool.CommunicateEndReasonDone
 		}
-		if candidate.Disposition == tool.CommunicateEndReasonDone {
+		switch candidate.Disposition {
+		case tool.CommunicateEndReasonWaitingOnWork:
+			accepted, err := a.admitTerminalWait(ctx, &candidate)
+			if err != nil {
+				return result, parentDriveNotify, err
+			}
+			if accepted {
+				if err := a.waitForTerminalTarget(ctx, candidate.WaitingOn); err != nil {
+					return result, parentDriveNotify, err
+				}
+				return result, parentDriveNotify, errDelegateWaitResolved
+			}
+			return result, parentDriveNotify, errTerminalReportRefused
+		case tool.CommunicateEndReasonBlocked:
+			admitted, err := a.admitTerminalReport(ctx, &candidate)
+			if err != nil {
+				return result, parentDriveNotify, err
+			}
+			if !admitted {
+				return result, parentDriveNotify, errTerminalReportRefused
+			}
+			return result, parentDriveNotify, nil
+		case tool.CommunicateEndReasonDone:
 			admitted, err := a.admitTerminalReport(ctx, &candidate)
 			if err != nil {
 				return result, parentDriveNotify, err
@@ -2525,6 +2547,7 @@ func stableDelegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinis
 		reportKind = "exhausted"
 	}
 	report := buildReportSummary(inputs.session, reportKind)
+	report.Blocker = inputs.blocker
 	metadata.Report = &report
 	if raw, err := json.Marshal(metadata); err == nil && string(raw) != "{}" {
 		packet.Metadata = raw

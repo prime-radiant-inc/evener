@@ -70,7 +70,7 @@ func TestTerminalAdmissionRefusesSameBatchWatchCreation(t *testing.T) {
 	s, jm := newAdmissionSession(t)
 	jm.mu.Lock()
 	jm.watches = map[watchKey]*watchConfig{
-		{VisibleSessionID: s.id, Target: "job-1"}: {watchID: "watch-1"},
+		{VisibleSessionID: s.id, Target: "job-1", ReceiverSessionID: s.id}: {watchID: "watch-1", receiverSessionID: s.id},
 	}
 	jm.mu.Unlock()
 
@@ -301,11 +301,11 @@ func TestDelegateWaitOnRemovedWatchGetsCancellationNotice(t *testing.T) {
 	s, jm := newAdmissionSession(t)
 	jm.mu.Lock()
 	jm.watches = map[watchKey]*watchConfig{
-		{VisibleSessionID: s.id, Target: "job-1"}: {watchID: "watch-1"},
+		{VisibleSessionID: s.id, Target: "job-1", ReceiverSessionID: s.id}: {watchID: "watch-1", receiverSessionID: s.id},
 	}
 	jm.mu.Unlock()
 	jm.mu.Lock()
-	delete(jm.watches, watchKey{VisibleSessionID: s.id, Target: "job-1"})
+	delete(jm.watches, watchKey{VisibleSessionID: s.id, Target: "job-1", ReceiverSessionID: s.id})
 	jm.mu.Unlock()
 
 	accepted, err := (&subagent{sess: s}).admitTerminalWait(context.Background(), &TerminalCandidate{
@@ -357,5 +357,9 @@ func TestDelegateWaitSatisfiedByJobWatchAndInput(t *testing.T) {
 	s.inputQueue = []queuedInput{{ID: "input-1"}}
 	if !s.terminalWaitSatisfied(context.Background(), "input-1") {
 		t.Fatal("queued input did not satisfy the wait")
+	}
+	s.steeringQueue = []steeringMessage{{StableTurnID: "steer-1", Text: "parent note"}}
+	if !s.terminalWaitSatisfied(context.Background(), "job-1") {
+		t.Fatal("parent steering did not satisfy the wait")
 	}
 }

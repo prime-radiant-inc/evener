@@ -21,6 +21,7 @@ type ReportSummary struct {
 	Tasks       TaskSummary      `json:"tasks"`
 	Inventory   InventorySummary `json:"inventory"`
 	TaskOwnerID string           `json:"task_owner_id,omitempty"`
+	Blocker     string           `json:"blocker,omitempty"`
 }
 
 type TaskSummary struct {
@@ -178,6 +179,9 @@ func renderReportNotice(summary ReportSummary) string {
 		}
 	} else {
 		b.WriteString(" Task list unavailable.")
+	}
+	if summary.Blocker != "" {
+		fmt.Fprintf(&b, " Blocker: %s.", summary.Blocker)
 	}
 	if len(summary.Inventory.Categories) != 0 {
 		parts := make([]string, 0, len(summary.Inventory.Categories))

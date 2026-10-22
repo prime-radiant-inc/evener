@@ -35,7 +35,7 @@ func TestOutstandingDelegateWorkItemizesEachCategory(t *testing.T) {
 	jm.mu.Lock()
 	jm.running = map[string]*runningJob{"job-1": {}}
 	jm.watches = map[watchKey]*watchConfig{
-		{VisibleSessionID: "s1", Target: "job-1"}: {watchID: "watch-1"},
+		{VisibleSessionID: "s1", Target: "job-1", ReceiverSessionID: "s1"}: {watchID: "watch-1", receiverSessionID: "s1"},
 	}
 	jm.mu.Unlock()
 

@@ -139,6 +139,7 @@ func TestInlineAndEarlierResultsCarrySummary(t *testing.T) {
 		Version:    1,
 		ReportKind: "done",
 		Tasks:      TaskSummary{Present: true, Total: 1, Done: 1},
+		Blocker:    "repository access",
 	}
 	metadata, _ := json.Marshal(delegateTerminalPacketMetadata{Report: &summary})
 	packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketReported, Message: []byte(`"finished"`), Metadata: metadata}
@@ -147,6 +148,9 @@ func TestInlineAndEarlierResultsCarrySummary(t *testing.T) {
 	populateStableDelegateSendResult(&current, packet)
 	if current.ReportSummary == "" {
 		t.Fatal("current result has no rendered report summary")
+	}
+	if !strings.Contains(current.ReportSummary, "repository access") {
+		t.Fatalf("current summary = %q, want the blocker", current.ReportSummary)
 	}
 	withEarlier := sendMessageResult{DelegateID: "dlg_target", Type: "delegate", Earlier: []delegatestore.TerminalPacket{packet}}
 	out := delegateSendResultFrom(withEarlier)

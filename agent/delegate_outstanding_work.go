@@ -83,7 +83,19 @@ func (s *Session) outstandingDelegateWork() (OutstandingDelegateWork, error) {
 // resolves attention under its own claim, and reading the fold here would make
 // admission race that resolution.
 func (s *Session) outstandingDelegateWorkForAdmission() (OutstandingDelegateWork, error) {
-	return s.outstandingDelegateWorkInventory(false)
+	work, err := s.outstandingDelegateWorkInventory(false)
+	if s == nil {
+		return work, err
+	}
+	s.attentionMu.Lock()
+	for id := range s.delegateAttentionArmIDs {
+		work.Attention = append(work.Attention, id)
+	}
+	for id := range s.rootAttentionWakeIDs {
+		work.Attention = append(work.Attention, id)
+	}
+	s.attentionMu.Unlock()
+	return work, err
 }
 
 func (s *Session) outstandingDelegateWorkInventory(includeAttention bool) (OutstandingDelegateWork, error) {
@@ -94,9 +106,9 @@ func (s *Session) outstandingDelegateWorkInventory(includeAttention bool) (Outst
 	var errs []error
 
 	if s.jobManager != nil {
-		jobs, watches, notifications, unknown, err := s.jobManager.outstandingWork()
+		jobs, _, notifications, unknown, err := s.jobManager.outstandingWork()
 		work.Jobs = jobs
-		work.Watches = watches
+		work.Watches = s.receiverWatchIDs()
 		work.Notifications = append(work.Notifications, notifications...)
 		work.Unknown = append(work.Unknown, unknown...)
 		if err != nil {
@@ -121,6 +133,30 @@ func (s *Session) outstandingDelegateWorkInventory(includeAttention bool) (Outst
 	work.Goals = s.activeGoalIDs()
 
 	return work, errors.Join(errs...)
+}
+
+// receiverWatchIDs returns the live watches that deliver to this session,
+// wherever their holder manager lives. A parent's watch on a delegate belongs
+// on the parent's row, and an observer's parent-source watch lives in the
+// parent's manager.
+func (s *Session) receiverWatchIDs() []string {
+	if s == nil {
+		return nil
+	}
+	var ids []string
+	for _, holder := range s.watchHolderSessions() {
+		if holder == nil || holder.jobManager == nil {
+			continue
+		}
+		holder.jobManager.mu.Lock()
+		for _, cfg := range holder.jobManager.watches {
+			if watchConfigMatchesReceiver(cfg, s.id, s.owningDelegateID) {
+				ids = append(ids, watchConfigID(cfg))
+			}
+		}
+		holder.jobManager.mu.Unlock()
+	}
+	return ids
 }
 
 // dropOwnedShellAttention removes attention that names a stable delegate's

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -55,6 +56,15 @@ func (s *Session) terminalWaitSatisfied(ctx context.Context, target string) bool
 	if s.peekNotifications() > 0 {
 		return true
 	}
+	if s.hasPendingSteering() {
+		return true
+	}
+	if pending, err := s.pendingDelegateAttentionIDs(); err == nil && len(pending) != 0 {
+		return true
+	}
+	if len(s.pendingChildDeliveryIDs()) != 0 {
+		return true
+	}
 	if s.hasQueuedWaitInput(target) {
 		return true
 	}
@@ -88,6 +98,10 @@ func (s *Session) hasQueuedWaitInput(target string) bool {
 // admitted=false with a nil error. A non-nil error means the refusal itself
 // could not be delivered.
 func (a *subagent) admitTerminalReport(ctx context.Context, candidate *TerminalCandidate) (bool, error) {
+	return a.admitTerminalReportWithInventory(ctx, candidate)
+}
+
+func (a *subagent) admitTerminalReportWithInventory(ctx context.Context, candidate *TerminalCandidate) (bool, error) {
 	if a == nil || a.sess == nil {
 		return false, errors.New("terminal admission requires a delegate session")
 	}
@@ -203,15 +217,8 @@ func (s *Session) validateWaitTarget(ctx context.Context, target string) error {
 	}
 
 	if kind == "" || kind == "watch" {
-		if s.jobManager != nil {
-			s.jobManager.mu.Lock()
-			for key, cfg := range s.jobManager.watches {
-				if watchConfigID(cfg) == id || key.Slot == id || (cfg != nil && cfg.id == id) {
-					s.jobManager.mu.Unlock()
-					return nil
-				}
-			}
-			s.jobManager.mu.Unlock()
+		if slices.Contains(s.receiverWatchIDs(), id) {
+			return nil
 		}
 	}
 
