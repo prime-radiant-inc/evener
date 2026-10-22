@@ -2356,29 +2356,42 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         return false;
       }
     };
-    const suppressedOutcome = async (): Promise<HandoffResult | null> => {
-      const entry = suppression();
-      if (!entry) return null;
+    // ONE rule answers the suppression verdict everywhere it is consulted: a
+    // confirmed suppression is terminal only when its epoch's expiry row
+    // exists. Unconfirmed entries await durable validation, and a confirmed
+    // entry whose fence did not commit has no row: both keep the work
+    // retryable. The row is written by the same transaction that flips the
+    // epoch's pending rows terminal, so a pending row and an expiry row for
+    // one epoch cannot coexist.
+    const suppressionVerdict = async (entry: SuppressionEntry): Promise<HandoffResult> => {
       if (!entry.confirmed) return { state: "pending", reason: "owner-unavailable" };
-      // The receipt was read before this consult, so a fence that committed
-      // answers cancelled from its row flip above; this check only sees the
-      // pre-fence window (or a failed fence), where the row is absent.
       if (!(await expiryBacksSuppression(entry))) return { state: "pending", reason: "owner-unavailable" };
       if (refused()) return { state: "pending", reason: "owner-unavailable" };
       return { state: "cancelled" };
     };
-    let provisionalSuppressionAtGuard = false;
+    const suppressedOutcome = async (): Promise<HandoffResult | null> => {
+      const entry = suppression();
+      if (!entry) return null;
+      return suppressionVerdict(entry);
+    };
+    // WHICH arm refused the append's final guard, so the cancellation it
+    // causes is classified by that arm's own rule: the suppression arm is
+    // re-answered by the shared durable verdict, while a dismissal or a
+    // closure/fault refusal stays terminal exactly as before.
+    let suppressionAtGuard: SuppressionEntry | undefined;
     const documentStillEligible = () => {
       if (refused()) return false;
       // A dismissal joins the same predicate at the append's final guard: its
       // synchronous fence is set before its durable flip can be observed here.
       if (this.#pendingCancelledDiscards.has(operationKey)) return false;
-      // The append's last guard asks this after its reads. Record a provisional
-      // answer so the cancellation it causes stays retryable: the validation the
-      // entry awaits may still prove its read stale and release the suppression.
+      // The append's last guard asks this after its reads. A confirmed entry
+      // observed here always lacks its expiry row yet - the append read the row
+      // in its own transaction, and the fence writes row and row-flip
+      // atomically - so recording the entry lets the shared verdict keep the
+      // answer retryable.
       const entry = suppression();
       if (!entry) return true;
-      if (!entry.confirmed) provisionalSuppressionAtGuard = true;
+      suppressionAtGuard = entry;
       return false;
     };
     const suppressed = await suppressedOutcome();
@@ -2474,12 +2487,16 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       this.#settleTransition({ signal: true, documentKey: annotationDocumentKey(key) });
       return { state: "applied", draftRevision: result.draftRevision };
     }
-    // The append's own last guard can be the first place an overlapping read's
-    // provisional suppression is observed. The durable operation was not
-    // cancelled, so answer the retryable pending outcome and let a later
-    // storage success finish the handoff once the suppression resolves.
-    if (result.state === "cancelled" && provisionalSuppressionAtGuard) {
-      return { state: "pending", reason: "owner-unavailable" };
+    // The append's own last guard can be the first place an overlapping
+    // suppression is observed. Only the suppression arm is re-classified here:
+    // a dismissal or a closure/fault refusal stays terminal. The recorded
+    // entry is answered by the same durable verdict every consult uses, so a
+    // confirmed entry without its expiry row behind it never settles the
+    // operation: the pending answer records the runtime's need and the next
+    // trigger lets the durable arbiter decide.
+    if (result.state === "cancelled" && suppressionAtGuard !== undefined) {
+      const verdict = await suppressionVerdict(suppressionAtGuard);
+      return verdict.state === "cancelled" ? result : verdict;
     }
     return result;
   }

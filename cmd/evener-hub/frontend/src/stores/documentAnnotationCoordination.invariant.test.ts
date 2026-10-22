@@ -2416,3 +2416,50 @@ test("suppressEpochForExpiry refuses an epoch of a retired incarnation", async (
     fixture.drafts.close();
   }
 });
+
+// A confirmed suppression can land while the append is between its reads and
+// its final guard: the fault-branch completion that proves a source change
+// outside any acceptance installs it synchronously. By transaction
+// serialization that entry can never have its expiry row yet - the append read
+// the row in its own transaction, and the fence writes row and row-flip
+// atomically. The guard therefore refuses work that is not durably terminal,
+// and the handoff must answer the retryable pending outcome so a later trigger
+// can consult the durable arbiter.
+test("a confirmed suppression at the append's final guard answers pending", async () => {
+  const appendReadsIssued = deferred<void>();
+  let suppressAtGuard = false;
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-guard-confirmed",
+    origin: "https://coordination.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+    prepareAnnotation: currentPreparation(() => fixture),
+    onAppendReadsIssued: () => {
+      if (suppressAtGuard && fixture) fixture.repository.suppressEpochForExpiry(fixture.operation.lease);
+      appendReadsIssued.resolve();
+    },
+  });
+  const operation: PreparedAnnotation = { ...fixture.operation, operationId: "operation-2" };
+  await applyFixtureOperation(fixture);
+  await fixture.repository.saveAnnotation(operation);
+  fixture.acknowledge.mockClear();
+
+  suppressAtGuard = true;
+  const handoff = fixture.runtime.handoff(fixture.document, operation.operationId);
+  await appendReadsIssued.promise;
+
+  // The append's guard refused the still-pending operation. Terminal
+  // cancelled would settle work on an expiry row that does not exist.
+  expect(await handoff).toEqual({ state: "pending", reason: "owner-unavailable" });
+  expect(fixture.acknowledge).not.toHaveBeenCalled();
+  // A fresh adapter holds no suppression: the durable row is still pending,
+  // not terminal.
+  const sibling = openSiblingRepository(fixture);
+  const views = await sibling.listAnnotations(fixture.document);
+  expect(views.find((view) => view.operation.operationId === operation.operationId)?.handoff.state).toBe("pending");
+  sibling.close();
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
