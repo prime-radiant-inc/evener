@@ -137,6 +137,43 @@ test("a held old-incarnation read continuation does not displace the new incarna
   }
 });
 
+// The old-incarnation registration guard is a check-then-act if it reads the
+// durable incarnation BEFORE an awaited boundary. Hold the GATE READ's own
+// completion (not the issuance): its transaction already read the retired
+// incarnation, so releasing it resumes with a stale "true". The old
+// continuation must still keep to its own incarnation's slot: the replacement
+// registration and read state survive, and the newer ticket stays acceptable.
+test("a held durable-incarnation gate read does not let the old continuation displace the current read", async () => {
+  const { drafts, repository, key, document } = await openStallFixture("annotation-read-gate");
+  const content = { text: "gate read", binary: false, mediaType: "text/markdown", truncated: false, sizeBytes: 9 };
+  try {
+    const primed = await repository.beginRead(document);
+    // The next readonly namespace-only transaction is beginRead's durable
+    // incarnation gate. Hold its completion: it has already read the old
+    // incarnation while the caller still waits.
+    const gateHold = holdNextTransactionEvent([ANNOTATION_NAMESPACES_STORE], "complete", "readonly");
+    const earlier = repository.beginRead(document);
+    await gateHold.reached;
+
+    // A reset retires the incarnation the held gate read answered for, and a
+    // replacement read registers under the new one.
+    const reset = await repository.resetOwnedNamespace(key.namespace, primed.namespaceIncarnation);
+    expect(reset).toMatchObject({ committed: true });
+    const later = await repository.beginRead(document);
+    expect(later.namespaceIncarnation).toBe(reset.incarnation);
+
+    gateHold.release();
+    const earlierTicket = await earlier;
+    expect(earlierTicket.namespaceIncarnation).toBe(primed.namespaceIncarnation);
+
+    expect(await repository.acceptRead(later, content)).toMatchObject({ state: "accepted" });
+    expect(await repository.acceptRead(earlierTicket, content)).toEqual({ state: "stale-ticket" });
+  } finally {
+    repository.close();
+    drafts.close();
+  }
+});
+
 // The repository's watchdog bounds the happy path; the rollback the error
 // path awaits must share that bound. A body that rejects before the deadline
 // enters the catch, whose completed-wait used to sit OUTSIDE the deadline

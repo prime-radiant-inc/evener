@@ -5,7 +5,12 @@ import { IDBDatabase, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ComposerPreparation } from "../panes/session/composer/composerContract";
 import { APPEND_STORES } from "./browserDraftRepository";
-import { createDocumentAnnotationRepository, RESET_STORES, SAVE_STORES } from "./documentAnnotationIndexedDB";
+import {
+  ACCEPT_STORES,
+  createDocumentAnnotationRepository,
+  RESET_STORES,
+  SAVE_STORES,
+} from "./documentAnnotationIndexedDB";
 import {
   ANNOTATION_EVIDENCE_STORE,
   ANNOTATION_EXPIRY_STORE,
@@ -14,6 +19,8 @@ import {
 } from "./localCompositionSchema";
 import {
   type AnnotationFixtureWithRuntime,
+  buildAnnotationOperation,
+  currentPreparation,
   deferred,
   openAnnotationFixture,
   openAnnotationStore,
@@ -585,5 +592,69 @@ test("a read registered after the reset commit survives the reset's own retireme
   } finally {
     store.repository.close();
     store.drafts.close();
+  }
+});
+
+// The read-state retirement has to name the incarnation the reset rotated
+// away, like every other retirement. A replacement-incarnation acceptance
+// installed while the reset's own completion is held must survive it: the next
+// read's entry-time provisional suppression is what protects an overlapping
+// handoff's append window, and losing this state reopens that window.
+test("a replacement-incarnation acceptance survives the held reset's own retirement", async () => {
+  const preparing = deferred<void>();
+  const preparationReleased = deferred<void>();
+  let preparations = 0;
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-reset-read-state-scope",
+    origin: "https://reset.example",
+    runtime: true,
+    prepareAnnotation: async () => {
+      preparations += 1;
+      if (preparations === 1) {
+        preparing.resolve();
+        await preparationReleased.promise;
+      }
+      return currentPreparation(() => fixture)();
+    },
+  });
+  const resetHold = holdNextWriteTransaction(RESET_STORES);
+  const reset = fixture.repository.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation);
+  await resetHold.reached;
+  try {
+    // The replacement incarnation is durably current, but the reset's own
+    // continuation has not run yet. Accept a read and save its operation.
+    const replacement = await fixture.repository.beginRead(fixture.document);
+    expect(replacement.namespaceIncarnation).not.toBe(fixture.incarnation);
+    const accepted = await fixture.repository.acceptRead(replacement, fixture.content);
+    if (accepted.state !== "accepted") throw new Error(`replacement read was not accepted: ${accepted.state}`);
+    const operation: PreparedAnnotation = {
+      ...buildAnnotationOperation(accepted.lease, fixture.content),
+      operationId: "operation-2",
+    };
+    await fixture.repository.saveAnnotation(operation);
+
+    resetHold.release();
+    expect(await reset).toMatchObject({ committed: true });
+
+    // The next read of changed content installs its entry-time provisional
+    // from the remembered replacement-incarnation acceptance. Hold its
+    // validation completion so the provisional stays unconfirmed while the
+    // overlapping handoff reaches its post-preparation guard.
+    const validationHold = holdNextWriteTransaction(ACCEPT_STORES);
+    const changedTicket = await fixture.repository.beginRead(fixture.document);
+    const handoff = fixture.runtime.handoff(fixture.document, operation.operationId);
+    await preparing.promise;
+    const changedRead = fixture.repository.acceptRead(changedTicket, sampleChangedContent());
+    await validationHold.reached;
+    preparationReleased.resolve();
+
+    expect(await handoff).toEqual({ state: "pending", reason: "owner-unavailable" });
+    validationHold.release();
+    expect(await changedRead).toMatchObject({ state: "expiry-pending" });
+  } finally {
+    resetHold.release();
+    fixture.repository.close();
+    fixture.drafts.close();
   }
 });
