@@ -819,6 +819,10 @@ func withCommunicateEndReason(def llm.ToolDefinition, reasons []string, descript
 		"enum":        slices.Clone(reasons),
 		"description": description,
 	}
+	props["waiting_on"] = map[string]any{
+		"type":        "string",
+		"description": "The job, watch, child delegate, or queued input ID that will wake you; required when end_reason=waiting_on_work.",
+	}
 	def.Parameters = params
 	return def
 }

@@ -91,10 +91,10 @@ func FuzzLfRouteNoToolCalls(f *testing.F) {
 		kind := lf_entryKinds[int(kindSel)%len(lf_entryKinds)]
 		_ = allowDelegateNoAction // retained in the fuzz wire shape for existing corpus entries
 
-		route := routeNoToolCalls(kind, noContent, afterTerminal)
+		route := routeNoToolCalls(kind, noContent, afterTerminal, false)
 
 		// Determinism.
-		if route2 := routeNoToolCalls(kind, noContent, afterTerminal); route != route2 {
+		if route2 := routeNoToolCalls(kind, noContent, afterTerminal, false); route != route2 {
 			t.Fatalf("nondeterministic route: %v vs %v", route, route2)
 		}
 		// Total function: exactly one of the two valid routes.

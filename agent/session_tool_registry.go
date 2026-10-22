@@ -60,6 +60,9 @@ type toolDeps struct {
 	// the blocker and waiting_on targets instead of needs_response.
 	delegate bool
 
+	// validateWaitTarget checks a root's waiting_on target against a live waker.
+	validateWaitTarget func(ctx context.Context, target string) error
+
 	// memoryToolsStripped reports that this session has no memory namespace
 	// (memoryNamespaceUnavailable), so filterUnavailableMemoryTools will remove
 	// every memory_-prefixed name — which makes the whole prefix unavailable as
@@ -386,6 +389,7 @@ func newToolDeps(s *Session) *toolDeps {
 		turnEndsProcess:        s.cfg.TurnEndsProcess,
 		offersEndReason:        s.hasHumanPartnerToAsk(),
 		delegate:               s.reportsToParent(),
+		validateWaitTarget:     s.validateWaitTarget,
 		memoryToolsStripped:    memoryNamespaceUnavailable(s.cfg),
 		toolNameMap:            s.profile.ToolNameMap(),
 		nativeWebSearch:        s.providerWebSearchEnabled(s.profile) && protocolInjectsNativeWebSearch(s.profile.Protocol()),

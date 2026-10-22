@@ -977,11 +977,20 @@ const (
 
 // routeNoToolCalls lets notification acknowledgements finish idle. After a
 // terminal communicate, notification silence must not resurrect the run (#329).
-func routeNoToolCalls(kind EntryKind, noContent bool, afterTerminalCommunicate bool) noCallsRoute {
+func routeNoToolCalls(kind EntryKind, noContent bool, afterTerminalCommunicate bool, carriedDelegateReport bool) noCallsRoute {
+	if kind == EntryNotification && carriedDelegateReport {
+		return runNoToolCalls
+	}
 	if kind == EntryNotification && (!noContent || afterTerminalCommunicate) {
 		return finishIdle
 	}
 	return runNoToolCalls
+}
+
+func (s *Session) carriedDelegateReportSnapshot() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.carriedDelegateReport
 }
 
 // drainInputs is the snapshot the drain loop feeds selectDrainNextAction after a
@@ -2046,6 +2055,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	s.restMu.Unlock()
 	s.turnStartedAt = s.sclock().Now()
 	s.comm = communicateResult{}
+	s.carriedDelegateReport = false
 	// A claimed answering steering carrier has already crossed its durable
 	// admission boundary before this carrier turn runs, so preserve its
 	// established entry-clear behavior. Ordinary user input clears only after
@@ -2447,7 +2457,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 					}
 				}
 			}
-			route := routeNoToolCalls(kind, noContent, s.hasAcceptedTerminalCommunicate())
+			route := routeNoToolCalls(kind, noContent, s.hasAcceptedTerminalCommunicate(), s.carriedDelegateReportSnapshot())
 			if route == finishIdle {
 				s.finishProcessingAtBoundary(ctx, SessionIdle)
 				return "", progressed, nil
@@ -2937,6 +2947,10 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	}
 	hasSteering := s.hasPendingSteering()
 	hasRootAttention := s.hasPendingRootDelegateAttention()
+	carriedDelegateReport := hasRootAttention && s.pendingRootReportAttention()
+	s.mu.Lock()
+	s.carriedDelegateReport = carriedDelegateReport
+	s.mu.Unlock()
 	// A delegate parked in its finalization drain is woken for its own
 	// delegates' updates (hasPendingDelegateUpdateAttention); the update is
 	// already in its transcript, so the turn's model request carries it. Only

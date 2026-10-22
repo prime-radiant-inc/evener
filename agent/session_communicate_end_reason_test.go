@@ -95,7 +95,7 @@ func TestCommunicateDeliversItsEndReason(t *testing.T) {
 		wantErr  bool
 	}{
 		{name: "root states needs_response", offered: true, args: map[string]any{"end_turn": true, "end_reason": "needs_response"}, want: "needs_response"},
-		{name: "root states waiting_on_work", offered: true, args: map[string]any{"end_turn": true, "end_reason": "waiting_on_work"}, want: "waiting_on_work"},
+		{name: "root states waiting_on_work", offered: true, args: map[string]any{"end_turn": true, "end_reason": "waiting_on_work", "waiting_on": "job-1"}, want: "waiting_on_work"},
 		{name: "root states done", offered: true, args: map[string]any{"end_turn": true, "end_reason": "done"}, want: "done"},
 		{name: "root states none", offered: true, args: map[string]any{"end_turn": true}, want: "done"},
 		{name: "root keeps the turn going", offered: true, args: map[string]any{"end_turn": false, "end_reason": "needs_response"}, want: ""},
@@ -119,6 +119,7 @@ func TestCommunicateDeliversItsEndReason(t *testing.T) {
 				setCommunicateTerminal: func(context.Context, string, string, string, any, string) bool { return true },
 				offersEndReason:        tc.offered,
 				delegate:               tc.delegate,
+					validateWaitTarget:     func(context.Context, string) error { return nil },
 			}
 			reg := tool.NewRegistry()
 			_ = registerCommunicateTool(reg, deps)

@@ -126,6 +126,16 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 					default:
 						return nil, appwire.InvalidParams(fmt.Sprintf("communicate end_reason %q is not available to a delegate", endReason))
 					}
+				} else if endReason == tool.CommunicateEndReasonWaitingOnWork {
+					waitingOn = communicateStringArg(args, "waiting_on")
+					if waitingOn == "" {
+						return nil, appwire.InvalidParams("communicate end_reason waiting_on_work requires waiting_on")
+					}
+					if deps.validateWaitTarget != nil {
+						if err := deps.validateWaitTarget(ctx, waitingOn); err != nil {
+							return nil, appwire.InvalidParams("communicate end_reason waiting_on_work requires a live waker: " + err.Error())
+						}
+					}
 				}
 			}
 
