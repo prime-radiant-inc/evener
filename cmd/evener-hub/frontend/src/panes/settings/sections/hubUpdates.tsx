@@ -89,9 +89,15 @@ export function HubUpdates() {
   const onDisk = check?.onDiskCommit;
   const channelError = check?.checkError ?? null;
   const restartSupported = check?.restartSupported === true;
+  // An older hub omits the field entirely; a current hub that cannot restart
+  // sends false. The generated type requires the field, so read it as optional
+  // to tell those two cases apart. Only the absence means the deprecated
+  // combined action.
+  const restartCapabilityPresent =
+    check !== null && (check as { restartSupported?: boolean }).restartSupported !== undefined;
   const installAvailable = check?.installAvailable ?? check?.updateAvailable ?? false;
   const legacyApply =
-    check !== null && !restartSupported && (check.applicable ?? false) && (check.updateAvailable ?? false);
+    check !== null && !restartCapabilityPresent && (check.applicable ?? false) && (check.updateAvailable ?? false);
   const busy = checking || installing || applying || restarting;
 
   const updateState = restarting

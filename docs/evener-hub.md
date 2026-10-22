@@ -409,7 +409,8 @@ Install and Restart are separate actions:
   hub probes that binary with `--version` and refuses a missing, unreadable, or
   non-Evener target; the running hub stays up on a refusal. On Unix the
   `hub.lock` flock and listener are released by the exec and re-acquired by
-  the new process.
+  the new process. A root-owned installation without a writable lock file is
+  restarted with the final digest check alone.
 - A restart is confirmed by process incarnation (`/api/health` `started_at`),
   not by version. A rebuild at the same commit still reloads the page.
 - `evener hub restart` runs the same restart from a terminal and waits for the
@@ -419,6 +420,9 @@ Install and Restart are separate actions:
   no longer calls it.
 - A hub that predates separate restart shows the original combined **Update and
   restart** action instead.
+- A current hub that reports restart disabled keeps the two-step controls; the
+  combined action is only for a hub whose response has no restart capability
+  field at all.
 
 The install targets the prefix the running hub was launched from (derived
 from its own binary path, e.g. `/usr/local` for a system install), not

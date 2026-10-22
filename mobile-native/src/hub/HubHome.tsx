@@ -6,7 +6,7 @@ import type { HostRow } from "@evener/appwire-client";
 import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { nativeApplicationVersion, nativeBuildVersion } from "expo-application";
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { Alert, Text } from "react-native";
 import { useConnection } from "../ConnectionProvider";
 import { useConnectionStatusText } from "../board/connectionStatus";
@@ -33,7 +33,11 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 	const connectionLine = useConnectionStatusText();
 	const line = hubStatusLine(ready, connectionLine, update.check);
 	const check = update.check;
-	const legacyUpdate = !!check && check.restartSupported !== true && !!check.applicable && !!check.updateAvailable;
+	const legacyUpdate =
+		!!check &&
+		(check as { restartSupported?: boolean }).restartSupported === undefined &&
+		!!check.applicable &&
+		!!check.updateAvailable;
 	const installWaiting =
 		!legacyUpdate &&
 		!!check?.applicable &&
@@ -71,6 +75,9 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 		);
 	const updateProblem =
 		update.installError ?? update.restartError ?? update.applyError ?? update.checkError ?? check?.checkError;
+	useEffect(() => {
+		if (update.installReconcile && ready) void updates.runCheck();
+	}, [update.installReconcile, ready, updates]);
 	// The home reads the hosts and the providers each time it shows; only the
 	// Hosts pages poll, and the provider list follows the hub's own
 	// notifications while the home is up.

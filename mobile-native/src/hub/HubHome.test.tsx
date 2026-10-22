@@ -74,11 +74,14 @@ const INSTALLED: UpdateCheckResponse = { ...UP_TO_DATE, onDiskCommit: "def5678",
  * on upgrade, and restarts on restart. */
 function hub(check: UpdateCheckResponse | Error) {
 	const calls: string[] = [];
-	const script = { failChecks: false, startedAt: undefined as string | undefined };
+	const script = { failChecks: false, failUpgrade: false, startedAt: undefined as string | undefined };
 	const client = {
 		request: (async (method: string) => {
 			calls.push(method);
-			if (method === "evener/upgrade") return {};
+			if (method === "evener/upgrade") {
+				if (script.failUpgrade) throw new Error("socket hung up");
+				return {};
+			}
 			if (method === "evener/hub/restart") return { restarting: true };
 			if (method === "evener/update/apply") return { restarting: false };
 			if (check instanceof Error) throw check;
@@ -419,6 +422,33 @@ it("offers the combined update action on an older hub", async () => {
 		alertRequests[0]?.buttons?.find((button) => button.text === "Update")?.onPress?.();
 	});
 	expect(calls).toContain("evener/update/apply");
+});
+
+it("does not offer the combined action when a current hub reports restart disabled", async () => {
+	const { find, tree } = await mount({
+		check: {
+			...WAITING,
+			restartSupported: false,
+			installAvailable: false,
+			installTarget: "/opt/evener",
+			installTargetMatchesLaunch: false,
+		},
+	});
+	expect(find("Update and restart")).toBeNull();
+	expect(find("Restart hub")).toBeNull();
+	expect(renderedText(tree)).toContain("/opt/evener");
+});
+
+it("reconciles a lost install once the connection is ready", async () => {
+	const { script, calls } = await mount({ check: WAITING });
+	const before = calls.filter((method) => method === "evener/update/check").length;
+	script.failUpgrade = true;
+	await act(async () => {
+		await updates.controller.install();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+	expect(calls.filter((method) => method === "evener/update/check").length).toBeGreaterThan(before);
+	expect(updates.controller.getState().installReconcile).toBe(false);
 });
 
 it("shows the on-disk build and its probe error", async () => {

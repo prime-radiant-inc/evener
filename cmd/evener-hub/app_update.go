@@ -474,8 +474,17 @@ func scheduleRestartAfterResponse(ctx context.Context, pin restartPin, binary st
 				release, err = selfupdate.AcquireInstallLockForVerify(relockCtx, pin.shareBinDir)
 				cancel()
 				if err != nil {
-					abort("restart aborted: install lock unavailable: %v", err)
-					return
+					if label == "restart" {
+						// The hub may run from a root-owned installation it can
+						// read and exec but not write. No concurrent installer
+						// can hold the lock either; the digest re-verify below
+						// still catches a changed target.
+						release = func() {}
+						_, _ = fmt.Fprintf(hubUpdateStderr, "[hub] restart: install lock unavailable (%v); verifying the digest without it\n", err)
+					} else {
+						abort("restart aborted: install lock unavailable: %v", err)
+						return
+					}
 				}
 			}
 			// The install lock released at Upgrade return; re-verify the

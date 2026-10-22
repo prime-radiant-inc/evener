@@ -200,6 +200,26 @@ test("disables Install when the managed target differs from the running binary",
   expect(screen.getByTestId("hub-install-target-mismatch").textContent).toContain("/opt/evener");
 });
 
+test("does not fall back to the combined action on a current hub with restart disabled", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/settings/overview", () => overview("snapshot"));
+  fake.on("evener/update/check", () => ({
+    ...UPDATE_AVAILABLE,
+    restartSupported: false,
+    installAvailable: false,
+    installTarget: "/opt/evener",
+    installTargetMatchesLaunch: false,
+  }));
+  fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
+
+  render(<HubSection />);
+  await updateStateIs("update-available");
+  expect(screen.queryByRole("button", { name: "Update and restart" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Install update" })).toHaveProperty("disabled", true);
+  expect(screen.queryByRole("button", { name: "Restart hub" })).toBeNull();
+  expect(screen.getByTestId("hub-install-target-mismatch")).toBeTruthy();
+});
+
 test("switching channel re-checks with the new channel", async () => {
   const fake = connectFakeClient();
   fake.on("evener/settings/overview", () => overview("snapshot"));

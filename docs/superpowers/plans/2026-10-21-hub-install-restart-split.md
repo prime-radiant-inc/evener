@@ -36,7 +36,9 @@ exactly the old process's `/api/health` `started_at` string.
    launch path has a managed install layout, also take the existing
    cross-process install lock around verify and exec. For a worktree or ad-hoc
    path there is no managed layout; the pinned digest is re-verified immediately
-   before exec and a change aborts the restart.
+   before exec and a change aborts the restart. If a managed installation is
+   read-only and has no lock file, the restart continues without the lock and
+   relies on that digest re-verify.
 5. Schedule the existing in-place `exec` after the response. It keeps the PID,
    arguments, cwd, environment, and stdio; the lock and listener are released by
    the exec and re-acquired by the new image.
@@ -90,6 +92,9 @@ the on-disk build and restart state without a network request.
 An older hub omits the new fields. A new client treats the on-disk commit as
 unknown, sets `restartPending=false`, and offers the deprecated combined
 `evener/update/apply` action (install then restart) instead of the two steps.
+An explicit `restartSupported=false` is not an older hub: it keeps the
+two-step UI and the install-target guard. The combined path propagates
+`checkError` before reporting `restarting:false`.
 
 After install, run a fresh check. The probe sees the new on-disk build, so
 `installAvailable` is false and `restartPending` is true.
