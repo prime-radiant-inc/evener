@@ -15,11 +15,12 @@ import (
 )
 
 func TestSystemdEffectiveLaunchEnvironment(t *testing.T) {
-	for _, name := range []string{"default-home", "system-no-pass", "system-pass", "user-inherits", "unit-over-manager", "files-over-unit", "unset-name", "unset-match", "unset-nonmatch", "optional-missing", "required-missing", "glob-refuses", "specifier-refuses", "quoted-unset-refuses", "duplicate-metadata-refuses"} {
+	for _, name := range []string{"default-home", "system-no-pass", "system-pass", "user-inherits", "unit-over-manager", "files-over-unit", "unset-name", "unset-match", "unset-nonmatch", "optional-missing", "required-missing", "glob-refuses", "specifier-refuses", "quoted-unset-refuses", "duplicate-metadata-refuses", "no-login-home-absent", "no-login-home-empty", "no-login-home-manager", "no-login-home-unit", "no-login-home-file", "no-login-user-inherits", "no-login-home-unset", "login-policy-invalid-refuses", "login-policy-missing-refuses"} {
 		t.Run(name, func(t *testing.T) {
 			host, _ := ownerCommands(t)
 			sup := supervisor{kind: supervisorSystemd, label: "evener-hub-selected.service"}
 			props := "EnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\n"
+			policy := "yes"
 			manager, unit := "", ""
 			files := map[string]string{}
 			want := []string{"HOME=/home/dev"}
@@ -70,6 +71,40 @@ func TestSystemdEffectiveLaunchEnvironment(t *testing.T) {
 				props = "EnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\"HOME=/some home\"\n"
 			case "duplicate-metadata-refuses":
 				props += "PassEnvironment=\n"
+			case "no-login-home-absent", "no-login-home-empty", "no-login-home-manager", "no-login-home-unit", "no-login-home-file", "no-login-user-inherits", "no-login-home-unset":
+				policy = "no"
+				unit = "XDG_CONFIG_HOME=/config XDG_STATE_HOME=/state"
+				want = []string{"XDG_CONFIG_HOME=/config", "XDG_STATE_HOME=/state"}
+				switch name {
+				case "no-login-home-absent":
+					manager = "HOME=/not-passed"
+				case "no-login-home-empty":
+					unit += " HOME="
+					want = append([]string{"HOME="}, want...)
+				case "no-login-home-manager":
+					props = "EnvironmentFiles=\nPassEnvironment=HOME\nUnsetEnvironment=\n"
+					manager = "HOME=/manager"
+					want = append([]string{"HOME=/manager"}, want...)
+				case "no-login-home-unit":
+					unit += " HOME=/unit"
+					want = append([]string{"HOME=/unit"}, want...)
+				case "no-login-home-file":
+					path := filepath.Join(t.TempDir(), "home.env")
+					files[path] = "HOME=/file\n"
+					props = "EnvironmentFiles=" + path + " (ignore_errors=no)\nPassEnvironment=HOME\nUnsetEnvironment=\n"
+					manager, unit = "HOME=/manager", unit+" HOME=/unit"
+					want = append([]string{"HOME=/file"}, want...)
+				case "no-login-user-inherits":
+					sup.kind, manager = supervisorSystemdUser, "HOME=/manager"
+					want = append([]string{"HOME=/manager"}, want...)
+				case "no-login-home-unset":
+					unit += " HOME=/unit"
+					props = "EnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=HOME\n"
+				}
+			case "login-policy-invalid-refuses":
+				policy = "unknown"
+			case "login-policy-missing-refuses":
+				policy = ""
 			}
 			for path, contents := range files {
 				if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
@@ -86,8 +121,11 @@ func TestSystemdEffectiveLaunchEnvironment(t *testing.T) {
 				switch remote {
 				case "getent passwd dev | cut -d: -f6":
 					return []byte("/home/dev\n"), nil
-				case command + " show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment -- " + sup.label:
-					return []byte(props), nil
+				case command + " show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- " + sup.label:
+					if policy == "" {
+						return []byte(props), nil
+					}
+					return []byte(props + "SetLoginEnvironment=" + policy + "\n"), nil
 				case "values=$(" + command + " show-environment) || exit; printf '%s\\n' \"$values\" | " + narrowEnvironmentFilter:
 					reads++
 					return exec.CommandContext(ctx, "/bin/sh", "-c", "systemctl() { printf '%s\\n' "+shellquote.RemoteWord(manager)+"; }; "+remote).Output()
@@ -122,6 +160,35 @@ func TestSystemdEffectiveLaunchEnvironment(t *testing.T) {
 			}
 			if name == "system-no-pass" && reads != 0 {
 				t.Fatalf("system manager inherited without PassEnvironment: reads=%d", reads)
+			}
+		})
+	}
+}
+
+func TestSystemdLoginEnvironmentDefinition(t *testing.T) {
+	for _, kind := range []supervisorKind{supervisorSystemd, supervisorSystemdUser} {
+		t.Run(string(kind), func(t *testing.T) {
+			host, _ := ownerCommands(t)
+			sup := supervisor{kind: kind, label: "evener-hub-selected.service"}
+			policy := "no"
+			show := "show --property=User,ExecStart,WorkingDirectory,Environment,EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- " + sup.label
+			if kind == supervisorSystemdUser {
+				show = "--user " + show
+			}
+			base := "User=dev\nExecStart=/opt/evener hub\nWorkingDirectory=/srv\nEnvironment=\nEnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\n"
+			fr := &fakeRunner{runFn: func(ctx context.Context, argv []string, _ io.Reader) ([]byte, error) {
+				stub := "systemctl() { case \"$*\" in " + shellquote.RemoteWord(show) + ") printf '%s' " + shellquote.RemoteWord(base+"SetLoginEnvironment="+policy+"\n") + ";; show-environment|'--user show-environment') :;; *) return 1;; esac; }; "
+				return exec.CommandContext(ctx, "/bin/sh", "-c", stub+strings.Join(argv[12:], " ")).Output()
+			}}
+			m := newTestManager(t, testRegistry(t, host), fr, Options{})
+			before, err := m.serviceDefinition(t.Context(), host, sup)
+			if err != nil {
+				t.Fatal(err)
+			}
+			policy = "yes"
+			after, err := m.serviceDefinition(t.Context(), host, sup)
+			if err != nil || before == after {
+				t.Fatalf("login policy change did not invalidate definition: before=%q after=%q err=%v", before, after, err)
 			}
 		})
 	}

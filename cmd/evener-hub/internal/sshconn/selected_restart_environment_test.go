@@ -19,23 +19,35 @@ import (
 // Files, fetches and checksums are real. Process/service observations and the
 // restarted listener are modeled, with an exact remote-command allowlist.
 func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
-	for _, name := range []string{"verified-restart", "lost-reply-recovery", "failed-start-recovery"} {
+	for _, name := range []string{"verified-restart", "lost-reply-recovery", "failed-start-recovery", "no-home-live", "no-home-cold"} {
 		lostReply, failedStart := name == "lost-reply-recovery", name == "failed-start-recovery"
 		t.Run(name, func(t *testing.T) {
+			noHome, cold := strings.HasPrefix(name, "no-home-"), name == "no-home-cold"
 			host, oldCommands := ownerCommands(t)
 			sup := supervisor{kind: supervisorSystemd, label: "evener-hub-selected.service"}
 			oldAddr, newAddr := "127.0.0.1:19371", "127.0.0.1:24519"
 			oldEnv := []string{"EVENER_HUB_LISTEN_ADDR=" + oldAddr, "HOME=/home/dev"}
 			newEnv := []string{"EVENER_HUB_LISTEN_ADDR=" + newAddr, "HOME=/home/dev"}
+			policy, unitEnv := "yes", "HOME=/home/dev"
+			fileEnv := "HOME=/home/dev\nEVENER_HUB_LISTEN_ADDR=" + newAddr + "\n"
+			if noHome {
+				policy, unitEnv = "no", ""
+				oldEnv = []string{"EVENER_HUB_LISTEN_ADDR=" + oldAddr, "XDG_CONFIG_HOME=/srv/config", "XDG_STATE_HOME=/srv/state"}
+				newEnv = []string{"EVENER_HUB_LISTEN_ADDR=" + newAddr, "XDG_CONFIG_HOME=/srv/config", "XDG_STATE_HOME=/srv/state"}
+				fileEnv = strings.Join(newEnv, "\n") + "\n"
+				if cold {
+					oldEnv = newEnv
+				}
+			}
 			file := filepath.Join(t.TempDir(), "hub.env")
 			// This definition already names the next listener before selection. The
 			// predecessor still has its original process environment and listener.
-			if err := os.WriteFile(file, []byte("HOME=/home/dev\nEVENER_HUB_LISTEN_ADDR="+newAddr+"\n"), 0600); err != nil {
+			if err := os.WriteFile(file, []byte(fileEnv), 0600); err != nil {
 				t.Fatal(err)
 			}
 			readDefinition := func() []byte {
-				properties := "User=dev\nExecStart=/opt/evener hub --config=/srv/selected.toml\nWorkingDirectory=/srv\nEnvironment=HOME=/home/dev\nEnvironmentFiles=" + file + " (ignore_errors=no)\nPassEnvironment=\nUnsetEnvironment=\n"
-				show := "show --property=User,ExecStart,WorkingDirectory,Environment,EnvironmentFiles,PassEnvironment,UnsetEnvironment -- " + sup.label
+				properties := "User=dev\nExecStart=/opt/evener hub --config=/srv/selected.toml\nWorkingDirectory=/srv\nEnvironment=" + unitEnv + "\nEnvironmentFiles=" + file + " (ignore_errors=no)\nPassEnvironment=\nUnsetEnvironment=\nSetLoginEnvironment=" + policy + "\n"
+				show := "show --property=User,ExecStart,WorkingDirectory,Environment,EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- " + sup.label
 				stub := "systemctl() { case \"$*\" in " + shellquote.RemoteWord(show) + ") printf '%s' " + shellquote.RemoteWord(properties) + ";; show-environment) :;; *) return 1;; esac; }; "
 				out, err := exec.CommandContext(t.Context(), "/bin/sh", "-c", stub+serviceDefinitionRemote(sup)).Output()
 				if err != nil {
@@ -83,6 +95,12 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 				// The pre-stop gate inspects the next environment against the same
 				// config/root while the original process still owns that root.
 				allowed[ownerContext("/srv", newEnv)+"/opt/evener hub endpoint --json --config /srv/selected.toml"] = mustOwnerJSON(t, report)
+				if noHome {
+					// Explicit XDG roots select the same config even if a caller
+					// incorrectly invents HOME. Process evidence still has none.
+					withHome := []string{newEnv[0], "HOME=/home/dev", newEnv[1], newEnv[2]}
+					allowed[ownerContext("/srv", withHome)+"/opt/evener hub endpoint --json --config /srv/selected.toml"] = mustOwnerJSON(t, report)
+				}
 				return allowed
 			}
 			before, after := makeCommands(false), makeCommands(true)
@@ -94,12 +112,21 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 				if strings.Contains(command, " hub endpoint ") {
 					out = mustOwnerJSON(t, stoppedReport)
 				}
+				if cold && command == systemctlListUnits {
+					out = sup.label + " loaded inactive dead\n"
+				}
+				if cold && command == systemctlListUnitsUser {
+					out = ""
+				}
 				stoppedCommands[command] = strings.ReplaceAll(out, "MainPID=4242", "MainPID=0")
+			}
+			if cold {
+				stoppedCommands["CDPATH='' cd -P -- /srv && pwd -P"] = "/srv\n"
 			}
 			var m *Manager
 			var saved pendingRestartState
 			restarted, effects, fileReads, polls := false, 0, 0, 0
-			stopped, oldEnvConfigReads := false, 0
+			stopped, oldEnvConfigReads := cold, 0
 			fr := &fakeRunner{runFn: func(ctx context.Context, argv []string, _ io.Reader) ([]byte, error) {
 				remote := strings.Join(argv[12:], " ")
 				switch remote {
@@ -113,8 +140,8 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 					return got, nil
 				case "getent passwd dev | cut -d: -f6":
 					return []byte("/home/dev\n"), nil
-				case "systemctl show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment -- " + sup.label:
-					return []byte("EnvironmentFiles=" + file + " (ignore_errors=no)\nPassEnvironment=\nUnsetEnvironment=\n"), nil
+				case "systemctl show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- " + sup.label:
+					return []byte("EnvironmentFiles=" + file + " (ignore_errors=no)\nPassEnvironment=\nUnsetEnvironment=\nSetLoginEnvironment=" + policy + "\n"), nil
 				case "values=$(systemctl show --property=Environment --value -- " + sup.label + ") || exit; printf '%s\\n' \"$values\" | " + narrowEnvironmentFilter:
 					return nil, nil
 				case systemdEnvironmentFileRemote(file, false):
@@ -122,16 +149,20 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 					return exec.CommandContext(ctx, "/bin/sh", "-c", remote).Output()
 				case "systemctl restart " + sup.label, "systemctl start " + sup.label:
 					effects++
-					if (effects == 1 && remote != "systemctl restart "+sup.label) || (effects > 1 && (!failedStart || remote != "systemctl start "+sup.label)) {
+					wantCommand := "systemctl restart " + sup.label
+					if cold || effects > 1 {
+						wantCommand = "systemctl start " + sup.label
+					}
+					if remote != wantCommand || effects > 1 && !failedStart {
 						t.Fatalf("unexpected replacement effect: %s", remote)
 					}
 					saved = m.pendingRestart(host.Name)
-					if !reflect.DeepEqual(saved.nextEnv, newEnv) {
+					if !noHome && !reflect.DeepEqual(saved.nextEnv, newEnv) {
 						t.Fatalf("replacement environment not retained before restart: %q", saved.nextEnv)
 					}
 					snapshot := m.pendingRestart(host.Name)
 					snapshot.nextEnv[0] = "EVENER_HUB_LISTEN_ADDR=wrong"
-					if !reflect.DeepEqual(m.pendingRestart(host.Name).nextEnv, newEnv) {
+					if !reflect.DeepEqual(m.pendingRestart(host.Name).nextEnv, saved.nextEnv) {
 						t.Fatal("pending snapshot aliases retained replacement environment")
 					}
 					if failedStart && effects == 1 {
@@ -147,7 +178,7 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 				allowed := before
 				if stopped {
 					allowed = stoppedCommands
-					if remote == ownerContext("/srv", oldEnv)+"/opt/evener hub endpoint --json --config /srv/selected.toml" {
+					if !cold && remote == ownerContext("/srv", oldEnv)+"/opt/evener hub endpoint --json --config /srv/selected.toml" {
 						oldEnvConfigReads++
 					}
 				}
@@ -172,7 +203,17 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 			} else if restartErr != nil {
 				t.Errorf("healthy successor on %s failed verification after %d observations: %v", newAddr, polls, restartErr)
 			}
-			if effects != 1 || fileReads != 1 || !reflect.DeepEqual(saved.selected.env, oldEnv) {
+			if saved.selected == nil {
+				t.Fatalf("restart did not reach launch: effects=%d err=%v", effects, restartErr)
+			}
+			if noHome && !reflect.DeepEqual(saved.nextEnv, newEnv) {
+				t.Errorf("no-login replacement environment=%q, want=%q", saved.nextEnv, newEnv)
+			}
+			wantFileReads := 1
+			if cold {
+				wantFileReads = 3
+			}
+			if effects != 1 || fileReads != wantFileReads || !reflect.DeepEqual(saved.selected.env, oldEnv) {
 				t.Fatalf("effects=%d file reads=%d predecessor env=%q", effects, fileReads, saved.selected.env)
 			}
 			if failedStart && (!stopped || !m.pendingRestart(host.Name).active()) {

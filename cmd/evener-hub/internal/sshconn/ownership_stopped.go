@@ -212,21 +212,13 @@ function emit() { if (word ~ /^(HOME|XDG_CONFIG_HOME|XDG_STATE_HOME|EVENER_HUB_L
 END { if (quote != "" || escape) exit 1 }'`
 
 func (m *Manager) stoppedServiceEnvironment(ctx context.Context, host hostreg.Host, sup supervisor, user string) ([]string, error) {
-	out, err := m.ownerRead(ctx, host, "getent passwd "+shellquote.RemoteWord(user)+" | cut -d: -f6")
-	if err != nil {
-		return nil, err
-	}
-	home, err := ownerPathOutput(out)
-	if err != nil {
-		return nil, errOwnerEvidence
-	}
 	remote := "systemctl"
 	if sup.kind == supervisorSystemdUser {
 		remote += " --user"
 	}
 	// Resolve the next launch independently of the running process. A stable
 	// definition may already select a different root than that process serves.
-	fileOut, err := m.ownerRead(ctx, host, remote+" show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment -- "+shellquote.RemoteWord(sup.label))
+	fileOut, err := m.ownerRead(ctx, host, remote+" show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- "+shellquote.RemoteWord(sup.label))
 	if err != nil {
 		return nil, err
 	}
@@ -234,15 +226,30 @@ func (m *Manager) stoppedServiceEnvironment(ctx context.Context, host hostreg.Ho
 	for line := range strings.SplitSeq(strings.TrimSuffix(string(fileOut), "\n"), "\n") {
 		key, value, ok := strings.Cut(line, "=")
 		_, duplicate := properties[key]
-		if !ok || duplicate || !slices.Contains([]string{"EnvironmentFiles", "PassEnvironment", "UnsetEnvironment"}, key) {
+		if !ok || duplicate || !slices.Contains([]string{"EnvironmentFiles", "PassEnvironment", "UnsetEnvironment", "SetLoginEnvironment"}, key) {
 			return nil, fmt.Errorf("%w: service environment properties unavailable", errOwnerEvidence)
 		}
 		properties[key] = value
 	}
-	if len(properties) != 3 {
+	if len(properties) != 4 {
 		return nil, fmt.Errorf("%w: stopped service environment properties unavailable", errOwnerEvidence)
 	}
-	env := map[string]string{"HOME": home}
+	env := map[string]string{}
+	switch properties["SetLoginEnvironment"] {
+	case "yes":
+		out, err := m.ownerRead(ctx, host, "getent passwd "+shellquote.RemoteWord(user)+" | cut -d: -f6")
+		if err != nil {
+			return nil, err
+		}
+		home, err := ownerPathOutput(out)
+		if err != nil {
+			return nil, errOwnerEvidence
+		}
+		env["HOME"] = home
+	case "no":
+	default:
+		return nil, fmt.Errorf("%w: service login environment policy unavailable", errOwnerEvidence)
+	}
 	merge := func(out []byte, allow func(string) bool) error {
 		if len(out) == 0 {
 			return nil
@@ -276,7 +283,7 @@ func (m *Manager) stoppedServiceEnvironment(ctx context.Context, host hostreg.Ho
 			return nil, err
 		}
 	}
-	out, err = m.ownerRead(ctx, host, "values=$("+remote+" show --property=Environment --value -- "+shellquote.RemoteWord(sup.label)+") || exit; printf '%s\\n' \"$values\" | "+narrowEnvironmentFilter)
+	out, err := m.ownerRead(ctx, host, "values=$("+remote+" show --property=Environment --value -- "+shellquote.RemoteWord(sup.label)+") || exit; printf '%s\\n' \"$values\" | "+narrowEnvironmentFilter)
 	if err != nil {
 		return nil, err
 	}

@@ -13,8 +13,8 @@ import (
 func TestRemoteStoppedUserEnvironmentInheritsManager(t *testing.T) {
 	host := hostreg.Host{Name: "selected", SSH: "dev@remote"}
 	commands := []ownerCommand{
+		{"systemctl --user show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- evener-hub.service", "EnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\nSetLoginEnvironment=yes\n"},
 		{"getent passwd dev | cut -d: -f6", "/home/dev\n"},
-		{"systemctl --user show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment -- evener-hub.service", "EnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\n"},
 		{"values=$(systemctl --user show-environment) || exit; printf '%s\\n' \"$values\" | " + narrowEnvironmentFilter, "XDG_STATE_HOME=/service/state\x00EVENER_HUB_LISTEN_ADDR=127.0.0.1:0\x00"},
 		{"values=$(systemctl --user show --property=Environment --value -- evener-hub.service) || exit; printf '%s\\n' \"$values\" | " + narrowEnvironmentFilter, "EVENER_HUB_LISTEN_ADDR=[::]:0\x00"},
 	}

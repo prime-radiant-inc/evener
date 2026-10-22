@@ -142,10 +142,10 @@ func modelSelectedProcess(t *testing.T, fr *fakeRunner, exe, before, after strin
 			return []byte(f.exe + "\n"), nil
 		case "getent passwd dev | cut -d: -f6":
 			return []byte("/home/dev\n"), nil
-		case "systemctl show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment -- evener-hub.service":
-			return []byte("EnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\n"), nil
-		case "systemctl --user show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment -- evener-hub.service":
-			return []byte("EnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\n"), nil
+		case "systemctl show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- evener-hub.service":
+			return []byte("EnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\nSetLoginEnvironment=yes\n"), nil
+		case "systemctl --user show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- evener-hub.service":
+			return []byte("EnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\nSetLoginEnvironment=yes\n"), nil
 		case "values=$(systemctl show --property=Environment --value -- evener-hub.service) || exit; printf '%s\\n' \"$values\" | " + narrowEnvironmentFilter:
 			return nil, nil
 		case "values=$(systemctl --user show --property=Environment --value -- evener-hub.service) || exit; printf '%s\\n' \"$values\" | " + narrowEnvironmentFilter:

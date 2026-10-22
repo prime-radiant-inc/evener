@@ -405,7 +405,7 @@ func serviceDefinitionRemote(sup supervisor) string {
 		remote += " --user"
 	}
 	manager := remote
-	remote += " show --property=User,ExecStart,WorkingDirectory,Environment,EnvironmentFiles,PassEnvironment,UnsetEnvironment -- " + shellquote.RemoteWord(sup.label)
+	remote += " show --property=User,ExecStart,WorkingDirectory,Environment,EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- " + shellquote.RemoteWord(sup.label)
 	// ExecStart's runtime suffix contains changing PID/timestamps. Its path and
 	// argv, not that suffix, are definition context. Freeze environment-file
 	// contents too, since changing XDG_STATE_HOME can select a different owner.

@@ -36,7 +36,7 @@ func TestServiceDefinitionRemoteShell(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = --user ]; then shift; fi
 case "$*" in
- 'show --property=User,ExecStart,WorkingDirectory,Environment,EnvironmentFiles,PassEnvironment,UnsetEnvironment -- evener-hub-selected.service') cat "$FIXTURE/definition" ;;
+ 'show --property=User,ExecStart,WorkingDirectory,Environment,EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- evener-hub-selected.service') cat "$FIXTURE/definition" ;;
  show-environment) cat "$FIXTURE/manager" ;;
  *) exit 97 ;;
 esac
@@ -46,7 +46,7 @@ esac
 	}
 	secret := "UNRELATED_SENTINEL_08a93c"
 	definition := func(argv, stamp, file string) string {
-		return fmt.Sprintf("User=dev\nExecStart={ path=/opt/evener ; argv[]=/opt/evener hub %s ; ignore_errors=no ; start_time=%s ; stop_time=n/a ; pid=4242 ; code=(null) ; status=0/0 }\nWorkingDirectory=/srv\nEnvironment=HOME=/home/dev SECRET=%s\nEnvironmentFiles=%s\nPassEnvironment=\nUnsetEnvironment=\n", argv, stamp, secret, file)
+		return fmt.Sprintf("User=dev\nExecStart={ path=/opt/evener ; argv[]=/opt/evener hub %s ; ignore_errors=no ; start_time=%s ; stop_time=n/a ; pid=4242 ; code=(null) ; status=0/0 }\nWorkingDirectory=/srv\nEnvironment=HOME=/home/dev SECRET=%s\nEnvironmentFiles=%s\nPassEnvironment=\nUnsetEnvironment=\nSetLoginEnvironment=yes\n", argv, stamp, secret, file)
 	}
 	write("manager", "HOME=/home/dev\nEVENER_HUB_LISTEN_ADDR=0.0.0.0:0\nUNRELATED="+secret+"\n")
 	envFile := filepath.Join(dir, "launch.env")

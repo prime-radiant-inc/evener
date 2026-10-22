@@ -96,9 +96,9 @@ func TestSelectedRestartBoundary(t *testing.T) {
 						definitionReads++
 						return environmentFileDefinition(t, owner.supervisor, envFile, remotePath), nil
 					}
-					if environmentFile && remote == "systemctl show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment -- evener-hub-selected.service" {
+					if environmentFile && remote == "systemctl show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- evener-hub-selected.service" {
 						coldEnvironmentReads++
-						return []byte("EnvironmentFiles=" + envFile + " (ignore_errors=no)\nPassEnvironment=\nUnsetEnvironment=\n"), nil
+						return []byte("EnvironmentFiles=" + envFile + " (ignore_errors=no)\nPassEnvironment=\nUnsetEnvironment=\nSetLoginEnvironment=yes\n"), nil
 					}
 					if environmentFile && remote == systemdEnvironmentFileRemote(envFile, false) {
 						cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", remote)
@@ -165,9 +165,9 @@ func TestSelectedRestartBoundary(t *testing.T) {
 					switch remote {
 					case "getent passwd dev | cut -d: -f6":
 						return []byte("/home/dev\n"), nil
-					case "systemctl show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment -- evener-hub-selected.service":
+					case "systemctl show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- evener-hub-selected.service":
 						coldEnvironmentReads++
-						return []byte("EnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\n"), nil
+						return []byte("EnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\nSetLoginEnvironment=yes\n"), nil
 					case "values=$(systemctl show --property=Environment --value -- evener-hub-selected.service) || exit; printf '%s\\n' \"$values\" | " + narrowEnvironmentFilter:
 						if strings.HasSuffix(name, "definition-B") {
 							return []byte("XDG_STATE_HOME=/srv/B\x00"), nil
@@ -230,8 +230,8 @@ func TestSelectedRestartBoundary(t *testing.T) {
 // systemctl metadata is modeled; changing file contents must change the proof.
 func environmentFileDefinition(t *testing.T, sup supervisor, envFile string, remotePath ...string) []byte {
 	t.Helper()
-	properties := "User=dev\nExecStart=/opt/evener hub --config=/srv/selected.toml --addr=[::]:0\nWorkingDirectory=/srv\nEnvironment=HOME=/home/dev\nEnvironmentFiles=" + envFile + " (ignore_errors=no)\nPassEnvironment=\nUnsetEnvironment=\n"
-	show := "show --property=User,ExecStart,WorkingDirectory,Environment,EnvironmentFiles,PassEnvironment,UnsetEnvironment -- " + sup.label
+	properties := "User=dev\nExecStart=/opt/evener hub --config=/srv/selected.toml --addr=[::]:0\nWorkingDirectory=/srv\nEnvironment=HOME=/home/dev\nEnvironmentFiles=" + envFile + " (ignore_errors=no)\nPassEnvironment=\nUnsetEnvironment=\nSetLoginEnvironment=yes\n"
+	show := "show --property=User,ExecStart,WorkingDirectory,Environment,EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- " + sup.label
 	stub := "systemctl() { case \"$*\" in " + shellquote.RemoteWord(show) + ") printf '%s' " + shellquote.RemoteWord(properties) + ";; show-environment) :;; *) return 1;; esac; }; "
 	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", stub+serviceDefinitionRemote(sup))
 	if len(remotePath) != 0 && remotePath[0] != "" {
