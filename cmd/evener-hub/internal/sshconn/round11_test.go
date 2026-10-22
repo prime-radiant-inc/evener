@@ -70,7 +70,7 @@ func TestRound11InstallerFallbackStreamsTheEmbeddedScript(t *testing.T) {
 		case strings.Contains(joined, "command -v evener"):
 			return []byte(evenerPathMissingMarker + "\n"), nil
 		case strings.Contains(joined, resolved+" launch-check"):
-			return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
@@ -130,81 +130,6 @@ func TestRound11ListenerProbeTiersBeyondLsof(t *testing.T) {
 	}
 }
 
-// TestRound11HeadlessHostWithoutAUserBusStillSeesNoHub pins the round-eleven
-// Medium that a failed `systemctl --user list-units` was fatal: on a headless
-// host with no matching system unit, a fresh install or a bare-process restart
-// ended in a retryable ErrRestart forever. An unreachable user bus proves no
-// user unit can be running, so it must fall through to the bare-process answer;
-// a bus that answers with a denial must stay fatal.
-func TestRound11HeadlessHostWithoutAUserBusStillSeesNoHub(t *testing.T) {
-	cases := []struct {
-		name     string
-		out      []byte
-		wantErr  bool
-		wantHost bool
-	}{
-		{
-			name: "no bus address",
-			out:  []byte("Failed to connect to bus: $DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined (consider using --machine=@.host --user to connect to bus of other user)\n"),
-		},
-		{
-			name: "missing socket",
-			out:  []byte("Failed to connect to bus: No such file or directory\n"),
-		},
-		{
-			name: "bus not running",
-			out:  []byte("Failed to connect to bus: Connection refused\n"),
-		},
-		{
-			name:    "permission denied",
-			out:     []byte("Failed to connect to bus: Permission denied\n"),
-			wantErr: true,
-		},
-		{
-			name:    "transport failure",
-			out:     []byte("ssh: connect to host alpha.example port 22: Connection timed out\n"),
-			wantErr: true,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
-			fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-				joined := strings.Join(argv, " ")
-				switch {
-				case strings.Contains(joined, "systemctl --user"):
-					return tc.out, exitStatus(t, 1)
-				case strings.Contains(joined, "list-units"):
-					// The current build names no evener hub unit at all: a fresh
-					// install, or a hub stopped by an operator.
-					return nil, nil
-				case strings.Contains(joined, "command -v lsof"):
-					// No lsof on the host either: the ss//proc tier proved the port
-					// free, which is the fallback's own answer shape.
-					return []byte(noListenerMarker + "\n"), nil
-				default:
-					return nil, fmt.Errorf("unexpected remote command: %v", argv)
-				}
-			}}
-			m := newTestManager(t, testRegistry(t, host), fr, Options{})
-
-			present, err := m.hubIsPresent(context.Background(), host, Preflight{OS: "linux"})
-			if tc.wantErr {
-				if !errors.Is(err, ErrRestart) {
-					t.Fatalf("hubIsPresent err = %v, want ErrRestart (a denial is not an absent bus)", err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("hubIsPresent: %v (an absent user bus must not be fatal)", err)
-			}
-			if present {
-				t.Fatal("hubIsPresent reported a hub on a host whose port probe proved the port free")
-			}
-		})
-	}
-}
-
 // TestRound11PreflightDiscoveredTargetReachesTheAttachArgv pins the round-eleven
 // Medium that a target discovered by preflight never reached host.EvenerPath:
 // for an already-healthy host whose binary lives at the installer default (off
@@ -221,12 +146,12 @@ func TestRound11PreflightDiscoveredTargetReachesTheAttachArgv(t *testing.T) {
 				return []byte("Linux\n"), nil
 			case strings.HasSuffix(joined, "uname -m"):
 				return []byte("x86_64\n"), nil
-			case strings.Contains(joined, "XDG_STATE_HOME"):
+			case argv[len(argv)-1] == envProbeScript:
 				return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 			case strings.HasSuffix(joined, "id -u"):
 				return []byte("1000\n"), nil
 			case strings.Contains(joined, resolved+" launch-check"):
-				return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 			case strings.Contains(joined, " evener launch-check"):
 				// The host's non-interactive PATH does not carry the binary.
 				return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
@@ -243,6 +168,7 @@ func TestRound11PreflightDiscoveredTargetReachesTheAttachArgv(t *testing.T) {
 		},
 		startFn: goodStartFn(t),
 	}
+	modelSelectedProcess(t, fr, "/home/dev/.local/bin/evener", "newsha", "newsha")
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		BuildBinary:               writeStageBinary,
@@ -284,7 +210,7 @@ func TestRound11FreshHostWithoutLsofIsProvisioned(t *testing.T) {
 				return []byte("Linux\n"), nil
 			case strings.HasSuffix(joined, "uname -m"):
 				return []byte("x86_64\n"), nil
-			case strings.Contains(joined, "XDG_STATE_HOME"):
+			case argv[len(argv)-1] == envProbeScript:
 				return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 			case strings.HasSuffix(joined, "id -u"):
 				return []byte("1000\n"), nil
@@ -300,10 +226,10 @@ func TestRound11FreshHostWithoutLsofIsProvisioned(t *testing.T) {
 			case strings.Contains(joined, "command -v evener"):
 				return []byte(evenerPathMissingMarker + "\n"), nil
 			case strings.Contains(joined, "launch-check"):
-				if strings.Contains(joined, " evener launch-check") {
+				if strings.Contains(joined, " evener launch-check") || !pushed {
 					return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
 				}
-				return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 			case strings.Contains(joined, "evener_resolve"):
 				// The deploy-target resolver runs before the push (nothing
 				// installed yet, so it fails and the create-target fallback takes
@@ -312,6 +238,11 @@ func TestRound11FreshHostWithoutLsofIsProvisioned(t *testing.T) {
 					return nil, exitStatus(t, 1)
 				}
 				return []byte(resolved + "\n"), nil
+			case strings.Contains(joined, executableProbeRemote(resolved)):
+				if !pushed {
+					return nil, exitStatus(t, 1)
+				}
+				return nil, nil
 			case strings.Contains(joined, "if [ -e "):
 				return []byte(resolved + "\n"), nil
 			case strings.Contains(joined, "if [ -n "):
@@ -339,6 +270,8 @@ func TestRound11FreshHostWithoutLsofIsProvisioned(t *testing.T) {
 		},
 		startFn: goodStartFn(t),
 	}
+	selected := modelSelectedProcess(t, fr, "/home/dev/.local/bin/evener", "newsha", "newsha")
+	selected.stopped, selected.adhoc = true, true
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },

@@ -324,7 +324,7 @@ func TestDefaultSourceSameTargetStillPushes(t *testing.T) {
 		},
 	})
 
-	target, err := m.deploy(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH}, nil)
+	target, err := m.deploy(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH, LaunchCheckKnown: true, HubEndpointSchema: 1}, nil)
 	if err != nil {
 		t.Fatalf("same-target deploy of the own executable: %v", err)
 	}
@@ -394,7 +394,7 @@ func TestDirtyControllerDeploysItsOwnExecutable(t *testing.T) {
 		},
 	})
 
-	target, err := m.deploy(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH}, nil)
+	target, err := m.deploy(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH, LaunchCheckKnown: true, HubEndpointSchema: 1}, nil)
 	if err != nil {
 		t.Fatalf("deploy of the controller's own executable from a dirty controller: %v", err)
 	}
@@ -436,13 +436,14 @@ func TestDirtyControllerOwnExecutableDeployConvergesThroughTheOperation(t *testi
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}}
+	modelSelectedProcess(t, fr, host.EvenerPath, "oldsha", dirtyControllerVersion)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: dirtyControllerVersion,
 		OwnExecutable:             true,
 		BuildBinary:               writeStageBinary,
 	})
 
-	target, after, err := m.DeployForOperation(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH}, true, nil)
+	target, after, err := m.DeployForOperation(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH, LaunchCheckKnown: true, HubEndpointSchema: 1}, true, nil)
 	if err != nil {
 		t.Fatalf("DeployForOperation: %v", err)
 	}
@@ -572,5 +573,5 @@ func TestDirtyControllerOwnExecutableMismatchRefusesUnstamped(t *testing.T) {
 // protocol incompatible" (what a hardcoded "evener-appwire-v5" did when the
 // protocol moved to v6 on main).
 func launchCheckJSON(version string) string {
-	return fmt.Sprintf(`{"protocol":%q,"version":%q,"launch_flags":["api-log"]}`, appwire.ProtocolVersion, version)
+	return fmt.Sprintf(`{"hub_endpoint_schema":1,"protocol":%q,"version":%q,"launch_flags":["api-log"]}`, appwire.ProtocolVersion, version)
 }

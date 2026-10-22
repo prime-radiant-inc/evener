@@ -176,12 +176,12 @@ func TestRunMainCreatesAppWireTraceAndWarnsAboutRawPayloads(t *testing.T) {
 	}
 }
 
-// The startup banners (listening address, auth URL, auth token path) must
-// reach the stderr runMain was given, not the process's real stderr: a
-// caller that redirects diagnostics (this test, or a future embedder) would
-// otherwise never see them.
+// The listener and token-file diagnostics reach the stderr runMain was given,
+// but a redirected writer never receives the credential-bearing browser link.
 func TestRunMainPrintsStartupBannersToTheGivenStderr(t *testing.T) {
 	_, cfg, deps := newTraceMainTestDeps(t)
+	const secret = "redirected-startup-sentinel"
+	deps.loadAuthToken = func(string) (string, error) { return secret, nil }
 
 	var stderr bytes.Buffer
 	if err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
@@ -199,19 +199,22 @@ func TestRunMainPrintsStartupBannersToTheGivenStderr(t *testing.T) {
 			urls = append(urls, u)
 		}
 	}
-	if len(urls) != 2 {
-		t.Fatalf("stderr has %d HTTP URLs, want browser and private URLs: %v", len(urls), urls)
+	if len(urls) != 1 {
+		t.Fatalf("stderr has %d HTTP URLs, want the public browser URL without a private link: %v", len(urls), urls)
 	}
-	for _, u := range urls {
-		if u.Host != m[1] {
-			t.Errorf("URL host = %q, want bound address %q", u.Host, m[1])
+	if urls[0].Host != m[1] {
+		t.Errorf("URL host = %q, want bound address %q", urls[0].Host, m[1])
+	}
+	if got := strings.Count(output, "auth-token"); got != 1 {
+		t.Fatalf("auth token machine value occurs %d times, want only the token-file path", got)
+	}
+	for _, want := range []string{cfg.Addr, cfg.RunDir, filepath.Join(cfg.HubStateRoot, "auth-token")} {
+		if !strings.Contains(output, want) {
+			t.Errorf("stderr missing startup value %q", want)
 		}
 	}
-	if got := strings.Count(output, "auth-token"); got != 2 {
-		t.Fatalf("auth token machine value occurs %d times, want once in private URL and once in token-file path", got)
-	}
-	if tokenPath := filepath.Join(cfg.HubStateRoot, "auth-token"); !strings.Contains(output, tokenPath) {
-		t.Fatalf("stderr does not carry token file path %s", tokenPath)
+	if strings.Contains(output, secret) {
+		t.Fatal("redirected startup disclosed its login credential")
 	}
 }
 

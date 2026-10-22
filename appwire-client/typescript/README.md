@@ -694,3 +694,11 @@ an Authorization header, adapt `clientFromEnvironment` to the authenticated
 comparison fingerprints, claim requests and encrypted credential decoding.
 It is a separate subpath so ordinary AppWire consumers do not load NaCl. See
 [the device pairing protocol](../../docs/device-pairing.md) for the wire contract.
+
+`@evener/appwire-client/hubOrigin` exports `parseHubOrigin(raw)` and
+`hubRPCURL(origin)` for HTTP(S) hub origins and their root `/rpc` WebSocket
+endpoint. It rejects credentials, wildcard hosts, ambiguous numeric addresses,
+query, fragment and non-root paths before URL normalization. Validation errors
+are `HubOriginError` with `code` and `field`, never the supplied URL. Callers
+retain their own reachability and credential policies; this module does not
+change the low-level WebSocket transport URL API.

@@ -106,7 +106,7 @@ func TestEnsureCompatibleDiscoveredBridgeSurvivesRejectedLaunchCheck(t *testing.
 		switch {
 		case strings.Contains(command, "launch-check"):
 			if strings.Contains(command, target) {
-				return []byte(`unsupported appwire protocol`), errors.New("exit status 1")
+				return []byte(`unsupported appwire protocol`), exitStatus(t, 1)
 			}
 			return nil, absent
 		case strings.Contains(command, "command -v evener"):

@@ -49,18 +49,19 @@ type Preflight struct {
 	// into `gui/<uid>/<label>`; it is expired on the controller, never left for
 	// the remote shell to expand as `$(id -u)` (spec 04, §"Preflight + version
 	// contract" and §"Stop/restart mechanics").
-	UID         string
-	Version     string
-	Protocol    string
-	LaunchFlags []string
+	UID               string
+	Version           string
+	Protocol          string
+	LaunchFlags       []string
+	HubEndpointSchema int
 	// LaunchCheckKnown is true when the on-disk binary answered
 	// `launch-check --json` with a decoded contract. A protocol refusal alone
 	// leaves it false: Protocol, Version, and LaunchFlags remain unknown until
 	// the executable successfully describes its own contract.
 	LaunchCheckKnown bool
 	// ExecutableMissing records the verified result of the dedicated executable
-	// probe (`test -x <run_path>`, or `command -v <run_path>` for a bare name):
-	// there is no evener executable at the host's resolved run target. It is
+	// probe (file presence for a path, or `command -v` for a bare name):
+	// there is no evener file at the host's resolved run target. It is
 	// surfaced as the ErrExecutableMissing sentinel where an error is needed;
 	// when a deploy path is configured, `Ensure` routes it into the
 	// deploy/install ladder, which creates the missing run target.
@@ -106,13 +107,14 @@ func mapArch(unameM string) (string, bool) {
 // a shell but exports no XDG_* (spike finding), so the `-` default leaves both
 // empty and the roots fall back to ~/.config/evener and ~/.local/state/evener.
 // It is one ssh argument so the remote shell performs the parameter expansion.
-const envProbeScript = `printf '%s\n' "HOME=${HOME-}" "XDG_STATE_HOME=${XDG_STATE_HOME-}" "XDG_CONFIG_HOME=${XDG_CONFIG_HOME-}"`
+const envProbeScript = `case "${HOME-}${XDG_STATE_HOME-}${XDG_CONFIG_HOME-}" in *'
+'*) exit 1 ;; esac; printf '%s\n' "HOME=${HOME-}" "XDG_STATE_HOME=${XDG_STATE_HOME-}" "XDG_CONFIG_HOME=${XDG_CONFIG_HOME-}"`
 
 // parseEnvProbe turns the probe's KEY=value lines into a map. HOME must be
 // present (it may be empty, which resolves to the same fallback evener uses).
 func parseEnvProbe(out []byte) (map[string]string, error) {
 	env := map[string]string{}
-	text := strings.TrimRight(string(out), "\n")
+	text := strings.TrimSuffix(string(out), "\n")
 	for line := range strings.SplitSeq(text, "\n") {
 		if line == "" {
 			continue
@@ -165,9 +167,10 @@ func resolveRoots(goos string, env map[string]string) (configRoot, stateRoot str
 // launchCheck is the subset of `evener launch-check --json` this component
 // consumes (cmd/evener/internal/launchcheck/launchcheck.go:42-54).
 type launchCheck struct {
-	Protocol    string   `json:"protocol"`
-	Version     string   `json:"version"`
-	LaunchFlags []string `json:"launch_flags"`
+	Protocol          string   `json:"protocol"`
+	Version           string   `json:"version"`
+	LaunchFlags       []string `json:"launch_flags"`
+	HubEndpointSchema int      `json:"hub_endpoint_schema"`
 }
 
 // parseLaunchCheck decodes the host's launch-check contract. Any decode failure
@@ -201,6 +204,11 @@ func (m *Manager) preflight(ctx context.Context, host hostreg.Host) (Preflight, 
 	}
 	if result.launchErr != nil && !m.canDeploy() {
 		return result.facts, result.launchErr
+	}
+	if !result.facts.ExecutableMissing {
+		if err := endpointCapability(host, result.facts); err != nil {
+			return result.facts, err
+		}
 	}
 	return result.facts, nil
 }
@@ -265,11 +273,22 @@ func (m *Manager) collectPreflight(ctx context.Context, host hostreg.Host) (pref
 	// An unfinished effect owns its selected installation. Its absence must not
 	// redirect recovery into a second installation discovered at the default.
 	if errors.Is(err, errExecutableMissing) && !m.pendingRestart(host.Name).active() {
-		if target, ok := m.probeInstallerDefaultExecutable(ctx, host); ok {
+		target, probeErr := m.installerDefaultForPreflight(ctx, host)
+		if probeErr != nil {
+			return preflightResult{facts: pf}, probeErr
+		}
+		if target != "" {
 			// Deployment may have claimed a target while discovery was in flight.
 			// Probe the selected installation, not an unowned discovery's facts.
 			probeHost.EvenerPath = m.publishDiscoveredTarget(host, target)
 			lc, err = m.probeLaunchCheck(ctx, probeHost)
+		}
+	}
+	if pending := m.pendingRestart(host.Name); pending.deployment && pending.selected != nil && errors.Is(err, errLaunchCheckFailed) {
+		// Only the retained installation can use nonexecutability as recorded
+		// repair evidence. An ordinary present-but-unusable binary is not missing.
+		if unusable, probeErr := m.recordedTargetUnusable(ctx, probeHost); probeErr == nil && unusable {
+			err = fmt.Errorf("%w: retained target is nonexecutable", errExecutableMissing)
 		}
 	}
 	if errors.Is(err, ErrProtocolIncompatible) {
@@ -297,6 +316,7 @@ func (m *Manager) collectPreflight(ctx context.Context, host hostreg.Host) (pref
 	pf.Protocol = lc.Protocol
 	pf.Version = lc.Version
 	pf.LaunchFlags = append([]string(nil), lc.LaunchFlags...)
+	pf.HubEndpointSchema = lc.HubEndpointSchema
 	return preflightResult{facts: pf}, nil
 }
 
@@ -304,30 +324,66 @@ func (m *Manager) collectPreflight(ctx context.Context, host hostreg.Host) (pref
 // contract. Post-deploy probes keep this strict gate; only collectPreflight may
 // follow a protocol refusal with a read of the executable's own contract.
 func (m *Manager) probeLaunchCheck(ctx context.Context, host hostreg.Host) (launchCheck, error) {
-	out, err := m.runner.Run(ctx, evenerCommandArgv(m.opts, host, "launch-check", "--protocol", appwire.ProtocolVersion, "--json"), nil)
+	return m.readLaunchCheck(ctx, host, false)
+}
+
+// probeStartupLaunchCheck judges the executable a management action will start.
+// Capability discovery uses the unfiltered contract, including older protocols.
+func (m *Manager) probeStartupLaunchCheck(ctx context.Context, host hostreg.Host) (launchCheck, error) {
+	return m.readLaunchCheck(ctx, host, true)
+}
+
+func (m *Manager) readLaunchCheck(ctx context.Context, host hostreg.Host, startup bool) (launchCheck, error) {
+	if err := ctx.Err(); err != nil {
+		return launchCheck{}, err
+	}
+	args := []string{"launch-check", "--json"}
+	if startup {
+		args = []string{"launch-check", "--protocol", appwire.ProtocolVersion, "--json"}
+	}
+	out, err := m.runner.Run(ctx, evenerCommandArgv(m.opts, host, args...), nil)
+	if ctx.Err() != nil {
+		return launchCheck{}, ctx.Err()
+	}
 	if err != nil {
-		if isProtocolMismatchOutput(out) {
+		if startup && isProtocolMismatchOutput(out) {
 			return launchCheck{}, fmt.Errorf("%w: host %q refused protocol %s: %s", ErrProtocolIncompatible, host.Name, appwire.ProtocolVersion, tail(out))
+		}
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() == 255 {
+			return launchCheck{}, sshRunFailure(host.Name, "launch-check", err, tail(out))
 		}
 		missing, present := m.probeExecutablePresence(ctx, host)
 		if missing {
 			return launchCheck{}, fmt.Errorf("%w: host %q launch-check: %s", errExecutableMissing, host.Name, tail(out))
 		}
 		failure := sshRunFailure(host.Name, "launch-check", err, tail(out))
-		var exit *exec.ExitError
 		if present && ctx.Err() == nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) &&
 			errors.As(err, &exit) && exit.ExitCode() > 0 && exit.ExitCode() != 255 {
 			// SSH reserves 255 for its own failures. A different completed exit,
 			// plus a successful presence probe, is an unusable disk contract, not
 			// evidence against a live compatible hub or permission to install.
-			return launchCheck{}, fmt.Errorf("%w: %w", errLaunchCheckFailed, failure)
+			return launchCheck{}, fmt.Errorf("%w: %w: %w", endpointMigration(host), errLaunchCheckFailed, failure)
 		}
 		return launchCheck{}, failure
 	}
-	return parseLaunchCheck(out)
+	lc, err := parseLaunchCheck(out)
+	if err != nil {
+		return launchCheck{}, fmt.Errorf("%w: %w", endpointMigration(host), err)
+	}
+	if startup && lc.Protocol != appwire.ProtocolVersion {
+		return launchCheck{}, fmt.Errorf("%w: host %q protocol %q, want %q", ErrProtocolIncompatible, host.Name, lc.Protocol, appwire.ProtocolVersion)
+	}
+	return lc, nil
 }
 
 var errLaunchCheckFailed = errors.New("sshconn: executable launch-check command failed")
+
+func isProtocolMismatchOutput(out []byte) bool {
+	text := string(out)
+	return strings.Contains(text, "unsupported appwire protocol") ||
+		strings.Contains(text, "does not match Hub protocol")
+}
 
 // errExecutableMissing marks the verified absence of the evener executable at the
 // host's resolved run target: the dedicated executable probe proved it (its own
@@ -379,32 +435,28 @@ func (m *Manager) probeExecutablePresence(ctx context.Context, host hostreg.Host
 // shell's own not-found code could not be told from the probe's.
 func executableProbeRemote(target string) string {
 	word := shellquote.RemoteWord(target)
-	cond := "test -x " + word
 	if !strings.Contains(target, "/") {
-		cond = "command -v " + word + " >/dev/null 2>&1"
+		return "if command -v " + word + " >/dev/null 2>&1; then exit 0; else exit 1; fi"
 	}
-	return "if " + cond + "; then exit 0; else exit 1; fi"
+	return "if test -e " + word + " || test -L " + word + "; then exit 0; fi; p=" + word + `; while :; do
+case "$p" in */*) p=${p%/*}; [ -n "$p" ] || p=/ ;; *) p=. ;; esac
+if test -e "$p" || test -L "$p"; then
+  if test -d "$p" && test -x "$p"; then exit 1; else exit 2; fi
+fi
+done`
 }
 
 // runRemote runs a non-evener remote command, classifying a failure as an auth
 // refusal or a transport failure.
 func (m *Manager) runRemote(ctx context.Context, host hostreg.Host, remote string) ([]byte, error) {
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
+	if ctx.Err() != nil {
+		return out, ctx.Err()
+	}
 	if err != nil {
 		return out, sshRunFailure(host.Name, fmt.Sprintf("command %q", remote), err, tail(out))
 	}
 	return out, nil
-}
-
-// isProtocolMismatchOutput recognizes a host binary that refused the requested
-// appwire protocol. launch-check validates --protocol against its own compiled
-// constant and exits nonzero on disagreement
-// (cmd/evener/internal/launchcheck/launchcheck.go:69-71), so a mismatch reaches
-// us as a failed Run, not a decodable response.
-func isProtocolMismatchOutput(out []byte) bool {
-	text := string(out)
-	return strings.Contains(text, "unsupported appwire protocol") ||
-		strings.Contains(text, "does not match Hub protocol")
 }
 
 // authFailureMarkers are ssh stderr phrases that mean the host cannot
@@ -493,4 +545,16 @@ func sshDiagnostic(err error, combined string) string {
 		return string(rf.Stderr)
 	}
 	return combined
+}
+
+func (m *Manager) installerDefaultForPreflight(ctx context.Context, host hostreg.Host) (string, error) {
+	const remote = `if [ -n "${HOME-}" ] && [ -f "${HOME-}/.local/bin/evener" ]; then printf '%s\n' "${HOME-}/.local/bin/evener"; fi`
+	out, err := m.runRemote(ctx, host, remote)
+	if err != nil {
+		return "", err
+	}
+	if len(out) == 0 {
+		return "", nil
+	}
+	return ownerPathOutput(out)
 }

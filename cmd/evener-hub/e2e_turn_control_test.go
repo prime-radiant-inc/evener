@@ -673,6 +673,17 @@ func startHubStackOnProviderWithEvener(t *testing.T, providersTOML, model, evene
 
 type hubStackOptions struct{ ChildEnv []string }
 
+func browserFixtureEnv(origin string) []string {
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if key != "EVENER_HUB_ADDR" && key != "EVENER_HUB_URL" {
+			env = append(env, entry)
+		}
+	}
+	return append(env, "EVENER_HUB_URL="+origin)
+}
+
 func startHubStackWithOptions(t *testing.T, providersTOML, model, evenerBin string, opts hubStackOptions, extraHubArgs ...string) hubStack {
 	t.Helper()
 

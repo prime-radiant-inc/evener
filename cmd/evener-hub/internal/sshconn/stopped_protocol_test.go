@@ -63,7 +63,7 @@ func newStoppedProtocolInstallation(t *testing.T) (*Manager, *stoppedProtocolIns
 			default:
 				t.Fatalf("unsupported launch-check arguments: %v", args)
 			}
-			return json.Marshal(map[string]any{"protocol": s.protocol, "version": s.version, "launch_flags": s.flags})
+			return json.Marshal(map[string]any{"hub_endpoint_schema": 1, "protocol": s.protocol, "version": s.version, "launch_flags": s.flags})
 		}
 		command := strings.Join(argv, " ")
 		switch {
@@ -133,8 +133,8 @@ func TestEnsureStoppedProtocolSelfDescriptionMustSucceedAndDecode(t *testing.T) 
 	}{
 		{name: "malformed", body: `{`, want: ErrPreflightDecode},
 		{name: "missing-protocol", body: `{"version":"old-build"}`, want: ErrPreflightDecode},
-		{name: "missing-version", body: `{"protocol":"evener-appwire-v5"}`, want: ErrPreflightDecode},
-		{name: "nonzero-contract", body: `{"protocol":"evener-appwire-v5","version":"old-build","launch_flags":["api-log"]}`, nonzero: true, want: ErrSSHStart},
+		{name: "missing-version", body: `{"hub_endpoint_schema":1,"protocol":"evener-appwire-v5"}`, want: ErrPreflightDecode},
+		{name: "nonzero-contract", body: `{"hub_endpoint_schema":1,"protocol":"evener-appwire-v5","version":"old-build","launch_flags":["api-log"]}`, nonzero: true, want: ErrSSHStart},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, s := newStoppedProtocolInstallation(t)
@@ -167,7 +167,7 @@ func TestCollectPreflightStoppedProtocolUsesDiscoveredExecutable(t *testing.T) {
 func TestProbeLaunchCheckStillRejectsStoppedProtocolOld(t *testing.T) {
 	m, s := newStoppedProtocolInstallation(t)
 	host, _ := m.reg.Get("alpha")
-	_, err := m.probeLaunchCheck(t.Context(), host)
+	_, err := m.probeStartupLaunchCheck(t.Context(), host)
 	if !errors.Is(err, ErrProtocolIncompatible) || s.descriptions != 0 {
 		t.Fatalf("strict deployment probe: err=%v descriptions=%d", err, s.descriptions)
 	}

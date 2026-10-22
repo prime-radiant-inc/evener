@@ -807,7 +807,18 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 			return
 		}
 		m.recordProgress(id, "pushing the controller's build")
-		_, afterDeploy, err := m.cfg.deployHost(ctx, work.entry, facts, restartFollows, beforeMutation)
+		_, afterDeploy, err := m.cfg.deployHost(ctx, work.entry, facts, restartFollows, beforeMutation, sshconn.DeploymentJournal{
+			OperationID: id,
+			Supersede: func(priorID string) error {
+				prior, found := m.cfg.ops.Record(priorID)
+				if !found {
+					return hostops.ErrRecordNotFound
+				}
+				note := fmt.Sprintf("supersedes pending intent: priorOperationId=%s host=%q generation=%d incarnationId=%q", prior.ID, prior.Host, prior.Generation, prior.IncarnationID)
+				_, err := m.cfg.ops.AppendProgress(id, note)
+				return err
+			},
+		})
 		if err != nil {
 			fail(err)
 			return
@@ -1045,8 +1056,8 @@ func (m *hubHostManager) refreshOperation(ctx context.Context, id string, work o
 		return fmt.Errorf("the post-operation probe reports the host unhealthy (build %q), so the operation is not a verified success", probe.Version)
 	}
 	if !startedAt.IsZero() {
-		// An owned free-port start can have no predecessor. Its proof is the
-		// actual process sshconn verified, independently observed at this epoch.
+		// An owned start or unavailable predecessor can lack a start time. The
+		// proof is sshconn's verified successor, independently observed at this epoch.
 		if probe.ProcessStartTime == nil || !probe.ProcessStartTime.Equal(startedAt) {
 			return errors.New("the post-operation probe did not identify the verified startup process")
 		}

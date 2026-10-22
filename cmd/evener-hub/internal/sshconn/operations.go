@@ -23,11 +23,13 @@ import (
 )
 
 // effectBinding outlives the worker that authorized an unfinished effect. The
-// validator owns copied hub-entry facts, not an attempt context or record ID.
+// validator owns copied hub-entry facts, not an attempt context. An explicit
+// deployment also retains its journal ID for a later correlated supersession.
 // Automatic recovery retains this immutable value, even under a new record.
 type effectBinding struct {
 	registration hostreg.Host
 	validate     func() error
+	operationID  string
 }
 
 var errEntryBinding = errors.New("sshconn: pending effect entry validation refused")
@@ -68,6 +70,9 @@ func (m *Manager) renewRestartBinding(host hostreg.Host, validate func() error) 
 	if err := m.checkEffectBinding(binding); err != nil {
 		return nil, err
 	}
+	if pending.binding != nil {
+		binding.operationID = pending.binding.operationID
+	}
 	m.mu.Lock()
 	if pending.active() {
 		pending.binding = binding
@@ -75,6 +80,15 @@ func (m *Manager) renewRestartBinding(host hostreg.Host, validate func() error) 
 	}
 	m.mu.Unlock()
 	return binding, nil
+}
+
+// DeploymentJournal identifies an explicit deployment's existing progress
+// journal. Supersede must durably correlate the prior operation before the
+// validated new intent replaces it at the write boundary. Ordinary callers
+// omit this optional journal and keep the existing recovery behavior.
+type DeploymentJournal struct {
+	OperationID string
+	Supersede   func(priorOperationID string) error
 }
 
 // DeployForOperation runs the 04b deploy path against host under the caller's
@@ -95,22 +109,55 @@ func (m *Manager) renewRestartBinding(host hostreg.Host, validate func() error) 
 //
 // The phase is bounded by the deploy limit, and the caller's context (the
 // operation worker's controller-lifetime context) cancels it.
-func (m *Manager) DeployForOperation(ctx context.Context, host hostreg.Host, facts Preflight, restart bool, beforeMutation func() error) (string, Preflight, error) {
+func (m *Manager) DeployForOperation(ctx context.Context, host hostreg.Host, facts Preflight, restart bool, beforeMutation func() error, journals ...DeploymentJournal) (string, Preflight, error) {
 	intent := m.deploymentIntent(restart, hubIdentity{})
 	intent.binding = newEffectBinding(host, beforeMutation)
+	if len(journals) != 0 && intent.binding != nil {
+		journal := journals[0]
+		intent.binding.operationID = journal.OperationID
+		prior := m.pendingRestart(host.Name)
+		if prior.active() && prior.binding != nil && prior.binding.operationID != "" && prior.binding.operationID != journal.OperationID && journal.Supersede != nil {
+			if !hostreg.SameRegistration(prior.binding.registration, host) {
+				return "", facts, fmt.Errorf("%w: %q", ErrHostNotFound, host.Name)
+			}
+			if err := m.checkEffectBinding(intent.binding); err != nil {
+				return "", facts, err
+			}
+			if facts.ExecutableMissing {
+				return "", facts, endpointMigration(host)
+			}
+			return m.deployForOperationWithSupersession(ctx, host, facts, intent, func() error {
+				if err := m.checkEffectBinding(intent.binding); err != nil {
+					return err
+				}
+				return journal.Supersede(prior.binding.operationID)
+			})
+		}
+	}
 	return m.deployForOperation(ctx, host, facts, intent)
 }
 
 func (m *Manager) deployForOperation(ctx context.Context, host hostreg.Host, facts Preflight, intent pendingRestartState) (string, Preflight, error) {
+	return m.deployForOperationWithSupersession(ctx, host, facts, intent, nil)
+}
+
+func (m *Manager) deployForOperationWithSupersession(ctx context.Context, host hostreg.Host, facts Preflight, intent pendingRestartState, supersede func() error) (string, Preflight, error) {
 	deployCtx, cancel := context.WithTimeout(ctx, m.opts.deployLimit())
 	defer cancel()
 	beforeWrite := func(target string) error {
 		if intent.restart && intent.replaced.startedAt.IsZero() && intent.command == "" {
-			intent.replaced, _ = m.probeRunningHub(deployCtx, host)
+			intent.replaced, _ = m.probeRunningHub(deployCtx, host, facts)
+		}
+		if supersede != nil {
+			// The supersession callback already validated the binding and appended
+			// the journal note. Publication below cannot fail after that note.
+			m.recordDeployment(host.Name, intent, target)
+			return nil
 		}
 		return m.deploymentRecorder(host.Name, intent)(target)
 	}
-	target, err := m.deploy(deployCtx, host, facts, beforeWrite)
+	retained := m.pendingRestart(host.Name)
+	target, err := m.deploySelectedWithSupersession(deployCtx, host, facts, supersede == nil && retained.deployment && retained.selected != nil, supersede, beforeWrite)
 	if err != nil {
 		return "", facts, err
 	}
@@ -139,8 +186,8 @@ func (m *Manager) deployForOperation(ctx context.Context, host hostreg.Host, fac
 type RestartResult struct {
 	TargetVersion     string
 	ReplacedStartedAt time.Time
-	// StartedAt is the verified identity of an owned free-port startup, not a
-	// substitute predecessor. Ordinary replacements leave it zero.
+	// StartedAt identifies the verified successor for an owned startup or a
+	// replacement whose predecessor start time is unknown. It is not a predecessor.
 	StartedAt time.Time
 }
 
@@ -211,9 +258,31 @@ func (m *Manager) restartForOperation(ctx context.Context, host hostreg.Host, fa
 	defer cancel()
 	registration := host
 	m.applyResolvedTarget(&host)
+	if pending := m.pendingRestart(host.Name); pending.selected != nil {
+		if err := checkSelectedRestartRegistration(host, pending.selected.host); err != nil {
+			return RestartResult{}, err
+		}
+	}
+	// Refresh is read-only. A refusal may not suppress independent proof of an
+	// already-completed effect, but still guards every execution path below.
+	facts, err = m.reReadLaunchContract(restartCtx, host, facts)
+	if pending := m.pendingRestart(host.Name); err != nil && pending.selected != nil && !pending.deployment {
+		if successor, complete, err := m.proveSelectedRestartComplete(restartCtx, host, facts, pending); err != nil {
+			return RestartResult{}, err
+		} else if complete {
+			result := RestartResult{TargetVersion: pending.expectedVersion, ReplacedStartedAt: pending.replaced.startedAt}
+			if pending.start || result.ReplacedStartedAt.IsZero() {
+				result.StartedAt = successor.report.Running.StartedAt
+			}
+			m.clearPendingRestart(host.Name)
+			if ch := m.currentChannel(host.Name); ch != nil && ch.MatchesRegistration(registration) {
+				ch.markLost()
+			}
+			return result, nil
+		}
+	}
 	// Attachment proves the running hub's protocol, not the executable that
 	// will replace it. Cached facts cannot settle a pending installation either.
-	facts, err = m.reReadLaunchContract(restartCtx, host, facts)
 	pending := m.authorizeDeploymentRestart(host.Name)
 	if pending.deployment && (err != nil || pending.needsDeployment(facts)) {
 		// This explicit Restart authorizes replacement even when the unfinished
@@ -230,63 +299,69 @@ func (m *Manager) restartForOperation(ctx context.Context, host hostreg.Host, fa
 	if err != nil && (pending.deployment || pending.command == "") {
 		return RestartResult{}, err
 	}
-	running, runningKnown := m.probeRunningHub(restartCtx, host)
-	version, pin := expectedServedBuild(facts, m.opts.controllerVersion())
 	pending = m.pendingRestart(host.Name)
-	completed := runningKnown && pending.completedBy(running, facts)
-	// A saved command may already have succeeded before verification was lost.
-	// Its proven effect needs no executable, but replay or another mutation still
-	// requires the current disk contract. Pending deployment repairs stay gated above.
-	if err != nil && !completed {
-		return RestartResult{}, err
-	}
-	err = nil
+	version, pin := expectedServedBuild(facts, m.opts.controllerVersion())
 	if pending.active() {
 		version, pin = pending.expectedVersion, pending.expectedGitSHA
-		running = pending.restartPredecessor(running)
 	}
-	result := RestartResult{TargetVersion: version, ReplacedStartedAt: running.startedAt}
-	if !completed {
+	result := RestartResult{TargetVersion: version, ReplacedStartedAt: pending.replaced.startedAt}
+	if err != nil {
+		return result, err
+	}
+	if pending.selected == nil {
 		if err := pending.validateExecutable(host.Name, facts); err != nil {
 			return result, err
 		}
 	}
-	started := pending.start
-	if pending.start || pending.command != "" && !runningKnown {
-		// A stopped replacement must replay its saved command, not rediscover
-		// a predecessor that was already killed. Owned startups already serving
-		// are verified below without issuing another command.
-		if !runningKnown {
-			cleared, probeErr := m.portCleared(restartCtx, host, hubPort(m.hostAddr(host)))
-			if probeErr != nil {
-				return result, probeErr
-			}
-			if !cleared {
-				return result, fmt.Errorf("%w: host %q startup recovery requires a free port", ErrRestart, host.Name)
-			}
-			err = m.recoverRestartPending(restartCtx, host, pending)
-			if err == nil && !started {
-				m.clearPendingRestart(host.Name)
-			}
-		}
-	} else if completed {
-		m.clearPendingRestart(host.Name)
+	var started bool
+	if pending.selected != nil {
+		started, err = m.recoverSelectedRestartWithStart(restartCtx, host, facts, &pending, true)
 	} else {
-		started, err = m.restartHubWithStartProof(restartCtx, host, facts, version, pin, running, binding)
+		if err := m.checkEffectBinding(binding); err != nil {
+			return result, err
+		}
+		owner, resolveErr := m.resolveOwnedEndpoint(restartCtx, host, facts)
+		if resolveErr != nil {
+			return result, fmt.Errorf("%w: %w", ErrRestart, resolveErr)
+		}
+		running, _ := identityFromReport(owner.report)
+		if !pending.active() {
+			result.ReplacedStartedAt = running.startedAt
+		}
+		previous := pending
+		pending, err = m.prepareSelectedRestart(restartCtx, host, facts, owner, version, pin)
+		if err != nil {
+			return result, err
+		}
+		pending.binding = binding
+		pending.replaced = previous.restartPredecessor(running)
+		pending.start = owner.report.State == "stopped"
+		started = pending.start
+		m.mu.Lock()
+		m.pendingRestarts[host.Name] = pending
+		m.mu.Unlock()
+		if err = m.checkEffectBinding(binding); err != nil {
+			m.mu.Lock()
+			m.pendingRestarts[host.Name] = previous
+			m.mu.Unlock()
+			return result, err
+		}
+		err = m.restartPreparedSelectedPending(restartCtx, host, facts, &pending, owner.pid != "0", previous)
 	}
 	if err != nil {
 		return result, err
 	}
-	if started {
-		// This mode is reached only through a recorded start or the actual
-		// free-port startup branch. Capture the real process with the same
-		// build/pin checks, for an independent epoch-bearing AppWire comparison.
-		actual, known := m.probeRunningHub(restartCtx, host)
-		if !known || actual.startedAt.IsZero() || actual.version != version || !hubBuildSHAMatches(actual.gitSHA, pin) {
+	if started || result.ReplacedStartedAt.IsZero() {
+		final, finalErr := m.resolveOwnedEndpoint(restartCtx, host, facts)
+		actual, known := identityFromReport(final.report)
+		if finalErr != nil || !known || actual.startedAt.IsZero() || !selectedSuccessor(final, *pending.selected, pending.nextEnv, version, pin) {
+			pending.start, pending.deployment = true, false
+			m.mu.Lock()
+			m.pendingRestarts[host.Name] = pending
+			m.mu.Unlock()
 			return result, fmt.Errorf("%w: host %q startup identity could not be verified", ErrRestart, host.Name)
 		}
 		result.StartedAt = actual.startedAt
-		m.clearPendingRestart(host.Name)
 	}
 	// Health has proved the replacement. The predecessor's SSH reader may not
 	// have observed EOF yet, so make reattach replace its channel immediately.

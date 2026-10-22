@@ -63,26 +63,28 @@ func TestRound8PushDeployReturnsResolvedTarget(t *testing.T) {
 // push had just provisioned.
 func TestRound8EnsureFreshHostPushDeployRecordsTarget(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
-	launched := false
+	installed, launched := false, false
 	var launchPaths []string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
 		switch {
+		case strings.HasPrefix(argv[len(argv)-1], `if [ -n "${HOME-}" ]`):
+			return nil, nil // no installer-default binary
 		case strings.HasSuffix(joined, "uname -s"):
 			return []byte("Linux\n"), nil
 		case strings.HasSuffix(joined, "uname -m"):
 			return []byte("x86_64\n"), nil
 		case strings.HasSuffix(joined, "id -u"):
 			return []byte("1000\n"), nil
-		case strings.Contains(joined, "XDG_STATE_HOME"):
+		case argv[len(argv)-1] == envProbeScript:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case strings.Contains(joined, "launch-check"):
-			if strings.Contains(joined, " evener launch-check") {
+			if strings.Contains(joined, " evener launch-check") || !installed {
 				// No evener_path and nothing on the non-interactive PATH.
 				return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
 			}
 			launchPaths = append(launchPaths, joined)
-			return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "list-units"):
 			return nil, nil
 		case strings.Contains(joined, "lsof -ti :9180"):
@@ -90,6 +92,11 @@ func TestRound8EnsureFreshHostPushDeployRecordsTarget(t *testing.T) {
 		case strings.Contains(joined, executableProbeRemote("evener")):
 			// The dedicated executable probe: absent.
 			return nil, exitStatus(t, 1)
+		case strings.Contains(joined, executableProbeRemote("/home/dev/.local/bin/evener")):
+			if !installed {
+				return nil, exitStatus(t, 1)
+			}
+			return nil, nil
 		case strings.Contains(joined, "command -v evener"):
 			return []byte(evenerPathMissingMarker + "\n"), nil
 		case strings.Contains(joined, "mkdir -p /home/dev/.local/bin"):
@@ -97,6 +104,7 @@ func TestRound8EnsureFreshHostPushDeployRecordsTarget(t *testing.T) {
 		case strings.Contains(joined, "evener_resolve"):
 			return []byte("/home/dev/.local/bin/evener\n"), nil
 		case strings.Contains(joined, "cat >"):
+			installed = true
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
 			}
@@ -113,6 +121,8 @@ func TestRound8EnsureFreshHostPushDeployRecordsTarget(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}, startFn: goodStartFn(t)}
+	selected := modelSelectedProcess(t, fr, "/home/dev/.local/bin/evener", "newsha", "newsha")
+	selected.stopped, selected.adhoc = true, true
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
@@ -164,7 +174,7 @@ func TestRound8InstallerPreservesSymlinkedInstallLayout(t *testing.T) {
 		case strings.Contains(joined, "command -v evener"):
 			return []byte(link + "\n"), nil
 		case strings.Contains(joined, "launch-check"):
-			return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "evener-install.XXXXXX"):
 			installerJoined = joined
 			return nil, nil
@@ -269,7 +279,7 @@ func TestRound8InstallerVersionMismatchIsTerminal(t *testing.T) {
 		case strings.Contains(joined, "launch-check"):
 			// The installer succeeded but fetched a newer snapshot than this
 			// controller's commit.
-			return []byte(`{"protocol":"evener-appwire-v7","version":"oldersha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldersha","launch_flags":["api-log"]}`), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}

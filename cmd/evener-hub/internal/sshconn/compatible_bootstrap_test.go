@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -33,7 +34,7 @@ func (s *stoppedInstallation) manager(t *testing.T, opts Options) *Manager {
 		command := strings.Join(argv, " ")
 		switch {
 		case strings.Contains(command, "launch-check"):
-			return json.Marshal(map[string]any{"protocol": appwire.ProtocolVersion, "version": s.version, "launch_flags": s.flags})
+			return json.Marshal(map[string]any{"hub_endpoint_schema": 1, "protocol": appwire.ProtocolVersion, "version": s.version, "launch_flags": s.flags})
 		case strings.Contains(command, "api/health"):
 			if !s.running {
 				return nil, errors.New("connection refused")
@@ -66,6 +67,11 @@ func (s *stoppedInstallation) manager(t *testing.T, opts Options) *Manager {
 			return nil, errors.New("bridge has no listener")
 		}
 		return goodStartFn(t)(ctx, argv, stderr)
+	}
+	f := modelSelectedProcess(t, fr, "/opt/evener/bin/evener", s.version, s.version)
+	f.observe = func(f *selectedProcessFixture) {
+		f.stopped = !s.running
+		f.sha, f.before, f.after = s.sha, s.version, s.version
 	}
 	opts.sleep = func(context.Context, time.Duration) error { return nil }
 	return newTestManager(t, testRegistry(t, hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}), fr, opts)
@@ -220,7 +226,7 @@ func TestEnsureCompatibleLiveHubDoesNotSettlePendingRestart(t *testing.T) {
 			}
 			beforeRestarts, beforeWrites, beforePresent := restarts, writes, present
 			ch, recoveryErr := m.Ensure(t.Context(), "alpha")
-			if !errors.Is(recoveryErr, wantErr) || ch != nil || m.pendingRestart("alpha") != pending {
+			if !errors.Is(recoveryErr, wantErr) || ch != nil || !reflect.DeepEqual(m.pendingRestart("alpha"), pending) {
 				t.Fatalf("unproved recovery: channel=%v error=%v pending=%+v", ch, recoveryErr, m.pendingRestart("alpha"))
 			}
 			if errors.Is(wantErr, ErrVersionMismatch) && (restarts != beforeRestarts || writes != beforeWrites || present != beforePresent) {
@@ -288,7 +294,7 @@ func TestEnsureRecoversDeploymentBeforeRestartMarker(t *testing.T) {
 						return nil, nil
 					}
 				case strings.Contains(command, "list-units"):
-					if inject && phase == "supervisor" {
+					if inject && phase == "supervisor" && writes > 0 {
 						return nil, interrupted
 					}
 				case strings.Contains(command, "systemctl restart"):
@@ -311,9 +317,9 @@ func TestEnsureRecoversDeploymentBeforeRestartMarker(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, after, err := m.DeployForOperation(t.Context(), host, facts, !strings.HasPrefix(phase, "deploy-only"), nil)
+			_, after, err := m.DeployForOperation(t.Context(), registeredTestHost(t, m, host), facts, !strings.HasPrefix(phase, "deploy-only"), nil)
 			if phase == "supervisor" && err == nil {
-				_, err = m.RestartForOperation(t.Context(), host, after, nil)
+				_, err = m.RestartForOperation(t.Context(), registeredTestHost(t, m, host), after, nil)
 			}
 			wantWrites := 1
 			if phase == "source-refusal" {
@@ -323,6 +329,15 @@ func TestEnsureRecoversDeploymentBeforeRestartMarker(t *testing.T) {
 				t.Fatalf("interrupted deployment: err=%v writes=%d restarts=%d", err, writes, restarts)
 			}
 			inject = false
+			if phase == "installer-write-ack" {
+				pending := m.pendingRestart(host.Name)
+				ch, err := m.Ensure(t.Context(), host.Name)
+				if !errors.Is(err, errRetainedInstaller) || !Terminal(err) || ch != nil || writes != wantWrites || restarts != 0 || running != initialRunning || !requestedInstalled || !reflect.DeepEqual(pending, m.pendingRestart(host.Name)) {
+					t.Fatalf("retained installer recovery was not refused before effects: channel=%v err=%v writes=%d restarts=%d pending=%+v", ch, err, writes, restarts, m.pendingRestart(host.Name))
+				}
+				// Supplying a push source can complete the original pinned write.
+				m.opts.BuildBinary = writeStageBinary
+			}
 			ch, err := m.Ensure(t.Context(), host.Name)
 			wantRunning, wantRestarts := requested, 1
 			if strings.HasPrefix(phase, "deploy-only") || phase == "source-refusal" {

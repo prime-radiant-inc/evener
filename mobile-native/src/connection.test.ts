@@ -29,16 +29,45 @@ describe("hub connections", () => {
 		}
 	});
 	it("normalizes origins and rejects credentials and URL tokens", () => {
-		expect(connectionTarget(" https://example.com:443/ ")).toBe("wss://example.com/rpc");
+		expect(connectionTarget("https://example.com:443/")).toBe("wss://example.com/rpc");
 		expect(connectionTarget("http://127.0.0.1:9180")).toBe("ws://127.0.0.1:9180/rpc");
+		expect(connectionTarget("http://[::ffff:127.0.0.1]")).toBe("ws://[::ffff:7f00:1]/rpc");
 		for (const url of [
 			"https://me:secret@hub.test",
 			"https://hub.test/?token=secret",
 			"https://hub.test/auth",
 			"file:///tmp/hub",
 			"https://hub.test/#secret",
+			"https://hub.test?",
+			"https://hub.test/a/..",
+			" http://hub.test",
+			"http://0.0.0.0:9180",
+			"http://127.1",
 		])
 			expect(() => connectionTarget(url)).toThrow();
+	});
+	it("refuses invalid input before writing a profile or replacing a saved one", async () => {
+		const data = new Map<string, string>();
+		const writes: string[] = [];
+		const profiles = new HubProfiles({
+			getItemAsync: async (key) => data.get(key) ?? null,
+			setItemAsync: async (key, value) => {
+				writes.push(key);
+				data.set(key, value);
+			},
+			deleteItemAsync: async (key) => {
+				data.delete(key);
+			},
+		});
+		await profiles.save({ id: "saved", name: "Before", origin: "https://hub.test", token: "first" });
+		const before = new Map(data);
+		const writeCount = writes.length;
+		for (const origin of ["http://hub.test/a/..", "http://127.1", "https://agent:secret-value@hub.test"]) {
+			await expect(profiles.save({ id: "saved", name: "After", origin, token: "replacement" })).rejects.toThrow();
+		}
+		expect(writes).toHaveLength(writeCount);
+		expect(data).toEqual(before);
+		expect(await profiles.token("saved")).toBe("first");
 	});
 	it("persists independent named hubs without exposing tokens in the roster", async () => {
 		const data = new Map<string, string>();

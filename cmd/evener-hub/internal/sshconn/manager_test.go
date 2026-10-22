@@ -171,10 +171,10 @@ func TestEnsurePreflightAndAttach(t *testing.T) {
 	if want := channelArgv(m.opts, host); !equalArgv(starts[0], want) {
 		t.Fatalf("Start argv:\n got %v\nwant %v", starts[0], want)
 	}
-	// Preflight must pass --protocol appwire.ProtocolVersion.
+	// Preflight reads capability without filtering by AppWire protocol.
 	for _, argv := range fr.recordedRuns() {
-		if containsToken(argv, "launch-check") && !containsToken(argv, appwire.ProtocolVersion) {
-			t.Fatalf("launch-check argv missing protocol: %v", argv)
+		if containsToken(argv, "launch-check") && containsToken(argv, "--protocol") {
+			t.Fatalf("launch-check argv filters protocol: %v", argv)
 		}
 	}
 }
@@ -401,7 +401,7 @@ func TestEnsureProtocolMismatchReachesTheDeployPath(t *testing.T) {
 	t.Run("no deploy configured refuses the protocol terminally", func(t *testing.T) {
 		host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 		override := map[string][]byte{
-			"launch-check": []byte(`{"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`),
+			"launch-check": []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`),
 		}
 		fr := &fakeRunner{runFn: cannedRun(override), startFn: goodStartFn(t)}
 		requireProtocolUpgrade(t, fr)
@@ -426,9 +426,9 @@ func TestEnsureProtocolMismatchReachesTheDeployPath(t *testing.T) {
 		fr := deployRunner(t,
 			func(call int) ([]byte, error) {
 				if call == 0 {
-					return []byte(`{"protocol":"evener-appwire-v4","version":"oldsha","launch_flags":["api-log"]}`), nil
+					return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v4","version":"oldsha","launch_flags":["api-log"]}`), nil
 				}
-				return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 			},
 			func(int) ([]byte, error) {
 				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
@@ -452,18 +452,15 @@ func TestEnsureProtocolMismatchReachesTheDeployPath(t *testing.T) {
 	})
 }
 
-// TestEnsureProtocolRefusedByRunReachesTheDeployPath covers the sibling case:
-// the on-disk binary refuses `launch-check --protocol` outright, so there is no
-// parsed contract at all. That is still a fact about a host reachable over ssh,
-// so when a deploy is configured the deploy path runs before any refusal; with no
-// deploy configured there is nothing to install, so the refusal is terminal.
-func TestEnsureProtocolRefusedByRunReachesTheDeployPath(t *testing.T) {
+// An endpoint-capable binary reports its own older protocol unfiltered.
+// Capability permits authorized upgrade, not attachment with that protocol.
+func TestEnsureUnfilteredOlderProtocolReachesDeployPath(t *testing.T) {
 	t.Run("no deploy configured refuses the refused protocol terminally", func(t *testing.T) {
 		host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 		fr := &fakeRunner{
 			runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 				if containsToken(argv, "launch-check") {
-					return []byte(`unsupported appwire protocol "evener-appwire-v7" (supported "evener-appwire-v4")`), errors.New("exit status 1")
+					return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v4","version":"oldsha","launch_flags":["api-log"]}`), nil
 				}
 				return cannedRun(nil)(context.Background(), argv, nil)
 			},
@@ -491,9 +488,9 @@ func TestEnsureProtocolRefusedByRunReachesTheDeployPath(t *testing.T) {
 		fr := deployRunner(t,
 			func(call int) ([]byte, error) {
 				if call == 0 {
-					return []byte(`unsupported appwire protocol "evener-appwire-v7" (supported "evener-appwire-v4")`), errors.New("exit status 1")
+					return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v4","version":"oldsha","launch_flags":["api-log"]}`), nil
 				}
-				return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 			},
 			func(int) ([]byte, error) {
 				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
@@ -527,7 +524,7 @@ func TestEnsureMissingAPILogFlagIsDeployable(t *testing.T) {
 		built := false
 		fr := deployRunner(t,
 			func(int) ([]byte, error) {
-				return []byte(`{"protocol":"evener-appwire-v7","version":"dev","launch_flags":[]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"dev","launch_flags":[]}`), nil
 			},
 			func(call int) ([]byte, error) {
 				// A real hub always reports started_at (cmd/evener-hub/web_api.go
@@ -566,9 +563,9 @@ func TestEnsureMissingAPILogFlagIsDeployable(t *testing.T) {
 		fr := deployRunner(t,
 			func(call int) ([]byte, error) {
 				if call == 0 {
-					return []byte(`{"protocol":"evener-appwire-v7","version":"dev","launch_flags":[]}`), nil
+					return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"dev","launch_flags":[]}`), nil
 				}
-				return []byte(`{"protocol":"evener-appwire-v7","version":"dev","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"dev","launch_flags":["api-log"]}`), nil
 			},
 			func(call int) ([]byte, error) {
 				// As above: the hub reports a start time, and the restarted process
@@ -638,12 +635,15 @@ func TestEnsurePreflightDecodeFailure(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	fr := &fakeRunner{runFn: cannedRun(map[string][]byte{"launch-check": []byte("not json"), "api/health": nil, "lsof -ti": []byte(noListenerMarker)}), startFn: goodStartFn(t)}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{})
-	_, err := m.Ensure(context.Background(), "alpha")
+	if ch, err := m.Ensure(t.Context(), "alpha"); err != nil || ch == nil {
+		t.Fatalf("live handshake lost to disk metadata: channel=%v err=%v", ch, err)
+	}
+	_, err := m.preflight(t.Context(), host)
 	if !errors.Is(err, ErrPreflightDecode) {
 		t.Fatalf("err = %v, want ErrPreflightDecode", err)
 	}
-	if got := len(fr.recordedStarts()); got != 0 {
-		t.Fatalf("Start calls = %d, want 0", got)
+	if got := len(fr.recordedStarts()); got != 1 {
+		t.Fatalf("Start calls = %d, want one read-only attach", got)
 	}
 }
 
@@ -1595,14 +1595,15 @@ func TestCloseSuppressesInFlightEnsureTerminalEmissions(t *testing.T) {
 	entered := make(chan struct{})
 	var once sync.Once
 	fr := &fakeRunner{
-		runFn: func(ctx context.Context, _ []string, _ io.Reader) ([]byte, error) {
+		runFn: cannedRun(nil),
+		startFn: func(ctx context.Context, _ []string, _ io.Writer) (Stdio, error) {
 			once.Do(func() { close(entered) })
 			<-ctx.Done()
 			// A terminal cause found concurrently with shutdown: Ensure keeps it
-			// (it names what went wrong) but must not announce it.
+			// (it names what went wrong) but must not announce it. Return it at
+			// bridge Start, after preflight's cancellation-owned boundary.
 			return nil, fmt.Errorf("%w: refused", ErrProtocolIncompatible)
 		},
-		startFn: goodStartFn(t),
 	}
 	events := make(chan Event, 64)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
@@ -1823,7 +1824,7 @@ func TestEnsureTerminalFailureReleasesHostOwnership(t *testing.T) {
 			refuse := mismatch
 			mu.Unlock()
 			if refuse && strings.Contains(strings.Join(argv, " "), "launch-check") {
-				return []byte(`{"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`), nil
 			}
 			return canned(ctx, argv, stdin)
 		},
@@ -1967,13 +1968,8 @@ func TestIsTerminalClassifiesManagerClosed(t *testing.T) {
 	}
 }
 
-// TestEnsureBoundsHubIsPresent proves the hub-presence probe is bounded like
-// every other phase of ensureOnce. hubIsPresent issues real ssh commands
-// (systemctl list-units, then lsof); before the fix it inherited the attempt
-// context, which for a supervisor reconnect has no deadline, so a hung remote
-// command held the per-host lock forever. The fake hangs the supervisor probe and
-// the test asserts ensureOnce still returns.
-func TestEnsureBoundsHubIsPresent(t *testing.T) {
+// A selected endpoint command must not hold a reconnect's host gate forever.
+func TestEnsureBoundsSelectedEndpoint(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	probing := make(chan struct{}, 4)
 	fr := &fakeRunner{runFn: func(ctx context.Context, argv []string, _ io.Reader) ([]byte, error) {
@@ -1988,18 +1984,13 @@ func TestEnsureBoundsHubIsPresent(t *testing.T) {
 		case strings.Contains(joined, "XDG_STATE_HOME"):
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case strings.Contains(joined, "launch-check"):
-			// A mismatching on-disk build puts a deploy on the table, which is the
-			// only path that runs the hub-presence probe.
-			return []byte(`{"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "api/health"):
-			return nil, errors.New("curl: (7) Failed to connect")
-		case strings.Contains(joined, "list-units"):
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
+		case strings.HasSuffix(joined, "/opt/evener/bin/evener hub endpoint --json"):
 			select {
 			case probing <- struct{}{}:
 			default:
 			}
-			// Block until the probe's own context expires: a real command stuck on
-			// a dead dbus behaves this way.
+			// Block until the selected probe's own context expires.
 			<-ctx.Done()
 			return nil, ctx.Err()
 		default:
@@ -2021,15 +2012,15 @@ func TestEnsureBoundsHubIsPresent(t *testing.T) {
 	select {
 	case <-probing:
 	case <-time.After(10 * time.Second):
-		t.Fatal("ensureOnce never reached the hub-presence supervisor probe")
+		t.Fatal("ensureOnce never reached the selected endpoint probe")
 	}
 	select {
 	case err := <-errCh:
-		if err == nil {
-			t.Fatal("ensureOnce returned nil; the hung hub-presence probe must surface a failure")
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("selected probe err=%v, want deadline exceeded", err)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("ensureOnce did not return: hubIsPresent ran on an unbounded context and held the host lock")
+		t.Fatal("selected endpoint probe held the host lock past its deadline")
 	}
 }
 
@@ -2099,7 +2090,7 @@ func TestTerminalFailureStopsTheReconnectLoop(t *testing.T) {
 			refuse := mismatch
 			mu.Unlock()
 			if refuse && strings.Contains(strings.Join(argv, " "), "launch-check") {
-				return []byte(`{"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`), nil
 			}
 			return canned(ctx, argv, stdin)
 		},
@@ -2192,7 +2183,7 @@ func TestReplacementAttachDoesNotLeakTheOlderSupervisor(t *testing.T) {
 			refuse := mismatch
 			mu.Unlock()
 			if refuse && strings.Contains(strings.Join(argv, " "), "launch-check") {
-				return []byte(`{"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`), nil
 			}
 			return canned(ctx, argv, stdin)
 		},
@@ -2327,7 +2318,7 @@ func TestSupersededSupervisorDoesNotEmitDisconnectedAfterReplacement(t *testing.
 					refuse := mismatch
 					mu.Unlock()
 					if refuse && strings.Contains(strings.Join(argv, " "), "launch-check") {
-						return []byte(`{"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`), nil
+						return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`), nil
 					}
 					return canned(ctx, argv, stdin)
 				},
@@ -3337,6 +3328,23 @@ func TestCloseDuringReconnectPreflightEmitsNoExtraReconnecting(t *testing.T) {
 	}
 }
 
+// This signal is produced by the manager classifying its returned error, not by
+// the runner merely reaching or returning from the injection point.
+type observedTerminalReconnectError struct {
+	classified chan struct{}
+	once       sync.Once
+}
+
+func (*observedTerminalReconnectError) Error() string { return "terminal reconnect fixture" }
+
+func (e *observedTerminalReconnectError) Is(target error) bool {
+	if target != ErrProtocolIncompatible {
+		return false
+	}
+	e.once.Do(func() { close(e.classified) })
+	return true
+}
+
 // A terminal error found while Close is racing the supervisor's reconnect must
 // not surface as an EventFailed: shutdown reports no host failure, even when the
 // attempt also happened to find a terminal fault (here a protocol mismatch). The
@@ -3344,26 +3352,27 @@ func TestCloseDuringReconnectPreflightEmitsNoExtraReconnecting(t *testing.T) {
 // manager's own teardown must suppress the terminal announcement directly.
 func TestCloseRaceWithTerminalReconnectEmitsNoFailedEvent(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	terminal := &observedTerminalReconnectError{classified: make(chan struct{})}
 
 	var mu sync.Mutex
 	block := false
-	preflightEntered := make(chan struct{})
-	releasePreflight := make(chan struct{})
+	bridgeEntered := make(chan struct{})
+	releaseBridge := make(chan struct{})
 	var enteredOnce, releaseOnce sync.Once
-	canned := cannedRun(nil)
+	goodStart := goodStartFn(t)
 	fr := &fakeRunner{
-		runFn: func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		runFn: cannedRun(nil),
+		startFn: func(ctx context.Context, argv []string, stderr io.Writer) (Stdio, error) {
 			mu.Lock()
 			blocking := block
 			mu.Unlock()
-			if blocking && strings.Contains(strings.Join(argv, " "), "launch-check") {
-				enteredOnce.Do(func() { close(preflightEntered) })
-				<-releasePreflight
-				return []byte(`{"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`), nil
+			if blocking {
+				enteredOnce.Do(func() { close(bridgeEntered) })
+				<-releaseBridge
+				return nil, terminal
 			}
-			return canned(ctx, argv, stdin)
+			return goodStart(ctx, argv, stderr)
 		},
-		startFn: goodStartFn(t),
 	}
 	events := make(chan Event, 128)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
@@ -3373,7 +3382,7 @@ func TestCloseRaceWithTerminalReconnectEmitsNoFailedEvent(t *testing.T) {
 		sleep:       func(context.Context, time.Duration) error { return nil },
 		jitter:      func(d time.Duration) time.Duration { return d },
 	})
-	defer releaseOnce.Do(func() { close(releasePreflight) })
+	defer releaseOnce.Do(func() { close(releaseBridge) })
 
 	ch, err := m.Ensure(context.Background(), "alpha")
 	if err != nil {
@@ -3385,12 +3394,12 @@ func TestCloseRaceWithTerminalReconnectEmitsNoFailedEvent(t *testing.T) {
 	mu.Unlock()
 	ch.markLost()
 	select {
-	case <-preflightEntered:
+	case <-bridgeEntered:
 	case <-time.After(5 * time.Second):
-		t.Fatal("the supervisor never reached a reconnect preflight")
+		t.Fatal("the supervisor never reached reconnect bridge Start")
 	}
 
-	// Begin shutdown while that preflight is still in flight: Close cancels the
+	// Begin shutdown while bridge Start is still in flight: Close cancels the
 	// base context and then waits for the supervisor.
 	closed := make(chan error, 1)
 	go func() { closed <- m.Close() }()
@@ -3400,17 +3409,22 @@ func TestCloseRaceWithTerminalReconnectEmitsNoFailedEvent(t *testing.T) {
 		t.Fatal("Close never canceled the base context")
 	}
 
-	// Release the preflight: it answers with a terminal protocol mismatch even
-	// though the manager is closing. Shutdown must not read that as a host
-	// failure.
-	releaseOnce.Do(func() { close(releasePreflight) })
+	// The terminal failure now comes after preflight, so cancellation cannot
+	// replace it before the reconnect loop classifies it. Shutdown must still
+	// suppress its Failed announcement.
+	releaseOnce.Do(func() { close(releaseBridge) })
 	select {
 	case err := <-closed:
 		if err != nil {
 			t.Fatalf("Close: %v", err)
 		}
 	case <-time.After(6 * time.Second):
-		t.Fatal("Close did not finish after the preflight returned")
+		t.Fatal("Close did not finish after bridge Start returned")
+	}
+	select {
+	case <-terminal.classified:
+	default:
+		t.Fatal("reconnect never classified the terminal error")
 	}
 	assertNoFailedEvent(t, events)
 }
