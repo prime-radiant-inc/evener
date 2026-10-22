@@ -15,12 +15,13 @@ import (
 )
 
 func TestSystemdEffectiveLaunchEnvironment(t *testing.T) {
-	for _, name := range []string{"default-home", "system-no-pass", "system-pass", "user-inherits", "unit-over-manager", "files-over-unit", "unset-name", "unset-match", "unset-nonmatch", "optional-missing", "required-missing", "glob-refuses", "specifier-refuses", "quoted-unset-refuses", "duplicate-metadata-refuses", "no-login-home-absent", "no-login-home-empty", "no-login-home-manager", "no-login-home-unit", "no-login-home-file", "no-login-user-inherits", "no-login-home-unset", "login-policy-invalid-refuses", "login-policy-missing-refuses"} {
+	for _, name := range []string{"default-home", "system-no-pass", "system-pass", "user-inherits", "unit-over-manager", "files-over-unit", "unset-name", "unset-match", "unset-nonmatch", "optional-missing", "required-missing", "glob-refuses", "specifier-refuses", "quoted-unset-refuses", "duplicate-metadata-refuses", "no-login-home-absent", "no-login-home-empty", "no-login-home-manager", "no-login-home-unit", "no-login-home-file", "no-login-user-inherits", "no-login-home-unset", "login-policy-invalid-refuses", "login-policy-missing-refuses", "unit-home-name", "unit-home-uid", "unit-home-default", "user-home-default", "unit-home-explicit-empty"} {
 		t.Run(name, func(t *testing.T) {
 			host, _ := ownerCommands(t)
 			sup := supervisor{kind: supervisorSystemd, label: "evener-hub-selected.service"}
 			props := "EnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\n"
 			policy := "yes"
+			unitUser := "dev"
 			manager, unit := "", ""
 			files := map[string]string{}
 			want := []string{"HOME=/home/dev"}
@@ -105,6 +106,16 @@ func TestSystemdEffectiveLaunchEnvironment(t *testing.T) {
 				policy = "unknown"
 			case "login-policy-missing-refuses":
 				policy = ""
+			case "unit-home-name":
+				unitUser, want = "hubsvc", []string{"HOME=/home/hubsvc"}
+			case "unit-home-uid":
+				unitUser, want = "1000", []string{"HOME=/home/uid-1000"}
+			case "unit-home-default":
+				unitUser, want = "", []string{"HOME=/root"}
+			case "user-home-default":
+				sup.kind, unitUser = supervisorSystemdUser, ""
+			case "unit-home-explicit-empty":
+				unitUser, unit, want = "hubsvc", "HOME=", []string{"HOME="}
 			}
 			for path, contents := range files {
 				if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
@@ -121,11 +132,17 @@ func TestSystemdEffectiveLaunchEnvironment(t *testing.T) {
 				switch remote {
 				case "getent passwd dev | cut -d: -f6":
 					return []byte("/home/dev\n"), nil
-				case command + " show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- " + sup.label:
+				case "getent passwd hubsvc | cut -d: -f6":
+					return []byte("/home/hubsvc\n"), nil
+				case "getent passwd 1000 | cut -d: -f6":
+					return []byte("/home/uid-1000\n"), nil
+				case "getent passwd root | cut -d: -f6":
+					return []byte("/root\n"), nil
+				case command + " show --property=User,EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- " + sup.label:
 					if policy == "" {
-						return []byte(props), nil
+						return []byte("User=" + unitUser + "\n" + props), nil
 					}
-					return []byte(props + "SetLoginEnvironment=" + policy + "\n"), nil
+					return []byte("User=" + unitUser + "\n" + props + "SetLoginEnvironment=" + policy + "\n"), nil
 				case "values=$(" + command + " show-environment) || exit; printf '%s\\n' \"$values\" | " + narrowEnvironmentFilter:
 					reads++
 					return exec.CommandContext(ctx, "/bin/sh", "-c", "systemctl() { printf '%s\\n' "+shellquote.RemoteWord(manager)+"; }; "+remote).Output()

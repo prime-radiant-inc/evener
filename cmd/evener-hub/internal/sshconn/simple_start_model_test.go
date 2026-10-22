@@ -96,9 +96,9 @@ func TestSelectedRestartBoundary(t *testing.T) {
 						definitionReads++
 						return environmentFileDefinition(t, owner.supervisor, envFile, remotePath), nil
 					}
-					if environmentFile && remote == "systemctl show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- evener-hub-selected.service" {
+					if environmentFile && remote == "systemctl show --property=User,EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- evener-hub-selected.service" {
 						coldEnvironmentReads++
-						return []byte("EnvironmentFiles=" + envFile + " (ignore_errors=no)\nPassEnvironment=\nUnsetEnvironment=\nSetLoginEnvironment=yes\n"), nil
+						return []byte("User=dev\nEnvironmentFiles=" + envFile + " (ignore_errors=no)\nPassEnvironment=\nUnsetEnvironment=\nSetLoginEnvironment=yes\n"), nil
 					}
 					if environmentFile && remote == systemdEnvironmentFileRemote(envFile, false) {
 						cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", remote)
@@ -165,9 +165,9 @@ func TestSelectedRestartBoundary(t *testing.T) {
 					switch remote {
 					case "getent passwd dev | cut -d: -f6":
 						return []byte("/home/dev\n"), nil
-					case "systemctl show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- evener-hub-selected.service":
+					case "systemctl show --property=User,EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- evener-hub-selected.service":
 						coldEnvironmentReads++
-						return []byte("EnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\nSetLoginEnvironment=yes\n"), nil
+						return []byte("User=dev\nEnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\nSetLoginEnvironment=yes\n"), nil
 					case "values=$(systemctl show --property=Environment --value -- evener-hub-selected.service) || exit; printf '%s\\n' \"$values\" | " + narrowEnvironmentFilter:
 						if strings.HasSuffix(name, "definition-B") {
 							return []byte("XDG_STATE_HOME=/srv/B\x00"), nil

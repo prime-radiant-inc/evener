@@ -1732,8 +1732,8 @@ func (r *restartRecoveryRunner) selectedEvidenceLocked(command string) ([]byte, 
 		return []byte("Id=evener-hub.service\nMainPID=" + pid + "\nUser=ops\nExecStart={ path=/opt/evener/bin/evener ; argv[]=/opt/evener/bin/evener hub ; ignore_errors=no ; }\nWorkingDirectory=/home/ops\n"), true, nil
 	case strings.HasPrefix(command, "definition=$(systemctl"):
 		return []byte("1234 567\n"), true, nil
-	case strings.Contains(command, "show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- evener-hub.service"):
-		return []byte("EnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\nSetLoginEnvironment=yes\n"), true, nil
+	case strings.Contains(command, "show --property=User,EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- evener-hub.service"):
+		return []byte("User=ops\nEnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\nSetLoginEnvironment=yes\n"), true, nil
 	case strings.HasPrefix(command, "values=$(systemctl") && strings.Contains(command, "--property=Environment --value"):
 		return nil, true, nil
 	case strings.HasPrefix(command, "launchctl print gui/1000/com.example.evener-hub | awk "):

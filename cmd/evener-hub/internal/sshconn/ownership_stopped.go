@@ -218,7 +218,7 @@ func (m *Manager) stoppedServiceEnvironment(ctx context.Context, host hostreg.Ho
 	}
 	// Resolve the next launch independently of the running process. A stable
 	// definition may already select a different root than that process serves.
-	fileOut, err := m.ownerRead(ctx, host, remote+" show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- "+shellquote.RemoteWord(sup.label))
+	fileOut, err := m.ownerRead(ctx, host, remote+" show --property=User,EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- "+shellquote.RemoteWord(sup.label))
 	if err != nil {
 		return nil, err
 	}
@@ -226,17 +226,23 @@ func (m *Manager) stoppedServiceEnvironment(ctx context.Context, host hostreg.Ho
 	for line := range strings.SplitSeq(strings.TrimSuffix(string(fileOut), "\n"), "\n") {
 		key, value, ok := strings.Cut(line, "=")
 		_, duplicate := properties[key]
-		if !ok || duplicate || !slices.Contains([]string{"EnvironmentFiles", "PassEnvironment", "UnsetEnvironment", "SetLoginEnvironment"}, key) {
+		if !ok || duplicate || !slices.Contains([]string{"User", "EnvironmentFiles", "PassEnvironment", "UnsetEnvironment", "SetLoginEnvironment"}, key) {
 			return nil, fmt.Errorf("%w: service environment properties unavailable", errOwnerEvidence)
 		}
 		properties[key] = value
 	}
-	if len(properties) != 4 {
+	if len(properties) != 5 {
 		return nil, fmt.Errorf("%w: stopped service environment properties unavailable", errOwnerEvidence)
 	}
 	env := map[string]string{}
 	switch properties["SetLoginEnvironment"] {
 	case "yes":
+		if sup.kind == supervisorSystemd {
+			user = properties["User"]
+			if user == "" {
+				user = "root"
+			}
+		}
 		out, err := m.ownerRead(ctx, host, "getent passwd "+shellquote.RemoteWord(user)+" | cut -d: -f6")
 		if err != nil {
 			return nil, err
