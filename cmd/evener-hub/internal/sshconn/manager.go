@@ -10,7 +10,6 @@ import (
 	"math/rand"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2257,11 +2256,27 @@ func (m *Manager) startBareHubPending(ctx context.Context, host hostreg.Host, ex
 	return m.waitStartedHealthy(ctx, host, expectedVersion, expectedGitSHA)
 }
 
-// deployRequired reports whether a stopped installation lacks its startup
-// contract. A running hub is judged by initialize before this gate is used.
+// deployRequired reports whether a stopped installation needs this controller's
+// build. Only a proven older protocol authorizes a replacement: a newer protocol
+// belongs to the controller's update, and an unparsable one is not proof of an
+// upgrade. A running hub is judged by initialize before this gate is used.
 func (m *Manager) deployRequired(facts Preflight) bool {
-	return m.canDeploy() && (facts.ExecutableMissing || (facts.LaunchCheckKnown &&
-		(facts.Protocol != appwire.ProtocolVersion || !slices.Contains(facts.LaunchFlags, requiredLaunchFlag))))
+	if !m.canDeploy() {
+		return false
+	}
+	if facts.ExecutableMissing {
+		return true
+	}
+	if !facts.LaunchCheckKnown {
+		return false
+	}
+	if appwire.OlderProtocolVersion(facts.Protocol) {
+		return true
+	}
+	if facts.Protocol != appwire.ProtocolVersion {
+		return false
+	}
+	return !slices.Contains(facts.LaunchFlags, requiredLaunchFlag)
 }
 
 // ensureDecision preserves recorded effects and repairs unusable installations.
@@ -2308,6 +2323,10 @@ func (m *Manager) hubIsPresent(ctx context.Context, host hostreg.Host, facts Pre
 // A usable live connection does not imply its on-disk replacement is usable.
 func validateStartupContract(hostName string, facts Preflight) error {
 	if facts.LaunchCheckKnown && facts.Protocol != appwire.ProtocolVersion {
+		if appwire.NewerProtocolVersion(facts.Protocol) {
+			return fmt.Errorf("%w: host %q speaks protocol %q, newer than this controller's %q; update the controller instead of downgrading the host",
+				ErrHostProtocolNewer, hostName, facts.Protocol, appwire.ProtocolVersion)
+		}
 		return fmt.Errorf("%w: host %q protocol %q, want %q", ErrProtocolIncompatible, hostName, facts.Protocol, appwire.ProtocolVersion)
 	}
 	if !slices.Contains(facts.LaunchFlags, requiredLaunchFlag) {
@@ -2380,77 +2399,53 @@ func (m *Manager) deployedBuildNotStamped(hostName string, facts Preflight, expe
 		errDeployUnstamped, hostName, facts.Version, expected, m.unstampedRemedy())
 }
 
-// positiveProtocolMismatch accepts only explicit protocol evidence. A missing
-// protocol field and generic JSON-RPC errors remain transport/response failures.
-// A server older than this controller reports the disagreement as an
-// InvalidRequest message (legacyProtocolRefusal) rather than the structured
-// upgradeRequired arm, so that exact refusal is evidence too.
-func positiveProtocolMismatch(err error) bool {
+// protocolMismatch classifies a positive protocol disagreement during the
+// initialize handshake. noProtocolMismatch is not a disagreement this
+// controller can act on: a missing protocol field, an unparsable version, and
+// generic JSON-RPC errors stay transport/response failures.
+type protocolMismatch int
+
+const (
+	noProtocolMismatch protocolMismatch = iota
+	// peerProtocolOlder means the host speaks an older protocol, so Connect may
+	// install this controller's build and restart the host into it.
+	peerProtocolOlder
+	// peerProtocolNewer means the host speaks a newer protocol. This controller
+	// cannot speak it, and installing its own older build would downgrade the
+	// host, so the refusal is terminal and names the controller update.
+	peerProtocolNewer
+)
+
+// classifyProtocolMismatch reads explicit protocol evidence from an initialize
+// failure. The typed mismatch covers a successful initialize response that
+// names another protocol and the legacy InvalidRequest an older server sends
+// (translated by appwire.Client.Initialize). upgradeRequired is emitted only by
+// a server whose protocol is newer than the announced client's, so it names a
+// newer host.
+func classifyProtocolMismatch(err error) protocolMismatch {
 	if mismatch, ok := errors.AsType[appwire.ProtocolVersionMismatchError](err); ok {
-		return strings.TrimSpace(mismatch.Got) != ""
+		switch {
+		case appwire.OlderProtocolVersion(mismatch.Got):
+			return peerProtocolOlder
+		case appwire.NewerProtocolVersion(mismatch.Got):
+			return peerProtocolNewer
+		default:
+			return noProtocolMismatch
+		}
 	}
 	wire, ok := errors.AsType[appwire.WireError](err)
 	if !ok {
-		return false
+		return noProtocolMismatch
 	}
 	raw, err := json.Marshal(wire.Data)
-	if err == nil {
-		var data appwire.ErrorData
-		if json.Unmarshal(raw, &data) == nil && data.EvenerErrorInfo == appwire.ErrorUpgradeRequired {
-			return true
-		}
+	if err != nil {
+		return noProtocolMismatch
 	}
-	return legacyProtocolRefusal(wire.Message)
-}
-
-// legacyProtocolRefusal recognizes the initialize refusal an Evener server older
-// than this controller sends a newer client. Such servers compare the announced
-// protocol exactly and answer a newer one with InvalidRequest, not the
-// structured upgradeRequired arm they reserve for an older client. An ancient
-// host therefore reports the disagreement only in its message, so that exact
-// shape is the protocol evidence an explicit Connect needs before replacing the
-// installation. Only a well-formed pair of AppWire versions is accepted, the
-// announced one must be this controller's, and the wanted one must be older:
-// the same refusal from a peer that speaks a newer protocol names an upgrade of
-// this controller, which a connect must not answer by downgrading the host.
-func legacyProtocolRefusal(message string) bool {
-	rest, ok := strings.CutPrefix(message, `appwire initialize: protocol version "`)
-	if !ok {
-		return false
+	var data appwire.ErrorData
+	if json.Unmarshal(raw, &data) == nil && data.EvenerErrorInfo == appwire.ErrorUpgradeRequired {
+		return peerProtocolNewer
 	}
-	announced, rest, ok := strings.Cut(rest, `" is incompatible; want "`)
-	if !ok {
-		return false
-	}
-	wanted, ok := strings.CutSuffix(rest, `"`)
-	if !ok {
-		return false
-	}
-	if announced != appwire.ProtocolVersion {
-		return false
-	}
-	announcedNumber, ok := appwireProtocolNumber(announced)
-	if !ok {
-		return false
-	}
-	wantedNumber, ok := appwireProtocolNumber(wanted)
-	return ok && wantedNumber < announcedNumber
-}
-
-// appwireProtocolNumber reads the N in "evener-appwire-vN". Only the canonical
-// decimal spelling is accepted, so a suffix a reader might mistake for a
-// version ("v05", "v5-rc1") stays an ambiguous refusal rather than protocol
-// evidence.
-func appwireProtocolNumber(version string) (int, bool) {
-	digits, ok := strings.CutPrefix(version, "evener-appwire-v")
-	if !ok {
-		return 0, false
-	}
-	n, err := strconv.Atoi(digits)
-	if err != nil || n < 0 || strconv.Itoa(n) != digits {
-		return 0, false
-	}
-	return n, true
+	return noProtocolMismatch
 }
 
 // attach spawns the bridge, wraps its stdio in a StreamTransport, and
@@ -2511,8 +2506,11 @@ func (m *Manager) attach(ctx context.Context, host hostreg.Host, facts Preflight
 			// context, not a transport fault, is why this channel is unusable.
 			return nil, ErrManagerClosed
 		}
-		if positiveProtocolMismatch(err) {
+		switch classifyProtocolMismatch(err) {
+		case peerProtocolOlder:
 			return nil, fmt.Errorf("%w: host %q: %w", ErrProtocolIncompatible, host.Name, err)
+		case peerProtocolNewer:
+			return nil, fmt.Errorf("%w: host %q: %w", ErrHostProtocolNewer, host.Name, err)
 		}
 		// A started ssh ran a remote command, so neither its stderr (which the
 		// remote command's own output shares) nor its exit status can prove the
@@ -2937,6 +2935,7 @@ func nextBackoff(delay, limit time.Duration) time.Duration {
 func isTerminal(err error) bool {
 	switch {
 	case errors.Is(err, ErrProtocolIncompatible),
+		errors.Is(err, ErrHostProtocolNewer),
 		errors.Is(err, ErrUnsupportedHost),
 		errors.Is(err, ErrLaunchContract),
 		errors.Is(err, ErrVersionMismatch),
@@ -3617,8 +3616,13 @@ func (p pendingRestartState) active() bool {
 
 // Equal build labels do not prove an interrupted write installed its bytes.
 // Replay an unacknowledged write before settling or restarting its deployment.
+// A recorded deployment that is also authorized to restart owns its requested
+// build, so a protocol mismatch on disk is part of that unfinished effect and
+// replays the write. A deploy-only record keeps its ownership instead: it
+// surfaces the contract refusal and waits for an explicit Restart.
 func (p pendingRestartState) needsDeployment(facts Preflight) bool {
-	return p.deployment && (!p.writeAcknowledged || facts.ExecutableMissing || facts.Version != p.expectedVersion)
+	return p.deployment && (!p.writeAcknowledged || facts.ExecutableMissing || facts.Version != p.expectedVersion ||
+		(p.restart && facts.LaunchCheckKnown && facts.Protocol != appwire.ProtocolVersion))
 }
 
 func (p pendingRestartState) completedBy(running hubIdentity, facts Preflight) bool {

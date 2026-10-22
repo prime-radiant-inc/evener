@@ -106,6 +106,17 @@ func TestEnsureStoppedProtocolOldRepairsAndStarts(t *testing.T) {
 	}
 }
 
+func TestEnsureStoppedNewerProtocolRefusesInsteadOfDowngrading(t *testing.T) {
+	m, s := newStoppedProtocolInstallation(t)
+	s.protocol = "evener-appwire-v99"
+	ch, err := m.Ensure(t.Context(), "alpha")
+	if ch != nil || !errors.Is(err, ErrHostProtocolNewer) || !isTerminal(err) ||
+		s.builds != 0 || s.deploys != 0 || s.starts != 0 || m.pendingRestart("alpha").active() {
+		t.Fatalf("newer stopped host: channel=%v err=%v builds=%d writes=%d starts=%d pending=%+v",
+			ch, err, s.builds, s.deploys, s.starts, m.pendingRestart("alpha"))
+	}
+}
+
 func TestEnsureStoppedProtocolOldRecoversUnlandedWrite(t *testing.T) {
 	m, s := newStoppedProtocolInstallation(t)
 	host, _ := m.reg.Get("alpha")

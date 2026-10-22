@@ -131,7 +131,7 @@ func TestEnsureCompatibleDiscoveredBridgeSurvivesRejectedLaunchCheck(t *testing.
 }
 
 func TestEnsureAmbiguousInitializeFailureDoesNotDeploy(t *testing.T) {
-	for _, mode := range []string{"invalid-request", "newer-protocol", "empty-protocol", "omitted-protocol", "malformed", "malformed-frame", "eof", "timeout", "authentication", "transport"} {
+	for _, mode := range []string{"invalid-request", "response-malformed", "empty-protocol", "omitted-protocol", "malformed", "malformed-frame", "eof", "timeout", "authentication", "transport"} {
 		t.Run(mode, func(t *testing.T) {
 			fr := &fakeRunner{runFn: cannedRun(nil)}
 			fr.startFn = func(_ context.Context, _ []string, stderr io.Writer) (Stdio, error) {
@@ -158,11 +158,10 @@ func TestEnsureAmbiguousInitializeFailureDoesNotDeploy(t *testing.T) {
 					switch mode {
 					case "invalid-request":
 						return appwire.ErrorMessage(request.ID, appwire.InvalidRequest("unsupported appwire protocol"))
-					case "newer-protocol":
-						// A peer that speaks a newer protocol must not be
-						// downgraded to this controller's build.
-						return appwire.ErrorMessage(request.ID, appwire.InvalidRequest(fmt.Sprintf(
-							"protocol version %q is incompatible; want %q", appwire.ProtocolVersion, "evener-appwire-v99")))
+					case "response-malformed":
+						// A successful handshake that names no usable protocol is
+						// a malformed response, not proof of an older host.
+						return appwire.ResponseMessage(request.ID, appwire.InitializeResponse{ProtocolVersion: "old-protocol"})
 					case "empty-protocol":
 						return appwire.ResponseMessage(request.ID, map[string]any{"protocolVersion": ""})
 					case "omitted-protocol":
@@ -176,7 +175,7 @@ func TestEnsureAmbiguousInitializeFailureDoesNotDeploy(t *testing.T) {
 			}
 			m, effects := compatibleConnectManager(t, fr, Options{BuildBinary: writeStageBinary, initializeTimeout: 20 * time.Millisecond})
 			ch, err := m.Ensure(t.Context(), "alpha")
-			if ch != nil || err == nil || errors.Is(err, ErrProtocolIncompatible) || m.Attached("alpha") {
+			if ch != nil || err == nil || errors.Is(err, ErrProtocolIncompatible) || errors.Is(err, ErrHostProtocolNewer) || m.Attached("alpha") {
 				t.Fatalf("ambiguous response: channel=%v err=%v", ch, err)
 			}
 			if *effects != (connectEffects{}) {
@@ -189,8 +188,15 @@ func TestEnsureAmbiguousInitializeFailureDoesNotDeploy(t *testing.T) {
 	}
 }
 
-func TestEnsureLiveProtocolMismatchRecovers(t *testing.T) {
-	for _, mode := range []string{"response", "structured", "server", "legacy"} {
+// legacyIncompatibleRefusal is a captured pre-v7 server's initialize refusal:
+// a frozen peer's wire text, not a copy of this controller's server copy.
+func legacyIncompatibleRefusal(wanted string) appwire.WireError {
+	return appwire.InvalidRequest(
+		`protocol version "` + appwire.ProtocolVersion + `" is incompatible; want "` + wanted + `"`)
+}
+
+func TestEnsureOlderProtocolHostRecovers(t *testing.T) {
+	for _, mode := range []string{"response", "legacy"} {
 		for _, source := range []string{"configured", "disabled", "unavailable"} {
 			t.Run(mode+"/"+source, func(t *testing.T) {
 				fr := deployRunner(t, func(int) ([]byte, error) { return launchContract("controller-build"), nil }, func(call int) ([]byte, error) {
@@ -209,22 +215,9 @@ func TestEnsureLiveProtocolMismatchRecovers(t *testing.T) {
 					return initializeReplyBridge(func(request appwire.Request) appwire.Message {
 						switch mode {
 						case "response":
-							return appwire.ResponseMessage(request.ID, appwire.InitializeResponse{ProtocolVersion: "old-protocol"})
-						case "server":
-							// Exercise the actual server's structured refusal, with an
-							// old client's protocol to produce the opposite mismatch.
-							server := appserver.NewServer(appserver.ServerConfig{})
-							return server.NewConnection("peer").HandleMessage(t.Context(), appwire.RequestMessage(request.ID, appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: "evener-appwire-v6"}))
-						case "legacy":
-							// A server older than v7 answers a newer controller's
-							// initialize with this invalid-request refusal instead of
-							// the structured upgradeRequired arm. The text is the
-							// captured wire response of that frozen peer, which the
-							// controller still has to upgrade.
-							return appwire.ErrorMessage(request.ID, appwire.InvalidRequest(fmt.Sprintf(
-								"protocol version %q is incompatible; want %q", appwire.ProtocolVersion, "evener-appwire-v5")))
+							return appwire.ResponseMessage(request.ID, appwire.InitializeResponse{ProtocolVersion: "evener-appwire-v5"})
 						default:
-							return appwire.ErrorMessage(request.ID, appwire.WireError{Code: appwire.CodeInvalidRequest, Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorUpgradeRequired}})
+							return appwire.ErrorMessage(request.ID, legacyIncompatibleRefusal("evener-appwire-v5"))
 						}
 					}), nil
 				}
@@ -245,6 +238,53 @@ func TestEnsureLiveProtocolMismatchRecovers(t *testing.T) {
 				}
 				if err != nil || ch == nil || attempts != 2 || effects.builds != 1 || effects.records != 1 || effects.writes != 2 {
 					t.Fatalf("recovery: ch=%v err=%v attempts=%d effects=%+v", ch, err, attempts, effects)
+				}
+			})
+		}
+	}
+}
+
+func TestEnsureNewerProtocolHostIsNotDowngraded(t *testing.T) {
+	for _, mode := range []string{"structured", "server", "response", "legacy"} {
+		for _, source := range []string{"configured", "disabled", "unavailable"} {
+			t.Run(mode+"/"+source, func(t *testing.T) {
+				fr := deployRunner(t, func(int) ([]byte, error) { return launchContract("controller-build"), nil }, func(call int) ([]byte, error) {
+					started := "2026-01-01T00:00:00Z"
+					if call > 0 {
+						started = "2026-01-02T00:00:00Z"
+					}
+					return []byte(fmt.Sprintf(`{"version":"controller-build","mobile_api_version":1,"hub_addr":"127.0.0.1:9180","started_at":%q}`, started)), nil
+				})
+				attempts := 0
+				fr.startFn = func(context.Context, []string, io.Writer) (Stdio, error) {
+					attempts++
+					return initializeReplyBridge(func(request appwire.Request) appwire.Message {
+						switch mode {
+						case "structured":
+							return appwire.ErrorMessage(request.ID, appwire.WireError{Code: appwire.CodeInvalidRequest, Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorUpgradeRequired}})
+						case "server":
+							// The actual server's structured refusal to an older
+							// client is what a newer host sends this controller.
+							server := appserver.NewServer(appserver.ServerConfig{})
+							return server.NewConnection("peer").HandleMessage(t.Context(), appwire.RequestMessage(request.ID, appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: "evener-appwire-v6"}))
+						case "response":
+							return appwire.ResponseMessage(request.ID, appwire.InitializeResponse{ProtocolVersion: "evener-appwire-v99"})
+						default:
+							return appwire.ErrorMessage(request.ID, legacyIncompatibleRefusal("evener-appwire-v99"))
+						}
+					}), nil
+				}
+				opts := Options{controllerVersionOverride: "controller-build", BuildBinary: writeStageBinary}
+				switch source {
+				case "disabled":
+					opts.DeployDisabled = true
+				case "unavailable":
+					opts.BuildBinary = nil
+				}
+				m, effects := compatibleConnectManager(t, fr, opts)
+				ch, err := m.Ensure(t.Context(), "alpha")
+				if ch != nil || !errors.Is(err, ErrHostProtocolNewer) || !isTerminal(err) || *effects != (connectEffects{}) || attempts != 1 || m.Attached("alpha") {
+					t.Fatalf("newer host: ch=%v err=%v terminal=%v attempts=%d effects=%+v", ch, err, isTerminal(err), attempts, effects)
 				}
 			})
 		}

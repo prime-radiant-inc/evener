@@ -274,6 +274,60 @@ func TestClientInitializeRejectsMismatchedProtocolBeforeInitialized(t *testing.T
 	}
 }
 
+func TestClientInitializeTranslatesLegacyProtocolRefusal(t *testing.T) {
+	for _, wanted := range []string{"evener-appwire-v5", "evener-appwire-v99"} {
+		t.Run(wanted, func(t *testing.T) {
+			transport := newMemoryTransport()
+			client := NewClient(transport)
+			ctx := t.Context()
+			client.Start(ctx)
+
+			done := make(chan error, 1)
+			go func() {
+				_, err := client.Initialize(ctx, InitializeParams{ProtocolVersion: ProtocolVersion})
+				done <- err
+			}()
+
+			request := <-transport.writes
+			transport.reads <- ErrorMessage(request.Request.ID, InvalidRequest(
+				`protocol version "`+ProtocolVersion+`" is incompatible; want "`+wanted+`"`))
+			err := <-done
+			var mismatch ProtocolVersionMismatchError
+			if !errors.As(err, &mismatch) {
+				t.Fatalf("err = %v (%T), want ProtocolVersionMismatchError", err, err)
+			}
+			if mismatch.Got != wanted || mismatch.Want != ProtocolVersion {
+				t.Fatalf("mismatch = %+v, want Got=%q Want=%q", mismatch, wanted, ProtocolVersion)
+			}
+		})
+	}
+}
+
+func TestClientInitializeLeavesGenericInvalidRequestAlone(t *testing.T) {
+	transport := newMemoryTransport()
+	client := NewClient(transport)
+	ctx := t.Context()
+	client.Start(ctx)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.Initialize(ctx, InitializeParams{ProtocolVersion: ProtocolVersion})
+		done <- err
+	}()
+
+	request := <-transport.writes
+	transport.reads <- ErrorMessage(request.Request.ID, InvalidRequest("unsupported appwire protocol"))
+	err := <-done
+	var wire WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("err = %v (%T), want WireError", err, err)
+	}
+	var mismatch ProtocolVersionMismatchError
+	if errors.As(err, &mismatch) {
+		t.Fatalf("generic invalid request became a protocol mismatch: %+v", mismatch)
+	}
+}
+
 func TestClientUpgradeRoundTrip(t *testing.T) {
 	transport := newMemoryTransport()
 	client := NewClient(transport)
