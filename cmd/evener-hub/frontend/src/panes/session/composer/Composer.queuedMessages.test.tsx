@@ -986,6 +986,101 @@ test("a Stop during recovery persistence holds the new Send identity without dis
   }
 });
 
+test("recovery activation during a paused resend preserves the secondary image recovery", async () => {
+  const barrier = deferred<{ stopEpoch: number }>();
+  const barrierReached = deferred<void>();
+  class PausedBarrierStorage extends MutationOutboxIndexedDB {
+    override async readStopEpoch(ref: string): Promise<number> {
+      barrierReached.resolve();
+      await barrier.promise;
+      return super.readStopEpoch(ref);
+    }
+  }
+  const storage = new PausedBarrierStorage();
+  const { fake } = await setup(false, storage);
+  const first = await queued(storage, "first recovery");
+  const second = await queued(storage, "image recovery");
+  await editQueuedMutation(first.clientMutationId, "root");
+  await editQueuedMutation(second.clientMutationId, "root");
+  const imageRecovery = await storage.getRecovery(second.clientMutationId);
+  if (!imageRecovery) throw new Error("missing image recovery fixture");
+  await storage.updateRecoveryInput(
+    second.clientMutationId,
+    [
+      { type: "text", text: "image recovery [image 1]" },
+      { type: "image", mediaType: "image/png", data: "AQID", name: "secondary.png" },
+    ],
+    [
+      {
+        presentationId: "secondary-image",
+        marker: 1,
+        mediaType: "image/png",
+        blob: new Blob([Uint8Array.of(1, 2, 3)]),
+        name: "secondary.png",
+      },
+    ],
+    "image recovery [image 1]",
+  );
+  const { source } = mount(fake);
+  const user = userEvent.setup();
+  await flushPendingTurnsProjectionForTests();
+  await user.click(screen.getAllByRole("button", { name: "Edit message" })[0] as HTMLElement);
+  await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(first.clientMutationId));
+  await flushPendingTurnsProjectionForTests();
+  await act(async () => {
+    fake.emitStateChange("ready");
+    fake.emitReady();
+  });
+  await flushPendingTurnsProjectionForTests();
+
+  try {
+    const sendClick = user.click(screen.getByRole("button", { name: "Send" }));
+    await barrierReached.promise;
+    const editRecovery = screen.getByRole("button", { name: "Edit message" });
+    const recoveryB = await storage.getRecovery(second.clientMutationId);
+    if (!recoveryB) throw new Error("missing image recovery while resend is paused");
+    expect(recoveryB.attachments[0]).toMatchObject({ marker: 1, name: "secondary.png" });
+    expect(recoveryB.payload.input).toContainEqual({
+      type: "image",
+      mediaType: "image/png",
+      data: "AQID",
+      name: "secondary.png",
+    });
+    expect(editRecovery.getAttribute("aria-disabled")).toBe("true");
+    let activationSettled = false;
+    await act(async () => {
+      const activation = source.activateRecovery(recoveryB).finally(() => {
+        activationSettled = true;
+      });
+      await Promise.resolve();
+      expect(await storage.getRecovery(second.clientMutationId)).toBeDefined();
+      expect(activationSettled).toBe(false);
+      barrier.resolve({ stopEpoch: 0 });
+      await sendClick;
+      await activation;
+    });
+    storage.close();
+    const reopened = new MutationOutboxIndexedDB();
+    try {
+      const recovery = await reopened.getRecovery(second.clientMutationId);
+      expect(recovery).toBeDefined();
+      expect(recovery?.attachments[0]).toMatchObject({ marker: 1, name: "secondary.png" });
+      expect(recovery?.payload.input).toContainEqual({
+        type: "image",
+        mediaType: "image/png",
+        data: "AQID",
+        name: "secondary.png",
+      });
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    barrier.resolve({ stopEpoch: 0 });
+    source.dispose();
+    storage.close();
+  }
+});
+
 test("an Edit claim completing after pane disposal stays recoverable without touching its replacement", async () => {
   const { storage, fake } = await setup();
   const original = await queued(storage, "original pane input");

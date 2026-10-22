@@ -1061,25 +1061,27 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
         },
         async () => {
           if (submittedRecoveryId !== null) {
-            await queueRecoveryPersistence(
-              submittedRecoveryId,
-              submittedText,
-              payload,
-              submittedSkillNames,
-              submittedCommandNames,
-              submittedMentions,
-            );
-            wonRecoveryResend = await resendRecoveryPendingTurn(
-              submittedRecoveryId,
-              ref,
-              kind,
-              submittedText,
-              payload,
-              submittedSkillNames,
-              submittedCommandNames,
-              submittedMentions,
-              recoveryBarrier,
-            );
+            await source.runRecoveryOperation(async () => {
+              await queueRecoveryPersistence(
+                submittedRecoveryId,
+                submittedText,
+                payload,
+                submittedSkillNames,
+                submittedCommandNames,
+                submittedMentions,
+              );
+              wonRecoveryResend = await resendRecoveryPendingTurn(
+                submittedRecoveryId,
+                ref,
+                kind,
+                submittedText,
+                payload,
+                submittedSkillNames,
+                submittedCommandNames,
+                submittedMentions,
+                recoveryBarrier,
+              );
+            });
             return;
           }
           if (kind === "send")

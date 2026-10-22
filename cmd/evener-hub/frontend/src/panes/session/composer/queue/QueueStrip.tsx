@@ -792,9 +792,13 @@ export function QueueStrip({
                     label="Edit message"
                     icon={<span aria-hidden="true">✎</span>}
                     size="sm"
-                    disabled={rowBusy || onEditRecovery === undefined}
+                    disabled={rowBusy || busy || onEditRecovery === undefined}
                     disabledReason={
-                      onEditRecovery === undefined ? "Open the session Composer to edit this message" : ""
+                      onEditRecovery === undefined
+                        ? "Open the session Composer to edit this message"
+                        : busy
+                          ? "Wait for the current message to finish sending"
+                          : ""
                     }
                     onClick={() => onEditRecovery?.(record)}
                   />
