@@ -21,6 +21,8 @@
 export * from "./documentReadDemand";
 export * from "./fileReferences";
 
+import { bindServedPath, type FileReference, parseFileReference } from "./fileReferences";
+
 export interface DocFileContent {
   text: string;
   binary: boolean;
@@ -231,6 +233,26 @@ export function fileURLToPath(fileURL: string): string {
   } catch {
     return "";
   }
+}
+
+// resolveFileLink names the served file a link destination points at, if any.
+// A markdown link is already a path, which binds against the session's working
+// directory. A file URL carries a scheme the path parser refuses, so its
+// destination is decoded and bound against the working directory and then the
+// session's retained artifacts directory (the second root the hub's document
+// routes serve). A destination outside both roots names nothing the hub can
+// open, so a client leaves it an ordinary link rather than promising a
+// document. The web transcript uses this today; the phone's file-reference
+// pass still binds cwd only, so it does not yet open an artifacts link.
+export function resolveFileLink(
+  href: string,
+  cwd: string,
+  artifactsDir: string | undefined,
+): FileReference | undefined {
+  const reference = parseFileReference(href, "link", cwd);
+  if (reference !== undefined) return reference;
+  const filePath = fileURLToPath(href);
+  return filePath === "" ? undefined : bindServedPath(filePath, cwd, artifactsDir);
 }
 
 // cwdRelative expresses a file path relative to the session's folder, or

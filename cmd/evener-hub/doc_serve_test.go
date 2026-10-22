@@ -692,3 +692,616 @@ func TestDocFile_Raw_UnderCapEmitsNoTruncationHeaders(t *testing.T) {
 		t.Fatalf("body=%q, want %q", rec.Body.Bytes(), content)
 	}
 }
+
+// A session's retained artifacts directory is the second root /doc/file and
+// /doc/image serve from. Agent reports filed there are named by file:// URLs in
+// assistant prose, and the web transcript turns those into document-pane links,
+// so the route has to serve them for the link to resolve.
+func artifactsDirOf(t *testing.T, web *WebServer, session string) string {
+	t.Helper()
+	entry, ok := web.cfg.Past.Find(session)
+	if !ok {
+		t.Fatalf("fixture session %q is missing from the past index", session)
+	}
+	dir, err := schema.SessionArtifactsDir(entry.StateDir, session)
+	if err != nil {
+		t.Fatalf("fixture artifacts dir: %v", err)
+	}
+	return dir
+}
+
+func TestDocFile_Raw_ServesSessionArtifacts(t *testing.T) {
+	web, _, session := docServeTestServer(t)
+	dir := artifactsDirOf(t, web, session)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("# Report\n\nretained evidence")
+	target := filepath.Join(dir, "report.md")
+	if err := os.WriteFile(target, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRawRequest(t, web, session, target)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("artifacts file should be served, got %d body=%q", rec.Code, rec.Body.String())
+	}
+	if !bytes.Equal(rec.Body.Bytes(), content) {
+		t.Fatalf("body=%q, want %q", rec.Body.Bytes(), content)
+	}
+}
+
+func TestDocImage_ServesSessionArtifactsImage(t *testing.T) {
+	web, _, session := docServeTestServer(t)
+	dir := artifactsDirOf(t, web, session)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	png := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+	target := filepath.Join(dir, "shot.png")
+	if err := os.WriteFile(target, png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := docImageRequest(t, web, session, target)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("artifacts image should be served, got %d body=%q", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/png" {
+		t.Fatalf("Content-Type=%q, want image/png", ct)
+	}
+}
+
+// The artifacts root is one more boundary, not a replacement for cwd: a file
+// outside both is still refused, and the artifacts root of one session is not
+// reachable from another.
+func TestDocFile_ArtifactsRootDoesNotWidenCwdContainment(t *testing.T) {
+	web, cwd, session := docServeTestServer(t)
+	dir := artifactsDirOf(t, web, session)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The session's own state directory holds its transcript and job store;
+	// a retained document must not reach them just because artifacts is a
+	// sibling.
+	secret := filepath.Join(filepath.Dir(dir), "delegates.jsonl")
+	if err := os.WriteFile(secret, []byte("SESSION SECRET"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{secret, filepath.Join(cwd, "..", "secret.txt")} {
+		rec := docRawRequest(t, web, session, path)
+		if rec.Code == http.StatusOK {
+			t.Fatalf("path %q outside both roots must be refused, got 200", path)
+		}
+		if strings.Contains(rec.Body.String(), "SESSION SECRET") {
+			t.Fatalf("SECURITY: %q served a file outside the served roots", path)
+		}
+	}
+}
+
+// A relative path keeps resolving against cwd only. It names no artifacts file
+// even when a same-named file exists there, so the second root cannot be used
+// to reach a neighboring session's artifacts either.
+func TestDocFile_RelativePathNeverResolvesAgainstArtifacts(t *testing.T) {
+	web, cwd, session := docServeTestServer(t)
+	dir := artifactsDirOf(t, web, session)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "only-in-artifacts.md"), []byte("artifacts only"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRawRequest(t, web, session, "only-in-artifacts.md")
+	if rec.Code == http.StatusOK {
+		t.Fatalf("a relative path must resolve against cwd only, got 200 body=%q", rec.Body.String())
+	}
+	if err := os.WriteFile(filepath.Join(cwd, "cwd-file.md"), []byte("cwd file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if rec := docRawRequest(t, web, session, "cwd-file.md"); rec.Code != http.StatusOK {
+		t.Fatalf("cwd-relative file must still be served, got %d", rec.Code)
+	}
+}
+
+func TestDocFile_ArtifactsUnknownSession404(t *testing.T) {
+	web, _, _ := docServeTestServer(t)
+	// A path under a session that does not exist never resolves, even though
+	// its shape is the same one a real session's artifacts would hold.
+	target := filepath.Join(t.TempDir(), "01NOPE", "artifacts", "report.md")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRawRequest(t, web, "01NOPE", target)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown session should 404, got %d body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+// A worktree cleanup removes the session's working directory. The retained
+// artifacts live under the session's state directory, which survives, so a
+// link an agent filed there must still open: the artifacts root is resolved on
+// its own absolute path, not as a fallback that needs a healthy cwd first.
+func TestDocFile_Raw_ServesSessionArtifactsAfterWorkingDirectoryRemoved(t *testing.T) {
+	web, cwd, session := docServeTestServer(t)
+	dir := artifactsDirOf(t, web, session)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("# Report\n\nretained evidence")
+	target := filepath.Join(dir, "report.md")
+	if err := os.WriteFile(target, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(cwd); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRawRequest(t, web, session, target)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("artifacts file should be served after cwd removal, got %d body=%q", rec.Code, rec.Body.String())
+	}
+	if !bytes.Equal(rec.Body.Bytes(), content) {
+		t.Fatalf("body=%q, want %q", rec.Body.Bytes(), content)
+	}
+}
+
+// The AppWire read carries the same rule as the HTTP routes: a relative path
+// resolves against the working directory only. Without that guard a relative
+// name could land on a same-named file in artifacts, which is a different
+// document than the one the request named.
+func TestHubSessionDocumentRelativePathNeverResolvesAgainstArtifacts(t *testing.T) {
+	cwd := docTestRoot(t)
+	// This fixture owns its state dir, so the test can put a same-named file
+	// in artifacts and leave cwd without one.
+	const session = "02wMz5Txv1C3Hut0M8GCeE"
+	stateDir := t.TempDir()
+	proj := filepath.Join(stateDir, "projects", "project-doc-0000000000")
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID: session, UpdatedAt: time.Now(), OriginalPrompt: "doc session",
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: cwd},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := schema.SessionArtifactsDir(proj, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "report.md"), []byte("artifacts report"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// cwd holds a report.md that is a symlink leading out of the session. A
+	// request for the relative name "report.md" names that refusable target,
+	// not the unrelated file of the same name in artifacts.
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "elsewhere.md"), []byte("outside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "elsewhere.md"), filepath.Join(cwd, "report.md")); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(stateDir, "projects", "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	srv, _ := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: idx})
+	t.Cleanup(srv.Close)
+	if _, err := requestSessionDocument(t, srv, appwire.SessionDocumentParams{SessionID: session, Path: "report.md"}); err == nil {
+		t.Fatal("a relative path resolved against the artifacts root; want a refusal")
+	}
+	// The absolute path is the one that may reach it.
+	resp, err := requestSessionDocument(t, srv, appwire.SessionDocumentParams{SessionID: session, Path: filepath.Join(dir, "report.md")})
+	if err != nil || string(resp.Data) != "artifacts report" {
+		t.Fatalf("absolute artifacts path = %q, %v; want the retained report", resp.Data, err)
+	}
+}
+
+// Removing the working directory must not turn an ordinary relative read into
+// an error: the file is simply not there any more, which is the same 404 a
+// missing file always gets.
+func TestDocFile_RelativeReadAfterWorkingDirectoryRemovedIsNotFound(t *testing.T) {
+	web, cwd, session := docServeTestServer(t)
+	if err := os.WriteFile(filepath.Join(cwd, "notes.txt"), []byte("notes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(cwd); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRawRequest(t, web, session, "notes.txt")
+	if rec.Code != http.StatusNotFound && rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("relative read after cwd removal = %d, want a not-found or unavailable refusal", rec.Code)
+	}
+}
+
+// The AppWire read answers a retained artifact after the working directory is
+// removed, exactly as the local /doc/file route does. Resolving the artifacts
+// root does not need the cwd, so a removed cwd must not make it a miss.
+func TestHubSessionDocumentServesArtifactsAfterWorkingDirectoryRemoved(t *testing.T) {
+	cwd := t.TempDir()
+	const session = "02wMz5Txv1C3Hut0M8GCeF"
+	stateDir := t.TempDir()
+	proj := filepath.Join(stateDir, "projects", "project-doc-1111111111")
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID: session, UpdatedAt: time.Now(), OriginalPrompt: "doc session",
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: cwd},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := schema.SessionArtifactsDir(proj, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "report.md")
+	if err := os.WriteFile(target, []byte("retained report"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(stateDir, "projects", "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	srv, _ := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: idx})
+	t.Cleanup(srv.Close)
+	if err := os.RemoveAll(cwd); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := requestSessionDocument(t, srv, appwire.SessionDocumentParams{SessionID: session, Path: target})
+	if err != nil || string(resp.Data) != "retained report" {
+		t.Fatalf("after cwd removal: %q, %v; want the retained report", resp.Data, err)
+	}
+}
+
+// A live session keeps the stable workspace ref it launched under across
+// Clear. A document request naming that ref must reach the current session's
+// retained artifacts, on both routes: the roster keys live entries by the
+// current id, and no saved entry exists under the stable one.
+func TestDocFile_Raw_ServesArtifactsForAStableRef(t *testing.T) {
+	const stableRef = "local:02wMz5Txv1C3Hut0M8GCeI"
+	const session = "02wMz5Txv1C3Hut0M8GCeJ"
+	stateDir := t.TempDir()
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:     rendezvous.Entry{SessionID: session, WorkspaceRef: stableRef, StateDir: stateDir, StartedAt: time.Now().UTC()},
+		SessionID: session,
+	})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: roster, StateDir: stateDir})
+	dir, err := schema.SessionArtifactsDir(stateDir, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("retained report")
+	target := filepath.Join(dir, "report.md")
+	if err := os.WriteFile(target, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRawRequest(t, web, stableRef, target)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stable-ref read = %d body=%q, want the retained report", rec.Code, rec.Body.String())
+	}
+	if !bytes.Equal(rec.Body.Bytes(), content) {
+		t.Fatalf("body=%q, want %q", rec.Body.Bytes(), content)
+	}
+}
+
+// A session fenced for deletion must not serve retained files through the
+// artifacts root. That root resolves from the roster and the past index, which
+// know nothing about deletion, so it applies the same fence the cwd path gets.
+func TestDocFile_ArtifactsRefuseADeletionFencedSession(t *testing.T) {
+	web, _, session := docServeTestServer(t)
+	dir := artifactsDirOf(t, web, session)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("retained report")
+	target := filepath.Join(dir, "report.md")
+	if err := os.WriteFile(target, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	projectKey := "project-docs-0000000000"
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	web.cfg.DeletionStore = store
+	if _, err := store.Begin(projectKey, []hubcore.DeletionTarget{{Ref: "local:" + session, ThreadID: session}}); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRawRequest(t, web, session, target)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("a deletion-fenced session served %q", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "retained report") {
+		t.Fatalf("SECURITY: a deletion-fenced session served its retained file")
+	}
+}
+
+// A path that belongs to the artifacts root but names no file there is a miss,
+// not a forbidden escape. Calling the cwd's refusal would tell a user their own
+// report is off limits when it is simply gone.
+func TestDocFile_MissingArtifactIsNotFoundNotEmptyForbidden(t *testing.T) {
+	web, _, session := docServeTestServer(t)
+	dir := artifactsDirOf(t, web, session)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRawRequest(t, web, session, filepath.Join(dir, "never-written.md"))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("contained missing artifact = %d, want 404", rec.Code)
+	}
+	// A path outside both roots keeps its escape refusal.
+	rec = docRawRequest(t, web, session, "/etc/passwd")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("outside-both-roots path = %d, want 403", rec.Code)
+	}
+}
+
+// A symlink planted where a session's artifacts directory belongs must not
+// redirect that session's reads into another session's files. The layout
+// beneath the state directory is fixed, so every component of it is checked as
+// a real directory rather than followed.
+func TestDocFile_ArtifactsRefuseASymlinkedRootIntoAnotherSession(t *testing.T) {
+	web, _, session := docServeTestServer(t)
+	entry, ok := web.cfg.Past.Find(session)
+	if !ok {
+		t.Fatal("fixture session is missing from the past index")
+	}
+	const other = "02wMz5Txv1C3Hut0M8GCeK"
+	otherDir, err := schema.SessionArtifactsDir(entry.StateDir, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(otherDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(otherDir, "secret.md")
+	if err := os.WriteFile(secret, []byte("OTHER SESSION"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// This session's own artifacts directory is a symlink to the other one.
+	dir := artifactsDirOf(t, web, session)
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(otherDir, dir); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	rec := docRawRequest(t, web, session, filepath.Join(dir, "secret.md"))
+	if rec.Code == http.StatusOK || strings.Contains(rec.Body.String(), "OTHER SESSION") {
+		t.Fatalf("a symlinked artifacts root served another session's file (status %d)", rec.Code)
+	}
+}
+
+// The AppWire read draws the same containment/existence line as the local
+// route: a missing file inside an existing artifacts root is not found, not
+// outside the session.
+func TestHubSessionDocumentMissingArtifactIsNotFound(t *testing.T) {
+	cwd := docTestRoot(t)
+	const session = "02wMz5Txv1C3Hut0M8GCeL"
+	stateDir := t.TempDir()
+	proj := filepath.Join(stateDir, "projects", "project-doc-2222222222")
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID: session, UpdatedAt: time.Now(), OriginalPrompt: "doc session",
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: cwd},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := schema.SessionArtifactsDir(proj, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(stateDir, "projects", "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	srv, _ := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: idx})
+	t.Cleanup(srv.Close)
+	_, err = requestSessionDocument(t, srv, appwire.SessionDocumentParams{SessionID: session, Path: filepath.Join(dir, "never.md")})
+	if err == nil {
+		t.Fatal("a missing artifact was served")
+	}
+	if got := sessionImageErrorInfo(t, err); got != string(appwire.ErrorResourceNotFound) {
+		t.Fatalf("refusal = %q, want %q", got, appwire.ErrorResourceNotFound)
+	}
+}
+
+// The `sessions` component is shared by every project's sessions, so a link
+// planted there would redirect every read. It is checked as a real directory
+// like the components beneath it.
+func TestDocFile_ArtifactsRefuseASymlinkedSessionsDirectory(t *testing.T) {
+	web, _, session := docServeTestServer(t)
+	entry, ok := web.cfg.Past.Find(session)
+	if !ok {
+		t.Fatal("fixture session is missing from the past index")
+	}
+	sessionsDir := filepath.Join(entry.StateDir, "sessions")
+	realSessions, err := os.MkdirTemp(filepath.Dir(sessionsDir), "elsewhere-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Move the real sessions directory aside and put a link in its place.
+	if err := os.Rename(sessionsDir, filepath.Join(realSessions, "sessions")); err != nil {
+		t.Skipf("cannot move the sessions directory: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(realSessions, "sessions"), sessionsDir); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	dir := filepath.Join(sessionsDir, session, "artifacts")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "report.md"), []byte("VIA LINKED SESSIONS"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRawRequest(t, web, session, filepath.Join(dir, "report.md"))
+	if rec.Code == http.StatusOK || strings.Contains(rec.Body.String(), "VIA LINKED SESSIONS") {
+		t.Fatalf("a symlinked sessions directory served a file (status %d)", rec.Code)
+	}
+}
+
+// Names that merely begin with two dots are ordinary contained files, not
+// parent references, and must be served.
+func TestDocFile_ServesArtifactNamesBeginningWithDotDot(t *testing.T) {
+	web, _, session := docServeTestServer(t)
+	dir := artifactsDirOf(t, web, session)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"..report.md", "...notes.md"} {
+		content := []byte("dotdot " + name)
+		if err := os.WriteFile(filepath.Join(dir, name), content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		rec := docRawRequest(t, web, session, filepath.Join(dir, name))
+		if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), content) {
+			t.Fatalf("%q = %d %q, want the file", name, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// The state directory may sit under a symlinked ancestor (/var on macOS, for
+// one). The request path and the root are resolved the same way, so a real
+// artifact is not mistaken for an escape.
+func TestDocFile_ServesArtifactUnderASymlinkedAncestor(t *testing.T) {
+	realRoot := t.TempDir()
+	linkParent := t.TempDir()
+	linked := filepath.Join(linkParent, "root")
+	if err := os.Symlink(realRoot, linked); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	cwd := t.TempDir()
+	const session = "02wMz5Txv1C3Hut0M8GCeM"
+	proj := filepath.Join(linked, "projects", "project-doc-3333333333")
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID: session, UpdatedAt: time.Now(), OriginalPrompt: "doc session",
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: cwd},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := schema.SessionArtifactsDir(proj, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("through a linked ancestor")
+	target := filepath.Join(dir, "report.md")
+	if err := os.WriteFile(target, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(linked, "projects", "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Past: idx})
+	rec := docRawRequest(t, web, session, target)
+	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), content) {
+		t.Fatalf("symlinked-ancestor read = %d %q, want the file", rec.Code, rec.Body.String())
+	}
+}
+
+// A deletion can be recorded against the session a stable ref now names. Asking
+// through the ref must not sidestep that fence, so both identities are checked.
+func TestDocFile_ArtifactsRefuseADeletionFencedStableRef(t *testing.T) {
+	const stableRef = "local:02wMz5Txv1C3Hut0M8GCeN"
+	const session = "02wMz5Txv1C3Hut0M8GCeP"
+	stateDir := t.TempDir()
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:     rendezvous.Entry{SessionID: session, WorkspaceRef: stableRef, StateDir: stateDir, StartedAt: time.Now().UTC()},
+		SessionID: session,
+	})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: roster, StateDir: stateDir})
+	dir, err := schema.SessionArtifactsDir(stateDir, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "report.md")
+	if err := os.WriteFile(target, []byte("fenced report"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	web.cfg.DeletionStore = store
+	if _, err := store.Begin("project-fence-0000000000", []hubcore.DeletionTarget{{Ref: "local:" + session, ThreadID: session}}); err != nil {
+		t.Fatal(err)
+	}
+	// The request names the stable ref, not the fenced session id.
+	rec := docRawRequest(t, web, stableRef, target)
+	if rec.Code == http.StatusOK || strings.Contains(rec.Body.String(), "fenced report") {
+		t.Fatalf("a stable ref bypassed its current session's deletion fence (status %d)", rec.Code)
+	}
+}
+
+// A working directory can be shaped exactly like a session's artifacts layout,
+// and it can have a symlinked component. It is still an ordinary cwd, so cwd
+// containment decides: artifact traversal applies only to a root the resolver
+// declared, never to a folder that merely looks like one.
+func TestDocFile_ServesALookalikeWorkingDirectoryThroughASymlink(t *testing.T) {
+	web, _, session := docServeTestServer(t)
+	entry, ok := web.cfg.Past.Find(session)
+	if !ok {
+		t.Fatal("fixture session is missing from the past index")
+	}
+	// The real cwd lives elsewhere, and the session's cwd is shaped exactly
+	// like <stateDir>/sessions/<id>/artifacts with its `sessions` component a
+	// link. Cwd containment accepts it; artifact traversal must not apply.
+	realRoot := t.TempDir()
+	realArtifacts := filepath.Join(realRoot, "work", "artifacts")
+	if err := os.MkdirAll(realArtifacts, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("ordinary file behind a linked lookalike")
+	if err := os.WriteFile(filepath.Join(realArtifacts, "notes.md"), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lookalikeParent := t.TempDir()
+	if err := os.Symlink(realRoot, filepath.Join(lookalikeParent, "sessions")); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	lookalike := filepath.Join(lookalikeParent, "sessions", "work", "artifacts")
+	target := filepath.Join(lookalike, "notes.md")
+
+	meta, err := schema.LoadSessionMeta(entry.StateDir, entry.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.EnvInfo.WorkingDir = lookalike
+	if err := schema.SaveSessionMeta(entry.StateDir, meta); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(filepath.Dir(entry.StateDir), "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web.cfg.Past = idx
+	rec := docRawRequest(t, web, session, target)
+	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), content) {
+		t.Fatalf("symlinked lookalike cwd read = %d %q, want the file", rec.Code, rec.Body.String())
+	}
+}

@@ -444,3 +444,33 @@ test("live matches settled on a closed-diagram head with a long streaming prose 
   // fell back to the single full parse.
   expect(sanitizeSpy.mock.calls.length).toBe(5);
 });
+
+// A file:// destination is how an agent names a report it filed beside the
+// session. Stripping the href left a bare anchor that looks like a link and
+// goes nowhere; the destination survives here so the transcript's anchor pass
+// can decide whether the hub serves it.
+test("keeps a file: link destination instead of leaving a bare anchor", () => {
+  render(
+    <Markdown source="[Full report and retained evidence](file:///state/projects/p/sessions/s1/artifacts/r.md)" />,
+  );
+  const link = screen.getByRole("link", { name: "Full report and retained evidence" });
+  expect(link.getAttribute("href")).toBe("file:///state/projects/p/sessions/s1/artifacts/r.md");
+  expect(link.getAttribute("target")).toBe("_blank");
+  expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+});
+
+// The scheme list is DOMPurify's own default plus `file`, so a scheme the
+// library already allowed must keep working: matrix: is the one that was
+// dropped once when the list was copied by hand.
+test("keeps a matrix: link, which DOMPurify's default already allowed", () => {
+  render(<Markdown source="[chat](matrix:u/room?action=chat)" />);
+  expect(screen.getByRole("link", { name: "chat" }).getAttribute("href")).toBe("matrix:u/room?action=chat");
+});
+
+test.each(["vbscript:msgbox(1)", "data:text/html,<p>x</p>", "blob:https://x/y", "filex:/a"])(
+  "still refuses the %s scheme",
+  (href) => {
+    render(<Markdown source={`[click me](${href})`} />);
+    expect(screen.getByText("click me").getAttribute("href")).toBeNull();
+  },
+);

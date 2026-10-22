@@ -70,6 +70,7 @@ Put options before positional arguments.
 
 ```bash
 evener plugin marketplace add --yes OWNER/REPOSITORY
+evener plugin marketplace add --ref BRANCH_OR_TAG --yes OWNER/REPOSITORY
 evener plugin marketplace list
 evener plugin marketplace browse MARKETPLACE
 evener plugin install --yes PLUGIN@MARKETPLACE
@@ -79,7 +80,12 @@ evener plugin list --effective
 
 `--yes` confirms trust without prompting. Do not use it for an unreviewed source.
 A marketplace source may be a supported repository URL, `owner/repo`, or a local
-path. Installed state lives under `$XDG_CONFIG_HOME/evener/plugins/`, with
+path. For a repository URL or `owner/repo`, `--ref BRANCH_OR_TAG` checks out that
+branch or tag; a branch follows its tip when the marketplace refreshes, while a
+tag stays at the commit it names. Name the branch or tag itself: a fully
+qualified ref such as `refs/heads/main` is rejected. The hub's Add marketplace
+form and the mobile Add marketplace sheet offer the same optional Branch or tag
+field. Installed state lives under `$XDG_CONFIG_HOME/evener/plugins/`, with
 `~/.config/evener/plugins/` as the fallback. Use the CLI rather than editing the
 registry or cache directly.
 

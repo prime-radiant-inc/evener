@@ -1094,6 +1094,14 @@ type EvenerThread struct {
 	// nil. Empty/nil means no links. It is read from the already-fetched
 	// thread snapshot like HumanNote.
 	SessionURLs []SessionURL `json:"sessionUrls,omitempty"`
+	// ArtifactsDir is the session's retained artifacts directory on the hub
+	// that serves it, empty when no local path names one (a remote thread, an
+	// unknown ref, or a hub serving no state directory). Agent reports filed
+	// there are linked by file:// URL in assistant prose; the transcript turns
+	// such a link into a document-pane request, and this is the directory the
+	// hub's doc route serves that request out of. Clients compare a link
+	// against it rather than guessing whether the hub can open it.
+	ArtifactsDir string `json:"artifactsDir,omitempty"`
 	// Usage, WorkMillis, and ActiveTurnStartedAt are the daemon's live
 	// working-state/token metrics (WS2), served from the daemon's materialized
 	// thread envelope, which is refreshed at the turn boundaries that move
@@ -3354,6 +3362,11 @@ type ModelDescriptor struct {
 	// model under a regional Vertex location) so the model picker can flag a
 	// row the resolver itself warns about.
 	Warnings []string `json:"warnings,omitempty"`
+	// InstanceDefault marks the row as its instance's configured default in
+	// the instance's own usable current listing. It is not the global default
+	// and not proof of generation access; an absent marker authorizes no
+	// automatic selection.
+	InstanceDefault bool `json:"instanceDefault,omitempty"`
 }
 
 type ModelListDiagnostic struct {
@@ -3542,6 +3555,15 @@ type EvenerJobParams struct {
 type EvenerAuthUpdatedParams struct {
 	Provider     string `json:"provider,omitempty"`
 	ActiveSource string `json:"activeSource,omitempty"`
+	// Reason names a broadcast that did not change credentials or provider
+	// configuration. The only value today is "models_changed": a background
+	// launch-model refresh produced a different list than a picker was served,
+	// so clients re-read their model catalog. It is catalog-only: no credential,
+	// instance or destination changed. Every credential write and
+	// provider-instance CRUD broadcast leaves it empty, and consumers must treat
+	// those empty-reason broadcasts as changes even when they carry no other
+	// payload.
+	Reason string `json:"reason,omitempty"`
 	// OriginClientId is the echoed OriginClientId of the mutation that caused
 	// this broadcast - an auth write or a provider-instance CRUD change - the
 	// identity of the client whose change it announces, so that client can

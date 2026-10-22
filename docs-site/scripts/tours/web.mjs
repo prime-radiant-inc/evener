@@ -193,8 +193,18 @@ export async function open(options) {
       phase='provider credential';
       await page.getByLabel('API key',{exact:true}).fill(args.credential);
       await page.getByRole('button',{name:'Save and check',exact:true}).click();
+      phase='provider completion';
+      // A successful check closes the guided dialog and returns to the
+      // preserved spawn draft on its own: there is no success continuation, and
+      // no forced model picker. The model choice below is a deliberate
+      // regular-UI action, not a required handoff.
+      await page.getByRole('dialog').waitFor({state:'detached'});
+      const cwd=page.locator('#spawn-cwd');
+      assert.equal(await cwd.getAttribute('data-state'),'chosen');
+      assert.ok((await cwd.getAttribute('aria-label')??'').includes(workspace));
+      assert.equal(await page.getByRole('listbox',{name:'Model',exact:true}).count(),0);
       phase='provider model selection';
-      await page.getByRole('button',{name:'Choose model',exact:true}).click();
+      await page.getByTestId('spawn-model-trigger').click();
       await page.getByRole('combobox',{name:'Model',exact:true}).fill(args.modelID);
       await page.getByRole('listbox',{name:'Model',exact:true}).getByRole('option').first().click();
      } catch(error) {

@@ -353,6 +353,52 @@ describe("connection changes", () => {
   });
 });
 
+describe("queued refresh provenance", () => {
+  test("an explicit read coalesces the store's queued self refresh and keeps its mark", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    fake.on("evener/auth/apiKey/set", () => SIGNED_IN);
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+    const selfBefore = store.getState().selfRefresh;
+
+    // A landed credential write queues the store's own post-write refresh.
+    await store.getState().setApiKey("work", API_KEY);
+    const reads = listReads(fake);
+    // The caller's awaited read folds that queued read into itself: one read,
+    // carrying the self mark the queued read would have carried.
+    expect(await store.getState().fetch()).toBe(true);
+    expect(listReads(fake)).toBe(reads + 1);
+    // readListing stamps the mark on both its loading and landed transitions.
+    expect(store.getState().selfRefresh).toBe(selfBefore + 2);
+    // The debounce leaves no second, unowned listing update behind.
+    await vi.advanceTimersByTimeAsync(300);
+    expect(listReads(fake)).toBe(reads + 1);
+  });
+
+  test("an explicit read leaves a queued foreign refresh armed and unmarked", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+    const selfBefore = store.getState().selfRefresh;
+
+    // Another client's change queues an unmarked refresh.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "other", activeSource: "store" } });
+    const reads = listReads(fake);
+    expect(await store.getState().fetch()).toBe(true);
+    // The caller's read is not presented as the store's own refresh...
+    expect(store.getState().selfRefresh).toBe(selfBefore);
+    expect(listReads(fake)).toBe(reads + 1);
+    // ...and consuming it would have lost the foreign change's own read.
+    await vi.advanceTimersByTimeAsync(300);
+    expect(listReads(fake)).toBe(reads + 2);
+    expect(store.getState().selfRefresh).toBe(selfBefore);
+  });
+});
+
 describe("resetForTests", () => {
   test("returns the listing to empty and drops the connection", async () => {
     const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });

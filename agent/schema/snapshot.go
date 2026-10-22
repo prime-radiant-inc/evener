@@ -335,6 +335,31 @@ func SessionDisplayName(meta SessionMeta) string {
 
 const sessionsSubdir = "sessions"
 
+// SessionDir returns a session's own state directory,
+// <stateDir>/sessions/<sessionID>. The session ID is validated before it is
+// joined to any path, so a malformed id never reaches the filesystem.
+func SessionDir(stateDir, sessionID string) (string, error) {
+	if strings.TrimSpace(stateDir) == "" {
+		return "", errors.New("session directory requires a durable state directory")
+	}
+	if err := ValidateSessionID(sessionID); err != nil {
+		return "", err
+	}
+	return filepath.Join(stateDir, sessionsSubdir, sessionID), nil
+}
+
+// SessionArtifactsDir returns the directory a session's retained artifacts
+// live in, <stateDir>/sessions/<sessionID>/artifacts. It is the one place the
+// layout is spelled: the delegate runtime creates it, the hub serves it as a
+// document root, and the thread snapshot advertises it.
+func SessionArtifactsDir(stateDir, sessionID string) (string, error) {
+	dir, err := SessionDir(stateDir, sessionID)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "artifacts"), nil
+}
+
 // SessionMetaTombstoneSuffix names the marker TombstoneSessionMeta leaves beside
 // a removed session so a writer that acquires the meta lock afterwards refuses
 // to recreate it. It is deliberately not a *.meta.json suffix, so the directory
