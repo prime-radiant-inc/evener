@@ -1,10 +1,20 @@
 export type FileReferenceKind = "prose" | "code" | "link";
 
 export interface FileReference {
+  /** The path inside `cwd`, which for a session file is the session's working
+   * directory and for a retained artifact is that session's artifacts
+   * directory (see `root`). */
   readonly path: string;
+  /** The directory `path` is relative to and `readTarget` must stay inside. */
   readonly cwd: string;
   readonly readTarget: string;
   readonly provenance: "relative" | "absolute";
+  /** Which of the session's two served roots `cwd` names. Absent means the
+   * session's working directory, the only root this type knew before
+   * artifacts were linkable. A retained-artifact reference names the
+   * artifacts directory instead, so a caller holding both roots can tell
+   * which one to rebind against. */
+  readonly root?: "artifacts";
 }
 
 export interface FileReferenceSpan {
@@ -96,6 +106,25 @@ export function bindFilePath(path: string, cwd: string): FileReference | undefin
     readTarget: normalized.value,
     provenance: "absolute",
   };
+}
+
+/** bindArtifactPath binds a path to a session's retained artifacts directory,
+ * the second root the hub's document routes serve. It accepts a path relative
+ * to that directory or an absolute path inside it, exactly as bindFilePath
+ * does for the working directory, and marks the reference so a consumer
+ * holding both roots rebinds against the right one. */
+export function bindArtifactPath(path: string, artifactsDir: string): FileReference | undefined {
+  if (artifactsDir === "") return undefined;
+  const bound = bindFilePath(path, artifactsDir);
+  return bound === undefined ? undefined : { ...bound, root: "artifacts" };
+}
+
+/** bindServedPath binds a destination to whichever of the session's served
+ * roots contains it: the working directory first, then the retained artifacts
+ * directory when the snapshot advertises one. A destination outside both
+ * names no document the hub can serve. */
+export function bindServedPath(path: string, cwd: string, artifactsDir?: string): FileReference | undefined {
+  return bindFilePath(path, cwd) ?? (artifactsDir === undefined ? undefined : bindArtifactPath(path, artifactsDir));
 }
 
 interface LiteralSurface {
@@ -267,6 +296,10 @@ export function findFileReferences(text: string, cwd: string): FileReferenceSpan
 }
 
 export function rebindFileReference(reference: FileReference, cwd: string): FileReference {
+  // An artifacts reference is not bound to the working directory, so a
+  // changed cwd leaves it alone: rebinding it would re-resolve a retained
+  // path against a directory that never contained it.
+  if (reference.root === "artifacts") return reference;
   return {
     ...reference,
     cwd,

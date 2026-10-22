@@ -1094,6 +1094,14 @@ type EvenerThread struct {
 	// nil. Empty/nil means no links. It is read from the already-fetched
 	// thread snapshot like HumanNote.
 	SessionURLs []SessionURL `json:"sessionUrls,omitempty"`
+	// ArtifactsDir is the session's retained artifacts directory on the hub
+	// that serves it, empty when no local path names one (a remote thread, an
+	// unknown ref, or a hub serving no state directory). Agent reports filed
+	// there are linked by file:// URL in assistant prose; the transcript turns
+	// such a link into a document-pane request, and this is the directory the
+	// hub's doc route serves that request out of. Clients compare a link
+	// against it rather than guessing whether the hub can open it.
+	ArtifactsDir string `json:"artifactsDir,omitempty"`
 	// Usage, WorkMillis, and ActiveTurnStartedAt are the daemon's live
 	// working-state/token metrics (WS2), served from the daemon's materialized
 	// thread envelope, which is refreshed at the turn boundaries that move
