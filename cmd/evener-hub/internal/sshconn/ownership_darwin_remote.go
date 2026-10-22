@@ -244,7 +244,7 @@ func (m *Manager) resolveDarwinOwner(ctx context.Context, host hostreg.Host, fac
 		if err := m.checkOwnerConfig(ctx, host, argv, def.cwd, def.env, report); err != nil {
 			return selectedOwner{}, err
 		}
-	} else if !supervisorArgvMatches(argv, def.argv, report, def.env) {
+	} else if !m.supervisorArgvMatches(ctx, host, pid, argv, def.argv, report, def.env, true) {
 		return selectedOwner{}, errOwnerEvidence
 	}
 	owner := selectedOwner{host: host, pid: pid, supervisor: sup, generation: generation, argv: argv, cwd: def.cwd, cwdIdentity: actualCwd, env: def.env, report: report}
@@ -253,10 +253,16 @@ func (m *Manager) resolveDarwinOwner(ctx context.Context, host hostreg.Host, fac
 	if sup.kind != supervisorNone {
 		owner.launchArgv = slices.Clone(def.argv)
 		owner.definition, owner.domainUID = launchdIntent(def), facts.UID
+		if report.Running == nil && !slices.Equal(argv, def.argv) && !m.hasOwnerWitness(owner) {
+			return selectedOwner{}, errOwnerEvidence
+		}
 	}
 	// A witness is scoped to birth plus the entire independently selected launch,
 	// never a PID alone. Without continuity, re-establish mapped-image capability.
 	if report.Running == nil && !m.hasOwnerWitness(owner) {
+		if err := m.checkDarwinRootVnode(ctx, host, pid, report.HubStateRoot); err != nil {
+			return selectedOwner{}, err
+		}
 		if err := m.probeDarwinImage(ctx, host, pid, facts); err != nil {
 			return selectedOwner{}, err
 		}
@@ -267,6 +273,96 @@ func (m *Manager) resolveDarwinOwner(ctx context.Context, host hostreg.Host, fac
 	}
 	m.rememberOwner(owner)
 	return owner.clone(), nil
+}
+
+// Darwin lsof cannot report flock ownership. Its vnode inventory can still
+// independently corroborate that this process opened the selected root's lock,
+// rather than infer that root from mutable TOML or executable capability.
+func (m *Manager) checkDarwinRootVnode(ctx context.Context, host hostreg.Host, pid, root string) error {
+	if !path.IsAbs(root) || strings.ContainsAny(root, "\r\n") {
+		return errOwnerEvidence
+	}
+	lock := shellquote.RemoteWord(strings.TrimRight(root, "/") + "/hub.lock")
+	command := "test ! -L " + lock + " && test -f " + lock + " && stat -f '%d %i' " + lock
+	before, err := m.ownerRead(ctx, host, command)
+	if err != nil {
+		return err
+	}
+	fields := strings.Fields(string(before))
+	if len(fields) != 2 {
+		return errOwnerEvidence
+	}
+	dev, err := strconv.ParseUint(fields[0], 10, 64)
+	if err != nil || !isNumericUID(fields[1]) {
+		return errOwnerEvidence
+	}
+	out, err := m.ownerRead(ctx, host, "lsof -a -p "+pid+" -F pftDi")
+	if err != nil {
+		return err
+	}
+	if !darwinOpenVnode(out, pid, dev, fields[1]) {
+		return fmt.Errorf("%w: selected Darwin root lacks process vnode evidence", errOwnerEvidence)
+	}
+	after, err := m.ownerRead(ctx, host, command)
+	if err != nil || !bytes.Equal(before, after) {
+		return errOwnerEvidence
+	}
+	return nil
+}
+
+func darwinOpenVnode(out []byte, pid string, device uint64, inode string) bool {
+	var process, fd, kind, dev, ino string
+	found, bad := false, false
+	finish := func() {
+		if !isNumericUID(fd) {
+			return // cwd and mapped executable vnodes are not open lock descriptors.
+		}
+		if kind != "" && kind != "REG" {
+			return
+		}
+		d, err := strconv.ParseUint(strings.TrimPrefix(dev, "0x"), 16, 64)
+		if err != nil || !isNumericUID(ino) || kind == "" {
+			bad = true
+		} else if kind == "REG" && d == device && ino == inode {
+			found = true
+		}
+	}
+	for line := range strings.SplitSeq(strings.TrimSuffix(string(out), "\n"), "\n") {
+		if len(line) < 2 {
+			return false
+		}
+		switch line[0] {
+		case 'p':
+			if process != "" || line[1:] != pid {
+				return false
+			}
+			process = line[1:]
+		case 'f':
+			if process == "" {
+				return false
+			}
+			finish()
+			fd, kind, dev, ino = line[1:], "", "", ""
+		case 't', 'D', 'i':
+			if fd == "" {
+				return false
+			}
+			field := &kind
+			if line[0] == 'D' {
+				field = &dev
+			} else if line[0] == 'i' {
+				field = &ino
+			}
+			if *field != "" {
+				return false
+			}
+			*field = line[1:]
+		default:
+			return false
+		}
+	}
+	finish()
+	return found && !bad && process == pid
 }
 
 // Darwin ps exposes process environment only through its wide command output.

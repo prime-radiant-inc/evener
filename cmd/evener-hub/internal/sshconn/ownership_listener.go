@@ -1,12 +1,39 @@
 package sshconn
 
 import (
+	"context"
 	"net"
 	"slices"
+	"strconv"
 	"strings"
 
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/internal/hubendpoint"
 )
+
+// A missing health report cannot invent a bound listener. Borrow that evidence
+// only from the same registered process and exact previously verified rewrite.
+// The caller still revalidates cwd, supervisor definition and config/root.
+func (m *Manager) supervisorArgvMatches(ctx context.Context, host hostreg.Host, pid string, live, definition []string, report hubendpoint.Report, env []string, darwin bool) bool {
+	if report.Running != nil || slices.Equal(live, definition) {
+		return supervisorArgvMatches(live, definition, report, env)
+	}
+	m.mu.Lock()
+	prior, ok := m.ownerWitnesses[host.Name]
+	prior = prior.clone()
+	m.mu.Unlock()
+	if !ok || prior.report.Running == nil || prior.supervisor.kind == supervisorNone || prior.pid != pid || strconv.Itoa(prior.report.Running.PID) != pid || !host.Equal(prior.host) || host.Generation != prior.host.Generation || host.IncarnationID != prior.host.IncarnationID || host.PresenceEpoch != prior.host.PresenceEpoch || report.ConfigPath != prior.report.ConfigPath || report.HubStateRoot != prior.report.HubStateRoot || !slices.Equal(live, prior.argv) || !slices.Equal(definition, prior.launchArguments()) || !slices.Equal(env, prior.env) {
+		return false
+	}
+	var generation string
+	var err error
+	if darwin {
+		generation, err = m.darwinGeneration(ctx, host, pid)
+	} else {
+		generation, err = m.ownerGeneration(ctx, host, pid)
+	}
+	return err == nil && generation == prior.generation && supervisorArgvMatches(live, definition, prior.report, env)
+}
 
 // supervisorArgvMatches admits only hubRestartArgs' port-zero rewrite. It does
 // not change either snapshot: live argv and the supervisor's next launch differ.

@@ -194,6 +194,10 @@ func TestRestartRecoverySupervisedProcessProof(t *testing.T) {
 					fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 						command := strings.Join(argv, " ")
 						switch {
+						case supervisor == "launchd" && strings.Join(argv[12:], " ") == "test ! -L /home/dev/.local/state/evener/hub.lock && test -f /home/dev/.local/state/evener/hub.lock && stat -f '%d %i' /home/dev/.local/state/evener/hub.lock":
+							return []byte("16777234 777\n"), nil
+						case supervisor == "launchd" && strings.Join(argv[12:], " ") == "lsof -a -p 4242 -F pftDi":
+							return []byte("p4242\nf3\ntREG\nD0x1000012\ni777\n"), nil
 						case mode == "occupied" && strings.Join(argv[12:], " ") == selectedLockRemote("/home/dev/.local/state/evener"):
 							// The selected lock, not the legacy listener, has an unknown owner.
 							return []byte("9999\n"), nil

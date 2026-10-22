@@ -94,6 +94,8 @@ func TestRemoteOwnerDarwinImageAssociation(t *testing.T) {
 			commands := darwinOwnerCommands(t, true, false)
 			last := commands[len(commands)-1]
 			commands = commands[:len(commands)-1]
+			rootStat := "test ! -L /srv/state/hub.lock && test -f /srv/state/hub.lock && stat -f '%d %i' /srv/state/hub.lock"
+			commands = append(commands, ownerCommand{rootStat, "16777234 777\n"}, ownerCommand{"lsof -a -p 4242 -F pftDi", "p4242\nf3\ntREG\nD0x1000012\ni777\n"}, ownerCommand{rootStat, "16777234 777\n"})
 			commands = append(commands, ownerCommand{"canonical", "/opt/evener\n"}, ownerCommand{"stat -f '%d %i' /opt/evener", "16777234 12345\n"}, ownerCommand{"lsof -a -p 4242 -d txt -F Di", "p4242\nftxt\nD0x1000012\ni12345\n"}, ownerCommand{"/opt/evener launch-check --json", tc.capability}, ownerCommand{"stat -f '%d %i' /opt/evener", "16777234 12345\n"})
 			if tc.capable {
 				commands = append(commands, last)

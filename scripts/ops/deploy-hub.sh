@@ -53,6 +53,7 @@ exec node - "$label" "$config" "$timeout" <<'JS'
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const {isIP} = require('node:net');
 const {spawn} = require('node:child_process');
 
 let [label, explicitConfig, seconds] = process.argv.slice(2);
@@ -254,15 +255,47 @@ function selectors(def) {
 }
 function intent(def) { return JSON.stringify([def.program, def.cwd, def.argv, relevant.map(k => [k, def.env[k]])]); }
 async function service(ms = inspectMS) { return definition(await rawText('launchctl', ['print', target], {ms})); }
-async function processIdentity(def, ms = inspectMS) {
+function processArgvMatches(actual, def, report) {
+    if (actual === def.argv.join(' ')) return true;
+    if (!report || report.state !== 'running' || !report.running || report.running.pid !== def.pid) return false;
+    const r = report.running, bound = r.bound_addr;
+    const address = typeof bound === 'string' && bound.match(/^(?:\[([^\]]+)\]|([^:]+)):(\d+)$/);
+    if (!address || bound.includes('%') || !isIP(address[1] || address[2]) || Number(address[3]) < 1 || Number(address[3]) > 65535) return false;
+    const ephemeral = value => typeof value === 'string' && /^(?:\[[^\]]+\]|[^:]*):0?$/.test(value);
+    const expected = [...def.argv];
+    let index = -1, inline = false;
+    for (let i = 2; i < def.argv.length; i++) {
+        const m = def.argv[i].match(/^--?addr(?:=(.*))?$/);
+        if (!m) continue;
+        if (index !== -1) return false;
+        index = i; inline = m[1] !== undefined;
+        const value = inline ? m[1] : def.argv[++i];
+        if (!ephemeral(value)) return false;
+    }
+    if (index === -1) {
+        const configured = report.listen_source === 'config' && ephemeral(report.configured_listen_addr);
+        const published = r.listen_source === 'config' && ephemeral(r.requested_listen_addr);
+        const env = def.env.EVENER_HUB_LISTEN_ADDR;
+        const fromEnv = ephemeral(env) && ((report.listen_source === 'env' && report.configured_listen_addr === env) ||
+            (r.listen_source === 'env' && r.requested_listen_addr === env));
+        if (!configured && !published && !fromEnv) return false;
+        expected.push('-addr', bound);
+    } else if (inline) expected[index] = def.argv[index].split('=')[0]+'='+bound;
+    else expected[index+1] = bound;
+    return actual === expected.join(' ');
+}
+async function processIdentity(def, ms = inspectMS, evidence) {
     if (!def.pid) return '';
     const pid = String(def.pid);
     need(await text('ps', ['-p', pid, '-o', 'uid='], {ms}) === String(uid), 'selected service effective user differs');
     const birth = await text('ps', ['-p', pid, '-o', 'lstart='], {ms});
     need(string(birth), 'selected process birth unavailable');
-    need(await text('ps', ['-p', pid, '-ww', '-o', 'command='], {ms}) === def.argv.join(' '), 'selected process argv differs');
+    const actual = await text('ps', ['-p', pid, '-ww', '-o', 'command='], {ms});
     const cwd = (await rawText('lsof', ['-a', '-p', pid, '-d', 'cwd', '-Fn'], {ms})).split('\n').filter(s => s.startsWith('n/'));
     need(cwd.length === 1 && sameFile(cwd[0].slice(1), def.cwd), 'selected process working directory differs');
+    // Fetch endpoint evidence only for a rewrite, after user/cwd checks. Keep
+    // the original definition argv for selection and replacement, never ps argv.
+    need(actual === def.argv.join(' ') || processArgvMatches(actual, def, evidence && await evidence()), 'selected process argv differs');
     need(await text('ps', ['-p', pid, '-o', 'lstart='], {ms}) === birth, 'selected process changed during inspection');
     return birth;
 }
@@ -320,9 +353,9 @@ let binary, target, invocationCwd = process.cwd();
     need(/^[A-Za-z0-9_.-]+$/.test(label), 'invalid launchd label');
     target = 'gui/'+uid+'/'+label;
     let def = await service(); oldPID = lastPID = def.pid;
-    const launch = intent(def), birth = await processIdentity(def);
     let predecessor;
-    try { predecessor = await endpoint(def); }
+    const launch = intent(def), birth = await processIdentity(def, inspectMS, async () => predecessor = await endpoint(def));
+    try { predecessor = predecessor || await endpoint(def); }
     catch (e) {
         // Old binaries may reject the endpoint subcommand altogether. Diagnose
         // positive unsupported image capability, never infer it from stderr.
@@ -343,7 +376,7 @@ let binary, target, invocationCwd = process.cwd();
         await capability(def);
     }
     const authorized = await service();
-    need(intent(authorized) === launch && authorized.pid === oldPID && await processIdentity(authorized) === birth,
+    need(intent(authorized) === launch && authorized.pid === oldPID && await processIdentity(authorized, inspectMS, async () => predecessor) === birth,
         'selected predecessor changed during authorization');
     const sha = await text('git', ['rev-parse', '--short', 'HEAD'], {cwd: repo});
     const dirty = await run('git', ['status', '--porcelain', '-uno'], {cwd: repo});
@@ -356,14 +389,14 @@ let binary, target, invocationCwd = process.cwd();
     // only within this invocation, never cached by PID alone.
     stage = 'revalidate';
     def = await service(); lastPID = def.pid;
-    need(intent(def) === launch && def.pid === oldPID && await processIdentity(def) === birth, 'service association changed during build, no restart attempted');
+    need(intent(def) === launch && def.pid === oldPID && await processIdentity(def, inspectMS, async () => predecessor) === birth, 'service association changed during build, no restart attempted');
     const current = await endpoint(def);
     need(JSON.stringify([current.config_path, current.hub_state_root]) === selection, 'selected config or state root changed during build');
     if (predecessor.running && current.running) need(predecessor.running.boot_id === current.running.boot_id, 'predecessor boot changed during build');
     if (!def.pid) need(current.state === 'stopped', 'selected stopped root is no longer free');
     // The endpoint query itself takes time, so reread the service/PID once more.
     const final = await service();
-    need(intent(final) === launch && final.pid === oldPID && await processIdentity(final) === birth, 'service changed before restart');
+    need(intent(final) === launch && final.pid === oldPID && await processIdentity(final, inspectMS, async () => predecessor) === birth, 'service changed before restart');
     stage = 'restart'; attempted = true;
     const kick = await run('launchctl', ['kickstart', '-k', target], {status: true}).catch(() => ({code: 'unknown'}));
     console.log('deploy-hub: selected kickstart status '+kick.code+', verifying successor');
@@ -375,14 +408,15 @@ let binary, target, invocationCwd = process.cwd();
             const remaining = () => { const left = deadline-Date.now(); need(left > 0, 'verification deadline exceeded'); return Math.min(inspectMS, left); };
             const successor = await service(remaining); lastPID = successor.pid;
             need(intent(successor) === launch, 'selected service definition changed');
-            const nextBirth = await processIdentity(successor, remaining);
-            const report = await endpoint(successor, remaining);
+            let report;
+            const nextBirth = await processIdentity(successor, remaining, async () => report = await endpoint(successor, remaining));
+            report = report || await endpoint(successor, remaining);
             need(JSON.stringify([report.config_path, report.hub_state_root]) === selection && report.state === 'running', 'selected successor is not ready');
             need(successor.pid > 0 && (successor.pid !== oldPID || nextBirth !== birth), 'predecessor is still running');
             need(!predecessor.running || report.running.boot_id !== predecessor.running.boot_id, 'old boot is still reported');
             need(report.running.version === expected && report.running.backend_git_sha === sha, 'successor build/version mismatch');
             const after = await service(remaining);
-            need(intent(after) === launch && after.pid === successor.pid && await processIdentity(after, remaining) === nextBirth, 'successor changed during verification');
+            need(intent(after) === launch && after.pid === successor.pid && await processIdentity(after, remaining, async () => report) === nextBirth, 'successor changed during verification');
             need(Date.now() <= deadline, 'successor verification deadline exceeded');
             console.log('deploy-hub: OK, '+target+', PID '+oldPID+' -> '+successor.pid+', boot '+report.running.boot_id+', build '+expected+', selected root verified');
             return;

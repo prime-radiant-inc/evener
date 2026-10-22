@@ -144,6 +144,10 @@ func TestSelectedRestartBoundary(t *testing.T) {
 							return []byte("16777234 12345\n"), nil
 						case "lsof -a -p 4242 -d txt -F Di":
 							return []byte("p4242\nftxt\nD0x1000012\ni12345\n"), nil
+						case "test ! -L /srv/state/hub.lock && test -f /srv/state/hub.lock && stat -f '%d %i' /srv/state/hub.lock":
+							return []byte("16777234 777\n"), nil
+						case "lsof -a -p 4242 -F pftDi":
+							return []byte("p4242\nf3\ntREG\nD0x1000012\ni777\n"), nil
 						}
 					}
 					if remote == resolveDeployCommand("/opt/evener") {

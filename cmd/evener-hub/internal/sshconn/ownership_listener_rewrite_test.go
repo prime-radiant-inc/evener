@@ -33,6 +33,12 @@ func TestSupervisedInPlaceListenerRewrite(t *testing.T) {
 			{"env-fixed", "", "-addr 127.0.0.1:19371", true},
 			{"env-bound-mismatch", "", "-addr 127.0.0.1:19372", true},
 			{"env-second-listener", "", "-addr 127.0.0.1:19371 -addr 127.0.0.1:19371", true},
+			{"unresponsive-flag", "-addr 127.0.0.1:0", "-addr 127.0.0.1:19371", false},
+			{"unresponsive-config", "", "-addr 127.0.0.1:19371", false},
+			{"unresponsive-no-witness", "-addr 127.0.0.1:0", "-addr 127.0.0.1:19371", false},
+			{"unresponsive-wrong-generation", "-addr 127.0.0.1:0", "-addr 127.0.0.1:19371", false},
+			{"unresponsive-wrong-registration", "-addr 127.0.0.1:0", "-addr 127.0.0.1:19371", false},
+			{"unresponsive-wrong-bound", "-addr 127.0.0.1:0", "-addr 127.0.0.1:19371", false},
 			{"fixed-exact", "-addr 127.0.0.1:19371", "-addr 127.0.0.1:19371", false},
 			{"non-listener-change", "-addr 127.0.0.1:0", "-addr 127.0.0.1:19371 --public-url=https://other.example", true},
 			{"fixed-change", "-addr 127.0.0.1:9180", "-addr 127.0.0.1:19371", true},
@@ -50,6 +56,7 @@ func TestSupervisedInPlaceListenerRewrite(t *testing.T) {
 				facts := selectedRestartFacts()
 				facts.OS, facts.UID = platform, "1000"
 				mutated, effects, writes := false, 0, 0
+				unresponsive := false
 				report := remoteEndpointFixture(host.ConfigPath, "127.0.0.1:19371", "boot-one")
 				ownerEnv := []string{"HOME=/home/dev"}
 				envAddr := ""
@@ -77,6 +84,9 @@ func TestSupervisedInPlaceListenerRewrite(t *testing.T) {
 					remote := strings.Join(argv[12:], " ")
 					current := live
 					currentReport := report
+					if unresponsive {
+						currentReport.State, currentReport.Running = "unavailable", nil
+					}
 					if mutated {
 						current = definition // The manager starts the original supervisor argv.
 						currentReport = remoteEndpointFixture(host.ConfigPath, "127.0.0.1:24519", "boot-two")
@@ -201,6 +211,30 @@ func TestSupervisedInPlaceListenerRewrite(t *testing.T) {
 					t.Fatal(err)
 				}
 				pendingSnapshot := m.pendingRestart(host.Name)
+				if strings.HasPrefix(tc.name, "unresponsive-") {
+					unresponsive = true
+					witness := m.ownerWitnesses[host.Name].clone()
+					switch tc.name {
+					case "unresponsive-no-witness":
+						delete(m.ownerWitnesses, host.Name)
+					case "unresponsive-wrong-generation":
+						witness.generation = "other-birth"
+						m.ownerWitnesses[host.Name] = witness
+					case "unresponsive-wrong-registration":
+						witness.host.Generation++
+						m.ownerWitnesses[host.Name] = witness
+					case "unresponsive-wrong-bound":
+						witness.report.Running.BoundAddr = "127.0.0.1:19372"
+						m.ownerWitnesses[host.Name] = witness
+					}
+				}
+				if strings.HasPrefix(tc.name, "unresponsive-wrong-") || tc.name == "unresponsive-no-witness" {
+					err := m.restartSelectedPending(t.Context(), host, facts, &pending, true)
+					if !errors.Is(err, errOwnerEvidence) || effects != 0 || writes != 0 || !reflect.DeepEqual(pendingSnapshot, m.pendingRestart(host.Name)) {
+						t.Fatalf("invalid witness accepted: err=%v effects=%d writes=%d", err, effects, writes)
+					}
+					return
+				}
 				if err := m.restartSelectedPending(t.Context(), host, facts, &pending, true); err != nil {
 					t.Fatalf("following restart: %v, retained=%+v", err, pendingSnapshot)
 				}

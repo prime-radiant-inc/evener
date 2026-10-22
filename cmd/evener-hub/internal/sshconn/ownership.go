@@ -139,6 +139,9 @@ func (m *Manager) resolveLinuxOwner(ctx context.Context, host hostreg.Host, repo
 		if err != nil {
 			return selectedOwner{}, err
 		}
+		if report.Running == nil && !slices.Equal(argv, launchArgv) && !m.hasOwnerWitness(owner) {
+			return selectedOwner{}, errOwnerEvidence
+		}
 	} else {
 		out, err := m.ownerRead(ctx, host, "cat /proc/"+pid+"/cgroup")
 		if err != nil {
@@ -235,6 +238,9 @@ func (m *Manager) hasOwnerWitness(owner selectedOwner) bool {
 func (m *Manager) rememberOwner(owner selectedOwner) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if prior, ok := m.ownerWitnesses[owner.host.Name]; ok && owner.report.Running == nil && sameOwner(owner, prior) {
+		return // Preserve previously verified listener evidence through health loss.
+	}
 	if m.ownerWitnesses == nil {
 		m.ownerWitnesses = make(map[string]selectedOwner)
 	}
@@ -646,7 +652,7 @@ func (m *Manager) supervisorForOwner(ctx context.Context, host hostreg.Host, pid
 		if !strings.HasPrefix(fields["ExecStart"], definitionPrefix) {
 			return supervisor{}, nil, fmt.Errorf("%w: service argv formatting is ambiguous", errOwnerEvidence)
 		}
-		argvMatches := supervisorArgvMatches(argv, definitionArgv, report, env)
+		argvMatches := m.supervisorArgvMatches(ctx, host, pid, argv, definitionArgv, report, env, false)
 		if pid == "0" && !argvMatches {
 			continue
 		}

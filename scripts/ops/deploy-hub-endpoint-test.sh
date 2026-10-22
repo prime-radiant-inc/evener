@@ -96,6 +96,17 @@ def endpoint_args():
     flags=[] if f.get('default_config') else ['--config',config_selector()]
     if not f.get('env_listener') and not f.get('toml_listener'): flags+=['--addr',f.get('listener','[::]:0')]
     return ['hub','endpoint','--json']+flags
+def live_argv():
+    words=argv()
+    if not f.get('inplace') or s.get('restarted'): return words
+    bound=f.get('bound_host','[::]')+':'+('19472' if f.get('inplace_mismatch') else '19471')
+    index=next((i for i,w in enumerate(words) if w in ['-addr','--addr'] or w.startswith(('-addr=','--addr='))),None)
+    if index is None: words+=['-addr',bound]
+    elif '=' in words[index]: words[index]=words[index].split('=',1)[0]+'='+bound
+    else: words[index+1]=bound
+    if f.get('inplace_extra'): words+=['--public-url=https://other.invalid']
+    if f.get('inplace_duplicate'): words+=['-addr',bound]
+    return words
 if cmd == 'launchctl':
     if args == ['list']:
         print('PID\tStatus\tLabel\n101\t0\tcom.test.evener-selected')
@@ -149,7 +160,7 @@ elif cmd == 'ps':
     else: birth='Fri Oct 16 08:00:00 2026'
     if args==['-p',pid,'-o','uid=']: print(os.getuid()+1 if f.get('wrong_user') else os.getuid())
     elif args==['-p',pid,'-o','lstart=']: print(birth)
-    elif args==['-p',pid,'-ww','-o','command=']: print(' '.join(argv())+(' unexpected' if f.get('wrong_argv') else ''))
+    elif args==['-p',pid,'-ww','-o','command=']: print(' '.join(live_argv())+(' unexpected' if f.get('wrong_argv') else ''))
     else: refuse()
 elif cmd == 'lsof':
     if args==['-a','-p',str(s['pid']),'-d','cwd','-Fn']: print('p'+str(s['pid'])+'\nn'+str(p/'other' if f.get('wrong_cwd') else (p/'physical' if f.get('cwd_space_collision') else service_cwd().resolve())))
@@ -204,6 +215,8 @@ elif cmd == 'evener':
             if f.get('running_alias'): running_config=str(p/'alias.toml')
             elif f.get('running_relative'): running_config='../alias.toml'
             report['running']={'schema_version':1,'pid':pid,'boot_id':boot,'started_at':'2026-10-16T08:00:00Z','config_path':running_config,'hub_state_root':str(root),'requested_listen_addr':f.get('listener','[::]:0'),'listen_source':source,'bound_addr':f.get('bound_host','[::]')+':'+str(port),'local_url':local,'loopback_url':local,'version':f['version'] if new else 'old','backend_git_sha':f['sha'] if new else 'old'}
+            if f.get('inplace') and not new:
+                report['running'].update(requested_listen_addr=report['running']['bound_addr'],listen_source='flag')
             if new and f.get('stale'): report['running'].update(pid=101,boot_id='old-boot')
             if new and f.get('wrong_build'): report['running']['version']='wrong'
             if new and f.get('wrong_sha'): report['running']['backend_git_sha']='wrong'
@@ -238,6 +251,17 @@ else: refuse()
 # Last column: (build calls, selected kickstart calls).
 cases=[
  ('selected_endpoint',{},[],True,(1,1)),
+ ('inplace_flag',{'inplace':True},[],True,(1,1)),
+ ('inplace_space_flag',{'inplace':True,'separate_flags':True},[],True,(1,1)),
+ ('inplace_config',{'inplace':True,'toml_listener':True},[],True,(1,1)),
+ ('inplace_environment',{'inplace':True,'env_listener':True,'listener':'0.0.0.0:0'},[],True,(1,1)),
+ ('inplace_fixed_change',{'inplace':True,'listener':'127.0.0.1:9180'},[],False,(0,0)),
+ ('inplace_no_ephemeral_evidence',{'inplace':True,'toml_listener':True,'listener':'127.0.0.1:9180'},[],False,(0,0)),
+ ('inplace_non_listener',{'inplace':True,'inplace_extra':True},[],False,(0,0)),
+ ('inplace_bound_mismatch',{'inplace':True,'inplace_mismatch':True},[],False,(0,0)),
+ ('inplace_scoped_bound',{'inplace':True,'bound_host':'[fe80::1%lo0]'},[],False,(0,0)),
+ ('inplace_duplicate',{'inplace':True,'inplace_duplicate':True},[],False,(0,0)),
+ ('inplace_unavailable',{'inplace':True,'unavailable':True},[],False,(0,0)),
  ('live_cwd_symlink',{'cwd_alias':True},[],True,(1,1)),
  ('stopped_cwd_symlink',{'cwd_alias':True,'stopped':True},[],True,(1,1)),
  ('different_cwd_symlink',{'cwd_alias':True,'wrong_cwd':True},[],False,(0,0)),
@@ -433,6 +457,21 @@ with tempfile.TemporaryDirectory(prefix='task7c-', dir=os.environ.get('EVENER_SC
             assert (returncode==0)==success, f'exit={returncode}, expected success={success}'
             assert not any(c['cmd']=='curl' for c in calls), 'guessed health destination probed'
             endpoints=[c for c in calls if c['cmd']=='evener' and c['args'][:3]==['hub','endpoint','--json']]
+            if name.startswith('inplace_') and success:
+                reports=[json.loads(line) for line in (p/'reports.jsonl').read_text().splitlines()]
+                old=[r for r in reports if r['running']['pid']==101]
+                new=[r for r in reports if r['running']['pid']==303]
+                assert old and new, 'rewritten predecessor and original-intent successor not both observed'
+                for report in old:
+                    assert report['running']['requested_listen_addr']==report['running']['bound_addr']=='[::]:19471'
+                    assert report['running']['listen_source']=='flag'
+                for report in new:
+                    assert report['running']['requested_listen_addr']==('0.0.0.0:0' if name=='inplace_environment' else '[::]:0')
+                for call in endpoints:
+                    if name in ['inplace_flag','inplace_space_flag']:
+                        assert call['args'][-2:]==['--addr','[::]:0'], 'live bound argv replaced original launch intent'
+                    else:
+                        assert '--addr' not in call['args'], 'appended live listener became replacement intent'
             # Literal independent report oracles for the two corrected positives.
             # This is not another production parser or a value copied from facts.
             expected_reports={'wildcard_ipv4':('0.0.0.0:0','0.0.0.0','127.0.0.1','flag'),
