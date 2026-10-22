@@ -3383,7 +3383,8 @@ export async function updateRecoveryMutation(
   consumeRecoveryIds?: readonly string[],
   localDraftRevisionId?: string,
   expectedCompositionRevision?: number,
-): Promise<boolean> {
+  expectedRecoveryRevisions?: Readonly<Record<string, number>>,
+): Promise<MutationRecoveryRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
   const record = await runtime.storage.updateRecoveryInput(
@@ -3395,20 +3396,22 @@ export async function updateRecoveryMutation(
     consumeRecoveryIds,
     localDraftRevisionId,
     expectedCompositionRevision,
+    expectedRecoveryRevisions,
   );
-  if (!record) return false;
+  if (!record) return undefined;
   notifyMutationPersistence([targetRef]);
-  return true;
+  return record;
 }
 
 export async function discardRecoveryMutation(
   clientMutationId: string,
   targetRef: string,
   shouldDiscard?: () => boolean,
+  expectedCompositionRevision?: number,
 ): Promise<boolean> {
   const runtime = requireMutationRuntime();
   await runtime.start;
-  const discarded = await runtime.storage.discardRecovery(clientMutationId, shouldDiscard);
+  const discarded = await runtime.storage.discardRecovery(clientMutationId, shouldDiscard, expectedCompositionRevision);
   if (discarded) {
     // A row left the outbox: in-flight reads for the ref are stale.
     noteMutationStateChange(targetRef);
@@ -3430,6 +3433,7 @@ export async function resendRecoveryMutation(
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
   barrierRead = captureRecoveryStopBarrier(targetRef),
+  expectedRecoveryRevisions?: Readonly<Record<string, number>>,
 ): Promise<MutationOutboxRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
@@ -3439,7 +3443,7 @@ export async function resendRecoveryMutation(
   // fallback send must see it before the async refresh can.
   const record = await trackOutboxWrite(
     targetRef,
-    () => runtime.storage.resendRecovery(clientMutationId, intent, barrier),
+    () => runtime.storage.resendRecovery(clientMutationId, intent, barrier, expectedRecoveryRevisions),
     // A resend mints its own row, so the id comes from the record it returns.
     (resent) =>
       resent === undefined

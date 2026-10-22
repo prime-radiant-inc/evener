@@ -98,6 +98,7 @@ export interface QueueStripProps {
     mentions?: readonly ComposerMention[],
   ): void;
   activeRecoveryId?: string;
+  activeRecoveryRevision?: number;
   onEditRecovery?(record: MutationRecoveryRecord): void | Promise<void>;
   // Called once a drain-as-steer intent commits to IndexedDB, so the
   // integration can clear the unchanged composer text/attachment snapshot.
@@ -188,6 +189,7 @@ export function QueueStrip({
   getComposerText,
   onRestoreToComposer,
   activeRecoveryId,
+  activeRecoveryRevision,
   onEditRecovery,
   onDrainSuccess,
   busy,
@@ -440,6 +442,10 @@ export function QueueStrip({
               skillNames,
               commandNames,
               mentions,
+              undefined,
+              activeRecoveryId && activeRecoveryRevision !== undefined
+                ? { [activeRecoveryId]: activeRecoveryRevision }
+                : undefined,
             );
             return;
           }
@@ -448,6 +454,10 @@ export function QueueStrip({
             .drainAsSteer(sessionRef, text, attachments, skillNames, commandNames, mentions);
         },
       );
+      if (!wonRecoveryResend && activeRecoveryId) {
+        toasts.push("info", "This message changed in another tab. Refresh and try again.");
+        return;
+      }
       if (!wonRecoveryResend) toasts.push("info", "This message was already sent in another tab.");
       onDrainSuccess();
     } catch {
@@ -498,7 +508,13 @@ export function QueueStrip({
   async function handleDismiss(record: MutationRecoveryRecord): Promise<void> {
     setRowBusy(record.clientMutationId, true);
     try {
-      await discardRecoveryPendingTurn(record.clientMutationId, sessionRef);
+      const discarded = await discardRecoveryPendingTurn(
+        record.clientMutationId,
+        sessionRef,
+        undefined,
+        record.compositionRevision ?? 0,
+      );
+      if (!discarded) toasts.push("info", "This message changed in another tab. Refresh and try again.");
     } catch (error) {
       toasts.push("error", `Couldn't dismiss this row: ${errorText(error)}`);
     } finally {

@@ -114,9 +114,11 @@ test("detached command-only recovery persists instead of being discarded", async
     optimisticDisplay: { method: "turn/start", input },
   });
   await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
   writeComposerDraft("root", { text: "", skillNames: [], commandNames: ["same"], mentions: [] });
   const source = createTestComposerSource("root");
-  source.setActiveRecoveryId(original.clientMutationId);
+  source.setActiveRecoveryId(recovery);
   await source.queueRecoveryPersistence(original.clientMutationId, "", [], [], ["same"], []);
   expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
   expect(source.getSnapshot().commandNames).toEqual(["same"]);
@@ -154,7 +156,9 @@ test("failed source draft write cannot acquire another source's revision token",
     expect(readComposerDraftRevisionId("root")).toBe(revisionC);
     expect(readComposerDraft("root").text).toBe("C");
     setItem.mockRestore();
-    sourceA.setActiveRecoveryId(original.clientMutationId);
+    const recovery = await storage.getRecovery(original.clientMutationId);
+    if (!recovery) throw new Error("missing recovery fixture");
+    sourceA.setActiveRecoveryId(recovery);
     await sourceA.queueRecoveryPersistence(original.clientMutationId, "A recovery", [], []);
     expect((await storage.getRecovery(original.clientMutationId))?.localDraftRevisionId).not.toBe(revisionC);
   } finally {

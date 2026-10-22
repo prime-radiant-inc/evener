@@ -653,7 +653,8 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
           await requestResult(optimistic.delete(clientMutationId));
         }
         if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
-        if (recoveryRecord) await requestResult(recovery.delete(clientMutationId));
+        if (recoveryRecord && (recoveryRecord.compositionRevision ?? 0) === 0)
+          await requestResult(recovery.delete(clientMutationId));
         return true;
       },
     );
@@ -682,7 +683,8 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         await this.#discardSupersededNoteRecovery(transaction, source);
         if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
         if (optimisticRecord) await requestResult(optimistic.delete(clientMutationId));
-        if (recoveryRecord) await requestResult(recovery.delete(clientMutationId));
+        if (recoveryRecord && (recoveryRecord.compositionRevision ?? 0) === 0)
+          await requestResult(recovery.delete(clientMutationId));
         settledSource = source;
         return true;
       },
@@ -703,7 +705,8 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       if (
         record.method === "notes/human/set" &&
         record.targetRef === source.targetRef &&
-        record.intentSequence < source.intentSequence
+        record.intentSequence < source.intentSequence &&
+        (record.compositionRevision ?? 0) === 0
       ) {
         await requestResult(store.delete(record.clientMutationId));
       }
@@ -886,6 +889,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       const outbox = transaction.objectStore(OUTBOX_STORE);
       const record = await requestResult<MutationOutboxRecord | undefined>(outbox.get(clientMutationId));
       if (!record) return undefined;
+      if (await requestResult(transaction.objectStore(RECOVERY_STORE).get(clientMutationId))) return undefined;
       const recovery: VersionedMutationRecoveryRecord = {
         ...record,
         recoveryKind,
@@ -907,6 +911,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       const record = await requestResult<MutationOutboxRecord | undefined>(outbox.get(expected.clientMutationId));
       if (!record || !matchesQueuedMessageSnapshot(record, expected) || !canEditQueuedMessage(record)) return undefined;
       if ((await this.#stopEpochOf(transaction, record.targetRef)) !== barrier.stopEpoch) return undefined;
+      if (await requestResult(transaction.objectStore(RECOVERY_STORE).get(record.clientMutationId))) return undefined;
       const recovery: VersionedMutationRecoveryRecord = {
         ...record,
         recoveryKind: "editing",
@@ -955,23 +960,32 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     consumeRecoveryIds?: readonly string[],
     localDraftRevisionId?: string,
     expectedCompositionRevision?: number,
+    expectedRecoveryRevisions?: Readonly<Record<string, number>>,
   ): Promise<MutationRecoveryRecord | undefined> {
     return this.#write(RECOVERY_STORE, "updateRecoveryInput", async (transaction) => {
       const store = transaction.objectStore(RECOVERY_STORE);
       const record = await requestResult<VersionedMutationRecoveryRecord | undefined>(store.get(clientMutationId));
       if (!record) return undefined;
       const sources = [...new Set(consumeRecoveryIds)].filter((id) => id !== clientMutationId);
+      const expected = new Map(Object.entries(expectedRecoveryRevisions ?? {}));
+      // Existing scalar callers remain compatible for the owner only. A
+      // supplied map is authoritative for every row in the transaction.
+      if (expectedRecoveryRevisions === undefined && expectedCompositionRevision !== undefined)
+        expected.set(clientMutationId, expectedCompositionRevision);
       // A consolidation must be based on the exact durable owner snapshot the
       // caller merged. Compare inside this transaction, before either writing
       // the replacement or deleting any secondary recovery rows.
-      if (
-        (sources.length > 0 && expectedCompositionRevision === undefined) ||
-        (expectedCompositionRevision !== undefined && (record.compositionRevision ?? 0) !== expectedCompositionRevision)
-      )
+      if (!expected.has(clientMutationId) || (record.compositionRevision ?? 0) !== expected.get(clientMutationId))
         return undefined;
       for (const id of sources) {
         const source = await requestResult<MutationRecoveryRecord | undefined>(store.get(id));
-        if (!source || source.targetRef !== record.targetRef) return undefined;
+        if (
+          !source ||
+          source.targetRef !== record.targetRef ||
+          !expected.has(id) ||
+          ((source as VersionedMutationRecoveryRecord).compositionRevision ?? 0) !== expected.get(id)
+        )
+          return undefined;
       }
       const next: VersionedMutationRecoveryRecord = {
         ...record,
@@ -994,11 +1008,20 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     });
   }
 
-  async discardRecovery(clientMutationId: string, shouldDiscard?: () => boolean): Promise<boolean> {
+  async discardRecovery(
+    clientMutationId: string,
+    shouldDiscard?: () => boolean,
+    expectedCompositionRevision?: number,
+  ): Promise<boolean> {
     return this.#write(RECOVERY_STORE, "discardRecovery", async (transaction) => {
       const store = transaction.objectStore(RECOVERY_STORE);
       const record = await requestResult<MutationRecoveryRecord | undefined>(store.get(clientMutationId));
       if (!record) return false;
+      if (
+        expectedCompositionRevision !== undefined &&
+        ((record as VersionedMutationRecoveryRecord).compositionRevision ?? 0) !== expectedCompositionRevision
+      )
+        return false;
       // Evaluate immediately at the durable deletion boundary, after every
       // asynchronous prerequisite. Callers use this to invalidate a discard
       // that became stale while it was waiting to reach storage.
@@ -1012,6 +1035,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     sourceIds: string | readonly string[],
     intent: MutationIntent,
     barrier?: MutationStopBarrier,
+    expectedRecoveryRevisions?: Readonly<Record<string, number>>,
   ): Promise<MutationOutboxRecord | undefined> {
     if (!intent.targetRef.trim()) throw new Error("targetRef is required");
     return this.#write(ENQUEUE_STORES, "resendRecovery", async (transaction) => {
@@ -1020,7 +1044,13 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       if (ids.length === 0) return undefined;
       for (const id of ids) {
         const recovery = await requestResult<MutationRecoveryRecord | undefined>(recoveryStore.get(id));
-        if (!recovery || recovery.targetRef !== intent.targetRef) return undefined;
+        if (
+          !recovery ||
+          recovery.targetRef !== intent.targetRef ||
+          expectedRecoveryRevisions?.[id] === undefined ||
+          ((recovery as VersionedMutationRecoveryRecord).compositionRevision ?? 0) !== expectedRecoveryRevisions[id]
+        )
+          return undefined;
       }
       const intentSequence = await this.#allocateSequence(transaction, intent.targetRef);
       const nextMutationId = this.#createMutationId();

@@ -231,7 +231,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     textRef,
     skillNamesRef,
     selectionMetaRef,
-    activeRecoveryIdRef,
+    recoveryOwnerLeaseRef,
     recoveryWriteVersionRef,
     recoveryReplacementEpochRef,
     recoveryOwnsLocalDraftRef,
@@ -418,7 +418,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     if (
       textRef.current !== "" ||
       attachmentItemsRef.current.length > 0 ||
-      activeRecoveryIdRef.current !== null ||
+      recoveryOwnerLeaseRef.current !== null ||
       skillNamesRef.current.length > 0 ||
       selectionMetaRef.current.commandNames.length > 0
     ) {
@@ -512,7 +512,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
     Object.assign(recovered, visible);
     recoveryOwnsLocalDraftRef.current = false;
-    setActiveRecoveryId(record.clientMutationId);
+    setActiveRecoveryId(record);
     // Restoration replaces this mount's local owner without editing the
     // shared recovery draft that an earlier mount may still be submitting.
     draftEditRevisionRef.current += 1;
@@ -810,7 +810,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     editSkillNames(value.skillNames);
     updateSelectionMeta(value);
     editText(value.text);
-    if (activeRecoveryIdRef.current === null) persistDraft(value.text);
+    if (recoveryOwnerLeaseRef.current === null) persistDraft(value.text);
     // Every keystroke re-evaluates the trailing-token match fresh - a token
     // Escape just closed (slashToken's own doc comment above) reopens on the
     // very next text change rather than staying closed indefinitely.
@@ -1029,7 +1029,8 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     const submittedRevision = draftEditRevisionRef.current;
     const submittedDraftRevision = readDraftRevision(ref);
     const payload = attachments.toInputAttachments();
-    const submittedRecoveryId = activeRecoveryIdRef.current;
+    const submittedLease = recoveryOwnerLeaseRef.current;
+    const submittedRecoveryId = submittedLease?.clientMutationId ?? null;
     const recoveryBarrier = submittedRecoveryId === null ? undefined : captureRecoveryStopBarrier(ref);
     let wonRecoveryResend = true;
     let recoveryWriteRefused = false;
@@ -1078,6 +1079,12 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
                 recoveryWriteRefused = true;
                 throw recoveryWriteRefusal;
               }
+              const committedRevision = recoveryOwnerLeaseRef.current?.compositionRevision;
+              if (committedRevision === undefined) {
+                wonRecoveryResend = false;
+                recoveryWriteRefused = true;
+                throw recoveryWriteRefusal;
+              }
               wonRecoveryResend = await resendRecoveryPendingTurn(
                 submittedRecoveryId,
                 ref,
@@ -1088,6 +1095,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
                 submittedCommandNames,
                 submittedMentions,
                 recoveryBarrier,
+                { [submittedRecoveryId]: committedRevision },
               );
             });
             return;
@@ -1472,6 +1480,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
         getComposerText={getComposerText}
         onRestoreToComposer={restoreTextToComposer}
         activeRecoveryId={activeRecoveryId ?? undefined}
+        activeRecoveryRevision={recoveryOwnerLeaseRef.current?.compositionRevision}
         onEditRecovery={activateRecovery}
         onDrainSuccess={handleDrainSuccess}
         busy={actionPending}

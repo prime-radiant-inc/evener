@@ -209,6 +209,31 @@ test("recovery draft provenance commits with merged composition and secondary co
   });
 });
 
+test("settlement leaves recovery advanced to revision one for reconciliation", async () => {
+  const f = fixture();
+  const outbox = await f.storage.enqueueIntent(queuedIntent("ref_a"));
+  const original = await f.storage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!original) throw new Error("failed to seed recovery");
+  const edited = await f.peer.updateRecoveryInput(
+    original.clientMutationId,
+    [{ type: "text", text: "newer composition" }],
+    [],
+    "newer composition",
+    [],
+    [],
+    undefined,
+    0,
+  );
+  expect(edited?.compositionRevision).toBe(1);
+  expect(await f.storage.settleApplied(original.clientMutationId)).toBe(true);
+  const reopened = await f.reopen();
+  expect(await reopened.getRecovery(original.clientMutationId)).toMatchObject({
+    compositionRevision: 1,
+    composerText: "newer composition",
+    payload: { input: [{ type: "text", text: "newer composition" }] },
+  });
+});
+
 test("stale cross-adapter recovery consolidation refuses without deleting the secondary", async () => {
   const f = fixture();
   const seedImageRecovery = async (text: string, imageName: string) => {
@@ -292,6 +317,115 @@ test("stale cross-adapter recovery consolidation refuses without deleting the se
     attachments: [expect.objectContaining({ name: "c.png" })],
   });
   expect(stale).toBeUndefined();
+});
+
+test("stale secondary revision refuses consolidation, preserving newer secondary and owner", async () => {
+  const f = fixture();
+  const seed = async (text: string) => {
+    const outbox = await f.storage.enqueueIntent({
+      ...queuedIntent("ref_a"),
+      payload: { ...queuedIntent("ref_a").payload, input: [{ type: "text" as const, text }] },
+    });
+    const record = await f.storage.transferToRecovery(outbox.clientMutationId, "rejected");
+    if (!record) throw new Error(`missing recovery ${text}`);
+    return record;
+  };
+  const owner = await seed("owner A");
+  const secondary = await seed("secondary B");
+  const latestB = await f.peer.updateRecoveryInput(
+    secondary.clientMutationId,
+    [{ type: "text", text: "newer B" }],
+    [],
+    "newer B",
+    [],
+    [],
+    undefined,
+    0,
+  );
+  expect((latestB as (typeof latestB & { compositionRevision?: number }) | undefined)?.compositionRevision).toBe(1);
+  const refused = await f.storage.updateRecoveryInput(
+    owner.clientMutationId,
+    [{ type: "text", text: "owner A + stale B" }],
+    [],
+    "owner A + stale B",
+    [],
+    [secondary.clientMutationId],
+    undefined,
+    0,
+    { [owner.clientMutationId]: 0, [secondary.clientMutationId]: 0 },
+  );
+  expect(refused).toBeUndefined();
+  const reopened = await f.reopen();
+  expect(await reopened.getRecovery(owner.clientMutationId)).toMatchObject({
+    composerText: "same input @inspect",
+    compositionRevision: 0,
+  });
+  expect(await reopened.getRecovery(secondary.clientMutationId)).toMatchObject({
+    composerText: "newer B",
+    compositionRevision: 1,
+  });
+});
+
+test("stale consolidation of C into peer-edited B refuses, preserving edited B and C", async () => {
+  const f = fixture();
+  const seed = async (text: string) => {
+    const intent = queuedIntent("ref_a");
+    const outbox = await f.storage.enqueueIntent({
+      ...intent,
+      payload: { ...intent.payload, input: [{ type: "text" as const, text }] },
+    });
+    const record = await f.storage.transferToRecovery(outbox.clientMutationId, "rejected");
+    if (!record) throw new Error(`missing recovery ${text}`);
+    return record;
+  };
+  const a = await seed("A");
+  const b = await seed("B");
+  const c = await seed("C");
+  const mergedB = await f.storage.updateRecoveryInput(
+    b.clientMutationId,
+    [{ type: "text", text: "B + A" }],
+    [],
+    "B + A",
+    [],
+    [a.clientMutationId],
+    undefined,
+    0,
+    { [b.clientMutationId]: 0, [a.clientMutationId]: 0 },
+  );
+  expect((mergedB as (typeof mergedB & { compositionRevision?: number }) | undefined)?.compositionRevision).toBe(1);
+  const peerEdit = await f.peer.updateRecoveryInput(
+    b.clientMutationId,
+    [{ type: "text", text: "edited B" }],
+    [],
+    "edited B",
+    [],
+    [],
+    undefined,
+    1,
+    { [b.clientMutationId]: 1 },
+  );
+  expect((peerEdit as (typeof peerEdit & { compositionRevision?: number }) | undefined)?.compositionRevision).toBe(2);
+  const refused = await f.storage.updateRecoveryInput(
+    b.clientMutationId,
+    [{ type: "text", text: "stale B + C" }],
+    [],
+    "stale B + C",
+    [],
+    [c.clientMutationId],
+    undefined,
+    1,
+    { [b.clientMutationId]: 1, [c.clientMutationId]: 0 },
+  );
+  expect(refused).toBeUndefined();
+  const reopened = await f.reopen();
+  expect(await reopened.getRecovery(b.clientMutationId)).toMatchObject({
+    composerText: "edited B",
+    compositionRevision: 2,
+  });
+  expect(await reopened.getRecovery(c.clientMutationId)).toMatchObject({
+    composerText: "same input @inspect",
+    compositionRevision: 0,
+  });
 });
 
 test("legacy reopen preserves unknown attempts and editing image bytes", async () => {

@@ -319,15 +319,17 @@ async function mountComposerWithHandle(
     focused?: boolean;
     prepare?: (fake: FakeClient) => void;
     holdMountProjection?: boolean;
+    source?: ReturnType<typeof createTestComposerSource>;
   } = {},
 ) {
   const fake = connectFakeClient(options.prepare);
+  const source = options.source ?? createTestComposerSource(ref);
   fake.on("thread/read", () => readResponse(ref, overrides));
   await threadsStore.getState().ensureThread(ref);
   const view = render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref={ref} source={createTestComposerSource(ref)} focused={options.focused ?? false} />
+      <Composer ref={ref} source={source} focused={options.focused ?? false} />
     </ClientProvider>,
   );
   await settleActivityDiscovery(ref);
@@ -350,6 +352,10 @@ async function mountComposer(
   options: { focused?: boolean; holdMountProjection?: boolean } = {},
 ): Promise<FakeClient> {
   return (await mountComposerWithHandle(ref, overrides, options)).fake;
+}
+
+function recoveryCompositionRevision(record: object): number {
+  return (record as { compositionRevision?: number }).compositionRevision ?? 0;
 }
 
 function deferred<T>() {
@@ -3606,28 +3612,38 @@ test.each(["automatic", "Edit message"] as const)(
 test("a losing cross-tab recovered send does not issue a second request", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
-  const recovered = await seedRejectedRecovery(storage, "ref_a", "one winner");
+  const recovered = await seedRejectedRecoveryWithAttachment(storage, "ref_a");
+  const source = createTestComposerSource("ref_a");
   const user = userEvent.setup();
-  const fake = await mountComposer("ref_a", { status: { type: "idle" } });
+  const { fake } = await mountComposerWithHandle("ref_a", { status: { type: "idle" } }, { source });
   await flushPendingTurnsProjectionForTests();
   const editor = textarea();
-  expect(editor.textContent).toBe("one winner");
+  expect(source.getSnapshot().activeRecoveryId).toBe(recovered.clientMutationId);
+  expect(editor.textContent).toBe("edit me [image 1]");
+  expect(screen.getByRole("button", { name: "Remove proof.png" })).toBeTruthy();
+  const currentRecovery = await storage.getRecovery(recovered.clientMutationId);
+  expect(currentRecovery).toBeDefined();
   const otherTab = new MutationOutboxIndexedDB();
-  await otherTab.resendRecovery(recovered.clientMutationId, {
-    targetRef: "ref_a",
-    threadId: "thread_a",
-    method: "turn/start",
-    payload: { ref: "ref_a", input: [{ type: "text", text: "one winner" }] },
-    attachments: [],
-    optimisticDisplay: {
-      method: "turn/start",
-      input: [{ type: "text", text: "one winner" }],
+  const peerResend = await otherTab.resendRecovery(
+    recovered.clientMutationId,
+    {
+      targetRef: "ref_a",
+      threadId: "thread_a",
+      method: currentRecovery!.method,
+      payload: currentRecovery!.payload,
+      attachments: currentRecovery!.attachments,
+      optimisticDisplay: currentRecovery!.optimisticDisplay,
     },
-  });
+    undefined,
+    { [recovered.clientMutationId]: recoveryCompositionRevision(currentRecovery!) },
+  );
+  expect(peerResend).toBeDefined();
 
   await user.click(submitButton());
 
-  await waitFor(() => expect(editor.textContent).toBe(""));
+  await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(recovered.clientMutationId));
+  expect(editor.textContent).toBe("edit me [image 1]");
+  expect(screen.getByRole("button", { name: "Remove proof.png" })).toBeTruthy();
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
   expect(toastKinds()).toEqual(["info"]);
   otherTab.close();

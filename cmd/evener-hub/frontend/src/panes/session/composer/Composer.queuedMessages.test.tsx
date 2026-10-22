@@ -104,6 +104,10 @@ function mount(fake: FakeClient, source = createTestComposerSource("root")) {
   return { source, ...view };
 }
 
+function recoveryCompositionRevision(record: object): number {
+  return (record as { compositionRevision?: number }).compositionRevision ?? 0;
+}
+
 class CommitThenPauseRecoveryStorage extends MutationOutboxIndexedDB {
   private pauseNextCommit = true;
   private committedSignal = deferred<void>();
@@ -378,6 +382,7 @@ test("a second committed consolidation records C before adapter and source reope
   if (!firstCommit) throw new Error("missing first recovery commit");
   expect(firstCommit.composerText).toBe("A\n\nB");
   expect(firstCommit.localDraftRevisionId).toBe(revisionA);
+  expect(recoveryCompositionRevision(firstCommit)).toBe(1);
   original.dispose();
 
   const replacement = createTestComposerSource("root");
@@ -393,11 +398,12 @@ test("a second committed consolidation records C before adapter and source reope
     const secondCommit = await storage.getRecovery(queuedRecord.clientMutationId);
     if (!secondCommit) throw new Error("missing second recovery commit");
     expect(secondCommit.composerText).toBe("C\n\nA\n\nB");
+    expect(recoveryCompositionRevision(secondCommit)).toBe(recoveryCompositionRevision(firstCommit) + 1);
     expect(secondCommit.localDraftRevisionId).toBe(revisionC);
-    replacement.dispose();
     storage.releaseContinuation();
     await storage.continued;
     await expect(secondActivation).resolves.toBe(true);
+    replacement.dispose();
 
     storage.close();
     resetThreadsStoreForTests();
@@ -1140,6 +1146,8 @@ test("stale recovery persistence refusal preserves the unsent draft and attachme
     await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(queuedRecord.clientMutationId));
     await screen.findByRole("button", { name: "Remove recovered.png" });
     const submittedText = source.getSnapshot().text;
+    const peerRecovery = await peer.getRecovery(queuedRecord.clientMutationId);
+    if (!peerRecovery) throw new Error("missing peer recovery fixture");
 
     // A second tab commits a newer durable composition after this Composer
     // loaded its owner revision. Its own recovery composition stays available.
@@ -1150,6 +1158,11 @@ test("stale recovery persistence refusal preserves the unsent draft and attachme
         [{ type: "text", text: "newer composition in another tab" }],
         undefined,
         "newer composition in another tab",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { [queuedRecord.clientMutationId]: recoveryCompositionRevision(peerRecovery) },
       );
     });
     expect(competingWrite).toBeDefined();
@@ -1376,13 +1389,17 @@ test("late built-in success does not consume newer edited recovery work", async 
     expect((await storage.getRecovery(record.clientMutationId))?.composerText).toBe("newer work"),
   );
   await act(async () => finishCommand.resolve());
+  await waitFor(() => expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false));
+  await flushPendingTurnsProjectionForTests();
   await waitFor(() =>
     expect(source.getSnapshot()).toMatchObject({ text: "newer work", activeRecoveryId: record.clientMutationId }),
   );
   expect((await storage.getRecovery(record.clientMutationId))?.composerText).toBe("newer work");
 
-  cleanup();
-  source.dispose();
+  await act(async () => {
+    cleanup();
+    source.dispose();
+  });
   const reopenedStorage = new MutationOutboxIndexedDB();
   const reopenedSource = mount(fake).source;
   await flushPendingTurnsProjectionForTests();
@@ -1391,8 +1408,11 @@ test("late built-in success does not consume newer edited recovery work", async 
   expect(reopenedSource.getSnapshot()).toMatchObject({ text: "newer work", activeRecoveryId: record.clientMutationId });
   expect((await reopenedStorage.getRecovery(record.clientMutationId))?.composerText).toBe("newer work");
   expect(fake.calls.filter((call) => messageMutationMethods.has(call.method))).toEqual([]);
-  cleanup();
-  reopenedSource.dispose();
+  await flushPendingTurnsProjectionForTests();
+  await act(async () => {
+    cleanup();
+    reopenedSource.dispose();
+  });
   reopenedStorage.close();
 });
 
@@ -1432,13 +1452,14 @@ test("transient cleanup failure retires completed command recovery without repla
 async function emptyRecoverySource() {
   const { storage } = await setup();
   const record = await queued(storage, "completed command");
-  await editQueuedMutation(record.clientMutationId, "root");
+  const recovery = await editQueuedMutation(record.clientMutationId, "root");
+  if (!recovery) throw new Error("missing recovery fixture");
   const source = createTestComposerSource("root");
   source.bindEditor({
     read: () => ({ text: "", cursor: 0, selection: { start: 0, end: 0 } }),
     write: () => {},
   });
-  source.setActiveRecoveryId(record.clientMutationId);
+  source.setActiveRecoveryId(recovery);
   return { storage, record, source };
 }
 
@@ -1584,7 +1605,10 @@ test("replacing the recovery owner cancels the prior owner's cleanup retry", asy
   try {
     await act(async () => source.queueRecoveryPersistence(record.clientMutationId, "", [], []).catch(() => undefined));
     expect(vi.getTimerCount()).toBe(1);
-    await act(async () => source.setActiveRecoveryId("replacement-owner"));
+    const replacement = await queued(storage, "replacement owner");
+    const replacementRecovery = await editQueuedMutation(replacement.clientMutationId, "root");
+    if (!replacementRecovery) throw new Error("missing replacement recovery fixture");
+    await act(async () => source.setActiveRecoveryId(replacementRecovery));
     expect(vi.getTimerCount()).toBe(0);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_000);

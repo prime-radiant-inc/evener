@@ -130,6 +130,8 @@ export interface MutationOptimisticRecord<A extends MutationAttachmentRef = Muta
 export interface MutationRecoveryRecord<A extends MutationAttachmentRef = MutationAttachmentRef>
   extends MutationOutboxRecord<A> {
   recoveryKind: MutationRecoveryKind;
+  // Composition CAS version; absent on older records and interpreted as zero.
+  compositionRevision?: number;
   // Local browser draft snapshot incorporated into this recovery row. Not an
   // RPC field; absent on older rows and on native recovery records.
   localDraftRevisionId?: string;

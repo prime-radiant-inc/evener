@@ -1141,6 +1141,83 @@ describe("dismiss a rejected Stop", () => {
     expect(queryRow("refused-stop")).toBeNull();
     expect(queueStrip()).toBeNull();
   });
+
+  test("stale Dismiss refuses and reopened recovery keeps the peer composition", async () => {
+    const { record, row } = await renderRejectedStop();
+    await flushPendingTurnsProjectionForTests();
+    const peer = new MutationOutboxIndexedDB();
+    onTestFinished(() => peer.close());
+    const newer = await peer.updateRecoveryInput(
+      record.clientMutationId,
+      [{ type: "text", text: "peer's newer composition" }],
+      [],
+      "peer's newer composition",
+      [],
+      [],
+      undefined,
+      0,
+    );
+    expect(newer?.compositionRevision).toBe(1);
+    await act(async () => {
+      fireEvent.click(within(row).getByRole("button", { name: "Dismiss" }));
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(getToasts().map((toast) => toast.text)).toContain(
+      "This message changed in another tab. Refresh and try again.",
+    );
+    expect(queryRow("refused-stop")).not.toBeNull();
+    const reopened = new MutationOutboxIndexedDB();
+    onTestFinished(() => reopened.close());
+    expect(await reopened.getRecovery(record.clientMutationId)).toMatchObject({
+      compositionRevision: 1,
+      composerText: "peer's newer composition",
+    });
+  });
+});
+
+test("stale recovery Drain refuses without reporting success or resending", async () => {
+  const fake = connectFakeClient();
+  await hydrate(fake, "ref_a", {
+    evener: {
+      ref: "ref_a",
+      capabilities: CAPABILITIES,
+      queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+    },
+  });
+  const record = await seedRecovery("rejected", "visible recovery text");
+  await flushPendingTurnsProjectionForTests();
+  const peer = new MutationOutboxIndexedDB();
+  onTestFinished(() => peer.close());
+  const newer = await peer.updateRecoveryInput(
+    record.clientMutationId,
+    [{ type: "text", text: "peer's newer composition" }],
+    [],
+    "peer's newer composition",
+    [],
+    [],
+    undefined,
+    0,
+  );
+  expect(newer?.compositionRevision).toBe(1);
+  const onDrainSuccess = vi.fn();
+  const getComposerText = vi.fn(() => ({ text: "visible recovery text", attachments: [], hasPending: false }));
+  renderStrip(
+    defaultProps({
+      activeRecoveryId: record.clientMutationId,
+      activeRecoveryRevision: record.compositionRevision ?? 0,
+      getComposerText,
+      onDrainSuccess,
+    }),
+  );
+  await flushPendingTurnsProjectionForTests();
+  await userEvent.setup().click(await screen.findByRole("button", { name: "Steer queue now" }));
+  await flushPendingTurnsProjectionForTests();
+  expect(onDrainSuccess).not.toHaveBeenCalled();
+  expect(getToasts().map((toast) => toast.text)).toContain(
+    "This message changed in another tab. Refresh and try again.",
+  );
+  expect(fake.calls.filter(({ method }) => method === "turn/steer" || method === "turn/start")).toEqual([]);
+  expect(getComposerText).toHaveBeenCalled();
 });
 
 describe("row rendering", () => {

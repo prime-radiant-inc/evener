@@ -493,7 +493,8 @@ export function updateRecoveryPendingTurn(
   consumeRecoveryIds?: readonly string[],
   localDraftRevisionId?: string,
   expectedCompositionRevision?: number,
-): Promise<boolean> {
+  expectedRecoveryRevisions?: Readonly<Record<string, number>>,
+): ReturnType<typeof updateRecoveryMutation> {
   // Composer serializes edits before resending. A committed edit must release
   // that chain even when the recovery tray cannot refresh yet.
   return trackProjectionWork(
@@ -509,6 +510,7 @@ export function updateRecoveryPendingTurn(
         consumeRecoveryIds,
         localDraftRevisionId,
         expectedCompositionRevision,
+        expectedRecoveryRevisions,
       );
       void refreshPendingTurnsProjection(ref);
       return updated;
@@ -520,8 +522,11 @@ export function discardRecoveryPendingTurn(
   clientMutationId: string,
   ref: string,
   shouldDiscard?: () => boolean,
+  expectedCompositionRevision?: number,
 ): Promise<boolean> {
-  return mutateThenRefresh(ref, () => discardRecoveryMutation(clientMutationId, ref, shouldDiscard));
+  return mutateThenRefresh(ref, () =>
+    discardRecoveryMutation(clientMutationId, ref, shouldDiscard, expectedCompositionRevision),
+  );
 }
 
 export function editQueuedPendingTurn(
@@ -545,6 +550,7 @@ export function resendRecoveryPendingTurn(
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
   barrierRead?: Promise<MutationStopBarrier>,
+  expectedRecoveryRevisions?: Readonly<Record<string, number>>,
 ): Promise<boolean> {
   // Resend publishes its committed handoff directly. Reading the recovery
   // tray again cannot hold up a submission that already has a durable owner.
@@ -560,6 +566,7 @@ export function resendRecoveryPendingTurn(
         commandNames,
         mentions,
         barrierRead,
+        expectedRecoveryRevisions,
       );
       void refreshPendingTurnsProjection(ref);
       return record !== undefined;
