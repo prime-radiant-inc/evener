@@ -1253,17 +1253,6 @@ func delegateUpdateReadiness(packet delegatestore.TerminalPacket) string {
 	return metadata.Readiness
 }
 
-func delegatePacketReport(packet delegatestore.TerminalPacket) *ReportSummary {
-	if len(packet.Metadata) == 0 {
-		return nil
-	}
-	var metadata delegateTerminalPacketMetadata
-	if err := json.Unmarshal(packet.Metadata, &metadata); err != nil {
-		return nil
-	}
-	return metadata.Report
-}
-
 func delegateNotificationContent(plan delegateDeliveryPlan) (string, error) {
 	// The name attribute is display-only: the frame stays addressable by
 	// delegate_id alone, and an unnamed delegate renders no name attribute.

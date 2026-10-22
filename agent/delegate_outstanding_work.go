@@ -170,8 +170,7 @@ func (s *Session) dropOwnedShellAttention(ids []string) []string {
 	defer s.jobManager.mu.Unlock()
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
-		if strings.HasPrefix(id, "shell:") {
-			rest := strings.TrimPrefix(id, "shell:")
+		if rest, ok := strings.CutPrefix(id, "shell:"); ok {
 			jobID, _, _ := strings.Cut(rest, ":")
 			if job := s.jobManager.running[jobID]; job != nil && job.delegateShell != nil {
 				continue

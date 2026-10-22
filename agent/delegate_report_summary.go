@@ -24,6 +24,7 @@ type ReportSummary struct {
 	Blocker     string           `json:"blocker,omitempty"`
 }
 
+// TaskSummary is the durable task list's bounded projection.
 type TaskSummary struct {
 	Present    bool              `json:"present"`
 	Total      int               `json:"total"`
@@ -35,16 +36,19 @@ type TaskSummary struct {
 	Truncated  bool              `json:"truncated,omitempty"`
 }
 
+// TaskSummaryItem is one task named in a summary.
 type TaskSummaryItem struct {
 	ID          int    `json:"id"`
 	Status      string `json:"status"`
 	Description string `json:"description"`
 }
 
+// InventorySummary groups the outstanding-work IDs by category.
 type InventorySummary struct {
 	Categories []InventoryCategory `json:"categories,omitempty"`
 }
 
+// InventoryCategory is one kind of outstanding work and its IDs.
 type InventoryCategory struct {
 	Category string   `json:"category"`
 	IDs      []string `json:"ids"`

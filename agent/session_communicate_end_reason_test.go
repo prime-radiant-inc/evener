@@ -119,7 +119,7 @@ func TestCommunicateDeliversItsEndReason(t *testing.T) {
 				setCommunicateTerminal: func(context.Context, string, string, string, any, string) bool { return true },
 				offersEndReason:        tc.offered,
 				delegate:               tc.delegate,
-					validateWaitTarget:     func(context.Context, string) error { return nil },
+				validateWaitTarget:     func(context.Context, string) error { return nil },
 			}
 			reg := tool.NewRegistry()
 			_ = registerCommunicateTool(reg, deps)

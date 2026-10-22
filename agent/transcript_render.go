@@ -1272,6 +1272,8 @@ var jobResultKnownKeys = map[string]bool{
 	"tools":               true, // stableDelegateCreateResult, delegateSendResult
 	"artifacts_dir":       true, // stableDelegateCreateResult
 	"earlier_results":     true, // delegateSendResult, each rendered as a reply is
+	"readiness":           true, // delegateSendResult
+	"report_summary":      true, // delegateSendResult
 }
 
 var jobResultMetadataKeys = []string{

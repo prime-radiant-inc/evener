@@ -2546,11 +2546,12 @@ func stableDelegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinis
 	if reportKind == "" {
 		reportKind = "done"
 	}
-	if finish.outcome == delegatestore.OutcomeFailed {
+	switch finish.outcome {
+	case delegatestore.OutcomeFailed:
 		reportKind = "failed"
-	} else if finish.outcome == delegatestore.OutcomeCancelled {
+	case delegatestore.OutcomeCancelled:
 		reportKind = "cancelled"
-	} else if finish.outcome == delegatestore.OutcomeExhausted {
+	case delegatestore.OutcomeExhausted:
 		reportKind = "exhausted"
 	}
 	report := buildReportSummary(inputs.session, reportKind)

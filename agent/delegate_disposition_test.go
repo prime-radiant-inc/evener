@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"reflect"
 	"testing"
 
@@ -112,9 +113,7 @@ func TestDelegateCommunicateRequiresBlockerAndWaitTarget(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			reg, delivered := delegateDispositionRegistry(t, true, false)
 			args := map[string]any{"message": "report", "end_turn": true}
-			for key, value := range tc.args {
-				args[key] = value
-			}
+			maps.Copy(args, tc.args)
 			res := reg.ExecuteCall(context.Background(), nil, communicateCallArgs("comm-1", args))
 			if tc.wantErr {
 				assertInvalidParams(t, res)

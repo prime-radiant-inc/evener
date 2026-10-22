@@ -978,11 +978,16 @@ const (
 // routeNoToolCalls lets notification acknowledgements finish idle. After a
 // terminal communicate, notification silence must not resurrect the run (#329).
 func routeNoToolCalls(kind EntryKind, noContent bool, afterTerminalCommunicate bool, carriedDelegateReport bool) noCallsRoute {
-	if kind == EntryNotification && carriedDelegateReport {
-		return runNoToolCalls
-	}
-	if kind == EntryNotification && (!noContent || afterTerminalCommunicate) {
-		return finishIdle
+	if kind == EntryNotification {
+		if afterTerminalCommunicate {
+			return finishIdle
+		}
+		if carriedDelegateReport {
+			return runNoToolCalls
+		}
+		if !noContent {
+			return finishIdle
+		}
 	}
 	return runNoToolCalls
 }
