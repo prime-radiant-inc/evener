@@ -128,6 +128,27 @@ test("dev build shows restart progress, timeout, and failure states", async () =
   expect(await screen.findByTestId("hub-dev-restart-error")).toBeTruthy();
 });
 
+test("dev build retries a failed check when the connection becomes ready", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/settings/overview", () => overview("dev"));
+  let attempts = 0;
+  fake.on("evener/update/check", () => {
+    attempts += 1;
+    if (attempts === 1) throw new WireError("socket hung up", -1);
+    return { ...UP_TO_DATE, buildChannel: "dev", applicable: false };
+  });
+  fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
+
+  render(<HubSection />);
+  await waitFor(() => expect(attempts).toBe(1));
+  expect(await screen.findByTestId("hub-dev-check-error")).toBeTruthy();
+
+  act(() => connectionStore.setState({ state: "reconnecting" }));
+  act(() => connectionStore.setState({ state: "ready" }));
+  await waitFor(() => expect(attempts).toBe(2));
+  expect(screen.queryByTestId("hub-dev-check-error")).toBeNull();
+});
+
 test("release build checks on mount and separates Install from Restart", async () => {
   const fake = connectFakeClient();
   fake.on("evener/settings/overview", () => overview("snapshot"));

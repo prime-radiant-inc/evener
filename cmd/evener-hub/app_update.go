@@ -441,7 +441,19 @@ type restartPin struct {
 
 // pinInstalledBinary records the identity of the just-installed binary.
 func pinInstalledBinary(path string) (restartPin, error) {
-	data, err := os.ReadFile(path)
+	f, err := openInstalledRead(path)
+	if err != nil {
+		return restartPin{}, err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return restartPin{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return restartPin{}, errors.New("installed binary is not a regular file")
+	}
+	data, err := io.ReadAll(f)
 	if err != nil {
 		return restartPin{}, err
 	}

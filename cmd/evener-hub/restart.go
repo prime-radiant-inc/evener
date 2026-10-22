@@ -119,10 +119,12 @@ func runHubRestart(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 
 	if err := waitForNewIncarnation(ctx, addr, baseline); err != nil {
+		confirmErr := err
 		if requestErr != nil {
-			return fmt.Errorf("%w; %w", requestErr, err)
+			confirmErr = fmt.Errorf("%w; %w", requestErr, err)
 		}
-		return err
+		_, _ = fmt.Fprintf(stderr, "[hub] restart confirmation: %v\n", confirmErr)
+		return confirmErr
 	}
 	_, _ = fmt.Fprintln(stdout, "hub restarted")
 	return nil

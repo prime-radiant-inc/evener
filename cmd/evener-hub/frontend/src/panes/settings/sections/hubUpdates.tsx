@@ -73,10 +73,15 @@ export function HubUpdates() {
   }, [channel]);
 
   // Dev builds have no channel, but the check is still what reports the
-  // on-disk build and whether restart is available.
+  // on-disk build and whether restart is available. Retry when the
+  // connection becomes ready after a failed check: a check that died with
+  // the socket leaves check null, and the dev UI would otherwise show
+  // neither Restart nor the failure.
   useEffect(() => {
-    if (hub && buildChannel === "dev") void hubUpdateStore.getState().runCheck();
-  }, [hub, buildChannel]);
+    if (hub && buildChannel === "dev" && connectionState === "ready") {
+      void hubUpdateStore.getState().runCheck();
+    }
+  }, [hub, buildChannel, connectionState]);
 
   // A lost install response is reconciled once the socket is ready again.
   useEffect(() => {
@@ -174,6 +179,11 @@ export function HubUpdates() {
           </FieldDim>
         </p>
       )}
+      {isDev && checkError !== null && (
+        <InlineNotice tone="danger" data-testid="hub-dev-check-error">
+          Couldn't read the hub's build: {checkError}
+        </InlineNotice>
+      )}
 
       {!isDev && channel !== null && (
         <>
@@ -242,12 +252,17 @@ export function HubUpdates() {
         </>
       )}
 
-      {isDev && restartSupported && (
+      {isDev && (
         <>
           <div className={CLASS.actions}>
-            <Button size="sm" onClick={() => setConfirming(true)} disabled={busy}>
-              Restart hub
+            <Button size="sm" onClick={() => void hubUpdateStore.getState().runCheck()} disabled={busy}>
+              Check again
             </Button>
+            {restartSupported && (
+              <Button size="sm" onClick={() => setConfirming(true)} disabled={busy}>
+                Restart hub
+              </Button>
+            )}
           </div>
           {restarting && (
             <div data-testid="hub-dev-restarting">

@@ -146,6 +146,9 @@ func TestHubRestartCommandUsesResponseIncarnation(t *testing.T) {
 	if err := runHubRestart([]string{"--addr", addr, "--timeout", "300ms"}, &stderr, deps); err == nil {
 		t.Fatal("runHubRestart confirmed a process that never restarted")
 	}
+	if stderr.Len() == 0 {
+		t.Fatal("restart confirmation failure wrote no diagnostic")
+	}
 }
 
 func TestHubRestartSubcommandDispatch(t *testing.T) {
