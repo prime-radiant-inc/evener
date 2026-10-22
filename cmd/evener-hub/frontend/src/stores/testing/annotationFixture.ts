@@ -189,6 +189,53 @@ export function openSiblingRepository(
   });
 }
 
+// A second FULL tab over the same database: its own drafts repository and its
+// own adapter, sharing only the durable database and the BroadcastChannel. A
+// sibling built on the same drafts repository cannot stand in for a peer - the
+// drafts subscription fires locally, so a mutation in "the peer" reaches the
+// local adapter and masks the channel path. Only a real second repository
+// proves a wake crossed the channel.
+export interface PeerRepository {
+  drafts: BrowserDraftRepository;
+  repository: BrowserDocumentAnnotationRepository;
+  close: () => void;
+}
+
+export function openPeerRepository(
+  store: AnnotationStore,
+  options: {
+    targetFor?: DocumentAnnotationOptions["targetFor"];
+    beforeCommit?: DocumentAnnotationOptions["beforeCommit"];
+    beforeExpiryFence?: DocumentAnnotationOptions["beforeExpiryFence"];
+    onAppendReadsIssued?: DocumentAnnotationOptions["onAppendReadsIssued"];
+    onStorageSuccess?: () => void;
+  } = {},
+): PeerRepository {
+  const drafts = createBrowserDraftRepository({
+    indexedDB: store.factory,
+    databaseName: store.databaseName,
+    storage: new MemoryStorage(),
+  });
+  const repository = createDocumentAnnotationRepository({
+    indexedDB: store.factory,
+    databaseName: store.databaseName,
+    drafts,
+    targetFor: options.targetFor ?? (() => null),
+    beforeCommit: options.beforeCommit,
+    beforeExpiryFence: options.beforeExpiryFence,
+    onAppendReadsIssued: options.onAppendReadsIssued,
+    onStorageSuccess: options.onStorageSuccess,
+  });
+  return {
+    drafts,
+    repository,
+    close: () => {
+      repository.close();
+      drafts.close();
+    },
+  };
+}
+
 export interface AnnotationFixtureOptions
   extends Omit<
     AnnotationStoreOptions,

@@ -25,6 +25,7 @@ import {
   COMPOSER_DRAFTS_STORE,
 } from "./localCompositionSchema";
 import {
+  type AnnotationFixture,
   type AnnotationFixtureWithRuntime,
   buildAnnotationOperation,
   deferred,
@@ -46,6 +47,23 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
+
+// A fixture whose first expiry-fence hook rejects: the hook proves no fence
+// committed and exercises the release path. Later hooks succeed, so a test can
+// re-accept once the released epoch is eligible again.
+function openRejectingHookFixture(databaseName: string): Promise<AnnotationFixture> {
+  let rejectNext = true;
+  return openAnnotationFixture({
+    databaseName,
+    origin: "https://coordination.example",
+    beforeExpiryFence: async () => {
+      if (rejectNext) {
+        rejectNext = false;
+        throw new Error("hook fault");
+      }
+    },
+  });
+}
 
 // A changed read installs its provisional suppression at entry and releases it
 // only when its durable validation answers. A handoff overlapping that window
@@ -1176,17 +1194,7 @@ test("a retained fence superseded by a peer reset releases silently", async () =
 // suppression but before any fence committed. Nothing durable expired, so the
 // epoch must stay listed and savable: release exactly this invocation's install.
 test("a rejected expiry-fence hook leaves the epoch listed and savable", async () => {
-  let rejectNext = true;
-  const fixture = await openAnnotationFixture({
-    databaseName: "annotation-hook-rejection",
-    origin: "https://coordination.example",
-    beforeExpiryFence: async () => {
-      if (rejectNext) {
-        rejectNext = false;
-        throw new Error("hook fault");
-      }
-    },
-  });
+  const fixture = await openRejectingHookFixture("annotation-hook-rejection");
   try {
     const ticket = await fixture.repository.beginRead(fixture.document);
     await expect(fixture.repository.acceptRead(ticket, sampleChangedContent())).rejects.toThrow("hook fault");
@@ -1205,17 +1213,7 @@ test("a rejected expiry-fence hook leaves the epoch listed and savable", async (
 // listing: a reader subscribed to the document must be woken, or a handoff
 // that refused in the window waits for unrelated activity.
 test("a rejected expiry-fence hook publishes the release's document settle", async () => {
-  let rejectNext = true;
-  const fixture = await openAnnotationFixture({
-    databaseName: "annotation-hook-rejection-settle",
-    origin: "https://coordination.example",
-    beforeExpiryFence: async () => {
-      if (rejectNext) {
-        rejectNext = false;
-        throw new Error("hook fault");
-      }
-    },
-  });
+  const fixture = await openRejectingHookFixture("annotation-hook-rejection-settle");
   const listener = vi.fn();
   fixture.repository.subscribe(fixture.document, listener);
   try {
