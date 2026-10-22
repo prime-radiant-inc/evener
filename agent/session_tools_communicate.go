@@ -12,12 +12,18 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/tool/repair"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
 func callIDFromContext(ctx context.Context) string {
 	callID, _ := ctx.Value(ctxToolCallID).(string)
 	return callID
+}
+
+func communicateStringArg(args map[string]any, name string) string {
+	value, _ := args[name].(string)
+	return strings.TrimSpace(value)
 }
 
 // registerCommunicateTool registers the session's result tool under its
@@ -76,6 +82,8 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 	}
 	if deps.offersEndReason {
 		resultToolDef = tool.WithCommunicateEndReason(resultToolDef)
+	} else if deps.delegate {
+		resultToolDef = tool.WithDelegateCommunicateEndReason(resultToolDef)
 	}
 	_ = reg.Register(tool.RegisteredTool{
 		Definition: resultToolDef,
@@ -95,10 +103,29 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 			}
 			// The registry's schema has already held end_reason to its enum.
 			endReason := ""
-			if endTurn && deps.offersEndReason {
+			blocker := ""
+			waitingOn := ""
+			if endTurn && (deps.offersEndReason || deps.delegate) {
 				endReason, _ = args["end_reason"].(string)
 				if endReason == "" {
 					endReason = tool.CommunicateEndReasonDone
+				}
+				if deps.delegate {
+					blocker = communicateStringArg(args, "blocker")
+					waitingOn = communicateStringArg(args, "waiting_on")
+					switch endReason {
+					case tool.CommunicateEndReasonDone:
+					case tool.CommunicateEndReasonBlocked:
+						if blocker == "" {
+							return nil, appwire.InvalidParams("communicate end_reason blocked requires blocker")
+						}
+					case tool.CommunicateEndReasonWaitingOnWork:
+						if waitingOn == "" {
+							return nil, appwire.InvalidParams("communicate end_reason waiting_on_work requires waiting_on")
+						}
+					default:
+						return nil, appwire.InvalidParams(fmt.Sprintf("communicate end_reason %q is not available to a delegate", endReason))
+					}
 				}
 			}
 
@@ -131,6 +158,8 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 				EndTurn:   endTurn,
 				Message:   message,
 				EndReason: endReason,
+				Blocker:   blocker,
+				WaitingOn: waitingOn,
 			}); err != nil {
 				// The transcript refused the entry (a poisoned or closed
 				// writer, or a served session failing closed): nothing

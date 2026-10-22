@@ -567,6 +567,8 @@ type CommunicateData struct {
 	EndTurn   bool   `json:"end_turn"`
 	Message   string `json:"message"`
 	EndReason string `json:"end_reason,omitempty"`
+	Blocker   string `json:"blocker,omitempty"`
+	WaitingOn string `json:"waiting_on,omitempty"`
 }
 
 // SkillActivatedData is the payload for an EventSkillActivated event.

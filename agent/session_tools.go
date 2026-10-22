@@ -1616,6 +1616,8 @@ func (s *Session) rebuildToolDefsCache() {
 			defs[i] = tool.WithoutIntentParameter(defs[i])
 			if s.hasHumanPartnerToAsk() {
 				defs[i] = tool.WithCommunicateEndReason(defs[i])
+			} else if s.reportsToParent() {
+				defs[i] = tool.WithDelegateCommunicateEndReason(defs[i])
 			}
 			if s.reportsToParent() {
 				defs[i] = tool.WithCommunicateDelegateUpdates(defs[i])

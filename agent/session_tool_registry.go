@@ -55,6 +55,11 @@ type toolDeps struct {
 	// (Session.hasHumanPartnerToAsk).
 	offersEndReason bool
 
+	// delegate reports that communicate reports to a parent agent
+	// (Session.reportsToParent), so it offers the delegate dispositions and
+	// the blocker and waiting_on targets instead of needs_response.
+	delegate bool
+
 	// memoryToolsStripped reports that this session has no memory namespace
 	// (memoryNamespaceUnavailable), so filterUnavailableMemoryTools will remove
 	// every memory_-prefixed name — which makes the whole prefix unavailable as
@@ -380,6 +385,7 @@ func newToolDeps(s *Session) *toolDeps {
 		runningJobIDs:          func() []string { return sessionRunningWorkIDs(s) },
 		turnEndsProcess:        s.cfg.TurnEndsProcess,
 		offersEndReason:        s.hasHumanPartnerToAsk(),
+		delegate:               s.reportsToParent(),
 		memoryToolsStripped:    memoryNamespaceUnavailable(s.cfg),
 		toolNameMap:            s.profile.ToolNameMap(),
 		nativeWebSearch:        s.providerWebSearchEnabled(s.profile) && protocolInjectsNativeWebSearch(s.profile.Protocol()),
