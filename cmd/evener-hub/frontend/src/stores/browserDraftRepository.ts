@@ -11,6 +11,7 @@ import type { ComposerPreparation } from "../panes/session/composer/composerCont
 import {
   type ComposerDraft,
   composerDraftStorageKey,
+  decodeStructuredComposerDraft,
   decodeSupportedComposerDraft,
   draftStorageKey,
   isBlankDraft,
@@ -160,7 +161,7 @@ interface InspectedDraft {
   structuredV2: string | null;
   // Which legacy representation the decoded value came from. The import carries
   // exactly this one's content, so only its bytes are removable.
-  carried: "v1" | "v2";
+  carriedFromV2: boolean;
   value: ComposerDraft;
 }
 
@@ -869,11 +870,11 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
       const draftKey: BrowserDraftKey = { namespace: { ...namespace }, sessionRef };
       const value = decodeSupportedComposerDraft(structuredV2, legacyV1);
       // The structured record wins whenever it decodes to the value the import
-      // carries; otherwise the v1 literal is what the row now holds.
-      const carried =
-        structuredV2 !== null && sameComposerValue(decodeSupportedComposerDraft(structuredV2, null), value)
-          ? "v2"
-          : "v1";
+      // carries; otherwise the v1 literal is what the row now holds. The
+      // decoder already knows whether it decoded, so decode once and derive
+      // the provenance from that result instead of parsing the record again.
+      const structured = structuredV2 === null ? null : decodeStructuredComposerDraft(structuredV2);
+      const carriedFromV2 = structured !== null && sameComposerValue(structured.value, value);
       return {
         key: draftKey,
         draftKey: serializeSessionKey(draftKey),
@@ -881,7 +882,7 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         legacyKeyV2,
         legacyV1,
         structuredV2,
-        carried,
+        carriedFromV2,
         value,
       };
     });
@@ -910,7 +911,7 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         // both markers exist, and cleans nothing because that scan imported
         // nothing. The composer-side recovery path is what eventually
         // disposes of it, never this cleanup.
-        const v2Carried = item.carried === "v2";
+        const v2Carried = item.carriedFromV2;
         const v1Carried = item.legacyV1 !== null && item.legacyV1 === item.value.text;
         for (const [legacyKey, bytes, carried] of [
           [item.legacyKeyV2, item.structuredV2, v2Carried],

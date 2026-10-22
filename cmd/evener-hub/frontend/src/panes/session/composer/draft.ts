@@ -90,7 +90,9 @@ function isStoredComposerDraft(value: unknown): value is ComposerDraft {
 // The decoded structured record with its persistence stamp kept alongside:
 // readComposerDraft leaves the stamp out of its public value, while the
 // legacy-transfer decode orders migrated drafts by it.
-function decodeStructuredComposerDraft(structured: string | null): { value: ComposerDraft; editedAt?: number } | null {
+export function decodeStructuredComposerDraft(
+  structured: string | null,
+): { value: ComposerDraft; editedAt?: number } | null {
   if (structured === null) return null;
   let parsed: unknown;
   try {
