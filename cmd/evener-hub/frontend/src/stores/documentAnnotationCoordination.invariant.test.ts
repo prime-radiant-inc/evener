@@ -1844,3 +1844,69 @@ test("a reloading preparation adopts the committed token after a withheld acknow
   fixture.repository.close();
   fixture.drafts.close();
 });
+
+// A changed read's fence cancels the expired epoch's pending operations, which
+// is the eligibility-restoring event for a successor that refused behind one of
+// them in the session FIFO. When that refusal lands while the changed read's
+// validation is durably committed but its completion event is still held, the
+// confirmed-expiry exemption is not yet in force - acceptRead installs it only
+// after the validation settles - so the successor records a retry need. The
+// fence's commit is then the only observation of the restored eligibility:
+// without its storage-success signal the runtime waits for unrelated activity
+// that never comes.
+test("a successor blocked behind an expiring operation completes when the fence commits", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+  });
+  // A successor on ANOTHER document shares the session sequence and the same
+  // handoff destination, so only the earlier expiring operation can block it.
+  const successorDocument: DocumentKey = { ...fixture.key, path: "OTHER.md" };
+  const successorTicket = await fixture.repository.beginRead(successorDocument);
+  const successorAccepted = await fixture.repository.acceptRead(successorTicket, fixture.content);
+  if (successorAccepted.state !== "accepted") {
+    throw new Error(`successor read was not accepted: ${successorAccepted.state}`);
+  }
+  const successor: PreparedAnnotation = {
+    ...buildAnnotationOperation(successorAccepted.lease, fixture.content),
+    operationId: "operation-2",
+  };
+  await fixture.runtime.save(successor);
+
+  // Hold the changed read's VALIDATION transaction: fake-indexeddb commits it
+  // and lets the next overlapping transaction run, but its completion event has
+  // not reached acceptRead, so the confirmed-expiry suppression is absent.
+  const validation = holdNextWriteTransaction([
+    ANNOTATION_NAMESPACES_STORE,
+    ANNOTATION_HEADS_STORE,
+    ANNOTATION_EVIDENCE_STORE,
+    ANNOTATION_OPERATIONS_STORE,
+    ANNOTATION_EXPIRY_STORE,
+  ]);
+  const changedTicket = await fixture.repository.beginRead(fixture.document);
+  const changedRead = fixture.repository.acceptRead(changedTicket, sampleChangedContent());
+  await validation.reached;
+
+  // The expiring operation's row is still pending and no exemption covers it
+  // yet: the session FIFO refuses the healthy successor behind it.
+  expect(await fixture.runtime.handoff(successorDocument, successor.operationId)).toEqual({
+    state: "pending",
+    reason: "dirty-draft",
+  });
+
+  // Releasing the completion lets the fence commit - the blocker is gone - and
+  // no external activity follows.
+  validation.release();
+  expect(await changedRead).toMatchObject({ state: "expiry-pending" });
+  await fixture.runtime.whenIdle();
+
+  const views = await fixture.repository.listAnnotations(successorDocument);
+  expect(views.find((view) => view.operation.operationId === successor.operationId)?.handoff.state).toBe(
+    "already-applied",
+  );
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});

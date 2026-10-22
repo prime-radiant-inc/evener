@@ -1086,8 +1086,18 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       };
     });
     // Both the changed-read fence and the retained-expiry retry land here after
-    // the real transaction commits.
-    this.#settleTransition({ documentKey });
+    // the real transaction commits. The commit settles BOTH halves: it replaces
+    // the displayed head, so readers and peers must wake, and it cancels every
+    // pending operation of the expired epoch, which is the eligibility-restoring
+    // event for a successor that refused behind one of those rows in the session
+    // FIFO. That refusal can only land while the changed read's VALIDATION is
+    // durably committed but its completion event has not reached acceptRead,
+    // because the confirmed-expiry exemption is installed in the continuation,
+    // after that completion; releasing the completion leaves the fence's commit
+    // as the only observation of the restored eligibility. The runtime's
+    // recorded retry need therefore has nothing to spend without this signal,
+    // and the healthy successor waits for unrelated external activity.
+    this.#settleTransition({ signal: true, documentKey });
     return fenced;
   }
 
