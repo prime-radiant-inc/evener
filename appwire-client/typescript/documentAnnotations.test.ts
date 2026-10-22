@@ -49,6 +49,25 @@ function passage(range = FIRST, selectedRenderedText = "same"): CapturedPassage 
   };
 }
 
+// The reference formatter produces prose for a person to read, so these tests
+// never match that prose. They read the DATA the reference carries instead:
+// every JSON-quoted field, and the code spans around the locator. A change to
+// wording that preserves the captured bytes and the structural choices
+// (delimiter length, JSON-quoted selection) keeps them green; a change that
+// drops, reorders or rewrites captured data fails them.
+function jsonQuoted(text: string): string[] {
+  return [...text.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((match) => JSON.parse(`"${match[1]}"`) as string);
+}
+
+function codeSpans(text: string): { delimiter: string; content: string }[] {
+  const spans: { delimiter: string; content: string }[] = [];
+  const pattern = /(`+)([\s\S]*?)\1/g;
+  for (let match = pattern.exec(text); match !== null; match = pattern.exec(text)) {
+    spans.push({ delimiter: match[1] ?? "", content: match[2] ?? "" });
+  }
+  return spans;
+}
+
 describe("source ranges", () => {
   it("uses the second literal occurrence and inclusive UTF16 positions", () => {
     expect(sourcePositions(SOURCE, SECOND)).toEqual({
@@ -59,7 +78,7 @@ describe("source ranges", () => {
       start: { line: 3, column: 51 },
       endInclusive: { line: 3, column: 52 },
     });
-    expect(() => validateSourceRange("a😀b", { start: 1, end: 2 })).toThrow();
+    expect(() => validateSourceRange("a😀b", { start: 1, end: 2 })).toThrow(RangeError);
   });
 
   it.each([
@@ -70,7 +89,7 @@ describe("source ranges", () => {
     ["fractional", { start: 0.5, end: 1 }],
     ["a split surrogate start", { start: 2, end: 3 }],
   ])("rejects %s ranges", (_name, range) => {
-    expect(() => validateSourceRange("a😀", range)).toThrow();
+    expect(() => validateSourceRange("a😀", range)).toThrow(RangeError);
   });
 
   it("counts CRLF as one line break while retaining both source units", () => {
@@ -240,34 +259,57 @@ describe("captured context", () => {
 
 describe("annotation reference formatting", () => {
   it("prints captured data in ordinary draft text without changing entered bytes", () => {
-    const reference = formatAnnotationReference(passage(), "NOTES.md", "Keep this scope.");
-    expect(reference.split("\n").slice(0, 3)).toEqual([
-      'A note on `NOTES.md:1:19-1:22` (captured source positions), selecting “same”: "Keep this scope."',
-      'Captured whole-file revision: "rev-A".',
-      'Context before: "First occurrence: "; after: "\\n\\nOther context for a second occurrence is nearby: same\\n".',
-    ]);
+    const capture = passage();
+    const note = "Keep this scope.";
+    const [locatorLine, evidenceLine, contextLine] = formatAnnotationReference(capture, "NOTES.md", note).split("\n");
+    // The locator is the captured range in a code span, and the selection and
+    // note survive as the exact bytes entered.
+    expect(codeSpans(locatorLine ?? "")).toContainEqual({ delimiter: "`", content: "NOTES.md:1:19-1:22" });
+    expect(locatorLine).toContain(capture.selectedRenderedText);
+    expect(jsonQuoted(locatorLine ?? "")).toEqual([note]);
+    // Every captured evidence and context field round-trips through JSON.
+    expect(jsonQuoted(evidenceLine ?? "")).toEqual([capture.evidence.wholeRevision]);
+    expect(jsonQuoted(contextLine ?? "")).toEqual([capture.contextBefore, capture.contextAfter]);
   });
 
   it("uses a longer code delimiter for backtick paths and encodes control characters unambiguously", () => {
     const path = "dir/a`b\nback\\slash.md";
     const reference = formatAnnotationReference(passage(), path, 'line one\n"line two"');
     const firstLine = reference.split("\n", 1)[0] ?? "";
-    expect(firstLine).toContain("`` dir/a`b\\nback\\\\slash.md:1:19-1:22 ``");
-    expect(firstLine).toContain(': "line one\\n\\"line two\\""');
+    // The path contains a backtick, so the locator's code span needs a longer
+    // delimiter, and the locator itself carries the escaped path and the
+    // captured positions.
+    expect(codeSpans(firstLine)).toEqual([{ delimiter: "``", content: " dir/a`b\\nback\\\\slash.md:1:19-1:22 " }]);
+    expect(jsonQuoted(firstLine)).toEqual(['line one\n"line two"']);
   });
 
   it("uses a JSON-quoted selection when curly quote delimiters occur in selected text", () => {
-    const reference = formatAnnotationReference(passage(FIRST, "left “same” right"), "NOTES.md", "note");
-    expect(reference.split("\n", 1)[0]).toContain('selecting "left “same” right": "note"');
+    const selected = "left “same” right";
+    const reference = formatAnnotationReference(passage(FIRST, selected), "NOTES.md", "note");
+    const firstLine = reference.split("\n", 1)[0] ?? "";
+    // Curly quotes force the JSON form; the captured selection still decodes
+    // to exactly the bytes selected, and the note stays separately quoted.
+    expect(jsonQuoted(firstLine)).toEqual([selected, "note"]);
   });
 
   it("labels prefix-only evidence without claiming whole-file coverage", () => {
-    const capture = passage();
-    capture.evidence = { fingerprint: displayedFingerprint(SOURCE, true) };
-    const evidenceLine = formatAnnotationReference(capture, "NOTES.md", "note").split("\n")[1];
-    expect(evidenceLine).toBe(
-      'Captured displayed-prefix reference: cyrb53 "l56j2xu13f", covering UTF-16 source range [0,78); content after this displayed prefix was not captured.',
-    );
+    const fingerprint = displayedFingerprint(SOURCE, true);
+    const prefixCapture: CapturedPassage = { ...passage(), evidence: { fingerprint } };
+    const fullCapture: CapturedPassage = {
+      ...passage(),
+      evidence: { fingerprint: displayedFingerprint(SOURCE, false) },
+    };
+    const prefixLine = formatAnnotationReference(prefixCapture, "NOTES.md", "note").split("\n")[1] ?? "";
+    const fullLine = formatAnnotationReference(fullCapture, "NOTES.md", "note").split("\n")[1] ?? "";
+    // The scope is behaviorally distinct: the same fingerprint data renders a
+    // different reference for a truncated read than for a complete one, and
+    // both carry the fingerprint value and the coverage they were built from.
+    expect(prefixLine).not.toBe(fullLine);
+    for (const line of [prefixLine, fullLine]) {
+      expect(jsonQuoted(line)).toContain(fingerprint.value);
+      expect(line).toContain(fingerprint.algorithm);
+      expect(line).toContain(`[${fingerprint.coverage.start},${fingerprint.coverage.end})`);
+    }
   });
 
   it("neutralizes attachment markers in every captured field it prints", () => {
@@ -286,7 +328,13 @@ describe("annotation reference formatting", () => {
     // append-and-send boundary is exercised in the app tree, where the
     // composer's own append lives.
     expect(markerPattern().test(reference)).toBe(false);
-    expect(reference.replaceAll("\u200b", "")).toContain("selecting “click [image 1] now”");
+    // Removing the inserted separators restores every captured field byte for
+    // byte, so neutralization neither drops nor rewrites the user's text.
+    const [locatorLine, evidenceLine, contextLine] = reference.replaceAll("\u200b", "").split("\n");
+    expect(jsonQuoted(locatorLine ?? "")).toEqual([note]);
+    expect(locatorLine).toContain(capture.selectedRenderedText);
+    expect(jsonQuoted(evidenceLine ?? "")).toEqual([capture.evidence.wholeRevision]);
+    expect(jsonQuoted(contextLine ?? "")).toEqual([capture.contextBefore, capture.contextAfter]);
   });
 });
 
