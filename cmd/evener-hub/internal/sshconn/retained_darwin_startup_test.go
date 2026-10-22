@@ -24,14 +24,8 @@ import (
 )
 
 // Publication, discovery/health enrichment and atomic target repair are real.
-// Darwin lock/process/launchd observations remain strict modeled evidence.
+// Darwin process/launchd observations remain strict modeled evidence.
 func TestRetainedDarwinStartupRecordRecovery(t *testing.T) {
-	testRetainedDarwinStartupRecordRecovery(t, false)
-}
-
-// The Darwin-only runtime test replaces only lock stat/lsof with real commands.
-func testRetainedDarwinStartupRecordRecovery(t *testing.T, realLock bool) {
-	t.Helper()
 	resolver := buildConfigIdentityResolver(t)
 	for _, mode := range []string{"deleted", "nonexecutable", "persisted-mismatch", "version-mismatch", "sha-mismatch", "persisted-at-write", "build-at-write"} {
 		t.Run(mode, func(t *testing.T) {
@@ -127,7 +121,7 @@ func testRetainedDarwinStartupRecordRecovery(t *testing.T, realLock bool) {
 			env := []string{"HOME=" + root}
 			post := ownerContext(root, env) + shellquote.RemoteWord(target) + " hub endpoint --json --config " + shellquote.RemoteWord(config)
 			recordRead := "if test -f " + shellquote.RemoteWord(file) + " && test ! -L " + shellquote.RemoteWord(file) + "; then head -c 65537 < " + shellquote.RemoteWord(file) + "; else exit 1; fi"
-			writes, locks, records, postReads := 0, 0, 0, 0
+			writes, records, postReads := 0, 0, 0
 			fr := &fakeRunner{runFn: func(ctx context.Context, command []string, in io.Reader) ([]byte, error) {
 				remote := strings.Join(command[12:], " ")
 				run := func() ([]byte, error) {
@@ -136,17 +130,6 @@ func testRetainedDarwinStartupRecordRecovery(t *testing.T, realLock bool) {
 					return cmd.Output()
 				}
 				switch remote {
-				case "stat -L -f '%d %i %p' " + shellquote.RemoteWord(filepath.Join(root, "hub.lock")):
-					if realLock {
-						return run()
-					}
-					return []byte("1234 678 100600\n"), nil
-				case "lsof -nP -F pftDil 2>&1":
-					locks++
-					if realLock {
-						return run()
-					}
-					return []byte("p" + pid + "\nf3\ntREG\nD0x4d2\ni678\nlW\n"), nil
 				case "ps -p " + pid + " -o lstart=":
 					return []byte("recorded-birth\n"), nil
 				case "launchctl list":
@@ -194,8 +177,8 @@ func testRetainedDarwinStartupRecordRecovery(t *testing.T, realLock bool) {
 			if mode == "deleted" || mode == "nonexecutable" {
 				data, readErr := os.ReadFile(target)
 				info, statErr := os.Stat(target)
-				if err != nil || readErr != nil || statErr != nil || string(data) != "staged-binary" || info.Mode()&0o111 == 0 || writes != 1 || locks != 2 || records != 2 || postReads != 1 || m.pendingRestart(host.Name).active() {
-					t.Fatalf("authorized real repair: err=%v read=%v stat=%v writes=%d locks=%d records=%d post=%d pending=%+v", err, readErr, statErr, writes, locks, records, postReads, m.pendingRestart(host.Name))
+				if err != nil || readErr != nil || statErr != nil || string(data) != "staged-binary" || info.Mode()&0o111 == 0 || writes != 1 || records != 2 || postReads != 1 || m.pendingRestart(host.Name).active() {
+					t.Fatalf("authorized real repair: err=%v read=%v stat=%v writes=%d records=%d post=%d pending=%+v", err, readErr, statErr, writes, records, postReads, m.pendingRestart(host.Name))
 				}
 			} else if err == nil || writes != 0 || postReads != 0 || !reflect.DeepEqual(pending, m.pendingRestart(host.Name)) {
 				t.Fatalf("mismatched evidence permitted repair: err=%v writes=%d post=%d pending=%+v", err, writes, postReads, m.pendingRestart(host.Name))
@@ -203,8 +186,8 @@ func testRetainedDarwinStartupRecordRecovery(t *testing.T, realLock bool) {
 			if err != nil && strings.Contains(err.Error(), "unexpected") {
 				t.Fatalf("fixture gap: %v", err)
 			}
-			if strings.HasSuffix(mode, "-at-write") && (!boundary || locks != 2 || records != 2) {
-				t.Fatalf("write-boundary check not reached: boundary=%t locks=%d records=%d", boundary, locks, records)
+			if strings.HasSuffix(mode, "-at-write") && (!boundary || records != 2) {
+				t.Fatalf("write-boundary check not reached: boundary=%t records=%d", boundary, records)
 			}
 			if len(fr.recordedStarts()) != 0 {
 				t.Fatal("repair attached or started a process")

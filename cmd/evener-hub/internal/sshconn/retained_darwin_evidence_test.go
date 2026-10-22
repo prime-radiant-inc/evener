@@ -16,7 +16,7 @@ import (
 // Darwin process, lsof and launchd observations are modeled here. This does not
 // establish that these commands work on a running macOS supervisor.
 func TestRetainedDarwinReinstallOwnership(t *testing.T) {
-	for _, mode := range []string{"live", "stopped-free", "launchd-live", "launchd-stopped", "other-lock-owner", "lock-unavailable", "lock-malformed", "lock-unlocked", "lock-changed", "generation-changed", "generation-after-read", "generation-unavailable", "absence-unavailable", "absence-malformed", "user-changed", "argv-changed", "cwd-changed", "environment-changed", "boot-changed", "record-unavailable", "launchd-unavailable", "now-supervised", "lock-owner-at-write", "stopped-lock-owner-at-write", "generation-at-write", "boot-at-write"} {
+	for _, mode := range []string{"live", "stopped-free", "launchd-live", "launchd-stopped", "generation-changed", "generation-after-read", "generation-unavailable", "absence-unavailable", "absence-malformed", "user-changed", "argv-changed", "cwd-changed", "environment-changed", "boot-changed", "record-unavailable", "launchd-unavailable", "now-supervised", "generation-at-write", "boot-at-write"} {
 		t.Run(mode, func(t *testing.T) {
 			host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 			repair, boundary := false, false
@@ -45,33 +45,9 @@ func TestRetainedDarwinReinstallOwnership(t *testing.T) {
 						return []byte("1000\n"), nil
 					case "id -u other":
 						return []byte("1001\n"), nil
-					case "stat -L -f '%d %i %p' /home/dev/.local/state/evener/hub.lock":
-						if mode == "lock-changed" && lockReads != 0 {
-							return []byte("1234 999 100600\n"), nil
-						}
-						return []byte("1234 678 100600\n"), nil
-					case "lsof -nP -F pftDil 2>&1":
-						lockReads++
-						if mode == "lock-unavailable" {
-							return nil, probeErr
-						}
-						if mode == "lock-malformed" {
-							return []byte("not lsof evidence\n"), nil
-						}
-						if mode == "stopped-free" || mode == "launchd-stopped" || mode == "absence-unavailable" || mode == "absence-malformed" || (mode == "stopped-lock-owner-at-write" && !boundary) {
-							return []byte("p99\nf1\ntREG\nD0x4d2\ni123\nl \n"), nil
-						}
-						pid, lock := "4242", "W"
-						if mode == "other-lock-owner" || ((mode == "lock-owner-at-write" || mode == "stopped-lock-owner-at-write") && boundary) {
-							pid = "9090"
-						}
-						if mode == "lock-unlocked" {
-							lock = " "
-						}
-						return []byte("p" + pid + "\nf3\ntREG\nD0x4d2\ni678\nl" + lock + "\n"), nil
 					case "ps -p 4242 -o lstart=":
 						generations++
-						if mode == "stopped-free" || mode == "launchd-stopped" || mode == "stopped-lock-owner-at-write" || mode == "other-lock-owner" || mode == "absence-unavailable" || mode == "absence-malformed" || mode == "generation-unavailable" {
+						if mode == "stopped-free" || mode == "launchd-stopped" || mode == "absence-unavailable" || mode == "absence-malformed" || mode == "generation-unavailable" {
 							return nil, probeErr
 						}
 						if mode == "generation-changed" || (mode == "generation-after-read" && generations == 2) || (mode == "generation-at-write" && boundary) {
@@ -160,14 +136,14 @@ func TestRetainedDarwinReinstallOwnership(t *testing.T) {
 			}
 			recorded = retained.selected.report.Running
 			repair, selected.executableAbsent = true, true
-			selected.stopped = mode == "stopped-free" || mode == "launchd-stopped" || mode == "stopped-lock-owner-at-write"
+			selected.stopped = mode == "stopped-free" || mode == "launchd-stopped"
 			_, _, err = m.deployForOperation(t.Context(), host, Preflight{Host: host.Name, OS: "darwin", Arch: "arm64", UID: "1000", ExecutableMissing: true}, retained)
 			if mode == "live" || mode == "stopped-free" || mode == "launchd-live" || mode == "launchd-stopped" {
 				if err != nil || writes != 2 || m.pendingRestart(host.Name).active() {
 					t.Fatalf("authorized Darwin repair: err=%v writes=%d pending=%+v", err, writes, m.pendingRestart(host.Name))
 				}
-				if lockReads < 2 {
-					t.Fatalf("missing initial/write-boundary lock evidence: %d", lockReads)
+				if lockReads != 0 {
+					t.Fatalf("pinned write inspected a remote lock: %d", lockReads)
 				}
 			} else if err == nil || writes != 1 || !reflect.DeepEqual(m.pendingRestart(host.Name), retained) {
 				t.Fatalf("unproven Darwin repair: err=%v writes=%d pending=%+v", err, writes, m.pendingRestart(host.Name))

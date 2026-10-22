@@ -118,6 +118,7 @@ func TestEnsureSelectedRestartReattaches(t *testing.T) {
 	commands = append(commands, first[0]) // Ensure decision consumes this report.
 	commands = append(commands, first...)
 	commands = append(commands, second...)
+	commands = append(commands, replacementGateCommands(t, second, true)...)
 	commands = append(commands, ownerCommand{"systemctl restart evener-hub-selected.service", ""})
 	commands = append(commands, selectedSuccessorCommands(t)...)
 	commands = append(commands, selectedPreflightCommands("release-selected")[4])
@@ -153,13 +154,16 @@ func TestEnsureSelectedStoppedReplacement(t *testing.T) {
 	_, second := ownerCommands(t)
 	commands := first
 	commands = append(commands, second...)
+	commands = append(commands, replacementGateCommands(t, second, true)...)
 	commands = append(commands, ownerCommand{"systemctl restart evener-hub-selected.service", ""})
 	failAt := len(commands)
 	stopped := remoteEndpointFixture(host.ConfigPath, "127.0.0.1:19371", "boot-one")
 	stopped.State, stopped.Running = "stopped", nil
 	raw := mustOwnerJSON(t, stopped)
 	commands = append(commands, selectedPreflightCommands("release-selected")...)
-	commands = append(commands, ownerCommand{first[0].command, raw}, ownerCommand{first[0].command, raw}, ownerCommand{first[9].command, raw}, first[10], first[11], ownerCommand{first[13].command, strings.ReplaceAll(first[13].output, "MainPID=4242", "MainPID=0")}, first[15], ownerCommand{first[0].command, raw}, ownerCommand{"systemctl restart evener-hub-selected.service", ""})
+	commands = append(commands, ownerCommand{first[0].command, raw}, ownerCommand{first[0].command, raw}, ownerCommand{first[9].command, raw}, first[10], first[11], ownerCommand{first[13].command, strings.ReplaceAll(first[13].output, "MainPID=4242", "MainPID=0")}, first[15], ownerCommand{first[0].command, raw})
+	commands = append(commands, replacementGateCommands(t, identityOwnerCommands(t, "linux", true), false)...)
+	commands = append(commands, ownerCommand{"systemctl start evener-hub-selected.service", ""})
 	commands = append(commands, selectedSuccessorCommands(t)...)
 	commands = append(commands, selectedPreflightCommands("release-selected")[4])
 	fr, index := ownerRunner(t, commands)

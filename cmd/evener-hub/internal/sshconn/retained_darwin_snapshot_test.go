@@ -13,48 +13,6 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 )
 
-func TestDarwinRetainedLockSnapshot(t *testing.T) {
-	for _, row := range []struct {
-		name, out, want string
-		refuse          bool
-	}{
-		{"free", "p99\nf1\ntREG\nD0x4d2\ni123\nl \n", "", false},
-		{"owner", "p4242\nf3\ntREG\nlW\nD0x4d2\ni678\n", "4242", false},
-		{"multiple-files", "p99\nf1\ntREG\nD0x4d2\ni123\nl \np4242\nf3\ntREG\nD0x4d2\ni678\nlW\nf4\ntIPv4\n", "4242", false},
-		{"other-device", "p4242\nf3\ntREG\nD0x4d3\ni678\nlW\n", "", false},
-		{"unlocked-open", "p4242\nf3\ntREG\nD0x4d2\ni678\n", "", true},
-		{"partial-lock", "p4242\nf3\ntREG\nD0x4d2\ni678\nlw\n", "", true},
-		{"two-owners", "p4242\nf3\ntREG\nD0x4d2\ni678\nlW\np9090\nf3\ntREG\nD0x4d2\ni678\nlW\n", "", true},
-		{"empty", "", "", true},
-		{"pid-only", "p4242\n", "", true},
-		{"missing-pid", "f3\ntREG\nD0x4d2\ni678\nlW\n", "", true},
-		{"missing-inode", "p4242\nf3\ntREG\nD0x4d2\nlW\n", "", true},
-		{"missing-device", "p4242\nf3\ntREG\ni678\nlW\n", "", true},
-		{"missing-type", "p4242\nf3\nD0x4d2\ni678\nlW\n", "", true},
-		{"bad-device", "p4242\nf3\ntREG\nDinvalid\ni678\nlW\n", "", true},
-		{"bad-inode", "p4242\nf3\ntREG\nD0x4d2\niunknown\nlW\n", "", true},
-		{"warning-with-success", "lsof: cannot examine a process\np99\nf1\ntREG\nD0x4d2\ni123\nl \n", "", true},
-		{"read-lock", "p4242\nf3\ntREG\nD0x4d2\ni678\nlR\n", "", true},
-		{"unknown-lock-type", "p4242\nf3\ntREG\nD0x4d2\ni678\nlN\n", "", true},
-		{"unlocked-field", "p4242\nf3\ntREG\nD0x4d2\ni678\nl \n", "", true},
-		{"link-count-not-lock", "p4242\nf3\ntREG\nD0x4d2\ni678\nk1\n", "", true},
-		{"synthetic-link-lock", "p4242\nf3\ntREG\nD0x4d2\ni678\nkW\n", "", true},
-		{"empty-lock", "p4242\nf3\ntREG\nD0x4d2\ni678\nl\n", "", true},
-		{"multiple-lock-values", "p4242\nf3\ntREG\nD0x4d2\ni678\nlWW\n", "", true},
-		{"unknown-lock-value", "p4242\nf3\ntREG\nD0x4d2\ni678\nlZ\n", "", true},
-		{"duplicate-lock", "p4242\nf3\ntREG\nD0x4d2\ni678\nlR\nlW\n", "", true},
-		{"other-file-read-lock", "p99\nf1\ntREG\nD0x4d2\ni123\nlR\n", "", false},
-		{"other-file-unknown-value", "p99\nf1\ntREG\nD0x4d2\ni123\nlZ\n", "", true},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			got, err := darwinLockSnapshot([]byte(row.out), 1234, 678)
-			if (err != nil) != row.refuse || (err == nil && got != row.want) {
-				t.Fatalf("pid=%q err=%v, want %q refusal=%t", got, err, row.want, row.refuse)
-			}
-		})
-	}
-}
-
 // Execute the production byte-bounded record command against real files. Only
 // this shell/file boundary is real here, not Darwin lsof or launchd.
 func TestRetainedDarwinRecordEvidence(t *testing.T) {

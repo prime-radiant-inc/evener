@@ -241,7 +241,7 @@ func TestRestartRecoverySupervisedProcessProof(t *testing.T) {
 							t.Fatalf("dormant startup: result=%+v effects=%d err=%v pending=%+v", result, effects, err, m.pendingRestart(host.Name))
 						}
 					case "live":
-						if !errors.Is(err, ErrRestart) || effects != 1 || !result.StartedAt.IsZero() || m.pendingRestart(host.Name).start {
+						if !errors.Is(err, errOwnerEvidence) || effects != 0 || !result.StartedAt.IsZero() || m.pendingRestart(host.Name).start || !m.pendingRestart(host.Name).active() {
 							t.Fatalf("live unit invented startup proof: result=%+v effects=%d err=%v", result, effects, err)
 						}
 					case "occupied":

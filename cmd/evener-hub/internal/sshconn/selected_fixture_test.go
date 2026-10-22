@@ -199,7 +199,7 @@ func modelSelectedProcess(t *testing.T, fr *fakeRunner, exe, before, after strin
 			return out, err
 		}
 		relaunch := "CDPATH='' cd -P -- /home/dev || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; " + relaunchCommand(launchArgv, "")
-		if remote == "systemctl start evener-hub.service" || remote == "systemctl restart evener-hub.service" || remote == "launchctl kickstart -k gui/1000/com.example.evener-hub" || (f.adhoc && remote == relaunch) {
+		if remote == "systemctl start evener-hub.service" || remote == "systemctl restart evener-hub.service" || remote == "launchctl kickstart -k gui/1000/com.example.evener-hub" || remote == "launchctl kickstart gui/1000/com.example.evener-hub" || (f.adhoc && remote == relaunch) {
 			out, err := base(ctx, argv, in)
 			if err == nil || f.advisory {
 				f.mutated = true

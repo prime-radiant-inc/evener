@@ -8,7 +8,6 @@ import (
 	"io"
 	"path"
 	"slices"
-	"strconv"
 	"strings"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
@@ -16,132 +15,11 @@ import (
 	"primeradiant.com/evener/internal/hubendpoint"
 )
 
-// darwinSelectedLockPID observes the selected lock vnode without acquiring it.
-// A successful global lsof snapshot is required: lsof <file>'s exit 1 cannot
-// distinguish a free file from an observation failure. Even an unlocked open
-// descriptor is inconclusive, not permission to overwrite a retained target.
-func (m *Manager) darwinSelectedLockPID(ctx context.Context, host hostreg.Host, root string) (string, error) {
-	if !path.IsAbs(root) {
-		return "", errOwnerEvidence
-	}
-	stat := "stat -L -f '%d %i %p' " + shellquote.RemoteWord(path.Join(root, "hub.lock"))
-	before, err := m.ownerRead(ctx, host, stat)
-	if err != nil {
-		return "", err
-	}
-	fields := strings.Fields(string(before))
-	if len(fields) != 3 {
-		return "", errOwnerEvidence
-	}
-	dev, err := strconv.ParseUint(fields[0], 10, 64)
-	if err != nil {
-		return "", errOwnerEvidence
-	}
-	ino, err := strconv.ParseUint(fields[1], 10, 64)
-	if err != nil || ino == 0 {
-		return "", errOwnerEvidence
-	}
-	mode, err := strconv.ParseUint(fields[2], 8, 64)
-	if err != nil || mode&0170000 != 0100000 {
-		return "", errOwnerEvidence
-	}
-	out, err := m.ownerRead(ctx, host, "lsof -nP -F pftDil 2>&1")
-	if err != nil {
-		return "", err
-	}
-	pid, err := darwinLockSnapshot(out, dev, ino)
-	if err != nil {
-		return "", err
-	}
-	after, err := m.ownerRead(ctx, host, stat)
-	if err != nil || !bytes.Equal(before, after) {
-		return "", errOwnerEvidence
-	}
-	return pid, nil
-}
-
-func darwinLockSnapshot(out []byte, dev, ino uint64) (string, error) {
-	var pid, selected, lock, kind string
-	var file, observed bool
-	var deviceSeen, inodeSeen, lockSeen bool
-	var fileDev, fileIno uint64
-	finish := func() error {
-		if file && (kind == "" || kind == "unknown" || (kind == "REG" && (!deviceSeen || !inodeSeen))) {
-			return errOwnerEvidence
-		}
-		if file && kind == "REG" && fileDev == dev && fileIno == ino {
-			// W denotes a whole-file write lock. Any other open descriptor
-			// refuses both live continuity and a claim that this root is free.
-			if lock != "W" || (selected != "" && selected != pid) {
-				return errOwnerEvidence
-			}
-			selected = pid
-		}
-		return nil
-	}
-	for line := range strings.SplitSeq(string(out), "\n") {
-		if line == "" {
-			continue
-		}
-		var err error
-		switch line[0] {
-		case 'p', 'f':
-			if err := finish(); err != nil {
-				return "", err
-			}
-			file, fileDev, fileIno, lock = false, 0, 0, ""
-			kind, deviceSeen, inodeSeen, lockSeen = "", false, false, false
-			if line[0] == 'p' {
-				pid = line[1:]
-				if _, err := numericPID(pid); err != nil || pid == "0" {
-					return "", errOwnerEvidence
-				}
-			} else {
-				if pid == "" || len(line) == 1 {
-					return "", errOwnerEvidence
-				}
-				file, observed = true, true
-			}
-		case 'D':
-			fileDev, err = strconv.ParseUint(strings.TrimPrefix(line[1:], "0x"), 16, 64)
-			deviceSeen = true
-		case 'i':
-			fileIno, err = strconv.ParseUint(line[1:], 10, 64)
-			inodeSeen = true
-		case 't':
-			kind = line[1:]
-		case 'l':
-			// l is lock status, not k (link count). Only documented single
-			// characters are evidence; only W authorizes the selected vnode.
-			if lockSeen || len(line) != 2 || !strings.ContainsRune(" rRwWuUNxX", rune(line[1])) {
-				return "", errOwnerEvidence
-			}
-			lockSeen = true
-			lock = line[1:]
-		default:
-			return "", errOwnerEvidence
-		}
-		if err != nil || (line[0] != 'p' && line[0] != 'f' && !file) {
-			return "", errOwnerEvidence
-		}
-	}
-	if err := finish(); err != nil {
-		return "", err
-	}
-	if !observed {
-		return "", errOwnerEvidence
-	}
-	return selected, nil
-}
-
 // A retained witness is not authority to write a different Darwin generation.
 // The deleted image cannot run its resolver, so bind its still-live process to
-// the previously verified record, launch context, lock vnode and birth instead.
+// the previously verified record, launch context and birth instead.
 func (m *Manager) revalidateRetainedDarwin(ctx context.Context, host hostreg.Host, facts Preflight, prior selectedOwner) error {
-	pid, err := m.darwinSelectedLockPID(ctx, host, prior.report.HubStateRoot)
-	if err != nil {
-		return err
-	}
+	var err error
 	live := prior.pid != "0"
 	var generation string
 	if live {
@@ -158,9 +36,6 @@ func (m *Manager) revalidateRetainedDarwin(ctx context.Context, host hostreg.Hos
 		} else if generation != prior.generation {
 			return errOwnerSelectionMismatch
 		}
-	}
-	if (!live && pid != "") || (live && pid != prior.pid) {
-		return errOwnerSelectionMismatch
 	}
 	defs, err := m.launchdOwners(ctx, host, facts, prior.pid)
 	if err != nil {

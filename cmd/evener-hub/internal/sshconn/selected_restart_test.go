@@ -20,6 +20,7 @@ func TestRemoteRestartSelectedInstance(t *testing.T) {
 	successor.Running.Version = "release-selected"
 	commands := first
 	commands = append(commands, second...)
+	commands = append(commands, replacementGateCommands(t, second, true)...)
 	commands = append(commands, ownerCommand{"systemctl restart evener-hub-selected.service", ""})
 	// Independent successor association is checked, not just a version at an old port.
 	_, next := ownerCommands(t)
@@ -73,14 +74,12 @@ func TestRemoteRestartUnresponsiveService(t *testing.T) {
 	first = append(first[:16], append([]ownerCommand{{"/proc/4242/exe launch-check --json", goodLaunchCheck}}, first[16:]...)...)
 	commands := first
 	commands = append(commands, second...)
-	commands = append(commands, ownerCommand{"systemctl restart evener-hub-selected.service", ""})
-	commands = append(commands, selectedSuccessorCommands(t)...)
 	fr, index := ownerRunner(t, commands)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "release-selected"})
-	if _, err := m.RestartForOperation(t.Context(), host, selectedRestartFacts(), nil); err != nil {
+	if _, err := m.RestartForOperation(t.Context(), host, selectedRestartFacts(), nil); !errors.Is(err, errOwnerEvidence) {
 		t.Fatal(err)
 	}
-	if *index != len(commands) || m.pendingRestart(host.Name).command != "" || len(fr.recordedStarts()) != 0 {
+	if *index != len(commands) || m.pendingRestart(host.Name).command == "" || len(fr.recordedStarts()) != 0 {
 		t.Fatalf("commands=%d/%d pending=%+v", *index, len(commands), m.pendingRestart(host.Name))
 	}
 }
@@ -92,13 +91,16 @@ func TestRemoteRestartRecoversStoppedReplacement(t *testing.T) {
 			_, second := ownerCommands(t)
 			commands := first
 			commands = append(commands, second...)
+			commands = append(commands, replacementGateCommands(t, second, true)...)
 			commands = append(commands, ownerCommand{"systemctl restart evener-hub-selected.service", ""})
 			failAt := len(commands)
 			stopped := remoteEndpointFixture(host.ConfigPath, "127.0.0.1:19371", "boot-one")
 			stopped.State, stopped.Running = "stopped", nil
 			raw := mustOwnerJSON(t, stopped)
 			// Revalidate exactly the selected definition, not another dormant unit.
-			commands = append(commands, ownerCommand{first[0].command, raw}, ownerCommand{first[9].command, raw}, first[10], first[11], ownerCommand{first[13].command, strings.ReplaceAll(first[13].output, "MainPID=4242", "MainPID=0")}, first[15], ownerCommand{first[0].command, raw}, ownerCommand{"systemctl restart evener-hub-selected.service", ""})
+			commands = append(commands, ownerCommand{first[0].command, raw}, ownerCommand{first[9].command, raw}, first[10], first[11], ownerCommand{first[13].command, strings.ReplaceAll(first[13].output, "MainPID=4242", "MainPID=0")}, first[15], ownerCommand{first[0].command, raw})
+			commands = append(commands, replacementGateCommands(t, identityOwnerCommands(t, "linux", true), false)...)
+			commands = append(commands, ownerCommand{"systemctl start evener-hub-selected.service", ""})
 			commands = append(commands, selectedSuccessorCommands(t)...)
 			fr, index := ownerRunner(t, commands)
 			run := fr.runFn

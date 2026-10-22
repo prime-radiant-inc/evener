@@ -1219,10 +1219,6 @@ func (m *Manager) reinstallRetainedTarget(ctx context.Context, host hostreg.Host
 				if err := m.checkHubOwner(ctx, host, prior.pid); err != nil {
 					return err
 				}
-				pid, err := m.selectedLockPID(ctx, host, prior.report.HubStateRoot)
-				if err != nil || pid != prior.pid {
-					return errOwnerSelectionMismatch
-				}
 				// This retained reinstall already proved the target unusable and
 				// bound this PID to the recorded owner. Match every recorded argv
 				// word, including the exact executable spelling, without resolving
@@ -1286,21 +1282,6 @@ func (m *Manager) reinstallRetainedTarget(ctx context.Context, host hostreg.Host
 		}
 		if err := ctx.Err(); err != nil {
 			return err
-		}
-		if facts.OS == "linux" {
-			if !path.IsAbs(prior.report.HubStateRoot) {
-				return errOwnerEvidence
-			}
-			// The old process can be gone while another ad-hoc hub owns the
-			// same root. Only a successful, empty selected-lock query proves
-			// this retained selection stopped, including at the write boundary.
-			out, err := m.ownerRead(ctx, host, selectedLockRemote(prior.report.HubStateRoot))
-			if err != nil {
-				return err
-			}
-			if len(out) != 0 {
-				return errOwnerSelectionMismatch
-			}
 		}
 		if prior.supervisor.kind != supervisorNone {
 			return m.revalidateStoppedService(ctx, host, facts, prior)

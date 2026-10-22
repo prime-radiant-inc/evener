@@ -85,9 +85,14 @@ func TestRemoteRestartIdentityResolvedTarget(t *testing.T) {
 					first := identityOwnerCommands(t, platform, stopped)
 					commands := first
 					commands = append(commands, identityOwnerCommands(t, platform, stopped)...)
+					commands = append(commands, replacementGateCommands(t, identityOwnerCommands(t, platform, stopped), !stopped)...)
 					mutation := identityRestartCommand(platform)
-					if stopped && platform == "linux" {
-						mutation.command = "systemctl start evener-hub-selected.service"
+					if stopped {
+						if platform == "linux" {
+							mutation.command = "systemctl start evener-hub-selected.service"
+						} else {
+							mutation.command = "launchctl kickstart gui/1000/com.example.evener-hub"
+						}
 					}
 					commands = append(commands, mutation)
 					mutationAt := len(commands)
@@ -101,6 +106,7 @@ func TestRemoteRestartIdentityResolvedTarget(t *testing.T) {
 						} else {
 							commands = append(commands, first[0], first[8], first[1], first[11], first[2], first[9], first[0])
 						}
+						commands = append(commands, replacementGateCommands(t, first, false)...)
 						commands = append(commands, mutation)
 					}
 					if replay == "ready" || replay == "lost-response" || replay == "stopped-retry" {
@@ -167,6 +173,7 @@ func TestRemoteRestartIdentitySameBirth(t *testing.T) {
 					facts.OS, facts.UID = platform, "1000"
 					commands := identityOwnerCommands(t, platform, false)
 					commands = append(commands, identityOwnerCommands(t, platform, false)...)
+					commands = append(commands, replacementGateCommands(t, identityOwnerCommands(t, platform, false), true)...)
 					commands = append(commands, identityRestartCommand(platform))
 					mutationAt := len(commands)
 					next := identitySuccessorCommands(t, platform, true, samePID)
@@ -175,9 +182,7 @@ func TestRemoteRestartIdentitySameBirth(t *testing.T) {
 					}
 					commands = append(commands, next...)
 					if recovery && samePID {
-						// An unchanged predecessor may be retried, never settled as a successor.
-						commands = append(commands, identityRestartCommand(platform))
-						commands = append(commands, next...)
+						commands = append(commands, next[0])
 					}
 					fr, index := ownerRunner(t, commands)
 					ctx, cancel := context.WithCancel(t.Context())
@@ -199,7 +204,11 @@ func TestRemoteRestartIdentitySameBirth(t *testing.T) {
 						}
 						err = m.recoverSelectedRestart(t.Context(), host, facts, m.pendingRestart(host.Name))
 					}
-					if samePID && !errors.Is(err, errReplacementFixture) || !samePID && err != nil {
+					want := errReplacementFixture
+					if recovery && samePID {
+						want = errOwnerEvidence
+					}
+					if samePID && !errors.Is(err, want) || !samePID && err != nil {
 						t.Fatalf("same birth settlement: err=%v", err)
 					}
 					if *index != len(commands) || (m.pendingRestart(host.Name).selected != nil) != samePID || len(fr.recordedStarts()) != 0 {

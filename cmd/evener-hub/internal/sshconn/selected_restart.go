@@ -3,6 +3,7 @@ package sshconn
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/internal/hubendpoint"
@@ -55,6 +56,87 @@ func selectedRelaunch(owner selectedOwner) string {
 	return ownerContext(owner.cwd, owner.env) + relaunchCommand(owner.argv, owner.logPath)
 }
 
+// checkSelectedReplacement is the last read-only boundary before any selected
+// stop or start. A lock holder is a locator, never stop authority. Both the live
+// predecessor and the definition that will launch its replacement must agree.
+func (m *Manager) checkSelectedReplacement(ctx context.Context, host hostreg.Host, facts Preflight, owner selectedOwner, live bool) error {
+	if live {
+		retained := owner.report.Running
+		if retained == nil || retained.BootID == "" {
+			return fmt.Errorf("%w: stop requires a retained live report", errOwnerEvidence)
+		}
+		_, err := m.revalidateOwnedEndpointUsing(ctx, host, facts, owner, func(ctx context.Context, host hostreg.Host, facts Preflight) (hubendpoint.Report, error) {
+			report, err := m.resolveHostEndpoint(ctx, host, facts)
+			if err != nil {
+				return report, err
+			}
+			running := report.Running
+			if running == nil || running.BootID != retained.BootID || running.PID != retained.PID || fmt.Sprint(running.PID) != owner.pid || running.ConfigPath != retained.ConfigPath || running.HubStateRoot != retained.HubStateRoot || report.ConfigPath != owner.report.ConfigPath || report.HubStateRoot != owner.report.HubStateRoot {
+				return report, fmt.Errorf("%w: stop requires the matching live report", errOwnerEvidence)
+			}
+			return report, nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+	if owner.supervisor.kind == supervisorLaunchd {
+		if facts.UID != owner.domainUID {
+			return fmt.Errorf("%w: selected launchd domain changed", errOwnerEvidence)
+		}
+		defs, err := m.launchdOwners(ctx, host, facts)
+		if err != nil {
+			return err
+		}
+		def, ok := defs[owner.supervisor]
+		pid := "0"
+		if live {
+			pid = owner.pid
+		}
+		if !ok || def.pid != pid || launchdIntent(def) != owner.definition {
+			return fmt.Errorf("%w: selected launchd definition changed", errOwnerEvidence)
+		}
+		return m.checkOwnerConfig(ctx, host, def.argv, def.cwd, def.env, owner.report)
+	}
+	if owner.supervisor.kind != supervisorNone {
+		pid := "0"
+		if live {
+			pid = owner.pid
+		}
+		sup, err := m.supervisorForOwner(ctx, host, pid, owner.argv, owner.cwd, owner.supervisor)
+		if err != nil {
+			return err
+		}
+		if sup != owner.supervisor {
+			return fmt.Errorf("%w: selected service changed", errOwnerEvidence)
+		}
+		definition, err := m.serviceDefinition(ctx, host, sup)
+		if err != nil {
+			return err
+		}
+		if definition != owner.definition {
+			return fmt.Errorf("%w: selected service definition changed", errOwnerEvidence)
+		}
+		user, ok := effectiveUserName(host)
+		if !ok {
+			out, err := m.ownerRead(ctx, host, "id -un")
+			if err != nil {
+				return err
+			}
+			user = firstLine(string(out))
+		}
+		env, err := m.stoppedServiceEnvironment(ctx, host, sup, user)
+		if err != nil {
+			return err
+		}
+		if !equalStrings(env, owner.env) {
+			return fmt.Errorf("%w: next service environment disagrees with selection", errOwnerEvidence)
+		}
+		return m.checkOwnerConfig(ctx, host, owner.argv, owner.cwd, env, owner.report)
+	}
+	return m.checkOwnerConfig(ctx, host, owner.argv, owner.cwd, owner.env, owner.report)
+}
+
 func (m *Manager) recoverSelectedRestart(ctx context.Context, host hostreg.Host, facts Preflight, pending pendingRestartState) error {
 	_, err := m.recoverSelectedRestartWithStart(ctx, host, facts, pending)
 	return err
@@ -81,7 +163,18 @@ func (m *Manager) recoverSelectedRestartWithStart(ctx context.Context, host host
 	if report.ConfigPath != prior.report.ConfigPath || report.HubStateRoot != prior.report.HubStateRoot {
 		return started, fmt.Errorf("%w: pending config/root changed", errOwnerEvidence)
 	}
-	if report.State != "stopped" {
+	stopped := report.State == "stopped"
+	if !stopped && report.Running == nil {
+		stopped = prior.pid == "0"
+		if !stopped {
+			out, err := m.ownerRead(ctx, host, processAliveRemote(prior.pid))
+			if err != nil {
+				return started, err
+			}
+			stopped = strings.TrimSpace(string(out)) == pidGoneMarker
+		}
+	}
+	if !stopped {
 		now, err := m.resolveOwnedEndpoint(ctx, host, facts)
 		if err != nil {
 			return started, err
@@ -112,7 +205,7 @@ func (m *Manager) recoverSelectedRestartWithStart(ctx context.Context, host host
 	if err := pending.validateExecutable(host.Name, facts); err != nil {
 		return started, err
 	}
-	// Stopped is a resolver-verified free selected lock, not an HTTP timeout.
+	// An absent process permits only a non-stopping start, not a restart.
 	// Recheck the service's definition and PID before replay. An ad-hoc replay
 	// checks that no newly selected supervisor owns the retained launch.
 	if err := m.checkOwnerConfig(ctx, host, prior.argv, prior.cwd, prior.env, report); err != nil {
@@ -146,13 +239,13 @@ func (m *Manager) recoverSelectedRestartWithStart(ctx context.Context, host host
 			return started, fmt.Errorf("%w: stopped launch now supervised", errOwnerEvidence)
 		}
 	}
-	// Re-resolve immediately before start so another selected lock winner cannot
-	// be mistaken for the stopped predecessor. No old listener has to disappear.
+	// Re-resolve the next launch identity, not remote lock availability. Another
+	// root owner is protected by the new process's own hub.lock acquisition.
 	latest, err := m.resolveHostEndpoint(ctx, host, facts)
 	if err != nil {
 		return started, err
 	}
-	if latest.State != "stopped" || latest.ConfigPath != report.ConfigPath || latest.HubStateRoot != report.HubStateRoot {
+	if latest.Running != nil || latest.ConfigPath != report.ConfigPath || latest.HubStateRoot != report.HubStateRoot {
 		return started, fmt.Errorf("%w: stopped selection changed before replay", errOwnerEvidence)
 	}
 	if pending.deployment || pending.command == "" {
@@ -236,8 +329,8 @@ func (m *Manager) waitSelectedSuccessor(ctx context.Context, host hostreg.Host, 
 	return fmt.Errorf("%w: selected successor PID, generation, boot or build not verified, version %q, want %q, backend_git_sha %q, want %q", ErrRestart, observedVersion, pending.expectedVersion, observedSHA, pending.expectedGitSHA)
 }
 
-// A free selected lock and independently absent selected service authorize only
-// fresh launch intent, never a guessed listener or replayed command.
+// An independently absent selected service permits only fresh launch intent,
+// never a guessed listener or replayed command. The new process acquires its lock.
 func (m *Manager) freshSelectedOwner(ctx context.Context, host hostreg.Host, report hubendpoint.Report) (selectedOwner, error) {
 	if addr := explicitHostAddr(m.opts, host); addr != "" {
 		if _, err := hubendpoint.ParseListenAddr(addr); err != nil {

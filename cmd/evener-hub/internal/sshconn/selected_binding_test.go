@@ -115,6 +115,7 @@ func TestRemoteRestartPreservesBinding(t *testing.T) {
 			commands := first
 			commands = append(commands, ownerCommand{"lsof -p 4242 -a -d 1,2", "evener 4242 dev 1w REG 1,2 123 456 " + logPath + "\nevener 4242 dev 2w REG 1,2 123 456 " + logPath + "\n"})
 			commands = append(commands, second...)
+			commands = append(commands, replacementGateCommands(t, second, true)...)
 			env := "export HOME=/home/dev; "
 			if strings.Contains(tc.env, "EVENER_HUB_LISTEN_ADDR=") {
 				env = "export EVENER_HUB_LISTEN_ADDR=127.0.0.1:0; " + env
@@ -168,6 +169,7 @@ func TestRemoteRestartRejectsUnselectedSuccessor(t *testing.T) {
 			}
 			commands := first
 			commands = append(commands, second...)
+			commands = append(commands, replacementGateCommands(t, second, true)...)
 			commands = append(commands, ownerCommand{"systemctl restart evener-hub-selected.service", ""})
 			commands = append(commands, next...)
 			fr, index := ownerRunner(t, commands)
@@ -191,6 +193,7 @@ func TestRemoteRestartStoppedReplayInvalidatesChangedSelection(t *testing.T) {
 			_, second := ownerCommands(t)
 			commands := first
 			commands = append(commands, second...)
+			commands = append(commands, replacementGateCommands(t, second, true)...)
 			commands = append(commands, ownerCommand{"systemctl restart evener-hub-selected.service", ""})
 			failAt := len(commands)
 			stopped := remoteEndpointFixture(host.ConfigPath, "127.0.0.1:19371", "boot-one")

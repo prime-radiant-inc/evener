@@ -3002,7 +3002,7 @@ func TestEnsureDeployPhaseHasItsOwnBudget(t *testing.T) {
 // its command before running it, so the next Ensure completes it.
 func TestEnsureSupervisorRestartRecoveryRetriesRestart(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
-	restarts, launchCalls := 0, 0
+	restarts, starts, launchCalls := 0, 0, 0
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
 		switch {
@@ -3026,12 +3026,15 @@ func TestEnsureSupervisorRestartRecoveryRetriesRestart(t *testing.T) {
 			return []byte("/opt/evener/bin/evener\n"), nil
 		case strings.Contains(joined, "list-units"):
 			return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
+		case strings.Contains(joined, "systemctl start"):
+			starts++
+			return nil, nil
 		case strings.Contains(joined, "systemctl restart"):
 			restarts++
 			return nil, nil
 		case strings.Contains(joined, "api/health"):
 			// The hub only answers once the recovery restart has run.
-			if restarts < 2 {
+			if restarts+starts < 2 {
 				return nil, errors.New("curl: (7) Failed to connect")
 			}
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
@@ -3071,8 +3074,8 @@ func TestEnsureSupervisorRestartRecoveryRetriesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ensure 2: %v (the pending supervisor restart must be retried)", err)
 	}
-	if restarts != 2 {
-		t.Fatalf("systemctl restarts after recovery = %d, want 2 (the recorded supervisor restart was not retried)", restarts)
+	if restarts != 1 || starts != 1 {
+		t.Fatalf("recovery: restarts=%d starts=%d, want 1/1", restarts, starts)
 	}
 	if got := ch.Preflight().Version; got != "newsha" {
 		t.Fatalf("channel version = %q, want newsha", got)
