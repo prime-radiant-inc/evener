@@ -29,6 +29,7 @@ import {
   currentPreparation,
   deferred,
   openAnnotationFixture,
+  openPeerRepository,
   openSiblingRepository,
   sampleChangedContent,
   sampleThirdContent,
@@ -2462,4 +2463,48 @@ test("a confirmed suppression at the append's final guard answers pending", asyn
 
   fixture.repository.close();
   fixture.drafts.close();
+});
+
+// A peer tab's committed dismissal flip unblocks this tab's FIFO successor,
+// but its wake reaches only this tab's readers. The successor's recorded need
+// has no trigger to spend, so delivery waits for unrelated local activity. A
+// peer wake must also signal this adapter's storage-success boundary, which is
+// the runtime's trigger - and it must not re-post the wake through
+// settleTransition, or two tabs would ping-pong it forever.
+test("a peer dismissal's wake delivers a local FIFO-blocked successor", async () => {
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-peer-dismissal",
+    origin: "https://coordination.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+    prepareAnnotation: currentPreparation(() => fixture),
+  });
+  const operationB: PreparedAnnotation = { ...fixture.operation, operationId: "operation-2" };
+  await fixture.runtime.save(operationB);
+  expect(await fixture.runtime.handoff(fixture.document, operationB.operationId)).toEqual({
+    state: "pending",
+    reason: "dirty-draft",
+  });
+
+  // Only the peer acts from here on. Its dismissal flips the predecessor's row
+  // terminal and publishes the channel wake this tab receives; nothing local
+  // fires.
+  const peer = openPeerRepository(fixture);
+  const passes = vi.spyOn(fixture.repository, "retryPendingWithOutcome");
+  try {
+    await peer.repository.dismissOperation(fixture.document, fixture.operation.operationId);
+    await settleRealTasks(() => passes.mock.calls.length > 0, 100);
+    expect(passes).toHaveBeenCalledTimes(1);
+    await fixture.runtime.whenIdle();
+
+    const views = await fixture.repository.listAnnotations(fixture.document);
+    expect(views.find((view) => view.operation.operationId === operationB.operationId)?.handoff.state).toBe(
+      "already-applied",
+    );
+  } finally {
+    peer.close();
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
 });

@@ -664,6 +664,14 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   #onPeerWake(message: AnnotationWakeMessage): void {
     if ("documentKey" in message) this.#notifyDocument(message.documentKey);
     else this.#notifyNamespace(message.namespaceKey);
+    // A peer's committed fence, dismissal flip, discard or append-applied
+    // flips pending rows that block this tab's FIFO successor, so the peer wake
+    // is also storage progress this tab's runtime may have recorded a need
+    // for. Signal the boundary DIRECTLY: routing this wake through
+    // #settleTransition would re-post it to the channel, and two tabs would
+    // ping-pong the same wake forever. A signal with no recorded need is
+    // dropped unspent by the runtime's spend rule, and its latch coalesces.
+    this.#notifyStorageSuccess();
   }
 
   // Observational storage-success boundary: called only AFTER an authority
