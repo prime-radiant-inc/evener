@@ -1968,14 +1968,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			continue
 		}
 		<-settlementClaim.ready
-		attentionPlans, attentionErr := a.sess.delegateController.AttentionResolutionsForFinalization(settlementClaim)
-		if executeErr := a.sess.executeDelegateMutationPlans(attentionPlans); attentionErr == nil {
-			attentionErr = executeErr
-		}
-		if attentionErr != nil {
-			err = errors.Join(err, attentionErr)
-		}
-		if err == nil && attentionErr == nil && a.sess.Communicated() {
+		if err == nil && a.sess.Communicated() {
 			candidate := a.sess.terminalCandidate()
 			if candidate.Disposition == "" {
 				candidate.Disposition = tool.CommunicateEndReasonDone
@@ -1998,6 +1991,13 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 					continue
 				}
 			}
+		}
+		attentionPlans, attentionErr := a.sess.delegateController.AttentionResolutionsForFinalization(settlementClaim)
+		if executeErr := a.sess.executeDelegateMutationPlans(attentionPlans); attentionErr == nil {
+			attentionErr = executeErr
+		}
+		if attentionErr != nil {
+			err = errors.Join(err, attentionErr)
 		}
 		if settlementClaim.mode == delegateSettlementTerminal {
 			if stableDelegateFatalRun(err) {
