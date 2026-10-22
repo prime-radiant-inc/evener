@@ -21,7 +21,6 @@ import { connectionStore, useConnectionStore } from "../stores/connection";
 import {
   selectLiveRows,
   selectLocation,
-  selectNeedsYouRows,
   selectNextSectionOffset,
   selectSectionRemaining,
 } from "../stores/navigation/selectors";
@@ -39,12 +38,12 @@ import { focusedSessionPaneId, focusedSessionRef } from "./focusedSession";
 import { HoldHints } from "./holdhints/HoldHints";
 import { installKeybindings } from "./installKeybindings";
 import { StackHost } from "./mobile/StackHost";
+import { NeedsYouProvider, useNeedsYou } from "./NeedsYouProvider";
 import { NotFound } from "./NotFound";
 import { CommandPalette } from "./palette/CommandPalette";
 import { openPalette, paletteStore } from "./palette/paletteController";
 import { RailHost } from "./rail";
 import { adjacentLiveSessionRef } from "./rail/liveSessionCycle";
-import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "./rail/needsYouCycle";
 import { navigate, observeRouteHistory, openSessionRoute, refParam, urlToPane } from "./routing";
 import { cycleSessionPane } from "./sessionCycle";
 import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
@@ -455,7 +454,7 @@ function reconcileWelcomeRouteWithLocation(location: NavigationSessionLocation |
   openNestedSessionWithOwner(childRef, location.top_level_ref);
 }
 
-export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateClient }: AppShellProps) {
+function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateClient }: AppShellProps) {
   const [slot, setSlot] = useState(() => createClientSlot(injectedClient));
   const { client, owned } = slot;
   // A banner retry wires a fresh client into connectionStore; adopting it
@@ -464,6 +463,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
   // idempotent on an already-connected client, so the mount effect below
   // safely re-runs for the adopted instance.
   const handleClientReplaced = useCallback((fresh: AppwireClientLike) => setSlot(adoptClientSlot(fresh)), []);
+  const { controller } = useNeedsYou();
 
   useEffect(() => {
     connectionStore.getState().connect(client);
@@ -545,60 +545,6 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
   // Dialog is the same "open the palette" intent as anywhere else.
   useEffect(() => {
     installKeybindings();
-    const requestedPages = new Set<string>();
-    let generation = navigationStore.getState().clientGenerationID;
-    let mounted = true;
-    let intent = 0;
-    const lastSettledNeedsYouPage = (state: ReturnType<typeof navigationStore.getState>) =>
-      [...state.resources.values()]
-        .filter(
-          (resource) =>
-            resource.key.kind === "section" &&
-            resource.key.section === "needs_you" &&
-            resource.data !== null &&
-            resource.data !== undefined &&
-            !resource.error &&
-            !resource.stale,
-        )
-        .sort((a, b) =>
-          a.key.kind === "section" && b.key.kind === "section"
-            ? a.key.offset - b.key.offset || a.key.limit - b.key.limit
-            : 0,
-        )
-        .at(-1);
-    const nextPageFor = (state: ReturnType<typeof navigationStore.getState>) => {
-      const offset = selectNextSectionOffset("needs_you", state);
-      return { offset, id: keyID({ kind: "section", section: "needs_you", offset, limit: 50 }) };
-    };
-    const openDemandedPage = (
-      beforeRefs: Set<string>,
-      focusAtIntent: string | null,
-      focusedPaneAtIntent: string | null,
-      pageID: string,
-      offset: number,
-    ) => {
-      if (requestedPages.has(pageID)) return;
-      const capturedIntent = ++intent;
-      requestedPages.add(pageID);
-      void navigationStore
-        .getState()
-        .loadSection("needs_you", offset)
-        .then(() => {
-          if (
-            !mounted ||
-            capturedIntent !== intent ||
-            paletteStore.getState().open ||
-            document.querySelector('[aria-modal="true"]') !== null ||
-            workspaceStore.getState().focusedPaneId !== focusedPaneAtIntent ||
-            focusedSessionRef() !== focusAtIntent
-          )
-            return;
-          const after = selectNeedsYouRows(navigationStore.getState());
-          const newlyLoaded = after.find((row) => !beforeRefs.has(row.ref));
-          if (newlyLoaded) openNeedsYouSession(newlyLoaded.ref);
-        })
-        .catch(() => undefined);
-    };
     const registry = keybindingsRegistry.getState();
     const unregisterActions = [
       registry.registerAction(ACTIONS.paletteOpen, () => openPalette()),
@@ -607,50 +553,7 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
         const paneId = focusedSessionPaneId();
         if (ref !== null) requestComposerFocus(ref, paneId);
       }),
-      registry.registerAction(ACTIONS.nextNeedsYou, () => {
-        const state = navigationStore.getState();
-        if (state.clientGenerationID !== generation) {
-          generation = state.clientGenerationID;
-          requestedPages.clear();
-        }
-        const rows = selectNeedsYouRows(state);
-        const refs = needsYouRefs(rows);
-        const current = focusedSessionRef();
-        if (
-          state.mode === "v3" &&
-          (refs.length === 0 || (current !== null && refs.indexOf(current) === refs.length - 1))
-        ) {
-          const page = nextPageFor(state);
-          const resource = state.resources.get(page.id);
-          const settledPage = lastSettledNeedsYouPage(state);
-          const beforeRefs = new Set(refs);
-          if (resource?.data !== null && resource?.data !== undefined && !resource.error && !resource.stale) {
-            const newlyLoaded = selectNeedsYouRows(state).find((row) => !beforeRefs.has(row.ref));
-            if (newlyLoaded) openNeedsYouSession(newlyLoaded.ref);
-            else {
-              const wrapped = nextNeedsYouRef(refs, current);
-              if (wrapped !== null) openNeedsYouSession(wrapped);
-            }
-            return;
-          }
-          if (refs.length === 0 && (state.manifest?.data?.sections.needs_you.count ?? 0) === 0) return;
-          if (
-            refs.length === 0 &&
-            settledPage !== undefined &&
-            ((settledPage.data as { remaining?: number } | null)?.remaining ?? 0) === 0
-          )
-            return;
-          if (refs.length > 0 && selectSectionRemaining("needs_you", state) === 0) {
-            const wrapped = nextNeedsYouRef(refs, current);
-            if (wrapped !== null) openNeedsYouSession(wrapped);
-            return;
-          }
-          openDemandedPage(beforeRefs, current, workspaceStore.getState().focusedPaneId, page.id, page.offset);
-          return;
-        }
-        const next = nextNeedsYouRef(refs, current);
-        if (next !== null) openNeedsYouSession(next);
-      }),
+      registry.registerAction(ACTIONS.nextNeedsYou, () => void controller.next()),
     ];
     function onClick(event: MouseEvent): void {
       const target = event.target as Element | null;
@@ -661,12 +564,10 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
     }
     document.addEventListener("click", onClick);
     return () => {
-      mounted = false;
-      intent++;
       for (const unregister of unregisterActions) unregister();
       document.removeEventListener("click", onClick);
     };
-  }, []);
+  }, [controller]);
 
   const connectionState = useConnectionStore((s) => s.state);
   const [pathname, historyRevision] = usePathname();
@@ -1200,5 +1101,13 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
         </div>
       </MotionProvider>
     </ClientProvider>
+  );
+}
+
+export function AppShell(props: AppShellProps) {
+  return (
+    <NeedsYouProvider>
+      <AppShellContent {...props} />
+    </NeedsYouProvider>
   );
 }

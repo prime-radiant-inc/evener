@@ -22,9 +22,12 @@ export type NeedsYouSnapshot = {
   loading: boolean;
   readFailed: boolean;
   blocked: boolean;
+  modalOpenCount: number;
 };
 export type NeedsYouController = {
   getSnapshot(): NeedsYouSnapshot;
+  /** True once dispose released this controller's resources. */
+  readonly disposed: boolean;
   subscribe(listener: () => void): () => void;
   next(): Promise<void>;
   select(ref: string): void;
@@ -51,10 +54,23 @@ function sourceIdentity(): string {
   return JSON.stringify({ pane, ref: focusedSessionRef(), paneId: focusedSessionPaneId() });
 }
 
-export function createNeedsYouController(): NeedsYouController {
+export type NeedsYouControllerOptions = {
+  /**
+   * Build the controller without observing anything yet; the first subscriber
+   * starts observation. The provider uses this because it builds the controller
+   * during render so the shell's content commits on the first pass, and React
+   * discards a render under StrictMode - an observing controller built there
+   * could never be released.
+   */
+  observeOnSubscribe?: boolean;
+};
+
+export function createNeedsYouController(options: NeedsYouControllerOptions = {}): NeedsYouController {
   let actionSerial = 0;
   let disposed = false;
+  let started = false;
   let modalOpen = typeof document !== "undefined" && !!document.querySelector('[aria-modal="true"]');
+  let modalOpenCount = 0;
   let source = sourceIdentity();
   let routeSerial = 0;
   const listeners = new Set<() => void>();
@@ -88,13 +104,14 @@ export function createNeedsYouController(): NeedsYouController {
       loading,
       readFailed: failed || state.mode === "error",
       blocked: modalOpen || paletteStore.getState().open,
+      modalOpenCount,
     });
   };
   let snapshot = read();
-  const emit = () => {
+  const emit = (notifyCounterOnly = false) => {
     if (disposed) return;
     const next = read();
-    if (
+    const samePublicState =
       next.choices.length === snapshot.choices.length &&
       next.choices.every((choice, index) => {
         const prior = snapshot.choices[index];
@@ -104,44 +121,58 @@ export function createNeedsYouController(): NeedsYouController {
       next.canLoadMore === snapshot.canLoadMore &&
       next.loading === snapshot.loading &&
       next.readFailed === snapshot.readFailed &&
-      next.blocked === snapshot.blocked
-    )
-      return;
+      next.blocked === snapshot.blocked;
+    const counterChanged = next.modalOpenCount !== snapshot.modalOpenCount;
+    if (samePublicState && !counterChanged) return;
     snapshot = next;
+    // A counter-only update refreshes the snapshot so a later read sees the new
+    // count, but it notifies only when the palette needs to learn about it now:
+    // a modal opened while another modal remained open. The palette also
+    // compares the count in attempt, so the close that unblocks it cannot fire
+    // a superseded intent.
+    if (samePublicState && !notifyCounterOnly) return;
     for (const listener of listeners) listener();
   };
   const cancel = () => {
     actionSerial += 1;
   };
-  const unsubscribeNavigation = navigationStore.subscribe((state, previous) => {
-    if (state.clientGenerationID !== previous.clientGenerationID) cancel();
-    emit();
-  });
-  const unsubscribeWorkspace = workspaceStore.subscribe(() => {
-    const next = sourceIdentity();
-    if (next !== source) {
-      source = next;
-      cancel();
-    }
-    emit();
-  });
-  const unsubscribePalette = paletteStore.subscribe((state, previous) => {
-    if (state.open !== previous.open) cancel();
-    emit();
-  });
-  const unsubscribeRoute = observeRouteHistory(() => {
-    routeSerial += 1;
-    cancel();
-  });
+  let unsubscribeNavigation = () => {};
+  let unsubscribeWorkspace = () => {};
+  let unsubscribePalette = () => {};
+  let unsubscribeRoute = () => {};
   const onPopState = () => {
     routeSerial += 1;
     cancel();
   };
-  window.addEventListener("popstate", onPopState);
   const containsModal = (node: Node): boolean =>
     node instanceof Element && (node.matches('[aria-modal="true"]') || !!node.querySelector('[aria-modal="true"]'));
+  // MutationObserver reports an attribute record's old value but not its new
+  // one, so a single record cannot prove which way aria-modal went. A record
+  // whose old value was not "true" opened a modal when the element now reads
+  // "true" (it stayed open) or when a later record for the same target has
+  // oldValue "true" (it opened and closed again before this callback ran). A
+  // close alone never counts: its old value is "true", and a redundant write
+  // after a close has no later oldValue-"true" record to point at.
+  const attributeOpenedModal = (record: MutationRecord, batch: readonly MutationRecord[]): boolean => {
+    if (record.oldValue === "true") return false;
+    if ((record.target as Element).getAttribute("aria-modal") === "true") return true;
+    return batch
+      .slice(batch.indexOf(record) + 1)
+      .some((later) => later.type === "attributes" && later.target === record.target && later.oldValue === "true");
+  };
   const modalObserver = new MutationObserver((records) => {
     const next = !!document.querySelector('[aria-modal="true"]');
+    // A UI mutation that opens a modal is a new modal-open transition. This is
+    // true even when another modal is already open (the palette itself is one),
+    // and even when the new modal closes again before this callback runs. Only
+    // opens advance the counter, so closing a dialog that was open before a
+    // pending palette selection cannot consume that selection's intent.
+    const modalOpened = records.some((record) => {
+      if (record.type === "attributes") {
+        return attributeOpenedModal(record, records);
+      }
+      return [...record.addedNodes].some(containsModal);
+    });
     const modalTransition = records.some((record) => {
       if (record.type === "attributes") {
         return record.oldValue === "true" || (record.target as Element).getAttribute("aria-modal") === "true";
@@ -149,18 +180,53 @@ export function createNeedsYouController(): NeedsYouController {
       return [...record.addedNodes, ...record.removedNodes].some(containsModal);
     });
     if (modalTransition || next !== modalOpen) {
+      if (modalOpened) modalOpenCount += 1;
+      const wasOpen = modalOpen;
       modalOpen = next;
       cancel();
-      emit();
+      emit(wasOpen && next);
     }
   });
-  modalObserver.observe(document.documentElement, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-    attributeOldValue: true,
-    attributeFilter: ["aria-modal"],
-  });
+  // Creating a controller only allocates state. Observation starts on the first
+  // subscriber, which is an effect (React subscribes there), so the provider can
+  // build the controller while it renders and still release every resource the
+  // moment observation has begun. A controller built by a render React discards
+  // never observes anything and has nothing to release.
+  const start = () => {
+    if (started || disposed) return;
+    started = true;
+    modalOpen = typeof document !== "undefined" && !!document.querySelector('[aria-modal="true"]');
+    unsubscribeNavigation = navigationStore.subscribe((state, previous) => {
+      if (state.clientGenerationID !== previous.clientGenerationID) cancel();
+      emit();
+    });
+    unsubscribeWorkspace = workspaceStore.subscribe(() => {
+      const next = sourceIdentity();
+      if (next !== source) {
+        source = next;
+        cancel();
+      }
+      emit();
+    });
+    unsubscribePalette = paletteStore.subscribe((state, previous) => {
+      if (state.open !== previous.open) cancel();
+      emit();
+    });
+    unsubscribeRoute = observeRouteHistory(() => {
+      routeSerial += 1;
+      cancel();
+    });
+    window.addEventListener("popstate", onPopState);
+    modalObserver.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeOldValue: true,
+      attributeFilter: ["aria-modal"],
+    });
+    snapshot = read();
+  };
+  if (!options.observeOnSubscribe) start();
 
   const demand = async (serial: number): Promise<void> => {
     const state = navigationStore.getState();
@@ -224,7 +290,11 @@ export function createNeedsYouController(): NeedsYouController {
   };
   return {
     getSnapshot: () => snapshot,
+    get disposed() {
+      return disposed;
+    },
     subscribe(listener) {
+      start();
       listeners.add(listener);
       return () => listeners.delete(listener);
     },

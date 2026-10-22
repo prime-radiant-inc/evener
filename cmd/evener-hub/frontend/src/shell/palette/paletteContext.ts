@@ -12,6 +12,15 @@ import { presentedPanes, workspaceStore } from "../workspace";
 
 export type OnPage = "home" | "session" | "settings" | "spawn" | "other";
 
+// The shell's one needs-you owner as a palette command can see it. The
+// CommandPalette supplies this from useNeedsYou(); calling next() closes the
+// palette and defers to the controller exactly as Mod+J and the palette's
+// needs-you rows do, so a command can never grow a second row-selection,
+// paging, validity or cancellation rule.
+export interface PaletteNeedsYouAction {
+  next(): void;
+}
+
 export interface PaletteContext {
   // The focused session's ref, or null when no session pane is focused. A
   // session's commands (and the in-session search) key off this.

@@ -1230,6 +1230,99 @@ test("non-modal popover mutations leave a held Next free to navigate", async () 
   }
 });
 
+test("the modal-open counter advances on every modal open, including a transient one, and not on closes", async () => {
+  const controller = createNeedsYouController();
+  const modal = document.createElement("div");
+  const transient = document.createElement("div");
+  transient.setAttribute("aria-modal", "true");
+  try {
+    const initial = controller.getSnapshot().modalOpenCount;
+    modal.setAttribute("aria-modal", "true");
+    document.body.append(modal);
+    await whenBlocked(controller, true);
+    expect(controller.getSnapshot().modalOpenCount).toBe(initial + 1);
+
+    // A close is invisible to the counter, which keeps an older dialog's close
+    // from consuming a pending palette selection.
+    modal.setAttribute("aria-modal", "false");
+    await whenBlocked(controller, false);
+    expect(controller.getSnapshot().modalOpenCount).toBe(initial + 1);
+
+    // An open and close in one mutation batch still advance the counter and
+    // refresh the snapshot even though the public blocked flag never changes.
+    const notifications = vi.fn();
+    const unsubscribe = controller.subscribe(notifications);
+    document.body.append(transient);
+    transient.remove();
+    await Promise.resolve();
+    expect(controller.getSnapshot().blocked).toBe(false);
+    expect(controller.getSnapshot().modalOpenCount).toBe(initial + 2);
+    expect(notifications).not.toHaveBeenCalled();
+    unsubscribe();
+
+    // A modal opening while another is already open is still a new open intent,
+    // and it notifies so a pending selection can cancel while still blocked.
+    modal.setAttribute("aria-modal", "true");
+    await whenBlocked(controller, true);
+    const withOneOpen = controller.getSnapshot().modalOpenCount;
+    const notified = vi.fn();
+    const unsubscribeNotified = controller.subscribe(notified);
+    const second = document.createElement("div");
+    second.setAttribute("aria-modal", "true");
+    document.body.append(second);
+    await Promise.resolve();
+    expect(controller.getSnapshot().modalOpenCount).toBe(withOneOpen + 1);
+    expect(notified).toHaveBeenCalledTimes(1);
+    second.remove();
+    await Promise.resolve();
+    expect(controller.getSnapshot().modalOpenCount).toBe(withOneOpen + 1);
+    unsubscribeNotified();
+
+    modal.setAttribute("aria-modal", "false");
+    await whenBlocked(controller, false);
+    expect(controller.getSnapshot().modalOpenCount).toBe(withOneOpen + 1);
+  } finally {
+    controller.dispose();
+    modal.remove();
+    transient.remove();
+  }
+});
+
+test("an aria-modal that flips true and back before the observer runs still counts as an open", async () => {
+  const older = document.createElement("div");
+  older.setAttribute("aria-modal", "true");
+  document.body.append(older);
+  const flip = document.createElement("div");
+  document.body.append(flip);
+  const controller = createNeedsYouController();
+  try {
+    const initial = controller.getSnapshot().modalOpenCount;
+    const notifications = vi.fn();
+    const unsubscribe = controller.subscribe(notifications);
+    // The observer delivers two records for this element, with old values
+    // absent and "true", but by the time it runs the element reads "false".
+    // Neither record's current value can prove the open, so the pair must.
+    flip.setAttribute("aria-modal", "true");
+    flip.setAttribute("aria-modal", "false");
+    await Promise.resolve();
+    expect(controller.getSnapshot().modalOpenCount).toBe(initial + 1);
+    expect(notifications).toHaveBeenCalledTimes(1);
+    // The older dialog is still open, so the preserved state is still blocked.
+    expect(controller.getSnapshot().blocked).toBe(true);
+    expect(older.getAttribute("aria-modal")).toBe("true");
+
+    // The mirror: a plain close never advances the counter.
+    older.setAttribute("aria-modal", "false");
+    await whenBlocked(controller, false);
+    expect(controller.getSnapshot().modalOpenCount).toBe(initial + 1);
+    unsubscribe();
+  } finally {
+    controller.dispose();
+    older.remove();
+    flip.remove();
+  }
+});
+
 test("same-generation reconnect refreshes later choices without reviving route-cancelled Next", async () => {
   const client = new FakeClient("ready");
   const initialization = await client.connect();
