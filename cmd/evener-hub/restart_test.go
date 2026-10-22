@@ -173,7 +173,7 @@ func TestHubRestartCommandUsesResponseIncarnation(t *testing.T) {
 }
 
 func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
-	for _, name := range []string{"listener-moved", "listener-moved-lost-reply", "hardlink-listener-moved", "hardlink-listener-moved-lost-reply", "shared-root-equal-content", "shared-root-different-config", "equal-content-record-config", "replaced-selected-config", "startup-prunes-metadata", "startup-prunes-metadata-lost-reply", "retargeted-selector-before-dispatch", "relative-config-listener-moved", "symlink-config-listener-moved", "relative-symlink-config-listener-moved", "failed-restart", "wrong-record-config", "changed-selected-root", "changed-selected-config", "same-incarnation"} {
+	for _, name := range []string{"listener-moved", "listener-moved-lost-reply", "hardlink-listener-moved", "hardlink-listener-moved-lost-reply", "shared-root-equal-content", "shared-root-different-config", "equal-content-record-config", "replaced-selected-config", "startup-prunes-metadata", "startup-prunes-metadata-lost-reply", "retargeted-selector-before-dispatch", "symlink-config-during-health", "directory-config-during-health", "relative-config-listener-moved", "symlink-config-listener-moved", "relative-symlink-config-listener-moved", "failed-restart", "wrong-record-config", "changed-selected-root", "changed-selected-config", "same-incarnation"} {
 		t.Run(name, func(t *testing.T) {
 			dir, root := endpointTestRoot(t)
 			config := endpointTestConfig(t, dir, root, "127.0.0.1:0")
@@ -182,6 +182,7 @@ func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
 			sharedRoot := strings.HasPrefix(name, "shared-root-")
 			pruneMetadata := strings.HasPrefix(name, "startup-prunes-metadata")
 			retargetSelector := name == "retargeted-selector-before-dispatch"
+			replaceDuringHealth := strings.HasSuffix(name, "-config-during-health")
 			if retargetSelector {
 				cliConfig = filepath.Join(dir, "selector.toml")
 				if err := os.Symlink(config, cliConfig); err != nil {
@@ -241,11 +242,25 @@ func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
 			}
 			var successorHealth, attempts, rpcRequests atomic.Int32
 			var scheduled atomic.Bool
+			replacementResult := make(chan error, 1)
 			successor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/api/health" || r.Header.Get("Authorization") != "" {
 					t.Error("successor confirmation sent a credential or non-health request")
 				}
-				successorHealth.Add(1)
+				if successorHealth.Add(1) == 1 && replaceDuringHealth {
+					// Discovery has already canonicalized the selected pathname,
+					// but confirmation has not yet checked its filesystem type.
+					original := filepath.Join(dir, "original-config.toml")
+					replaceErr := os.Rename(config, original)
+					if replaceErr == nil {
+						if name == "symlink-config-during-health" {
+							replaceErr = os.Symlink(original, config)
+						} else {
+							replaceErr = os.Mkdir(config, 0700)
+						}
+					}
+					replacementResult <- replaceErr
+				}
 				_ = json.NewEncoder(w).Encode(map[string]any{"boot_id": "restart-successor", "hub_addr": r.Host, "started_at": after})
 			}))
 			defer successor.Close()
@@ -462,6 +477,23 @@ func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
 			if scheduleErr != nil || attempts.Load() != 1 {
 				t.Fatalf("restart scheduling: attempts=%d err=%v", attempts.Load(), scheduleErr)
 			}
+			if replaceDuringHealth {
+				select {
+				case replaceErr := <-replacementResult:
+					if replaceErr != nil {
+						t.Fatal(replaceErr)
+					}
+				default:
+					t.Fatal("config was not replaced during successor discovery")
+				}
+				replacement, replaceErr := os.Lstat(config)
+				if replaceErr != nil {
+					t.Fatal(replaceErr)
+				}
+				if name == "symlink-config-during-health" && replacement.Mode()&os.ModeSymlink == 0 || name == "directory-config-during-health" && !replacement.IsDir() {
+					t.Fatalf("wrong config replacement type: %v", replacement.Mode())
+				}
+			}
 			switch name {
 			case "listener-moved", "listener-moved-lost-reply", "hardlink-listener-moved", "hardlink-listener-moved-lost-reply", "relative-config-listener-moved", "symlink-config-listener-moved", "relative-symlink-config-listener-moved", "replaced-selected-config", "startup-prunes-metadata", "startup-prunes-metadata-lost-reply":
 				if err != nil || successorHealth.Load() == 0 {
@@ -481,6 +513,9 @@ func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
 				if !errors.Is(err, hubendpoint.ErrIdentityMismatch) {
 					t.Fatalf("different selected identity confirmed: %v", err)
 				}
+			}
+			if replaceDuringHealth && successorHealth.Load() != 1 {
+				t.Fatalf("nonregular config was not refused immediately after discovery: health requests=%d", successorHealth.Load())
 			}
 		})
 	}

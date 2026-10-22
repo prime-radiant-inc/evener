@@ -282,9 +282,10 @@ func selectRestartConfigIdentity(opts endpointOptions, report hubendpoint.Report
 func (selected restartConfigIdentity) matchesConfirmation(path string) bool {
 	if selected.file != nil && path == selected.canonicalPath {
 		// Startup may atomically prune host metadata at the same canonical
-		// pathname. Another pathname still needs the frozen file identity.
-		_, err := os.Stat(path)
-		return err == nil
+		// pathname, but must leave a regular file rather than a symlink or other
+		// type. Another pathname still needs the frozen file identity.
+		current, err := os.Lstat(path)
+		return err == nil && current.Mode().IsRegular()
 	}
 	return selected.matches(path)
 }
