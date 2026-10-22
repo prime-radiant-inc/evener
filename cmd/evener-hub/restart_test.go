@@ -413,6 +413,188 @@ func restartStartupConfigPath(t *testing.T, selector string) string {
 	return record.ConfigPath
 }
 
+func TestHubRestartCommandAbsentDefault(t *testing.T) {
+	for _, name := range []string{"absent", "file-appears", "selection-changes"} {
+		t.Run(name, func(t *testing.T) {
+			_, _, deps := newTraceMainTestDeps(t)
+			deps.loadConfig = func(path string, explicit bool) (Config, error) {
+				cfg, err := loadConfigForCommandLine(path, explicit)
+				cfg.PluginAutoUpgrade = false
+				return cfg, err
+			}
+			cfg, err := LoadConfig(DefaultConfigPath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(cfg.HubStateRoot, 0700); err != nil {
+				t.Fatal(err)
+			}
+			var record hubendpoint.Record
+			deps.serve = func(context.Context, hubHTTPServer) error {
+				record, err = hubendpoint.Read(cfg.HubStateRoot)
+				return err
+			}
+			if err := runMain([]string{"--addr", "127.0.0.1:0", "--evener", "/bin/evener"}, io.Discard, deps); err != nil {
+				t.Fatalf("default startup: %v", err)
+			}
+			if _, err := os.Lstat(DefaultConfigPath()); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("startup created the optional config: %v", err)
+			}
+			setBuild(t, "abc1234", "release")
+			t.Cleanup(func() { hubUpdateMu = sync.Mutex{} })
+			previousSupported := hubRestartSupported
+			hubRestartSupported = func() bool { return true }
+			t.Cleanup(func() { hubRestartSupported = previousSupported })
+			previousPath, previousErr := hubLaunchEntrypoint, errHubLaunchEntrypoint
+			hubLaunchEntrypoint, errHubLaunchEntrypoint = writeProbeScript(t, "echo 'evener abc1234 (2026-10-21T00:00:00Z)'"), nil
+			t.Cleanup(func() { hubLaunchEntrypoint, errHubLaunchEntrypoint = previousPath, previousErr })
+			previousStarted := hubProcessStartedAt
+			hubProcessStartedAt = record.StartedAt
+			t.Cleanup(func() { hubProcessStartedAt = previousStarted })
+			token, err := hubedge.LoadOrCreateAuthToken(cfg.HubStateRoot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var mu sync.Mutex
+			started := record.StartedAt
+			mux := http.NewServeMux()
+			appServer := newHubAppServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, appsource.NewRegistry())
+			mux.HandleFunc("/rpc", appServer.ServeWebSocket)
+			mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				defer mu.Unlock()
+				restartFixtureHealth(t, w, r, started)
+			})
+			srv := httptest.NewServer(hubedge.AuthGuard(token)(mux))
+			defer srv.Close()
+			record.BootID = "restart-fixture"
+			record.BoundAddr = strings.TrimPrefix(srv.URL, "http://")
+			record.LocalURL, record.LoopbackURL = srv.URL, srv.URL
+			release, err := hostlock.AcquireLock(filepath.Join(cfg.HubStateRoot, "hub.lock"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(release)
+			publish := func() error {
+				remove, err := hubendpoint.Publish(cfg.HubStateRoot, record)
+				if err == nil {
+					t.Cleanup(func() {
+						if err := remove(); err != nil {
+							t.Error(err)
+						}
+					})
+				}
+				return err
+			}
+			if err := publish(); err != nil {
+				t.Fatal(err)
+			}
+			var attempts atomic.Int32
+			var scheduleErr error
+			previousSchedule := scheduleHubRestartOnly
+			scheduleHubRestartOnly = func(context.Context, restartPin, string, []string) {
+				mu.Lock()
+				defer mu.Unlock()
+				attempts.Add(1)
+				started = started.Add(time.Second)
+				record.StartedAt = started
+				if name == "file-appears" {
+					scheduleErr = os.MkdirAll(filepath.Dir(DefaultConfigPath()), 0700)
+					if scheduleErr == nil {
+						scheduleErr = os.WriteFile(DefaultConfigPath(), []byte("# newly created\n"), 0600)
+					}
+				}
+				if name == "selection-changes" {
+					record.ConfigPath = filepath.Join(t.TempDir(), "other.toml")
+				}
+				if scheduleErr == nil {
+					scheduleErr = publish()
+				}
+			}
+			t.Cleanup(func() { scheduleHubRestartOnly = previousSchedule })
+			deps = defaultMainDeps()
+			deps.stdout = io.Discard
+			err = runHubRestart([]string{"--timeout", "2s"}, io.Discard, deps)
+			mu.Lock()
+			defer mu.Unlock()
+			if scheduleErr != nil || attempts.Load() != 1 {
+				t.Fatalf("default restart not dispatched: attempts=%d schedule=%v restart=%v", attempts.Load(), scheduleErr, err)
+			}
+			if name == "absent" {
+				if err != nil {
+					t.Fatalf("absent default restart: %v", err)
+				}
+			} else if !errors.Is(err, hubendpoint.ErrIdentityMismatch) {
+				t.Fatalf("changed default identity accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestHubRestartAbsentConfigIdentity(t *testing.T) {
+	for _, name := range []string{"implicit-default", "explicit-default", "nondefault", "reported-file", "wrong-running-path", "dangling-symlink", "appeared-before-pin", "appeared-after-pin", "changed-selection", "changed-default"} {
+		t.Run(name, func(t *testing.T) {
+			endpointTestRoot(t)
+			config, err := filepath.Abs(DefaultConfigPath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			opts := endpointOptions{configPath: DefaultConfigPath(), configExplicit: name == "explicit-default"}
+			report := hubendpoint.Report{ConfigPath: config, Running: &hubendpoint.Record{ConfigPath: config}}
+			if name == "nondefault" {
+				opts.configPath = filepath.Join(t.TempDir(), "other.toml")
+				report.ConfigPath, report.Running.ConfigPath = opts.configPath, opts.configPath
+			}
+			if name == "reported-file" {
+				report.ConfigExists = true
+			}
+			if name == "wrong-running-path" {
+				report.Running.ConfigPath = filepath.Join(t.TempDir(), "other.toml")
+			}
+			create := func(symlink bool) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Dir(config), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if symlink {
+					if err := os.Symlink(filepath.Join(t.TempDir(), "missing.toml"), config); err != nil {
+						t.Fatal(err)
+					}
+				} else if err := os.WriteFile(config, nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if name == "dangling-symlink" || name == "appeared-before-pin" {
+				create(name == "dangling-symlink")
+			}
+			identity, err := selectRestartConfigIdentity(opts, report)
+			valid := name == "implicit-default" || name == "appeared-after-pin" || name == "changed-selection" || name == "changed-default"
+			if !valid {
+				if err == nil {
+					t.Fatal("unproven implicit default identity accepted")
+				}
+				return
+			}
+			if err != nil || !identity.matches(config) {
+				t.Fatalf("implicit absent identity: %v", err)
+			}
+			switch name {
+			case "appeared-after-pin":
+				create(false)
+			case "changed-selection":
+				config = filepath.Join(t.TempDir(), "other.toml")
+			case "changed-default":
+				t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			default:
+				return
+			}
+			if identity.matches(config) {
+				t.Fatal("changed absent default identity accepted")
+			}
+		})
+	}
+}
+
 func TestHubRestartSubcommandDispatch(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := Run([]string{"restart", "--not-a-flag"}, strings.NewReader(""), &stdout, &stderr); code == 0 {
@@ -484,7 +666,7 @@ func TestWaitForNewIncarnationTimesOut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	configIdentity, err := os.Stat(selected.ConfigPath)
+	configIdentity, err := selectRestartConfigIdentity(opts, selected)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -611,14 +793,11 @@ func TestHubRestartCommandRequiresSelectedConfigIdentity(t *testing.T) {
 	defer srv.Close()
 	addr := strings.TrimPrefix(srv.URL, "http://")
 	publishRestartFixture(t, root, addr, started)
-	if err := os.Remove(DefaultConfigPath()); err != nil {
-		t.Fatal(err)
-	}
 	deps := defaultMainDeps()
 	deps.loadConfig = func(string, bool) (Config, error) {
 		return Config{Addr: addr, HubStateRoot: root}, nil
 	}
-	err := runHubRestart([]string{"--timeout", "1s"}, io.Discard, deps)
+	err := runHubRestart([]string{"--config", DefaultConfigPath(), "--timeout", "1s"}, io.Discard, deps)
 	if !errors.Is(err, hubendpoint.ErrIdentityMismatch) || controls.Load() != 0 {
 		t.Fatalf("missing selected config: err=%v controls=%d", err, controls.Load())
 	}
@@ -643,10 +822,6 @@ func publishRestartFixture(t *testing.T, root, addr string, started time.Time) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Dir(config), 0700); err != nil {
-		t.Fatal(err)
-	}
-	endpointTestConfig(t, filepath.Dir(config), root, "0.0.0.0:0")
 	remove, err := hubendpoint.Publish(root, hubendpoint.Record{
 		SchemaVersion: hubendpoint.SchemaVersion, BootID: "restart-fixture", PID: os.Getpid(),
 		StartedAt: started, ConfigPath: config, HubStateRoot: root,

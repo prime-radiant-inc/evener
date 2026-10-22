@@ -183,9 +183,7 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 				}
 				stoppedCommands[command] = strings.ReplaceAll(out, "MainPID=4242", "MainPID=0")
 			}
-			if cold {
-				stoppedCommands["CDPATH='' cd -P -- /srv && pwd -P"] = "/srv\n"
-			}
+			stoppedCommands["CDPATH='' cd -P -- /srv && pwd -P"] = "/srv\n"
 			var m *Manager
 			var saved pendingRestartState
 			restarted, effects, fileReads, polls := false, 0, 0, 0

@@ -96,7 +96,7 @@ func runHubRestart(args []string, stderr io.Writer, deps mainDeps) error {
 		}
 		origin = selected
 	}
-	configIdentity, err := os.Stat(report.ConfigPath)
+	configIdentity, err := selectRestartConfigIdentity(endpointOpts, report)
 	if err != nil {
 		err = fmt.Errorf("%w: selected config: %w", hubendpoint.ErrIdentityMismatch, err)
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
@@ -217,7 +217,7 @@ func readHubStartedAt(ctx context.Context, origin hubendpoint.Origin) (time.Time
 	return health.StartedAt, nil
 }
 
-func waitForNewIncarnation(ctx context.Context, opts endpointOptions, deps mainDeps, selected hubendpoint.Report, configIdentity os.FileInfo, previous time.Time) error {
+func waitForNewIncarnation(ctx context.Context, opts endpointOptions, deps mainDeps, selected hubendpoint.Report, configIdentity restartConfigIdentity, previous time.Time) error {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -231,13 +231,13 @@ func waitForNewIncarnation(ctx context.Context, opts endpointOptions, deps mainD
 			if err != nil {
 				continue
 			}
-			if !restartConfigMatches(report.ConfigPath, configIdentity) || report.HubStateRoot != selected.HubStateRoot {
+			if !configIdentity.matches(report.ConfigPath) || (configIdentity.file == nil && report.ConfigExists) || report.HubStateRoot != selected.HubStateRoot {
 				return hubendpoint.ErrIdentityMismatch
 			}
 			if report.Running == nil {
 				continue
 			}
-			if !restartConfigMatches(report.Running.ConfigPath, configIdentity) || report.Running.HubStateRoot != selected.HubStateRoot {
+			if !configIdentity.matches(report.Running.ConfigPath) || report.Running.HubStateRoot != selected.HubStateRoot {
 				return hubendpoint.ErrIdentityMismatch
 			}
 			origin, err := attachOrigin(report.Running.LoopbackURL)
@@ -252,7 +252,42 @@ func waitForNewIncarnation(ctx context.Context, opts endpointOptions, deps mainD
 	}
 }
 
-func restartConfigMatches(path string, selected os.FileInfo) bool {
-	current, err := os.Stat(path)
-	return err == nil && os.SameFile(selected, current)
+type restartConfigIdentity struct {
+	file       os.FileInfo
+	absentPath string
+}
+
+func selectRestartConfigIdentity(opts endpointOptions, report hubendpoint.Report) (restartConfigIdentity, error) {
+	file, err := os.Stat(report.ConfigPath)
+	if err == nil {
+		if !report.ConfigExists {
+			return restartConfigIdentity{}, hubendpoint.ErrIdentityMismatch
+		}
+		return restartConfigIdentity{file: file}, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) || opts.configExplicit || report.ConfigExists {
+		return restartConfigIdentity{}, err
+	}
+	defaultPath, defaultErr := endpointConfigPath(DefaultConfigPath(), false)
+	selectedPath, selectedErr := endpointConfigPath(opts.configPath, false)
+	identity := restartConfigIdentity{absentPath: defaultPath}
+	if defaultErr != nil || selectedErr != nil || selectedPath != defaultPath || report.ConfigPath != defaultPath || !identity.matches(report.ConfigPath) || (report.Running != nil && !identity.matches(report.Running.ConfigPath)) {
+		return restartConfigIdentity{}, hubendpoint.ErrIdentityMismatch
+	}
+	return identity, nil
+}
+
+func (selected restartConfigIdentity) matches(path string) bool {
+	if selected.file != nil {
+		current, err := os.Stat(path)
+		return err == nil && os.SameFile(selected.file, current)
+	}
+	// A file-less selection has no inode. Pin its default pathname and require
+	// absence, including no dangling symlink, for the whole confirmation.
+	defaultPath, err := endpointConfigPath(DefaultConfigPath(), false)
+	if err != nil || selected.absentPath == "" || path != selected.absentPath || defaultPath != selected.absentPath {
+		return false
+	}
+	_, err = os.Lstat(path)
+	return errors.Is(err, os.ErrNotExist)
 }

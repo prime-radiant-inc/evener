@@ -94,6 +94,15 @@ func (m *Manager) checkSelectedReplacement(ctx context.Context, host hostreg.Hos
 			return nil, err
 		}
 	}
+	if !live {
+		cwd, err := m.directoryIdentity(ctx, host, owner.cwd)
+		if err != nil {
+			return nil, err
+		}
+		if cwd != owner.cwdIdentity {
+			return nil, fmt.Errorf("%w: stopped working directory changed", errOwnerEvidence)
+		}
+	}
 	if owner.supervisor.kind == supervisorLaunchd {
 		if facts.UID != owner.domainUID {
 			return nil, fmt.Errorf("%w: selected launchd domain changed", errOwnerEvidence)
