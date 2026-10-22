@@ -2701,7 +2701,13 @@ test("a superseded reflection read cannot reopen the old Retry", async () => {
 
 test("a latest-read omission settles the accepted copy and clears its marker", async () => {
   const turn = failedTurn();
-  const { fake, storage } = await loadThread("ref_a", [turn]);
+  // Acceptance is stamped by the adapter at t; every authoritative read is
+  // issued at t+1, so the strict acceptance-before-read comparison is fixed
+  // independently of scheduler order.
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  const storage = new MutationOutboxIndexedDB({ now: () => 1_000_000 });
+  const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_001);
+  const { fake } = await loadThread("ref_a", [turn], {}, storage);
   fake.on("thread/read", () =>
     readResponse("ref_a", {
       status: { type: "idle" },
@@ -2726,13 +2732,6 @@ test("a latest-read omission settles the accepted copy and clears its marker", a
     await waitFor(() =>
       expect(fake.calls.filter((call) => call.method === "thread/read").length).toBeGreaterThanOrEqual(2),
     );
-    await flushPendingTurnsProjectionForTests();
-    // A fresh read issued safely after the acceptance, so the copy's
-    // acceptance time is strictly before this read's issue time.
-    await new Promise((resolve) => setTimeout(resolve, 2));
-    await act(async () => {
-      await threadsStore.getState().refreshThread("ref_a");
-    });
     await flushPendingTurnsProjectionForTests();
     await waitFor(() => expect(retryReflectionForTests("ref_a")).toBeUndefined());
     await waitFor(() => expect(retryButton()?.disabled).toBe(false));
@@ -2768,6 +2767,46 @@ test("a latest-read omission settles the accepted copy and clears its marker", a
     await flushPendingTurnsProjectionForTests();
     expect(retryButton()).toBeNull();
   } finally {
+    clock.mockRestore();
+    storage.close();
+  }
+});
+
+test("an omission read in the acceptance millisecond retains the accepted copy", async () => {
+  const turn = failedTurn();
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  const storage = new MutationOutboxIndexedDB({ now: () => 2_000_000 });
+  const clock = vi.spyOn(Date, "now").mockReturnValue(2_000_000);
+  const { fake } = await loadThread("ref_a", [turn], {}, storage);
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      status: { type: "idle" },
+      turns: [{ id: turn.id, status: "failed", itemsView: "full", items: [], error: { message: "boom" } }],
+    }),
+  );
+  fake.on("turn/start", ({ clientMutationId }) => ({
+    receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
+    turn: { id: "continued", status: "inProgress", itemsView: "" },
+  }));
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+    await act(async () => {
+      await threadsStore.getState().continueTurn("ref_a", turn.id);
+    });
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() =>
+      expect(fake.calls.filter((call) => call.method === "thread/read").length).toBeGreaterThanOrEqual(2),
+    );
+    await flushPendingTurnsProjectionForTests();
+    // acceptedAt === observedBefore is not strictly older: retain the copy and
+    // keep the marker, regardless of how the scheduler ordered the read.
+    expect(await storage.listOptimistic("ref_a")).toHaveLength(1);
+    expect(retryReflectionForTests("ref_a")?.failedTurnId).toBe(turn.id);
+    await waitFor(() => expect(retryButton()?.disabled).toBe(true));
+  } finally {
+    clock.mockRestore();
     storage.close();
   }
 });
