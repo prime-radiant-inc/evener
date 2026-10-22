@@ -100,19 +100,68 @@ and network boundaries; evidence names the exact commands and outcomes.
 
 ## Task 5: Native canonical session store
 
-- Replace the per-route `createConversationStore` instances with one store per
-  `(hubId, ref)`, shared by every mounted view of that session. Keep the
-  existing store lifecycle and subscription teardown; release on the last view.
-- The durable mutation runtime and its SQLite adapter remain the submission
-  owner. The shared store holds the canonical conversation and the projected
-  pending state.
-- Red-first: two mounted views share a canonical turn advance; one view's
-  accepted continuation is visible to the other; no second mutation can be
-  admitted from the stale view after the shared store advances.
-- Do not add a new admission coordinator, progress revision, or refresh claim.
+The binding-sharing design is
+`native-store-sharing-design.md`. Split implementation into four bounded
+steps, each committed and reviewed before the next.
 
-Acceptance: the two-view tests fail on the per-route stores and pass on the
-shared store; existing native store tests pass.
+### Task 5a: Conversation store canonical/pending readiness
+
+- In `mobile/src/state/conversation.ts`, add the store-owned `latestReadState`
+  (`unknown`, `reading`, `ready`, `error`), a read-only `canonicalSession`
+  selector that returns the model only while valid, `ensureLatest()` through the
+  existing drain scheduler, and pending readiness (`pendingMutationsReady`) with
+  an awaitable refresh.
+- Invalidated/failed history, initial open, reconnect, and a target storage
+  notification lose canonical readiness until an accepted current latest-window
+  publication restores it. Paging, display reprojection, pending emptiness, a
+  returned promise, or a discarded/superseded read cannot restore it.
+- A pending storage notification marks readiness false before its read starts;
+  retain prior rows for display but never present them as verified empty. A
+  pre-notification read cannot certify a later write. A failed refresh leaves
+  readiness false and the durable row intact.
+- Tests first in `mobile/src/state/conversation.test.ts`: unknown before first
+  read; error stays unknown; accepted latest ready; discarded read not ready;
+  paging/display no restore; notification invalidates before read; late
+  pre-notification read rejected; awaitable refresh resolves/cancels on
+  retirement; ordinary Send/Queue routing unchanged.
+
+### Task 5b: Binding registry and provider
+
+- Add `session/nativeConversationSessions.ts` and
+  `NativeConversationSessionsProvider.tsx` per the design: one entry per
+  `(hubId, ref)` owning store, host/submitter, service, activity sink and read
+  actor; attach/release handles with refcount; final release closes the entry,
+  not the durable runtime; committed-layout attachment; Strict Mode safe;
+  client replacement/hub isolation/reopen semantics.
+- Tests: two attachments share store/service/sink and one target registration;
+  release one during a held read, survivor publishes; final release unregisters,
+  cancels, closes; late replies cannot resurrect; reopen starts fresh; same ref
+  on different hubs isolated.
+
+### Task 5c: Screen migration
+
+- `App.tsx` installs the provider under preferences and above navigation.
+- `screens.tsx` replaces screen-owned host/service/sink/store/read-retry/pending
+  rebind/focus suspend with the shared attachment. Keep per-view controls,
+  drafts, scroll/reader state, paging demand, image picker, Find and disclosure
+  behavior; aggregate following-live-end and move disclosure clear to final
+  release.
+- Tests: existing screen suites plus two-view canonical advance, one unresolved
+  own submission blocking both, settlement/read gap, display-level sharing and
+  reader isolation.
+
+### Task 5d: Entry read actor
+
+- Move the existing `useReadRetry` backoff into one entry-owned actor; cancel
+  on entry retirement; make rehydrate failures reach the actor even when the
+  retained store still reads open. No per-view timer, no settlement demand
+  loop.
+- Tests: one timer per entry, rehydrate error recovery, teardown.
+
+Acceptance: the split tests fail before each step and pass after; existing
+native store/screen tests pass; no `conversationAdmission`, progress watermark,
+refresh claim or admission coordinator is introduced.
+
 
 ## Task 6: Native one-owner Retry
 
