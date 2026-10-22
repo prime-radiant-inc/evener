@@ -1196,8 +1196,22 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
       releaseInFlightRecovery();
       if (submissionFailed && source.alive && draftEditRevisionRef.current !== submittedRevision) {
         // The recovery autosave effect is suppressed while the guard is held.
-        // Persist edits typed during the failed send so a reload keeps them.
-        source.persistDraft(textRef.current);
+        // Persist edits typed during the failed send through the recovery
+        // chain so reloading does not merge them with the older record as two
+        // separate copies.
+        const activeRecoveryId = source.getSnapshot().activeRecoveryId;
+        if (activeRecoveryId === null) {
+          source.persistDraft(textRef.current);
+        } else {
+          void source.queueRecoveryPersistence(
+            activeRecoveryId,
+            textRef.current,
+            attachments.toInputAttachments(),
+            skillNamesRef.current,
+            selectionMetaRef.current.commandNames,
+            selectionMetaRef.current.mentions,
+          );
+        }
       }
       releaseRecoveryOperation();
     }
