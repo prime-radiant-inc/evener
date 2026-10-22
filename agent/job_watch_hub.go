@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +13,14 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
+func hubObservationSelector(event string) bool {
+	switch event {
+	case "status", "question", "approval", "communicate":
+		return true
+	}
+	return false
+}
+
 // Hub watches use the same journal, pending-send rail and watch ID as ordinary
 // watches. Their source is a canonical ref, not a local job or event stream.
 func (jm *jobManager) configureHubWatch(ref, instance, generation, hubID string, revision uint64, selectors []string, completion bool) (watchResult, error) {
@@ -24,9 +31,7 @@ func (jm *jobManager) configureHubWatch(ref, instance, generation, hubID string,
 		return watchResult{}, errors.New("invalid_request: watch needs events or completion")
 	}
 	for _, event := range selectors {
-		switch event {
-		case "status", "question", "approval", "communicate":
-		default:
+		if !hubObservationSelector(event) {
 			return watchResult{}, fmt.Errorf("invalid_request: unsupported hub observation %q", event)
 		}
 	}
@@ -279,11 +284,11 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 		return nil, err
 	}
 	var request appwire.SessionWatchRequest
-	decoder := json.NewDecoder(bytes.NewReader(encoded))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&request); err != nil {
-		return nil, appwire.InvalidParams(err.Error())
+	decoded, err := decodeManagerArguments[appwire.SessionWatchRequest](encoded)
+	if err != nil {
+		return nil, err
 	}
+	request = *decoded
 	if _, err := appwire.ParseRef(request.Ref); err != nil {
 		return nil, appwire.InvalidParams(err.Error())
 	}
@@ -297,9 +302,7 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 		return nil, appwire.InvalidParams("events or completion is required")
 	}
 	for _, selector := range request.Events {
-		switch selector {
-		case "status", "question", "approval", "communicate":
-		default:
+		if !hubObservationSelector(selector) {
 			return nil, appwire.InvalidParams("unsupported observation selector " + selector)
 		}
 	}

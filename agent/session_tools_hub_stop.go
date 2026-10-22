@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"reflect"
@@ -66,14 +65,13 @@ func (s *Session) invokeHubStop(ctx context.Context, args map[string]any) (any, 
 	if err != nil {
 		return nil, err
 	}
-	var hub struct {
+	type stopArguments struct {
 		Mode      string          `json:"mode"`
 		Arguments json.RawMessage `json:"arguments"`
 	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&hub); err != nil {
-		return nil, appwire.InvalidParams(err.Error())
+	hub, err := decodeManagerArguments[stopArguments](raw)
+	if err != nil {
+		return nil, err
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(hub.Arguments, &fields); err != nil || fields == nil {

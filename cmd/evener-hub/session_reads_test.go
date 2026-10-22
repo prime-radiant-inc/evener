@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -176,6 +177,79 @@ func managerInvoke(t *testing.T, o *sessionOperations, caller appwire.ManagerVie
 func operationKind(r appwire.SessionOperationRequest) string {
 	raw, _ := json.Marshal(r)
 	return string(raw)
+}
+
+func TestManagerTaskPageMatchesAccumulatedEncoding(t *testing.T) {
+	owner, local, _, _ := managerReadFixture(t)
+	base, err := json.Marshal(appwire.SessionTasksResponse{Data: []appwire.Task{{ID: 1}}, Snapshot: strings.Repeat("x", 64)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundaryPrompt := managerTaskPageMaxJSONBytes - len(base)
+	// This is the old page algorithm, kept independent of the new size
+	// accounting. Compare the actual wire encoding, not Go struct equality.
+	oldPage := func(tasks []appwire.Task, offset, limit int) (appwire.SessionTasksResponse, error) {
+		identity := struct {
+			Ref        string
+			InstanceID string
+			Data       []appwire.Task
+		}{"local:shared", "instance-local", tasks}
+		raw, err := json.Marshal(identity)
+		if err != nil {
+			return appwire.SessionTasksResponse{}, err
+		}
+		sum := sha256.Sum256(raw)
+		result := appwire.SessionTasksResponse{Snapshot: hex.EncodeToString(sum[:]), Data: []appwire.Task{}}
+		if offset >= len(tasks) {
+			return result, nil
+		}
+		for i := offset; i < min(len(tasks), offset+limit); i++ {
+			result.Data = append(result.Data, tasks[i])
+			encoded, err := json.Marshal(result)
+			if err != nil {
+				return appwire.SessionTasksResponse{}, err
+			}
+			if len(encoded) > managerTaskPageMaxJSONBytes {
+				result.Data = result.Data[:len(result.Data)-1]
+				if len(result.Data) == 0 {
+					return appwire.SessionTasksResponse{}, appwire.InvalidRequest("task exceeds bounded result; read the task on its owning session")
+				}
+				break
+			}
+		}
+		if next := offset + len(result.Data); next < len(tasks) {
+			result.NextOffset = &next
+		}
+		return result, nil
+	}
+	for _, tc := range []struct {
+		name   string
+		tasks  []appwire.Task
+		offset int
+	}{
+		{"empty", []appwire.Task{}, 0},
+		{"escaped and optional fields", []appwire.Task{{ID: 1, Description: "<&\né", Notes: []string{"\"quoted\""}}, {ID: 2, DependsOn: []int{1}}}, 0},
+		{"exact cutoff", []appwire.Task{{ID: 1, Prompt: strings.Repeat("x", boundaryPrompt)}}, 0},
+		{"one byte past cutoff", []appwire.Task{{ID: 1, Prompt: strings.Repeat("x", boundaryPrompt+1)}}, 0},
+		{"second task over cutoff", []appwire.Task{{ID: 1, Prompt: strings.Repeat("x", managerTaskPageMaxJSONBytes-300)}, {ID: 2, Prompt: "next"}}, 0},
+		{"offset page", []appwire.Task{{ID: 1, Prompt: "first"}, {ID: 2, Prompt: strings.Repeat("é<&", 20000)}, {ID: 3, Prompt: strings.Repeat("x", managerTaskPageMaxJSONBytes-300)}}, 1},
+		{"single task over cutoff", []appwire.Task{{ID: 1, Prompt: strings.Repeat("x", managerTaskPageMaxJSONBytes)}}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			local.tasks = tc.tasks
+			p := appwire.SessionTasksRequest{Ref: "local:shared", Offset: tc.offset, Limit: 200}
+			want, wantErr := oldPage(tc.tasks, p.Offset, p.Limit)
+			got, gotErr := owner.tasks(t.Context(), p)
+			if (wantErr == nil) != (gotErr == nil) || wantErr != nil && wantErr.Error() != gotErr.Error() {
+				t.Fatalf("error changed: old=%v new=%v", wantErr, gotErr)
+			}
+			wantJSON, _ := json.Marshal(want)
+			gotJSON, _ := json.Marshal(got)
+			if !bytes.Equal(wantJSON, gotJSON) {
+				t.Fatalf("page bytes changed: old=%s new=%s", wantJSON, gotJSON)
+			}
+		})
+	}
 }
 
 func TestManagerReadContracts(t *testing.T) {

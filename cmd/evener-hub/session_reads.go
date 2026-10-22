@@ -202,20 +202,32 @@ func (o *sessionOperations) tasks(ctx context.Context, p appwire.SessionTasksReq
 	if p.Offset >= len(full.Data) {
 		return result, nil
 	}
+	// A nonempty data array differs from the empty envelope only by the
+	// encoded task values and the commas between them. NextOffset is set
+	// after this cutoff, just as in the accumulated-response encoding.
+	empty, err := json.Marshal(result)
+	if err != nil {
+		return appwire.SessionTasksResponse{}, err
+	}
+	pageBytes := len(empty)
 	end := min(len(full.Data), p.Offset+limit)
 	for i := p.Offset; i < end; i++ {
-		result.Data = append(result.Data, full.Data[i])
-		encoded, e := json.Marshal(result)
+		encoded, e := json.Marshal(full.Data[i])
 		if e != nil {
 			return appwire.SessionTasksResponse{}, e
 		}
-		if len(encoded) > managerTaskPageMaxJSONBytes {
-			result.Data = result.Data[:len(result.Data)-1]
+		nextBytes := pageBytes + len(encoded)
+		if len(result.Data) > 0 {
+			nextBytes++ // comma between task objects
+		}
+		if nextBytes > managerTaskPageMaxJSONBytes {
 			if len(result.Data) == 0 {
 				return appwire.SessionTasksResponse{}, appwire.InvalidRequest("task exceeds bounded result; read the task on its owning session")
 			}
 			break
 		}
+		result.Data = append(result.Data, full.Data[i])
+		pageBytes = nextBytes
 	}
 	if next := p.Offset + len(result.Data); next < len(full.Data) {
 		result.NextOffset = &next

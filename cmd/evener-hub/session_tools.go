@@ -68,6 +68,11 @@ type boundSessionOperations struct {
 
 type sessionBindingContextKey struct{}
 type remoteSessionAdmissionKey struct{}
+type localSessionPreferenceKey struct{}
+type localSessionPreference struct {
+	key   string
+	hubID string
+}
 
 func sessionInputProof(ctx context.Context, callerRef string) (*appwire.SessionActorProof, error) {
 	binding, ok := ctx.Value(sessionBindingContextKey{}).(appwire.SessionBinding)
@@ -360,26 +365,43 @@ func (b *boundSessionOperations) State(ctx context.Context) (appwire.ManagerView
 		}
 		return appwire.ManagerView{Ref: thread.Evener.Ref, InstanceID: thread.Evener.InstanceID, Setting: setting}, nil
 	}
-	thread, err := b.local.SessionToolsThread(b.binding)
+	view, key, err := b.localCaller()
 	if err != nil {
-		return view, err
-	}
-	key, err := managerPreferenceRef(b.owner.cfg, thread)
-	if err != nil {
-		return view, err
+		return appwire.ManagerView{}, err
 	}
 	setting, err := b.owner.cfg.SessionPreferences.Manager(key)
 	if err != nil {
-		return view, err
+		return appwire.ManagerView{}, err
 	}
 	if setting.Enabled && setting.HubID != b.binding.HubID {
-		return view, appwire.Conflict("another hub owns Manager authority")
+		return appwire.ManagerView{}, appwire.Conflict("another hub owns Manager authority")
 	}
-	return appwire.ManagerView{Ref: thread.Evener.Ref, InstanceID: thread.Evener.InstanceID, Setting: setting}, nil
+	view.Setting = setting
+	return view, nil
+}
+
+func (b *boundSessionOperations) localCaller() (appwire.ManagerView, string, error) {
+	thread, err := b.local.SessionToolsThread(b.binding)
+	if err != nil {
+		return appwire.ManagerView{}, "", err
+	}
+	key, err := managerPreferenceRef(b.owner.cfg, thread)
+	if err != nil {
+		return appwire.ManagerView{}, "", err
+	}
+	return appwire.ManagerView{Ref: thread.Evener.Ref, InstanceID: thread.Evener.InstanceID}, key, nil
 }
 
 func (b *boundSessionOperations) Invoke(ctx context.Context, request appwire.SessionOperationRequest) (appwire.SessionOperationResponse, error) {
-	view, err := b.State(ctx)
+	var view appwire.ManagerView
+	var err error
+	if b.remote != nil {
+		view, err = b.State(ctx)
+	} else if err = ctx.Err(); err == nil {
+		var key string
+		view, key, err = b.localCaller()
+		ctx = context.WithValue(ctx, localSessionPreferenceKey{}, localSessionPreference{key: key, hubID: b.binding.HubID})
+	}
 	if err != nil {
 		return appwire.SessionOperationResponse{}, err
 	}
@@ -393,22 +415,36 @@ func (b *boundSessionOperations) Invoke(ctx context.Context, request appwire.Ses
 
 func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerView, request appwire.SessionOperationRequest) (appwire.SessionOperationResponse, error) {
 	var response appwire.SessionOperationResponse
+	// The bound local path resolves the same durable row once, here at the
+	// owner boundary. Its conflict still precedes request validation as it did
+	// when boundSessionOperations.Invoke called State first.
+	setting := caller.Setting
+	bound, boundLocal := ctx.Value(localSessionPreferenceKey{}).(localSessionPreference)
+	if boundLocal {
+		var err error
+		setting, err = o.cfg.SessionPreferences.Manager(bound.key)
+		if err != nil {
+			return response, err
+		}
+		if setting.Enabled && setting.HubID != bound.hubID {
+			return response, appwire.Conflict("another hub owns Manager authority")
+		}
+	}
 	if err := request.Validate(); err != nil {
 		return response, err
 	}
 	// caller was resolved from the authenticated connection, never tool arguments.
-	// Read durable state again at the owner boundary, rather than trusting its
-	// previously projected enabled bit.
+	// Direct callers resolve durable state here; bound local callers used the
+	// same row above instead of trusting a previously projected enabled bit.
 	hubID, err := o.cfg.SessionPreferences.HubID()
 	if err != nil {
 		return response, err
 	}
-	setting := caller.Setting
 	if binding, remote := ctx.Value(remoteSessionAdmissionKey{}).(appwire.SessionBinding); remote {
 		if binding.Ref != caller.Ref || binding.InstanceID != caller.InstanceID || binding.HubID != hubID {
 			return response, appwire.InvalidRequest("remote Manager authority changed")
 		}
-	} else {
+	} else if !boundLocal {
 		thread := appwire.Thread{Evener: appwire.EvenerThread{Ref: caller.Ref, InstanceID: caller.InstanceID}}
 		key, err := managerPreferenceRef(o.cfg, thread)
 		if err != nil {
@@ -423,6 +459,13 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 		return response, appwire.InvalidRequest("Manager mode is not enabled")
 	}
 	response.Actor = appwire.SessionActor{Kind: "manager", ManagerRef: caller.Ref}
+	var proof *appwire.SessionActorProof
+	if request.Start != nil || request.Queue != nil || request.Steer != nil || request.Control != nil {
+		proof, err = sessionInputProof(ctx, caller.Ref)
+		if err != nil {
+			return response, err
+		}
+	}
 	if request.Discover != nil {
 		discovery, err := o.discover(ctx, *request.Discover)
 		if err != nil {
@@ -507,10 +550,6 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 		}
 		response.Create = &created
 	} else if request.Start != nil {
-		proof, err := sessionInputProof(ctx, caller.Ref)
-		if err != nil {
-			return response, err
-		}
 		params := *request.Start
 		params.ManagerProof = proof
 		start, err := o.Start(ctx, params)
@@ -519,10 +558,6 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 		}
 		response.Start = &start
 	} else if request.Queue != nil {
-		proof, err := sessionInputProof(ctx, caller.Ref)
-		if err != nil {
-			return response, err
-		}
 		params := *request.Queue
 		params.ManagerProof = proof
 		queue, err := o.Queue(ctx, params)
@@ -531,10 +566,6 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 		}
 		response.Queue = &queue
 	} else if request.Steer != nil {
-		proof, err := sessionInputProof(ctx, caller.Ref)
-		if err != nil {
-			return response, err
-		}
 		params := *request.Steer
 		params.ManagerProof = proof
 		steer, err := o.Steer(ctx, params)
@@ -543,10 +574,6 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 		}
 		response.Steer = &steer
 	} else if request.Control != nil {
-		proof, err := sessionInputProof(ctx, caller.Ref)
-		if err != nil {
-			return response, err
-		}
 		params := *request.Control
 		if params.Approval != nil {
 			approval := *params.Approval

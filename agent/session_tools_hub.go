@@ -518,11 +518,11 @@ func (s *Session) invokeHubInput(ctx context.Context, args map[string]any) (any,
 		if err != nil {
 			return nil, err
 		}
-		dec := json.NewDecoder(bytes.NewReader(raw))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&input); err != nil {
-			return nil, appwire.InvalidParams(err.Error())
+		decoded, err := decodeManagerArguments[[]appwire.InputItem](raw)
+		if err != nil {
+			return nil, err
 		}
+		input = *decoded
 	}
 	id, _ := args["client_mutation_id"].(string)
 	instance, _ := args["expected_instance_id"].(string)

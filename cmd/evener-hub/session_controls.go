@@ -91,14 +91,10 @@ func (o *sessionOperations) Control(ctx context.Context, request appwire.Session
 		out.Archive = &result
 		return out, err
 	case "delete":
-		if o.navigation == nil {
+		if o.navigation == nil || o.navigation.deleteSession == nil {
 			return out, appwire.Unavailable("session deletion unavailable")
 		}
-		source, ok := o.navigation.source.(webNavigationSource)
-		if !ok || source.web == nil {
-			return out, appwire.Unavailable("session deletion unavailable")
-		}
-		result, err := source.web.sessionDelete(ctx, *request.Delete)
+		result, err := o.navigation.deleteSession(ctx, *request.Delete)
 		out.Delete = &result
 		return out, err
 	case "pin":

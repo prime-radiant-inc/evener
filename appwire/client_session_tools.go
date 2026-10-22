@@ -29,12 +29,16 @@ type clientSessionTools struct {
 	calls   map[string]context.CancelFunc
 }
 
+func newClientSessionTools(binding SessionBinding, owner SessionHubClient) *clientSessionTools {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &clientSessionTools{ctx: ctx, cancel: cancel, binding: binding, owner: owner, slots: make(chan struct{}, SessionToolsPendingLimit), watches: map[string]context.CancelFunc{}, calls: map[string]context.CancelFunc{}}
+}
+
 // SetSessionTools installs only the fixed runtime methods on this discovered
 // daemon connection. Call before Start. The caller identity is in owner, not
 // accepted from the wire.
 func (c *Client) SetSessionTools(binding SessionBinding, owner SessionHubClient) {
-	ctx, cancel := context.WithCancel(context.Background())
-	c.sessionTools = &clientSessionTools{ctx: ctx, cancel: cancel, binding: binding, owner: owner, slots: make(chan struct{}, SessionToolsPendingLimit), watches: map[string]context.CancelFunc{}, calls: map[string]context.CancelFunc{}}
+	c.sessionTools = newClientSessionTools(binding, owner)
 }
 
 // AddSessionTools installs a separately scoped Manager binding on an attached
@@ -44,15 +48,14 @@ func (c *Client) AddSessionTools(binding SessionBinding, owner SessionHubClient)
 	if binding.BindingID == "" || binding.Ref == "" || binding.InstanceID == "" || binding.HubID == "" || owner == nil {
 		return InvalidParams("complete runtime binding and owner required")
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	state := &clientSessionTools{ctx: ctx, cancel: cancel, binding: binding, owner: owner, slots: make(chan struct{}, SessionToolsPendingLimit), watches: map[string]context.CancelFunc{}, calls: map[string]context.CancelFunc{}}
+	state := newClientSessionTools(binding, owner)
 	c.sessionToolsMu.Lock()
 	defer c.sessionToolsMu.Unlock()
 	if c.sessionToolBindings == nil {
 		c.sessionToolBindings = map[string]*clientSessionTools{}
 	}
 	if _, exists := c.sessionToolBindings[binding.BindingID]; exists {
-		cancel()
+		state.cancel()
 		return Conflict("runtime binding ID already installed")
 	}
 	c.sessionToolBindings[binding.BindingID] = state
