@@ -924,12 +924,19 @@ func TestHostDaemonReapCommandIsScopedToThisCase(t *testing.T) {
 	if strings.Contains(got, hostDir+"/bin/evener-real serve") {
 		t.Fatalf("reap command spells the expanded daemon path into its own command line, so its filter matches the shell running it: %q", got)
 	}
-	if !strings.Contains(got, "EVENER_REAP_DIR=") || !strings.Contains(got, `"$EVENER_REAP_DIR/bin/evener-real serve"`) {
+	if !strings.Contains(got, "EVENER_REAP_DIR=") || !strings.Contains(got, `bin="$EVENER_REAP_DIR/bin/evener-real"`) {
 		t.Fatalf("reap command does not match the daemon by absolute path from the environment: %q", got)
 	}
-	// A directory prefix must not match a longer sibling path: the match requires
-	// the trailing /bin/evener-real serve, so /x and /x-other stay distinct.
-	if !strings.Contains(got, "/bin/evener-real serve") {
+	// The executable field is matched exactly. A substring match on the command
+	// line would also match the grep or awk that is doing the matching, which
+	// made the first version of this report a phantom survivor forever.
+	if !strings.Contains(got, `$2==bin && $3=="serve"`) {
+		t.Fatalf("reap command does not exact-match the executable field: %q", got)
+	}
+	// A directory prefix must not match a longer sibling path. The match requires
+	// the daemon's own absolute binary, so /x and /x-other stay distinct even
+	// though one string is a prefix of the other.
+	if !strings.Contains(got, "/bin/evener-real") {
 		t.Fatalf("reap command matches a bare directory, so sibling run directories alias: %q", got)
 	}
 	// Escalation is part of the contract: SIGTERM, then SIGKILL for laggards.

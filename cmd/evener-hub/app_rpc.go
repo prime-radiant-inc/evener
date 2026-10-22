@@ -1530,9 +1530,15 @@ func registerThreadHandlers(
 		return operations.Queue(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnDrainAsSteer, func(ctx context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+		if params.ManagerProof != nil {
+			return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams("actor metadata is not a human input argument")
+		}
 		return drainQueueControl(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnPromoteQueuedAsSteer, func(ctx context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+		if params.ManagerProof != nil {
+			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("actor metadata is not a human input argument")
+		}
 		return promoteQueuedControl(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnCancelQueued, func(ctx context.Context, params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {

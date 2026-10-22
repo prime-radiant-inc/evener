@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
+	"primeradiant.com/evener/identifier"
 )
 
 func validSessionWatch(request appwire.SessionWatchRequest) error {
@@ -148,6 +149,18 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 	updates := make(chan appwire.SessionWatchUpdate, 32)
 	initial := appwire.SessionWatchUpdate{Snapshot: &read, Metadata: appwire.SessionObservationMetadata{Ref: read.Thread.Evener.Ref, InstanceID: read.Thread.Evener.InstanceID, GenerationID: read.BootGeneration}}
 	updates <- initial
+	// Live notifications carry no identity of their own, so each one needs a
+	// manufactured entry ID. A plain counter is not an identity: the watcher
+	// dedups on instance/generation/entry/event and keeps that memory across a
+	// reconnect, so the first question after a rebind would be numbered the same
+	// as the first one before it and dropped as already seen. A per-subscription
+	// prefix keeps every manufactured ID distinct from every other subscription's,
+	// so a rebind can only repeat an ID it actually re-sends.
+	subscription, err := identifier.NewWatchGeneration()
+	if err != nil {
+		cleanup()
+		return nil, err
+	}
 	go func() {
 		defer close(updates)
 		defer cleanup()
@@ -202,7 +215,7 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 					if json.Unmarshal(notification.Params, &status) == nil && status.AskPending != nil && *status.AskPending && sessionWatchSelected(request, "question") {
 						notificationSeq++
 						question := base
-						question.EntryID = fmt.Sprintf("question-%d", notificationSeq)
+						question.EntryID = fmt.Sprintf("question-%s-%d", subscription, notificationSeq)
 						question.CausalKnown = true
 						if !send(appwire.SessionWatchUpdate{Event: "question", Notification: &notification, Metadata: question}) {
 							return
@@ -217,7 +230,7 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 					continue
 				}
 				notificationSeq++
-				base.EntryID = fmt.Sprintf("%s-%d", notification.Method, notificationSeq)
+				base.EntryID = fmt.Sprintf("%s-%s-%d", notification.Method, subscription, notificationSeq)
 				base.CausalKnown = true
 				if !send(appwire.SessionWatchUpdate{Event: event, Notification: &notification, Metadata: base}) {
 					return
