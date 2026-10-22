@@ -1,15 +1,28 @@
 // @vitest-environment node
 
 import { IDBFactory } from "fake-indexeddb";
-import { expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import type { ComposerPreparation } from "../panes/session/composer/composerContract";
 import { composerDraftStorageKey, draftStorageKey } from "../panes/session/composer/draft";
 import { MemoryStorage } from "../storageTestUtils";
 import { browserDraftKey, createBrowserDraftRepository } from "./browserDraftRepository";
+import { IndexedDBTransactionTimeoutError, runBoundedTransaction } from "./idbConnection";
 import type { MutationIntent } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 
+// Observe the transaction seam without replacing it: the wrapper runs the real
+// runner, so the repository's own timeout factory is what the test inspects.
+vi.mock("./idbConnection", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./idbConnection")>();
+  return { ...actual, runBoundedTransaction: vi.fn(actual.runBoundedTransaction) };
+});
+
 const ORIGIN = "https://drafts.example";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
 
 const ORIGINAL_SESSION = "local:superseded-identity";
 const OTHER_SESSION = "local:resumed-identity";
@@ -173,4 +186,23 @@ test("readAppendBacking refuses a recovery backing retargeted to another session
   } finally {
     harness.repository.close();
   }
+});
+
+// The drafts watchdog's machine identity is the shared typed error, not a bare
+// Error a caller would have to match by prose. The message still names the
+// operation.
+test("a draft transaction's watchdog reports the typed timeout", async () => {
+  const repository = createBrowserDraftRepository({
+    indexedDB: new IDBFactory(),
+    databaseName: "draft-transaction-timeout",
+    storage: new MemoryStorage(),
+  });
+  const key = browserDraftKey("ref_a", ORIGIN);
+  await repository.seedDraft(key, { text: "timed", skillNames: [] });
+  const options = vi.mocked(runBoundedTransaction).mock.calls.at(-1)?.[0];
+  if (options === undefined) throw new Error("the seed opened no bounded transaction");
+  const timeout = options.timeout();
+  expect(timeout).toBeInstanceOf(IndexedDBTransactionTimeoutError);
+  expect(timeout.message).toBe("Browser draft repository transaction timed out");
+  repository.close();
 });

@@ -28,7 +28,7 @@ import {
   serializeNamespace,
   serializeSessionKey,
 } from "./compositionRevision";
-import { IDBConnection, requestResult, runBoundedTransaction } from "./idbConnection";
+import { IDBConnection, IndexedDBTransactionTimeoutError, requestResult, runBoundedTransaction } from "./idbConnection";
 import {
   ANNOTATION_EVIDENCE_STORE,
   ANNOTATION_EXPIRY_STORE,
@@ -981,7 +981,7 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
       transaction,
       retire: () => this.#connection.retire(database),
       waitMs: STORAGE_WAIT_MS,
-      timeout: () => new Error("Browser draft repository transaction timed out"),
+      timeout: () => new IndexedDBTransactionTimeoutError("Browser draft repository transaction timed out"),
       onLateCompletion,
       run: async () => {
         const result = await body(transaction);
