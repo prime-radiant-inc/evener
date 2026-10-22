@@ -228,6 +228,9 @@ func (jm *jobManager) outstandingWork() (jobs, watches, notifications, unknown [
 	if jm.stableWatchSettlementRetrying {
 		notifications = append(notifications, "settlement-retry")
 	}
+	if jm.watchCallbacks > 0 {
+		notifications = append(notifications, "watch-callback")
+	}
 	jm.mu.Unlock()
 
 	journal, readErr := retirementJobJournal(filepath.Join(jm.dir, "jobs.jsonl"))

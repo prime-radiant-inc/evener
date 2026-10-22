@@ -4225,6 +4225,14 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 	// end that did not persist. An end that lands stops the ticker with the
 	// watch; one that fails keeps it armed for the next retry.
 	if dec.endOneShot {
+		jm.mu.Lock()
+		jm.watchCallbacks++
+		jm.mu.Unlock()
+		defer func() {
+			jm.mu.Lock()
+			jm.watchCallbacks--
+			jm.mu.Unlock()
+		}()
 		dec.keepAlive = !jm.endFiredOneShot(cfg)
 		if dec.keepAlive {
 			jm.markOneShotFiredPendingEnd(cfg)

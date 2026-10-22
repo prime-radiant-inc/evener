@@ -62,6 +62,9 @@ export interface ParsedNotification {
   // reason code, so a phone line can say it beneath a headline. Legacy
   // attribute frames claim none - their `reason` is a raw code.
   ending?: string;
+  // A terminal report's rendered task/inventory notice, when the daemon
+  // included one in the packet metadata.
+  reportNotice?: string;
   outputBytes?: number;
   exitCode?: number;
   transcriptRef?: string;
@@ -377,6 +380,7 @@ interface TerminalPacket {
   // renders). Absent on frames recorded before the marker existed, where the
   // default-envelope shape heuristic remains the fallback.
   structuredResultSource?: string;
+  reportNotice?: string;
 }
 
 // parseTerminalPacket reads the daemon's TerminalPacket JSON. json.Marshal
@@ -403,6 +407,7 @@ function parseTerminalPacket(body: string): TerminalPacket | null {
       typeof parsed.structured_result_valid === "boolean" ? parsed.structured_result_valid : undefined,
     structuredResultReason: text(parsed.structured_result_reason) || undefined,
     structuredResultSource: text(parsed.structured_result_source) || undefined,
+    reportNotice: text(metadata.report_notice) || undefined,
   };
 }
 
@@ -561,6 +566,7 @@ function delegatePacketNotification(
     message: message || undefined,
     structuredResult,
     ending,
+    reportNotice: packet.reportNotice,
     structuredResultValid: reported ? packet.structuredResultValid : undefined,
     structuredResultReason: reported ? packet.structuredResultReason : undefined,
     concerns: [],

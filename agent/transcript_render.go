@@ -1173,6 +1173,9 @@ func jobResultStatus(r jobResult, raw string) string {
 	if r.Reason != "" {
 		statusParts = append(statusParts, "reason="+r.Reason)
 	}
+	if r.Readiness != "" {
+		statusParts = append(statusParts, "readiness="+r.Readiness)
+	}
 	statusParts = append(statusParts, "transcript_ref="+ref)
 	if len(r.Tools) > 0 {
 		// The capability ceiling is frozen at delegate creation/send time. Keep
@@ -1196,6 +1199,10 @@ func jobResultOutput(r jobResult) string {
 	var b strings.Builder
 	if r.Output != "" {
 		b.WriteString(r.Output) // already de-escaped (real newlines) by the JSON decoder
+		b.WriteString("\n")
+	}
+	if r.ReportSummary != "" {
+		b.WriteString(r.ReportSummary)
 		b.WriteString("\n")
 	}
 	if r.StructuredResult != nil {

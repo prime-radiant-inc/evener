@@ -80,7 +80,11 @@ type jobManager struct {
 	store            *jobstore.Store
 	running          map[string]*runningJob
 	watches          map[watchKey]*watchConfig
-	terminalFlush    map[*watchConfig]bool
+	// watchCallbacks counts fired one-shot callbacks between removing their
+	// registration and enqueueing the notification. Admission treats a
+	// positive count as outstanding watch work. Guarded by jm.mu.
+	watchCallbacks int
+	terminalFlush  map[*watchConfig]bool
 	// watchHistory is a bounded, latest-trimmed ring of watches that have left
 	// the active set, surfaced by job_list so a fired-then-removed watch stays
 	// legible. Guarded by jm.mu.

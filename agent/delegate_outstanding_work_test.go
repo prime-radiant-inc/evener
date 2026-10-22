@@ -143,3 +143,18 @@ func TestOutstandingDelegateWorkReadFailureIsUnknown(t *testing.T) {
 		}
 	})
 }
+
+func TestOutstandingDelegateWorkIncludesInFlightWatchCallback(t *testing.T) {
+	s, jm := newAdmissionSession(t)
+	jm.mu.Lock()
+	jm.watchCallbacks = 1
+	jm.mu.Unlock()
+
+	work, err := s.outstandingDelegateWork()
+	if err != nil {
+		t.Fatalf("outstandingDelegateWork: %v", err)
+	}
+	if !slices.Contains(work.Notifications, "watch-callback") {
+		t.Fatalf("notifications = %v, want watch-callback", work.Notifications)
+	}
+}
