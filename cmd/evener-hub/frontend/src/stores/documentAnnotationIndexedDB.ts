@@ -1138,6 +1138,22 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
           restoreInstalledSuppression();
           return { state: "stale-ticket" };
         }
+        // The fence transaction may have committed before its completion was
+        // lost (a watchdog outlived the connection). The durable expiry row is
+        // the evidence: the fence wrote it in phase "fenced" and flipped the
+        // epoch's pending rows terminal in the same transaction. That flip is
+        // the eligibility-restoring event a FIFO successor waits on, and this
+        // catch is the only arm that can publish it - no sweep follows a direct
+        // acceptance. Do not retain a second attempt.
+        const committed = await this.#fenceCommitted(
+          documentKey,
+          validation.namespaceIncarnation,
+          validation.head.epoch,
+        );
+        if (committed !== undefined) {
+          this.#settleTransition({ signal: true, documentKey });
+          return { state: "expiry-pending", receipt: committed };
+        }
         // A failed fence keeps the confirmed suppression and its pending expiry for
         // retry; the read is honest expiry-pending with no committed receipt.
         this.#pendingExpiries.set(suppressionIdentity, {
@@ -1279,6 +1295,31 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // validation and so the observation boundary can run between them. It rechecks
   // the durable identity it is about to replace: an obsolete validation must not
   // rewrite a newer epoch.
+  // The durable evidence that a fence committed though its caller never saw the
+  // completion: the same transaction writes the expiry row in phase "fenced"
+  // under the expected document, incarnation and epoch. Any other row state, a
+  // mismatched identity or an unreadable row proves nothing.
+  async #fenceCommitted(
+    documentKey: string,
+    namespaceIncarnation: string,
+    expiredEpoch: string,
+  ): Promise<ExpiryReceipt | undefined> {
+    let row: AnnotationExpiryRow | undefined;
+    try {
+      row = await this.#readRow<AnnotationExpiryRow>(
+        ANNOTATION_EXPIRY_STORE,
+        annotationExpiryKey(documentKey, expiredEpoch),
+      );
+    } catch {
+      return undefined;
+    }
+    const receipt = row?.receipt;
+    if (receipt === undefined || receipt.phase !== "fenced") return undefined;
+    if (receipt.namespaceIncarnation !== namespaceIncarnation || receipt.expiredEpoch !== expiredEpoch)
+      return undefined;
+    return receipt;
+  }
+
   async #fence(
     ticketKey: DocumentKey,
     namespace: Extract<DocumentKey["namespace"], { kind: "browser" }>,
@@ -1941,7 +1982,21 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
           }
           this.#pendingExpiries.delete(identity);
         } else {
-          retainedFaults.push(error);
+          // The retained fence's own transaction may have committed before its
+          // completion was lost. The durable row proves it: the flip it wrote
+          // is the FIFO unblock a successor needs, so this pass publishes the
+          // signal the lost completion skipped instead of fencing again.
+          const committed = await this.#fenceCommitted(
+            record.documentKey,
+            record.namespaceIncarnation,
+            record.expiredEpoch,
+          );
+          if (committed !== undefined) {
+            this.#pendingExpiries.delete(identity);
+            this.#settleTransition({ signal: true, documentKey: record.documentKey });
+          } else {
+            retainedFaults.push(error);
+          }
         }
       }
     }
