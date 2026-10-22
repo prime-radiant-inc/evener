@@ -260,10 +260,11 @@ type restartConfigIdentity struct {
 func selectRestartConfigIdentity(opts endpointOptions, report hubendpoint.Report) (restartConfigIdentity, error) {
 	file, err := os.Stat(report.ConfigPath)
 	if err == nil {
-		if !report.ConfigExists {
+		identity := restartConfigIdentity{file: file}
+		if !report.ConfigExists || report.Running == nil || !identity.matches(report.Running.ConfigPath) || report.Running.HubStateRoot != report.HubStateRoot {
 			return restartConfigIdentity{}, hubendpoint.ErrIdentityMismatch
 		}
-		return restartConfigIdentity{file: file}, nil
+		return identity, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) || opts.configExplicit || report.ConfigExists {
 		return restartConfigIdentity{}, err

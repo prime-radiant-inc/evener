@@ -173,12 +173,16 @@ func TestHubRestartCommandUsesResponseIncarnation(t *testing.T) {
 }
 
 func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
-	for _, name := range []string{"listener-moved", "listener-moved-lost-reply", "hardlink-listener-moved", "hardlink-listener-moved-lost-reply", "equal-content-record-config", "replaced-selected-config", "relative-config-listener-moved", "symlink-config-listener-moved", "relative-symlink-config-listener-moved", "failed-restart", "wrong-record-config", "changed-selected-root", "changed-selected-config", "same-incarnation"} {
+	for _, name := range []string{"listener-moved", "listener-moved-lost-reply", "hardlink-listener-moved", "hardlink-listener-moved-lost-reply", "shared-root-equal-content", "shared-root-different-config", "equal-content-record-config", "replaced-selected-config", "relative-config-listener-moved", "symlink-config-listener-moved", "relative-symlink-config-listener-moved", "failed-restart", "wrong-record-config", "changed-selected-root", "changed-selected-config", "same-incarnation"} {
 		t.Run(name, func(t *testing.T) {
 			dir, root := endpointTestRoot(t)
 			config := endpointTestConfig(t, dir, root, "127.0.0.1:0")
 			recordConfig := config
 			cliConfig := config
+			sharedRoot := strings.HasPrefix(name, "shared-root-")
+			if sharedRoot {
+				recordConfig = filepath.Join(dir, "running.toml")
+			}
 			if strings.HasPrefix(name, "hardlink-") {
 				recordConfig, cliConfig = filepath.Join(dir, "a.toml"), filepath.Join(dir, "b.toml")
 				for _, alias := range []string{recordConfig, cliConfig} {
@@ -227,7 +231,7 @@ func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var successorHealth, attempts atomic.Int32
+			var successorHealth, attempts, rpcRequests atomic.Int32
 			var scheduled atomic.Bool
 			successor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/api/health" || r.Header.Get("Authorization") != "" {
@@ -240,7 +244,10 @@ func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
 			newAddr := strings.TrimPrefix(successor.URL, "http://")
 			mux := http.NewServeMux()
 			appServer := newHubAppServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, appsource.NewRegistry())
-			mux.HandleFunc("/rpc", appServer.ServeWebSocket)
+			mux.HandleFunc("/rpc", func(w http.ResponseWriter, r *http.Request) {
+				rpcRequests.Add(1)
+				appServer.ServeWebSocket(w, r)
+			})
 			mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 				at := before
 				if scheduled.Load() && (name == "wrong-record-config" || strings.HasPrefix(name, "changed-selected-")) {
@@ -277,6 +284,18 @@ func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
 			})
 			// The running process retains its fixed listener while TOML moves.
 			endpointTestConfig(t, dir, root, newAddr)
+			if sharedRoot {
+				data, err := os.ReadFile(config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if name == "shared-root-different-config" {
+					data = append(data, []byte("\n# Another config sharing the running hub's state root.\n")...)
+				}
+				if err := os.WriteFile(recordConfig, data, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			var mu sync.Mutex
 			var scheduleErr error
 			previousSchedule := scheduleHubRestartOnly
@@ -371,6 +390,12 @@ func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
 			err = runHubRestart([]string{"--config", cliConfig, "--timeout", "1s"}, &stderr, deps)
 			mu.Lock()
 			defer mu.Unlock()
+			if sharedRoot {
+				if !errors.Is(err, hubendpoint.ErrIdentityMismatch) || rpcRequests.Load() != 0 || attempts.Load() != 0 || scheduleErr != nil {
+					t.Fatalf("different config reached restart: err=%v RPC requests=%d attempts=%d schedule=%v", err, rpcRequests.Load(), attempts.Load(), scheduleErr)
+				}
+				return
+			}
 			if scheduleErr != nil || attempts.Load() != 1 {
 				t.Fatalf("restart scheduling: attempts=%d err=%v", attempts.Load(), scheduleErr)
 			}
@@ -526,6 +551,39 @@ func TestHubRestartCommandAbsentDefault(t *testing.T) {
 				}
 			} else if !errors.Is(err, hubendpoint.ErrIdentityMismatch) {
 				t.Fatalf("changed default identity accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestHubRestartFileConfigIdentity(t *testing.T) {
+	for _, name := range []string{"same-file", "hardlink", "different-file", "missing-running", "missing-running-config", "different-root"} {
+		t.Run(name, func(t *testing.T) {
+			dir, root := endpointTestRoot(t)
+			config := endpointTestConfig(t, dir, root, "127.0.0.1:0")
+			report := hubendpoint.Report{ConfigPath: config, ConfigExists: true, HubStateRoot: root, Running: &hubendpoint.Record{ConfigPath: config, HubStateRoot: root}}
+			switch name {
+			case "hardlink":
+				report.Running.ConfigPath = filepath.Join(dir, "alias.toml")
+				if err := os.Link(config, report.Running.ConfigPath); err != nil {
+					t.Fatal(err)
+				}
+			case "different-file":
+				report.Running.ConfigPath = endpointTestConfig(t, t.TempDir(), root, "127.0.0.1:0")
+			case "missing-running":
+				report.Running = nil
+			case "missing-running-config":
+				report.Running.ConfigPath = filepath.Join(dir, "missing.toml")
+			case "different-root":
+				report.Running.HubStateRoot = t.TempDir()
+			}
+			identity, err := selectRestartConfigIdentity(endpointOptions{configPath: config, configExplicit: true}, report)
+			if name == "same-file" || name == "hardlink" {
+				if err != nil || !identity.matches(report.Running.ConfigPath) {
+					t.Fatalf("matching config identity refused: %v", err)
+				}
+			} else if !errors.Is(err, hubendpoint.ErrIdentityMismatch) {
+				t.Fatalf("unproven running identity accepted: %v", err)
 			}
 		})
 	}
