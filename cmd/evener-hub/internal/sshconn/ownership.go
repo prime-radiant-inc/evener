@@ -203,7 +203,11 @@ func sameProcess(now, prior selectedOwner) bool {
 }
 
 func sameLaunch(now, prior selectedOwner) bool {
-	return now.supervisor == prior.supervisor && now.domainUID == prior.domainUID && now.cwdIdentity == prior.cwdIdentity && slices.Equal(now.argv, prior.argv) && slices.Equal(now.env, prior.env) && now.definition == prior.definition && now.report.ConfigPath == prior.report.ConfigPath && now.report.HubStateRoot == prior.report.HubStateRoot
+	return sameLaunchWithEnv(now, prior, prior.env)
+}
+
+func sameLaunchWithEnv(now, prior selectedOwner, env []string) bool {
+	return now.supervisor == prior.supervisor && now.domainUID == prior.domainUID && now.cwdIdentity == prior.cwdIdentity && slices.Equal(now.argv, prior.argv) && slices.Equal(now.env, env) && now.definition == prior.definition && now.report.ConfigPath == prior.report.ConfigPath && now.report.HubStateRoot == prior.report.HubStateRoot
 }
 
 func (m *Manager) hasOwnerWitness(owner selectedOwner) bool {

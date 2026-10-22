@@ -123,7 +123,7 @@ func TestDarwinOwnerDirectoryIdentity(t *testing.T) {
 					if now.cwdIdentity != tc.actual || stopped && prior.cwdIdentity != tc.actual {
 						t.Fatalf("pathname bytes changed: prior=%q now=%q want=%q", prior.cwdIdentity, now.cwdIdentity, tc.actual)
 					}
-					if stopped && !selectedSuccessor(now, prior, "release-selected", "") {
+					if stopped && !selectedSuccessor(now, prior, nil, "release-selected", "") {
 						t.Fatal("same directory refused as stopped-service successor")
 					}
 				}

@@ -59,11 +59,11 @@ func selectedRelaunch(owner selectedOwner) string {
 // checkSelectedReplacement is the last read-only boundary before any selected
 // stop or start. A lock holder is a locator, never stop authority. Both the live
 // predecessor and the definition that will launch its replacement must agree.
-func (m *Manager) checkSelectedReplacement(ctx context.Context, host hostreg.Host, facts Preflight, owner selectedOwner, live bool) error {
+func (m *Manager) checkSelectedReplacement(ctx context.Context, host hostreg.Host, facts Preflight, owner selectedOwner, live bool) ([]string, error) {
 	if live {
 		retained := owner.report.Running
 		if retained == nil || retained.BootID == "" {
-			return fmt.Errorf("%w: stop requires a retained live report", errOwnerEvidence)
+			return nil, fmt.Errorf("%w: stop requires a retained live report", errOwnerEvidence)
 		}
 		_, err := m.revalidateOwnedEndpointUsing(ctx, host, facts, owner, func(ctx context.Context, host hostreg.Host, facts Preflight) (hubendpoint.Report, error) {
 			report, err := m.resolveHostEndpoint(ctx, host, facts)
@@ -77,16 +77,16 @@ func (m *Manager) checkSelectedReplacement(ctx context.Context, host hostreg.Hos
 			return report, nil
 		})
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if owner.supervisor.kind == supervisorLaunchd {
 		if facts.UID != owner.domainUID {
-			return fmt.Errorf("%w: selected launchd domain changed", errOwnerEvidence)
+			return nil, fmt.Errorf("%w: selected launchd domain changed", errOwnerEvidence)
 		}
 		defs, err := m.launchdOwners(ctx, host, facts)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		def, ok := defs[owner.supervisor]
 		pid := "0"
@@ -94,9 +94,9 @@ func (m *Manager) checkSelectedReplacement(ctx context.Context, host hostreg.Hos
 			pid = owner.pid
 		}
 		if !ok || def.pid != pid || launchdIntent(def) != owner.definition {
-			return fmt.Errorf("%w: selected launchd definition changed", errOwnerEvidence)
+			return nil, fmt.Errorf("%w: selected launchd definition changed", errOwnerEvidence)
 		}
-		return m.checkOwnerConfig(ctx, host, def.argv, def.cwd, def.env, owner.report)
+		return owner.env, m.checkOwnerConfig(ctx, host, def.argv, def.cwd, def.env, owner.report)
 	}
 	if owner.supervisor.kind != supervisorNone {
 		pid := "0"
@@ -105,40 +105,40 @@ func (m *Manager) checkSelectedReplacement(ctx context.Context, host hostreg.Hos
 		}
 		sup, err := m.supervisorForOwner(ctx, host, pid, owner.argv, owner.cwd, owner.supervisor)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if sup != owner.supervisor {
-			return fmt.Errorf("%w: selected service changed", errOwnerEvidence)
+			return nil, fmt.Errorf("%w: selected service changed", errOwnerEvidence)
 		}
 		definition, err := m.serviceDefinition(ctx, host, sup)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if definition != owner.definition {
-			return fmt.Errorf("%w: selected service definition changed", errOwnerEvidence)
+			return nil, fmt.Errorf("%w: selected service definition changed", errOwnerEvidence)
 		}
 		user, ok := effectiveUserName(host)
 		if !ok {
 			out, err := m.ownerRead(ctx, host, "id -un")
 			if err != nil {
-				return err
+				return nil, err
 			}
 			user = firstLine(string(out))
 		}
 		env, err := m.stoppedServiceEnvironment(ctx, host, sup, user)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if !live && !equalStrings(env, owner.env) {
-			return fmt.Errorf("%w: next service environment disagrees with selection", errOwnerEvidence)
+			return nil, fmt.Errorf("%w: next service environment disagrees with selection", errOwnerEvidence)
 		}
-		return m.checkOwnerConfig(ctx, host, owner.argv, owner.cwd, env, owner.report)
+		return env, m.checkOwnerConfig(ctx, host, owner.argv, owner.cwd, env, owner.report)
 	}
-	return m.checkOwnerConfig(ctx, host, owner.argv, owner.cwd, owner.env, owner.report)
+	return owner.env, m.checkOwnerConfig(ctx, host, owner.argv, owner.cwd, owner.env, owner.report)
 }
 
 func (m *Manager) recoverSelectedRestart(ctx context.Context, host hostreg.Host, facts Preflight, pending pendingRestartState) error {
-	_, err := m.recoverSelectedRestartWithStart(ctx, host, facts, pending)
+	_, err := m.recoverSelectedRestartWithStart(ctx, host, facts, &pending)
 	return err
 }
 
@@ -149,7 +149,7 @@ func checkSelectedRestartRegistration(host, prior hostreg.Host) error {
 	return nil
 }
 
-func (m *Manager) recoverSelectedRestartWithStart(ctx context.Context, host hostreg.Host, facts Preflight, pending pendingRestartState) (started bool, err error) {
+func (m *Manager) recoverSelectedRestartWithStart(ctx context.Context, host hostreg.Host, facts Preflight, pending *pendingRestartState) (started bool, err error) {
 	started = pending.start
 	prior := *pending.selected
 	m.applyResolvedTarget(&host)
@@ -179,13 +179,20 @@ func (m *Manager) recoverSelectedRestartWithStart(ctx context.Context, host host
 		if err != nil {
 			return started, err
 		}
-		if !sameLaunch(now, prior) {
+		if sameProcess(now, prior) && !sameLaunch(now, prior) {
 			return started, fmt.Errorf("%w: pending owner intent changed", errOwnerEvidence)
 		}
 		if !sameProcess(now, prior) {
+			env := pending.nextEnv
+			if env == nil {
+				env = prior.env
+			}
+			if !sameLaunchWithEnv(now, prior, env) {
+				return started, fmt.Errorf("%w: pending owner intent changed", errOwnerEvidence)
+			}
 			// A successful replacement may have outlived a lost SSH response. Verify
 			// that successor instead of needlessly restarting it again.
-			if selectedSuccessor(now, prior, pending.expectedVersion, pending.expectedGitSHA) {
+			if selectedSuccessor(now, prior, pending.nextEnv, pending.expectedVersion, pending.expectedGitSHA) {
 				m.clearPendingRestart(host.Name)
 				return started, nil
 			}
@@ -276,9 +283,12 @@ func (m *Manager) revalidateStoppedService(ctx context.Context, host hostreg.Hos
 	return nil
 }
 
-func selectedSuccessor(now, prior selectedOwner, version, pin string) bool {
+func selectedSuccessor(now, prior selectedOwner, env []string, version, pin string) bool {
+	if env == nil {
+		env = prior.env
+	}
 	running := now.report.Running
-	return running != nil && !sameProcess(now, prior) && sameLaunch(now, prior) && running.Version == version && hubBuildSHAMatches(running.BackendGitSHA, pin) && (prior.report.Running == nil || running.BootID != prior.report.Running.BootID)
+	return running != nil && !sameProcess(now, prior) && sameLaunchWithEnv(now, prior, env) && running.Version == version && hubBuildSHAMatches(running.BackendGitSHA, pin) && (prior.report.Running == nil || running.BootID != prior.report.Running.BootID)
 }
 
 // proveSelectedRestartComplete never starts or retries an effect. It permits an
@@ -293,12 +303,12 @@ func (m *Manager) proveSelectedRestartComplete(ctx context.Context, host hostreg
 	if err != nil {
 		return selectedOwner{}, false, err
 	}
-	if !selectedSuccessor(now, *pending.selected, pending.expectedVersion, pending.expectedGitSHA) {
+	if !selectedSuccessor(now, *pending.selected, pending.nextEnv, pending.expectedVersion, pending.expectedGitSHA) {
 		return selectedOwner{}, false, nil
 	}
 	if pending.start {
 		final, err := m.resolveOwnedEndpoint(ctx, host, facts)
-		if err != nil || !selectedSuccessor(final, *pending.selected, pending.expectedVersion, pending.expectedGitSHA) || final.report.Running.StartedAt.IsZero() {
+		if err != nil || !selectedSuccessor(final, *pending.selected, pending.nextEnv, pending.expectedVersion, pending.expectedGitSHA) || final.report.Running.StartedAt.IsZero() {
 			return selectedOwner{}, false, fmt.Errorf("%w: host %q startup identity could not be verified", ErrRestart, host.Name)
 		}
 		now = final
@@ -319,7 +329,7 @@ func (m *Manager) waitSelectedSuccessor(ctx context.Context, host hostreg.Host, 
 		if now.report.Running != nil {
 			observedVersion, observedSHA = now.report.Running.Version, now.report.Running.BackendGitSHA
 		}
-		if err == nil && selectedSuccessor(now, *pending.selected, pending.expectedVersion, pending.expectedGitSHA) {
+		if err == nil && selectedSuccessor(now, *pending.selected, pending.nextEnv, pending.expectedVersion, pending.expectedGitSHA) {
 			return nil
 		}
 		if err := m.opts.waitSleep(ctx, restartHealthInterval); err != nil {

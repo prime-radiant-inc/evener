@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -552,7 +553,7 @@ func (m *Manager) restartHubWithStartProof(ctx context.Context, host hostreg.Hos
 	m.mu.Lock()
 	m.pendingRestarts[host.Name] = pending
 	m.mu.Unlock()
-	return pending.start, m.restartSelectedPending(ctx, host, facts, pending, owner.pid != "0")
+	return pending.start, m.restartSelectedPending(ctx, host, facts, &pending, owner.pid != "0")
 }
 
 // checkHubOwner proves the identified listener runs as the host's effective SSH
@@ -1645,11 +1646,12 @@ func firstLine(s string) string {
 	return strings.TrimSpace(s)
 }
 
-func (m *Manager) restartSelectedPending(ctx context.Context, host hostreg.Host, facts Preflight, pending pendingRestartState, predecessorLive bool) error {
+func (m *Manager) restartSelectedPending(ctx context.Context, host hostreg.Host, facts Preflight, pending *pendingRestartState, predecessorLive bool) error {
 	if err := m.checkEffectBinding(pending.binding); err != nil {
 		return err
 	}
-	if err := m.checkSelectedReplacement(ctx, host, facts, *pending.selected, predecessorLive); err != nil {
+	nextEnv, err := m.checkSelectedReplacement(ctx, host, facts, *pending.selected, predecessorLive)
+	if err != nil {
 		return err
 	}
 	// The gate performs remote reads. Keep entry authorization adjacent to the
@@ -1659,6 +1661,7 @@ func (m *Manager) restartSelectedPending(ctx context.Context, host hostreg.Host,
 			return err
 		}
 	}
+	pending.nextEnv = slices.Clone(nextEnv)
 	// The installation has been validated, and this command now owns only
 	// replacement of its selected predecessor, not future deployment repair.
 	pending.deployment = false
@@ -1669,7 +1672,7 @@ func (m *Manager) restartSelectedPending(ctx context.Context, host hostreg.Host,
 		pending.command = selectedRelaunch(*pending.selected)
 	}
 	m.mu.Lock()
-	m.pendingRestarts[host.Name] = pending
+	m.pendingRestarts[host.Name] = *pending
 	m.mu.Unlock()
 	owner := *pending.selected
 	if owner.supervisor.kind == supervisorLaunchd && facts.UID != owner.domainUID {
@@ -1711,7 +1714,7 @@ func (m *Manager) restartSelectedPending(ctx context.Context, host hostreg.Host,
 	if runErr != nil && !owner.supervisor.restartStatusIsAdvisory() {
 		return fmt.Errorf("%w: selected replacement %s: %w: %s", ErrRestart, command, runErr, tail(out))
 	}
-	if err := m.waitSelectedSuccessor(ctx, host, facts, pending); err != nil {
+	if err := m.waitSelectedSuccessor(ctx, host, facts, *pending); err != nil {
 		if runErr != nil {
 			return fmt.Errorf("%w: advisory restart status %s: %w", err, command, runErr)
 		}

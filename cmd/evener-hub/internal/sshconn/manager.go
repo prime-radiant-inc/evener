@@ -484,8 +484,11 @@ func (h hubIdentity) differentProcessFrom(other hubIdentity) bool {
 // write, together with the requested build and the process it must replace.
 // A deployment may not yet have resolved its restart command.
 type pendingRestartState struct {
-	command         string
-	selected        *selectedOwner
+	command  string
+	selected *selectedOwner
+	// nextEnv is the validated replacement environment, separate from the live
+	// predecessor's selected.env. Nil retains legacy predecessor-env semantics.
+	nextEnv         []string
 	replaced        hubIdentity
 	expectedVersion string
 	expectedGitSHA  string
@@ -3481,6 +3484,7 @@ func (m *Manager) pendingRestart(name string) pendingRestartState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	pending := m.pendingRestarts[name]
+	pending.nextEnv = slices.Clone(pending.nextEnv)
 	if pending.selected != nil {
 		owner := pending.selected.clone()
 		pending.selected = &owner

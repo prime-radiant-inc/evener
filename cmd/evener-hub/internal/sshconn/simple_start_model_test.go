@@ -194,7 +194,7 @@ func TestSelectedRestartBoundary(t *testing.T) {
 					m.pendingRestarts[host.Name] = pending
 				}
 				saved := m.pendingRestart(host.Name)
-				err := m.restartSelectedPending(t.Context(), host, facts, pending, !stopped)
+				err := m.restartSelectedPending(t.Context(), host, facts, &pending, !stopped)
 				refusal := errOwnerEvidence
 				if name == "different-config" {
 					refusal = ErrPreflightDecode

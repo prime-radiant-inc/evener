@@ -192,7 +192,7 @@ func TestRecoveryEntryBindingDeploymentWriteAndReplay(t *testing.T) {
 				if acknowledged {
 					wantWrites = 1
 				}
-				if err != nil || ch == nil || writes != wantWrites || launches != 2 || running != "snapshot" || m.pendingRestart(host.Name) != (pendingRestartState{}) || m.resolvedTarget(host.Name) != host.EvenerPath {
+				if err != nil || ch == nil || writes != wantWrites || launches != 2 || running != "snapshot" || !reflect.DeepEqual(m.pendingRestart(host.Name), pendingRestartState{}) || m.resolvedTarget(host.Name) != host.EvenerPath {
 					t.Fatalf("recovery: err=%v writes=%d launches=%d running=%s pending=%+v target=%s", err, writes, launches, running, m.pendingRestart(host.Name), m.resolvedTarget(host.Name))
 				}
 			})
@@ -266,7 +266,7 @@ func TestRecoveryEntryBindingDeploySupersession(t *testing.T) {
 			}
 			entry = 1
 			recordConnectionOperations(t, m)
-			if _, err := m.ensureOnce(t.Context(), host, false); !errors.Is(err, refused) || writes != 2 || m.pendingRestart(host.Name) != newIntent {
+			if _, err := m.ensureOnce(t.Context(), host, false); !errors.Is(err, refused) || writes != 2 || m.pendingRestart(host.Name).binding != newIntent.binding || m.pendingRestart(host.Name).selected != newIntent.selected || !reflect.DeepEqual(m.pendingRestart(host.Name), newIntent) {
 				t.Fatalf("recovery adopted old binding: err=%v writes=%d pending=%+v", err, writes, m.pendingRestart(host.Name))
 			}
 		})
@@ -351,7 +351,7 @@ func TestRecoveryEntryBindingGuardsBothBareRestartMutations(t *testing.T) {
 				if _, err := m.ensureOnce(t.Context(), host, false); !errors.Is(err, refused) || kills != 1 || launches != 0 || !reflect.DeepEqual(m.pendingRestart(host.Name), pending) {
 					t.Fatalf("unauthorized relaunch replay: err=%v kills=%d launches=%d", err, kills, launches)
 				}
-			} else if m.pendingRestart(host.Name) != (pendingRestartState{}) {
+			} else if !reflect.DeepEqual(m.pendingRestart(host.Name), pendingRestartState{}) {
 				t.Fatal("refused kill recorded a nonexistent effect")
 			}
 			inject = false
@@ -374,7 +374,7 @@ func TestRecoveryEntryBindingGuardsBothBareRestartMutations(t *testing.T) {
 			if ch != nil {
 				defer func() { _ = ch.Close() }()
 			}
-			if err != nil || ch == nil || kills != 1 || launches != 1 || started != "2026-01-02T00:00:00Z" || m.pendingRestart(host.Name) != (pendingRestartState{}) {
+			if err != nil || ch == nil || kills != 1 || launches != 1 || started != "2026-01-02T00:00:00Z" || !reflect.DeepEqual(m.pendingRestart(host.Name), pendingRestartState{}) {
 				t.Fatalf("bare recovery: err=%v kills=%d launches=%d pending=%+v", err, kills, launches, m.pendingRestart(host.Name))
 			}
 		})
@@ -421,7 +421,7 @@ func TestRecoveryEntryBindingReleasedAtTeardown(t *testing.T) {
 			case "close":
 				err = m.Close()
 			}
-			if err != nil || m.pendingRestart(host.Name) != (pendingRestartState{}) {
+			if err != nil || !reflect.DeepEqual(m.pendingRestart(host.Name), pendingRestartState{}) {
 				t.Fatalf("teardown retained callback: err=%v pending=%+v", err, m.pendingRestart(host.Name))
 			}
 			before := validations

@@ -315,7 +315,7 @@ func (m *Manager) restartForOperation(ctx context.Context, host hostreg.Host, fa
 	}
 	var started bool
 	if pending.selected != nil {
-		started, err = m.recoverSelectedRestartWithStart(restartCtx, host, facts, pending)
+		started, err = m.recoverSelectedRestartWithStart(restartCtx, host, facts, &pending)
 	} else {
 		if err := m.checkEffectBinding(binding); err != nil {
 			return result, err
@@ -346,7 +346,7 @@ func (m *Manager) restartForOperation(ctx context.Context, host hostreg.Host, fa
 			m.mu.Unlock()
 			return result, err
 		}
-		err = m.restartSelectedPending(restartCtx, host, facts, pending, owner.pid != "0")
+		err = m.restartSelectedPending(restartCtx, host, facts, &pending, owner.pid != "0")
 	}
 	if err != nil {
 		return result, err
@@ -354,7 +354,7 @@ func (m *Manager) restartForOperation(ctx context.Context, host hostreg.Host, fa
 	if started {
 		final, finalErr := m.resolveOwnedEndpoint(restartCtx, host, facts)
 		actual, known := identityFromReport(final.report)
-		if finalErr != nil || !known || actual.startedAt.IsZero() || !selectedSuccessor(final, *pending.selected, version, pin) {
+		if finalErr != nil || !known || actual.startedAt.IsZero() || !selectedSuccessor(final, *pending.selected, pending.nextEnv, version, pin) {
 			pending.start, pending.deployment = true, false
 			m.mu.Lock()
 			m.pendingRestarts[host.Name] = pending

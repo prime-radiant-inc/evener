@@ -210,7 +210,7 @@ func TestOwnerOSIdentity(t *testing.T) {
 					}
 					now.report.Running = remoteEndpointFixture(config, "127.0.0.1:19371", "successor-boot").Running
 					now.report.Running.PID, now.report.Running.Version = 4343, "new"
-					if !selectedSuccessor(now, prior, "new", "") {
+					if !selectedSuccessor(now, prior, nil, "new", "") {
 						t.Fatalf("same OS identity refused as successor: prior=%+v now=%+v", prior, now)
 					}
 				} else {

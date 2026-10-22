@@ -2128,7 +2128,7 @@ func TestPendingStartOnHealthySupervisorlessHostAttaches(t *testing.T) {
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
 		t.Fatalf("Ensure = %v, want nil: a healthy hub must settle a recorded start, not be refused as a supervisorless restart", err)
 	}
-	if got := m.pendingRestart(host.Name); got != (pendingRestartState{}) {
+	if got := m.pendingRestart(host.Name); !reflect.DeepEqual(got, pendingRestartState{}) {
 		t.Fatalf("pending start survived a healthy hub: %+v", got)
 	}
 }
@@ -2175,7 +2175,7 @@ func TestPendingStartOnHealthyHostKeepingItsOwnBuildAttaches(t *testing.T) {
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
 		t.Fatalf("Ensure = %v, want nil: a recorded start must be settled against the host's own build", err)
 	}
-	if got := m.pendingRestart(host.Name); got != (pendingRestartState{}) {
+	if got := m.pendingRestart(host.Name); !reflect.DeepEqual(got, pendingRestartState{}) {
 		t.Fatalf("pending start survived a healthy host keeping its own build: %+v", got)
 	}
 }
@@ -2226,7 +2226,7 @@ func TestPendingStartNotSettledForWrongSnapshotCommit(t *testing.T) {
 	if _, err := m.Ensure(context.Background(), "alpha"); !errors.Is(err, ErrRestart) {
 		t.Fatalf("Ensure = %v, want ErrRestart (a wrong-commit hub must not settle a recorded start)", err)
 	}
-	if got := m.pendingRestart(host.Name); got == (pendingRestartState{}) {
+	if got := m.pendingRestart(host.Name); reflect.DeepEqual(got, pendingRestartState{}) {
 		t.Fatal("a recorded start was settled against the expected version but the wrong snapshot commit")
 	}
 }
