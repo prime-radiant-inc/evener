@@ -82,7 +82,9 @@ func supervisorArgvMatches(live, definition []string, report hubendpoint.Report,
 		for _, value := range env {
 			addr, ok := strings.CutPrefix(value, "EVENER_HUB_LISTEN_ADDR=")
 			if ok && ephemeral(addr) {
-				fromEnv = (report.ListenSource == "env" && report.ConfiguredListenAddr == addr) || (report.Running.ListenSource == "env" && report.Running.RequestedListenAddr == addr)
+				// Captured process/service environment proves the original launch.
+				// SSH inspection may lack it, and the rewritten record names a flag.
+				fromEnv = true
 			}
 		}
 		if !configured && !published && !fromEnv {

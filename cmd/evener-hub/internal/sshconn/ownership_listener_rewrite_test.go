@@ -33,6 +33,12 @@ func TestSupervisedInPlaceListenerRewrite(t *testing.T) {
 			{"env-fixed", "", "-addr 127.0.0.1:19371", true},
 			{"env-bound-mismatch", "", "-addr 127.0.0.1:19372", true},
 			{"env-second-listener", "", "-addr 127.0.0.1:19371 -addr 127.0.0.1:19371", true},
+			{"env-service-only", "", "-addr 127.0.0.1:19371", false},
+			{"env-service-only-no-captured-env", "", "-addr 127.0.0.1:19371", true},
+			{"env-service-only-bound-missing", "", "-addr 127.0.0.1:19371", true},
+			{"env-service-only-bound-mismatch", "", "-addr 127.0.0.1:19372", true},
+			{"env-service-only-second-listener", "", "-addr 127.0.0.1:19371 -addr 127.0.0.1:19371", true},
+			{"env-service-only-non-listener-change", "", "-addr 127.0.0.1:19371 --public-url=https://other.example", true},
 			{"unresponsive-flag", "-addr 127.0.0.1:0", "-addr 127.0.0.1:19371", false},
 			{"unresponsive-config", "", "-addr 127.0.0.1:19371", false},
 			{"unresponsive-no-witness", "-addr 127.0.0.1:0", "-addr 127.0.0.1:19371", false},
@@ -60,16 +66,25 @@ func TestSupervisedInPlaceListenerRewrite(t *testing.T) {
 				report := remoteEndpointFixture(host.ConfigPath, "127.0.0.1:19371", "boot-one")
 				ownerEnv := []string{"HOME=/home/dev"}
 				envAddr := ""
+				serviceOnly := strings.HasPrefix(tc.name, "env-service-only")
 				if strings.HasPrefix(tc.name, "env-") {
 					report.ListenSource, report.ConfiguredListenAddr = "env", "127.0.0.1:0"
 					report.Running.ListenSource, report.Running.RequestedListenAddr = "flag", "127.0.0.1:19371"
-					if tc.name != "env-missing" {
+					if tc.name != "env-missing" && tc.name != "env-service-only-no-captured-env" {
 						envAddr = "127.0.0.1:0"
 						if tc.name == "env-fixed" {
 							envAddr = "127.0.0.1:9180"
 						}
 						ownerEnv = append(ownerEnv, "EVENER_HUB_LISTEN_ADDR="+envAddr)
 						slices.Sort(ownerEnv)
+					}
+				}
+				if serviceOnly {
+					// Inspection runs under SSH login HOME with no listener env.
+					// The rewritten process record reports its appended flag instead.
+					report.ListenSource, report.ConfiguredListenAddr = "default", "127.0.0.1:9180"
+					if tc.name == "env-service-only-bound-missing" {
+						report.Running.BoundAddr = ""
 					}
 				}
 				if tc.name == "fixed-config" {
@@ -94,6 +109,9 @@ func TestSupervisedInPlaceListenerRewrite(t *testing.T) {
 						if strings.HasPrefix(tc.name, "env-") {
 							currentReport.ListenSource, currentReport.ConfiguredListenAddr = "env", envAddr
 							currentReport.Running.ListenSource, currentReport.Running.RequestedListenAddr = "env", envAddr
+							if serviceOnly {
+								currentReport.ListenSource, currentReport.ConfiguredListenAddr = "default", "127.0.0.1:9180"
+							}
 						}
 						if tc.name == "fixed-exact" {
 							currentReport = remoteEndpointFixture(host.ConfigPath, "127.0.0.1:19371", "boot-two")
@@ -198,13 +216,20 @@ func TestSupervisedInPlaceListenerRewrite(t *testing.T) {
 				host, _ = m.reg.Get(host.Name)
 				owner, err := m.resolveOwnedEndpoint(t.Context(), host, facts)
 				if tc.refuse {
-					if !errors.Is(err, errOwnerEvidence) || effects != 0 || writes != 0 || m.pendingRestart(host.Name).active() {
+					wantErr := errOwnerEvidence
+					if tc.name == "env-service-only-bound-missing" {
+						wantErr = ErrPreflightDecode
+					}
+					if !errors.Is(err, wantErr) || effects != 0 || writes != 0 || m.pendingRestart(host.Name).active() {
 						t.Fatalf("invalid rewrite accepted: owner=%+v err=%v effects=%d writes=%d", owner, err, effects, writes)
 					}
 					return
 				}
 				if err != nil || !reflect.DeepEqual(owner.argv, live) || owner.supervisor.kind == supervisorNone {
 					t.Fatalf("valid live association refused or argv changed: owner=%+v err=%v", owner, err)
+				}
+				if serviceOnly && (!slices.Equal(owner.env, ownerEnv) || owner.report.ListenSource != "default" || owner.report.Running.ListenSource != "flag") {
+					t.Fatalf("service-only provenance not independently captured: env=%q report=%+v", owner.env, owner.report)
 				}
 				pending, err := m.prepareSelectedRestart(t.Context(), host, facts, owner, "release-selected", "")
 				if err != nil {
@@ -243,6 +268,30 @@ func TestSupervisedInPlaceListenerRewrite(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestSupervisorArgvCapturedEnvironmentRewrite(t *testing.T) {
+	for _, tc := range []struct {
+		name, env, source string
+		want              bool
+	}{
+		{"zero-port", "EVENER_HUB_LISTEN_ADDR=127.0.0.1:0", "default", true},
+		{"empty-port", "EVENER_HUB_LISTEN_ADDR=127.0.0.1:", "default", true},
+		{"inspection-flag", "EVENER_HUB_LISTEN_ADDR=127.0.0.1:0", "flag", true},
+		{"missing-captured-env", "HOME=/home/dev", "default", false},
+		{"fixed-port", "EVENER_HUB_LISTEN_ADDR=127.0.0.1:9180", "default", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			definition := []string{"/opt/evener", "hub", "--config=/srv/selected.toml"}
+			live := append(slices.Clone(definition), "-addr", "127.0.0.1:19371")
+			report := remoteEndpointFixture("/srv/selected.toml", "127.0.0.1:19371", "boot-one")
+			report.ListenSource, report.ConfiguredListenAddr = tc.source, "127.0.0.1:9180"
+			report.Running.ListenSource, report.Running.RequestedListenAddr = "flag", "127.0.0.1:19371"
+			if got := supervisorArgvMatches(live, definition, report, []string{tc.env}); got != tc.want {
+				t.Fatalf("captured environment rewrite match=%v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
