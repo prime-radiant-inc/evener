@@ -1012,7 +1012,8 @@ func (m *Manager) deploySelectedWithSupersession(ctx context.Context, host hostr
 		return m.deploy(ctx, host, facts, nil)
 	}
 	retained := m.pendingRestart(host.Name)
-	if realEndpointAuthority && retained.deployment && retained.selected != nil && (facts.ExecutableMissing || facts.HubEndpointSchema != 1) {
+	retainedDeployment := realEndpointAuthority && retained.deployment && retained.selected != nil
+	if retainedDeployment && (facts.ExecutableMissing || facts.HubEndpointSchema != 1) {
 		// A failed executable probe, not unreadable metadata, authorizes only the
 		// retained operation's original write. The post-write contract stays strict.
 		unusable, probeErr := m.recordedTargetUnusable(ctx, host)
@@ -1053,7 +1054,7 @@ func (m *Manager) deploySelectedWithSupersession(ctx context.Context, host hostr
 		}
 	}
 	checkRetained := func(now selectedOwner) error {
-		if !realEndpointAuthority || !retained.deployment || retained.selected == nil {
+		if !retainedDeployment {
 			return nil
 		}
 		if err := m.checkEffectBinding(retained.binding); err != nil {
@@ -1090,6 +1091,9 @@ func (m *Manager) deploySelectedWithSupersession(ctx context.Context, host hostr
 		return "", err
 	}
 	beforeWrite := func(target string) error {
+		if retainedDeployment && (retained.installTarget == "" || target != retained.installTarget) {
+			return errOwnerSelectionMismatch
+		}
 		previous := m.pendingRestart(host.Name)
 		var fresh pendingRestartState
 		if facts.ExecutableMissing {
@@ -1148,7 +1152,11 @@ func (m *Manager) deploySelectedWithSupersession(ctx context.Context, host hostr
 		}
 		return nil
 	}
-	target, err := m.deploy(ctx, host, facts, beforeWrite)
+	var retainedTarget []string
+	if retainedDeployment {
+		retainedTarget = []string{retained.installTarget}
+	}
+	target, err := m.deploy(ctx, host, facts, beforeWrite, retainedTarget...)
 	if err != nil {
 		return "", err
 	}
