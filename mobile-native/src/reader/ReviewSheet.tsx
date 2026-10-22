@@ -85,6 +85,7 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 				now.target,
 				now.action === "queue" ? "queue" : "send",
 				reviewMessage(path, verdict, comments, note),
+				now.action === "resume",
 			);
 		} catch (error) {
 			setFailure(error instanceof Error ? error.message : String(error));

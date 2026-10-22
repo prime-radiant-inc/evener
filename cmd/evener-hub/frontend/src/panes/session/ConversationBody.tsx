@@ -5,7 +5,7 @@ import { paneToURL, refParam } from "../../shell/routing";
 import { workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { controlsFor, recoveryFence } from "../../stores/liveControls";
-import { hasQueuedNonSend, ownerRetainedRef, threadsStore, useThreadsStore } from "../../stores/threads";
+import { ownerRetainedRef, threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { Button, Cadence, EmptyState, InlineNotice, type VirtualListHandle, VisuallyHidden } from "../../widgets";
 import { zoomPaneCoversConversation } from "../zoom/cascadeCoverage";
@@ -116,8 +116,6 @@ export function ConversationBody({
   seat: ConversationSeat;
   render: (parts: ConversationParts) => React.ReactNode;
 }) {
-  const blockedMutations = useBlockedMutationEntries(ref);
-
   // One ensureThread(ref) claim on mount, one matching releaseThread(ref) on
   // unmount — the threads store owns hydration, retries and re-subscription
   // from there; the claim, not this effect, is what the store converges on.
@@ -149,8 +147,8 @@ export function ConversationBody({
   );
   const deletedRef = useThreadsStore((s) => s.deletedRefs.has(ref));
   const restartPending = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
-  const stopping = useThreadsStore((s) => s.stoppingRefs.has(ref));
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(ref));
+  const blockedMutations = useBlockedMutationEntries(ref);
   const reconciliationFailed = useThreadsStore((s) => s.mutationReconciliationFailures.has(ref));
 
   // Identity follow-up for a store-driven resume: the transcript is already
@@ -280,21 +278,20 @@ export function ConversationBody({
     />
   );
 
-  const recoveryOwnerRef = ownerRetainedRef(model, mutationStateAuthoritative);
-  // Neither face of the fence that Send now drives needs the notice; the
-  // shapes that remain are ones Send cannot drive.
-  const fence = recoveryFence(ref, model, restartPending, {
+  // Send drives the resume on every recoverable shape, so the notice belongs
+  // only to the two Send cannot complete: an incompatible-protocol daemon that
+  // must be stopped first, and a retained child whose work its owner must
+  // reconcile. Every descendant read carries mutationStateAuthoritative=false,
+  // so retention alone would put the owner notice on every subagent pane; the
+  // notice also needs the uncertainty or the fence that gives it something to
+  // say.
+  const fence = recoveryFence(model, restartPending, {
     uncertainMessages: blockedMutations.length > 0,
-    stopInFlight: stopping,
-    queuedNonSend: hasQueuedNonSend(ref),
-    mutationStateAuthoritative,
   });
+  const recoveryOwnerRef = ownerRetainedRef(model, mutationStateAuthoritative);
   const showRestartNotice =
     model.status.type === "restartRequired" ||
-    (restartPending && !fence.sendDriven) ||
-    (blockedMutations.length > 0 &&
-      (model.status.type === "notLoaded" || !mutationStateAuthoritative) &&
-      !fence.sendDriven);
+    (recoveryOwnerRef !== undefined && (restartPending || blockedMutations.length > 0) && !fence.sendDriven);
 
   const cadence = <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />;
 
@@ -390,13 +387,7 @@ export function ConversationBody({
           retry={model.modelRetry}
           primaryModel={model.model}
         />
-        {showRestartNotice && (
-          <RestartRequiredNotice
-            sessionRef={ref}
-            ownerRef={recoveryOwnerRef}
-            resumeRequired={model.status.type !== "restartRequired" && !recoveryOwnerRef}
-          />
-        )}
+        {showRestartNotice && <RestartRequiredNotice sessionRef={ref} ownerRef={recoveryOwnerRef} />}
         {/* Recovery keeps the composer and its menu mounted. Retain the
             fallback only for other local snapshots with no Send surface;
             owner-retained sessions direct recovery to their owner. */}
@@ -453,25 +444,13 @@ const DEGRADED_VERSION_EMPTY_HINT =
 // via the useToasts() singleton; the resume the Send-resumes face drives
 // keeps no inline sequence of its own — the store owns the one resume
 // sequence.
-function RestartRequiredNotice({
-  sessionRef,
-  resumeRequired = false,
-  ownerRef,
-}: {
-  sessionRef: string;
-  resumeRequired?: boolean;
-  ownerRef?: string;
-}) {
+function RestartRequiredNotice({ sessionRef, ownerRef }: { sessionRef: string; ownerRef?: string }) {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const refresh = async () => {
     setRefreshing(true);
     setError(null);
     try {
-      if (resumeRequired) {
-        await threadsStore.getState().resumeSession(sessionRef);
-        return;
-      }
       await threadsStore.getState().refreshThread(sessionRef);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -480,19 +459,14 @@ function RestartRequiredNotice({
     }
   };
   return (
-    <div
-      role="alert"
-      data-reason={ownerRef ? "owner-retained" : resumeRequired ? "resume-required" : "version-mismatch"}
-    >
+    <div role="alert" data-reason={ownerRef ? "owner-retained" : "version-mismatch"}>
       {ownerRef
         ? "This session is retained by its owning session. Its uncertain messages cannot be checked here until the owner releases it."
-        : resumeRequired
-          ? "Resume this session before continuing. Any uncertain messages will be checked before sending."
-          : DEGRADED_VERSION_NOTICE}
+        : DEGRADED_VERSION_NOTICE}
       {ownerRef && <a href={paneToURL("session", { ref: ownerRef }) ?? undefined}>Open owning session</a>}
-      {(resumeRequired || ownerRef) && (
+      {ownerRef && (
         <Button disabled={refreshing} onClick={() => void refresh()}>
-          {resumeRequired ? "Resume session" : "Refresh session"}
+          Refresh session
         </Button>
       )}
       {error && <span>{error}</span>}

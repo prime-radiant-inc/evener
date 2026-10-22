@@ -8,12 +8,7 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { connectionStore } from "./connection";
-import {
-  isResumeOnlyLocal,
-  productionEntryTranscriptForTests,
-  resetThreadsStoreForTests,
-  threadsStore,
-} from "./threads";
+import { isResumeOnly, productionEntryTranscriptForTests, resetThreadsStoreForTests, threadsStore } from "./threads";
 
 const cleanupStops: Array<() => Promise<void>> = [];
 beforeEach(() => {
@@ -76,14 +71,14 @@ test("an ordinary off-shutdown transition changes the consuming resume predicate
     requestGeneration: params.requestGeneration,
   }));
   await threadsStore.getState().ensureThread(ref);
-  expect(isResumeOnlyLocal(ref, model(ref))).toBe(true);
+  expect(isResumeOnly(model(ref))).toBe(true);
   expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
   act(() => fake.emitNotification(status(ref, "active")));
   expect(model(ref).status.type).toBe("active");
-  expect(isResumeOnlyLocal(ref, model(ref))).toBe(false);
+  expect(isResumeOnly(model(ref))).toBe(false);
   expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
   act(() => publishAgain(fake, ref));
-  expect(isResumeOnlyLocal(ref, model(ref))).toBe(false);
+  expect(isResumeOnly(model(ref))).toBe(false);
   expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
   expect(productionEntryTranscriptForTests(ref).model?.resumeOnlyFoldable).toBe(false);
 });
@@ -100,7 +95,7 @@ test("an off-shut-down status fold leaves a stop-owned fence armed", async () =>
   }));
   await threadsStore.getState().ensureThread(ref);
   expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
-  expect(isResumeOnlyLocal(ref, model(ref))).toBe(true);
+  expect(isResumeOnly(model(ref))).toBe(true);
 
   const stop = deferred<void>();
   fake.on("evener/thread/forceStop", () => stop.promise);
@@ -122,11 +117,11 @@ test("an off-shut-down status fold leaves a stop-owned fence armed", async () =>
   // The stop group still owns the obligation: the fold did not drop its fence.
   expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
   expect(threadsStore.getState().threads.get(ref)?.resumeOnlyFoldable).toBe(false);
-  expect(isResumeOnlyLocal(ref, model(ref))).toBe(false);
+  expect(isResumeOnly(model(ref))).toBe(false);
   expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
-  expect(isResumeOnlyLocal(ref, model(ref), { stopInFlight: true })).toBe(false);
+  expect(isResumeOnly(model(ref), { stopInFlight: true })).toBe(false);
   act(() => publishAgain(fake, ref));
-  expect(isResumeOnlyLocal(ref, model(ref))).toBe(false);
+  expect(isResumeOnly(model(ref))).toBe(false);
   expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
   expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
 
@@ -141,9 +136,9 @@ test("ordinary status publication preserves a never-resume-only recovery fence",
   const fake = connectFakeClient();
   fake.on("thread/read", (params) => ({ ...resumeOnlySnapshot(ref), requestGeneration: params.requestGeneration }));
   await threadsStore.getState().ensureThread(ref);
-  expect(isResumeOnlyLocal(ref, model(ref))).toBe(false);
+  expect(isResumeOnly(model(ref))).toBe(false);
   act(() => fake.emitNotification(status(ref, "active")));
-  expect(isResumeOnlyLocal(ref, model(ref))).toBe(false);
+  expect(isResumeOnly(model(ref))).toBe(false);
   expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
 });
 
@@ -156,10 +151,10 @@ test("an authoritative live foldable snapshot remains foldable without an off-sh
     return { ...response, requestGeneration: params.requestGeneration };
   });
   await threadsStore.getState().ensureThread(ref);
-  expect(isResumeOnlyLocal(ref, model(ref))).toBe(true);
+  expect(isResumeOnly(model(ref))).toBe(true);
   act(() => publishAgain(fake, ref));
-  expect(isResumeOnlyLocal(ref, model(ref))).toBe(true);
+  expect(isResumeOnly(model(ref))).toBe(true);
   act(() => fake.emitNotification(status(ref, "notLoaded")));
-  expect(isResumeOnlyLocal(ref, model(ref))).toBe(true);
+  expect(isResumeOnly(model(ref))).toBe(true);
   expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
 });

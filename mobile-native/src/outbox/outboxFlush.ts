@@ -20,18 +20,25 @@
 import type { AppwireClientLike } from "@evener/appwire-client";
 import { reconnectDelay } from "../hubConnection";
 
-export type SettleResult = "open" | "reconciled" | "blocked" | "stale" | "unregistered";
+export type SettleResult = "open" | "reconciled" | "blocked" | "resumed" | "retry" | "stale" | "unregistered";
 
 /** The slice of NativeMutationRuntime the flush uses. */
 export interface FlushRuntime {
 	readonly storage: {
 		listTargetRefs(): Promise<string[]>;
-		listOutbox(targetRef: string): Promise<readonly { state: string }[]>;
+		listOutbox(targetRef: string): Promise<readonly { state: string; method: string }[]>;
 	};
 	start(): Promise<void>;
 	targetClient(hubId: string, targetRef: string): AppwireClientLike | undefined;
+	/** True when the target's registration is held by a client that is gone. */
+	hasStaleRegistration?(hubId: string, targetRef: string): boolean;
 	registerTarget(hubId: string, targetRef: string, client: AppwireClientLike | null): () => void;
-	settleTarget(hubId: string, targetRef: string, client: AppwireClientLike): Promise<SettleResult>;
+	settleTarget(
+		hubId: string,
+		targetRef: string,
+		client: AppwireClientLike,
+		options?: { mayResumeFenced?: () => Promise<boolean> },
+	): Promise<SettleResult>;
 	subscribeStorage(listener: (targetRefs: readonly string[]) => void): () => void;
 }
 
@@ -170,7 +177,12 @@ export class OutboxFlush {
 		client: AppwireClientLike,
 	): Promise<void> {
 		const { generation } = this;
-		const holder = runtime.targetClient(hubId, ref);
+		// A registration whose client is gone is not a holder. An
+		// identity-changing resume registers the resolved identity for the
+		// runtime's lifetime, so when the connection is replaced that entry
+		// survives with a dead client; reading it as an owner made the flush skip
+		// this target forever, stranding whatever moved to it.
+		const holder = runtime.hasStaleRegistration?.(hubId, ref) ? undefined : runtime.targetClient(hubId, ref);
 		if (holder !== undefined) {
 			// A session screen holds this target. Under the Reader or a subagent
 			// it doesn't read, so after a reconnect its waiting message would
@@ -183,7 +195,25 @@ export class OutboxFlush {
 			const mark = Symbol(key);
 			this.settlingForScreens.set(key, mark);
 			try {
-				if (await this.waiting(runtime, key)) await runtime.settleTarget(hubId, ref, client);
+				// Settle only when the target holds a message that still needs
+				// sending; a covered screen with nothing owed needs no read at all.
+				if (await this.waiting(runtime, key)) {
+					// The runtime asks the predicate only when it sees a fence, so a
+					// healthy settle pays no extra storage read.
+					const answer = await runtime.settleTarget(hubId, ref, client, {
+						mayResumeFenced: () => this.messageWaiting(runtime, key),
+					});
+					// The screen is not reading here, and a resume writes nothing, so
+					// this path owns the follow-up for a settle that resumed but could
+					// not finish - the same reason the claim path does.
+					if (answer === "resumed") this.retryTargetSoon();
+					// A predicate that could not read storage: retry on the existing
+					// storage backoff, since the message behind it is still waiting.
+					else if (answer === "retry") {
+						this.readFailures += 1;
+						this.retryLater(generation);
+					}
+				}
 			} catch {
 				// Storage failed: nothing else looks again for a screen's target
 				// (changed() leaves it to the screen), so retry on the backoff, as
@@ -204,8 +234,26 @@ export class OutboxFlush {
 			// that connection's claims go, and the runtime answers a read for a
 			// registration that is gone or replaced with "stale", before it
 			// reconciles or dispatches anything (isCurrentRead).
-			const answer = await runtime.settleTarget(hubId, ref, client);
+			//
+			// Resume a fenced target only when it holds a message that still needs
+			// sending: a session the person deliberately stopped has no such row,
+			// and reconnecting must not restart it behind their back.
+			const answer = await runtime.settleTarget(hubId, ref, client, {
+				// Asked only when the runtime sees a fence. A failed read answers
+				// "no", which leaves the row where a fence always left it and keeps
+				// the retry cadence this path has always had.
+				mayResumeFenced: () => this.messageWaiting(runtime, key),
+			});
 			settled = answer === "reconciled" || answer === "open";
+			// A settle that resumed but could not finish (a stale read after the
+			// resume recycled its transport) leaves the row parked with no storage
+			// write to wake this flush, so it owns the next look. A plain "blocked"
+			// is a fence or a failure and waits as it always did.
+			if (answer === "resumed") this.retryTargetSoon();
+			else if (answer === "retry") {
+				this.readFailures += 1;
+				this.retryLater(generation);
+			}
 		} catch {
 			// A read or storage failure: let go, as for a read that failed.
 		}
@@ -221,6 +269,23 @@ export class OutboxFlush {
 	private letGo(key: string, claim: Claim): void {
 		if (!this.release(key, claim)) return;
 		if (this.touched.delete(key)) void this.flush().catch(() => undefined);
+	}
+
+	/** Looks again shortly for one target whose settle could not finish. A
+	 * fenced settle that resumed has already cleared the fence, so the next
+	 * look dispatches; the delay only keeps a transport that is still being
+	 * recycled from answering the retry with another stale read. */
+	private retryTargetSoon(): void {
+		const timer = setTimeout(() => {
+			// Deliberately not generation-checked. The resume recycles its own
+			// transport, so the app rebinds this flush and advances the generation
+			// while the settle that scheduled this retry is still in flight; a
+			// generation guard would throw the retry away in exactly the case it
+			// exists for. flush() reads the current binding and no-ops when there
+			// is none, which is the only condition that should cancel it.
+			void this.flush().catch(() => undefined);
+		}, 500);
+		timer.unref?.();
 	}
 
 	/** A target the flush holds may be done; a record for one nobody holds is
@@ -288,6 +353,16 @@ export class OutboxFlush {
 	private async waiting(runtime: FlushRuntime, key: string): Promise<boolean> {
 		const records = await runtime.storage.listOutbox(key);
 		return records.some((record) => record.state === "submitting");
+	}
+
+	/** Whether this target holds a message that still needs delivering. This is
+	 * the resume decision, and it is narrower than `waiting`: a pending
+	 * turn/interrupt is not a reason to restart a session - the person stopped
+	 * it - so a Stop left across a reconnect must not bring it back. The Stop
+	 * still settles through `waiting`, which is what delivers it. */
+	private async messageWaiting(runtime: FlushRuntime, key: string): Promise<boolean> {
+		const records = await runtime.storage.listOutbox(key);
+		return records.some((record) => record.state === "submitting" && record.method !== "turn/interrupt");
 	}
 
 	/** Lets go of this claim, and only this one: a late continuation of an

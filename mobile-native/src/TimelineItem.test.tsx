@@ -1021,9 +1021,9 @@ describe("an error", () => {
 		expect(onErrorAction).toHaveBeenCalledWith("signIn");
 	});
 
-	it("offers Resume on a paused session", () => {
+	it("offers Retry on a paused session: Send is its recovery action", () => {
 		expect(show(failure("go test exited 1"), true).buttons.map((button) => button.props.accessibilityLabel)).toEqual([
-			"Resume",
+			"Retry",
 		]);
 	});
 
@@ -1072,9 +1072,7 @@ describe("a warning", () => {
 				item={{ kind: "failure", id: "w1", title: "Low disk", detail: "clean up", attention: true, turnId: "turn_2" }}
 				hubId="hub"
 				sessionRef="warning"
-				errorActionFor={(failed) =>
-					errorAction(failed, { resumeRequired: true, turns: [{ id: "turn_1" }, { id: "turn_2" }] as never }, true)
-				}
+				errorActionFor={(failed) => errorAction(failed, { turns: [{ id: "turn_1" }, { id: "turn_2" }] as never }, true)}
 				onErrorAction={() => {}}
 			/>,
 		);

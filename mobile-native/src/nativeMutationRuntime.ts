@@ -42,6 +42,9 @@ type NativeStorage = MutationOutboxStorage<MutationAttachmentRef> & {
 	discardRecovery(clientMutationId: string, targetRef: string): Promise<boolean>;
 	discardUndelivered(clientMutationId: string, targetRef: string): Promise<boolean>;
 	releaseCanceled(clientMutationId: string, targetRef: string, barrier: MutationStopBarrier): Promise<boolean>;
+	/** Moves a resumed session's waiting rows to its resolved identity and
+	 * returns the ids that moved. */
+	retarget(ref: string, to: { ref: string; wireRef: string; threadId?: string; instanceId?: string }): string[];
 	pruneUnlistedAccepted(
 		targetRef: string,
 		acceptedBefore: number,
@@ -143,6 +146,12 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		{ client: AppwireClientLike; token: symbol; readToken?: symbol; unsubscribe: () => void }
 	>();
 	readonly #blockedTargets = new Set<string>();
+	// Registrations this runtime created for its own work and must release when
+	// that work ends. A settle that retargets a resumed session registers the
+	// new identity so the moved rows can dispatch; nothing else owns that
+	// registration, so it is retired with the settle rather than left pinned to
+	// a client a later connection replaces.
+	readonly #retireWithSettle: Array<() => void> = [];
 	// The mutations this phone submitted to each target, by id, with when:
 	// reconcilePendingEntries' submittedHere. An authoritative read that lists
 	// a send as pending settles its durable record before any turn shows it,
@@ -234,6 +243,17 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		this.#started = false;
 		this.#startup = undefined;
 		await this.#outbox.stop();
+		// A stopped runtime serves nothing, so the registrations it made for its
+		// own work end here. A later start that needs the identity registers it
+		// again; leaving them held would pin the targets to this attempt's client.
+		//
+		// A registration like that can outlive its client between ordinary
+		// connection replacements, since the process-lifetime runtime never stops.
+		// It is harmless rather than released early: the flush reads a registration
+		// whose client is gone as no holder at all (hasStaleRegistration), so the
+		// replacement claims the target. Releasing it from the settle instead would
+		// strand the very dispatch it exists for.
+		for (const release of this.#retireWithSettle.splice(0)) release();
 	}
 
 	// The scoped durable read (NativeMutationPersistenceRead): the snapshot
@@ -347,6 +367,18 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		return this.#targets.get(nativeMutationTargetKey(hubId, targetRef))?.client;
 	}
 
+	/** A registration exists, but nobody live is behind it: its client was
+	 * replaced or closed and no screen rebinds that target any more. The flush
+	 * reads this to tell "another owner is reading this" from "a stale entry is
+	 * holding it", which is what an identity-changing resume leaves behind when
+	 * the runtime outlives a connection. A stale entry is not an owner, so the
+	 * target is claimable. */
+	hasStaleRegistration(hubId: string, targetRef: string): boolean {
+		const target = this.#targets.get(nativeMutationTargetKey(hubId, targetRef));
+		if (target === undefined) return false;
+		return target.client.state !== "ready" && target.client.state !== "reconnecting";
+	}
+
 	beginAuthoritativeRead(
 		hubId: string,
 		targetRef: string,
@@ -450,7 +482,14 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		hubId: string,
 		targetRef: string,
 		client: AppwireClientLike,
-	): Promise<"open" | "reconciled" | "blocked" | "stale" | "unregistered"> {
+		options: {
+			mayResumeFenced?: () => Promise<boolean>;
+			/** Called with the resolved ref when a resume changes the session's
+			 * identity, so a mounted screen can follow it instead of staying on
+			 * the ref the daemon retired. */
+			onResolvedIdentity?: (ref: string) => void;
+		} = {},
+	): Promise<"open" | "reconciled" | "blocked" | "resumed" | "retry" | "stale" | "unregistered"> {
 		const targetKey = nativeMutationTargetKey(hubId, targetRef);
 		if (!this.#targets.has(targetKey)) return "unregistered";
 		if (!this.#blockedTargets.has(targetKey)) return "open";
@@ -466,6 +505,112 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 			});
 		} catch {
 			return "blocked";
+		}
+		// A fenced target that still holds a waiting message resumes here, so an
+		// offline send is not stranded: the resume's own read is what releases the
+		// parked row, and the next settle finishes it. Off by default - an
+		// ordinary read must never resume a session the person has not sent to.
+		if (
+			options.mayResumeFenced !== undefined &&
+			// Validate before acting: a newer read may already have cleared the
+			// fence and started dispatching, and resuming on this older answer
+			// would recycle the transport out from under that healthy work.
+			this.#isCurrentRead(lease) &&
+			response.thread.evener.resumeRequired === true &&
+			// A daemon that needs restarting refuses a resume; that shape stays with
+			// the person, whose older process must be stopped first.
+			response.thread.status.type !== "restartRequired"
+		) {
+			// Asked only now, on a fence the caller has actually seen: the ordinary
+			// settle path pays no storage read for it.
+			//
+			// A refusal and a failure are different facts. Refused: the session has
+			// no message worth resuming for, and "blocked" is its resting state.
+			// Failed: the caller could not tell, and answering "blocked" would skip
+			// the storage backoff it needs - so that answer is its own, and the
+			// flush schedules the retry it already has for a failed read.
+			let mayResume: boolean;
+			try {
+				mayResume = await options.mayResumeFenced();
+			} catch {
+				return "retry";
+			}
+			if (!mayResume) return "blocked";
+			// The predicate reads storage, so it is an await of its own: a newer
+			// read can clear the fence and start healthy work inside it. Acting on
+			// this older answer then would recycle the transport out from under that
+			// work, so the lease is checked again here, not only before.
+			if (!this.#isCurrentRead(lease)) return "stale";
+			// A refused resume leaves the row parked and the next settle retries.
+			const resumed = await client.resumeThread(targetRef).catch(() => undefined);
+			if (!resumed) return "blocked";
+			// A resume can return a different identity. The parked rows still name
+			// the old ref and its instance, so they move to the resumed one before
+			// any read below - otherwise reconciliation sees rows under a ref the
+			// daemon no longer serves, or dispatches them with a stale fence.
+			const resolvedRef = resumed.thread.evener.ref;
+			if (resolvedRef !== targetRef) {
+				// Rows are keyed by the composite hub+ref the intent was built
+				// with, so the move names that same key on both sides.
+				const resolvedKey = nativeMutationTargetKey(hubId, resolvedRef);
+				this.storage.retarget(targetKey, {
+					ref: resolvedKey,
+					// The wire ref is the bare session ref; the key above is this
+					// phone's storage identity for it. Conflating them would send the
+					// daemon a JSON-encoded pair as a session ref.
+					wireRef: resolvedRef,
+					threadId: resumed.thread.id,
+					instanceId: resumed.thread.evener.instanceId,
+				});
+				// The resumed identity needs its own registration: the dispatcher
+				// reaches a client only through the key it names, so without this the
+				// moved rows would sit under a key nothing can serve. The original
+				// registration still belongs to its owner and is left alone.
+				//
+				// The one created here is scoped to this settle: it exists so the rows
+				// can dispatch, and holding it longer would pin the target to this
+				// connection's client - a later flush would then find the target
+				// "owned" and skip it, stranding whatever moved later.
+				const releaseResolved = this.registerTarget(hubId, resolvedRef, client);
+				this.#retireWithSettle.push(releaseResolved);
+				// Subscribers match the composite key, so a bare ref reaches none of
+				// them and both projections would keep showing rows that moved.
+				this.#notifyStorageChange([targetKey, resolvedKey]);
+				options.onResolvedIdentity?.(resolvedRef);
+			}
+			try {
+				// The resume cleared the fence, so read once more and reconcile in
+				// this same settle. A flush with no screen on the target lets go after
+				// a "blocked" answer and is woken by storage writes only, and the
+				// resume writes none - so leaving the row for "the next settle" would
+				// strand it.
+				//
+				// The resume recycles its transport, so the registration this read
+				// started under may be gone by now: a lease whose registration
+				// vanished reconciles as "stale". Reconcile what this tab can still
+				// prove, and let the caller's own retry own the rest.
+				const afterLease = this.beginAuthoritativeRead(hubId, resolvedRef, client);
+				if (!afterLease) return "resumed";
+				let after: ThreadReadResponse;
+				try {
+					after = await client.request("thread/read", {
+						ref: resolvedRef,
+						includeTurns: true,
+						itemsView: "fragment",
+						itemLimit: READ_ITEM_LIMIT,
+					});
+				} catch {
+					return "resumed";
+				}
+				return await this.reconcileAuthoritativeRead(afterLease, after);
+			} finally {
+				// Deliberately NOT released here. The dispatch this registration
+				// enables runs asynchronously and reads storage several awaits deep,
+				// so any release timed from this settle either strands the dispatch
+				// (too early, which a test caught) or holds the target claimed by
+				// this connection (too late). Its lifetime is the runtime's, released
+				// in stop(); see the KNOWN LIMITATION note there.
+			}
 		}
 		return this.reconcileAuthoritativeRead(lease, response);
 	}
