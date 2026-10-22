@@ -48,23 +48,22 @@ typecheck and targeted Vitest pass.
 
 ## Task 2: Adjacent outbox consolidation
 
-Share only what is genuinely common; keep storage and publication local.
+Clean `main` already uses the shared mutation package from both clients:
+`mutationOutbox.ts` re-exports and extends the package's `MutationOutbox`,
+records and selectors, and `nativeMutationRuntime.ts` imports the shared
+mutation contracts. The named `MutationAdmissionLostError` /
+`requirePrecondition` classes belong to the abandoned feature branch and do
+not exist here. No record-shape or discovery consolidation is required.
 
-- Reuse the shared record, pending-entry, projection and commit-feed selectors
-  in browser and native host code instead of host-side scans.
-- Share the stale-admission refusal classification between browser
-  `MutationAdmissionLostError` and native `requirePrecondition`, preserving the
-  rule that a refusal never falls back to a storage write.
-- Share pure settlement identity/evidence selection only where the browser and
-  native decisions are identical. Do not move publication fences, storage
-  commits, SQLite transactions, IndexedDB epochs, attachment bytes, or
-  notifications.
-- Keep `mutationOutboxIndexedDB.ts` and the native SQLite adapter separate.
-- Tests: refusal classification and shared selector cases; no storage rewrite.
+Verify the imports and record the result. Any remaining native adapter
+alignment (flush result/target ports) is cleanup, not Retry correctness, and
+belongs in the broader client-state cleanup spec. Do not manufacture a merge
+of IndexedDB and SQLite adapters, the dispatcher, or the protocol.
 
-Acceptance: no duplicate record/entry shape remains in the host layers; all
-existing outbox and recovery tests pass unchanged; the refusal distinction is
-covered in both clients.
+Acceptance: a short verification note in the task report names the shared
+imports and confirms no duplicate record/entry shape remains in the host
+layers; no code change unless a real duplicate is found.
+
 
 ## Task 3: Browser one-owner Retry
 
