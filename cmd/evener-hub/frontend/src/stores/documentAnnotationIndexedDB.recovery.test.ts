@@ -1199,3 +1199,50 @@ test("a rejected expiry-fence hook leaves the epoch listed and savable", async (
     fixture.drafts.close();
   }
 });
+
+// The entry-time provisional a later read displaces must not be restored after
+// its owner has gone. T0 installs its provisional, T1 displaces it, T0's stale
+// completion leaves the displaced entry in T1's hands, and T0's finally retires
+// its registration. T1's own stale answer then restored P0, whose owner no
+// longer exists: the unconfirmed entry hid the epoch from listing forever.
+test("a stale acceptance does not restore a displaced provisional whose owner retired", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-displaced-owner-retired",
+    origin: "https://coordination.example",
+  });
+  const sibling = openSiblingRepository(fixture);
+  const holds = holdNextTransactions([
+    { stores: ACCEPT_STORES, event: "complete" },
+    { stores: ACCEPT_STORES, event: "complete" },
+  ]);
+  try {
+    // T0 registers, a sibling supersedes it durably, and its validation commits
+    // stale with its completion held.
+    const firstTicket = await fixture.repository.beginRead(fixture.document);
+    await sibling.beginRead(fixture.document);
+    const firstAcceptance = fixture.repository.acceptRead(firstTicket, sampleChangedContent());
+    await holds.reached[0];
+
+    // T1 registers into the same slot, displaces T0's provisional, is itself
+    // superseded durably, and its stale validation completion is held too.
+    const secondTicket = await fixture.repository.beginRead(fixture.document);
+    await sibling.beginRead(fixture.document);
+    const secondAcceptance = fixture.repository.acceptRead(secondTicket, sampleChangedContent());
+    await holds.reached[1];
+
+    // T0 answers stale while T1's entry still holds the slot, then retires its
+    // registration. T1's later stale answer must not resurrect T0's entry.
+    holds.releaseAt(0);
+    expect(await firstAcceptance).toEqual({ state: "stale-ticket" });
+    holds.releaseAt(1);
+    expect(await secondAcceptance).toEqual({ state: "stale-ticket" });
+
+    const views = await fixture.repository.listAnnotations(fixture.document);
+    expect(views.map((view) => view.operation.operationId)).toContain(fixture.operation.operationId);
+  } finally {
+    holds.release();
+    sibling.close();
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});

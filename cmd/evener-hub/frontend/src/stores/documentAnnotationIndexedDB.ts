@@ -486,6 +486,11 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // incarnations. Acceptance still requires the durable head to match, so a
   // later beginRead in ANOTHER adapter retires this ticket too.
   readonly #issuedReads = new Map<string, Map<string, IssuedRead>>();
+  // Acceptances currently executing in this adapter. A newer beginRead
+  // replaces an older ticket's REGISTRATION while that older acceptance is
+  // still in flight, so registration ownership alone cannot answer whether a
+  // displaced provisional's owner can still act; this set can.
+  readonly #liveAcceptances = new Set<string>();
   // The last completed ticket and accepted source per (document, incarnation)
   // slot, used for immediate in-memory suppression (never durable, never in
   // ComposerSourceState).
@@ -812,6 +817,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     if (issued === undefined || !this.#ownsRegistration(documentKey, ticket.namespaceIncarnation, ticket.requestId)) {
       return { state: "stale-ticket" };
     }
+    this.#liveAcceptances.add(ticket.requestId);
     // Entry, before the first await: a locally current read of changed content
     // installs or transfers unconfirmed suppression for the original accepted
     // epoch, so an overlapping append sees it at its own final guard. A confirmed
@@ -842,12 +848,20 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     // Confirm or release ONLY this invocation's still-owned provisional entry,
     // from the real durable validation result, never a caller-supplied
     // boolean. The release helper signals the boundary.
-    // Restore the entry this invocation displaced, unless its incarnation is
-    // one this adapter has retired: a reset's sweep already deleted it and
-    // reinstating it would leak an entry nothing can ever release.
+    // Restore the entry this invocation displaced only while its owner is
+    // still live: the displaced entry belongs to another ticket, and that
+    // ticket's registration is what will confirm or release it. An owner that
+    // retired can never act again, so restoring its entry would leak an
+    // unconfirmed suppression forever. Release this invocation's own install
+    // instead, identity-checked, so the map ends empty. An unconfirmed entry
+    // always carries a requestId: suppressEpochForExpiry installs confirmed
+    // entries, and the reset's provisioning names its read's ticket.
     const restoreDisplacedOrRelease = (identity: string): void => {
       if (
         displacedEntry !== undefined &&
+        displacedEntry.requestId !== null &&
+        (this.#ownsRegistration(documentKey, ticket.namespaceIncarnation, displacedEntry.requestId) ||
+          this.#liveAcceptances.has(displacedEntry.requestId)) &&
         !this.#isRetiredIncarnation(annotationNamespaceKey(namespace), displacedEntry.namespaceIncarnation)
       ) {
         this.#suppressedEpochs.set(identity, displacedEntry);
@@ -1149,6 +1163,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       releaseProvisional();
       throw error;
     } finally {
+      this.#liveAcceptances.delete(ticket.requestId);
       // Retire only this invocation's own registration: a newer read that
       // registered while this acceptance was settling keeps its ticket.
       if (this.#ownsRegistration(documentKey, ticket.namespaceIncarnation, ticket.requestId)) {
