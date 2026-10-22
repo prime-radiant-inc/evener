@@ -39,7 +39,7 @@ import {
 } from "../../../../widgets";
 import { useConnectedEffect } from "../useConnectedEffect";
 import type { FormError } from "./formError";
-import { type InstanceDraft, PROTOCOL_OPTIONS, SURFACE_OPTIONS, varRows } from "./instanceEdit";
+import { draftFor, type InstanceDraft, PROTOCOL_OPTIONS, SURFACE_OPTIONS, varRows } from "./instanceEdit";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
 import styles from "./ProviderConnection.module.css";
@@ -564,6 +564,7 @@ function SelectedConnection({
   const [settingsDraft, setSettingsDraft] = useState<SettingsDraft>(() => settingsOf(row));
   const [settingsBaseline, setSettingsBaseline] = useState<SettingsDraft>(() => settingsOf(row));
   const [settingsVars, setSettingsVars] = useState<Record<string, string>>({});
+  const [settingsVarsBaseline, setSettingsVarsBaseline] = useState<Record<string, string>>({});
   const settingsVarRows = varRows({ ...EMPTY_VAR_DRAFT, vars: settingsVars }, effectiveProvider);
   const modes = row?.authModes ?? effectiveProvider.authModes ?? [];
   const json = modes.includes("credentialJson");
@@ -870,11 +871,12 @@ function SelectedConnection({
    * draft is reseeded only when the disclosure opens, never when a reconciled
    * save keeps the user's current values. */
   function anchorSettings(row: InstanceEntry | undefined, keepDraft = false) {
+    const seedValues = row ? draftFor(row, effectiveProvider).vars : {};
     if (!keepDraft) {
       setSettingsDraft(settingsOf(row));
-      const seeded = varRows({ ...EMPTY_VAR_DRAFT, vars: row?.vars ?? {} }, effectiveProvider);
-      setSettingsVars(Object.fromEntries(seeded.map(({ key }) => [key, row?.vars?.[key] ?? ""])));
+      setSettingsVars(seedValues);
     }
+    setSettingsVarsBaseline(seedValues);
     setSettingsBaseline(settingsOf(row));
     setSettingsClaim(claimOf(row));
   }
@@ -948,14 +950,10 @@ function SelectedConnection({
     closeEditor: () => void,
     saveFailedMessage: string,
   ): Promise<void> {
-    if (claimEndpointMoved(claim, row)) {
-      // The row moved while the editor sat open. The value was authored
-      // against the row the editor showed, so it cannot be written to the
-      // replacement; drop it and re-anchor the card on what is there now.
-      closeEditor();
-      await recoverChangedEndpoint({ reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR });
-      return;
-    }
+    // The row moved while the editor sat open. The value was authored against
+    // the row the editor showed, so it cannot be written to the replacement;
+    // drop it and re-anchor the card on what is there now.
+    if (await reviewMovedDestination(claim, row, closeEditor)) return;
     // A save is a new intent for this destination: an automatic retry armed by
     // an earlier check must not fire in the middle of it and retire its token.
     clearRetry();
@@ -1070,6 +1068,20 @@ function SelectedConnection({
     const recovered = findSetup(targetName);
     adoptBaseline(recovered);
     setError(changed);
+  }
+
+  /** reviewMovedDestination runs the one destination review: a claim whose
+   * endpoint no longer holds closes its editor, re-reads, and reports the
+   * move. Resolves true when it handled the row. */
+  async function reviewMovedDestination(
+    claim: DestinationClaim | undefined,
+    row: InstanceEntry,
+    closeEditor: () => void,
+  ): Promise<boolean> {
+    if (claim === undefined || !claimEndpointMoved(claim, row)) return false;
+    closeEditor();
+    await recoverChangedEndpoint({ reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR });
+    return true;
   }
 
   async function refreshAndCheck(
@@ -1426,7 +1438,7 @@ function SelectedConnection({
     const editVars: Record<string, string> = {};
     for (const { key } of settingsVarRows) {
       const value = (settingsVars[key] ?? "").trim();
-      if (value !== (row.vars?.[key] ?? "").trim()) editVars[key] = value;
+      if (value !== (settingsVarsBaseline[key] ?? "").trim()) editVars[key] = value;
     }
     const createVars = Object.fromEntries(
       settingsVarRows.map(({ key }) => [key, (settingsVars[key] ?? "").trim()]).filter(([, value]) => value !== ""),
@@ -1487,15 +1499,14 @@ function SelectedConnection({
       if (settingsOpen) anchorSettings(found, true);
       return;
     }
+    // A settings write asserts the endpoint it was opened on; a moved row is
+    // reviewed before anything is adopted.
+    if (settingsOpen && (await reviewMovedDestination(settingsClaim, found, closeSettings))) return;
     adoptBaseline(found);
     if (editing === "endpoint") {
       if (sameSetting(found.baseUrl ?? "", endpointDraft)) {
         closeEndpointEditor();
-      } else if (endpointClaim !== undefined && claimEndpointMoved(endpointClaim, found)) {
-        // The draft is not the row that landed, and the destination moved from
-        // the one the editor was opened on: review it like any moved save.
-        closeEndpointEditor();
-        await recoverChangedEndpoint({ reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR });
+      } else if (await reviewMovedDestination(endpointClaim, found, closeEndpointEditor)) {
         return;
       } else {
         setEndpointClaim(claimOf(found));
@@ -1504,12 +1515,14 @@ function SelectedConnection({
     }
     if (settingsOpen) {
       const confirmedSettings = settingsOf(found);
-      if (SETTINGS_FIELDS.every((field) => sameSetting(confirmedSettings[field], settingsDraft[field]))) {
+      const settingsMatch = SETTINGS_FIELDS.every((field) =>
+        sameSetting(confirmedSettings[field], settingsDraft[field]),
+      );
+      const varsMatch = settingsVarRows.every(({ key }) =>
+        sameSetting(found.vars?.[key] ?? "", settingsVars[key] ?? ""),
+      );
+      if (settingsMatch && varsMatch) {
         closeSettings();
-      } else if (settingsClaim !== undefined && claimEndpointMoved(settingsClaim, found)) {
-        closeSettings();
-        await recoverChangedEndpoint({ reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR });
-        return;
       } else anchorSettings(found, true);
     }
   }

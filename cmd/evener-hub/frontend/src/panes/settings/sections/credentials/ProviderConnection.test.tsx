@@ -3030,6 +3030,90 @@ test("a settings reload re-anchors the clear on the confirmed row", async () => 
   expect(params.expectedEndpointFingerprint).toBe("fp-anthropic");
 });
 
+// Matching settings are not a destination proof. A hidden endpoint change is
+// still a moved destination and must go through the review.
+test("a query-only endpoint change is reviewed even when the settings draft matches", async () => {
+  const { user, client } = setup(savedList());
+  await choose(user);
+  await user.click(screen.getByText("All connection settings"));
+  await enterText(user, screen.getByLabelText("API key env"), "TEAM_KEY");
+  const authored: InstanceEntry = { ...savedList().instances[0]!, apiKeyEnv: "TEAM_KEY" };
+  const authoredListing: InstanceListResponse = {
+    instances: [authored],
+    availableProviders: structuredClone(catalogue),
+  };
+  await unconfirmedEdit(
+    client,
+    async () => {
+      await user.click(screen.getByRole("button", { name: "Save settings" }));
+    },
+    authoredListing,
+  );
+
+  const moved: InstanceEntry = { ...authored, endpointFingerprint: "fp-hidden" };
+  scriptListing(client, { instances: [moved], availableProviders: structuredClone(catalogue) });
+  await user.click(screen.getByRole("button", { name: "Reload connection" }));
+
+  await waitFor(() => expect(reasonShown("endpoint-changed")).toBe(true));
+  expect(screen.queryByLabelText("API key env")).toBeNull();
+});
+
+// A variable changed after the failed confirmation is an unsaved draft; the
+// reload must keep it in the editor rather than closing on the scalar match.
+test("a variable changed while confirmation is owed keeps its draft", async () => {
+  const list = savedList("google-vertex", { vars: { project: "project-a" } });
+  const savedRow: InstanceEntry = list.instances[0]!;
+  const { user, client } = setup(list);
+  await choose(user, "Google Vertex");
+  await user.click(screen.getByText("All connection settings"));
+  await user.clear(screen.getByLabelText("project"));
+  await enterText(user, screen.getByLabelText("project"), "project-b");
+  const authored: InstanceEntry = { ...savedRow, vars: { project: "project-b" } };
+  const authoredListing: InstanceListResponse = { instances: [authored], availableProviders: list.availableProviders };
+  await unconfirmedEdit(
+    client,
+    async () => {
+      await user.click(screen.getByRole("button", { name: "Save settings" }));
+    },
+    authoredListing,
+  );
+
+  const field = screen.getByLabelText("project");
+  await user.clear(field);
+  await enterText(user, field, "project-c");
+  scriptListing(client, authoredListing);
+  await user.click(screen.getByRole("button", { name: "Reload connection" }));
+
+  await waitFor(() => expect(screen.getByLabelText("project")).toHaveProperty("value", "project-c"));
+});
+
+// A variable changed by another client is not this editor's draft. Saving an
+// unrelated field must leave it alone, not restore the stale opening value.
+test("a concurrent variable update is not overwritten by another settings save", async () => {
+  const list = savedList("google-vertex", { vars: { project: "project-a" } });
+  const savedRow: InstanceEntry = list.instances[0]!;
+  const { user, client } = setup(list);
+  await choose(user, "Google Vertex");
+  await user.click(screen.getByText("All connection settings"));
+  const external: InstanceEntry = { ...savedRow, vars: { project: "project-external" } };
+  scriptListing(client, { instances: [external], availableProviders: list.availableProviders });
+  await act(async () => {
+    await credentialsStore.getState().fetch();
+  });
+  await enterText(user, screen.getByLabelText("API key env"), "TEAM_KEY");
+
+  const edited: InstanceEntry = { ...external, apiKeyEnv: "TEAM_KEY" };
+  const editedListing: InstanceListResponse = { instances: [edited], availableProviders: list.availableProviders };
+  scriptListing(client, editedListing);
+  scriptEdit(client, editedListing);
+  await user.click(screen.getByRole("button", { name: "Save settings" }));
+
+  await waitFor(() => expect(editCalls(client)).toHaveLength(1));
+  const params = editCalls(client)[0]!.params as Record<string, unknown>;
+  expect(params.apiKeyEnv).toBe("TEAM_KEY");
+  expect(params.vars).toBeUndefined();
+});
+
 // Whitespace is not a value: the hub trims it to empty, so the card must trim
 // before computing values and clear flags or the existing override survives.
 test("a whitespace-only API key env clears the override", async () => {
