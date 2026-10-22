@@ -256,7 +256,7 @@ func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandbo
 				},
 				"task_list": map[string]any{
 					"type":        "array",
-					"description": "Seed the delegate's task list, one item per step, in order. Items fill the role's parent_tasks slot when its default task list has one and follow the role's default tasks otherwise. The first task auto-starts and its prompt is injected into the delegate; the delegate works the list in order and marks each task done. Each item's prompt must define a self-contained step.",
+					"description": "Seed the delegate's task list, one item per step, in order. Items fill the role's parent_tasks slot when its default task list has one and follow the role's default tasks otherwise. The delegate's first turn carries the whole plan — every step's title, status, effort, and prompt — and names the step to work first, so write each prompt as if every worker can read it. The delegate works the list in order and marks each task done. Each item's prompt must define a self-contained step.",
 					"items": map[string]any{
 						"type":                 "object",
 						"additionalProperties": false,
