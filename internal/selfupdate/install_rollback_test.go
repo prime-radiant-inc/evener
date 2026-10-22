@@ -33,6 +33,9 @@ func TestInstallLockHonorsContext(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error acquiring a held lock with an expiring context")
 	}
+	if errors.Is(err, ErrInstallDirReadOnly) {
+		t.Fatalf("contention reported as a read-only install: %v", err)
+	}
 	if elapsed > 30*time.Second {
 		t.Fatalf("lock wait took %v with a 100ms context; acquisition ignores ctx", elapsed)
 	}

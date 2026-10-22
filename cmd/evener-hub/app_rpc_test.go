@@ -1597,6 +1597,7 @@ func (s *deletionFenceMutationSource) recordCall(method string) {
 }
 
 func TestHubRPCUpgradeRunsSelfUpdater(t *testing.T) {
+	setBuild(t, "3b1c5f8", "snapshot")
 	var got selfupdate.Options
 	previous := runHubSelfUpgrade
 	runHubSelfUpgrade = func(_ context.Context, opts selfupdate.Options) (selfupdate.Result, error) {
@@ -12948,6 +12949,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerUpgrade,
 		appwire.MethodEvenerUpdateCheck,
 		appwire.MethodEvenerUpdateApply,
+		appwire.MethodEvenerHubRestart,
 		appwire.MethodModelList,
 		appwire.MethodEvenerTasksList,
 		appwire.MethodEvenerJobsList,

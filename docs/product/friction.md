@@ -1046,6 +1046,12 @@ has replaced the file, reconcile the newer operation before restarting.
 Cancellation or a superseding request takes precedence over the pending update.
 Implementation remains pending.
 
+**Progress (2026-10-21).** The Settings split now distinguishes an installed
+build from the running one, keeps the old hub reachable when a restart does not
+complete, and retains digest and install-lock validation. Restart confirmation
+uses the process incarnation. Automatic retry of a recoverable restart failure
+remains open.
+
 **Acceptance.** Fail delayed restart after a successful response. The client
 learns the installed-but-not-restarted outcome and retains access to the working
 hub. Recovery after the initial polling window automatically completes the same
