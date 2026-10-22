@@ -232,6 +232,133 @@ test("a reset retires a confirmed suppression entry with its incarnation", async
   }
 });
 
+// A changed read's validation can commit, then lose its completion across a
+// reset. The continuation used to install its confirmed suppression entry after
+// the reset's sweep had already run, re-creating exactly the retired-incarnation
+// entry member 3 taught the reset to retire. A retired incarnation also means
+// this read's world is gone: the fence would be refused by its own re-check, so
+// the continuation answers stale and confirms nothing.
+test("a held changed-read validation that lands after a reset installs no confirmed suppression", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-reset-changed-read",
+    origin: "https://reset.example",
+  });
+  const transact = IDBDatabase.prototype.transaction;
+  let validationHold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  const transactSpy = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (
+    this: IDBDatabase,
+    ...args: Parameters<IDBDatabase["transaction"]>
+  ) {
+    const transaction = transact.apply(this, args);
+    const scope = [...transaction.objectStoreNames];
+    if (
+      !validationHold &&
+      transaction.mode === "readwrite" &&
+      scope.length === 5 &&
+      scope.includes(ANNOTATION_EVIDENCE_STORE) &&
+      scope.includes(ANNOTATION_OPERATIONS_STORE) &&
+      scope.includes(ANNOTATION_EXPIRY_STORE)
+    ) {
+      validationHold = holdIndexedDBEvent(transaction, "complete");
+    }
+    return transaction;
+  });
+  try {
+    const retiredIdentity = JSON.stringify([
+      annotationDocumentKey(fixture.document),
+      fixture.incarnation,
+      fixture.operation.lease.epoch,
+    ]);
+    const ticket = await fixture.repository.beginRead(fixture.document);
+    const acceptance = fixture.repository.acceptRead(ticket, sampleChangedContent());
+    await settleRealTasks(() => validationHold !== undefined, 100);
+    if (!validationHold) throw new Error("changed-read validation did not reach IndexedDB");
+    await validationHold.reached;
+    // The validation commit is durable; the reset retires its incarnation and
+    // sweeps the entries of that incarnation before the continuation runs.
+    expect(await fixture.repository.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation)).toMatchObject({
+      committed: true,
+    });
+
+    const installed: string[] = [];
+    const set = Map.prototype.set;
+    const setSpy = vi.spyOn(Map.prototype, "set").mockImplementation(function (
+      this: Map<unknown, unknown>,
+      key: unknown,
+      value: unknown,
+    ) {
+      if (typeof key === "string") installed.push(key);
+      return set.call(this, key, value);
+    });
+    validationHold.release();
+    try {
+      expect(await acceptance).toEqual({ state: "stale-ticket" });
+    } finally {
+      setSpy.mockRestore();
+    }
+    expect(installed).not.toContain(retiredIdentity);
+  } finally {
+    transactSpy.mockRestore();
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
+
+// A peer's fence can replace the epoch between this invocation's confirmed
+// suppression and its own fence. The superseded fence never commits, so nothing
+// else releases the entry: it names an epoch that no longer heads the document
+// and that only the peer's expiry row covers. The superseded path must restore
+// the pre-invocation state rather than leave this stale read's confirmation
+// behind.
+test("a superseded changed read releases the confirmed suppression it installed", async () => {
+  let fixture: AnnotationFixture | undefined;
+  let sibling: ReturnType<typeof createDocumentAnnotationRepository> | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-superseded-confirm",
+    origin: "https://reset.example",
+    beforeExpiryFence: async () => {
+      // A peer fences the same epoch first, so this invocation's fence is
+      // refused by its own durable re-check.
+      const peerTicket = await sibling?.beginRead(fixture?.document as DocumentKey);
+      if (!peerTicket || !sibling) throw new Error("sibling adapter missing");
+      expect(await sibling.acceptRead(peerTicket, sampleChangedContent())).toMatchObject({ state: "expiry-pending" });
+    },
+  });
+  sibling = createDocumentAnnotationRepository({
+    indexedDB: fixture.factory,
+    databaseName: "annotation-superseded-confirm",
+    drafts: fixture.drafts,
+    targetFor: () => null,
+  });
+  try {
+    const retiredIdentity = JSON.stringify([
+      annotationDocumentKey(fixture.document),
+      fixture.incarnation,
+      fixture.operation.lease.epoch,
+    ]);
+    const ticket = await fixture.repository.beginRead(fixture.document);
+    const released: string[] = [];
+    const remove = Map.prototype.delete;
+    const removeSpy = vi.spyOn(Map.prototype, "delete").mockImplementation(function (
+      this: Map<unknown, unknown>,
+      key: unknown,
+    ) {
+      if (typeof key === "string") released.push(key);
+      return remove.call(this, key);
+    });
+    try {
+      expect(await fixture.repository.acceptRead(ticket, sampleChangedContent())).toEqual({ state: "stale-ticket" });
+    } finally {
+      removeSpy.mockRestore();
+    }
+    expect(released).toContain(retiredIdentity);
+  } finally {
+    sibling.close();
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
+
 // Cancellation reaches a save transaction only while it can still abort. A
 // dismissal landing after the transaction passed that boundary cannot stop the
 // commit, and the runtime's success path never checked the token, so the

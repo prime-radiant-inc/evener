@@ -991,6 +991,17 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         }
         return { state: "accepted", lease: validation.lease };
       }
+      // A reset can retire this read's incarnation between the validation's
+      // commit and this continuation. No confirmed suppression and no fence may
+      // be installed for an incarnation the durable row has retired: the fence
+      // would be refused by its own re-check, and a confirmation landing after
+      // the reset's sweep would re-create the entry that sweep exists to retire.
+      // The caller gets the same stale answer the fence's re-check gives, and a
+      // fresh retry registers cleanly under the new incarnation.
+      if (!(await this.#durableIncarnationIs(namespace, validation.namespaceIncarnation))) {
+        releaseProvisional();
+        return { state: "stale-ticket" };
+      }
       // A current changed read: confirm suppression BEFORE scheduling its fence,
       // then run the outside-transaction observation boundary. A recreated
       // adapter validated this change against durable history alone — it holds
@@ -998,10 +1009,13 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // expired epoch must be suppressed from the validated durable head
       // itself, or a failed fence leaves the dead epoch visible to listing
       // and handoff-eligible despite the confirmed source change.
-      this.#suppressedEpochs.set(epochIdentityOf(documentKey, validation.namespaceIncarnation, validation.head.epoch), {
-        requestId: ticket.requestId,
-        confirmed: true,
-      });
+      const suppressionIdentity = epochIdentityOf(documentKey, validation.namespaceIncarnation, validation.head.epoch);
+      // The exact entry object this invocation installs, so the superseded path
+      // releases only its own confirmation and restores whatever an overlapping
+      // invocation owned here before.
+      const priorSuppression = this.#suppressedEpochs.get(suppressionIdentity);
+      const installedSuppression: SuppressionEntry = { requestId: ticket.requestId, confirmed: true };
+      this.#suppressedEpochs.set(suppressionIdentity, installedSuppression);
       finishValidation(true);
       await this.#options.beforeExpiryFence?.(ticket);
       try {
@@ -1029,7 +1043,24 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         // can never retry, so the read is stale with no retained work and no
         // post-teardown notification.
         if (this.#closed) return { state: "stale-ticket" };
-        if (error instanceof SupersededFenceError) return { state: "stale-ticket" };
+        if (error instanceof SupersededFenceError) {
+          // Another fence already replaced this epoch: a peer's fence, or a
+          // reset's rotation whose sweep may already have passed. This
+          // invocation's confirmation now names an epoch that is no longer the
+          // durable head, so restore the pre-invocation state instead of
+          // leaving a stale read's suppression behind. A provisional this read
+          // still owned drops; an entry another invocation owned returns
+          // unchanged. Nothing is resurrected: the replacement fence wrote the
+          // epoch's expiry row and flipped its pending operations terminal.
+          if (this.#suppressedEpochs.get(suppressionIdentity) === installedSuppression) {
+            if (priorSuppression === undefined || priorSuppression.requestId === ticket.requestId) {
+              this.#suppressedEpochs.delete(suppressionIdentity);
+            } else {
+              this.#suppressedEpochs.set(suppressionIdentity, priorSuppression);
+            }
+          }
+          return { state: "stale-ticket" };
+        }
         // A failed fence keeps the confirmed suppression and its pending expiry for
         // retry; the read is honest expiry-pending with no committed receipt.
         this.#pendingExpiries.set(
