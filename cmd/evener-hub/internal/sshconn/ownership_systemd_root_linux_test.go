@@ -21,7 +21,7 @@ import (
 // The process, service and endpoint are strict command fixtures. The selected
 // lock files, flock and /proc fd device/inode comparison are real Linux evidence.
 func TestSystemdFallbackRequiresSelectedRootEvidence(t *testing.T) {
-	for _, name := range []string{"retarget-invalid-lock", "retarget-other-lock", "candidate-holds-selected-lock", "retained-witness", "same-root-invalid-no-witness", "changed-birth-witness", "changed-registration-witness", "healthy-fallback", "primary-lock-path"} {
+	for _, name := range []string{"retarget-invalid-lock", "retarget-other-lock", "retarget-symlink-lock", "unlocked-read-only", "shared-lock", "lock-query-unavailable", "lock-query-ambiguous", "candidate-holds-selected-lock", "retained-witness", "same-root-invalid-no-witness", "changed-birth-witness", "changed-registration-witness", "healthy-fallback", "primary-lock-path"} {
 		t.Run(name, func(t *testing.T) {
 			rootA, rootB := filepath.Join(t.TempDir(), "root A"), filepath.Join(t.TempDir(), "root B")
 			for _, root := range []string{rootA, rootB} {
@@ -61,7 +61,14 @@ func TestSystemdFallbackRequiresSelectedRootEvidence(t *testing.T) {
 				}
 				if remote == serviceLockVnodeTestCommand(currentRoot, pid) {
 					vnodeReads++
-					return exec.CommandContext(ctx, "/bin/sh", "-c", remote).CombinedOutput()
+					prefix := ""
+					if name == "lock-query-unavailable" {
+						prefix = "awk() { return 23; }; "
+					} else if name == "lock-query-ambiguous" {
+						// Read the real table twice to inject duplicate owner records.
+						prefix = "awk() { command awk \"$@\" /proc/locks; }; "
+					}
+					return exec.CommandContext(ctx, "/bin/sh", "-c", prefix+remote).CombinedOutput()
 				}
 				if remote == ownerGenerationRemote(pid) {
 					return []byte("kernel-boot\n" + birth + "\n"), nil
@@ -127,6 +134,20 @@ func TestSystemdFallbackRequiresSelectedRootEvidence(t *testing.T) {
 				witness.host.Generation++
 				m.ownerWitnesses[host.Name] = witness
 			}
+			if name == "unlocked-read-only" {
+				if err := lock.Close(); err != nil {
+					t.Fatal(err)
+				}
+				lock, err = os.Open(filepath.Join(rootB, "hub.lock"))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if name == "shared-lock" {
+				if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err != nil {
+					t.Fatal(err)
+				}
+			}
 			invalid := name == "retarget-invalid-lock" || name == "retained-witness" || name == "same-root-invalid-no-witness" || strings.HasSuffix(name, "-witness")
 			if invalid {
 				if !retarget {
@@ -138,6 +159,10 @@ func TestSystemdFallbackRequiresSelectedRootEvidence(t *testing.T) {
 					}
 				}
 				if err := os.Mkdir(filepath.Join(rootB, "hub.lock"), 0700); err != nil {
+					t.Fatal(err)
+				}
+			} else if name == "retarget-symlink-lock" {
+				if err := os.Symlink(filepath.Join(rootA, "hub.lock"), filepath.Join(rootB, "hub.lock")); err != nil {
 					t.Fatal(err)
 				}
 			} else if retarget {
@@ -152,7 +177,7 @@ func TestSystemdFallbackRequiresSelectedRootEvidence(t *testing.T) {
 			pending := m.setSelectedRestart(host, selected, "systemctl restart evener-hub-selected.service", "release-selected", "")
 			before := m.pendingRestart(host.Name)
 			got, selectionErr := m.resolveOwnedEndpoint(t.Context(), host, facts)
-			wantRefusal := retarget || name == "same-root-invalid-no-witness" || name == "changed-birth-witness" || name == "changed-registration-witness"
+			wantRefusal := retarget || name == "unlocked-read-only" || name == "shared-lock" || strings.HasPrefix(name, "lock-query-") || name == "same-root-invalid-no-witness" || name == "changed-birth-witness" || name == "changed-registration-witness"
 			if wantRefusal {
 				gateErr := m.restartSelectedPending(t.Context(), host, facts, &pending, true)
 				if !errors.Is(selectionErr, errOwnerEvidence) || !errors.Is(gateErr, errOwnerEvidence) || effects != 0 || !reflect.DeepEqual(before, m.pendingRestart(host.Name)) {
@@ -177,5 +202,5 @@ func TestSystemdFallbackRequiresSelectedRootEvidence(t *testing.T) {
 
 // This literal allowlist is independent of the production command constructor.
 func serviceLockVnodeTestCommand(root, pid string) string {
-	return "lock=" + shellquote.RemoteWord(filepath.Join(root, "hub.lock")) + "; [ -f \"$lock\" ] || exit 1; identity=$(stat -Lc '%d %i' \"$lock\") || exit; found=; [ -r /proc/" + pid + "/fd ] && [ -x /proc/" + pid + "/fd ] || exit 1; for fd in /proc/" + pid + "/fd/*; do current=$(stat -Lc '%d %i' \"$fd\" 2>/dev/null) || continue; if [ \"$current\" = \"$identity\" ]; then found=yes; break; fi; done; current=$(stat -Lc '%d %i' \"$lock\") || exit; [ \"$current\" = \"$identity\" ] && [ \"$found\" = yes ] || exit 1; printf 'match\\n'"
+	return "lock=" + shellquote.RemoteWord(filepath.Join(root, "hub.lock")) + "; [ ! -L \"$lock\" ] && [ -f \"$lock\" ] || exit 1; identity=$(stat -c '%d %i' \"$lock\") || exit; found=; [ -r /proc/" + pid + "/fd ] && [ -x /proc/" + pid + "/fd ] || exit 1; for fd in /proc/" + pid + "/fd/*; do current=$(stat -Lc '%d %i' \"$fd\" 2>/dev/null) || continue; if [ \"$current\" = \"$identity\" ]; then found=yes; break; fi; done; [ \"$found\" = yes ] || exit 1; set -- $identity; [ \"$#\" -eq 2 ] || exit 1; dev=$1; ino=$2; major=$(( ((dev >> 8) & 4095) | ((dev >> 32) & 4294963200) )); minor=$(( (dev & 255) | ((dev >> 12) & 4294967040) )); key=$(printf '%02x:%02x:%s' \"$major\" \"$minor\" \"$ino\"); awk -v key=\"$key\" -v pid=" + pid + " '$2 == \"FLOCK\" && $3 == \"ADVISORY\" && $4 == \"WRITE\" && $6 == key { count++; owner=$5 } END { if (count != 1 || owner != pid) exit 1 }' /proc/locks || exit; [ ! -L \"$lock\" ] && [ -f \"$lock\" ] || exit 1; current=$(stat -c '%d %i' \"$lock\") || exit; [ \"$current\" = \"$identity\" ] || exit 1; printf 'match\\n'"
 }

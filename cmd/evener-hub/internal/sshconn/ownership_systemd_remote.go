@@ -15,7 +15,7 @@ import (
 
 // When /proc/locks cannot locate an owner, MainPID is only a candidate. Current
 // TOML cannot prove the root a process started with, so corroborate that root
-// with its open lock vnode or a previously verified same-process/root witness.
+// with its exclusively held lock or a previously verified same-process/root witness.
 // Never fall back to a listener or use the report PID as authority by itself.
 func (m *Manager) selectedServicePID(ctx context.Context, host hostreg.Host, report hubendpoint.Report) (string, error) {
 	var selected string
@@ -120,12 +120,16 @@ func (m *Manager) checkServiceRoot(ctx context.Context, host hostreg.Host, pid s
 	return nil
 }
 
-// An open descriptor names the process's actual vnode, not a re-resolution of
-// its launch arguments against mutable TOML. Pin the selected vnode on both
-// sides of the read. This observes only, without creating or acquiring a lock.
+// Require a regular, non-symlink selected lock, an open candidate descriptor,
+// and exactly one FLOCK WRITE owner matching that candidate on the pinned vnode.
+// Pin the selected vnode on both sides. Observe only, without acquiring a lock.
 func serviceLockVnodeRemote(root, pid string) string {
-	return "lock=" + shellquote.RemoteWord(path.Join(root, "hub.lock")) + "; [ -f \"$lock\" ] || exit 1; identity=$(stat -Lc '%d %i' \"$lock\") || exit; found=; " +
+	return "lock=" + shellquote.RemoteWord(path.Join(root, "hub.lock")) + "; [ ! -L \"$lock\" ] && [ -f \"$lock\" ] || exit 1; identity=$(stat -c '%d %i' \"$lock\") || exit; found=; " +
 		"[ -r /proc/" + pid + "/fd ] && [ -x /proc/" + pid + "/fd ] || exit 1; for fd in /proc/" + pid + "/fd/*; do current=$(stat -Lc '%d %i' \"$fd\" 2>/dev/null) || continue; " +
-		"if [ \"$current\" = \"$identity\" ]; then found=yes; break; fi; done; current=$(stat -Lc '%d %i' \"$lock\") || exit; " +
-		"[ \"$current\" = \"$identity\" ] && [ \"$found\" = yes ] || exit 1; printf 'match\\n'"
+		"if [ \"$current\" = \"$identity\" ]; then found=yes; break; fi; done; [ \"$found\" = yes ] || exit 1; " +
+		"set -- $identity; [ \"$#\" -eq 2 ] || exit 1; dev=$1; ino=$2; major=$(( ((dev >> 8) & 4095) | ((dev >> 32) & 4294963200) )); minor=$(( (dev & 255) | ((dev >> 12) & 4294967040) )); " +
+		"key=$(printf '%02x:%02x:%s' \"$major\" \"$minor\" \"$ino\"); " +
+		"awk -v key=\"$key\" -v pid=" + pid + " '$2 == \"FLOCK\" && $3 == \"ADVISORY\" && $4 == \"WRITE\" && $6 == key { count++; owner=$5 } END { if (count != 1 || owner != pid) exit 1 }' /proc/locks || exit; " +
+		"[ ! -L \"$lock\" ] && [ -f \"$lock\" ] || exit 1; current=$(stat -c '%d %i' \"$lock\") || exit; " +
+		"[ \"$current\" = \"$identity\" ] || exit 1; printf 'match\\n'"
 }
