@@ -12100,6 +12100,12 @@ func TestHubRPCInstanceCreateAnswersWithItsOwnState(t *testing.T) {
 	if err := holder.Reload(); err != nil {
 		t.Fatalf("registry: %v", err)
 	}
+	// The seam has to be installed before the server builds its controller,
+	// and it reports the controller this test then arms for the edit.
+	var ctl *hubInstancesController
+	previousObserver := observeInstancesController
+	observeInstancesController = func(observed *hubInstancesController) { ctl = observed }
+	t.Cleanup(func() { observeInstancesController = previousObserver })
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		Past:                hubcore.NewPastIndex(""),
 		Registry:            holder,
@@ -12108,6 +12114,9 @@ func TestHubRPCInstanceCreateAnswersWithItsOwnState(t *testing.T) {
 		CredsStore:          credsStore,
 	})
 	defer hub.Close()
+	if ctl == nil {
+		t.Fatal("the app server built no instances controller")
+	}
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 	// A second connection: AppWire requests on one client are serialized, and
@@ -12144,20 +12153,26 @@ func TestHubRPCInstanceCreateAnswersWithItsOwnState(t *testing.T) {
 		t.Fatal("Create never reached its reload, so the loader was not paused")
 	}
 
-	editStarted := make(chan struct{})
+	// The seam fires just before a mutation takes the write lock, so the
+	// signal says the edit has reached the lock the paused create holds. The
+	// create already took its lock before the hook is armed. Waiting for it,
+	// rather than sleeping, is what makes the create's release race an edit
+	// that is actually in flight.
+	editAtLock := make(chan struct{})
+	ctl.beforeWriteLock = sync.OnceFunc(func() { close(editAtLock) })
 	editDone := make(chan outcome, 1)
 	go func() {
-		close(editStarted)
 		var resp appwire.InstanceListResponse
 		err := editClient.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{
 			Name: "work", BaseURL: racedURL,
 		}, &resp)
 		editDone <- outcome{resp: resp, err: err}
 	}()
-	<-editStarted
-	// The edit's request has to reach the handler, where it blocks on the
-	// create's lock, before the create is released.
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-editAtLock:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Edit never reached its write lock, so the create was not raced")
+	}
 	release()
 
 	created := <-createDone

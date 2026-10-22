@@ -62,7 +62,16 @@ type hubInstancesController struct {
 	// advances. A test uses it to settle a probe inside that window
 	// deterministically; nil in production.
 	afterAccessReload func()
+	// beforeWriteLock, when set, runs in lockForWrite before c.mu.Lock. A race
+	// test uses it to hold a mutation at the lock until it has arranged the
+	// other side. Nil in production.
+	beforeWriteLock func()
 }
+
+// observeInstancesController, when set, receives the instances controller the
+// app server builds, for tests that need to arm one of its seams. Nil in
+// production.
+var observeInstancesController func(*hubInstancesController)
 
 func (c *hubInstancesController) read() (*registry.Layer, bool, error) {
 	return registry.ReadConfigFile(c.providersConfigPath)
@@ -89,6 +98,9 @@ func (c *hubInstancesController) write(l *registry.Layer) error {
 // every mutation's answer to "did this call write?" is its own writes and not
 // a previous call's.
 func (c *hubInstancesController) lockForWrite() {
+	if c.beforeWriteLock != nil {
+		c.beforeWriteLock()
+	}
 	c.mu.Lock()
 	c.applied.resetApplied()
 }
