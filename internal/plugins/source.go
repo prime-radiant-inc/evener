@@ -39,6 +39,12 @@ const (
 	SourceGitSubdir SourceKind = "git-subdir"
 )
 
+// HasRemote reports whether the kind names a git remote. A directory source is
+// read in place and has none.
+func (k SourceKind) HasRemote() bool {
+	return k != SourceDirectory
+}
+
 // Source is a marketplace-container or plugin source. Field meaning depends on
 // Kind: Repo (github), URL (url/git-subdir), Path (directory local path, or
 // git-subdir subdirectory, or the bare-string relative path). Rel marks the

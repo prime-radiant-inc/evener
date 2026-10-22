@@ -93,8 +93,8 @@ func coverageAtomicWrite(t *testing.T) {
 }
 
 func coverageGit(t *testing.T) {
-	origLook, origMkdir, origRun := gitLookPath, gitMkdirAll, gitRun
-	t.Cleanup(func() { gitLookPath, gitMkdirAll, gitRun = origLook, origMkdir, origRun })
+	origLook, origMkdir, origRun, origStdout := gitLookPath, gitMkdirAll, gitRun, gitStdout
+	t.Cleanup(func() { gitLookPath, gitMkdirAll, gitRun, gitStdout = origLook, origMkdir, origRun, origStdout })
 	boom := errors.New("boom")
 	gitLookPath = func(string) (string, error) { return "", boom }
 	if gitAvailable() {
@@ -115,6 +115,13 @@ func coverageGit(t *testing.T) {
 	gitRun = func(_ context.Context, dir string, args ...string) (string, error) {
 		calls = append(calls, dir+":"+strings.Join(args, " "))
 		return " abc \n", nil
+	}
+	gitStdout = func(_ context.Context, dir string, args ...string) (string, error) {
+		calls = append(calls, "stdout:"+dir+":"+strings.Join(args, " "))
+		if len(args) > 0 && args[0] == "cat-file" {
+			return "commit", nil
+		}
+		return "abc1234", nil
 	}
 	if err := gitClone(context.Background(), "url", dir, "", ""); err != nil {
 		t.Fatal(err)
