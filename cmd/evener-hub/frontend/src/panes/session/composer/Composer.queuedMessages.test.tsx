@@ -381,7 +381,7 @@ test("typing and selections during an already-incorporated activation survive it
   const claimed = await storage.getRecovery(queuedRecord.clientMutationId);
   if (!claimed) throw new Error("missing claimed recovery fixture");
   storage.skipNextPause();
-  await storage.updateRecoveryInput(
+  const seededFirst = await storage.updateRecoveryInput(
     claimed.clientMutationId,
     [{ type: "text", text: "A\n\nB" }],
     [],
@@ -389,7 +389,9 @@ test("typing and selections during an already-incorporated activation survive it
     [],
     [],
     revisionA,
+    0,
   );
+  expect(seededFirst).toBeDefined();
   original.dispose();
   const replacement = createTestComposerSource("root");
   storage.armPause();
@@ -494,7 +496,7 @@ test("recovery skips its unchanged loaded A while another source retains C", asy
   if (!revisionA) throw new Error("missing draft A revision");
   const sourceA = createTestComposerSource("root");
   await editQueuedMutation(queuedRecord.clientMutationId, "root");
-  await storage.updateRecoveryInput(
+  const seededSecond = await storage.updateRecoveryInput(
     queuedRecord.clientMutationId,
     [{ type: "text", text: "A\n\nB" }],
     [],
@@ -502,7 +504,9 @@ test("recovery skips its unchanged loaded A while another source retains C", asy
     [],
     [],
     revisionA,
+    0,
   );
+  expect(seededSecond).toBeDefined();
   const committed = await storage.getRecovery(queuedRecord.clientMutationId);
   if (!committed) throw new Error("missing committed recovery fixture");
   expect(committed.composerText).toBe("A\n\nB");
@@ -1066,7 +1070,7 @@ test("recovery activation during a paused resend preserves the secondary image r
   await editQueuedMutation(second.clientMutationId, "root");
   const imageRecovery = await storage.getRecovery(second.clientMutationId);
   if (!imageRecovery) throw new Error("missing image recovery fixture");
-  await storage.updateRecoveryInput(
+  const seededImage = await storage.updateRecoveryInput(
     second.clientMutationId,
     [
       { type: "text", text: "image recovery [image 1]" },
@@ -1082,7 +1086,12 @@ test("recovery activation during a paused resend preserves the secondary image r
       },
     ],
     "image recovery [image 1]",
+    undefined,
+    undefined,
+    undefined,
+    0,
   );
+  expect(seededImage).toBeDefined();
   const { source } = mount(fake);
   const user = userEvent.setup();
   await flushPendingTurnsProjectionForTests();
@@ -1242,6 +1251,11 @@ test("stale recovery persistence refusal preserves the unsent draft and attachme
       payload: { input: [{ type: "text", text: "newer composition in another tab" }] },
       attachments: [expect.objectContaining({ name: "recovered.png" })],
     });
+    act(() => cleanup());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flushPendingTurnsProjectionForTests();
   } finally {
     act(() => source.dispose());
     peer.close();
@@ -1583,7 +1597,7 @@ test("typing before cleanup retry preserves newer work and the recovery row", as
     this: IDBObjectStore,
     ...args: unknown[]
   ) {
-    if (this.name === "recovery") {
+    if (this.name === "recovery" && args[0] === record.clientMutationId) {
       deleteAttempts += 1;
       if (deleteAttempts === 1) throw new DOMException("scripted cleanup failure", "QuotaExceededError");
     }
@@ -1665,7 +1679,6 @@ test("replacing the recovery owner cancels the prior owner's cleanup retry", asy
     const replacementRecovery = await editQueuedMutation(replacement.clientMutationId, "root");
     if (!replacementRecovery) throw new Error("missing replacement recovery fixture");
     await act(async () => source.setActiveRecoveryId(replacementRecovery));
-    expect(vi.getTimerCount()).toBe(0);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_000);
     });

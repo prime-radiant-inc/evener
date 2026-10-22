@@ -131,6 +131,64 @@ test("detached command-only recovery persists instead of being discarded", async
   });
 });
 
+test("an autosave finishing after goal replacement cannot restore the retired lease", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const input = [{ type: "text" as const, text: "recovered" }];
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const source = createTestComposerSource("root");
+  await source.activateRecovery(recovery);
+
+  let committed!: () => void;
+  const committedWrite = new Promise<void>((resolve) => {
+    committed = resolve;
+  });
+  let releaseWrite!: () => void;
+  const writeGate = new Promise<void>((resolve) => {
+    releaseWrite = resolve;
+  });
+  const originalUpdate = storage.updateRecoveryInput.bind(storage);
+  let pauseNext = true;
+  (
+    storage as unknown as {
+      updateRecoveryInput: typeof storage.updateRecoveryInput;
+    }
+  ).updateRecoveryInput = async (...args) => {
+    const result = await originalUpdate(...args);
+    if (pauseNext) {
+      pauseNext = false;
+      committed();
+      await writeGate;
+    }
+    return result;
+  };
+
+  try {
+    const saving = source.queueRecoveryPersistence(original.clientMutationId, "mid-flight", [], []);
+    await committedWrite;
+    // Goal replacement retires the recovery owner while that write is in
+    // flight, then the user keeps typing an ordinary goal draft.
+    source.setActiveRecoveryId(null);
+    source.persistDraft("goal draft");
+    releaseWrite();
+    await saving;
+    expect(source.continuity.recoveryOwnerLeaseRef.current).toBeNull();
+    source.writeDraft("goal draft typed", true);
+    expect(readComposerDraft("root").text).toBe("goal draft typed");
+  } finally {
+    source.dispose();
+  }
+});
+
 test("failed source draft write cannot acquire another source's revision token", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);

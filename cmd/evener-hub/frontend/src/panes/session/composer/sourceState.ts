@@ -425,17 +425,25 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
           }
           return false;
         }
-        recoveryOwnerLeaseRef.current = {
-          clientMutationId,
-          compositionRevision: recoveryCompositionRevision(updated),
-        };
-        committedRecoveryComposition = recoveryCompositionFingerprint({
-          text: nextText,
-          attachments: nextAttachments,
-          skillNames: nextSkillNames,
-          commandNames: nextCommandNames,
-          mentions: nextMentions,
-        });
+        // A goal replacement (or another owner) retires this lease while the
+        // write is in flight; do not resurrect it in the local mirror.
+        if (
+          !disposed &&
+          currentRecoveryId() === clientMutationId &&
+          recoveryReplacementEpochRef.current === replacementEpoch
+        ) {
+          recoveryOwnerLeaseRef.current = {
+            clientMutationId,
+            compositionRevision: recoveryCompositionRevision(updated),
+          };
+          committedRecoveryComposition = recoveryCompositionFingerprint({
+            text: nextText,
+            attachments: nextAttachments,
+            skillNames: nextSkillNames,
+            commandNames: nextCommandNames,
+            mentions: nextMentions,
+          });
+        }
         if (
           !disposed &&
           recoveryOwnsLocalDraftRef.current &&
