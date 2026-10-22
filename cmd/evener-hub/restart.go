@@ -72,7 +72,8 @@ func runHubRestart(args []string, stderr io.Writer, deps mainDeps) error {
 			return err
 		}
 	}
-	report, err := resolveHubEndpoint(ctx, endpointOptions{configPath: opts.configPath, configExplicit: opts.configExplicit}, deps)
+	endpointOpts := endpointOptions{configPath: opts.configPath, configExplicit: opts.configExplicit}
+	report, err := resolveHubEndpoint(ctx, endpointOpts, deps)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] endpoint: %v\n", err)
 		return err
@@ -131,7 +132,7 @@ func runHubRestart(args []string, stderr io.Writer, deps mainDeps) error {
 		}
 	}
 
-	if err := waitForNewIncarnation(ctx, origin, baseline); err != nil {
+	if err := waitForNewIncarnation(ctx, endpointOpts, deps, report, baseline); err != nil {
 		confirmErr := err
 		if requestErr != nil {
 			confirmErr = fmt.Errorf("%w; %w", requestErr, err)
@@ -210,7 +211,7 @@ func readHubStartedAt(ctx context.Context, origin hubendpoint.Origin) (time.Time
 	return health.StartedAt, nil
 }
 
-func waitForNewIncarnation(ctx context.Context, origin hubendpoint.Origin, previous time.Time) error {
+func waitForNewIncarnation(ctx context.Context, opts endpointOptions, deps mainDeps, selected hubendpoint.Report, previous time.Time) error {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -218,8 +219,27 @@ func waitForNewIncarnation(ctx context.Context, origin hubendpoint.Origin, previ
 		case <-ctx.Done():
 			return fmt.Errorf("hub did not restart: %w", ctx.Err())
 		case <-ticker.C:
+			// The replacement may bind a different configured listener. Pin the
+			// selected config/root, not the predecessor's address.
+			report, err := resolveHubEndpoint(ctx, opts, deps)
+			if err != nil {
+				continue
+			}
+			if report.ConfigPath != selected.ConfigPath || report.HubStateRoot != selected.HubStateRoot {
+				return hubendpoint.ErrIdentityMismatch
+			}
+			if report.Running == nil {
+				continue
+			}
+			if report.Running.ConfigPath != selected.ConfigPath || report.Running.HubStateRoot != selected.HubStateRoot {
+				return hubendpoint.ErrIdentityMismatch
+			}
+			origin, err := attachOrigin(report.Running.LoopbackURL)
+			if err != nil {
+				return err
+			}
 			next, err := readHubStartedAt(ctx, origin)
-			if err == nil && !next.Equal(previous) {
+			if err == nil && !next.IsZero() && next.Equal(report.Running.StartedAt) && !next.Equal(previous) {
 				return nil
 			}
 		}

@@ -15,12 +15,13 @@ import (
 )
 
 func TestSystemdEffectiveLaunchEnvironment(t *testing.T) {
-	for _, name := range []string{"default-home", "system-no-pass", "system-pass", "user-inherits", "unit-over-manager", "files-over-unit", "unset-name", "unset-match", "unset-nonmatch", "optional-missing", "required-missing", "glob-refuses", "specifier-refuses", "quoted-unset-refuses", "duplicate-metadata-refuses", "no-login-home-absent", "no-login-home-empty", "no-login-home-manager", "no-login-home-unit", "no-login-home-file", "no-login-user-inherits", "no-login-home-unset", "login-policy-invalid-refuses", "login-policy-missing-refuses", "unit-home-name", "unit-home-uid", "unit-home-default", "user-home-default", "unit-home-explicit-empty"} {
+	for _, name := range []string{"default-home", "system-no-pass", "system-pass", "user-inherits", "unit-over-manager", "files-over-unit", "unset-name", "unset-match", "unset-nonmatch", "optional-missing", "required-missing", "glob-refuses", "specifier-refuses", "quoted-unset-refuses", "duplicate-metadata-refuses", "no-login-home-absent", "no-login-home-empty", "no-login-home-manager", "no-login-home-unit", "no-login-home-file", "no-login-user-inherits", "no-login-home-unset", "login-policy-invalid-refuses", "legacy-login-home", "legacy-unit-home", "legacy-home-unset", "legacy-home-empty", "legacy-home-unit", "metadata-missing-user-refuses", "login-policy-empty-refuses", "unit-home-name", "unit-home-uid", "unit-home-default", "user-home-default", "unit-home-explicit-empty"} {
 		t.Run(name, func(t *testing.T) {
 			host, _ := ownerCommands(t)
 			sup := supervisor{kind: supervisorSystemd, label: "evener-hub-selected.service"}
 			props := "EnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\n"
 			policy := "yes"
+			omitPolicy := strings.HasPrefix(name, "legacy-")
 			unitUser := "dev"
 			manager, unit := "", ""
 			files := map[string]string{}
@@ -104,8 +105,17 @@ func TestSystemdEffectiveLaunchEnvironment(t *testing.T) {
 				}
 			case "login-policy-invalid-refuses":
 				policy = "unknown"
-			case "login-policy-missing-refuses":
+			case "login-policy-empty-refuses":
 				policy = ""
+			case "legacy-unit-home":
+				unitUser, want = "hubsvc", []string{"HOME=/home/hubsvc"}
+			case "legacy-home-unset":
+				props = "EnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=HOME\n"
+				want = nil
+			case "legacy-home-empty":
+				unit, want = "HOME=", []string{"HOME="}
+			case "legacy-home-unit":
+				unit, want = "HOME=/unit", []string{"HOME=/unit"}
 			case "unit-home-name":
 				unitUser, want = "hubsvc", []string{"HOME=/home/hubsvc"}
 			case "unit-home-uid":
@@ -139,10 +149,14 @@ func TestSystemdEffectiveLaunchEnvironment(t *testing.T) {
 				case "getent passwd root | cut -d: -f6":
 					return []byte("/root\n"), nil
 				case command + " show --property=User,EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- " + sup.label:
-					if policy == "" {
-						return []byte("User=" + unitUser + "\n" + props), nil
+					result := "User=" + unitUser + "\n" + props
+					if name == "metadata-missing-user-refuses" {
+						result = props
 					}
-					return []byte("User=" + unitUser + "\n" + props + "SetLoginEnvironment=" + policy + "\n"), nil
+					if !omitPolicy {
+						result += "SetLoginEnvironment=" + policy + "\n"
+					}
+					return []byte(result), nil
 				case "values=$(" + command + " show-environment) || exit; printf '%s\\n' \"$values\" | " + narrowEnvironmentFilter:
 					reads++
 					return exec.CommandContext(ctx, "/bin/sh", "-c", "systemctl() { printf '%s\\n' "+shellquote.RemoteWord(manager)+"; }; "+remote).Output()
@@ -185,27 +199,39 @@ func TestSystemdEffectiveLaunchEnvironment(t *testing.T) {
 func TestSystemdLoginEnvironmentDefinition(t *testing.T) {
 	for _, kind := range []supervisorKind{supervisorSystemd, supervisorSystemdUser} {
 		t.Run(string(kind), func(t *testing.T) {
-			host, _ := ownerCommands(t)
-			sup := supervisor{kind: kind, label: "evener-hub-selected.service"}
-			policy := "no"
-			show := "show --property=User,ExecStart,WorkingDirectory,Environment,EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- " + sup.label
-			if kind == supervisorSystemdUser {
-				show = "--user " + show
-			}
-			base := "User=dev\nExecStart=/opt/evener hub\nWorkingDirectory=/srv\nEnvironment=\nEnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\n"
-			fr := &fakeRunner{runFn: func(ctx context.Context, argv []string, _ io.Reader) ([]byte, error) {
-				stub := "systemctl() { case \"$*\" in " + shellquote.RemoteWord(show) + ") printf '%s' " + shellquote.RemoteWord(base+"SetLoginEnvironment="+policy+"\n") + ";; show-environment|'--user show-environment') :;; *) return 1;; esac; }; "
-				return exec.CommandContext(ctx, "/bin/sh", "-c", stub+strings.Join(argv[12:], " ")).Output()
-			}}
-			m := newTestManager(t, testRegistry(t, host), fr, Options{})
-			before, err := m.serviceDefinition(t.Context(), host, sup)
-			if err != nil {
-				t.Fatal(err)
-			}
-			policy = "yes"
-			after, err := m.serviceDefinition(t.Context(), host, sup)
-			if err != nil || before == after {
-				t.Fatalf("login policy change did not invalidate definition: before=%q after=%q err=%v", before, after, err)
+			for _, initial := range []string{"no", ""} {
+				t.Run("policy="+initial, func(t *testing.T) {
+					host, _ := ownerCommands(t)
+					sup := supervisor{kind: kind, label: "evener-hub-selected.service"}
+					policy := initial
+					show := "show --property=User,ExecStart,WorkingDirectory,Environment,EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- " + sup.label
+					if kind == supervisorSystemdUser {
+						show = "--user " + show
+					}
+					base := "User=dev\nExecStart=/opt/evener hub\nWorkingDirectory=/srv\nEnvironment=\nEnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\n"
+					fr := &fakeRunner{runFn: func(ctx context.Context, argv []string, _ io.Reader) ([]byte, error) {
+						properties := base
+						if policy != "" {
+							properties += "SetLoginEnvironment=" + policy + "\n"
+						}
+						stub := "systemctl() { case \"$*\" in " + shellquote.RemoteWord(show) + ") printf '%s' " + shellquote.RemoteWord(properties) + ";; show-environment|'--user show-environment') :;; *) return 1;; esac; }; "
+						return exec.CommandContext(ctx, "/bin/sh", "-c", stub+strings.Join(argv[12:], " ")).Output()
+					}}
+					m := newTestManager(t, testRegistry(t, host), fr, Options{})
+					before, err := m.serviceDefinition(t.Context(), host, sup)
+					if err != nil {
+						t.Fatal(err)
+					}
+					repeated, err := m.serviceDefinition(t.Context(), host, sup)
+					if err != nil || before != repeated {
+						t.Fatalf("unchanged login policy invalidated definition: before=%q repeated=%q err=%v", before, repeated, err)
+					}
+					policy = "yes"
+					after, err := m.serviceDefinition(t.Context(), host, sup)
+					if err != nil || before == after {
+						t.Fatalf("login policy change did not invalidate definition: before=%q after=%q err=%v", before, after, err)
+					}
+				})
 			}
 		})
 	}

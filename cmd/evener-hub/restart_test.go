@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,7 +22,6 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostlock"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
-	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/internal/hubendpoint"
 )
 
@@ -51,10 +52,12 @@ func TestHubRestartCommandWaitsForNewIncarnation(t *testing.T) {
 	hubProcessStartedAt = started
 	t.Cleanup(func() { hubProcessStartedAt = previousStarted })
 	scheduled := false
+	var scheduleErr error
 	previousSchedule := scheduleHubRestartOnly
 	scheduleHubRestartOnly = func(context.Context, restartPin, string, []string) {
 		mu.Lock()
 		started = started.Add(time.Second)
+		scheduleErr = republishRestartFixture(t, root, started)
 		scheduled = true
 		mu.Unlock()
 	}
@@ -83,6 +86,11 @@ func TestHubRestartCommandWaitsForNewIncarnation(t *testing.T) {
 
 	if err := runHubRestart([]string{"--timeout", "5s"}, &stderr, deps); err != nil {
 		t.Fatalf("runHubRestart: %v (stderr %q)", err, stderr.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if scheduleErr != nil {
+		t.Fatal(scheduleErr)
 	}
 	if !scheduled {
 		t.Fatal("restart was not sent to the hub")
@@ -133,12 +141,14 @@ func TestHubRestartCommandUsesResponseIncarnation(t *testing.T) {
 	addr := strings.TrimPrefix(srv.URL, "http://")
 	publishRestartFixture(t, root, addr, healthStarted)
 
+	var scheduleErr error
 	previousSchedule := scheduleHubRestartOnly
 	scheduleHubRestartOnly = func(context.Context, restartPin, string, []string) {
 		// Process B accepted the request but never restarted. Its health
 		// answer is B, not the A the CLI read before sending.
 		mu.Lock()
 		healthStarted = responseStarted
+		scheduleErr = republishRestartFixture(t, root, healthStarted)
 		mu.Unlock()
 	}
 	t.Cleanup(func() { scheduleHubRestartOnly = previousSchedule })
@@ -152,8 +162,182 @@ func TestHubRestartCommandUsesResponseIncarnation(t *testing.T) {
 	if err := runHubRestart([]string{"--addr", addr, "--timeout", "300ms"}, &stderr, deps); err == nil {
 		t.Fatal("runHubRestart confirmed a process that never restarted")
 	}
+	mu.Lock()
+	defer mu.Unlock()
+	if scheduleErr != nil {
+		t.Fatal(scheduleErr)
+	}
 	if stderr.Len() == 0 {
 		t.Fatal("restart confirmation failure wrote no diagnostic")
+	}
+}
+
+func TestHubRestartCommandRediscoversSuccessor(t *testing.T) {
+	for _, name := range []string{"listener-moved", "listener-moved-lost-reply", "failed-restart", "wrong-record-config", "changed-selected-root", "changed-selected-config", "same-incarnation"} {
+		t.Run(name, func(t *testing.T) {
+			setBuild(t, "abc1234", "release")
+			t.Cleanup(func() { hubUpdateMu = sync.Mutex{} })
+			previousSupported := hubRestartSupported
+			hubRestartSupported = func() bool { return true }
+			t.Cleanup(func() { hubRestartSupported = previousSupported })
+			previousPath, previousErr := hubLaunchEntrypoint, errHubLaunchEntrypoint
+			hubLaunchEntrypoint, errHubLaunchEntrypoint = writeProbeScript(t, "echo 'evener abc1234 (2026-10-21T00:00:00Z)'"), nil
+			t.Cleanup(func() { hubLaunchEntrypoint, errHubLaunchEntrypoint = previousPath, previousErr })
+			before := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+			previousStarted := hubProcessStartedAt
+			hubProcessStartedAt = before
+			t.Cleanup(func() { hubProcessStartedAt = previousStarted })
+			after := before.Add(time.Second)
+			if name == "same-incarnation" {
+				after = before
+			}
+			dir, root := endpointTestRoot(t)
+			token, err := hubedge.LoadOrCreateAuthToken(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var successorHealth, attempts atomic.Int32
+			var scheduled atomic.Bool
+			successor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/health" || r.Header.Get("Authorization") != "" {
+					t.Error("successor confirmation sent a credential or non-health request")
+				}
+				successorHealth.Add(1)
+				_ = json.NewEncoder(w).Encode(map[string]any{"boot_id": "restart-successor", "hub_addr": r.Host, "started_at": after})
+			}))
+			defer successor.Close()
+			newAddr := strings.TrimPrefix(successor.URL, "http://")
+			mux := http.NewServeMux()
+			appServer := newHubAppServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, appsource.NewRegistry())
+			mux.HandleFunc("/rpc", appServer.ServeWebSocket)
+			mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
+				at := before
+				if scheduled.Load() && (name == "wrong-record-config" || strings.HasPrefix(name, "changed-selected-")) {
+					// A new timestamp at the old URL alone cannot prove selection.
+					at = after
+				}
+				restartFixtureHealth(t, w, r, at)
+			})
+			rpcConn := make(chan net.Conn, 1)
+			predecessor := httptest.NewUnstartedServer(hubedge.AuthGuard(token)(mux))
+			predecessor.Config.ConnState = func(conn net.Conn, state http.ConnState) {
+				if state == http.StateHijacked {
+					rpcConn <- conn
+				}
+			}
+			predecessor.Start()
+			defer predecessor.Close()
+			oldAddr := strings.TrimPrefix(predecessor.URL, "http://")
+			config := endpointTestConfig(t, dir, root, oldAddr)
+			release, err := hostlock.AcquireLock(filepath.Join(root, "hub.lock"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(release)
+			record := hubendpoint.Record{SchemaVersion: hubendpoint.SchemaVersion, BootID: "restart-fixture", PID: os.Getpid(), StartedAt: before, ConfigPath: config, HubStateRoot: root, RequestedListenAddr: oldAddr, ListenSource: "config", BoundAddr: oldAddr, LocalURL: predecessor.URL, LoopbackURL: predecessor.URL}
+			remove, err := hubendpoint.Publish(root, record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := remove(); err != nil {
+					t.Error(err)
+				}
+			})
+			// The running process retains its fixed listener while TOML moves.
+			endpointTestConfig(t, dir, root, newAddr)
+			var mu sync.Mutex
+			var scheduleErr error
+			previousSchedule := scheduleHubRestartOnly
+			scheduleHubRestartOnly = func(context.Context, restartPin, string, []string) {
+				mu.Lock()
+				defer mu.Unlock()
+				attempts.Add(1)
+				if name == "failed-restart" {
+					return
+				}
+				next := record
+				next.BootID, next.StartedAt = "restart-successor", after
+				next.RequestedListenAddr, next.BoundAddr = newAddr, newAddr
+				next.LocalURL, next.LoopbackURL = successor.URL, successor.URL
+				if name == "wrong-record-config" {
+					next.ConfigPath = filepath.Join(dir, "unrelated.toml")
+				}
+				if name == "changed-selected-root" {
+					next.HubStateRoot = filepath.Join(dir, "other-root")
+					scheduleErr = os.MkdirAll(next.HubStateRoot, 0700)
+					if scheduleErr != nil {
+						return
+					}
+					var releaseNext func()
+					releaseNext, scheduleErr = hostlock.AcquireLock(filepath.Join(next.HubStateRoot, "hub.lock"))
+					if scheduleErr != nil {
+						return
+					}
+					t.Cleanup(releaseNext)
+					endpointTestConfig(t, dir, next.HubStateRoot, newAddr)
+				}
+				if name == "changed-selected-config" {
+					other := filepath.Join(dir, "other-config")
+					scheduleErr = os.MkdirAll(other, 0700)
+					if scheduleErr != nil {
+						return
+					}
+					next.ConfigPath = endpointTestConfig(t, other, root, newAddr)
+					scheduleErr = os.Remove(config)
+					if scheduleErr != nil {
+						return
+					}
+					scheduleErr = os.Symlink(next.ConfigPath, config)
+					if scheduleErr != nil {
+						return
+					}
+				}
+				var retire func() error
+				retire, scheduleErr = hubendpoint.Publish(next.HubStateRoot, next)
+				if scheduleErr != nil {
+					return
+				}
+				t.Cleanup(func() {
+					if err := retire(); err != nil {
+						t.Error(err)
+					}
+				})
+				scheduled.Store(true)
+				if name == "listener-moved-lost-reply" {
+					select {
+					case conn := <-rpcConn:
+						scheduleErr = conn.Close()
+					default:
+						scheduleErr = errors.New("restart RPC connection unavailable")
+					}
+				}
+			}
+			t.Cleanup(func() { scheduleHubRestartOnly = previousSchedule })
+			deps := defaultMainDeps()
+			var stdout, stderr bytes.Buffer
+			deps.stdout = &stdout
+			err = runHubRestart([]string{"--config", config, "--timeout", "1s"}, &stderr, deps)
+			mu.Lock()
+			defer mu.Unlock()
+			if scheduleErr != nil || attempts.Load() != 1 {
+				t.Fatalf("restart scheduling: attempts=%d err=%v", attempts.Load(), scheduleErr)
+			}
+			switch name {
+			case "listener-moved", "listener-moved-lost-reply":
+				if err != nil || successorHealth.Load() == 0 {
+					t.Fatalf("moved successor not confirmed: err=%v health=%d stderr=%q", err, successorHealth.Load(), stderr.String())
+				}
+			case "failed-restart", "same-incarnation":
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("unchanged incarnation confirmed: %v", err)
+				}
+			default:
+				if !errors.Is(err, hubendpoint.ErrIdentityMismatch) {
+					t.Fatalf("different selected identity confirmed: %v", err)
+				}
+			}
+		})
 	}
 }
 
@@ -211,19 +395,27 @@ func TestHubRestartCommandReportsRefusal(t *testing.T) {
 }
 
 func TestWaitForNewIncarnationTimesOut(t *testing.T) {
+	_, root := endpointTestRoot(t)
 	fixed := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(hubapi.HealthResponse{StartedAt: fixed})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		restartFixtureHealth(t, w, r, fixed)
 	}))
 	defer srv.Close()
-	origin, err := attachOrigin(srv.URL)
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	publishRestartFixture(t, root, addr, fixed)
+	deps := defaultMainDeps()
+	deps.loadConfig = func(string, bool) (Config, error) {
+		return Config{Addr: addr, HubStateRoot: root}, nil
+	}
+	opts := endpointOptions{configPath: DefaultConfigPath()}
+	selected, err := resolveHubEndpoint(t.Context(), opts, deps)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	if err := waitForNewIncarnation(ctx, origin, fixed); err == nil {
+	if err := waitForNewIncarnation(ctx, opts, deps, selected, fixed); err == nil {
 		t.Fatal("waitForNewIncarnation accepted an unchanged process")
 	}
 }
@@ -362,4 +554,23 @@ func publishRestartFixture(t *testing.T, root, addr string, started time.Time) {
 			t.Error(err)
 		}
 	})
+}
+
+func republishRestartFixture(t *testing.T, root string, started time.Time) error {
+	t.Helper()
+	record, err := hubendpoint.Read(root)
+	if err != nil {
+		return err
+	}
+	record.StartedAt = started
+	remove, err := hubendpoint.Publish(root, record)
+	if err != nil {
+		return err
+	}
+	t.Cleanup(func() {
+		if err := remove(); err != nil {
+			t.Error(err)
+		}
+	})
+	return nil
 }

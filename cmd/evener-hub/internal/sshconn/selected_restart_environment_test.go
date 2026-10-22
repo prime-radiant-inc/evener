@@ -19,7 +19,7 @@ import (
 // Files, fetches and checksums are real. Process/service observations and the
 // restarted listener are modeled, with an exact remote-command allowlist.
 func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
-	for _, name := range []string{"verified-restart", "lost-reply-recovery", "failed-start-recovery", "no-home-live", "no-home-cold", "unit-user-live", "unit-user-cold", "unit-user-other-uid", "repair-fresh-operation", "repair-fresh-automatic", "repair-fresh-operation-prior", "repair-fresh-automatic-prior"} {
+	for _, name := range []string{"verified-restart", "lost-reply-recovery", "failed-start-recovery", "no-home-live", "no-home-cold", "legacy-home-live", "legacy-home-cold", "legacy-unset-home-live", "legacy-unset-home-cold", "unit-user-live", "unit-user-cold", "unit-user-other-uid", "repair-fresh-operation", "repair-fresh-automatic", "repair-fresh-operation-prior", "repair-fresh-automatic-prior"} {
 		lostReply, failedStart := name == "lost-reply-recovery", name == "failed-start-recovery"
 		t.Run(name, func(t *testing.T) {
 			repair := strings.HasPrefix(name, "repair-fresh-")
@@ -31,6 +31,7 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 			oldEnv := []string{"EVENER_HUB_LISTEN_ADDR=" + oldAddr, "HOME=/home/dev"}
 			newEnv := []string{"EVENER_HUB_LISTEN_ADDR=" + newAddr, "HOME=/home/dev"}
 			policy, unitEnv := "yes", "HOME=/home/dev"
+			unset := ""
 			unitUser := "dev"
 			fileEnv := "HOME=/home/dev\nEVENER_HUB_LISTEN_ADDR=" + newAddr + "\n"
 			if noHome {
@@ -51,6 +52,23 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 					oldEnv = newEnv
 				}
 			}
+			if strings.HasPrefix(name, "legacy-") {
+				policy, unitEnv = "", ""
+				fileEnv = "EVENER_HUB_LISTEN_ADDR=" + newAddr + "\n"
+				if strings.HasPrefix(name, "legacy-unset-") {
+					noHome, unset = true, "HOME"
+					oldEnv = []string{"EVENER_HUB_LISTEN_ADDR=" + oldAddr, "XDG_CONFIG_HOME=/srv/config", "XDG_STATE_HOME=/srv/state"}
+					newEnv = []string{"EVENER_HUB_LISTEN_ADDR=" + newAddr, "XDG_CONFIG_HOME=/srv/config", "XDG_STATE_HOME=/srv/state"}
+					fileEnv = strings.Join(newEnv, "\n") + "\n"
+				}
+				if cold {
+					oldEnv = newEnv
+				}
+			}
+			loginProperty := ""
+			if policy != "" {
+				loginProperty = "SetLoginEnvironment=" + policy + "\n"
+			}
 			file := filepath.Join(t.TempDir(), "hub.env")
 			// This definition already names the next listener before selection. The
 			// predecessor still has its original process environment and listener.
@@ -62,7 +80,7 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 				t.Fatal(err)
 			}
 			readDefinition := func() []byte {
-				properties := "User=" + unitUser + "\nExecStart=/opt/evener hub --config=/srv/selected.toml\nWorkingDirectory=/srv\nEnvironment=" + unitEnv + "\nEnvironmentFiles=" + file + " (ignore_errors=no)\nPassEnvironment=\nUnsetEnvironment=\nSetLoginEnvironment=" + policy + "\n"
+				properties := "User=" + unitUser + "\nExecStart=/opt/evener hub --config=/srv/selected.toml\nWorkingDirectory=/srv\nEnvironment=" + unitEnv + "\nEnvironmentFiles=" + file + " (ignore_errors=no)\nPassEnvironment=\nUnsetEnvironment=" + unset + "\n" + loginProperty
 				show := "show --property=User,ExecStart,WorkingDirectory,Environment,EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- " + sup.label
 				stub := "systemctl() { case \"$*\" in " + shellquote.RemoteWord(show) + ") printf '%s' " + shellquote.RemoteWord(properties) + ";; show-environment) :;; *) return 1;; esac; }; "
 				out, err := exec.CommandContext(t.Context(), "/bin/sh", "-c", stub+serviceDefinitionRemote(sup)).Output()
@@ -178,7 +196,7 @@ func TestSelectedRestartEnvironmentFileListenerChange(t *testing.T) {
 					}
 					return []byte("1000\n"), nil
 				case "systemctl show --property=User,EnvironmentFiles,PassEnvironment,UnsetEnvironment,SetLoginEnvironment -- " + sup.label:
-					return []byte("User=" + unitUser + "\nEnvironmentFiles=" + file + " (ignore_errors=no)\nPassEnvironment=\nUnsetEnvironment=\nSetLoginEnvironment=" + policy + "\n"), nil
+					return []byte("User=" + unitUser + "\nEnvironmentFiles=" + file + " (ignore_errors=no)\nPassEnvironment=\nUnsetEnvironment=" + unset + "\n" + loginProperty), nil
 				case "values=$(systemctl show --property=Environment --value -- " + sup.label + ") || exit; printf '%s\\n' \"$values\" | " + narrowEnvironmentFilter:
 					return nil, nil
 				case systemdEnvironmentFileRemote(file, false):

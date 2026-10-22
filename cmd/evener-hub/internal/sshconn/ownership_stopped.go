@@ -234,6 +234,10 @@ func (m *Manager) stoppedServiceEnvironment(ctx context.Context, host hostreg.Ho
 		}
 		properties[key] = value
 	}
+	// Before systemd 255 this property was absent and login environment was on.
+	if _, present := properties["SetLoginEnvironment"]; !present {
+		properties["SetLoginEnvironment"] = "yes"
+	}
 	if len(properties) != 5 {
 		return nil, fmt.Errorf("%w: stopped service environment properties unavailable", errOwnerEvidence)
 	}
