@@ -1268,6 +1268,34 @@ test("a stale acceptance does not restore a displaced provisional whose owner re
   }
 });
 
+// A provisional suppression hides its epoch from listAnnotations too, so a
+// reader that re-listed while it was installed holds a stale listing. Releasing
+// the provisional restores eligibility and is the only observation of that
+// restored state; the storage-success signal alone starts no re-list, so the
+// release must also publish the document wake for what it unhid.
+test("releasing a provisional suppression wakes subscribed readers", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-release-wake",
+    origin: "https://coordination.example",
+  });
+  const sibling = openSiblingRepository(fixture);
+  const listener = vi.fn();
+  fixture.repository.subscribe(fixture.document, listener);
+  try {
+    const ticket = await fixture.repository.beginRead(fixture.document);
+    // Another adapter's read supersedes the ticket durably, so the acceptance
+    // installs its provisional at entry and can only answer stale.
+    await sibling.beginRead(fixture.document);
+    listener.mockClear();
+    expect(await fixture.repository.acceptRead(ticket, sampleChangedContent())).toEqual({ state: "stale-ticket" });
+    expect(listener).toHaveBeenCalled();
+  } finally {
+    sibling.close();
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
+
 // A fence whose transaction commits but whose completion is lost to the
 // watchdog lands in acceptRead's non-superseded catch. The fence already
 // flipped the expired epoch's pending rows terminal - the FIFO unblock a

@@ -721,15 +721,22 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // here: a proven change (or a committed reset) keeps its suppression until
   // its expiry's deletion completes.
   #releaseUnconfirmed(owned: readonly { identity: string; requestId?: string | null }[]): void {
-    let released = false;
+    const releasedDocuments = new Set<string>();
     for (const candidate of owned) {
       const entry = this.#suppressedEpochs.get(candidate.identity);
       if (!entry || entry.confirmed) continue;
       if (candidate.requestId !== undefined && entry.requestId !== candidate.requestId) continue;
       this.#suppressedEpochs.delete(candidate.identity);
-      released = true;
+      releasedDocuments.add(entry.documentKey);
     }
-    if (released) this.#settleTransition({ signal: true });
+    if (releasedDocuments.size === 0) return;
+    // These entries HID their epoch from listAnnotations, so removing them
+    // changes what every reader of that document sees. The signal is the
+    // runtime's trigger; the document wake is what makes a subscribed reader
+    // re-list instead of holding the listing it kept while the entry was
+    // installed.
+    this.#settleTransition({ signal: true });
+    for (const documentKey of releasedDocuments) this.#settleTransition({ documentKey });
   }
 
   async beginRead(key: DocumentKey): Promise<ReadTicket> {
