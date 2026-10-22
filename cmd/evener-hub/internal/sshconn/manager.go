@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2381,6 +2382,9 @@ func (m *Manager) deployedBuildNotStamped(hostName string, facts Preflight, expe
 
 // positiveProtocolMismatch accepts only explicit protocol evidence. A missing
 // protocol field and generic JSON-RPC errors remain transport/response failures.
+// A server older than this controller reports the disagreement as an
+// InvalidRequest message (legacyProtocolRefusal) rather than the structured
+// upgradeRequired arm, so that exact refusal is evidence too.
 func positiveProtocolMismatch(err error) bool {
 	if mismatch, ok := errors.AsType[appwire.ProtocolVersionMismatchError](err); ok {
 		return strings.TrimSpace(mismatch.Got) != ""
@@ -2390,11 +2394,63 @@ func positiveProtocolMismatch(err error) bool {
 		return false
 	}
 	raw, err := json.Marshal(wire.Data)
-	if err != nil {
+	if err == nil {
+		var data appwire.ErrorData
+		if json.Unmarshal(raw, &data) == nil && data.EvenerErrorInfo == appwire.ErrorUpgradeRequired {
+			return true
+		}
+	}
+	return legacyProtocolRefusal(wire.Message)
+}
+
+// legacyProtocolRefusal recognizes the initialize refusal an Evener server older
+// than this controller sends a newer client. Such servers compare the announced
+// protocol exactly and answer a newer one with InvalidRequest, not the
+// structured upgradeRequired arm they reserve for an older client. An ancient
+// host therefore reports the disagreement only in its message, so that exact
+// shape is the protocol evidence an explicit Connect needs before replacing the
+// installation. Only a well-formed pair of AppWire versions is accepted, the
+// announced one must be this controller's, and the wanted one must be older:
+// the same refusal from a peer that speaks a newer protocol names an upgrade of
+// this controller, which a connect must not answer by downgrading the host.
+func legacyProtocolRefusal(message string) bool {
+	rest, ok := strings.CutPrefix(message, `appwire initialize: protocol version "`)
+	if !ok {
 		return false
 	}
-	var data appwire.ErrorData
-	return json.Unmarshal(raw, &data) == nil && data.EvenerErrorInfo == appwire.ErrorUpgradeRequired
+	announced, rest, ok := strings.Cut(rest, `" is incompatible; want "`)
+	if !ok {
+		return false
+	}
+	wanted, ok := strings.CutSuffix(rest, `"`)
+	if !ok {
+		return false
+	}
+	if announced != appwire.ProtocolVersion {
+		return false
+	}
+	announcedNumber, ok := appwireProtocolNumber(announced)
+	if !ok {
+		return false
+	}
+	wantedNumber, ok := appwireProtocolNumber(wanted)
+	return ok && wantedNumber < announcedNumber
+}
+
+// appwireProtocolNumber reads the N in "evener-appwire-vN". Only the canonical
+// decimal spelling is accepted, so a suffix a reader might mistake for a
+// version ("v05", "v5-rc1") stays an ambiguous refusal rather than protocol
+// evidence.
+func appwireProtocolNumber(version string) (int, bool) {
+	digits, ok := strings.CutPrefix(version, "evener-appwire-v")
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.Atoi(digits)
+	if err != nil || n < 0 || strconv.Itoa(n) != digits {
+		return 0, false
+	}
+	return n, true
 }
 
 // attach spawns the bridge, wraps its stdio in a StreamTransport, and
