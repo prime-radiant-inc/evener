@@ -3466,6 +3466,12 @@ export async function discardRecoveryMutation(
   return discarded;
 }
 
+export async function recoveryExists(clientMutationId: string): Promise<boolean> {
+  const runtime = requireMutationRuntime();
+  await runtime.start;
+  return (await runtime.storage.getRecovery(clientMutationId)) !== undefined;
+}
+
 export async function resendRecoveryMutation(
   clientMutationId: string,
   targetRef: string,

@@ -3742,7 +3742,7 @@ test("a recovery Send refused after a peer revision keeps the composer and sourc
   expect(storage.resendRecoveryResult).toHaveBeenCalledOnce();
   expect(editor.textContent).toBe("edit me [image 1] /cleanup");
   expect(screen.getByRole("button", { name: "Remove proof.png" })).toBeTruthy();
-  expect(source.getSnapshot().activeRecoveryId).toBeNull();
+  expect(source.getSnapshot().activeRecoveryId).toBe(recovered.clientMutationId);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
   expect(getToasts().map((toast) => toast.text)).toContain(
     "This message changed in another tab. Refresh and try again.",

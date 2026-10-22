@@ -24,6 +24,7 @@ import {
 } from "./draft";
 import {
   discardRecoveryPendingTurn,
+  recoveryPendingTurnExists,
   refreshPendingTurnsProjection,
   subscribeComposerSubmissionCommitted,
   updateRecoveryPendingTurn,
@@ -451,7 +452,17 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           compositionOwnerId,
         );
         if (!updated) {
-          if (!disposed && currentRecoveryId() === clientMutationId) {
+          const missing =
+            !disposed &&
+            currentRecoveryId() === clientMutationId &&
+            !(await recoveryPendingTurnExists(clientMutationId));
+          if (missing) {
+            // Another tab consumed the row. Keeping this lease would make
+            // every later submission fail against an owner this tab can no
+            // longer write.
+            setActiveRecoveryId(null);
+          }
+          if (!disposed && (missing || currentRecoveryId() === clientMutationId)) {
             pushToast("info", "This message changed in another tab. Refresh and try again.");
           }
           return false;

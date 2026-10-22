@@ -33,6 +33,7 @@ import {
   installResumeOnlyProjection,
   notifyReadyForMutationDispatch,
   readMutationPersistence,
+  recoveryExists,
   removeQueuedMutation,
   resendRecoveryMutation,
   retryBlockedMutation,
@@ -530,6 +531,10 @@ export function discardRecoveryPendingTurn(
   return mutateThenRefresh(ref, () =>
     discardRecoveryMutation(clientMutationId, ref, shouldDiscard, expectedCompositionRevision),
   );
+}
+
+export function recoveryPendingTurnExists(clientMutationId: string): Promise<boolean> {
+  return recoveryExists(clientMutationId);
 }
 
 export function editQueuedPendingTurn(

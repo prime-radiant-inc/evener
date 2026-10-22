@@ -1100,12 +1100,6 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
                 submittedMentions,
               );
               if (!persisted) {
-                // The row is gone (another tab consumed it) or advanced by a
-                // peer. Keeping this lease would make every later submission
-                // fail against an owner this tab can no longer write. The
-                // composer text stays put; the projection decides what row to
-                // offer next.
-                if (source.alive) source.setActiveRecoveryId(null);
                 throw recoveryWriteRefusal;
               }
               const committedRevision = recoveryOwnerLeaseRef.current?.compositionRevision;
@@ -1166,10 +1160,9 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     } catch (error) {
       // The local durable write failed. The submitted composer payload stays
       // untouched and no network request was eligible to start.
-      if (source.alive && recoveryResendRefused) {
-        source.setActiveRecoveryId(null);
+      if (source.alive && recoveryResendRefused)
         toasts.push("info", "This message changed in another tab. Refresh and try again.");
-      } else if (source.alive && recoveryAlreadySent)
+      else if (source.alive && recoveryAlreadySent)
         toasts.push("info", "This message was already sent in another tab.");
       else if (error !== recoveryWriteRefusal && error !== recoveryAlreadySentRefusal) return;
     } finally {
