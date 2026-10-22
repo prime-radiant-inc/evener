@@ -1,7 +1,13 @@
 import type { UpdateCheckResponse } from "@evener/appwire-client";
 import { expect, it, vi } from "vitest";
 import { renderHook } from "../renderNative.testkit";
-import { createPhoneHubUpdates, createReadiness, RESTART_DEADLINE_MS, useHubUpdates } from "./hubUpdates";
+import {
+	createPhoneHubUpdates,
+	createReadiness,
+	RESTART_DEADLINE_MS,
+	RESTART_RECHECK_MS,
+	useHubUpdates,
+} from "./hubUpdates";
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -92,7 +98,7 @@ it("clears the restart once the hub is back on a new incarnation, even at the sa
 	expect(updates.controller.getState()).toMatchObject({ restarting: false, restartTimedOut: false });
 });
 
-it("ends the restart as timed out when the hub comes back on the same process", async () => {
+it("keeps observing when a reconnect reaches the old process, then clears on the new one", async () => {
 	const h = hub();
 	const readiness = createReadiness();
 	readiness.set(true);
@@ -102,8 +108,33 @@ it("ends the restart as timed out when the hub comes back on the same process", 
 	await settle();
 	readiness.set(false);
 	readiness.set(true);
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	expect(updates.controller.getState()).toMatchObject({ restarting: true, restartTimedOut: false });
+
+	h.state.startedAt = SECOND_START;
+	await new Promise((resolve) => setTimeout(resolve, RESTART_RECHECK_MS + 50));
 	await restarting;
-	expect(updates.controller.getState()).toMatchObject({ restarting: false, restartTimedOut: true });
+	expect(updates.controller.getState()).toMatchObject({ restarting: false, restartTimedOut: false });
+});
+
+it("retries a failed check in the restart window and clears on the new incarnation", async () => {
+	const h = hub();
+	const readiness = createReadiness();
+	readiness.set(true);
+	const updates = createPhoneHubUpdates(h.client, readiness);
+	await updates.controller.runCheck();
+	const restarting = updates.controller.restart();
+	await settle();
+	h.state.failNextCheck = true;
+	readiness.set(false);
+	readiness.set(true);
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	expect(updates.controller.getState()).toMatchObject({ restarting: true, restartTimedOut: false });
+
+	h.state.startedAt = SECOND_START;
+	await new Promise((resolve) => setTimeout(resolve, RESTART_RECHECK_MS + 50));
+	await restarting;
+	expect(updates.controller.getState()).toMatchObject({ restarting: false, restartTimedOut: false });
 });
 
 it("times out when the hub never reconnects", async () => {
@@ -233,19 +264,4 @@ it("asks once when the hub comes back from a restart, and shows what that answer
 	expect(h.calls).toEqual(["evener/update/check"]);
 	expect(hook.result.current.getState()).toMatchObject({ restarting: false, check: { startedAt: SECOND_START } });
 	hook.unmount();
-});
-
-it("ends the restart when the hub is back but its first answer fails, rather than waiting on", async () => {
-	const h = hub();
-	const readiness = createReadiness();
-	readiness.set(true);
-	const updates = createPhoneHubUpdates(h.client, readiness);
-	await updates.controller.runCheck();
-	const restarting = updates.controller.restart();
-	await settle();
-	h.state.failNextCheck = true;
-	readiness.set(false);
-	readiness.set(true);
-	await restarting;
-	expect(updates.controller.getState()).toMatchObject({ restarting: false, restartTimedOut: true });
 });

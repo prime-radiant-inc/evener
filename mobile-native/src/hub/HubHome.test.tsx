@@ -17,7 +17,7 @@ import { hostRow, type ScriptedFleet, scriptedFleet } from "../hosts/hostsTestUt
 import { Tag } from "../sheet/Grouped";
 import { HubHome } from "./HubHome";
 import { type HubRoutes, type HubSheetContextValue, HubSheetProvider } from "./hubSheetContext";
-import { createPhoneHubUpdates, createReadiness, type PhoneHubUpdates } from "./hubUpdates";
+import { createPhoneHubUpdates, createReadiness, type PhoneHubUpdates, RESTART_RECHECK_MS } from "./hubUpdates";
 
 const status = { line: null as string | null };
 vi.mock("../board/connectionStatus", async (importOriginal) => ({
@@ -555,8 +555,8 @@ it("opens Display inside the sheet, valued with this phone's appearance", async 
 	expect(sheet.navigate).toHaveBeenCalledWith("Display", { hubId: "hub-1" });
 });
 
-it("says the restart timed out when the hub returns on the same incarnation", async () => {
-	const { tree, press, readiness } = await mount({ check: INSTALLED });
+it("keeps waiting when a reconnect reaches the old process, then confirms the new one", async () => {
+	const { tree, press, readiness, script } = await mount({ check: INSTALLED });
 	press("Restart hub");
 	await act(async () => {
 		alertRequests[0]?.buttons?.find((button) => button.text === "Restart")?.onPress?.();
@@ -566,11 +566,17 @@ it("says the restart timed out when the hub returns on the same incarnation", as
 		readiness.set(true);
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
-	expect(updates.controller.getState().restartTimedOut).toBe(true);
-	expect(updateReports(tree)).toContain("restart-timeout");
+	expect(updates.controller.getState()).toMatchObject({ restarting: true, restartTimedOut: false });
+
+	script.startedAt = SECOND_START;
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, RESTART_RECHECK_MS + 50));
+	});
+	expect(updates.controller.getState()).toMatchObject({ restarting: false, restartTimedOut: false });
+	expect(updateReports(tree)).not.toContain("restart-timeout");
 });
 
-it("says the restart timed out when the hub's first answer after the restart fails", async () => {
+it("retries a failed answer in the restart window, then confirms the new incarnation", async () => {
 	const { tree, press, readiness, script } = await mount({ check: INSTALLED });
 	press("Restart hub");
 	await act(async () => {
@@ -582,6 +588,13 @@ it("says the restart timed out when the hub's first answer after the restart fai
 		readiness.set(true);
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	});
-	expect(updates.controller.getState().restartTimedOut).toBe(true);
-	expect(updateReports(tree)).toContain("restart-timeout");
+	expect(updates.controller.getState()).toMatchObject({ restarting: true, restartTimedOut: false });
+
+	script.failChecks = false;
+	script.startedAt = SECOND_START;
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, RESTART_RECHECK_MS + 50));
+	});
+	expect(updates.controller.getState()).toMatchObject({ restarting: false, restartTimedOut: false });
+	expect(updateReports(tree)).not.toContain("restart-timeout");
 });
