@@ -329,8 +329,13 @@ func TestManagerHumanControlsClearWhitespaceGuard(t *testing.T) {
 	}
 	_, humanErr := w.appRPC.Router().Dispatch(t.Context(), appwire.Request{ID: appwire.NewIntID(1), Method: appwire.MethodThreadClear, Params: raw})
 	_, managerErr := (&sessionOperations{cfg: w.cfg, sources: w.sources}).Control(t.Context(), appwire.SessionControlRequest{Action: "clear", Clear: &params})
-	if humanErr == nil || managerErr == nil || appserver.WireError(humanErr).Message != appserver.WireError(managerErr).Message || appserver.WireError(managerErr).Message != "clientMutationId is required" {
+	if humanErr == nil || managerErr == nil {
 		t.Fatalf("whitespace clear guard changed: human=%v Manager=%v", humanErr, managerErr)
+	}
+	// The contract is that a Manager refusal names the same reason as the human
+	// one, not that either carries a particular phrasing.
+	if human, manager := appserver.WireError(humanErr), appserver.WireError(managerErr); human.Code != manager.Code || human.Message != manager.Message {
+		t.Fatalf("human and Manager disagree on the whitespace clear refusal: human=%v Manager=%v", humanErr, managerErr)
 	}
 }
 

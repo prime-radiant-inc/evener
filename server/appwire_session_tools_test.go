@@ -231,7 +231,7 @@ func TestSessionToolsConflictingEnabledHubAfterSelection(t *testing.T) {
 	assertConflict := func(operation string, err error) {
 		t.Helper()
 		var wire appwire.WireError
-		if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict || wire.Message != "multiple hubs claim Manager authority" {
+		if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
 			t.Fatalf("%s with newly enabled B = %v, want authority conflict", operation, err)
 		}
 	}

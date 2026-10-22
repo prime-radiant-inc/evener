@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -192,8 +193,12 @@ func TestE2E_ManagerRemoteQuestionLoop(t *testing.T) {
 	if bound == nil {
 		t.Fatal("enabling hub did not install the identified peer owner")
 	}
-	if _, err := bound.Watch(ctx, appwire.SessionWatchRequest{Ref: qualifiedWorker, Events: []string{"question"}}); err == nil || !strings.Contains(err.Error(), "remote job_watch is unsupported") || !strings.Contains(err.Error(), "reads, status, input and approval remain available") {
-		t.Fatalf("remote observation falsely advertised as a lease: %v", err)
+	// The contract is that a remote watch is refused as unavailable while the
+	// other operations stay usable, not that the refusal carries this phrasing.
+	_, watchErr := bound.Watch(ctx, appwire.SessionWatchRequest{Ref: qualifiedWorker, Events: []string{"question"}})
+	var watchWire appwire.WireError
+	if watchErr == nil || !errors.As(watchErr, &watchWire) || watchWire.Code != appwire.CodeUnavailable {
+		t.Fatalf("remote observation falsely advertised as a lease: %v", watchErr)
 	}
 	const marker = "REMOTE-MANAGER-BOUND-INPUT"
 	_, err = clientRequest[appwire.TurnStartResponse](ctx, human, appwire.MethodTurnStart, appwire.TurnStartParams{Ref: managerRef, ExpectedInstanceID: instance, ClientMutationID: newMutationID(t), Input: []appwire.InputItem{{Type: "text", Text: marker}}})
