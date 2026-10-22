@@ -6,7 +6,6 @@ import { paneToURL, refParam } from "../../shell/routing";
 import { workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { controlsFor, recoveryFence } from "../../stores/liveControls";
-import { useNavigationStore } from "../../stores/navigation/store";
 import { hasQueuedNonSend, ownerRetainedRef, threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { Button, Cadence, EmptyState, InlineNotice, type VirtualListHandle, VisuallyHidden } from "../../widgets";
@@ -65,6 +64,8 @@ export interface ConversationSeat {
   viewFallbackId: string;
   // Whether the seat's frame is focused: pane focus, or a readable column.
   focused: boolean;
+  // Seat-level policy for mount autofocus, independent of the shared editor.
+  mountAutofocus?: boolean;
   // A resumed conversation continues under a new ref. A pane replaces its
   // route; a cascade column lets its own reconciliation replace the scope in
   // place. The draft always carries to the resumed identity first. The
@@ -207,24 +208,10 @@ export function ConversationBody({
   useEffect(() => {
     if (!attentionOwner) setOverlayHeight(0);
   }, [attentionOwner]);
-  // Mount the control only once navigation can describe a needs-you queue.
-  // This is a mount gate, not membership: the controller still owns ordering,
-  // validity and visibility. It also keeps a bare conversation (an isolated
-  // pane test, a surface outside the shell) from requiring the shell owner.
-  const needsYouKnown = useNavigationStore((state) => {
-    if ((state.manifest?.data?.sections.needs_you.count ?? 0) > 0) return true;
-    return [...state.resources.values()].some(
-      (resource) =>
-        resource.key.kind === "section" &&
-        resource.key.section === "needs_you" &&
-        (resource.data !== null || resource.loading || !!resource.error),
-    );
-  });
   const attentionHidden = editing || askPending || approvalPending;
-  const attentionOverlay =
-    attentionOwner && needsYouKnown ? (
-      <NextNeedsYou sessionRef={ref} viewId={seat.readView?.id ?? seat.viewFallbackId} hidden={attentionHidden} />
-    ) : undefined;
+  const attentionOverlay = attentionOwner ? (
+    <NextNeedsYou sessionRef={ref} viewId={seat.readView?.id ?? seat.viewFallbackId} hidden={attentionHidden} />
+  ) : undefined;
   const pendingEntries = usePendingTurnEntries(ref);
   const heldSteers = useMemo(() => heldSteerEntries(pendingEntries), [pendingEntries]);
   // Spec §1's live gate, complete: the read-only status family, plus the two
@@ -484,6 +471,7 @@ export function ConversationBody({
             paneId={seat.viewFallbackId}
             source={seat.composerSource}
             focused={seat.focused}
+            mountAutofocus={seat.mountAutofocus}
             onEditingChange={handleEditingChange}
           />
         )}

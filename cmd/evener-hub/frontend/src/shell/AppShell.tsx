@@ -54,6 +54,7 @@ import {
   conversationOpenParentRef,
   documentPaneState,
   type OpenPaneRecord,
+  presentedPanes,
   sourcePaneSessionRef,
   workspaceStore,
 } from "./workspace";
@@ -228,7 +229,7 @@ function routePlacementIsApplied(
     return source ? { ...pane, ...source } : pane;
   };
   const main = routeRole(mainRecord);
-  const panes = workspace.panes.filter((pane) => pane.slot !== "parked").map(routeRole);
+  const panes = presentedPanes(workspace.panes).map(routeRole);
 
   if (route.type === "settings" || route.type === "spawn") {
     if (workspace.focusedPaneId !== main.id) return false;
@@ -410,9 +411,9 @@ function openRouteAsPane(
       // workspace already holds beside its recorded context keeps every
       // pane instead: focus that conversation, and let a later successful
       // read place by confirmed ownership.
-      const held = workspaceStore
-        .getState()
-        .panes.find((pane) => pane.slot !== "parked" && pane.type === "session" && refParam(pane.params) === ref);
+      const held = presentedPanes(workspaceStore.getState().panes).find(
+        (pane) => pane.type === "session" && refParam(pane.params) === ref,
+      );
       const heldParent = held === undefined ? undefined : conversationOpenParentRef(held);
       if (held !== undefined && heldParent !== undefined && heldParent !== ref) {
         workspaceStore.getState().focusPane(held.id);

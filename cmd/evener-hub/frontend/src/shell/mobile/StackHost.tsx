@@ -123,6 +123,17 @@ function singlePaneRouteNames(pathname: string, pane: OpenPaneRecord): boolean {
   return route !== null && route.type === pane.type && JSON.stringify(route.params) === JSON.stringify(pane.params);
 }
 
+function attentionEntryOwnsPane(pane: OpenPaneRecord | null | undefined): boolean {
+  if (!pane) return false;
+  const readerRef =
+    pane.type === "session"
+      ? (pane.params as { ref?: unknown }).ref
+      : pane.type === "sessionZoom"
+        ? parseZoomParams(pane.params)?.ref
+        : null;
+  return typeof readerRef === "string" && attentionEntryOwnsReader(pane.id, readerRef);
+}
+
 // Module-level, not component state: popstate is a window-level browser
 // event, not owned by any one StackHost instance (only one is ever mounted
 // at a time in practice, the same one-active-host precedent as DockHost's
@@ -264,14 +275,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     if (prev !== focusedPaneId) {
       const realBrowserNav = lastPopstateWasTrusted;
       lastPopstateWasTrusted = false;
-      const attentionRef =
-        focusedPane?.type === "session"
-          ? (focusedPane.params as { ref?: unknown }).ref
-          : focusedPane?.type === "sessionZoom"
-            ? parseZoomParams(focusedPane.params)?.ref
-            : null;
-      const attentionRestore =
-        typeof attentionRef === "string" && attentionEntryOwnsReader(focusedPane?.id ?? "", attentionRef);
+      const attentionRestore = attentionEntryOwnsPane(focusedPane);
       if (!wentBackRef.current && !realBrowserNav && !attentionRestore && prev !== null)
         backStackRef.current.push(prev);
       wentBackRef.current = false;
@@ -304,13 +308,7 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   useEffect(() => {
     if (routeDeferred) return;
     if (!focusedPane) return;
-    const attentionRef =
-      focusedPane.type === "session"
-        ? (focusedPane.params as { ref?: unknown }).ref
-        : focusedPane.type === "sessionZoom"
-          ? parseZoomParams(focusedPane.params)?.ref
-          : null;
-    if (typeof attentionRef === "string" && attentionEntryOwnsReader(focusedPane.id, attentionRef)) return;
+    if (attentionEntryOwnsPane(focusedPane)) return;
     if (singlePaneRouteNames(window.location.pathname, focusedPane)) return;
     const url = paneToURL(focusedPane.type, focusedPane.params);
     if (url) navigate(url);

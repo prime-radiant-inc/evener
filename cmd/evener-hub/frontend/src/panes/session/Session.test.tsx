@@ -8,6 +8,7 @@ import { keyID } from "@evener/appwire-client/state/navigation";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
+import { capability, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
@@ -558,7 +559,9 @@ test("the real Session consumer retains its structured editor and pending images
 
   const view = render(
     <ClientProvider client={fake}>
-      <FocusedSessionHost />
+      <NeedsYouProvider>
+        <FocusedSessionHost />
+      </NeedsYouProvider>
     </ClientProvider>,
   );
   const editor = await screen.findByRole("textbox", { name: "Message" });
@@ -6409,6 +6412,182 @@ function renderAttentionSession(fake: FakeClient, pane: OpenPaneRecord) {
     </ClientProvider>,
   );
 }
+
+test("a cold focused conversation can demand its first needs-you page before the manifest arrives", async ({
+  onTestFinished,
+}) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+    stubSessionSlots();
+  });
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => attentionRead("ref_a"));
+  const manifestGate = deferred<void>();
+  const pageRequests: Array<{ offset?: number; limit?: number }> = [];
+  fake.on("evener/navigation/read", (params) => {
+    if (params.resource === "manifest") {
+      return manifestGate.promise.then(() =>
+        wireSnapshot(
+          params,
+          manifest({
+            generation_id: "cold-needs-you",
+            sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+          }),
+          '"manifest"',
+          1,
+          "cold-needs-you",
+        ),
+      );
+    }
+    if (params.resource === "section" && params.section === "needs_you") {
+      pageRequests.push({ offset: params.offset, limit: params.limit });
+      return wireSnapshot(params, { sessions: [], remaining: 0 }, '"page"', 1, "cold-needs-you");
+    }
+    throw new Error(`unexpected navigation resource ${params.resource}`);
+  });
+  const releaseNavigation = navigationStore.init(fake, capability("cold-needs-you"));
+  const manifestRead = navigationStore.getState().loadManifest();
+  const pane = attentionSession();
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  window.history.replaceState({}, "", "/s/ref_a");
+  let view: ReturnType<typeof render> | undefined;
+
+  try {
+    await waitFor(() => expect(navigationStore.getState().manifest?.loading).toBe(true));
+    view = renderAttentionSession(fake, pane);
+    await screen.findByRole("textbox", { name: "Message" });
+    await flushPendingTurnsProjectionForTests();
+
+    const next = await screen.findByTestId("next-needs-you-next");
+    expect(pageRequests).toEqual([]);
+    fireEvent.click(next);
+    await waitFor(() => expect(pageRequests).toEqual([{ offset: 0, limit: 50 }]));
+  } finally {
+    view?.unmount();
+    releaseNavigation();
+    manifestGate.resolve();
+    await manifestRead;
+  }
+});
+
+test("a focused conversation can retry needs-you after its manifest read fails", async ({ onTestFinished }) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+    stubSessionSlots();
+  });
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => attentionRead("ref_a"));
+  let manifestReads = 0;
+  const pageRequests: Array<{ offset?: number; limit?: number }> = [];
+  fake.on("evener/navigation/read", (params) => {
+    if (params.resource === "manifest") {
+      manifestReads += 1;
+      throw new Error("manifest unavailable");
+    }
+    if (params.resource === "section" && params.section === "needs_you") {
+      pageRequests.push({ offset: params.offset, limit: params.limit });
+      return wireSnapshot(params, { sessions: [], remaining: 0 }, '"page"', 1, "failed-needs-you");
+    }
+    throw new Error(`unexpected navigation resource ${params.resource}`);
+  });
+  const releaseNavigation = navigationStore.init(fake, capability("failed-needs-you"));
+  const pane = attentionSession("failed-needs-you-pane");
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  window.history.replaceState({}, "", "/s/ref_a");
+  let view: ReturnType<typeof render> | undefined;
+
+  try {
+    await waitFor(() => expect(manifestReads).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(navigationStore.getState().manifest?.error).toBeTruthy());
+    view = renderAttentionSession(fake, pane);
+    await screen.findByRole("textbox", { name: "Message" });
+    await flushPendingTurnsProjectionForTests();
+
+    const next = await screen.findByTestId("next-needs-you-next");
+    expect(pageRequests).toEqual([]);
+    fireEvent.click(next);
+    await waitFor(() => expect(pageRequests).toEqual([{ offset: 0, limit: 50 }]));
+  } finally {
+    view?.unmount();
+    releaseNavigation();
+  }
+});
+
+test("a reconnect does not flash an empty needs-you control while its manifest reloads", async ({ onTestFinished }) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+    stubSessionSlots();
+  });
+  const firstClient = connectFakeClient();
+  firstClient.on("thread/read", () => attentionRead("ref_a"));
+  firstClient.on("evener/navigation/read", (params) => {
+    if (params.resource !== "manifest") throw new Error(`unexpected navigation resource ${params.resource}`);
+    return wireSnapshot(
+      params,
+      manifest({
+        generation_id: "reconnect-old-empty",
+        sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+      }),
+      '"manifest"',
+      1,
+      "reconnect-old-empty",
+    );
+  });
+  const releaseFirst = navigationStore.init(firstClient, capability("reconnect-old-empty"));
+  const pane = attentionSession("reconnect-empty-pane");
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  window.history.replaceState({}, "", "/s/ref_a");
+  const replacementClient = new FakeClient("ready");
+  const replacementManifestGate = deferred<void>();
+  replacementClient.on("evener/navigation/read", (params) => {
+    if (params.resource !== "manifest") throw new Error(`unexpected navigation resource ${params.resource}`);
+    return replacementManifestGate.promise.then(() =>
+      wireSnapshot(
+        params,
+        manifest({
+          generation_id: "reconnect-new-empty",
+          sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+        }),
+        '"manifest"',
+        1,
+        "reconnect-new-empty",
+      ),
+    );
+  });
+  let releaseReplacement: (() => void) | undefined;
+  let replacementManifestRead: Promise<unknown> | undefined;
+  let view: ReturnType<typeof render> | undefined;
+
+  try {
+    await waitFor(() => expect(navigationStore.getState().manifest?.data?.generation_id).toBe("reconnect-old-empty"));
+    view = renderAttentionSession(firstClient, pane);
+    await screen.findByRole("textbox", { name: "Message" });
+    await flushPendingTurnsProjectionForTests();
+    expect(screen.queryByTestId("next-needs-you-next")).toBeNull();
+
+    act(() => {
+      releaseReplacement = navigationStore.init(replacementClient, capability("reconnect-new-empty"));
+      replacementManifestRead = navigationStore.getState().loadManifest();
+    });
+    await waitFor(() => expect(navigationStore.getState().manifest?.loading).toBe(true));
+    expect(screen.queryByTestId("next-needs-you-next")).toBeNull();
+    await act(async () => {
+      replacementManifestGate.resolve();
+      await replacementManifestRead;
+    });
+    expect(navigationStore.getState().manifest?.data?.generation_id).toBe("reconnect-new-empty");
+    expect(screen.queryByTestId("next-needs-you-next")).toBeNull();
+  } finally {
+    view?.unmount();
+    releaseReplacement?.();
+    releaseFirst();
+    replacementManifestGate.resolve();
+    await replacementManifestRead?.catch(() => undefined);
+  }
+});
 
 test("a focused draft stays visible and composition suppression clears without losing the draft", async ({
   onTestFinished,

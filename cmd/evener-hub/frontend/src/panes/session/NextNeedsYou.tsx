@@ -13,6 +13,7 @@ import type {
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNeedsYou } from "../../shell/NeedsYouProvider";
 import { Button, IconButton, ListRow, Popover } from "../../widgets";
+import { LONG_PRESS_MS, POINTER_CLICK_WINDOW_MS } from "../../widgets/hovercard";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./nextNeedsYou.module.css";
 
@@ -22,12 +23,7 @@ export interface NextNeedsYouProps {
   hidden: boolean;
 }
 
-// Same hold contract as widgets/hovercard's long press: 500ms with 10 CSS
-// pixels of drift tolerance. The click window that follows a lifted press is
-// the same 350ms backstop HoverCard arms.
-const HOLD_MS = 500;
 const HOLD_SLOP_PX = 10;
-const CLICK_SUPPRESS_BACKSTOP_MS = 350;
 
 const CLASS = {
   root: requireClass(styles.root, "nextNeedsYou.module.css", "root"),
@@ -61,16 +57,17 @@ export function NextNeedsYou({ sessionRef, viewId, hidden }: NextNeedsYouProps):
   const nextChoice = snapshot.choices.find((choice) => choice.summary.ref === snapshot.nextRef);
   const nextTitle = nextChoice?.summary.title?.trim() ?? "";
   const otherChoices = snapshot.choices.filter((choice) => choice.summary.ref !== sessionRef);
-  // A loaded page holding only the current session is not the whole queue:
-  // keep the demand control visible while another page may exist, a read
-  // failed, or a page is already loading. With nothing known at all (no
-  // manifest, no rows), stay hidden until the queue can say anything real.
+  // A loaded page holding only the current session is not the whole queue.
+  // Keep demand visible while another page may exist, a read failed, or a page
+  // is loading. On a cold shell, the first manifest read is also enough to
+  // offer page zero; after a manifest was known, reconnects stay quiet until
+  // the queue returns or a read fails.
   const visible =
     !hidden &&
     !snapshot.blocked &&
     (snapshot.nextRef !== null ||
       snapshot.readFailed ||
-      (snapshot.canLoadMore && (snapshot.choices.length > 0 || snapshot.loading)));
+      (snapshot.canLoadMore && (snapshot.choices.length > 0 || snapshot.loading || snapshot.canLoadInitialPage)));
 
   const moreRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLElement>(null);
@@ -182,8 +179,8 @@ export function NextNeedsYou({ sessionRef, viewId, hidden }: NextNeedsYouProps):
       suppressBackstopRef.current = setTimeout(() => {
         suppressBackstopRef.current = undefined;
         suppressClickRef.current = false;
-      }, CLICK_SUPPRESS_BACKSTOP_MS);
-    }, HOLD_MS);
+      }, POINTER_CLICK_WINDOW_MS);
+    }, LONG_PRESS_MS);
     // A page that goes hidden loses the pointer, so the pending hold ends like
     // an early release: the timer never fires and the next click is not
     // consumed as the completed hold's.

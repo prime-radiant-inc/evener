@@ -52,7 +52,6 @@ import {
   useSyncExternalStore,
 } from "react";
 import { activitySidebarStore } from "../../../shell/activitybar/activitySidebarStore";
-import { attentionEntryOwnsReader } from "../../../shell/attentionHistory";
 import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
 import { sessionBuiltinCommands } from "../../../shell/palette/commands";
 import type { SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
@@ -134,6 +133,8 @@ export interface ComposerProps {
   // autofocus keys on it: a session loading into a background tab must never
   // yank keyboard focus away from what the reader is doing.
   focused: boolean;
+  // The seat may suppress mount autofocus for a navigation or restore intent.
+  mountAutofocus?: boolean;
   source: ComposerSourceState;
   // An in-progress IME composition, reported for the floating attention
   // control's visibility. Focus alone never counts: a session open autofocuses
@@ -191,7 +192,7 @@ type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
 // shallow-equality bailout for a value that carries no information.
 const NO_TURN_VERBS: SessionMenuTurnVerbs = Object.freeze({});
 
-export function Composer({ ref, paneId, focused, source, onEditingChange }: ComposerProps) {
+export function Composer({ ref, paneId, focused, mountAutofocus = true, source, onEditingChange }: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
   const recoveryRequired = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
   // Delivery-uncertain rows do NOT fence Send here: they clear the resume-only
@@ -684,9 +685,9 @@ export function Composer({ ref, paneId, focused, source, onEditingChange }: Comp
   });
 
   // Loading a session lands keyboard focus in its composer: writing the next
-  // message is what the pane is for. Mount-only, gated on the pane being
-  // focused at mount (see useMountAutofocus for the full rationale).
-  useMountAutofocus(editorRef, focused && !(paneId && attentionEntryOwnsReader(paneId, ref)));
+  // message is what the pane is for. Mount-only, gated by the seat's focus and
+  // its general autofocus policy (see useMountAutofocus for the full rationale).
+  useMountAutofocus(editorRef, focused && mountAutofocus);
 
   const hasText = text.trim() !== "";
   const hasAttachments = attachments.items.length > 0;
