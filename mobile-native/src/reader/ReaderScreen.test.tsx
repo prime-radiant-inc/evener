@@ -827,6 +827,24 @@ it("goes back to its session and copies its path from ⋯", async () => {
 	expect(navigation.pop).toHaveBeenCalledWith(1);
 });
 
+// A retained artifact's folder-relative path names a different file when pasted
+// beside the session's folder, so ⋯ copies the target that was read.
+it("copies an artifacts document's full target from ⋯", async () => {
+	const artifactsDir = "/state/sessions/local-fix/artifacts";
+	served["report.md"] = { body: "# Report\n\nOne line.\n" };
+	const { navigation } = await mount("report.md", {
+		reference: {
+			path: "report.md",
+			cwd: artifactsDir,
+			readTarget: `${artifactsDir}/report.md`,
+			provenance: "absolute",
+			root: "artifacts",
+		},
+	});
+	await act(async () => menuAction(navigation, "Copy path").onPress());
+	expect(harness.clipboard).toEqual([`${artifactsDir}/report.md`]);
+});
+
 it("shares the document through its hub from the Document actions menu", async () => {
 	const { navigation } = await mount();
 	await act(async () => menuAction(navigation, "Share").onPress());

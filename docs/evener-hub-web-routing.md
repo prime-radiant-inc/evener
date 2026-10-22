@@ -126,7 +126,11 @@ directory.
 `Thread.evener.artifactsDir` announces that directory for a local session, so a
 client can tell an openable `file://` link from one the hub would refuse without
 guessing. It is empty for a remote thread, an unknown ref, or a hub serving no
-state directory.
+state directory. Clients bind a link through the shared resolver
+([docContent.ts](../appwire-client/typescript/docContent.ts)), which tries the
+working directory and then the artifacts root, so the web transcript and the
+phone's Reader offer the same document for the same link. A link that names no
+root is left an ordinary link rather than promising a read the hub would refuse.
 
 A missing archived metadata file returns `ResourceNotFound` (HTTP 404). Other
 metadata read or decode failures return `SessionUnavailable` (HTTP 503), so the

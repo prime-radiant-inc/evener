@@ -1,4 +1,9 @@
-import { findFileReferences, parseFileReference, type FileReference } from "@evener/appwire-client/docContent";
+import {
+	findFileReferences,
+	parseFileReference,
+	type FileReference,
+	resolveFileLink,
+} from "@evener/appwire-client/docContent";
 import { Marked, type Token, type Tokens } from "marked";
 
 // The installed native parser uses NOHTML. Keep marked's Markdown grammar and
@@ -13,11 +18,27 @@ const nativeMarkdown = new Marked({
 
 export interface NativeFileOpenContext {
 	readonly cwd: string;
+	/** The session's retained artifacts directory, the second root the hub
+	 * serves. A link inside it opens as a document just as one inside `cwd`
+	 * does. Absent until the thread snapshot advertises one. */
+	readonly artifactsDir?: string;
 	openFile(reference: FileReference): void;
 }
 export interface MarkdownFileRender {
 	readonly markdown: string;
 	readonly references: ReadonlyMap<string, FileReference>;
+}
+
+/** The path that names this document to a person. A working-directory file is
+ * named by its path inside the folder. A retained artifact needs its full
+ * target: the same relative path can name a different file in the folder, so a
+ * copied path or a review naming only `report.md` would point at the wrong one. */
+export function namedFileTarget(reference: {
+	readonly path: string;
+	readonly root?: "artifacts";
+	readonly readTarget?: string;
+}): string {
+	return reference.root === "artifacts" && reference.readTarget ? reference.readTarget : reference.path;
 }
 interface Source {
 	text: string;
@@ -31,6 +52,9 @@ interface Candidate {
 	surface: "prose" | "code" | "link";
 	value: string;
 	label?: string;
+	// An autolink's source is `<url>`, which is not what its reader sees: the
+	// URL is its visible text, so the rewritten link shows that instead.
+	display?: string;
 	referenceSuffix?: true;
 }
 interface InlineSpan {
@@ -297,6 +321,18 @@ function collectInline(
 		const to = raw.offsets.at(-1);
 		if (from === undefined || to === undefined) continue;
 		if (token.type === "link") {
+			// An autolink has no label of its own: `<url>` is both destination
+			// and visible text, and labelEnd would reject it for the missing
+			// bracket. Only a file URL can name a served document, and only it
+			// carries a scheme the path parser refuses; anything else here
+			// (`<https://…>`, `<person@example.test>`) stays an ordinary link.
+			if (token.raw.startsWith("<") && token.raw.endsWith(">")) {
+				// CommonMark applies no entity or backslash processing to an
+				// autolink's text, so the URL is taken as written.
+				const url = token.raw.slice(1, -1);
+				if (/^file:/iu.test(url)) found.push({ start: from, end: to + 1, surface: "link", value: url, display: url });
+				continue;
+			}
 			const close = labelEnd(token.raw, token.text);
 			if (close < 0) continue;
 			if (token.raw[close + 1] === "(") {
@@ -433,27 +469,37 @@ function candidates(markdown: string): readonly Candidate[] {
 	return found;
 }
 
-function boundCandidates(markdown: string, cwd: string) {
+function boundCandidates(markdown: string, cwd: string, artifactsDir?: string) {
 	return candidates(markdown).flatMap((candidate) => {
-		const reference = parseFileReference(candidate.value, candidate.surface, cwd);
+		// A link destination may be a file URL, which the path parser refuses,
+		// so links bind through the shared resolver the web transcript uses.
+		const reference =
+			candidate.surface === "link"
+				? resolveFileLink(candidate.value, cwd, artifactsDir)
+				: parseFileReference(candidate.value, candidate.surface, cwd);
 		return reference ? [{ candidate, reference }] : [];
 	});
 }
 export function markdownFileReferences(
 	markdown: string,
 	cwd: string,
+	artifactsDir?: string,
 ): Array<{ reference: FileReference; surface: "prose" | "code" | "link" }> {
-	return boundCandidates(markdown, cwd).map(({ candidate, reference }) => ({ reference, surface: candidate.surface }));
+	return boundCandidates(markdown, cwd, artifactsDir).map(({ candidate, reference }) => ({
+		reference,
+		surface: candidate.surface,
+	}));
 }
 let renderGeneration = 0;
-export function renderMarkdownFileReferences(markdown: string, cwd: string): MarkdownFileRender {
+export function renderMarkdownFileReferences(markdown: string, cwd: string, artifactsDir?: string): MarkdownFileRender {
 	const generation = ++renderGeneration;
 	const references = new Map<string, FileReference>();
-	const replacements = boundCandidates(markdown, cwd).map(({ candidate, reference }, index) => {
+	const replacements = boundCandidates(markdown, cwd, artifactsDir).map(({ candidate, reference }, index) => {
 		const id = `evener-file:${generation}-${index}`;
 		references.set(id, reference);
 		let replacement: string;
 		if (candidate.referenceSuffix) replacement = `(${id})`;
+		else if (candidate.display !== undefined) replacement = `[${proseLabel(candidate.display)}](${id})`;
 		else if (candidate.label === undefined) replacement = id;
 		else
 			replacement = `[${candidate.surface === "prose" ? candidate.label : markdown.slice(candidate.start, candidate.end)}](${id})`;

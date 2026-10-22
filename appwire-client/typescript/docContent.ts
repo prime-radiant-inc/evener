@@ -242,8 +242,8 @@ export function fileURLToPath(fileURL: string): string {
 // session's retained artifacts directory (the second root the hub's document
 // routes serve). A destination outside both roots names nothing the hub can
 // open, so a client leaves it an ordinary link rather than promising a
-// document. The web transcript uses this today; the phone's file-reference
-// pass still binds cwd only, so it does not yet open an artifacts link.
+// document. The web transcript and the phone's Reader both bind through this,
+// so the same link opens the same document on either client.
 export function resolveFileLink(
   href: string,
   cwd: string,

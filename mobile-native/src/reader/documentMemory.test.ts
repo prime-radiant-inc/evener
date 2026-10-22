@@ -277,6 +277,54 @@ describe("what the phone remembers about a document", () => {
 		expect([...storage.values.keys()]).toEqual([]);
 	});
 
+	// An agent files a report in the session artifacts, and the folder holds a
+	// file of the same name. Both are named "report.md"; they are not the same
+	// document, so neither's reading position or unsent comments may answer for
+	// the other's.
+	it("keeps a working-directory file and an artifacts file of one name apart", () => {
+		const storage = memoryStorage();
+		const folder: DocumentKey = { sessionRef: "local:s-1", path: "report.md" };
+		const retained: DocumentKey = { sessionRef: "local:s-1", path: "report.md", root: "artifacts" };
+		const memory = new DocumentMemory(storage, "hub-1", () => 1_000);
+		memory.savePosition(folder, { blockIndex: 1, blockHash: "p1", offset: 4, progress: 0.3 });
+		memory.addComment(folder, { blockIndex: 1, blockHash: "p1", quote: "folder words", text: "fix this" });
+		expect(memory.position(retained)).toBeNull();
+		expect(memory.comments(retained)).toEqual([]);
+		memory.savePosition(retained, { blockIndex: 5, blockHash: "p5", offset: 0, progress: 0.9 });
+		memory.addComment(retained, { blockIndex: 5, blockHash: "p5", quote: "retained words", text: "keep" });
+		expect(memory.position(folder)).toEqual({ blockIndex: 1, blockHash: "p1", offset: 4, progress: 0.3 });
+		expect(memory.comments(folder).map((comment) => comment.text)).toEqual(["fix this"]);
+		expect(memory.comments(retained).map((comment) => comment.text)).toEqual(["keep"]);
+		// Clearing one document's drafts leaves the other's where they were.
+		memory.clearComments(folder);
+		expect(memory.comments(folder)).toEqual([]);
+		expect(memory.comments(retained).map((comment) => comment.text)).toEqual(["keep"]);
+	});
+
+	// Positions and unsent comments saved before artifacts documents existed
+	// were keyed by session and path alone. They are still that document's.
+	it("still reads a record saved under the old working-directory key", () => {
+		const key = JSON.stringify(["local:s-1", "report.md"]);
+		const storage = memoryStorage(
+			new Map([
+				[
+					"evener.native.documents.hub-1",
+					JSON.stringify({
+						[key]: {
+							position: { blockIndex: 2, blockHash: "p2", offset: 0, progress: 0.4 },
+							comments: [{ id: "c1", blockIndex: 2, blockHash: "p2", quote: "words", text: "old", createdAt: 1 }],
+							touchedAt: 1_000,
+						},
+					}),
+				],
+			]),
+		);
+		const memory = new DocumentMemory(storage, "hub-1", () => 2_000);
+		const folder: DocumentKey = { sessionRef: "local:s-1", path: "report.md" };
+		expect(memory.position(folder)).toEqual({ blockIndex: 2, blockHash: "p2", offset: 0, progress: 0.4 });
+		expect(memory.comments(folder).map((comment) => comment.text)).toEqual(["old"]);
+	});
+
 	it("tells subscribers when something changes", () => {
 		const memory = new DocumentMemory(memoryStorage(), "hub-1", () => 1);
 		let calls = 0;
