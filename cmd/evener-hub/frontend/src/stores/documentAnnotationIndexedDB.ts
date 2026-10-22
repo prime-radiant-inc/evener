@@ -1079,13 +1079,18 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // fence committed, so the epoch is still live: release exactly this
       // invocation's own confirmed install (and restore what it displaced) or
       // the epoch stays hidden from listing and refused by saves forever.
-      const restoreInstalledSuppression = (): void => {
-        if (this.#suppressedEpochs.get(suppressionIdentity) !== installedSuppression) return;
+      // Returns whether THIS invocation's install was still in place and was
+      // restored. A displaced entry was replaced by an invocation that runs its
+      // own hook outcome and its own fence-or-reject settle, so this arm owes
+      // nothing for it.
+      const restoreInstalledSuppression = (): boolean => {
+        if (this.#suppressedEpochs.get(suppressionIdentity) !== installedSuppression) return false;
         if (priorSuppression === undefined || priorSuppression.requestId === ticket.requestId) {
           this.#suppressedEpochs.delete(suppressionIdentity);
         } else if (!this.#installSuppression(suppressionIdentity, priorSuppression)) {
           this.#suppressedEpochs.delete(suppressionIdentity);
         }
+        return true;
       };
       try {
         await this.#options.beforeExpiryFence?.(ticket);
@@ -1099,8 +1104,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         // release announces the transition through the one emission rule: the
         // wake re-lists this document and the signal is the storage-success
         // boundary the runtime spends the recorded need on.
-        restoreInstalledSuppression();
-        this.#settleTransition({ signal: true, documentKey });
+        if (restoreInstalledSuppression()) this.#settleTransition({ signal: true, documentKey });
         throw error;
       }
       try {
@@ -2007,8 +2011,15 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         }
       }
     }
-    retainedFaults.push(...(await this.#sweepUnfinishedExpiries()));
-    await this.#retryPersistedPending(cancellation);
+    const sweep = await this.#sweepUnfinishedExpiries();
+    retainedFaults.push(...sweep.faults);
+    // The sweep already read every expiry key in this pass. Threading that set
+    // into the handoffs below makes N pending annotations under one suppressed
+    // epoch cost one read instead of N identical get(expiryKey) transactions.
+    // Accepted snapshot caveat: a fence committing between the sweep and a
+    // consult is answered pending and retried on the next trigger - the same
+    // tradeoff this pass already makes elsewhere.
+    await this.#retryPersistedPending(cancellation, sweep.expiryKeys);
     if (retainedFaults.length > 0) throw retainedFaults[0];
   }
 
@@ -2021,7 +2032,10 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // the same isolation case as a failed retained fence: the non-terminal
   // receipt is swept again on the next trigger while the pass continues to the
   // persisted handoffs.
-  async #sweepUnfinishedExpiries(): Promise<unknown[]> {
+  async #sweepUnfinishedExpiries(): Promise<{
+    faults: unknown[];
+    expiryKeys: ReadonlySet<string> | undefined;
+  }> {
     let rows: AnnotationExpiryRow[];
     try {
       rows = await this.#transaction([ANNOTATION_EXPIRY_STORE], "readonly", async (transaction) =>
@@ -2031,7 +2045,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // The row read is one pass step, isolated like each row's deletion: a
       // fault here must not abort the persisted-handoff sweep later in the
       // pass, and the runtime keeps the retained fault for the next trigger.
-      return [error];
+      return { faults: [error], expiryKeys: undefined };
     }
     const faults: unknown[] = [];
     for (const row of rows) {
@@ -2053,7 +2067,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         faults.push(error);
       }
     }
-    return faults;
+    return { faults, expiryKeys: new Set(rows.map((row) => row.expiryKey)) };
   }
 
   // Read the persisted pending operations once, then hand each off using its
@@ -2075,7 +2089,10 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // uncertain pass therefore runs first, and the pending sweep below skips the
   // operations it already visited - a retry that re-faulted re-retains its own
   // record under the same identity, which this pass must not append twice.
-  async #retryPersistedPending(cancellation?: AnnotationRetryCancellation): Promise<void> {
+  async #retryPersistedPending(
+    cancellation?: AnnotationRetryCancellation,
+    expiryKeys?: ReadonlySet<string>,
+  ): Promise<void> {
     // Keyed like every durable identity: two namespaces may mint the same bare
     // operation ID, and the pending row's own operationKey is the identity
     // that tells them apart.
@@ -2090,7 +2107,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     for (const record of [...this.#uncertainAppends.values()]) {
       if (cancellation?.cancelled) return;
       handled.add(annotationOperationKey(record.key.namespace, record.operationId));
-      await this.handoff(record.key, record.operationId, cancellation);
+      await this.handoff(record.key, record.operationId, cancellation, expiryKeys);
     }
     const pending = await this.#transaction(
       [ANNOTATION_OPERATIONS_STORE, ANNOTATION_PAYLOADS_STORE],
@@ -2124,7 +2141,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // second attempt would only repeat the outcome against the composer it
       // just touched.
       if (handled.has(row.operationKey)) continue;
-      await this.handoff(payload.operation.lease.key, payload.operation.operationId, cancellation);
+      await this.handoff(payload.operation.lease.key, payload.operation.operationId, cancellation, expiryKeys);
     }
   }
 
@@ -2323,6 +2340,9 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     key: DocumentKey,
     operationId: string,
     cancellation?: AnnotationRetryCancellation,
+    // The retry pass's read-only snapshot of every expiry key, taken by the
+    // same pass's sweep. A direct handoff omits it and reads the live row.
+    knownExpiryKeys?: ReadonlySet<string>,
   ): Promise<HandoffResult> {
     // Closure is terminal for this adapter; a runtime's cancellation is
     // terminal for the work it started. Both mean the same thing to a handoff
@@ -2414,12 +2434,13 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     // would have earned. Only the row - never the in-memory pending-expiry map,
     // which a normally-completing fence does not retain - backs the verdict.
     const expiryBacksSuppression = async (entry: SuppressionEntry): Promise<boolean> => {
+      const expiryKey = annotationExpiryKey(entry.documentKey, originalLease.epoch);
+      if (knownExpiryKeys !== undefined) return knownExpiryKeys.has(expiryKey);
       try {
-        const row = await this.#readRow<AnnotationExpiryRow>(
-          ANNOTATION_EXPIRY_STORE,
-          annotationExpiryKey(entry.documentKey, originalLease.epoch),
+        const present = await this.#transaction([ANNOTATION_EXPIRY_STORE], "readonly", (transaction) =>
+          requestResult<IDBValidKey | undefined>(transaction.objectStore(ANNOTATION_EXPIRY_STORE).getKey(expiryKey)),
         );
-        return row !== undefined;
+        return present !== undefined;
       } catch {
         // An unreadable row proves nothing durable; the retryable answer keeps
         // the handoff recoverable.
