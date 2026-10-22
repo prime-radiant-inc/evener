@@ -327,7 +327,9 @@ function collectInline(
 			// carries a scheme the path parser refuses; anything else here
 			// (`<https://…>`, `<person@example.test>`) stays an ordinary link.
 			if (token.raw.startsWith("<") && token.raw.endsWith(">")) {
-				const url = destination(token.raw.slice(1, -1));
+				// CommonMark applies no entity or backslash processing to an
+				// autolink's text, so the URL is taken as written.
+				const url = token.raw.slice(1, -1);
 				if (/^file:/iu.test(url)) found.push({ start: from, end: to + 1, surface: "link", value: url, display: url });
 				continue;
 			}
@@ -497,7 +499,7 @@ export function renderMarkdownFileReferences(markdown: string, cwd: string, arti
 		references.set(id, reference);
 		let replacement: string;
 		if (candidate.referenceSuffix) replacement = `(${id})`;
-		else if (candidate.display !== undefined) replacement = `[${candidate.display}](${id})`;
+		else if (candidate.display !== undefined) replacement = `[${proseLabel(candidate.display)}](${id})`;
 		else if (candidate.label === undefined) replacement = id;
 		else
 			replacement = `[${candidate.surface === "prose" ? candidate.label : markdown.slice(candidate.start, candidate.end)}](${id})`;

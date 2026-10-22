@@ -1054,6 +1054,32 @@ describe("native file URL links", () => {
 		expect(result.markdown).toContain(reportURL);
 	});
 
+	// CommonMark gives an autolink's text no entity or escape processing: what
+	// sits between the angles is the URL. A file whose name looks like an entity
+	// therefore names that file, and a bracket in the name must not break the
+	// rewritten link.
+	it("keeps an autolink's text literal and escapes it when rewriting", () => {
+		const entityNamed = renderMarkdownFileReferences(`See <file://${cwd}/report&amp;.md>`, cwd);
+		expect([...entityNamed.references.values()][0]).toMatchObject({ path: "report&amp;.md" });
+		const bracketed = renderMarkdownFileReferences(`See <file://${cwd}/report].md>`, cwd);
+		const reference = [...bracketed.references.values()][0];
+		expect(reference).toMatchObject({ path: "report].md" });
+		// The rewritten label escapes the bracket so the link still parses, and
+		// the escaped form renders as the file name.
+		expect(bracketed.markdown).toMatch(/\[file:\/\/[^\]]*report\\\]\.md\]\(evener-file:[\d-]+\)$/u);
+		// Parse our own output back: the label kept the link intact and the
+		// generated identifier still names the file with its bracket.
+		const reparsed: string[] = [];
+		const visit = (tokens: ReturnType<typeof lexer>) => {
+			for (const token of tokens) {
+				if (token.type === "link") reparsed.push(token.href);
+				if ("tokens" in token && token.tokens) visit(token.tokens as ReturnType<typeof lexer>);
+			}
+		};
+		visit(lexer(bracketed.markdown));
+		expect(reparsed.map((href) => bracketed.references.get(href)?.path)).toEqual(["report].md"]);
+	});
+
 	it("binds a file URL inside the working directory", () => {
 		const result = renderMarkdownFileReferences(`[design](file://${cwd}/docs/plan.md)`, cwd);
 		expect([...result.references.values()][0]).toMatchObject({
