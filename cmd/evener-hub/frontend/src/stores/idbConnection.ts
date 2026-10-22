@@ -140,6 +140,18 @@ export class IDBUpgradeError extends Error {
   }
 }
 
+// The watchdog timeout's machine identity, separate from the message a person
+// reads. A caller can tell a timed-out transaction from any other fault with
+// `instanceof` (a structured check) instead of matching prose, so the wording
+// stays free to change. Adapters pass their own message so the human-facing
+// text still names the operation that timed out.
+export class IndexedDBTransactionTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "IndexedDBTransactionTimeoutError";
+  }
+}
+
 export class IDBConnection {
   readonly #options: IDBConnectionOptions;
   #database: IDBDatabase | undefined;

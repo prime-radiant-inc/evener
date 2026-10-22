@@ -6,6 +6,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import type { ComposerPreparation, ComposerSourceState } from "../panes/session/composer/composerContract";
 import { APPEND_STORES, browserDraftKey } from "./browserDraftRepository";
 import { createDocumentAnnotationRepository, RESET_STORES, SAVE_STORES } from "./documentAnnotationIndexedDB";
+import { IndexedDBTransactionTimeoutError } from "./idbConnection";
 import {
   ANNOTATION_EVIDENCE_STORE,
   ANNOTATION_EXPIRY_STORE,
@@ -1491,7 +1492,7 @@ test("a finishExpiry whose completion was lost releases its suppression and wake
   expect(reached).toBe(true);
   await vi.advanceTimersByTimeAsync(10_001);
   await finish;
-  expect(finishFailure).toMatchObject({ message: "Document annotation repository transaction timed out" });
+  expect(finishFailure).toBeInstanceOf(IndexedDBTransactionTimeoutError);
   hold.release();
   vi.useRealTimers();
 

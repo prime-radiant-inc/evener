@@ -36,7 +36,13 @@ import type {
   CommittedAppendBacking,
 } from "./browserDraftRepository";
 import { type NamespaceRow, readNamespaceRow, serializeSessionKey } from "./compositionRevision";
-import { IDBConnection, requestResult, runBoundedTransaction, tryAbortTransaction } from "./idbConnection";
+import {
+  IDBConnection,
+  IndexedDBTransactionTimeoutError,
+  requestResult,
+  runBoundedTransaction,
+  tryAbortTransaction,
+} from "./idbConnection";
 import {
   ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX,
   ANNOTATION_EVIDENCE_STORE,
@@ -2288,7 +2294,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         transaction,
         retire: () => this.#connection.retire(database),
         waitMs: STORAGE_WAIT_MS,
-        timeout: () => new Error("Document annotation repository transaction timed out"),
+        timeout: () => new IndexedDBTransactionTimeoutError("Document annotation repository transaction timed out"),
         run: () => body(transaction),
       });
     } finally {
@@ -2341,7 +2347,7 @@ async function retryBrowserAnnotationsWithOutcome(
     transaction,
     retire: () => connection.retire(database),
     waitMs: STORAGE_WAIT_MS,
-    timeout: () => new Error("Document annotation outcome scan timed out"),
+    timeout: () => new IndexedDBTransactionTimeoutError("Document annotation outcome scan timed out"),
     run: () => requestResult<AnnotationOperationRow[]>(transaction.objectStore(ANNOTATION_OPERATIONS_STORE).getAll()),
   });
   return {

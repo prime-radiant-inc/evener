@@ -5,6 +5,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { draftStorageKey } from "../panes/session/composer/draft";
 import { MemoryStorage } from "../storageTestUtils";
 import { browserDraftKey, createBrowserDraftRepository } from "./browserDraftRepository";
+import { IndexedDBTransactionTimeoutError } from "./idbConnection";
 import {
   ANNOTATION_HEADS_STORE,
   ANNOTATION_NAMESPACES_STORE,
@@ -53,7 +54,7 @@ test("a stalled annotation transaction stops waiting and the same adapter can re
   });
   await hold.reached;
   await vi.advanceTimersByTimeAsync(10_001);
-  expect(failure).toMatchObject({ message: "Document annotation repository transaction timed out" });
+  expect(failure).toBeInstanceOf(IndexedDBTransactionTimeoutError);
   hold.release();
   // The watchdog retired the stalled connection; a fresh read still works.
   expect((await repository.beginRead(document)).key).toEqual(document);
@@ -163,7 +164,7 @@ test("a stalled retry outcome scan stops waiting and a later retry proceeds", as
   if (!hold) throw new Error("outcome scan did not reach IndexedDB");
   await hold.reached;
   await vi.advanceTimersByTimeAsync(10_001);
-  expect(failure).toMatchObject({ message: "Document annotation outcome scan timed out" });
+  expect(failure).toBeInstanceOf(IndexedDBTransactionTimeoutError);
   hold.release();
   // The retired connection does not poison the shared retry pass: a later
   // retry completes over a fresh connection.
