@@ -137,7 +137,7 @@ type deployWiring struct {
 // prefers BuildBinary too, so the two cannot disagree. The help text is always
 // supplied: the hub always has a state to name, including the -no-deploy and
 // non-evener-executable cases where the refusal actually fires. -no-deploy wins
-// over both flags: it is the explicit opt-in to the pre-default behavior, so a
+// over both flags: it prohibits installation even when needed, so a
 // named deploy source alongside it is ignored (and validateDeployFlags still
 // validates it, so a typo cannot hide behind the opt-out). The defaulted
 // own-executable source arrives here as an ordinary deployBinary: by the time a

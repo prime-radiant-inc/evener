@@ -80,13 +80,14 @@ func browserGuardSpec(guard, root string) guardSpec {
 		}
 	case skillGuard:
 		// web-skillguard carries the full-stack skill and onboarding guards:
-		// cmd/evener-hub's TestSkillComposerBrowser and TestOnboardingBrowser
-		// (browserguard build tag) drive the production web app in real Chrome
-		// through a real hub against real `evener serve` daemons. Their tagged
-		// TestSkillGuard* and TestOnboardingEvidence* rejection tests ride along.
+		// cmd/evener-hub's TestSkillComposerBrowser, TestOnboardingBrowser and
+		// TestOnboardingOAuthBrowser (browserguard build tag) drive the
+		// production web app in real Chrome through a real hub against real
+		// `evener serve` daemons. Their tagged TestSkillGuard* and
+		// TestOnboardingEvidence* rejection tests ride along.
 		return guardSpec{
 			name:            guard,
-			argv:            []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestSkillComposerBrowser$|^TestSkillGuard|^TestOnboardingBrowser$|^TestOnboardingEvidence", "-count=1"},
+			argv:            []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestSkillComposerBrowser$|^TestSkillGuard|^TestOnboardingBrowser$|^TestOnboardingOAuthBrowser$|^TestOnboardingEvidence", "-count=1"},
 			dir:             ".",
 			env:             []string{vite},
 			needsBuild:      true,

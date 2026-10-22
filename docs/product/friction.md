@@ -43,6 +43,7 @@ and should not be presented as reproduced production incidents.
 | [C12](#c12-remote-credential-transfer-outcomes) | Medium | Reconnecting hides a completed credential-transfer report; uncertain transfers require manual investigation | S02, S05, S07, S15 |
 | [C13](#c13-storage-unavailable-send-fallback-ordering-and-stop-fence) | High (deferred) | A storage wedge lets a web or phone send reorder, escape a Stop, or duplicate | S02, S11 |
 | [C14](#c14-staged-image-attachments-across-identity-changes) | Medium | An image staged in the composer is lost silently when the session identity changes, while the typed draft survives | S02, S11 |
+| [C15](#c15-native-file-links-open-no-document) | Low (deferred) | A phone transcript shows a report link it cannot open, while the web opens the same document | S03, S05 |
 | [R01](#r01-transcript-durability-stop) | High | A healed storage problem leaves the chat permanently stopped | S08, S09, S10 |
 | [R02](#r02-finished-turn-ownership) | High | A finished turn continues blocking new messages | S09, S11 |
 | [R03](#r03-watch-intent-after-restart) | High | Restart can end monitoring without informing the owning agent | S08, S12 |
@@ -55,7 +56,6 @@ and should not be presented as reproduced production incidents.
 | [H02](#h02-live-daemons-after-api-key-repair) | High | Saving a corrected API key leaves running sessions using the old key | S08, S15 |
 | [H03](#h03-host-journal-failure-scope) | High | Incomplete host-journal quarantine prevents unrelated local work | S06, S07 |
 | [H04](#h04-retaining-explicit-connect-intent) | High | A transient first Connect failure has no continuing retry owner | S02, S03, S07 |
-| [H05](#h05-connection-versus-build-synchronization) | High | Build synchronization can block an otherwise compatible remote host | S07, S20 |
 | [H07](#h07-proven-no-op-teardown-remnants) | Medium | Already-harmless teardown remnants still require manual recovery | S07 |
 | [H08](#h08-oauth-refresh-across-processes) | Medium | Shared rotating credentials can race and provoke another sign-in | S08, S15 |
 | [H09](#h09-issued-credentials-awaiting-persistence) | Medium | A local save failure discards successfully issued credentials | S06, S15 |
@@ -497,6 +497,28 @@ stays and only the composer's copy makes it explicit to users.
 **When discussed.** Record the accepted behavior with its acceptance
 scenario here.
 
+### C15 Native file links open no document
+
+**Current behavior.** Assistant prose that links a report by `file://` URL opens
+the document pane in the web transcript when the path resolves inside the
+session's working directory or its retained artifacts directory. The phone's
+file-reference pass binds cwd only
+([markdownFileReferences.ts](../../mobile-native/src/reader/markdownFileReferences.ts)),
+so the same link on the phone is inert: it is offered no document and never
+reaches the artifacts root the hub now serves.
+
+**Evidence.** The shared resolver
+([docContent.ts](../../appwire-client/typescript/docContent.ts)) tries the
+working directory and then the artifacts root, and the web anchor pass uses it
+([fileReferenceDOM.ts](../../cmd/evener-hub/frontend/src/panes/session/transcript/messages/fileReferenceDOM.ts)).
+The native pass calls `parseFileReference` with the cwd alone, and the thread
+snapshot already carries `artifactsDir` for the phone to use.
+
+**Deferred.** The web path landed first by Jesse's direction on 2026-10-20;
+the phone is the agreed fast follow. Wire the native pass through the shared
+resolver with the thread's `artifactsDir`, and cover it with a native test that
+opens an artifacts link.
+
 ## Runtime and continuing intent
 
 ### R01 Transcript durability stop
@@ -906,36 +928,6 @@ restore SSH after a prolonged outage. Attempts remain paced and the host attache
 without another click. Disconnect or cancellation during recovery prevents later
 attachment. Supplying required authentication resumes the retained request
 without another Connect, while an intentionally disconnected host stays dormant.
-
-### H05 Connection versus build synchronization
-
-**Current behavior.** Default attach synchronizes builds and tries to deploy the
-controller's binary when builds differ or a development/dirty build cannot prove
-its identity. A development/unpublished controller on another target OS or
-architecture can fail to supply that binary even when the already-running host
-speaks a compatible protocol. A no-deploy path permits compatible connection,
-but the default does not choose it.
-
-**Evidence.** [Default synchronization policy](../../cmd/evener-hub/main.go#L533),
-[version/deploy handling](../../cmd/evener-hub/internal/sshconn/manager.go#L2207),
-and [deployment resolution](../../cmd/evener-hub/internal/sshconn/deploy.go#L378).
-This requires a build difference or unverifiable development identity, plus an
-unavailable target artifact. It does not describe every release-to-release attach.
-
-**Decision.** When matching-build synchronization cannot complete, Connect uses
-the healthy, compatible remote build already running. Verify the live host's
-connection protocol and required capabilities, then let the user work and show
-the actual local and remote versions in host details. Preserve an explicitly
-requested exact-build requirement; connecting to a different build does not
-satisfy it. Actual protocol incompatibility still requires an update or another
-compatible connection path. Implementation remains pending.
-
-**Acceptance.** Connect a development controller to a compatible different-target
-host without an available matching artifact. The connection succeeds using the
-verified running build, and version details identify what each side actually
-runs. A genuinely incompatible host is accurately identified, and a requested
-exact-build synchronization is not reported complete merely because connection
-to another build succeeds.
 
 ### H07 Proven no-op teardown remnants
 

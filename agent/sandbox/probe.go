@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -121,6 +122,14 @@ type HostFacts struct {
 	// Missing directories are listed anyway, so one created mid-session is
 	// covered from its next use.
 	EvenerContentRoots []string
+
+	// EvenerManagedContentRoots are the installed-plugin content roots inside
+	// EvenerContentRoots (the cache and bundled directories), distinct from the
+	// user's own skills directory. EvenerManagedContentClean reports whether the
+	// plugin store's last complete audit found no Git metadata there; only then
+	// may a backend skip its per-spawn walk for those roots.
+	EvenerManagedContentRoots []string
+	EvenerManagedContentClean bool
 
 	// EvenerConfigRoot is Evener's config root ($XDG_CONFIG_HOME/evener, else
 	// ~/.config/evener). Resolve masks it wherever it lives, since that is where
@@ -336,6 +345,9 @@ func probeHost(system probeSystem) HostFacts {
 	facts.GitGlobalConfigPaths = probeGitGlobalConfigPaths(system)
 	facts.EvenerConfigRoot = probeEvenerConfigRoot(system)
 	facts.EvenerContentRoots = evenerContentRoots(facts.EvenerConfigRoot, system.getenv(envvars.EVENERNoUserSkills.Name) == "1")
+	storeRoot := userdirs.PluginStore(facts.EvenerConfigRoot)
+	facts.EvenerManagedContentRoots = userdirs.PluginContentDirs(storeRoot)
+	facts.EvenerManagedContentClean = managedContentCleanAt(system, storeRoot)
 	facts.GoPath = goEnvValue(system, envvars.GoPath.Name)
 	facts.GoEnvFile = goEnvFile(system)
 	facts.GoModCache = goEnvValue(system, envvars.GoModCache.Name)
@@ -440,6 +452,33 @@ func evenerContentRoots(root string, noUserSkills bool) []string {
 		roots = append(roots, userdirs.UserSkills(root))
 	}
 	return roots
+}
+
+// managedContentStoreFormat is the store-level completion assertion written by
+// the plugin store. Its file name and version are part of the sandbox contract
+// so a policy can retire the managed walk without importing the store package.
+const (
+	storeFormatFileName  = "store-format.json"
+	storeFormatVersion   = 1
+	storeFormatCleanWord = "clean"
+)
+
+func managedContentCleanAt(system probeSystem, storeRoot string) bool {
+	if storeRoot == "" {
+		return false
+	}
+	data, err := system.readFile(filepath.Join(storeRoot, storeFormatFileName))
+	if err != nil {
+		return false
+	}
+	var state struct {
+		Version        int    `json:"version"`
+		ManagedContent string `json:"managed_content"`
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		return false
+	}
+	return state.Version == storeFormatVersion && state.ManagedContent == storeFormatCleanWord
 }
 
 // goEnvValue returns a go command setting as configured on this host, with the

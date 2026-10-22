@@ -27,9 +27,9 @@ func TestGatewayInputModalities(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// Nil, not an empty slice, is what "advertises nothing" must mean:
 			// anything else would erase a curated list on the live replay.
-			got := GatewayInputModalities(tc.arch, tc.caps)
+			got := gatewayInputModalities(tc.arch, tc.caps)
 			if !slices.Equal(got, tc.want) || (got == nil) != (tc.want == nil) {
-				t.Fatalf("GatewayInputModalities = %#v, want %#v", got, tc.want)
+				t.Fatalf("gatewayInputModalities = %#v, want %#v", got, tc.want)
 			}
 		})
 	}
@@ -141,18 +141,203 @@ func TestGatewayEffortLadder(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, published := GatewayEffortLadder(tc.compat)
+			got, published := gatewayEffortLadder(tc.compat)
 			if published != tc.published {
 				t.Fatalf("published = %v, want %v", published, tc.published)
 			}
 			if !slices.Equal(got, tc.want) || (!published && got != nil) {
-				t.Fatalf("GatewayEffortLadder = %#v, want %#v (published %v)", got, tc.want, published)
+				t.Fatalf("gatewayEffortLadder = %#v, want %#v (published %v)", got, tc.want, published)
 			}
 		})
 	}
 }
 
-func TestApplyGatewayReasoning(t *testing.T) {
+// TestApplyGatewayFacts_Dialect pins the two wire-shaping compat fields a
+// gateway publishes beside its effort map. A dialect the chat builders do not
+// know is dropped rather than carried: an unknown thinking_format writes no
+// reasoning control at all, so passing one through would silently disable
+// thinking on that row.
+func TestApplyGatewayFacts_Dialect(t *testing.T) {
+	cases := []struct {
+		name       string
+		compat     GatewayClientCompat
+		wantFormat string
+		wantMaxTok string
+	}{
+		{
+			name:       "a known dialect and token spelling are carried",
+			compat:     GatewayClientCompat{Pi: &GatewayPiCompat{ThinkingFormat: "zai", MaxTokensField: "max_completion_tokens"}},
+			wantFormat: "zai",
+			wantMaxTok: "max_completion_tokens",
+		},
+		{
+			name:       "an unknown dialect is dropped",
+			compat:     GatewayClientCompat{Pi: &GatewayPiCompat{ThinkingFormat: "claude", MaxTokensField: "max_tokens"}},
+			wantMaxTok: "max_tokens",
+		},
+		{
+			name:       "an unknown token spelling is dropped",
+			compat:     GatewayClientCompat{Pi: &GatewayPiCompat{ThinkingFormat: "openai", MaxTokensField: "max_output"}},
+			wantFormat: "openai",
+		},
+		{
+			// Both fields stay unset, so a curated row's own dialect survives.
+			name:   "an absent block states no dialect",
+			compat: GatewayClientCompat{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			caps := registry.Caps{}
+			ApplyGatewayFacts(&caps, GatewayArchitecture{}, GatewayCapabilities{}, tc.compat)
+			if got := registry.StringValue(caps.ThinkingFormat); got != tc.wantFormat {
+				t.Fatalf("ThinkingFormat = %q, want %q", got, tc.wantFormat)
+			}
+			if got := registry.StringValue(caps.MaxTokensField); got != tc.wantMaxTok {
+				t.Fatalf("MaxTokensField = %q, want %q", got, tc.wantMaxTok)
+			}
+		})
+	}
+}
+
+// TestApplyGatewayFacts_EffortUnsupported pins a model the gateway says takes
+// no effort parameter: derivation must not infer an effort control, and a map
+// published beside the verdict cannot reach the wire, so neither the ladder nor
+// the effort name survives.
+func TestApplyGatewayFacts_EffortUnsupported(t *testing.T) {
+	no := false
+	cases := []struct {
+		name   string
+		compat GatewayClientCompat
+	}{
+		{
+			name:   "no map",
+			compat: GatewayClientCompat{Pi: &GatewayPiCompat{SupportsReasoningEffort: &no}},
+		},
+		{
+			name: "a map beside the verdict",
+			compat: GatewayClientCompat{Pi: &GatewayPiCompat{
+				SupportsReasoningEffort: &no,
+				ThinkingLevelMap:        map[string]string{"low": "low", "high": "high"},
+			}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			caps := registry.Caps{}
+			ApplyGatewayFacts(&caps, GatewayArchitecture{}, GatewayCapabilities{}, tc.compat)
+			if len(caps.EffortValues) != 0 {
+				t.Fatalf("EffortValues = %#v, want none", caps.EffortValues)
+			}
+			// The raw row states the verdict; derivation is what turns it into
+			// toggle-only controls, because only derivation can preserve a
+			// numeric budget control that came from another layer.
+			if !registry.BoolValue(caps.EffortParameterUnsupported) {
+				t.Fatal("the row must record the no-effort verdict")
+			}
+			// Non-nil, or mergeCaps inherits a curated ladder and derivation
+			// re-adds the effort control the gateway just said not to use.
+			if caps.EffortValues == nil {
+				t.Fatal("a toggle-only row must publish an empty ladder, not a nil one")
+			}
+		})
+	}
+}
+
+// TestApplyGatewayFacts_NonReasoningBeatsEffortVerdict pins the precedence the
+// capability verdict has over the compat block: a gateway saying the model does
+// not reason at all leaves no reasoning controls, whatever the block's effort
+// field says. Controls on a Reasoning=false row are a shape derivation exists
+// to forbid.
+func TestApplyGatewayFacts_NonReasoningBeatsEffortVerdict(t *testing.T) {
+	no := false
+	caps := registry.Caps{}
+	ApplyGatewayFacts(&caps, GatewayArchitecture{}, GatewayCapabilities{Reasoning: &no}, GatewayClientCompat{
+		Pi: &GatewayPiCompat{SupportsReasoningEffort: &no, ThinkingLevelMap: map[string]string{"low": "low"}},
+	})
+	if caps.Reasoning == nil || *caps.Reasoning {
+		t.Fatalf("Reasoning = %v, want false", caps.Reasoning)
+	}
+	if len(caps.ReasoningControls) != 0 {
+		t.Fatalf("ReasoningControls = %#v, want none on a non-reasoning row", caps.ReasoningControls)
+	}
+	if len(caps.EffortValues) != 0 {
+		t.Fatalf("EffortValues = %#v, want none on a non-reasoning row", caps.EffortValues)
+	}
+}
+
+// TestApplyGatewayFacts_EffortUnsupportedStillProvesReasoning pins that the
+// effort verdict and the reasoning evidence are independent. A usable map
+// proves the model reasons even when the gateway says it takes no effort
+// parameter; keeping the weaker inferred verdict would make derivation clear
+// the controls and request shaping drop reasoning entirely.
+func TestApplyGatewayFacts_EffortUnsupportedStillProvesReasoning(t *testing.T) {
+	no := false
+	caps := registry.Caps{}
+	ApplyGatewayFacts(&caps, GatewayArchitecture{}, GatewayCapabilities{}, GatewayClientCompat{
+		Pi: &GatewayPiCompat{
+			SupportsReasoningEffort: &no,
+			ThinkingLevelMap:        map[string]string{"low": "low", "high": "high"},
+		},
+	})
+	if caps.Reasoning == nil || !*caps.Reasoning {
+		t.Fatalf("Reasoning = %v, want the usable map to prove reasoning", caps.Reasoning)
+	}
+	if !registry.BoolValue(caps.EffortParameterUnsupported) {
+		t.Fatal("the row must record the no-effort verdict")
+	}
+}
+
+// TestApplyGatewayFacts_EmptyMapProvesNothing pins the other side of that
+// evidence rule: a published map with no usable level says the model takes no
+// effort control, and is not proof the model reasons at all. Raising the
+// verdict for it would open a thinking-enable object on a non-reasoning model.
+func TestApplyGatewayFacts_EmptyMapProvesNothing(t *testing.T) {
+	no := false
+	for name, levels := range map[string]map[string]string{
+		"empty":   {},
+		"all-nil": {"low": "", "high": ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			caps := registry.Caps{}
+			ApplyGatewayFacts(&caps, GatewayArchitecture{}, GatewayCapabilities{}, GatewayClientCompat{
+				Pi: &GatewayPiCompat{SupportsReasoningEffort: &no, ThinkingLevelMap: levels},
+			})
+			if caps.Reasoning != nil {
+				t.Fatalf("Reasoning = %v, want the inferred verdict left alone", *caps.Reasoning)
+			}
+		})
+	}
+}
+
+// TestApplyGatewayFacts_PositiveVerdictClearsInheritedRejection pins the
+// verdict's other direction. An alias target or curated layer can carry a
+// no-effort rejection; a gateway that states true knows better for this row, and
+// leaving the stale rejection would make derivation discard the ladder the
+// gateway just advertised.
+func TestApplyGatewayFacts_PositiveVerdictClearsInheritedRejection(t *testing.T) {
+	yes := true
+	caps := registry.Caps{
+		Reasoning:                  new(true),
+		ReasoningControls:          []string{"effort"},
+		EffortValues:               []string{"low", "high"},
+		EffortParameterUnsupported: new(true),
+	}
+	ApplyGatewayFacts(&caps, GatewayArchitecture{}, GatewayCapabilities{}, GatewayClientCompat{
+		Pi: &GatewayPiCompat{SupportsReasoningEffort: &yes, ThinkingLevelMap: map[string]string{"low": "low", "high": "high"}},
+	})
+	if registry.BoolValue(caps.EffortParameterUnsupported) {
+		t.Fatal("a positive gateway verdict must clear an inherited rejection")
+	}
+	if !slices.Equal(caps.EffortValues, []string{"low", "high"}) {
+		t.Fatalf("EffortValues = %#v, want the advertised ladder kept", caps.EffortValues)
+	}
+	if !caps.EffortCapable() {
+		t.Fatal("the row must stay effort-capable once the rejection is cleared")
+	}
+}
+
+func TestApplyGatewayFacts_Reasoning(t *testing.T) {
 	yes, no := true, false
 	levels := func(m map[string]string) GatewayClientCompat {
 		return GatewayClientCompat{Pi: &GatewayPiCompat{ThinkingLevelMap: m}}
@@ -236,7 +421,7 @@ func TestApplyGatewayReasoning(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			caps := registry.Caps{EffortValues: tc.before, Reasoning: tc.beforeReason}
-			ApplyGatewayReasoning(&caps, tc.capsFacts, tc.compat)
+			ApplyGatewayFacts(&caps, GatewayArchitecture{}, tc.capsFacts, tc.compat)
 			if (caps.Reasoning == nil) != (tc.wantReason == nil) || (caps.Reasoning != nil && *caps.Reasoning != *tc.wantReason) {
 				t.Fatalf("Reasoning = %v, want %v", caps.Reasoning, tc.wantReason)
 			}

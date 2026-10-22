@@ -11,13 +11,14 @@
 //     the child's stdin/stdout in an appwire.StreamTransport, exposing an
 //     initialized appwire.Client;
 //   - supervises the channel, reconnecting with bounded exponential backoff when
-//     the link drops, and never starting a hub on the host.
+//     the link drops, without starting a stopped hub during background reconnect.
 //
-// 04a covers the channel, preflight, and lifecycle. 04b (also here) adds deploy
-// (cross-compile the controller's tree for the host's GOOS/GOARCH, push it over
-// an atomic ssh `cat` + `mv`), version auto-match (a host build differing from
-// buildinfo.Version() is redeployed before attaching), and host hub restart
-// (supervisor-aware, with the doc's bare-process fallback).
+// A compatible live handshake preserves the host's executable and process,
+// regardless of differing build labels or deployment-source availability. An
+// explicit Connect can start a stopped compatible installation. A missing or
+// incompatible installation requires a suitable deployment source. Explicit
+// deployment and interrupted-effect recovery retain their requested build and
+// process-identity checks before attachment is published.
 //
 // It does not map a channel onto an appsource.Source (component 05) or render
 // hosts (component 06).

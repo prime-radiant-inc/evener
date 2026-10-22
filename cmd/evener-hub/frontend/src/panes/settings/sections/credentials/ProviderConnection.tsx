@@ -13,6 +13,7 @@ import {
   fingerprintUnavailable,
   isEndpointConflict,
   safeCredentialTestResult,
+  WireError,
 } from "@evener/appwire-client";
 import type { EditSupersededReconcile } from "@evener/appwire-client/state/credentials";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
@@ -38,7 +39,7 @@ import {
 } from "../../../../widgets";
 import { useConnectedEffect } from "../useConnectedEffect";
 import type { FormError } from "./formError";
-import { byCodePoint, PROTOCOL_OPTIONS, SURFACE_OPTIONS } from "./instanceEdit";
+import { type InstanceDraft, PROTOCOL_OPTIONS, SURFACE_OPTIONS, varRows } from "./instanceEdit";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
 import styles from "./ProviderConnection.module.css";
@@ -50,6 +51,7 @@ import { useEditorLifetime } from "./useEditorLifetime";
 // editor is the card's own last disclosure.
 const ENDPOINT_MOVED_ERROR =
   "This connection changed to a different endpoint. Check its destination and enter the key again.";
+const ACCESS_CHANGED_ERROR = "Access changed during the check. Checking again.";
 const CHANGED_ERROR = "Connection or configuration changed. Review access and check again.";
 const REFRESH_FAILED_ERROR = "Access could not be refreshed. Your saved credential is retained; retry the check.";
 const RELOAD_FAILED_ERROR =
@@ -61,19 +63,31 @@ const CONFIRM_RELOAD_FAILED_ERROR =
 const NAME_REQUIRED_ERROR = "Enter a name for this connection.";
 const ENDPOINT_REQUIRED_ERROR = "Enter the endpoint's base URL.";
 
+// isAccessChangedConflict recognizes the hub refusing a check result that a
+// hub-observed credential write superseded while the probe ran
+// (appwire.Conflict: code -32013 with data.evenerErrorInfo "conflict"). The
+// discriminant, never the code: endpointConflict shares the code and keeps its
+// own destination-review handling above. This refusal is not evidence about
+// the endpoint, so it must not be presented as an endpoint failure.
+function isAccessChangedConflict(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === "conflict";
+}
+
 /** Why the flow stopped, as its alert's data-reason: the connection or its
  * configuration changed under it, the check or the save was refused for a
  * destination the hub cannot fingerprint, the endpoint moved, the connection
- * was replaced, the check failed, the refresh failed, the connection needs
- * configuration, the save or the sign-in start failed, a save reached the host
- * but no applied listing could confirm it, a create was refused, or a created
- * or reloaded connection could not be loaded. */
+ * was replaced, a credential write superseded the check, the check failed, the
+ * refresh failed, the connection needs configuration, the save or the sign-in
+ * start failed, a save reached the host but no applied listing could confirm
+ * it, a create was refused, or a created or reloaded connection could not be
+ * loaded. */
 type ConnectionErrorReason =
   | "changed"
   | "check-fingerprint-unavailable"
   | "fingerprint-unavailable"
   | "endpoint-changed"
   | "connection-replaced"
+  | "access-changed"
   | "check-failed"
   | "refresh-failed"
   | "needs-configuration"
@@ -88,7 +102,6 @@ type ConnectionErrorReason =
 export interface ProviderConnectionProps {
   onClose(): void;
   onConnected(name?: string): void;
-  completionLabel: string;
   /** Hands the user to the settings pane's credentials section, where every
    * connection is listed. The card edits its own connection in place; this is
    * only the listing. The hosting dialog owns the handoff. */
@@ -124,12 +137,17 @@ const HELP: Record<string, { label: string; keyUrl: string; billing: string }> =
   },
 };
 
-function findSetup(name: string): InstanceEntry | undefined {
-  const store = credentialsStore.getState();
+function findSetupIn(
+  listing: { instances: InstanceEntry[]; availableProviders: ProviderDescriptor[] },
+  name: string,
+): InstanceEntry | undefined {
   return (
-    store.instances.find((row) => row.name === name) ??
-    store.availableProviders.find((row) => row.setup?.name === name)?.setup
+    listing.instances.find((row) => row.name === name) ??
+    listing.availableProviders.find((row) => row.setup?.name === name)?.setup
   );
+}
+function findSetup(name: string): InstanceEntry | undefined {
+  return findSetupIn(credentialsStore.getState(), name);
 }
 /** listedInstance reports whether the name is an instance the hub lists, as
  * opposed to a discovery-only setup row. Only the former can be edited; the
@@ -154,6 +172,27 @@ function destination(row: InstanceEntry | undefined): string {
     row.credentialHeader,
     row.hidden,
   ]);
+}
+/** accessIdentity is the selected row's effective access, separate from its
+ * destination: which credential source resolves, the revision of that
+ * configuration, and the stored/account facts that say what access is there.
+ * A listing refresh that replaces the row without moving any of these - new
+ * models, warnings, or another provider's entirely separate row - has not
+ * changed the evidence a check is about. */
+function accessIdentity(row: InstanceEntry | undefined): string {
+  if (!row) return "";
+  return JSON.stringify([
+    row.activeSource,
+    row.configRevision,
+    row.hasStoredFile,
+    row.hasStoredOAuth,
+    row.storedEmail,
+    row.envVar,
+    row.shadowedEnvVar,
+  ]);
+}
+function selectionIdentity(row: InstanceEntry | undefined): string {
+  return `${destination(row)}\n${accessIdentity(row)}`;
 }
 /** DestinationClaim is the destination a draft was authored against: the
  * endpoint fingerprint the wire asserts, and the whole destination the card
@@ -196,6 +235,9 @@ function needsConfiguration(row: InstanceEntry | undefined): boolean {
  * the credential store, with host access overriding it. */
 function isStoredAccess(row: InstanceEntry | undefined, host: boolean): boolean {
   return !host && row?.activeSource === "store";
+}
+function hasSavedAccess(row: InstanceEntry | undefined): boolean {
+  return row?.activeSource === "store" || row?.activeSource === "oauth";
 }
 /** The refusal every write and check reports the same way: either the
  * connection was replaced under the flow, or its endpoint moved. */
@@ -364,6 +406,10 @@ export function ProviderConnection(props: ProviderConnectionProps) {
 }
 
 type Phase = "idle" | "saving" | "refreshing" | "checking" | "review" | "result";
+// Transient failures are retried while the dialog is open: one second, then
+// doubling to fifteen, and fifteen thereafter. The timer is the flow's own;
+// there is no separate retry store.
+const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000];
 
 /** Which row of the card is open for editing. Only one at a time, because a
  * draft belongs to one destination and the check that follows it. */
@@ -385,6 +431,16 @@ const SETTINGS_FIELDS = [
 
 const sameSetting = (a: string, b: string) => a.trim() === b.trim();
 
+const EMPTY_VAR_DRAFT: InstanceDraft = {
+  name: "",
+  baseUrl: "",
+  protocol: "",
+  surface: "",
+  vars: {},
+  apiKeyEnv: "",
+  credentialHeader: "",
+};
+
 function settingsOf(row: InstanceEntry | undefined): SettingsDraft {
   return {
     protocol: row?.protocol ?? "",
@@ -398,7 +454,6 @@ function SelectedConnection({
   provider,
   onClose,
   onConnected,
-  completionLabel,
   onOpenSettings,
   onChange,
 }: ProviderConnectionProps & {
@@ -421,8 +476,8 @@ function SelectedConnection({
   }, [resolvedProviderId, draft.providerId]);
   const [missingCredential, setMissingCredential] = useState(false);
   const [host, setHost] = useState(false);
-  const [saved, setSaved] = useState(isStoredAccess(row, false));
-  const [storedAccess, setStoredAccess] = useState(isStoredAccess(row, false));
+  const [saved, setSaved] = useState(hasSavedAccess(row));
+  const [storedAccess, setStoredAccess] = useState(hasSavedAccess(row));
   const [configured, setConfigured] = useState(false);
   const [oauth, setOAuth] = useState<OAuthEditor | null>(null);
   const [phase, setPhaseState] = useState<Phase>("idle");
@@ -432,6 +487,36 @@ function SelectedConnection({
   const [review, setReview] = useState<InstanceEntry | null>(null);
   const errorRef = useRef<HTMLDivElement>(null);
   const operation = useRef(0);
+  // One retry timer owned by this flow. The attempt count paces it; both are
+  // cleared whenever the flow leaves, its target moves, or the outcome is
+  // terminal.
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryAttempt = useRef(0);
+  // Mirrors whether retryTimer is armed, for presentation only: a ref change
+  // does not re-render. Cleared whenever the timer is cleared or fires.
+  const [retryScheduled, setRetryScheduled] = useState(false);
+  const retryRunRef = useRef<((token: number, expectedSource?: string) => Promise<void>) | null>(null);
+  // What automatic work still owes the user, independent of the request token
+  // that a reconnect makes obsolete: a read/check reconciliation anchored on
+  // this flow's destination and expected credential source.
+  const pendingRecovery = useRef<{ expectedSource?: string } | null>(null);
+  // The source the acquisition actually produced ("store" for a saved key or
+  // JSON, "oauth" for a sign-in, a resolved host source, or undefined). Manual
+  // and automatic recovery compare against this, never against a generic
+  // "saved" flag.
+  const acquisitionSource = useRef<string | undefined>(
+    row?.activeSource && row.activeSource !== "none" ? row.activeSource : undefined,
+  );
+  // The callback the check completes through. A ref keeps a check that began
+  // under an earlier render from calling a stale owner callback.
+  const onConnectedRef = useRef(onConnected);
+  onConnectedRef.current = onConnected;
+  // What the in-flight (or completed) check was taken against: the selected
+  // row's destination and access identity at the moment check() began. An
+  // acquisition's own confirmed revision becomes that anchor; a later listing
+  // transition that moves it retires the check, whichever mark its read
+  // carries.
+  const checkAnchor = useRef<string | null>(null);
   // The destination each draft was authored against, captured when the draft
   // starts. The credential claim lives in a ref because the store subscription
   // and the save handlers must read it live, not from a render.
@@ -463,6 +548,13 @@ function SelectedConnection({
   const adding = !listed && needsConfiguration(row) && !configured;
   const [newName, setNewName] = useState(provider.setup?.name ?? provider.id);
   const [newBaseUrl, setNewBaseUrl] = useState("");
+  // Template variables a provider's registry entry declares. They are authored
+  // here, on the add card, so a create carries them onto the instance; a
+  // literal endpoint alone would drop the metadata those variables drive.
+  const [addVars, setAddVars] = useState<Record<string, string>>(() =>
+    Object.fromEntries(Object.keys(effectiveProvider.vars ?? {}).map((key) => [key, ""])),
+  );
+  const addVarRows = varRows({ ...EMPTY_VAR_DRAFT, vars: addVars }, effectiveProvider);
   const [endpointDraft, setEndpointDraft] = useState("");
   // The sanitized value the endpoint editor was opened with. The listing strips
   // query parameters and userinfo, so saving the seed back unchanged would
@@ -471,6 +563,8 @@ function SelectedConnection({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsDraft, setSettingsDraft] = useState<SettingsDraft>(() => settingsOf(row));
   const [settingsBaseline, setSettingsBaseline] = useState<SettingsDraft>(() => settingsOf(row));
+  const [settingsVars, setSettingsVars] = useState<Record<string, string>>({});
+  const settingsVarRows = varRows({ ...EMPTY_VAR_DRAFT, vars: settingsVars }, effectiveProvider);
   const modes = row?.authModes ?? effectiveProvider.authModes ?? [];
   const json = modes.includes("credentialJson");
   const storedMode = json || modes.includes("apiKey");
@@ -497,48 +591,137 @@ function SelectedConnection({
     phaseRef.current = next;
     setPhaseState(next);
   }, []);
-  const invalidate = useCallback(() => {
-    operation.current += 1;
-    setPhase("idle");
-    setResult(null);
-    setReview(null);
-    setOAuth(null);
-    setError({ reason: "changed", message: CHANGED_ERROR });
-  }, [setPhase]);
+  const clearRetry = useCallback(() => {
+    if (retryTimer.current !== null) {
+      clearTimeout(retryTimer.current);
+      retryTimer.current = null;
+    }
+    setRetryScheduled(false);
+  }, []);
+  useEffect(() => () => clearRetry(), [clearRetry]);
+  const scheduleRetryRef = useRef<(expectedSource?: string) => void>(() => {});
+  const scheduleRetry = useCallback(
+    (expectedSource?: string) => {
+      if (!active.current) return;
+      clearRetry();
+      const delay = RETRY_DELAYS_MS[Math.min(retryAttempt.current, RETRY_DELAYS_MS.length - 1)] ?? 15000;
+      retryAttempt.current += 1;
+      setRetryScheduled(true);
+      retryTimer.current = setTimeout(() => {
+        retryTimer.current = null;
+        setRetryScheduled(false);
+        if (!active.current) return;
+        // A retry that comes due during a reconnect waits for the recovered
+        // connection instead of spending its attempt on a request that cannot
+        // land; transport recovery is what re-anchors the next read.
+        if (connectionStore.getState().state !== "ready") {
+          scheduleRetryRef.current(expectedSource);
+          return;
+        }
+        // Every earlier attempt is obsolete, so the retry starts a fresh
+        // operation and re-reads the listing before it contacts the provider.
+        const next = ++operation.current;
+        void retryRunRef.current?.(next, expectedSource);
+      }, delay);
+    },
+    [active, clearRetry],
+  );
+  scheduleRetryRef.current = scheduleRetry;
+  const invalidate = useCallback(
+    (clearScheduled = true) => {
+      if (clearScheduled) {
+        clearRetry();
+        retryAttempt.current = 0;
+        pendingRecovery.current = null;
+      }
+      operation.current += 1;
+      setPhase("idle");
+      setResult(null);
+      setReview(null);
+      setOAuth(null);
+      setError({ reason: "changed", message: CHANGED_ERROR });
+    },
+    [clearRetry, setPhase],
+  );
   useEffect(() => {
     const unsubscribeConnection = connectionStore.subscribe((current, previous) => {
       if (current.client !== previous.client || current.state !== previous.state) {
-        invalidate();
-        if (current.client !== previous.client) {
-          setEditing(null);
-          setSaved(false);
-          setStoredAccess(false);
+        // A reconnect or replacement is not a different target: a scheduled
+        // retry still re-anchors on the destination it named and reads through
+        // whichever client is current when it fires. Pending read intent is not
+        // a request token: the old request is obsolete, but the reconciliation
+        // it owed the user is scheduled again over the recovered client.
+        const replacement = current.client !== previous.client;
+        const recovered = current.state === "ready" && previous.state !== "ready";
+        invalidate(false);
+        // A same-controller replacement is transport, not credential removal:
+        // saved access and its source survive so manual recovery cannot write
+        // the credential a second time. The destination comparison still
+        // refuses a replacement controller's different listing.
+        if (replacement) {
           setConfigured(false);
           confirmedStore.current = undefined;
-          setConfirmationOwed(false);
+          // Do not clear confirmationOwed: a write that landed still owes an
+          // applied read, and the reload performs it against the new client.
+        }
+        if (
+          current.state === "ready" &&
+          (replacement || recovered) &&
+          pendingRecovery.current !== null &&
+          retryTimer.current === null
+        ) {
+          retryAttempt.current = 0;
+          scheduleRetry(pendingRecovery.current.expectedSource);
         }
       }
     });
     const unsubscribeStore = credentialsStore.subscribe((current, previous) => {
-      if (selfMutation.current) return;
-      if (!foreignListingChange(current, previous)) return;
+      const selected = findSetupIn(current, name);
       // A credential draft is pinned to the destination it was typed for. The
       // listing moving that destination is the one change no later save may
       // miss: drop the draft now, and say why, before any write can use it.
-      const now = findSetup(name);
-      const claim = draftClaim.current;
-      if (claim && !claimHolds(claim, now)) adoptBaselineRef.current(now);
-      if (
-        ["saving", "checking", "result", "review"].includes(phaseRef.current) ||
-        (oauth && destination(now) !== destination(baseline))
-      )
+      // A self-marked read is this card's own refresh, not evidence that the
+      // destination moved under the draft; the save's own claim check is what
+      // refuses that write.
+      if (!selfMutation.current && foreignListingChange(current, previous)) {
+        const claim = draftClaim.current;
+        if (claim && !claimHolds(claim, selected)) adoptBaselineRef.current(selected);
+      }
+      // A check is evidence about the one row it anchored on, not about the
+      // listing as a whole. Another provider's update - or any read that only
+      // replaces arrays - must not retract it. The comparison deliberately
+      // ignores list loading/error flags and row fields that do not describe
+      // this target's access. It runs on self-marked transitions too: a
+      // delayed acquisition refresh that carries a different revision is stale
+      // evidence even though foreignListingChange would not report it.
+      if (phaseRef.current === "checking" || phaseRef.current === "result") {
+        if (selectionIdentity(selected) !== checkAnchor.current) invalidate();
+        return;
+      }
+      // The review names the row it showed. It survives the same unrelated
+      // replacements and retires when that row itself moves.
+      if (phaseRef.current === "review") {
+        if (selectionIdentity(selected) !== selectionIdentity(review ?? undefined)) invalidate();
+        return;
+      }
+      if (selfMutation.current) return;
+      if (!foreignListingChange(current, previous)) return;
+      // A mutation or sign-in start has no check to anchor on yet, so it is
+      // anchored on the destination it showed: an unrelated provider's update,
+      // another row's replacement or a read's loading transition does not
+      // retire an acquisition the user already confirmed, while an actual move
+      // of the selected destination still does. The acquisition's own expected
+      // source/revision change is not a destination change. An open OAuth
+      // editor follows the same rule.
+      if ((phaseRef.current === "saving" || oauth !== null) && destination(selected) !== destination(baseline)) {
         invalidate();
+      }
     });
     return () => {
       unsubscribeConnection();
       unsubscribeStore();
     };
-  }, [invalidate, oauth, name, baseline]);
+  }, [invalidate, oauth, name, baseline, review, scheduleRetry]);
   const errorMessage = error?.message;
   useEffect(() => {
     if (errorMessage) errorRef.current?.focus();
@@ -562,8 +745,8 @@ function SelectedConnection({
     if (result?.status === "success")
       return { label: "Connected", tone: "alive", row: "Model list reachable, just now" };
     if (result?.status === "unsupported") return { label: "Unverified", tone: "attention", row: "Not testable here" };
-    if (saved || host) return { label: "Saved", tone: "neutral", row: "Not tested yet" };
     if (row?.activeSource === "oauth") return { label: "Signed in", tone: "alive", row: credentialValue(row) };
+    if (saved || host) return { label: "Saved", tone: "neutral", row: "Not tested yet" };
     if (!required) return { label: "Ready", tone: "neutral", row: "No credential required" };
     if (row?.activeSource && row.activeSource !== "none" && row.activeSource !== "store")
       return { label: "Configured", tone: "neutral", row: credentialValue(row) };
@@ -572,13 +755,26 @@ function SelectedConnection({
   }
 
   function leave(callback: () => void) {
-    operation.current += 1;
+    retireForIntentChange();
     callback();
+  }
+  // A user-intent change away from the checked connection retires every
+  // automatic read for it; the replacement editor or access mode owns what
+  // happens next.
+  function retireForIntentChange() {
+    clearRetry();
+    retryAttempt.current = 0;
+    pendingRecovery.current = null;
+    operation.current += 1;
   }
   function current(token: number) {
     return active.current && operation.current === token && connectionStore.getState().state === "ready";
   }
   function changeValue(next: string) {
+    clearRetry();
+    retryAttempt.current = 0;
+    pendingRecovery.current = null;
+    acquisitionSource.current = undefined;
     operation.current += 1;
     draftValue.current = next;
     // A typed credential replaces host access: the flag applies only while the
@@ -648,7 +844,7 @@ function SelectedConnection({
     // adopted row sources its existing access. Only a row adopted with no
     // pending replacement derives saved state from what it resolves.
     const pending = !dropped && !saved && (draftClaim.current !== undefined || draftValue.current.trim() !== "");
-    const stored = isStoredAccess(next, host) || confirmedHolds;
+    const stored = (hasSavedAccess(next) && !host) || confirmedHolds;
     setSaved(!pending && stored);
     setStoredAccess(stored);
     setBaseline(next);
@@ -674,7 +870,11 @@ function SelectedConnection({
    * draft is reseeded only when the disclosure opens, never when a reconciled
    * save keeps the user's current values. */
   function anchorSettings(row: InstanceEntry | undefined, keepDraft = false) {
-    if (!keepDraft) setSettingsDraft(settingsOf(row));
+    if (!keepDraft) {
+      setSettingsDraft(settingsOf(row));
+      const seeded = varRows({ ...EMPTY_VAR_DRAFT, vars: row?.vars ?? {} }, effectiveProvider);
+      setSettingsVars(Object.fromEntries(seeded.map(({ key }) => [key, row?.vars?.[key] ?? ""])));
+    }
     setSettingsBaseline(settingsOf(row));
     setSettingsClaim(claimOf(row));
   }
@@ -729,10 +929,6 @@ function SelectedConnection({
     return listedInstance(name) ? () => confirmEdit(editParams) : () => confirmCreate(createParams);
   }
 
-  function writeTarget(claim: DestinationClaim, row: InstanceEntry) {
-    return { target: row, asserted: claim.fingerprint };
-  }
-
   function reportUnconfirmed() {
     setConfirmationOwed(true);
     setPhase("idle");
@@ -760,6 +956,11 @@ function SelectedConnection({
       await recoverChangedEndpoint({ reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR });
       return;
     }
+    // A save is a new intent for this destination: an automatic retry armed by
+    // an earlier check must not fire in the middle of it and retire its token.
+    clearRetry();
+    retryAttempt.current = 0;
+    pendingRecovery.current = null;
     const token = ++operation.current;
     setPhase("saving");
     setError(null);
@@ -795,11 +996,15 @@ function SelectedConnection({
 
   async function check(token: number, target: InstanceEntry) {
     if (!current(token)) return;
+    clearRetry();
+    pendingRecovery.current = { expectedSource: target.activeSource };
     if (fingerprintUnavailable(target)) {
+      pendingRecovery.current = null;
       setPhase("idle");
       setError({ reason: "check-fingerprint-unavailable", message: FINGERPRINT_UNAVAILABLE_TEST_MESSAGE });
       return;
     }
+    checkAnchor.current = selectionIdentity(target);
     setPhase("checking");
     setError(null);
     setReview(null);
@@ -809,14 +1014,38 @@ function SelectedConnection({
         await credentialsStore.getState().testCredentials(target.name, target.endpointFingerprint),
       );
       if (!current(token)) return;
+      if (response.status === "success") {
+        // Retire the operation before telling the owner: whatever the owner
+        // does next - including a store notification - cannot complete twice.
+        pendingRecovery.current = null;
+        operation.current += 1;
+        onConnectedRef.current(target.name);
+        return;
+      }
       setResult(response);
       setPhase("result");
-      if (response.status !== "success") setError({ reason: "check-failed", message: response.message });
+      setError({ reason: "check-failed", message: response.message });
+      // Only an unreachable endpoint is transient evidence. A rejected
+      // credential, a missing credential and broken configuration are answers
+      // about the connection, and retrying them cannot change that.
+      if (response.status === "endpoint_failure") scheduleRetry(target.activeSource);
+      else pendingRecovery.current = null;
     } catch (err) {
       if (!current(token)) return;
       const changed = destinationChangeError(err);
       if (changed) {
         await recoverChangedEndpoint(changed);
+        return;
+      }
+      if (isAccessChangedConflict(err)) {
+        // The credential this check sent was replaced by a hub-observed write
+        // while the provider was answering. The replacement is already saved;
+        // the paced retry rereads the listing and checks it without saving
+        // again. Clear any endpoint verdict: this endpoint did not move.
+        setResult(null);
+        setPhase("result");
+        setError({ reason: "access-changed", message: ACCESS_CHANGED_ERROR });
+        scheduleRetry(target.activeSource);
         return;
       }
       const response = safeCredentialTestResult(target.name, {
@@ -827,6 +1056,7 @@ function SelectedConnection({
       setResult(response);
       setPhase("result");
       setError({ reason: "check-failed", message: response.message });
+      scheduleRetry(target.activeSource);
     }
   }
 
@@ -849,6 +1079,8 @@ function SelectedConnection({
     contextBaseline: InstanceEntry | undefined = baseline,
   ) {
     setPhase("refreshing");
+    setError(null);
+    pendingRecovery.current = { expectedSource };
     let applied = false;
     try {
       applied = await credentialsStore.getState().fetchSelf();
@@ -861,6 +1093,7 @@ function SelectedConnection({
       if (!current(token)) return;
       setPhase("idle");
       setError({ reason: "refresh-failed", message: REFRESH_FAILED_ERROR });
+      scheduleRetry(expectedSource);
       return;
     }
     const fresh = credentialsStore.getState();
@@ -868,9 +1101,13 @@ function SelectedConnection({
     if (!applied || fresh.loading || fresh.error) {
       setPhase("idle");
       setError({ reason: "refresh-failed", message: REFRESH_FAILED_ERROR });
+      scheduleRetry(expectedSource);
       return;
     }
     if (needsConfiguration(target)) {
+      clearRetry();
+      retryAttempt.current = 0;
+      pendingRecovery.current = null;
       setPhase("idle");
       setError({
         reason: "needs-configuration",
@@ -881,18 +1118,23 @@ function SelectedConnection({
     if (!target) {
       setPhase("idle");
       setError({ reason: "refresh-failed", message: REFRESH_FAILED_ERROR });
+      scheduleRetry(expectedSource);
       return;
     }
     if (
       destination(contextBaseline) !== destination(target) ||
       target.activeSource !== (expectedSource ?? contextBaseline?.activeSource)
     ) {
+      pendingRecovery.current = null;
       setReview(target);
       setPhase("review");
       return;
     }
     await check(token, target);
   }
+  // A retry re-runs the flow's own refresh-and-check, never the credential
+  // mutation: the value on screen was already saved by the attempt that failed.
+  retryRunRef.current = refreshAndCheck;
 
   // The card's one primary action. In the add state it creates the connection
   // first; otherwise it writes the typed credential (if any) and tests.
@@ -914,6 +1156,9 @@ function SelectedConnection({
       document.getElementById("provider-credential")?.focus();
       return;
     }
+    clearRetry();
+    retryAttempt.current = 0;
+    pendingRecovery.current = null;
     const token = ++operation.current;
     setError(null);
     setResult(null);
@@ -939,6 +1184,7 @@ function SelectedConnection({
         confirmedStore.current = claim;
         setSavedAccess(true);
         setEditing(null);
+        acquisitionSource.current = "store";
       } catch (err) {
         if (!current(token)) return;
         const changed = destinationChangeError(err);
@@ -947,14 +1193,15 @@ function SelectedConnection({
           return;
         }
         setPhase("idle");
+        pendingRecovery.current = null;
         setError({
           reason: "save-failed",
           message: "Credential could not be saved. Your draft is retained; retry saving.",
         });
         return;
       }
-      await refreshAndCheck(token, "store");
-    } else await refreshAndCheck(token, saved ? "store" : undefined);
+    }
+    await refreshAndCheck(token, acquisitionSource.current);
   }
 
   // Creating the connection is the add state's save: the row the card shows
@@ -990,6 +1237,11 @@ function SelectedConnection({
     setResult(null);
     selfMutation.current = true;
     let applied = false;
+    const vars = Object.fromEntries(
+      Object.entries(addVars)
+        .map(([key, value]) => [key, value.trim()])
+        .filter(([, value]) => value !== ""),
+    );
     // The fingerprint the create itself authored. It is read from the create's
     // own answer before any further await - the applied listing, or the answer
     // a newer request superseded, which still carries the row the hub wrote
@@ -1003,6 +1255,7 @@ function SelectedConnection({
           name: trimmedName,
           base: effectiveProvider.id,
           baseUrl: trimmedBaseUrl,
+          ...(Object.keys(vars).length > 0 ? { vars } : {}),
         },
         {
           onSuperseded: (response) => {
@@ -1021,6 +1274,10 @@ function SelectedConnection({
         : await confirmListingState((instances) =>
             instances.some((candidate) => candidate.name === trimmedName && !candidate.implicit),
           );
+      if (!current(token)) {
+        selfMutation.current = false;
+        return;
+      }
       selfMutation.current = false;
       if (!confirmed) {
         // The create itself landed. Keep its name and move to the card's
@@ -1049,9 +1306,13 @@ function SelectedConnection({
     }
     if (!current(token)) return;
     const created = findSetup(trimmedName);
+    clearRetry();
+    retryAttempt.current = 0;
+    pendingRecovery.current = null;
+    acquisitionSource.current = undefined;
     setName(trimmedName);
     setConfigured(true);
-    setStoredAccess(isStoredAccess(created, false));
+    setStoredAccess(hasSavedAccess(created));
     setHost(false);
     setMissingCredential(false);
     if (!created) {
@@ -1140,11 +1401,10 @@ function SelectedConnection({
     const claim = endpointClaim;
     if (!claim) return;
     const write = () => {
-      const { target, asserted } = writeTarget(claim, row);
       return writeFor(
         row.name,
-        { name: row.name, baseUrl: next, expectedEndpointFingerprint: asserted },
-        { name: row.name, base: target.base || target.providerId, baseUrl: next },
+        { name: row.name, baseUrl: next, expectedEndpointFingerprint: claim.fingerprint },
+        { name: row.name, base: row.base || row.providerId, baseUrl: next },
       )();
     };
     await saveClaimed(claim, row, write, closeEndpointEditor, "The endpoint could not be saved. Your value is kept.");
@@ -1163,10 +1423,17 @@ function SelectedConnection({
       apiKeyEnv: settingsDraft.apiKeyEnv.trim() || undefined,
       credentialHeader: settingsDraft.credentialHeader.trim() || undefined,
     };
+    const editVars: Record<string, string> = {};
+    for (const { key } of settingsVarRows) {
+      const value = (settingsVars[key] ?? "").trim();
+      if (value !== (row.vars?.[key] ?? "").trim()) editVars[key] = value;
+    }
+    const createVars = Object.fromEntries(
+      settingsVarRows.map(({ key }) => [key, (settingsVars[key] ?? "").trim()]).filter(([, value]) => value !== ""),
+    );
     const write = () => {
       // A field the user changed from the opening baseline is theirs to write.
       const changed = (field: keyof SettingsDraft) => !sameSetting(settingsDraft[field], settingsBaseline[field]);
-      const { target, asserted } = writeTarget(claim, row);
       return writeFor(
         row.name,
         {
@@ -1177,9 +1444,15 @@ function SelectedConnection({
           ...(changed("credentialHeader")
             ? { credentialHeader: values.credentialHeader, clearCredentialHeader: !values.credentialHeader }
             : {}),
-          expectedEndpointFingerprint: asserted,
+          ...(Object.keys(editVars).length > 0 ? { vars: editVars } : {}),
+          expectedEndpointFingerprint: claim.fingerprint,
         },
-        { name: row.name, base: target.base || target.providerId, ...values },
+        {
+          name: row.name,
+          base: row.base || row.providerId,
+          ...values,
+          ...(Object.keys(createVars).length > 0 ? { vars: createVars } : {}),
+        },
       )();
     };
     await saveClaimed(claim, row, write, closeSettings, "The settings could not be saved. Your values are kept.");
@@ -1243,6 +1516,9 @@ function SelectedConnection({
 
   async function signIn() {
     if (confirmationOwed) return;
+    clearRetry();
+    retryAttempt.current = 0;
+    pendingRecovery.current = null;
     const token = ++operation.current;
     setPhase("saving");
     setError(null);
@@ -1257,32 +1533,52 @@ function SelectedConnection({
       if (current(token)) {
         setPhase("idle");
         if (isStaleListingRefusal(err)) {
+          pendingRecovery.current = null;
           setError({ reason: "connection-replaced", message: CONNECTION_REPLACED_ERROR });
-          void credentialsStore
-            .getState()
-            .fetch()
-            .catch(() => {});
+          void refreshListingAfterMutation();
           return;
         }
+        pendingRecovery.current = null;
         setError({ reason: "sign-in-failed", message: "Sign-in could not be started. Try again." });
       }
     }
   }
   function closeOAuth() {
+    pendingRecovery.current = null;
     operation.current += 1;
     setOAuth(null);
     setPhase("idle");
   }
   function signedIn() {
     setOAuth(null);
+    // A completed sign-in has stored access just as a saved key does; its
+    // dismissal wording and the retained access follow that fact even before
+    // the check returns.
+    setSaved(true);
+    setStoredAccess(true);
+    acquisitionSource.current = "oauth";
     const token = ++operation.current;
     void refreshAndCheck(token, "oauth");
   }
+  // The OAuth child confirms authorization before its first listing read. That
+  // read is interruptible: a transport reconnect unmounts the child, so the
+  // parent records the acquired source and its automatic-recovery ownership
+  // here, before the read, rather than waiting for the child's success callback
+  // that the unmount would drop.
+  const oauthAuthorized = useCallback(() => {
+    setSaved(true);
+    setStoredAccess(true);
+    acquisitionSource.current = "oauth";
+    pendingRecovery.current = { expectedSource: "oauth" };
+  }, []);
   const signedInRef = useRef(signedIn);
   signedInRef.current = signedIn;
   const completeOAuth = useCallback(() => signedInRef.current(), []);
 
   async function reloadCreated() {
+    clearRetry();
+    retryAttempt.current = 0;
+    pendingRecovery.current = null;
     const token = ++operation.current;
     setPhase("refreshing");
     setError(null);
@@ -1319,6 +1615,7 @@ function SelectedConnection({
         verificationUrl={oauth.verificationUrl}
         intervalSeconds={oauth.intervalSeconds}
         onCancel={closeOAuth}
+        onAuthorized={oauthAuthorized}
         onSuccess={completeOAuth}
         onRestart={() => void signIn()}
       />
@@ -1330,6 +1627,7 @@ function SelectedConnection({
         flowId={oauth.flowId}
         authUrl={oauth.authUrl}
         onCancel={closeOAuth}
+        onAuthorized={oauthAuthorized}
         onSuccess={completeOAuth}
       />
     );
@@ -1369,10 +1667,6 @@ function SelectedConnection({
           ) : result?.status === "unsupported" ? (
             <Button variant="secondary" disabled={busy} onClick={() => leave(() => onConnected(name))}>
               Continue without verification
-            </Button>
-          ) : result?.status === "success" ? (
-            <Button disabled={busy} onClick={() => leave(() => onConnected(name))}>
-              {completionLabel}
             </Button>
           ) : (
             <Button
@@ -1465,6 +1759,24 @@ function SelectedConnection({
                   </div>
                 </div>
               </div>
+              {addVarRows.map(({ key, label }) => (
+                <div className={styles.row} key={key}>
+                  <label className={styles.rowLabel} htmlFor={`connection-var-${key}`}>
+                    {label}
+                  </label>
+                  <div className={styles.rowValue}>
+                    <Input
+                      id={`connection-var-${key}`}
+                      value={addVars[key] ?? ""}
+                      disabled={busy}
+                      onChange={(event) => {
+                        setAddVars((current) => ({ ...current, [key]: event.target.value }));
+                        setError(null);
+                      }}
+                    />
+                  </div>
+                </div>
+              ))}
               <div className={styles.row}>
                 <label className={styles.rowLabel} htmlFor="provider-credential">
                   {json ? "Credential JSON" : "API key"}
@@ -1576,10 +1888,14 @@ function SelectedConnection({
                           variant="link"
                           disabled={busy}
                           onClick={() => {
+                            retireForIntentChange();
+                            acquisitionSource.current = undefined;
                             setHost(true);
                             changeValue("");
                             setResult(null);
+                            setReview(null);
                             setPhase("idle");
+                            setError(null);
                           }}
                         >
                           use this host's access instead
@@ -1618,6 +1934,7 @@ function SelectedConnection({
                             setHost(false);
                             changeValue("");
                             const stored = savedFor(row, false);
+                            acquisitionSource.current = stored ? "store" : undefined;
                             setSavedAccess(stored);
                           }}
                         >
@@ -1668,7 +1985,10 @@ function SelectedConnection({
           </p>
         )}
 
-        {modes.includes("oauth") && (
+        {/* While an automatic retry for saved access is pending, another
+            acquisition is not what the flow needs: the stored access is
+            already there and recovery is already scheduled. */}
+        {modes.includes("oauth") && !busy && !retryScheduled && (
           <Button disabled={busy || unavailable || confirmationOwed} onClick={() => void signIn()}>
             Sign in
           </Button>
@@ -1704,6 +2024,7 @@ function SelectedConnection({
             <Button
               disabled={unavailable || confirmationOwed}
               onClick={() => {
+                acquisitionSource.current = review.activeSource;
                 adoptBaseline(review);
                 void check(++operation.current, review);
               }}
@@ -1733,6 +2054,11 @@ function SelectedConnection({
             {error.message}
           </InlineNotice>
         )}
+        {retryScheduled && storedAccess && (
+          <InlineNotice live="status" data-retry="scheduled">
+            Access is saved. An automatic retry is scheduled; you can also retry now.
+          </InlineNotice>
+        )}
         {connection !== "ready" && (
           <p role="status" data-state="reconnecting">
             Waiting for the Evener host to reconnect.
@@ -1751,9 +2077,17 @@ function SelectedConnection({
             summary="All connection settings"
           >
             <div className={styles.settings} data-settings-editor>
-              {row?.vars && Object.keys(row.vars).length > 0 && (
-                <p className={styles.note}>{Object.keys(row.vars).sort(byCodePoint).join(", ")}</p>
-              )}
+              {settingsVarRows.map(({ key, label }) => (
+                <label className={styles.settingsRow} htmlFor={`connection-setting-var-${key}`} key={key}>
+                  <span className={styles.rowLabel}>{label}</span>
+                  <Input
+                    id={`connection-setting-var-${key}`}
+                    value={settingsVars[key] ?? ""}
+                    disabled={instanceEditsBlocked}
+                    onChange={(event) => setSettingsVars((current) => ({ ...current, [key]: event.target.value }))}
+                  />
+                </label>
+              ))}
               <label className={styles.settingsRow} htmlFor="connection-protocol">
                 <span className={styles.rowLabel}>Protocol</span>
                 <Select

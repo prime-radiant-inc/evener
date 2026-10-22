@@ -45,8 +45,8 @@ Keep those references current when changing the behavior they describe.
   categorized, labeled, and ranked: the label vocabulary, the eval-only
   test, and the triage procedure.
 - **[tutorial-tours.md](tutorial-tours.md)** — how the CLI and web tutorial
-  screenshots are executed, validated, and refreshed, and what they do not
-  prove.
+  screenshots are executed, retained, and reviewed as a proposed asset patch.
+  The 24-row matrix excludes native, which remains deferred.
 - **[../../docs-site/README.md](../../docs-site/README.md)** — the publisher for the
   public guide: the publication manifest, link and export rules, and the
   GitHub Pages workflow. Edit chapters in `docs/`, never in `.generated/`.
@@ -60,16 +60,21 @@ The public guide is built from canonical Markdown in `docs/`. Only pages listed
 in `docs-site/publication.json` are published; everything else stays in the
 repository. The site tracks `main`.
 
-Run the documentation gate from the repository root:
+From the repository root, install the site dependencies and Chromium before
+running the documentation gate. Never run `npm ci` through a symlinked
+`docs-site/node_modules` shared by other worktrees.
 
 ```sh
+npm --prefix docs-site ci
+(cd docs-site && npx playwright install chromium)
 make docs-check
 ```
 
-That installs and validates the `docs-site` toolchain, checks the publication
-manifest, links, fragments, assets, and committed tutorial evidence, then builds
-the site. It is part of `make merge-approval-gate`. CI runs the same build plus
-the tutorial tours and the Chromium browser checks in
+The gate reuses a fresh, real install (or installs it if missing), runs
+Chromium-dependent publisher tests, checks the publication manifest, links,
+fragments, assets, and committed tutorial evidence, then builds the site. It is
+part of `make merge-approval-gate`. CI runs the same build plus the tutorial
+tours and browser checks in
 `.github/workflows/docs.yml`.
 
 To preview the site, see [docs-site/README.md](../../docs-site/README.md). For a
@@ -77,6 +82,37 @@ single page's rules: one H1, ordinary Markdown and GFM tables, no raw HTML
 components, and local links that resolve from the canonical source path. A link
 to an unpublished file resolves to GitHub on `main` rather than failing, so a
 page can cite an implementation file without making it public.
+
+## First contribution
+
+Install the Go version in `go.mod`, Node 22 or newer, npm, Git, and Python 3
+(`python3` on PATH). Start in an isolated checkout so builds and installs do not
+disturb another contributor's worktree. For example, from an existing clone:
+
+```sh
+git worktree add -b docs/my-first-change ../evener-docs main
+cd ../evener-docs
+make build-runtime
+./evener --version
+```
+
+`make build-runtime` builds the web UI first, then the runtime and development
+binaries; it may install frontend dependencies. See [Building](building.md) for
+the build contract. Edit a canonical Markdown page under `docs/`, such as this
+README, rather than a generated page under `docs-site/.generated/`. Then install
+the documentation tools and check the edit:
+
+```sh
+npm --prefix docs-site ci
+(cd docs-site && npx playwright install chromium)
+make docs-check
+```
+
+If you change an AppWire catalog or a `##` make-target annotation, run
+`make generate` and review the generated diff before committing it. Review your
+own diff and run focused checks for the files you changed; [Testing](testing.md)
+explains which checks apply. CI owns the full lint, test, browser, and build
+gates. Open a review with the commands you ran and any checks you could not run.
 
 ## Git hooks
 
@@ -110,7 +146,7 @@ The tests for both scripts are in `hooks_test.go` (part of `make test`); `EVENER
 <!-- BEGIN GENERATED: make targets. Edit make/repo.mk, then run `make generate`. -->
 | Command | Summary | What it proves | Trigger | Requires | Fails when |
 | --- | --- | --- | --- | --- | --- |
-| `make docs-check` | Build and validate the public documentation site. | Every page in docs-site/publication.json parses with one H1, its local links and fragments resolve, published assets exist, committed tutorial evidence matches its manifest, and VitePress renders the site. Local links across the repository's non-archived Markdown resolve too. | Local pre-merge via make merge-approval-gate; CI's Documentation workflow runs the same check plus tutorial tours and browser checks. | Node 22 and the docs-site install; docs-site/node_modules must not be a symlink to another worktree's install. A real install newer than the lockfile is reused instead of reinstalled. | The publisher's tests fail, a manifest entry or link is invalid, a published asset or tutorial file is missing, or the build fails. Evidence captured at an older revision warns rather than fails. |
+| `make docs-check` | Build and validate the public documentation site. | Every page in docs-site/publication.json parses with one H1, its local links and fragments resolve, published assets exist, committed tutorial evidence matches its manifest, and VitePress renders the site. Local links across the repository's non-archived Markdown resolve too. | Local pre-merge via make merge-approval-gate; CI's Documentation workflow runs the same check plus tutorial tours and browser checks. | Node 22, npm, Python 3, the docs-site install, and Playwright Chromium (install with `npm --prefix docs-site ci`, then `(cd docs-site && npx playwright install chromium)`). docs-site/node_modules must not be a symlink to another worktree's install. A real install newer than the lockfile is reused instead of reinstalled. | The publisher's tests fail, a manifest entry or link is invalid, a published asset or tutorial file is missing, or the build fails. Evidence whose relevant source bytes have changed warns rather than fails. |
 
 ### Other targets
 

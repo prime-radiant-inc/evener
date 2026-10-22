@@ -158,15 +158,15 @@ func TestPreviewForLaunch_ReportsAFailureToRemoveItsStaging(t *testing.T) {
 		t.Skip("root writes through a read-only directory mode")
 	}
 	m := NewManager(t.TempDir())
-	store := filepath.Join(m.Root, "bundled")
-	t.Cleanup(func() { _ = os.Chmod(store, 0o755) })
-	// Sealing the store from the load the preview runs between staging the
-	// copy and removing it: the staging directory itself can no longer be
-	// unlinked from its parent.
+	stagingParent := m.bundledPublishingDir()
+	t.Cleanup(func() { _ = os.Chmod(stagingParent, 0o755) })
+	// Sealing the private staging parent from the load the preview runs between
+	// staging the copy and removing it: the staging directory itself can no
+	// longer be unlinked from its parent.
 	load := enabledLoad
 	enabledLoad = func(dir string) (agentplugin.Instance, error) {
 		instance, err := load(dir)
-		if chmodErr := os.Chmod(store, 0o500); chmodErr != nil {
+		if chmodErr := os.Chmod(stagingParent, 0o500); chmodErr != nil {
 			t.Fatal(chmodErr)
 		}
 		return instance, err
@@ -187,14 +187,17 @@ func TestPreviewForLaunch_ReportsAFailureToRemoveItsStaging(t *testing.T) {
 		t.Errorf("Candidates = %+v, want the preview it built before cleanup failed", res.Candidates)
 	}
 	if len(res.Diagnostics) != 1 || res.Diagnostics[0].Source != LaunchPluginSourceBundled ||
-		filepath.Dir(res.Diagnostics[0].Path) != store || !strings.HasPrefix(filepath.Base(res.Diagnostics[0].Path), stagingPrefix) {
+		filepath.Dir(res.Diagnostics[0].Path) != stagingParent || !strings.HasPrefix(filepath.Base(res.Diagnostics[0].Path), stagingPrefix) {
 		t.Fatalf("Diagnostics = %+v, want one naming the staging it could not remove", res.Diagnostics)
 	}
-	entries := bundledStoreEntries(t, store)
-	if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), stagingPrefix) {
-		t.Fatalf("bundled store holds %v, want the staging the preview could not remove", entries)
+	entries, err := os.ReadDir(stagingParent)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Lstat(filepath.Join(store, entries[0].Name(), stagingMarker)); err != nil {
+	if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), stagingPrefix) {
+		t.Fatalf("private bundled staging holds %v, want the staging the preview could not remove", entries)
+	}
+	if _, err := os.Lstat(filepath.Join(stagingParent, entries[0].Name(), stagingMarker)); err != nil {
 		t.Errorf("leftover staging is unmarked, so no sweep will reclaim it: %v", err)
 	}
 }

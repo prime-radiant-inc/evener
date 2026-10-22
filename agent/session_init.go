@@ -347,7 +347,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			_ = client.ReleaseSessionAPILog(sessionID)
 		}
 	}()
-	resolvedProfile, selectedModels, err := resolveLiveModelProfileValidated(client, profile, sessionID, llm.AdapterTimeout{Connect: 10 * time.Second, StreamRead: idleTimeout})
+	resolvedProfile, selectedModels, err := resolveStartupModelProfile(client, profile, sessionID, llm.AdapterTimeout{Connect: 10 * time.Second, StreamRead: idleTimeout}, cfg.StartupModelListing)
 	if err != nil {
 		return nil, err
 	}
@@ -561,13 +561,13 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		if agent, ok := s.pluginAgents[agentName]; ok && len(agent.Tasks) > 0 {
 			store := s.getOrCreateTaskStore()
 			if err := store.PopulateFromTemplates(agent.Tasks, nil); err == nil {
-				// Inject the first task prompt. Its reasoning_effort applies
-				// per-round via prepareModelRequestWithError while it is in progress; it
-				// must not overwrite the session's configured effort.
-				if current, ok := store.CurrentInProgress(); ok {
-					if err := s.SteerKind(formatCurrentTaskSteering(current, s.canInstructTool("task_list")), events.SteeringKindCurrentTask); err != nil {
-						s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("steering admission failed: %v", err)})
-					}
+				// Announce the workflow the same way a delegate receives its plan:
+				// an agent's own workflow has the same property, that a later step's
+				// instructions decide what the first must build. Each task's
+				// reasoning_effort still applies per-round via
+				// prepareModelRequestWithError; this only affects the prompt.
+				if err := steerDelegatePlan(s, store); err != nil {
+					s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("steering admission failed: %v", err)})
 				}
 			}
 		}
@@ -761,10 +761,13 @@ type RestoreSessionConfig struct {
 	DisableMemory   bool
 	// parentMemoryProjectID is a delegate's binding (spawn names its parent):
 	// the live parent's, replacing whatever the delegate saved.
-	parentMemoryProjectID   string
-	StateDir                string
-	Project                 identifier.Project
-	ResolveProfile          func(ref string) (*provider.Profile, error)
+	parentMemoryProjectID string
+	StateDir              string
+	Project               identifier.Project
+	ResolveProfile        func(ref string) (*provider.Profile, error)
+	// StartupModelListing reuses a listing the launcher already fetched for
+	// this session's model instance instead of fetching it again.
+	StartupModelListing     *StartupModelListing
 	AcquireSessionOwnership func(sessionID string) error
 	// OwnershipAlreadyAcquired keeps a host reservation alive across restore
 	// failure while still carrying AcquireSessionOwnership into the session.
@@ -1199,7 +1202,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// s.id is already known (meta.ID, set above), unlike a fresh NewSession
 	// call: attribute this listing's canonical API-log attempt to it instead
 	// of letting it fall into the shared unattributed bucket.
-	profile, selectedModels := resolveLiveModelProfileWithEnumerationTimeout(client, profile, s.id, *s.providerAdapterTimeout())
+	profile, selectedModels := resolveStartupModelProfileWithReuse(client, profile, s.id, *s.providerAdapterTimeout(), restoreCfg.StartupModelListing)
 	s.profile = profile
 	s.captureModelAvailability(selectedModels)
 	closeDelegateStoreOnError := true

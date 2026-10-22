@@ -975,6 +975,7 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `provider` | string | yes |  |
 | `activeSource` | string | yes |  |
+| `reason` | string | yes |  |
 | `originClientId` | string | yes |  |
 
 
@@ -1210,6 +1211,7 @@ Underlying Go kind: `string` (no struct fields).
 | `humanNote` | string | yes |  |
 | `agentNote` | string | yes |  |
 | `sessionUrls` | [][appwire.SessionURL](#sessionurl) | yes |  |
+| `artifactsDir` | string | yes |  |
 | `usage` | \*[appwire.EvenerUsage](#evenerusage) | yes |  |
 | `workMillis` | int64 | yes |  |
 | `activeTurnStartedAt` | int64 | yes |  |
@@ -2591,6 +2593,7 @@ Underlying Go kind: `string` (no struct fields).
 | `outputCostPerMillion` | \*float64 | yes |  |
 | `reasoningEffortLevels` | []string | yes |  |
 | `warnings` | []string | yes |  |
+| `instanceDefault` | bool | yes |  |
 
 
 ### `ModelListDiagnostic`
@@ -3300,6 +3303,7 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `name` | string |  |  |
 | `version` | string |  |  |
+| `buildVersion` | string | yes |  |
 | `os` | string | yes |  |
 | `arch` | string | yes |  |
 | `roots` | []string | yes |  |

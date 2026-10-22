@@ -70,6 +70,7 @@ Put options before positional arguments.
 
 ```bash
 evener plugin marketplace add --yes OWNER/REPOSITORY
+evener plugin marketplace add --ref BRANCH_OR_TAG --yes OWNER/REPOSITORY
 evener plugin marketplace list
 evener plugin marketplace browse MARKETPLACE
 evener plugin install --yes PLUGIN@MARKETPLACE
@@ -79,7 +80,12 @@ evener plugin list --effective
 
 `--yes` confirms trust without prompting. Do not use it for an unreviewed source.
 A marketplace source may be a supported repository URL, `owner/repo`, or a local
-path. Installed state lives under `$XDG_CONFIG_HOME/evener/plugins/`, with
+path. For a repository URL or `owner/repo`, `--ref BRANCH_OR_TAG` checks out that
+branch or tag; a branch follows its tip when the marketplace refreshes, while a
+tag stays at the commit it names. Name the branch or tag itself: a fully
+qualified ref such as `refs/heads/main` is rejected. The hub's Add marketplace
+form and the mobile Add marketplace sheet offer the same optional Branch or tag
+field. Installed state lives under `$XDG_CONFIG_HOME/evener/plugins/`, with
 `~/.config/evener/plugins/` as the fallback. Use the CLI rather than editing the
 registry or cache directly.
 
@@ -126,6 +132,34 @@ Explicit plugin uninstall and marketplace removal retain their deletion semantic
 Externally edited directory sources remain live directories, not managed snapshots. `evener plugin marketplace remove
 MARKETPLACE` removes a marketplace explicitly. Deleted selections are not
 recovered by this retention rule.
+
+## Git metadata and managed content
+
+Managed installs publish only plugin content. A fetched or copied source is
+prepared in the store's private `publishing` area, its `.git` entry is removed,
+the copied tree skips `.git` entries and refuses a symlink into Git metadata,
+and the prepared tree is audited before it enters `cache`. Bundled publication
+audits its embedded payload the same way. A copied `directory` source (no SHA)
+publishes a fresh revision on reinstall rather than reusing a single directory.
+A copied source that selects a Git administration directory is refused before
+copy, as is a relative or git-subdir path containing `.git`; in-place
+directory-marketplace sources stay user-owned and are not copied. Plugin Git
+commands ignore ambient `GIT_DIR`/`GIT_WORK_TREE` repository selection. Without
+Git, detection is signature-based (HEAD ref or object id, `[core]`, object
+layout), so a corrupt or nonstandard administrative layout may not be detected;
+an unverifiable admin-looking directory is refused.
+
+`store-format.json` records whether a whole-store audit found no Git metadata
+under `cache` and `bundled`. Missing or unverified state keeps today's
+per-spawn masking. A completed audit moves only entries named `.git` into the
+private `managed-git-archive` area; it never moves a pointer's target, an
+ordinary symlink target, or any other content path. A `.git` pointer into an
+ordinary directory inside a managed root is left in place and the store stays
+unverified. Migration runs from updated plugin writers under the store and
+bundled locks, is retried on the next write after a failure, and never rewrites
+the registry or a saved session path. Older hub or CLI writers that install
+cache revisions must be updated before relying on the clean state; older
+session daemons keep reading the same content paths.
 
 ## Maintain installed plugins
 

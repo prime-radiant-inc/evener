@@ -25,6 +25,18 @@ interface DraftFields {
   selectionRestoreRevision: number;
   harness: string;
   model: string;
+  /** How many explicit model choices this draft has recorded. A draft starts at
+   * 1 when its model came from saved defaults and at 0 otherwise; every
+   * explicit choice - even one that repeats the current value or clears it -
+   * increments it. Automatic discovery/fallback never does. Comparing this
+   * revision, rather than the model string, is what lets an onboarding
+   * completion tell a preserved choice from an untouched first run. */
+  modelChoiceRevision: number;
+  /** The source/harness/cwd scope in which this draft entered provider setup.
+   * It suppresses the uncredentialed-default fallback for that exact scope and
+   * asks for an explicit model there. Draft-owned so it survives a pane
+   * remount, and never persisted: it is not an onboarding-completed flag. */
+  providerConnectionScope: { source: string; harness: string; cwd: string } | null;
   /** The model value the uncredentialed-default fallback installed into `model`
    * for THIS draft, or null when `model` did not come from it. Provenance is a
    * property of the draft, not of the mounted form: SpawnForm is a singleton
@@ -64,6 +76,7 @@ interface DraftFields {
 
 function createDraft(cwd: string) {
   const defaults = resolveInitialDefaults({ serverPrefillDir: cwd });
+  const savedModel = defaults.model ?? "";
   return {
     cwd,
     fields: createStore<DraftFields>(() => ({
@@ -73,7 +86,9 @@ function createDraft(cwd: string) {
       promptRevision: 0,
       selectionRestoreRevision: 0,
       harness: defaults.harness ?? "",
-      model: defaults.model ?? "",
+      model: savedModel,
+      modelChoiceRevision: savedModel.trim() === "" ? 0 : 1,
+      providerConnectionScope: null,
       defaultModelFallback: null,
       staleModelNotice: null,
       reasoningEffort: defaults.reasoningEffort ?? "",
@@ -200,6 +215,13 @@ export function setDraftField<K extends keyof DraftFields>(
       ? { promptRevision: state.promptRevision + 1 }
       : {}),
   });
+}
+
+/** Records an explicit model choice on the draft. Increments even when the
+ * caller re-chooses the current value or chooses empty, because the value the
+ * person picked is not what identifies the choice - the act is. */
+export function markModelChoice(draft: SpawnDraft): void {
+  setDraftField(draft, "modelChoiceRevision", (revision) => revision + 1);
 }
 
 export function useDraftField<K extends keyof DraftFields>(

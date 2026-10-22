@@ -41,6 +41,111 @@ serves a strict content security policy. When you expose it further, put it
 behind an SSH tunnel, VPN or private-network firewall, or an authenticated
 reverse proxy — the token is a bearer capability, not a per-user login system.
 
+### Rotate a leaked token or revoke a lost device
+
+Rotate the shared hub credential, not just the pairing invitation. Every browser,
+phone, integration, and other client holding that credential loses access.
+Canceling or expiring an invitation cannot revoke a credential already delivered.
+Deleting a phone's local profile does not revoke its copy either.
+
+The guard loads the token once at startup. Replacing `auth-token` while the hub
+runs leaves both its old credential and existing authenticated sockets usable.
+There is no `--rotate-auth-token` flag.
+
+```mermaid
+flowchart LR
+  A[Identify service and state root] --> B[Stop hub and prevent restart]
+  B --> C[Move old token to private quarantine]
+  C --> D[Start hub with a new token]
+  D --> E[Verify old access fails]
+  E --> F[Reauthorize trusted clients]
+```
+
+Run this on the owning host as the service user. You need control of its
+supervisor, the effective `hub.toml` and environment, a private connection to
+the host, and a way to reauthorize trusted clients. If the host
+itself is compromised, isolate and recover it before issuing a replacement.
+
+1. **Identify the service.** Match the running hub's PID, executable, listener,
+   config path, and supervisor entry. Set `hub_state_root` to the effective
+   `hub_state_root` in that config; only when absent use
+   `${XDG_STATE_HOME:-$HOME/.local/state}/evener` from the **service's** environment.
+   Record its startup command without copying credentials. Do not use a guessed
+   default root or a broad process-name kill.
+2. **Stop the hub and prevent restart.** For a systemd user service, stop the
+   identified unit with `systemctl --user stop "$unit"` and disable any timer,
+   socket, or external monitor that can start it. An explicit stop suppresses
+   the unit's own `Restart=` policy. For a launchd user job, use
+   `launchctl bootout "gui/$(id -u)/$label"`, not `kickstart -k`; keep the known
+   plist or registration command for restoration. Stop a foreground hub in its
+   owning terminal. Confirm that the exact PID has exited and its listener is
+   closed. Stop here if it returns automatically. Session daemons and their jobs
+   may continue while the hub is down; rotating this token does not stop them.
+3. **Remove the old credential from the active path.** Check that `auth-token`
+   is the expected regular file owned by the service user. Keep its bytes only
+   in a private quarantine for the rejection check. In Bash, with tracing off:
+
+   ```bash
+   set +x
+   umask 077
+   revoked_dir=$(mktemp -d "${TMPDIR:-/tmp}/evener-revoked-token.XXXXXX") &&
+     mv "${hub_state_root:?Set the effective hub state root}/auth-token" "$revoked_dir/auth-token"
+   ```
+
+   Stop if either command fails. Do not delete the state directory, lock,
+   transcripts, or daemon rendezvous files. Protect old backups and startup
+   logs too: they retain the old credential.
+4. **Start the same hub.** Use `systemctl --user start "$unit"`,
+   `launchctl bootstrap "gui/$(id -u)" "$plist"` for a plist-backed job, or the
+   recorded registration/foreground command. Restore only the restart sources
+   you deliberately disabled. The absent token file makes startup generate a
+   new 256-bit credential at `<hub_state_root>/auth-token`. Check that it is
+   owned by the service user and mode `0600`. Keep supervisor output private:
+   the hub logs a credential-bearing authorization URL on startup.
+5. **Verify revocation before distributing the replacement.** Existing clients
+   must disconnect. In a browser still holding only the old cookie, open the
+   plain `/api/debug/subscriptions` URL and require HTTP 401. Do not visit the
+   new authorization URL first. Check old and new bearer access with this
+   Python 3 probe; its arguments are paths, never credentials. Set `hub_origin`
+   to the direct, trusted hub origin, with no path or embedded credential:
+
+   ```bash
+   python3 - "$hub_origin" "$revoked_dir/auth-token" "$hub_state_root/auth-token" <<'PY'
+   import pathlib, sys, urllib.error, urllib.request
+
+   class NoRedirect(urllib.request.HTTPRedirectHandler):
+       def redirect_request(self, req, fp, code, msg, headers, newurl):
+           return None
+
+   opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+   for label, path, expected in [('old', sys.argv[2], 401), ('replacement', sys.argv[3], 200)]:
+       token = pathlib.Path(path).read_text().strip()
+       request = urllib.request.Request(sys.argv[1].rstrip('/') + '/api/debug/subscriptions',
+                                        headers={'Authorization': 'Bearer ' + token})
+       try:
+           with opener.open(request, timeout=10) as response:
+               status = response.status
+       except urllib.error.HTTPError as error:
+           status = error.code
+       except Exception:
+           raise SystemExit('Probe failed, inspect the connection privately') from None
+       print(label, status)
+       if status != expected:
+           raise SystemExit('Stop, credential verification failed')
+   PY
+   ```
+
+   Expect `old 401` and `replacement 200`. `/api/health` is unauthenticated and
+   proves neither. If old access works, stop the hub again and check the process,
+   effective root, and proxy destination; do not declare the incident resolved.
+6. **Reauthorize trusted clients only.** Authorize browsers through the private
+   new URL, pair phones again, and replace integration secrets through their
+   secret store. Confirm a trusted client can initialize AppWire and list
+   sessions, or open its saved history in the UI. Review uncertain in-flight
+   actions before retrying them. Remove only the quarantined credential after
+   these checks, according to your secret-retention policy; never restore it to
+   the active path.
+
 ## Prepare the host
 
 Install Evener using [Getting started](getting-started.md), then run the hub as the user who owns the repositories and configuration. This guide assumes that installation is complete. For routine browser work, use [Daily work](daily-work.md); for headless invocations, use the [CLI](cli.md).
@@ -330,10 +435,34 @@ daemon and resume the saved session to move it to the new build.
 
 ### Deploying to remote hosts
 
-Attaching a remote host can overwrite its Evener installation and restart its
-hub. By default, the controller deploys its own executable when the host needs
-a build or reports a different build. Choose the deployment policy before
-attaching; use `--no-deploy` to prohibit both pushes and installer fallback.
+Connect first verifies the running remote hub's AppWire handshake. A compatible
+hub stays on its existing build and process, even when the controller has a
+different version, is a development or dirty build, or cannot supply an artifact
+for the host's platform. Optional capabilities control the features available on
+that connection; their absence does not trigger deployment.
+
+```mermaid
+flowchart TD
+    A[Connect] --> B{Running hub handshake}
+    B -->|Compatible| C[Use existing channel and build]
+    B -->|Proven incompatible| D[Install suitable build and verify replacement]
+    B -->|Authentication, transport or malformed response| E[Report connection failure]
+    B -->|No hub listening| F{Installed launch contract usable}
+    F -->|Yes| G[Start installed build and verify connection]
+    F -->|Verified missing or incompatible| D
+    F -->|Malformed or unknown| E
+```
+
+Connect can still install software on a fresh or incompatible host. A stopped
+compatible installation is started without replacement on an explicit Connect;
+background reconnect does not start a stopped hub. An unclassified handshake
+failure is a connection error, not permission to overwrite the installation.
+The same rule applies to malformed or incomplete cold-start launch metadata.
+Use `--no-deploy` to prohibit both pushes and installer fallback. Explicit Deploy
+retains its plan, confirmation and requested-build checks.
+
+The source rules below apply **when installation is required**, not on every
+Connect:
 
 | Hub invocation or condition | Binary source | Overwrite or refusal behavior |
 |---|---|---|
@@ -342,13 +471,21 @@ attaching; use `--no-deploy` to prohibit both pushes and installer fallback.
 | `evener hub --deploy-binary <path>` | Named pre-built Evener executable | Needs no Go toolchain or source. Refuses a non-Evener binary or wrong OS/architecture before pushing. A dirty controller refuses this source. After installation, a build mismatch refuses attachment. |
 | `evener hub --build-source <path>` | Cross-compiled checkout on the controller | Needs Go, the Evener module root, and a built web UI. A stamped controller requires the same commit, a clean checkout, and no ignored untracked Go files. A dirty controller refuses this source. An unstamped dev controller skips revision checks. |
 | `evener hub --no-deploy` | None | Writes no build, including through the installer. Keeps an existing compatible host build; refuses a host that needs installation or a protocol/launch-contract upgrade. |
-| No flags, but the controller cannot adopt its executable as an Evener binary | Published artifact if available | Uses the release/snapshot installer when possible. Otherwise keeps a compatible host build and logs the difference; refuses a host that needs a build. |
+| No flags, but the controller cannot adopt its executable as an Evener binary | Published artifact if available | Uses the release/snapshot installer when installation is required; refuses if no suitable artifact is available. |
 
 `--no-deploy` wins over both source flags; `--deploy-binary` wins over
 `--build-source`. Named paths are still validated at startup even when another
 flag takes precedence. The startup log records the effective source and any
-ignored flags. Read attach failures in the host's Settings row; when attachment
-keeps a different compatible build, the hub log records that difference.
+ignored flags. Read attach failures and the connected host's build in host
+details in the web or native client. The live handshake's optional
+`serverInfo.buildVersion` reports that remote process's build; absent metadata
+stays unknown. `serverInfo.version` is the protocol package version and is not a
+substitute for the remote build. Launch-check describes the installed executable,
+which can differ from the process still running.
+An executable launch-check failure that can be distinguished from a transport
+failure does not block a usable live connection or already-authorized deployment
+repair. Startup and post-install verification still require a valid launch
+contract; SSH and environment failures remain connection errors.
 
 **Installation target.** Deployment uses the host entry's `evener_path`, then
 the running host hub's executable, then `command -v evener`, then
@@ -357,6 +494,11 @@ stages a temporary file, verifies its length, and renames it atomically over the
 target. A failed transfer does not leave a partial executable. The installer
 preserves the existing installation location and layout. A configured target
 must name the `evener` runtime, not another program.
+While an effect is pending, default-path discovery cannot replace its selected
+target, even when a concurrent plan refresh began discovery before the deployment
+recorded that target. If that executable disappears or loses its execute bit, an
+authorized deployment repairs the selected installation rather than switching to
+another one.
 
 **Build verification.** A source build carries the controller's build identity;
 a named artifact carries its own. After deployment, the controller re-reads the
@@ -365,6 +507,77 @@ installation is not proof of successful attachment. In particular, installer
 verification happens **after the binary is written**: a moved snapshot channel
 can replace the host binary and then fail the version check. Prefer a push source
 when the published snapshot has moved beyond the controller's commit.
+
+**Interrupted deployment.** A compatible connection cannot settle an unfinished
+build replacement or restart. Recovery retains the requested build identity and
+the predecessor process identity before the first remote write, including writes
+whose acknowledgement is lost. Reconnect verifies the installed build and finishes
+the recorded replacement even if the original attempt failed before choosing a
+restart command. A confirmed deploy-only operation remains deploy-only on retry.
+Explicit Restart authorizes starting or replacing that installation even when
+its acknowledged write already matches the requested build and needs no rewrite.
+An unacknowledged write is retried before recovery can settle, since equal build
+labels such as `dev` do not prove the requested executable was installed.
+Even an acknowledged deploy-only write remains pending until its build and startup
+contract are verified, preserving its repair authority for a later Restart.
+Before stopping the live hub, Restart re-reads the selected executable's startup
+contract and uses those fresh facts to reconcile any pending deployment. An
+already-authorized deployment can repair an invalid contract or a changed build;
+its requested build must be verified before restart. If the SSH channel has
+dropped, Restart performs this recovery under its persisted operation gate before
+requiring attachment. It then reattaches and independently verifies the requested
+build and replacement process without issuing a second restart. Recovery rechecks
+the operation-bound host entry before each remote mutation. Pending effects retain
+that check across installation, command recording, worker completion and channel
+loss; a reconnect attempt cannot replace it with a new settings snapshot. An entry
+edit during installation refuses replacement while retaining the verified
+installation. Restoring the entry permits a later retry. A fresh explicit Restart
+can instead accept the changed entry after admission and validation, retaining the
+original requested build, target and process proof. Replaying the same operation
+ID does not renew this authorization. A new confirmed Deploy supersedes old intent
+only when its first authorized write begins; source refusal leaves it untouched.
+An already-completed effect can settle through independent read-only verification
+despite later entry drift. None of these paths transfers pending work to a different
+host registration or silently reloads its target. These reads do not atomically
+exclude external edits after the check. Ordinary Restart
+without pending deployment authority still attaches first. Without that repair, an
+incompatible protocol, missing required flag or unreadable contract refuses the
+restart and preserves the live connection. Fix the executable, then retry Restart.
+Connect and reconnect also validate the executable before retrying
+a pending restart, whether the predecessor is still running or has stopped.
+Refusal retains the pending intent so recovery can finish after the repair.
+A pending standalone start or Restart retains its original build and predecessor;
+enabling automatic deployment does not authorize replacing that intent with a
+controller-build installation. A known different executable build refuses another
+start or restart until the requested executable is restored. An already-completed
+expected process can still settle without another command despite later disk drift,
+including an incompatible protocol or missing launch flag. Recovery verifies the
+recorded build and process before requiring the executable to support another
+launch. An unverified effect remains pending, and another launch still requires a
+valid startup contract.
+A verified restart retires the predecessor's bridge before reattaching and
+checking the replacement, even if the old SSH connection has not reported EOF.
+If the first health probe missed the predecessor, a later probe can identify it
+before the first restart command runs; an issued command retains its original
+predecessor identity across retries.
+If a supervisorless predecessor exits before a restart command is recorded,
+recovery proves the port is free and starts the saved target with the deployment's
+build expectations. An occupied or unprobeable port leaves the recovery pending.
+The same startup proof applies when a dormant systemd, systemd user, or launchd
+unit starts on a proven-free port; a live supervisor remains a replacement.
+When the predecessor is unknown, the public operation independently verifies the
+actual startup process after reattachment. A known predecessor still requires a
+different process start time. Retrying a recorded startup completes that effect
+without requesting another replacement.
+Source refusals before a write leave no recovery intent. Recovery does not
+reinterpret the operation from a newly observed executable or hide its failure.
+
+**Stable installation paths.** Keep executable symlinks and their parent
+directories unchanged until pending deployment recovery finishes. Host-entry
+validation does not freeze remote filesystem path resolution: redirecting a
+configured `evener_path` symlink between attempts can send a retried write to its
+new destination. Destination-drift handling is deferred in
+[#4802](https://github.com/prime-radiant-inc/evener/issues/4802).
 
 **Own-executable limit.** The default reads the executable file at deploy time,
 not a copy of the running process. Replacing that file while the controller runs
@@ -459,6 +672,13 @@ A live functional check can incur provider charges: authorize the browser, choos
 
 The documentation site tracks main. Release builds can lag it; snapshot builds follow ongoing development. Record the current version and installation prefix before changing channels. The installation guide owns download procedures; Settings → Hub → Updates owns an installed hub's update flow above.
 
+**Before shutting down an older daemon:** saved session trees containing legacy
+delegate lifecycle or legacy delegate-addressed watch state cannot resume on
+the current runtime. Read [the compatibility warning and fresh-root
+continuation](../UPGRADING.md#before-shutting-down-an-older-session). Preserve
+history and finish essential work first. Layout migration does not repair that
+format, and saved-history visibility is not proof of resumability.
+
 1. Finish work that must not straddle a version change. In each session's actions menu, choose **Shut down** and confirm. This stops the agent process; the composer's **Stop** only interrupts a turn. Verify that the old daemon process has exited before copying state. A hub restart alone does not stop its session daemons.
 2. Inventory effective paths and make a private [backup](security.md#storage-and-backups). Copying live state is not guaranteed consistent.
 3. Preview any legacy-layout migration on the owning host:
@@ -468,7 +688,7 @@ The documentation site tracks main. Release builds can lag it; snapshot builds f
    ```
 
 4. Review the paths before running `evener migrate`. It moves supported legacy layouts and converts old provider schema, preserving `providers.toml.pre-registry`. It is not a universal session-format repair or a promise that old project identities become current ones.
-5. Restart the intended hub, check health/build, and verify saved-session visibility. Resume a saved session or start a new one only after the intended runtime is installed.
+5. Restart the intended hub, check health/build, and verify saved-session visibility. Resume only compatible saved state after installing the intended runtime. If restoration rejects legacy state, preserve it for reading and continue in a fresh root as described above.
 6. Verify the session daemon separately from the hub. On the owning host, check its new rendezvous record's PID against the process's start time and executable path. For a direct authenticated AppWire connection to that daemon, `initialize` returns its running build in `serverInfo.version`; compare it with the intended build. A hub health response or `evener --version` alone does not prove that an existing daemon was replaced. Keep rendezvous credentials private.
 
 Keep the pre-upgrade backup until you have checked workspaces and saved sessions. Do not restore over new work or assume an older executable can read newly written state. See [provider migration](llm-provider-config-and-launch.md#upgrading-from-the-old-schema) for renamed instances and changed credential variables.

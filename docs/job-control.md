@@ -102,7 +102,16 @@ This reference contract is not itself the runtime system prompt, but the followi
 - Delegate creation returns after one stable `delegate_id` and its initial input
   are durable. It does not accept `max_wait_ms` and does not expose a run handle.
 - Use `delegate` to start a new delegate conversation: `prompt` is the brief
-  and `task_list` seeds its task list, one item per step. Sessions start clean
+  and `task_list` seeds its task list, one item per step. The delegate's first
+  turn carries the whole seeded plan — each step's title, status, effort, and
+  prompt — and names the step to work first. That step is the first
+  in-progress task, which is a step the role's own workflow contributes when
+  the role has one before its `parent_tasks` slot; otherwise it is the first
+  seeded step. A later step's instructions often decide what an earlier step
+  must build, so write each step's prompt as if every worker can read it.
+  A root non-interactive session started from a named agent's workflow receives
+  the same announcement, since that workflow has the same cross-step property.
+  Sessions start clean
   by default; use `fork_context=true` only when the assignment requires the
   parent's full context and history. It returns `dlg_...`,
   child/session transcript metadata, status, and resumability—never `job_...`.
@@ -307,6 +316,8 @@ stateDiagram-v2
 ```
 
 ## Model-facing tools
+
+**Jump to:** [Shell](#existing-shellbash-tool) · [`delegate`](#delegate) · [`delegate_send`](#delegate_send) · [`job_watch`](#job_watch) · [`job_status`](#job_status) · [`job_list`](#job_list) · [`job_stop`](#job_stop).
 
 ### Existing shell/bash tool
 

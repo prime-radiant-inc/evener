@@ -2431,7 +2431,7 @@ function threadFields(resp: ThreadReadResponse, ref: string, now: number): Omit<
   // WITHOUT a stamp — replayed input images from a read path that didn't
   // re-stamp, or older-producer frames.
   const imageSessionId = wireImageSessionId(thread);
-  return {
+  const fields: Omit<ThreadModel, "turns"> = {
     ref,
     threadId: thread.id,
     ...(thread.evener.parentRef === undefined ? {} : { parentRef: thread.evener.parentRef }),
@@ -2441,6 +2441,12 @@ function threadFields(resp: ThreadReadResponse, ref: string, now: number): Omit<
     status: thread.status,
     resumeRequired: thread.evener.resumeRequired ?? false,
     resumeOnlyFoldable: thread.evener.resumeOnlyFoldable ?? false,
+    // A read's fields are merged over the existing model, so omitting the key
+    // when the snapshot has no root would keep a previous value and leave link
+    // actions pointing at a directory this snapshot no longer advertises.
+    // Present-and-undefined clears it; the key is then dropped so a model
+    // without a root keeps the shape it had before this field existed.
+    artifactsDir: thread.evener.artifactsDir || undefined,
     modelProvider: thread.modelProvider,
     // Thread has no separate "model id" field on the wire snapshot — only
     // ModelProvider, which appwire/types.go documents as overloaded to
@@ -2501,6 +2507,13 @@ function threadFields(resp: ThreadReadResponse, ref: string, now: number): Omit<
     createdAt: epochSecondsToISO(thread.createdAt),
     updatedAt: epochSecondsToISO(thread.updatedAt),
   };
+  // A read's fields are merged over the existing model, so omitting the key
+  // when the snapshot has no root would keep a previous value and leave link
+  // actions pointing at a directory this snapshot no longer advertises.
+  // Present-and-undefined clears it; the key is then dropped so a model
+  // without a root keeps the shape it had before this field existed.
+  if (fields.artifactsDir === undefined) delete fields.artifactsDir;
+  return fields;
 }
 
 export function collectAuthoritativeMutationIds(resp: ThreadReadResponse): Set<string> {
@@ -4187,8 +4200,12 @@ export function applyReadResponse<M extends ThreadModel>(
     turns,
   };
   const { runningTurnId: _previous, ...base } = model;
+  // The spread keeps any field this read omits. A snapshot that no longer
+  // advertises an artifacts root must clear the previous one, or link actions
+  // stay aimed at a directory the hub no longer serves.
+  const clearedArtifacts = fields.artifactsDir === undefined ? { artifactsDir: undefined } : {};
   let next = withDisplay(
-    { ...base, ...fields, ...runningTurn(resp.thread), olderCursor },
+    { ...base, ...fields, ...clearedArtifacts, ...runningTurn(resp.thread), olderCursor },
     history,
     overlayRecord(resp.overlay),
   );
@@ -4313,8 +4330,19 @@ export function applyReadModel<M extends ThreadModel>(model: M, fresh: ThreadMod
     ...fields
   } = fresh;
   const { runningTurnId: _previous, ...base } = model;
+  // Same rule as applyReadResponse: a freshly hydrated model that carries no
+  // artifacts root must clear the previous one, or the spread keeps it and
+  // link actions stay aimed at a directory the snapshot no longer names.
+  const clearedArtifacts =
+    fresh.artifactsDir === undefined && model.artifactsDir !== undefined ? { artifactsDir: undefined } : {};
   let next = withDisplay(
-    { ...base, ...fields, ...(freshRunningTurnId ? { runningTurnId: freshRunningTurnId } : {}), olderCursor },
+    {
+      ...base,
+      ...fields,
+      ...clearedArtifacts,
+      ...(freshRunningTurnId ? { runningTurnId: freshRunningTurnId } : {}),
+      olderCursor,
+    },
     history,
     freshOverlay ?? {},
   );

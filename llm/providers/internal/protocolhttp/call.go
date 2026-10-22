@@ -76,7 +76,7 @@ type Prepared struct {
 func Prepare(ctx context.Context, c *Call) (*Prepared, error) {
 	var pruned []string
 	if c.Body != nil {
-		pruned = registry.Prune(c.Body, c.Res.Caps)
+		pruned = registry.Prune(c.Body, c.Res.Caps, c.Res.Protocol)
 		registry.ApplyBodyConstants(c.Body, c.Res.Transport.Body)
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, c.Method, c.URL, nil)

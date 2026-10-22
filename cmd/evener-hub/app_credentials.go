@@ -21,6 +21,7 @@ const (
 	credentialTestEndpointMessage      = "The provider endpoint could not be reached. Check the endpoint and network connection."
 	credentialTestConfigurationMessage = "Provider configuration could not be loaded. Check the instance settings."
 	credentialTestUnsupportedMessage   = "This provider does not support harmless credential verification."
+	credentialTestSupersededMessage    = "Credentials changed while this check was running. Refresh and check again."
 )
 
 type credentialProbeClient interface {
@@ -212,7 +213,18 @@ func (c *hubAuthController) runCredentialTest(ctx context.Context, name, asserte
 	probeCtx, cancel := context.WithTimeout(withScopedCodexAuth(ctx, client.Registry()), credentialTestTimeout)
 	defer cancel()
 	listing, err := client.Models(probeCtx, name)
-	c.settleCredentialProbe(probe, listing, err)
+	// The probe read the credential this instance had when it started, and
+	// another client can replace that stored key at the same destination while
+	// the provider is answering. The redacted listing cannot show the
+	// difference, so a write the hub made in between makes this result evidence
+	// about a credential the instance no longer has. Refuse it as the existing
+	// generic Conflict: it is not a verdict about the replacement, and it is not
+	// an endpoint conflict either. Joined callers receive the same refusal, and
+	// the client's paced recovery rereads the listing and checks the
+	// replacement without saving again.
+	if !c.settleCredentialProbe(probe, listing, err) {
+		return appwire.AuthTestResponse{}, appwire.Conflict(credentialTestSupersededMessage)
+	}
 	if err != nil {
 		status, message := classifyCredentialTestError(err)
 		return credentialTestResponse(name, status, message), nil

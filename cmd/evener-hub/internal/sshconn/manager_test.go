@@ -404,6 +404,7 @@ func TestEnsureProtocolMismatchReachesTheDeployPath(t *testing.T) {
 			"launch-check": []byte(`{"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`),
 		}
 		fr := &fakeRunner{runFn: cannedRun(override), startFn: goodStartFn(t)}
+		requireProtocolUpgrade(t, fr)
 		m := newTestManager(t, testRegistry(t, host), fr, Options{})
 		testDeployRecorder(t, m)
 		testRestartRecorder(t, m)
@@ -415,8 +416,8 @@ func TestEnsureProtocolMismatchReachesTheDeployPath(t *testing.T) {
 		if !errors.Is(err, ErrProtocolIncompatible) {
 			t.Fatalf("err = %v, want ErrProtocolIncompatible (no deploy can upgrade the host)", err)
 		}
-		if got := len(fr.recordedStarts()); got != 0 {
-			t.Fatalf("Start calls = %d, want 0 (no bridge before the upgrade)", got)
+		if got := len(fr.recordedStarts()); got != 1 {
+			t.Fatalf("Start calls = %d, want 1 (the incompatible live probe)", got)
 		}
 	})
 
@@ -433,6 +434,7 @@ func TestEnsureProtocolMismatchReachesTheDeployPath(t *testing.T) {
 				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 			},
 		)
+		requireProtocolUpgrade(t, fr)
 		m := newTestManager(t, testRegistry(t, host), fr, Options{
 			controllerVersionOverride: "newsha",
 			BuildBinary:               writeStageBinary,
@@ -467,6 +469,7 @@ func TestEnsureProtocolRefusedByRunReachesTheDeployPath(t *testing.T) {
 			},
 			startFn: goodStartFn(t),
 		}
+		requireProtocolUpgrade(t, fr)
 		m := newTestManager(t, testRegistry(t, host), fr, Options{})
 		testDeployRecorder(t, m)
 		testRestartRecorder(t, m)
@@ -478,8 +481,8 @@ func TestEnsureProtocolRefusedByRunReachesTheDeployPath(t *testing.T) {
 		if !errors.Is(err, ErrProtocolIncompatible) {
 			t.Fatalf("err = %v, want ErrProtocolIncompatible (no deploy can upgrade the host)", err)
 		}
-		if got := len(fr.recordedStarts()); got != 0 {
-			t.Fatalf("Start calls = %d, want 0", got)
+		if got := len(fr.recordedStarts()); got != 1 {
+			t.Fatalf("Start calls = %d, want 1 (the incompatible live probe)", got)
 		}
 	})
 
@@ -496,6 +499,7 @@ func TestEnsureProtocolRefusedByRunReachesTheDeployPath(t *testing.T) {
 				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 			},
 		)
+		requireProtocolUpgrade(t, fr)
 		m := newTestManager(t, testRegistry(t, host), fr, Options{
 			controllerVersionOverride: "newsha",
 			BuildBinary:               writeStageBinary,
@@ -534,6 +538,7 @@ func TestEnsureMissingAPILogFlagIsDeployable(t *testing.T) {
 					time.Date(2026, 1, 1, 0, call, 0, 0, time.UTC).Format(time.RFC3339))), nil
 			},
 		)
+		requireProtocolUpgrade(t, fr)
 		m := newTestManager(t, testRegistry(t, host), fr, Options{
 			controllerVersionOverride: "dev",
 			BuildBinary: func(_ context.Context, _, _, out string) error {
@@ -551,8 +556,8 @@ func TestEnsureMissingAPILogFlagIsDeployable(t *testing.T) {
 		if !built {
 			t.Fatal("the deploy path was never offered before the refusal")
 		}
-		if got := len(fr.recordedStarts()); got != 0 {
-			t.Fatalf("Start calls = %d, want 0", got)
+		if got := len(fr.recordedStarts()); got != 1 {
+			t.Fatalf("Start calls = %d, want 1 (the incompatible live probe)", got)
 		}
 	})
 
@@ -572,6 +577,7 @@ func TestEnsureMissingAPILogFlagIsDeployable(t *testing.T) {
 					time.Date(2026, 1, 1, 0, call, 0, 0, time.UTC).Format(time.RFC3339))), nil
 			},
 		)
+		requireProtocolUpgrade(t, fr)
 		m := newTestManager(t, testRegistry(t, host), fr, Options{
 			controllerVersionOverride: "dev",
 			BuildBinary:               writeStageBinary,
@@ -630,7 +636,7 @@ func TestEnsureUnsupportedHost(t *testing.T) {
 
 func TestEnsurePreflightDecodeFailure(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
-	fr := &fakeRunner{runFn: cannedRun(map[string][]byte{"launch-check": []byte("not json")}), startFn: goodStartFn(t)}
+	fr := &fakeRunner{runFn: cannedRun(map[string][]byte{"launch-check": []byte("not json"), "api/health": nil, "lsof -ti": []byte(noListenerMarker)}), startFn: goodStartFn(t)}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{})
 	_, err := m.Ensure(context.Background(), "alpha")
 	if !errors.Is(err, ErrPreflightDecode) {
@@ -1824,8 +1830,9 @@ func TestEnsureTerminalFailureReleasesHostOwnership(t *testing.T) {
 		startFn: func(context.Context, []string, io.Writer) (Stdio, error) {
 			mu.Lock()
 			starts++
+			refuse := mismatch
 			mu.Unlock()
-			return newFakeBridge(appwire.ProtocolVersion).stdio, nil
+			return protocolMismatchBridge(refuse), nil
 		},
 	}
 	events := make(chan Event, 128)
@@ -1902,8 +1909,8 @@ func TestEnsureTerminalFailureReleasesHostOwnership(t *testing.T) {
 	mu.Lock()
 	got := starts
 	mu.Unlock()
-	if got != 1 {
-		t.Fatalf("Start calls = %d, want 1: a terminal failure must not be retried", got)
+	if got != 2 {
+		t.Fatalf("Start calls = %d, want 2 (attach and terminal probe): a terminal failure must not be retried", got)
 	}
 	if ch := m.currentChannel("alpha"); ch != nil {
 		t.Fatalf("a terminal failure left the dropped channel mapped: %v", ch)
@@ -1999,6 +2006,7 @@ func TestEnsureBoundsHubIsPresent(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}}
+	requireProtocolUpgrade(t, fr)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		attemptTimeout:            100 * time.Millisecond,
@@ -2095,7 +2103,12 @@ func TestTerminalFailureStopsTheReconnectLoop(t *testing.T) {
 			}
 			return canned(ctx, argv, stdin)
 		},
-		startFn: goodStartFn(t),
+		startFn: func(context.Context, []string, io.Writer) (Stdio, error) {
+			mu.Lock()
+			refuse := mismatch
+			mu.Unlock()
+			return protocolMismatchBridge(refuse), nil
+		},
 	}
 	events := make(chan Event, 256)
 	// Park the supervisor inside its backoff sleep, so it has already retired the
@@ -2184,7 +2197,10 @@ func TestReplacementAttachDoesNotLeakTheOlderSupervisor(t *testing.T) {
 			return canned(ctx, argv, stdin)
 		},
 		startFn: func(context.Context, []string, io.Writer) (Stdio, error) {
-			return newFakeBridge(appwire.ProtocolVersion).stdio, nil
+			mu.Lock()
+			refuse := mismatch
+			mu.Unlock()
+			return protocolMismatchBridge(refuse), nil
 		},
 	}
 	events := make(chan Event, 256)
@@ -2315,7 +2331,12 @@ func TestSupersededSupervisorDoesNotEmitDisconnectedAfterReplacement(t *testing.
 					}
 					return canned(ctx, argv, stdin)
 				},
-				startFn: goodStartFn(t),
+				startFn: func(context.Context, []string, io.Writer) (Stdio, error) {
+					mu.Lock()
+					refuse := mismatch
+					mu.Unlock()
+					return protocolMismatchBridge(refuse), nil
+				},
 			}
 
 			var evMu sync.Mutex

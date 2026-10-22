@@ -114,6 +114,12 @@ type Caps struct {
 	Reasoning         *bool    `toml:"reasoning" json:"reasoning,omitempty"`
 	ReasoningControls []string `toml:"reasoning_controls" json:"reasoning_controls,omitempty"`
 	EffortValues      []string `toml:"effort_values" json:"effort_values,omitempty"`
+	// EffortParameterUnsupported records a gateway's explicit statement that
+	// the model takes no effort parameter at all. It is distinct from
+	// toggle-only ReasoningControls, which the catalog also uses for models
+	// whose gateway translates a level into a budget: only this flag says the
+	// level itself would be rejected.
+	EffortParameterUnsupported *bool `toml:"effort_parameter_unsupported" json:"effort_parameter_unsupported,omitempty"`
 	// DefaultEffort is the effort the model runs at when nothing configured
 	// one — the model's own stated default, not a policy (spec §7.4). Unset
 	// means no source states one and the caller applies its own fallback.

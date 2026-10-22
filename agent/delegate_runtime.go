@@ -2846,6 +2846,11 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	}
 	if len(descriptor.TaskTemplates) != 0 {
 		childStore := child.getOrCreateTaskStore()
+		// seeded records that THIS restore populated the store. A spawned
+		// delegate always writes its own task file, so a normal restore finds
+		// the tasks already there and the persisted queue redelivers the plan.
+		// Only a store that lost its tasks needs the announcement back.
+		seeded := false
 		if err := childStore.MutateAndPublish(func(epoch, revision uint64) error {
 			if len(childStore.View()) != 0 {
 				return nil
@@ -2853,12 +2858,32 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			if err := childStore.PopulateFromTemplates(descriptor.TaskTemplates, nil); err != nil {
 				return err
 			}
+			seeded = true
 			summary := task.Summarize(childStore.View())
 			child.emit(events.EventTaskUpdated, taskUpdatedData(summary, child.taskStoreOwnerSessionID(), epoch, revision))
 			return nil
 		}); err != nil {
 			child.discardRestoredCandidate()
 			return nil, false, fmt.Errorf("restore committed delegate tasks: %w", err)
+		}
+		// A shared store is the parent's list, not this child's plan, so it is
+		// never announced. Keep the single current-task reminder for it.
+		if descriptor.SharedTaskStoreOwnerSessionID != "" {
+			if current, ok := childStore.CurrentInProgress(); ok {
+				if err := child.SteerKind(formatCurrentTaskSteering(current, child.canInstructTool("task_list")), events.SteeringKindCurrentTask); err != nil {
+					child.discardRestoredCandidate()
+					return nil, false, err
+				}
+			}
+		} else if seeded || !child.hasTaskListAnnouncement() {
+			// Tasks present is not proof the plan was announced: the store is
+			// written before the steering, so a crash between them leaves tasks
+			// with nothing queued and nothing delivered. The transcript is the
+			// durable record of delivery, so announce when it shows no plan.
+			if err := steerDelegatePlan(child, childStore); err != nil {
+				child.discardRestoredCandidate()
+				return nil, false, err
+			}
 		}
 	}
 	now := s.sclock().Now()

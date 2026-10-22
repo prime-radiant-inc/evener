@@ -11,8 +11,8 @@ what is surprising about working here follows from that one fact.
 per-module. Run from the root, they say nothing about `agent` or `llm`.
 A change that breaks a sibling module passes every one of them.
 
-`make lint` and `make test` loop the modules explicitly
-(`evener dev module-lint`, driven by the Makefile's module lists).
+`make test` loops the modules through `scripts/gate/run-module-tests.sh`;
+`make lint` uses `make lint-golangci` for its module sweep.
 **Those are the gates.** A green `./...` is not evidence that the
 workspace builds.
 
@@ -117,8 +117,9 @@ became a `[]summarizationRoute` stranded a `//go:build eval` caller for
 six weeks.
 
 **`golangci-lint` still does not look inside a tagged file.**
-`evener dev module-lint` runs a bare `golangci-lint run ./...` per
-module and `.golangci.yml` sets no `build-tags`, so the lint rules
+`make lint-golangci` runs the developer binary's module-lint command,
+which invokes a bare `golangci-lint run ./...` per module.
+`.golangci.yml` sets no `build-tags`, so the lint rules
 proper — unused, staticcheck, the rest — never see a `//go:build
 evenerfuzz` or `//go:build eval` source. The floors are type-checking, not
 linting. When a tagged file needs the full treatment, run it by hand:
