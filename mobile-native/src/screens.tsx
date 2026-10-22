@@ -1400,6 +1400,7 @@ export function ConversationScreen({
 	// keyed by their content: a publish that changed no write keeps the same
 	// Map, and each message's chips skip re-reading its markdown.
 	const documentCwd = conversation?.cwd ?? "";
+	const artifactsDir = conversation?.artifactsDir;
 	const turns = conversation?.turns;
 	const writesKey = useMemo(() => JSON.stringify([...fileWrites(turns ?? [], documentCwd)]), [turns, documentCwd]);
 	const writes = useMemo(() => new Map<string, string>(JSON.parse(writesKey) as [string, string][]), [writesKey]);
@@ -1423,9 +1424,9 @@ export function ConversationScreen({
 	const fileContext = useMemo<NativeFileOpenContext | undefined>(
 		() =>
 			documentCwd && route.params.hubId && isValidTranscriptRef(route.params.ref)
-				? { cwd: documentCwd, artifactsDir: conversation?.artifactsDir, openFile }
+				? { cwd: documentCwd, artifactsDir, openFile }
 				: undefined,
-		[documentCwd, route.params.hubId, route.params.ref, conversation?.artifactsDir, openFile],
+		[documentCwd, route.params.hubId, route.params.ref, artifactsDir, openFile],
 	);
 	const openDocument = useCallback(
 		(path: string, updatedAt: string | undefined) => {

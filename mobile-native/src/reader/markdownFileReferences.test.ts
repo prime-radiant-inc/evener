@@ -1018,8 +1018,8 @@ describe("large adjoining prose spans", () => {
 	});
 });
 
-// C15: an agent files a report in the session's retained artifacts directory
-// and links it by file:// URL. The hub serves that directory, and the thread
+// An agent files a report in the session's retained artifacts directory and
+// links it by file:// URL. The hub serves that directory, and the thread
 // snapshot names it, so the phone must bind the link the same way the web does.
 describe("native file URL links", () => {
 	const artifactsDir = "/state/projects/p/sessions/s1/artifacts";
@@ -1045,13 +1045,14 @@ describe("native file URL links", () => {
 		});
 	});
 
-	it("leaves a file URL outside both roots as an ordinary link", () => {
-		for (const target of ["file:///etc/passwd", "file:///state/other/artifacts/r.md"]) {
+	it.each(["file:///etc/passwd", "file:///state/other/artifacts/r.md"])(
+		"leaves %s, outside both roots, an ordinary link",
+		(target) => {
 			const result = renderMarkdownFileReferences(`[report](${target})`, cwd, artifactsDir);
 			expect(result.references.size).toBe(0);
 			expect(result.markdown).toContain(target);
-		}
-	});
+		},
+	);
 
 	it("mentions the file reference the same way for chips and prose", () => {
 		const references = markdownFileReferences(`[Full report](${reportURL})`, cwd, artifactsDir);
