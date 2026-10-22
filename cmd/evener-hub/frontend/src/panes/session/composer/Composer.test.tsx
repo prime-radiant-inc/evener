@@ -3922,6 +3922,7 @@ test("a /queue typed over a recovered edit resends its body atomically", async (
   const rows = await storage.listOutbox("ref_a");
   expect(rows.at(-1)?.payload).toMatchObject({ input: [{ type: "text", text: "replacement" }] });
   expect(textarea().textContent).toBe("");
+  expect(readDraft("ref_a")).toBe("");
 });
 
 test("blanking an attachment-free recovered draft discards it durably", async () => {

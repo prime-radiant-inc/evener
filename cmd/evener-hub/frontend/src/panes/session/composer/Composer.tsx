@@ -100,7 +100,7 @@ import { CurrentWork } from "./CurrentWork";
 import styles from "./composer.module.css";
 import { consumeComposerFocus, requestComposerFocus, useComposerFocusRequest } from "./composerFocus";
 import { STEER_RECOVERY_FENCED_REASON, steerTooltipLabel, submitTooltipLabel } from "./controlTooltips";
-import { clearPersistedDraft, readDraftRevision } from "./draft";
+import { clearDraft, clearPersistedDraft, readDraftRevision } from "./draft";
 import { useNarrowComposer } from "./narrowComposer";
 import { pendingTurnEntries, QueueStrip, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
 import {
@@ -127,6 +127,7 @@ import {
   type ComposerSourceState,
   recoverySubmissionInFlight,
   restoredSkillNames,
+  sameSkillSelections,
 } from "./sourceState";
 import { recordStoplessComposer } from "./stoplessComposer";
 import { useInlineStopReady } from "./useInlineStopReady";
@@ -1047,8 +1048,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     const payload = attachments.toInputAttachments();
     const submittedLease = recoveryOwnerLeaseRef.current;
     const submittedRecoveryId = submittedLease?.clientMutationId ?? null;
-    let releaseRecoveryInFlight: (() => void) | null =
-      submittedRecoveryId === null ? null : beginRecoverySubmission(submittedRecoveryId);
+    let releaseRecoveryInFlight: (() => void) | null = null;
     const releaseInFlightRecovery = () => {
       releaseRecoveryInFlight?.();
       releaseRecoveryInFlight = null;
@@ -1073,6 +1073,8 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
       return;
     }
     setBusyAction(kind === "send" || kind === "queue" ? "submit" : "steer");
+    if (submittedRecoveryId !== null) releaseRecoveryInFlight = beginRecoverySubmission(submittedRecoveryId);
+    let submissionFailed = false;
     try {
       await submitWithPendingTracking(
         {
@@ -1149,15 +1151,39 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
         },
       );
       if (!source.alive) return;
-      clearIfUnchanged(
+      const submittedEditorMatches =
+        textRef.current === clearDraftText &&
+        sameSkillSelections(skillNamesRef.current, submittedSkillNames) &&
+        sameSkillSelections(selectionMetaRef.current.commandNames, submittedCommandNames);
+      const cleared = clearIfUnchanged(
         clearDraftText,
         submittedRevision,
         submittedDraftRevision,
         submittedSkillNames,
         submittedCommandNames,
       );
+      // A typed message-producing built-in submits its body while the editor
+      // still holds the invocation. Settlement preserves that literal command,
+      // which changes the edit revision, so the revision-guarded clear above
+      // can decline. Clear the persisted invocation by content instead when the
+      // editor still holds exactly what was submitted.
+      if (
+        options.clearDraftText !== undefined &&
+        options.text !== undefined &&
+        options.text !== options.clearDraftText &&
+        submittedEditorMatches
+      ) {
+        if (!cleared) {
+          updateText("");
+          updateSkillNames([]);
+          updateSelectionMeta({ text: "", skillNames: [] });
+        }
+        clearDraft(ref);
+        ownedDraftRevisionRef.current = readDraftRevision(ref);
+      }
       clearSubmittedAttachments(submittedAttachments);
     } catch (error) {
+      submissionFailed = true;
       // The local durable write failed. The submitted composer payload stays
       // untouched and no network request was eligible to start.
       if (source.alive && recoveryResendRefused)
@@ -1168,6 +1194,11 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     } finally {
       if (mountedRef.current) setBusyAction(null);
       releaseInFlightRecovery();
+      if (submissionFailed && source.alive && draftEditRevisionRef.current !== submittedRevision) {
+        // The recovery autosave effect is suppressed while the guard is held.
+        // Persist edits typed during the failed send so a reload keeps them.
+        source.persistDraft(textRef.current);
+      }
       releaseRecoveryOperation();
     }
   }
