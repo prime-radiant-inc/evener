@@ -2587,9 +2587,11 @@ function getMutationRuntime(): MutationRuntime | null {
     // the new turn is observed. Open the same observation marker Retry uses,
     // for ANY own turn submission, so the obsolete failure is not actionable
     // in that window. The mark is idempotent for the same identity.
+    let reflectedRecord: MutationOutboxRecord | undefined;
     if (projectionState === "reflected") {
       const record = await storage.getOutbox(clientMutationId);
       if (record !== undefined && isTurnSubmissionMethod(record.method)) {
+        reflectedRecord = record;
         const baseline = submittedTailBaselines.get(clientMutationId) ?? record.submissionBaselineTail;
         // Only a failed tail offers Retry. If the ordinary send's new turn is
         // already the tail (running, completed or failed), there is no stale
@@ -2600,6 +2602,23 @@ function getMutationRuntime(): MutationRuntime | null {
       }
     }
     const settled = await settleReceipt(clientMutationId, projectionState, acceptedTurnId);
+    // The read that settled this row may already have published the accepted
+    // turn in the bounded window, without the mutation id that would have
+    // settled the copy. A delayed reflected receipt must not leave a stale
+    // copy behind: observation alone settles it now, with no second read.
+    if (
+      settled &&
+      reflectedRecord !== undefined &&
+      acceptedTurnId !== undefined &&
+      isAcceptedTurnObserved(reflectedRecord.targetRef, acceptedTurnId)
+    ) {
+      const deleted = await storage.settleObservedAcceptedCopy(reflectedRecord.targetRef, acceptedTurnId);
+      for (const id of deleted) retryPendingProjection?.settledMutation(id);
+      if (deleted.length > 0) {
+        noteMutationStateChange(reflectedRecord.targetRef);
+        notifyMutationPersistence([reflectedRecord.targetRef]);
+      }
+    }
     submittedTailBaselines.delete(clientMutationId);
     if (settled) noteHandledMutation(clientMutationId);
     return settled;
@@ -4012,6 +4031,16 @@ function isAcceptedTurnObserved(ref: string, acceptedTurnId: string): boolean {
   );
 }
 
+// A direct fallback that cannot publish its accepted copy still owns the
+// input. If the accepted turn is observed anywhere, it is not stale; otherwise
+// the current failed tail must stay closed against a duplicate submission.
+function protectFailedAcceptedCopy(ref: string, acceptedTurnId: string | undefined, clientMutationId: string): void {
+  if (acceptedTurnId !== undefined && isAcceptedTurnObserved(ref, acceptedTurnId)) return;
+  const model = threadsStore.getState().threads.get(ref);
+  const tail = latestTurnId(model);
+  if (tail !== undefined && tail !== acceptedTurnId) markStaleRetryTail(ref, tail, clientMutationId);
+}
+
 // A direct fallback has no durable row for settleReceipt to observe, so the
 // send itself registers its baseline and opens the same observation marker
 // when the conversation still names the pre-send failed tail.
@@ -4041,7 +4070,12 @@ async function recordDirectAccepted(
   // The page-local bridge opens first and always: a storage failure after a
   // successful RPC must not leave this accepted input actionable as a Retry.
   noteDirectSubmission(ref, intent.method, baselineTail, clientMutationId);
-  if (persistCopy && isTurnSubmissionMethod(intent.method)) {
+  if (!isTurnSubmissionMethod(intent.method)) return;
+  if (!persistCopy) {
+    protectFailedAcceptedCopy(ref, acceptedTurnId, clientMutationId);
+    return;
+  }
+  {
     const runtime = getMutationRuntime();
     if (runtime) {
       // Hold the accepted-input owner until the copy is published. The public
@@ -4074,10 +4108,7 @@ async function recordDirectAccepted(
           // current, so the accepted input cannot be retried as a second one.
           // If the accepted turn is observed anywhere, it is not stale; a
           // newer failed tail must keep its own Retry available.
-          if (acceptedTurnId !== undefined && isAcceptedTurnObserved(ref, acceptedTurnId)) return;
-          const model = threadsStore.getState().threads.get(ref);
-          const tail = latestTurnId(model);
-          if (tail !== undefined && tail !== acceptedTurnId) markStaleRetryTail(ref, tail, clientMutationId);
+          protectFailedAcceptedCopy(ref, acceptedTurnId, clientMutationId);
         })
         .finally(endCopyOwner);
     }
@@ -5821,6 +5852,9 @@ async function publishAndReconcileThreadHydration(
             new Set((hydration.response.thread.turns ?? []).map((turn) => turn.id)),
           );
           if (settledAbsent.length > 0) {
+            for (const clientMutationId of settledAbsent) {
+              retryPendingProjection?.settledMutation(clientMutationId);
+            }
             noteMutationStateChange(ref);
             notifyMutationPersistence([ref]);
           }

@@ -149,6 +149,28 @@ async function clickRetryWhenReady(driver, { times = 1, timeoutMs = 20000 } = {}
   }
 }
 
+// The enabled check and the click are not one transaction: a publication can
+// advance Retry's admission between the DOM snapshot and the React handler.
+// Allow one fresh press after a bounded no-wire window. A second refusal still
+// fails the journey, so a genuinely closed control is never reported as sent.
+async function pressRetryUntilTransport(driver) {
+  await clickRetryWhenReady(driver, { times: 1 });
+  try {
+    await driver.waitPage("window.__retryWire.requests.length > 0", {
+      label: "Retry reached transport",
+      timeoutMs: 1500,
+    });
+    return;
+  } catch {
+    // Fall through to one enabled re-press.
+  }
+  await clickRetryWhenReady(driver, { times: 1, timeoutMs: 5000 });
+  await driver.waitPage("window.__retryWire.requests.length > 0", {
+    label: "Retry reached transport after one enabled re-press",
+    timeoutMs: 5000,
+  });
+}
+
 async function waitDurable(driver, ref, predicate, label, timeoutMs = 20000) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -287,8 +309,7 @@ async function runLegacy(driver, scenario) {
   await evaluate(driver.send, `${editor}.focus()`);
   await driver.typeText(scenario.ref, "RETRY_UNSENT_DRAFT");
   await evaluate(driver.send, `Object.assign(window.__retryWire, {mode:${q(scenario.mode)}, armed:true, requests:[]})`);
-  await clickRetryWhenReady(driver, { times: 1 });
-  await driver.waitPage("window.__retryWire.requests.length > 0", { label: "Retry reached transport" });
+  await pressRetryUntilTransport(driver);
   assert.deepEqual(await evaluate(driver.send, "window.__retryWire.requests[0].params.input"), [
     { type: "text", text: CONTINUE },
   ]);

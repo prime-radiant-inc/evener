@@ -713,6 +713,16 @@ export class MutationOutboxIndexedDB {
     });
   }
 
+  // A reflected receipt can arrive after a read already published its turn.
+  // Observation alone settles that copy; no read time or identity is invented.
+  async settleObservedAcceptedCopy(targetRef: string, acceptedTurnId: string): Promise<string[]> {
+    return this.#write([OPTIMISTIC_STORE], "settleObservedAcceptedCopy", async (transaction) => {
+      return this.#deleteOptimisticCopies(transaction, targetRef, (record) => {
+        return record.retainAcceptedCopyUntilObserved === true && record.submissionAcceptedTurnId === acceptedTurnId;
+      });
+    });
+  }
+
   // Clear or an instance replacement retires every accepted copy for the ref:
   // none of them describes the replacement conversation.
   async retireAcceptedCopies(targetRef: string): Promise<string[]> {
