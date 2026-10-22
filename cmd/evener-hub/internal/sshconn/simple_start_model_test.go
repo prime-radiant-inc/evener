@@ -18,9 +18,9 @@ import (
 // not an inferred error or the number of read-only inspections.
 func TestSelectedRestartBoundary(t *testing.T) {
 	for _, platform := range []string{"linux", "darwin"} {
-		for _, name := range []string{"matching-live", "no-live-report", "different-boot", "different-pid", "different-config", "different-root", "live-A-definition-B", "stopped-A-definition-B", "binding-during-ad-hoc-gate", "live-environment-file", "changed-environment-file", "cold-environment-file"} {
+		for _, name := range []string{"matching-live", "no-live-report", "different-boot", "different-pid", "different-config", "different-root", "live-A-definition-B", "stopped-A-definition-B", "binding-during-ad-hoc-gate", "live-environment-file", "changed-environment-file", "cold-environment-file", "stable-B-environment-file", "stable-B-unit-environment"} {
 			environmentFile := strings.HasSuffix(name, "environment-file")
-			if platform == "darwin" && (name == "binding-during-ad-hoc-gate" || environmentFile) {
+			if platform == "darwin" && (name == "binding-during-ad-hoc-gate" || environmentFile || name == "stable-B-unit-environment") {
 				continue
 			}
 			t.Run(platform+"/"+name, func(t *testing.T) {
@@ -47,7 +47,11 @@ func TestSelectedRestartBoundary(t *testing.T) {
 				var envFile string
 				if environmentFile {
 					envFile = filepath.Join(t.TempDir(), "hub.env")
-					if err := os.WriteFile(envFile, []byte("HOME=/home/dev\n"), 0o600); err != nil {
+					contents := "HOME=/home/dev\n"
+					if name == "stable-B-environment-file" {
+						contents += "XDG_STATE_HOME=/srv/B\n"
+					}
+					if err := os.WriteFile(envFile, []byte(contents), 0o600); err != nil {
 						t.Fatal(err)
 					}
 					owner.definition = strings.Join(strings.Fields(string(environmentFileDefinition(t, owner.supervisor, envFile))), " ")
@@ -70,7 +74,7 @@ func TestSelectedRestartBoundary(t *testing.T) {
 				case "different-root":
 					fresh.HubStateRoot, fresh.Running.HubStateRoot = "/srv/B", "/srv/B"
 				}
-				mutations, definitionReads, coldEnvironmentReads := 0, 0, 0
+				mutations, definitionReads, coldEnvironmentReads, nextRootReads := 0, 0, 0, 0
 				fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 					remote := strings.Join(argv[12:], " ")
 					if environmentFile && remote == serviceDefinitionRemote(owner.supervisor) {
@@ -80,6 +84,9 @@ func TestSelectedRestartBoundary(t *testing.T) {
 					if environmentFile && remote == "systemctl show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment -- evener-hub-selected.service" {
 						coldEnvironmentReads++
 						return []byte("EnvironmentFiles=" + envFile + " (ignore_errors=no)\nPassEnvironment=\nUnsetEnvironment=\n"), nil
+					}
+					if environmentFile && remote == systemdEnvironmentFileRemote(envFile, false) {
+						return exec.CommandContext(t.Context(), "/bin/sh", "-c", remote).Output()
 					}
 					if platform == "linux" && strings.HasSuffix(name, "definition-B") && remote == serviceDefinitionRemote(owner.supervisor) {
 						return []byte("9999 567"), nil
@@ -110,12 +117,18 @@ func TestSelectedRestartBoundary(t *testing.T) {
 							return []byte(config + "\n"), nil
 						}
 					}
-					if strings.HasPrefix(remote, "values=$(systemctl show --property=Environment ") && strings.HasSuffix(name, "definition-B") {
+					if strings.HasPrefix(remote, "values=$(systemctl show --property=Environment ") && (strings.HasSuffix(name, "definition-B") || name == "stable-B-unit-environment") {
 						return []byte("XDG_STATE_HOME=/srv/B\x00"), nil
 					}
 					if remote == ownerContext("/srv", []string{"HOME=/home/dev", "XDG_STATE_HOME=/srv/B"})+"/opt/evener hub endpoint --json --config /srv/selected.toml --addr '[::]:0'" {
+						nextRootReads++
 						reportB := fresh
 						reportB.HubStateRoot = "/srv/B/evener"
+						if fresh.Running != nil {
+							running := *fresh.Running
+							running.HubStateRoot = reportB.HubStateRoot
+							reportB.Running = &running
+						}
 						return []byte(mustOwnerJSON(t, reportB)), nil
 					}
 					for _, command := range commands {
@@ -170,15 +183,22 @@ func TestSelectedRestartBoundary(t *testing.T) {
 				if bindingCase {
 					refusal = errEntryBinding
 				}
-				if name == "matching-live" || name == "live-environment-file" {
+				if name == "matching-live" || name == "live-environment-file" || name == "cold-environment-file" {
 					if mutations != 1 || !errors.Is(err, errReplacementFixture) {
 						t.Fatalf("mutations=%d err=%v, want one authorized restart", mutations, err)
 					}
 				} else if mutations != 0 || !errors.Is(err, refusal) || !reflect.DeepEqual(m.pendingRestart(host.Name), saved) {
 					t.Fatalf("refusal: mutations=%d err=%v pending preserved=%v", mutations, err, reflect.DeepEqual(m.pendingRestart(host.Name), saved))
 				}
+				if strings.HasPrefix(name, "stable-B-") && nextRootReads != 1 {
+					t.Fatalf("next-launch root B was not inspected: reads=%d err=%v", nextRootReads, err)
+				}
 				if environmentFile {
-					if definitionReads == 0 || (stopped && (coldEnvironmentReads != 1 || !strings.Contains(err.Error(), "stopped service requires retained environment intent"))) || (!stopped && coldEnvironmentReads != 0) {
+					wantReads := 1
+					if name == "changed-environment-file" {
+						wantReads = 0 // The unchanged definition comparison refuses first.
+					}
+					if definitionReads == 0 || coldEnvironmentReads != wantReads {
 						t.Fatalf("wrong environment evidence: definition reads=%d cold environment reads=%d err=%v", definitionReads, coldEnvironmentReads, err)
 					}
 				}

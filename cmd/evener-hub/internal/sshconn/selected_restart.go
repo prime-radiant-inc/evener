@@ -117,23 +117,20 @@ func (m *Manager) checkSelectedReplacement(ctx context.Context, host hostreg.Hos
 		if definition != owner.definition {
 			return fmt.Errorf("%w: selected service definition changed", errOwnerEvidence)
 		}
-		env := owner.env
-		if !live {
-			user, ok := effectiveUserName(host)
-			if !ok {
-				out, err := m.ownerRead(ctx, host, "id -un")
-				if err != nil {
-					return err
-				}
-				user = firstLine(string(out))
-			}
-			env, err = m.stoppedServiceEnvironment(ctx, host, sup, user)
+		user, ok := effectiveUserName(host)
+		if !ok {
+			out, err := m.ownerRead(ctx, host, "id -un")
 			if err != nil {
 				return err
 			}
-			if !equalStrings(env, owner.env) {
-				return fmt.Errorf("%w: next service environment disagrees with selection", errOwnerEvidence)
-			}
+			user = firstLine(string(out))
+		}
+		env, err := m.stoppedServiceEnvironment(ctx, host, sup, user)
+		if err != nil {
+			return err
+		}
+		if !live && !equalStrings(env, owner.env) {
+			return fmt.Errorf("%w: next service environment disagrees with selection", errOwnerEvidence)
 		}
 		return m.checkOwnerConfig(ctx, host, owner.argv, owner.cwd, env, owner.report)
 	}

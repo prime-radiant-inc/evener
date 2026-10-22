@@ -199,8 +199,8 @@ func (m *Manager) resolveStoppedOwner(ctx context.Context, host hostreg.Host, fa
 // eval. The remote awk lexer strips quoting while exporting only the four named
 // inputs. A construct it cannot unambiguously decode refuses without disclosure.
 const narrowEnvironmentFilter = `awk '
-function emit() { if (word ~ /^(HOME|XDG_CONFIG_HOME|XDG_STATE_HOME|EVENER_HUB_LISTEN_ADDR)=/) printf "%s%c", word, 0; word="" }
-{ for (i=1;i<=length($0);i++) {
+function emit() { if (word ~ /^(HOME|XDG_CONFIG_HOME|XDG_STATE_HOME|EVENER_HUB_LISTEN_ADDR)=/) { total+=length(word)+1; if (total > 65536) exit 1; printf "%s%c", word, 0 } word="" }
+{ if (length($0) > 65536) exit 1; for (i=1;i<=length($0);i++) {
  c=substr($0,i,1)
  if (escape) { if (c != "\\" && c != "\042" && c != "\047" && c != " ") exit 1; word=word c; escape=0; continue }
  if (c == "\\") { escape=1; continue }
@@ -224,27 +224,55 @@ func (m *Manager) stoppedServiceEnvironment(ctx context.Context, host hostreg.Ho
 	if sup.kind == supervisorSystemdUser {
 		remote += " --user"
 	}
-	// An EnvironmentFile or nontrivial manager inheritance needs retained live
-	// intent, rather than guessing a fresh stopped launch's environment.
+	// Resolve the next launch independently of the running process. A stable
+	// definition may already select a different root than that process serves.
 	fileOut, err := m.ownerRead(ctx, host, remote+" show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment -- "+shellquote.RemoteWord(sup.label))
 	if err != nil {
 		return nil, err
 	}
-	properties := map[string]bool{}
+	properties := map[string]string{}
 	for line := range strings.SplitSeq(strings.TrimSuffix(string(fileOut), "\n"), "\n") {
 		key, value, ok := strings.Cut(line, "=")
-		if !ok || value != "" || properties[key] || !slices.Contains([]string{"EnvironmentFiles", "PassEnvironment", "UnsetEnvironment"}, key) {
-			return nil, fmt.Errorf("%w: stopped service requires retained environment intent", errOwnerEvidence)
+		_, duplicate := properties[key]
+		if !ok || duplicate || !slices.Contains([]string{"EnvironmentFiles", "PassEnvironment", "UnsetEnvironment"}, key) {
+			return nil, fmt.Errorf("%w: service environment properties unavailable", errOwnerEvidence)
 		}
-		properties[key] = true
+		properties[key] = value
 	}
 	if len(properties) != 3 {
 		return nil, fmt.Errorf("%w: stopped service environment properties unavailable", errOwnerEvidence)
 	}
-	var inherited []byte
-	if sup.kind == supervisorSystemdUser {
-		inherited, err = m.ownerRead(ctx, host, "values=$("+remote+" show-environment) || exit; printf '%s\\n' \"$values\" | "+narrowEnvironmentFilter)
+	env := map[string]string{"HOME": home}
+	merge := func(out []byte, allow func(string) bool) error {
+		if len(out) == 0 {
+			return nil
+		}
+		if len(out) > 65536 || out[len(out)-1] != 0 {
+			return errOwnerEvidence
+		}
+		for entry := range strings.SplitSeq(string(out[:len(out)-1]), "\x00") {
+			key, value, ok := strings.Cut(entry, "=")
+			if !ok || !slices.Contains(ownerEnvKeys, key) || strings.ContainsAny(value, "\r\n") {
+				return errOwnerEvidence
+			}
+			if allow == nil || allow(key) {
+				env[key] = value
+			}
+		}
+		return nil
+	}
+	pass := strings.Fields(properties["PassEnvironment"])
+	for _, key := range pass {
+		if strings.ContainsAny(key, "=\\\"'%") {
+			return nil, fmt.Errorf("%w: unsupported PassEnvironment serialization", errOwnerEvidence)
+		}
+	}
+	if sup.kind == supervisorSystemdUser || len(pass) != 0 {
+		inherited, err := m.ownerRead(ctx, host, "values=$("+remote+" show-environment) || exit; printf '%s\\n' \"$values\" | "+narrowEnvironmentFilter)
 		if err != nil {
+			return nil, err
+		}
+		if err := merge(inherited, func(key string) bool { return sup.kind == supervisorSystemdUser || slices.Contains(pass, key) }); err != nil {
 			return nil, err
 		}
 	}
@@ -252,23 +280,42 @@ func (m *Manager) stoppedServiceEnvironment(ctx context.Context, host hostreg.Ho
 	if err != nil {
 		return nil, err
 	}
-	out = append(inherited, out...)
-	env := []string{"HOME=" + home}
-	if len(out) > 0 {
-		for value := range strings.SplitSeq(strings.TrimSuffix(string(out), "\x00"), "\x00") {
-			key, _, ok := strings.Cut(value, "=")
-			if !ok || !slices.Contains(ownerEnvKeys, key) {
-				return nil, errOwnerEvidence
-			}
-			for i, previous := range env {
-				if strings.HasPrefix(previous, key+"=") {
-					env = append(env[:i], env[i+1:]...)
-					break
-				}
-			}
-			env = append(env, value)
+	if strings.ContainsRune(string(out), '%') {
+		return nil, fmt.Errorf("%w: unresolved Environment specifier", errOwnerEvidence)
+	}
+	if err := merge(out, nil); err != nil {
+		return nil, err
+	}
+	files := strings.Fields(properties["EnvironmentFiles"])
+	if len(files)%2 != 0 || len(files) > 128 {
+		return nil, fmt.Errorf("%w: unsupported EnvironmentFiles serialization", errOwnerEvidence)
+	}
+	for i := 0; i < len(files); i += 2 {
+		path, mode := files[i], files[i+1]
+		if !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "\\\"'%*?[]") || (mode != "(ignore_errors=yes)" && mode != "(ignore_errors=no)") {
+			return nil, fmt.Errorf("%w: unsupported EnvironmentFile path", errOwnerEvidence)
+		}
+		out, err := m.ownerRead(ctx, host, systemdEnvironmentFileRemote(path, mode == "(ignore_errors=yes)"))
+		if err != nil {
+			return nil, fmt.Errorf("%w: cannot resolve EnvironmentFile: %w", errOwnerEvidence, err)
+		}
+		if err := merge(out, nil); err != nil {
+			return nil, err
 		}
 	}
-	slices.Sort(env)
-	return env, nil
+	for _, unset := range strings.Fields(properties["UnsetEnvironment"]) {
+		if strings.ContainsAny(unset, "\\\"'%") {
+			return nil, fmt.Errorf("%w: unsupported UnsetEnvironment serialization", errOwnerEvidence)
+		}
+		key, value, exact := strings.Cut(unset, "=")
+		if !exact || env[key] == value {
+			delete(env, key)
+		}
+	}
+	var result []string
+	for key, value := range env {
+		result = append(result, key+"="+value)
+	}
+	slices.Sort(result)
+	return result, nil
 }

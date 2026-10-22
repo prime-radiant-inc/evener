@@ -53,12 +53,10 @@ func replacementGateCommands(t *testing.T, inspection []ownerCommand, live bool)
 			t.Fatal("missing declared selected service")
 		}
 		commands = append(commands, listing, userListing, show, definition)
-		if !live {
-			commands = append(commands,
-				ownerCommand{"getent passwd dev | cut -d: -f6", "/home/dev\n"},
-				ownerCommand{"systemctl show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment -- " + label, "EnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\n"},
-				ownerCommand{"values=$(systemctl show --property=Environment --value -- " + label + ") || exit; printf '%s\\n' \"$values\" | " + narrowEnvironmentFilter, ""})
-		}
+		commands = append(commands,
+			ownerCommand{"getent passwd dev | cut -d: -f6", "/home/dev\n"},
+			ownerCommand{"systemctl show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment -- " + label, "EnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\n"},
+			ownerCommand{"values=$(systemctl show --property=Environment --value -- " + label + ") || exit; printf '%s\\n' \"$values\" | " + narrowEnvironmentFilter, ""})
 	}
 	commands = append(commands, contextReport)
 	return commands
