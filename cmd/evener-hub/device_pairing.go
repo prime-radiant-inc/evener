@@ -52,8 +52,7 @@ func (p *devicePairings) create(params appwire.DevicePairingCreateParams) (appwi
 			origin, _ = mobilePairingOrigin(p.cfg, "")
 		}
 	}
-	parsed, err := hubendpoint.ParseOrigin(origin)
-	if err != nil {
+	if _, err := hubendpoint.ParseOrigin(origin); err != nil {
 		return appwire.DevicePairingInvitation{}, appwire.InvalidParams("pairing requires a Hub HTTP(S) origin")
 	}
 	origin, ok := safeMobileOrigin(origin)
@@ -61,7 +60,13 @@ func (p *devicePairings) create(params appwire.DevicePairingCreateParams) (appwi
 		return appwire.DevicePairingInvitation{}, appwire.InvalidParams("choose a reachable Hub origin")
 	}
 	// Pairing keeps its narrower wire host policy above the shared origin parser.
-	host := strings.TrimRight(parsed.Hostname(), ".")
+	// Validate the hostname the invitation and the credential envelope actually
+	// carry, including any root dot, because a length byte holds at most 255.
+	stored, err := hubendpoint.ParseOrigin(origin)
+	if err != nil {
+		return appwire.DevicePairingInvitation{}, appwire.InvalidParams("choose a reachable Hub origin")
+	}
+	host := stored.Hostname()
 	if len(host) == 0 || len(host) > 255 || strings.Trim(host, "abcdefghijklmnopqrstuvwxyz0123456789.:-") != "" {
 		return appwire.DevicePairingInvitation{}, appwire.InvalidParams("choose a reachable Hub origin")
 	}
