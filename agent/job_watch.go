@@ -223,6 +223,8 @@ type watchConfig struct {
 	hubGeneration      string
 	hubCaller          string
 	hubCompletion      bool
+	hubTurnBound       bool
+	hubTurnID          string
 	hubSeen            map[string]bool
 	hubSuspended       bool
 	target             string

@@ -51,7 +51,7 @@ executable provides the commands that launch these processes. See
 | Recall, correct or forget durable lessons | S24 memory | S09 session context, S14 scoped execution, S10 historical evidence |
 | Use a plugin, skill, hook, or external tool | S17–S19 extensions | S14 execution boundaries, S15 credentials |
 | Approve access beyond a selected sandbox | S14 execution boundaries | S05 approval requests and decisions; S02–S03 client controls |
-| Let one session manage another | S01 Manager start parameter; S08–S09 durable session bit | S02–S03 read-only indication, S05 authenticated binding, S06–S07 routing, S10–S12 history, input and local watches |
+| Let one session manage another | S01 Manager start parameter; S08–S09 durable session bit | S02–S03 read-only indication, S05 authenticated binding, S06–S07 routing, S10–S12 history, input and local/remote watches |
 | Diagnose a stuck session or repair setup | S21 diagnostics; S15 settings | The affected subsystem's authority and recovery owner below |
 
 ## Clients and interaction

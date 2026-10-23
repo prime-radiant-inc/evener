@@ -24,10 +24,11 @@ It creates an independent worker, installs its watch before input, and reports
 creation, watch and input separately. The Manager can read the question or
 approval with `job_status`, answer via `delegate_send` or approve through
 `session_control`, and read accepted terminal history with `read_transcript`.
-This local approval path works without a browser subscriber. **Remote
-`job_watch` is unsupported**: do not promise the same unattended remote
-notification loop. Remote reads, input and approval remain available, but
-remote sandbox approval has not been exercised by a live remote prompt.
+This local approval path works without a browser subscriber. For an existing
+remote worker, attach `job_watch` with its source-qualified ref before sending
+input. Remote question/answer/completion uses the shared hub subscription path
+and needs no browser. Worker creation remains local-only; remote sandbox
+approval has not been exercised by a live remote prompt.
 
 ## Try a CLI continuation
 

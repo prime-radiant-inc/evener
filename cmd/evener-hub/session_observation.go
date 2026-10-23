@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -35,6 +34,9 @@ func sessionWatchSelected(request appwire.SessionWatchRequest, event string) boo
 
 func observationMetadata(item appwire.ThreadItem, ref, instance, generation string) appwire.SessionObservationMetadata {
 	m := *item.Observation
+	// These fields scope delivery to the serving subscription. They do not
+	// establish the original execution's boot. TurnID and the recorded typed
+	// acceptance verdict identify the work, and the snapshot stays unchanged.
 	m.Ref, m.InstanceID, m.GenerationID = ref, instance, generation
 	if m.EntryID == "" {
 		m.EntryID = item.TranscriptKey
@@ -63,16 +65,6 @@ func recordedObservationUpdates(items []appwire.ThreadItem, request appwire.Sess
 }
 
 func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.SessionWatchRequest) (<-chan appwire.SessionWatchUpdate, error) {
-	// A remote AppWire subscriber stream is not the local observation lease.
-	// Fail this unsupported target before asking for a snapshot or a lease; the
-	// local watch's admission and handoff order below remains unchanged.
-	if target, err := appwire.ParseRef(request.Ref); err == nil {
-		if source, err := b.owner.sources.SourceForRef(target.String()); err == nil {
-			if _, remote := source.(*appsource.RemoteHubSource); remote {
-				return nil, appwire.Unavailable("remote job_watch is unsupported: the remote observation lease is unavailable; reads, status, input and approval remain available")
-			}
-		}
-	}
 	view, err := b.State(ctx)
 	if err != nil {
 		return nil, err
@@ -89,21 +81,18 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 	if err != nil {
 		return nil, appwire.InvalidParams(err.Error())
 	}
-	source, err := b.owner.sources.SourceForRef(ref.String())
+	watchCtx, cancel := context.WithCancel(ctx)
+	transport, err := b.owner.server.NewInProcessTransport(watchCtx)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
-	relaySource, ok := source.(appsource.RelaySessionSource)
-	if !ok {
-		return nil, appwire.Unavailable("remote job_watch is unsupported: the remote observation lease is unavailable; reads, status, input and approval remain available")
-	}
-	watchCtx, cancel := context.WithCancel(ctx)
-	var lease appsource.RelaySessionLease
-	cleanup := func() {
-		cancel()
-		if lease != nil {
-			lease.Close()
-		}
+	cleanup := func() { cancel(); _ = transport.Close() }
+	client := appwire.NewClient(transport)
+	client.Start(watchCtx)
+	if _, err := client.Initialize(watchCtx, appwire.InitializeParams{}); err != nil {
+		cleanup()
+		return nil, err
 	}
 	current, err := b.State(watchCtx)
 	if err != nil {
@@ -114,26 +103,13 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 		cleanup()
 		return nil, appwire.InvalidRequest("Manager caller changed during watch registration")
 	}
-	canonical, err := relaySource.ResolveRelaySession(appwire.ThreadReadParams{Ref: ref.String()})
+	params := appwire.ThreadReadParams{Ref: ref.String(), Subscribe: true, IncludeTurns: request.Completion || sessionWatchSelected(request, "communicate")}
+	read, err := client.ThreadRead(watchCtx, params)
 	if err != nil {
 		cleanup()
 		return nil, err
 	}
-	lease, err = relaySource.AcquireRelaySession(canonical)
-	if err != nil {
-		cleanup()
-		return nil, err
-	}
-	var notifications <-chan appsource.RelayDelivery
-	params := appwire.ThreadReadParams{Ref: ref.String(), IncludeTurns: request.Completion || sessionWatchSelected(request, "communicate")}
-	read, err := b.owner.readWithHandoff(watchCtx, params, false, func() error { var listenErr error; notifications, listenErr = lease.Listen(watchCtx); return listenErr })
-	if err != nil || notifications == nil {
-		cleanup()
-		if err == nil {
-			err = appwire.SessionUnavailable("thread has no live snapshot handoff")
-		}
-		return nil, err
-	}
+	notifications := client.Notifications()
 	updates := make(chan appwire.SessionWatchUpdate, 32)
 	initial := appwire.SessionWatchUpdate{Snapshot: &read, Metadata: appwire.SessionObservationMetadata{Ref: read.Thread.Evener.Ref, InstanceID: read.Thread.Evener.InstanceID, GenerationID: read.BootGeneration}}
 	updates <- initial
@@ -168,24 +144,73 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 				}
 			}
 		}
+		type readResult struct {
+			response appwire.ThreadReadResponse
+			err      error
+		}
+		// One in-flight read, not a second notification consumer. Keeping this
+		// loop draining lets the shared client's response/handoff progress even
+		// when notifications precede the response on the wire.
+		readDone := make(chan readResult)
+		reading, readAgain := false, false
+		refresh := func() {
+			if reading {
+				readAgain = true
+				return
+			}
+			reading = true
+			go func() {
+				response, err := client.ThreadRead(watchCtx, params)
+				select {
+				case readDone <- readResult{response, err}:
+				case <-watchCtx.Done():
+				}
+			}()
+		}
 		for {
 			select {
 			case <-watchCtx.Done():
 				return
-			case delivery, open := <-notifications:
+			case result := <-readDone:
+				reading = false
+				if result.err != nil {
+					return
+				}
+				fresh := result.response
+				meta := appwire.SessionObservationMetadata{Ref: fresh.Thread.Evener.Ref, InstanceID: fresh.Thread.Evener.InstanceID, GenerationID: fresh.BootGeneration}
+				if !send(appwire.SessionWatchUpdate{Snapshot: &fresh, Metadata: meta}) {
+					return
+				}
+				if meta.Ref != initial.Metadata.Ref || meta.InstanceID != initial.Metadata.InstanceID || meta.GenerationID != initial.Metadata.GenerationID {
+					return // The runtime ends the old watch from this replacement cut.
+				}
+				if readAgain {
+					readAgain = false
+					refresh()
+				}
+			case notification, open := <-notifications:
 				if !open {
 					return
 				}
-				notification := delivery.Notification
-				delivery.Acknowledge()
 				current, err := b.State(watchCtx)
 				if err != nil || !current.Manager || current.Ref != view.Ref || current.InstanceID != view.InstanceID {
 					return
 				}
 				base := appwire.SessionObservationMetadata{Ref: ref.String(), InstanceID: read.Thread.Evener.InstanceID, GenerationID: read.BootGeneration}
+				if notification.Method == appwire.NotifyEvenerThreadResync {
+					if !send(appwire.SessionWatchUpdate{Notification: &notification, Metadata: base}) {
+						return
+					}
+					refresh()
+					continue
+				}
 				if notification.Method == appwire.NotifyHistoryUpdated {
 					var history appwire.HistoryUpdatedParams
 					if json.Unmarshal(notification.Params, &history) != nil {
+						continue
+					}
+					if history.BootGeneration != "" && history.BootGeneration != read.BootGeneration {
+						refresh()
 						continue
 					}
 					for _, u := range recordedObservationUpdates(history.Items, request, ref.String(), base.InstanceID, base.GenerationID) {
@@ -209,7 +234,7 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 							return
 						}
 					}
-				case appwire.NotifyEvenerThreadResync, appwire.NotifyThreadClosed:
+				case appwire.NotifyThreadClosed:
 					event = "status"
 				case appwire.NotifyEvenerSandboxEscalationRequested:
 					event = "approval"

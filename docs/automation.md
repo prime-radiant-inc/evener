@@ -198,16 +198,22 @@ The `delegate` result reports `created`, `watch` and `input` separately. A
 successful creation followed by a failed watch returns the worker ref, leaves
 the worker empty, and does not submit its prompt. A successful watch followed
 by failed or uncertain input keeps the watch attached and reports that input
-outcome separately. If the launch is unknown, it stays unknown: never retry
-creation automatically. Inspect any returned worker ref before deciding what
+outcome separately. Once input has a mutation identity, `input.clientMutationId`
+retains it on submitted, refused and uncertain outcomes. Retry uncertain input
+with `delegate_send` using that same ID, prompt, worker ref and instance, not a
+new creation or a fresh mutation ID. If the launch is unknown, it stays unknown:
+never retry creation automatically. Inspect any returned worker ref before deciding what
 to do next. Workers are not owned delegates; they continue independently when
 their Manager's turn ends, and their watch notices are not delegate reports.
 
-The watch-before-input loop and no-browser sandbox approval are qualified for
-**local** workers. Remote `job_watch` is unavailable; do not substitute the
-browser's remote notification stream for its recorded observation lease.
-Remote status, input and approval use their existing owners, but a sandbox
-approval caused by a live remote prompt has not been exercised end to end.
+Manager `job_watch` supports local and remote targets through the same shared
+hub subscriptions as human clients. For an existing remote worker, attach
+`job_watch(operation="create", hub={ref:"HOST:WORKSPACE_ID",events:["question"],completion:true})`
+before sending input. Remote question/answer/completion and saved Manager
+attribution are checked through real two-hub SSH acceptance, without a browser.
+Clearing a Manager watch leaves human subscribers attached. Local no-browser
+sandbox approval is qualified; approval caused by a live remote prompt remains
+unexercised end to end.
 
 ## Apply human controls from a Manager
 

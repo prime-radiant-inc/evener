@@ -23,6 +23,9 @@ import (
 // Only the model is scripted. The SSH host, two hubs, daemons, human RPC,
 // Manager binding, observation lease, input, sandbox and histories are real.
 func TestE2E_ManagerAcceptance(t *testing.T) {
+	if os.Getenv("EVENER_SSH_E2E") != "1" || os.Getenv("EVENER_SSH_E2E_DEPLOY") != "1" {
+		t.Skip("requires EVENER_SSH_E2E=1 EVENER_SSH_E2E_DEPLOY=1, writes only to a test-owned localhost SSH directory")
+	}
 	e2ecap.RequireLoopbackBind(t)
 	e2ecap.RequireProcessInspect(t)
 	if testing.Short() {
@@ -141,8 +144,8 @@ func TestE2E_ManagerAcceptance(t *testing.T) {
 	if selectedModel == "" {
 		t.Fatalf("remote model unavailable: %+v", models.Models)
 	}
-	// The local worker uses a local observation lease: remote job_watch is not
-	// advertised, and this test does not claim a remote approval watch works.
+	// Exercise live approval locally. The remote workflow below separately
+	// exercises question and completion watches, not remote sandbox approval.
 	const task = "ACCEPT-WORKER-TASK"
 	call.RespondToolCall("delegate", map[string]any{"prompt": task, "hub": map[string]any{"cwd": local.workDir, "model": local.model, "watch": map[string]any{"events": []string{"question", "approval"}, "completion": true}}})
 	var workerFirst *fakellm.Call
@@ -509,6 +512,41 @@ func acceptanceRemoteManagerInput(ctx context.Context, t *testing.T, provider *f
 	if err != nil || !managerCall.Contains(opening) {
 		t.Fatalf("remote input driver: call=%v err=%v", managerCall, err)
 	}
+	// Keep the same human subscription through Manager attach, clear and
+	// reattach. A later terminal notification must reach this original client.
+	observer := local.dialRPC(ctx, t)
+	if _, err := observer.ThreadRead(ctx, appwire.ThreadReadParams{Ref: target, Subscribe: true}); err != nil {
+		t.Fatal(err)
+	}
+	attach := func(call *fakellm.Call) (*fakellm.Call, string) {
+		t.Helper()
+		call.RespondToolCall("job_watch", map[string]any{"operation": "create", "hub": map[string]any{"ref": target, "events": []string{"question"}, "completion": true}})
+		next, err := provider.Next(ctx.Done())
+		if err != nil || !next.Contains(opening) {
+			t.Fatalf("remote watch attach provider: %v", err)
+		}
+		watches, err := clientRequest[appwire.SessionWatchesResponse](ctx, human, appwire.MethodEvenerThreadWatchesList, appwire.SessionActivityListParams{Ref: managerRef})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range watches.Watches {
+			if row.Watch.Active && row.Watch.Target == target && next.Contains(row.Watch.ID) {
+				return next, row.Watch.ID
+			}
+		}
+		t.Fatalf("remote watch absent from durable activity: %+v", watches.Watches)
+		return nil, ""
+	}
+	managerCall, clearedWatch := attach(managerCall)
+	managerCall.RespondToolCall("job_watch", map[string]any{"operation": "clear", "watch_id": clearedWatch})
+	managerCall, err = provider.Next(ctx.Done())
+	if err != nil || !managerCall.Contains(opening) {
+		t.Fatalf("remote watch clear: call=%v err=%v", managerCall, err)
+	}
+	managerCall, watchID := attach(managerCall)
+	if watchID == clearedWatch {
+		t.Fatal("cleared remote watch remained active")
+	}
 	var queueMutations []string
 	for _, message := range []string{task, answer} {
 		managerCall.RespondToolCall("delegate_send", map[string]any{"to": target, "input_mode": "start", "message": message, "client_mutation_id": newMutationID(t), "expected_instance_id": instance})
@@ -538,6 +576,13 @@ func acceptanceRemoteManagerInput(ctx context.Context, t *testing.T, provider *f
 			awaitThread(ctx, t, human, target, "remote question pending", func(thread appwire.Thread) bool {
 				return thread.Evener.AskPending && thread.Evener.PendingQuestion != nil && thread.Evener.PendingQuestion.Question == question
 			})
+			// End the Manager turn so the question must wake it through its
+			// durable remote watch, not a polling loop or browser answer.
+			managerCall.RespondToolCall("communicate", communicateArgs("waiting for remote question"))
+			managerCall, err = provider.Next(ctx.Done())
+			if err != nil || !managerCall.Contains(opening) || !managerCall.Contains(watchID) {
+				t.Fatalf("remote question watch wake: call=%v err=%v", managerCall, err)
+			}
 		} else {
 			managerCall, targetCall, queueMutations = acceptanceRemoteQueueControls(ctx, t, provider, remoteHuman, managerCall, targetCall, workerRef, target, instance, opening, task)
 			targetCall.RespondToolCall("communicate", communicateArgs("remote answer received"))
@@ -545,9 +590,48 @@ func acceptanceRemoteManagerInput(ctx context.Context, t *testing.T, provider *f
 	}
 	managerCall.RespondToolCall("communicate", communicateArgs("remote work answered"))
 	awaitThread(ctx, t, remoteHuman, workerRef, "remote worker settled", func(thread appwire.Thread) bool { return thread.Status.Type == appwire.ThreadStatusIdle })
+	for {
+		call, err := provider.Next(ctx.Done())
+		if err != nil || !call.Contains(opening) || !call.Contains(watchID) {
+			t.Fatalf("remote completion watch wake: call=%v err=%v", call, err)
+		}
+		watches, err := clientRequest[appwire.SessionWatchesResponse](ctx, human, appwire.MethodEvenerThreadWatchesList, appwire.SessionActivityListParams{Ref: managerRef})
+		if err != nil {
+			t.Fatal(err)
+		}
+		call.RespondToolCall("communicate", communicateArgs("remote completion observed"))
+		if acceptanceWatchCompleted(watches, watchID) {
+			break
+		}
+	}
+	humanTerminal := false
+	for !humanTerminal {
+		select {
+		case notice, open := <-observer.Notifications():
+			if !open {
+				t.Fatal("human subscription closed after Manager watch")
+			}
+			if notice.Method == appwire.NotifyHistoryUpdated {
+				var history appwire.HistoryUpdatedParams
+				if json.Unmarshal(notice.Params, &history) != nil {
+					t.Fatal("invalid human history update")
+				}
+				for _, item := range history.Items {
+					if item.Text == "remote answer received" && item.Observation != nil && item.Observation.EndTurn && item.Observation.EndReason == "done" && item.Observation.CausalKnown && item.Observation.TerminalAccepted != nil && *item.Observation.TerminalAccepted {
+						humanTerminal = true
+					}
+				}
+			}
+		case <-ctx.Done():
+			t.Fatal("original human missed remote terminal after Manager attach/clear")
+		}
+	}
 	turns, err := readTranscriptTurns(ctx, remoteHuman, workerRef, "")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !workerTerminalAccepted(turns, "remote answer received") {
+		t.Fatal("remote saved history lost accepted completion")
 	}
 	hubID, err := hubcore.NewHubIdentityStore(filepath.Join(local.home, "state", "evener", "index.db")).HubID()
 	if err != nil {

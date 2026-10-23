@@ -15,9 +15,9 @@ changes; keep implementation history in Git and pull requests.
   navigation boundaries, pagination and shared recovery ownership.
 - [Manager workflow](../automation.md#manager-sessions): an immutable session
   start parameter for anyone authorized to start a session. Managers discover,
-  observe and act on sessions reachable through their own hub, with local watches
-  and explicit remote limits. The daemon owns status; web and native show a
-  read-only indication. Ownership stays in the existing session, hub, input,
+  observe and act on sessions reachable through their own hub, with local and
+  remote watches; worker creation remains local-only. The daemon owns status;
+  web and native show a read-only indication. Ownership stays in the existing session, hub, input,
   history and watch subsystems.
 - [History content](history-content.md): selectable conversation, reasoning, tool,
   intent, system and diagnostics content on reads, pages and subscriptions.

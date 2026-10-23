@@ -844,6 +844,7 @@ func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, err
 		return appwire.ThreadItem{}, fmt.Errorf("%w: entry %d projects no item at part %d", errCorrupt, record.Entry-1, record.Part)
 	}
 	item := items[at]
+	openerID, openerRoundID := item.ID, item.RoundID
 	if callID != "" {
 		opener, err := r.entry(record.Opener.Offset, record.Opener.Length)
 		if err != nil {
@@ -866,11 +867,34 @@ func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, err
 		if record.Completer.Length > 0 {
 			contributors = append(contributors, record.Completer)
 		}
+		var echoes []appwire.ThreadItem
 		var completedAtEntry uint64
 		for _, c := range contributors {
 			entry, err := r.entry(c.Offset, c.Length)
 			if err != nil {
 				return appwire.ThreadItem{}, err
+			}
+			if entry.Kind == schema.TurnCommunicate && item.Type == "agentMessage" {
+				projected, _, err := r.project(c, callID, turnID)
+				if err != nil {
+					return appwire.ThreadItem{}, err
+				}
+				for _, communication := range projected {
+					if communication.Observation != nil {
+						echoes = append(echoes, communication)
+					}
+				}
+				continue
+			}
+			if len(echoes) > 0 && (entry.Kind == schema.TurnToolResults || entry.Kind == schema.TurnTool) {
+				for i := range echoes {
+					if echoes[i].Observation.EndTurn {
+						if accepted := apptranscript.CommunicateTerminalAccepted(*entry, echoes[i].CallID); accepted != nil {
+							echoes[i].Observation.TerminalAccepted = accepted
+						}
+					}
+				}
+				continue
 			}
 			if item.Observation != nil && item.Observation.EndTurn && (entry.Kind == schema.TurnToolResults || entry.Kind == schema.TurnTool) {
 				if accepted := apptranscript.CommunicateTerminalAccepted(*entry, callID); accepted != nil {
@@ -896,10 +920,20 @@ func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, err
 			}
 			item = foldCall(item, items, callID)
 		}
+		if len(echoes) > 0 {
+			winner := echoes[0]
+			for _, echo := range echoes {
+				if accepted := echo.Observation.TerminalAccepted; echo.Observation.EndTurn && accepted != nil && *accepted {
+					winner = echo
+					break
+				}
+			}
+			item.CallID, item.Observation = winner.CallID, winner.Observation
+		}
 		item.CompletedAtEntry = completedAtEntry
 		// A new-format item that spans entries keeps its opener's identity.
 		if identity {
-			item.ID, item.RoundID = items[at].ID, items[at].RoundID
+			item.ID, item.RoundID = openerID, openerRoundID
 		}
 	}
 	item.TurnID = turnID

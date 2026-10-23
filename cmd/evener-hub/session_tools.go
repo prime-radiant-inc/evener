@@ -414,12 +414,6 @@ func (o *sessionOperations) Read(ctx context.Context, params appwire.ThreadReadP
 }
 
 func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadParams, capture bool) (appwire.ThreadReadResponse, error) {
-	return o.readWithHandoff(ctx, params, capture, nil)
-}
-
-// beforeCommit installs a private listener while the canonical read still owns
-// the snapshot cut. Human reads retain their existing admission/publication path.
-func (o *sessionOperations) readWithHandoff(ctx context.Context, params appwire.ThreadReadParams, capture bool, beforeCommit func() error) (appwire.ThreadReadResponse, error) {
 	cfg, sources, relays := o.cfg, o.sources, o.relays
 
 	if err := appwire.ValidateThreadReadParams(params); err != nil {
@@ -588,12 +582,6 @@ func (o *sessionOperations) readWithHandoff(ctx context.Context, params appwire.
 			if !read.handoff.Prepare() {
 				read.finish(false)
 				return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread snapshot is unavailable")
-			}
-			if beforeCommit != nil {
-				if err := beforeCommit(); err != nil {
-					read.finish(false)
-					return appwire.ThreadReadResponse{}, err
-				}
 			}
 			if !read.finish(true) {
 				return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread snapshot is unavailable")
