@@ -73,6 +73,26 @@ test("a wrap row's value wraps in full instead of truncating, and only that row'
   expect(wrap).toContain("overflow: visible");
 });
 
+test("eyebrowLabels labels rows with the eyebrow recipe, and only when asked", () => {
+  const { rerender } = render(
+    <PropertyList rows={[{ label: "Was", value: "https://old.example", mono: true, wrap: true }]} />,
+  );
+  const plain = classesOf(screen.getByRole("term"));
+
+  rerender(
+    <PropertyList eyebrowLabels rows={[{ label: "Was", value: "https://old.example", mono: true, wrap: true }]} />,
+  );
+  const eyebrow = classesOf(screen.getByRole("term"));
+  expect(eyebrow).toEqual(expect.arrayContaining(plain));
+  expect(eyebrow).toHaveLength(plain.length + 1);
+
+  const recipe = topRuleBlock(CSS, ".eyebrowLabel");
+  expect(recipe).toContain("font-size: var(--font-size-caption)");
+  expect(recipe).toContain("text-transform: uppercase");
+  expect(recipe).toContain("letter-spacing: var(--tracking-eyebrow)");
+  expect(recipe).toContain("font-weight: var(--font-weight-medium)");
+});
+
 test("stacked rows put the label over the value and wrap the value", () => {
   const { container, rerender } = render(
     <PropertyList rows={[{ label: "State dir", value: "~/.local/state/evener" }]} />,
