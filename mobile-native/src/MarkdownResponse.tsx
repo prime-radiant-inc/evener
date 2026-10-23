@@ -132,6 +132,10 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 		},
 		[],
 	);
+	// A caller that owns touch and hold passes its own actions; otherwise the
+	// selection menu keeps the built-in Copy response item.
+	const copyResponse = useMemo(() => [{ text: "Copy response", onPress: () => void copyText(markdown) }], [markdown]);
+	const menuItems = contextMenu ? [...contextMenu] : selectable ? copyResponse : undefined;
 	return (
 		<>
 			{rendered.map((segment, index) =>
@@ -187,20 +191,7 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 							if (url.toLowerCase().startsWith("evener-file:")) return;
 							showLink(url);
 						}}
-						contextMenuItems={
-							contextMenu
-								? [...contextMenu]
-								: selectable
-									? [
-											{
-												text: "Copy response",
-												onPress: () => {
-													void copyText(markdown);
-												},
-											},
-										]
-									: undefined
-						}
+						contextMenuItems={menuItems}
 						accessibilityActions={accessibilityActions}
 						onAccessibilityAction={onAccessibilityAction}
 					/>

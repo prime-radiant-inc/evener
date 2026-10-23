@@ -363,8 +363,8 @@ it("opens files through actual TimelineItem event props and preserves ordinary r
 	]);
 	expect(Linking.openURL).not.toHaveBeenCalled();
 	expect(text.props.selectable).toBe(false);
-	// The message menu rides on the markdown view's own touch and hold, so a tap
-	// reaches a link inside the prose (issue #4839).
+	// The message menu rides on the markdown view's own touch and hold; see
+	// TimelineItem's guard test for why no wrapper may sit above the prose.
 	const items = text.props.contextMenuItems as { text: string; onPress(): void }[];
 	// No quote handler here, so no "Quote in reply".
 	expect(items.map((item) => item.text)).toEqual(["Copy", "Select text"]);
