@@ -774,6 +774,9 @@ type Session struct {
 	driveCounter                     *treeCounter      // tree-wide drive-down turn counter, budgeted separately from spawns
 	subagents                        *subagentManager
 	delegateRestoreBeforeSideEffects func(*Session)
+	// delegateRestoreAfterCommit observes a cold attention restore after its
+	// commit and before the owner chain is restored. Test-only.
+	delegateRestoreAfterCommit func(delegateID string)
 	// restoredMetaIsSubagent is set from the persisted meta.IsSubagent flag
 	// during RestoreSessionFromMetaWithConfig, before initSessionState runs. It
 	// exists because cfg.spawn is never persisted (json:"-"): a bare `serve
