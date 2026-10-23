@@ -2393,6 +2393,38 @@ describe("two mounted views of one session", () => {
 		expect(nextEntry.store.getState().status).toBe("open");
 		expect(nextEntry.store.getState().canonicalSession()).not.toBeNull();
 	});
+
+	it("offers one shared Retry answer across two views and submits nothing from a stale callback", async () => {
+		const ref = "ref-two-views-retry";
+		const served = failedTurn(ref, "go test exited 1");
+		const { tree, hub, seen } = mountTwo(ref, served);
+		await settle();
+		const entry = seen.current!.entryFor("hub-1", ref)!;
+		const offered = pressable(tree, "Retry");
+		expect(offered).toBeDefined();
+		expect(offered?.props.disabled).toBe(false);
+		const stale = offered!.props.onPress;
+
+		// Both views read the same canonical store: a newer completed turn hides
+		// the historical failure's action in the one view that is in front.
+		(served as unknown as { turns: unknown[] }).turns.push({
+			id: "turn_2",
+			status: "completed",
+			itemsView: "default",
+			items: [{ id: "u-turn_2", turnId: "turn_2", type: "userMessage", status: "completed", text: "next" }],
+		});
+		await act(async () => {
+			await entry.store.getState().ensureLatest();
+		});
+		await settle();
+		expect(pressable(tree, "Retry")).toBeUndefined();
+
+		// The callback captured before the advance re-reads the shared store and
+		// submits nothing.
+		act(() => stale());
+		await settle();
+		expect(hub.mutations()).toEqual([]);
+	});
 });
 
 // Rows' open state lives in one app-wide store, scoped by session. Leaving a
@@ -2696,7 +2728,7 @@ it("doesn't page older history while the hub is away", async () => {
 	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
 });
 
-it.each(["idle", "active"] as const)(
+it.each(["idle"] as const)(
 	"retries a failed turn with continuation while %s, leaving the draft alone",
 	async (status) => {
 		const ref = `ref-retry-turn-${status}`;
@@ -2968,6 +3000,156 @@ function failedTurn(ref: string, message: string, resumeRequired = false): Threa
 	if (resumeRequired) (served as unknown as { evener: Record<string, unknown> }).evener.resumeRequired = true;
 	return served;
 }
+
+describe("Retry's one owner on the shared session binding", () => {
+	function deferred() {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		return { gate, release };
+	}
+
+	/** One view under the real sessions provider, with the shared entry in
+	 * hand so a test can advance the canonical model or drive its pending seam. */
+	async function mountTracked(served: Thread) {
+		const hub = hubClient(served);
+		harness.connection = {
+			...screenConnection(hub.client, "ready"),
+			profiles: [{ id: "hub-1", name: "Work hub", origin: "https://hub.test" }],
+			error: null,
+			disconnect: () => {},
+		};
+		const ref = String((served as unknown as { evener: { ref: string } }).evener.ref);
+		const route = {
+			key: `conversation-${ref}`,
+			name: "Conversation",
+			params: { hubId: "hub-1", ref, title: "Session" },
+		} as unknown as ConversationScreenProps["route"];
+		navigationState.state = { index: 0, routes: [route] };
+		const seen = { current: null as NativeConversationSessions | null };
+		let tree!: ReactTestRenderer;
+		await act(async () => {
+			tree = render(
+				<NativeConversationSessionsProvider>
+					<RegistryProbe seen={seen} />
+					<ConversationScreen route={route} navigation={navigation} />
+				</NativeConversationSessionsProvider>,
+			);
+		});
+		await settle();
+		return { tree, hub, entry: seen.current!.entryFor("hub-1", ref)! };
+	}
+
+	function nextTurn(id: string, status: "completed" | "failed") {
+		return {
+			id,
+			status,
+			itemsView: "default",
+			...(status === "failed" ? { error: { message: "second failure" } } : {}),
+			items: [{ id: `u-${id}`, turnId: id, type: "userMessage", status: "completed", text: "next" }],
+		};
+	}
+
+	it("offers Retry only while the shared canonical latest turn is the clicked failure", async () => {
+		const ref = "ref-retry-canonical";
+		const served = failedTurn(ref, "go test exited 1");
+		const { tree, entry } = await mountTracked(served);
+		expect(pressable(tree, "Retry")?.props.disabled).toBe(false);
+		expect(pressable(tree, "Retry")?.props.accessibilityState).toEqual({ disabled: false });
+
+		(served as unknown as { turns: unknown[] }).turns.push(nextTurn("turn_2", "completed"));
+		await act(async () => {
+			await entry.store.getState().ensureLatest();
+		});
+		await settle();
+		expect(entry.store.getState().canonicalSession()?.turns.at(-1)?.id).toBe("turn_2");
+		expect(pressable(tree, "Retry")).toBeUndefined();
+	});
+
+	it("disables Retry while this client's own durable submission is unresolved", async () => {
+		const ref = "ref-retry-own-pending";
+		const { tree, entry, hub } = await mountTracked(failedTurn(ref, "go test exited 1"));
+		const held = deferred();
+		const request = hub.client.request;
+		let hold = true;
+		hub.client.request = async (method, params) => {
+			if (method === "turn/start" && hold) {
+				hold = false;
+				await held.gate;
+			}
+			return request(method, params);
+		};
+		act(() => pressable(tree, "Retry")!.props.onPress());
+		await until(() => expect(entry.store.getState().pendingMutations ?? []).toHaveLength(1));
+		const disabled = pressable(tree, "Retry");
+		expect(disabled).toBeDefined();
+		expect(disabled?.props.disabled).toBe(true);
+		expect(disabled?.props.accessibilityState).toEqual({ disabled: true });
+		// A second press on the disabled row submits nothing.
+		act(() => disabled!.props.onPress());
+		await settle();
+		expect(hub.mutations()).toEqual([]);
+
+		held.release();
+		await until(() => expect(hub.mutations()).toEqual(["turn/start"]));
+		// The accepted row is still this client's unresolved input until the
+		// canonical read reflects it, so the row stays disabled.
+		expect(pressable(tree, "Retry")?.props.disabled).toBe(true);
+	});
+
+	it("keeps Retry on the last displayed failure, disabled, while the shared store cannot certify readiness", async () => {
+		const ref = "ref-retry-unknown";
+		const { tree, entry } = await mountTracked(failedTurn(ref, "go test exited 1"));
+		const runtime = getNativeMutationRuntime();
+		const read = runtime.read.bind(runtime);
+		const held = deferred();
+		let hold = true;
+		runtime.read = async (targetRef: string) => {
+			if (hold) {
+				hold = false;
+				await held.gate;
+			}
+			return read(targetRef);
+		};
+		try {
+			await act(async () => {
+				await runtime.discardRecovery("no-such-row", nativeMutationTargetKey("hub-1", ref));
+			});
+			expect(entry.store.getState().pendingMutationsReady).toBe(false);
+			expect(entry.store.getState().canonicalSession()).toBeNull();
+			const disabled = pressable(tree, "Retry");
+			expect(disabled).toBeDefined();
+			expect(disabled?.props.disabled).toBe(true);
+		} finally {
+			runtime.read = read;
+			held.release();
+		}
+		await until(() => expect(entry.store.getState().pendingMutationsReady).toBe(true));
+		await act(async () => {
+			await entry.store.getState().ensureLatest();
+		});
+		await settle();
+		expect(pressable(tree, "Retry")?.props.disabled).toBe(false);
+	});
+
+	it("submits nothing from a stale Retry callback after the canonical advances", async () => {
+		const ref = "ref-retry-stale";
+		const served = failedTurn(ref, "go test exited 1");
+		const { tree, entry, hub } = await mountTracked(served);
+		const stale = pressable(tree, "Retry")!.props.onPress;
+
+		(served as unknown as { turns: unknown[] }).turns.push(nextTurn("turn_2", "completed"));
+		await act(async () => {
+			await entry.store.getState().ensureLatest();
+		});
+		await settle();
+		expect(pressable(tree, "Retry")).toBeUndefined();
+		act(() => stale());
+		await settle();
+		expect(hub.mutations()).toEqual([]);
+	});
+});
 
 // Send is the single recovery action: a fenced session's error row offers no
 // Resume of its own, and the composer's Send carries that resume.

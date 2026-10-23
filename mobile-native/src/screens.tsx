@@ -40,6 +40,7 @@ import {
 	buildComposerInput,
 	errorText,
 	formatQuoteBlock,
+	latestTurnId,
 	mergeDraftText,
 	type ModelListResponse,
 	type NavigationSessionSummary,
@@ -116,6 +117,7 @@ import {
 } from "./readerPosition";
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
 import { type ErrorAction, errorAction } from "./session/errorAction";
+import { failureRowIdentity } from "./projectedRows";
 import { TURN_CONTINUATION_TEXT } from "@evener/appwire-client";
 import {
 	type Ghost,
@@ -561,6 +563,9 @@ function ConversationScreenView({
 		};
 	}, [focused, imageSelection]);
 	const unconfirmedSend = draft.submitting ? null : draft.record.unconfirmed;
+	// A draft operation in flight, or one still uncertain, keeps Retry visible
+	// but disabled: the document itself refuses a second submitText.
+	const documentBusy = draft.submitting || !draft.loaded || draft.error !== null || draft.record.unconfirmed !== null;
 	const connected = connectionState === "ready" && activeProfile?.id === route.params.hubId;
 	const connectionText = useConnectionStatusText();
 	// The same debounced signal the connection bar itself waits on (spec 14:
@@ -2559,24 +2564,64 @@ function ConversationScreenView({
 		// could not finish.
 		[store, controls, showToast, recoverFenced],
 	);
-	// Continuation uses Send's routing without consuming the current draft.
-	const retryFailedTurn = useCallback(async () => {
-		const kind = liveSendKind();
-		if (!service || kind === null) return;
-		setActionError(null);
-		try {
-			await document.submitText(TURN_CONTINUATION_TEXT, async (text, images) => deliver(service, kind, text, images));
-		} catch {
-			// As with Send, a refusal leaves the unconfirmed ghost to say so.
-		}
-	}, [liveSendKind, service, document, deliver]);
+	// Whether Retry may offer itself at all: Send's routing prerequisites,
+	// without the transient local mutation state that makes a press a no-op
+	// instead of hiding the row (that is the descriptor's `disabled`).
+	const retryCanSend = useCallback((): boolean => {
+		const live = store.getState();
+		if (!service || !connected || !focused || live.status !== "open") return false;
+		if (controls?.getSnapshot().pending != null || commandPending) return false;
+		if (!live.conversation || pendingQuestions(live.conversation).length > 0) return false;
+		return sendAction(live.conversation, live.pendingMutations, connectionReady.current) !== "none";
+	}, [service, connected, focused, store, controls, commandPending]);
+	// Continuation uses Send's routing without consuming the current draft. The
+	// clicked turn and the shared store are re-read here, not trusted from the
+	// render that offered the action: a stale callback submits nothing.
+	const retryFailedTurn = useCallback(
+		async (failedTurnId: string) => {
+			const live = store.getState();
+			const canonical = live.canonicalSession();
+			const now = document.getSnapshot();
+			if (
+				!attachment.live ||
+				!focused ||
+				!screenInFront(navigation, route.key) ||
+				!retryCanSend() ||
+				now.submitting ||
+				!now.loaded ||
+				now.error !== null ||
+				now.record.unconfirmed !== null
+			)
+				return;
+			const kind = liveSendKind();
+			if (kind === null || service === null) return;
+			const action = errorAction(
+				{ id: failureRowIdentity(failedTurnId), title: "", detail: "", turnId: failedTurnId },
+				{
+					canonical,
+					displayedLatestTurnId: latestTurnId(live.conversation ?? undefined),
+					pendingMutations: live.pendingMutations,
+					pendingMutationsReady: live.pendingMutationsReady,
+				},
+				true,
+			);
+			if (action === null || action.kind !== "retry" || action.disabled) return;
+			setActionError(null);
+			try {
+				await document.submitText(TURN_CONTINUATION_TEXT, async (text, images) => deliver(service, kind, text, images));
+			} catch {
+				// As with Send, a refusal leaves the unconfirmed ghost to say so.
+			}
+		},
+		[attachment, focused, navigation, route.key, retryCanSend, store, document, liveSendKind, deliver, service],
+	);
 
 	const runErrorAction = useCallback(
 		(errorAction: ErrorAction) => {
-			if (errorAction === "signIn")
+			if (errorAction.kind === "signIn")
 				// The error doesn't name the provider, so the Hub opens at Providers.
 				openProviders(navigation, route.params.hubId);
-			else void retryFailedTurn();
+			else void retryFailedTurn(errorAction.failedTurnId);
 		},
 		[navigation, route.params.hubId, retryFailedTurn],
 	);
@@ -2968,12 +3013,25 @@ function ConversationScreenView({
 							subagentTree={subagentTree}
 							openSubagent={openSubagent}
 							answerFor={answerFor}
-							errorActionFor={(row) =>
-								conversation
-									? // Retry shows only when a press would send.
-										errorAction(row, conversation, liveSendKind() !== null)
-									: null
-							}
+							errorActionFor={(row) => {
+								if (!conversation) return null;
+								// Retry's two facts come from the shared store: the canonical
+								// latest own failure, and no unresolved own submission. A local
+								// draft operation in flight disables the row without hiding it.
+								const live = store.getState();
+								const action = errorAction(
+									row,
+									{
+										canonical: live.canonicalSession(),
+										displayedLatestTurnId: latestTurnId(live.conversation ?? undefined),
+										pendingMutations: live.pendingMutations,
+										pendingMutationsReady: live.pendingMutationsReady,
+									},
+									retryCanSend(),
+								);
+								if (action === null || action.kind !== "retry") return action;
+								return documentBusy && !action.disabled ? { ...action, disabled: true } : action;
+							}}
 							onErrorAction={runErrorAction}
 							documentChips={documentChips}
 							fileContext={fileContext}
@@ -2996,10 +3054,11 @@ function ConversationScreenView({
 			quote,
 			liveRun,
 			conversation,
+			documentBusy,
 			subagentTree,
 			openSubagent,
 			answerFor,
-			liveSendKind,
+			retryCanSend,
 			runErrorAction,
 			documentChips,
 			fileContext,
