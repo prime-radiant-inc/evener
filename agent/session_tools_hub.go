@@ -217,9 +217,10 @@ type managerWatchStage struct {
 }
 
 type managerInputStage struct {
-	Status      string                      `json:"status"`
-	Disposition appwire.MutationDisposition `json:"disposition,omitempty"`
-	Error       string                      `json:"error,omitempty"`
+	Status           string                      `json:"status"`
+	Disposition      appwire.MutationDisposition `json:"disposition,omitempty"`
+	Error            string                      `json:"error,omitempty"`
+	ClientMutationID string                      `json:"clientMutationId,omitempty"`
 }
 
 type managerCreateOutcome struct {
@@ -317,7 +318,7 @@ func (s *Session) createHubDelegate(ctx context.Context, args map[string]any) (a
 		Input: []appwire.InputItem{{Type: "text", Text: prompt}},
 	}})
 	if err != nil {
-		out.Input = managerInputStage{Status: "unknown", Error: err.Error()}
+		out.Input = managerInputStage{Status: "unknown", Error: err.Error(), ClientMutationID: id}
 		var wire appwire.WireError
 		if errors.As(err, &wire) {
 			var detail appwire.ErrorData
@@ -328,10 +329,10 @@ func (s *Session) createHubDelegate(ctx context.Context, args map[string]any) (a
 		return out, nil
 	}
 	if input.Start == nil {
-		out.Input = managerInputStage{Status: "unknown", Error: "input returned no receipt"}
+		out.Input = managerInputStage{Status: "unknown", Error: "input returned no receipt", ClientMutationID: id}
 		return out, nil
 	}
-	out.Input = managerInputStage{Status: "submitted", Disposition: input.Start.Receipt.Disposition}
+	out.Input = managerInputStage{Status: "submitted", Disposition: input.Start.Receipt.Disposition, ClientMutationID: id}
 	return out, nil
 }
 

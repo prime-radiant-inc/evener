@@ -198,8 +198,11 @@ The `delegate` result reports `created`, `watch` and `input` separately. A
 successful creation followed by a failed watch returns the worker ref, leaves
 the worker empty, and does not submit its prompt. A successful watch followed
 by failed or uncertain input keeps the watch attached and reports that input
-outcome separately. If the launch is unknown, it stays unknown: never retry
-creation automatically. Inspect any returned worker ref before deciding what
+outcome separately. Once input has a mutation identity, `input.clientMutationId`
+retains it on submitted, refused and uncertain outcomes. Retry uncertain input
+with `delegate_send` using that same ID, prompt, worker ref and instance, not a
+new creation or a fresh mutation ID. If the launch is unknown, it stays unknown:
+never retry creation automatically. Inspect any returned worker ref before deciding what
 to do next. Workers are not owned delegates; they continue independently when
 their Manager's turn ends, and their watch notices are not delegate reports.
 
