@@ -703,6 +703,26 @@ const ORDERING_SAVED_PANES = [
   { id: "pane_session_2", type: "session", params: { ref: "local:neighbor" }, slot: "secondary" },
 ];
 
+function panesWithoutSeats(panes: readonly OpenPaneRecord[]) {
+  return panes.map(({ composerSeatId: _composerSeatId, ...pane }) => pane);
+}
+
+// A restored pane must keep the seat it saved, and no two panes may share one.
+function expectDistinctSeats(
+  panes: readonly OpenPaneRecord[],
+  expected?: ReadonlyMap<string, string>,
+): Map<string, string> {
+  const seats = panes.map((pane) => pane.composerSeatId);
+  expect(seats.every((seat) => typeof seat === "string" && seat !== "")).toBe(true);
+  expect(new Set(seats).size).toBe(seats.length);
+  if (expected !== undefined) {
+    for (const pane of panes) expect(pane.composerSeatId).toBe(expected.get(pane.id));
+  }
+  return new Map(
+    panes.flatMap((pane) => (pane.composerSeatId === undefined ? [] : [[pane.id, pane.composerSeatId] as const])),
+  );
+}
+
 function orderingClient() {
   const ancestry = ["local:root", "local:step-1", "local:step-2", "local:step-3", "local:step-4", "local:step-5"];
   const client = cascadeClient((ref) => {
@@ -722,7 +742,7 @@ function orderingClient() {
 
 // Prepare legacy in-place intent using real retype, pane registration,
 // Dockview, and DockHost's synchronous final-save flush. No fabricated layout.
-async function saveOrderingCascade(): Promise<void> {
+async function saveOrderingCascade(): Promise<Map<string, string>> {
   const client = orderingClient();
   connectionStore.getState().connect(client);
   const sourceId = workspaceStore.getState().openPane("session", { ref: "local:root" });
@@ -746,7 +766,8 @@ async function saveOrderingCascade(): Promise<void> {
     expect(workspaceStore.getState().retypePane(source, "sessionZoom", ORDERING_CASCADE)).toBe(true);
   });
   await screen.findByRole("button", { name: "Return to previous view" });
-  expect(workspaceStore.getState().panes).toEqual(ORDERING_SAVED_PANES);
+  expect(panesWithoutSeats(workspaceStore.getState().panes)).toEqual(ORDERING_SAVED_PANES);
+  const savedSeats = expectDistinctSeats(workspaceStore.getState().panes);
   expect(workspaceStore.getState().focusedPaneId).toBe("pane_session_1");
   view.unmount();
   const raw = localStorage.getItem(LAYOUT_KEY);
@@ -755,10 +776,12 @@ async function saveOrderingCascade(): Promise<void> {
     paneType: "sessionZoom",
     paneParams: ORDERING_CASCADE,
   });
+  expect(JSON.parse(raw).composerSeats).toEqual(Object.fromEntries(savedSeats));
   resetWorkspaceStoreForTests();
   resetThreadsStoreForTests();
   resetNavigationStoreForTests();
   connectionStore.setState({ client: null, state: "idle" });
+  return savedSeats;
 }
 
 test.each([
@@ -769,7 +792,7 @@ test.each([
   { order: "restoration-before-location", routeRef: "local:different-root" },
   { order: "cached-location-with-warm-host", routeRef: "local:different-root" },
 ] as const)("startup $order respects route $routeRef against a saved six-edge cascade", async ({ order, routeRef }) => {
-  await saveOrderingCascade();
+  const savedSeats = await saveOrderingCascade();
   const client = orderingClient();
   const reply = deferred<void>();
   const requested = deferred<void>();
@@ -820,7 +843,13 @@ test.each([
       expect(location?.loading).toBe(false);
       expect(location?.stale).toBe(false);
       expect(workspaceStore.getState().panes).toEqual([
-        { id: "pane_session_1", type: "session", params: { ref: routeRef }, slot: "main" },
+        {
+          id: "pane_session_1",
+          type: "session",
+          params: { ref: routeRef },
+          slot: "main",
+          composerSeatId: expect.any(String),
+        },
       ]);
       expect(workspaceStore.getState().focusedPaneId).toBe("pane_session_1");
       expect(getDockviewApi()).toBeNull();
@@ -843,7 +872,8 @@ test.each([
     await restored.promise;
     if (order === "restoration-before-location") {
       await requested.promise;
-      expect(workspaceStore.getState().panes).toEqual(ORDERING_SAVED_PANES);
+      expect(panesWithoutSeats(workspaceStore.getState().panes)).toEqual(ORDERING_SAVED_PANES);
+      expectDistinctSeats(workspaceStore.getState().panes, savedSeats);
       expect(workspaceStore.getState().focusedPaneId).toBe("pane_session_1");
       expect(getDockviewApi()?.activePanel?.id).toBe("pane_session_1");
       await act(async () => {
@@ -858,7 +888,8 @@ test.each([
     expect(events.indexOf("restored")).toBeGreaterThan(events.indexOf("layout-read"));
     if (order !== "restoration-before-location") {
       expect(events.indexOf("location-ready")).toBeLessThan(events.indexOf("layout-read"));
-      expect(witnesses.find((w) => w.event === "layout-read")?.panes).toEqual([
+      const layoutReadPanes = witnesses.find((w) => w.event === "layout-read")?.panes;
+      expect(panesWithoutSeats(Array.isArray(layoutReadPanes) ? layoutReadPanes : [])).toEqual([
         { id: "pane_session_1", type: "session", params: { ref: routeRef }, slot: "main" },
       ]);
       if (order === "completed-placement-before-restoration") {
@@ -873,7 +904,13 @@ test.each([
     }
     if (routeRef === "local:different-root") {
       expect(workspaceStore.getState().panes).toEqual([
-        { id: "pane_session_3", type: "session", params: { ref: "local:different-root" }, slot: "main" },
+        {
+          id: "pane_session_3",
+          type: "session",
+          params: { ref: "local:different-root" },
+          slot: "main",
+          composerSeatId: expect.any(String),
+        },
       ]);
       expect(workspaceStore.getState().focusedPaneId).toBe("pane_session_3");
       expect(getDockviewApi()?.activePanel?.id).toBe("pane_session_3");
@@ -881,9 +918,11 @@ test.each([
       expect(await screen.findByRole("heading", { name: "local:different-root" })).toBeTruthy();
       expect(window.location.pathname).toBe("/s/local%3Adifferent-root");
     } else {
-      expect(workspaceStore.getState().panes, `Startup witnesses: ${JSON.stringify(witnesses)}`).toEqual(
-        ORDERING_SAVED_PANES,
-      );
+      expect(
+        panesWithoutSeats(workspaceStore.getState().panes),
+        `Startup witnesses: ${JSON.stringify(witnesses)}`,
+      ).toEqual(ORDERING_SAVED_PANES);
+      expectDistinctSeats(workspaceStore.getState().panes, savedSeats);
       expect(workspaceStore.getState().focusedPaneId).toBe("pane_session_1");
       expect(getDockviewApi()?.activePanel?.id).toBe("pane_session_1");
       expect(await screen.findByRole("button", { name: "Return to previous view" })).toBeTruthy();

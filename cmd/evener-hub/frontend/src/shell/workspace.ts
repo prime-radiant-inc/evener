@@ -877,14 +877,13 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       const savedSeats = migrated.composerSeats ?? {};
       const usedSeats = new Set<string>();
       for (const pane of panes) {
-        if (pane.type !== "session") continue;
-        const ref = refParam(pane.params);
-        if (ref === null) continue;
+        if (pane.type !== "session" && pane.type !== "sessionZoom") continue;
+        const ref = pane.type === "session" ? refParam(pane.params) : null;
         const saved = savedSeats[pane.id];
-        const stored = typeof saved === "string" ? saved : readRefComposerSeat(ref);
+        const stored = typeof saved === "string" ? saved : ref === null ? undefined : readRefComposerSeat(ref);
         pane.composerSeatId = stored !== undefined && !usedSeats.has(stored) ? stored : pane.id;
         usedSeats.add(pane.composerSeatId);
-        writeComposerSeat(ref, pane.composerSeatId);
+        if (ref !== null) writeComposerSeat(ref, pane.composerSeatId);
       }
       for (const listener of workspaceRestoreListeners) listener(panes);
       bumpPastRestoredIds(panes);
