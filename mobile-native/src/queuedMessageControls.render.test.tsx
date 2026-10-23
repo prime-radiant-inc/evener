@@ -1802,3 +1802,63 @@ it.each([false, true])("nativeQueuedControlsPreserveAndResendOnce held=%s", asyn
 	expect(await f.runtime.storage.getOutbox(removed)).toBeUndefined();
 	expect(f.document.getSnapshot().record.draft).toBe("");
 });
+
+it("actual screen keeps an occupied destination when the resume handoff is refused", async () => {
+	const f = await mount();
+	f.document.edit("existing destination work");
+	const oldRef = `${f.ref}-old`;
+	const oldDestination = { hubId: "hub-1", sessionRef: oldRef };
+	const oldKey = nativeMutationTargetKey("hub-1", oldRef);
+	async function submitOld(text: string) {
+		await f.runtime.submit({
+			kind: "send",
+			hubId: "hub-1",
+			targetRef: oldRef,
+			threadId: `thread-${oldRef}`,
+			instanceId: "instance",
+			input: buildComposerInput(text, []),
+			composer: { text, attachments: [] },
+		});
+	}
+	await act(async () => {
+		await submitOld("original recovered");
+	});
+	const source = (await f.runtime.read(oldKey)).outbox[0];
+	if (!source) throw new Error("missing recovered source");
+	await act(async () => {
+		await f.runtime.storage.transferToRecovery(source.clientMutationId, "editing");
+	});
+	nativeDrafts().write(oldDestination, {
+		draft: "edited recovered",
+		unconfirmed: null,
+		composer: { recoveryIds: [source.clientMutationId] },
+	});
+	await act(async () => {
+		await submitOld("waiting message");
+	});
+	// The resume moved the editing row and its waiting message to the new ref.
+	await act(async () => {
+		f.runtime.storage.retarget(oldKey, {
+			ref: f.targetKey,
+			wireRef: f.ref,
+			threadId: f.thread.id,
+			instanceId: "instance",
+		});
+	});
+
+	// The occupied destination refuses the handoff, so its own work stays and
+	// the migrated editing row is marked released rather than auto-appended.
+	act(() => {
+		expect(drafts.handoff(oldDestination, { hubId: "hub-1", sessionRef: f.ref })).toBe(false);
+	});
+	expect(f.document.getSnapshot().record.releasedRecoveryIds).toContain(source.clientMutationId);
+
+	await f.recreateOffline();
+	await settle();
+	expect(f.document.getSnapshot().record.draft).toBe("existing destination work");
+	expect(f.document.getSnapshot().record.composer?.recoveryIds).toBeUndefined();
+	expect((await f.runtime.read(f.targetKey)).recovery.map((row) => row.clientMutationId)).toEqual([
+		source.clientMutationId,
+	]);
+	expect(nativeDrafts().read(oldDestination).draft).toBe("edited recovered");
+});
