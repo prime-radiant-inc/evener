@@ -128,7 +128,7 @@ class SessionEntry implements NativeConversationSession {
 	#retired = false;
 	#readFailures = 0;
 	#retryTimer: ReturnType<typeof setTimeout> | null = null;
-	#retryQueued = false;
+	#retryToken: symbol | null = null;
 	#retrying = false;
 	#readListeners = new Set<() => void>();
 
@@ -378,15 +378,28 @@ class SessionEntry implements NativeConversationSession {
 	 * still in error when it settles. */
 	#observeRead(): void {
 		if (this.#retired) return;
-		const status = this.store.getState().status;
-		if (status === "open") {
-			this.#clearRetry();
-			this.#setReadFailures(0);
+		const state = this.store.getState();
+		// A rehydrate failure keeps the retained display model readable and only
+		// moves latestReadState to "error"; following status alone would never
+		// arm the retry. Both the status failure and the read-state failure are
+		// the same demand on this one actor.
+		if (!this.#readFailed()) {
+			// Only an accepted ready publication (or a binding that never left
+			// readable history) clears the demand; "reading" keeps it armed while
+			// a newer attempt is out.
+			if (state.status === "open" && state.latestReadState !== "reading") {
+				this.#clearRetry();
+				this.#setReadFailures(0);
+			}
 			return;
 		}
-		if (status !== "error") return;
 		this.#setReadFailures(this.#readFailures === 0 ? 1 : this.#readFailures);
 		this.#scheduleRetry();
+	}
+
+	#readFailed(): boolean {
+		const state = this.store.getState();
+		return state.status === "error" || state.latestReadState === "error";
 	}
 
 	#setReadFailures(failures: number): void {
@@ -396,39 +409,40 @@ class SessionEntry implements NativeConversationSession {
 	}
 
 	#scheduleRetry(): void {
-		if (this.#retired || this.#retryTimer !== null || this.#retryQueued || this.#retrying) return;
+		if (this.#retired || this.#retryToken !== null || this.#retrying) return;
 		if (this.#service === null) return;
 		const delay = reconnectDelay(this.#readFailures - 1);
+		const token = Symbol("native-conversation-read-retry");
+		this.#retryToken = token;
+		const fire = () => {
+			if (this.#retryToken !== token) return;
+			this.#retryToken = null;
+			this.#retryTimer = null;
+			this.#retryRead();
+		};
 		// The first retry is due at once. A microtask keeps that promise without
 		// depending on a zero-delay timer turn, which a test's fake clock does
 		// not owe between two reads.
 		if (delay === 0) {
-			this.#retryQueued = true;
-			queueMicrotask(() => {
-				this.#retryQueued = false;
-				this.#retryRead();
-			});
+			queueMicrotask(fire);
 			return;
 		}
-		this.#retryTimer = setTimeout(() => {
-			this.#retryTimer = null;
-			this.#retryRead();
-		}, delay);
+		this.#retryTimer = setTimeout(fire, delay);
 	}
 
 	#retryRead(): void {
 		const service = this.#service;
 		if (this.#retired || service === null) return;
-		if (this.store.getState().status !== "error") return;
+		if (!this.#readFailed()) return;
 		const attempt = this.#readFailures;
 		this.#retrying = true;
 		const settle = () => {
 			this.#retrying = false;
 			if (this.#retired) return;
-			// Only a retry that left the store in error counts. A newer read that
-			// took over ("opening") does not; if it fails, the status returns to
-			// error and the next observation re-arms at the same step.
-			if (this.store.getState().status === "error") {
+			// Only a retry that left the store failed counts. A newer read that
+			// took over ("reading") does not; if it fails, the next observation
+			// re-arms at the same step.
+			if (this.#readFailed()) {
 				this.#setReadFailures(attempt + 1);
 				this.#scheduleRetry();
 			}
@@ -439,6 +453,8 @@ class SessionEntry implements NativeConversationSession {
 	#clearRetry(): void {
 		if (this.#retryTimer !== null) clearTimeout(this.#retryTimer);
 		this.#retryTimer = null;
+		// An already-queued immediate retry checks its token and drops out.
+		this.#retryToken = null;
 	}
 }
 

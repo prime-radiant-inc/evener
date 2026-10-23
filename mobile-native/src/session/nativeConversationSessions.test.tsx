@@ -602,6 +602,123 @@ describe("hub isolation", () => {
 	});
 });
 
+describe("entry read actor", () => {
+	it("retries a rehydrate failure that leaves readable rows open, once for the entry, and clears on success", async () => {
+		const control = { fail: false };
+		const client = hub("ref-1", () => {
+			if (control.fail) return Promise.reject(new Error("read failed"));
+			return Promise.resolve({ thread: thread("ref-1") });
+		});
+		connected(client);
+		const a = sessions.attach("hub-1", "ref-1");
+		const b = sessions.attach("hub-1", "ref-1");
+		await vi.waitFor(() => expect(a.entry.store.getState().status).toBe("open"));
+		expect(a.entry.store.getState().canonicalSession()).not.toBeNull();
+		const initialReads = reads(client);
+
+		// Capture the failure exactly as the store publishes it: the readable
+		// model still on screen, status still open, read validity at error. The
+		// entry's actor may begin its immediate retry (which moves status to
+		// opening) before ensureLatest's promise resolves, so the transition
+		// itself is the evidence.
+		let whileReadable: { status: string; latestReadState: string; hasRows: boolean } | null = null;
+		const unsubscribe = a.entry.store.subscribe(() => {
+			const current = a.entry.store.getState();
+			if (current.status === "open" && current.latestReadState === "error") {
+				whileReadable = {
+					status: current.status,
+					latestReadState: current.latestReadState,
+					hasRows: current.conversation !== null,
+				};
+			}
+		});
+		control.fail = true;
+		await a.entry.store.getState().ensureLatest();
+		unsubscribe();
+		// The store kept its readable rows and stayed open; only read validity
+		// moved to error. Following status alone would ignore this failure.
+		expect(whileReadable).toEqual({ status: "open", latestReadState: "error", hasRows: true });
+		await vi.waitFor(() => expect(a.entry.readActor.failures).toBeGreaterThanOrEqual(1));
+
+		// One entry actor: the two attachments share one immediate retry, not
+		// one attempt per view.
+		await vi.waitFor(() => expect(reads(client)).toBe(initialReads + 2));
+		expect(b.entry.readActor.failures).toBe(a.entry.readActor.failures);
+
+		control.fail = false;
+		sessions.setConnection("hub-1", null);
+		sessions.setConnection("hub-1", client);
+		await vi.waitFor(() => expect(a.entry.store.getState().latestReadState).toBe("ready"));
+		await vi.waitFor(() => expect(a.entry.readActor.failures).toBe(0));
+		expect(a.entry.store.getState().status).toBe("open");
+	});
+
+	it("keeps one entry timer across a view unmount and cancels it on final release", async () => {
+		vi.useFakeTimers();
+		try {
+			const control = { fail: false };
+			const client = hub("ref-1", () => {
+				if (control.fail) return Promise.reject(new Error("read failed"));
+				return Promise.resolve({ thread: thread("ref-1") });
+			});
+			connected(client);
+			const a = sessions.attach("hub-1", "ref-1");
+			const b = sessions.attach("hub-1", "ref-1");
+			await vi.advanceTimersByTimeAsync(0);
+			expect(a.entry.store.getState().status).toBe("open");
+
+			control.fail = true;
+			await a.entry.store.getState().ensureLatest();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(a.entry.readActor.failures).toBeGreaterThanOrEqual(2);
+
+			// The next attempt sits on the entry's one backoff timer. Releasing a
+			// view must not cancel it: the surviving attachment still owns it.
+			a.release();
+			const beforeSurvivor = reads(client);
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(reads(client)).toBe(beforeSurvivor + 1);
+
+			// The final release retires the entry and its retry work.
+			const beforeRetirement = reads(client);
+			b.release();
+			expect(b.entry.readActor.cancelled).toBe(true);
+			await vi.advanceTimersByTimeAsync(30_000);
+			expect(reads(client)).toBe(beforeRetirement);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("cancels the entry's retry timer when the client retires", async () => {
+		vi.useFakeTimers();
+		try {
+			const control = { fail: false };
+			const client = hub("ref-1", () => {
+				if (control.fail) return Promise.reject(new Error("read failed"));
+				return Promise.resolve({ thread: thread("ref-1") });
+			});
+			connected(client);
+			const a = sessions.attach("hub-1", "ref-1");
+			await vi.advanceTimersByTimeAsync(0);
+			expect(a.entry.store.getState().status).toBe("open");
+
+			control.fail = true;
+			await a.entry.store.getState().ensureLatest();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(a.entry.readActor.failures).toBeGreaterThanOrEqual(2);
+
+			const before = reads(client);
+			sessions.setConnection("hub-1", null);
+			expect(a.entry.service).toBeNull();
+			await vi.advanceTimersByTimeAsync(30_000);
+			expect(reads(client)).toBe(before);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
 // The provider: exactly one registry, connection and matching hub preferences
 // fed into it, and a committed attachment hook. Strict Mode mounts effects
 // twice; the hook must settle on one usable attachment, not a leaked refcount.
