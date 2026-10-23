@@ -1440,3 +1440,149 @@ func TestSupersededUnacceptedWatchFrameNeverRedelivers(t *testing.T) {
 		})
 	}
 }
+
+func TestCandidateOnlyWatchReceiptsRecoverThroughHostPumps(t *testing.T) {
+	for _, route := range []string{"restore pump", "drain pump"} {
+		t.Run(route, func(t *testing.T) {
+			adapter := newMessagingAdapter()
+			s := newMessagingRoot(t, adapter, nil)
+			jm := s.jobManager
+			jm.clock = agenttest.NewFakeClockAt(time.Unix(1700000000, 0))
+			r, err := jm.configureWatch(watchArgs{Source: "self", Target: runtimeMessageAliasCaller, RepeatSeconds: 60})
+			if err != nil {
+				t.Fatal(err)
+			}
+			jm.mu.Lock()
+			key, cfg, _ := jm.watchConfigByIDLocked(r.WatchID)
+			jm.mu.Unlock()
+			s.SetNotifyFunc(func() { _ = jm.store.Close() })
+			jm.fireProgressTick(key, cfg)
+			s.SetNotifyFunc(nil)
+			original := producerSourceEvents(t, jm, jobstore.EventWatchSendPending)[0].WatchSend
+			reopenProducerSource(t, jm)
+			var faultOriginalAck func(jobstore.Event) error
+			faultOriginalAck = func(event jobstore.Event) error {
+				if event.Kind == jobstore.EventWatchSendDelivered && event.WatchSend.DeliveryID == original.DeliveryID {
+					if err := jm.store.Close(); err != nil {
+						return err
+					}
+					err := jm.store.Append(event) // Actual closed-descriptor source failure.
+					reopenProducerSource(t, jm)
+					jm.appendEvent = faultOriginalAck
+					return err
+				}
+				return jm.store.Append(event)
+			}
+			jm.appendEvent = faultOriginalAck
+			jm.fireProgressTick(key, cfg)
+			// A's descriptor replacement makes the earlier dispatch's bound load
+			// stale. Complete B through its actual transport, not A's retry batch.
+			produced := producerSourceEvents(t, jm, jobstore.EventWatchSendPending)
+			if len(produced) != 2 {
+				t.Fatal("B was not source-produced before the crash fixture")
+			}
+			if accepted, err := jm.deliverPendingWatchSend(cfg, *produced[1].WatchSend, false); err != nil || !accepted {
+				t.Fatalf("B custody/receipt failed: accepted=%t err=%v", accepted, err)
+			}
+			before, err := jm.store.LoadWatchSends()
+			acks := producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)
+			if err != nil || len(before.Pending) != 0 || len(before.Superseded) != 1 || len(acks) != 1 || acks[0].WatchSend.DeliveryID == original.DeliveryID || producerRecordCount(t, s) != 2 {
+				t.Fatalf("candidate-only crash cut: pending=%d candidates=%d receipts=%d err=%v", len(before.Pending), len(before.Superseded), len(acks), err)
+			}
+			if err := jm.closeStoreOnly(); err != nil {
+				t.Fatal(err)
+			}
+			restored, err := newJobManager(s.stateDir, s.ID(), s.enqueueJobNotificationAndNotify)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { restored.close() })
+			s.jobManager, restored.retirementOwner, restored.delegateController = restored, s, s.delegateController
+			if len(restored.pendingWatchSendDeliveries(nil)) != 0 {
+				t.Fatal("reconstructed manager unexpectedly has a current head")
+			}
+			reconstructed, err := restored.store.LoadWatchSends()
+			if err != nil || len(reconstructed.Superseded) != 1 || reconstructed.Superseded[original.DeliveryID] == nil || restored.watchSendDelivered(original.DeliveryID) {
+				t.Fatalf("reconstructed candidate missing or falsely settled: candidates=%d delivered=%t err=%v", len(reconstructed.Superseded), restored.watchSendDelivered(original.DeliveryID), err)
+			}
+			pump := func() error {
+				if route == "restore pump" {
+					return s.retryRestoredPendingWatchSends(context.Background())
+				}
+				_, err := s.drainPendingWatchSendsReport(context.Background())
+				return err
+			}
+			custodyErr := errors.New("controlled resident custody Sync failure")
+			if err := s.attachedTranscript().Close(); err != nil {
+				t.Fatal(err)
+			}
+			path := transcriptPath(s.stateDir, s.ID())
+			writer, _, err := transcript.OpenWriterForSessionWithFS(producerQueryFaultFS{Fs: afero.NewOsFs(), syncErr: custodyErr}, path, s.ID())
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.attachTranscript(writer)
+			if err := s.attachedTranscript().EstablishDurability(); !errors.Is(err, custodyErr) {
+				t.Fatalf("resident fault did not reach its actual writer: %v", err)
+			}
+			queryErr := pump()
+			if err := writer.Close(); err != nil && !errors.Is(err, custodyErr) {
+				t.Fatal(err)
+			}
+			writer, _, err = transcript.OpenWriterForSession(path, s.ID())
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.attachTranscript(writer)
+			if !errors.Is(queryErr, custodyErr) {
+				t.Fatalf("candidate-only host pump did not propagate custody Sync uncertainty: %v", queryErr)
+			}
+			if len(producerSourceEvents(t, restored, jobstore.EventWatchSendDelivered)) != 1 {
+				t.Fatal("uncertain custody falsely settled the predecessor")
+			}
+			restored.appendEvent = func(event jobstore.Event) error {
+				if event.Kind != jobstore.EventWatchSendDelivered {
+					return restored.store.Append(event)
+				}
+				if err := restored.store.Close(); err != nil {
+					return err
+				}
+				err := restored.store.Append(event)
+				reopenProducerSource(t, restored)
+				return err
+			}
+			if err := pump(); err == nil {
+				t.Fatal("candidate-only host pump did not propagate source-ack failure")
+			}
+			if len(producerSourceEvents(t, restored, jobstore.EventWatchSendDelivered)) != 1 {
+				t.Fatal("failed source ack falsely settled the predecessor")
+			}
+			if err := pump(); err != nil {
+				t.Fatal(err)
+			}
+			if err := pump(); err != nil {
+				t.Fatal(err)
+			}
+			acks = producerSourceEvents(t, restored, jobstore.EventWatchSendDelivered)
+			after, err := restored.store.LoadWatchSends()
+			if err != nil || len(after.Pending) != 0 || len(after.Superseded) != 0 || len(acks) != 2 || producerRecordCount(t, s) != 2 || len(adapter.requestsFor("root")) != 0 {
+				t.Fatalf("host source-only recovery: pending=%d candidates=%d receipts=%d provider=%d err=%v", len(after.Pending), len(after.Superseded), len(acks), len(adapter.requestsFor("root")), err)
+			}
+			if got := len(producerSourceEvents(t, restored, jobstore.EventWatchSendPending)); got != len(produced) {
+				t.Fatalf("host pump produced %d new payloads", got-len(produced))
+			}
+			for _, state := range produced {
+				count := 0
+				for _, ack := range acks {
+					if ack.WatchSend.DeliveryID == state.WatchSend.DeliveryID {
+						count++
+					}
+				}
+				if count != 1 {
+					t.Fatalf("delivery %s source receipts=%d, want exactly one", state.WatchSend.DeliveryID, count)
+				}
+			}
+			t.Log("candidate-only reconstruction: heads=0 candidates=1 canonical=2 receipts=1; uncertain Sync and failed source ack retained receipt; repaired host pumps: candidates=0 canonical=2 exact receipts=2 provider requests=0 new payloads=0")
+		})
+	}
+}

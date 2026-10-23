@@ -4667,16 +4667,18 @@ func (jm *jobManager) dispatchProducedWatchSends() {
 	jm.dispatchProducedWatchSendsFrom(jm.store.LoadWatchSends)
 }
 
-func (jm *jobManager) dispatchProducedWatchSendsFrom(load watchSendLoader) {
+func (jm *jobManager) dispatchProducedWatchSendsFrom(load watchSendLoader) error {
+	var errs []error
 	if _, err := jm.retryStableWatchSettlements(); err != nil {
 		jm.kick()
+		errs = append(errs, err)
 	}
 	fold, err := load()
 	if err != nil {
 		jm.kick()
-		return
+		return errors.Join(append(errs, err)...)
 	}
-	jm.settleSupersededWatchSends(fold.Superseded)
+	errs = append(errs, jm.settleSupersededWatchSends(fold.Superseded))
 	for _, d := range jm.pendingWatchSendDeliveries(nil) {
 		pending := fold.Pending[d.state.Key]
 		ensurePending := pending == nil || pending.DeliveryID != d.state.DeliveryID || pending.UpdateSeq != d.state.UpdateSeq
@@ -4684,12 +4686,14 @@ func (jm *jobManager) dispatchProducedWatchSendsFrom(load watchSendLoader) {
 			jm.kick()
 		}
 	}
+	return errors.Join(errs...)
 }
 
 // A replacement pending head cannot settle an accepted predecessor. The source
 // history retains candidates until their exact terminal event, and the existing
 // receiver transcript decides custody. Candidates never enter the delivery rail.
-func (jm *jobManager) settleSupersededWatchSends(candidates map[string]*jobstore.WatchSendState) {
+func (jm *jobManager) settleSupersededWatchSends(candidates map[string]*jobstore.WatchSendState) error {
+	var errs []error
 	states := make([]*jobstore.WatchSendState, 0, len(candidates))
 	for _, state := range candidates {
 		states = append(states, state)
@@ -4703,8 +4707,10 @@ func (jm *jobManager) settleSupersededWatchSends(candidates map[string]*jobstore
 		jm.releaseWatchSendDeliveryClaim(state.DeliveryID)
 		if err != nil {
 			jm.kick()
+			errs = append(errs, err)
 		}
 	}
+	return errors.Join(errs...)
 }
 
 func (jm *jobManager) settleSupersededWatchSend(state jobstore.WatchSendState) error {
@@ -6317,6 +6323,15 @@ func (s *Session) drainJobManagerWatchSends(ctx context.Context, jm *jobManager,
 	if !retrySettled {
 		return result, nil
 	}
+	if jm.retirementOwner != nil || jm.delegateController != nil {
+		// An accepted predecessor may outlive its replacement head. Query the
+		// source candidates even when there is no current send left to drain.
+		fold, err := jm.store.LoadWatchSends()
+		if err != nil {
+			return result, err
+		}
+		errs = append(errs, jm.settleSupersededWatchSends(fold.Superseded))
+	}
 	for _, delivery := range jm.pendingWatchSendDeliveries(nil) {
 		target := delivery.state.Key.ResolvedSendTo
 		if target == runtimeMessageAliasCaller && jm.retirementOwner == nil && jm.delegateController == nil {
@@ -6354,7 +6369,8 @@ func (s *Session) retryRestoredPendingWatchSends(_ context.Context) error {
 
 func (s *Session) retryRestoredPendingWatchSendsFrom(load watchSendLoader) error {
 	deliveries := s.jobManager.pendingWatchSendDeliveries(nil)
-	dispatch := false
+	// Canonical source-receipt work can remain after the current head settles.
+	dispatch := s.jobManager.retirementOwner != nil || s.jobManager.delegateController != nil
 	for _, delivery := range deliveries {
 		if delivery.state.Key.ResolvedSendTo == runtimeMessageAliasCaller && s.jobManager.retirementOwner == nil && s.jobManager.delegateController == nil {
 			if s.jobManager != nil && s.jobManager.enqueue != nil {
@@ -6371,7 +6387,7 @@ func (s *Session) retryRestoredPendingWatchSendsFrom(load watchSendLoader) error
 		}
 	}
 	if dispatch {
-		s.jobManager.dispatchProducedWatchSendsFrom(load)
+		return s.jobManager.dispatchProducedWatchSendsFrom(load)
 	}
 	return nil
 }
