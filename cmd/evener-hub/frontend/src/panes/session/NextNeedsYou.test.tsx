@@ -163,6 +163,28 @@ test("hold opens once without navigating", () => {
   expect(workspaceStore.getState().focusedPaneId).not.toBe(origin);
 });
 
+test("a hold longer than the click window still consumes its release click", () => {
+  vi.useFakeTimers();
+  installRows();
+  const origin = seedSource();
+  render(controlTree());
+  const next = nextTrigger();
+
+  fireEvent.pointerDown(next, { button: 0, clientX: 10, clientY: 10, pointerId: 5 });
+  // The list opens at 500 ms. Keep the pointer down well past that plus the
+  // 350 ms click window, so a suppression window that started at completion
+  // would already have expired while the pointer is still held.
+  act(() => vi.advanceTimersByTime(1200));
+  expect(screen.getByTestId("next-needs-you-list")).toBeTruthy();
+
+  fireEvent.pointerUp(next, { clientX: 10, clientY: 10, pointerId: 5 });
+  fireEvent.click(next);
+  // However long the hold lasted, its release click belongs to the hold.
+  expect(window.location.pathname).toBe("/s/local%3Aa");
+  expect(workspaceStore.getState().focusedPaneId).toBe(origin);
+  expect(screen.getByTestId("next-needs-you-list")).toBeTruthy();
+});
+
 test("cancellation does not poison the next click", () => {
   vi.useFakeTimers();
   installRows();

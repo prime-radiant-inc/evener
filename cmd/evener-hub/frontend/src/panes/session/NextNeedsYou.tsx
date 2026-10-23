@@ -106,6 +106,17 @@ function OwnedNextNeedsYou({
     suppressBackstopRef.current = undefined;
   }, []);
 
+  // The one click a completed hold still emits arrives with the release, so
+  // its suppression window starts there, not when the list opened: a hold
+  // longer than the window would otherwise navigate on release.
+  const armSuppressBackstop = useCallback(() => {
+    clearSuppressBackstop();
+    suppressBackstopRef.current = setTimeout(() => {
+      suppressBackstopRef.current = undefined;
+      suppressClickRef.current = false;
+    }, POINTER_CLICK_WINDOW_MS);
+  }, [clearSuppressBackstop]);
+
   const detachGesture = useCallback(() => {
     const cleanup = gestureCleanupRef.current;
     if (cleanup === null) return;
@@ -141,6 +152,7 @@ function OwnedNextNeedsYou({
     const onUp = (event: PointerEvent) => {
       if (!owns(event)) return;
       cancelHold();
+      if (suppressClickRef.current) armSuppressBackstop();
     };
     const onCancel = (event: PointerEvent) => {
       if (!owns(event)) return;
@@ -155,7 +167,7 @@ function OwnedNextNeedsYou({
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onCancel);
     };
-  }, [cancelHold]);
+  }, [armSuppressBackstop, cancelHold]);
 
   const closeList = useCallback((restoreFocus: boolean) => {
     restoreFocusRef.current = restoreFocus;
@@ -186,11 +198,6 @@ function OwnedNextNeedsYou({
       holdCompletedRef.current = true;
       suppressClickRef.current = true;
       openList();
-      clearSuppressBackstop();
-      suppressBackstopRef.current = setTimeout(() => {
-        suppressBackstopRef.current = undefined;
-        suppressClickRef.current = false;
-      }, POINTER_CLICK_WINDOW_MS);
     }, LONG_PRESS_MS);
     // A page that goes hidden loses the pointer, so the pending hold ends like
     // an early release: the timer never fires and the next click is not
@@ -220,7 +227,12 @@ function OwnedNextNeedsYou({
   }
 
   function handleLostPointerCapture() {
-    if (holdTimerRef.current === undefined) return;
+    if (holdTimerRef.current === undefined) {
+      // A completed hold whose pointer never releases still needs its click
+      // window to end.
+      if (suppressClickRef.current) armSuppressBackstop();
+      return;
+    }
     holdCompletedRef.current = false;
     cancelHold();
   }
