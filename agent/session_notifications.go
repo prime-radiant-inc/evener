@@ -426,6 +426,34 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 		c.mu.Unlock()
 		return receiver.releaseNotificationAdmission()
 	}
+	run := c.durable[id]
+	if run != nil && run.Phase == delegatestore.PhaseRunning && run.CurrentRunOpen {
+		root := c.rootRuntime
+		stateDir, ref := c.stateDir, run.Descriptor.TranscriptRef
+		blocked := c.stopCoversLocked(id) || c.reclamationCoversLocked(id) || c.hasColdDeliveryWorkForOwnerLocked(id)
+		c.mu.Unlock()
+		if blocked || root == nil {
+			return nil
+		}
+		path, expectedID, pendingErr := delegateTranscriptPathFromRef(stateDir, ref)
+		var fold delegateAttentionFold
+		if pendingErr == nil {
+			fold, pendingErr = readExistingDelegateAttentionFold(path, expectedID)
+		}
+		if pendingErr != nil {
+			c.scheduleSessionWakeRetry(sessionID)
+			return pendingErr
+		}
+		if len(fold.pendingIDs()) == 0 {
+			return nil
+		}
+		_, sub, restoreErr := root.restoreColdDelegateAttentionRuntime(id)
+		if restoreErr != nil {
+			c.scheduleSessionWakeRetry(sessionID)
+			return restoreErr
+		}
+		return sub.sess.releaseNotificationAdmission()
+	}
 	state := c.attention[id]
 	paused := state != nil && state.parked
 	ready := c.delegateAttentionWakeEligibleLocked(id) && !c.hasColdDeliveryWorkForOwnerLocked(id)

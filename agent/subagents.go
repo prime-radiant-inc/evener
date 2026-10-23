@@ -1636,6 +1636,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	var res string
 	var err error
 	var restoreParentDriveNotify func()
+	var finalization activationFinalization
 	var finish delegateFinish
 	var noActionClaim *delegateSettlementClaim
 	iteration := 0
@@ -1692,17 +1693,17 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		}
 		restoreParentDriveNotify = nil
 		if err == nil {
-			res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
-			if errors.Is(err, errDelegateWaitResolved) {
+			finalization, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
+			res = finalization.Text
+			if err == nil && finalization.Disposition == activationYielded {
 				if restoreParentDriveNotify != nil {
 					a.sess.SetNotifyFunc(restoreParentDriveNotify)
 				}
-				a.mu.Lock()
-				a.finalizing = false
-				a.mu.Unlock()
-				input = "The work you waited on has settled. Continue the assignment and report your result."
-				kind = EntryContinuation
-				continue
+				if yieldErr := a.yieldActivation(ctx, finalization.Checkpoint); yieldErr == nil {
+					return
+				} else {
+					err = yieldErr
+				}
 			}
 		}
 		if stableRun && a.sess.delegateController != nil && nudgeAvailable && !cancelRequested && !budgetExhausted && a.nudgeEnabled &&
@@ -1736,17 +1737,17 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				case delegateSupervisionSuppress:
 				}
 				if err == nil {
-					res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
-					if errors.Is(err, errDelegateWaitResolved) {
+					finalization, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
+					res = finalization.Text
+					if err == nil && finalization.Disposition == activationYielded {
 						if restoreParentDriveNotify != nil {
 							a.sess.SetNotifyFunc(restoreParentDriveNotify)
 						}
-						a.mu.Lock()
-						a.finalizing = false
-						a.mu.Unlock()
-						input = "The work you waited on has settled. Continue the assignment and report your result."
-						kind = EntryContinuation
-						continue
+						if yieldErr := a.yieldActivation(ctx, finalization.Checkpoint); yieldErr == nil {
+							return
+						} else {
+							err = yieldErr
+						}
 					}
 				}
 			}
@@ -1977,7 +1978,7 @@ func (a *subagent) announceFinishedGeneration(lease delegateLease, announcements
 	a.sess.releaseFinishedGeneration(lease, a.sess)
 }
 
-func (a *subagent) drainForFinalization(ctx context.Context, result string) (string, func(), error) {
+func (a *subagent) drainForFinalization(ctx context.Context, result string) (activationFinalization, func(), error) {
 	a.sess.mu.Lock()
 	parentDriveNotify := a.sess.notifyFunc
 	a.sess.mu.Unlock()
@@ -1989,12 +1990,13 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 		if a.sess.delegateController != nil && report.called {
 			switch report.endReason {
 			case tool.CommunicateEndReasonBlocked:
-				return report.reply, parentDriveNotify, nil
+				return activationFinalization{Text: report.reply}, parentDriveNotify, nil
 			case tool.CommunicateEndReasonWaitingOnWork:
-				if err := a.waitForTerminalTarget(ctx, report.waitingOn); err != nil {
-					return result, parentDriveNotify, err
+				checkpoint, err := readWaitCheckpoint(transcriptPath(a.sess.stateDir, a.sess.id), a.sess.id)
+				if err == nil && (checkpoint == nil || checkpoint.ResumedByTurnID != "") {
+					err = errors.New("wait checkpoint is unavailable")
 				}
-				return result, parentDriveNotify, errDelegateWaitResolved
+				return activationFinalization{Text: result, Disposition: activationYielded, Checkpoint: checkpoint}, parentDriveNotify, err
 			}
 		}
 		if drained {
@@ -2005,7 +2007,7 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 		a.mu.Unlock()
 		text, err := a.sess.DrainJobTreeKeepingReport(ctx)
 		if err != nil {
-			return result, parentDriveNotify, err
+			return activationFinalization{Text: result}, parentDriveNotify, err
 		}
 		if text != "" {
 			result = text
@@ -2016,7 +2018,7 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 	if reply, reported := a.sess.communicatedReply(); reported {
 		result = reply
 	}
-	return result, parentDriveNotify, nil
+	return activationFinalization{Text: result}, parentDriveNotify, nil
 }
 
 // runEndClass is the shared classification of a delegate run's terminal error.

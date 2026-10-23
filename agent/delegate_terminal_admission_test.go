@@ -40,7 +40,7 @@ func TestTerminalAdmissionInventoryIsReadOnly(t *testing.T) {
 	}
 }
 
-func TestDelegateWaitOnRunningJobKeepsRunOpenAndResumes(t *testing.T) {
+func TestWaitTargetAdmissionTracksRunningJob(t *testing.T) {
 	s, jm := newAdmissionSession(t)
 	jm.mu.Lock()
 	jm.running = map[string]*runningJob{"job-1": {}}
@@ -52,14 +52,14 @@ func TestDelegateWaitOnRunningJobKeepsRunOpenAndResumes(t *testing.T) {
 	if err != nil || !slices.Contains(work.Jobs, "job-1") {
 		t.Fatalf("jobs=%v err=%v", work.Jobs, err)
 	}
-	if s.terminalWaitSatisfied(context.Background(), "job-1") {
-		t.Fatal("running target satisfied wait")
+	if err := s.validateWaitTarget(context.Background(), "job-1"); err != nil {
+		t.Fatal("running target refused")
 	}
 	jm.mu.Lock()
 	jm.running = nil
 	jm.mu.Unlock()
-	if !s.terminalWaitSatisfied(context.Background(), "job-1") {
-		t.Fatal("settled target did not wake wait")
+	if err := s.validateWaitTarget(context.Background(), "job-1"); err == nil {
+		t.Fatal("absent target accepted")
 	}
 }
 
@@ -105,27 +105,27 @@ func TestDelegateWaitOnChildMustBeDescendant(t *testing.T) {
 	}
 }
 
-func TestDelegateWaitSatisfiedByJobWatchAndInput(t *testing.T) {
+func TestWaitTargetAdmissionAcceptsQueuedInputAndSteering(t *testing.T) {
 	s, jm := newAdmissionSession(t)
 	jm.mu.Lock()
 	jm.running = map[string]*runningJob{"job-1": {}}
 	jm.mu.Unlock()
-	if s.terminalWaitSatisfied(context.Background(), "job-1") {
-		t.Fatal("a running job satisfied the wait")
+	if err := s.validateWaitTarget(context.Background(), "job-1"); err != nil {
+		t.Fatal("running job refused")
 	}
 	jm.mu.Lock()
 	delete(jm.running, "job-1")
 	jm.mu.Unlock()
-	if !s.terminalWaitSatisfied(context.Background(), "job-1") {
-		t.Fatal("a settled job did not satisfy the wait")
+	if err := s.validateWaitTarget(context.Background(), "job-1"); err == nil {
+		t.Fatal("absent job accepted")
 	}
 
 	s.inputQueue = []queuedInput{{ID: "input-1"}}
-	if !s.terminalWaitSatisfied(context.Background(), "input-1") {
-		t.Fatal("queued input did not satisfy the wait")
+	if err := s.validateWaitTarget(context.Background(), "input-1"); err != nil {
+		t.Fatal("queued input refused")
 	}
 	s.steeringQueue = []steeringMessage{{StableTurnID: "steer-1", Text: "parent note"}}
-	if !s.terminalWaitSatisfied(context.Background(), "job-1") {
-		t.Fatal("parent steering did not satisfy the wait")
+	if err := s.validateWaitTarget(context.Background(), "steer-1"); err != nil {
+		t.Fatal("parent steering refused")
 	}
 }

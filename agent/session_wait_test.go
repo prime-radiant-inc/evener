@@ -48,7 +48,7 @@ func TestWaitCheckpointRecovery(t *testing.T) {
 		{name: "explicit Stop retains ownership", after: "stop", waiting: true},
 		{name: "interrupted tool without checkpoint", inflight: true, omitCheckpoint: true},
 		{name: "completed batch without checkpoint", omitCheckpoint: true},
-		{name: "checkpoint without completed execution", omitCompletion: true},
+		{name: "checkpoint before completion marker", omitCompletion: true, waiting: true},
 		{name: "checkpoint without completed tool batch", inflight: true},
 		{name: "refused communicate", refused: true},
 		{name: "duplicate checkpoint", after: "duplicate", waiting: true},
@@ -148,11 +148,6 @@ func TestWaitCheckpointRecovery(t *testing.T) {
 			}
 			communicate(communicateCallArgs("call-1", map[string]any{"message": "fixture-report", "end_turn": true, "end_reason": "waiting_on_work", "waiting_on": "fixture-job"}), true, tc.refused)
 			s.inputQueue = nil
-			if !tc.inflight {
-				if !tc.omitCompletion {
-					record(schema.Turn{Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}}, transcript.PlaceCompletion)
-				}
-			}
 			checkpoint := schema.WaitCheckpointInfo{SessionID: childID, DelegateID: "dlg_wait", Generation: 1, ExecutionTurnID: "execution-1", CommunicateCallID: "call-1", WaitingOn: "fixture-job"}
 			if tc.change != nil {
 				tc.change(&checkpoint)
@@ -162,6 +157,11 @@ func TestWaitCheckpointRecovery(t *testing.T) {
 					record(schema.Turn{Kind: schema.TurnWaitCheckpoint, WaitCheckpoint: &checkpoint}, transcript.PlaceInTurn("execution-1"))
 				} else if err := s.persistWaitCheckpoint(checkpoint); err != nil {
 					t.Fatal(err)
+				}
+			}
+			if !tc.inflight {
+				if !tc.omitCompletion {
+					record(schema.Turn{Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}}, transcript.PlaceCompletion)
 				}
 			}
 			switch tc.after {
@@ -331,7 +331,7 @@ func TestWaitCheckpointRecovery(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if len(data.Entries) != 6 || data.Entries[5].Turn.Kind != schema.TurnWaitCheckpoint || data.Entries[5].Turn.WaitCheckpoint.CommunicateCallID != "call-1" {
+				if len(data.Entries) != 6 || data.Entries[4].Turn.Kind != schema.TurnWaitCheckpoint || data.Entries[4].Turn.WaitCheckpoint.CommunicateCallID != "call-1" {
 					t.Fatalf("raw reader lost private checkpoint: %+v", data.Entries)
 				}
 				if open := transcript.ExecutionTurns(data.Entries); len(open) != 1 || open["execution-1"] {
@@ -347,7 +347,7 @@ func TestWaitCheckpointRecovery(t *testing.T) {
 					}
 				}
 				forensic, err := doctor.Transcript(c.stateDir, childID, doctor.TranscriptOpts{})
-				if err != nil || forensic.TurnsTotal != 3 || len(forensic.Turns) != 6 || forensic.Turns[5].Kind != "WAIT_CHECKPOINT" || forensic.Turns[5].Turn != nil {
+				if err != nil || forensic.TurnsTotal != 3 || len(forensic.Turns) != 6 || forensic.Turns[4].Kind != "WAIT_CHECKPOINT" || forensic.Turns[4].Turn != nil {
 					t.Fatalf("doctor checkpoint classification = %+v, %v", forensic, err)
 				}
 				// A resident executor must never lend its writer to this cold path.

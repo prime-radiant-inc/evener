@@ -7,14 +7,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/appwire"
 )
-
-var errDelegateWaitResolved = errors.New("delegate wait resolved")
 
 // recordInputAdmission runs only after entry acceptance, before its first
 // request. A new input retires the previous input's done fence, including for
@@ -36,66 +33,6 @@ func (c *delegateTreeController) recordInputAdmission(lease delegateLease, requi
 		c.evidenceVersion++
 	}
 	return nil
-}
-
-// waitForTerminalTarget keeps the run alive until the named waker signals or
-// disappears. Any session notification counts: a job completion, a watch
-// frame, or a child delivery all wake the run to inspect the new evidence.
-func (a *subagent) waitForTerminalTarget(ctx context.Context, target string) error {
-	ticker := time.NewTicker(250 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		if a.sess.terminalWaitSatisfied(ctx, target) {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
-	}
-}
-
-func (s *Session) terminalWaitSatisfied(ctx context.Context, target string) bool {
-	if s == nil {
-		return true
-	}
-	if s.peekNotifications() > 0 {
-		return true
-	}
-	if s.hasPendingSteering() {
-		return true
-	}
-	if pending, err := s.pendingDelegateAttentionIDs(); err == nil && len(pending) != 0 {
-		return true
-	}
-	if len(s.pendingChildDeliveryIDs()) != 0 {
-		return true
-	}
-	if s.hasQueuedWaitInput(target) {
-		return true
-	}
-	return s.validateWaitTarget(ctx, target) != nil
-}
-
-func (s *Session) hasQueuedWaitInput(target string) bool {
-	kind, id := splitWaitTarget(target)
-	if kind != "" && kind != "input" {
-		return false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, input := range s.inputQueue {
-		if input.ID == id {
-			return true
-		}
-	}
-	for _, steering := range s.steeringQueue {
-		if steering.StableTurnID == id || steering.ClientMutationID == id {
-			return true
-		}
-	}
-	return false
 }
 
 // validateCompletion is a sender rule, not an outstanding-work inventory gate.
@@ -135,6 +72,15 @@ func (c *delegateTreeController) validateCompletionLocked(actor delegateActor) e
 	return nil
 }
 
+type staleWaitTargetError struct {
+	target string
+	state  any
+}
+
+func (e *staleWaitTargetError) Error() string {
+	return "wait target " + e.target + " is already settled"
+}
+
 // validateWaitTarget resolves a wait target against a live waker. It accepts a
 // bare identity or a kind-prefixed one (job:, watch:, child:, input:).
 func (s *Session) validateWaitTarget(ctx context.Context, target string) error {
@@ -153,20 +99,23 @@ func (s *Session) validateWaitTarget(ctx context.Context, target string) error {
 
 	if kind == "" || kind == "job" {
 		if s.jobManager != nil {
-			s.jobManager.mu.Lock()
-			_, running := s.jobManager.running[id]
-			s.jobManager.mu.Unlock()
-			if running {
-				return nil
-			}
 			journal, err := retirementJobJournal(filepath.Join(s.jobManager.dir, "jobs.jsonl"))
 			if err != nil {
 				return fmt.Errorf("cannot verify job %q: %w", id, err)
 			}
 			for _, record := range jobstore.Fold(journal) {
-				if record.JobID == id && !record.Status.IsTerminal() {
+				if record.JobID == id {
+					if record.Status.IsTerminal() {
+						return &staleWaitTargetError{target: target, state: record}
+					}
 					return nil
 				}
+			}
+			s.jobManager.mu.Lock()
+			_, running := s.jobManager.running[id]
+			s.jobManager.mu.Unlock()
+			if running {
+				return nil
 			}
 		}
 	}
@@ -185,11 +134,17 @@ func (s *Session) validateWaitTarget(ctx context.Context, target string) error {
 			live := descendant && aggregate != nil && (aggregate.CurrentRunOpen ||
 				aggregate.Phase == delegatestore.PhaseRunning ||
 				aggregate.Phase == delegatestore.PhaseSettling ||
-				aggregate.Phase == delegatestore.PhaseStopping ||
-				len(aggregate.PendingDeliveries) != 0)
+				aggregate.Phase == delegatestore.PhaseStopping)
+			var terminal any
+			if descendant && aggregate != nil && !live {
+				terminal = map[string]any{"phase": aggregate.Phase, "generation": aggregate.Generation, "outcome": aggregate.LatestOutcome}
+			}
 			s.delegateController.mu.Unlock()
 			if live {
 				return nil
+			}
+			if terminal != nil {
+				return &staleWaitTargetError{target: target, state: terminal}
 			}
 		}
 	}

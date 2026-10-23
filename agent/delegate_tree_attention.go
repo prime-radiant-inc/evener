@@ -623,18 +623,21 @@ func (c *delegateTreeController) attentionWakeAncestorGateLocked(delegateID stri
 
 // ancestorChainRestorableLocked reports whether a child's cold restore can
 // make its owner chain resident: walking up from parentID, each ancestor is
-// either resident already or idle and restorable, the two conditions the
-// restore itself applies (restoreColdDelegateOwnerRuntime). A running
-// ancestor with no resident runtime (after a restart, until its generation
-// is recovered) fails every restore beneath it target_busy, so its
-// descendants wait rather than being selected pass after pass.
+// resident, idle and restorable, or independently proven safely waiting.
+// A cold waiting ancestor attaches its same open lease without executing it.
+// Other running ancestors and uncertain reads keep descendants waiting until
+// existing recovery can establish the owner chain.
 func (c *delegateTreeController) ancestorChainRestorableLocked(parentID string) bool {
 	for ancestorID := parentID; ancestorID != ""; ancestorID = c.durable[ancestorID].Descriptor.ParentDelegateID {
 		if c.residentDelegateRuntimeLocked(ancestorID) != nil {
 			return true
 		}
 		if !c.idleRestorableLocked(ancestorID) {
-			return false
+			run := c.durable[ancestorID]
+			safe, err := c.readSafeDelegateWaitLocked(run)
+			if err != nil || !safe {
+				return false
+			}
 		}
 	}
 	return true

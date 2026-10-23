@@ -1484,7 +1484,14 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			s.endInputAtTurnFailure()
 			return strings.Join(outputs, "\n"), err
 		}
+		if err := s.checkpointCompletedWait(processCtx); err != nil {
+			s.completeExecution(schema.TurnFailed)
+			return strings.Join(outputs, "\n"), err
+		}
 		s.completeExecution(schema.TurnCompleted)
+		if s.communicateEndReason() == tool.CommunicateEndReasonWaitingOnWork {
+			return strings.Join(outputs, "\n"), nil
+		}
 		// Drain the next action after a completed (non-error) turn. The pops and the
 		// goal-gate fold are side effects kept here; selectDrainNextAction is the pure
 		// priority decision over their results. popQueueHead is reached only when no
@@ -2215,7 +2222,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	if executionName == "" {
 		executionName = queuedIdentity.StableTurnID
 	}
-	s.beginExecution(executionName)
+	if err := s.beginExecution(executionName); err != nil {
+		return "", false, err
+	}
 
 	if kind == EntryContinuation {
 		s.acceptContinuationInput(ctx, input, runningTurnID)

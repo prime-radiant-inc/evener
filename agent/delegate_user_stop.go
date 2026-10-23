@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -81,7 +82,7 @@ func (s *Session) subagentForChild(childSessionID string) *subagent {
 // cancelled run with nothing to report tells its coordinator "Stopped by the
 // user."; cancelAgent's own cancel (unwired in production today) passes
 // false, so it is never misattributed as a direct user stop.
-// It refuses a subagent that is not running, one whose run has passed its
+// It refuses a subagent with no executing or yielded open run, one whose run has passed its
 // last pre-settlement check, and one already stopping, so a repeated stop
 // answers notRunning. On success it returns the admitted run's done channel,
 // captured under the same lock as the check: a caller must wait on this
@@ -89,9 +90,22 @@ func (s *Session) subagentForChild(childSessionID string) *subagent {
 // different run's channel if the run settles and resumes in between.
 func (a *subagent) requestRunCancel(asUserStop bool) (chan struct{}, error) {
 	a.mu.Lock()
+	cancel := a.cancel
 	if !a.running {
-		a.mu.Unlock()
-		return nil, errSubagentNotRunning
+		cancel = nil
+		if c := a.sess.delegateController; c != nil {
+			c.mu.Lock()
+			if live := c.live[a.sess.owningDelegateID]; live != nil && live.binding != nil && live.binding.runtime == a.sess && live.binding.yielded {
+				if _, _, err := c.admitLeaseLocked(live.binding.lease, delegatestore.PhaseRunning); err == nil {
+					cancel = live.binding.cancel
+				}
+			}
+			c.mu.Unlock()
+		}
+		if cancel == nil {
+			a.mu.Unlock()
+			return nil, errSubagentNotRunning
+		}
 	}
 	if a.settlementClaimed || a.cancelRequested {
 		a.mu.Unlock()
@@ -99,7 +113,6 @@ func (a *subagent) requestRunCancel(asUserStop bool) (chan struct{}, error) {
 	}
 	a.cancelRequested = true
 	a.userStopRequested = asUserStop
-	cancel := a.cancel
 	done := a.done
 	a.mu.Unlock()
 	if cancel != nil {

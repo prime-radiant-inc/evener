@@ -34,7 +34,8 @@ type executionState struct {
 	startedAt time.Time
 	// failed records a TURN_FAILURE recorded during the execution: its
 	// completion then records failed whatever the input loop saw.
-	failed bool
+	failed     bool
+	waitCallID string
 }
 
 // executionTurnID is the TurnID an execution runs under: the client-mutation
@@ -51,8 +52,11 @@ func executionTurnID(name string) string {
 // beginExecution admits an execution named name (see executionTurnID) on the
 // session's transcript, before any of its entries is recorded. The
 // execution-started func and EventExecutionStarted learn its TurnID first.
-func (s *Session) beginExecution(name string) {
+func (s *Session) beginExecution(name string) error {
 	turnID := executionTurnID(name)
+	if err := s.claimWaitResumption(turnID); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	announced := s.sessionStarted
 	s.execution = executionState{running: true, turnID: turnID, announced: announced, startedAt: s.sclock().Now()}
@@ -75,6 +79,7 @@ func (s *Session) beginExecution(name string) {
 	if reopen {
 		_ = s.recordTranscriptOnlyAt(schema.Turn{Kind: schema.TurnReopen}, transcript.PlaceSession)
 	}
+	return nil
 }
 
 // completeExecution records the running execution's completion entry. status
@@ -301,7 +306,12 @@ func (s *Session) closeCrashedExecutions(entries []transcript.Entry) bool {
 	s.mu.Unlock()
 	recorded := false
 	for _, turnID := range closeCrashedExecutionTargets(executions, pending) {
-		rec, err := s.completeTurn(turnID, schema.TurnInterrupted)
+		status := schema.TurnInterrupted
+		checkpoint, checkpointErr := readWaitCheckpoint(transcriptPath(s.stateDir, s.id), s.id)
+		if checkpointErr == nil && checkpoint != nil && checkpoint.ExecutionTurnID == turnID && safeWaitBoundary(*checkpoint, entries) {
+			status = schema.TurnCompleted
+		}
+		rec, err := s.completeTurn(turnID, status)
 		if err != nil {
 			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 		}
@@ -489,6 +499,9 @@ func (s *Session) deliverCommunicate(data events.CommunicateData) error {
 	}
 	s.mu.Lock()
 	s.noteAgentMessageLocked(data.Message)
+	if data.EndTurn && data.EndReason == "waiting_on_work" {
+		s.execution.waitCallID = data.CallID
+	}
 	s.mu.Unlock()
 	s.emit(events.EventCommunicate, data)
 	return nil

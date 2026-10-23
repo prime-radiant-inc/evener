@@ -951,7 +951,16 @@ func (c *delegateTreeController) recheckNotificationReceivers() bool {
 	root := c.rootRuntime
 	ids := make([]string, 0, len(c.durable))
 	for id, aggregate := range c.durable {
-		if aggregate != nil && aggregate.Resumable && aggregate.Phase == delegatestore.PhaseIdle {
+		if aggregate == nil || !aggregate.Resumable {
+			continue
+		}
+		waiting := aggregate.CurrentRunOpen && aggregate.Phase == delegatestore.PhaseRunning
+		if live := c.live[id]; live != nil && (live.runtime != nil || live.binding != nil) {
+			waiting = waiting && live.binding != nil && live.binding.yielded
+		}
+		// A cold candidate is not declared safe here. Addressed pending evidence
+		// and the single safe-checkpoint reader gate its actual restoration.
+		if aggregate.Phase == delegatestore.PhaseIdle || waiting {
 			ids = append(ids, id)
 		}
 	}

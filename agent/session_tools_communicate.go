@@ -135,14 +135,15 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 					}
 				} else if endReason == tool.CommunicateEndReasonWaitingOnWork {
 					waitingOn = communicateStringArg(args, "waiting_on")
-					if waitingOn == "" {
-						return nil, appwire.InvalidParams("communicate end_reason waiting_on_work requires waiting_on")
-					}
 				}
 			}
 
-			if endReason == tool.CommunicateEndReasonWaitingOnWork && deps.validateWaitTarget != nil {
+			if endReason == tool.CommunicateEndReasonWaitingOnWork && waitingOn != "" && deps.validateWaitTarget != nil {
 				if err := deps.validateWaitTarget(ctx, waitingOn); err != nil {
+					var stale *staleWaitTargetError
+					if errors.As(err, &stale) {
+						return map[string]any{"accepted": false, "end_turn": false, "reason": "stale_wait_target", "target": stale.target, "target_state": stale.state}, nil
+					}
 					return nil, appwire.InvalidParams("communicate end_reason waiting_on_work requires a live waker: " + err.Error())
 				}
 			}

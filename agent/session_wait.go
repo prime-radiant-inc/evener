@@ -10,16 +10,35 @@ import (
 	"io"
 	"os"
 
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
+
+type activationDisposition uint8
+
+const (
+	activationSettled activationDisposition = iota
+	activationYielded
+)
+
+type activationFinalization struct {
+	Text        string
+	Disposition activationDisposition
+	Checkpoint  *schema.WaitCheckpointInfo
+}
 
 // persistWaitCheckpoint records only transcript evidence, never model history.
 // Callers own activation/communicate admission and delegate journal validation.
 // A retained-unsynced error must not be treated as a safe yield or re-appended:
 // the existing writer's EstablishDurability barrier settles that record.
 func (s *Session) persistWaitCheckpoint(checkpoint schema.WaitCheckpointInfo) error {
+	return s.persistWaitCheckpointThrough(checkpoint, false)
+}
+
+func (s *Session) persistWaitCheckpointThrough(checkpoint schema.WaitCheckpointInfo, establish bool) error {
 	if err := validateWaitCheckpoint(checkpoint, s.id); err != nil {
 		return err
 	}
@@ -30,9 +49,43 @@ func (s *Session) persistWaitCheckpoint(checkpoint schema.WaitCheckpointInfo) er
 	if header := writer.Header(); header.SessionID != s.id {
 		return &transcript.SessionIDMismatchError{HeaderSessionID: header.SessionID, RequestedSessionID: s.id}
 	}
-	rec, err := s.recordTranscriptOnlyThrough(schema.Turn{
-		Kind: schema.TurnWaitCheckpoint, WaitCheckpoint: &checkpoint,
-	}, transcript.DoorSynced, transcript.PlaceInTurn(waitCheckpointRecordTurn(checkpoint)))
+	appended := false
+	rec, err := func() (transcript.Record, error) {
+		s.attentionMu.Lock()
+		defer s.attentionMu.Unlock()
+		if establish && checkpoint.ResumedByTurnID != "" && checkpoint.DelegateID != "" {
+			c := s.delegateController
+			if c == nil {
+				return transcript.Record{}, errDelegateStaleLease
+			}
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			lease := delegateLease{delegateID: checkpoint.DelegateID, generation: checkpoint.Generation}
+			_, live, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
+			if err != nil {
+				return transcript.Record{}, err
+			}
+			if live.binding.runtime != s || live.binding.yielded || c.hasSettlementClaimLocked(lease) {
+				return transcript.Record{}, errDelegateTargetBusy
+			}
+		}
+		// The lock order is attentionMu, controller lease, Session.mu, then
+		// the writer's leaf locks. No event/retirement callback runs here.
+		appended = true
+		rec, err := s.recordTranscriptLocked(schema.Turn{
+			Kind: schema.TurnWaitCheckpoint, WaitCheckpoint: &checkpoint,
+		}, transcript.DoorSynced, transcript.PlaceInTurn(waitCheckpointRecordTurn(checkpoint)))
+		if establish && retainedUnsyncedError(err) != nil {
+			err = writer.EstablishDurability() // Repair the retained record, never append twice.
+		}
+		return rec, err
+	}()
+	if appended {
+		if err != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		}
+		s.surfaceTranscriptWarnings()
+	}
 	if err != nil {
 		return err
 	}
@@ -158,7 +211,7 @@ func safeWaitBoundary(checkpoint schema.WaitCheckpointInfo, entries []transcript
 	if checkpoint.ResumedByTurnID != "" {
 		return false
 	}
-	started, completed, communicated, accepted := false, false, false, false
+	started, completed, communicated, accepted, sealed := false, false, false, false, false
 	pending := make(map[string]bool)
 	for _, entry := range entries {
 		turn := entry.Turn
@@ -180,11 +233,11 @@ func safeWaitBoundary(checkpoint schema.WaitCheckpointInfo, entries []transcript
 		}
 		// Questions and approval state can be recorded in delivery/gap spans,
 		// not only in the yielding execution. They retain their own hold owner.
-		if completed && turn.Notice != nil && turn.Notice.Kind == schema.NoticeApprovalDecision {
+		if (completed || sealed) && turn.Notice != nil && turn.Notice.Kind == schema.NoticeApprovalDecision {
 			return false
 		}
 		for _, part := range turn.Message.Content {
-			if completed && part.ToolResult != nil && part.ToolResult.Name == askUserToolName {
+			if (completed || sealed) && part.ToolResult != nil && part.ToolResult.Name == askUserToolName {
 				return false
 			}
 		}
@@ -199,12 +252,12 @@ func safeWaitBoundary(checkpoint schema.WaitCheckpointInfo, entries []transcript
 		case schema.TurnFailure, schema.TurnReopen:
 			return false
 		case schema.TurnAssistant, schema.TurnTool, schema.TurnToolResults:
-			if completed {
+			if completed || sealed {
 				return false
 			}
 		case schema.TurnCommunicate:
 			info := turn.Communicate
-			if completed || info == nil || !pending[info.CallID] {
+			if completed || sealed || info == nil || !pending[info.CallID] {
 				return false
 			}
 			if info.CallID != checkpoint.CommunicateCallID {
@@ -217,6 +270,11 @@ func safeWaitBoundary(checkpoint schema.WaitCheckpointInfo, entries []transcript
 				return false
 			}
 			communicated = true
+		case schema.TurnWaitCheckpoint:
+			if turn.WaitCheckpoint == nil || *turn.WaitCheckpoint != checkpoint || len(pending) != 0 || !communicated || !accepted {
+				return false
+			}
+			sealed = true
 		case schema.TurnCompletion:
 			if turn.Completion == nil || turn.Completion.Status != schema.TurnCompleted || len(pending) != 0 || !communicated || !accepted {
 				return false
@@ -257,5 +315,283 @@ func safeWaitBoundary(checkpoint schema.WaitCheckpointInfo, entries []transcript
 			}
 		}
 	}
-	return started && completed && communicated && accepted && len(pending) == 0
+	return started && sealed && communicated && accepted && len(pending) == 0
+}
+
+// checkpointCompletedWait runs after processOneInput joined its entire tool
+// batch and synced its results, before the completion marker or executor release.
+func (s *Session) checkpointCompletedWait(ctx context.Context) error {
+	s.mu.Lock()
+	report, execution := s.comm, s.execution
+	s.mu.Unlock()
+	if !report.called || report.endReason != "waiting_on_work" {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !execution.running || execution.failed || execution.waitCallID == "" {
+		return errors.New("wait has no completed execution boundary")
+	}
+	checkpoint := schema.WaitCheckpointInfo{SessionID: s.id, ExecutionTurnID: execution.turnID, CommunicateCallID: execution.waitCallID, WaitingOn: report.waitingOn}
+	if s.owningDelegateID != "" {
+		actor, err := s.delegateActor(ctx)
+		if err != nil {
+			return err
+		}
+		if actor.lease == nil {
+			return errDelegateStaleLease
+		}
+		c := s.delegateController
+		c.mu.Lock()
+		_, live, err := c.admitLeaseLocked(*actor.lease, delegatestore.PhaseRunning)
+		if err == nil && (live.binding.evidence.batch != nil || c.hasSettlementClaimLocked(*actor.lease)) {
+			err = errDelegateTargetBusy
+		}
+		c.mu.Unlock()
+		if err != nil {
+			return err
+		}
+		checkpoint.DelegateID, checkpoint.Generation = actor.lease.delegateID, actor.lease.generation
+	}
+	return s.persistWaitCheckpointDurably(checkpoint)
+}
+
+func (s *Session) persistWaitCheckpointDurably(checkpoint schema.WaitCheckpointInfo) error {
+	return s.persistWaitCheckpointThrough(checkpoint, true)
+}
+
+// The caller already owns the single input executor. Claim before recording
+// any activity of its new execution, so a crash is ordinary interruption.
+func (s *Session) claimWaitResumption(turnID string) error {
+	if s.attachedTranscript() == nil || s.stateDir == "" {
+		return nil
+	}
+	checkpoint, err := readWaitCheckpoint(transcriptPath(s.stateDir, s.id), s.id)
+	if err != nil {
+		return err
+	}
+	if checkpoint == nil || checkpoint.ResumedByTurnID != "" {
+		return nil
+	}
+	if checkpoint.DelegateID != "" && s.delegateController != nil {
+		c := s.delegateController
+		c.mu.Lock()
+		run := c.durable[checkpoint.DelegateID]
+		historical := run != nil && (run.Generation != checkpoint.Generation || !run.CurrentRunOpen)
+		c.mu.Unlock()
+		if historical {
+			return nil // Stop or settlement, not a resumption of this wait.
+		}
+	}
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id), "")
+	if err != nil {
+		return err
+	}
+	if !safeWaitBoundary(*checkpoint, data.Entries) {
+		return errors.New("wait resumption lacks a safe boundary")
+	}
+	checkpoint.ResumedByTurnID = turnID
+	return s.persistWaitCheckpointDurably(*checkpoint)
+}
+
+func waitCapacityKind(run *delegatestore.Aggregate) delegateCapacityKind {
+	if run.Trigger == delegatestore.TriggerAttention {
+		return delegateDriveCapacity
+	}
+	return delegateTurnCapacity
+}
+
+// yieldActivation releases only model execution. The binding, lease, child
+// callbacks, job manager and waiter channel remain owned by this generation.
+func (a *subagent) yieldActivation(ctx context.Context, checkpoint *schema.WaitCheckpointInfo) error {
+	c := a.sess.delegateController
+	lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
+	if !ok || c == nil || checkpoint == nil {
+		return errDelegateStaleLease
+	}
+	a.mu.Lock()
+	c.mu.Lock()
+	run, live, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
+	if err == nil && (a.cancelRequested || c.hasSettlementClaimLocked(lease) || live.binding.evidence.batch != nil || live.binding.yielded) {
+		err = errDelegateTargetBusy
+	}
+	if err == nil {
+		a.bindYieldCancellationLocked(live.binding)
+		live.binding.yielded = true
+		c.releaseCapacityLocked(waitCapacityKind(run))
+		c.evidenceVersion++
+		a.running = false
+		a.finalizing = false
+		a.cancel = nil
+	}
+	c.mu.Unlock()
+	a.mu.Unlock()
+	if err == nil {
+		c.recheckNotificationReceivers()
+		_ = a.sess.releaseNotificationAdmission()
+	}
+	return err
+}
+
+// Called under the subagent and controller locks. Stop already invokes this
+// binding's cancellation outside its locks, including when no executor remains.
+func (a *subagent) bindYieldCancellationLocked(binding *delegateRuntimeBinding) {
+	if binding.yieldCancelBound {
+		return
+	}
+	base, lease := binding.cancel, binding.lease
+	binding.cancel = func() {
+		if base != nil {
+			base()
+		}
+		a.cancelYieldedActivation(lease)
+	}
+	binding.yieldCancelBound = true
+}
+
+func (a *subagent) cancelYieldedActivation(lease delegateLease) {
+	c := a.sess.delegateController
+	a.mu.Lock()
+	c.mu.Lock()
+	live := c.live[lease.delegateID]
+	var cancel context.CancelFunc
+	finish := false
+	if live != nil && live.binding != nil && live.binding.lease == lease {
+		cancel = live.binding.executionCancel
+		finish = live.binding.yielded && !a.running
+		if finish {
+			a.running, a.cancelRequested = true, true
+		}
+	}
+	c.mu.Unlock()
+	a.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if finish {
+		// Reuse only the existing canceled-run finalization tail. This cannot
+		// enter a model or tool call and owns no execution capacity.
+		ctx, cancel := context.WithCancel(a.sess.sessionContext())
+		cancel()
+		ctx = context.WithValue(ctx, delegateRunLeaseContextKey{}, lease)
+		a.run(ctx, "", nil)
+	}
+}
+
+// resumeYieldedDelegate is called with the existing subagent drive guard held.
+// It borrows the same capacity counter as the generation's original executor.
+func (s *Session) resumeYieldedDelegate(sub *subagent) (bool, bool) {
+	c := s.delegateController
+	c.mu.Lock()
+	run := c.durable[sub.sess.owningDelegateID]
+	live := c.live[sub.sess.owningDelegateID]
+	if live == nil || live.binding == nil || !live.binding.yielded {
+		c.mu.Unlock()
+		return false, false
+	}
+	lease := live.binding.lease
+	_, _, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
+	if err == nil && (live.runtime != sub.sess || c.hasSettlementClaimLocked(lease) || live.binding.evidence.batch != nil) {
+		err = errDelegateTargetBusy
+	}
+	if err == nil && !c.reserveCapacityLocked(waitCapacityKind(run)) {
+		err = errTreeAtCapacity
+	}
+	if err != nil {
+		c.mu.Unlock()
+		sub.sess.deferNotificationAdmission()
+		return true, false
+	}
+	runCtx, runCancel := context.WithCancel(sub.sess.sessionContext())
+	live.binding.executionCancel = runCancel
+	live.binding.yielded = false
+	c.attentionDriveSeq++
+	c.attentionStateLocked(sub.sess.owningDelegateID).driveTurn = c.attentionDriveSeq
+	c.evidenceVersion++
+	started := delegateStartCommit{lease: lease, ctx: runCtx, descriptor: cloneDelegateStartDescriptor(run.Descriptor), startedAt: run.RunStartedAt}
+	c.mu.Unlock()
+	// launchAcceptedDelegateAttention uses the existing executor handoff, not a
+	// start reservation or RunStarted event. Only its input is autonomous.
+	if err := s.launchAcceptedDelegateAttention(sub, started); err != nil {
+		runCancel()
+		c.mu.Lock()
+		if current := c.live[lease.delegateID]; current == live && current.binding != nil && current.binding.lease == lease {
+			current.binding.yielded = true
+			c.releaseCapacityLocked(waitCapacityKind(run))
+		}
+		c.mu.Unlock()
+		sub.sess.deferNotificationAdmission()
+		return true, false
+	}
+	return true, true
+}
+
+// beginWaitingRuntimeRestore claims the existing open lease before releasing
+// the controller lock. Its binding excludes cold writers and competing restores.
+// It reserves no execution capacity and creates no generation event.
+func (c *delegateTreeController) beginWaitingRuntimeRestore(id string) (delegateStartCommit, string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	run := c.durable[id]
+	if c.closing || run == nil || c.reclamationCoversLocked(id) {
+		return delegateStartCommit{}, "", errDelegateTargetBusy
+	}
+	safe, err := c.readSafeDelegateWaitLocked(run)
+	if err != nil {
+		return delegateStartCommit{}, "", err
+	}
+	if !safe {
+		return delegateStartCommit{}, "", errDelegateTargetBusy
+	}
+	live := c.live[id]
+	if live == nil {
+		live = &delegateLiveState{}
+		c.live[id] = live
+	}
+	ctx, cancel := context.WithCancel(c.rootRuntime.sessionContext())
+	lease := delegateLease{delegateID: id, generation: run.Generation}
+	live.binding = &delegateRuntimeBinding{lease: lease, cancel: cancel, yielded: true, evidence: &delegateGenerationEvidence{requirement: delegateCompletionReportRequired}}
+	c.evidenceVersion++
+	return delegateStartCommit{lease: lease, ctx: ctx, descriptor: cloneDelegateStartDescriptor(run.Descriptor), startedAt: run.RunStartedAt, transcriptPath: transcriptPath(c.stateDir, run.Descriptor.ChildSessionID)}, run.Descriptor.ParentDelegateID, nil
+}
+
+func (c *delegateTreeController) abandonWaitingRuntimeRestore(lease delegateLease) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	live := c.live[lease.delegateID]
+	if live != nil && live.runtime == nil && live.binding != nil && live.binding.lease == lease && live.binding.yielded {
+		if live.binding.cancel != nil {
+			live.binding.cancel()
+		}
+		live.binding = nil
+		c.evidenceVersion++
+	}
+}
+
+func (c *delegateTreeController) attachWaitingRuntime(lease delegateLease, runtime *Session) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	run, live, err := c.exactLeaseLocked(lease)
+	if err != nil {
+		return err
+	}
+	if c.closing || c.reclamationCoversLocked(lease.delegateID) || run.Phase != delegatestore.PhaseRunning || run.PendingStopSeq != 0 || !run.Resumable || live.recoveryRequired {
+		return errDelegateTargetBusy
+	}
+	if blocked, _ := c.ancestorFenceLocked(run.Descriptor.ParentDelegateID); blocked {
+		return errDelegateTargetBusy
+	}
+	if !live.binding.yielded || live.binding.runtime != nil && live.binding.runtime != runtime || live.runtime != nil && live.runtime != runtime || runtime.delegateController != c || runtime.owningDelegateID != lease.delegateID || runtime.id != run.Descriptor.ChildSessionID || c.hasDeliveryWorkForOwnerLocked(lease.delegateID) {
+		return errDelegateTargetBusy
+	}
+	ownerID, owner, err := c.runtimeOwnerLocked(runtime)
+	if err != nil || owner != nil && owner != live || ownerID != "" && ownerID != lease.delegateID {
+		return errDelegateTargetBusy
+	}
+	c.setResidentRuntimeLocked(live, runtime)
+	live.binding.runtime = runtime
+	live.binding.ready = true
+	c.evidenceVersion++
+	return nil
 }

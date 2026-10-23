@@ -69,9 +69,12 @@ child's update or completion. A delegate cannot claim `done` while a child is
 live, including a reserved child start. That sender check shares the child-start
 admission lock. It is not a task-list, shell-job, watch or attention inventory
 gate, and does not restrict root completion. A valid `waiting_on_work` call
-resumes for a child report through its existing polling wait.
+publishes its message, joins the tool batch, syncs a checkpoint, then releases
+model execution capacity without settling its generation. Children, shell jobs,
+watches, callbacks and the original lease remain owned by that generation.
+Unfinished task-list rows alone do not force another turn.
 
-### Durable wait recovery, reader foundation
+### Durable wait yield and recovery
 
 `agent/session_wait.go` defines private `WAIT_CHECKPOINT` yield/resumption
 records. They never enter model history or public/UI content. Raw forensic
@@ -80,7 +83,7 @@ The latest nonduplicate checkpoint is evidence, not execution authority.
 
 Before generic `runtime_lost`, cold recovery checks the session, descriptor,
 delegate and journal generation, the same accepted `communicate` call, all tool
-results, successful execution completion and absence of later contradicting
+results, a checkpoint sealing the completed batch and absence of later contradicting
 execution, question or approval state. Stop and existing writer, restore,
 reservation and finalization fences still own admission. The existing owned
 writer's `EstablishDurability` barrier must succeed, readable bytes alone do not
@@ -93,12 +96,17 @@ flowchart LR
   R[Cold open generation] --> V[Validate checkpoint and execution, establish durability]
   V --> W[Keep PhaseRunning and CurrentRunOpen, same generation]
   W --> C[Existing addressed custody and source replay]
-  C --> T[Task9, attach and claim the same generation]
+  C --> T[Attach existing lease, reacquire execution capacity]
+  T --> S[Sync resumption claim under lease admission]
+  S --> M[New execution turn, same generation]
 ```
 
-This reader foundation leaves the generation cold, unbound and on the existing
+Recovery first leaves the generation cold, unbound and on the existing
 reconciliation order. It writes no terminal outcome and starts no replacement
-generation. Existing shell/watch repair and delegate FIFO outboxes retain their
+generation. The addressed dispatcher attaches that same lease through existing
+writer/restore fences, then uses the existing single executor. A cold waiting
+ancestor may be attached to restore a descendant without running its own model.
+Existing shell/watch repair and delegate FIFO outboxes retain their
 transport obligations until synced receiver custody. Independently proven cold
 waits can accept notifications through the existing cold writer admission, but
 acceptance neither consumes them nor resumes execution. A missing/nonrestorable
@@ -106,10 +114,22 @@ named producer yields one addressed `wait-interrupted:<session>:<execution>:<cal
 notification, not a false completion. Source-read failure does not mean absence.
 Root checkpoints may omit delegate, generation and named target.
 
-**Task9 owns production checkpoint calls, executor yield, attachment and claim of
-this same open lease, resumption records and notification-triggered execution.**
-Those paths are not implemented by this reader foundation. Ordinary resident
-and non-checkpoint idle dispatch retain their existing paths. A pre-checkpoint
+Any incoming notification or admitted user input may resume a wait, not just
+the named producer. The target validates admission, never filters messages.
+An already settled named target is an ordinary refusal carrying its actual
+terminal state, with no publication, checkpoint or synthetic wake. Completion
+after validation remains owed through ordinary durable delivery.
+
+The resumption claim is synced before new model/tool activity while holding
+the original lease admission lock. Stop either wins before that claim or cancels
+the admitted execution of that exact generation. Retained-unsynced records use
+the existing durability barrier, never a blind reappend. A checkpoint can repair
+a missing activation-completion marker as completed; a crash after a resumption
+claim instead uses ordinary interrupted-execution recovery.
+
+There is no wait-target polling loop, ticker or fabricated continuation prompt.
+Ordinary non-checkpoint idle dispatch retains successor-generation semantics.
+A pre-checkpoint
 reader cannot safely restore a yielded generation, downgrade requires retaining
 the checkpoint-aware reader, not a legacy compatibility route.
 

@@ -826,6 +826,10 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		}
 		ids = pending
 	}
+	if handled, resumed := s.resumeYieldedDelegate(sub); handled {
+		launched = resumed
+		return true
+	}
 	reservation, err := s.delegateController.ReserveAttention(sub.sess, ids[0])
 	if err != nil {
 		if !errors.Is(err, errDelegateTargetBusy) && !errors.Is(err, errTreeAtCapacity) {
@@ -905,15 +909,24 @@ func (s *Session) restoreColdDelegateAttentionRuntime(delegateID string, gates .
 	}
 	defer retirementRelease()
 	started, parentID, err := s.delegateController.idleDelegateRestoreCommit(delegateID)
+	mode := delegateRuntimeAttachIdle
 	if err != nil {
-		return nil, nil, err
+		started, parentID, err = s.delegateController.beginWaitingRuntimeRestore(delegateID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("claim waiting runtime: %w", err)
+		}
+		mode = delegateRuntimeAttachWaiting
+		defer s.delegateController.abandonWaitingRuntimeRestore(started.lease)
 	}
 	owner, err := s.restoreColdDelegateOwnerRuntime(parentID, gates...)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	sub, err := s.reconstructDelegateAttentionRuntime(owner, started, delegateRuntimeAttachIdle, gates...)
+	sub, err := s.reconstructDelegateAttentionRuntime(owner, started, mode, gates...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("attach restored runtime: %w", err)
+	}
 	return owner, sub, err
 }
 
@@ -922,6 +935,7 @@ type delegateRuntimeAttachMode uint8
 const (
 	delegateRuntimeAttachIdle delegateRuntimeAttachMode = iota
 	delegateRuntimeAttachStarted
+	delegateRuntimeAttachWaiting
 )
 
 type owedBootstrapRestore struct {
@@ -1000,6 +1014,8 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 			return installation.attach(selected.sess)
 		case delegateRuntimeAttachStarted:
 			return s.delegateController.AttachRuntime(started.lease, selected.sess)
+		case delegateRuntimeAttachWaiting:
+			return s.delegateController.attachWaitingRuntime(started.lease, selected.sess)
 		default:
 			return errDelegateTargetBusy
 		}
@@ -1025,6 +1041,15 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 		owner.delegateRestoreBeforeSideEffects(sub.sess)
 	}
 	bindStableDelegateActivityToOwner(sub.sess, s.delegateController, started.lease, owner)
+	if mode == delegateRuntimeAttachWaiting {
+		sub.mu.Lock()
+		s.delegateController.mu.Lock()
+		if live := s.delegateController.live[started.lease.delegateID]; live != nil && live.binding != nil && live.binding.lease == started.lease {
+			sub.bindYieldCancellationLocked(live.binding)
+		}
+		s.delegateController.mu.Unlock()
+		sub.mu.Unlock()
+	}
 	if restored && len(gates) != 0 {
 		if err := gates[0].add(owner, sub, started); err != nil {
 			finishRestore(nil, err)

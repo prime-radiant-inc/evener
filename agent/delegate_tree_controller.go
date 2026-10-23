@@ -167,6 +167,10 @@ type delegateRuntimeBinding struct {
 	ready      bool
 	inputClaim uint64
 	evidence   *delegateGenerationEvidence
+	// yielded releases execution capacity, not this generation's resources.
+	yielded          bool
+	yieldCancelBound bool
+	executionCancel  context.CancelFunc
 }
 
 // delegateFinalization is a finished generation whose runtime has not yet

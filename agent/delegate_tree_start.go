@@ -882,6 +882,7 @@ func (c *delegateTreeController) releaseGenerationLocked(lease delegateLease) co
 		delete(c.inputClaims, live.binding.inputClaim)
 	}
 	c.dropRuntimeClaimsForMembersLocked(map[string]struct{}{lease.delegateID: {}})
+	yielded := live.binding.yielded
 	if live.binding.runtime != nil {
 		c.setResidentRuntimeLocked(live, live.binding.runtime)
 	}
@@ -902,6 +903,9 @@ func (c *delegateTreeController) releaseGenerationLocked(lease delegateLease) co
 	live.quietNotified = false
 	live.quietNotifiedAt = time.Time{}
 	live.quietClaim = nil
+	if yielded {
+		return cancel
+	}
 	if c.durable[lease.delegateID].Trigger == delegatestore.TriggerAttention {
 		c.releaseCapacityLocked(delegateDriveCapacity)
 	} else {
