@@ -584,24 +584,6 @@ func (c *delegateTreeController) owesDelegateAttention(delegateID string) bool {
 	return state != nil && len(state.wakeIDs) != 0
 }
 
-func (c *delegateTreeController) hasPendingDelegateAttention() bool {
-	if c == nil {
-		return false
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for delegateID, state := range c.attention {
-		if state.parked {
-			continue
-		}
-		aggregate := c.durable[delegateID]
-		if len(state.wakeIDs) != 0 && aggregate != nil && aggregate.Resumable && aggregate.PendingStopSeq == 0 && aggregate.Phase != delegatestore.PhaseClosed {
-			return true
-		}
-	}
-	return false
-}
-
 // delegateAttentionWakeEligibleLocked reports whether delegateID could accept
 // an attention wake or an escalation right now, before the ancestor fence is
 // consulted. ReserveAttention and exact-receiver restoration share it.

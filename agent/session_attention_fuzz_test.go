@@ -116,7 +116,7 @@ func FuzzStableDelegateWatchDelivery(f *testing.F) {
 		}
 
 		attentionID := stableWatchAttentionID(state)
-		result, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, "")
+		result, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM)
 		if err != nil {
 			t.Fatalf("deliver stable watch: %v", err)
 		}
@@ -130,7 +130,7 @@ func FuzzStableDelegateWatchDelivery(f *testing.F) {
 			t.Fatalf("stable watch attention count = %d, want 1", got)
 		}
 
-		if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, ""); err != nil {
+		if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM); err != nil {
 			t.Fatalf("repeat stable watch drain: %v", err)
 		}
 		if got := countAttentionEntries(t, fixture.rootTranscriptPath, attentionID); got != 1 {

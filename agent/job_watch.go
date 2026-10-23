@@ -5904,7 +5904,7 @@ func (s *Session) drainPendingWatchSendsReport(ctx context.Context) (watchSendDr
 	var result watchSendDrainResult
 	var errs []error
 	if s.jobManager != nil {
-		drained, err := s.drainJobManagerWatchSends(ctx, s.jobManager, "")
+		drained, err := s.drainJobManagerWatchSends(ctx, s.jobManager)
 		result.observerHandoff = result.observerHandoff || drained.observerHandoff
 		errs = append(errs, err)
 	}
@@ -5914,7 +5914,7 @@ func (s *Session) drainPendingWatchSendsReport(ctx context.Context) (watchSendDr
 			if child.jobManager == nil {
 				continue
 			}
-			drained, err := child.drainJobManagerWatchSends(ctx, child.jobManager, child.id)
+			drained, err := child.drainJobManagerWatchSends(ctx, child.jobManager)
 			result.observerHandoff = result.observerHandoff || drained.observerHandoff
 			errs = append(errs, err)
 		}
@@ -6086,45 +6086,9 @@ func delegateRowStopGated(row delegateSnapshot) bool {
 	return row.lastOutcome.Status == delegatestore.OutcomeStopped && row.lastOutcome.Reason == delegatestore.ReasonStoppedByParent
 }
 
-// settleDrivenChildForwardedPendings marks the parent's forwarded pending COPIES
-// for childSessionID delivered at a successful drive handoff (spec §3 settle).
-// This is safe because the parent's forwarded copy is only a DRIVE SIGNAL, not
-// the delivery ledger: the child's own durable queue (armed at the original
-// enqueue, re-armed at the child's restore) is the ledger, and the no-loss clause
-// keeps its meaning on the owner's copy. Settling the signal stops the same stale
-// pending from re-driving forever; it never touches the child's own store.
-func (s *Session) settleDrivenChildForwardedPendings(childSessionID string) {
-	if s == nil || s.jobManager == nil || childSessionID == "" {
-		return
-	}
-	jm := s.jobManager
-	recs, err := jm.store.Load()
-	if err != nil {
-		return
-	}
-	for _, rec := range recs {
-		if rec == nil ||
-			rec.OwnerSessionID != childSessionID ||
-			rec.VisibleToSession != jm.sessionID ||
-			rec.TerminalGen == "" ||
-			rec.NotifyState != jobstore.NotifyPending {
-			continue
-		}
-		if err := jm.appendEvent(jobstore.Event{
-			Kind:        jobstore.EventJobNotificationDelivered,
-			TS:          jm.now(),
-			JobID:       rec.JobID,
-			TerminalGen: rec.TerminalGen,
-		}); err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("drive settle mark failed: %v", err)})
-		}
-	}
-}
-
 // drainJobManagerWatchSends drains jm through the session that owns jm. The
-// receiver is the control surface for delegate-targeted sends; childSessionID is
-// only the caller-token routing marker used when a parent scans a child store.
-func (s *Session) drainJobManagerWatchSends(ctx context.Context, jm *jobManager, childSessionID string) (watchSendDrainResult, error) {
+// receiver is the control surface for delegate-targeted sends.
+func (s *Session) drainJobManagerWatchSends(ctx context.Context, jm *jobManager) (watchSendDrainResult, error) {
 	var result watchSendDrainResult
 	var errs []error
 	retrySettled, err := jm.retryStableWatchSettlements()

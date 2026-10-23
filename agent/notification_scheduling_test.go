@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/llm"
 )
@@ -466,6 +467,24 @@ func notificationTestPending(t testing.TB, s *Session) map[string]struct{} {
 
 // These projection readers preserve historical controller-record assertions.
 // They never wake or execute a receiver, and are not readiness inputs.
+func (c *delegateTreeController) hasPendingDelegateAttention() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for delegateID, state := range c.attention {
+		if state.parked {
+			continue
+		}
+		aggregate := c.durable[delegateID]
+		if len(state.wakeIDs) != 0 && aggregate != nil && aggregate.Resumable && aggregate.PendingStopSeq == 0 && aggregate.Phase != delegatestore.PhaseClosed {
+			return true
+		}
+	}
+	return false
+}
+
 func notificationTestProjectedReceiver(c *delegateTreeController) (string, string, bool) {
 	if c == nil {
 		return "", "", false

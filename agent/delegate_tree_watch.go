@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 type delegateWatchSourceBinding struct {
@@ -475,7 +476,7 @@ func repairStableWatchStoreForBootstrap(snapshot stableWatchBootstrapSnapshot, s
 		if open == nil {
 			open = transcript.OpenWriterForSession
 		}
-		if _, err := appendColdDelegateNotificationDurablyWithOpen(path, sessionID, stableWatchAttentionID(state), stableWatchNotificationContent(state), now, open); err != nil {
+		if _, err := appendColdDelegateAttentionMessageDurablyWithOpen(path, sessionID, stableWatchAttentionID(state), llm.UserMachinery(stableWatchNotificationContent(state)), now, open, state.Provenance); err != nil {
 			return err
 		}
 		if err := store.Append(jobstore.Event{

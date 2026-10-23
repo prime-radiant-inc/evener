@@ -98,8 +98,8 @@ func jdrExercisePendingAndRender(t *testing.T, s *Session) {
 	jm.enqueue = func(jobNotification) {}
 	_ = s.retryRestoredPendingWatchSends(context.Background())
 	failAppendN(jm, jobstore.EventWatchSendDropped, 1)
-	_, _ = s.drainJobManagerWatchSends(context.Background(), jm, "child")
-	_, _ = s.drainJobManagerWatchSends(context.Background(), jm, "")
+	_, _ = s.drainJobManagerWatchSends(context.Background(), jm)
+	_, _ = s.drainJobManagerWatchSends(context.Background(), jm)
 
 	badKey := jobstore.WatchSendKey{ResolvedWatchedIdentity: "bad", ResolvedSendTo: "job_bad", VisibleSessionID: testOwnerSessionID}
 	badState := &jobstore.WatchSendState{Key: badKey, UpdateSeq: 3}
@@ -175,7 +175,6 @@ func jdrExerciseGuardsAndFailures(t *testing.T, s *Session) {
 	nilSession.renderUnreachableChildPendings(nil)
 	_ = nilSession.childResumable("x")
 	_ = nilSession.childStopGated("x")
-	nilSession.settleDrivenChildForwardedPendings("x")
 	_ = nilSession.retryRestoredPendingWatchSends(context.Background())
 	s.driveChildIfNotStopGated(nil)
 	s.driveChildIfNotStopGated(&subagent{})
@@ -193,7 +192,6 @@ func jdrExerciseGuardsAndFailures(t *testing.T, s *Session) {
 	cs.renderUnreachableChildPendings(nil)
 	_ = cs.childResumable("child")
 	_ = cs.childStopGated("child")
-	cs.settleDrivenChildForwardedPendings("child")
 
 	// Empty and nil records cover the skip arms without inventing a fake store.
 	_ = s.childResumable("")
@@ -202,11 +200,7 @@ func jdrExerciseGuardsAndFailures(t *testing.T, s *Session) {
 	}
 	_ = s.childResumable("no-child")
 	_ = s.childStopGated("")
-	s.settleDrivenChildForwardedPendings("")
 	_ = s.drainPendingWatchSends(context.Background())
-	appendForwardedChildTerminalPending(t, s.jobManager, "job_settle", "child-settle")
-	failAppendN(s.jobManager, jobstore.EventJobNotificationDelivered, 1)
-	s.settleDrivenChildForwardedPendings("child-settle")
 
 	appendForwardedChildTerminalPending(t, s.jobManager, "job_live_tail", "child-live")
 	appendForwardedChildTerminalPending(t, s.jobManager, "job_gone_tail", "child-gone")

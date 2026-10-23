@@ -1935,7 +1935,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// armed runs a redundant notification turn whose request carries nothing
 	// new.
 	//
-	// Two rules govern the failure path (see finishRootDelegateAttentionTurn
+	// Two rules govern the failure path (see finishNotificationExecution
 	// for the coverage contract): a resolution failure joins the turn's error
 	// only when there IS a begin snapshot — an accepted notification turn's
 	// established contract — and every other coverage-only failure warns and

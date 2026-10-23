@@ -292,7 +292,7 @@ func rwlpRunStableDeliveryProgram(t *testing.T, r *rwlpReader) {
 	if !pending.state.StableReceiver || pending.state.SourceDelegateID != "dlg_source" {
 		t.Fatalf("stable watch route = %+v", pending.state)
 	}
-	if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, ""); err != nil {
+	if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM); err != nil {
 		t.Fatalf("drain stable watch delivery: %v", err)
 	}
 	if got := fixture.sourceJM.pendingWatchSendDeliveries(nil); len(got) != 0 {
