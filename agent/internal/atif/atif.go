@@ -320,6 +320,7 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 	}
 
 	traj.Steps = steps
+	promptWireTokens := totalPrompt + totalCached + totalCacheWrite + totalCacheWrite1h
 	traj.FinalMetrics = &FinalMetrics{
 		TotalPromptTokens:     totalPrompt,
 		TotalCompletionTokens: totalCompletion,
@@ -327,7 +328,7 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 		TotalSteps:            len(steps),
 		Extra: map[string]any{
 			"cache_read_tokens":  totalCached,
-			"prompt_wire_tokens": totalPrompt + totalCached + totalCacheWrite + totalCacheWrite1h,
+			"prompt_wire_tokens": promptWireTokens,
 		},
 	}
 
