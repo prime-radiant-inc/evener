@@ -55,7 +55,7 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
       if (!alive || sourceType !== "session") return null;
       let state = lifetime.composers.get(sourceRef);
       if (state === undefined) {
-        state = createComposerSourceState(sourceRef, lifetime.compositionOwnerId);
+        state = createComposerSourceState(sourceRef, lifetime.compositionOwnerId, lifetime.paneId);
         lifetime.composers.set(sourceRef, state);
       }
       return state;

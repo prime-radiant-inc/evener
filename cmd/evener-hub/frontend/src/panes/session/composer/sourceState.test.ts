@@ -18,6 +18,7 @@ import {
   readComposerDraft,
   readComposerDraftRevisionId,
   readDraftRevision,
+  readRecoverySelection,
   writeComposerDraft,
 } from "./draft";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
@@ -391,6 +392,160 @@ test("an identical-composition refusal keeps the same recovery owner at its curr
   } finally {
     source.dispose();
     peer.close();
+    storage.close();
+  }
+});
+
+test("a failed preservation keeps ownership and retries once storage recovers", async () => {
+  class FailingPreservationStorage extends MutationOutboxIndexedDB {
+    failNextPreservation = true;
+
+    override async preserveRecoveryComposition(
+      ...args: Parameters<MutationOutboxIndexedDB["preserveRecoveryComposition"]>
+    ): ReturnType<MutationOutboxIndexedDB["preserveRecoveryComposition"]> {
+      if (this.failNextPreservation) {
+        this.failNextPreservation = false;
+        throw new Error("storage unavailable");
+      }
+      return super.preserveRecoveryComposition(...args);
+    }
+  }
+  const storage = new FailingPreservationStorage();
+  setMutationStorageForTests(storage);
+  const text = "keep this [image 1]";
+  const input: InputItem[] = [
+    { type: "text", text },
+    { type: "image", mediaType: "image/png", data: "AQID", name: "recovered.png" },
+  ];
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    threadId: "thread-a",
+    method: "turn/start",
+    attachments: [
+      {
+        presentationId: "recovered-presentation",
+        marker: 1,
+        name: "recovered.png",
+        mediaType: "image/png",
+        blob: new Blob([Uint8Array.of(1, 2, 3)], { type: "image/png" }),
+      },
+    ],
+    composerText: text,
+    payload: { ref: "root", input },
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+
+  const source = createTestComposerSource("root");
+  const peer = new MutationOutboxIndexedDB();
+  let reloaded: ReturnType<typeof createTestComposerSource> | undefined;
+  try {
+    await source.activateRecovery(recovery);
+    const peerRecovery = await peer.getRecovery(original.clientMutationId);
+    if (!peerRecovery) throw new Error("missing peer recovery fixture");
+    const peerText = "newer composition in another tab";
+    await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: peerText }],
+      [],
+      peerText,
+      [],
+      [],
+      undefined,
+      undefined,
+      {
+        [original.clientMutationId]:
+          (peerRecovery as MutationRecoveryRecord & { compositionRevision?: number }).compositionRevision ?? 0,
+      },
+    );
+    const localAttachments = [{ marker: 1, name: "recovered.png", mediaType: "image/png", data: "AQID" }];
+    expect(await source.queueRecoveryPersistence(original.clientMutationId, text, localAttachments, [])).toBe(false);
+    // The failed write keeps the pane's ownership and does not fall back to a
+    // marker-only draft.
+    expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+    expect(source.continuity.recoveryOwnerLeaseRef.current?.clientMutationId).toBe(original.clientMutationId);
+    expect(readComposerDraft("root").text).toBe("");
+
+    // Storage recovers; the pending retry preserves the composition.
+    const deadline = Date.now() + 2_000;
+    while (source.getSnapshot().activeRecoveryId === original.clientMutationId && Date.now() < deadline)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(source.getSnapshot().activeRecoveryId).not.toBe(original.clientMutationId);
+    const preserved = (await storage.listRecovery("root")).find(
+      (record) => record.clientMutationId !== original.clientMutationId,
+    );
+    expect(preserved).toMatchObject({
+      composerText: text,
+      payload: {
+        input: [
+          { type: "text", text },
+          { type: "image", mediaType: "image/png", data: "AQID", name: "recovered.png" },
+        ],
+      },
+      attachments: [expect.objectContaining({ marker: 1, name: "recovered.png" })],
+    });
+
+    // Reload restores the images from the retried owner.
+    source.dispose();
+    reloaded = createTestComposerSource("root");
+    if (!preserved) throw new Error("missing preserved recovery fixture");
+    const reloadedRow = await storage.getRecovery(preserved.clientMutationId);
+    if (!reloadedRow) throw new Error("missing preserved recovery row");
+    await expect(reloaded.activateRecovery(reloadedRow)).resolves.toBe(true);
+    expect(reloaded.getSnapshot().text).toBe(text);
+    expect(reloaded.attachments.getState().items).toEqual([
+      expect.objectContaining({ marker: 1, name: "recovered.png", mediaType: "image/png", data: "AQID" }),
+    ]);
+  } finally {
+    source.dispose();
+    reloaded?.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
+test("recovery selection is scoped to its pane owner", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const queue = async (text: string) => {
+    const outbox = await storage.enqueueIntent({
+      targetRef: "root",
+      method: "turn/start",
+      payload: { ref: "root", input: [{ type: "text", text }] },
+      attachments: [],
+      composerText: text,
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text }] },
+    });
+    await storage.transferToRecovery(outbox.clientMutationId, "rejected");
+    return storage.getRecovery(outbox.clientMutationId);
+  };
+  const first = await queue("first");
+  const second = await queue("second");
+  if (!first || !second) throw new Error("missing recovery fixtures");
+  const sourceA = createTestComposerSource("root", undefined, "pane-a");
+  const sourceB = createTestComposerSource("root", undefined, "pane-b");
+  try {
+    sourceA.setActiveRecoveryId(first);
+    sourceB.setActiveRecoveryId(second);
+    expect(readRecoverySelection("root", sourceA.recoverySelectionOwnerId)).toBe(first.clientMutationId);
+    expect(readRecoverySelection("root", sourceB.recoverySelectionOwnerId)).toBe(second.clientMutationId);
+
+    // Pane B retires its own lease; pane A's reload choice survives.
+    sourceB.setActiveRecoveryId(null);
+    expect(readRecoverySelection("root", sourceB.recoverySelectionOwnerId)).toBeUndefined();
+    expect(readRecoverySelection("root", sourceA.recoverySelectionOwnerId)).toBe(first.clientMutationId);
+
+    const reloadedA = createTestComposerSource("root", undefined, "pane-a");
+    try {
+      expect(readRecoverySelection("root", reloadedA.recoverySelectionOwnerId)).toBe(first.clientMutationId);
+    } finally {
+      reloadedA.dispose();
+    }
+  } finally {
+    sourceA.dispose();
+    sourceB.dispose();
     storage.close();
   }
 });

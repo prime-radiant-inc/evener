@@ -1,5 +1,6 @@
 import type { ComposerMention } from "@evener/appwire-client";
 import { createStore } from "zustand/vanilla";
+import { ownClientId } from "../../../stores/mutationClientIdentity";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { createSecureUUID } from "../../../stores/secureUUID";
 import type { InputAttachment } from "../../../stores/threads";
@@ -84,6 +85,8 @@ export interface ComposerSourceSnapshot {
 export interface ComposerSourceState {
   readonly ref: string;
   readonly alive: boolean;
+  /** Reload-stable tab/pane scope for the selected recovery owner. */
+  readonly recoverySelectionOwnerId: string;
   readonly attachments: AttachmentStore;
   readonly editor: TextEditor;
   readonly continuity: {
@@ -171,8 +174,14 @@ export function recoverySubmissionInFlight(clientMutationId: string): boolean {
 
 /** A pane passes its lifetime token; standalone mounts fall back to one token
  * per ref so a remount outside the pane shell still reuses ownership. */
-export function createComposerSourceState(ref: string, ownerId?: string): ComposerSourceState {
+export function createComposerSourceState(
+  ref: string,
+  ownerId?: string,
+  selectionOwnerId?: string,
+): ComposerSourceState {
   const compositionOwnerId = ownerId ?? defaultCompositionOwners.get(ref) ?? createSecureUUID();
+  const recoverySelectionOwnerId =
+    selectionOwnerId === undefined ? ownClientId() : `${ownClientId()}:${selectionOwnerId}`;
   if (ownerId === undefined && !defaultCompositionOwners.has(ref))
     defaultCompositionOwners.set(ref, compositionOwnerId);
   const initial = readComposerDraftSnapshot(ref);
@@ -227,12 +236,22 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   let cleanupRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let cleanupRetryAttempt = 0;
   let cleanupRetryVersion = 0;
+  let preservationRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let preservationRetryAttempt = 0;
+  let preservationRetryVersion = 0;
 
   function cancelCleanupRetry(): void {
     cleanupRetryVersion += 1;
     if (cleanupRetryTimer !== null) clearTimeout(cleanupRetryTimer);
     cleanupRetryTimer = null;
     cleanupRetryAttempt = 0;
+  }
+
+  function cancelPreservationRetry(): void {
+    preservationRetryVersion += 1;
+    if (preservationRetryTimer !== null) clearTimeout(preservationRetryTimer);
+    preservationRetryTimer = null;
+    preservationRetryAttempt = 0;
   }
 
   function hasEmptyComposition(): boolean {
@@ -269,6 +288,61 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         return;
       void queueRecoveryPersistence(clientMutationId, "", [], []);
     }, delay);
+  }
+
+  // Preservation needs the durable write that failed; the composition stays in
+  // memory and the stale lease stays owned. Retry with backoff so a recovered
+  // storage keeps the attachment bytes instead of falling back to a text-only
+  // draft.
+  function schedulePreservationRetry(clientMutationId: string, replacementEpoch: number): void {
+    if (
+      disposed ||
+      currentRecoveryId() !== clientMutationId ||
+      recoveryReplacementEpochRef.current !== replacementEpoch ||
+      hasEmptyComposition()
+    )
+      return;
+    if (preservationRetryTimer !== null) return;
+    preservationRetryAttempt += 1;
+    const delay = Math.min(250 * 2 ** (preservationRetryAttempt - 1), 5_000);
+    const retryVersion = preservationRetryVersion;
+    preservationRetryTimer = setTimeout(() => {
+      preservationRetryTimer = null;
+      if (
+        retryVersion !== preservationRetryVersion ||
+        disposed ||
+        currentRecoveryId() !== clientMutationId ||
+        recoveryReplacementEpochRef.current !== replacementEpoch
+      )
+        return;
+      void retryPreservation(clientMutationId, replacementEpoch);
+    }, delay);
+  }
+
+  async function retryPreservation(clientMutationId: string, replacementEpoch: number): Promise<void> {
+    if (disposed || currentRecoveryId() !== clientMutationId) return;
+    if (hasEmptyComposition()) {
+      cancelPreservationRetry();
+      setActiveRecoveryId(null);
+      return;
+    }
+    if (operations.hasPending) {
+      schedulePreservationRetry(clientMutationId, replacementEpoch);
+      return;
+    }
+    const preserved = await preserveStaleRecovery(clientMutationId);
+    if (
+      disposed ||
+      currentRecoveryId() !== clientMutationId ||
+      recoveryReplacementEpochRef.current !== replacementEpoch
+    )
+      return;
+    if (preserved) {
+      cancelPreservationRetry();
+      setActiveRecoveryId(preserved);
+    } else {
+      schedulePreservationRetry(clientMutationId, replacementEpoch);
+    }
   }
 
   const ownsDraft = () => ownedDraftRevisionRef.current === readDraftRevision(ref);
@@ -318,13 +392,14 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     const activeRecoveryId = record?.clientMutationId ?? null;
     if (currentRecoveryId() !== activeRecoveryId) {
       cancelCleanupRetry();
+      cancelPreservationRetry();
       committedRecoveryComposition = null;
     }
     recoveryOwnerLeaseRef.current = record
       ? { clientMutationId: record.clientMutationId, compositionRevision: recoveryCompositionRevision(record) }
       : null;
     recoveryBaseRecord = record;
-    writeRecoverySelection(ref, activeRecoveryId);
+    writeRecoverySelection(ref, recoverySelectionOwnerId, activeRecoveryId);
     state.setState({ activeRecoveryId });
   }
   function persistDraft(text: string): void {
@@ -468,7 +543,9 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
             // owner this tab can no longer write. A draft carries no image
             // bytes, so preserve the complete local composition under a fresh
             // recovery owner before retiring the lease.
-            const preserved = await preserveStaleRecovery(clientMutationId, localDraftRevisionId);
+            const preserved = hasEmptyComposition()
+              ? null
+              : await preserveStaleRecovery(clientMutationId, localDraftRevisionId);
             if (
               !disposed &&
               currentRecoveryId() === clientMutationId &&
@@ -479,12 +556,17 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
                 // fast path and its current revision: later edits update it,
                 // Send consumes it, and a reload restores its attachment
                 // bytes.
+                cancelPreservationRetry();
                 setActiveRecoveryId(preserved);
-              } else {
-                // Preservation failed, so nothing durable carries the images.
-                // Fall back to the ordinary draft and retire the lease.
-                persistDraft(textRef.current);
+              } else if (hasEmptyComposition()) {
+                // Nothing left to preserve; retire the unusable stale lease.
                 setActiveRecoveryId(null);
+              } else {
+                // The preservation write itself failed. Keep the composition
+                // in memory and the stale lease owned so later autosaves and
+                // the retry below can persist it once storage recovers; a
+                // text-only draft would strand the attachment bytes.
+                schedulePreservationRetry(clientMutationId, replacementEpoch);
               }
             }
           }
@@ -812,6 +894,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     get alive() {
       return !disposed;
     },
+    recoverySelectionOwnerId,
     attachments,
     editor,
     continuity,
@@ -882,6 +965,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       if (disposed) return;
       disposed = true;
       cancelCleanupRetry();
+      cancelPreservationRetry();
       boundEditor = null;
       recoveryWriteVersionRef.current += 1;
       recoveryReplacementEpochRef.current += 1;

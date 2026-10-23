@@ -1330,6 +1330,8 @@ test("identical-composition refusal keeps the recovery owner for a later edit an
   try {
     mount(fake, source);
     await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(queuedRecord.clientMutationId));
+    // The activation's own projection refresh outlives the adoption wait.
+    await flushPendingTurnsProjectionForTests();
     const peerRecovery = await peer.getRecovery(queuedRecord.clientMutationId);
     if (!peerRecovery) throw new Error("missing peer recovery fixture");
     // Another pane rewrites the identical composition, advancing only the revision.
@@ -1349,8 +1351,6 @@ test("identical-composition refusal keeps the recovery owner for a later edit an
     let saved = false;
     await act(async () => {
       saved = await source.queueRecoveryPersistence(queuedRecord.clientMutationId, text, localAttachments, []);
-    });
-    await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     await flushPendingTurnsProjectionForTests();
@@ -1432,12 +1432,14 @@ test("reload restores the selected fresh owner over an older rejected peer row",
     optimisticDisplay: { method: "turn/start", input },
   });
   await storage.transferToRecovery(queuedRecord.clientMutationId, "rejected");
-  const source = createTestComposerSource("root");
+  const source = createTestComposerSource("root", undefined, "pane-a");
   const peer = new MutationOutboxIndexedDB();
   let replacement: ReturnType<typeof createTestComposerSource> | undefined;
   try {
     mount(fake, source);
     await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(queuedRecord.clientMutationId));
+    // The activation's own projection refresh outlives the adoption wait.
+    await flushPendingTurnsProjectionForTests();
     const peerRecovery = await peer.getRecovery(queuedRecord.clientMutationId);
     if (!peerRecovery) throw new Error("missing peer recovery fixture");
     const peerText = "older peer work";
@@ -1462,10 +1464,12 @@ test("reload restores the selected fresh owner over an older rejected peer row",
         [{ marker: 1, name: "local.png", mediaType: "image/png", data: "AQID" }],
         [],
       );
-    });
-    await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
+    // Unmount before observing: a late projection publish cannot re-render a
+    // mounted QueueStrip outside act.
+    act(() => cleanup());
+    source.dispose();
     await flushPendingTurnsProjectionForTests();
     expect(saved).toBe(false);
     const preserved = (await peer.listRecovery("root")).find(
@@ -1474,21 +1478,19 @@ test("reload restores the selected fresh owner over an older rejected peer row",
     expect(preserved).toBeDefined();
     expect(source.getSnapshot().activeRecoveryId).toBe(preserved?.clientMutationId);
 
-    act(() => cleanup());
-    source.dispose();
-    replacement = createTestComposerSource("root");
+    replacement = createTestComposerSource("root", undefined, "pane-a");
     mount(fake, replacement);
     await waitFor(() => expect(replacement?.getSnapshot().freshRecoveryRef).toBe("root"));
     await waitFor(() => expect(replacement?.getSnapshot().activeRecoveryId).toBe(preserved?.clientMutationId));
-    expect(replacement.getSnapshot().text).toBe(localText);
-    expect(replacement.attachments.getState().items).toEqual([
-      expect.objectContaining({ marker: 1, name: "local.png", mediaType: "image/png", data: "AQID" }),
-    ]);
     act(() => cleanup());
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     await flushPendingTurnsProjectionForTests();
+    expect(replacement.getSnapshot().text).toBe(localText);
+    expect(replacement.attachments.getState().items).toEqual([
+      expect.objectContaining({ marker: 1, name: "local.png", mediaType: "image/png", data: "AQID" }),
+    ]);
   } finally {
     act(() => replacement?.dispose());
     act(() => source.dispose());

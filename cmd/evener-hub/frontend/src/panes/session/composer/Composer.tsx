@@ -515,7 +515,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     // Prefer the row this pane owned before reload: a newer row with the same
     // target can sit beside an older peer row, and intent order alone would
     // restore the peer's composition.
-    const selectedRecoveryId = readRecoverySelection(ref);
+    const selectedRecoveryId = readRecoverySelection(ref, source.recoverySelectionOwnerId);
     const restorable = recoveryEntries.filter(
       (entry) => entry.recoveryKind === "rejected" && entry.method !== "turn/interrupt" && !entry.preserveComposer,
     );
@@ -548,6 +548,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     scheduleCursorRestore,
     setActiveRecoveryId,
     skillNamesRef,
+    source.recoverySelectionOwnerId,
     selectionMetaRef,
     textRef,
     updateText,

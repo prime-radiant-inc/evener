@@ -68,7 +68,9 @@ command selections, payload input and attachment bytes, and the peer's row is
 left untouched. If the stale row still holds the identical composition, no
 duplicate row is created. The pane then owns the fresh row, so later edits
 update it, Send consumes it, and a reload restores the local composition
-including its images.
+including its images. If that preservation write fails, the pane keeps the
+composition and its ownership and retries once storage recovers, rather than
+downgrading to a text-only draft.
 
 Sending recovery consumes its durable source and creates one fresh outbox
 identity atomically. It never falls back to an ordinary enqueue when the source

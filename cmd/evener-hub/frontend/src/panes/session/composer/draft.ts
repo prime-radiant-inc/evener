@@ -24,7 +24,7 @@ import { patchSelectionText, type SkillEditorValue } from "./skillDocument";
 
 const STORAGE_PREFIX = "evener.composer.draft.v1.";
 const STRUCTURED_STORAGE_PREFIX = "evener.composer.draft.v2.";
-const RECOVERY_SELECTION_PREFIX = "evener.composer.recovery.v1.";
+const RECOVERY_SELECTION_PREFIX = "evener.composer.recovery.v2.";
 const draftRevisions = new Map<string, number>();
 
 // A composer draft: the textarea's text plus the canonical names of the
@@ -62,20 +62,27 @@ export function composerDraftStorageKey(ref: string): string {
 
 // The recovery row this pane last owned, remembered across reload so
 // restoration can choose it over an older row for the same ref. This names an
-// owner, not draft text: the recovery transaction owns the composition.
-export function readRecoverySelection(ref: string): string | undefined {
+// owner, not draft text: the recovery transaction owns the composition. The
+// selection owner is a reload-stable tab/pane identity, so another pane on the
+// same ref can neither read nor clear this pane's choice.
+function recoverySelectionStorageKey(ref: string, selectionOwnerId: string): string {
+  return `${RECOVERY_SELECTION_PREFIX}${encodeURIComponent(selectionOwnerId)}.${encodeURIComponent(ref)}`;
+}
+
+export function readRecoverySelection(ref: string, selectionOwnerId: string): string | undefined {
   try {
-    const value = localStorage.getItem(`${RECOVERY_SELECTION_PREFIX}${ref}`);
+    const value = localStorage.getItem(recoverySelectionStorageKey(ref, selectionOwnerId));
     return value === null || value === "" ? undefined : value;
   } catch {
     return undefined;
   }
 }
 
-export function writeRecoverySelection(ref: string, clientMutationId: string | null): void {
+export function writeRecoverySelection(ref: string, selectionOwnerId: string, clientMutationId: string | null): void {
   try {
-    if (clientMutationId === null) localStorage.removeItem(`${RECOVERY_SELECTION_PREFIX}${ref}`);
-    else localStorage.setItem(`${RECOVERY_SELECTION_PREFIX}${ref}`, clientMutationId);
+    const key = recoverySelectionStorageKey(ref, selectionOwnerId);
+    if (clientMutationId === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, clientMutationId);
   } catch {
     // Best-effort, like every other composer draft persistence.
   }
