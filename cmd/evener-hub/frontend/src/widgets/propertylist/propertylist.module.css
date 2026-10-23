@@ -23,6 +23,15 @@
   font-size: var(--font-size-caption);
 }
 
+/* The eyebrow recipe (design-system §2) on a fact row's label: the
+   uppercase caption tracking a card's read-only rows carry. Composes on
+   .label for size and color. */
+.eyebrowLabel {
+  font-weight: var(--font-weight-medium);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+}
+
 .value {
   min-width: 0;
   margin: 0;

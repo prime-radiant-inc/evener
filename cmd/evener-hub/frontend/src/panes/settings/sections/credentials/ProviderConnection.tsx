@@ -34,6 +34,7 @@ import {
   Input,
   ListRow,
   OpenButton,
+  PropertyList,
   Skeleton,
 } from "../../../../widgets";
 import { useConnectedEffect } from "../useConnectedEffect";
@@ -2025,11 +2026,13 @@ function SelectedConnection({
         {review && (
           <div className={styles.review} data-testid="access-review">
             <p>Review changed access before contacting the provider.</p>
-            <ConnectionFacts
+            <PropertyList
+              eyebrowLabels
               rows={[
                 {
-                  key: "previous",
                   label: "Was",
+                  mono: true,
+                  wrap: true,
                   value: (
                     <span className={styles.monoValue} data-destination="previous">
                       {baseline?.baseUrl ?? "Not configured"}
@@ -2037,8 +2040,9 @@ function SelectedConnection({
                   ),
                 },
                 {
-                  key: "current",
                   label: "Now",
+                  mono: true,
+                  wrap: true,
                   value: (
                     <span className={styles.monoValue} data-destination="current">
                       {review.baseUrl}
