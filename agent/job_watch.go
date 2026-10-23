@@ -566,8 +566,17 @@ func (jm *jobManager) watchConfigForKeyLocked(key jobstore.WatchSendKey) *watchC
 // only place the condition-fire breaker can trip — the match site latches it
 // too, so frames that never settle stay bounded — and the latch keeps the two
 // to one teardown.
+// Runtime callers hold the delivery's claim through this completion. Do not
+// reacquire it here: current-head delivery and candidate recovery already own it.
 func (jm *jobManager) settleWatchSendDelivered(cfg *watchConfig, state jobstore.WatchSendState) error {
 	defer jm.publishWatchActivity()
+	jm.mu.Lock()
+	if jm.watchSendDeliveredLocked(state.DeliveryID) {
+		jm.forgetStableWatchSettlementRetryLocked(state)
+		jm.mu.Unlock()
+		return nil
+	}
+	jm.mu.Unlock()
 	delivered := state
 	if err := jm.appendWatchSendEvents([]jobstore.Event{{
 		Kind:      jobstore.EventWatchSendDelivered,
@@ -576,17 +585,21 @@ func (jm *jobManager) settleWatchSendDelivered(cfg *watchConfig, state jobstore.
 	}}); err != nil {
 		return err
 	}
-	jm.removePendingWatchSend(cfg, delivered.Key, delivered.UpdateSeq)
-	jm.releaseStableWatchReceipt(delivered.DeliveryID)
 	jm.mu.Lock()
+	removePendingWatchSendLocked(cfg, delivered.Key, delivered.UpdateSeq)
+	jm.forgetTerminalFlushIfEmptyLocked(cfg)
 	if delivered.DeliveryID != "" {
 		jm.deliveredWatchSendIDs[delivered.DeliveryID] = struct{}{}
 	}
+	jm.forgetStableWatchSettlementRetryLocked(delivered)
 	crossedBudget := false
 	if !state.CallbackFrame {
 		crossedBudget = jm.recordWatchDeliveryLocked(cfg)
 	}
 	jm.mu.Unlock()
+	// Publish completion before releasing the controller receipt, whose callbacks
+	// may reenter the source pump. Neither callback nor source I/O holds jm.mu.
+	jm.releaseStableWatchReceipt(delivered.DeliveryID)
 	if crossedBudget {
 		jm.autoClearWatchOverBudget(cfg)
 	}
@@ -610,8 +623,8 @@ func (jm *jobManager) watchSendDelivered(deliveryID string) bool {
 
 // claimWatchSendDelivery takes process-local ownership of one watch-send
 // delivery id. It returns false when another executor already owns it, so the
-// second caller stands down instead of racing the same store write. Mirrors
-// claimStableWatchSettlementRetries. Guarded by jm.mu.
+// second caller stands down instead of racing acceptance or source settlement.
+// The settlement retry batch also takes this per-ID claim. Guarded by jm.mu.
 func (jm *jobManager) claimWatchSendDelivery(deliveryID string) bool {
 	if deliveryID == "" {
 		return true
@@ -4669,9 +4682,13 @@ func (jm *jobManager) dispatchProducedWatchSends() {
 
 func (jm *jobManager) dispatchProducedWatchSendsFrom(load watchSendLoader) error {
 	var errs []error
-	if _, err := jm.retryStableWatchSettlements(); err != nil {
+	retrySettled, err := jm.retryStableWatchSettlements()
+	if err != nil {
 		jm.kick()
 		errs = append(errs, err)
+	}
+	if !retrySettled {
+		return errors.Join(errs...)
 	}
 	fold, err := load()
 	if err != nil {
@@ -4730,8 +4747,14 @@ func (jm *jobManager) settleSupersededWatchSend(state jobstore.WatchSendState) e
 		return err
 	}
 	jm.mu.Lock()
+	retry, retrying := jm.stableWatchSettlementRetries[state.DeliveryID]
 	cfg := jm.watchConfigForKeyLocked(state.Key)
 	jm.mu.Unlock()
+	if retrying {
+		// Custody alone cannot bypass a live retry's required arming. Its
+		// original config also owns accounting after the newer head settles.
+		return jm.retryClaimedStableWatchSettlement(retry)
+	}
 	if cfg == nil {
 		cfg = &watchConfig{watchID: state.Key.WatchID, generation: state.Key.WatchGeneration}
 	}
@@ -5216,13 +5239,12 @@ func (jm *jobManager) rememberStableWatchSettlementRetryLocked(retry pendingWatc
 	jm.stableWatchSettlementRetries[retry.state.DeliveryID] = retry
 }
 
-func (jm *jobManager) forgetStableWatchSettlementRetry(state jobstore.WatchSendState) {
-	jm.mu.Lock()
+// Caller holds jm.mu. Only the exact completed payload can retire its retry.
+func (jm *jobManager) forgetStableWatchSettlementRetryLocked(state jobstore.WatchSendState) {
 	retry, ok := jm.stableWatchSettlementRetries[state.DeliveryID]
 	if ok && retry.state.UpdateSeq == state.UpdateSeq {
 		delete(jm.stableWatchSettlementRetries, state.DeliveryID)
 	}
-	jm.mu.Unlock()
 }
 
 func (jm *jobManager) claimStableWatchSettlementRetries() ([]pendingWatchSendDelivery, bool) {
@@ -5294,43 +5316,14 @@ func (jm *jobManager) retryStableWatchSettlements() (bool, error) {
 	}()
 	for {
 		for _, retry := range retries {
-			if !retry.state.StableReceiver {
-				if retry.unarmed {
-					if err := jm.acceptWatchFrame(retry.state); err != nil {
-						return true, err
-					}
-				}
-				if err := jm.settleWatchSendDelivered(retry.cfg, retry.state); err != nil {
-					return true, err
-				}
-				jm.forgetStableWatchSettlementRetry(retry.state)
-				continue
+			if !jm.claimWatchSendDelivery(retry.state.DeliveryID) {
+				// The active owner will finish or retain the obligation. Do not
+				// spin on this batch or advance a newer current head past it.
+				return false, nil
 			}
-			controller := jm.delegateController
-			if controller == nil {
-				return true, errors.New("stable watch controller is unavailable")
-			}
-			receiver, err := controller.stableWatchReceiver(retry.state.ReceiverSessionID, retry.state.ReceiverDelegateID)
+			err := jm.retryClaimedStableWatchSettlement(retry)
+			jm.releaseWatchSendDeliveryClaim(retry.state.DeliveryID)
 			if err != nil {
-				return true, err
-			}
-			attentionID := stableWatchAttentionID(retry.state)
-			// A frame whose arm failed is armed before it is acknowledged:
-			// acknowledging releases its receipt and its retry, after which
-			// nothing would arm it.
-			if retry.unarmed {
-				if err := jm.armStableWatchFrame(controller, receiver, retry.state.ReceiverDelegateID, attentionID); err != nil {
-					return true, err
-				}
-			}
-			if err := jm.settleWatchSendDelivered(retry.cfg, retry.state); err != nil {
-				return true, err
-			}
-			jm.forgetStableWatchSettlementRetry(retry.state)
-			if retry.unarmed {
-				continue
-			}
-			if err := jm.armStableWatchFrame(controller, receiver, retry.state.ReceiverDelegateID, attentionID); err != nil {
 				return true, err
 			}
 		}
@@ -5341,6 +5334,47 @@ func (jm *jobManager) retryStableWatchSettlements() (bool, error) {
 			return true, nil
 		}
 	}
+}
+
+// retryClaimedStableWatchSettlement is shared by the batch and a candidate with
+// a live retry. The caller already owns the per-ID delivery claim. A batch
+// snapshot may have settled before that claim was acquired, so recheck before
+// receiver lookup or arming, not just before the source append.
+func (jm *jobManager) retryClaimedStableWatchSettlement(retry pendingWatchSendDelivery) error {
+	if jm.watchSendDelivered(retry.state.DeliveryID) {
+		return jm.settleWatchSendDelivered(retry.cfg, retry.state)
+	}
+	if !retry.state.StableReceiver {
+		if retry.unarmed {
+			if err := jm.acceptWatchFrame(retry.state); err != nil {
+				return err
+			}
+		}
+		return jm.settleWatchSendDelivered(retry.cfg, retry.state)
+	}
+	controller := jm.delegateController
+	if controller == nil {
+		return errors.New("stable watch controller is unavailable")
+	}
+	receiver, err := controller.stableWatchReceiver(retry.state.ReceiverSessionID, retry.state.ReceiverDelegateID)
+	if err != nil {
+		return err
+	}
+	attentionID := stableWatchAttentionID(retry.state)
+	// A failed arm must recover before acknowledgment releases its receipt and
+	// retry. Candidate recovery obeys the same order as the existing batch.
+	if retry.unarmed {
+		if err := jm.armStableWatchFrame(controller, receiver, retry.state.ReceiverDelegateID, attentionID); err != nil {
+			return err
+		}
+	}
+	if err := jm.settleWatchSendDelivered(retry.cfg, retry.state); err != nil {
+		return err
+	}
+	if retry.unarmed {
+		return nil
+	}
+	return jm.armStableWatchFrame(controller, receiver, retry.state.ReceiverDelegateID, attentionID)
 }
 
 type watchSendPendingRecord struct {

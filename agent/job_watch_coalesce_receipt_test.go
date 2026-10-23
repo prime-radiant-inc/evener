@@ -383,15 +383,11 @@ func TestAcceptedFrameWithFailedArmRetriesAfterACoalesce(t *testing.T) {
 // stay; once it succeeds the frame is armed, acknowledged and released.
 func TestSettlementRetryArmsBeforeItAcknowledges(t *testing.T) {
 	fixture := newStableWatchRuntimeFixture(t, nil)
-	cfg := fixture.onlyWatchConfig(t)
 	jm := fixture.sourceJM
-	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "first"})
-	first := fixture.requireOnePending(t).state
 	armFailure := errors.New("arm failed")
 	jm.stableWatchArmFailure = func(string) error { return armFailure }
-	if _, err := jm.deliverPendingWatchSend(cfg, first, false); !errors.Is(err, armFailure) {
-		t.Fatalf("deliver first frame: err = %v, want the arm failure", err)
-	}
+	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "first"})
+	first := fixture.requireOnePending(t).state
 	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "second"})
 	second := fixture.requireOnePending(t).state
 	if _, err := jm.retryStableWatchSettlements(); !errors.Is(err, armFailure) {
@@ -404,12 +400,18 @@ func TestSettlementRetryArmsBeforeItAcknowledges(t *testing.T) {
 	if got := stableWatchDeliveryReceiptIDs(fixture.controller); !slices.Contains(got, first.DeliveryID) {
 		t.Fatalf("a failed retry arm released the receipt: %v", got)
 	}
+	if got := countExactWatchSendEvents(loadJobStoreEvents(t, jm), jobstore.EventWatchSendDelivered, first); got != 0 {
+		t.Fatalf("source acknowledgements before successful arm = %d, want 0", got)
+	}
 	jm.stableWatchArmFailure = nil
 	if _, err := jm.retryStableWatchSettlements(); err != nil {
 		t.Fatalf("retry once the arm succeeds: %v", err)
 	}
 	if !jm.watchSendDelivered(first.DeliveryID) {
 		t.Fatal("the retry did not acknowledge the frame")
+	}
+	if got := countExactWatchSendEvents(loadJobStoreEvents(t, jm), jobstore.EventWatchSendDelivered, first); got != 1 {
+		t.Fatalf("source acknowledgements after successful arm = %d, want 1", got)
 	}
 	requireOnlyStableWatchReceipts(t, fixture, second.DeliveryID)
 }

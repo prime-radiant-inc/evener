@@ -102,10 +102,17 @@ func TestWatchSendDeliverySettledRerunStandsDown(t *testing.T) {
 	fixture := newStableWatchRuntimeFixture(t, nil)
 	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "settled rerun"})
 	cfg := fixture.onlyWatchConfig(t)
-	state := fixture.requireOnePending(t).state
-
-	if err := fixture.sourceJM.settleWatchSendDelivered(cfg, state); err != nil {
-		t.Fatalf("settle delivery: %v", err)
+	produced := producerSourceEvents(t, fixture.sourceJM, jobstore.EventWatchSendPending)
+	if len(produced) != 1 {
+		t.Fatalf("produced source frames = %d, want 1", len(produced))
+	}
+	state := *produced[0].WatchSend
+	if got := countExactWatchSendEvents(loadJobStoreEvents(t, fixture.sourceJM), jobstore.EventWatchSendDelivered, state); got != 1 {
+		t.Fatalf("producer source acknowledgements = %d, want 1", got)
+	}
+	before := cfg.deliveries
+	if state.CallbackFrame || before != 1 {
+		t.Fatalf("stable internal-send accounting = %d callback=%t, want 1/false", before, state.CallbackFrame)
 	}
 	// Re-materialize the in-memory pending so the rerun passes the entry read
 	// while the durable pending head is already gone.
@@ -121,4 +128,11 @@ func TestWatchSendDeliverySettledRerunStandsDown(t *testing.T) {
 	if receipt := fixture.sourceJM.stableWatchReceipt(state.DeliveryID); receipt != nil {
 		t.Fatal("settled delivery rerun leaked a delivery receipt")
 	}
+	if got := countExactWatchSendEvents(loadJobStoreEvents(t, fixture.sourceJM), jobstore.EventWatchSendDelivered, state); got != 1 || cfg.deliveries != before {
+		t.Fatalf("settled rerun acknowledgements/accounting = %d/%d, want 1/%d", got, cfg.deliveries, before)
+	}
+	if !fixture.sourceJM.claimWatchSendDelivery(state.DeliveryID) {
+		t.Fatal("settled delivery rerun leaked its delivery claim")
+	}
+	fixture.sourceJM.releaseWatchSendDeliveryClaim(state.DeliveryID)
 }

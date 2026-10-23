@@ -325,15 +325,30 @@ func TestStableDelegateWatch_ControllerReceiptRunsAfterJobManagerUnlock(t *testi
 	boundaries := 0
 	fixture.sourceJM.watchReceiptBoundary = func() {
 		boundaries++
+		if !fixture.sourceJM.mu.TryLock() {
+			t.Fatal("stable watch entered the delegate controller while holding the job-manager lock")
+		}
+		fixture.sourceJM.mu.Unlock()
 		if !fixture.sourceJM.watchPersistMu.TryLock() {
 			t.Fatal("stable watch entered the delegate controller while holding the job-manager persistence lock")
 		}
 		fixture.sourceJM.watchPersistMu.Unlock()
+		if boundaries == 3 {
+			produced := producerSourceEvents(t, fixture.sourceJM, jobstore.EventWatchSendPending)
+			if len(produced) != 1 || !fixture.sourceJM.watchSendDelivered(produced[0].WatchSend.DeliveryID) || len(fixture.sourceJM.pendingWatchSendDeliveries(nil)) != 0 {
+				t.Fatal("delivery completion entered the controller before source settlement was observable")
+			}
+			if err := fixture.sourceJM.dispatchProducedWatchSendsFrom(fixture.sourceJM.store.LoadWatchSends); err != nil {
+				t.Fatalf("reentrant source pump at delivery completion: %v", err)
+			}
+		}
 	}
 
 	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "lock order"})
-	if boundaries != 2 {
-		t.Fatalf("controller receipt boundaries = %d, want enqueue admission and completion", boundaries)
+	// Immediate transport calls BeginWatchEnqueue, CompleteWatchEnqueue, then
+	// CompleteWatchDelivery. Each real controller entry must be outside both locks.
+	if boundaries != 3 {
+		t.Fatalf("controller receipt boundaries = %d, want enqueue admission, enqueue completion, and delivery completion", boundaries)
 	}
 }
 
@@ -680,66 +695,99 @@ func TestStableDelegateWatch_ConcurrentRedrainsClaimSupersededAckOnce(t *testing
 }
 
 func TestStableDelegateWatch_RetryAddedDuringClaimSettlesBeforeCurrentCursor(t *testing.T) {
-	fs := newAttentionSyncBarrierFS()
-	fixture := newStableWatchRuntimeFixture(t, fs)
-	retryA, staleB, originalAppend := seedSupersededStableWatchAckFailure(t, fixture, fs)
-	cfg := fixture.onlyWatchConfig(t)
-
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	jm := fixture.sourceJM
+	originalAppend := jm.appendEvent
+	ackFailure := errors.New("source acknowledgement failed")
 	retryAAckEntered := make(chan struct{}, 1)
 	releaseRetryAAck := make(chan struct{})
+	staleBAckEntered := make(chan struct{}, 1)
+	releaseStaleBAck := make(chan struct{})
 	currentAckEntered := make(chan struct{}, 1)
 	releaseCurrentAck := make(chan struct{})
 	releasedRetryA := false
+	releasedStaleB := false
 	releasedCurrent := false
 	defer func() {
 		if !releasedRetryA {
 			close(releaseRetryAAck)
 		}
+		if !releasedStaleB {
+			close(releaseStaleBAck)
+		}
 		if !releasedCurrent {
 			close(releaseCurrentAck)
 		}
-		fixture.sourceJM.appendEvent = originalAppend
+		jm.appendEvent = originalAppend
 	}()
-	staleBAckFailure := errors.New("second stale source acknowledgement failed")
-	var staleBAckFailed atomic.Bool
-	var current jobstore.WatchSendState
-	fixture.sourceJM.appendEvent = func(event jobstore.Event) error {
+	var retryA, staleB, current jobstore.WatchSendState
+	var retryReady atomic.Bool
+	var staleBAckHeld atomic.Bool
+	produced := 0
+	// Install before production: transport no longer waits for an explicit drain.
+	// B holds its real delivery claim while C supersedes it. Only after the retry
+	// batch has snapshotted A do we fail B's append and hand B to that same batch.
+	jm.appendEvent = func(event jobstore.Event) error {
+		if event.Kind == jobstore.EventWatchSendPending {
+			produced++
+			switch produced {
+			case 1:
+				retryA = *event.WatchSend
+			case 2:
+				staleB = *event.WatchSend
+			case 3:
+				current = *event.WatchSend
+			}
+		}
 		if exactWatchSendEvent(event, jobstore.EventWatchSendDelivered, retryA) {
+			if !retryReady.Load() {
+				return ackFailure
+			}
 			retryAAckEntered <- struct{}{}
 			<-releaseRetryAAck
 		}
-		if exactWatchSendEvent(event, jobstore.EventWatchSendDelivered, staleB) && staleBAckFailed.CompareAndSwap(false, true) {
-			return staleBAckFailure
+		if exactWatchSendEvent(event, jobstore.EventWatchSendDelivered, staleB) && staleBAckHeld.CompareAndSwap(false, true) {
+			staleBAckEntered <- struct{}{}
+			<-releaseStaleBAck
+			return ackFailure
 		}
 		if exactWatchSendEvent(event, jobstore.EventWatchSendDelivered, current) {
+			if !retryReady.Load() {
+				return ackFailure
+			}
 			currentAckEntered <- struct{}{}
 			<-releaseCurrentAck
 		}
 		return originalAppend(event)
 	}
 
-	fs.rearm()
-	staleBDone := make(chan error, 1)
+	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "retry A"})
+	staleBDone := make(chan struct{})
 	go func() {
-		_, err := fixture.sourceJM.deliverStableWatchSend(cfg, staleB)
-		staleBDone <- err
+		onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "stale B"})
+		close(staleBDone)
 	}()
-	<-fs.syncEntered
-	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "current frame"})
-	current = fixture.requireOnePending(t).state
+	<-staleBAckEntered
+	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "current frame"})
+	if got := fixture.requireOnePending(t).state; got.DeliveryID != current.DeliveryID {
+		t.Fatalf("current cursor = %q, want %q", got.DeliveryID, current.DeliveryID)
+	}
+	if !stableWatchSettlementRetrying(jm, retryA.DeliveryID) || stableWatchSettlementRetrying(jm, staleB.DeliveryID) {
+		t.Fatal("batch setup must retain A's retry while B still owns its delivery claim")
+	}
 
+	retryReady.Store(true)
 	drainDone := make(chan error, 1)
 	go func() {
-		_, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, "")
+		_, err := fixture.source.drainJobManagerWatchSends(context.Background(), jm, "")
 		drainDone <- err
 	}()
 	<-retryAAckEntered
-	fs.release()
-	if err := <-staleBDone; !errors.Is(err, staleBAckFailure) {
-		close(releaseRetryAAck)
-		releasedRetryA = true
-		<-drainDone
-		t.Fatalf("second stale delivery error = %v, want %v", err, staleBAckFailure)
+	close(releaseStaleBAck)
+	releasedStaleB = true
+	<-staleBDone
+	if !stableWatchSettlementRetrying(jm, staleB.DeliveryID) {
+		t.Fatal("B's failed acknowledgement did not join the already active retry batch")
 	}
 	close(releaseRetryAAck)
 	releasedRetryA = true
@@ -759,6 +807,9 @@ func TestStableDelegateWatch_RetryAddedDuringClaimSettlesBeforeCurrentCursor(t *
 	}
 	if staleBReceipt != nil {
 		t.Fatal("second stale delivery receipt remained held at current cursor acknowledgement")
+	}
+	if got := countExactWatchSendEvents(eventsAtCurrentAck, jobstore.EventWatchSendDelivered, retryA); got != 1 {
+		t.Fatalf("first stale source acknowledgements before current cursor = %d, want exactly 1", got)
 	}
 }
 
