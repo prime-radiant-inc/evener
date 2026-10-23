@@ -2662,6 +2662,10 @@ export function ConversationScreen({
 					// The rows followed the resume; the pane has to as well, or the
 					// message and the work it starts land on a ref nobody is showing.
 					onResolvedIdentity: (resolved) => {
+						drafts.handoff(
+							{ hubId: route.params.hubId, sessionRef: ref },
+							{ hubId: route.params.hubId, sessionRef: resolved },
+						);
 						navigation.replace("Conversation", {
 							hubId: route.params.hubId,
 							ref: resolved,

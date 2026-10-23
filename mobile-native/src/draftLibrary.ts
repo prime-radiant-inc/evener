@@ -1,7 +1,10 @@
 import { DraftDocument } from "./draftDocument";
 import type { DraftDestination, DraftRepository } from "./draftRepository";
 
-export type DraftStorage = Pick<DraftRepository, "read" | "write" | "removeHub" | "imageInputs" | "refsWithDrafts">;
+export type DraftStorage = Pick<
+	DraftRepository,
+	"read" | "write" | "remove" | "removeHub" | "imageInputs" | "refsWithDrafts"
+>;
 
 /** One document per destination keeps pending work coherent across navigation. */
 export class DraftLibrary {
@@ -24,6 +27,43 @@ export class DraftLibrary {
 			sessions.set(destination.sessionRef, document);
 		}
 		return document;
+	}
+
+	/** Hand a destination's complete draft, including recovery ownership, to a
+	 * resumed identity before the new screen can open it. The source is removed
+	 * only after the destination write commits. */
+	handoff(from: DraftDestination, to: DraftDestination): boolean {
+		if (from.hubId === to.hubId && from.sessionRef === to.sessionRef) return true;
+		const source = this.open(from);
+		const snapshot = source.getSnapshot();
+		if (!snapshot.loaded) return false;
+		const record = snapshot.record;
+		const destination = this.repository().read(to);
+		if (
+			destination.draft !== "" ||
+			(destination.images?.length ?? 0) > 0 ||
+			(destination.unconfirmed !== null && destination.unconfirmed !== undefined) ||
+			(destination.composer?.recoveryIds?.length ?? 0) > 0
+		)
+			return false;
+		const images = [...(record.images ?? []), ...(record.unconfirmedImages ?? [])];
+		let additions;
+		try {
+			additions = images.map((image) => ({
+				...image,
+				data: source.imagePreviews([image])[0]?.data ?? "",
+			}));
+		} catch {
+			return false;
+		}
+		try {
+			this.repository().write(to, record, additions);
+		} catch {
+			return false;
+		}
+		this.repository().remove(from);
+		source.forget();
+		return true;
 	}
 
 	refsWithDrafts(hubId: string): Set<string> {
