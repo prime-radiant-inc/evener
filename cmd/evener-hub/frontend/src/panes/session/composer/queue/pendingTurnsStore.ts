@@ -133,6 +133,8 @@ installResumeOnlyProjection({
       (record) => record.method !== "turn/start",
     ),
   ownPendingTurnInput: ownPendingTurnInputFor,
+  beginSubmission: (ref) => pendingTurnsStore.beginSubmission(ref),
+  endSubmission: (ref) => pendingTurnsStore.endSubmission(ref),
 });
 
 // The durable-read fence a refresh's targets are decided through, and the

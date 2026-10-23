@@ -9,10 +9,14 @@ import { setMutationClientIdentityForTests } from "../../../stores/mutationClien
 import type { MutationOutboxRecord } from "../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { settleProjectionWorkForTests } from "../../../stores/projectionWork";
-import { holdIndexedDBEvent } from "../../../stores/testing/stalledIndexedDB";
+import { holdIndexedDBEvent, holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../stores/threads";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
-import { pendingTurnEntries, refreshPendingTurnsProjection } from "../composer/queue/pendingTurnsStore";
+import {
+  pendingTurnEntries,
+  refreshPendingTurnsProjection,
+  submitWithPendingTracking,
+} from "../composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../composer/queue/testing/flushPendingTurnsProjection";
 import { readResponse } from "./messages/testing/heldSteerTestUtils";
 import { TurnBlock } from "./TurnBlock";
@@ -417,6 +421,58 @@ test("a captured Retry callback still submits when the same latest turn's error 
     await threadsStore.getState().continueTurn("ref_a", "turn_1");
   });
   await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
+});
+
+test("Retry pressed while an ordinary send's enqueue is in flight admits no continuation", async () => {
+  const { fake, storage } = await connectedThread();
+  act(() => seedModel([failedTurn()]));
+  render(<TurnFailureEndCap error={{ message: "boom" }} turnId="turn_1" sessionRef="ref_a" />);
+  await flushPendingTurnsProjectionForTests();
+  expect(threadsStore.getState().pendingProjectionLoadedRefs.has("ref_a")).toBe(true);
+  expect(retryButton()?.disabled).toBe(false);
+
+  // The composer's ordinary press: submitWithPendingTracking marks the shared
+  // per-session submission guard, then the send's durable enqueue transaction
+  // is held. The projection is still empty, so the old failure still looks
+  // latest and the Retry button is still enabled.
+  const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+  let send!: Promise<void>;
+  await act(async () => {
+    send = submitWithPendingTracking({ ref: "ref_a", text: "hello", onFailure: vi.fn() }, () =>
+      threadsStore.getState().send("ref_a", "hello"),
+    );
+    await hold.reached;
+  });
+  expect(pendingTurnEntries("ref_a")).toEqual([]);
+  expect(retryButton()?.disabled).toBe(false);
+
+  // Capture the press's own activation promise so both the correct refusal and
+  // a wrong admission settle before the send is released.
+  const continueTurn = threadsStore.getState().continueTurn;
+  let retry!: Promise<void>;
+  const spy = vi.spyOn(threadsStore.getState(), "continueTurn").mockImplementation((ref, turnId) => {
+    retry = continueTurn(ref, turnId);
+    return retry;
+  });
+  fireEvent.click(retryButton() as HTMLButtonElement);
+  await act(async () => {
+    await retry;
+  });
+  spy.mockRestore();
+
+  await act(async () => {
+    hold.release();
+    await send;
+  });
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
+  // The one admitted turn/start is the original send, with its own text.
+  const starts = fake.calls.filter((call) => call.method === "turn/start");
+  const startParams = starts[0]?.params as MethodTypes["turn/start"]["params"] | undefined;
+  expect(startParams?.input).toEqual([{ type: "text", text: "hello" }]);
+  const stored = [...(await storage.listOutbox("ref_a")), ...(await storage.listOptimistic("ref_a"))];
+  expect(stored.some((record) => record.composerText === "continue")).toBe(false);
+  expect(stored.some((record) => JSON.stringify(record.payload).includes('"continue"'))).toBe(false);
 });
 
 test("a provider failure shows a provider-status badge and a Retry action", async () => {

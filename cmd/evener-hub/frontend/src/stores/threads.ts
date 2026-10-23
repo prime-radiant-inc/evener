@@ -4223,6 +4223,12 @@ interface ResumeOnlyProjection {
   // already holds that answer, and threads.ts cannot import it back without a
   // cycle, so it registers the read here beside the fence's own.
   ownPendingTurnInput(ref: string): boolean;
+  // The same per-session submission guard ordinary Send/press uses
+  // (submittingRefs through pendingTurnsStore). Retry begins and ends one
+  // submission through it, so an ordinary send whose durable enqueue is still
+  // in flight blocks Retry, and Retry's own window blocks a second send.
+  beginSubmission(ref: string): boolean;
+  endSubmission(ref: string): void;
 }
 let resumeOnlyProjection: ResumeOnlyProjection | null = null;
 
@@ -4277,6 +4283,17 @@ export function hasQueuedNonSend(ref: string): boolean {
 function ownPendingTurnInputNow(ref: string): boolean {
   if (!threadsStore.getState().pendingProjectionLoadedRefs.has(ref)) return true;
   return resumeOnlyProjection?.ownPendingTurnInput(ref) ?? true;
+}
+
+// Retry's share of the composer's per-session submission guard. The pending
+// store owns `submittingRefs`; no projection installed means no shared owner
+// can certify the window, so Retry fails closed.
+function beginSharedSubmission(ref: string): boolean {
+  return resumeOnlyProjection?.beginSubmission(ref) ?? false;
+}
+
+function endSharedSubmission(ref: string): void {
+  resumeOnlyProjection?.endSubmission(ref);
 }
 
 // isResumeOnly over the store's current model for ref: the ADMISSION
@@ -7683,6 +7700,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     const currentTurn = model.turns.find((turn) => turn.id === expectedTurnId);
     if (currentTurn === undefined || !isTurnError(currentTurn.error)) return;
     if (ownPendingTurnInputNow(ref) || retryActivationsInFlight.has(ref)) return;
+    // An ordinary Send/press marks the composer's shared submission guard
+    // before its durable row is visible in the projection. Retry must join that
+    // guard, not only its own set, or a press in that window would admit a
+    // continuation that dispatches after the new message.
+    if (!beginSharedSubmission(ref)) return;
     retryActivationsInFlight.add(ref);
     try {
       await sendMutationIntent({
@@ -7691,6 +7713,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       });
     } finally {
       retryActivationsInFlight.delete(ref);
+      endSharedSubmission(ref);
     }
   },
 
