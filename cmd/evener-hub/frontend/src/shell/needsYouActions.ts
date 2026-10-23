@@ -1,5 +1,6 @@
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { keyID, NAVIGATION_SECTION_LIMIT, type ResourceKey } from "@evener/appwire-client/state/navigation";
+import { parseZoomParams } from "../panes/zoom/intent";
 import {
   selectNeedsYouCount,
   selectNeedsYouRows,
@@ -10,6 +11,7 @@ import { navigationStore } from "../stores/navigation/store";
 import { openAttentionSession } from "./attentionHistory";
 import { focusedSessionPaneId, focusedSessionRef } from "./focusedSession";
 import { paletteStore } from "./palette/paletteController";
+import { existingConversationPaneLifetime } from "./paneLifetime";
 import { needsYouRefs, nextNeedsYouRef } from "./rail/needsYouCycle";
 import { observeRouteHistory } from "./routing";
 import { workspaceStore } from "./workspace";
@@ -48,10 +50,28 @@ const rowPageKey = (ref: string, state: ReturnType<typeof navigationStore.getSta
   return null;
 };
 
+function focusedReaderRef(pane: { type: string; params: unknown } | undefined): string | null {
+  if (!pane) return null;
+  if (pane.type === "session") {
+    const ref = (pane.params as { ref?: unknown }).ref;
+    return typeof ref === "string" && ref !== "" ? ref : null;
+  }
+  if (pane.type === "sessionZoom") return parseZoomParams(pane.params)?.ref ?? null;
+  return null;
+}
+
 function sourceIdentity(): string {
   const state = workspaceStore.getState();
   const pane = state.panes.find((item) => item.id === state.focusedPaneId);
-  return JSON.stringify({ pane, ref: focusedSessionRef(), paneId: focusedSessionPaneId() });
+  // The exact reader behind that pane, not just its record: a cascade can rebind
+  // its leaf to a different backing session behind identical params (a resume),
+  // and a pending Next must not act for the reader that was replaced.
+  const conversation =
+    pane !== undefined && (pane.type === "session" || pane.type === "sessionZoom" || pane.type === "transcript");
+  const lifetime = pane && conversation ? existingConversationPaneLifetime(pane) : null;
+  const readerRef = focusedReaderRef(pane);
+  const boundSession = readerRef && lifetime ? (lifetime.resolvedSessions.get(readerRef) ?? null) : null;
+  return JSON.stringify({ pane, ref: focusedSessionRef(), paneId: focusedSessionPaneId(), boundSession });
 }
 
 export type NeedsYouControllerOptions = {

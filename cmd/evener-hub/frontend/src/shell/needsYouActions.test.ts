@@ -8,7 +8,7 @@ import { navigationStore, resetNavigationStoreForTests } from "../stores/navigat
 import "../panes/session";
 import "../panes/transcript";
 import "../panes/zoom";
-import { enterAgentCascade, popAgentCascade } from "../panes/zoom/actions";
+import { enterAgentCascade, popAgentCascade, reconcileCascadeBinding } from "../panes/zoom/actions";
 import { activityDelegate } from "../stores/sessionActivityTestUtils";
 import { focusedSessionRef } from "./focusedSession";
 import { createNeedsYouController, type NeedsYouController } from "./needsYouActions";
@@ -1577,4 +1577,63 @@ test("dispose releases each real store, route, window and modal observer subscri
     closePalette();
     vi.restoreAllMocks();
   }
+});
+
+// A cascade can rebind its focused leaf to a different backing session behind
+// identical params (a resume retypes it in place). A pending Next captured before
+// that must not act for the reader that was replaced.
+test("a held next response does not act after the focused cascade rebinds its leaf", async () => {
+  const client = new FakeClient("ready");
+  let releasePage!: () => void;
+  let entered!: () => void;
+  const pageEntered = new Promise<void>((resolve) => (entered = resolve));
+  client.on("evener/navigation/read", (params) => {
+    if (params.resource === "manifest") {
+      return wireSnapshot(
+        params,
+        manifest({
+          generation_id: "cascade-rebind",
+          sections: { live: { count: 0 }, needs_you: { count: 1 }, pin_sections: { count: 0 } },
+        }),
+        '"manifest"',
+        1,
+        "cascade-rebind",
+      );
+    }
+    if (params.resource === "section") {
+      entered();
+      return new Promise((resolve) => {
+        releasePage = () =>
+          resolve(
+            wireSnapshot(params, { sessions: [{ ref: "local:target" }], remaining: 0 }, '"page"', 1, "cascade-rebind"),
+          );
+      });
+    }
+    throw new Error(`unexpected resource ${params.resource}`);
+  });
+  navigationStore.init(client, capability("cascade-rebind"));
+  const paneId = workspaceStore
+    .getState()
+    .openPane(
+      "sessionZoom",
+      { ref: "local:leaf", source: { type: "session", params: { ref: "local:leaf" } }, edges: [] },
+      { slot: "main" },
+    );
+  workspaceStore.getState().focusPane(paneId);
+  const pane = workspaceStore.getState().panes.find((item) => item.id === paneId);
+  if (!pane) throw new Error("missing cascade pane");
+  const lifetime = conversationPaneLifetime(pane);
+  lifetime.resolvedSessions.set("local:leaf", "session-before");
+  const controller = createNeedsYouController();
+  const before = { path: window.location.pathname, history: window.history.length };
+
+  const pending = controller.next();
+  await pageEntered;
+  reconcileCascadeBinding(pane, "local:leaf", "session-after");
+  releasePage();
+  await pending;
+
+  expect(window.location.pathname).toBe(before.path);
+  expect(window.history.length).toBe(before.history);
+  controller.dispose();
 });
