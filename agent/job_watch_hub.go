@@ -149,6 +149,12 @@ func (jm *jobManager) onHubObservationEvidence(watchID string, update appwire.Se
 					continue
 				}
 				meta := *item.Observation
+				if meta.EntryID == "" {
+					meta.EntryID = item.TranscriptKey
+					if meta.EntryID == "" {
+						meta.EntryID = item.ID
+					}
+				}
 				if meta.TurnID == "" {
 					meta.TurnID = turn.ID
 				}

@@ -112,6 +112,8 @@ func TestDelegateManagerRoleNotInheritedOnCreateOrResume(t *testing.T) {
 		sub.mu.Unlock()
 		select {
 		case <-done:
+		// TRIPWIRE: one scripted provider response completes in milliseconds;
+		// this unchanged bound catches a stuck child, not successful completion.
 		case <-time.After(10 * time.Second):
 			t.Fatal("scripted child did not complete")
 		}

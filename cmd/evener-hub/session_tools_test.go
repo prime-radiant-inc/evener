@@ -88,8 +88,10 @@ func TestSessionToolsWatchSnapshotHandoff(t *testing.T) {
 	sources.Add(source)
 	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test"}
 	server := appserver.NewServer(appserver.ServerConfig{})
+	defer server.Shutdown(ctx)
 	relays := newHubRelayFunctions(server, cfg, sources)
 	owner := &sessionOperations{cfg: cfg, sources: sources, relays: relays, server: server}
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, owner.Read)
 	binding := &boundSessionOperations{owner: owner, local: source, binding: appwire.SessionBinding{Ref: ref, InstanceID: instance, HubID: "hub-test", BindingID: "binding"}}
 	parsed, err := appwire.ParseRef(ref)
 	if err != nil {
