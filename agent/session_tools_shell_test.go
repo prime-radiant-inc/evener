@@ -1741,6 +1741,7 @@ func TestShellModeDetachedFollowsEnvironment(t *testing.T) {
 		}
 		select {
 		case <-receipts[0].done:
+		// TRIPWIRE: `exec true` reports completion in milliseconds; this bound only keeps a broken completion receipt from hanging the suite.
 		case <-time.After(10 * time.Second):
 			if p, err := os.FindProcess(receipts[0].pid); err == nil {
 				_ = p.Kill()
