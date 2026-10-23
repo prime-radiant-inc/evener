@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -100,9 +101,10 @@ func TestSessionLogSnapshotPayloadCoverage(t *testing.T) {
 						}
 					case "restored-after-disjoint":
 						ids = []int{1, 2}
-						if fold == 0 {
+						switch fold {
+						case 0:
 							ids = []int{1}
-						} else if fold == 1 {
+						case 1:
 							ids = []int{2}
 						}
 					case "empty-to-entry":
@@ -168,17 +170,19 @@ func TestSessionLogSnapshotRetention(t *testing.T) {
 					ids = nil
 				case "opaque", "legacy-canonical", "embedded-conversation", "embedded-earlier":
 					ids = []int{1, 2}
-					if mode == "opaque" {
+					switch mode {
+					case "opaque":
 						source = sessionLogCheckpointStart + "OPAQUE_SNAPSHOT_580\n## Conversation\n\n### User\n\n```text\nMODEL_EXAMPLE_SNAPSHOT_691\n```\n[END CHECKPOINT]"
-					} else if mode == "legacy-canonical" {
+					case "legacy-canonical":
 						body := "Original prompt: LEGACY_NAV_SNAPSHOT_802\nSession log:\nLEGACY_QUOTATION_SNAPSHOT_913\n\nSession log:\n" + s.log.String()
 						source = renderStrategyCheckpoint(sessionLogCheckpointStart, "## Session Log", body, "", nil, &s.cm.Meta)
-					} else {
+					default:
 						var carry string
 						var earlier []string
-						if mode == "embedded-conversation" {
+						switch mode {
+						case "embedded-conversation":
 							carry = renderCheckpointConversation([]checkpointConversationEntry{{Role: "user", Text: "NESTED_SNAPSHOT_802"}})
-						} else if mode == "embedded-earlier" {
+						case "embedded-earlier":
 							earlier = []string{"NESTED_SNAPSHOT_913"}
 						}
 						source = renderSessionLogCheckpoint("NAV_SNAPSHOT_024", s.log.String(), carry, earlier, &s.cm.Meta)
@@ -363,7 +367,7 @@ func TestSessionLogSnapshotHistoricalNavigationBoundaries(t *testing.T) {
 	t.Parallel()
 	fields := []string{"", "NAV_579", "NAV_579\n", "NAV_579\n\n", " \n\t\n", "NAV_579\r\n", "\n## Conversation\n```text\nMODEL_ONLY_680\n```\n## Earlier Summaries\n[END CHECKPOINT]\n"}
 	for i, navigation := range fields {
-		t.Run(fmt.Sprint(i), func(t *testing.T) {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
 			const payload = "ACTUAL_PAYLOAD_791"
 			source := renderSessionLogCheckpoint(navigation, payload, "", nil, nil)
 			if parsed, ok := parseStrategyCheckpoint(source); !ok || parsed.navigation != navigation {

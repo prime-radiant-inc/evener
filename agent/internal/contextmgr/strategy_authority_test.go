@@ -52,15 +52,16 @@ func TestStrategyAuthoritySources(t *testing.T) {
 				prompt = req.Messages[0].Text()
 				return llm.Response{Message: llm.Assistant(`{"action":"assistant","summary":"work","outcome":"success"}`)}, nil
 			})
-			if name == "predictive" {
+			switch name {
+			case "predictive":
 				if _, err := NewCheckpointPredStrategy(cm).predictiveCheckpoint(context.Background(), history, 2); err != nil {
 					t.Fatal(err)
 				}
-			} else if name == "fork" {
+			case "fork":
 				if _, err := forkSummarize(context.Background(), cm.cheap, cm.currentProfile(), history, len(history)); err != nil {
 					t.Fatal(err)
 				}
-			} else {
+			default:
 				sls := &SessionLogStrategy{cm: cm, log: mustNewSessionLog(t, filepath.Join(t.TempDir(), "log.jsonl")), session: &fakeStrategyHost{profile: cm.currentProfile()}}
 				var strategy Strategy = sls
 				if name == "ooda" {
@@ -315,9 +316,10 @@ func TestStrategyFallbackSeesWholeEarlierContext(t *testing.T) {
 			}
 			sls := &SessionLogStrategy{cm: cm, log: log}
 			var strategy Strategy = sls
-			if name == "ooda" {
+			switch name {
+			case "ooda":
 				strategy = &OODAStrategy{SessionLogStrategy: sls}
-			} else if name == "predictive" {
+			case "predictive":
 				strategy = NewCheckpointPredStrategy(cm)
 			}
 			history := []schema.Turn{
