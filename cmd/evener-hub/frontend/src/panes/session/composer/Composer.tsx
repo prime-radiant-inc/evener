@@ -1263,6 +1263,15 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
       activeRecoveryId !== null &&
       match.argsText.trim()
     ) {
+      if (match.command.unavailableReason) {
+        toasts.push("error", `/${match.command.id} is ${match.command.unavailableReason}`);
+        return;
+      }
+      const unavailable = match.command.available?.(liveThreadModel(ref) ?? renderedModel);
+      if (unavailable !== undefined) {
+        toasts.push("error", unavailable);
+        return;
+      }
       const literal = textRef.current;
       await submitAction(match.command.id, { text: match.argsText, clearDraftText: literal });
       return;

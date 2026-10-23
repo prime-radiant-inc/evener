@@ -3912,7 +3912,10 @@ test("a /queue typed over a recovered edit resends its body atomically", async (
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const recovered = await seedRejectedRecovery(storage, "ref_a", "retry me");
-  await mountComposer("ref_a");
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
+  });
   await flushPendingTurnsProjectionForTests();
   expect(textarea().textContent).toBe("retry me");
 
@@ -3930,7 +3933,10 @@ test("a failed /queue resend keeps the invocation as the recovery composer text"
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const recovered = await seedRejectedRecovery(storage, "ref_a", "retry me");
-  await mountComposer("ref_a");
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
+  });
   await flushPendingTurnsProjectionForTests();
   replaceEditorText(textarea(), "/queue replacement");
   const resend = vi
@@ -7251,6 +7257,19 @@ test("an unavailable built-in (/steer while idle) is refused with the unavailabl
   await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(editor.textContent).toBe("/steer go left");
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
+test("an unavailable /steer over an active recovery is refused without consuming it", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "retry me");
+  await mountComposer("ref_a", { status: { type: "idle" } });
+  await flushPendingTurnsProjectionForTests();
+  replaceEditorText(textarea(), "/steer go left");
+  fireEvent.click(submitButton());
+  await waitFor(() => expect(toastKinds()).toContain("error"));
+  expect(textarea().textContent).toBe("/steer go left");
+  expect(await storage.getRecovery(recovered.clientMutationId)).toBeDefined();
 });
 
 test("an unknown /foo sends as a plain message - the escape hatch", async () => {
