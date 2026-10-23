@@ -307,9 +307,16 @@ describe("TranscriptBody", () => {
     expect(screen.queryByText("tree output")).toBeNull();
   });
 
-  test.each(["live", "readOnly"] as const)("uses the projected VirtualList for %s", (surface) => {
-    render(
-      <TranscriptBody model={fixture} config={preset("tools")} surface={surface} disclosureScope={`${surface}:test`} />,
+  test.each(["live", "readOnly"] as const)("uses the projected VirtualList for %s", async (surface) => {
+    await act(async () =>
+      render(
+        <TranscriptBody
+          model={fixture}
+          config={preset("tools")}
+          surface={surface}
+          disclosureScope={`${surface}:test`}
+        />,
+      ),
     );
 
     expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy();
@@ -909,14 +916,16 @@ describe("TranscriptBody", () => {
     expect(single.hasAttribute("open")).toBe(true);
   });
 
-  test("coalesces intent-only actions across adjacent turns into one stable virtual row", () => {
-    const { rerender } = render(
-      <TranscriptBody
-        model={crossTurnFixture}
-        config={preset("intent")}
-        surface="live"
-        disclosureScope="live:cross-turn"
-      />,
+  test("coalesces intent-only actions across adjacent turns into one stable virtual row", async () => {
+    const { rerender } = await act(async () =>
+      render(
+        <TranscriptBody
+          model={crossTurnFixture}
+          config={preset("intent")}
+          surface="live"
+          disclosureScope="live:cross-turn"
+        />,
+      ),
     );
 
     const group = screen.getAllByTestId("intent-group");
@@ -935,13 +944,15 @@ describe("TranscriptBody", () => {
     ).toBe("turn_b");
 
     const rowIds = screen.getAllByTestId("transcript-row").map((row) => row.getAttribute("data-row-id"));
-    rerender(
-      <TranscriptBody
-        model={crossTurnFixture}
-        config={preset("intent")}
-        surface="live"
-        disclosureScope="live:cross-turn"
-      />,
+    await act(async () =>
+      rerender(
+        <TranscriptBody
+          model={crossTurnFixture}
+          config={preset("intent")}
+          surface="live"
+          disclosureScope="live:cross-turn"
+        />,
+      ),
     );
     expect(screen.getAllByTestId("transcript-row").map((row) => row.getAttribute("data-row-id"))).toEqual(rowIds);
   });
@@ -985,7 +996,7 @@ describe("TranscriptBody", () => {
     expect(group.hasAttribute("open")).toBe(false);
   });
 
-  test("a terminal one-turn intent row extends across a streamed second turn without remounting", () => {
+  test("a terminal one-turn intent row extends across a streamed second turn without remounting", async () => {
     const initialTurn = crossTurnFixture.turns[0];
     const streamedTurn = crossTurnFixture.turns[1];
     if (initialTurn === undefined || streamedTurn === undefined) throw new Error("streaming fixture is incomplete");
@@ -998,14 +1009,16 @@ describe("TranscriptBody", () => {
       ],
     } as ThreadModel;
     const config = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { roundTimings: true });
-    const { rerender } = render(
-      <TranscriptBody
-        model={initial}
-        config={config}
-        surface="live"
-        disclosureScope="live:one-to-two-turns"
-        showSeenDividerTurnId="turn_a"
-      />,
+    const { rerender } = await act(async () =>
+      render(
+        <TranscriptBody
+          model={initial}
+          config={config}
+          surface="live"
+          disclosureScope="live:one-to-two-turns"
+          showSeenDividerTurnId="turn_a"
+        />,
+      ),
     );
     const row = screen.getByTestId("transcript-row");
     const group = screen.getByTestId("intent-group");
@@ -1025,20 +1038,22 @@ describe("TranscriptBody", () => {
     expect(firstAnchor.getAttribute("data-view-anchor-members")).toBe("intent:tool_a");
     expect(group.querySelector("[data-view-anchor-id]")).toBeNull();
     expect(group.hasAttribute("open")).toBe(false);
-    fireEvent.click(summary);
+    await act(async () => fireEvent.click(summary));
     expect(group.hasAttribute("open")).toBe(true);
     const openAnchor = document.querySelector('[data-view-anchor-id="intent:tool_a"]');
     if (!(openAnchor instanceof HTMLElement)) throw new Error("open intent entry anchor did not render");
     expect(group.contains(openAnchor)).toBe(true);
 
-    rerender(
-      <TranscriptBody
-        model={streamed}
-        config={config}
-        surface="live"
-        disclosureScope="live:one-to-two-turns"
-        showSeenDividerTurnId="turn_a"
-      />,
+    await act(async () =>
+      rerender(
+        <TranscriptBody
+          model={streamed}
+          config={config}
+          surface="live"
+          disclosureScope="live:one-to-two-turns"
+          showSeenDividerTurnId="turn_a"
+        />,
+      ),
     );
 
     expect(screen.getByTestId("transcript-row")).toBe(row);
@@ -1229,15 +1244,17 @@ describe("TranscriptBody", () => {
 });
 
 describe("trailingRow", () => {
-  test("renders the trailing row as the last virtual transcript row on the live surface", () => {
-    render(
-      <TranscriptBody
-        model={fixture}
-        config={preset("tools")}
-        surface="live"
-        disclosureScope="live:trailing-row"
-        trailingRow={{ id: "live-edge", content: <div data-testid="trailing-sentinel">Answer me</div> }}
-      />,
+  test("renders the trailing row as the last virtual transcript row on the live surface", async () => {
+    await act(async () =>
+      render(
+        <TranscriptBody
+          model={fixture}
+          config={preset("tools")}
+          surface="live"
+          disclosureScope="live:trailing-row"
+          trailingRow={{ id: "live-edge", content: <div data-testid="trailing-sentinel">Answer me</div> }}
+        />,
+      ),
     );
 
     const rows = screen.getAllByTestId("transcript-row");
@@ -1248,32 +1265,38 @@ describe("trailingRow", () => {
     expect(last?.contains(sentinel)).toBe(true);
   });
 
-  test("a rerender keeps the trailing row's identity stable and after every transcript row", () => {
-    const { rerender } = render(
-      <TranscriptBody
-        model={fixture}
-        config={preset("tools")}
-        surface="live"
-        disclosureScope="live:trailing-row-stable"
-        trailingRow={{ id: "live-edge", content: <div data-testid="trailing-sentinel">Answer me</div> }}
-      />,
+  test("a rerender keeps the trailing row's identity stable and after every transcript row", async () => {
+    const { rerender } = await act(async () =>
+      render(
+        <TranscriptBody
+          model={fixture}
+          config={preset("tools")}
+          surface="live"
+          disclosureScope="live:trailing-row-stable"
+          trailingRow={{ id: "live-edge", content: <div data-testid="trailing-sentinel">Answer me</div> }}
+        />,
+      ),
     );
     const before = screen.getAllByTestId("transcript-row").map((row) => row.getAttribute("data-row-id"));
-    rerender(
-      <TranscriptBody
-        model={fixture}
-        config={preset("tools")}
-        surface="live"
-        disclosureScope="live:trailing-row-stable"
-        trailingRow={{ id: "live-edge", content: <div data-testid="trailing-sentinel">Answer me</div> }}
-      />,
+    await act(async () =>
+      rerender(
+        <TranscriptBody
+          model={fixture}
+          config={preset("tools")}
+          surface="live"
+          disclosureScope="live:trailing-row-stable"
+          trailingRow={{ id: "live-edge", content: <div data-testid="trailing-sentinel">Answer me</div> }}
+        />,
+      ),
     );
     expect(screen.getAllByTestId("transcript-row").map((row) => row.getAttribute("data-row-id"))).toEqual(before);
   });
 
-  test("omitting trailingRow renders exactly the transcript rows", () => {
-    render(
-      <TranscriptBody model={fixture} config={preset("tools")} surface="live" disclosureScope="live:no-trailing" />,
+  test("omitting trailingRow renders exactly the transcript rows", async () => {
+    await act(async () =>
+      render(
+        <TranscriptBody model={fixture} config={preset("tools")} surface="live" disclosureScope="live:no-trailing" />,
+      ),
     );
     const rows = screen.getAllByTestId("transcript-row");
     expect(rows).toHaveLength(1);
@@ -1282,7 +1305,7 @@ describe("trailingRow", () => {
 });
 
 describe("trailingRow scroll coordination", () => {
-  test("the view registration's rendered row count includes the trailing row", () => {
+  test("the view registration's rendered row count includes the trailing row", async () => {
     const realRegistration = flowModule.useTranscriptViewRegistration;
     const capturedCounts: Array<number | undefined> = [];
     const spy = vi
@@ -1292,14 +1315,16 @@ describe("trailingRow scroll coordination", () => {
         return realRegistration(options);
       });
     try {
-      render(
-        <TranscriptBody
-          model={fixture}
-          config={preset("tools")}
-          surface="live"
-          disclosureScope="live:trailing-count"
-          trailingRow={{ id: "live-edge", content: <div data-testid="trailing-sentinel" /> }}
-        />,
+      await act(async () =>
+        render(
+          <TranscriptBody
+            model={fixture}
+            config={preset("tools")}
+            surface="live"
+            disclosureScope="live:trailing-count"
+            trailingRow={{ id: "live-edge", content: <div data-testid="trailing-sentinel" /> }}
+          />,
+        ),
       );
       // One turn row + the synthetic trailing row: following-bottom view
       // restores scroll to renderedRowCount - 1, so the count must cover the
@@ -1312,21 +1337,23 @@ describe("trailingRow scroll coordination", () => {
 });
 
 describe("prepared view", () => {
-  test("consumes a prepared view without re-deriving it", () => {
+  test("consumes a prepared view without re-deriving it", async () => {
     const project = vi.spyOn(appwireClient, "projectThread");
     const projection = appwireClient.projectThread(fixture, preset("tools"));
     const rows = transcriptRowsForProjection(projection);
     const anchorEntries = transcriptAnchorEntriesForRows(rows);
     project.mockClear();
 
-    render(
-      <TranscriptBody
-        model={fixture}
-        config={preset("tools")}
-        preparedView={{ projection, rows, anchorEntries }}
-        surface="live"
-        disclosureScope="live:prepared"
-      />,
+    await act(async () =>
+      render(
+        <TranscriptBody
+          model={fixture}
+          config={preset("tools")}
+          preparedView={{ projection, rows, anchorEntries }}
+          surface="live"
+          disclosureScope="live:prepared"
+        />,
+      ),
     );
 
     expect(project).not.toHaveBeenCalled();
@@ -1558,8 +1585,8 @@ describe("retained transcript placement", () => {
     descriptors.clear();
     observers.clear();
   });
-  function resized() {
-    act(() => {
+  async function resized() {
+    await act(async () => {
       for (const observer of [...observers]) {
         const entries = [...observer.elements].map((target) => {
           const size = { blockSize: (target as HTMLElement).offsetHeight, inlineSize: 490 };
@@ -1630,8 +1657,8 @@ describe("retained transcript placement", () => {
     });
   }
 
-  test("keeps the coherent long-row anchor when CSS reflows before viewport capture", () => {
-    render(<Harness />);
+  test("keeps the coherent long-row anchor when CSS reflows before viewport capture", async () => {
+    await act(async () => render(<Harness />));
     readBack(3292);
     expect(captureTranscriptViews().get("retained-pane")).toMatchObject({
       anchorId: "long-message",
@@ -1648,12 +1675,14 @@ describe("retained transcript placement", () => {
 
   test.each([false, true])(
     "coherent geometry keeps current focus ownership rather than cached focus, focused %s",
-    (focused) => {
-      render(
-        <>
-          <button type="button">Outside transcript</button>
-          <Harness />
-        </>,
+    async (focused) => {
+      await act(async () =>
+        render(
+          <>
+            <button type="button">Outside transcript</button>
+            <Harness />
+          </>,
+        ),
       );
       readBack(3292);
       const anchor = port().querySelector<HTMLElement>('[data-view-anchor-id="long-message"]');
@@ -1671,10 +1700,10 @@ describe("retained transcript placement", () => {
     },
   );
 
-  test("does not consume normalized restoration in the initial zero-range measurement", () => {
+  test("does not consume normalized restoration in the initial zero-range measurement", async () => {
     rowHeight = 96;
-    render(<Harness />);
-    act(() =>
+    await act(async () => render(<Harness />));
+    await act(async () =>
       restoreTranscriptViews(
         new Map([
           [
@@ -1688,17 +1717,17 @@ describe("retained transcript placement", () => {
         ]),
       ),
     );
-    resized();
+    await resized();
     expect(port().scrollTop).toBe(0);
     rowHeight = 4368;
-    resized();
+    await resized();
     expect((port().firstElementChild as HTMLElement).style.height).toBe("4368px");
     expect(port().scrollTop).toBe(1856);
   });
 
-  test("an actually empty transcript consumes its normalized fallback without waiting for nonexistent rows", () => {
-    const { rerender } = render(<Harness empty />);
-    act(() =>
+  test("an actually empty transcript consumes its normalized fallback without waiting for nonexistent rows", async () => {
+    const { rerender } = await act(async () => render(<Harness empty />));
+    await act(async () =>
       restoreTranscriptViews(
         new Map([
           [
@@ -1714,13 +1743,13 @@ describe("retained transcript placement", () => {
     );
     // An empty list has no row resize to publish. Its next real Body commit
     // is the measurement boundary, just as for a view/configuration change.
-    rerender(<Harness empty />);
-    resized();
+    await act(async () => rerender(<Harness empty />));
+    await resized();
     expect(port().scrollTop).toBe(0);
     expect(captureTranscriptViews().get("retained-pane")?.followingBottom).toBe(true);
   });
 
-  test.each([false, true])("same exact view rehydrates away from latest, StrictMode %s", (strict) => {
+  test.each([false, true])("same exact view rehydrates away from latest, StrictMode %s", async (strict) => {
     const view = (loaded: boolean, session = fixture.ref) =>
       strict ? (
         <StrictMode>
@@ -1729,19 +1758,19 @@ describe("retained transcript placement", () => {
       ) : (
         <Harness loaded={loaded} session={session} />
       );
-    const { rerender } = render(view(true));
+    const { rerender } = await act(async () => render(view(true)));
     readBack(3292);
-    rerender(view(false));
+    await act(async () => rerender(view(false)));
     expect(screen.getByText("Loading same view")).toBeTruthy();
-    rerender(view(true));
-    resized();
+    await act(async () => rerender(view(true)));
+    await resized();
     expect(port().scrollTop).toBe(3292);
   });
 
-  test("a new ref in the same mounted pane rejects the old pending placement and opens at latest", () => {
+  test("a new ref in the same mounted pane rejects the old pending placement and opens at latest", async () => {
     rowHeight = 96;
-    const { rerender } = render(<Harness />);
-    act(() =>
+    const { rerender } = await act(async () => render(<Harness />));
+    await act(async () =>
       restoreTranscriptViews(
         new Map([
           [
@@ -1755,25 +1784,25 @@ describe("retained transcript placement", () => {
         ]),
       ),
     );
-    resized();
+    await resized();
     expect(port().scrollTop).toBe(0);
     rowHeight = 4368;
-    rerender(<Harness session="local:new-session" />);
-    resized();
+    await act(async () => rerender(<Harness session="local:new-session" />));
+    await resized();
     expect(port().scrollTop).toBe(3712);
   });
 
   test.each([false, true])(
     "a completed A placement cannot suppress latest after same-DOM A→B→A, StrictMode %s",
-    (strict) => {
+    async (strict) => {
       const listRef = createRef<VirtualListHandle>();
       const view = (session: string) => {
         const body = <Harness session={session} listRef={listRef} />;
         return strict ? <StrictMode>{body}</StrictMode> : body;
       };
-      const { rerender } = render(view(fixture.ref));
+      const { rerender } = await act(async () => render(view(fixture.ref)));
       const scrollingElement = port();
-      resized();
+      await resized();
       expect(listRef.current?.isMeasurementReady?.()).toBe(true);
       expect(scrollingElement.scrollHeight).toBe(4368);
       expect(scrollingElement.clientHeight).toBe(656);
@@ -1787,22 +1816,22 @@ describe("retained transcript placement", () => {
         followingBottom: false,
       });
       readBack(3000);
-      act(() => restoreTranscriptViews(captured));
+      await act(async () => restoreTranscriptViews(captured));
       // Unchanged row size need not notify the virtualizer again. Its real
       // Body commit also retries placement against the useful measurement.
-      rerender(view(fixture.ref));
-      resized();
+      await act(async () => rerender(view(fixture.ref)));
+      await resized();
       expect(port()).toBe(scrollingElement);
       expect(scrollingElement.scrollTop).toBe(3292);
       // The production restore completed, rather than remaining pending and
       // being consumed by B. A subsequent measurement respects reader input.
       readBack(3200);
-      rerender(view(fixture.ref));
-      resized();
+      await act(async () => rerender(view(fixture.ref)));
+      await resized();
       expect(scrollingElement.scrollTop).toBe(3200);
 
-      rerender(view("local:session-b"));
-      resized();
+      await act(async () => rerender(view("local:session-b")));
+      await resized();
       expect(port()).toBe(scrollingElement);
       expect(listRef.current?.isMeasurementReady?.()).toBe(true);
       expect(scrollingElement.scrollTop).toBe(3712);
@@ -1812,68 +1841,68 @@ describe("retained transcript placement", () => {
         followingBottom: false,
       });
 
-      rerender(view(fixture.ref));
-      resized();
+      await act(async () => rerender(view(fixture.ref)));
+      await resized();
       expect(port()).toBe(scrollingElement);
       expect(listRef.current?.isMeasurementReady?.()).toBe(true);
       expect(scrollingElement.scrollTop).toBe(3712);
     },
   );
 
-  test("same-A child registration hands measured retained placement to parent initialization", () => {
+  test("same-A child registration hands measured retained placement to parent initialization", async () => {
     const listRef = createRef<VirtualListHandle>();
-    const { rerender } = render(<Harness key="outgoing" listRef={listRef} />);
-    resized();
+    const { rerender } = await act(async () => render(<Harness key="outgoing" listRef={listRef} />));
+    await resized();
     expect(listRef.current?.isMeasurementReady?.()).toBe(true);
     expect(port().scrollTop).toBe(3712);
     readBack(3292);
-    act(() => prepareTranscriptViewRemount(captureTranscriptViews(), "desktop"));
+    await act(async () => prepareTranscriptViewRemount(captureTranscriptViews(), "desktop"));
     // Registration is the only incoming restore. Do not replay a transition's
     // finally restore after the parent's initialization could overwrite it.
-    rerender(<Harness key="incoming" listRef={listRef} />);
+    await act(async () => rerender(<Harness key="incoming" listRef={listRef} />));
     expect(port().scrollTop).toBe(3292);
-    resized();
+    await resized();
     expect(listRef.current?.isMeasurementReady?.()).toBe(true);
     expect(port().scrollTop).toBe(3292);
   });
 
-  test("closing and reopening the same pane id starts at latest rather than its previous session position", () => {
-    const { rerender } = render(<Harness />);
+  test("closing and reopening the same pane id starts at latest rather than its previous session position", async () => {
+    const { rerender } = await act(async () => render(<Harness />));
     readBack(3292);
-    rerender(<p>Closed pane</p>);
-    rerender(<Harness />);
-    resized();
+    await act(async () => rerender(<p>Closed pane</p>));
+    await act(async () => rerender(<Harness />));
+    await resized();
     expect(port().scrollTop).toBe(3712);
   });
 
-  test("two exact views keep distinct positions through same-view content reload", () => {
+  test("two exact views keep distinct positions through same-view content reload", async () => {
     const views = (loaded: boolean) => (
       <>
         <Harness loaded={loaded} viewId="view-a" />
         <Harness loaded={loaded} viewId="view-b" />
       </>
     );
-    const { rerender } = render(views(true));
+    const { rerender } = await act(async () => render(views(true)));
     const ports = () =>
       screen.getAllByTestId("transcript-virtual-list").map((list) => list.firstElementChild as HTMLElement);
     readBack(3292, ports()[0]);
     readBack(3000, ports()[1]);
-    rerender(views(false));
-    rerender(views(true));
-    resized();
+    await act(async () => rerender(views(false)));
+    await act(async () => rerender(views(true)));
+    await resized();
     expect(ports().map((element) => element.scrollTop)).toEqual([3292, 3000]);
   });
 
-  test("keeps the pending host placement through StrictMode replay while its model hydrates", () => {
+  test("keeps the pending host placement through StrictMode replay while its model hydrates", async () => {
     transcriptDisplayStore.setState({ viewport: "mobile" });
-    const { rerender } = render(<Harness key="phone" keepRemount={keepMountedView} />);
+    const { rerender } = await act(async () => render(<Harness key="phone" keepRemount={keepMountedView} />));
     readBack(3292);
     const desktop = (loaded: boolean) => (
       <StrictMode>
         <Harness key="desktop" loaded={loaded} keepRemount={keepMountedView} />
       </StrictMode>
     );
-    act(() =>
+    await act(async () =>
       transitionTranscriptViews(
         () => {
           transcriptDisplayStore.setState({ viewport: "desktop" });
@@ -1884,17 +1913,17 @@ describe("retained transcript placement", () => {
       ),
     );
     expect(screen.getByText("Loading same view")).toBeTruthy();
-    rerender(desktop(true));
-    resized();
+    await act(async () => rerender(desktop(true)));
+    await resized();
     expect(port().scrollTop).toBe(3292);
   });
 
-  test("captures the restored phone position before its native scroll event and returns to desktop", () => {
+  test("captures the restored phone position before its native scroll event and returns to desktop", async () => {
     transcriptDisplayStore.setState({ viewport: "desktop" });
-    const { rerender } = render(<Harness key="desktop" />);
+    const { rerender } = await act(async () => render(<Harness key="desktop" />));
     readBack(3292);
     rowHeight = 2639;
-    act(() =>
+    await act(async () =>
       transitionTranscriptViews(
         () => {
           rowHeight = 4368;
@@ -1913,7 +1942,7 @@ describe("retained transcript placement", () => {
       anchorId: "long-message",
       anchorOffset: -3292,
     });
-    act(() =>
+    await act(async () =>
       transitionTranscriptViews(
         () => {
           rowHeight = 4368;
