@@ -49,7 +49,6 @@ func TestOnboardingBrowser(t *testing.T) {
 		t.Skip("requires Chrome and production frontend")
 	}
 	for _, view := range onboardingViews() {
-		view := view
 		t.Run(view.name, func(t *testing.T) { testOnboardingBrowserAt(t, view) })
 	}
 }
@@ -211,7 +210,7 @@ func testOnboardingBrowserAt(t *testing.T, view onboardingView) {
 		attempts := len(launches)
 		childMu.Unlock()
 		if err != nil || len(entries) != 0 || len(requests) != 0 || attempts != 0 {
-			http.Error(w, "session or generation before Start", 500)
+			http.Error(w, "session or generation before Start", http.StatusInternalServerError)
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]int{"checks": checks, "sessions": len(entries), "generations": len(requests)})
@@ -236,7 +235,7 @@ func testOnboardingBrowserAt(t *testing.T, view onboardingView) {
 	if evidenceDir != "" {
 		cmd.Args = append(cmd.Args, "--evidence-dir", evidenceDir)
 	}
-	cmd.Dir = filepath.Join(repo, "cmd/evener-hub/frontend")
+	cmd.Dir = filepath.Join(repo, "cmd", "evener-hub", "frontend")
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = 15 * time.Second
 	out, err := cmd.CombinedOutput()
@@ -275,7 +274,7 @@ func testOnboardingBrowserAt(t *testing.T, view onboardingView) {
 		switch milestone.Milestone {
 		case "start-activated":
 			var detail struct {
-				At float64 `json:"activatedAt"`
+				At float64 `json:"activatedAt"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field activatedAt.
 			}
 			if err := json.Unmarshal(milestone.Detail, &detail); err != nil {
 				t.Fatal(err)
@@ -328,68 +327,70 @@ func testOnboardingBrowserAt(t *testing.T, view onboardingView) {
 	}
 
 	for i, ref := range refs {
-		var entry rendezvous.Entry
-		for _, candidate := range entries {
-			if candidate.PID == children[i].Process.Pid {
-				entry = candidate
+		func() {
+			var entry rendezvous.Entry
+			for _, candidate := range entries {
+				if candidate.PID == children[i].Process.Pid {
+					entry = candidate
+				}
 			}
-		}
-		if entry.SessionID == "" {
-			t.Fatal("spawned daemon missing rendezvous metadata")
-		}
-		path := filepath.Join(entry.StateDir, "sessions", entry.SessionID+".transcript.jsonl")
-		f, err := os.Open(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer f.Close()
-		scanner := bufio.NewScanner(f)
-		scanner.Buffer(make([]byte, 4096), 4*1024*1024)
-		var input, reply, finished, attached bool
-		userTurns := 0
-		var header transcript.Header
-		for scanner.Scan() {
-			var record struct {
-				Kind string      `json:"kind"`
-				Turn schema.Turn `json:"turn"`
+			if entry.SessionID == "" {
+				t.Fatal("spawned daemon missing rendezvous metadata")
 			}
-			if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
+			path := filepath.Join(entry.StateDir, "sessions", entry.SessionID+".transcript.jsonl")
+			f, err := os.Open(path)
+			if err != nil {
 				t.Fatal(err)
 			}
-			if record.Kind == "header" {
-				if err := json.Unmarshal(scanner.Bytes(), &header); err != nil {
+			defer f.Close()
+			scanner := bufio.NewScanner(f)
+			scanner.Buffer(make([]byte, 4096), 4*1024*1024)
+			var input, reply, finished, attached bool
+			userTurns := 0
+			var header transcript.Header
+			for scanner.Scan() {
+				var record struct {
+					Kind string      `json:"kind"`
+					Turn schema.Turn `json:"turn"`
+				}
+				if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
 					t.Fatal(err)
 				}
-			}
-			if record.Kind != "entry" {
-				continue
-			}
-			if record.Turn.Kind == schema.TurnUserInput {
-				userTurns++
-				input = input || strings.Contains(record.Turn.Message.Text(), "ONBOARDING_TASK_72e")
-				for _, part := range record.Turn.Message.Content {
-					attached = attached || part.Kind == llm.ContentImage
+				if record.Kind == "header" {
+					if err := json.Unmarshal(scanner.Bytes(), &header); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if record.Kind != "entry" {
+					continue
+				}
+				if record.Turn.Kind == schema.TurnUserInput {
+					userTurns++
+					input = input || strings.Contains(record.Turn.Message.Text(), "ONBOARDING_TASK_72e")
+					for _, part := range record.Turn.Message.Content {
+						attached = attached || part.Kind == llm.ContentImage
+					}
+				}
+				if c := record.Turn.Communicate; c != nil {
+					reply = reply || (c.Message == "ONBOARDING_REPLY_72e" && c.EndTurn)
+				}
+				if c := record.Turn.Completion; c != nil {
+					finished = finished || c.Status == schema.TurnCompleted
 				}
 			}
-			if c := record.Turn.Communicate; c != nil {
-				reply = reply || (c.Message == "ONBOARDING_REPLY_72e" && c.EndTurn)
+			if err := scanner.Err(); err != nil {
+				t.Fatal(err)
 			}
-			if c := record.Turn.Completion; c != nil {
-				finished = finished || c.Status == schema.TurnCompleted
+			if err := onboardingIdentity(ref, work, entry, header); err != nil {
+				t.Fatalf("launch %d: %v", i, err)
 			}
-		}
-		if err := scanner.Err(); err != nil {
-			t.Fatal(err)
-		}
-		if err := onboardingIdentity(ref, work, entry, header); err != nil {
-			t.Fatalf("launch %d: %v", i, err)
-		}
-		if i == 0 && !(input && attached && reply && finished && userTurns == 1) {
-			t.Fatal("active task session missing completed input/reply")
-		}
-		if i == 1 && (userTurns != 0 || reply || finished) {
-			t.Fatal("active blank session contains user work")
-		}
+			if i == 0 && (!input || !attached || !reply || !finished || userTurns != 1) {
+				t.Fatal("active task session missing completed input/reply")
+			}
+			if i == 1 && (userTurns != 0 || reply || finished) {
+				t.Fatal("active blank session contains user work")
+			}
+		}()
 	}
 
 	t.Logf("verified model-list retry (%d requests), no generation/session before Start, one routed generation and durable input/reply", checks)

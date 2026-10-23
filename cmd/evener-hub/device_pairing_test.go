@@ -413,3 +413,54 @@ func TestDevicePairingCanonicalDestinationMatchesEnvelope(t *testing.T) {
 		})
 	}
 }
+
+func TestDevicePairingHostLengthCountsTrailingDot(t *testing.T) {
+	// Four maximum-length labels plus separators: exactly 255 canonical bytes,
+	// the largest hostname the TypeScript encoder accepts and the length byte
+	// can represent.
+	host := strings.Join([]string{
+		strings.Repeat("a", 63), strings.Repeat("b", 63),
+		strings.Repeat("c", 63), strings.Repeat("d", 63),
+	}, ".")
+	if len(host) != 255 {
+		t.Fatalf("test host length = %d", len(host))
+	}
+	origin := "http://" + host + ":9180"
+	p := newDevicePairings(hubcore.WebConfig{AuthToken: "credential"})
+	invite, err := p.create(appwire.DevicePairingCreateParams{Origin: origin, Tailnet: true})
+	if err != nil || invite.Origin != origin {
+		t.Fatalf("255-byte canonical host: invitation=%+v error=%v", invite, err)
+	}
+	// The stored origin keeps a root dot, so the wire host the envelope carries
+	// is the exact stored hostname, not a trimmed spelling.
+	pub, secret, err := box.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := sealDeviceCredential(invite, hex.EncodeToString(pub[:]), "credential")
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := hex.DecodeString(sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sender [32]byte
+	copy(sender[:], envelope[12:44])
+	var nonce [24]byte
+	copy(nonce[:], envelope[44:68])
+	plain, ok := box.Open(nil, envelope[68:], &nonce, &sender, secret)
+	if !ok || int(plain[4]) != len(host) || string(plain[8:8+int(plain[4])]) != host {
+		t.Fatalf("envelope host length byte=%d, want %d", plain[4], len(host))
+	}
+
+	// The root dot is part of the stored hostname and the wire host, so it must
+	// count against the 255-byte limit.
+	dotted := origin[:len("http://")] + host + "." + origin[len("http://")+len(host):]
+	refused := newDevicePairings(hubcore.WebConfig{AuthToken: "credential"})
+	invite, err = refused.create(appwire.DevicePairingCreateParams{Origin: dotted, Tailnet: true})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams || invite.Invitation != "" || len(refused.entries) != 0 {
+		t.Fatalf("256-byte dotted host created an invitation: code=%d entries=%d err=%v", wireErr.Code, len(refused.entries), err)
+	}
+}
