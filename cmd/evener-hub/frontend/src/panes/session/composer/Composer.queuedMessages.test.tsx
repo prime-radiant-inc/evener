@@ -1349,8 +1349,11 @@ test("identical-composition refusal keeps the recovery owner for a later edit an
     let saved = false;
     await act(async () => {
       saved = await source.queueRecoveryPersistence(queuedRecord.clientMutationId, text, localAttachments, []);
-      await flushPendingTurnsProjectionForTests();
     });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flushPendingTurnsProjectionForTests();
     expect(saved).toBe(false);
     expect(source.getSnapshot().activeRecoveryId).toBe(queuedRecord.clientMutationId);
     expect(await peer.getRecovery(queuedRecord.clientMutationId)).toMatchObject({
@@ -1364,8 +1367,9 @@ test("identical-composition refusal keeps the recovery owner for a later edit an
     await act(async () => {
       await Promise.resolve();
       await source.flushRecoveryWrites();
-      await flushPendingTurnsProjectionForTests();
+      await new Promise((resolve) => setTimeout(resolve, 0));
     });
+    await flushPendingTurnsProjectionForTests();
     expect((await peer.getRecovery(queuedRecord.clientMutationId))?.composerText).toBe(edited);
     expect((await peer.listRecovery("root")).filter((record) => record.method === "turn/start")).toHaveLength(1);
 
@@ -1393,8 +1397,8 @@ test("identical-composition refusal keeps the recovery owner for a later edit an
     act(() => cleanup());
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
   } finally {
     act(() => source.dispose());
     peer.close();
@@ -1458,8 +1462,11 @@ test("reload restores the selected fresh owner over an older rejected peer row",
         [{ marker: 1, name: "local.png", mediaType: "image/png", data: "AQID" }],
         [],
       );
-      await flushPendingTurnsProjectionForTests();
     });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flushPendingTurnsProjectionForTests();
     expect(saved).toBe(false);
     const preserved = (await peer.listRecovery("root")).find(
       (record) => record.clientMutationId !== queuedRecord.clientMutationId,
@@ -1480,8 +1487,8 @@ test("reload restores the selected fresh owner over an older rejected peer row",
     act(() => cleanup());
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
-      await flushPendingTurnsProjectionForTests();
     });
+    await flushPendingTurnsProjectionForTests();
   } finally {
     act(() => replacement?.dispose());
     act(() => source.dispose());

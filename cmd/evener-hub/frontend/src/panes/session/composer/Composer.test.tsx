@@ -3666,12 +3666,42 @@ test("a losing cross-tab recovered send does not issue a second request", async 
 
   await user.click(submitButton());
 
-  await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBeNull());
+  await waitFor(async () => {
+    const owner = (await storage.listRecovery("ref_a")).find(
+      (record) => record.clientMutationId !== recovered.clientMutationId,
+    );
+    expect(owner).toBeDefined();
+    expect(source.getSnapshot().activeRecoveryId).toBe(owner?.clientMutationId);
+  });
+  // The preservation's own projection refresh outlives the adoption wait.
+  await flushPendingTurnsProjectionForTests();
+  const preserved = (await storage.listRecovery("ref_a")).find(
+    (record) => record.clientMutationId !== recovered.clientMutationId,
+  );
+  expect(preserved).toBeDefined();
+  expect(preserved?.clientMutationId).not.toBe(recovered.clientMutationId);
   expect(editor.textContent).toBe("edit me [image 1]");
-  expect(readDraft("ref_a")).toBe("edit me [image 1]");
+  // The fresh owner carries the composition; no draft competes on reload.
+  expect(readDraft("ref_a") ?? "").toBe("");
   expect(screen.getByRole("button", { name: "Remove proof.png" })).toBeTruthy();
+  expect(preserved?.composerText).toBe("edit me [image 1]");
+  expect(preserved?.payload.input).toContainEqual({ type: "text", text: "edit me [image 1]" });
+  expect(preserved?.payload.input).toContainEqual({
+    type: "image",
+    mediaType: "image/png",
+    data: "AQID",
+    name: "proof.png",
+  });
+  expect(preserved?.attachments).toEqual([expect.objectContaining({ marker: 1, name: "proof.png" })]);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
   expect(toastKinds()).toEqual(["info"]);
+  // Unmount before the last drain: a projection publish the recovery
+  // preservation schedules can otherwise re-render QueueStrip outside act.
+  act(() => cleanup());
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  await flushPendingTurnsProjectionForTests();
   otherTab.close();
 });
 
