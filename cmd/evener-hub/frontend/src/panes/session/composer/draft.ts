@@ -117,11 +117,17 @@ function storeSeat(key: string, seatId: string): void {
 }
 
 export function readRefComposerSeat(ref: string): string | undefined {
-  return storedSeat(`${COMPOSER_SEAT_PREFIX}ref.${encodeURIComponent(ref)}`);
+  return storedSeat(refSeatKey(ref));
 }
 
 export function writeComposerSeat(ref: string, seatId: string): void {
-  storeSeat(`${COMPOSER_SEAT_PREFIX}ref.${encodeURIComponent(ref)}`, seatId);
+  storeSeat(refSeatKey(ref), seatId);
+}
+
+// The seat mapping belongs to this tab's identity as well as the ref: another
+// tab's seat for the same conversation must not be adopted on reload.
+function refSeatKey(ref: string): string {
+  return `${COMPOSER_SEAT_PREFIX}${encodeURIComponent(ownClientId())}.ref.${encodeURIComponent(ref)}`;
 }
 
 // A successful resume changes the ref, and the recovery rows move with it.

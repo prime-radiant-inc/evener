@@ -23,6 +23,7 @@ import { resetMobileViewportForTests } from "../../shell/useIsMobile";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "../../stores/activityPanel";
 import { connectionStore } from "../../stores/connection";
+import { setMutationClientIdentityForTests } from "../../stores/mutationClientIdentity";
 import type { MutationRecoveryRecord } from "../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
@@ -64,6 +65,7 @@ import {
   readDraft,
   readRecoverySelection,
   readRefComposerSeat,
+  writeComposerSeat,
   writeDraft,
   writeRecoverySelection,
 } from "./composer/draft";
@@ -5945,6 +5947,43 @@ test("promoting a secondary owner keeps its selected recovery", async ({ onTestF
   render(
     <ClientProvider client={fake}>
       <Session params={{ ref: ownerRef }} paneId={promoted.id} focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe(localText));
+});
+
+test("a tab reload keeps its own seat when another tab updates the ref mapping", async ({ onTestFinished }) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(stubSessionSlots);
+  onTestFinished(() => setMutationClientIdentityForTests(undefined));
+  const ref = "local:tab-ref";
+  const localText = "tab A local work";
+  const { peer, preserved } = await seedRecoveryPair(ref, localText, "tab A older peer work");
+  const fake = connectFakeClient();
+  fake.on("thread/read", ({ ref: readRef }) => readResponse(readRef ?? ref));
+
+  setMutationClientIdentityForTests("tab-a");
+  writeComposerSeat(ref, "seat-a");
+  writeRecoverySelection(ref, composerSelectionScope("seat-a"), preserved.clientMutationId);
+  setMutationClientIdentityForTests("tab-b");
+  writeComposerSeat(ref, "seat-b");
+  writeRecoverySelection(ref, composerSelectionScope("seat-b"), peer.clientMutationId);
+
+  // Tab A reloads after tab B rewrote the ref mapping.
+  setMutationClientIdentityForTests("tab-a");
+  expect(readRefComposerSeat(ref)).toBe("seat-a");
+  resetWorkspaceStoreForTests();
+  openTopLevelSession(ref);
+  const placed = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.type === "session" && (pane.params as { ref?: unknown }).ref === ref);
+  if (!placed?.composerSeatId) throw new Error("reload placement lost the seat");
+  expect(placed.composerSeatId).toBe("seat-a");
+  expect(readRecoverySelection(ref, composerSelectionScope(placed.composerSeatId))).toBe(preserved.clientMutationId);
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId={placed.id} focused={true} />
     </ClientProvider>,
   );
   await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe(localText));

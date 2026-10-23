@@ -2,10 +2,12 @@ import { bindFilePath, parseFileReference } from "@evener/appwire-client/docCont
 import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { composerSelectionScope, readRecoverySelection, writeRecoverySelection } from "../panes/session/composer/draft";
 import { parseZoomParams } from "../panes/zoom/intent";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { conversationPaneLifetime } from "./paneLifetime";
 import { type PaneDescriptor, type PaneProps, type PaneTypeId, registerPaneForTests } from "./paneRegistry";
+import { openNestedSessionWithOwner } from "./sessionPlacement";
 import {
   cancelPaneFocus,
   consumePaneFocus,
@@ -1281,4 +1283,41 @@ test("independent session panes on one ref keep distinct selection seats", () =>
   expect(sessions.map((pane) => pane.id).sort()).toEqual([docId, mainId].sort());
   expect(new Set(sessions.map((pane) => pane.composerSeatId)).size).toBe(2);
   for (const pane of sessions) expect(pane.composerSeatId).toBeDefined();
+});
+
+test("a child opened beside a retained cascade gets its own recovery seat", () => {
+  installLocalStorage(new MemoryStorage());
+  const workspace = workspaceStore.getState();
+  const ownerRef = "local:owner";
+  const childRef = "local:child";
+  const ownerId = workspace.openPane("session", { ref: ownerRef });
+  const owner = workspaceStore.getState().panes.find((pane) => pane.id === ownerId);
+  if (!owner) throw new Error("missing owner pane");
+  expect(
+    workspace.retypePane(owner, "sessionZoom", {
+      ref: childRef,
+      source: { type: "session", params: { ref: ownerRef } },
+      edges: [],
+    }),
+  ).toBe(true);
+  const cascade = workspaceStore.getState().panes.find((pane) => pane.id === ownerId);
+  if (!cascade?.composerSeatId) throw new Error("retained cascade lacks its seat");
+  writeRecoverySelection(childRef, composerSelectionScope(cascade.composerSeatId), "preserved-child");
+
+  openNestedSessionWithOwner(childRef, ownerRef);
+
+  const child = workspaceStore
+    .getState()
+    .panes.find(
+      (pane) => pane.id !== ownerId && pane.type === "session" && (pane.params as { ref?: unknown }).ref === childRef,
+    );
+  if (!child?.composerSeatId) throw new Error("nested child lacks its seat");
+  expect(child.composerSeatId).not.toBe(cascade.composerSeatId);
+  const liveSeats = workspaceStore.getState().panes.map((pane) => pane.composerSeatId ?? pane.id);
+  expect(new Set(liveSeats).size).toBe(liveSeats.length);
+  // The carried selection reaches the child without moving off the cascade.
+  expect(readRecoverySelection(childRef, composerSelectionScope(cascade.composerSeatId))).toBe("preserved-child");
+  expect(readRecoverySelection(childRef, composerSelectionScope(child.composerSeatId))).toBe("preserved-child");
+  writeRecoverySelection(childRef, composerSelectionScope(child.composerSeatId), "child-own");
+  expect(readRecoverySelection(childRef, composerSelectionScope(cascade.composerSeatId))).toBe("preserved-child");
 });

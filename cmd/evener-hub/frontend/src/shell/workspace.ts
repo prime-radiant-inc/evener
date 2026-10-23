@@ -311,7 +311,10 @@ function liveComposerSeats(panes: readonly OpenPaneRecord[]): Set<string> {
 // destination choice is never overwritten by the transfer.
 function placeComposerSeat(ref: string, panes: readonly OpenPaneRecord[], outgoingSeat?: string): string {
   const live = liveComposerSeats(panes);
-  let seat = outgoingSeat;
+  // An explicit outgoing seat is only reusable when its pane is leaving. A
+  // retained pane with that seat keeps its own selection scope; the new pane
+  // gets a distinct seat and takes a copy of the carried selection.
+  let seat = outgoingSeat !== undefined && !live.has(outgoingSeat) ? outgoingSeat : undefined;
   if (seat === undefined) {
     const byRef = readRefComposerSeat(ref);
     if (byRef !== undefined && !live.has(byRef)) seat = byRef;
