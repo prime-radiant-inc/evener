@@ -167,7 +167,6 @@ func (jm *jobManager) onHubObservation(watchID string, update appwire.SessionWat
 		}
 	}
 	if !m.CausalKnown {
-		selected = false
 		complete = false
 		event = "replay gap: unknown causality"
 		selected = true
