@@ -14,20 +14,39 @@ import (
 // only record of a permission or hold. Never shorten those source records.
 // The default summarizer retains its existing renderer and budgets.
 func buildStrategyHistoryDigest(turns []schema.Turn, resultToolName string) string {
-	const maxDetailChars = 30_000
+	return renderStrategyHistoryRecords(buildStrategyHistoryRecords(turns, resultToolName))
+}
+
+type strategyHistoryRecord struct {
+	label string
+	text  string
+}
+
+func renderStrategyHistoryRecords(records []strategyHistoryRecord) string {
 	var b strings.Builder
+	for _, record := range records {
+		b.WriteString(record.label)
+		b.WriteString(record.text)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func buildStrategyHistoryRecords(turns []schema.Turn, resultToolName string) []strategyHistoryRecord {
+	const maxDetailChars = 30_000
+	var records []strategyHistoryRecord
 	detailChars := 0
 	omitted := false
 	writeDetail := func(text string) {
 		if detailChars >= maxDetailChars {
 			if !omitted {
-				b.WriteString("[Further assistant/tool detail omitted]\n")
+				records = append(records, strategyHistoryRecord{text: "[Further assistant/tool detail omitted]"})
 				omitted = true
 			}
 			return
 		}
-		b.WriteString(text)
-		detailChars += len(text)
+		records = append(records, strategyHistoryRecord{text: text})
+		detailChars += len(text) + 1
 	}
 	for _, turn := range turns {
 		switch turn.Kind {
@@ -37,13 +56,9 @@ func buildStrategyHistoryDigest(turns []schema.Turn, resultToolName string) stri
 			if isStrategyCompactionText(text) {
 				label = "Previous compaction: "
 			}
-			b.WriteString(label)
-			b.WriteString(text)
-			b.WriteString("\n")
+			records = append(records, strategyHistoryRecord{label: label, text: text})
 		case schema.TurnCheckpoint, schema.TurnSummary:
-			b.WriteString("Previous compaction: ")
-			b.WriteString(turn.Message.Text())
-			b.WriteString("\n")
+			records = append(records, strategyHistoryRecord{label: "Previous compaction: ", text: turn.Message.Text()})
 		case schema.TurnSteering:
 			label := "System: "
 			if isPartnerSteering(turn) {
@@ -51,12 +66,10 @@ func buildStrategyHistoryDigest(turns []schema.Turn, resultToolName string) stri
 			} else if isParentSteering(turn) {
 				label = "Parent: "
 			}
-			b.WriteString(label)
-			b.WriteString(turn.Message.Text())
-			b.WriteString("\n")
+			records = append(records, strategyHistoryRecord{label: label, text: turn.Message.Text()})
 		case schema.TurnAssistant:
 			if text := turn.Message.Text(); text != "" {
-				writeDetail("Assistant: " + truncate(text, 500) + "\n")
+				writeDetail("Assistant: " + truncate(text, 500))
 			}
 			for _, part := range turn.Message.Content {
 				if part.Kind != llm.ContentToolCall || part.ToolCall == nil {
@@ -69,9 +82,9 @@ func buildStrategyHistoryDigest(turns []schema.Turn, resultToolName string) stri
 					if endTurn {
 						label = "Agent Message"
 					}
-					writeDetail(label + ": " + truncate(message, 500) + "\n")
+					writeDetail(label + ": " + truncate(message, 500))
 				} else {
-					writeDetail(fmt.Sprintf("  [tool_call: %s(%s)]\n", call.Name, truncate(string(call.Arguments), 200)))
+					writeDetail(fmt.Sprintf("  [tool_call: %s(%s)]", call.Name, truncate(string(call.Arguments), 200)))
 				}
 			}
 		case schema.TurnTool, schema.TurnToolResults:
@@ -84,11 +97,11 @@ func buildStrategyHistoryDigest(turns []schema.Turn, resultToolName string) stri
 				if result.IsError {
 					errTag = " ERROR"
 				}
-				writeDetail(fmt.Sprintf("Tool(%s)%s: %s\n", result.Name, errTag, truncate(fmt.Sprint(result.Content), 300)))
+				writeDetail(fmt.Sprintf("Tool(%s)%s: %s", result.Name, errTag, truncate(fmt.Sprint(result.Content), 300)))
 			}
 		}
 	}
-	return b.String()
+	return records
 }
 
 func isStrategyCompactionText(text string) bool {

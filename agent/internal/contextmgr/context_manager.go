@@ -2556,10 +2556,10 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 // summarizeStrategyFold keeps the existing summary prompt, carry and response
 // handling, but never prefix-truncates an opt-in strategy's source records.
 func (cm *Manager) summarizeStrategyFold(ctx context.Context, history []schema.Turn, preserveRecent int, checkpointed []schema.Turn) ([]schema.Turn, error) {
-	return cm.summarizeFoldWithDigest(ctx, history, preserveRecent, "", checkpointed, buildStrategyHistoryDigest)
+	return cm.summarizeFoldWithDigest(ctx, history, preserveRecent, "", checkpointed, buildStrategyHistoryRecords)
 }
 
-func (cm *Manager) summarizeFoldWithDigest(ctx context.Context, history []schema.Turn, preserveRecent int, instructions string, checkpointed []schema.Turn, digest func([]schema.Turn, string) string) ([]schema.Turn, error) {
+func (cm *Manager) summarizeFoldWithDigest(ctx context.Context, history []schema.Turn, preserveRecent int, instructions string, checkpointed []schema.Turn, digest func([]schema.Turn, string) []strategyHistoryRecord) ([]schema.Turn, error) {
 	if attentionTransparentTurnCount(history) <= preserveRecent {
 		return history, nil
 	}
@@ -2606,7 +2606,7 @@ func (cm *Manager) summarizeFoldWithDigest(ctx context.Context, history []schema
 	// summarizer reads every one of them whatever else the budget cuts; past
 	// half the history budget they arrive condensed in bounded batches
 	// (condensePartnerMessages).
-	if len(summarized) > 0 {
+	if digest == nil && len(summarized) > 0 {
 		// Each message goes in whole; one longer than a part is split into
 		// overlapping, numbered parts rather than cut short, small enough that
 		// two share a batch.
@@ -2630,14 +2630,17 @@ func (cm *Manager) summarizeFoldWithDigest(ctx context.Context, history []schema
 		b.WriteString("\nThe conversation:\n")
 	}
 	if digest != nil {
-		source := history[:cutoff]
+		records := digest(partnerSource, cm.resultToolName())
 		if checkpointed != nil {
-			// The checkpoint may have trimmed a kept message too, so the
-			// omitted-message prelude alone cannot restore its original source.
-			// Keep the new prediction or durable log as additional context.
-			source = append(slices.Clip(partnerSource), history[0])
+			// Originals already include every carried message and earlier
+			// compaction. Add only the new prediction or additional log payload.
+			records = append(records, strategyCheckpointAdditionalContext(records, history[0].Message.Text())...)
 		}
-		b.WriteString(digest(source, cm.resultToolName()))
+		condensed, err := cm.condenseStrategyHistory(ctx, sumProfile, records, instructions)
+		if err != nil {
+			return nil, err
+		}
+		b.WriteString(condensed)
 	} else {
 		for i := range cutoff {
 			t := history[i]
