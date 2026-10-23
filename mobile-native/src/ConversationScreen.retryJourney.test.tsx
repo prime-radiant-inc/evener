@@ -321,6 +321,7 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 					const state = entry().store.getState();
 					expect(state.latestReadState).toBe("ready");
 					expect(state.pendingMutationsReady).toBe(true);
+					expect(entry().service).not.toBeNull();
 					expect(state.canonicalSession()?.turns.at(-1)?.id).toBe(turnId);
 					const button = retryButtonForTurn(tree, turnId);
 					expect(button).toBeDefined();

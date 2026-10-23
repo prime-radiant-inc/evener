@@ -2700,11 +2700,11 @@ function ConversationScreenView({
 	// instead of hiding the row (that is the descriptor's `disabled`).
 	const retryCanSend = useCallback((): boolean => {
 		const live = store.getState();
-		if (!service || !connected || !focused || live.status !== "open") return false;
+		if (!connected || !focused || live.status !== "open") return false;
 		if (controls?.getSnapshot().pending != null || commandPending) return false;
 		if (!live.conversation || pendingQuestions(live.conversation).length > 0) return false;
 		return sendAction(live.conversation, live.pendingMutations, connectionReady.current) !== "none";
-	}, [service, connected, focused, store, controls, commandPending]);
+	}, [connected, focused, store, controls, commandPending]);
 	// The failure-recovery consumer's read demand. A target storage transition
 	// only fail-closes canonical authority and schedules no authoritative read of
 	// its own: on native that read takes the runtime's read lease and blocks the
@@ -3472,7 +3472,11 @@ function ConversationScreenView({
 									retryCanSend(),
 								);
 								if (action === null || action.kind !== "retry") return action;
-								return documentBusy && !action.disabled ? { ...action, disabled: true } : action;
+								// Eligibility includes a current live service binding. Without
+								// one, fail closed: keep the action visible but disabled rather
+								// than enabled and silently refused at activation.
+								const disabled = documentBusy || entry.service === null;
+								return disabled && !action.disabled ? { ...action, disabled: true } : action;
 							}}
 							onErrorAction={runErrorAction}
 							documentChips={documentChips}

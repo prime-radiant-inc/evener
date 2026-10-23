@@ -3490,6 +3490,52 @@ describe("Retry's one owner on the shared session binding", () => {
 		expect(await getNativeMutationRuntime().storage.listOutbox(nativeMutationTargetKey("hub-1", ref))).toEqual([]);
 	});
 
+	it("disables Retry while the live entry has no service, and submits once it rebinds", async () => {
+		const ref = "ref-retry-no-service";
+		const { tree, hub, entry, route, seen } = await mountTracked(failedTurn(ref, "go test exited 1"));
+		const document = drafts.open({ hubId: "hub-1", sessionRef: ref });
+		const runtime = getNativeMutationRuntime();
+		const key = nativeMutationTargetKey("hub-1", ref);
+		const rerender = () =>
+			act(() =>
+				tree.update(
+					<NativeConversationSessionsProvider>
+						<RegistryProbe seen={seen} />
+						<ConversationScreen route={route} navigation={navigation} />
+					</NativeConversationSessionsProvider>,
+				),
+			);
+		const service = entry.service;
+		expect(service).not.toBeNull();
+		Object.defineProperty(entry, "service", { configurable: true, get: () => null });
+		try {
+			await rerender();
+			await settle();
+			// Readiness is otherwise ready; only the live service binding is absent.
+			expect(entry.store.getState().latestReadState).toBe("ready");
+			expect(entry.store.getState().pendingMutationsReady).toBe(true);
+			expect(entry.store.getState().canonicalSession()).not.toBeNull();
+			await until(() => expect(pressable(tree, "Retry")?.props.disabled).toBe(true));
+			expect(pressable(tree, "Retry")?.props.accessibilityState).toEqual({ disabled: true });
+
+			// A press in the null-service window fails closed and writes nothing.
+			act(() => pressable(tree, "Retry")!.props.onPress());
+			await settle();
+			expect(hub.mutations()).toEqual([]);
+			expect(await runtime.storage.listOutbox(key)).toEqual([]);
+			expect(document.getSnapshot().record.unconfirmed).toBeNull();
+		} finally {
+			Reflect.deleteProperty(entry, "service");
+		}
+
+		// Once the service is live again the same action submits exactly once.
+		await rerender();
+		await until(() => expect(pressable(tree, "Retry")?.props.disabled).toBe(false));
+		await press(tree, "Retry");
+		await until(() => expect(hub.mutations()).toEqual(["turn/start"]));
+		expect(document.getSnapshot().record.unconfirmed).toBeNull();
+	});
+
 	it("refuses a retained Retry callback after the same turn's error changes to Sign in", async () => {
 		const ref = "ref-retry-error-signin";
 		const served = failedTurn(ref, "go test exited 1");
