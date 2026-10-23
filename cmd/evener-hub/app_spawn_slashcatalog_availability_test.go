@@ -46,11 +46,30 @@ func TestFreshSpawnSkillAvailabilityHasNoLaunchMemoryControl(t *testing.T) {
 	for _, typ := range []reflect.Type{
 		reflect.TypeOf(launchconfig.Layer{}),
 		reflect.TypeOf(appwire.LaunchConfigLayer{}),
+		reflect.TypeOf(appwire.SpawnSlashCatalogParams{}),
 	} {
 		for i := 0; i < typ.NumField(); i++ {
 			if name := typ.Field(i).Name; strings.Contains(name, "Memory") {
 				t.Fatalf("%s gained memory control %q; freshSpawnSkillAvailability must derive from it", typ, name)
 			}
+		}
+	}
+	// The CLI switch would ride argv/env, not a struct field the reflection
+	// above sees. Scan the launch-rendered surfaces too.
+	args := launchconfig.ToArgs(launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5", Agent: "default"}})
+	for _, arg := range args {
+		if strings.Contains(strings.ToLower(arg), "memory") {
+			t.Fatalf("launch argv gained memory switch %q; freshSpawnSkillAvailability must derive from it", arg)
+		}
+	}
+	env := launchconfig.ToEnv(launchconfig.EnvInputs{
+		RunDir:   "/run",
+		StateDir: "/state",
+		HubToken: "token",
+	})
+	for _, entry := range env {
+		if strings.Contains(strings.ToLower(entry), "memory") {
+			t.Fatalf("launch env gained memory control %q; freshSpawnSkillAvailability must derive from it", entry)
 		}
 	}
 	if got := freshSpawnSkillAvailability(); !got.MemorySaveAvailable {
