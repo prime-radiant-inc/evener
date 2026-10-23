@@ -22,7 +22,8 @@ type MemoryCrystal struct {
 // MemoryCrystalsStrategy uses compact compaction as the base, but periodically
 // crystallizes key facts into tiny structured summaries that survive all
 // compaction. Unlike session-log prose, crystals are machine-readable, small
-// (<100 tokens each), and cumulative.
+// (normally <100 tokens each), and cumulative. Authority quotations take
+// precedence over their size and style preferences.
 //
 // AfterAction: every 3rd action, call cheap model to extract key facts.
 // ManageContext: run compact, then inject crystal bank as steering message.
@@ -120,32 +121,15 @@ func (s *MemoryCrystalsStrategy) AfterAction(ctx context.Context, history []sche
 
 // crystallize calls the cheap model to extract key facts from recent turns.
 func (s *MemoryCrystalsStrategy) crystallize(ctx context.Context, recent []schema.Turn, turnNumber int) (MemoryCrystal, error) {
-	var b strings.Builder
-	for _, t := range recent {
-		switch t.Kind {
-		case schema.TurnAssistant:
-			b.WriteString("Assistant: ")
-			b.WriteString(truncate(t.Message.Text(), 200))
-			b.WriteString("\n")
-		case schema.TurnTool, schema.TurnToolResults:
-			for _, p := range t.Message.Content {
-				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
-					content := fmt.Sprint(p.ToolResult.Content)
-					errTag := ""
-					if p.ToolResult.IsError {
-						errTag = " ERROR"
-					}
-					fmt.Fprintf(&b, "Tool(%s)%s: %s\n", p.ToolResult.Name, errTag, truncate(content, 200))
-				}
-			}
-		}
-	}
+	digest := buildStrategyHistoryDigest(recent, s.cm.resultToolName())
 
-	prompt := fmt.Sprintf(`Extract the key facts from this coding agent action. Output a single line (under 100 tokens) listing ONLY concrete facts: file paths modified, values discovered, test results, decisions made, errors encountered. No prose.
+	prompt := fmt.Sprintf(`Extract the key facts from this coding agent action. Prefer a single line (under 100 tokens) listing concrete facts: file paths modified, values discovered, test results, decisions made, errors encountered. Prefer factual fragments, not prose. These size and style preferences must yield to the authority-quotation rule below.
+
+%s
 
 Recent action:
 %s
-Key facts (one line):`, b.String())
+Key facts:`, partnerAuthorityRule, digest)
 
 	req := llm.Request{
 		Messages: []llm.Message{llm.User(prompt)},
@@ -153,6 +137,9 @@ Key facts (one line):`, b.String())
 
 	resp, err := s.cm.completeCheap(ctx, req)
 	if err != nil {
+		return MemoryCrystal{}, err
+	}
+	if err := checkNotCutOff(resp); err != nil {
 		return MemoryCrystal{}, err
 	}
 
@@ -178,7 +165,8 @@ Key facts (one line):`, b.String())
 }
 
 // pruneOldCrystals caps the crystal bank to avoid unbounded growth.
-// 20 crystals at ~100 tokens each = ~2k tokens total.
+// 20 crystals at ~100 tokens each is ordinarily ~2k tokens total, with extra
+// space for authority quotations.
 func (s *MemoryCrystalsStrategy) pruneOldCrystals() {
 	const maxCrystals = 20
 	if len(s.crystals) > maxCrystals {
