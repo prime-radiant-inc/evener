@@ -10,6 +10,10 @@ export interface TranscriptTestGeometry {
 // A held frame runs these first, as a browser's rendering update runs its scroll
 // steps before it takes that frame's animation frame callbacks.
 const scrollStepCallbacks = new WeakSet<FrameRequestCallback>();
+const heldRenderingUpdates = new WeakMap<
+  typeof window.requestAnimationFrame,
+  (scrollSteps?: FrameRequestCallback) => void
+>();
 
 /** Holds browser scheduling, never the virtualizer's request or direction fields. */
 export function holdReaderFrames() {
@@ -25,20 +29,26 @@ export function holdReaderFrames() {
   window.cancelAnimationFrame = (id) => {
     pending.delete(id);
   };
+  const release = (scrollSteps?: FrameRequestCallback) => {
+    // notify's scroll wakeup may belong to a restored holder. Run it here once,
+    // alongside this holder's scroll steps, without consuming handler-created work.
+    const scrollCallbacks = new Set<FrameRequestCallback>(scrollSteps ? [scrollSteps] : []);
+    for (const [id, callback] of pending) {
+      if (!scrollStepCallbacks.has(callback)) continue;
+      pending.delete(id);
+      scrollCallbacks.add(callback);
+    }
+    for (const callback of scrollCallbacks) callback(performance.now());
+    // A scroll handler's frame request joins this frame; its writes' events wait for the next.
+    for (const [id, callback] of [...pending]) {
+      if (scrollStepCallbacks.has(callback) || !pending.delete(id)) continue;
+      callback(performance.now());
+    }
+  };
+  heldRenderingUpdates.set(window.requestAnimationFrame, release);
   return {
     pending,
-    release() {
-      const run = (scrollSteps: boolean) => {
-        for (const [id, callback] of [...pending]) {
-          if (scrollStepCallbacks.has(callback) !== scrollSteps) continue;
-          pending.delete(id);
-          callback(performance.now());
-        }
-      };
-      // A scroll handler's frame request joins this frame; its writes' events wait for the next.
-      run(true);
-      run(false);
-    },
+    release,
     restore() {
       window.requestAnimationFrame = request;
       window.cancelAnimationFrame = cancel;
@@ -185,8 +195,10 @@ export function installTranscriptGeometry(
       return [...observers].flatMap((observer) => [...observer.targets]);
     },
     notify(include = () => true) {
-      // Each delivery is a new rendering update, whose scroll steps come first.
-      runScrollSteps();
+      // One rendering update: scroll steps, this frame's callbacks, then observations.
+      const release = heldRenderingUpdates.get(window.requestAnimationFrame);
+      if (release) release(runScrollSteps);
+      else runScrollSteps();
       for (const observer of [...observers]) {
         const entries: ResizeObserverEntry[] = [...observer.targets].flatMap((target) => {
           if (!(target instanceof HTMLElement) || !target.isConnected || !include(target)) return [];

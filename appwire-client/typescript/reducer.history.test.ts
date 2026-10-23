@@ -660,6 +660,96 @@ describe("the live overlay", () => {
     expect(shown(next)).toEqual([["t1", [itemKey("t1", 0), "notice:0"]]]);
   });
 
+  test.each(["interrupted", "warning"] as const)(
+    "native Stop recovery absorbs a laid %s notice before re-seating overlay",
+    (eventKind) => {
+      const recorded = turn("t1", 1, [item("t1", 0)], "inProgress");
+      const notice = noticeOverlay(11, 1, "t1");
+      notice.item.eventKind = eventKind;
+      const unrelated = noticeOverlay(12, 1, "t1");
+      let next = hydrate([recorded], { activeTurnId: "t1" });
+      next = applyNotification(
+        next,
+        {
+          method: "thread/queueChanged",
+          params: { threadId: THREAD_ID, ref: REF, queue: { revision: 1, depth: 1, ids: ["queued-1"] } },
+        },
+        NOW,
+      );
+      next = applyNotification(next, upserted(streamOverlay("t1", "r1", 0, "partial")), NOW);
+      next = applyNotification(next, upserted(notice), NOW);
+      next = applyNotification(
+        next,
+        {
+          method: "overlay/end",
+          params: { threadId: THREAD_ID, ref: REF, roundId: "r1" },
+        },
+        NOW,
+      );
+      expect(shown(next)).toEqual([["t1", [itemKey("t1", 0), notice.key]]]);
+      expect(next.history?.turns[0]?.items.map((item) => item.id)).toEqual([itemKey("t1", 0)]);
+
+      // Stop's uncertain-delivery reconciliation rereads the same session. The
+      // daemon holds the notice in overlay, never among the recorded wire items.
+      const fresh = hydrate([recorded], { overlay: [notice] });
+      next = applyReadModel(next, fresh);
+      const laid = next.turns[0]?.items.find((item) => item.id === notice.key);
+      expect(laid).toBeDefined();
+      expect(laid?.transcriptKey).toBeUndefined();
+      expect(next.overlay?.[notice.key]).toBe(notice);
+      if (!next.history) throw new Error("missing history");
+      // mobile/src/state/conversation.ts's rehydrate calls
+      // withSyncedHistoryTurns with these already-laid display turns.
+      next = { ...next, history: { ...next.history, turns: next.turns } };
+      next = applyNotification(next, upserted(unrelated), NOW);
+
+      expect(shown(next)).toEqual([["t1", [itemKey("t1", 0), notice.key, unrelated.key]]]);
+      expect(next.overlay?.[notice.key]).toBeUndefined();
+      expect(next.overlay?.[unrelated.key]).toBe(unrelated);
+      expect(next.turns[0]?.items.find((item) => item.id === notice.key)).toBe(laid);
+      expect(next.history?.turns[0]?.items.filter((item) => item.id === notice.key)).toEqual([laid]);
+    },
+  );
+
+  test.each(["history-first", "overlay-first", "read"])(
+    "recorded notice identity wins across turns via %s",
+    (delivery) => {
+      const notice = noticeOverlay(11, 1, "t1");
+      notice.item = { ...notice.item, id: "live-notice-id", transcriptKey: "notice-identity" };
+      const recorded = item("t2", 1, {
+        type: "systemMessage",
+        id: "recorded-notice-id",
+        transcriptKey: "notice-identity",
+      });
+      const firstTurn = turn("t1", 1, [item("t1", 0)]);
+      let next = hydrate([firstTurn]);
+      if (delivery === "history-first") {
+        next = applyNotification(next, updated([recorded]), NOW);
+        next = applyNotification(next, upserted(notice), NOW);
+      } else if (delivery === "overlay-first") {
+        next = applyNotification(next, upserted(notice), NOW);
+        next = applyNotification(next, updated([recorded]), NOW);
+      } else {
+        next = hydrate([firstTurn, turn("t2", 2, [recorded])], { overlay: [notice] });
+      }
+      expect(shown(next)).toEqual([
+        ["t1", [itemKey("t1", 0)]],
+        ["t2", [recorded.id]],
+      ]);
+      expect(next.overlay).toEqual({});
+      expect(next.turns).toBe(next.history?.turns);
+    },
+  );
+
+  test("distinct recorded steering and memory-context items do not cover a live notice", () => {
+    const notice = noticeOverlay(11, 1, "t1");
+    const steering = item("t1", 1, { type: "steering", steeringKind: "interrupted", text: notice.item.text });
+    const memory = item("t1", 2, { type: "systemMessage", eventKind: "memory-context", text: notice.item.text });
+    const next = hydrate([turn("t1", 3, [item("t1", 0), steering, memory])], { overlay: [notice] });
+    expect(shown(next)).toEqual([["t1", [itemKey("t1", 0), notice.key, steering.id, memory.id]]]);
+    expect(next.overlay?.[notice.key]).toBe(notice);
+  });
+
   test("overlay/end drops uncovered slots for the shared reducer default", () => {
     const model = hydrate([turn("t1", 1, [item("t1", 0)], "inProgress")], { activeTurnId: "t1" });
     const text = streamOverlay("t1", "r1", 0, "pending text");
