@@ -257,6 +257,36 @@ export class DraftRepository {
 		});
 	}
 
+	/** Move one destination's complete draft, image bytes and settlement
+	 * markers to another in one savepoint. The source is removed only after the
+	 * destination write commits, so a failed handoff leaves both recoverable. */
+	transfer(from: DraftDestination, to: DraftDestination, record: DraftRecord, additions: DraftImageData[] = []): void {
+		withSavepoint(this.db, "draft_transfer", () => {
+			this.write(to, record, additions);
+			this.remove(from);
+		});
+	}
+
+	remove(destination: DraftDestination): void {
+		withSavepoint(this.db, "draft_remove", () => {
+			this.db.runSync(
+				"DELETE FROM draft_image_sets WHERE hub_id = ? AND session_ref = ?",
+				destination.hubId,
+				destination.sessionRef,
+			);
+			this.db.runSync(
+				"DELETE FROM draft_images WHERE hub_id = ? AND session_ref = ?",
+				destination.hubId,
+				destination.sessionRef,
+			);
+			this.db.runSync(
+				"DELETE FROM drafts WHERE hub_id = ? AND session_ref = ?",
+				destination.hubId,
+				destination.sessionRef,
+			);
+		});
+	}
+
 	private writeText(destination: DraftDestination, record: DraftRecord): void {
 		if (
 			record.draft === "" &&
