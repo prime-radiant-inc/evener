@@ -365,8 +365,8 @@ func TestSessionToolsReverseResponsesBypassRequestQueue(t *testing.T) {
 	result := make(chan error, 1)
 	go func() {
 		view, err := client.State(ctx)
-		if err == nil && view.Setting.Enabled {
-			t.Error("disabled state changed")
+		if err == nil && view.Manager {
+			t.Error("ordinary session became a Manager")
 		}
 		result <- err
 	}()
