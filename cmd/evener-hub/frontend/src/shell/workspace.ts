@@ -318,9 +318,24 @@ function placeComposerSeat(ref: string, panes: readonly OpenPaneRecord[], outgoi
   }
   if (seat === undefined) seat = createSecureUUID();
   writeComposerSeat(ref, seat);
-  if (outgoingSeat !== undefined && outgoingSeat !== seat)
-    transferRecoverySelection(ref, composerSelectionScope(outgoingSeat), composerSelectionScope(seat));
+  if (outgoingSeat !== undefined && outgoingSeat !== seat) transferRecoverySelection(ref, outgoingSeat, seat);
   return seat;
+}
+
+// The outgoing seat that already owns this ref's selection. A promotion or
+// replacement may be about to remove its pane, so this is read before the
+// replacement publishes; the preferred pane is checked first.
+function selectionSeatForRef(
+  ref: string,
+  panes: readonly OpenPaneRecord[],
+  preferred?: OpenPaneRecord | null,
+): string | undefined {
+  for (const pane of preferred ? [preferred, ...panes] : panes) {
+    if (pane.type !== "session" && pane.type !== "sessionZoom") continue;
+    const seat = pane.composerSeatId ?? pane.id;
+    if (readRecoverySelection(ref, composerSelectionScope(seat)) !== undefined) return seat;
+  }
+  return undefined;
 }
 
 // The live DockviewApi, registered by DockHost once dockview is ready and
@@ -585,11 +600,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
             if (existing.composerSeatId === undefined)
               panes = panes.map((pane) => (pane.id === existing.id ? { ...pane, composerSeatId: seat } : pane));
             else if (opts?.recoverySelectionFrom !== undefined && opts.recoverySelectionFrom !== seat)
-              transferRecoverySelection(
-                ref,
-                composerSelectionScope(opts.recoverySelectionFrom),
-                composerSelectionScope(seat),
-              );
+              transferRecoverySelection(ref, opts.recoverySelectionFrom, seat);
           }
         }
         const focusChanged = !keepFocus && state.focusedPaneId !== existing.id;
@@ -668,17 +679,10 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     // reads a different recovery-selection scope. Move the outgoing pane's
     // choice for the routed ref with it.
     const placedRef = type === "session" ? refParam(params) : null;
-    const mainSeat = main ? (main.composerSeatId ?? main.id) : undefined;
-    // Inherit the outgoing seat only when it actually owns the routed ref's
-    // carried selection. A primary replaced for an unrelated conversation must
-    // not lend its seat to the new one.
-    const outgoingSeat =
-      placedRef !== null &&
-      mainSeat !== undefined &&
-      readRecoverySelection(placedRef, composerSelectionScope(mainSeat)) !== undefined
-        ? mainSeat
-        : undefined;
-    const composerSeatId = placedRef === null ? undefined : placeComposerSeat(placedRef, state.panes, outgoingSeat);
+    // This arm removes every existing pane, including a session being promoted
+    // from secondary, so conflict checks must consider only survivors (none).
+    const outgoingSeat = placedRef === null ? undefined : selectionSeatForRef(placedRef, state.panes, main);
+    const composerSeatId = placedRef === null ? undefined : placeComposerSeat(placedRef, [], outgoingSeat);
     set({
       panes: [{ id, type, params, slot: "main", ...(composerSeatId ? { composerSeatId } : {}) }],
       focusedPaneId: id,

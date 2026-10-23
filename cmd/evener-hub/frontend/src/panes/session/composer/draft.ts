@@ -139,10 +139,12 @@ export function carryRecoverySelection(fromRef: string, toRef: string, selection
 // A route placement that replaces a session pane opens a new pane id, so the
 // destination composer reads a different scope. Move the selection with the
 // pane, leaving an already-established destination choice alone.
-export function transferRecoverySelection(ref: string, fromPaneId: string, toPaneId: string): void {
-  if (fromPaneId === toPaneId) return;
-  const fromScope = composerSelectionScope(fromPaneId);
-  const toScope = composerSelectionScope(toPaneId);
+// Both arguments are RAW seat ids, not already-scoped keys; this function is
+// the one place that applies composerSelectionScope to them.
+export function transferRecoverySelection(ref: string, fromSeatId: string, toSeatId: string): void {
+  if (fromSeatId === toSeatId) return;
+  const fromScope = composerSelectionScope(fromSeatId);
+  const toScope = composerSelectionScope(toSeatId);
   const selected = readRecoverySelection(ref, fromScope);
   if (selected === undefined) return;
   if (readRecoverySelection(ref, toScope) !== undefined) return;
