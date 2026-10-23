@@ -1039,6 +1039,10 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: workspacePanesVersion is a deliberate trigger-only dep for route-owned primary replacement ordering
   useEffect(() => {
+    // StackHost publishes focused-pane navigation in its child effect, before
+    // this parent effect runs. Let usePathname's next render reconcile that
+    // route instead of reopening the session the user just left with Back.
+    if (pathname !== window.location.pathname) return;
     if (route?.type === "settings" || route?.type === "spawn" || route?.type === "session") {
       if (routePlacementInProgressRef.current) {
         const armedPathname = routePlacementPathnameRef.current;
