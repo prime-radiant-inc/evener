@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -275,23 +274,15 @@ func (s *Session) treeHasOutstandingWorkBesidesOwnJobs() (bool, error) {
 	}
 	// A Stop's park defers pending attention to re-engagement, so it must
 	// not hold a drain open either.
-	if s.pendingRootDelegateAttention() {
-		return true, nil
-	}
-	if s.hasPendingDelegateAttentionArmRetry() {
-		return true, nil
-	}
-	if s.hasPendingStableDelegateAttention() {
+	if s.isRootDelegateAttentionReceiver() && s.notificationWorkPending() {
 		return true, nil
 	}
 	for _, sub := range s.liveDirectSubagents() {
 		active, child := s.subagentActive(sub)
 		if child != nil && (s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id)) {
-			// A deliberately stopped or fatally failed child is never driven —
-			// driveChildrenWithUndeliveredAttention skips all three gates — so its
-			// attention will never be
-			// delivered. Counting it (or its subtree) would hang the drain forever,
-			// so match the drive gate and skip it.
+			// A deliberately stopped or failed subtree is not runnable. Its
+			// durable notifications remain subject to the lifecycle fence and
+			// must not keep resource quiescence open.
 			//
 			// The abandoned gate belongs here as much as in
 			// subtreeHasLiveComponent, and #382 item 3 is why: the
@@ -571,13 +562,7 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 	}
 	// A Stop's park defers pending attention to re-engagement, so it must
 	// not hold a drain open either.
-	if s.pendingRootDelegateAttention() {
-		return true, nil
-	}
-	if s.hasPendingDelegateAttentionArmRetry() {
-		return true, nil
-	}
-	if s.hasPendingStableDelegateAttention() {
+	if s.isRootDelegateAttentionReceiver() && s.notificationWorkPending() {
 		return true, nil
 	}
 	for _, sub := range s.liveDirectSubagents() {
@@ -1034,13 +1019,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 
 	lastResult := ""
 	var stallStart time.Time
-	// drivenAttention holds the notifications the model has already seen, so
-	// a notification that stays pending does not run another turn. It starts with
-	// what the turn before the drain showed: a delta turn credits nothing and
-	// clears that coverage, which would leave a notification whose marker failed
-	// to repeat turns forever.
-	drivenAttention := make(map[string]struct{})
-	s.settlePresentedDelegateAttention(drivenAttention)
+	s.repairNotificationReceipts()
 	// drainStartedAt is the instant the root declared the work over: in a
 	// one-shot run this loop starts the moment the coordinator's terminal
 	// communicate ended its turn. It is the reference delegateAbandonedByDrain
@@ -1177,7 +1156,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// and resume restores them; see
 		// TestRootDelegateAttention_PendingContentSurvivesCompactionRestart),
 		// so a request after a compaction or a failed turn still presents it.
-		notificationTurnOwed := s.peekNotifications() > 0 || s.pendingRootDelegateAttention() || s.hasUndrivenDelegateAttention(drivenAttention)
+		notificationTurnOwed := s.peekNotifications() > 0 || s.notificationsRunnable()
 		if s.hasPendingStableSteering() && !notificationTurnOwed {
 			return lastResult, nil
 		}
@@ -1197,7 +1176,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			if res != "" {
 				lastResult = res
 			}
-			s.settlePresentedDelegateAttention(drivenAttention)
+			s.repairNotificationReceipts()
 			s.restartDrainGraceSecondWindows(s.sclock().Now())
 			// A delivered notification is real drain progress: reset the stall
 			// clock so the watchdog measures only continuous stall, never a stall
@@ -1509,9 +1488,8 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 //
 // It closes a gap between the drain's two signals: quiescence is measured on the
 // durable ledger (outstandingDrainJobCount reads NotifyPending records) while
-// delivery is driven off the in-memory queue (the loop's peekNotifications gate,
-// and driveChildrenWithUndeliveredAttention only drives a child whose queue is
-// non-empty). A pending that survives only in the durable store — a revived
+// delivery consumes the existing shell notification queue and the receiver's
+// common notification readiness. A pending that survives only in the durable store — a revived
 // managed job whose deferred restore side effects were interrupted before
 // arm_notifications ran, or a finalize whose in-memory enqueue never landed —
 // would otherwise hold the drain open forever: counted as outstanding, but never
@@ -1627,15 +1605,9 @@ func waitDrainWake(ctx context.Context, wake <-chan struct{}, recheck <-chan tim
 	}
 }
 
-// kickDriveTree delivers pending watch sends, flushes pending delegate
-// deliveries, and kicks drive-down at every level of the live managed-job
-// subtree, skipping stop-gated children (which are never driven).
-// drainPendingWatchSends already drives THIS session's direct children (its
-// trailing driveChildrenWithUndeliveredAttention pass), and recursing into
-// each child repeats that at every level — so outstanding work isolated in a
-// grandchild subtree makes progress even when the intervening session's own rail
-// carries no immediate signal. All the underlying operations are idempotent and
-// self-terminating, so repeated kicks are safe.
+// kickDriveTree repairs producer custody throughout the live managed-job
+// subtree. Each destination schedules its own execution. This walk never chooses
+// a child model executor, and skips lifecycle-fenced subtrees.
 func (s *Session) kickDriveTree(ctx context.Context) error {
 	return s.kickDriveTreeWith(ctx, func(sess *Session, ctx context.Context) error {
 		return sess.drainPendingWatchSends(ctx)
@@ -1646,7 +1618,7 @@ func (s *Session) kickDriveTreeWith(ctx context.Context, drain func(*Session, co
 	if err := s.replayDelegateDeliveries(); err != nil {
 		return err
 	}
-	s.drivePendingStableDelegateAttention()
+	s.delegateController.recheckNotificationReceivers()
 	if err := s.rematerializeDurablePendings(); err != nil {
 		return err
 	}
@@ -1667,23 +1639,9 @@ func (s *Session) kickDriveTreeWith(ctx context.Context, drain func(*Session, co
 	return nil
 }
 
-// hasUndrivenDelegateAttention reports whether a notification is pending for a
-// delegate session that the drain has not yet run a turn for.
-func (s *Session) hasUndrivenDelegateAttention(driven map[string]struct{}) bool {
-	return slices.ContainsFunc(s.pendingOwnDelegateAttentionIDs(), func(id string) bool {
-		_, done := driven[id]
-		return !done
-	})
-}
-
-// settlePresentedDelegateAttention records the notifications the last turn showed the
-// model in driven and retries its derived consumed markers. A synced response
-// already proves observation, so missing markers no longer mean pending model
-// work. Retry bookkeeping independently, never another model turn.
-func (s *Session) settlePresentedDelegateAttention(driven map[string]struct{}) {
-	for _, id := range s.presentedDelegateAttentionIDs() {
-		driven[id] = struct{}{}
-	}
+// repairNotificationReceipts retries only the derived receipt index. Synced
+// assistant responses already own observation and never require another call.
+func (s *Session) repairNotificationReceipts() {
 	if err := s.finishAttentionTurn(nil, nil); err != nil {
 		s.emit(events.EventWarning, warningDataFromError("delegate notification receipt index repair failed", err))
 	}

@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -19,13 +18,11 @@ type coldDelegateAttentionRef struct {
 	transcriptRef string
 }
 
-// delegateAttentionState is one delegate's per-delegate attention bookkeeping.
-// The four fields have different lifetimes but one owner: new attention
-// (noteDelegateAttentionLocked) starts the delegate's delivery attempts over —
-// clearing restoreFailures and parked — while its driveTurn stays, and dropping
-// the delegate clears the whole state at once, so no path can leave one field
-// behind for a delegate that owes nothing.
+// delegateAttentionState retains cold admission recovery and the controller's
+// derived attention projection. Resident readiness belongs to Session. New
+// attention resets failed restoration, not successful-admission fairness.
 type delegateAttentionState struct {
+	retry notificationRetry
 	// wakeIDs are the transcript attention IDs this delegate still owes, each
 	// delivered, escalated or forgotten on its own.
 	wakeIDs map[string]struct{}
@@ -38,10 +35,9 @@ type delegateAttentionState struct {
 	// the root: the drive stops cold-restoring the delegate until new attention
 	// arrives or the daemon restarts.
 	parked bool
-	// driveTurn records when the attention drive last selected the delegate
-	// (attentionDriveSeq order): the drive picks the delegate it has not picked
-	// yet, else the one picked longest ago, so eligible delegates take turns and
-	// none, failing or not, holds the others back.
+	// driveTurn records successful leased notification admission. Capacity
+	// rechecks visit the least recently admitted receiver first, without spending
+	// turns on refused or empty receivers.
 	driveTurn uint64
 }
 
@@ -503,8 +499,8 @@ func (c *delegateTreeController) delegateAttentionRestored(delegateID string) {
 
 // parkDelegateAttention stops the drive's cold restores of delegateID until
 // new attention arrives for it (noteDelegateAttentionLocked) or the daemon
-// restarts (coldRestoreDriveCandidateLocked says what the park leaves). It
-// reports whether this call parked it, so overlapping passes say so once.
+// restarts. It reports whether this call parked it, so overlapping passes
+// say so once.
 func (c *delegateTreeController) parkDelegateAttention(delegateID string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -608,11 +604,8 @@ func (c *delegateTreeController) hasPendingDelegateAttention() bool {
 
 // delegateAttentionWakeEligibleLocked reports whether delegateID could accept
 // an attention wake or an escalation right now, before the ancestor fence is
-// consulted. ReserveAttention and every wake-cache scan start from it; the
-// cold-restore drive then also skips parked delegates
-// (coldRestoreDriveCandidateLocked), a park it does not know about, so a
-// parked delegate's own runtime can still reserve and the escalation still
-// reaches it.
+// consulted. ReserveAttention and exact-receiver restoration share it.
+// Cold restoration additionally respects the retained receiver restore park.
 func (c *delegateTreeController) delegateAttentionWakeEligibleLocked(delegateID string) bool {
 	if !c.idleRestorableLocked(delegateID) {
 		return false
@@ -622,8 +615,8 @@ func (c *delegateTreeController) delegateAttentionWakeEligibleLocked(delegateID 
 	}
 	// A finished generation still finalizing hasn't announced its result: an
 	// attention successor waits for the release, as a send does, so it can't
-	// start ahead of that result. Every release wakes the root's drive for
-	// attention it skipped here (releaseFinalizationLocked).
+	// start ahead of that result. Release rechecks the exact receiver's common
+	// readiness (releaseFinalizationLocked).
 	if c.finalizingLocked(delegateID) != nil {
 		return false
 	}
@@ -635,77 +628,6 @@ func (c *delegateTreeController) delegateAttentionWakeEligibleLocked(delegateID 
 	return true
 }
 
-// hasRunnableDelegateAttention reports whether the root driver has actionable
-// attention work: a wake it may commit, or attention it must escalate because
-// a permanently closed ancestor fences the wake off forever. Attention parked
-// under a transient ancestor stop, or under an ancestor chain its restore
-// cannot make resident yet, is pending, not runnable.
-func (c *delegateTreeController) hasRunnableDelegateAttention() bool {
-	if c == nil {
-		return false
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for delegateID, state := range c.attention {
-		if len(state.wakeIDs) == 0 || !c.delegateAttentionWakeEligibleLocked(delegateID) {
-			continue
-		}
-		// Attention a closed ancestor fenced off is the escalation's work,
-		// parked or not.
-		if _, closedAncestorID := c.attentionWakeAncestorGateLocked(delegateID); closedAncestorID != "" {
-			return true
-		}
-		if c.coldRestoreDriveCandidateLocked(delegateID) {
-			return true
-		}
-	}
-	return false
-}
-
-func (c *delegateTreeController) retryDelegateAttentionLater() {
-	if c == nil {
-		return
-	}
-	c.mu.Lock()
-	root := c.rootRuntime
-	c.mu.Unlock()
-	if root != nil {
-		root.scheduleStableDelegateAttentionRetry()
-	}
-}
-
-func (c *delegateTreeController) nextIdleDelegateAttention() (string, string, bool) {
-	if c == nil {
-		return "", "", false
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.nextIdleDelegateAttentionLocked()
-}
-
-// selectDelegateAttentionWake is the wake driver's selection: it returns the
-// next eligible delegate with pending attention and takes this pass's hold
-// in one critical section, so no release claim can slip between selection
-// and hold. The pass MUST release the hold on every exit; overlapping passes
-// each hold their own reference.
-func (c *delegateTreeController) selectDelegateAttentionWake() (string, string, bool) {
-	if c == nil {
-		return "", "", false
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	delegateID, attentionID, pending := c.nextIdleDelegateAttentionLocked()
-	if !pending {
-		return "", "", false
-	}
-	// Taking its turn sends the delegate to the back of the line, whatever
-	// this pass then does with it.
-	c.attentionDriveSeq++
-	c.attentionStateLocked(delegateID).driveTurn = c.attentionDriveSeq
-	c.holdAttentionRestoreLocked(delegateID)
-	return delegateID, attentionID, true
-}
-
 // attentionWakeAncestorGateLocked is the ancestor side of an attention wake,
 // shared by every wake-cache scan so the runnable check, selection, and
 // escalation cannot disagree. ready means no ancestor fences the wake and the
@@ -715,20 +637,6 @@ func (c *delegateTreeController) attentionWakeAncestorGateLocked(delegateID stri
 	parentID := c.durable[delegateID].Descriptor.ParentDelegateID
 	blocked, closedAncestorID := c.ancestorFenceLocked(parentID)
 	return !blocked && c.ancestorChainRestorableLocked(parentID), closedAncestorID
-}
-
-// coldRestoreDriveCandidateLocked reports whether the attention drive may
-// cold-restore delegateID to deliver its wake-eligible attention: the drive
-// has not parked it and the ancestor gate is ready. The park stops this
-// drive's cold restores of a delegate that could not be restored or handed
-// over, and only that: its own live runtime can still reserve its attention
-// (ReserveAttention), and the fenced escalation still reaches it.
-func (c *delegateTreeController) coldRestoreDriveCandidateLocked(delegateID string) bool {
-	if state := c.attention[delegateID]; state != nil && state.parked {
-		return false
-	}
-	ready, _ := c.attentionWakeAncestorGateLocked(delegateID)
-	return ready
 }
 
 // ancestorChainRestorableLocked reports whether a child's cold restore can
@@ -748,34 +656,6 @@ func (c *delegateTreeController) ancestorChainRestorableLocked(parentID string) 
 		}
 	}
 	return true
-}
-
-func (c *delegateTreeController) nextIdleDelegateAttentionLocked() (string, string, bool) {
-	delegateIDs := make([]string, 0, len(c.attention))
-	for delegateID, state := range c.attention {
-		if len(state.wakeIDs) == 0 || !c.delegateAttentionWakeEligibleLocked(delegateID) {
-			continue
-		}
-		if !c.coldRestoreDriveCandidateLocked(delegateID) {
-			continue
-		}
-		delegateIDs = append(delegateIDs, delegateID)
-	}
-	if len(delegateIDs) == 0 {
-		return "", "", false
-	}
-	// Turns: a delegate the drive has not picked yet first, in id order,
-	// then the one it picked longest ago. One delegate that can't be restored,
-	// or whose drive keeps declining, must not hold every sibling back.
-	delegateID := slices.MinFunc(delegateIDs, func(left, right string) int {
-		return cmp.Or(cmp.Compare(c.attention[left].driveTurn, c.attention[right].driveTurn), cmp.Compare(left, right))
-	})
-	attentionIDs := make([]string, 0, len(c.attention[delegateID].wakeIDs))
-	for attentionID := range c.attention[delegateID].wakeIDs {
-		attentionIDs = append(attentionIDs, attentionID)
-	}
-	sort.Strings(attentionIDs)
-	return delegateID, attentionIDs[0], true
 }
 
 // delegateFencedAttentionEscalation is one delegate's pending attention that a

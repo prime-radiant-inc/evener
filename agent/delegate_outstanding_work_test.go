@@ -39,37 +39,29 @@ func TestOutstandingDelegateWorkItemizesEachCategory(t *testing.T) {
 	}
 	jm.mu.Unlock()
 
-	s := &Session{
-		id:         "s1",
-		stateDir:   dir,
-		jobManager: jm,
-		inputQueue: []queuedInput{
-			{ID: "input-1"},
-			{ID: "dup"},
-		},
-		steeringQueue: []steeringMessage{
-			{StableTurnID: "steer-1"},
-		},
-		pendingJobNotifs: []jobNotification{
-			{JobID: "notif-1"},
-			{JobID: "dup"},
-		},
-		delegateAttentionArmIDs: map[string]struct{}{
-			"attention-arm": {},
-		},
-		rootAttentionWakeIDs: map[string]struct{}{
-			"attention-root": {},
-		},
-		delegateController: &delegateTreeController{
-			durable: delegatestore.State{
-				"dlg-1": {
-					DelegateID:        "dlg-1",
-					Phase:             delegatestore.PhaseRunning,
-					CurrentRunOpen:    true,
-					PendingDeliveries: []delegatestore.PendingDelivery{{DeliveryID: "delivery-1"}},
-				},
+	s := observationSession(t, &skillContinuationAdapter{}, false)
+	// The inventory's synthetic controller and job manager are not runtimes.
+	t.Cleanup(func() { s.delegateController = nil; s.jobManager = nil })
+	jm.sessionID = s.id
+	jm.watches = map[watchKey]*watchConfig{
+		{VisibleSessionID: s.id, Target: "job-1", ReceiverSessionID: s.id}: {watchID: "watch-1", receiverSessionID: s.id},
+	}
+	s.jobManager = jm
+	s.inputQueue = []queuedInput{{ID: "input-1"}, {ID: "dup"}}
+	s.steeringQueue = []steeringMessage{{StableTurnID: "steer-1"}}
+	s.pendingJobNotifs = []jobNotification{{JobID: "notif-1"}, {JobID: "dup"}}
+	s.delegateController = &delegateTreeController{
+		durable: delegatestore.State{
+			"dlg-1": {
+				DelegateID:        "dlg-1",
+				Phase:             delegatestore.PhaseRunning,
+				CurrentRunOpen:    true,
+				PendingDeliveries: []delegatestore.PendingDelivery{{DeliveryID: "delivery-1"}},
 			},
 		},
+	}
+	for _, id := range []string{"attention-arm", "attention-root"} {
+		observationEnqueue(t, s, id, "notification payload")
 	}
 	s.getOrCreateGoalStore().Set("test", time.Now())
 

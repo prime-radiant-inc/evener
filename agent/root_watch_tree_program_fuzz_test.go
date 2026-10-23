@@ -607,9 +607,7 @@ func rwlpAssertWatchLedger(t *testing.T, jm *jobManager, notifications []jobNoti
 		delivered[id] = true
 	}
 	for _, n := range notifications {
-		if n.WatchSend != nil && n.WatchSend.DeliveryID == "" {
-			t.Fatalf("notification carried an incomplete watch token: %+v", n)
-		}
+
 	}
 }
 

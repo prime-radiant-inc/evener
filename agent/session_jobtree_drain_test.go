@@ -38,13 +38,13 @@ func outstandingWorkReasons(s *Session) []string {
 	if n := s.peekNotifications(); n > 0 {
 		reasons = append(reasons, fmt.Sprintf("peekNotifications=%d", n))
 	}
-	if s.hasPendingRootDelegateAttention() {
-		reasons = append(reasons, "hasPendingRootDelegateAttention")
+	if s.hasPendingNotifications() {
+		reasons = append(reasons, "hasPendingNotifications")
 	}
-	if s.hasPendingDelegateAttentionArmRetry() {
+	if s.notificationWorkPending() {
 		reasons = append(reasons, "hasPendingDelegateAttentionArmRetry")
 	}
-	if s.hasPendingStableDelegateAttention() {
+	if s.notificationWorkPending() {
 		reasons = append(reasons, "hasPendingStableDelegateAttention")
 	}
 	for _, sub := range s.liveDirectSubagents() {
@@ -830,7 +830,7 @@ func TestDrainJobTreeConsumesRootDelegateAttentionBeforeCompletion(t *testing.T)
 	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
 		t.Fatalf("append root attention: %v", err)
 	}
-	if err := root.armDelegateAttention(attentionID); err != nil {
+	if err := root.requestNotificationWake(); err != nil {
 		t.Fatalf("arm root attention after source settlement: %v", err)
 	}
 

@@ -25,9 +25,6 @@ func FuzzWatchCoreConfigEdges(f *testing.F) {
 		t.Cleanup(func() { _ = jm.close() })
 
 		s := &Session{jobManager: jm}
-		if _, _, _, ok := s.resolveWatchSendToken(nil); ok {
-			t.Fatal("nil token resolved")
-		}
 
 		// A live durable record with no runtime entry reaches configureWatch's
 		// post-validation recheck and is rejected because attachment requires the

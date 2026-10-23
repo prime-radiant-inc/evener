@@ -198,9 +198,9 @@ func TestNotificationObservation(t *testing.T) {
 		if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 			t.Fatal(err)
 		}
-		s.attentionMu.Lock()
-		unsettled := s.rootAttentionRetry.active || len(s.rootAttentionWakeIDs) != 0
-		s.attentionMu.Unlock()
+		s.mu.Lock()
+		unsettled := s.notificationSchedule.retry.active || len(notificationTestPending(t, s)) != 0
+		s.mu.Unlock()
 		if unsettled {
 			t.Fatal("synced resolution did not clear retry debt")
 		}
@@ -273,7 +273,7 @@ func TestNotificationObservation(t *testing.T) {
 		}
 		observationReceipts(t, s, [][]string{{"obs-a"}})
 		assertNotificationPending(t, s, []string{"obs-b"})
-		if !s.rootAttentionPaused {
+		if !s.notificationSchedule.paused {
 			t.Fatal("earlier receipt hid the permanent failure for pending obs-b")
 		}
 	})
@@ -451,8 +451,8 @@ func TestNotificationObservation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !bytes.Equal(before, after) || len(a.Requests()) != 0 || s.rootAttentionWake || s.rootAttentionRetry.active {
-				t.Fatalf("empty repair changed transcript or armed execution: requests=%d wake=%t retry=%t", len(a.Requests()), s.rootAttentionWake, s.rootAttentionRetry.active)
+			if !bytes.Equal(before, after) || len(a.Requests()) != 0 || s.notificationSchedule.hinted || s.notificationSchedule.retry.active {
+				t.Fatalf("empty repair changed transcript or armed execution: requests=%d wake=%t retry=%t", len(a.Requests()), s.notificationSchedule.hinted, s.notificationSchedule.retry.active)
 			}
 		})
 	}
@@ -605,12 +605,11 @@ func observationOneResolution(t *testing.T, s *Session) {
 }
 
 func observationRepairOwed(s *Session) bool {
-	s.attentionMu.Lock()
-	defer s.attentionMu.Unlock()
-	// The paced retry may already have fired. Either its pending timer or the
-	// resulting wake must remain live while this accepted ID still needs repair.
-	_, pending := s.rootAttentionWakeIDs["obs-a"]
-	return pending && (s.rootAttentionRetry.active || s.rootAttentionWake)
+	fold, err := readDelegateAttentionFold(transcriptPath(s.stateDir, s.id), s.id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, accepted := fold.content["obs-a"]
+	return err != nil || accepted && (s.notificationSchedule.retry.active || s.notificationSchedule.hinted)
 }
 
 func observationResolutionCount(t *testing.T, s *Session) int {

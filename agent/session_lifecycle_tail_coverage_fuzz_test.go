@@ -173,10 +173,7 @@ func FuzzSessionLifecycleNotificationFaultCoverage(f *testing.F) {
 		if proceed := loopSession.acceptNotificationInput(loopCtx, ""); !proceed {
 			t.Fatal("injected watch notification did not proceed")
 		}
-		settleCtx := context.WithValue(context.Background(), sessionLifecycleFaultsKey{}, map[string]error{"settle_watch": errors.New("settle failed")})
-		appendSession.settleDeliveredWatchNotification(settleCtx, deliverableJobNotification{watchJM: &jobManager{}})
-		settleJM := &jobManager{appendEvent: func(jobstore.Event) error { return nil }, now: func() time.Time { return time.Unix(2, 0) }}
-		appendSession.settleDeliveredWatchNotification(context.Background(), deliverableJobNotification{watchJM: settleJM})
+
 	})
 }
 

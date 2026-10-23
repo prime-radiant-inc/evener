@@ -282,12 +282,12 @@ func (s *Session) runDelegateQuietWatchdogTick(lease delegateLease, now time.Tim
 // append attempt and arms the wake. The append is durable even when completion
 // then finds the claim stale, so the wake is armed in that case too: a wake that
 // is never armed leaves the durable attention pending with nothing to deliver
-// it. armDelegateAttention is idempotent and no-ops when the attention is no
-// longer pending, so an identity retired by a covering stop is not resurrected.
+// it. Common readiness rechecks durable membership and Stop holds, so an
+// identity retired by a covering stop is not resurrected.
 func (s *Session) completeQuietWatchdogClaim(claim *delegateQuietAttentionClaim, appendErr error) error {
 	completionErr := s.delegateController.CompleteQuietAttention(claim, appendErr == nil)
 	if appendErr == nil {
-		completionErr = errors.Join(completionErr, s.armDelegateAttention(claim.attentionID))
+		completionErr = errors.Join(completionErr, s.requestNotificationWake())
 	}
 	return errors.Join(appendErr, completionErr)
 }
@@ -498,7 +498,7 @@ func (s *Session) delegateQuietWatchNext(ctx context.Context, lease delegateLeas
 // serveDelegateQuietWatchHub is the hub's single goroutine: each shared tick
 // fans out to every registered lease whose stop channel is still open. Each
 // lease's tick runs on its own goroutine so one lease blocked on durable
-// transcript I/O (or armDelegateAttention's reservation path) cannot stall
+// transcript I/O or execution admission cannot stall
 // the remaining leases or delay hub shutdown: the loop never waits on tick
 // work and keeps selecting on hub.done.
 func (s *Session) serveDelegateQuietWatchHub(hub *delegateQuietWatchHub) {
@@ -763,26 +763,14 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	if observer := s.cfg.testOnly.delegateAttentionBeforeDriveClaim; observer != nil {
 		observer(sub)
 	}
-	// Claim the child for the WHOLE start, not just for this check. Everything
-	// between here and launchAcceptedDelegateAttention is durable work
-	// (ReserveAttention, acceptDelegateAttention's transcript append,
-	// CommitStart, the delegate update emit), and the run goroutine only sets
-	// running at the far end of it. Without the claim a wake-edge drive landing
-	// in that gap reads an idle child: the reservation is already consumed and
-	// the attention is no longer pending, so driveStableDelegateAttention itself
-	// declines, and driveChildIfNotStopGated falls through to
-	// driveSubagentNotificationTurn, which starts a second, UNLEASED turn on the
-	// session this generation is about to run. The two turns then share one
-	// drain ladder and the unleased one can pop the run's follow-up, leaving the
-	// generation to settle attention-only instead of report-required. The claim
-	// is the drive flag every other guard already reads, and it is handed over
-	// under the same sub.mu hold that sets running.
+	// Hold the child through reservation, acceptance, commit and launch. Common
+	// wake callbacks can overlap that durable work, but must not admit another
+	// executor before the run takes ownership under the same sub.mu hold.
 	sub.mu.Lock()
 	// childCommittedSendStart is consulted here, at the decision point, so every
 	// path into the attention drive is gated at the depth the decision is made
 	// rather than relying on each caller to remember (#940).
-	// drivePendingStableDelegateAttention reaches this primitive directly with no
-	// caller-side gate.
+	// The exact receiver's callback reaches this primitive directly.
 	// startBlockedLocked is the shared drive-guard predicate delegate_send reads
 	// through takeSendDriveGuard, so the two busy lists cannot drift. The
 	// attention-only extras are layered on top.
@@ -795,6 +783,7 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	}
 	sub.mu.Unlock()
 	if blocked {
+		sub.sess.deferNotificationAdmission()
 		return true
 	}
 	launched := false
@@ -808,7 +797,7 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		// The re-drive re-drives again only if a drive is refused on its own
 		// guard, so one that keeps losing stops (#3723).
 		if releaseDriveGuard(sub) {
-			s.redriveLiveChild(sub.sess.id)
+			s.delegateController.requestSessionWake(sub.sess.id)
 		}
 	}()
 	s.mu.Lock()
@@ -842,20 +831,24 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		if !errors.Is(err, errDelegateTargetBusy) && !errors.Is(err, errTreeAtCapacity) {
 			s.emit(events.EventWarning, warningDataFromError("reserve delegate attention", err))
 		}
-		s.delegateController.retryDelegateAttentionLater()
+		sub.sess.deferNotificationAdmission()
 		return true
 	}
 	if err := sub.sess.acceptDelegateAttention(reservation); err != nil {
 		s.emit(events.EventWarning, warningDataFromError("accept delegate attention", err))
-		s.delegateController.retryDelegateAttentionLater()
+		sub.sess.scheduleNotificationRetry()
 		return true
 	}
 	started, err := s.delegateController.CommitStart(reservation)
 	if err != nil {
 		s.emit(events.EventWarning, warningDataFromError("commit delegate attention", err))
-		s.delegateController.retryDelegateAttentionLater()
+		sub.sess.scheduleNotificationRetry()
 		return true
 	}
+	s.delegateController.mu.Lock()
+	s.delegateController.attentionDriveSeq++
+	s.delegateController.attentionStateLocked(sub.sess.owningDelegateID).driveTurn = s.delegateController.attentionDriveSeq
+	s.delegateController.mu.Unlock()
 	if observer := s.cfg.testOnly.delegateAttentionStartCommitted; observer != nil {
 		observer(sub)
 	}
@@ -883,7 +876,7 @@ func (s *Session) launchAcceptedDelegateAttention(sub *subagent, started delegat
 	}
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
-	runCtx, runCancel := context.WithCancel(started.ctx)
+	runCtx, runCancel := context.WithTimeout(started.ctx, driveTurnTimeout)
 	runCtx = context.WithValue(runCtx, delegateRunLeaseContextKey{}, started.lease)
 	runCtx = context.WithValue(runCtx, delegateAttentionRunContextKey{}, struct{}{})
 	sub.mu.Lock()
@@ -1221,28 +1214,6 @@ func parkedEscalationStandsDown(err error) bool {
 
 // escalateUnreachableDelegateAttention transfers permanently fenced wakes to
 // the root, preserving identity/content and idempotent crash replay.
-func (s *Session) escalateUnreachableDelegateAttention() bool {
-	progressed, failed := false, false
-	for _, plan := range s.delegateController.permanentlyFencedDelegateAttention() {
-		readFold := readDelegateAttentionFold
-		if plan.parked {
-			readFold = readExistingDelegateAttentionFold
-		}
-		if err := s.escalateOneUnreachableDelegateAttention(plan, readFold); err != nil {
-			s.warnDelegateAttentionFailed(delegateAttentionEscalateLabel, plan.delegateID, err)
-			failed = failed || !plan.parked || !parkedEscalationStandsDown(err)
-			continue
-		}
-		s.delegateAttentionWarningResolved(delegateAttentionEscalateLabel, plan.delegateID)
-		progressed = true
-	}
-	if failed {
-		s.scheduleStableDelegateAttentionRetry()
-	} else if progressed {
-		s.resetStableDelegateAttentionRetryDelay()
-	}
-	return progressed
-}
 
 // escalateOneUnreachableDelegateAttention transfers plan's attention to the
 // root, reading the source transcript's fold with readFold.
@@ -1269,7 +1240,7 @@ func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAtt
 		if _, err := s.appendDelegateAttentionMessageDurably(attentionID, message); err != nil {
 			return err
 		}
-		if err := s.armDelegateAttention(attentionID); err != nil {
+		if err := s.requestNotificationWake(); err != nil {
 			return err
 		}
 		if err := s.delegateController.resolveDelegateAttentionDurably(plan.runtime, plan.transcriptRef, []string{attentionID}, delegateAttentionDiscarded, 0); err != nil {
@@ -1404,43 +1375,6 @@ func (s *Session) giveUpDelegateAttention(delegateID string, restoreErr error) {
 	data.Code = events.WarningCodeDelegateAttentionUndeliverable
 	data.DelegateID = delegateID
 	s.emit(events.EventWarning, data)
-}
-
-func (s *Session) drivePendingStableDelegateAttention() bool {
-	if s == nil || s.delegateController == nil || !s.isRootDelegateAttentionReceiver() {
-		return false
-	}
-	s.forgetSettledDelegateAttentionWarnings()
-	escalated := s.escalateUnreachableDelegateAttention()
-	delegateID, _, pending := s.delegateController.selectDelegateAttentionWake()
-	if !pending {
-		return escalated
-	}
-	// The selection already took this pass's hold under the controller lock,
-	// closing the selection-to-hold gap a release claim could slip through.
-	// The defer releases it on every pass exit — reservation committed or
-	// drive declined — so it can never pin the runtime warm, and overlapping
-	// passes each keep their own reference.
-	defer s.delegateController.releaseAttentionRestoreHold(delegateID)
-	owner, sub, err := s.restoreColdDelegateAttentionRuntime(delegateID)
-	if err != nil {
-		s.warnDelegateAttentionFailed(delegateAttentionRestoreLabel, delegateID, err)
-		s.countDelegateAttentionRestoreFailure(delegateID, err)
-		s.scheduleStableDelegateAttentionRetry()
-		return true
-	}
-	s.delegateController.delegateAttentionRestored(delegateID)
-	s.delegateAttentionWarningResolved(delegateAttentionRestoreLabel, delegateID)
-	if hook := s.cfg.testOnly.afterDelegateAttentionRestore; hook != nil {
-		hook(delegateID, sub)
-	}
-	owner.driveStableDelegateAttention(sub)
-	if s.delegateController.hasPendingDelegateAttention() {
-		s.scheduleStableDelegateAttentionRetry()
-	} else {
-		s.resetStableDelegateAttentionRetry()
-	}
-	return true
 }
 
 func (c *delegateTreeController) stableDelegateOwnerRuntime(lease delegateLease) *Session {
@@ -1675,24 +1609,10 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	defer func() {
 		if committedClaimHeld {
 			s.releaseChildCommittedSendStart(committedChildID)
-			// The claim refused every drive for the claimed child that landed
-			// while it was held -- a child notification arriving mid-window runs
-			// the child's notify, driveChildIfNotStopGated, which returns early on
-			// the claim, and driveStableDelegateAttention refuses the stable
-			// attention the same way -- so that wake is DROPPED. The run about to
-			// launch would have drained the child's queue, but this exit did not
-			// hand a run over (the claim is still held here), so re-drive the
-			// claimed child's queued notifications, watch sends and armed stable
-			// attention or the dropped wake can sit undriven forever. The re-drive
-			// is scoped to committedChildID because the claim only gated that
-			// child, so only that child can hold a wake it swallowed. The hand-off
-			// path clears committedClaimHeld before this defer runs, so it never
-			// re-drives: the handed-over run drains the queue itself, and
-			// re-driving there would launch the second turn this claim prevents.
-			// This runs from the deferred rollback after every failure exit
-			// (aborted reservation, failed commit, failed restore, blocked
-			// hand-off, start-input failure), and send holds no lock here.
-			s.redriveLiveChild(committedChildID)
+			// Rollback released the exact child without handing an executor over.
+			// Recheck its common readiness outside all send locks. Successful
+			// handoff clears committedClaimHeld and leaves recovery to the run.
+			s.delegateController.requestSessionWake(committedChildID)
 		}
 	}()
 	if observer := s.cfg.testOnly.delegateSendStartClaimed; observer != nil {
@@ -1775,12 +1695,8 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// consumed the reservation, but sub.running stays false through the restored
 	// side effects and the start-input mutation plans (BeginStartInput,
 	// preseedInput, CompleteStartInput); the run goroutine only sets running at
-	// the far end of it. A wake-edge drive landing in that gap reads an idle
-	// child, and driveChildIfNotStopGated falls through to
-	// driveSubagentNotificationTurn, which launches a second, UNLEASED
-	// EntryNotification turn on the session this generation is about to run. The
-	// two turns then share one drain ladder and popFollowUp (a destructive pop
-	// with no owner check) lets the unleased turn steal the run's follow-up.
+	// the far end of it. An overlapping wake must not admit another executor
+	// into that committed-start gap or consume this run's follow-up.
 	// sub.driving is the flag every other guard already reads as "a turn is in
 	// flight on this idle child"; it is handed to the run under the same sub.mu
 	// hold that sets running.
@@ -2911,7 +2827,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		endedAt:          &now,
 		stableDescriptor: &stableDescriptor,
 	}
-	child.SetNotifyFunc(func() { s.driveChildIfNotStopGated(sub) })
+	child.SetNotifyFunc(func() { s.driveStableDelegateAttention(sub) })
 	return sub, true, nil
 }
 

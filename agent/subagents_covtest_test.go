@@ -331,7 +331,7 @@ func TestCovStableDelegateFatalRun2(t *testing.T) {
 func TestCovHasPendingDelegateAttentionArmRetry_NilSession(t *testing.T) {
 	t.Parallel()
 	var s *Session
-	if s.hasPendingDelegateAttentionArmRetry() {
+	if s.notificationWorkPending() {
 		t.Fatal("nil session should return false")
 	}
 }
@@ -340,7 +340,7 @@ func TestCovHasPendingDelegateAttentionArmRetry_NilSession(t *testing.T) {
 func TestCovHasPendingDelegateAttentionArmRetry_NoArms(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
-	if s.hasPendingDelegateAttentionArmRetry() {
+	if s.notificationWorkPending() {
 		t.Fatal("no arms should return false")
 	}
 }

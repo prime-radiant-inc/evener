@@ -82,7 +82,7 @@ wait:
 		}
 		select {
 		case <-wakes:
-			if root.hasPendingRootDelegateAttention() {
+			if root.hasPendingNotifications() {
 				_, err := root.ProcessInputKind(ctx, "", nil, EntryNotification)
 				modelFailures = recordRootStep(ctx, t, modelFailures, err)
 			}

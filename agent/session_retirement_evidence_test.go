@@ -262,9 +262,9 @@ func retirementAttentionRetryWake(t *testing.T, attachBefore bool) {
 		t.Fatalf("provider failure = %v", err)
 	}
 	adapter.fail.Store(false)
-	root.attentionMu.Lock()
-	active := root.rootAttentionRetry.active
-	root.attentionMu.Unlock()
+	root.mu.Lock()
+	active := root.notificationSchedule.retry.active
+	root.mu.Unlock()
 	if !active {
 		t.Fatal("failed original attention turn did not arm retry")
 	}
@@ -347,7 +347,7 @@ func TestRetirementAutonomousAttentionRetryOverlap(t *testing.T) {
 	// the later blocker check find no notification evidence (#1879's "missing
 	// notification evidence").
 	var gate atomic.Int32
-	root.cfg.testOnly.rootAttentionRetryCallback = func() {
+	root.cfg.testOnly.notificationRetryCallback = func() {
 		if selected := gate.Swap(0); selected != 0 {
 			close(entered[selected-1])
 			<-resume[selected-1]
@@ -428,15 +428,13 @@ func TestRetirementRootAttentionRetrySeamSkipsStaleCallback(t *testing.T) {
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}))
 	defer root.Close()
 	var fired atomic.Int32
-	root.cfg.testOnly.rootAttentionRetryCallback = func() { fired.Add(1) }
+	root.cfg.testOnly.notificationRetryCallback = func() { fired.Add(1) }
 
-	root.attentionMu.Lock()
-	root.rootAttentionWakeIDs["stale-seam-source"] = struct{}{}
-	root.scheduleRootAttentionRetryLocked()
+	observationEnqueue(t, root, "stale-seam-source", "pending notification")
+	root.scheduleNotificationRetry()
 	// Supersede the armed callback (a newer schedule or a reset invalidated it)
 	// before it fires; the parked timer is not cancelled, so it still runs.
-	root.resetRootAttentionRetryLocked()
-	root.attentionMu.Unlock()
+	root.suspendNotificationWake()
 
 	clk.Advance(jobNotificationRetryInitialDelay)
 	clk.Drain()
@@ -456,12 +454,10 @@ func TestRetirementRootAttentionRetrySeamSkipsParkedCallback(t *testing.T) {
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}))
 	defer root.Close()
 	var fired atomic.Int32
-	root.cfg.testOnly.rootAttentionRetryCallback = func() { fired.Add(1) }
+	root.cfg.testOnly.notificationRetryCallback = func() { fired.Add(1) }
 
-	root.attentionMu.Lock()
-	root.rootAttentionWakeIDs["parked-seam-source"] = struct{}{}
-	root.scheduleRootAttentionRetryLocked()
-	root.attentionMu.Unlock()
+	observationEnqueue(t, root, "parked-seam-source", "pending notification")
+	root.scheduleNotificationRetry()
 
 	// Park the rail before the armed callback fires; the parked timer is not
 	// cancelled, so it still runs and reads the hold.
@@ -471,7 +467,7 @@ func TestRetirementRootAttentionRetrySeamSkipsParkedCallback(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !root.rootAttentionRailParked() {
+	if !root.notificationStopHeld() {
 		t.Fatal("fixture: the attention rail is not parked")
 	}
 
@@ -513,9 +509,9 @@ func TestRetirementAutonomousAttentionRetryStale(t *testing.T) {
 			t.Fatalf("provider failure = %v", err)
 		}
 		adapter.fail.Store(false)
-		root.attentionMu.Lock()
-		active := root.rootAttentionRetry.active
-		root.attentionMu.Unlock()
+		root.mu.Lock()
+		active := root.notificationSchedule.retry.active
+		root.mu.Unlock()
 		if !active {
 			t.Fatal("real failure did not schedule retry")
 		}
@@ -543,9 +539,9 @@ func TestRetirementAutonomousAttentionRetryStale(t *testing.T) {
 		clk.Advance(jobNotificationRetryInitialDelay)
 		clk.Drain()
 		afterClaim, readErr := readDelegateAttentionFold(path, root.id)
-		root.attentionMu.Lock()
-		active = root.rootAttentionRetry.active
-		root.attentionMu.Unlock()
+		root.mu.Lock()
+		active = root.notificationSchedule.retry.active
+		root.mu.Unlock()
 		if err := c.Abort(claim, ""); err != nil {
 			t.Fatal(err)
 		}
@@ -592,9 +588,9 @@ func TestRetirementAutonomousAttentionRetryRefusedRearms(t *testing.T) {
 		t.Fatalf("provider failure = %v", err)
 	}
 	adapter.fail.Store(false)
-	root.attentionMu.Lock()
-	active := root.rootAttentionRetry.active
-	root.attentionMu.Unlock()
+	root.mu.Lock()
+	active := root.notificationSchedule.retry.active
+	root.mu.Unlock()
 	if !active {
 		t.Fatal("failed original attention turn did not arm retry")
 	}
@@ -635,7 +631,7 @@ func TestRetirementAutonomousAttentionRetryRefusedRearms(t *testing.T) {
 	}
 
 	beforeWake := wakes.Load()
-	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Advance(2 * jobNotificationRetryInitialDelay)
 	clk.Drain()
 	if wakes.Load() != beforeWake+1 {
 		t.Fatalf("re-armed attention retry did not fire: before=%d after=%d", beforeWake, wakes.Load())
@@ -664,20 +660,24 @@ func TestRetirementAttentionArmRetryPending(t *testing.T) {
 	c := retirementEvidenceController(t, root)
 	retirementIdleDelegate(t, root)
 	assertRetirementEvidenceEligible(t, c)
+	var wakes atomic.Int32
+	root.SetNotifyFunc(func() { wakes.Add(1) })
+	observationEnqueue(t, root, "original-arm-retry-attention", "original pending body-781a")
 	injected := errors.New("injected attention arm fold failure")
 	root.cfg.testOnly.delegateAttentionReadFold = func(string, string) (delegateAttentionFold, error) {
 		return delegateAttentionFold{}, injected
 	}
-	if err := root.armDelegateAttention("original-arm-retry-attention"); !errors.Is(err, injected) {
+	if err := root.requestNotificationWake(); !errors.Is(err, injected) {
 		t.Fatalf("arm = %v, want %v", err, injected)
 	}
-	root.attentionMu.Lock()
-	_, held := root.delegateAttentionArmIDs["original-arm-retry-attention"]
-	retryActive := root.delegateAttentionArmRetry.active
-	root.attentionMu.Unlock()
+	_, held := notificationTestPending(t, root)["original-arm-retry-attention"]
+	root.mu.Lock()
+	retryActive := root.notificationSchedule.retry.active
+	root.mu.Unlock()
 	if !held || !retryActive {
 		t.Fatalf("failed arm not retained for retry: held=%t active=%t", held, retryActive)
 	}
+	root.cfg.testOnly.delegateAttentionReadFold = nil
 	claim, state, err := c.TryClaim(true)
 	if claim != nil {
 		if abortErr := c.Abort(claim, ""); abortErr != nil {
@@ -692,14 +692,21 @@ func TestRetirementAttentionArmRetryPending(t *testing.T) {
 	}) {
 		t.Fatalf("arm retry evidence lost its original owner: %+v", state)
 	}
-	// Real settlement: the armed retry callback re-arms and clears the exact ID.
-	root.cfg.testOnly.delegateAttentionReadFold = nil
+	// Repair restores execution readiness, not observation. Only the provider's
+	// successful synced response settles the original durable message.
+	beforeWake := wakes.Load()
 	clk.Advance(jobNotificationRetryInitialDelay)
 	clk.Drain()
-	root.attentionMu.Lock()
-	remaining := len(root.delegateAttentionArmIDs)
-	stillActive := root.delegateAttentionArmRetry.active
-	root.attentionMu.Unlock()
+	if wakes.Load() != beforeWake+1 {
+		t.Fatal("repaired fold did not wake the original receiver")
+	}
+	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	remaining := len(notificationTestPending(t, root))
+	root.mu.Lock()
+	stillActive := root.notificationSchedule.retry.active
+	root.mu.Unlock()
 	if remaining != 0 || stillActive {
 		t.Fatalf("settled arm retry still pending: ids=%d active=%t", remaining, stillActive)
 	}
@@ -717,16 +724,16 @@ func TestRetirementPausedRootAttentionIsNotABlocker(t *testing.T) {
 	retirementIdleDelegate(t, root)
 	assertRetirementEvidenceEligible(t, c)
 
-	root.attentionMu.Lock()
-	root.rootAttentionWakeIDs["paused-root-attention"] = struct{}{}
-	root.rootAttentionPaused = true
-	root.rootAttentionWake = false
-	root.attentionMu.Unlock()
+	observationEnqueue(t, root, "paused-root-attention", "pending notification")
+	root.mu.Lock()
+	root.notificationSchedule.paused = true
+	root.notificationSchedule.hinted = false
+	root.mu.Unlock()
 	assertRetirementEvidenceEligible(t, c)
 
-	root.attentionMu.Lock()
-	root.rootAttentionWake = true
-	root.attentionMu.Unlock()
+	if err := root.requestNotificationWake(); err != nil {
+		t.Fatal(err)
+	}
 	assertRetirementEvidenceBlocked(t, c, "notification")
 }
 

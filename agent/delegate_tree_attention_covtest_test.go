@@ -46,7 +46,7 @@ func TestDelegateAttentionProjectionEligible(t *testing.T) {
 func TestNextIdleDelegateAttention_NoPending(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_idle", "")
-	_, _, pending := c.nextIdleDelegateAttention()
+	_, _, pending := notificationTestProjectedReceiver(c)
 	if pending {
 		t.Fatal("expected pending=false with no attention")
 	}
@@ -65,7 +65,7 @@ func TestHasPendingDelegateAttention_NoPending(t *testing.T) {
 // TestRetryDelegateAttentionLater covers the no-op retry path.
 func TestRetryDelegateAttentionLater(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	c.retryDelegateAttentionLater()
+	c.recheckNotificationReceivers()
 	// Should not panic.
 }
 

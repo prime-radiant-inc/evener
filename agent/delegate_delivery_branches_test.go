@@ -303,7 +303,7 @@ func TestHasPendingDelegateDeliveriesNil(t *testing.T) {
 func TestNotifyStableDelegateAttentionNil(t *testing.T) {
 	t.Parallel()
 	var c *delegateTreeController
-	c.notifyStableDelegateAttention() // should be a no-op
+	c.recheckNotificationReceivers() // should be a no-op
 }
 
 // ---------------------------------------------------------------------------

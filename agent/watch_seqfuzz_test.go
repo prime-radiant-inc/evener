@@ -398,7 +398,7 @@ func (h *ws_harness) applyEmit(op ws_op) ws_opOutcome {
 	observed := 0
 	h.capMu.Lock()
 	for _, n := range h.captured[before:] {
-		if n.Kind == jobNotificationKindWatch && n.WatchSend == nil && !strings.HasPrefix(n.Reason, "watch cleared:") {
+		if n.Kind == jobNotificationKindWatch && !strings.HasPrefix(n.Reason, "watch cleared:") {
 			observed++
 		}
 	}

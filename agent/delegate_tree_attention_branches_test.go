@@ -441,7 +441,7 @@ func TestHasPendingDelegateAttentionEmptyIDs(t *testing.T) {
 func TestHasRunnableDelegateAttentionNil(t *testing.T) {
 	t.Parallel()
 	var c *delegateTreeController
-	if c.hasRunnableDelegateAttention() {
+	if notificationTestProjectionRunnable(c) {
 		t.Fatalf("expected false for nil controller")
 	}
 }
@@ -452,7 +452,7 @@ func TestHasRunnableDelegateAttentionEmpty(t *testing.T) {
 		attention: map[string]*delegateAttentionState{},
 		durable:   map[string]*delegatestore.Aggregate{},
 	}
-	if c.hasRunnableDelegateAttention() {
+	if notificationTestProjectionRunnable(c) {
 		t.Fatalf("expected false for empty")
 	}
 }
@@ -464,13 +464,13 @@ func TestHasRunnableDelegateAttentionEmpty(t *testing.T) {
 func TestRetryDelegateAttentionLaterNil(t *testing.T) {
 	t.Parallel()
 	var c *delegateTreeController
-	c.retryDelegateAttentionLater() // should be a no-op
+	c.recheckNotificationReceivers() // should be a no-op
 }
 
 func TestRetryDelegateAttentionLaterNilRoot(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{}
-	c.retryDelegateAttentionLater() // should be a no-op
+	c.recheckNotificationReceivers() // should be a no-op
 }
 
 // ---------------------------------------------------------------------------
@@ -480,7 +480,7 @@ func TestRetryDelegateAttentionLaterNilRoot(t *testing.T) {
 func TestNextIdleDelegateAttentionNil(t *testing.T) {
 	t.Parallel()
 	var c *delegateTreeController
-	_, _, ok := c.nextIdleDelegateAttention()
+	_, _, ok := notificationTestProjectedReceiver(c)
 	if ok {
 		t.Fatalf("expected false for nil controller")
 	}
@@ -492,7 +492,7 @@ func TestNextIdleDelegateAttentionEmpty(t *testing.T) {
 		attention: map[string]*delegateAttentionState{},
 		durable:   map[string]*delegatestore.Aggregate{},
 	}
-	_, _, ok := c.nextIdleDelegateAttention()
+	_, _, ok := notificationTestProjectedReceiver(c)
 	if ok {
 		t.Fatalf("expected false for empty")
 	}

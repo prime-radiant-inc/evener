@@ -11,7 +11,7 @@ import (
 // hold, returning the delegate picked.
 func pickDelegateAttention(t *testing.T, c *delegateTreeController) string {
 	t.Helper()
-	id, _, pending := c.selectDelegateAttentionWake()
+	id, _, pending := notificationTestTakeProjectedReceiver(c)
 	if !pending {
 		t.Fatal("no delegate selected")
 	}
@@ -44,7 +44,7 @@ func TestAFailingDelegateDoesNotStarveItsSiblings(t *testing.T) {
 	if !c.noteDelegateAttention("dlg_a", "delegate:dlg_a-again") {
 		t.Fatal("note dlg_a attention again")
 	}
-	if id, _, _ := c.nextIdleDelegateAttention(); id != "dlg_a" {
+	if id, _, _ := notificationTestProjectedReceiver(c); id != "dlg_a" {
 		t.Fatalf("after dlg_a owes afresh, next = %s, want dlg_a", id)
 	}
 }
@@ -56,7 +56,7 @@ func TestAFailedRestoreTakesTheDelegatesTurn(t *testing.T) {
 	if err := os.Remove(filepath.Join(fixture.stateDir, sessionsSubdir, fenced.grandchildSessionID+".meta.json")); err != nil {
 		t.Fatalf("remove grandchild session meta: %v", err)
 	}
-	root.drivePendingStableDelegateAttention()
+	root.delegateController.recheckNotificationReceivers()
 	c := root.delegateController
 	c.mu.Lock()
 	state := c.attention[fenced.grandchildDelegateID]

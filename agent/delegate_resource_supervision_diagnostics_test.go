@@ -5,7 +5,6 @@ import (
 	"os"
 	"reflect"
 	"runtime"
-	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -246,7 +245,7 @@ func TestStableSupervisionFailureSnapshotCapturesArmRetryIDs(t *testing.T) {
 		}
 	})
 	for _, id := range []string{"attention:diagnostic-z", "attention:diagnostic-a"} {
-		if err := sub.sess.armDelegateAttention(id); err == nil {
+		if err := sub.sess.requestNotificationWake(); err == nil {
 			t.Fatalf("arm %q against directory transcript succeeded", id)
 		}
 	}
@@ -392,11 +391,9 @@ func stableSupervisionFailureSnapshot(root *Session, sub *subagent, adapter *fak
 		snapshot["subagent_lock_busy"] = true
 	}
 	sess := sub.sess
-	if sess.attentionMu.TryLock() {
-		ids := keys(sess.delegateAttentionArmIDs)
-		sort.Strings(ids)
-		snapshot["arm_retry_ids"] = ids
-		sess.attentionMu.Unlock()
+	if sess.mu.TryLock() {
+		snapshot["notification_retry"] = sess.notificationSchedule.retry.active
+		sess.mu.Unlock()
 	} else {
 		snapshot["attention_lock_busy"] = true
 	}

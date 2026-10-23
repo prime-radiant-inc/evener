@@ -71,7 +71,7 @@ func TestAttentionPauseWarnsAgainAfterADelivery(t *testing.T) {
 	_, _ = s.ProcessInputKind(context.Background(), "", nil, EntryNotification)
 	// The deferred attention rides a later turn that succeeds (a user's
 	// message, say) and resolves.
-	if err := s.finishRootDelegateAttentionTurn([]string{"delegate:dlg_a/delivery/1"}, nil); err != nil {
+	if err := s.finishAttentionTurn([]string{"delegate:dlg_a/delivery/1"}, nil); err != nil {
 		t.Fatalf("resolve the deferred attention: %v", err)
 	}
 	armOneRootAttention(t, s, "dlg_b", "delegate:dlg_b/delivery/1")
@@ -118,7 +118,7 @@ func TestAttentionPausedMessageSaysHowToResume(t *testing.T) {
 		{llm.ErrorFromHTTPStatus("work", 404, "no such model", nil, nil), "work refused the request. Switch models or send a message to continue."},
 	}
 	for _, tc := range cases {
-		if got := rootAttentionPausedMessage(tc.err); !strings.HasSuffix(got, tc.want) {
+		if got := notificationsPausedMessage(tc.err); !strings.HasSuffix(got, tc.want) {
 			t.Errorf("paused message for %v = %q, want it to end %q", tc.err, got, tc.want)
 		}
 	}
@@ -170,7 +170,7 @@ func TestAttentionPausedMessageNamesTheQuotaResetInUTC(t *testing.T) {
 		t.Fatalf("fixture kind = %v, want quota exceeded", llm.Kind(err))
 	}
 	want := "work's usage limit is reached until " + time.Unix(1785258150, 0).UTC().Format("Jan 2 15:04 UTC") + "."
-	if got := rootAttentionPausedMessage(err); !strings.Contains(got, want) {
+	if got := notificationsPausedMessage(err); !strings.Contains(got, want) {
 		t.Fatalf("quota message = %q, want it to contain %q", got, want)
 	}
 }
@@ -262,7 +262,7 @@ func TestModelSwitchDoesNotReopenAStopParkedRail(t *testing.T) {
 	}, func() {}); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	if !s.rootAttentionRailParked() {
+	if !s.notificationStopHeld() {
 		t.Fatal("this test is not in the state it means to be: the Stop did not park the rail")
 	}
 	if err := s.SetModel("gpt-5.4"); err != nil {

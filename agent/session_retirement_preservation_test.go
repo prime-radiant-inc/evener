@@ -934,7 +934,7 @@ func TestRetirementTreeSettleDrainsPendingRootAttention(t *testing.T) {
 	// root's emitters stay unjoined so nothing drains the root attention.
 	joinRetirementTreeEmitters(sub.sess)
 	deadline := time.Now().Add(10 * time.Second)
-	for !root.hasPendingRootDelegateAttention() {
+	for !root.hasPendingNotifications() {
 		if time.Now().After(deadline) {
 			t.Fatal("fixture: the delegate completion armed no pending root attention to drain")
 		}
@@ -948,7 +948,7 @@ func TestRetirementTreeSettleDrainsPendingRootAttention(t *testing.T) {
 	// The production readiness path drains the tree, after which retirement is
 	// claimable.
 	awaitTreeQuiesced(t, root)
-	if root.hasPendingRootDelegateAttention() {
+	if root.hasPendingNotifications() {
 		t.Fatal("tree settle left the root delegate attention pending")
 	}
 	claim, state, err := c.TryClaim(true)

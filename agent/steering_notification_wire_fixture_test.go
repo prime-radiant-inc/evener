@@ -139,12 +139,8 @@ func TestSteeringNotificationWireFixtures(t *testing.T) {
 		Terminal:        true,
 		Note:            "Check whether CI finished.",
 	}
-	watchSend := watchSendTokenNotification("", jobstore.WatchSendState{
-		Key:           jobstore.WatchSendKey{ResolvedWatchedIdentity: "job_7"},
-		TriggerReason: "output_match: PASS",
-		DeliveryID:    "wsd_1",
-	})
-	watchSend.watchSendFrame = "CI finished: 3 checks passed."
+	// Frozen historical token wrapper, retained only to test old transcript readers.
+	watchSend := "<job-notification job_id=\"job_7\" event=\"watch_send\" delivery_id=\"wsd_1\" trigger=\"output_match: PASS\">\nCI finished: 3 checks passed.\n</job-notification>"
 	completedExcerpt := notificationExcerpt{text: "ok  \tprimeradiant.com/evener/agent\t12.3s", complete: true}
 	failedExcerpt := notificationExcerpt{
 		text:     "--- FAIL: TestTreeSettle (0.02s)\n    tree_test.go:88: drain ran before settle\nFAIL",
@@ -268,7 +264,7 @@ func TestSteeringNotificationWireFixtures(t *testing.T) {
 		{
 			name: "job-watch-send",
 			note: "A watch's send frame delivered on its trigger.",
-			turn: notificationWireReminder(frame(watchSend, notificationExcerpt{})),
+			turn: notificationWireReminder(watchSend),
 		},
 	}
 

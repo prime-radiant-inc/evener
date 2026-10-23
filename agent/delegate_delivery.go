@@ -539,7 +539,7 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 	}
 	if plan.controller.deliveryReceiverCommitted(token) {
 		plans, err := plan.controller.CompleteDelivery(token, true)
-		plan.controller.notifyStableDelegateAttention()
+		plan.controller.recheckNotificationReceivers()
 		return plans, err
 	}
 	if receiver == nil {
@@ -594,7 +594,7 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 			// the writer, so retain only the FIFO source receipt and publish the
 			// transcript-backed wake even when the following source append fails.
 			plan.controller.commitColdDeliveryReceiver(token)
-			defer plan.controller.notifyStableDelegateAttention()
+			defer plan.controller.recheckNotificationReceivers()
 		}
 	default:
 		_, err = receiver.appendDelegateNotificationDurably(attentionID, content)
@@ -615,7 +615,7 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 	switch receiver := receiver.(type) {
 	case *Session:
 		if !receiver.isRootDelegateAttentionReceiver() {
-			plan.controller.notifyStableDelegateAttention()
+			plan.controller.recheckNotificationReceivers()
 		}
 	}
 	return plans, err
@@ -930,16 +930,46 @@ func (c *delegateTreeController) deliveryReceiverLocked(ownerDelegateID string) 
 	return nil
 }
 
-func (c *delegateTreeController) notifyStableDelegateAttention() {
+func (c *delegateTreeController) recheckNotificationReceivers() bool {
 	if c == nil {
-		return
+		return false
 	}
 	c.mu.Lock()
 	root := c.rootRuntime
+	ids := make([]string, 0, len(c.durable))
+	for id, aggregate := range c.durable {
+		if aggregate != nil && aggregate.Resumable && aggregate.Phase == delegatestore.PhaseIdle {
+			ids = append(ids, id)
+		}
+	}
+	slices.SortFunc(ids, func(a, b string) int {
+		var at, bt uint64
+		if state := c.attention[a]; state != nil {
+			at = state.driveTurn
+		}
+		if state := c.attention[b]; state != nil {
+			bt = state.driveTurn
+		}
+		if at < bt {
+			return -1
+		}
+		if at > bt {
+			return 1
+		}
+		return strings.Compare(a, b)
+	})
+	sessionIDs := make([]string, 0, len(ids))
+	for _, id := range ids {
+		sessionIDs = append(sessionIDs, c.durable[id].Descriptor.ChildSessionID)
+	}
 	c.mu.Unlock()
 	if root != nil {
-		root.notify()
+		root.dispatchNotificationWake()
 	}
+	for _, id := range sessionIDs {
+		c.requestSessionWake(id)
+	}
+	return len(sessionIDs) != 0
 }
 
 func (s *Session) executeDelegateMutationPlans(plans delegateMutationPlans) error {

@@ -66,7 +66,7 @@ func jdrExerciseSuccessfulChildDrive(t *testing.T) {
 	}
 	safzWaitDone(t, sub)
 	sub.sess.enqueueJobNotification(jobNotification{JobID: "job_drive_tail", Reason: "drive tail"})
-	parent.driveChildrenWithUndeliveredAttention()
+	parent.delegateController.recheckNotificationReceivers()
 	parent.sendersWG.Wait()
 	if parent.treeCounter.n.Load() != 0 || parent.driveCounter.n.Load() != 0 {
 		t.Fatalf("child drive counters = tree:%d drive:%d, want zero", parent.treeCounter.n.Load(), parent.driveCounter.n.Load())
@@ -96,7 +96,7 @@ func jdrExercisePendingAndRender(t *testing.T, s *Session) {
 	jm.pendingWatchSendDeliveries(func(*jobstore.WatchSendState) bool { return false })
 	jm.hasPendingWatchSends()
 	jm.enqueue = func(jobNotification) {}
-	s.enqueueOwnCallerWatchSendTokens()
+	_ = s.retryRestoredPendingWatchSends(context.Background())
 	failAppendN(jm, jobstore.EventWatchSendDropped, 1)
 	_, _ = s.drainJobManagerWatchSends(context.Background(), jm, "child")
 	_, _ = s.drainJobManagerWatchSends(context.Background(), jm, "")
@@ -176,7 +176,6 @@ func jdrExerciseGuardsAndFailures(t *testing.T, s *Session) {
 	_ = nilSession.childResumable("x")
 	_ = nilSession.childStopGated("x")
 	nilSession.settleDrivenChildForwardedPendings("x")
-	nilSession.enqueueOwnCallerWatchSendTokens()
 	_ = nilSession.retryRestoredPendingWatchSends(context.Background())
 	s.driveChildIfNotStopGated(nil)
 	s.driveChildIfNotStopGated(&subagent{})
@@ -253,7 +252,7 @@ func jdrExerciseGuardsAndFailures(t *testing.T, s *Session) {
 	s.driveChildIfNotStopGated(stopped)
 	s.subagents = newSubagentManager(nil, 0)
 	s.subagents.track(stopped)
-	s.driveChildrenWithUndeliveredAttention()
+	s.delegateController.recheckNotificationReceivers()
 }
 
 func appendForwardedChildTerminalPending(t *testing.T, jm *jobManager, jobID, childSessionID string) {

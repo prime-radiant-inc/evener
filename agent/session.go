@@ -1041,17 +1041,9 @@ type Session struct {
 	// attentionFoldCursor is the incremental fold of this Session's own
 	// transcript behind its attention reads. Guarded by attentionMu.
 	attentionFoldCursor delegateAttentionFoldCursor
-	// rootAttentionWakeIDs is a process-local wake cache keyed by unresolved
-	// attention IDs from the root transcript. The transcript fold remains the
-	// sole durable authority; restart rebuilds this map from that fold.
-	rootAttentionWakeIDs map[string]struct{}
-	rootAttentionWake    bool
-	rootAttentionRetry   notificationRetry
-	// rootAttentionPaused records that a permanent provider failure deferred
-	// the pending root attention and the session has said so (see
-	// finishRootDelegateAttentionTurn); a delivery or a model switch ends
-	// the episode. Guarded by attentionMu.
-	rootAttentionPaused bool
+	// notificationSchedule shares the input lifetime's s.mu. It holds only
+	// dispatch/recovery state, never message IDs or bodies.
+	notificationSchedule notificationSchedule
 	// attentionCoveredIDs is the running turn's coverage set. Stage it per
 	// round, promote it on settle, and read it at turn finish; the contract
 	// lives on stagePresentedAttentionCoverage and unionCoveredAttention.
@@ -1100,13 +1092,10 @@ type Session struct {
 	// delegateAttentionWarnMu guards delegateAttentionWarned alone: per
 	// failing delegate-attention action and delegate, the error the session
 	// last warned about (see warnDelegateAttentionFailed).
-	delegateAttentionWarnMu   sync.Mutex
-	delegateAttentionWarned   map[delegateAttentionWarning]string
-	delegateAttentionArmIDs   map[string]struct{}
-	delegateAttentionArmRetry notificationRetry
-	stableAttentionRetry      notificationRetry
-	delegateDeliveryPumping   bool
-	delegateDeliveryRetry     notificationRetry
+	delegateAttentionWarnMu sync.Mutex
+	delegateAttentionWarned map[delegateAttentionWarning]string
+	delegateDeliveryPumping bool
+	delegateDeliveryRetry   notificationRetry
 	// transcriptReady records that attachTranscript has run, i.e. that the
 	// session has finished deciding whether it has a transcript at all. Until
 	// then a turn has nowhere to go and is held in pendingTranscriptTurns; a
@@ -1321,36 +1310,25 @@ func (s *Session) SetNotifyFunc(f func()) {
 	if f == nil {
 		return
 	}
-	s.pendingJobNotifsMu.Lock()
-	pending := len(s.pendingJobNotifs) > 0
-	s.pendingJobNotifsMu.Unlock()
-	// The USER's steering and queued input both count as pending work here for
-	// the same reason the rest does. Either one accepted durably and then lost
-	// to a crash is rebuilt by restoreDurableClientMutationQueues, and nothing
-	// else asks the session to run: the client may never retry, and the round
-	// loop only drains steering inside a turn that is not going to start on its
-	// own. Registering the callback is the moment a wake can provably be
-	// delivered.
-	//
-	// Daemon-authored steering is deliberately NOT counted. It is injected
-	// during startup, before the user has said anything, and it is context for
-	// their first turn rather than work of its own -- so waking for it would
-	// start a turn nobody asked for, ahead of the opening prompt.
-	//
-	// A steer parked by a Stop (SteeringHeld) is NOT counted: it is waiting on
-	// the user, not work in progress, and waking for it at attach would restart
-	// the session and deliver the steer the user just stopped -- the open
-	// steering rail issue #174 closes (issue #146, Option C — park in place).
-	if pending || s.hasRunnableUserSteering() || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
+	s.mu.Lock()
+	s.notificationSchedule.version++
+	s.notificationSchedule.hinted = false
+	s.mu.Unlock()
+	if s.hasRunnableUserSteering() || s.QueueDepth() > 0 {
 		f()
+	}
+	s.dispatchNotificationWake()
+	if s.isRootDelegateAttentionReceiver() && s.delegateController != nil {
+		s.delegateController.recheckNotificationReceivers()
 	}
 }
 
 func (s *Session) notify() {
 	s.mu.Lock()
 	f := s.notifyFunc
+	closed := s.closingOrClosedLocked()
 	s.mu.Unlock()
-	if f != nil {
+	if f != nil && !closed {
 		f()
 	}
 }
@@ -1765,7 +1743,7 @@ func (s *Session) SetModel(model string) error {
 	// boundary doesn't leave on-disk model stale. Kata wnfz. maybeAutoSave
 	// re-acquires s.mu via s.Meta(), so the lock must be released first.
 	s.maybeAutoSave()
-	s.resumeRootAttentionAfterModelSwitch()
+	s.requestNotificationWake()
 	return nil
 }
 

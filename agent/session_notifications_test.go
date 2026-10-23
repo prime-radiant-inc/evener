@@ -277,7 +277,7 @@ func TestNotificationColdSourceAckFailureRetainsReceiverRecovery(t *testing.T) {
 	if wakes == 0 {
 		t.Error("cold receiver was not woken after durable acceptance and source-ack failure")
 	}
-	if delegateID, selectedID, ok := c.nextIdleDelegateAttention(); !ok || delegateID != "dlg_owner" || selectedID != attentionID {
+	if delegateID, selectedID, ok := notificationTestProjectedReceiver(c); !ok || delegateID != "dlg_owner" || selectedID != attentionID {
 		t.Errorf("cold recovery selection = %q, %q, %v", delegateID, selectedID, ok)
 	}
 	coldRetry := c.ReplayDeliveries()

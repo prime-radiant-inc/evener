@@ -111,17 +111,20 @@ func TestDelegateReportNeedsResponseKeepsExistingQuestion(t *testing.T) {
 }
 
 func TestDelegateReportCreatesNoAttentionEntry(t *testing.T) {
-	s := &Session{}
-	s.rootAttentionWakeIDs = map[string]struct{}{"delegate:dlg_target/delivery/1": {}}
-	if !s.pendingRootReportAttention() {
-		t.Fatal("a report delivery was not recognized as report attention")
-	}
-	s.rootAttentionWakeIDs = map[string]struct{}{"delegate:dlg_target/update/1": {}}
-	if s.pendingRootReportAttention() {
-		t.Fatal("an update delivery was mistaken for report attention")
-	}
-	s.rootAttentionWakeIDs = map[string]struct{}{"watch:job-1": {}}
-	if s.pendingRootReportAttention() {
-		t.Fatal("a watch wake was mistaken for report attention")
+	for _, tc := range []struct {
+		id     string
+		report bool
+	}{
+		{"delegate:dlg_target/delivery/1", true},
+		{"delegate:dlg_target/update/1", false},
+		{"watch:job-1", false},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			s := observationSession(t, &skillContinuationAdapter{}, false)
+			observationEnqueue(t, s, tc.id, "notification payload")
+			if got := s.pendingDelegateReport(); got != tc.report {
+				t.Fatalf("pendingDelegateReport = %t, want %t", got, tc.report)
+			}
+		})
 	}
 }

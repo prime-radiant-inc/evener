@@ -89,7 +89,7 @@ func TestDelegateAttention_LiveStopCompletionDiscardsLateBoundWake(t *testing.T)
 	if c.hasPendingDelegateAttention() {
 		t.Fatal("hasPendingDelegateAttention is true for a deliberately stopped delegate")
 	}
-	if nextID, _, pending := c.nextIdleDelegateAttention(); pending {
+	if nextID, _, pending := notificationTestProjectedReceiver(c); pending {
 		t.Fatalf("attention drive would resurrect stop-gated delegate %q", nextID)
 	}
 	fold, err := readDelegateAttentionFold(transcriptPath(c.stateDir, childSessionID), childSessionID)

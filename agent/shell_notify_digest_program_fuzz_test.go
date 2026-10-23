@@ -66,11 +66,7 @@ func FuzzShellNotificationRenderProgram(f *testing.F) {
 			terminalWithOutput = true
 			excerpt = s.terminalNotificationExcerpt(n)
 		case 2:
-			n = watchSendTokenNotification("job_render", jobstore.WatchSendState{
-				Key:        jobstore.WatchSendKey{ResolvedWatchedIdentity: "job_render", ResolvedSendTo: "caller"},
-				DeliveryID: "delivery-1", TriggerReason: reason,
-			})
-			n.watchSendFrame = content
+			n = watchNotification("job_render", reason+content)
 			excerpt = s.terminalNotificationExcerpt(n)
 		case 3:
 			n.JobID = ""
@@ -107,7 +103,7 @@ func FuzzShellNotificationRenderProgram(f *testing.F) {
 		if got := notificationTranscriptRef(n); got == "" && n.JobID != "" {
 			t.Fatal("job notification has no transcript reference fallback")
 		}
-		if mode&8 != 0 && n.WatchSend == nil && !strings.Contains(block, `event="running"`) {
+		if mode&8 != 0 && !strings.Contains(block, `event="running"`) {
 			t.Fatalf("empty status did not render the default running event: %q", block)
 		}
 	})

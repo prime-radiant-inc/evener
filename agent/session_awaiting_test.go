@@ -660,7 +660,7 @@ func TestArmAwaitingAtSettle_PendingDelegateReportRestsIdle(t *testing.T) {
 	if ok, err := sess.appendDelegateNotificationDurably(id, `<delegate-notification delegate_id="dlg_x">done</delegate-notification>`); err != nil || !ok {
 		t.Fatalf("append delegate notification: %v %v", ok, err)
 	}
-	if err := sess.armDelegateAttention(id); err != nil {
+	if err := sess.requestNotificationWake(); err != nil {
 		t.Fatal(err)
 	}
 	sess.armAwaitingAtSettle(true, false)

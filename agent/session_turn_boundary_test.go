@@ -311,7 +311,7 @@ func TestWakeStandsDownWhileAUserTurnIsClaimed(t *testing.T) {
 }
 
 // TestStandDownConsumesNoWakeState is the constraint that decides WHERE the
-// stand-down check goes. beginRootDelegateAttentionTurn (session_lifecycle.go,
+// stand-down check goes. notificationSnapshot (session_lifecycle.go,
 // in processOneInput) runs ahead of acceptNotificationInput and consumes the
 // process-local wake: it clears rootAttentionWake AND cancels any scheduled
 // retry (session_attention.go:518-521). Only finishRootDelegateAttentionTurn
@@ -325,10 +325,10 @@ func TestStandDownConsumesNoWakeState(t *testing.T) {
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 
-	s.attentionMu.Lock()
-	s.rootAttentionWakeIDs = map[string]struct{}{"att_1": {}}
-	s.rootAttentionWake = true
-	s.attentionMu.Unlock()
+	observationEnqueue(t, s, "att_1", "pending notification")
+	s.mu.Lock()
+	s.notificationSchedule.hinted = true
+	s.mu.Unlock()
 
 	// A user's turn/start already owns the durable name.
 	if err := s.ensureClientMutationStore(); err != nil {
@@ -337,6 +337,7 @@ func TestStandDownConsumesNoWakeState(t *testing.T) {
 	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		snapshot.NextTurnSequence++
 		snapshot.ActiveTurnID = appwire.ClientMutationTurnID(snapshot.NextTurnSequence)
+		snapshot.PendingExecutions["cm-user"] = appwire.PendingMutation{ClientMutationID: "cm-user", Method: clientMutationMethodStart, ExecutionState: "accepted", TurnID: snapshot.ActiveTurnID, ProjectionState: appwire.MutationProjectionPending}
 		return nil
 	}); err != nil {
 		t.Fatalf("seed a claimed user turn: %v", err)
@@ -346,10 +347,13 @@ func TestStandDownConsumesNoWakeState(t *testing.T) {
 		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
 	}
 
-	s.attentionMu.Lock()
-	armed := s.rootAttentionWake
-	pending := len(s.rootAttentionWakeIDs)
-	s.attentionMu.Unlock()
+	s.mu.Lock()
+	armed := s.notificationSchedule.hinted || s.notificationSchedule.retry.active
+	s.turnNameRetryMu.Lock()
+	armed = armed || s.turnNameRetry.active
+	s.turnNameRetryMu.Unlock()
+	pending := len(notificationTestPending(t, s))
+	s.mu.Unlock()
 	if pending == 0 {
 		t.Fatal("the stand-down dropped the pending attention ids outright")
 	}
@@ -422,10 +426,10 @@ func TestStandDownReArmsTheWake(t *testing.T) {
 		woken <- struct{}{}
 	})
 
-	s.attentionMu.Lock()
-	s.rootAttentionWakeIDs = map[string]struct{}{"att_1": {}}
-	s.rootAttentionWake = true
-	s.attentionMu.Unlock()
+	observationEnqueue(t, s, "att_1", "pending notification")
+	s.mu.Lock()
+	s.notificationSchedule.hinted = true
+	s.mu.Unlock()
 
 	if err := s.ensureClientMutationStore(); err != nil {
 		t.Fatalf("ensureClientMutationStore: %v", err)

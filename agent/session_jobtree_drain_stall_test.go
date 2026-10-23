@@ -321,15 +321,15 @@ func TestDrainStallWatchdogSparePendingDelegateAttentionArmRetry(t *testing.T) {
 	// Seed the retry set the way armDelegateAttention's entering-retry
 	// transition does, without ever delivering the (misrouted) wake.
 	sess.attentionMu.Lock()
-	sess.delegateAttentionArmIDs = map[string]struct{}{"quiet:dlg_child:1:1": {}}
+	sess.notificationSchedule.retry.active = true
 	sess.attentionMu.Unlock()
 	defer func() {
 		sess.attentionMu.Lock()
-		sess.delegateAttentionArmIDs = nil
+		sess.notificationSchedule.retry.active = false
 		sess.attentionMu.Unlock()
 	}()
 
-	if !sess.hasPendingDelegateAttentionArmRetry() {
+	if !sess.notificationWorkPending() {
 		t.Fatal("precondition: expected a pending delegate attention arm retry")
 	}
 	if stalled, err := sess.drainSubtreeIsStalled(); err != nil || stalled {

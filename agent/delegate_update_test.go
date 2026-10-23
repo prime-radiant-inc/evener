@@ -1107,7 +1107,7 @@ func TestDelegateUpdateSurvivesRestart(t *testing.T) {
 		if !slices.Equal(pending, []string{updateID, reportID}) {
 			t.Fatalf("root attention after restore = %v, want the update then the runtime_lost report", pending)
 		}
-		if !root.hasPendingRootDelegateAttention() {
+		if !root.hasPendingNotifications() {
 			t.Fatal("restore did not arm the root's wake")
 		}
 		// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
@@ -1148,7 +1148,7 @@ func TestDelegateUpdateSurvivesRestart(t *testing.T) {
 		if got := rootPendingAttention(restored); !slices.Equal(got, pending) {
 			t.Fatalf("root attention after restart = %v, want %v", got, pending)
 		}
-		if !restored.hasPendingRootDelegateAttention() {
+		if !restored.hasPendingNotifications() {
 			t.Fatal("restore did not re-arm the unread update's wake")
 		}
 		// TRIPWIRE: every answer is scripted in process; only a hang reaches it.

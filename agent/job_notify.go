@@ -14,9 +14,6 @@ import (
 type deliverableJobNotification struct {
 	notification jobNotification
 	terminalGen  string
-	watchJM      *jobManager
-	watchCfg     *watchConfig
-	watchState   jobstore.WatchSendState
 }
 
 const jobNotificationEventWatch = "watch"
@@ -126,7 +123,7 @@ type notificationExcerpt struct {
 func (s *Session) terminalNotificationExcerpt(n jobNotification) notificationExcerpt {
 	// Watch frames and watch events (with or without a job id) are not terminal
 	// job_finished notifications and carry no result excerpt.
-	if n.WatchSend != nil || n.JobID == "" || n.Status == jobNotificationEventWatch {
+	if n.JobID == "" || n.Status == jobNotificationEventWatch {
 		return notificationExcerpt{}
 	}
 	jm, rec, err := s.nestedOrLocalJobManager(n.JobID)
@@ -228,16 +225,6 @@ func notificationAttr(key, value string) string {
 // read_transcript": false drops the output pointer rather than pointing at a
 // tool the receiver cannot call.
 func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt, canReadTranscript bool) string {
-	if n.WatchSend != nil {
-		attrs := []string{
-			notificationAttr("job_id", n.JobID),
-			`event="watch_send"`,
-			notificationAttr("delivery_id", n.WatchSend.DeliveryID),
-			notificationAttr("trigger", n.Reason),
-		}
-		return fmt.Sprintf("<job-notification %s>\n%s\n</job-notification>",
-			strings.Join(attrs, " "), escapeNotificationBody(n.watchSendFrame))
-	}
 
 	event := n.Status
 	if event == "" {

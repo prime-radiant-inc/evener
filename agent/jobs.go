@@ -584,10 +584,6 @@ type jobNotification struct {
 	// triggering watch's lineage so the notification turn it drives stamps the
 	// same origin and a same-watch retrigger is suppressed.
 	Provenance *provenance.Causal
-	// WatchSend marks this entry as a watch-send wake token: render-by-key
-	// against the owning jobManager's CURRENT pending state at accept time
-	// (spec §4.3). The frame text is deliberately NOT carried here.
-	WatchSend *watchSendToken
 	// Watch fields (in-memory only). WatchID identifies the firing timer so
 	// the session can fold repeated ticks; Fires is how many folded into this
 	// entry; IntervalSeconds and Terminal carry what the timer block needs.
@@ -619,9 +615,6 @@ type jobNotification struct {
 	receiverHoldWake  func() func()
 	callbackConfig    *watchConfig
 	callbackTrigger   string
-	// watchSendFrame is the rendered frame, populated only between filter and
-	// format inside one accept pass (never persisted, never enqueued).
-	watchSendFrame string
 }
 
 func (n jobNotification) isWatch() bool {
@@ -2091,9 +2084,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		watchNotifications, watchDeliveries = jm.completeExpiredJobWatchesLocked(run.rec.JobID, expiredWatches, watchRootProvenance)
 		jm.mu.Unlock()
 		ownNotices = jm.routeWatchNotifications(watchNotifications)
-		var tokens []jobNotification
-		tokens, watchSendRecorded = jm.recordWatchSends(watchDeliveries)
-		ownNotices = append(ownNotices, tokens...)
+		watchSendRecorded = jm.recordWatchSends(watchDeliveries)
 	} else {
 		jm.mu.Unlock()
 	}

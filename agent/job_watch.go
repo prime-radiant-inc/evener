@@ -477,69 +477,6 @@ type restoredWatchConfigKey struct {
 	stableReceiver     bool
 }
 
-// watchSendToken identifies a pending caller-targeted watch send. Tokens are
-// at-least-once and harmless when stale: render-by-key skips any token whose
-// pending state was replaced, cleared, dropped, or already settled.
-type watchSendToken struct {
-	ChildSessionID string // "" = the session's own jobManager
-	Key            jobstore.WatchSendKey
-	UpdateSeq      uint64
-	DeliveryID     string
-}
-
-func watchSendTokenNotification(childSessionID string, state jobstore.WatchSendState) jobNotification {
-	return jobNotification{
-		Kind:       jobNotificationKindWatch,
-		JobID:      state.Key.ResolvedWatchedIdentity,
-		Status:     jobNotificationEventWatch,
-		Reason:     state.TriggerReason,
-		Provenance: provenance.Clone(state.Provenance),
-		WatchSend: &watchSendToken{
-			ChildSessionID: childSessionID,
-			Key:            state.Key,
-			UpdateSeq:      state.UpdateSeq,
-			DeliveryID:     state.DeliveryID,
-		},
-	}
-}
-
-// jobManagerForToken resolves which jobManager owns a token's pending state.
-func (s *Session) jobManagerForToken(tok *watchSendToken) *jobManager {
-	if tok == nil {
-		return nil
-	}
-	if tok.ChildSessionID == "" {
-		return s.jobManager
-	}
-	if s.subagents == nil {
-		return nil
-	}
-	if sub := s.subagents.get(tok.ChildSessionID); sub != nil && sub.sess != nil {
-		return sub.sess.jobManager
-	}
-	return nil
-}
-
-// resolveWatchSendToken returns the CURRENT frame for a token, or ok=false if
-// the token is stale (latest-frame-wins; also covers delivery-after-drop).
-func (s *Session) resolveWatchSendToken(tok *watchSendToken) (jm *jobManager, cfg *watchConfig, state jobstore.WatchSendState, ok bool) {
-	jm = s.jobManagerForToken(tok)
-	if jm == nil {
-		return nil, nil, jobstore.WatchSendState{}, false
-	}
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	cfg = jm.watchConfigForKeyLocked(tok.Key)
-	if cfg == nil {
-		return nil, nil, jobstore.WatchSendState{}, false
-	}
-	cur := cfg.pending[tok.Key]
-	if cur == nil || cur.UpdateSeq != tok.UpdateSeq {
-		return nil, nil, jobstore.WatchSendState{}, false
-	}
-	return jm, cfg, *cur, true
-}
-
 // watchConfigForKeyLocked returns the live or terminal-flush watch config that
 // currently holds a pending entry for key, or nil. Caller holds jm.mu.
 func (jm *jobManager) watchConfigForKeyLocked(key jobstore.WatchSendKey) *watchConfig {
@@ -4495,48 +4432,26 @@ func (jm *jobManager) rejectRunawayWatchSend(cfg *watchConfig, state jobstore.Wa
 }
 
 // recordWatchSendsAndKick persists fired sends and pumps canonical custody
-// immediately, including while tools run. Wake tokens and kicks schedule only
+// immediately, including while tools run. Kicks schedule only
 // later presentation or retry, not source production or receiver acceptance.
 func (jm *jobManager) recordWatchSendsAndKick(deliveries []watchSendDelivery) {
-	tokens, recorded := jm.recordWatchSends(deliveries)
+	recorded := jm.recordWatchSends(deliveries)
 	jm.dispatchProducedWatchSends()
-	// A queued token wakes the owner by itself; a kick is what covers a
-	// recorded send that queued nothing.
-	if queued := jm.enqueueNotifications(tokens); recorded && !queued {
+	if recorded {
 		jm.kick()
 	}
 }
 
-// recordWatchSends is the durable half of recordWatchSendsAndKick: it persists
-// every fired send and RETURNS the caller wake tokens rather than queueing
-// them, so a caller with more to say about the same event can wake the owner
-// once for all of it. recorded reports whether anything was persisted at all —
-// with tokens empty, that is what still owes the owner a kick.
-func (jm *jobManager) recordWatchSends(deliveries []watchSendDelivery) (tokens []jobNotification, recorded bool) {
-	if len(deliveries) == 0 {
-		return nil, false
-	}
-	deliveries = jm.snapshotWatchSendFrames(deliveries)
-	for _, d := range deliveries {
-		state, _, ok, err := jm.recordWatchSend(d)
-		if err != nil {
+// recordWatchSends persists source work. Canonical custody is its only delivery route.
+func (jm *jobManager) recordWatchSends(deliveries []watchSendDelivery) (recorded bool) {
+	for _, d := range jm.snapshotWatchSendFrames(deliveries) {
+		_, _, ok, err := jm.recordWatchSend(d)
+		if err != nil && !ok {
 			jm.kick()
 		}
-		if !ok {
-			continue // recordWatchSend already produced diagnostics/drops
-		}
-		// A partial-persist failure still returns ok=true with the persisted
-		// state: the pending frame is already journaled and committed to the
-		// runtime map, so it owes the owner a wake like any recorded send —
-		// otherwise the frame stalls until unrelated activity. The failure
-		// itself is already queued as a diagnostic at the persist site, so it
-		// coexists with the token/kick below.
-		recorded = true
-		if state.Key.ResolvedSendTo == runtimeMessageAliasCaller {
-			tokens = append(tokens, watchSendTokenNotification("", state))
-		}
+		recorded = recorded || ok
 	}
-	return tokens, recorded
+	return recorded
 }
 
 func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string) jobstore.WatchSendState {
@@ -4926,7 +4841,7 @@ func (jm *jobManager) armStableWatchFrame(controller *delegateTreeController, re
 func armStableWatchAttention(controller *delegateTreeController, receiver delegateDeliveryReceiver, receiverDelegateID, attentionID string) error {
 	switch receiver := receiver.(type) {
 	case *Session:
-		return receiver.armDelegateAttention(attentionID)
+		return receiver.requestNotificationWake()
 	case coldDelegateDeliveryReceiver:
 		return controller.armColdDelegateAttention(receiverDelegateID, attentionID)
 	}
@@ -6004,113 +5919,7 @@ func (s *Session) drainPendingWatchSendsReport(ctx context.Context) (watchSendDr
 			errs = append(errs, err)
 		}
 	}
-	s.driveChildrenWithUndeliveredAttention()
 	return result, errors.Join(errs...)
-}
-
-// driveChildrenWithUndeliveredAttention re-purposes the parent's loop-boundary
-// child traversal as a DRIVE-SIGNAL reader (spec §3): for each LIVE, IDLE direct
-// child with undelivered attention, the parent launches ONE EntryNotification
-// turn on the child's own drain loop. This is signal-reading only: it renders no
-// notification on the parent's rail (worker terminals reach the child's own
-// model, never the parent's — spec §3). The drive turn is async
-// (driveSubagentNotificationTurn fires a goroutine), so the parent's boundary
-// never blocks on a child's loop.
-//
-// Drive signals (spec §3): (a) queued job notifications (peekNotifications) and
-// (b) pending caller-targeted watch sends (hasPendingWatchSends). Signal (b) is
-// read here now that the v2 child-iteration re-route is deleted — a mid-owner
-// caller frame renders in the mid's own drive turn instead of being re-tokened
-// onto the parent's rail. A deliberately stopped child is stop-gated (no
-// resurrection); a successful handoff settles the parent's forwarded drive
-// signal; a child that cannot be driven escalates as "child unreachable:".
-func (s *Session) driveChildrenWithUndeliveredAttention() {
-	live := make(map[string]bool)
-	for _, sub := range s.liveDirectSubagents() {
-		child := sub.sess
-		// liveDirectSubagents filters nil subagents and sessions.
-		live[child.id] = true
-		// Stop-gating (spec §3): a deliberately stopped child is never resurrected
-		// by a drive for attention that predates the stop. New work clears the gate.
-		// A child the one-shot drain has given up on is skipped for the same
-		// reason and, additionally, for consistency: the drain declares it not
-		// live work, so driving it here would have the drain kicking a child it
-		// has already told the operator it abandoned — and abandoning a queued
-		// notification the drive loop was mid-way through delivering.
-		if s.childDriveGated(child.id) {
-			continue
-		}
-		if child.peekNotifications() > 0 || child.jobManager.hasPendingWatchSends() {
-			if s.driveSubagentNotificationTurn(sub) {
-				// Settle the parent's forwarded drive signal on a successful
-				// handoff so the same stale pending does not re-drive forever; the
-				// child's own ledger stays the source of truth.
-				s.settleDrivenChildForwardedPendings(child.id)
-			}
-		}
-	}
-	s.renderUnreachableChildPendings(live)
-}
-
-// redriveLiveChild re-drives the ONE live direct child whose wake a held
-// claim or guard dropped, once that claim or guard is let go and no run took
-// the dropped wake. Two exits use it:
-//   - a committed-send-start rollback (#940): while the claim was held the
-//     wake edge (driveChildIfNotStopGated) and the attention primitive
-//     (driveStableDelegateAttention) refused every drive for that child, so a
-//     child notification, pending watch send or armed stable attention that
-//     landed in the window was DROPPED;
-//   - an attention drive that launched no run, or a notification turn, after
-//     an attention drive was refused on its drive guard (#3723), such as the
-//     finalize tail's re-arm drive landing while a drive refused busy still
-//     held the guard.
-//
-// Nothing that ran drains the dropped wake, so the exit must re-drive it.
-// Only that child can hold the dropped wake, so this is scoped to
-// childSessionID: a whole-tree sweep would re-drive unrelated children and
-// read every child's transcript fold.
-//
-// It delegates to the shared wake-edge driver driveChildIfNotStopGated so the
-// re-drive order cannot drift from the wake edge: stable delegate attention
-// FIRST (its run drains the child's notification queue itself), and only the
-// notification turn when no attention is owed. The previous inline order drove
-// the notification turn first; when both were pending the notification drive
-// set sub.driving synchronously, the attention drive then refused on that flag,
-// and nothing retried it -- the armed attention stayed stranded. The claim or
-// guard is released before this call, so driveChildIfNotStopGated's own
-// childDriveGated check is the same stop/fatal/drain gate every other drive
-// reads.
-func (s *Session) redriveLiveChild(childSessionID string) {
-	if s == nil || childSessionID == "" {
-		return
-	}
-	for _, sub := range s.liveDirectSubagents() {
-		if sub == nil || sub.sess == nil || sub.sess.id != childSessionID {
-			continue
-		}
-		s.driveChildIfNotStopGated(sub)
-		return
-	}
-}
-
-// driveChildIfNotStopGated is the wake-edge drive: it skips a stop-gated child so
-// a deliberately stopped child is not resurrected by its own pre-stop notify
-// (spec §3 stop-gating), and a child the one-shot drain has abandoned for the
-// same reason driveChildrenWithUndeliveredAttention does. On a successful
-// handoff it settles the parent's forwarded drive signal for that child.
-func (s *Session) driveChildIfNotStopGated(sub *subagent) {
-	if sub == nil || sub.sess == nil {
-		return
-	}
-	if s.childDriveGated(sub.sess.id) {
-		return
-	}
-	if s.driveStableDelegateAttention(sub) {
-		return
-	}
-	if s.driveSubagentNotificationTurn(sub) {
-		s.settleDrivenChildForwardedPendings(sub.sess.id)
-	}
 }
 
 // renderUnreachableChildPendings is the failure fallback (spec §3): a forwarded
@@ -6224,9 +6033,8 @@ func (s *Session) childStopGated(childSessionID string) bool {
 // start whose owning run has not yet taken the generation over (#940). The
 // claim is keyed by child session id, not by the child object, so it covers the
 // stretch CommitStart -> restoreIdleForSend -> admitReconstructed/AttachRuntime
-// where the child does not exist yet or is still idle and drivable. Every
-// wake-edge drivability check reads it, and driveSubagentNotificationTurn reads
-// it too, so the drive refuses without needing a resolved child object.
+// where the child does not exist yet or is still idle. Leased start admission
+// reads it before taking over the runtime.
 func (s *Session) childCommittedSendStart(childSessionID string) bool {
 	if s == nil || childSessionID == "" {
 		return false
@@ -6235,19 +6043,6 @@ func (s *Session) childCommittedSendStart(childSessionID string) bool {
 	defer s.childCommittedSendMu.Unlock()
 	_, held := s.childCommittedSendChildren[childSessionID]
 	return held
-}
-
-// childDriveGated is the drive-gate conjunction every child-attention drive
-// consults: a deliberately stopped child, a fatal-run-gated child, a child the
-// one-shot drain has abandoned, a child with a drain grace window pending, and a
-// child holding a committed-send-start claim are each refused a drive. It lives
-// in one place so a new gate cannot be added to some call sites and not others.
-func (s *Session) childDriveGated(childSessionID string) bool {
-	return s.childStopGated(childSessionID) ||
-		s.childFatalRunGated(childSessionID) ||
-		s.childDrainAbandoned(childSessionID) ||
-		s.childDrainGracePending(childSessionID) ||
-		s.childCommittedSendStart(childSessionID)
 }
 
 // claimChildCommittedSendStart takes the id-keyed committed-send-start claim.
@@ -6326,24 +6121,6 @@ func (s *Session) settleDrivenChildForwardedPendings(childSessionID string) {
 	}
 }
 
-// enqueueOwnCallerWatchSendTokens enqueues this session's pending caller-targeted
-// watch-send tokens onto its OWN rail. A drive turn launched on the
-// hasPendingWatchSends signal (drive signal b) may have no token queued yet; this
-// puts the caller frames on the rail so they render in the same drive turn. It is
-// caller-only — it does not deliver delegate-targeted observer frames, which the loop
-// boundary handles — so it never duplicates a sidecar delivery.
-func (s *Session) enqueueOwnCallerWatchSendTokens() {
-	if s == nil || s.jobManager == nil || s.jobManager.enqueue == nil {
-		return
-	}
-	for _, delivery := range s.jobManager.pendingWatchSendDeliveries(nil) {
-		if delivery.state.Key.ResolvedSendTo != runtimeMessageAliasCaller {
-			continue
-		}
-		s.jobManager.enqueue(watchSendTokenNotification("", delivery.state))
-	}
-}
-
 // drainJobManagerWatchSends drains jm through the session that owns jm. The
 // receiver is the control surface for delegate-targeted sends; childSessionID is
 // only the caller-token routing marker used when a parent scans a child store.
@@ -6367,24 +6144,6 @@ func (s *Session) drainJobManagerWatchSends(ctx context.Context, jm *jobManager,
 		errs = append(errs, jm.settleSupersededWatchSends(fold.Superseded))
 	}
 	for _, delivery := range jm.pendingWatchSendDeliveries(nil) {
-		target := delivery.state.Key.ResolvedSendTo
-		if target == runtimeMessageAliasCaller && jm.retirementOwner == nil && jm.delegateController == nil {
-			// Caller sends render on the OWNING session's own rail. Tokens are
-			// enqueued at observation time; this re-token covers restored /
-			// crash-recovered pendings. Duplicates are harmless (render-by-key +
-			// batch dedupe). A mid-level owner's caller frame renders in the mid's
-			// OWN drive turn (spec §3 mid-owner caller sends): the parent drives
-			// the mid on the pending-watch-send signal, and the mid renders here
-			// against its own rail (childSessionID == "" from the mid's view). The
-			// v2 child-iteration re-route — re-tokening a child's caller pending
-			// onto the PARENT's rail with ChildSessionID set — is deleted; the
-			// drive signal replaces it, so only the owning session enqueues its
-			// own caller token.
-			if jm.enqueue != nil && childSessionID == "" {
-				jm.enqueue(watchSendTokenNotification("", delivery.state))
-			}
-			continue
-		}
 		delivered, err := jm.deliverPendingWatchSend(delivery.cfg, delivery.state, true)
 		result.observerHandoff = result.observerHandoff || delivered
 		if err != nil {
@@ -6406,12 +6165,6 @@ func (s *Session) retryRestoredPendingWatchSendsFrom(load watchSendLoader) error
 	// Canonical source-receipt work can remain after the current head settles.
 	dispatch := s.jobManager.retirementOwner != nil || s.jobManager.delegateController != nil
 	for _, delivery := range deliveries {
-		if delivery.state.Key.ResolvedSendTo == runtimeMessageAliasCaller && s.jobManager.retirementOwner == nil && s.jobManager.delegateController == nil {
-			if s.jobManager != nil && s.jobManager.enqueue != nil {
-				s.jobManager.enqueue(watchSendTokenNotification("", delivery.state))
-			}
-			continue
-		}
 		if delivery.state.StableReceiver || delivery.state.CallbackFrame || delivery.state.ReceiverSessionID != "" {
 			dispatch = true
 			continue

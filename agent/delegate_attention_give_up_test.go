@@ -47,7 +47,7 @@ func TestUnrestorableDelegateAttentionIsHandedToTheRoot(t *testing.T) {
 	}
 
 	for range 3 {
-		root.drivePendingStableDelegateAttention()
+		root.delegateController.recheckNotificationReceivers()
 	}
 
 	rootFold, err := readDelegateAttentionFold(transcriptPath(fixture.stateDir, fixture.meta.ID), fixture.meta.ID)
@@ -76,7 +76,7 @@ func TestDelegateAttentionIsNotHandedOverBeforeTheGiveUpLimit(t *testing.T) {
 	}
 
 	for range 2 {
-		root.drivePendingStableDelegateAttention()
+		root.delegateController.recheckNotificationReceivers()
 	}
 
 	rootFold, err := readDelegateAttentionFold(transcriptPath(fixture.stateDir, fixture.meta.ID), fixture.meta.ID)
@@ -108,20 +108,20 @@ func TestUndeliverableDelegateAttentionParksUntilNewAttention(t *testing.T) {
 	eventsDone := captureSessionEvents(root)
 
 	for range 4 {
-		root.drivePendingStableDelegateAttention()
+		root.delegateController.recheckNotificationReceivers()
 	}
 	controller := root.delegateController
 	if controller.hasPendingDelegateAttention() {
 		t.Fatal("a parked delegate still reads as pending attention, so the retry keeps spinning")
 	}
-	if delegateID, _, pending := controller.nextIdleDelegateAttention(); pending {
+	if delegateID, _, pending := notificationTestProjectedReceiver(controller); pending {
 		t.Fatalf("the drive still selects parked delegate %s", delegateID)
 	}
 
 	if _, err := controller.openDelegateAttention(fenced.grandchildDelegateID, "delegate:fresh-attention"); err != nil {
 		t.Fatalf("open fresh attention: %v", err)
 	}
-	if delegateID, _, pending := controller.nextIdleDelegateAttention(); !pending || delegateID != fenced.grandchildDelegateID {
+	if delegateID, _, pending := notificationTestProjectedReceiver(controller); !pending || delegateID != fenced.grandchildDelegateID {
 		t.Fatalf("after fresh attention: selected %q pending=%t, want the unparked grandchild", delegateID, pending)
 	}
 	root.Close()
@@ -169,7 +169,7 @@ func TestASuccessfulRestoreResetsTheFailureCount(t *testing.T) {
 	c.recordDelegateAttentionRestoreFailure(fenced.grandchildDelegateID)
 	c.recordDelegateAttentionRestoreFailure(fenced.grandchildDelegateID)
 
-	root.drivePendingStableDelegateAttention()
+	root.delegateController.recheckNotificationReceivers()
 
 	c.mu.Lock()
 	count := attentionRestoreFailuresOf(c, fenced.grandchildDelegateID)
@@ -226,7 +226,7 @@ func TestGivingUpOnAMissingTranscriptParksInsteadOfDropping(t *testing.T) {
 	eventsDone := captureSessionEvents(root)
 
 	for range 2 {
-		root.drivePendingStableDelegateAttention()
+		root.delegateController.recheckNotificationReceivers()
 	}
 	stillOwed, parked := fenced.owedAndParked()
 	root.Close()
@@ -303,7 +303,7 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 	stableRetry := func(fenced fencedGrandchildAttention) (time.Duration, bool) {
 		fenced.root.attentionMu.Lock()
 		defer fenced.root.attentionMu.Unlock()
-		return fenced.root.stableAttentionRetry.delay, fenced.root.stableAttentionRetry.active
+		return fenced.root.notificationSchedule.retry.delay, fenced.root.notificationSchedule.retry.active
 	}
 	// makeGrandchildTranscriptUnreadable sets the grandchild transcript aside
 	// and puts a directory in its place, which stats fine and fails the read.
@@ -332,7 +332,7 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 	t.Run("transcript present: handed to the root", func(t *testing.T) {
 		fenced := parkedUnderClosedParent(t)
 
-		fenced.root.drivePendingStableDelegateAttention()
+		fenced.root.delegateController.recheckNotificationReceivers()
 
 		rootFold, err := readDelegateAttentionFold(transcriptPath(fenced.fixture.stateDir, fenced.fixture.meta.ID), fenced.fixture.meta.ID)
 		if err != nil {
@@ -358,7 +358,7 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 			t.Fatalf("remove grandchild transcript: %v", err)
 		}
 
-		fenced.root.drivePendingStableDelegateAttention()
+		fenced.root.delegateController.recheckNotificationReceivers()
 
 		if owed, parked := fenced.owedAndParked(); !owed || !parked {
 			t.Fatalf("after a failed strict escalation: owed=%t parked=%t, want the attention kept and parked", owed, parked)
@@ -384,7 +384,7 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 		fenced.root.clock = clk
 		makeGrandchildTranscriptUnreadable(t, fenced)
 
-		fenced.root.drivePendingStableDelegateAttention()
+		fenced.root.delegateController.recheckNotificationReceivers()
 		if _, active := stableRetry(fenced); !active {
 			t.Fatal("a parked delegate's escalation failing on an unreadable transcript did not arm the retry")
 		}
@@ -403,7 +403,7 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 		clk := agenttest.NewFakeClock()
 		fenced.root.clock = clk
 		restoreTranscript := makeGrandchildTranscriptUnreadable(t, fenced)
-		fenced.root.drivePendingStableDelegateAttention()
+		fenced.root.delegateController.recheckNotificationReceivers()
 		clk.Advance(jobNotificationRetryInitialDelay)
 		clk.Drain()
 		if backedOff, _ := stableRetry(fenced); backedOff != 2*jobNotificationRetryInitialDelay {
@@ -411,7 +411,7 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 		}
 		restoreTranscript()
 
-		fenced.root.drivePendingStableDelegateAttention()
+		fenced.root.delegateController.recheckNotificationReceivers()
 
 		if owed, parked := fenced.owedAndParked(); owed || parked {
 			t.Fatalf("after escalation: owed=%t parked=%t, want neither", owed, parked)
@@ -455,11 +455,11 @@ func TestAParkedUnfencedDelegateIsNotRunnable(t *testing.T) {
 	if !c.noteDelegateAttention("dlg_parked", "delegate:dlg_parked") {
 		t.Fatal("note attention")
 	}
-	if !c.hasRunnableDelegateAttention() {
+	if !notificationTestProjectionRunnable(c) {
 		t.Fatal("this test is not in the state it means to be: the unparked delegate is not runnable")
 	}
 	c.parkDelegateAttention("dlg_parked")
-	if c.hasRunnableDelegateAttention() {
+	if notificationTestProjectionRunnable(c) {
 		t.Fatal("a parked, unfenced delegate reads as runnable")
 	}
 }
@@ -503,17 +503,19 @@ func TestABackoffResetHoldsAcrossAnArmedRetry(t *testing.T) {
 	}
 	const staleDelay = 2 * time.Second
 	root.attentionMu.Lock()
-	root.stableAttentionRetry.delay = staleDelay
+	root.notificationSchedule.retry.delay = staleDelay
 	root.attentionMu.Unlock()
-	root.scheduleStableDelegateAttentionRetry()
+	root.scheduleNotificationRetry()
 	root.attentionMu.Lock()
-	armedGeneration := root.stableAttentionRetry.generation
+	armedGeneration := root.notificationSchedule.retry.generation
 	root.attentionMu.Unlock()
 
-	root.resetStableDelegateAttentionRetryDelay()
+	root.mu.Lock()
+	root.notificationSchedule.retry.delay = jobNotificationRetryInitialDelay
+	root.mu.Unlock()
 
 	root.attentionMu.Lock()
-	active, generation := root.stableAttentionRetry.active, root.stableAttentionRetry.generation
+	active, generation := root.notificationSchedule.retry.active, root.notificationSchedule.retry.generation
 	root.attentionMu.Unlock()
 	if !active || generation != armedGeneration {
 		t.Fatalf("after the reset: active=%t generation=%d, want the armed retry kept (active, generation %d)", active, generation, armedGeneration)
@@ -521,7 +523,7 @@ func TestABackoffResetHoldsAcrossAnArmedRetry(t *testing.T) {
 	clk.Advance(staleDelay)
 	clk.Drain()
 	root.attentionMu.Lock()
-	delay := root.stableAttentionRetry.delay
+	delay := root.notificationSchedule.retry.delay
 	root.attentionMu.Unlock()
 	if delay != 2*jobNotificationRetryInitialDelay {
 		t.Fatalf("retry delay after the armed retry fired = %v, want %v backed off from the reset delay", delay, 2*jobNotificationRetryInitialDelay)

@@ -37,7 +37,7 @@ func FuzzWatchConfigValidationProgram(f *testing.F) {
 		wcvpAssertSendTargetValidation(t, r)
 		wcvpAssertManagerTargetValidation(t, r)
 		wcvpAssertConfigureLifecycle(t, r)
-		wcvpAssertTokenAndSnapshotContracts(t, r)
+		wcvpAssertSourceAndSnapshotContracts(t, r)
 		wcvpAssertClosedStoreFailures(t)
 	})
 }
@@ -568,32 +568,9 @@ func wcvpAssertConfigureLifecycle(t *testing.T, r *wcvpReader) {
 	}
 }
 
-func wcvpAssertTokenAndSnapshotContracts(t *testing.T, r *wcvpReader) {
+func wcvpAssertSourceAndSnapshotContracts(t *testing.T, r *wcvpReader) {
 	t.Helper()
 	root := wcvpNewManager(t)
-	child := wcvpNewManager(t)
-	parent := &Session{jobManager: root, subagents: newSubagentManager(nil, 0)}
-	if got := (&Session{jobManager: root}).jobManagerForToken(&watchSendToken{ChildSessionID: "child-live"}); got != nil {
-		t.Fatalf("child token without subagent manager = %p", got)
-	}
-	parent.subagents.track(&subagent{id: "child-live", sess: &Session{jobManager: child}})
-	parent.subagents.track(&subagent{id: "child-empty"})
-	if parent.jobManagerForToken(nil) != nil {
-		t.Fatal("nil watch token resolved to a manager")
-	}
-	if got := parent.jobManagerForToken(&watchSendToken{}); got != root {
-		t.Fatalf("root token manager = %p, want %p", got, root)
-	}
-	if got := parent.jobManagerForToken(&watchSendToken{ChildSessionID: "missing"}); got != nil {
-		t.Fatalf("missing child token manager = %p", got)
-	}
-	if got := parent.jobManagerForToken(&watchSendToken{ChildSessionID: "child-empty"}); got != nil {
-		t.Fatalf("empty child token manager = %p", got)
-	}
-	if got := parent.jobManagerForToken(&watchSendToken{ChildSessionID: "child-live"}); got != child {
-		t.Fatalf("live child token manager = %p, want %p", got, child)
-	}
-
 	cfg, err := newWatchConfig(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"job.notification"}}, frozenTestTime, "")
 	if err != nil {
 		t.Fatalf("new token config: %v", err)
@@ -611,18 +588,14 @@ func wcvpAssertTokenAndSnapshotContracts(t *testing.T, r *wcvpReader) {
 	root.mu.Lock()
 	root.watches[watchKey{VisibleSessionID: root.sessionID, Target: cfg.target}] = cfg
 	root.mu.Unlock()
-	token := &watchSendToken{Key: key, UpdateSeq: state.UpdateSeq, DeliveryID: state.DeliveryID}
-	resolvedJM, resolvedCfg, gotState, ok := parent.resolveWatchSendToken(token)
-	if !ok || resolvedJM != root || resolvedCfg != cfg || gotState.DeliveryID != state.DeliveryID {
-		t.Fatalf("resolve current token = (%p, %p, %+v, %v)", resolvedJM, resolvedCfg, gotState, ok)
+	if !root.isCurrentPendingWatchSend(cfg, state) {
+		t.Fatal("current source cursor missing")
 	}
-	if _, _, _, ok := parent.resolveWatchSendToken(&watchSendToken{Key: key, UpdateSeq: state.UpdateSeq + 1}); ok {
-		t.Fatal("stale token resolved as current")
+	stale := state
+	stale.UpdateSeq++
+	if root.isCurrentPendingWatchSend(cfg, stale) {
+		t.Fatal("stale source cursor accepted")
 	}
-	if _, _, _, ok := parent.resolveWatchSendToken(&watchSendToken{Key: jobstore.WatchSendKey{WatchID: "missing"}}); ok {
-		t.Fatal("missing token resolved as current")
-	}
-
 	// terminalFlush is part of the token lookup surface after a watch has been
 	// detached but a caller delivery remains pending. The same key must resolve
 	// there, too, until settlement removes it.
@@ -639,20 +612,6 @@ func wcvpAssertTokenAndSnapshotContracts(t *testing.T, r *wcvpReader) {
 	if terminalCfg != cfg {
 		t.Fatalf("terminal flush lookup = %p, want %p", terminalCfg, cfg)
 	}
-	if _, resolvedCfg, _, ok := parent.resolveWatchSendToken(token); !ok || resolvedCfg != cfg {
-		t.Fatalf("terminal flush token resolve = (%p, %v)", resolvedCfg, ok)
-	}
-
-	stateForNotification := state
-	stateForNotification.Provenance = provenance.WithWatch(nil, "watch_parent", "generation", "delivery", "S1", "job_wcvp")
-	note := watchSendTokenNotification("child-live", stateForNotification)
-	if note.JobID != state.Key.ResolvedWatchedIdentity || note.Status != jobNotificationEventWatch || note.WatchSend == nil || note.WatchSend.ChildSessionID != "child-live" {
-		t.Fatalf("watch token notification = %+v", note)
-	}
-	if note.Provenance == stateForNotification.Provenance {
-		t.Fatal("watch token notification leaked provenance pointer")
-	}
-
 	// Settle through the real durable event append and prove the delivery-id
 	// ledger and pending slot move together. This is the exact completion edge
 	// used by caller-token delivery, not an in-memory mock.

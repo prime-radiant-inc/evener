@@ -324,11 +324,7 @@ func (c *delegateTreeController) releaseFinalizationLocked(live *delegateLiveSta
 	}
 	close(finalizing.released)
 	live.finalizing = nil
-	if state := c.attention[finalizing.delegateID]; state != nil && len(state.wakeIDs) != 0 {
-		if root := c.rootRuntime; root != nil {
-			go root.notify()
-		}
-	}
+	go c.recheckNotificationReceivers()
 }
 
 // finalizingLocked is delegateID's finished generation still finalizing on

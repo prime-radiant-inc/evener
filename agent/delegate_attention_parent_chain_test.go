@@ -17,10 +17,10 @@ func TestAChildWaitsWhileItsParentIsRunningWithoutARuntime(t *testing.T) {
 		t.Fatal("note child attention")
 	}
 
-	if delegateID, _, pending := c.nextIdleDelegateAttention(); pending {
+	if delegateID, _, pending := notificationTestProjectedReceiver(c); pending {
 		t.Fatalf("selected %s while its parent runs with no resident runtime; its restore can only fail", delegateID)
 	}
-	if c.hasRunnableDelegateAttention() {
+	if notificationTestProjectionRunnable(c) {
 		t.Fatal("attention under a non-resident running parent reads as runnable, so the drive keeps attempting it")
 	}
 	if !c.hasPendingDelegateAttention() {
@@ -31,7 +31,7 @@ func TestAChildWaitsWhileItsParentIsRunningWithoutARuntime(t *testing.T) {
 	c.mu.Lock()
 	c.live["dlg_parent"].runtime = &Session{}
 	c.mu.Unlock()
-	if delegateID, _, pending := c.nextIdleDelegateAttention(); !pending || delegateID != "dlg_child" {
+	if delegateID, _, pending := notificationTestProjectedReceiver(c); !pending || delegateID != "dlg_child" {
 		t.Fatalf("with the parent resident: selected %q pending=%t, want dlg_child", delegateID, pending)
 	}
 }
@@ -46,7 +46,7 @@ func TestAChildUnderAnIdleColdParentIsSelected(t *testing.T) {
 	if !c.noteDelegateAttention("dlg_child", "delegate:dlg_child") {
 		t.Fatal("note child attention")
 	}
-	if delegateID, _, pending := c.nextIdleDelegateAttention(); !pending || delegateID != "dlg_child" {
+	if delegateID, _, pending := notificationTestProjectedReceiver(c); !pending || delegateID != "dlg_child" {
 		t.Fatalf("under an idle cold parent: selected %q pending=%t, want dlg_child", delegateID, pending)
 	}
 }
@@ -65,10 +65,10 @@ func TestAGrandchildWaitsWhileItsGrandparentIsRunningWithoutARuntime(t *testing.
 		t.Fatal("note child attention")
 	}
 
-	if delegateID, _, pending := c.nextIdleDelegateAttention(); pending {
+	if delegateID, _, pending := notificationTestProjectedReceiver(c); pending {
 		t.Fatalf("selected %s under a grandparent running with no resident runtime; its restore can only fail", delegateID)
 	}
-	if c.hasRunnableDelegateAttention() {
+	if notificationTestProjectionRunnable(c) {
 		t.Fatal("attention under a non-resident running grandparent reads as runnable")
 	}
 	if !c.hasPendingDelegateAttention() {
@@ -78,7 +78,7 @@ func TestAGrandchildWaitsWhileItsGrandparentIsRunningWithoutARuntime(t *testing.
 	c.mu.Lock()
 	c.live["dlg_grandparent"].runtime = &Session{}
 	c.mu.Unlock()
-	if delegateID, _, pending := c.nextIdleDelegateAttention(); !pending || delegateID != "dlg_child" {
+	if delegateID, _, pending := notificationTestProjectedReceiver(c); !pending || delegateID != "dlg_child" {
 		t.Fatalf("with the grandparent resident: selected %q pending=%t, want dlg_child", delegateID, pending)
 	}
 }

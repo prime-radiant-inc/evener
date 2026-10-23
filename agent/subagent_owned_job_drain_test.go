@@ -638,7 +638,7 @@ func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testi
 	if running {
 		t.Fatal("finalization hook ran before running=false was published")
 	}
-	if fixture.parent.driveSubagentNotificationTurn(fixture.child) {
+	if fixture.parent.driveStableDelegateAttention(fixture.child) {
 		t.Fatal("automatic notification drive launched during callback restoration")
 	}
 
@@ -812,7 +812,7 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 		t.Fatalf("stable terminal message = %q (error %v), want original fatal error", message, err)
 	}
 
-	if parent.driveSubagentNotificationTurn(child) {
+	if parent.driveStableDelegateAttention(child) {
 		t.Fatal("fatal-gated child admitted an automatic notification drive")
 	}
 	if requests := adapter.Requests(); len(requests) != 2 {
@@ -1167,7 +1167,7 @@ func armOwnedJobDrainAttention(sess *Session, attentionID, content string) error
 	if err != nil {
 		return err
 	}
-	if err := sess.armDelegateAttention(attentionID); err != nil {
+	if err := sess.requestNotificationWake(); err != nil {
 		return err
 	}
 	return nil
@@ -1218,8 +1218,12 @@ func requireChildAttentionSettled(t *testing.T, child *subagent, requests func()
 	}
 }
 
-func (f *ownedJobDrainFixture) requireHandledResult(t *testing.T, wantRequests int, wantResult string) {
+func (f *ownedJobDrainFixture) requireHandledResult(t *testing.T, wantRequests int, wantResult string, wantGenerations ...int) {
 	t.Helper()
+	wantGeneration := 1
+	if len(wantGenerations) != 0 {
+		wantGeneration = wantGenerations[0]
+	}
 
 	requests := f.adapter.Requests()
 	if len(requests) != wantRequests {
@@ -1264,8 +1268,13 @@ func (f *ownedJobDrainFixture) requireHandledResult(t *testing.T, wantRequests i
 	if err != nil {
 		t.Fatalf("read parent stable attention: %v", err)
 	}
-	if len(pending) != 2 || !strings.HasPrefix(pending[0], "delegate:") || !strings.HasPrefix(pending[1], "delegate:") {
-		t.Fatalf("parent pending stable attention = %#v, want the original and attention-generation terminal deliveries", pending)
+	if len(pending) != wantGeneration || aggregate.Generation != uint64(wantGeneration) {
+		t.Fatalf("parent pending stable attention = %#v, generation %d, want %d terminal deliveries", pending, aggregate.Generation, wantGeneration)
+	}
+	for _, id := range pending {
+		if !strings.HasPrefix(id, "delegate:") {
+			t.Fatalf("parent delivery = %q, want stable delegate delivery", id)
+		}
 	}
 }
 
@@ -1610,8 +1619,16 @@ func TestStableDelegateAttentionSuccessorFollowsItsPredecessorsResult(t *testing
 	}()
 
 	var wakeEligible []bool
+	var successorOnce sync.Once
 	updateSessionTestConfig(fixture.child.sess, func(cfg *testConfig) {
 		cfg.subagentBeforeGenerationAnnounced = func(*subagent) {
+			// The owned shell is consumed by the original generation's drain.
+			// Arrive after its last request to require a genuine successor.
+			successorOnce.Do(func() {
+				if err := armOwnedJobDrainAttention(fixture.child.sess, "successor-order", "successor-order"); err != nil {
+					t.Errorf("arm successor attention: %v", err)
+				}
+			})
 			c := fixture.parent.delegateController
 			c.mu.Lock()
 			eligible := c.delegateAttentionWakeEligibleLocked(delegateID)
@@ -1623,7 +1640,8 @@ func TestStableDelegateAttentionSuccessorFollowsItsPredecessorsResult(t *testing
 	})
 
 	fixture.releaseAndWait(t)
-	fixture.requireHandledResult(t, 3, "owned shell handled")
+	waitForOwnedJobDrainGeneration(t, fixture.child, fixture.freshHandled, "ordered successor")
+	fixture.requireHandledResult(t, 4, "fresh notification handled", 2)
 	close(stop)
 	<-collected
 

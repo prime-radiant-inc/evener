@@ -760,7 +760,7 @@ func TestDrainDoesNotDriveAChildItHasAbandoned(t *testing.T) {
 		t.Fatal("precondition: the wedged delegate must be abandoned")
 	}
 
-	f.root.driveChildrenWithUndeliveredAttention()
+	f.root.delegateController.recheckNotificationReceivers()
 	if state := forwardedPendingNotifyState(t, f.root.jobManager, "job_child_tail"); state != jobstore.NotifyPending {
 		t.Fatalf("forwarded pending notify state = %q, want %q: the drain drove a child it had already abandoned", state, jobstore.NotifyPending)
 	}

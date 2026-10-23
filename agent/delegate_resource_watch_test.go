@@ -529,7 +529,7 @@ func TestStableDelegateWatch_CoalescingRetainsInflightReceiverReceipt(t *testing
 		t.Fatalf("newer coalesced cursor after old acknowledgement = %#v, want delivery %q seq %d", current, newer.DeliveryID, newer.UpdateSeq)
 	}
 	fixture.root.attentionMu.Lock()
-	_, armed := fixture.root.rootAttentionWakeIDs[stableWatchAttentionID(old)]
+	_, armed := notificationTestPending(t, fixture.root)[stableWatchAttentionID(old)]
 	fixture.root.attentionMu.Unlock()
 	if !armed {
 		t.Fatalf("coalesced receiver attention %q was not armed", stableWatchAttentionID(old))
@@ -590,7 +590,7 @@ func TestStableDelegateWatch_SupersededAckFailureRetainsArmedAttentionBeforeCurr
 	}
 	current := folded.Pending[newer.Key]
 	fixture.root.attentionMu.Lock()
-	_, oldArmed := fixture.root.rootAttentionWakeIDs[stableWatchAttentionID(old)]
+	_, oldArmed := notificationTestPending(t, fixture.root)[stableWatchAttentionID(old)]
 	fixture.root.attentionMu.Unlock()
 	close(releaseNewAck)
 	released = true
@@ -1529,7 +1529,7 @@ func TestStableWatchBoundarySettleWakesOwnerForEnvelopeRefresh(t *testing.T) {
 	if after != before+1 {
 		t.Fatalf("watch deliveries = %d, want %d after the boundary drain settled the frame", after, before+1)
 	}
-	if !fixture.root.hasPendingRootDelegateAttention() {
+	if !fixture.root.hasPendingNotifications() {
 		t.Fatal("a settled stable watch delivery left the owner unwoken; its envelope watch row would stay stale")
 	}
 }

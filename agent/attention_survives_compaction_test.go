@@ -100,7 +100,7 @@ func TestRootDelegateAttentionPendingAcrossCompactionIsPresentedAndConsumed(t *t
 	if _, err := sess.appendDelegateNotificationDurably(attentionID, compactedAttentionText); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
-	if err := sess.armDelegateAttention(attentionID); err != nil {
+	if err := sess.requestNotificationWake(); err != nil {
 		t.Fatalf("arm attention: %v", err)
 	}
 	compactAfterAttention(t, sess)
@@ -134,7 +134,7 @@ func TestRootDelegateAttentionSurvivesCompactionWhenTheTranscriptReadFails(t *te
 	if _, err := sess.appendDelegateNotificationDurably(attentionID, compactedAttentionText); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
-	if err := sess.armDelegateAttention(attentionID); err != nil {
+	if err := sess.requestNotificationWake(); err != nil {
 		t.Fatalf("arm attention: %v", err)
 	}
 	failReads.Store(true)
@@ -163,7 +163,7 @@ func TestRootDelegateAttentionKeepsDeliveryOrderAcrossCompaction(t *testing.T) {
 		if _, err := sess.appendDelegateNotificationDurably(attentionID, text); err != nil {
 			t.Fatalf("append attention: %v", err)
 		}
-		if err := sess.armDelegateAttention(attentionID); err != nil {
+		if err := sess.requestNotificationWake(); err != nil {
 			t.Fatalf("arm attention: %v", err)
 		}
 	}

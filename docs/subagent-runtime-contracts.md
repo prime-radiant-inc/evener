@@ -36,8 +36,32 @@ the retained child for a start (`Session.driveStableDelegateAttention`). A delay
 drive cannot reserve an ID an intervening generation already observed and
 finished. An admitted start retains its exact reservation and generation across
 a failed delegate-journal commit. A launch claim is not observation and writes
-no consumed marker. Parents continue to drive the child's
-attention, and fresh owner work remains admissible after the attention settles.
+no consumed marker. The exact child schedules its own leased execution without
+a parent-model turn, and fresh owner work remains admissible after it settles.
+
+Roots and delegates share receiver-scoped notification readiness
+(`agent/session_notifications.go`). Durable append publishes readiness after
+writer locks are released. Root callbacks use the existing server wake channel
+and serve loop. Delegate callbacks use the existing restore and leased start
+admission, not a parallel executor. Cold writers, restore and execution retain
+their existing exclusion and lifecycle fences.
+
+```mermaid
+flowchart LR
+  S[Producer outbox] --> C[Synced receiver custody]
+  C --> R[Common receiver readiness]
+  R --> A[Existing root or leased delegate admission]
+  A --> M[Provider request]
+  M --> O[Synced successful response, exact observation IDs]
+```
+
+Custody settles source transport, not model observation. Question, approval and
+explicit Stop holds remain execution gates. Registration, hold/capacity release
+and executor release recheck durable work, including a lost wake edge. Permanent
+provider failures defer that receiver, not healthy siblings. Exhausted fast
+`ActiveTurnID` release retries retain the exact release obligation in common
+paced recovery, so repaired storage can resume admission without user input or
+a daemon restart. These callbacks do not reopen a Stop or bypass an executor.
 
 Child reports and updates wake a parent delegate waiting on work. The parent's
 next model request presents the pending notification without waiting for another
@@ -56,7 +80,7 @@ If the derived consumed-marker write fails, the drain or a reopened session
 repairs the marker without another provider request. A second marker failure
 leaves index repair for the generation's end without failing the parent or
 stopping healthy siblings (`Session.ackNotifications`, `Session.drainJobTreeWith`,
-`Session.settlePresentedDelegateAttention`, `agent/session_jobtree_drain.go`).
+`Session.repairNotificationReceipts`, `agent/session_jobtree_drain.go`).
 
 Reports take synced receiver custody during model calls and tool execution,
 without waiting in a second receiver queue. Writer serialization and request

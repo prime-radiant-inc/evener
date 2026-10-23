@@ -648,7 +648,7 @@ func TestDelegateAttention_ArmClaimSpansFoldAndOpen(t *testing.T) {
 	}
 
 	armDone := make(chan error, 1)
-	go func() { armDone <- runtime.armDelegateAttentionOnce(attentionID) }()
+	go func() { armDone <- runtime.requestNotificationWake() }()
 	<-foldEntered
 
 	// The reservation is the controller-side blocker that used to deadlock
@@ -2182,10 +2182,10 @@ func TestDelegateAttention_LiveReplayHonorsDurableCallerCommit(t *testing.T) {
 	if remaining != 0 {
 		t.Fatalf("durably committed live delivery remained pending: %d", remaining)
 	}
-	root.attentionMu.Lock()
-	wakeIDs := len(root.rootAttentionWakeIDs)
-	wakeArmed := root.rootAttentionWake
-	root.attentionMu.Unlock()
+	root.mu.Lock()
+	wakeIDs := len(notificationTestPending(t, root))
+	wakeArmed := root.notificationSchedule.hinted
+	root.mu.Unlock()
 	if wakeIDs != 0 || wakeArmed {
 		t.Fatalf("durably committed live delivery armed phantom root attention: ids=%d armed=%t", wakeIDs, wakeArmed)
 	}
@@ -2314,7 +2314,7 @@ func TestDelegateAttention_ColdPostAckReadFailureRetriesExactID(t *testing.T) {
 		t.Fatalf("caller retry cold attention: %v", err)
 	}
 	<-wakes
-	delegateID, gotAttentionID, pending := c.nextIdleDelegateAttention()
+	delegateID, gotAttentionID, pending := notificationTestProjectedReceiver(c)
 	if !pending || delegateID != "dlg_target" || gotAttentionID != attentionID {
 		t.Fatalf("retried cold attention = delegate:%q attention:%q pending:%t", delegateID, gotAttentionID, pending)
 	}
@@ -2373,7 +2373,7 @@ func TestDelegateAttention_SettledResidentChildStartsExactAttentionGeneration(t 
 	if appended, err := sub.sess.appendDelegateNotificationDurably(attentionID, attentionContent); err != nil || !appended {
 		t.Fatalf("append resident attention = appended:%t err:%v", appended, err)
 	}
-	if err := sub.sess.armDelegateAttention(attentionID); err != nil {
+	if err := sub.sess.requestNotificationWake(); err != nil {
 		t.Fatalf("arm resident attention: %v", err)
 	}
 	<-attentionCommitted
@@ -2864,7 +2864,7 @@ func TestRootDelegateAttention_DurableAppendWaitsForSourceSettlementBeforeWake(t
 		t.Fatal("durable root attention woke before its source settled")
 	default:
 	}
-	if err := root.armDelegateAttention(attentionID); err != nil {
+	if err := root.requestNotificationWake(); err != nil {
 		t.Fatalf("arm settled root attention: %v", err)
 	}
 	select {
@@ -2896,7 +2896,7 @@ func TestRootDelegateAttention_SuccessfulNotificationConsumesExactIDs(t *testing
 	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
 		t.Fatalf("append root attention: %v", err)
 	}
-	if err := root.armDelegateAttention(attentionID); err != nil {
+	if err := root.requestNotificationWake(); err != nil {
 		t.Fatalf("arm root attention: %v", err)
 	}
 	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
@@ -2956,7 +2956,7 @@ func TestRootDelegateAttention_MidTurnArmedAttentionConsumedWithoutRedundantWake
 					}
 				}
 				if midTurnAppendErr == nil {
-					midTurnArmErr = root.armDelegateAttention(secondID)
+					midTurnArmErr = root.requestNotificationWake()
 				}
 				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 			},
@@ -2970,7 +2970,7 @@ func TestRootDelegateAttention_MidTurnArmedAttentionConsumedWithoutRedundantWake
 	if _, err := root.appendDelegateNotificationDurably(firstID, firstContent); err != nil {
 		t.Fatalf("append first root attention: %v", err)
 	}
-	if err := root.armDelegateAttention(firstID); err != nil {
+	if err := root.requestNotificationWake(); err != nil {
 		t.Fatalf("arm first root attention: %v", err)
 	}
 	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
@@ -2997,7 +2997,7 @@ func TestRootDelegateAttention_MidTurnArmedAttentionConsumedWithoutRedundantWake
 	if pending := fold.pendingIDs(); len(pending) != 0 {
 		t.Fatalf("mid-turn-covered attention remains pending after the turn that saw it: %#v", pending)
 	}
-	if root.hasPendingRootDelegateAttention() {
+	if root.hasPendingNotifications() {
 		t.Fatal("covered attention still arms a wake: a redundant notification turn would re-ask the model with nothing new")
 	}
 	if calls != 2 {
@@ -3037,7 +3037,7 @@ func TestRootDelegateAttention_PostBuildArmedAttentionStaysPendingForWake(t *tes
 					_, lateAppendErr = root.appendDelegateNotificationDurably(lateID, lateContent)
 				}
 				if lateAppendErr == nil {
-					lateArmErr = root.armDelegateAttention(lateID)
+					lateArmErr = root.requestNotificationWake()
 				}
 				return toolCallResponse(communicateCall("unseen-turn-complete", "first handled"))
 			},
@@ -3051,7 +3051,7 @@ func TestRootDelegateAttention_PostBuildArmedAttentionStaysPendingForWake(t *tes
 	if _, err := root.appendDelegateNotificationDurably(firstID, firstContent); err != nil {
 		t.Fatalf("append first root attention: %v", err)
 	}
-	if err := root.armDelegateAttention(firstID); err != nil {
+	if err := root.requestNotificationWake(); err != nil {
 		t.Fatalf("arm first root attention: %v", err)
 	}
 	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
@@ -3073,7 +3073,7 @@ func TestRootDelegateAttention_PostBuildArmedAttentionStaysPendingForWake(t *tes
 	if pending := fold.pendingIDs(); !reflect.DeepEqual(pending, []string{lateID}) {
 		t.Fatalf("pending after the turn that never saw the late delivery = %#v, want exactly that delivery", pending)
 	}
-	if !root.hasPendingRootDelegateAttention() {
+	if !root.hasPendingNotifications() {
 		t.Fatal("unseen attention lost its wake: its content would never reach the model")
 	}
 	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
@@ -3119,7 +3119,7 @@ func TestRootDelegateAttention_EmptySnapshotNotificationTurnConsumesCoveredDeliv
 					_, appendErr = root.appendDelegateNotificationDurably(attentionID, content)
 				}
 				if appendErr == nil {
-					armErr = root.armDelegateAttention(attentionID)
+					armErr = root.requestNotificationWake()
 				}
 				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 			},
@@ -3155,7 +3155,7 @@ func TestRootDelegateAttention_EmptySnapshotNotificationTurnConsumesCoveredDeliv
 	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
 		t.Fatalf("attention disposition = %q, want consumed by the covering turn", got)
 	}
-	if root.hasPendingRootDelegateAttention() {
+	if root.hasPendingNotifications() {
 		t.Fatal("covered attention still arms a wake after the turn that presented it")
 	}
 }
@@ -3185,7 +3185,7 @@ func TestRootDelegateAttention_UserTurnConsumesCoveredMidTurnDelivery(t *testing
 					_, appendErr = root.appendDelegateNotificationDurably(attentionID, content)
 				}
 				if appendErr == nil {
-					armErr = root.armDelegateAttention(attentionID)
+					armErr = root.requestNotificationWake()
 				}
 				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 			},
@@ -3227,7 +3227,7 @@ func TestRootDelegateAttention_UserTurnConsumesCoveredMidTurnDelivery(t *testing
 	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
 		t.Fatalf("attention disposition = %q, want consumed by the covering user turn", got)
 	}
-	if root.hasPendingRootDelegateAttention() {
+	if root.hasPendingNotifications() {
 		t.Fatal("covered attention still arms a wake after the user turn that presented it")
 	}
 }
@@ -3265,7 +3265,7 @@ func TestRootDelegateAttention_UserTurnConsumesAttentionArmedBeforeTurn(t *testi
 	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
 		t.Fatalf("append pre-turn attention: %v", err)
 	}
-	if err := root.armDelegateAttention(attentionID); err != nil {
+	if err := root.requestNotificationWake(); err != nil {
 		t.Fatalf("arm pre-turn attention: %v", err)
 	}
 	if _, err := root.ProcessInput(context.Background(), "status update please", nil); err != nil {
@@ -3284,7 +3284,7 @@ func TestRootDelegateAttention_UserTurnConsumesAttentionArmedBeforeTurn(t *testi
 	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
 		t.Fatalf("attention disposition = %q, want consumed by the user turn", got)
 	}
-	if root.hasPendingRootDelegateAttention() {
+	if root.hasPendingNotifications() {
 		t.Fatal("the pre-armed delivery still holds a wake after the turn that presented it")
 	}
 }
@@ -3322,7 +3322,7 @@ func TestRootDelegateAttention_PreArmedAttentionNotPresentedKeepsItsNotification
 	)
 	// Armed in the wake set before the turn; its durable entry does not exist
 	// yet, so no request of the user turn can present it.
-	root.armRootDelegateAttention(attentionID)
+	root.requestNotificationWake()
 	if _, err := root.ProcessInput(context.Background(), "status update please", nil); err != nil {
 		t.Fatalf("process user turn: %v", err)
 	}
@@ -3335,7 +3335,7 @@ func TestRootDelegateAttention_PreArmedAttentionNotPresentedKeepsItsNotification
 	if !notificationSaw {
 		t.Fatal("the notification turn did not present the item")
 	}
-	if root.hasPendingRootDelegateAttention() {
+	if root.hasPendingNotifications() {
 		t.Fatal("the notification turn left the item pending")
 	}
 }
@@ -3361,7 +3361,7 @@ func TestRootDelegateAttention_CoverageIncludesAttentionArmedBeforeTurnBegin(t *
 	if _, err := root.appendDelegateNotificationDurably(preTurnID, preContent); err != nil {
 		t.Fatalf("append pre-turn attention: %v", err)
 	}
-	if err := root.armDelegateAttention(preTurnID); err != nil {
+	if err := root.requestNotificationWake(); err != nil {
 		t.Fatalf("arm pre-turn attention: %v", err)
 	}
 	// Turn start.
@@ -3369,7 +3369,7 @@ func TestRootDelegateAttention_CoverageIncludesAttentionArmedBeforeTurnBegin(t *
 	if _, err := root.appendDelegateNotificationDurably(midTurnID, midContent); err != nil {
 		t.Fatalf("append mid-turn attention: %v", err)
 	}
-	if err := root.armDelegateAttention(midTurnID); err != nil {
+	if err := root.requestNotificationWake(); err != nil {
 		t.Fatalf("arm mid-turn attention: %v", err)
 	}
 	// Appended but deliberately NOT armed: the arm can lag the append past the
@@ -3425,7 +3425,7 @@ func rootWithMidTurnAttention(t *testing.T, attentionID, content string) (*Sessi
 	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
-	if err := root.armDelegateAttention(attentionID); err != nil {
+	if err := root.requestNotificationWake(); err != nil {
 		t.Fatalf("arm attention: %v", err)
 	}
 	steering := schema.NewTurn(schema.TurnSteering, llm.User(content))
@@ -3522,7 +3522,7 @@ func TestRootDelegateAttention_CoverageCreditsOnlySettledRounds(t *testing.T) {
 	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
-	if err := root.armDelegateAttention(attentionID); err != nil {
+	if err := root.requestNotificationWake(); err != nil {
 		t.Fatalf("arm attention: %v", err)
 	}
 	steering := schema.NewTurn(schema.TurnSteering, llm.User(content))
@@ -3547,7 +3547,7 @@ func TestRootDelegateAttention_CoverageCreditsOnlySettledRounds(t *testing.T) {
 		t.Fatal("staging alone credited coverage before any call settled")
 	}
 	root.attentionMu.Unlock()
-	if err := root.finishRootDelegateAttentionTurn(nil, nil); err != nil {
+	if err := root.finishAttentionTurn(nil, nil); err != nil {
 		t.Fatalf("finish with no settled coverage: %v", err)
 	}
 	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
@@ -3565,7 +3565,7 @@ func TestRootDelegateAttention_CoverageCreditsOnlySettledRounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	root.promoteStagedAttentionCoverage(llm.Request{})
-	if err := root.finishRootDelegateAttentionTurn(nil, nil); err != nil {
+	if err := root.finishAttentionTurn(nil, nil); err != nil {
 		t.Fatalf("finish with settled coverage: %v", err)
 	}
 	fold, err = readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
@@ -3600,7 +3600,7 @@ func TestRootDelegateAttention_EmptySnapshotCoverageFailureWarnsAndRetries(t *te
 				if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
 					t.Errorf("mid-turn append: %v", err)
 				}
-				if err := root.armDelegateAttention(attentionID); err != nil {
+				if err := root.requestNotificationWake(); err != nil {
 					t.Errorf("mid-turn arm: %v", err)
 				}
 				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
@@ -3638,16 +3638,7 @@ func TestRootDelegateAttention_EmptySnapshotCoverageFailureWarnsAndRetries(t *te
 		t.Fatal("failed coverage resolution left no autonomous work to recover consumption")
 	}
 	clock.Advance(jobNotificationRetryInitialDelay)
-	select {
-	case <-wakes:
-	// TRIPWIRE: in-process notify channel with a fake clock already advanced
-	// past the retry delay; only fires on a genuine hang.
-	case <-time.After(30 * time.Second):
-		t.Fatal("declined wake arranged no paced retry")
-	}
-	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
-		t.Fatalf("paced-retry wake turn: %v", err)
-	}
+	clock.Drain()
 	fold, err = readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
 	if err != nil {
 		t.Fatalf("read fold after paced retry: %v", err)
@@ -3704,6 +3695,7 @@ func TestRootDelegateAttention_PanicUnwindDoesNotConsumeCoverage(t *testing.T) {
 func TestRootDelegateAttention_CoveredResolutionFailureDoesNotFailUserTurn(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
+	clock := agenttest.NewFakeClock()
 	const (
 		attentionID = "delegate:dlg_resfail/delivery/1"
 		content     = `<delegate-notification delegate_id="dlg_resfail">resolution will fail</delegate-notification>`
@@ -3712,14 +3704,14 @@ func TestRootDelegateAttention_CoveredResolutionFailureDoesNotFailUserTurn(t *te
 	requests := 0
 	root = newSession(t,
 		withDir(stateDir),
-		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, clock: clock}),
 		withSteps(
 			func(llm.Request) llm.Response {
 				requests++
 				if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
 					t.Errorf("mid-turn append: %v", err)
 				}
-				if err := root.armDelegateAttention(attentionID); err != nil {
+				if err := root.requestNotificationWake(); err != nil {
 					t.Errorf("mid-turn arm: %v", err)
 				}
 				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
@@ -3742,6 +3734,8 @@ func TestRootDelegateAttention_CoveredResolutionFailureDoesNotFailUserTurn(t *te
 	if _, err := root.ProcessInput(context.Background(), "question", nil); err != nil {
 		t.Fatalf("covering user turn (or its recovery wake) failed with the coverage resolution error: %v", err)
 	}
+	clock.Advance(jobNotificationRetryInitialDelay)
+	clock.Drain()
 	if requests != 2 {
 		t.Fatalf("provider requests across receipt repair = %d, want 2 original rounds", requests)
 	}
@@ -3776,7 +3770,6 @@ func TestRootDelegateAttention_FailedTurnWithSnapshotConsultsDurableReceipts(t *
 		}
 	}
 	root.attentionMu.Lock()
-	root.rootAttentionWakeIDs = map[string]struct{}{snapshotID: {}, coveredID: {}}
 	root.attentionCoveredIDs = map[string]struct{}{coveredID: {}}
 	root.attentionMu.Unlock()
 
@@ -3787,7 +3780,7 @@ func TestRootDelegateAttention_FailedTurnWithSnapshotConsultsDurableReceipts(t *
 	}
 	defer func() { root.cfg.testOnly.delegateAttentionReadFold = nil }()
 
-	if err := root.finishRootDelegateAttentionTurn([]string{snapshotID}, errors.New("turn failed")); err != nil {
+	if err := root.finishAttentionTurn([]string{snapshotID}, errors.New("turn failed")); err != nil {
 		t.Fatalf("failed turn with snapshot: %v", err)
 	}
 	if foldReads < 1 || foldReads > 3 {
@@ -3818,7 +3811,7 @@ func TestRootDelegateAttention_FailedEmptySnapshotMemoryOnlyCoverageKeepsWake(t 
 	if _, err := root.appendDelegateNotificationDurably(coveredID, `<delegate-notification delegate_id="dlg_coveredgate">gate needs the fold</delegate-notification>`); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
-	if err := root.armDelegateAttention(coveredID); err != nil {
+	if err := root.requestNotificationWake(); err != nil {
 		t.Fatal(err)
 	}
 	root.attentionMu.Lock()
@@ -3832,7 +3825,7 @@ func TestRootDelegateAttention_FailedEmptySnapshotMemoryOnlyCoverageKeepsWake(t 
 	}
 	defer func() { root.cfg.testOnly.delegateAttentionReadFold = nil }()
 
-	if err := root.finishRootDelegateAttentionTurn(nil, errors.New("turn failed")); err != nil {
+	if err := root.finishAttentionTurn(nil, errors.New("turn failed")); err != nil {
 		t.Fatalf("failed empty-snapshot turn: %v", err)
 	}
 	if foldReads < 1 || foldReads > 3 {
@@ -3842,8 +3835,8 @@ func TestRootDelegateAttention_FailedEmptySnapshotMemoryOnlyCoverageKeepsWake(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pending := fold.pendingIDs(); !reflect.DeepEqual(pending, []string{coveredID}) || len(fold.resolutions) != 0 || !root.rootAttentionWake {
-		t.Fatalf("memory-only coverage lost unobserved work: pending=%v resolutions=%v wake=%t", pending, fold.resolutions, root.rootAttentionWake)
+	if pending := fold.pendingIDs(); !reflect.DeepEqual(pending, []string{coveredID}) || len(fold.resolutions) != 0 || !(root.notificationSchedule.hinted || root.notificationSchedule.retry.active) {
+		t.Fatalf("memory-only coverage lost unobserved work: pending=%v resolutions=%v wake=%t", pending, fold.resolutions, root.notificationSchedule.hinted)
 	}
 	if !root.sessionWorkPending() {
 		t.Fatal("failed empty-snapshot turn left no paced retry for the covered-but-pending attention")
@@ -3875,7 +3868,7 @@ func TestRootDelegateAttention_FailedEmptyCoverageTurnRefiresViaArmKick(t *testi
 				if _, err := root.appendDelegateNotificationDurably(attentionID, `<delegate-notification delegate_id="dlg_refire">refire me</delegate-notification>`); err != nil {
 					t.Errorf("mid-turn append: %v", err)
 				}
-				if err := root.armDelegateAttention(attentionID); err != nil {
+				if err := root.requestNotificationWake(); err != nil {
 					t.Errorf("mid-turn arm: %v", err)
 				}
 				return toolCallResponse(communicateCall("refire-covering", "covered mid-turn"))
@@ -3907,25 +3900,15 @@ func TestRootDelegateAttention_FailedEmptyCoverageTurnRefiresViaArmKick(t *testi
 		t.Fatal("consumed attention still reports autonomous work pending")
 	}
 
-	// Now the adversarial shape itself: a failed turn, empty snapshot,
-	// nothing covered, wake flag set. The finish path must leave the flag
-	// set (it is the coalescing suppressor) and the liveness carrier — the
-	// arm's kick — is still in flight.
-	root.attentionMu.Lock()
-	wakeFlagBefore := root.rootAttentionWake
-	root.rootAttentionWake = true
-	root.attentionMu.Unlock()
-	if err := root.finishRootDelegateAttentionTurn(nil, errors.New("turn failed")); err != nil {
+	// A failed empty turn must not manufacture a new notification wake.
+	if err := root.finishAttentionTurn(nil, errors.New("turn failed")); err != nil {
 		t.Fatalf("failed empty turn: %v", err)
 	}
-	root.attentionMu.Lock()
-	wakeFlagAfter := root.rootAttentionWake
-	root.attentionMu.Unlock()
-	if !wakeFlagAfter {
-		t.Fatal("empty failed turn cleared the wake flag: the in-flight arm kick's turn would be suppressed into a redundant notification")
-	}
-	if wakeFlagBefore {
-		t.Fatal("test setup: wake flag was already set before the adversarial injection")
+	root.mu.Lock()
+	retrying := root.notificationSchedule.retry.active
+	root.mu.Unlock()
+	if retrying || root.hasPendingNotifications() {
+		t.Fatal("empty failed turn manufactured notification work")
 	}
 }
 
@@ -3957,7 +3940,7 @@ func TestRootDelegateAttention_FailedIndexRepairRearmsWithoutRepeatingModelWork(
 	if _, err := root.appendDelegateNotificationDurably(attentionID, `<delegate-notification delegate_id="dlg_retry">retry me</delegate-notification>`); err != nil {
 		t.Fatalf("append root attention: %v", err)
 	}
-	if err := root.armDelegateAttention(attentionID); err != nil {
+	if err := root.requestNotificationWake(); err != nil {
 		t.Fatalf("arm root attention: %v", err)
 	}
 	select {
@@ -3982,16 +3965,7 @@ func TestRootDelegateAttention_FailedIndexRepairRearmsWithoutRepeatingModelWork(
 		t.Fatal("failed root attention consumption cleared autonomous work")
 	}
 	clock.Advance(jobNotificationRetryInitialDelay)
-	select {
-	case <-wakes:
-	// TRIPWIRE: in-process notify channel with a fake clock already advanced
-	// past the retry delay; only fires on a genuine hang.
-	case <-time.After(30 * time.Second):
-		t.Fatal("failed root attention consumption did not re-arm a paced wake")
-	}
-	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
-		t.Fatalf("retry root attention turn: %v", err)
-	}
+	clock.Drain()
 	fold, err = readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
 	if err != nil {
 		t.Fatalf("read retried root attention fold: %v", err)

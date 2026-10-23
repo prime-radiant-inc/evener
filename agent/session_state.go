@@ -167,11 +167,7 @@ func historyTurnFailure(history []schema.Turn) (schema.Turn, bool) {
 // without user input. Child activity is excluded because it is projected on
 // the child session, while its eventual notification is included once queued.
 func (s *Session) sessionWorkPending() bool {
-	return s.peekNotifications() > 0 || s.pendingQueueDepth() > 0 || s.hasRunnableClientMutationStart() || s.hasPendingDelegateDeliveries() || s.pendingRootDelegateAttention() || s.hasPendingDelegateAttentionArmRetry() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry())
-}
-
-func (s *Session) hasPendingStableDelegateAttention() bool {
-	return s != nil && s.isRootDelegateAttentionReceiver() && s.delegateController.hasPendingDelegateAttention()
+	return s.pendingQueueDepth() > 0 || s.hasRunnableClientMutationStart() || s.hasRunnableUserSteering() || s.notificationWorkPending()
 }
 
 // hasPendingStableSteering reports whether this session's own delegate

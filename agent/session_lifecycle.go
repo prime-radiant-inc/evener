@@ -1198,11 +1198,14 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	// goal); it is cleared as the last act of this call (the deferred clear below),
 	// mutually exclusive on s.mu with "set goal + read flag" and "clear goal".
 	s.goalInTurn = true
+	s.notificationSchedule.hinted = false
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
 		s.goalInTurn = false
+		s.notificationSchedule.version++
 		s.mu.Unlock()
+		s.dispatchNotificationWake()
 	}()
 
 	// A test-only seam: fail the turn before its user entry is recorded, the
@@ -1575,7 +1578,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// drainForFinalization), and the drain's own turn gate reads the same
 		// two signals.
 		if noFollowUpOrQueued && !awaiting && ranKind != EntryNotification && !s.hasAcceptedTerminalCommunicate() {
-			notificationsPending = s.peekNotifications() > 0 || s.pendingRootDelegateAttention()
+			notificationsPending = s.peekNotifications() > 0 || s.notificationsRunnable()
 		}
 		action, skipGoalGate := selectDrainNextAction(drainInputs{
 			RanKind:              ranKind,
@@ -2104,7 +2107,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// any wake state — the same ordering the name refusal below keeps.
 		// Job notifications are not the user's to stop mid-delivery, so a
 		// wake that carries any still runs.
-		if s.rootAttentionRailParked() && s.peekNotifications() == 0 {
+		if s.notificationStopHeld() && s.peekNotifications() == 0 {
 			s.finishNotificationNoop()
 			return "", false, nil
 		}
@@ -2116,11 +2119,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// prevent. mintRunningTurnID either takes the name or reports it
 		// taken, with nothing in between.
 		//
-		// Deciding here, before beginRootDelegateAttentionTurn, is the other
-		// half. That call consumes the process-local wake: it clears
-		// rootAttentionWake and cancels any scheduled retry, and only a wake
-		// that is ACCEPTED re-arms them. A stand-down decided after it would
-		// strand the very attention it was woken for.
+		// A refused input does not consume durable notification membership.
+		// The common scheduling owner retains the readiness obligation.
 		var refusal turnNameRefusal
 		runningTurnID, refusal = s.mintRunningTurnID()
 		if s.servedByDaemon() && runningTurnID == "" {
@@ -2128,14 +2128,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			// (above), the way every other refusal on this path does. Without
 			// it the session reports itself busy with nothing running.
 			s.finishNotificationNoop()
-			// Ask for another wake. Nothing else will: the EntryNotification
-			// that got us here is consumed, and the drain loop deliberately does
-			// not run another notification immediately after an EntryNotification
-			// turn. For delegate attention, the wake flag we deliberately did NOT
-			// consume is itself what suppresses a new one --
-			// armRootDelegateAttention notifies only when the flag is clear, and
-			// the retry scheduler returns early while it is set.
-			//
+			// A refused daemon admission retains its exact pending messages and
+			// arranges paced recovery rather than immediately feeding the channel.
 			// The wake is guaranteed rather than best-effort, but it is PACED
 			// rather than immediate (kata ajg5). An immediate notify() pushes
 			// into a one-slot channel the serve loop is about to read, so it is
@@ -2153,8 +2147,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			// A store that would not take the write says NOTHING about the
 			// name -- it may be free. Reading that as a stale name is what left
 			// delegate attention stranded: the stand-down warned and did not
-			// re-arm, while rootAttentionWake stayed set and suppressed every
-			// other source of a wake. So retry, and let mintRunningTurnID's own
+			// recheck. Retry uncertainty, and let mintRunningTurnID's own
 			// warning be the diagnostic.
 			//
 			// A name a pending execution owns is coming back, whether promptly
@@ -2165,9 +2158,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			//
 			// A name NO pending execution owns is not coming back at all: it
 			// was left by a crash between reserving and releasing, or by a
-			// failed release write, and only forgetRunningTurnNoOneOwns at load
-			// clears it. Waiting on that is the hot loop with a timer in front
-			// of it, so say so once and let the wake wait for a real one.
+			// untracked stale identity. A release failure created here instead
+			// retains its exact write obligation in common paced recovery.
+			// Do not fabricate an execution owner for an unrelated stale name.
 			switch {
 			case refusal == turnNameStoreFailed:
 				s.scheduleRunningTurnNameRetry(turnNameStoreRetryMaxDelay)
@@ -2182,7 +2175,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 		// Named: drop any backoff this session accumulated standing down.
 		s.resetRunningTurnNameRetry()
-		rootAttentionIDs = s.beginRootDelegateAttentionTurn()
+		rootAttentionIDs = s.notificationSnapshot()
 	}
 
 	// Name the turn before the event that opens it, so the AppWire projection
@@ -2947,31 +2940,20 @@ func (s *Session) acceptDelegateAttentionInput() {
 // every wake that gets this far can address its own turn.
 func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (proceed bool) {
 	if err := s.ackNotifications(nil); err != nil {
-		s.attentionMu.Lock()
-		s.rootAttentionWake = false
-		s.scheduleRootAttentionRetryLocked()
-		s.attentionMu.Unlock()
+		s.scheduleNotificationRetry()
 		s.emit(events.EventWarning, warningDataFromError("Notification receipt repair failed", err))
 		s.finishNotificationNoop()
 		return false
 	}
-	s.drivePendingStableDelegateAttention()
-	// Drive signal (b) (spec §3): a child driven on its pending caller-targeted
-	// watch sends may have no token queued yet (the drive was launched on the
-	// hasPendingWatchSends signal, not a token enqueue). Enqueue the OWN session's
-	// pending caller tokens onto its rail before draining so the frame renders in
-	// this same drive turn. Caller-only — sidecar delivery stays at the boundary.
-	s.enqueueOwnCallerWatchSendTokens()
 	jobNotifs, retryJobNotifs, injectedJobNotifs := s.filterDeliverableJobNotifications(s.drainJobNotifications())
 	if sessionLifecycleFault(ctx, "inject_watch_notification") != nil {
 		jobNotifs = append(jobNotifs, deliverableJobNotification{
 			notification: jobNotification{Kind: jobNotificationKindWatch, JobID: "injected-watch", Status: jobNotificationEventWatch},
-			watchJM:      &jobManager{},
 		})
 	}
 	hasSteering := s.hasPendingSteering()
-	hasRootAttention := s.hasPendingRootDelegateAttention()
-	carriedDelegateReport := hasRootAttention && s.pendingRootReportAttention()
+	hasRootAttention := s.hasPendingNotifications()
+	carriedDelegateReport := hasRootAttention && s.pendingDelegateReport()
 	s.mu.Lock()
 	s.carriedDelegateReport = carriedDelegateReport
 	s.mu.Unlock()
@@ -2991,7 +2973,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	// defers the attention, and a turn carrying nothing deliverable runs
 	// nothing. The begin-consumed wake stays consumed — the IDs stay cached
 	// and unpark re-arms them.
-	if len(jobNotifs) == 0 && !hasSteering && !hasDelegateAttention && (!hasRootAttention || s.rootAttentionRailParked()) {
+	if len(jobNotifs) == 0 && !hasSteering && !hasDelegateAttention && (!hasRootAttention || s.notificationStopHeld()) {
 		if len(retryJobNotifs) == 0 && len(injectedFailures) == 0 {
 			s.resetJobNotificationRetry()
 		}
@@ -3045,15 +3027,6 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 		s.resetJobNotificationRetry()
 	}
 	s.countJobNotificationsDelivered(len(jobNotifs) - len(deliveredFailures))
-	// Settle caller-targeted watch sends only after the durable reminder turn
-	// persisted (above): the durable pending survives an appendSteeringTurnDurably
-	// failure for re-token (at-least-once contract, spec §4.3).
-	for _, d := range jobNotifs {
-		if d.watchJM == nil {
-			continue
-		}
-		s.settleDeliveredWatchNotification(ctx, d)
-	}
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
 	s.injectDrainedSteering()
@@ -3169,16 +3142,6 @@ func (s *Session) releaseSteeringCarrierClaim(identity queuedClientMutationIdent
 	}
 }
 
-func (s *Session) settleDeliveredWatchNotification(ctx context.Context, d deliverableJobNotification) {
-	err := sessionLifecycleFault(ctx, "settle_watch")
-	if err == nil {
-		err = d.watchJM.settleWatchSendDelivered(d.watchCfg, d.watchState)
-	}
-	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: "watch send settle failed: " + err.Error()})
-	}
-}
-
 func (s *Session) finishNotificationNoop() {
 	// No turn ran, so a needs_response rest the wake interrupted still stands,
 	// and the drain loop then treats the input as awaiting, holding follow-ups
@@ -3205,22 +3168,7 @@ func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]de
 	}
 	survivors := make([]deliverableJobNotification, 0, len(raw))
 	durableRaw := make([]jobNotification, 0, len(raw))
-	seenTok := make(map[jobstore.WatchSendKey]bool)
 	for _, n := range raw {
-		if n.WatchSend != nil {
-			jm, cfg, state, ok := s.resolveWatchSendToken(n.WatchSend)
-			if !ok {
-				continue // stale token: replaced, cleared, dropped, or settled
-			}
-			if seenTok[n.WatchSend.Key] {
-				continue
-			}
-			seenTok[n.WatchSend.Key] = true
-			n.watchSendFrame = state.Frame
-			n.Provenance = provenance.Union(n.Provenance, state.Provenance)
-			survivors = append(survivors, deliverableJobNotification{notification: n, watchJM: jm, watchCfg: cfg, watchState: state})
-			continue
-		}
 		if n.isWatch() {
 			if n.WatchID != "" && !n.Terminal && !s.timerWatchIsLive(n.WatchID) {
 				continue // the timer was cleared after this tick was built
