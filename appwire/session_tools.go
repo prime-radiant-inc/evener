@@ -9,41 +9,13 @@ import (
 	"primeradiant.com/evener/agent/provenance"
 )
 
-// ManagerSetting is the hosting hub's durable human-controlled preference.
-// HubID is a nonsecret authority identity, never a credential.
-type ManagerSetting struct {
-	HubID    string `json:"hubId"`
-	Enabled  bool   `json:"enabled"`
-	Revision uint64 `json:"revision"`
-}
-
-// ManagerView names the selected thread exactly as thread/read does. Historical
-// refs remain addressable independently, even when their persisted workspace
-// identity shares one private preference row after Clear.
+// ManagerView names the selected thread exactly as thread/read does, carrying
+// the session's own start-time Manager property as its daemon projects it.
+// There is no hub-side setting: Manager is the whole truth.
 type ManagerView struct {
 	Ref        string `json:"ref"`
 	InstanceID string `json:"instanceId"`
-	// Manager is the session's own start-time property as its daemon projects
-	// it. It is the admission truth; Setting is the transitional preference
-	// projection that retires with the store.
-	Manager bool           `json:"manager,omitempty"`
-	Setting ManagerSetting `json:"setting"`
-}
-
-type ThreadManagerSetParams struct {
-	Ref     string `json:"ref"`
-	Enabled bool   `json:"enabled"`
-}
-
-type ThreadManagerSetResponse struct {
-	View ManagerView `json:"view"`
-}
-
-// ThreadManagerSetErrorData carries the unchanged current view on a refused
-// write. View is absent when storage or identity could not be read.
-type ThreadManagerSetErrorData struct {
-	ErrorData
-	View *ManagerView `json:"view,omitempty"`
+	Manager    bool   `json:"manager,omitempty"`
 }
 
 const (
@@ -70,10 +42,11 @@ type SessionToolsPeerResponse struct {
 }
 
 // SessionToolsInput carries one qualified mutation on the identified bridge.
-// The receiving hub selects the Manager caller from BindingID on this
-// connection, not from Params. Method is restricted to fixed input methods.
+// The sending hub admits its local Manager and supplies CallerRef. The receiver
+// qualifies that local ref with the connection's peer identity before recording
+// attribution. Method is restricted to fixed input methods.
 type SessionToolsInput struct {
-	BindingID string          `json:"bindingId"`
+	CallerRef string          `json:"callerRef"`
 	Method    string          `json:"method"`
 	Params    json.RawMessage `json:"params"`
 }
@@ -86,11 +59,10 @@ type SessionHubClient interface {
 }
 
 type SessionBinding struct {
-	Ref                string `json:"ref"`
-	InstanceID         string `json:"instanceId"`
-	HubID              string `json:"hubId"`
-	BindingID          string `json:"bindingId"`
-	PreferenceRevision uint64 `json:"preferenceRevision,omitempty"`
+	Ref        string `json:"ref"`
+	InstanceID string `json:"instanceId"`
+	HubID      string `json:"hubId"`
+	BindingID  string `json:"bindingId"`
 }
 
 type SessionActor struct {

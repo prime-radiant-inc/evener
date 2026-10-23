@@ -1657,6 +1657,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		currentMu.RUnlock()
 		clearCfg := sessionCfg
 		clearCfg.WorkspaceID = oldSess.WorkspaceID()
+		// A resumed daemon has no Manager launch flag; the session owns it.
+		clearCfg.Manager = oldSess.Meta().Manager
 		// The launch picked the first session's ID into sessionCfg; the cleared
 		// session is a new session and picks its own.
 		clearCfg.SessionID = ""

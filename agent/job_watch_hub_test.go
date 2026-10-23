@@ -14,14 +14,14 @@ import (
 )
 
 type managerWatchClient struct {
-	setting  appwire.ManagerSetting
+	view     appwire.ManagerView
 	updates  chan appwire.SessionWatchUpdate
 	requests chan appwire.SessionWatchRequest
 }
 
 type managerRecoverClient struct {
 	mu           sync.Mutex
-	setting      appwire.ManagerSetting
+	view         appwire.ManagerView
 	offline      bool
 	streams      chan chan appwire.SessionWatchUpdate
 	watches      chan struct{}
@@ -51,7 +51,7 @@ func (c *managerRecoverClient) State(context.Context) (appwire.ManagerView, erro
 		}
 		return appwire.ManagerView{}, errors.New("binding disconnected")
 	}
-	return appwire.ManagerView{Setting: c.setting}, nil
+	return c.view, nil
 }
 func (*managerRecoverClient) Invoke(context.Context, appwire.SessionOperationRequest) (appwire.SessionOperationResponse, error) {
 	return appwire.SessionOperationResponse{}, nil
@@ -63,20 +63,20 @@ func (c *managerRecoverClient) Watch(ctx context.Context, _ appwire.SessionWatch
 	return stream, nil
 }
 
-func TestManagerWatchRuntimeRebindAndOffOnOutage(t *testing.T) {
+func TestManagerWatchRuntimeRebindAndCallerReplacement(t *testing.T) {
 	const ref, instance, generation = "local:worker", "worker-instance", "7@worker"
 	snapshot := appwire.SessionWatchUpdate{Snapshot: &appwire.ThreadReadResponse{BootGeneration: generation, Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: ref, InstanceID: instance}}}, Metadata: appwire.SessionObservationMetadata{Ref: ref, InstanceID: instance, GenerationID: generation}}
-	for _, changeSetting := range []bool{false, true} {
+	for _, replaceCaller := range []bool{false, true} {
 		name := "rebind"
-		if changeSetting {
-			name = "off-on during outage"
+		if replaceCaller {
+			name = "caller replaced during outage"
 		}
 		t.Run(name, func(t *testing.T) {
 			root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
 			first, second := make(chan appwire.SessionWatchUpdate, 2), make(chan appwire.SessionWatchUpdate, 2)
 			first <- snapshot
 			second <- snapshot
-			client := &managerRecoverClient{setting: appwire.ManagerSetting{Enabled: true, HubID: "hub-1", Revision: 4}, streams: make(chan chan appwire.SessionWatchUpdate, 2), watches: make(chan struct{}, 2), offlineReads: make(chan struct{}, 1), ended: make(chan struct{}, 2)}
+			client := &managerRecoverClient{view: appwire.ManagerView{Ref: "local:manager", InstanceID: "manager-instance", Manager: true}, streams: make(chan chan appwire.SessionWatchUpdate, 2), watches: make(chan struct{}, 2), offlineReads: make(chan struct{}, 1), ended: make(chan struct{}, 2)}
 			client.streams <- first
 			client.streams <- second
 			root.SetHubClient(client)
@@ -116,23 +116,23 @@ func TestManagerWatchRuntimeRebindAndOffOnOutage(t *testing.T) {
 			}
 			client.mu.Lock()
 			client.offline = false
-			if changeSetting {
-				client.setting.Revision += 2 // Disable then enable while disconnected.
+			if replaceCaller {
+				client.view.InstanceID = "replacement-manager"
 			}
 			client.mu.Unlock()
 			root.HubBindingChanged()
-			if changeSetting {
+			if replaceCaller {
 				select {
 				case <-client.ended:
 				case <-t.Context().Done():
-					t.Fatal("off/on outage did not end old watch")
+					t.Fatal("caller replacement did not end old watch")
 				}
 				if managerWatchActive(jm, watchID) {
-					t.Fatal("off/on outage rearmed old watch")
+					t.Fatal("caller replacement rearmed old watch")
 				}
 				select {
 				case <-client.watches:
-					t.Fatal("changed revision resubscribed old watch")
+					t.Fatal("changed caller resubscribed old watch")
 				default:
 				}
 			} else {
@@ -164,7 +164,7 @@ func TestManagerWatchRuntimeRebindAndOffOnOutage(t *testing.T) {
 				}
 			}
 			wantedInterruptions := 1
-			if !changeSetting {
+			if !replaceCaller {
 				wantedInterruptions = 2 // Closing the rebound stream is a second loss episode.
 			}
 			if interruptions != wantedInterruptions || ends != 1 {
@@ -187,7 +187,7 @@ func TestManagerWatchTargetReplacementAndUnsupportedObservation(t *testing.T) {
 			root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
 			stream := make(chan appwire.SessionWatchUpdate, 2)
 			stream <- appwire.SessionWatchUpdate{Snapshot: &appwire.ThreadReadResponse{BootGeneration: generation, Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: ref, InstanceID: instance}}}, Metadata: appwire.SessionObservationMetadata{Ref: ref, InstanceID: instance, GenerationID: generation}}
-			client := &managerRecoverClient{setting: appwire.ManagerSetting{Enabled: true, HubID: "hub-1", Revision: 4}, streams: make(chan chan appwire.SessionWatchUpdate, 1), watches: make(chan struct{}, 1), ended: make(chan struct{}, 1)}
+			client := &managerRecoverClient{view: appwire.ManagerView{Ref: "local:manager", InstanceID: "manager-instance", Manager: true}, streams: make(chan chan appwire.SessionWatchUpdate, 1), watches: make(chan struct{}, 1), ended: make(chan struct{}, 1)}
 			client.streams <- stream
 			root.SetHubClient(client)
 			if _, err := root.configureHubWatchRuntime(t.Context(), map[string]any{"operation": "create", "hub": map[string]any{"ref": ref, "events": []string{"status"}}}); err != nil {
@@ -219,7 +219,7 @@ func TestManagerWatchUnrecoverableRebindEndsDurably(t *testing.T) {
 	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
 	stream := make(chan appwire.SessionWatchUpdate, 1)
 	stream <- appwire.SessionWatchUpdate{Snapshot: &appwire.ThreadReadResponse{BootGeneration: generation, Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: ref, InstanceID: instance}}}, Metadata: appwire.SessionObservationMetadata{Ref: ref, InstanceID: instance, GenerationID: generation}}
-	base := &managerRecoverClient{setting: appwire.ManagerSetting{Enabled: true, HubID: "hub-1", Revision: 4}, streams: make(chan chan appwire.SessionWatchUpdate, 1), watches: make(chan struct{}, 1), offlineReads: make(chan struct{}, 1), ended: make(chan struct{}, 1)}
+	base := &managerRecoverClient{view: appwire.ManagerView{Ref: "local:manager", InstanceID: "manager-instance", Manager: true}, streams: make(chan chan appwire.SessionWatchUpdate, 1), watches: make(chan struct{}, 1), offlineReads: make(chan struct{}, 1), ended: make(chan struct{}, 1)}
 	base.streams <- stream
 	client := &managerRejectedRebindClient{managerRecoverClient: base}
 	root.SetHubClient(client)
@@ -278,7 +278,7 @@ func TestManagerWatchSubscriptionFailureClassification(t *testing.T) {
 }
 
 func (c *managerWatchClient) State(context.Context) (appwire.ManagerView, error) {
-	return appwire.ManagerView{Setting: c.setting}, nil
+	return c.view, nil
 }
 func (c *managerWatchClient) Invoke(context.Context, appwire.SessionOperationRequest) (appwire.SessionOperationResponse, error) {
 	return appwire.SessionOperationResponse{}, nil
@@ -290,7 +290,7 @@ func (c *managerWatchClient) Watch(_ context.Context, request appwire.SessionWat
 
 func TestManagerWatchRuntimeToolRegistersAndObserves(t *testing.T) {
 	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
-	client := &managerWatchClient{setting: appwire.ManagerSetting{Enabled: true, HubID: "hub-1", Revision: 4}, updates: make(chan appwire.SessionWatchUpdate, 8), requests: make(chan appwire.SessionWatchRequest, 2)}
+	client := &managerWatchClient{view: appwire.ManagerView{Ref: "local:manager", InstanceID: "manager-instance", Manager: true}, updates: make(chan appwire.SessionWatchUpdate, 8), requests: make(chan appwire.SessionWatchRequest, 2)}
 	client.updates <- appwire.SessionWatchUpdate{Snapshot: &appwire.ThreadReadResponse{Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: "local:worker", InstanceID: "worker-instance"}}, BootGeneration: "7@worker"}, Metadata: appwire.SessionObservationMetadata{Ref: "local:worker", InstanceID: "worker-instance", GenerationID: "7@worker"}}
 	root.SetHubClient(client)
 
@@ -314,8 +314,7 @@ func TestManagerWatchCompletionAndRestart(t *testing.T) {
 	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
 	jm := root.jobManager
 	const ref, generation = "local:worker", "7@worker"
-	config := appwire.ManagerSetting{HubID: "hub-1", Enabled: true, Revision: 4}
-	watch, err := jm.configureHubWatch(ref, "worker-instance", generation, "hub-1", config.Revision, []string{"question", "communicate"}, true)
+	watch, err := jm.configureHubWatch(ref, "worker-instance", generation, "local:manager", []string{"question", "communicate"}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,7 +357,7 @@ func TestManagerWatchCompletionAfterEarlierSameEntryObservation(t *testing.T) {
 	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
 	jm := root.jobManager
 	const ref, instance, generation = "local:worker", "worker-instance", "7@worker"
-	watch, err := jm.configureHubWatch(ref, instance, generation, "hub-1", 4, []string{"communicate"}, true)
+	watch, err := jm.configureHubWatch(ref, instance, generation, "local:manager", []string{"communicate"}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +394,7 @@ func TestManagerWatchUnknownCausalityReplay(t *testing.T) {
 	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
 	jm := root.jobManager
 	const ref, generation = "local:worker", "7@worker"
-	watch, err := jm.configureHubWatch(ref, "worker-instance", generation, "hub-1", 4, []string{"communicate"}, false)
+	watch, err := jm.configureHubWatch(ref, "worker-instance", generation, "local:manager", []string{"communicate"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -428,7 +427,7 @@ func TestManagerWatchUnknownCausalityReplay(t *testing.T) {
 func TestManagerWatchRebindAndDisable(t *testing.T) {
 	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
 	jm := root.jobManager
-	watch, err := jm.configureHubWatch("local:worker", "worker-instance", "7@worker", "hub-1", 4, []string{"status"}, false)
+	watch, err := jm.configureHubWatch("local:worker", "worker-instance", "7@worker", "local:manager", []string{"status"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,7 +472,7 @@ func TestManagerWatchRuntimeRestartAfterEarlierDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 	freezeClock(original)
-	watch, err := original.configureHubWatch("local:worker", "worker-instance", "7@worker", "hub-1", 4, []string{"communicate"}, false)
+	watch, err := original.configureHubWatch("local:worker", "worker-instance", "7@worker", "local:manager", []string{"communicate"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -507,7 +506,7 @@ func TestManagerWatchSnapshotLiveRaceAndPendingIdentity(t *testing.T) {
 	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
 	jm := root.jobManager
 	const ref, instance, generation = "local:worker", "worker-instance", "7@worker"
-	watch, err := jm.configureHubWatch(ref, instance, generation, "hub-1", 4, []string{"communicate"}, true)
+	watch, err := jm.configureHubWatch(ref, instance, generation, "local:manager", []string{"communicate"}, true)
 	if err != nil {
 		t.Fatal(err)
 	}

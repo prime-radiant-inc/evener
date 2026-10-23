@@ -35,9 +35,12 @@ func hubObservationSelector(event string) bool {
 
 // Hub watches use the same journal, pending-send rail and watch ID as ordinary
 // watches. Their source is a canonical ref, not a local job or event stream.
-func (jm *jobManager) configureHubWatch(ref, instance, generation, hubID string, revision uint64, selectors []string, completion bool) (watchResult, error) {
-	if ref == "" || instance == "" || generation == "" || hubID == "" || revision == 0 {
-		return watchResult{}, errors.New("source_not_watchable: authoritative hub target generation and setting are required")
+// caller names the Manager whose binding admitted the watch; the durable
+// identity keys on the target triple plus that caller, so two Managers
+// watching the same target keep distinct watches.
+func (jm *jobManager) configureHubWatch(ref, instance, generation, caller string, selectors []string, completion bool) (watchResult, error) {
+	if ref == "" || instance == "" || generation == "" || caller == "" {
+		return watchResult{}, errors.New("source_not_watchable: authoritative hub target generation and Manager caller are required")
 	}
 	if len(selectors) == 0 && !completion {
 		return watchResult{}, errors.New("invalid_request: watch needs events or completion")
@@ -53,8 +56,8 @@ func (jm *jobManager) configureHubWatch(ref, instance, generation, hubID string,
 		return watchResult{}, err
 	}
 	cfg.events = append([]string(nil), selectors...)
-	cfg.hubRef, cfg.hubInstance, cfg.hubGeneration, cfg.hubID, cfg.hubRevision, cfg.hubCompletion = ref, instance, generation, hubID, revision, completion
-	cfg.configHash = fmt.Sprintf("%s:%s:%s:%s:%d:%v:%v", cfg.configHash, ref, instance, generation, revision, selectors, completion)
+	cfg.hubRef, cfg.hubInstance, cfg.hubGeneration, cfg.hubCaller, cfg.hubCompletion = ref, instance, generation, caller, completion
+	cfg.configHash = fmt.Sprintf("%s:%s:%s:%s:%s:%v:%v", cfg.configHash, ref, instance, generation, caller, selectors, completion)
 	key := watchKey{VisibleSessionID: jm.sessionID, Target: ref, SendTo: runtimeMessageAliasCaller}
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
@@ -322,8 +325,8 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 	if err != nil {
 		return nil, err
 	}
-	if !state.Setting.Enabled {
-		return nil, appwire.InvalidRequest("Manager mode is disabled")
+	if !state.Manager {
+		return nil, appwire.InvalidRequest("session is not a Manager")
 	}
 	watchCtx, cancel := context.WithCancel(context.Background())
 	updates, err := client.Watch(watchCtx, request)
@@ -347,7 +350,7 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 		cancel()
 		return nil, err
 	}
-	result, err := jm.configureHubWatch(request.Ref, first.Metadata.InstanceID, first.Metadata.GenerationID, state.Setting.HubID, state.Setting.Revision, request.Events, request.Completion)
+	result, err := jm.configureHubWatch(request.Ref, first.Metadata.InstanceID, first.Metadata.GenerationID, state.Ref, request.Events, request.Completion)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -363,7 +366,7 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 	}
 	s.hubWatchCancels[result.WatchID] = cancel
 	s.mu.Unlock()
-	go s.consumeHubWatch(watchCtx, result.WatchID, request, state.Setting, updates, first)
+	go s.consumeHubWatch(watchCtx, result.WatchID, request, state.Ref, state.InstanceID, updates, first)
 	return marshalWatchResult(result, jobToolResultDefaultMaxChar)
 }
 
@@ -379,7 +382,10 @@ func (s *Session) cancelHubWatch(id string) {
 
 // consumeHubWatch owns just a transport subscription. The job manager owns
 // durable watch state, delivery identities, provenance and restart teardown.
-func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwire.SessionWatchRequest, setting appwire.ManagerSetting, updates <-chan appwire.SessionWatchUpdate, initial appwire.SessionWatchUpdate) {
+// callerRef and callerInstance name the Manager whose binding admitted the
+// watch: a recheck ends the watch if the binding no longer serves that same
+// Manager session.
+func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwire.SessionWatchRequest, callerRef, callerInstance string, updates <-chan appwire.SessionWatchUpdate, initial appwire.SessionWatchUpdate) {
 	defer s.cancelHubWatch(id)
 	jm := s.jobManager
 	if jm == nil {
@@ -442,8 +448,8 @@ func (s *Session) consumeHubWatch(ctx context.Context, id string, request appwir
 			cancel()
 			if err == nil {
 				stateFailures = 0
-				if !state.Setting.Enabled || state.Setting.HubID != setting.HubID || state.Setting.Revision != setting.Revision {
-					_ = jm.endHubWatch(id, "Manager setting disabled or changed; re-register", nil)
+				if !state.Manager || state.Ref != callerRef || state.InstanceID != callerInstance {
+					_ = jm.endHubWatch(id, "Manager binding no longer serves this session; re-register", nil)
 					return
 				}
 				if signal == boundSignal {

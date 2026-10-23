@@ -121,8 +121,7 @@ type WatchConfigSnapshot struct {
 	HubRef        string `json:"hub_ref,omitempty"`
 	HubInstance   string `json:"hub_instance,omitempty"`
 	HubGeneration string `json:"hub_generation,omitempty"`
-	HubID         string `json:"hub_id,omitempty"`
-	HubRevision   uint64 `json:"hub_revision,omitempty"`
+	HubCaller     string `json:"hub_caller,omitempty"`
 	HubCompletion bool   `json:"hub_completion,omitempty"`
 }
 

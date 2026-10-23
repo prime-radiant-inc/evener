@@ -151,20 +151,11 @@ func managerReadFixture(t *testing.T) (*sessionOperations, *managerReadSource, *
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := hubcore.NewSessionPreferencesStore(filepath.Join(t.TempDir(), "index.db"))
-	id, err := store.HubID()
-	if err != nil {
-		t.Fatal(err)
-	}
-	setting, err := store.SetManager(manager, id, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), SessionPreferences: store, RemoteHostRegistry: hosts, RemoteHosts: hosts.All()}
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test", RemoteHostRegistry: hosts, RemoteHosts: hosts.All()}
 	cfg.SessionSeen = hubcore.NewSessionSeenStore(filepath.Join(t.TempDir(), "seen.db"))
 	server := appserver.NewServer(appserver.ServerConfig{})
 	owner := &sessionOperations{cfg: cfg, sources: sources, server: server, relays: newHubRelayFunctions(server, cfg, sources)}
-	return owner, first, second, appwire.ManagerView{Ref: manager, InstanceID: "manager-instance", Manager: true, Setting: setting}
+	return owner, first, second, appwire.ManagerView{Ref: manager, InstanceID: "manager-instance", Manager: true}
 }
 func managerInvoke(t *testing.T, o *sessionOperations, caller appwire.ManagerView, request appwire.SessionOperationRequest) appwire.SessionOperationResponse {
 	t.Helper()

@@ -1132,7 +1132,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			return appserver.SubscriptionAdmissionResolution{Key: key, Intent: appserver.SubscriptionAdmissionResolved}
 		},
 		Features: appwire.FeatureSet{
-			SessionTools:              cfg.SessionPreferences != nil,
+			SessionTools:              cfg.HubID != "",
 			ThreadList:                true,
 			ThreadTurnsList:           true,
 			TurnStart:                 true,
@@ -1328,15 +1328,14 @@ func registerThreadHandlers(
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadList, func(ctx context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return hubThreadList(ctx, cfg, sources, params)
 	})
-	operations := &sessionOperations{cfg: cfg, sources: sources, relays: relays, server: server}
+	operations := &sessionOperations{cfg: cfg, sources: sources, relays: relays, server: server, hubID: cfg.HubID}
 	if len(owners) > 0 {
 		operations.navigation, operations.resolve = owners[0].navigation, owners[0].resolve
 	}
 	readThread := operations.Read
 	operations.install()
-	registerSessionToolsPeer(server, cfg)
+	registerSessionToolsPeer(server, cfg.HubID)
 	operations.registerRemoteInput()
-	registerThreadManagerSetHandler(server, cfg, sources, readThread, operations.resyncThread)
 	// thread/unsubscribe drops only the calling connection's downstream
 	// subscription — the browser's own read of a thread it is navigating away
 	// from. The relay key is derived by the same helper thread/read's relay

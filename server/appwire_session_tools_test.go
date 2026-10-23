@@ -126,7 +126,7 @@ type bindingProbeOwner struct {
 
 func (o *bindingProbeOwner) State(context.Context) (appwire.ManagerView, error) {
 	o.states.Add(1)
-	return appwire.ManagerView{Setting: appwire.ManagerSetting{Enabled: true, HubID: "hub-a"}}, nil
+	return appwire.ManagerView{Manager: true}, nil
 }
 func (o *bindingProbeOwner) Invoke(context.Context, appwire.SessionOperationRequest) (appwire.SessionOperationResponse, error) {
 	o.invokes.Add(1)

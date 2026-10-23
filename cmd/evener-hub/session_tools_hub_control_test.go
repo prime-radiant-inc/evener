@@ -253,21 +253,12 @@ func controlStoresSnapshot(t *testing.T, w *WebServer) any {
 }
 
 func TestManagerHumanControlsAttributionAndClosedUnion(t *testing.T) {
-	store := hubcore.NewSessionPreferencesStore(filepath.Join(t.TempDir(), "manager.db"))
-	hubID, err := store.HubID()
-	if err != nil {
-		t.Fatal(err)
-	}
 	const managerRef = "local:manager"
-	setting, err := store.SetManager(managerRef, hubID, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	w := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), HubStateRoot: t.TempDir(), SessionPreferences: store, Archive: hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")), PinSections: hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db")), SessionSeen: hubcore.NewSessionSeenStore(filepath.Join(t.TempDir(), "seen.db"))})
+	w := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), HubStateRoot: t.TempDir(), HubID: "hub-test", Archive: hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")), PinSections: hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db")), SessionSeen: hubcore.NewSessionSeenStore(filepath.Join(t.TempDir(), "seen.db"))})
 	w.injectMetasForTest([]schema.SessionMeta{topLevelMeta("session-a")})
 	o := &sessionOperations{cfg: w.cfg, sources: w.sources, navigation: w.navigation, resolve: w.resolveTopLevelSessionRef}
-	caller := appwire.ManagerView{Ref: managerRef, InstanceID: "manager-instance", Manager: true, Setting: setting}
-	ctx := context.WithValue(t.Context(), sessionBindingContextKey{}, appwire.SessionBinding{Ref: managerRef, InstanceID: caller.InstanceID, HubID: hubID, BindingID: "authenticated-binding"})
+	caller := appwire.ManagerView{Ref: managerRef, InstanceID: "manager-instance", Manager: true}
+	ctx := context.WithValue(t.Context(), sessionBindingContextKey{}, appwire.SessionBinding{Ref: managerRef, InstanceID: caller.InstanceID, HubID: "hub-test", BindingID: "authenticated-binding"})
 	archive := &appwire.ArchiveParams{Kind: appwire.ArchiveTargetSession, ID: "local:session-a", Archived: true}
 	bad := appwire.SessionOperationRequest{Control: &appwire.SessionControlRequest{Action: "archive", Archive: archive, Seen: &appwire.SessionSeenSetParams{}}}
 	before := controlStoresSnapshot(t, w)

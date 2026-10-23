@@ -1,11 +1,10 @@
 package hub
 
 import (
-	"encoding/json"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/schema"
@@ -13,40 +12,6 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
-func managerModeAwaitResync(t *testing.T, client *appwire.Client, ref, instance string, setting appwire.ManagerSetting) {
-	t.Helper()
-	timer := time.NewTimer(5 * time.Second)
-	defer timer.Stop()
-	for {
-		select {
-		case n := <-client.Notifications():
-			if n.Method != appwire.NotifyEvenerThreadResync {
-				continue
-			}
-			var hint appwire.ThreadResyncParams
-			if err := json.Unmarshal(n.Params, &hint); err != nil {
-				t.Fatal(err)
-			}
-			if hint.Ref != ref || hint.ThreadID != instance {
-				t.Fatalf("resync = %+v, want selected %s / %s", hint, ref, instance)
-			}
-			read, err := client.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: hint.Ref})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if read.Thread.Evener.ManagerSetting == nil || *read.Thread.Evener.ManagerSetting != setting {
-				t.Fatalf("resync reread = %+v, want %+v", read.Thread.Evener, setting)
-			}
-			return
-		case <-timer.C:
-			t.Fatalf("no Manager resync for %s", ref)
-		}
-	}
-}
-
-// Hypotheses: the cold projection uses the transcript ID instead of explicit
-// WorkspaceID; canonical lookup then selects the retained pre-Clear transcript.
-// A missing persisted identity would instead implicate the Clear writer.
 func TestManagerModeClearColdRead(t *testing.T) {
 	f := &daemonRetirementProcessFixture{t: t, cfg: DefaultConfig(), params: map[string]appwire.TurnStartParams{}, turnMutations: map[string]string{}}
 	f.setupRoots(t)
@@ -61,20 +26,28 @@ func TestManagerModeClearColdRead(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	if err := f.launchInitial(); err != nil {
+	before := f.handleCount()
+	launchCtx, cancel := context.WithTimeout(t.Context(), f.watchdogBudget())
+	defer cancel()
+	request := f.launchRequest()
+	request.Manager = true
+	entry, err := f.hub.Spawn(launchCtx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.adoptLaunch(before, entry); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.awaitStartup(); err != nil {
 		t.Fatal(err)
 	}
-	store := hubcore.NewSessionPreferencesStore(filepath.Join(f.root, "index.db"))
 	roster := hubcore.NewRoster(f.runDir, nil)
 	roster.Refresh()
 	past := hubcore.NewPastIndex(f.stateDir)
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	cfg := hubcore.WebConfig{RunDir: f.runDir, StateDir: f.stateDir, Roster: roster, Past: past, SessionPreferences: store}
+	cfg := hubcore.WebConfig{RunDir: f.runDir, StateDir: f.stateDir, Roster: roster, Past: past, HubID: "hub-test"}
 	hub := newHubRPCTestServer(t, cfg)
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -87,9 +60,8 @@ func TestManagerModeClearColdRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var enabled appwire.ThreadManagerSetResponse
-	if err := client.Request(t.Context(), appwire.MethodEvenerThreadManagerSet, appwire.ThreadManagerSetParams{Ref: ref, Enabled: true}, &enabled); err != nil {
-		t.Fatal(err)
+	if !initial.Thread.Evener.Manager {
+		t.Fatalf("start flag absent from live projection: %+v", initial.Thread.Evener)
 	}
 	turn, err := f.startMutation("manager-fork-seed")
 	if err != nil {
@@ -126,16 +98,14 @@ func TestManagerModeClearColdRead(t *testing.T) {
 	if cleared.Thread.Evener.Ref != ref {
 		t.Fatalf("Clear ref = %q, want %q", cleared.Thread.Evener.Ref, ref)
 	}
-	// The Manager bit is the session's own start-time property; the toggle
-	// RPC's projection contract is the setting row, shared across Clear.
-	if !cleared.Thread.Evener.ManagerEditable || cleared.Thread.Evener.ManagerSetting == nil || *cleared.Thread.Evener.ManagerSetting != enabled.View.Setting {
-		t.Fatalf("Clear Manager projection = %+v, want editable with setting %+v", cleared.Thread.Evener, enabled.View.Setting)
+	if !cleared.Thread.Evener.Manager {
+		t.Fatalf("Clear lost Manager: %+v", cleared.Thread.Evener)
 	}
 	meta, err := schema.LoadSessionMeta(f.stateDir, instance)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if "local:"+meta.WorkspaceID != ref {
+	if "local:"+meta.WorkspaceID != ref || !meta.Manager {
 		t.Fatalf("persisted identity = %q, want %q", meta.WorkspaceID, ref)
 	}
 	roster.Refresh()
@@ -168,20 +138,9 @@ func TestManagerModeClearColdRead(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if read.Thread.Evener.Ref != requested || read.Thread.Evener.InstanceID != selected.instance || read.Thread.Evener.ManagerSetting == nil || *read.Thread.Evener.ManagerSetting != enabled.View.Setting {
-			t.Errorf("cold read %s = %+v, want selected instance %s and shared setting %+v", requested, read.Thread.Evener, selected.instance, enabled.View.Setting)
+		if read.Thread.Evener.Ref != requested || read.Thread.Evener.InstanceID != selected.instance || !read.Thread.Evener.Manager {
+			t.Errorf("cold read %s = %+v, want selected instance %s with Manager", requested, read.Thread.Evener, selected.instance)
 		}
-		var response appwire.ThreadManagerSetResponse
-		if err := cold.Request(t.Context(), appwire.MethodEvenerThreadManagerSet, appwire.ThreadManagerSetParams{Ref: requested, Enabled: true}, &response); err != nil {
-			t.Fatal(err)
-		}
-		if response.View.Ref != requested || response.View.InstanceID != selected.instance || response.View.Setting != enabled.View.Setting {
-			t.Errorf("cold idempotent set = %+v", response.View)
-		}
-	}
-	aliasSetting, err := store.Manager("local:" + instance)
-	if err != nil || aliasSetting != (appwire.ManagerSetting{}) {
-		t.Fatalf("cold alias created a separate row: %+v, %v", aliasSetting, err)
 	}
 	if _, err := cold.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref, Subscribe: true}); err != nil {
 		t.Fatal(err)
@@ -194,22 +153,6 @@ func TestManagerModeClearColdRead(t *testing.T) {
 	if _, err := aliasClient.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:" + instance, Subscribe: true}); err != nil {
 		t.Fatal(err)
 	}
-	for _, state := range []bool{false, true} {
-		var response appwire.ThreadManagerSetResponse
-		if err := aliasClient.Request(t.Context(), appwire.MethodEvenerThreadManagerSet, appwire.ThreadManagerSetParams{Ref: "local:" + instance, Enabled: state}, &response); err != nil {
-			t.Fatal(err)
-		}
-		managerModeAwaitResync(t, cold, ref, initial.Thread.Evener.InstanceID, response.View.Setting)
-		managerModeAwaitResync(t, aliasClient, "local:"+instance, instance, response.View.Setting)
-		old, err := cold.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: ref})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if old.Thread.Evener.InstanceID != initial.Thread.Evener.InstanceID || old.Thread.Evener.ManagerSetting == nil || *old.Thread.Evener.ManagerSetting != response.View.Setting {
-			t.Fatalf("historical view failed to share preference without rerouting: %+v", old.Thread.Evener)
-		}
-		enabled = response
-	}
 	child, _, err := agent.ForkSessionAtUserTurn(f.stateDir, initial.Thread.Evener.InstanceID, divergence, "")
 	if err != nil {
 		t.Fatal(err)
@@ -221,7 +164,7 @@ func TestManagerModeClearColdRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if forked.Thread.Evener.Manager || forked.Thread.Evener.ManagerSetting == nil || forked.Thread.Evener.ManagerSetting.Revision != 0 {
+	if forked.Thread.Evener.Manager {
 		t.Fatalf("fork inherited Manager: %+v", forked.Thread.Evener)
 	}
 	const legacyID = "02wMz5Txv1C3Hut0M8GCeB"
@@ -229,17 +172,9 @@ func TestManagerModeClearColdRead(t *testing.T) {
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	var unrelated []*appwire.Client
-	for _, id := range []string{child, legacyID} {
-		peer := dialHubRPC(t, hub)
-		defer peer.Close()
-		if _, err := peer.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := peer.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:" + id, Subscribe: true}); err != nil {
-			t.Fatal(err)
-		}
-		unrelated = append(unrelated, peer)
+	legacy, err := cold.ThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:" + legacyID})
+	if err != nil || legacy.Thread.Evener.Manager {
+		t.Fatalf("legacy session inherited Manager: %+v %v", legacy, err)
 	}
 
 	// Rebuild the real hub spawner and human server over the same persisted roots.
@@ -251,7 +186,6 @@ func TestManagerModeClearColdRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	roster.Refresh()
-	cfg.SessionPreferences = hubcore.NewSessionPreferencesStore(filepath.Join(f.root, "index.db"))
 	restarted := newHubRPCTestServer(t, cfg)
 	defer restarted.Close()
 	reconnected := dialHubRPC(t, restarted)
@@ -263,7 +197,7 @@ func TestManagerModeClearColdRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resumed.Thread.Evener.Ref != ref || resumed.Thread.Evener.InstanceID != instance || resumed.Thread.Evener.ManagerSetting == nil || *resumed.Thread.Evener.ManagerSetting != enabled.View.Setting {
+	if resumed.Thread.Evener.Ref != ref || resumed.Thread.Evener.InstanceID != instance || !resumed.Thread.Evener.Manager {
 		t.Fatalf("resumed projection = %+v", resumed.Thread.Evener)
 	}
 	// A second Clear leaves the intermediate instance independently readable
@@ -298,29 +232,8 @@ func TestManagerModeClearColdRead(t *testing.T) {
 	if selected.Thread.Evener.Ref != "local:"+instance || selected.Thread.Evener.InstanceID != instance {
 		t.Fatalf("historical sibling was rerouted: %+v", selected.Thread.Evener)
 	}
-	var changed appwire.ThreadManagerSetResponse
-	if err := aliasClient.Request(t.Context(), appwire.MethodEvenerThreadManagerSet, appwire.ThreadManagerSetParams{Ref: "local:" + instance, Enabled: false}, &changed); err != nil {
-		t.Fatal(err)
-	}
-	managerModeAwaitResync(t, liveClient, ref, currentInstance, changed.View.Setting)
-	managerModeAwaitResync(t, aliasClient, "local:"+instance, instance, changed.View.Setting)
-	if err := liveClient.Request(t.Context(), appwire.MethodEvenerThreadManagerSet, appwire.ThreadManagerSetParams{Ref: ref, Enabled: true}, &changed); err != nil {
-		t.Fatal(err)
-	}
-	managerModeAwaitResync(t, aliasClient, "local:"+instance, instance, changed.View.Setting)
-	managerModeAwaitResync(t, liveClient, ref, currentInstance, changed.View.Setting)
-	for _, peer := range unrelated {
-		timer := time.NewTimer(100 * time.Millisecond)
-		for done := false; !done; {
-			select {
-			case n := <-peer.Notifications():
-				if n.Method == appwire.NotifyEvenerThreadResync {
-					t.Fatalf("fork or legacy workspace received unrelated setting hint: %s", n.Params)
-				}
-			case <-timer.C:
-				done = true
-			}
-		}
+	if !selected.Thread.Evener.Manager || !liveRead.Thread.Evener.Manager || !second.Thread.Evener.Manager {
+		t.Fatalf("Manager after second Clear: historical=%t live=%t response=%t", selected.Thread.Evener.Manager, liveRead.Thread.Evener.Manager, second.Thread.Evener.Manager)
 	}
 	if err := f.launchInitial(); err != nil {
 		t.Fatal(err)
@@ -330,7 +243,7 @@ func TestManagerModeClearColdRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if newRoot.Thread.Evener.Ref == ref || newRoot.Thread.Evener.Manager || newRoot.Thread.Evener.ManagerSetting == nil || newRoot.Thread.Evener.ManagerSetting.Revision != 0 {
+	if newRoot.Thread.Evener.Ref == ref || newRoot.Thread.Evener.Manager {
 		t.Fatalf("new root inherited Manager: %+v", newRoot.Thread.Evener)
 	}
 }

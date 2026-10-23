@@ -88,7 +88,7 @@ type WebConfig struct {
 	Favorite           *FavoriteStore           // favorite decision store; nil when not configured
 	PinSections        *PinSectionStore         // named pin-section store; nil when not configured
 	SessionSeen        *SessionSeenStore        // per-session seen-through markers (S4); nil when not configured
-	SessionPreferences *SessionPreferencesStore // hosting workspace Manager preferences in index.db
+	HubID              string                   // this hub's durable nonsecret peer identity from HubIdentityStore; empty disables session-tools bindings
 	// MessageSearch is the message-text search index (S14); nil when it is not
 	// configured or search.db could not be opened, and search then finds
 	// sessions by title and prompt only.

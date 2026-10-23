@@ -75,7 +75,6 @@ const (
 	MethodEvenerDaemonStatus          = "evener/daemon/status"
 	MethodEvenerDaemonIdleTimeoutSet  = "evener/daemon/idle-timeout/set"
 	MethodEvenerThreadNameSet         = "evener/thread/name/set"
-	MethodEvenerThreadManagerSet      = "evener/thread/manager/set"
 	MethodEvenerThreadTranscriptsList = "evener/thread/transcripts/list"
 	MethodEvenerThreadActivityRead    = "evener/thread/activity/read"
 	MethodEvenerThreadDelegatesList   = "evener/thread/delegates/list"
@@ -1043,10 +1042,6 @@ type EvenerThread struct {
 	// session itself. It is not a runtime setting: nothing can turn it on or
 	// off after the session starts.
 	Manager bool `json:"manager,omitempty"`
-	// ManagerSetting is absent when the hosting preference cannot be resolved.
-	ManagerSetting *ManagerSetting `json:"managerSetting,omitempty"`
-	// ManagerEditable is true only where this hub can change the preference.
-	ManagerEditable bool `json:"managerEditable,omitempty"`
 	// ResumeRequired means recovery stopped this session and automatic actions
 	// must wait for an explicit thread/resume. Saved transcripts remain readable.
 	ResumeRequired bool `json:"resumeRequired,omitempty"`

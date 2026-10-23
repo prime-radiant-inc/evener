@@ -221,8 +221,7 @@ type watchConfig struct {
 	hubRef             string
 	hubInstance        string
 	hubGeneration      string
-	hubID              string
-	hubRevision        uint64
+	hubCaller          string
 	hubCompletion      bool
 	hubSeen            map[string]bool
 	hubSuspended       bool
@@ -2259,8 +2258,7 @@ func watchConfigSnapshot(cfg *watchConfig) *jobstore.WatchConfigSnapshot {
 		HubRef:                   cfg.hubRef,
 		HubInstance:              cfg.hubInstance,
 		HubGeneration:            cfg.hubGeneration,
-		HubID:                    cfg.hubID,
-		HubRevision:              cfg.hubRevision,
+		HubCaller:                cfg.hubCaller,
 		HubCompletion:            cfg.hubCompletion,
 	}
 	// A timer keeps only the seconds it derived and which mode derived them, so

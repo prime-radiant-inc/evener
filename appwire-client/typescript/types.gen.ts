@@ -822,14 +822,6 @@ export interface EvenerThread {
    */
   manager?: boolean;
   /**
-   * ManagerSetting is absent when the hosting preference cannot be resolved.
-   */
-  managerSetting?: ManagerSetting;
-  /**
-   * ManagerEditable is true only where this hub can change the preference.
-   */
-  managerEditable?: boolean;
-  /**
    * ResumeRequired means recovery stopped this session and automatic actions
    * must wait for an explicit thread/resume. Saved transcripts remain readable.
    */
@@ -2214,22 +2206,10 @@ export interface MCPServerSpec {
   args?: string[];
 }
 
-export interface ManagerSetting {
-  hubId: string;
-  enabled: boolean;
-  revision: number;
-}
-
 export interface ManagerView {
   ref: string;
   instanceId: string;
-  /**
-   * Manager is the session's own start-time property as its daemon projects
-   * it. It is the admission truth; Setting is the transitional preference
-   * projection that retires with the store.
-   */
   manager?: boolean;
-  setting: ManagerSetting;
 }
 
 export interface MarketplaceAddParams {
@@ -3468,7 +3448,6 @@ export interface SessionBinding {
   instanceId: string;
   hubId: string;
   bindingId: string;
-  preferenceRevision?: number;
 }
 
 export interface SessionControlRequest {
@@ -3820,7 +3799,7 @@ export interface SessionTasksResponse {
 }
 
 export interface SessionToolsInput {
-  bindingId: string;
+  callerRef: string;
   method: string;
   params: unknown;
 }
@@ -4449,15 +4428,6 @@ export interface ThreadListResponse {
   data: Thread[];
   nextCursor?: string;
   backwardsCursor?: string;
-}
-
-export interface ThreadManagerSetParams {
-  ref: string;
-  enabled: boolean;
-}
-
-export interface ThreadManagerSetResponse {
-  view: ManagerView;
 }
 
 export interface ThreadModelChangedParams {
@@ -5153,7 +5123,6 @@ export const METHOD_NAMES = [
   "thread/clear",
   "thread/model/set",
   "evener/thread/name/set",
-  "evener/thread/manager/set",
   "thread/reasoning-effort/set",
   "thread/vision-model/set",
   "thread/compact/start",
@@ -5478,7 +5447,6 @@ export interface MethodTypes {
   "thread/clear": { params: ThreadClearParams; result: ThreadClearResponse };
   "thread/model/set": { params: ThreadModelSetParams; result: EmptyResponse };
   "evener/thread/name/set": { params: ThreadNameSetParams; result: EmptyResponse };
-  "evener/thread/manager/set": { params: ThreadManagerSetParams; result: ThreadManagerSetResponse };
   "thread/reasoning-effort/set": { params: ThreadReasoningEffortSetParams; result: EmptyResponse };
   "thread/vision-model/set": { params: ThreadVisionModelSetParams; result: EmptyResponse };
   "thread/compact/start": { params: ThreadCompactStartParams; result: EmptyResponse };

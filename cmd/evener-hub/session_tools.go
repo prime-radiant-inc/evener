@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"sync"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
@@ -13,98 +12,25 @@ import (
 )
 
 type sessionOperations struct {
-	cfg        hubcore.WebConfig
-	sources    *appsource.Registry
+	cfg     hubcore.WebConfig
+	sources *appsource.Registry
+	// hubID is this hub's durable nonsecret identity, from the identity
+	// store. It names the hub in session-tools bindings and the bridge
+	// identify exchange; it carries no authority.
+	hubID      string
 	navigation *NavigationService
 	resolve    topLevelSessionResolver
 	relays     hubRelayFunctions
 	server     *appserver.Server
-	mu         sync.Mutex
-	watches    map[*sessionObservation]struct{}
-	remote     map[string]*remoteSessionOwner
-}
-
-// remoteSessionOwner is a proxy to the enabling hub's reverse-call owner on
-// this identified bridge, not an independent hosting-hub Manager authority.
-type remoteSessionOwner struct {
-	hubID   string
-	owner   appwire.SessionHubClient
-	ctx     context.Context
-	cancel  context.CancelFunc
-	binding appwire.SessionBinding
-}
-
-// retire ends this proxy's binding at its source: the context its installation
-// was given, which the installation's own cleanup waits on.
-func (r *remoteSessionOwner) retire() {
-	if r.cancel != nil {
-		r.cancel()
-	}
-}
-
-// supersededRemoteProxy reports whether previous is a stale binding that an
-// installation carrying next may replace.
-//
-// Turning Manager off and on again keeps the same enabling hub, so a re-enable
-// presents a fresh binding ID and a newer preference revision. Nothing told the
-// hosting hub the old binding was finished: the disconnect it waits for never
-// comes, because the bridge carried on. A newer revision for this hub and
-// instance is that proof, and the host rechecks the preference row before
-// installing, so replacing on it cannot outrun a human's disable.
-func supersededRemoteProxy(previous *remoteSessionOwner, next appwire.SessionBinding) bool {
-	if previous == nil || previous.ctx.Err() != nil {
-		return false
-	}
-	if previous.binding.HubID != next.HubID || previous.binding.InstanceID != next.InstanceID {
-		return false
-	}
-	return next.PreferenceRevision > previous.binding.PreferenceRevision
-}
-
-func (r *remoteSessionOwner) SessionToolsHubID() string     { return r.hubID }
-func (r *remoteSessionOwner) SessionToolsBindingID() string { return r.binding.BindingID }
-func (r *remoteSessionOwner) State(ctx context.Context) (appwire.ManagerView, error) {
-	if r.ctx.Err() != nil {
-		return appwire.ManagerView{}, appwire.Unavailable("enabling hub disconnected")
-	}
-	return r.owner.State(ctx)
-}
-func (r *remoteSessionOwner) Invoke(ctx context.Context, request appwire.SessionOperationRequest) (appwire.SessionOperationResponse, error) {
-	if r.ctx.Err() != nil {
-		return appwire.SessionOperationResponse{}, appwire.Unavailable("enabling hub disconnected")
-	}
-	return r.owner.Invoke(ctx, request)
-}
-func (r *remoteSessionOwner) Watch(ctx context.Context, request appwire.SessionWatchRequest) (<-chan appwire.SessionWatchUpdate, error) {
-	if r.ctx.Err() != nil {
-		return nil, appwire.Unavailable("enabling hub disconnected")
-	}
-	return r.owner.Watch(ctx, request)
-}
-
-type sessionObservation struct {
-	preferenceKey string
-	cancel        context.CancelFunc
 }
 
 type boundSessionOperations struct {
 	owner   *sessionOperations
 	local   *appsource.LocalDaemonSource
-	remote  *appsource.RemoteHubSource
 	binding appwire.SessionBinding
 }
 
 type sessionBindingContextKey struct{}
-type remoteSessionAdmissionKey struct{}
-type localSessionPreferenceKey struct{}
-type localSessionPreference struct {
-	key string
-	// manager is the caller's own start-time property, projected by its
-	// daemon. It is the admission truth; the preference key is carried only
-	// for the store paths that still read it.
-	manager bool
-	hubID   string
-}
 
 func sessionInputProof(ctx context.Context, callerRef string) (*appwire.SessionActorProof, error) {
 	binding, ok := ctx.Value(sessionBindingContextKey{}).(appwire.SessionBinding)
@@ -117,165 +43,40 @@ func sessionInputProof(ctx context.Context, callerRef string) (*appwire.SessionA
 }
 
 func (o *sessionOperations) install() {
-	if o.cfg.SessionPreferences == nil {
+	if o.hubID == "" {
 		return
 	}
 	o.sources.SetOnSessionToolsAdd(o.installSource)
 	for _, source := range o.sources.All() {
 		o.installSource(source)
 	}
-	o.server.InstallSessionTools(func(ctx context.Context, binding appwire.SessionBinding, upstream appwire.SessionHubClient) error {
-		peer := appserver.SessionToolsPeerID(ctx)
-		if peer == "" || peer != binding.HubID {
-			return appwire.InvalidRequest("identified enabling peer required")
-		}
-		source, _ := o.sources.Source("local")
-		local, ok := source.(*appsource.LocalDaemonSource)
-		if !ok {
-			return appwire.Unavailable("hosting daemon source unavailable")
-		}
-		thread, err := local.SessionToolsThread(binding)
-		if err != nil {
-			return err
-		}
-		key, err := managerPreferenceRef(o.cfg, thread)
-		if err != nil {
-			return err
-		}
-		setting, err := o.cfg.SessionPreferences.Manager(key)
-		if err != nil {
-			return err
-		}
-		if !setting.Enabled || setting.HubID != peer || setting.Revision != binding.PreferenceRevision {
-			return appwire.InvalidRequest("saved Manager authority differs from identified peer")
-		}
-		proxyCtx, proxyCancel := context.WithCancel(ctx)
-		proxy := &remoteSessionOwner{hubID: peer, owner: upstream, ctx: proxyCtx, cancel: proxyCancel, binding: binding}
-		o.mu.Lock()
-		if o.remote == nil {
-			o.remote = map[string]*remoteSessionOwner{}
-		}
-		previous := o.remote[binding.Ref]
-		superseded := supersededRemoteProxy(previous, binding)
-		if previous != nil && previous.ctx.Err() == nil && !superseded {
-			o.mu.Unlock()
-			return appwire.Conflict("workspace already has an enabling hub binding")
-		}
-		o.remote[binding.Ref] = proxy
-		o.mu.Unlock()
-		if superseded {
-			// Retire the old binding before installing over it: its cleanup removes
-			// it from o.remote only while it is still the current entry, so the new
-			// proxy above is never deleted by the old binding's teardown.
-			previous.retire()
-		}
-		local.ReconcileSessionTools()
-		if err := local.AwaitSessionToolsBinding(ctx, binding); err != nil {
-			o.mu.Lock()
-			if o.remote[binding.Ref] == proxy {
-				delete(o.remote, binding.Ref)
-			}
-			o.mu.Unlock()
-			local.ReconcileSessionTools()
-			return appwire.Unavailable("Manager daemon binding not installed: " + err.Error())
-		}
-		go func() {
-			<-ctx.Done()
-			o.mu.Lock()
-			if o.remote[binding.Ref] == proxy {
-				delete(o.remote, binding.Ref)
-			}
-			o.mu.Unlock()
-			local.ReconcileSessionTools()
-		}()
-		return nil
-	})
 }
 
 func (o *sessionOperations) installSource(source appsource.Source) {
-	if remote, ok := source.(*appsource.RemoteHubSource); ok {
-		remote.SetSessionTools(func(binding appwire.SessionBinding) (appwire.SessionHubClient, error) {
-			return &boundSessionOperations{owner: o, remote: remote, binding: binding}, nil
-		}, func() (string, error) { return o.cfg.SessionPreferences.HubID() })
-	}
 	if local, ok := source.(*appsource.LocalDaemonSource); ok {
 		local.SetSessionTools(func(binding appwire.SessionBinding) (appwire.SessionHubClient, error) {
-			if o.cfg.SessionPreferences == nil {
-				return nil, appwire.Unavailable("session preferences unavailable")
-			}
-			hubID, err := o.cfg.SessionPreferences.HubID()
+			// Ordinary workers need a binding to authenticate incoming Manager
+			// input. Outbound operations still check the caller's Manager bit.
+			_, err := local.SessionToolsThread(binding)
 			if err != nil {
 				return nil, err
 			}
-			thread, err := local.SessionToolsThread(binding)
-			if err != nil {
-				return nil, err
-			}
-			key, err := managerPreferenceRef(o.cfg, thread)
-			if err != nil {
-				return nil, err
-			}
-			setting, err := o.cfg.SessionPreferences.Manager(key)
-			if err != nil {
-				return nil, err
-			}
-			if setting.Enabled && setting.HubID != hubID {
-				o.mu.Lock()
-				remote := o.remote[binding.Ref]
-				o.mu.Unlock()
-				if remote == nil || remote.hubID != setting.HubID || remote.ctx.Err() != nil {
-					return nil, appwire.Unavailable("enabling hub binding unavailable")
-				}
-				return remote, nil
-			}
-			binding.HubID = hubID
+			binding.HubID = o.hubID
 			return &boundSessionOperations{owner: o, local: local, binding: binding}, nil
-		}, func() (string, error) { return o.cfg.SessionPreferences.HubID() })
-		local.SetSessionToolsAuthority(func(binding appwire.SessionBinding) (string, string, error) {
-			thread, err := local.SessionToolsThread(binding)
-			if err != nil {
-				return "", "", err
-			}
-			key, err := managerPreferenceRef(o.cfg, thread)
-			if err != nil {
-				return "", "", err
-			}
-			setting, err := o.cfg.SessionPreferences.Manager(key)
-			if err != nil {
-				return "", "", err
-			}
-			id, err := o.cfg.SessionPreferences.HubID()
-			if err != nil {
-				return "", "", err
-			}
-			if setting.Enabled && setting.HubID != id {
-				o.mu.Lock()
-				remote := o.remote[binding.Ref]
-				o.mu.Unlock()
-				if remote == nil || remote.hubID != setting.HubID || remote.ctx.Err() != nil {
-					return "", "", nil
-				}
-				return remote.hubID, remote.binding.BindingID, nil
-			}
-			return id, "", nil
-		})
+		}, func() (string, error) { return o.hubID, nil })
 	}
 }
 
-func registerSessionToolsPeer(server *appserver.Server, cfg hubcore.WebConfig) {
+func registerSessionToolsPeer(server *appserver.Server, hubID string) {
 	appserver.HandleTyped(server.Router(), appwire.MethodHubSessionToolsIdentify, func(ctx context.Context, params appwire.SessionToolsPeerParams) (appwire.SessionToolsPeerResponse, error) {
 		var out appwire.SessionToolsPeerResponse
-		if hostRoutingOrigin(ctx) != hostRoutingOriginBridge || cfg.SessionPreferences == nil {
+		if hostRoutingOrigin(ctx) != hostRoutingOriginBridge || hubID == "" {
 			return out, appwire.InvalidRequest("authenticated hub bridge required for peer identity")
-		}
-		id, err := cfg.SessionPreferences.HubID()
-		if err != nil {
-			return out, appwire.Unavailable(err.Error())
 		}
 		if err := appserver.IdentifySessionToolsPeer(ctx, params.HubID); err != nil {
 			return out, err
 		}
-		return appwire.SessionToolsPeerResponse{HubID: id}, nil
+		return appwire.SessionToolsPeerResponse{HubID: hubID}, nil
 	})
 }
 
@@ -284,37 +85,18 @@ func (o *sessionOperations) registerRemoteInput() {
 		if hostRoutingOrigin(ctx) != hostRoutingOriginBridge {
 			return nil, appwire.InvalidRequest("identified hub bridge required")
 		}
-		binding, ok := appserver.SessionToolsPeerBinding(ctx, input.BindingID)
-		if !ok || binding.HubID != appserver.SessionToolsPeerID(ctx) {
-			return nil, appwire.InvalidRequest("unknown peer Manager binding")
+		peer := appserver.SessionToolsPeerID(ctx)
+		if peer == "" || peer == "local" || !appwire.ValidRefPart(peer) {
+			return nil, appwire.InvalidRequest("identified hub bridge required")
 		}
-		o.mu.Lock()
-		peer := o.remote[binding.Ref]
-		o.mu.Unlock()
-		if peer == nil || peer.ctx.Err() != nil || peer.binding != binding {
-			return nil, appwire.InvalidRequest("Manager binding replaced")
+		caller, err := appwire.ParseRef(input.CallerRef)
+		if err != nil || caller.SourceID != "local" {
+			return nil, appwire.InvalidParams("bridge caller must be a local Manager ref")
 		}
-		source, _ := o.sources.Source("local")
-		local, ok := source.(*appsource.LocalDaemonSource)
-		if !ok {
-			return nil, appwire.Unavailable("hosting daemon source unavailable")
-		}
-		thread, err := local.SessionToolsThread(binding)
-		if err != nil {
-			return nil, err
-		}
-		key, err := managerPreferenceRef(o.cfg, thread)
-		if err != nil {
-			return nil, err
-		}
-		setting, err := o.cfg.SessionPreferences.Manager(key)
-		if err != nil {
-			return nil, err
-		}
-		if !setting.Enabled || setting.HubID != binding.HubID {
-			return nil, appwire.InvalidRequest("Manager authority revoked")
-		}
-		proof := &appwire.SessionActorProof{CallerRef: binding.Ref, Actor: appwire.SessionActor{Kind: "manager"}}
+		// The authenticated peer admits its own Manager. Qualify that caller so
+		// the target's saved actor cannot be mistaken for a session on this hub.
+		caller.SourceID = peer
+		proof := &appwire.SessionActorProof{CallerRef: caller.String(), Actor: appwire.SessionActor{Kind: "manager"}}
 		decode := func(out any) error {
 			decoder := json.NewDecoder(bytes.NewReader(input.Params))
 			decoder.DisallowUnknownFields()
@@ -391,119 +173,40 @@ func (b *boundSessionOperations) State(ctx context.Context) (appwire.ManagerView
 	if err := ctx.Err(); err != nil {
 		return view, err
 	}
-	if b.remote != nil {
-		read, err := b.remote.ReadThread(ctx, appwire.ThreadReadParams{Ref: b.binding.Ref})
-		if err != nil {
-			return view, err
-		}
-		thread := read.Thread
-		if thread.Evener.Ref != b.binding.Ref || thread.Evener.InstanceID != b.binding.InstanceID {
-			return view, appwire.SessionUnavailable("remote workspace binding changed")
-		}
-		if !thread.Evener.Manager {
-			return view, appwire.InvalidRequest("remote session is not a Manager")
-		}
-		if thread.Evener.ManagerSetting != nil {
-			setting := *thread.Evener.ManagerSetting
-			if setting.Enabled && setting.HubID != b.binding.HubID {
-				return view, appwire.Conflict("another hub owns Manager authority")
-			}
-			return appwire.ManagerView{Ref: thread.Evener.Ref, InstanceID: thread.Evener.InstanceID, Manager: true, Setting: setting}, nil
-		}
-		return appwire.ManagerView{Ref: thread.Evener.Ref, InstanceID: thread.Evener.InstanceID, Manager: true}, nil
-	}
-	view, manager, key, err := b.localCaller()
-	if err != nil {
-		return appwire.ManagerView{}, err
-	}
-	setting, err := b.owner.cfg.SessionPreferences.Manager(key)
-	if err != nil {
-		return appwire.ManagerView{}, err
-	}
-	if setting.Enabled && setting.HubID != b.binding.HubID {
-		return appwire.ManagerView{}, appwire.Conflict("another hub owns Manager authority")
-	}
-	view.Manager = manager
-	view.Setting = setting
-	return view, nil
+	return b.localCaller()
 }
 
-func (b *boundSessionOperations) localCaller() (appwire.ManagerView, bool, string, error) {
+func (b *boundSessionOperations) localCaller() (appwire.ManagerView, error) {
 	thread, err := b.local.SessionToolsThread(b.binding)
 	if err != nil {
-		return appwire.ManagerView{}, false, "", err
+		return appwire.ManagerView{}, err
 	}
-	key, err := managerPreferenceRef(b.owner.cfg, thread)
-	if err != nil {
-		return appwire.ManagerView{}, false, "", err
-	}
-	return appwire.ManagerView{Ref: thread.Evener.Ref, InstanceID: thread.Evener.InstanceID}, thread.Evener.Manager, key, nil
+	return appwire.ManagerView{Ref: thread.Evener.Ref, InstanceID: thread.Evener.InstanceID, Manager: thread.Evener.Manager}, nil
 }
 
 func (b *boundSessionOperations) Invoke(ctx context.Context, request appwire.SessionOperationRequest) (appwire.SessionOperationResponse, error) {
-	var view appwire.ManagerView
-	var err error
-	if b.remote != nil {
-		view, err = b.State(ctx)
-	} else if err = ctx.Err(); err == nil {
-		var key string
-		var manager bool
-		view, manager, key, err = b.localCaller()
-		ctx = context.WithValue(ctx, localSessionPreferenceKey{}, localSessionPreference{key: key, manager: manager, hubID: b.binding.HubID})
-	}
+	view, err := b.State(ctx)
 	if err != nil {
 		return appwire.SessionOperationResponse{}, err
 	}
 	ctx = context.WithValue(ctx, sessionBindingContextKey{}, b.binding)
-	if b.remote != nil {
-		ctx = context.WithValue(ctx, remoteSessionAdmissionKey{}, b.binding)
-		ctx = appsource.WithManagerInputBinding(ctx, b.binding.BindingID)
-	}
 	return b.owner.Invoke(ctx, view, request)
 }
 
 func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerView, request appwire.SessionOperationRequest) (appwire.SessionOperationResponse, error) {
 	var response appwire.SessionOperationResponse
-	// The bound local path resolves the same durable row once, here at the
-	// owner boundary. Its conflict still precedes request validation as it did
-	// when boundSessionOperations.Invoke called State first.
-	setting := caller.Setting
-	bound, boundLocal := ctx.Value(localSessionPreferenceKey{}).(localSessionPreference)
-	if boundLocal {
-		var err error
-		setting, err = o.cfg.SessionPreferences.Manager(bound.key)
-		if err != nil {
-			return response, err
-		}
-		if setting.Enabled && setting.HubID != bound.hubID {
-			return response, appwire.Conflict("another hub owns Manager authority")
-		}
-	}
 	if err := request.Validate(); err != nil {
 		return response, err
 	}
-	// caller was resolved from the authenticated connection, never tool arguments.
-	// Admission is the caller's own start-time property, projected by its
-	// daemon: bound local callers resolved it with their thread, remote callers
-	// carry it in the view, and nothing here reads a preference row to decide it.
-	hubID, err := o.cfg.SessionPreferences.HubID()
-	if err != nil {
-		return response, err
-	}
-	manager := caller.Manager
-	if boundLocal {
-		manager = bound.manager
-	}
-	if binding, remote := ctx.Value(remoteSessionAdmissionKey{}).(appwire.SessionBinding); remote {
-		if binding.Ref != caller.Ref || binding.InstanceID != caller.InstanceID || binding.HubID != hubID {
-			return response, appwire.InvalidRequest("remote Manager authority changed")
-		}
-	}
-	if !manager {
+	// The authenticated connection resolves the caller and its start-time
+	// Manager property from the daemon, never from tool arguments.
+	if !caller.Manager {
 		return response, appwire.InvalidRequest("session is not a Manager")
 	}
+	ctx = appsource.WithManagerInputCaller(ctx, caller.Ref)
 	response.Actor = appwire.SessionActor{Kind: "manager", ManagerRef: caller.Ref}
 	var proof *appwire.SessionActorProof
+	var err error
 	if request.Start != nil || request.Queue != nil || request.Steer != nil || request.Control != nil {
 		proof, err = sessionInputProof(ctx, caller.Ref)
 		if err != nil {
@@ -682,18 +385,6 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 
 func statusFollowUp(ref string) appwire.SessionStatusFollowUp {
 	return appwire.SessionStatusFollowUp{Tool: "job_status", Arguments: appwire.SessionStatusArguments{Hub: appwire.SessionStatusTarget{Ref: ref}}}
-}
-
-func (o *sessionOperations) resyncThread(thread appwire.Thread, key string) {
-	o.mu.Lock()
-	for watch := range o.watches {
-		if watch.preferenceKey == key {
-			watch.cancel()
-		}
-	}
-	o.mu.Unlock()
-	o.relays.resyncThread(thread, key)
-	reconcileSessionTools(o.sources)
 }
 
 func (o *sessionOperations) Read(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {

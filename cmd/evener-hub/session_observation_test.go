@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -36,15 +35,10 @@ func TestManagerObservationRecordedCompletionCut(t *testing.T) {
 	}, upstream.Client())
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	store := hubcore.NewSessionPreferencesStore(filepath.Join(t.TempDir(), "index.db"))
-	hubID, err := store.HubID()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), SessionPreferences: store}
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test"}
 	server := appserver.NewServer(appserver.ServerConfig{})
 	owner := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelayFunctions(server, cfg, sources), server: server}
-	binding := &boundSessionOperations{owner: owner, local: source, binding: appwire.SessionBinding{Ref: ref, InstanceID: instance, HubID: hubID, BindingID: "binding"}}
+	binding := &boundSessionOperations{owner: owner, local: source, binding: appwire.SessionBinding{Ref: ref, InstanceID: instance, HubID: "hub-test", BindingID: "binding"}}
 	for _, invalid := range []string{"unknown", "assistant.tool"} {
 		if _, err := binding.Watch(ctx, appwire.SessionWatchRequest{Ref: ref, Events: []string{invalid}}); err == nil {
 			t.Fatalf("unsupported selector %q accepted", invalid)
@@ -91,7 +85,7 @@ func TestManagerObservationRecordedCompletionCut(t *testing.T) {
 	}
 }
 
-func TestManagerWatchRebindDisableAndHubRestart(t *testing.T) {
+func TestManagerWatchRebindCancellationAndHubRestart(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	const ref, instance = "local:manager-workspace", "manager-instance"
@@ -110,15 +104,10 @@ func TestManagerWatchRebindDisableAndHubRestart(t *testing.T) {
 	}, upstream.Client())
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	store := hubcore.NewSessionPreferencesStore(filepath.Join(t.TempDir(), "index.db"))
-	hubID, err := store.HubID()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), SessionPreferences: store}
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test"}
 	server := appserver.NewServer(appserver.ServerConfig{})
 	owner := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelayFunctions(server, cfg, sources), server: server}
-	binding := &boundSessionOperations{owner: owner, local: source, binding: appwire.SessionBinding{Ref: ref, InstanceID: instance, HubID: hubID, BindingID: "binding"}}
+	binding := &boundSessionOperations{owner: owner, local: source, binding: appwire.SessionBinding{Ref: ref, InstanceID: instance, HubID: "hub-test", BindingID: "binding"}}
 	readFirst := func(updates <-chan appwire.SessionWatchUpdate) appwire.SessionWatchUpdate {
 		t.Helper()
 		select {
@@ -137,23 +126,25 @@ func TestManagerWatchRebindDisableAndHubRestart(t *testing.T) {
 		select {
 		case update, open := <-updates:
 			if open {
-				t.Fatalf("revoked observation delivered %+v", update)
+				t.Fatalf("cancelled observation delivered %+v", update)
 			}
 		case <-ctx.Done():
 			t.Fatal("observation not closed")
 		}
 	}
 	request := appwire.SessionWatchRequest{Ref: ref, Events: []string{"status"}}
-	updates, err := binding.Watch(ctx, request)
+	firstCtx, cancelFirst := context.WithCancel(ctx)
+	defer cancelFirst()
+	updates, err := binding.Watch(firstCtx, request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	first := readFirst(updates)
-	// Resync cancels active observation consumers; a Manager's start-time
-	// property never changes, so the rebind needs no re-enable.
-	owner.resyncThread(first.Snapshot.Thread, ref)
+	cancelFirst()
 	awaitClosed(updates)
-	rebound, err := binding.Watch(ctx, request)
+	secondCtx, cancelSecond := context.WithCancel(ctx)
+	defer cancelSecond()
+	rebound, err := binding.Watch(secondCtx, request)
 	if err != nil {
 		t.Fatalf("rebound observation: %v", err)
 	}
@@ -164,13 +155,14 @@ func TestManagerWatchRebindDisableAndHubRestart(t *testing.T) {
 	if n := daemon.AppServer().SubscriberCount(ref); n != 1 {
 		t.Fatalf("rebound opened %d upstream subscriptions, want 1", n)
 	}
-	// A new hub owner can use the same durable setting after the old owner's
-	// observers close; it never borrows the old owner's private subscription.
-	owner.resyncThread(second.Snapshot.Thread, ref)
+	// A new hub owner opens its own subscription after the old one closes.
+	cancelSecond()
 	awaitClosed(rebound)
 	restarted := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelayFunctions(server, cfg, sources), server: server}
 	restartedBinding := &boundSessionOperations{owner: restarted, local: source, binding: binding.binding}
-	restored, err := restartedBinding.Watch(ctx, request)
+	thirdCtx, cancelThird := context.WithCancel(ctx)
+	defer cancelThird()
+	restored, err := restartedBinding.Watch(thirdCtx, request)
 	if err != nil {
 		t.Fatalf("hub restart observation: %v", err)
 	}
@@ -178,6 +170,6 @@ func TestManagerWatchRebindDisableAndHubRestart(t *testing.T) {
 	if third.Metadata.InstanceID != first.Metadata.InstanceID {
 		t.Fatalf("hub restart switched target: %+v", third.Metadata)
 	}
-	restarted.resyncThread(third.Snapshot.Thread, ref)
+	cancelThird()
 	awaitClosed(restored)
 }

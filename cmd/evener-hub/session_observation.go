@@ -97,27 +97,13 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 	if !ok {
 		return nil, appwire.Unavailable("remote job_watch is unsupported: the remote observation lease is unavailable; reads, status, input and approval remain available")
 	}
-	key, err := managerPreferenceRef(b.owner.cfg, appwire.Thread{Evener: appwire.EvenerThread{Ref: view.Ref, InstanceID: view.InstanceID}})
-	if err != nil {
-		return nil, err
-	}
 	watchCtx, cancel := context.WithCancel(ctx)
-	observation := &sessionObservation{preferenceKey: key, cancel: cancel}
-	b.owner.mu.Lock()
-	if b.owner.watches == nil {
-		b.owner.watches = map[*sessionObservation]struct{}{}
-	}
-	b.owner.watches[observation] = struct{}{}
-	b.owner.mu.Unlock()
 	var lease appsource.RelaySessionLease
 	cleanup := func() {
 		cancel()
 		if lease != nil {
 			lease.Close()
 		}
-		b.owner.mu.Lock()
-		delete(b.owner.watches, observation)
-		b.owner.mu.Unlock()
 	}
 	current, err := b.State(watchCtx)
 	if err != nil {

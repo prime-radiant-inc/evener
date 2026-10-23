@@ -58,7 +58,7 @@ func TestManagerWatchResolvesTransientFailureWithoutRebind(t *testing.T) {
 		Metadata: appwire.SessionObservationMetadata{Ref: ref, InstanceID: instance, GenerationID: generation},
 	}
 	base := &managerRecoverClient{
-		setting:      appwire.ManagerSetting{Enabled: true, HubID: "hub-1", Revision: 4},
+		view:         appwire.ManagerView{Ref: "local:manager", InstanceID: "manager-instance", Manager: true},
 		streams:      make(chan chan appwire.SessionWatchUpdate, 2),
 		watches:      make(chan struct{}, 2),
 		offlineReads: make(chan struct{}, 1),

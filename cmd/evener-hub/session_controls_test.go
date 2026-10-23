@@ -3,7 +3,6 @@ package hub
 import (
 	"context"
 	"encoding/json"
-	"path/filepath"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -18,7 +17,7 @@ func TestManagerApprovalClosedUnionAndRealOwner(t *testing.T) {
 			t.Fatalf("unimplemented or forged approval decoded: %s", raw)
 		}
 	}
-	owner := &sessionOperations{cfg: hubcore.WebConfig{SessionPreferences: hubcore.NewSessionPreferencesStore(filepath.Join(t.TempDir(), "index.db"))}, sources: appsource.NewRegistry()}
+	owner := &sessionOperations{cfg: hubcore.WebConfig{HubID: "hub-test"}, sources: appsource.NewRegistry()}
 	result, err := owner.Control(context.Background(), appwire.SessionControlRequest{Action: "approval", Approval: &appwire.SandboxEscalationResolveParams{Ref: "local:missing", EscalationID: "esc", Approve: true}})
 	if err == nil {
 		t.Fatalf("missing target approval falsely succeeded: %+v", result)

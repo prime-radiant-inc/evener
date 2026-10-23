@@ -25,7 +25,7 @@ func TestManagerWatchRebindDeliversNewQuestionAfterEarlierOne(t *testing.T) {
 	root := newMessagingRoot(t, newMessagingAdapter(), nil)
 	jm := root.jobManager
 	const ref, instance, generation = "local:worker", "worker-instance", "7@worker"
-	watch, err := jm.configureHubWatch(ref, instance, generation, "hub-1", 4, []string{"question"}, false)
+	watch, err := jm.configureHubWatch(ref, instance, generation, "local:manager", []string{"question"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}

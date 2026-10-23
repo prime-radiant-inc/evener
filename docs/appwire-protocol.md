@@ -194,7 +194,7 @@ no router (reserved).
 | `ping` | connection | [EmptyParams](#emptyparams) | [EmptyResponse](#emptyresponse) | Connection keepalive, answered directly before the initialize gate (the browser's app-level heartbeat). |
 | `evener/hub/session-tools/identify` | connection | [SessionToolsPeerParams](#sessiontoolspeerparams) | [SessionToolsPeerResponse](#sessiontoolspeerresponse) | Private peer identity exchange on an authenticated, negotiated hub bridge; a hub ID is not a credential. |
 | `evener/runtime/session/bind` | connection | [SessionBinding](#sessionbinding) | [SessionBinding](#sessionbinding) | Private authenticated hub-to-runtime binding, accepted only by explicitly installed daemon handlers after initialize. |
-| `evener/runtime/session/state` | connection | [SessionRuntimeRequest](#sessionruntimerequest) | [ManagerView](#managerview) | Private reverse request on a bound runtime connection, reads current human Manager state even while disabled. |
+| `evener/runtime/session/state` | connection | [SessionRuntimeRequest](#sessionruntimerequest) | [ManagerView](#managerview) | Private reverse request on a bound runtime connection, reads the session's own start-time Manager property. |
 | `evener/runtime/session/invoke` | connection | [SessionRuntimeRequest](#sessionruntimerequest) | [SessionOperationResponse](#sessionoperationresponse) | Private reverse request on a current Manager binding for one typed discovery, read, create, input, control or stop operation. |
 | `evener/runtime/session/watch` | connection | [SessionRuntimeRequest](#sessionruntimerequest) | [EmptyResponse](#emptyresponse) | Private reverse request for a local Manager observation lease with initial snapshot, live events and accepted-terminal completion. Remote Manager watch is unsupported. |
 | `evener/runtime/session/unwatch` | connection | [SessionRuntimeRequest](#sessionruntimerequest) | [EmptyResponse](#emptyresponse) | Private reverse request, detaches one Manager observation lease from its bound connection. |
@@ -211,7 +211,6 @@ no router (reserved).
 | `thread/clear` | both | [ThreadClearParams](#threadclearparams) | [ThreadClearResponse](#threadclearresponse) | Clears the thread's conversation when no turn, queued, or approval work is unresolved. |
 | `thread/model/set` | both | [ThreadModelSetParams](#threadmodelsetparams) | [EmptyResponse](#emptyresponse) | Changes the session's model/provider. |
 | `evener/thread/name/set` | both | [ThreadNameSetParams](#threadnamesetparams) | [EmptyResponse](#emptyresponse) | Sets a user-chosen session title (rename). |
-| `evener/thread/manager/set` | hub | [ThreadManagerSetParams](#threadmanagersetparams) | [ThreadManagerSetResponse](#threadmanagersetresponse) | Sets the human-controlled Manager preference. A local caller uses the hosting hub's identity; an identified peer uses its connection-scoped identity. The saved authority cannot be displaced while enabled. |
 | `thread/reasoning-effort/set` | both | [ThreadReasoningEffortSetParams](#threadreasoningeffortsetparams) | [EmptyResponse](#emptyresponse) | Sets reasoning effort, normalizing and validating the value. |
 | `thread/vision-model/set` | both | [ThreadVisionModelSetParams](#threadvisionmodelsetparams) | [EmptyResponse](#emptyresponse) | Sets the vision side-channel routing ("", "off", or a model ref). |
 | `thread/compact/start` | both | [ThreadCompactStartParams](#threadcompactstartparams) | [EmptyResponse](#emptyresponse) | Starts a context-compaction pass on the session. |
@@ -1199,8 +1198,6 @@ Underlying Go kind: `string` (no struct fields).
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `manager` | bool | yes |  |
-| `managerSetting` | \*[appwire.ManagerSetting](#managersetting) | yes |  |
-| `managerEditable` | bool | yes |  |
 | `resumeRequired` | bool | yes |  |
 | `resumeOnlyFoldable` | bool | yes |  |
 | `ref` | string |  |  |
@@ -2495,15 +2492,6 @@ Underlying Go kind: `string` (no struct fields).
 | `args` | []string | yes |  |
 
 
-### `ManagerSetting`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `hubId` | string |  |  |
-| `enabled` | bool |  |  |
-| `revision` | uint64 |  |  |
-
-
 ### `ManagerView`
 
 | Field | Go type | Omitempty | Embedded |
@@ -2511,7 +2499,6 @@ Underlying Go kind: `string` (no struct fields).
 | `ref` | string |  |  |
 | `instanceId` | string |  |  |
 | `manager` | bool | yes |  |
-| `setting` | [appwire.ManagerSetting](#managersetting) |  |  |
 
 
 ### `MarketplaceAddParams`
@@ -3515,7 +3502,6 @@ Underlying Go kind: `string` (no struct fields).
 | `instanceId` | string |  |  |
 | `hubId` | string |  |  |
 | `bindingId` | string |  |  |
-| `preferenceRevision` | uint64 | yes |  |
 
 
 ### `SessionControlRequest`
@@ -3961,7 +3947,7 @@ Underlying Go kind: `string` (no struct fields).
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `bindingId` | string |  |  |
+| `callerRef` | string |  |  |
 | `method` | string |  |  |
 | `params` | jsontext.Value |  |  |
 
@@ -4439,21 +4425,6 @@ Underlying Go kind: `string` (no struct fields).
 | `data` | [][appwire.Thread](#thread) |  |  |
 | `nextCursor` | string | yes |  |
 | `backwardsCursor` | string | yes |  |
-
-
-### `ThreadManagerSetParams`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `ref` | string |  |  |
-| `enabled` | bool |  |  |
-
-
-### `ThreadManagerSetResponse`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `view` | [appwire.ManagerView](#managerview) |  |  |
 
 
 ### `ThreadModelChangedParams`

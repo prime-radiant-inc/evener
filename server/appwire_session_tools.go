@@ -91,25 +91,14 @@ func (c *runtimeHubClients) close() {
 
 // State answers from the session itself, not from any hub preference: the
 // session's start-time Manager property is the whole truth, reported through
-// the wire shape hub-side admission still reads. The revision is this
-// daemon's binding revision: it moves exactly when the set of live hub
-// bindings changes, which is the change a still-store-gated hub watch checks
-// for. It is a compatibility bridge for hub paths that have not moved to the
-// projected Manager bit yet, and it disappears with them.
+// the wire shape hub-side admission reads.
 func (c *runtimeHubClients) State(ctx context.Context) (appwire.ManagerView, error) {
 	client, err := c.admitted(ctx)
 	if err != nil {
 		return appwire.ManagerView{}, err
 	}
-	c.mu.Lock()
-	revision := c.revision
-	c.mu.Unlock()
 	session := client.session
-	setting := appwire.ManagerSetting{Enabled: false, HubID: client.binding.HubID, Revision: revision}
-	if session != nil && session.Meta().Manager {
-		setting.Enabled = true
-	}
-	return appwire.ManagerView{Ref: client.binding.Ref, InstanceID: client.binding.InstanceID, Manager: session != nil && session.Meta().Manager, Setting: setting}, nil
+	return appwire.ManagerView{Ref: client.binding.Ref, InstanceID: client.binding.InstanceID, Manager: session != nil && session.Meta().Manager}, nil
 }
 
 // admitted returns the hub client operations run through. A Manager session is

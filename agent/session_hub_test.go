@@ -180,7 +180,7 @@ func TestManagerModeKeepsRunningAndIdleOwnedDelegateSend(t *testing.T) {
 }
 
 func (c *managerStateForUnit) State(context.Context) (appwire.ManagerView, error) {
-	return appwire.ManagerView{Setting: appwire.ManagerSetting{Enabled: c.enabled.Load()}}, nil
+	return appwire.ManagerView{Manager: c.enabled.Load()}, nil
 }
 func (*managerStateForUnit) Invoke(context.Context, appwire.SessionOperationRequest) (appwire.SessionOperationResponse, error) {
 	return appwire.SessionOperationResponse{}, errors.New("unit fixture does not implement hub operations")

@@ -363,7 +363,6 @@ type hubRelayFunctions struct {
 	stopCanonicalRelay  func(appwire.Ref)
 	relayCommandCount   func(string) int
 	relayPublished      func(string) bool
-	resyncThread        func(appwire.Thread, string)
 }
 
 var observeHubRelayFunctions func(hubRelayFunctions)
@@ -2254,59 +2253,6 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		handle := relayedThreads[key]
 		return handle != nil && handle.relayKeys[key] != nil
 	}
-	resyncThread := func(thread appwire.Thread, preferenceKey string) {
-		// Saved instances retain their own selected identities. Only explicit
-		// workspace metadata (or a legacy instance's own ID) shares a preference.
-		targets := map[string]appwire.ThreadResyncParams{}
-		if cfg.Past != nil {
-			for _, entry := range cfg.Past.All() {
-				if managerSavedPreferenceRef("local", entry.Meta) == preferenceKey {
-					ref := appwire.Ref{SourceID: "local", ThreadID: entry.Meta.ID}.String()
-					targets[ref] = appwire.ThreadResyncParams{ThreadID: entry.Meta.ID, Ref: ref}
-				}
-			}
-		}
-		targets[thread.Evener.Ref] = appwire.ThreadResyncParams{ThreadID: thread.ID, Ref: thread.Evener.Ref}
-		type delivery struct {
-			key    string
-			thread appwire.Thread
-		}
-		var active []delivery
-		relayMu.Lock()
-		for key, handle := range relayedThreads {
-			state := handle.relayKeys[key]
-			if !handle.stopping && state != nil && !state.retiring {
-				active = append(active, delivery{key, state.thread})
-			}
-		}
-		relayMu.Unlock()
-		// Resolve outside relayMu: metadata reads may touch disk. Live canonical
-		// routes take precedence over a retained historical row at the same ref.
-		for _, route := range active {
-			if cfg.Roster != nil {
-				ref, err := appwire.ParseRef(route.thread.Evener.Ref)
-				if err != nil || ref.SourceID != "local" {
-					continue
-				}
-				if _, live := liveDaemonForThread(cfg.Roster, ref.ThreadID); !live {
-					// Recovery keeps a relay alive after its daemon exits. Its last
-					// snapshot cannot replace the saved recipient identity above.
-					continue
-				}
-			}
-			key, err := managerPreferenceRef(cfg, route.thread)
-			if err == nil && key == preferenceKey {
-				hint := appwire.ThreadResyncParams{ThreadID: route.thread.ID, Ref: route.thread.Evener.Ref}
-				targets[route.key] = hint
-				targets[route.thread.Evener.Ref] = hint
-			}
-		}
-		// A hint owns no relay lifetime and contains no session content. Publish
-		// outside relayMu, as with upstream publication. Readers fetch fresh state.
-		for key, hint := range targets {
-			server.Broadcast(key, appwire.NotifyEvenerThreadResync, hint)
-		}
-	}
 	return hubRelayFunctions{
 		startRelay:          startRelay,
 		readThread:          readThread,
@@ -2317,6 +2263,5 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		stopCanonicalRelay:  stopCanonicalRelay,
 		relayCommandCount:   relayCommandCount,
 		relayPublished:      relayPublished,
-		resyncThread:        resyncThread,
 	}
 }

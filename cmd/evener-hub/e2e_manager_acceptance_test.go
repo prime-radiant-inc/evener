@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/internal/e2ecap"
 	"primeradiant.com/evener/test/e2e/fakellm"
@@ -339,9 +340,6 @@ func TestE2E_ManagerAcceptance(t *testing.T) {
 		defer done()
 		_, _ = clientRequest[appwire.EmptyResponse](stop, human, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: otherRef})
 	})
-	if _, err := clientRequest[appwire.ThreadManagerSetResponse](ctx, human, appwire.MethodEvenerThreadManagerSet, appwire.ThreadManagerSetParams{Ref: otherRef, Enabled: true}); err != nil {
-		t.Fatal(err)
-	}
 	token, err := os.ReadFile(hostDir + "/state/auth-token")
 	if err != nil {
 		t.Fatal(err)
@@ -370,8 +368,7 @@ func TestE2E_ManagerAcceptance(t *testing.T) {
 		}
 		caps := read.Thread.Evener.Capabilities
 		// The Manager bit is the session's own start-time property as its daemon
-		// reports it; the store-projected ManagerSetting is transitional and not
-		// the source of truth.
+		// reports it.
 		if !read.Thread.Evener.Manager || !caps.Queue || !caps.Steer || !caps.SkillInput || !caps.CommandInput || target == remoteRef && (caps.Clear || caps.Interrupt || caps.ChangeModel) {
 			t.Fatalf("Manager target %s: %+v %v", target, read.Thread.Evener, err)
 		}
@@ -412,12 +409,9 @@ func TestE2E_ManagerAcceptance(t *testing.T) {
 		t.Fatalf("remote Manager read through its own hub: %+v refusal=%s", remoteRead, managerToolRefusal(call))
 	}
 	call.RespondToolCall("communicate", communicateArgs("remote Manager read"))
-	revoked, err := clientRequest[appwire.ThreadManagerSetResponse](ctx, human, appwire.MethodEvenerThreadManagerSet, appwire.ThreadManagerSetParams{Ref: managerRef, Enabled: false})
-	if err != nil || revoked.View.Setting.Enabled {
-		t.Fatalf("human revocation: %+v %v", revoked, err)
-	}
-	awaitThread(ctx, t, human, managerRef, "revoked Manager idle", func(thread appwire.Thread) bool { return thread.Status.Type == appwire.ThreadStatusIdle })
-	const ordinary = "ACCEPT-POST-REVOCATION"
+	acceptanceRemoteManagerInput(ctx, t, provider, local, remote, human, remoteHuman, managerRef, remoteHost)
+	awaitThread(ctx, t, human, managerRef, "Manager idle", func(thread appwire.Thread) bool { return thread.Status.Type == appwire.ThreadStatusIdle })
+	const ordinary = "ACCEPT-ORDINARY-TOOL"
 	if _, err := clientRequest[appwire.TurnStartResponse](ctx, human, appwire.MethodTurnStart, appwire.TurnStartParams{Ref: managerRef, ExpectedInstanceID: localInstanceIDForTestRef(managerRef), ClientMutationID: newMutationID(t), Input: []appwire.InputItem{{Type: "text", Text: ordinary}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -431,7 +425,7 @@ func TestE2E_ManagerAcceptance(t *testing.T) {
 	var last map[string]any
 	if managerToolResult(call, &last) {
 		if _, ok := last["actor"]; ok {
-			t.Fatalf("revoked request still used Manager operation: %v", last)
+			t.Fatalf("ordinary request used Manager operation: %v", last)
 		}
 	}
 	call.RespondToolCall("communicate", communicateArgs("ordinary request succeeded"))
@@ -449,13 +443,12 @@ func TestE2E_ManagerAcceptance(t *testing.T) {
 		}
 	}
 	if !ordinarySucceeded {
-		t.Fatalf("ordinary post-revocation request not saved: %v", managerItemSummary(final))
+		t.Fatalf("ordinary request not saved: %v", managerItemSummary(final))
 	}
-	// The Manager bit is the session's own start-time property, so a store
-	// change cannot demote it: the session reads Manager true for life. The
-	// ordinary request above already proved its ordinary tools still serve.
+	// Manager and ordinary tools share the session. Using an ordinary tool
+	// preserves the Manager's role and leaves its worker ordinary.
 	if read, err := clientRequest[appwire.ThreadReadResponse](ctx, human, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: managerRef}); err != nil || !read.Thread.Evener.Manager {
-		t.Fatalf("Manager session demoted by a store change: %+v %v", read.Thread.Evener, err)
+		t.Fatalf("Manager role lost after ordinary tool use: %+v %v", read.Thread.Evener, err)
 	}
 	if read, err := clientRequest[appwire.ThreadReadResponse](ctx, human, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: workerRef}); err != nil || !read.Thread.Evener.Capabilities.Send || read.Thread.Evener.Manager {
 		t.Fatalf("worker state after ordinary round: %+v %v", read.Thread.Evener, err)
@@ -478,7 +471,100 @@ func TestE2E_ManagerAcceptance(t *testing.T) {
 		t.Fatalf("remote Manager history missing: %v", managerItemSummary(remoteTurns))
 	}
 	if !acceptanceHasTool(remoteTurns, "job_status") || !acceptanceHasTool(final, "read_file") {
-		t.Fatalf("actual remote status or ordinary post-revocation file call absent: remote=%v local=%v", managerItemSummary(remoteTurns), managerItemSummary(final))
+		t.Fatalf("actual remote status or ordinary file call absent: remote=%v local=%v", managerItemSummary(remoteTurns), managerItemSummary(final))
+	}
+}
+
+func acceptanceRemoteManagerInput(ctx context.Context, t *testing.T, provider *fakellm.Server, local, remote hubStack, human, remoteHuman *appwire.Client, managerRef, remoteHost string) {
+	t.Helper()
+	worker, err := clientRequest[appwire.ThreadStartResponse](ctx, remoteHuman, appwire.MethodThreadStart, appwire.ThreadStartParams{Harness: "evener", CWD: remote.workDir, Model: remote.model})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerRef, instance := worker.Thread.Evener.Ref, worker.Thread.Evener.InstanceID
+	t.Cleanup(func() {
+		stop, done := context.WithTimeout(context.Background(), 20*time.Second)
+		defer done()
+		if _, err := clientRequest[appwire.EmptyResponse](stop, remoteHuman, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: workerRef}); err != nil {
+			t.Errorf("remote worker shutdown: %v", err)
+		}
+	})
+	parsed, err := appwire.ParseRef(workerRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := (appwire.Ref{SourceID: remoteHost, ThreadID: parsed.ThreadID}).String()
+	const opening, task, question, answer = "ACCEPT-REMOTE-SEND", "ACCEPT-REMOTE-TASK", "ACCEPT-REMOTE-QUESTION", "ACCEPT-REMOTE-ANSWER"
+	awaitThread(ctx, t, human, managerRef, "Manager ready for remote input", func(thread appwire.Thread) bool { return thread.Status.Type == appwire.ThreadStatusIdle })
+	if _, err := clientRequest[appwire.TurnStartResponse](ctx, human, appwire.MethodTurnStart, appwire.TurnStartParams{Ref: managerRef, ExpectedInstanceID: localInstanceIDForTestRef(managerRef), ClientMutationID: newMutationID(t), Input: []appwire.InputItem{{Type: "text", Text: opening}}}); err != nil {
+		t.Fatal(err)
+	}
+	managerCall, err := provider.Next(ctx.Done())
+	if err != nil || !managerCall.Contains(opening) {
+		t.Fatalf("remote input driver: call=%v err=%v", managerCall, err)
+	}
+	for _, message := range []string{task, answer} {
+		managerCall.RespondToolCall("delegate_send", map[string]any{"to": target, "input_mode": "start", "message": message, "client_mutation_id": newMutationID(t), "expected_instance_id": instance})
+		var targetCall *fakellm.Call
+		managerCall = nil
+		for targetCall == nil || managerCall == nil {
+			call, err := provider.Next(ctx.Done())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if call.Contains(opening) {
+				var result appwire.SessionOperationResponse
+				if !managerToolResult(call, &result) || result.Start == nil || result.Actor.Kind != "manager" || result.Actor.ManagerRef != managerRef {
+					var payload map[string]any
+					managerToolResult(call, &payload)
+					t.Fatalf("Manager-to-remote input: result=%+v payload=%v refusal=%s", result, payload, managerToolRefusal(call))
+				}
+				managerCall = call
+			} else if call.Contains(message) {
+				targetCall = call
+			} else {
+				t.Fatalf("unexpected remote input provider request: %v", call.Texts())
+			}
+		}
+		if message == task {
+			targetCall.RespondToolCall("ask_user", map[string]any{"questions": []any{map[string]any{"question": question, "options": []any{map[string]any{"label": "Proceed", "detail": "Continue"}, map[string]any{"label": "Wait", "detail": "Pause"}}}}})
+			awaitThread(ctx, t, human, target, "remote question pending", func(thread appwire.Thread) bool {
+				return thread.Evener.AskPending && thread.Evener.PendingQuestion != nil && thread.Evener.PendingQuestion.Question == question
+			})
+		} else {
+			targetCall.RespondToolCall("communicate", communicateArgs("remote answer received"))
+		}
+	}
+	managerCall.RespondToolCall("communicate", communicateArgs("remote work answered"))
+	awaitThread(ctx, t, remoteHuman, workerRef, "remote worker settled", func(thread appwire.Thread) bool { return thread.Status.Type == appwire.ThreadStatusIdle })
+	turns, err := readTranscriptTurns(ctx, remoteHuman, workerRef, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hubID, err := hubcore.NewHubIdentityStore(filepath.Join(local.home, "state", "evener", "index.db")).HubID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	caller, err := appwire.ParseRef(managerRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantActor := (appwire.Ref{SourceID: hubID, ThreadID: caller.ThreadID}).String()
+	for _, message := range []string{task, answer} {
+		found := false
+		for _, turn := range turns {
+			for _, item := range turn.Items {
+				if item.Text == message {
+					found = true
+					if item.Actor == nil || item.Actor.Kind != "manager" || item.Actor.ManagerRef != wantActor {
+						t.Fatalf("remote persisted actor=%+v, want Manager %s", item.Actor, wantActor)
+					}
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("remote input absent from history: %q", message)
+		}
 	}
 }
 

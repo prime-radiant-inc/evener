@@ -26,13 +26,8 @@ import (
 )
 
 func TestManagerInputClosedOperationAndAdmission(t *testing.T) {
-	store := hubcore.NewSessionPreferencesStore(filepath.Join(t.TempDir(), "index.db"))
-	hubID, err := store.HubID()
-	if err != nil {
-		t.Fatal(err)
-	}
 	manager := appwire.ManagerView{Ref: "local:manager", InstanceID: "manager-instance"}
-	owner := &sessionOperations{cfg: hubcore.WebConfig{SessionPreferences: store}, sources: appsource.NewRegistry()}
+	owner := &sessionOperations{cfg: hubcore.WebConfig{HubID: "hub-test"}, sources: appsource.NewRegistry()}
 	input := []appwire.InputItem{{Type: "text", Text: "answer"}}
 	start := appwire.SessionOperationRequest{Start: &appwire.TurnStartParams{Ref: "local:worker", ClientMutationID: "one", Input: input}}
 	if err := start.Validate(); err != nil {
@@ -40,9 +35,6 @@ func TestManagerInputClosedOperationAndAdmission(t *testing.T) {
 	}
 	if _, err := owner.Invoke(context.Background(), manager, start); err == nil {
 		t.Fatal("Manager input admitted while disabled")
-	}
-	if _, err := store.SetManager(manager.Ref, hubID, true); err != nil {
-		t.Fatal(err)
 	}
 	if _, err := owner.Invoke(context.Background(), manager, start); err == nil {
 		t.Fatal("missing source accepted Manager input")
@@ -130,15 +122,7 @@ func TestManagerInputRealHubRuntimePersistsCallerNotTarget(t *testing.T) {
 	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry { return entries }, workerHTTP.Client())
 	sources := appsource.NewRegistry()
 	sources.Add(source)
-	store := hubcore.NewSessionPreferencesStore(filepath.Join(t.TempDir(), "index.db"))
-	hubID, err := store.HubID()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.SetManager(managerRef, hubID, true); err != nil {
-		t.Fatal(err)
-	}
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), SessionPreferences: store,
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test",
 		Roster: hubcore.NewRosterWithEntries(
 			hubcore.LiveEntry{Entry: entries[0].Entry, SessionID: managerID, Status: "active"},
 			hubcore.LiveEntry{Entry: entries[1].Entry, SessionID: worker.ID(), Status: "active"},

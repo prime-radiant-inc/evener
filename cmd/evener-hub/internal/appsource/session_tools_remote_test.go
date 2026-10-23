@@ -5,47 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/appwire"
 )
-
-func TestSessionToolsRemoteAwaitInstalledBinding(t *testing.T) {
-	source := NewLocalDaemonSourceWithEntries("local", nil, nil)
-	source.SetSessionTools(nil, nil)
-	binding := appwire.SessionBinding{Ref: "local:worker", InstanceID: "worker", HubID: "enabling-hub", BindingID: "new-binding"}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	result := make(chan error, 1)
-	go func() { result <- source.AwaitSessionToolsBinding(ctx, binding) }()
-	source.sessionToolsMu.Lock()
-	stale := binding
-	stale.BindingID = "old-daemon-binding"
-	source.sessionToolsConnections[binding.Ref] = sessionToolsLiveConnection{binding: stale, peerBindingID: "old-peer-binding"}
-	source.signalSessionToolsChanged()
-	source.sessionToolsMu.Unlock()
-	refused, stop := context.WithCancel(context.Background())
-	stop()
-	if err := source.AwaitSessionToolsBinding(refused, binding); !errors.Is(err, context.Canceled) {
-		t.Fatalf("old peer binding accepted as ready: %v", err)
-	}
-	source.sessionToolsMu.Lock()
-	source.sessionToolsConnections[binding.Ref] = sessionToolsLiveConnection{binding: binding, peerBindingID: binding.BindingID}
-	source.signalSessionToolsChanged()
-	source.sessionToolsMu.Unlock()
-	if err := <-result; err != nil {
-		t.Fatalf("binding-installed signal was missed: %v", err)
-	}
-
-	// The old connection's binding cannot make a changed instance ready.
-	wrong := binding
-	wrong.InstanceID = "replaced-worker"
-	refused, stop = context.WithCancel(context.Background())
-	stop()
-	if err := source.AwaitSessionToolsBinding(refused, wrong); !errors.Is(err, context.Canceled) {
-		t.Fatalf("stale binding accepted as ready: %v", err)
-	}
-}
 
 // An independent assertion of the shared human/Manager input qualification:
 // the forwarding set and the host's own claims both gate advertising. Adding
@@ -82,7 +44,7 @@ func TestSessionToolsRemotePrivateInputResponseLoss(t *testing.T) {
 		return scriptedReply{closeConn: true}
 	})
 	const mutationID = "manager-private-response-lost"
-	_, err := source.StartTurn(WithManagerInputBinding(context.Background(), "peer-binding"), appwire.TurnStartParams{
+	_, err := source.StartTurn(WithManagerInputCaller(context.Background(), "local:manager"), appwire.TurnStartParams{
 		Ref: testControllerRef, ExpectedInstanceID: "instance-1", ClientMutationID: mutationID,
 		Input: []appwire.InputItem{{Type: "text", Text: "send"}},
 	})
@@ -101,8 +63,8 @@ func TestSessionToolsRemotePrivateInputResponseLoss(t *testing.T) {
 	if err := json.Unmarshal(input.Params, &turn); err != nil {
 		t.Fatal(err)
 	}
-	if input.BindingID != "peer-binding" || input.Method != appwire.MethodTurnStart || turn.Ref != testRemoteRef || turn.ClientMutationID != mutationID || turn.ExpectedInstanceID != "instance-1" || len(turn.Input) != 1 || turn.Input[0].Text != "send" || turn.ManagerProof != nil {
-		t.Fatalf("private bridge request lost identity or input: binding=%q method=%q ref=%q mutation=%q instance=%q input=%+v proof=%+v", input.BindingID, input.Method, turn.Ref, turn.ClientMutationID, turn.ExpectedInstanceID, turn.Input, turn.ManagerProof)
+	if input.CallerRef != "local:manager" || input.Method != appwire.MethodTurnStart || turn.Ref != testRemoteRef || turn.ClientMutationID != mutationID || turn.ExpectedInstanceID != "instance-1" || len(turn.Input) != 1 || turn.Input[0].Text != "send" || turn.ManagerProof != nil {
+		t.Fatalf("private bridge request lost identity or input: caller=%q method=%q ref=%q mutation=%q instance=%q input=%+v proof=%+v", input.CallerRef, input.Method, turn.Ref, turn.ClientMutationID, turn.ExpectedInstanceID, turn.Input, turn.ManagerProof)
 	}
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {

@@ -2,7 +2,7 @@ package hub
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"net/http"
 	"path/filepath"
 	"testing"
@@ -15,8 +15,7 @@ import (
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
-// The hubs, daemon, bearer-authenticated /rpc connections and preference row
-// are real. Only the model provider is scripted. The bridge marker denotes an
+// The hubs and bearer-authenticated /rpc connections are real. Only the model provider is scripted. The bridge marker denotes an
 // honest cooperating hub, not cryptographic proof of a particular peer.
 func TestManagerRemotePeerIdentity(t *testing.T) {
 	e2ecap.RequireLoopbackBind(t)
@@ -32,42 +31,21 @@ func TestManagerRemotePeerIdentity(t *testing.T) {
 	hubA, hubB := startHubStack(t, provider), startHubStack(t, provider)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	idA, err := hubcore.NewSessionPreferencesStore(filepath.Join(hubA.home, "state", "evener", "index.db")).HubID()
+	idA, err := hubcore.NewHubIdentityStore(filepath.Join(hubA.home, "state", "evener", "index.db")).HubID()
 	if err != nil {
 		t.Fatal(err)
 	}
-	idB, err := hubcore.NewSessionPreferencesStore(filepath.Join(hubB.home, "state", "evener", "index.db")).HubID()
+	idB, err := hubcore.NewHubIdentityStore(filepath.Join(hubB.home, "state", "evener", "index.db")).HubID()
 	if err != nil || idB == idA {
 		t.Fatalf("two persisted hub identities: A=%q B=%q err=%v", idA, idB, err)
 	}
 	human := hubB.dialRPC(ctx, t)
-	started, err := clientRequest[appwire.ThreadStartResponse](ctx, human, appwire.MethodThreadStart, appwire.ThreadStartParams{
-		Harness: "evener", CWD: hubB.workDir, Model: hubB.model,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ref := started.Thread.Evener.Ref
-	if ref == "" || started.Thread.Evener.InstanceID == "" {
-		t.Fatalf("empty daemon identity: %+v", started.Thread.Evener)
-	}
-	t.Cleanup(func() {
-		shutdown, done := context.WithTimeout(context.Background(), 20*time.Second)
-		defer done()
-		_, err := clientRequest[appwire.EmptyResponse](shutdown, human, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: ref})
-		if err != nil {
-			t.Errorf("shutdown remote Manager: %v", err)
-		}
-	})
 
 	// A human cannot assert a peer identity even if it holds the hub token.
 	if _, err := human.IdentifySessionToolsPeer(ctx, appwire.SessionToolsPeerParams{HubID: idA}); err == nil {
 		t.Fatal("human identity accepted")
 	}
 	bridge := dialManagerPeerBridge(ctx, t, hubB)
-	if _, err := clientRequest[appwire.ThreadManagerSetResponse](ctx, bridge, appwire.MethodEvenerThreadManagerSet, appwire.ThreadManagerSetParams{Ref: ref, Enabled: true}); err == nil {
-		t.Fatal("unbound set accepted")
-	}
 	identified, err := bridge.IdentifySessionToolsPeer(ctx, appwire.SessionToolsPeerParams{HubID: idA})
 	if err != nil || identified.HubID != idB {
 		t.Fatalf("identify A->B: response=%+v err=%v", identified, err)
@@ -79,38 +57,25 @@ func TestManagerRemotePeerIdentity(t *testing.T) {
 	if _, err := bridge.IdentifySessionToolsPeer(ctx, appwire.SessionToolsPeerParams{HubID: idB}); err == nil {
 		t.Fatal("conflicting reidentify accepted")
 	}
-	set, err := clientRequest[appwire.ThreadManagerSetResponse](ctx, bridge, appwire.MethodEvenerThreadManagerSet, appwire.ThreadManagerSetParams{Ref: ref, Enabled: true})
-	if err != nil || !set.View.Setting.Enabled || set.View.Setting.HubID != idA {
-		t.Fatalf("peer-selected authority: response=%+v err=%v", set, err)
-	}
-	// The hosting hub's UI reads this same row, but cannot replace A.
-	if _, err := clientRequest[appwire.ThreadManagerSetResponse](ctx, human, appwire.MethodEvenerThreadManagerSet, appwire.ThreadManagerSetParams{Ref: ref, Enabled: true}); err == nil {
-		t.Fatal("hosting human replaced enabling authority")
-	}
 	fresh := dialManagerPeerBridge(ctx, t, hubB)
-	if _, err := clientRequest[appwire.ThreadManagerSetResponse](ctx, fresh, appwire.MethodEvenerThreadManagerSet, appwire.ThreadManagerSetParams{Ref: ref, Enabled: false}); err == nil {
-		t.Fatal("new connection inherited former identity before exchange")
-	}
 	again, err := fresh.IdentifySessionToolsPeer(ctx, appwire.SessionToolsPeerParams{HubID: idA})
 	if err != nil || again.HubID != idB {
 		t.Fatalf("reconnect identify: response=%+v err=%v", again, err)
 	}
-	if _, err := clientRequest[appwire.ThreadManagerSetResponse](ctx, fresh, appwire.MethodEvenerThreadManagerSet, appwire.ThreadManagerSetParams{Ref: ref, Enabled: false}); err != nil {
-		t.Fatalf("owner cannot disable after reconnect: %v", err)
-	}
-	// Supplying an extra identity as a human operation argument cannot re-enable.
-	var forged json.RawMessage
-	if err := human.Request(ctx, appwire.MethodEvenerThreadManagerSet, map[string]any{"ref": ref, "enabled": true, "hubId": idA}, &forged); err == nil {
-		var result appwire.ThreadManagerSetResponse
-		if err := json.Unmarshal(forged, &result); err != nil || result.View.Setting.HubID != idB {
-			t.Fatalf("caller-supplied hubId established authority: response=%+v err=%v", result, err)
+	// Neither a human nor an identified peer can change a session's Manager bit.
+	for _, client := range []*appwire.Client{human, bridge, fresh} {
+		for _, enabled := range []bool{false, true} {
+			var response appwire.EmptyResponse
+			err := client.Request(ctx, "evener/thread/manager/set", map[string]any{"ref": "local:workspace", "enabled": enabled, "hubId": idA}, &response)
+			var wire appwire.WireError
+			if !errors.As(err, &wire) || wire.Code != appwire.CodeMethodNotFound {
+				t.Fatalf("toggle remains callable: enabled=%t error=%v", enabled, err)
+			}
 		}
 	}
+
 }
 
-// An actual B daemon asks its Manager tool over B's daemon connection. B
-// Shared remote source input runs through a real hosting hub and daemon. The
-// Manager path must use these same source methods and their mutation receipts.
 func dialManagerPeerBridge(ctx context.Context, t *testing.T, stack hubStack) *appwire.Client {
 	t.Helper()
 	header := http.Header{}
