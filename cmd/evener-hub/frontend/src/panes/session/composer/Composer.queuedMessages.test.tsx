@@ -1476,10 +1476,11 @@ test("late built-in success does not consume newer edited recovery work", async 
   await flushPendingTurnsProjectionForTests();
   await user.click(screen.getByRole("button", { name: "Edit message" }));
   await waitFor(() => expect(reopenedSource.getSnapshot().text).toBe("newer work"));
+  // Restored text does not mean the recovery projection has finished publishing.
+  await flushPendingTurnsProjectionForTests();
   expect(reopenedSource.getSnapshot()).toMatchObject({ text: "newer work", activeRecoveryId: record.clientMutationId });
   expect((await reopenedStorage.getRecovery(record.clientMutationId))?.composerText).toBe("newer work");
   expect(fake.calls.filter((call) => messageMutationMethods.has(call.method))).toEqual([]);
-  await flushPendingTurnsProjectionForTests();
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
