@@ -116,10 +116,19 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 	const current = useRef<typeof rendered | null>(null);
 	useLayoutEffect(() => {
 		current.current = rendered;
-		return () => {
-			current.current = null;
-		};
 	}, [rendered]);
+	// Retire presses only when this view goes away. Nulling on every re-run of
+	// the effect above would open a window on each publish where a tap on a
+	// link returns early, and a live session publishes constantly: that made
+	// every file link in the prose dead (#4839). Layout cleanup runs at the
+	// unmount commit, not after paint, so a native callback already in flight
+	// cannot act on a message that has just disappeared.
+	useLayoutEffect(
+		() => () => {
+			current.current = null;
+		},
+		[],
+	);
 	return (
 		<>
 			{rendered.map((segment, index) =>

@@ -246,7 +246,7 @@ function parseDelegateNotification(block: string): ParsedNotification | null {
   const attrs = parseQuotedAttrs(match[1] ?? "");
   const body = (match[2] ?? "").trim();
   const delegateId = attrs.delegate_id?.trim() || undefined;
-  const name = decodeNotificationEntities(attrs.name ?? "").trim();
+  const name = decodeNotificationAttributeEntities(attrs.name ?? "").trim();
   // An update names its kind; its body is the delegate's text whatever its
   // shape, so it routes before the packet and watchdog shapes are tried.
   if (attrs.kind === "update") return delegateUpdateNotification(block, name, delegateId, body);
@@ -279,7 +279,7 @@ function parseDelegateNotification(block: string): ParsedNotification | null {
   const communicate = parseCommunicateEnvelope(excerpt);
   const tone = notificationTone(attrs, communicate);
   const transcriptRef = isValidTranscriptRef(attrs.transcript_ref) ? attrs.transcript_ref : undefined;
-  const description = decodeNotificationEntities(attrs.description ?? "").trim();
+  const description = decodeNotificationAttributeEntities(attrs.description ?? "").trim();
   const status = (attrs.status || attrs.event || "notification").trim();
   const reason = attrs.reason?.trim();
   // The secondary carries identity only: a legacy frame's reason attr is a raw
@@ -309,7 +309,7 @@ function parseDelegateNotification(block: string): ParsedNotification | null {
 
 // A delegate's mid-work update (agent/delegate_delivery.go's
 // delegateNotificationContent, kind="update"): the body is the delegate's
-// message with "<" escaped, decoded here once.
+// message with "&" and "<" escaped, decoded here once.
 function delegateUpdateNotification(
   block: string,
   name: string,
@@ -588,32 +588,14 @@ function compactStringArray(value: unknown): string[] {
   return value.map((v) => String(v ?? "").trim()).filter(Boolean);
 }
 
-// decodeNotificationEntities is the paired decoder for the producer's
-// HTML-entity escaping. Attribute values use agent/job_notify.go's
-// escapeNotificationText, which escapes &, <, >, and " (kata 77sf), so reason
-// / description attrs extracted from the wrapper must be decoded back before
-// use. Body text (prose, notes, excerpts) uses escapeNotificationBody, which
-// escapes only "<" (kata 72kp) — EXCEPT the watch-note lane: the producer
-// pre-escapes "&" in the note (agent/job_watch.go's
-// watchNotificationFromWatch) before the note rides the body, so a note body
-// carries the same "&"-first order as attribute values. That composition is
-// what makes literal entity text round-trip: a note containing "&lt;" rides
-// the wire as "&amp;lt;" and this single full decode restores "&lt;", never
-// "<". &amp; is decoded LAST so double-escaped content only unwraps one
-// level. The parser applies this once to the excerpt and prose it hands
-// callers, so every client reads plain text and never decodes again
-// (issue #3086).
-//
-// Residual asymmetry, documented not fixed (issue #4245): shell/delegate job
-// OUTPUT excerpts and delegate update messages (kind="update") also ride the
-// body through escapeNotificationBody ("<"-only), so
-// literal "&lt;" / "&amp;" / "&quot;" / "&#39;" in job output still
-// over-decodes here (there is no "&"-first pre-escape on that lane, and
-// adding one would change the wire format in agent/job_notify.go, out of
-// scope). Watch notes — the finding's case — are exact; excerpts are the
-// known remainder. Decoding once here rather than in each client does not
-// change this remainder; it only removes the re-escape round trip.
+// Body entities pair with agent/job_notify.go's escapeNotificationBody.
+// A single pass never re-decodes sender text, so &amp;lt; becomes literal &lt;.
 export function decodeNotificationEntities(text: string): string {
+  return text.replace(/&lt;|&amp;/g, (entity) => (entity === "&lt;" ? "<" : "&"));
+}
+
+// Attributes retain the full codec paired with escapeNotificationText.
+function decodeNotificationAttributeEntities(text: string): string {
   return text
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
@@ -622,7 +604,7 @@ export function decodeNotificationEntities(text: string): string {
     .replace(/&amp;/g, "&");
 }
 
-// escapeNotificationEntities is decodeNotificationEntities run backward: the
+// escapeNotificationEntities is the full attribute encoder paired with the
 // producer-side escaping (agent/job_notify.go's escapeNotificationText) for
 // text interpolated into a <job-notification> wrapper. The parser no longer
 // re-escapes any output of its own (it decodes once and hands callers plain
@@ -680,7 +662,7 @@ function notificationTone(attrs: Record<string, string>, communicate: Communicat
   // watch diagnostics normally arrive as job notifications (which check
   // this in jobNotificationTone), but no watch-shaped failure must ever
   // read as an expected outcome (combined RoboRev review).
-  if (isWatchDeliveryFailure(decodeNotificationEntities(attrs.reason ?? "").trim())) {
+  if (isWatchDeliveryFailure(decodeNotificationAttributeEntities(attrs.reason ?? "").trim())) {
     return "warning";
   }
   // Mockups 23-job-watch §E: a fired watch is the expected outcome, never
@@ -734,7 +716,7 @@ function jobNotificationTone(
   // below, which is for expected outcomes (fires, teardowns) — and before
   // the disposition arms, so a failed DELIVERY never reads as the watched
   // job's own outcome either.
-  if (isWatchDeliveryFailure(decodeNotificationEntities(attrs.reason ?? "").trim())) {
+  if (isWatchDeliveryFailure(decodeNotificationAttributeEntities(attrs.reason ?? "").trim())) {
     return "warning";
   }
   // Same §E rule as notificationTone above: watch and watch-send deliveries
@@ -772,7 +754,7 @@ function titleForJobNotification(attrs: Record<string, string>, type: string, pr
     // The reason is producer-escaped (escapeNotificationText) and
     // parseQuotedAttrs does not decode, so decode before matching — a
     // pattern containing & < > must title decoded (RoboRev PR #954 review 3).
-    const reason = decodeNotificationEntities(attrs.reason ?? "").trim();
+    const reason = decodeNotificationAttributeEntities(attrs.reason ?? "").trim();
     // Teardown notices are endings, never firings (RoboRev PR #954 review 3):
     // watchEndedUnfiredMessage / watchLostAtRestartMessage start with
     // "watch ended:", watchBudgetClearedMessage with "watch cleared:". The
@@ -917,7 +899,7 @@ function notificationSecondary(
   // back to the raw reason when the prose does not match (RoboRev PR #954
   // review 3).
   if (notificationType === "watch") {
-    const reason = decodeNotificationEntities(attrs.reason ?? "").trim();
+    const reason = decodeNotificationAttributeEntities(attrs.reason ?? "").trim();
     // A watch_id-reclassified completion carries the job's completion reason,
     // not a trigger: it surfaces verbatim as the honest fallback (never a
     // synthesized trigger), with the card prose carrying the full sentence.
@@ -985,7 +967,7 @@ function watchProse(attrs: Record<string, string>, bodyText: string): string {
   // "this session" (titleForJobNotification), so synthesized prose must too
   // ("Matched … on self" leaks the same token the card suppresses).
   const jobLabel = jobId === "self" ? "this session" : jobId;
-  const reason = decodeNotificationEntities(attrs.reason ?? "").trim();
+  const reason = decodeNotificationAttributeEntities(attrs.reason ?? "").trim();
   // The producer appends the watch's own note to every fire body
   // (withNotificationNote). Synthesized prose replaces the generic lead
   // sentence but preserves the note, already decoded, spliced as-is.
@@ -1080,12 +1062,11 @@ function parseJobNotification(block: string): ParsedNotification | null {
   // Gate on the actual job type, not on whether the excerpt happens to parse
   // as JSON with message/data keys: shell stdout is literal output even when
   // it coincidentally looks like an envelope (kata 9cnq). The excerpt is
-  // already decoded above, so the envelope's own JSON quotes (&quot; on the
-  // wire, kata 77sf) are valid JSON syntax again.
+  // already body-decoded above, and the producer leaves JSON quotes literal.
   const communicate = attrs.job_type === "delegate" ? parseCommunicateEnvelope(excerpt) : null;
   const transcriptRef = isValidTranscriptRef(attrs.transcript_ref) ? attrs.transcript_ref : undefined;
-  const intent = decodeNotificationEntities(attrs.intent ?? "").trim();
-  const description = decodeNotificationEntities(attrs.description ?? "").trim();
+  const intent = decodeNotificationAttributeEntities(attrs.intent ?? "").trim();
+  const description = decodeNotificationAttributeEntities(attrs.description ?? "").trim();
   const analysis = analyzeJobNotification(attrs, communicate);
   // The parser's type, not the attr echo: a watch_id-reclassified delivery
   // carries the completed job's event/status/reason, so the attr check inside

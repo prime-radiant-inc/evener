@@ -7,7 +7,6 @@ import (
 	"log"
 	"runtime/debug"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -586,21 +585,7 @@ func (s *Server) initialize(_ context.Context, params appwire.InitializeParams) 
 // olderProtocolVersion reports whether version is an AppWire protocol version
 // ("evener-appwire-v<N>") older than the one this server speaks.
 func olderProtocolVersion(version string) bool {
-	n, ok := protocolVersionNumber(version)
-	current, currentOK := protocolVersionNumber(appwire.ProtocolVersion)
-	return ok && currentOK && n < current
-}
-
-func protocolVersionNumber(version string) (int, bool) {
-	digits, ok := strings.CutPrefix(version, "evener-appwire-v")
-	if !ok {
-		return 0, false
-	}
-	n, err := strconv.Atoi(digits)
-	if err != nil || n < 0 || strconv.Itoa(n) != digits {
-		return 0, false
-	}
-	return n, true
+	return appwire.OlderProtocolVersion(version)
 }
 
 func navigationCapability(capability *appwire.NavigationCapability) *appwire.NavigationCapability {
