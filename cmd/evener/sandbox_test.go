@@ -166,12 +166,11 @@ func TestSandboxFlagRestrictedEnforces(t *testing.T) {
 	}
 }
 
-// TestSandboxReprovisionAfterCleanup proves EnableSandbox is re-entrant after a
-// Cleanup: provisioning, disposing the env, and provisioning again must mint a FRESH
-// session tmp and a usable enforced env rather than leaving a stale one pointing at a
-// disposed tmp. This property backs any path that re-provisions an env (e.g. a
-// delegate re-rooting/resuming onto a cleaned env). Gated on a real bwrap host and
-// skipped under -short.
+// TestSandboxReprovisionAfterCleanup proves /clear provisions a new session with
+// fresh scratch while retaining the old session's scratch for handoff. Like the
+// production clear path, it resets the session ID and builds a fresh env: resuming
+// the same named session intentionally reopens its scratch. Gated on a real bwrap
+// host and skipped under -short.
 func TestSandboxReprovisionAfterCleanup(t *testing.T) {
 	if testing.Short() {
 		t.Skip("real-bwrap sandbox re-provision skipped under -short")
@@ -203,8 +202,12 @@ func TestSandboxReprovisionAfterCleanup(t *testing.T) {
 	if _, err := os.Stat(tmp1); err != nil {
 		t.Fatalf("first session tmp must exist: %v", err)
 	}
+	artifact := filepath.Join(tmp1, "handoff.txt")
+	if err := os.WriteFile(artifact, []byte("handoff"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
-	// The old session's Close() releases the SHARED env's lease but RETAINS
+	// The old session's Close() releases its env's lease but RETAINS
 	// the scratch dir on disk for human handoff (6190f9d46, "retain delegate
 	// scratch for handoff") - the /clear scenario must not destroy artifacts
 	// a person may still want.
@@ -213,24 +216,43 @@ func TestSandboxReprovisionAfterCleanup(t *testing.T) {
 		t.Errorf("first session tmp must be retained after Cleanup (handoff contract): %v", err)
 	}
 
-	// The /clear fix: re-provisioning rebuilds an enforced env with a FRESH tmp.
-	if err := provisionSandboxWithHost(env, &cfg, worktree, facts); err != nil {
+	// /clear copies the launch config, clears its picked ID, and provisions a new
+	// env. Reusing either identity would instead model same-session scratch reuse.
+	clearCfg := cfg
+	clearCfg.SessionID = ""
+	clearEnv := execenv.NewLocalExecutionEnvironment(worktree)
+	t.Cleanup(clearEnv.Cleanup)
+	if err := provisionSandboxWithHost(clearEnv, &clearCfg, worktree, facts); err != nil {
 		t.Fatalf("re-provision after cleanup: %v", err)
 	}
-	if env.Sandbox == nil || !env.Sandbox.Enforced() || env.Wrapper == nil {
+	if clearCfg.SessionID == "" || clearCfg.SessionID == cfg.SessionID {
+		t.Fatal("cleared session must have a fresh identity")
+	}
+	// Old teardown must also be harmless while the replacement is live.
+	env.Cleanup()
+	if _, err := os.Stat(tmp1); err != nil {
+		t.Errorf("first session tmp must remain after re-provision: %v", err)
+	}
+	if got, err := os.ReadFile(artifact); err != nil || string(got) != "handoff" {
+		t.Errorf("old session's handoff artifact changed: %q, %v", got, err)
+	}
+	if clearEnv.Sandbox == nil || !clearEnv.Sandbox.Enforced() || clearEnv.Wrapper == nil {
 		t.Fatal("re-provision must rebuild an enforced env")
 	}
-	tmp2 := env.Wrapper.SessionTmp()
+	tmp2 := clearEnv.Wrapper.SessionTmp()
 	if tmp2 == tmp1 {
-		t.Error("re-provision must mint a fresh tmp, not reuse the disposed one")
+		t.Error("re-provision must mint a fresh tmp, not reuse the retained one")
 	}
 	if _, err := os.Stat(tmp2); err != nil {
 		t.Errorf("re-provisioned session tmp must exist: %v", err)
 	}
 	// A spawn under the re-provisioned env runs (the cleared session is usable).
-	res, err := env.ExecCommand(context.Background(), "echo REPROVISION-OK", 15000, worktree, nil)
+	res, err := clearEnv.ExecCommand(context.Background(), "echo REPROVISION-OK", 15000, worktree, nil)
 	if err != nil {
 		t.Fatalf("spawn after re-provision failed: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Errorf("spawn after re-provision exited %d: %q %q", res.ExitCode, res.Stdout, res.Stderr)
 	}
 	if !strings.Contains(res.Stdout, "REPROVISION-OK") {
 		t.Errorf("spawn after re-provision did not run: %q %q", res.Stdout, res.Stderr)
