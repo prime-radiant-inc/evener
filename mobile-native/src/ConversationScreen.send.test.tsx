@@ -3233,6 +3233,82 @@ describe("Retry's one owner on the shared session binding", () => {
 		}
 	});
 
+	// A discarded reply is not an event that asks for another read. One demand
+	// belongs to one binding generation and one displayed failure: when the
+	// shorter same-incarnation replies are discarded, authority stays unavailable
+	// and the token stays consumed. Recovery waits for an explicit demand (a
+	// focus/reopen/reconnect in the field, called directly here) or a ready
+	// publication.
+	it("demands one authoritative read per binding while discarded replies leave authority unknown", async () => {
+		const ref = "ref-retry-one-demand";
+		readHistory.live = true;
+		const { tree, entry, hub } = await mountTracked(failedTurn(ref, "go test exited 1"));
+		await settle();
+		// The retained history is longer than a shortened window's reply: same
+		// incarnation with a shorter length, which applyReadModel discards.
+		const held = entry.store.getState().conversation!;
+		expect(held.history).toBeDefined();
+		act(() =>
+			entry.store.setState({
+				conversation: { ...held, history: held.history && { ...held.history, length: 10 } },
+			}),
+		);
+		expect(entry.store.getState().latestReadState).toBe("ready");
+		expect(pressable(tree, "Retry")?.props.disabled).toBe(false);
+
+		const runtime = getNativeMutationRuntime();
+		const targetKey = nativeMutationTargetKey("hub-1", ref);
+		const request = hub.client.request;
+		let replyLength = 0;
+		let reads = 0;
+		const gates: (() => void)[] = [];
+		hub.client.request = async (method, params) => {
+			if (method !== "thread/read") return request(method, params);
+			reads += 1;
+			await new Promise<void>((resolve) => gates.push(resolve));
+			const response = (await request(method, params)) as {
+				snapshot?: { incarnation: string; length: number };
+			};
+			return { ...response, snapshot: { incarnation: "inc-1", length: replyLength } };
+		};
+		try {
+			await act(async () => {
+				await runtime.discardRecovery("no-such-row", targetKey);
+			});
+			await until(() => expect(reads).toBe(1));
+
+			// Release the first three reads that appear with a shorter reply. The
+			// fixed store demands only the first; a loop would consume gates 2-4.
+			for (let index = 0; index < 3; index += 1) {
+				await act(async () => gates[index]?.());
+				await settle();
+				expect(reads).toBe(1);
+				await until(() => expect(entry.store.getState().latestReadState).toBe("unknown"));
+			}
+			expect(entry.store.getState().canonicalSession()).toBeNull();
+			expect(hub.mutations()).toEqual([]);
+
+			// The next explicit demand gets the matching length: authority returns
+			// and the same failure's Retry is enabled again.
+			replyLength = 10;
+			let latest!: Promise<void>;
+			act(() => {
+				latest = entry.store.getState().ensureLatest();
+			});
+			await until(() => expect(reads).toBe(2));
+			await act(async () => {
+				gates[1]?.();
+				await latest;
+			});
+			await settle();
+			expect(entry.store.getState().latestReadState).toBe("ready");
+			expect(pressable(tree, "Retry")?.props.disabled).toBe(false);
+			expect(hub.mutations()).toEqual([]);
+		} finally {
+			hub.client.request = request;
+		}
+	});
+
 	it("submits nothing from a stale Retry callback after the canonical advances", async () => {
 		const ref = "ref-retry-stale";
 		const served = failedTurn(ref, "go test exited 1");

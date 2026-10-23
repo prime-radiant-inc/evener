@@ -2588,20 +2588,25 @@ function ConversationScreenView({
 	// on). Keyed on the readiness state and the displayed model, so it re-runs
 	// when the storage notification drops authority or when the failure arrives
 	// while authority is already unavailable.
-	const retryAuthorityDemand = useRef<number | null>(null);
+	const retryAuthorityDemand = useRef<{ generation: number; failureTurnId: string } | null>(null);
 	useEffect(() => {
 		if (!focused || !connected || !service) return;
 		const current = store.getState();
-		if (current.latestReadState !== "unknown") {
-			retryAuthorityDemand.current = null;
-			return;
-		}
 		if (current.ref !== route.params.ref || current.status !== "open") return;
+		// Only a ready publication clears the demand: the next invalidation of this
+		// same failure may ask again. "reading" and a discarded "unknown" keep the
+		// token, so a discarded reply cannot spawn another read.
+		if (current.latestReadState === "ready") {
+			retryAuthorityDemand.current = null;
+		}
 		// An uncertified projection or an unresolved own row already disables
 		// Retry; a read now could only block the dispatcher's target.
 		if (!current.pendingMutationsReady || ownPendingTurnInput(current.pendingMutations)) return;
 		const displayedTurnId = latestTurnId(current.conversation ?? undefined);
-		if (displayedTurnId === undefined) return;
+		if (displayedTurnId === undefined) {
+			retryAuthorityDemand.current = null;
+			return;
+		}
 		// The same owner predicate the row uses, with authority removed: true only
 		// for a turn's own failure row on the displayed latest turn, so a warning,
 		// another item's error, a historical failure or a sign-in failure asks for
@@ -2621,11 +2626,26 @@ function ConversationScreenView({
 				)?.kind === "retry"
 			);
 		});
-		if (!offersRetry) return;
-		// At most one demand per binding while authority stays unavailable: a
-		// discarded read returns to "unknown", and re-asking would spin.
-		if (retryAuthorityDemand.current === current.conversationGeneration) return;
-		retryAuthorityDemand.current = current.conversationGeneration;
+		if (!offersRetry) {
+			retryAuthorityDemand.current = null;
+			return;
+		}
+		// One demand per binding generation and displayed failure. A demanded
+		// read that is discarded returns to "unknown" with this token consumed:
+		// recovery waits for a ready publication or the next explicit event
+		// (focus, reopen, reconnect), never an immediate read-after-read loop.
+		if (current.latestReadState !== "unknown") return;
+		const demanded = retryAuthorityDemand.current;
+		if (
+			demanded !== null &&
+			demanded.generation === current.conversationGeneration &&
+			demanded.failureTurnId === displayedTurnId
+		)
+			return;
+		retryAuthorityDemand.current = {
+			generation: current.conversationGeneration,
+			failureTurnId: displayedTurnId,
+		};
 		void current.ensureLatest();
 	}, [
 		snapshot.latestReadState,
