@@ -765,7 +765,14 @@ export async function attentionJourney(ctx) {
   await new Promise((resolve) => setTimeout(resolve, 620));
   assert.equal(await read(`document.querySelector(${q(LIST)}) !== null`), false, "movement beyond 10px cancels the hold before it completes");
   await driver.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: cancelPoint.x + 30, y: cancelPoint.y - 60, button: "left", clickCount: 1 });
+  // A release after the pointer left the button must not deliver the button's
+  // own click (the pending hold's pointer capture stays on the element, so a
+  // retargeted click would navigate here). Give a navigation the beat it needs
+  // to commit before asserting, and check focus as well as the URL.
+  await new Promise((resolve) => setTimeout(resolve, 750));
   assert.equal(await read("location.pathname"), holdStart, "a cancelled hold leaves the reader where it was");
+  assert.equal(await read(`document.querySelector(${q(LIST)}) !== null`), false, "the cancelled hold's release opens no attention list");
+  assert.equal(await read(`${driver.paneScopeExpr(rootRef)} !== null`), true, "the cancelled hold's release keeps the source reader mounted");
   driver.milestone("attention-hold-cancel", { width: 320, entry: holdStart });
   await driver.send("Emulation.setDeviceMetricsOverride", { width: 1000, height: 900, deviceScaleFactor: 1, mobile: false });
 
@@ -931,6 +938,17 @@ export async function attentionJourney(ctx) {
     window.__attentionListSettle = stamp;
     return previous === stamp ? true : null;
   })()`, "the reader's scroll is settled before the attention list opens");
+  // The panel also dismisses on any outer resize, and the host swap just
+  // changed the emulated metrics: a resize delivered after the panel opened
+  // closes it before it can carry rows. Require a quiet window first.
+  await read(`(() => {
+    window.__attentionResizeAt = performance.now();
+    window.__attentionResizeWatch ??= (() => {
+      window.addEventListener("resize", () => { window.__attentionResizeAt = performance.now(); }, true);
+      return true;
+    })();
+  })()`);
+  await wait(`performance.now() - window.__attentionResizeAt > 400`, "the host swap's resize has settled before the attention list opens");
   await activate(MORE, "the More trigger opens the attention list for the later-page target");
   await wait(`document.querySelector(${q(LIST)}) !== null`, "the attention list opens for the later-page target");
   const listBounds = await read(`(() => {
@@ -950,12 +968,27 @@ export async function attentionJourney(ctx) {
   await new Promise((resolve) => setTimeout(resolve, 1000));
   // A panel that has opened but not been given its first page yet satisfies
   // every "no Load more control" reading, so the wait has to see rows before it
-  // can say the list reached its later page.
-  await wait(`(() => {
+  // can say the list reached its later page. A panel that has gone away was
+  // dismissed (the control hid for a beat, or an outer event arrived); a person
+  // taps More again, so the leg reopens it once rather than waiting on a closed
+  // panel. A panel that stays open without rows still fails the wait.
+  const laterPageRows = `(() => {
     const rows = document.querySelectorAll(${q(ROW)}).length;
     if (rows === 0) return null;
     return rows > 50 || document.querySelector(${q(LOAD_MORE)}) === null ? rows : null;
-  })()`, "the attention list reaches its later page");
+  })()`;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await wait(laterPageRows, "the attention list reaches its later page");
+      break;
+    } catch (error) {
+      const panelOpen = await read(`document.querySelector(${q(LIST)}) !== null`);
+      if (panelOpen || attempt >= 2) throw error;
+      driver.milestone("attention-later-page-reopened", { attempt });
+      await activate(MORE, "the More trigger reopens the dismissed attention list");
+      await wait(`document.querySelector(${q(LIST)}) !== null`, "the reopened attention list is mounted");
+    }
+  }
   const allRows = await read(`[...document.querySelectorAll(${q(ROW)})].map((row) => row.dataset.ref)`);
   // The store may already have merged the hub's second page before this leg
   // reads the list, so the rows past the first page are identified by the
