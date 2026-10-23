@@ -1138,10 +1138,15 @@ func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []
 				IsError:    true,
 			}
 		}
-		if call.Name == "delegate_send" {
-			// This abandoned batch persists no inline identities. Preserve its
-			// valid result pair, leaving the payload to canonical delivery.
-			res.Output = delegateInlineStatusResult(&llm.ToolResultData{Content: res.Output}).Content.(string)
+		if call.Name == "delegate_send" && !res.IsError {
+			s.delegateDeliveryMu.Lock()
+			hasInlinePayload := len(s.delegateDeliveryCommits[call.ID]) != 0
+			s.delegateDeliveryMu.Unlock()
+			if hasInlinePayload {
+				// This abandoned batch persists no inline identities. Preserve its
+				// valid result pair, leaving the payload to canonical delivery.
+				res.Output = delegateInlineStatusResult(&llm.ToolResultData{Content: res.Output}).Content.(string)
+			}
 		}
 		parts = append(parts, llm.ContentPart{
 			Kind: llm.ContentToolResult,
@@ -1226,9 +1231,9 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 		s.maybeAutoSave()
 		s.announceReadableToolResultImages(results)
 	}); abortErr != nil {
-		// The tool round will not persist, so release any inline delivery receipts
-		// it acquired before cancellation and leave their durable heads replayable.
-		abortDelegateToolCallDeliveryCommits(s.takeDelegateDeliveryCommits(calls))
+		// Keep projection identities available while omitting abandoned payloads,
+		// then release them. Neither step grants custody or model observation.
+		defer func() { abortDelegateToolCallDeliveryCommits(s.takeDelegateDeliveryCommits(calls)) }()
 		if ctx.Err() != nil && !s.isClosingOrClosed() {
 			s.appendCanceledToolResults(calls, results, abortErr)
 		}

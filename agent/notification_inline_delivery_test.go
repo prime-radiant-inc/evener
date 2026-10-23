@@ -951,6 +951,108 @@ func TestNotificationInlineDeliveryTruncatedCarrier(t *testing.T) {
 	}
 }
 
+// Call-name-only payload substitution loses completed errors and invents a
+// notification for an unexecuted send. Compare with the result before cancel.
+func TestNotificationInlineDeliveryCanceledPreservesNonCarrierResults(t *testing.T) {
+	for _, prevalidation := range []bool{false, true} {
+		t.Run(fmt.Sprintf("prevalidation_%t", prevalidation), func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "notification-gate.txt"), []byte("gate"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			gate := &notificationReadGate{LocalExecutionEnvironment: execenv.NewLocalExecutionEnvironment(dir), entered: make(chan struct{}), release: make(chan struct{})}
+			var original events.ToolCallEndData
+			originalReady := make(chan struct{})
+			a := &notificationDeliveryAdapter{}
+			a.rootSteps = []func(context.Context, llm.Request) (llm.Response, error){
+				func(context.Context, llm.Request) (llm.Response, error) {
+					args := map[string]any{"to": "caller", "message": "rejected send"}
+					if prevalidation {
+						args["max_wait_ms"] = map[string]any{"invalid": true}
+					}
+					response := notificationToolCall("send-error", "delegate_send", args)
+					for _, next := range []llm.Response{
+						notificationToolCall("read-gate", "read_file", map[string]any{"file_path": "notification-gate.txt", "intent": "blocking after send error"}),
+						notificationToolCall("send-unexecuted", "delegate_send", map[string]any{"to": "caller", "message": "must not execute"}),
+						notificationToolCall("read-unexecuted", "read_file", map[string]any{"file_path": "notification-gate.txt", "intent": "unexecuted cancellation control"}),
+					} {
+						response.Message.Content = append(response.Message.Content, next.Message.Content...)
+					}
+					return response, nil
+				},
+				func(_ context.Context, req llm.Request) (llm.Response, error) {
+					notificationValidToolPairs(t, req)
+					results := map[string]*llm.ToolResultData{}
+					for _, message := range req.Messages {
+						for _, part := range message.Content {
+							if part.ToolResult != nil {
+								results[part.ToolResult.ToolCallID] = part.ToolResult
+							}
+						}
+					}
+					completed := results["send-error"]
+					if completed == nil {
+						t.Fatal("resumed request omitted completed send error")
+					}
+					if completed.Content != original.Error || !completed.IsError || completed.PrevalOnly != original.PrevalOnly {
+						t.Errorf("completed result changed: content=%q error=%t prevalidation=%t, original=%q prevalidation=%t", completed.Content, completed.IsError, completed.PrevalOnly, original.Error, original.PrevalOnly)
+					}
+					skippedSend, skippedRead := results["send-unexecuted"], results["read-unexecuted"]
+					if skippedSend == nil || skippedRead == nil {
+						t.Fatal("resumed request omitted unexecuted result pairs")
+					}
+					if skippedSend.Content != skippedRead.Content || !skippedSend.IsError || skippedSend.PrevalOnly {
+						t.Errorf("unexecuted send lost cancellation result: send=%+v, read control=%+v", skippedSend, skippedRead)
+					}
+					return finalResponse("resumed non-carrier response"), nil
+				},
+			}
+			s := notificationSession(t, a, gate, make(chan struct{}))
+			drained := make(chan struct{})
+			var unexecutedEnds int
+			s.ConsumeEventsLossless(func(event events.SessionEvent) {
+				if data, ok := event.Data.(events.ToolCallEndData); ok {
+					switch data.CallID {
+					case "send-error":
+						original = data
+						close(originalReady)
+					case "send-unexecuted", "read-unexecuted":
+						unexecutedEnds++
+					}
+				}
+			}, func() { close(drained) })
+			t.Cleanup(func() { s.Close(); notificationAwait(t, drained) })
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { _, err := s.ProcessInput(ctx, "start non-carrier cancellation", nil); done <- err }()
+			notificationAwait(t, gate.entered)
+			notificationAwait(t, originalReady)
+			if original.Error == "" || len(original.Error) > jobToolResultDefaultMaxChar || original.PrevalOnly != prevalidation {
+				t.Fatalf("original bounded error missing or wrong execution path: %+v", original)
+			}
+			cancel()
+			if err := <-done; !errors.Is(err, context.Canceled) {
+				t.Fatalf("canceled batch error=%v", err)
+			}
+			if _, err := s.ProcessInput(context.Background(), "resume non-carrier cancellation", nil); err != nil {
+				t.Fatal(err)
+			}
+			s.Close()
+			notificationAwait(t, drained)
+			if unexecutedEnds != 0 {
+				t.Errorf("trailing calls executed before cancellation: %d", unexecutedEnds)
+			}
+			for _, entry := range notificationRawEntries(t, s.TranscriptPath()) {
+				if entry.Turn.AttentionID != "" || len(entry.Turn.ObservedNotificationIDs) != 0 || len(entry.Turn.DelegateDeliveryCommits) != 0 {
+					t.Fatalf("non-carrier fabricated notification state: %+v", entry.Turn)
+				}
+			}
+			t.Logf("captured original error bytes=%d, prevalidation=%t, unexecuted tool ends=%d, canonical records=0, receipts=0", len(original.Error), prevalidation, unexecutedEnds)
+		})
+	}
+}
+
 func TestNotificationInlineDeliveryCanceledBeforeBindingTake(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "notification-gate.txt"), []byte("gate"), 0600); err != nil {
