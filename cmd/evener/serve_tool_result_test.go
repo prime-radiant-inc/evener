@@ -47,6 +47,14 @@ const (
 	foregroundShellColdReattach foregroundShellServeMode = "cold-reattach"
 )
 
+// The fixture shell and its deterministic child each publish their PID under
+// these names in the fixture working directory. They are shared with the Unix
+// cleanup regression, which derives the child's path from the shell's.
+const (
+	foregroundShellPIDFilename      = "shell.pid"
+	foregroundShellChildPIDFilename = "shell-child.pid"
+)
+
 type serveShellNotificationSignals struct {
 	started       chan struct{}
 	completed     chan struct{}
@@ -155,6 +163,24 @@ func dialServeToolResultClient(ctx context.Context, t *testing.T, addr, name, re
 // durable record exists rather than relying on the live projection alone.
 func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellServeMode) {
 	t.Helper()
+	runServeForegroundShellPersistenceCaseWithCheckpoint(t, mode, nil)
+}
+
+// foregroundCleanupJoinDeadline bounds the fixture's own join during cleanup,
+// the backstop for a case that fails before its explicit shutdown.
+const foregroundCleanupJoinDeadline = 15 * time.Second
+
+// runServeForegroundShellPersistenceCaseWithCheckpoint is
+// runServeForegroundShellPersistenceCase with a test-only observation seam. The
+// checkpoint reports lifecycle facts — the fixture shell writing its PID before
+// it waits, the second provider request, and the serve join — and never performs
+// cleanup. A nil checkpoint is the wrapper's path; the outer cleanup regression
+// drives the failure checkpoints through a re-executed child instead.
+func runServeForegroundShellPersistenceCaseWithCheckpoint(t *testing.T, mode foregroundShellServeMode, checkpoint func(stage, shellPIDPath string)) {
+	t.Helper()
+	if checkpoint == nil {
+		checkpoint = func(string, string) {}
+	}
 	workDir := t.TempDir()
 	stateDir := t.TempDir()
 	runDir := t.TempDir()
@@ -163,8 +189,22 @@ func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellSe
 		t.Fatalf("mkdir transcript directory: %v", err)
 	}
 
+	// The fixture shell publishes its own PID and its deterministic long-lived
+	// child's PID before it waits, so the seam and the outer regression can
+	// identify the exact processes a failing run must not outlive. The shell owns
+	// and reaps the child itself on both the gate-release (normal) path and the
+	// TERM path, so descendant reaping never depends on host init or a subreaper.
+	// The PID files are private to the working directory.
+	shellPIDPath := filepath.Join(workDir, foregroundShellPIDFilename)
+	shellChildPIDPath := filepath.Join(workDir, foregroundShellChildPIDFilename)
 	gatePath := filepath.Join(workDir, "shell-release")
-	shellCommand := fmt.Sprintf("while [ ! -f %s ]; do sleep 0.01; done; printf shell-complete", strconv.Quote(gatePath))
+	shellCommand := fmt.Sprintf(
+		"sleep 600 & child=$!; "+
+			"trap 'kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null; exit 0' TERM; "+
+			"printf '%%s' \"$child\" > %s; printf '%%s' $$ > %s; "+
+			"while [ ! -f %s ]; do sleep 0.01; done; "+
+			"kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null; printf shell-complete",
+		strconv.Quote(shellChildPIDPath), strconv.Quote(shellPIDPath), strconv.Quote(gatePath))
 	secondRequest := make(chan struct{})
 	secondResponseRelease := make(chan struct{})
 	releaseSecondResponse := sync.OnceFunc(func() { close(secondResponseRelease) })
@@ -186,17 +226,50 @@ func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellSe
 		},
 	})
 
-	done := make(chan error, 1)
+	// The fixture owns a cancel function for the serve context, supplied through
+	// the production notifyContext seam. It is the same cancellation an interrupt
+	// delivers, so a case that returns before its own shutdown still ends serve.
+	fixtureCtx, cancelFixture := context.WithCancel(context.Background())
+	deps := defaultServeDeps()
+	deps.notifyContext = func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
+		return fixtureCtx, cancelFixture
+	}
+
+	serveResult := make(chan error, 1)
+
+	// One idempotent cleanup, registered before serve can fail. Its body releases
+	// the shell gate and the second provider gate, cancels the fixture context,
+	// then joins serve under a bounded deadline. It runs ahead of the temporary
+	// directories' removal because it is registered after they are created. It is
+	// the single reader of serveResult, and the normal path waits on it by calling
+	// cleanup() below, so the join is never consumed twice.
+	var serveErr error
+	cleanup := sync.OnceFunc(func() {
+		_ = os.WriteFile(gatePath, []byte("release"), 0o600)
+		releaseSecondResponse()
+		cancelFixture()
+		select {
+		case serveErr = <-serveResult:
+			checkpoint("joined", shellPIDPath)
+		case <-time.After(foregroundCleanupJoinDeadline):
+			t.Errorf("foreground fixture's serve did not join within %s", foregroundCleanupJoinDeadline)
+		}
+	})
+	t.Cleanup(cleanup)
+
 	go func() {
-		done <- runServe([]string{
+		serveResult <- runServeWithDeps([]string{
 			"--model", "openai/gpt-test",
 			"--addr", "127.0.0.1:0",
 			"--dir", workDir,
 			"--state-dir", stateDir,
 			"--run-dir", runDir,
-		})
+		}, deps)
 	}()
 
+	// Emitted before the rendezvous: the serve-started failure case must cancel
+	// and join a serve that has not yet registered, the earliest failure point.
+	checkpoint("serve-started", shellPIDPath)
 	entry := waitForServeTestRendezvous(t, runDir)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -237,6 +310,13 @@ func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellSe
 		client, signals = dialServeToolResultClient(ctx, t, entry.Address, "cold-reattach", ref)
 		defer client.Close()
 	}
+	if _, ok := waitForFileContent(shellPIDPath, 10*time.Second); !ok {
+		t.Fatalf("foreground shell never wrote its PID file %s", shellPIDPath)
+	}
+	if _, ok := waitForFileContent(shellChildPIDPath, 10*time.Second); !ok {
+		t.Fatalf("foreground shell never wrote its child PID file %s", shellChildPIDPath)
+	}
+	checkpoint("shell-started", shellPIDPath)
 	if err := os.WriteFile(gatePath, []byte("release"), 0o600); err != nil {
 		t.Fatalf("release shell gate: %v", err)
 	}
@@ -246,6 +326,7 @@ func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellSe
 	case <-ctx.Done():
 		t.Fatalf("second provider request after foreground shell: %v", ctx.Err())
 	}
+	checkpoint("provider-waiting", shellPIDPath)
 	if mode == foregroundShellNoSubscriber {
 		// Reaching the second provider request proves the shell result crossed the
 		// full tool boundary with zero subscribers. Attach only after that proof,
@@ -301,13 +382,11 @@ func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellSe
 	if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {
 		t.Fatalf("thread/shutdown: %v", err)
 	}
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("runServe: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("runServe did not exit after shutdown")
+	// The explicit call proves the registered cleanup is idempotent; t.Cleanup
+	// invokes it a second time.
+	cleanup()
+	if serveErr != nil {
+		t.Fatalf("runServe: %v", serveErr)
 	}
 }
 
