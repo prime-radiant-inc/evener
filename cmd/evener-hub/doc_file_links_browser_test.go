@@ -205,6 +205,11 @@ func TestDocumentFileLinksBrowser(t *testing.T) {
 	if !*documentFileLinksBrowser {
 		t.Skip("run with -document-file-links-browser")
 	}
+	runDocumentFileLinksBrowser(t, "frontend/scripts/documentfilelinksguard/run.mjs")
+}
+
+func runDocumentFileLinksBrowser(t *testing.T, runner string) {
+	t.Helper()
 	web, cwd, sessionID := docServeTestServer(t)
 	const childID = "02wMz5TxvEMoJEDTDGOTil"
 	childCWD := t.TempDir()
@@ -325,14 +330,14 @@ func TestDocumentFileLinksBrowser(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer raw.Close()
-	cmd := exec.CommandContext(context.Background(), "node", "frontend/scripts/documentfilelinksguard/run.mjs")
+	cmd := exec.CommandContext(context.Background(), "node", runner)
 	cmd.Env = append(browserFixtureEnv(server.URL), "DOCUMENT_FILE_LINKS_CWD="+cwd, "DOCUMENT_FILE_LINKS_REF="+ref,
 		"DOCUMENT_FILE_LINKS_CHILD_CWD="+childCWD, "DOCUMENT_FILE_LINKS_CHILD_REF="+childRef,
 		"DOCUMENT_FILE_LINKS_ARTIFACT_DIR="+artifacts, "DOCUMENT_FILE_LINKS_TOKEN="+token)
 	cmd.Stdout = io.MultiWriter(os.Stdout, raw)
 	cmd.Stderr = io.MultiWriter(os.Stderr, raw)
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("documentfilelinksguard: %v, artifacts %s", err, artifacts)
+		t.Fatalf("%s: %v, artifacts %s", runner, err, artifacts)
 	}
 	result, err := os.ReadFile(filepath.Join(artifacts, "result.json"))
 	if err != nil {
