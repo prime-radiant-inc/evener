@@ -85,6 +85,7 @@ function OwnedNextNeedsYou({
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const suppressBackstopRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const pressRef = useRef<{ x: number; y: number; pointerId: number } | null>(null);
+  const captureRef = useRef<{ element: Element; pointerId: number } | null>(null);
   const holdCompletedRef = useRef(false);
   const suppressClickRef = useRef(false);
   const restoreFocusRef = useRef(false);
@@ -124,6 +125,24 @@ function OwnedNextNeedsYou({
     cleanup();
   }, []);
 
+  // Capture keeps the release delivered while the pointer is away from the
+  // button, which is what lets a hold survive a small wobble - but leaving it
+  // armed after the gesture is cancelled hands the eventual release back to
+  // this button, and the click that follows it would navigate about a gesture
+  // the reader already cancelled. Drop it the moment the gesture ends.
+  const releasePointerCapture = useCallback(() => {
+    const captured = captureRef.current;
+    captureRef.current = null;
+    if (captured === null) return;
+    try {
+      if (captured.element.hasPointerCapture(captured.pointerId)) {
+        captured.element.releasePointerCapture(captured.pointerId);
+      }
+    } catch {
+      // The element can be gone, and the capture already revoked.
+    }
+  }, []);
+
   // A pending hold ends without opening anything. A hold that already
   // completed keeps its one-click suppression until the release click or the
   // backstop consumes it.
@@ -131,11 +150,12 @@ function OwnedNextNeedsYou({
     clearHoldTimer();
     pressRef.current = null;
     detachGesture();
+    releasePointerCapture();
     if (!holdCompletedRef.current) {
       suppressClickRef.current = false;
       clearSuppressBackstop();
     }
-  }, [clearHoldTimer, clearSuppressBackstop, detachGesture]);
+  }, [clearHoldTimer, clearSuppressBackstop, detachGesture, releasePointerCapture]);
 
   const armGesture = useCallback(() => {
     if (gestureCleanupRef.current !== null) return;
@@ -190,6 +210,7 @@ function OwnedNextNeedsYou({
     armGesture();
     try {
       event.currentTarget.setPointerCapture(event.pointerId);
+      captureRef.current = { element: event.currentTarget, pointerId: event.pointerId };
     } catch {
       // jsdom has no pointer capture; the window listeners own the gesture.
     }
