@@ -1477,10 +1477,12 @@ terminal packet:
 `kind="report"` marks the generation's terminal packet, whatever its outcome.
 A mid-work update (`communicate(end_turn=false)`) is
 `<delegate-notification delegate_id="dlg_..." name="..." kind="update">` with
-the delegate's message as the body, `<` escaped so it can neither close the
-frame nor open another. Clients decode the body's entities once, so a
-literal entity the delegate types, such as `&amp;`, reads as the character it
-names; job output excerpts share this remainder. The `name` attribute appears
+the delegate's message as the body, escaping `&` first, then `<`. Clients
+decode exactly `&lt;` and `&amp;` once, preserving literal sender text such as
+`&lt;`; job output excerpts use the same body contract. Accepted breakage:
+pre-`6adc500868` frames render `&quot;`/`&gt;` literally and their entity-escaped
+JSON-envelope extraction fails. No migration or legacy fallback is applied.
+The `name` attribute appears
 only for a named delegate. The quiet watchdog's frame carries neither `name` nor `kind`. A
 delegate frame never carries `job_id` or `job_type="delegate"`. The full
 conversation stays available through the delegate's `transcript_ref`. A
