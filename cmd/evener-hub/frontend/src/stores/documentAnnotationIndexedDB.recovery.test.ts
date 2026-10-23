@@ -28,6 +28,7 @@ import {
   type AnnotationFixture,
   type AnnotationFixtureWithRuntime,
   buildAnnotationOperation,
+  type Deferred,
   deferred,
   holdFirstPreparation,
   openAnnotationFixture,
@@ -917,6 +918,19 @@ test("a stale same-ticket acceptance keeps its successor's provisional alive", a
 
     holds.release();
     expect(await second).toEqual({ state: "stale-ticket" });
+
+    // Both invocations released their own installs, so nothing suppresses the
+    // epoch: the saved annotation is listed and its handoff is not blocked by
+    // an orphan. #liveAcceptances is a Set keyed by requestId, so the first
+    // invocation's finally already removed the shared element before the
+    // second invocation checks it: a same-ticket liveness test would have
+    // called this dead. The release is object-exact, not a liveness test, so
+    // the epoch comes back here.
+    const views = await fixture.repository.listAnnotations(fixture.document);
+    expect(views.map((view) => view.operation.operationId)).toContain(fixture.operation.operationId);
+    expect(await fixture.repository.handoff(fixture.document, fixture.operation.operationId)).toMatchObject({
+      state: "applied",
+    });
   } finally {
     holds?.release();
     sibling.close();
@@ -970,6 +984,185 @@ test("a stale overlapping acceptance keeps the earlier provisional alive", async
     expect(await firstAcceptance).toMatchObject({ state: "expiry-pending" });
   } finally {
     sibling.close();
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
+
+// Two DISTINCT tickets accept changed content on one epoch. The first installs
+// its confirmed suppression and parks before its fence; the second displaces it
+// and parks too. Rejecting the first hook proves its flow dead. Rejecting the
+// second must not restore the dead owner's confirmed entry: that entry has no
+// expiry row behind it, so it hides the epoch from listings, refuses saves and
+// keeps handing off pending until the next acceptance or a reset.
+test("a dead acceptance's displaced confirmed suppression is not resurrected", async () => {
+  const gates: [Deferred<void>, Deferred<void>] = [deferred<void>(), deferred<void>()];
+  let hookCalls = 0;
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-abandoned-confirmed",
+    origin: "https://coordination.example",
+    beforeExpiryFence: () => {
+      const gate = gates[hookCalls];
+      hookCalls += 1;
+      if (gate === undefined) throw new Error("unexpected expiry-fence hook");
+      return gate.promise;
+    },
+  });
+  const listener = vi.fn();
+  fixture.repository.subscribe(fixture.document, listener);
+  try {
+    // Ticket A: its entry stage installs an unconfirmed provisional, which its
+    // fence stage replaces with a confirmed entry before parking.
+    const ticketA = await fixture.repository.beginRead(fixture.document);
+    const acceptanceA = fixture.repository.acceptRead(ticketA, sampleChangedContent());
+    await settleRealTasks(() => hookCalls === 1, 50);
+    expect(hookCalls).toBe(1);
+
+    // Ticket B registers after A passed its guard. Its entry stage finds the
+    // confirmed entry and installs no provisional of its own, then its fence
+    // stage displaces A's confirmed entry and parks.
+    const ticketB = await fixture.repository.beginRead(fixture.document);
+    const acceptanceB = fixture.repository.acceptRead(ticketB, sampleChangedContent());
+    await settleRealTasks(() => hookCalls === 2, 50);
+    expect(hookCalls).toBe(2);
+
+    listener.mockClear();
+    gates[0].reject(new Error("hook fault"));
+    await expect(acceptanceA).rejects.toThrow("hook fault");
+    gates[1].reject(new Error("hook fault"));
+    await expect(acceptanceB).rejects.toThrow("hook fault");
+
+    // B's release is the only settle: the map ends empty, so the epoch is
+    // listed, a fresh save against its lease commits, and its handoff applies.
+    expect(listener).toHaveBeenCalledTimes(1);
+    const views = await fixture.repository.listAnnotations(fixture.document);
+    expect(views.map((view) => view.operation.operationId)).toContain(fixture.operation.operationId);
+    await fixture.repository.saveAnnotation({ ...fixture.operation, operationId: "operation-after-dead-flow" });
+    expect(await fixture.repository.handoff(fixture.document, fixture.operation.operationId)).toMatchObject({
+      state: "applied",
+    });
+  } finally {
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
+
+// A reset provisions an unconfirmed entry named by the read ticket it will
+// retire. An acceptance on that same ticket displaces the provisioned entry
+// and holds its stale validation. When the reset's abort releases the
+// provisioned entry first, its settle finds the acceptance's entry and marks
+// its own captured object abandoned. The acceptance's later restore must
+// refuse to re-install that dead object: restored, it is unconfirmed, so an
+// unchanged reread never clears it and the epoch stays hidden from listings
+// and blocked for handoffs.
+test("a reset's released provisioned entry is not resurrected by a later restore", async () => {
+  const resetAttempted = deferred<void>();
+  let fixture: AnnotationFixture | undefined;
+  let holds: ReturnType<typeof holdNextTransactions> | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-abandoned-provisioned",
+    origin: "https://reset.example",
+    beforeCommit: (operation) => {
+      if (operation !== "reset") return;
+      resetAttempted.resolve();
+      throw new Error("reset fault");
+    },
+  });
+  const listener = vi.fn();
+  fixture.repository.subscribe(fixture.document, listener);
+  try {
+    // T registers on the accepted epoch; the reset provisions its entry by
+    // naming T, then its aborted transaction holds its abort event.
+    const ticket = await fixture.repository.beginRead(fixture.document);
+    holds = holdNextTransactions([
+      { stores: RESET_STORES, event: "abort" },
+      { stores: ACCEPT_STORES, event: "complete" },
+    ]);
+    const reset = fixture.repository.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation);
+    await resetAttempted.promise;
+    await holds.reached[0];
+
+    // A sibling read advances the durable generation, so the acceptance on T
+    // validates stale. Its entry stage displaces the reset's provisioned entry.
+    const sibling = openSiblingRepository(fixture);
+    await sibling.beginRead(fixture.document);
+    const acceptance = fixture.repository.acceptRead(ticket, sampleChangedContent());
+    await holds.reached[1];
+
+    // The reset's release runs first and skips the acceptance's displaced
+    // install; then the stale acceptance settles.
+    listener.mockClear();
+    holds.releaseAt(0);
+    await expect(reset).rejects.toThrow("reset fault");
+    holds.releaseAt(1);
+    expect(await acceptance).toEqual({ state: "stale-ticket" });
+    sibling.close();
+
+    // The acceptance's own release publishes, and the dead reset entry never
+    // returns: the epoch is listed, savable and handoff-eligible.
+    const views = await fixture.repository.listAnnotations(fixture.document);
+    expect(views.map((view) => view.operation.operationId)).toContain(fixture.operation.operationId);
+    expect(listener).toHaveBeenCalledTimes(1);
+    await fixture.repository.saveAnnotation({ ...fixture.operation, operationId: "operation-after-reset-release" });
+    expect(await fixture.repository.handoff(fixture.document, fixture.operation.operationId)).toMatchObject({
+      state: "applied",
+    });
+  } finally {
+    holds?.release();
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
+
+// The reversed ordering of the case above: the stale acceptance settles first
+// and restores the reset's provisioned entry, then the reset's own release
+// finds exactly the object it provisioned and releases it with publication.
+// Both orderings end with the epoch eligible.
+test("a reset release that runs after a restore still settles the entry it provisioned", async () => {
+  const resetAttempted = deferred<void>();
+  let fixture: AnnotationFixture | undefined;
+  let holds: ReturnType<typeof holdNextTransactions> | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-provisioned-restored",
+    origin: "https://reset.example",
+    beforeCommit: (operation) => {
+      if (operation !== "reset") return;
+      resetAttempted.resolve();
+      throw new Error("reset fault");
+    },
+  });
+  const listener = vi.fn();
+  fixture.repository.subscribe(fixture.document, listener);
+  try {
+    const ticket = await fixture.repository.beginRead(fixture.document);
+    holds = holdNextTransactions([
+      { stores: RESET_STORES, event: "abort" },
+      { stores: ACCEPT_STORES, event: "complete" },
+    ]);
+    const reset = fixture.repository.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation);
+    await resetAttempted.promise;
+    await holds.reached[0];
+
+    const sibling = openSiblingRepository(fixture);
+    await sibling.beginRead(fixture.document);
+    const acceptance = fixture.repository.acceptRead(ticket, sampleChangedContent());
+    await holds.reached[1];
+
+    // The acceptance restores the reset's entry first, then the reset releases
+    // the exact object it provisioned.
+    listener.mockClear();
+    holds.releaseAt(1);
+    expect(await acceptance).toEqual({ state: "stale-ticket" });
+    holds.releaseAt(0);
+    await expect(reset).rejects.toThrow("reset fault");
+    sibling.close();
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    const views = await fixture.repository.listAnnotations(fixture.document);
+    expect(views.map((view) => view.operation.operationId)).toContain(fixture.operation.operationId);
+    await fixture.repository.saveAnnotation({ ...fixture.operation, operationId: "operation-after-restore" });
+  } finally {
+    holds?.release();
     fixture.repository.close();
     fixture.drafts.close();
   }

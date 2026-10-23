@@ -341,6 +341,10 @@ interface SuppressionEntry {
   // ticket's validation, and a null-owner entry is never released by a ticket.
   requestId: string | null;
   confirmed: boolean;
+  // Set by the OWNER of this entry when its settle finds itself displaced.
+  // A displacer owns the identity now, so this object is dead to the flow that
+  // installed it and no stale restore may put it back in the map.
+  abandoned: boolean;
 }
 
 interface ReadState {
@@ -728,7 +732,12 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     for (const candidate of owned) {
       const entry = this.#suppressedEpochs.get(candidate.identity);
       if (!entry || entry.confirmed) continue;
-      if (entry !== candidate.entry) continue;
+      if (entry !== candidate.entry) {
+        // A displacer owns the identity now: this invocation's captured entry is
+        // dead to it, and a later restore must not resurrect it.
+        candidate.entry.abandoned = true;
+        continue;
+      }
       this.#suppressedEpochs.delete(candidate.identity);
       releasedDocuments.add(entry.documentKey);
     }
@@ -861,6 +870,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
             namespaceIncarnation: previous.lease.namespaceIncarnation,
             requestId: ticket.requestId,
             confirmed: false,
+            abandoned: false,
           };
           if (this.#installSuppression(identity, provisionalEntry)) installedProvisional = provisionalEntry;
           provisional = identity;
@@ -881,6 +891,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const restoreDisplacedOrRelease = (identity: string, owned: SuppressionEntry): void => {
       if (
         displacedEntry !== undefined &&
+        !displacedEntry.abandoned &&
         displacedEntry.requestId !== null &&
         (this.#ownsRegistration(documentKey, ticket.namespaceIncarnation, displacedEntry.requestId) ||
           this.#liveAcceptances.has(displacedEntry.requestId)) &&
@@ -893,7 +904,12 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const finishValidation = (confirmFor?: string): void => {
       if (provisional === undefined || installedProvisional === undefined) return;
       const entry = this.#suppressedEpochs.get(provisional);
-      if (entry !== installedProvisional) return;
+      if (entry !== installedProvisional) {
+        // The map holds a displacer's object: this invocation's install never
+        // reaches its confirmation, so mark it dead against any stale restore.
+        installedProvisional.abandoned = true;
+        return;
+      }
       // Confirm only when the changed path fenced exactly the epoch this
       // provisional names: a peer may have advanced the head in between, and a
       // confirmation for the dead epoch would never be released.
@@ -1080,6 +1096,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         namespaceIncarnation: validation.namespaceIncarnation,
         requestId: ticket.requestId,
         confirmed: true,
+        abandoned: false,
       };
       this.#installSuppression(suppressionIdentity, installedSuppression);
       finishValidation(suppressionIdentity);
@@ -1092,10 +1109,20 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // own hook outcome and its own fence-or-reject settle, so this arm owes
       // nothing for it.
       const restoreInstalledSuppression = (): boolean => {
-        if (this.#suppressedEpochs.get(suppressionIdentity) !== installedSuppression) return false;
-        if (priorSuppression === undefined || priorSuppression.requestId === ticket.requestId) {
+        if (this.#suppressedEpochs.get(suppressionIdentity) !== installedSuppression) {
+          // A displacer owns the identity now: this invocation's confirmed
+          // install is dead to it, and no stale restore may re-install it.
+          installedSuppression.abandoned = true;
+          return false;
+        }
+        // Delete only an entry this invocation's own entry stage installed: a
+        // same-ticket sibling's live provisional carries the same requestId and
+        // is not this invocation's to delete. A foreign prior is restored only
+        // while its owner never abandoned it, so a live sibling's provisional
+        // stays protected until that owner settles it.
+        if (priorSuppression === undefined || priorSuppression === installedProvisional) {
           this.#suppressedEpochs.delete(suppressionIdentity);
-        } else if (!this.#installSuppression(suppressionIdentity, priorSuppression)) {
+        } else if (priorSuppression.abandoned || !this.#installSuppression(suppressionIdentity, priorSuppression)) {
           this.#suppressedEpochs.delete(suppressionIdentity);
         }
         return true;
@@ -1947,6 +1974,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       namespaceIncarnation: lease.namespaceIncarnation,
       requestId: null,
       confirmed: true,
+      abandoned: false,
     });
   }
 
@@ -2210,6 +2238,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
           namespaceIncarnation: expectedIncarnation,
           requestId: state.ticket.requestId,
           confirmed: false,
+          abandoned: false,
         };
         // Only an install that actually happened is this reset's to settle.
         if (this.#installSuppression(identity, entry)) provisioned.push({ identity, entry });
