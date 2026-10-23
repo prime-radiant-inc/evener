@@ -150,6 +150,35 @@ test("a drill inside an attention entry's cascade keeps the entry bound to its r
   expect(currentAttentionEntryToken()).toBe(token);
 });
 
+// Retiring a closed target must not detach the history branch: the parked
+// source is still reachable with Back, and dropping the retiring entry's
+// identity before the replacement lands reset the branch and released that
+// source with its staged work.
+test("closing an attention target keeps its parked source on the Back branch", async () => {
+  window.history.replaceState({}, "", "/s/local%3Aa");
+  const aId = workspaceStore.getState().openPane("session", { ref: "local:a" });
+  workspaceStore.getState().focusPane(aId);
+  const a = workspaceStore.getState().mainPane();
+  if (!a) throw new Error("missing source reader");
+  const lifetime = conversationPaneLifetime(a);
+  openAttentionSession("local:b");
+  const b = presentAttentionTarget("local:b");
+  if (!b) throw new Error("missing attention target");
+  openAttentionSession("local:c");
+  const backOnce = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+  window.history.back();
+  await backOnce;
+
+  workspaceStore.getState().closePane(b.pane.id);
+  expect(a.slot).toBe("parked");
+
+  // Another hop after the close must not release the still-parked source.
+  openAttentionSession("local:d");
+  expect(workspaceStore.getState().panes).toContain(a);
+  expect(conversationPaneLifetime(a)).toBe(lifetime);
+  expect(lifetime.alive).toBe(true);
+});
+
 test.each(["open", "toggle", "replace"] as const)("ordinary %s does not focus a parked match", (action) => {
   const id = workspaceStore.getState().openPane("session", { ref: "local:a" });
   const origin = captureAttentionPlacement();

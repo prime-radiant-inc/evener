@@ -147,12 +147,13 @@ function retireAttentionEntry(binding: HistoryBinding): void {
     state.panes.find((pane) => pane.slot === "main") ??
     null;
   const url = survivor ? paneToURL(survivor.type, survivor.params) : null;
-  entries.delete(key(binding.token));
-  branch = branch.map((entry) =>
-    entry.token && key(entry.token) === key(binding.token) ? { ...entry, token: null } : entry,
-  );
-  cursor = branchIndex(null, `${location.pathname}${location.search}${location.hash}`);
+  // The branch entry keeps the retiring token until navigate()'s replacement
+  // observer matches it by that token and the previous URL. Clearing it first
+  // makes the observer treat this as a fresh branch, which drops every other
+  // entry and releases their parked readers - including a source Back can
+  // still reach, with its staged attachments.
   navigate(url ?? "/", { replace: true });
+  entries.delete(key(binding.token));
 }
 
 // A drill inside the cascade an attention entry owns keeps the same pane and
