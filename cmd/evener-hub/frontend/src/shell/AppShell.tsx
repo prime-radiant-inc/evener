@@ -950,11 +950,17 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
   // would otherwise overwrite the deep link with its own fallback pane's "/"
   // mid-wait (kata bbsv). Desktop needs nothing: DockHost never writes to the
   // address bar, so a deferred route simply sits there until it can be placed.
+  //
+  // The same wait covers an attention entry whose exact reader still has to be
+  // restored: StackHost's URL sync is a child effect, so it runs before this
+  // shell's restoration effect and would publish whichever pane happens to be
+  // focused at mount. That entry is not always a session URL - a saved
+  // layout's conversation is a valid source while the address bar says "/" -
+  // so the deferral follows the token, not the route type.
   const attentionToken = currentAttentionEntryToken();
   const routeDeferred =
-    route?.type === "session" &&
-    (pendingSessionRef.current !== null ||
-      (attentionToken !== null && restoredAttentionTokenRef.current !== attentionToken));
+    (route?.type === "session" && pendingSessionRef.current !== null) ||
+    (attentionToken !== null && restoredAttentionTokenRef.current !== attentionToken);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: workspacePanesVersion is a deliberate trigger-only dep for route-owned primary replacement ordering
   useEffect(() => {

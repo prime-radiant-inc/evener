@@ -2196,6 +2196,56 @@ test("mobile initial mount restores a valid attention entry before StackHost pub
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Astale"));
 });
 
+// The entry an attention source leaves need not be a session URL: a saved
+// layout's conversation is a valid source while the address bar still says
+// "/". The mobile URL sync has to wait for that restore on EVERY route type,
+// not only on a session deep link, or StackHost publishes whichever pane
+// happens to be focused at mount over the entry it is about to restore.
+test("mobile mount at a welcome-route attention entry restores it before StackHost publishes the stale focused URL", async () => {
+  const setMobile = installSwitchableViewport();
+  setMobile(true);
+  // A saved layout's reader lives at "/": the address bar names the workspace
+  // default while a session conversation holds focus.
+  window.history.replaceState({}, "", "/");
+  let origin = "";
+  act(() => {
+    origin = workspaceStore.getState().openPane("session", { ref: "local:origin" });
+    workspaceStore.getState().focusPane(origin);
+  });
+  const originPane = workspaceStore.getState().panes.find((pane) => pane.id === origin);
+  if (!originPane) throw new Error("missing the saved-layout reader");
+  const originLifetime = conversationPaneLifetime(originPane);
+  act(() => openAttentionSession("local:destination"));
+  const back = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+  await act(async () => {
+    window.history.back();
+    await back;
+  });
+  expect(window.location.pathname).toBe("/");
+
+  // A different session reader is focused when the phone mounts here.
+  let staleReader = "";
+  act(() => {
+    staleReader = workspaceStore.getState().openPane("session", { ref: "local:stale" }, { slot: "secondary" });
+  });
+  act(() => workspaceStore.getState().focusPane(staleReader));
+  const token = currentAttentionEntryToken();
+  if (!token) throw new Error("the welcome-route entry lost its valid runtime token before remount");
+  const entryState = window.history.state;
+  const historyLength = window.history.length;
+
+  render(<AppShell client={navClient()} />);
+
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(origin));
+  expect(window.location.pathname).toBe("/");
+  expect(currentAttentionEntryToken()).toBe(token);
+  expect(window.history.length).toBe(historyLength);
+  expect(window.history.state).toEqual(entryState);
+  expect(workspaceStore.getState().panes).toContain(originPane);
+  expect(conversationPaneLifetime(originPane)).toBe(originLifetime);
+  expect(originLifetime.alive).toBe(true);
+});
+
 test("a secondary departure restores the exact reader without replacing its main or neighbors", async () => {
   window.history.replaceState({}, "", "/s/local%3Aowner");
   installLocationForRoute("local:owner");
