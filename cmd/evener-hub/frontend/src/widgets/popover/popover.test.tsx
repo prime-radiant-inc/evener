@@ -237,3 +237,37 @@ test("in a popout the panel portals into the trigger's document and dismisses th
   popout.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
   expect(onClose).toHaveBeenCalled();
 });
+
+// Dockview moves an existing panel into a popout window, so a trigger that
+// mounted in the opener can belong to the popout by the time the panel opens.
+test("a trigger moved into a popout before opening portals into that document", ({ onTestFinished }) => {
+  const { document: popout, cleanup } = popoutHost();
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  onTestFinished(() => {
+    act(() => root.unmount());
+    container.remove();
+    cleanup();
+  });
+  const panel = (
+    <Popover open={false} onClose={() => {}} trigger={<button type="button">open</button>} data-testid="panel">
+      <div>panel body</div>
+    </Popover>
+  );
+  act(() => root.render(panel));
+
+  // The move happens while the panel is closed; opening it afterwards has to
+  // resolve the document again rather than trusting the mount-time one.
+  popout.body.appendChild(container);
+  act(() =>
+    root.render(
+      <Popover open onClose={() => {}} trigger={<button type="button">open</button>} data-testid="panel">
+        <div>panel body</div>
+      </Popover>,
+    ),
+  );
+
+  expect(popout.querySelector('[data-testid="panel"]')).toBeTruthy();
+  expect(document.querySelector('[data-testid="panel"]')).toBeNull();
+});

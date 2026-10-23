@@ -325,17 +325,30 @@ function OwnedNextNeedsYou({
   // the panel with the component.
   useEffect(() => {
     if (!listOpen) return;
+    // The trigger's own window: a conversation in a Dockview popout scrolls and
+    // resizes there, and the list lives there too.
+    const view = moreRef.current?.ownerDocument?.defaultView ?? window;
+    // contains() reads across realms, where `instanceof Node` does not, and it
+    // throws on a target that is not a Node at all (a window, say).
+    const insideList = (target: EventTarget | null): boolean => {
+      const list = listRef.current;
+      if (!list || target === null) return false;
+      try {
+        return list.contains(target as Node);
+      } catch {
+        return false;
+      }
+    };
     const onScroll = (event: Event) => {
-      const target = event.target;
-      if (target instanceof Node && listRef.current?.contains(target)) return;
+      if (insideList(event.target)) return;
       closeList(false);
     };
     const onResize = () => closeList(false);
-    window.addEventListener("scroll", onScroll, true);
-    window.addEventListener("resize", onResize);
+    view.addEventListener("scroll", onScroll, true);
+    view.addEventListener("resize", onResize);
     return () => {
-      window.removeEventListener("scroll", onScroll, true);
-      window.removeEventListener("resize", onResize);
+      view.removeEventListener("scroll", onScroll, true);
+      view.removeEventListener("resize", onResize);
     };
   }, [listOpen, closeList]);
 
