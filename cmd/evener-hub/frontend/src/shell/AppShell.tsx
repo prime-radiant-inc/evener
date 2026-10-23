@@ -955,6 +955,28 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: workspacePanesVersion is a deliberate trigger-only dep for route-owned primary replacement ordering
   useEffect(() => {
+    // Exact runtime entries outrank every route type, not only session URLs: a
+    // saved layout's conversation is a valid source reader while the address
+    // bar still says "/", so Back from an attention target has to restore its
+    // placement before the route branch decides what to place. A stale
+    // location read must not rebuild a retained secondary as main either.
+    const attentionToken = currentAttentionEntryToken();
+    if (attentionToken === null) restoredAttentionTokenRef.current = null;
+    if (attentionToken !== null && restoredAttentionTokenRef.current === attentionToken) {
+      pendingSessionRef.current = null;
+      placedPathnameRef.current = pathname;
+      return;
+    }
+    if (
+      attentionToken !== null &&
+      restoredAttentionTokenRef.current !== attentionToken &&
+      restoreCurrentAttentionEntry()
+    ) {
+      restoredAttentionTokenRef.current = attentionToken;
+      pendingSessionRef.current = null;
+      placedPathnameRef.current = pathname;
+      return;
+    }
     if (route?.type === "settings" || route?.type === "spawn" || route?.type === "session") {
       if (routePlacementInProgressRef.current) {
         const armedPathname = routePlacementPathnameRef.current;
@@ -964,30 +986,6 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
           placedPathnameRef.current = pathname;
           return;
         }
-      }
-      // Exact runtime entries outrank generic location reconciliation. A stale
-      // location read must not rebuild a retained secondary as main.
-      const attentionToken = currentAttentionEntryToken();
-      if (attentionToken === null) restoredAttentionTokenRef.current = null;
-      if (
-        route?.type === "session" &&
-        attentionToken !== null &&
-        restoredAttentionTokenRef.current === attentionToken
-      ) {
-        pendingSessionRef.current = null;
-        placedPathnameRef.current = pathname;
-        return;
-      }
-      if (
-        route?.type === "session" &&
-        attentionToken !== null &&
-        restoredAttentionTokenRef.current !== attentionToken &&
-        restoreCurrentAttentionEntry()
-      ) {
-        restoredAttentionTokenRef.current = attentionToken;
-        pendingSessionRef.current = null;
-        placedPathnameRef.current = pathname;
-        return;
       }
       const allowFocusedCompanion =
         pendingSessionRef.current === null &&

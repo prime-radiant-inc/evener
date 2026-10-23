@@ -4015,6 +4015,39 @@ test("kata 9r5y: a reload at the welcome route over a saved layout restores the 
   expect(screen.queryByText("No session open")).toBeNull();
 });
 
+test("Back from an attention target restores the saved conversation the welcome route left in place", async () => {
+  await saveRealSessionLayout();
+  window.history.pushState({}, "", "/");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:session-a" }));
+  const origin = workspaceStore.getState().mainPane();
+  if (!origin) throw new Error("missing restored reader");
+  const lifetime = conversationPaneLifetime(origin);
+  // The saved layout keeps its own focus; this leg is about the session
+  // reader, so the reader click that starts it focuses main first.
+  act(() => workspaceStore.getState().focusPane(origin.id));
+
+  act(() => openAttentionSession("local:destination"));
+  const destination = () =>
+    workspaceStore.getState().panes.find((pane) => (pane.params as { ref?: string }).ref === "local:destination");
+  await waitFor(() => expect(destination()).toBeTruthy());
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(destination()?.id));
+
+  const back = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+  await act(async () => {
+    window.history.back();
+    await back;
+  });
+
+  // The entry this reader left is "/", not a session URL: Back has to restore
+  // its exact reader before the welcome route decides what to place.
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(origin.id));
+  expect(window.location.pathname).toBe("/");
+  expect(workspaceStore.getState().panes).toContain(origin);
+  expect(conversationPaneLifetime(origin)).toBe(lifetime);
+  expect(lifetime.alive).toBe(true);
+});
+
 test("opening /s/{ref} replaces unrelated main session instead of opening a secondary", async () => {
   workspaceStore.getState().openPane("session", { ref: "local:existing" });
 
