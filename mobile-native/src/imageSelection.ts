@@ -1,4 +1,10 @@
-import { type AttachmentRejection, admissionRejection, MAX_ATTACHMENTS, sizeRejection } from "@evener/appwire-client";
+import {
+	type AttachmentRejection,
+	admissionRejection,
+	MAX_ATTACHMENTS,
+	nextComposerImageMarker,
+	sizeRejection,
+} from "@evener/appwire-client";
 import type { DraftDocument } from "./draftDocument";
 
 export interface PickedImage {
@@ -162,10 +168,7 @@ export class ImageSelection {
 				source === "camera" ? await this.picker.capture() : await this.picker.pick(MAX_ATTACHMENTS - count);
 			if (generation !== this.generation) return;
 			const current = this.document.getSnapshot().record;
-			this.nextMarker = Math.max(
-				this.nextMarker,
-				...[...(current.images ?? []), ...(current.unconfirmedImages ?? [])].map((image) => image.marker),
-			);
+			const attachments = [...(current.images ?? []), ...(current.unconfirmedImages ?? [])];
 			let reserved = current.images?.length ?? 0;
 			const pending: PendingImage[] = [];
 			for (const image of picked) {
@@ -175,10 +178,12 @@ export class ImageSelection {
 					continue;
 				}
 				reserved++;
+				const marker = nextComposerImageMarker(current.draft, [...attachments, ...pending], this.nextMarker);
+				this.nextMarker = marker;
 				pending.push({
 					...image,
 					id: this.picker.id(),
-					marker: ++this.nextMarker,
+					marker,
 				});
 			}
 			this.update({ pending });

@@ -8,6 +8,73 @@ export interface ComposerMention {
   offset: number;
 }
 
+/** Length of the leading UTF-16 run two serialized values share. */
+export function sharedPrefixLength(before: string, after: string): number {
+  const limit = Math.min(before.length, after.length);
+  let index = 0;
+  while (index < limit && before[index] === after[index]) index++;
+  return index;
+}
+
+/** Length of the trailing UTF-16 run two values share, past `prefix`. */
+export function sharedSuffixLength(before: string, after: string, prefix: number): number {
+  const limit = Math.min(before.length, after.length) - prefix;
+  let count = 0;
+  while (count < limit && before[before.length - 1 - count] === after[after.length - 1 - count]) count++;
+  return count;
+}
+
+const skillTokenCharacter = /[\p{L}\p{N}_./:-]/u;
+const skillSentenceTerminator = /[.:]/;
+
+/** Whether a character continues a skill reference rather than bounding one. */
+export function isSkillTokenCharacter(character: string): boolean {
+  return skillTokenCharacter.test(character);
+}
+
+/** Return the longest-first name spelled as a complete reference at this offset. */
+export function completeSkillReferenceAt(text: string, offset: number, names: readonly string[]): string | undefined {
+  if (text[offset] !== "/" || (offset > 0 && skillTokenCharacter.test(text.charAt(offset - 1)))) return undefined;
+  return names.find((candidate) => {
+    const end = offset + candidate.length + 1;
+    return (
+      text.startsWith(`/${candidate}`, offset) &&
+      (end === text.length ||
+        !skillTokenCharacter.test(text.charAt(end)) ||
+        (skillSentenceTerminator.test(text.charAt(end)) && !skillTokenCharacter.test(text.charAt(end + 1))))
+    );
+  });
+}
+
+function hasCompleteComposerReference(text: string, mention: ComposerMention): boolean {
+  const end = mention.offset + mention.name.length + 1;
+  return (
+    mention.offset >= 0 &&
+    completeSkillReferenceAt(text, mention.offset, [mention.name]) === mention.name &&
+    end <= text.length
+  );
+}
+
+/** Shift existing identities across a text splice, dropping edited labels, never selecting new prose. */
+export function reconcileComposerMentions(
+  before: string,
+  after: string,
+  mentions: readonly ComposerMention[],
+): ComposerMention[] {
+  const prefix = sharedPrefixLength(before, after);
+  const suffix = sharedSuffixLength(before, after, prefix);
+  const oldEnd = before.length - suffix;
+  const delta = after.length - before.length;
+  return mentions.flatMap((item) => {
+    if (item.offset + item.name.length + 1 <= prefix) return hasCompleteComposerReference(after, item) ? [item] : [];
+    if (item.offset >= oldEnd) {
+      const shifted = { ...item, offset: item.offset + delta };
+      return hasCompleteComposerReference(after, shifted) ? [shifted] : [];
+    }
+    return [];
+  });
+}
+
 /** Staged image bytes; marker identifies its editing anchor, never a wire field. */
 export interface InputAttachment {
   marker: number;
