@@ -1027,12 +1027,21 @@ export async function attentionJourney(ctx) {
   assert.ok(mountedOwners.length > 0, "the attention scene has mounted conversation owners before the reconnect");
   await reconnect({ expectRefs: mountedOwners });
   await wait(`${driver.paneScopeExpr(rootRef)} !== null`, "the source pane survives a real socket reconnect");
-  for (let poll = 0; poll < 100; poll++) {
-    const pending = sent(beforeReconnect).filter((frame) => frame.method === "evener/navigation/read");
-    if (pending.length > 0 && pending.every(answered)) break;
+  // The app's own post-reconnect reads (the needs-you manifest and tier) are
+  // issued after the subscriptions reconnect() already waited for, and CI load
+  // can put them past a short local window, so this gets the guard's standard
+  // 15s and names any request that never came back.
+  const postReconnectReads = () => sent(beforeReconnect).filter((frame) => frame.method === "evener/navigation/read");
+  const readDeadline = Date.now() + 15000;
+  while (Date.now() < readDeadline && !postReconnectReads().every(answered)) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  assert.ok(sent(beforeReconnect).filter((frame) => frame.method === "evener/navigation/read").every(answered), "every navigation read after reconnect is answered");
+  const unansweredReads = postReconnectReads().filter((frame) => !answered(frame));
+  assert.equal(
+    unansweredReads.length,
+    0,
+    `every navigation read after reconnect is answered; unanswered ${unansweredReads.map((frame) => `${frame.params?.section ?? "?"} offset ${frame.params?.offset ?? "?"} (${frame.id})`).join(", ")}`,
+  );
   const afterReconnect = await focused();
   assert.equal(afterReconnect.ref, laterRef, "a real reconnect keeps the later-page target's focused pane and URL");
   await wait(`document.querySelector(${q(`${NEXT}`)}) !== null`, "the control re-derives its tier after reconnect");
