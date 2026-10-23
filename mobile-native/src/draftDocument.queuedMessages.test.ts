@@ -589,6 +589,41 @@ it("restores only the parked composition beside an unconfirmed send", async () =
 	expect(document.getSnapshot().record.parkedCompositions).toBeUndefined();
 });
 
+it("failed parked discard keeps the park and its sources until the removal commits", () => {
+	document.appendEditedRecovery(recovery());
+	document.replaceDraft("/goal");
+	const parkId = document.getSnapshot().record.parkedCompositions?.[0]?.id ?? "";
+	const before = repository.read(destination);
+	database.exec("PRAGMA query_only = ON");
+
+	document.dismissParked(parkId);
+	expect(document.getSnapshot().error).not.toBeNull();
+	expect(repository.read(destination)).toEqual(before);
+	// The live record keeps the park's ownership, so the screen continues to
+	// hide those sources from Discard and reconciliation leaves them alone.
+	expect(document.getSnapshot().record.parkedCompositions?.map((parked) => parked.id)).toEqual([parkId]);
+	expect(document.getSnapshot().record.parkedCompositions?.[0]?.composer?.recoveryIds).toEqual(["source-a"]);
+	expect(document.getSnapshot().record.releasedRecoveryIds ?? []).not.toContain("source-a");
+
+	// Retry cannot commit while storage still refuses, and the park stays put.
+	document.retry();
+	expect(document.getSnapshot().error).not.toBeNull();
+	expect(document.getSnapshot().record.parkedCompositions?.[0]?.id).toBe(parkId);
+
+	database.exec("PRAGMA query_only = OFF");
+	document.retry();
+	expect(document.getSnapshot().error).toBeNull();
+	expect(document.getSnapshot().record.parkedCompositions?.[0]?.id).toBe(parkId);
+
+	// A later committed Discard releases the sources and stays removed.
+	document.dismissParked(parkId);
+	expect(document.getSnapshot().record.parkedCompositions).toBeUndefined();
+	expect(document.getSnapshot().record.releasedRecoveryIds).toContain("source-a");
+	reopen();
+	expect(document.getSnapshot().record.parkedCompositions).toBeUndefined();
+	expect(document.getSnapshot().record.releasedRecoveryIds).toContain("source-a");
+});
+
 it("keeps every park and its ownership across repeated replacements", () => {
 	document.appendEditedRecovery(recovery("source-a"));
 	document.replaceDraft("/goal one");

@@ -844,7 +844,9 @@ export class DraftDocument {
 				true,
 			);
 		} catch {
-			/* Retry retains the requested recovery state. */
+			// A failed save changed nothing durably: keep the prior park and
+			// its source ownership visible so those sources stay protected.
+			this.update({ record });
 		}
 	}
 	/** Restore only the selected park, leaving other parks and any unconfirmed send. */
