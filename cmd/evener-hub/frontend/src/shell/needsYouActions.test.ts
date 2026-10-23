@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { afterEach, expect, test, vi } from "vitest";
@@ -181,6 +182,85 @@ test("a deliberate retry recovers a failed boundary page", async () => {
   expect(offsets).toEqual([0, 0]);
   expect(controller.getSnapshot().readFailed).toBe(false);
   expect(controller.getSnapshot().choices.map((choice) => choice.summary.ref)).toEqual(["local:recovered"]);
+  controller.dispose();
+});
+
+test("demand retries a failed later page at its own offset before advancing", async () => {
+  const client = new FakeClient("ready");
+  const offsets: number[] = [];
+  client.on("evener/navigation/read", (params) => {
+    if (params.resource === "manifest") {
+      return wireSnapshot(
+        params,
+        manifest({
+          generation_id: "retry-later-generation",
+          sections: { live: { count: 0 }, needs_you: { count: 52 }, pin_sections: { count: 0 } },
+        }),
+        '"manifest"',
+        1,
+        "retry-later-generation",
+      );
+    }
+    if (params.resource === "section") {
+      const offset = params.offset ?? -1;
+      offsets.push(offset);
+      const sessions =
+        offset === 0
+          ? Array.from({ length: 50 }, (_, index) => ({ ref: `local:first-${index}` }))
+          : [{ ref: "local:later-a" }, { ref: "local:later-b" }];
+      return wireSnapshot(params, { sessions, remaining: offset === 0 ? 2 : 0 }, '"page"', 1, "retry-later-generation");
+    }
+    throw new Error(`unexpected resource ${params.resource}`);
+  });
+  navigationStore.init(client, capability("retry-later-generation"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const controller = createNeedsYouController();
+  // Page zero arrives with the boot manifest; one More loads the second page.
+  await controller.loadMore();
+  expect(offsets).toEqual([0, 50]);
+
+  // A refresh of the loaded later page fails: the revalidator keeps the rows
+  // it already has and marks the page stale with the error, so the page's
+  // choices are unusable until that exact page is read again.
+  const pageKey = { kind: "section", section: "needs_you", offset: 50, limit: 50 } as const;
+  const resources = new Map(navigationStore.getState().resources);
+  resources.set(keyID(pageKey), {
+    key: pageKey,
+    data: {
+      generation_id: "retry-later-generation",
+      revision: 1,
+      sessions: [
+        {
+          ref: "local:later-a",
+          host_id: "local",
+          session_id: "local:later-a",
+          title: "local:later-a",
+          project: "Proj",
+          state: "awaiting",
+          kind: "session",
+          live: true,
+          children: [],
+        },
+      ],
+      remaining: 0,
+      truncated: false,
+    },
+    loadedRevision: 1,
+    targetRevision: 1,
+    forceToken: 0,
+    etag: '"page"',
+    loading: false,
+    stale: true,
+    error: new Error("transport failure"),
+    generationID: "retry-later-generation",
+  });
+  const visibleResourceKeys = new Set(navigationStore.getState().visibleResourceKeys);
+  visibleResourceKeys.add(keyID(pageKey));
+  navigationStore.setState({ resources, visibleResourceKeys });
+
+  await controller.loadMore();
+  // The retry asks for the failed page itself, not the offset past it.
+  expect(offsets.at(-1)).toBe(50);
   controller.dispose();
 });
 

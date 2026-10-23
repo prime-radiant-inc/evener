@@ -236,8 +236,23 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
 
   const demand = async (serial: number): Promise<void> => {
     const state = navigationStore.getState();
-    const offset = selectNextSectionOffset("needs_you", state);
-    await state.loadSection("needs_you", offset, NAVIGATION_SECTION_LIMIT);
+    // A failed page keeps the rows it already had, so an offset computed from
+    // them would skip past the failure and leave its choices unusable. Retry
+    // the earliest failed visible page at its own offset and limit first; only
+    // an all-clean set advances the page.
+    const failed = [...state.resources.values()]
+      .filter(
+        (resource) =>
+          resource.key.kind === "section" &&
+          resource.key.section === "needs_you" &&
+          resource.error !== null &&
+          state.visibleResourceKeys.has(keyID(resource.key)),
+      )
+      .sort((a, b) => (a.key.kind === "section" && b.key.kind === "section" ? a.key.offset - b.key.offset : 0))[0];
+    const failedPage = failed?.key.kind === "section" ? failed.key : null;
+    const offset = failedPage ? failedPage.offset : selectNextSectionOffset("needs_you", state);
+    const limit = failedPage ? failedPage.limit : NAVIGATION_SECTION_LIMIT;
+    await state.loadSection("needs_you", offset, limit);
     if (disposed || serial !== actionSerial) return;
   };
   const runNext = async (): Promise<void> => {
