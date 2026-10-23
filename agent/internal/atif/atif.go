@@ -133,7 +133,7 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 
 	var steps []Step
 	stepID := 1
-	var totalPrompt, totalCompletion, totalCached int
+	var totalPrompt, totalCompletion, totalCached, totalCacheWrite, totalCacheWrite1h int
 
 	for i := 0; i < len(entries); i++ {
 		entry := entries[i]
@@ -182,6 +182,8 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 				totalPrompt += step.Metrics.PromptTokens
 				totalCompletion += step.Metrics.CompletionTokens
 				totalCached += step.Metrics.CachedTokens
+				totalCacheWrite += optionalInt(turn.Usage.CacheWriteTokens)
+				totalCacheWrite1h += optionalInt(turn.Usage.CacheWrite1hTokens)
 			}
 
 			steps = append(steps, step)
@@ -318,14 +320,28 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 	}
 
 	traj.Steps = steps
+	promptWireTokens := totalPrompt + totalCached + totalCacheWrite + totalCacheWrite1h
 	traj.FinalMetrics = &FinalMetrics{
 		TotalPromptTokens:     totalPrompt,
 		TotalCompletionTokens: totalCompletion,
 		TotalCachedTokens:     totalCached,
 		TotalSteps:            len(steps),
+		Extra: map[string]any{
+			"cache_read_tokens":  totalCached,
+			"prompt_wire_tokens": promptWireTokens,
+		},
 	}
 
 	return traj
+}
+
+// optionalInt returns the pointed-to count, or zero when the provider did not
+// report it.
+func optionalInt(v *int) int {
+	if v == nil {
+		return 0
+	}
+	return *v
 }
 
 // convertAssistantTurn extracts text, tool calls, thinking, and metadata from an assistant turn.
