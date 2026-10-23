@@ -79,7 +79,7 @@ export async function hydrate(fake: FakeClient, ref: string, overrides: Partial<
 export async function seedHeld(
   method: PendingMethod,
   text: string,
-  opts: { ref?: string; skillNames?: string[]; attachments?: InputAttachment[] } = {},
+  opts: { ref?: string; skillNames?: string[]; attachments?: InputAttachment[]; attempted?: boolean } = {},
 ): Promise<string> {
   const ref = opts.ref ?? "ref_a";
   const wireMethod = {
@@ -115,6 +115,7 @@ export async function seedHeld(
     })),
     optimisticDisplay: { method: wireMethod, input },
   });
+  if (opts.attempted) await storage.markAttempted(outbox.clientMutationId);
   storage.close();
   await refreshPendingTurnsProjection(ref);
   await flushPendingTurnsProjectionForTests();

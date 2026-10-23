@@ -21,6 +21,6 @@ export async function submitGoalCommand(
 		return true;
 	};
 	if (clear) await document.submitText("/goal", apply);
-	else await document.submit(apply);
+	else await document.submitBuiltinCommand(apply);
 	return true;
 }

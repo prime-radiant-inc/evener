@@ -15,7 +15,11 @@ import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { AskDock, AskDockAnnouncements, useAskDockActivationEpoch, useAskDockPending } from "./composer/askDock";
 import { Composer } from "./composer/Composer";
 import { carryComposerDraft } from "./composer/draft";
-import { useBlockedMutationEntries, usePendingTurnEntries } from "./composer/queue/pendingTurnsStore";
+import {
+  useBlockedMutationEntries,
+  usePendingTurnEntries,
+  useQueueStripMutationIds,
+} from "./composer/queue/pendingTurnsStore";
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import type { ComposerSourceState } from "./composer/sourceState";
 import { cadenceStateForStatus, NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
@@ -179,7 +183,8 @@ export function ConversationBody({
   const askPending = useAskDockPending(ref);
   const askEpoch = useAskDockActivationEpoch(ref);
   const pendingEntries = usePendingTurnEntries(ref);
-  const heldSteers = useMemo(() => heldSteerEntries(pendingEntries), [pendingEntries]);
+  const queueStripIds = useQueueStripMutationIds(ref);
+  const heldSteers = useMemo(() => heldSteerEntries(pendingEntries, queueStripIds), [pendingEntries, queueStripIds]);
   // Spec §1's live gate, complete: the read-only status family, plus the two
   // fence marks that can hold a session read-only while its status still
   // reads active/idle.
