@@ -32,6 +32,7 @@ type MutationOutboxOperation =
   | "settleReceipt"
   | "transferToRecovery"
   | "updateRecoveryInput"
+  | "preserveRecoveryComposition"
   | "discardRecovery"
   | "resendRecovery"
   | "editQueuedMessage"
@@ -39,6 +40,22 @@ type MutationOutboxOperation =
   | "retargetOutbox";
 
 type VersionedMutationRecoveryRecord = MutationRecoveryRecord & { compositionRevision?: number };
+
+// The stale row still holding exactly the composition a refused pane meant to
+// write means there is nothing new to preserve: duplicating it would give the
+// same unsent work two recovery owners.
+function sameRecoveryComposition(
+  record: MutationRecoveryRecord,
+  input: readonly InputItem[],
+  composerText: string,
+  composerMentions: readonly ComposerMention[] | undefined,
+): boolean {
+  return (
+    record.composerText === composerText &&
+    JSON.stringify(record.payload.input ?? []) === JSON.stringify(input) &&
+    JSON.stringify(record.composerMentions ?? []) === JSON.stringify(composerMentions ?? [])
+  );
+}
 
 export type MutationRecoveryResendResult =
   | { status: "sent"; record: MutationOutboxRecord }
@@ -1027,6 +1044,58 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       await requestResult(store.put(next));
       for (const id of sources) await requestResult(store.delete(id));
       return next;
+    });
+  }
+
+  // A stale lease could no longer write its row, but the composition in the
+  // composer is still the user's unsent work. Preserve it under a fresh
+  // recovery owner without touching the peer's row. A stale row still holding
+  // exactly this composition already preserves it, so no duplicate is written.
+  async preserveRecoveryComposition(
+    base: MutationRecoveryRecord,
+    input: InputItem[],
+    attachments: MutationAttachment[],
+    composerText: string,
+    composerMentions?: readonly ComposerMention[],
+    compositionOwnerId?: string,
+    localDraftRevisionId?: string,
+  ): Promise<MutationRecoveryRecord | undefined> {
+    return this.#write(ENQUEUE_STORES, "preserveRecoveryComposition", async (transaction) => {
+      const recoveryStore = transaction.objectStore(RECOVERY_STORE);
+      const stale = await requestResult<VersionedMutationRecoveryRecord | undefined>(
+        recoveryStore.get(base.clientMutationId),
+      );
+      if (stale && sameRecoveryComposition(stale, input, composerText, composerMentions)) return stale;
+      const intentSequence = await this.#allocateSequence(transaction, base.targetRef);
+      const clientMutationId = this.#createMutationId();
+      await this.#assertMutationIdAvailable(transaction, clientMutationId);
+      const record: VersionedMutationRecoveryRecord = {
+        version: 1,
+        clientMutationId,
+        originClientId: ownClientId(),
+        intentSequence,
+        createdAt: this.#now(),
+        targetRef: base.targetRef,
+        threadId: base.threadId,
+        instanceId: base.instanceId,
+        method: base.method,
+        payload: { ...base.payload, ref: base.targetRef, input },
+        attachments,
+        optimisticDisplay: { method: base.method, input },
+        composerText,
+        composerMentions,
+        recoveryKind: "rejected",
+        recoveryReason: base.recoveryReason,
+        compositionRevision: 0,
+        compositionOwnerId,
+        localDraftRevisionId,
+        state: "submitting",
+        attempted: false,
+        unresolvedAttempts: 0,
+        stopEpochAtEnqueue: await this.#stopEpochOf(transaction, base.targetRef),
+      };
+      await requestResult(recoveryStore.put(record));
+      return record;
     });
   }
 
