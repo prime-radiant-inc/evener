@@ -114,7 +114,7 @@ it.each([
 	const { database: db, port } = openSqliteSyncDouble();
 	const repository = new DraftRepository(port);
 	const destination = { hubId: "hub", sessionRef: "local:test" };
-	const document = new DraftDocument(() => repository, destination);
+	let document = new DraftDocument(() => repository, destination);
 	const { io, service } = boundary();
 	try {
 		await service.open(destination.sessionRef);
@@ -151,6 +151,84 @@ it.each([
 		db.close();
 	}
 });
+
+it("completes recovered /compact through the built-in command path", async () => {
+	const { database: db, port } = openSqliteSyncDouble();
+	const repository = new DraftRepository(port);
+	const destination = { hubId: "hub", sessionRef: "local:test" };
+	let document = new DraftDocument(() => repository, destination);
+	const { io, service } = boundary();
+	try {
+		await service.open(destination.sessionRef);
+		const sourceId = "recovered-source";
+		document.edit("/compact");
+		repository.write(destination, {
+			...document.getSnapshot().record,
+			composer: { recoveryIds: [sourceId] },
+		});
+		document = new DraftDocument(() => repository, destination);
+		io.lifecycle = async (method) => {
+			expect(method).toBe("thread/compact/start");
+			return {};
+		};
+		await submitComposerCommand(document, service, commandContext);
+		expect(repository.read(destination)).toMatchObject({
+			draft: "",
+			unconfirmed: null,
+			completedCommandRecoveryIds: [sourceId],
+		});
+	} finally {
+		service.close();
+		db.close();
+	}
+});
+
+it.each(["success", "failure", "newer text"] as const)(
+	"completes recovered local /project with %s outcome",
+	async (outcome) => {
+		const { database: db, port } = openSqliteSyncDouble();
+		const repository = new DraftRepository(port);
+		const destination = { hubId: "hub", sessionRef: "local:test" };
+		let document = new DraftDocument(() => repository, destination);
+		const { service } = boundary();
+		const sourceId = `project-source-${outcome}`;
+		const sentinelError = new Error("Local command failed");
+		try {
+			await service.open(destination.sessionRef);
+			document.edit("/project");
+			repository.write(destination, {
+				...document.getSnapshot().record,
+				composer: { recoveryIds: [sourceId] },
+			});
+			document = new DraftDocument(() => repository, destination);
+			const operation = submitComposerCommand(document, service, {
+				...commandContext,
+				local: async (id) => {
+					expect(id).toBe("project");
+					expect(document.getSnapshot().record.unconfirmed).toBe("/project");
+					if (outcome === "newer text") document.edit("newer local draft");
+					if (outcome === "failure") throw sentinelError;
+				},
+			});
+			if (outcome === "failure") await expect(operation).rejects.toBe(sentinelError);
+			else expect(await operation).toBe("project");
+			expect(repository.read(destination)).toMatchObject(
+				outcome === "success"
+					? { draft: "", completedCommandRecoveryIds: [sourceId] }
+					: outcome === "newer text"
+						? { draft: "newer local draft", completedCommandRecoveryIds: [sourceId] }
+						: {
+								draft: "",
+								unconfirmed: "/project",
+								unconfirmedComposer: { recoveryIds: [sourceId] },
+							},
+			);
+		} finally {
+			service.close();
+			db.close();
+		}
+	},
+);
 
 it("preserves newer live work state across an older hydration and isolates session notifications", async () => {
 	const { thread, io, service } = boundary();
@@ -231,17 +309,34 @@ it("checkpoints goal changes, retains uncertain delivery, and clears without con
 	const repository = new DraftRepository(port);
 	const destination = { hubId: "hub", sessionRef: "local:test" };
 	const { io, objectives, service, thread } = boundary();
-	const document = new DraftDocument(() => repository, destination);
+	let document = new DraftDocument(() => repository, destination);
 	try {
 		await service.open("local:test");
 		document.edit("/goal objective");
+		repository.write(destination, {
+			...document.getSnapshot().record,
+			composer: { recoveryIds: ["goal-source"] },
+		});
+		document = new DraftDocument(() => repository, destination);
 		await submitGoalCommand(document, service);
 		expect(objectives).toEqual(["objective"]);
-		expect(repository.read(destination).unconfirmed).toBeNull();
+		expect(repository.read(destination)).toMatchObject({
+			unconfirmed: null,
+			completedCommandRecoveryIds: ["goal-source"],
+		});
 		document.edit("ordinary draft");
+		repository.write(destination, {
+			...document.getSnapshot().record,
+			composer: { recoveryIds: ["unrelated-source"] },
+		});
+		document = new DraftDocument(() => repository, destination);
 		await submitGoalCommand(document, service, true);
 		expect(objectives).toEqual(["objective", ""]);
-		expect(repository.read(destination).draft).toBe("ordinary draft");
+		expect(repository.read(destination)).toMatchObject({
+			draft: "ordinary draft",
+			composer: { recoveryIds: ["unrelated-source"] },
+			completedCommandRecoveryIds: ["goal-source"],
+		});
 		thread.evener.capabilities.goal = false;
 		await service.open("local:test");
 		await expect(service.setGoal("blocked")).rejects.toThrow();
@@ -294,11 +389,11 @@ it.each([false, true])("keeps malformed goal acknowledgment recoverable (clear: 
 	}
 });
 
-function commandDraft() {
+function commandDraft(createCaptureToken?: () => string) {
 	const { database: db, port } = openSqliteSyncDouble();
 	const repository = new DraftRepository(port);
 	const destination = { hubId: "hub", sessionRef: "local:test" };
-	return { db, document: new DraftDocument(() => repository, destination) };
+	return { db, repository, document: new DraftDocument(() => repository, destination, undefined, createCaptureToken) };
 }
 
 it.each([
@@ -480,7 +575,7 @@ it.each([
 	["/steer sentinel", "steer", [{ type: "text", text: "sentinel" }]],
 	["/queue sentinel", "queue", [{ type: "text", text: "sentinel" }]],
 ] as const)("routes %s to the outbox, keeping it unconfirmed until admitted", async (text, kind, input) => {
-	const { db, document } = commandDraft();
+	const { db, document } = commandDraft(() => "goal-command-capture");
 	const { io, service } = boundary();
 	const submitted: unknown[] = [];
 	try {
@@ -504,7 +599,9 @@ it.each([
 				queue: { revision: 7, depth: 0 },
 			}),
 		});
-		expect(submitted).toEqual([[kind, input]]);
+		expect(submitted).toEqual([
+			[kind, input, { composer: { text: "sentinel", attachments: [] }, draftCaptureToken: "goal-command-capture" }],
+		]);
 		expect(document.getSnapshot().record).toMatchObject({
 			draft: "",
 			unconfirmed: null,
@@ -593,9 +690,11 @@ it("returns a command the phone couldn't keep to the composer", async () => {
 
 // The drain goes through the outbox, as Steer all now does, never the service.
 it("routes /drain-as-steer to the outbox drain, keeping it unconfirmed until admitted", async () => {
-	const { db, document } = commandDraft();
+	const { db, repository } = commandDraft();
+	let document = new DraftDocument(() => repository, { hubId: "hub", sessionRef: "local:test" });
 	const { io, service, thread } = boundary();
 	thread.evener.capabilities.steer = true;
+	const sourceId = "drain-source";
 	let drained = 0;
 	try {
 		await service.open("local:test");
@@ -603,6 +702,14 @@ it("routes /drain-as-steer to the outbox drain, keeping it unconfirmed until adm
 			throw new Error(`unexpected ${method}`);
 		};
 		document.edit("/drain-as-steer");
+		repository.write(
+			{ hubId: "hub", sessionRef: "local:test" },
+			{
+				...document.getSnapshot().record,
+				composer: { recoveryIds: [sourceId] },
+			},
+		);
+		document = new DraftDocument(() => repository, { hubId: "hub", sessionRef: "local:test" });
 		await submitComposerCommand(document, service, {
 			...commandContext,
 			drainQueue: async () => {
@@ -617,6 +724,7 @@ it("routes /drain-as-steer to the outbox drain, keeping it unconfirmed until adm
 		});
 		expect(drained).toBe(1);
 		expect(document.getSnapshot().record).toMatchObject({ draft: "", unconfirmed: null });
+		expect(repository.read({ hubId: "hub", sessionRef: "local:test" }).completedCommandRecoveryIds).toEqual([sourceId]);
 	} finally {
 		service.close();
 		db.close();
@@ -685,19 +793,30 @@ it("does not resurrect a turn that completes during a read before its start was 
 it.each(["tasks", "status", "copy-id", "project"] as const)(
 	"runs /%s locally without a delivery checkpoint",
 	async (id) => {
-		const { db, document } = commandDraft();
+		const { db, repository } = commandDraft();
+		let document = new DraftDocument(() => repository, { hubId: "hub", sessionRef: "local:test" });
 		const { service } = boundary();
 		try {
+			const completedIds: string[] = [];
 			for (const outcome of ["success", "newer", "failure"] as const) {
 				const text = `/${id}`;
 				document.edit(text);
+				const sourceId = `${id}-${outcome}`;
+				repository.write(
+					{ hubId: "hub", sessionRef: "local:test" },
+					{
+						...document.getSnapshot().record,
+						composer: { recoveryIds: [sourceId] },
+					},
+				);
+				document = new DraftDocument(() => repository, { hubId: "hub", sessionRef: "local:test" });
 				const operation = submitComposerCommand(document, service, {
 					...commandContext,
 					local: async (actual) => {
 						expect(actual).toBe(id);
 						expect(document.getSnapshot().record).toMatchObject({
-							draft: text,
-							unconfirmed: null,
+							draft: "",
+							unconfirmed: text,
 						});
 						if (outcome === "failure") throw new Error("Platform operation failed");
 						if (outcome === "newer") document.edit("newer draft");
@@ -706,9 +825,13 @@ it.each(["tasks", "status", "copy-id", "project"] as const)(
 				if (outcome === "failure") await expect(operation).rejects.toThrow();
 				else expect(await operation).toBe(id);
 				expect(document.getSnapshot().record).toMatchObject({
-					draft: outcome === "failure" ? text : outcome === "newer" ? "newer draft" : "",
-					unconfirmed: null,
+					draft: outcome === "newer" ? "newer draft" : "",
+					unconfirmed: outcome === "failure" ? text : null,
 				});
+				if (outcome !== "failure") completedIds.push(sourceId);
+				expect(repository.read({ hubId: "hub", sessionRef: "local:test" }).completedCommandRecoveryIds).toEqual(
+					completedIds,
+				);
 			}
 		} finally {
 			service.close();

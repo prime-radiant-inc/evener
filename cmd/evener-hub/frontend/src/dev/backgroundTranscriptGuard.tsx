@@ -1,10 +1,50 @@
 // Dev-only budget installation and read-only evidence for backgroundtranscriptguard.
 // The real app imports its unchanged ordinary stores after the budget boundary is set.
 // No ref selects a fixture route, and no separate transcript database is created.
+import type { TranscriptDisplayConfigV1, ViewportClass } from "@evener/appwire-client";
 import { installBackgroundTranscriptOptionsForTests } from "../stores/backgroundTranscriptOptions";
 import { SESSION_CACHE_DATABASE_NAME, SESSION_CACHE_DATABASE_VERSION } from "../stores/sessionCacheSchema";
 
-const entryProduction = new URLSearchParams(window.location.search).get("entry-production") === "true";
+const query = new URLSearchParams(window.location.search);
+const entryProduction = query.get("entry-production") === "true";
+const displayTransport = query.get("display-transport");
+const displayDocument = displayTransport === "broadcast" || displayTransport === "storage";
+const displayStorageBlocked = displayTransport === "broadcast";
+const displayStorage: {
+  key: string;
+  old_value: string | null;
+  new_value: string | null;
+  url: string;
+  trusted: boolean;
+  local_storage: boolean;
+  blocked: boolean;
+}[] = [];
+if (displayDocument) {
+  // Attach before importing the app and its production storage listener. Only
+  // the native-channel documents suppress the fallback, so storage cannot
+  // conceal a broken BroadcastChannel receive path.
+  window.addEventListener(
+    "storage",
+    (event) => {
+      if (
+        event.key !== "evener.prefs.transcriptDisplay.desktop" &&
+        event.key !== "evener.prefs.transcriptDisplay.mobile"
+      )
+        return;
+      displayStorage.push({
+        key: event.key,
+        old_value: event.oldValue,
+        new_value: event.newValue,
+        url: event.url,
+        trusted: event.isTrusted,
+        local_storage: event.storageArea === window.localStorage,
+        blocked: displayStorageBlocked,
+      });
+      if (displayStorageBlocked) event.stopImmediatePropagation();
+    },
+    true,
+  );
+}
 // Entry reads need 23,810 payload bytes plus 27,708 competing bytes. Reserve a
 // second full envelope, rounded up to a KiB, without changing sustained pressure.
 installBackgroundTranscriptOptionsForTests({
@@ -15,13 +55,59 @@ installBackgroundTranscriptOptionsForTests({
 
 // This harness document is already loaded. Put the ordinary app on its home
 // route without navigating away from the dev entry.
-window.history.replaceState(null, "", "/");
+// Display documents retain their distinct source URLs for native storage proof.
+window.history.replaceState(null, "", displayDocument ? `/?${query}` : "/");
 
 try {
   await import("../main");
   const threads = await import("../stores/threads");
   const connection = await import("../stores/connection");
   const workspace = await import("../shell/workspace");
+  if (displayDocument) {
+    const display = await import("../stores/transcriptDisplay");
+    const { LOCAL_KEYS } = await import("../stores/transcriptDisplay/localStore");
+    // Idempotent, and deliberately BEFORE the independent native observer.
+    // Its receipt is a delivery barrier after the production receiver's task.
+    display.initTranscriptDisplay();
+    const publications: Partial<Record<ViewportClass, TranscriptDisplayConfigV1>>[] = [];
+    display.transcriptDisplayStore.subscribe((state, previous) => {
+      if (state.local !== previous.local) publications.push(structuredClone(state.local));
+    });
+    const messages: unknown[] = [];
+    const observer =
+      typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel(display.TRANSCRIPT_DISPLAY_CHANNEL);
+    observer?.addEventListener("message", (event: MessageEvent<unknown>) => messages.push(event.data));
+    Object.defineProperty(window, "backgroundDisplayGuard", {
+      value: Object.freeze({
+        setLocal: (layout: ViewportClass, config: TranscriptDisplayConfigV1) =>
+          display.transcriptDisplayStore.getState().setLocal(layout, config),
+        clearLocal: (layout: ViewportClass) => display.transcriptDisplayStore.getState().clearLocal(layout),
+        resetObservations: () => {
+          publications.length = 0;
+          messages.length = 0;
+          displayStorage.length = 0;
+        },
+        snapshot: () => {
+          const state = display.transcriptDisplayStore.getState();
+          return structuredClone({
+            local: state.local,
+            effective: { desktop: state.effective("desktop"), mobile: state.effective("mobile") },
+            publications,
+            messages,
+            storage: displayStorage,
+            persisted: {
+              desktop: localStorage.getItem(LOCAL_KEYS.desktop),
+              mobile: localStorage.getItem(LOCAL_KEYS.mobile),
+            },
+            broadcast_channel: typeof BroadcastChannel,
+            storage_blocked: displayStorageBlocked,
+            origin: location.origin,
+            href: location.href,
+          });
+        },
+      }),
+    });
+  }
   const paneIdentities = new WeakMap<object, number>();
   let nextPaneIdentity = 0;
   Object.defineProperty(window, "backgroundTranscriptEvidence", {
