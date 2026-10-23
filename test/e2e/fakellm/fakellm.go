@@ -73,7 +73,7 @@ func (c *Call) Cancelled() <-chan struct{} { return c.cancelled }
 
 // AffinityHeader is the session-affinity header value from the request, if present.
 // It may be one of session_id, x-client-request-id, or x-session-affinity headers
-// sent by evener when send_session_affinity_headers is configured. Empty if absent.
+// sent by evener when session_affinity_headers is configured. Empty if absent.
 func (c *Call) AffinityHeader() string { return c.affinityHeader }
 
 type reply struct {
