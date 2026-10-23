@@ -34,12 +34,17 @@ import {
   Input,
   ListRow,
   OpenButton,
-  Select,
   Skeleton,
 } from "../../../../widgets";
 import { useConnectedEffect } from "../useConnectedEffect";
+import {
+  type ConnectionFact,
+  ConnectionFacts,
+  ConnectionSettingsDisclosure,
+  connectionSettingsFields,
+} from "./ConnectionFacts";
 import type { FormError } from "./formError";
-import { draftFor, type InstanceDraft, PROTOCOL_OPTIONS, SURFACE_OPTIONS, varRows } from "./instanceEdit";
+import { draftFor, type InstanceDraft, varRows } from "./instanceEdit";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
 import styles from "./ProviderConnection.module.css";
@@ -109,7 +114,9 @@ export interface ProviderConnectionProps {
 }
 
 // Presentation only. Authentication capabilities always come from the catalogue.
-const HELP: Record<string, { label: string; keyUrl: string; billing: string }> = {
+// One table owns both the display name and the optional key-help copy; the
+// popular set is exactly its keys, so a name and its status cannot drift apart.
+const PROVIDERS: Record<string, { label: string; keyUrl?: string; billing?: string }> = {
   anthropic: {
     label: "Anthropic",
     keyUrl: "https://console.anthropic.com/settings/keys",
@@ -135,7 +142,18 @@ const HELP: Record<string, { label: string; keyUrl: string; billing: string }> =
     keyUrl: "https://openrouter.ai/settings/keys",
     billing: "API billing uses your OpenRouter credits.",
   },
+  // The registry entry whose setup has no usable base URL: how an endpoint
+  // outside the catalogue is added. Its display name is the path, not the
+  // registry's internal "OpenAI-compatible endpoint". It has no key-help copy.
+  "openai-compatible": {
+    label: "Custom endpoint",
+  },
 };
+const POPULAR_PROVIDER_IDS = new Set(Object.keys(PROVIDERS));
+
+function providerPresentation(row: ProviderDescriptor) {
+  return Object.hasOwn(PROVIDERS, row.id) ? PROVIDERS[row.id] : undefined;
+}
 
 function findSetupIn(
   listing: { instances: InstanceEntry[]; availableProviders: ProviderDescriptor[] },
@@ -300,7 +318,7 @@ function ProviderChoice({
   onSelect(row: ProviderDescriptor): void;
 }) {
   const descriptionId = useId();
-  const label = HELP[row.id]?.label || row.name || row.id;
+  const label = providerPresentation(row)?.label ?? row.name ?? row.id;
   return (
     <ListRow
       label={label}
@@ -347,9 +365,11 @@ export function ProviderConnection(props: ProviderConnectionProps) {
   useEffect(() => {
     if (store.error) errorRef.current?.focus();
   }, [store.error]);
-  const popular = store.availableProviders.filter((row) => Object.hasOwn(HELP, row.id));
+  const popular = store.availableProviders.filter((row) => POPULAR_PROVIDER_IDS.has(row.id));
   const matching = store.availableProviders.filter((row) =>
-    `${row.id} ${row.name ?? ""} ${HELP[row.id]?.label ?? ""}`.toLowerCase().includes(search.toLowerCase()),
+    `${row.id} ${row.name ?? ""} ${providerPresentation(row)?.label ?? ""}`
+      .toLowerCase()
+      .includes(search.toLowerCase()),
   );
   const listingUnavailable = store.loading || !!store.error;
   if (selected)
@@ -576,7 +596,7 @@ function SelectedConnection({
   const needsKey = storedMode && !adding && row?.activeSource !== "store";
   const [editing, setEditing] = useState<EditingRow>(() => (needsKey ? "key" : null));
   const busy = phase === "saving" || phase === "refreshing" || phase === "checking";
-  const help = Object.hasOwn(HELP, effectiveProvider.id) ? HELP[effectiveProvider.id] : undefined;
+  const presentation = providerPresentation(effectiveProvider);
   const unavailable = connection !== "ready" || store.loading;
   // The hub refuses instance mutations while its provider config is broken;
   // credential store writes are a separate path and stay available.
@@ -585,7 +605,7 @@ function SelectedConnection({
   // Every instance-editor mutation is gated by one fact: either the listing
   // refuses edits, or a landed write still owes its confirming read.
   const mutationsBlocked = instanceEditsBlocked || confirmationOwed;
-  const providerLabel = help?.label || effectiveProvider.name || effectiveProvider.id;
+  const providerLabel = presentation?.label ?? effectiveProvider.name ?? effectiveProvider.id;
   const status = statusOf();
 
   const setPhase = useCallback((next: Phase) => {
@@ -1660,6 +1680,241 @@ function SelectedConnection({
   }
   const primaryLabel = primaryActionLabel();
 
+  const addFacts = (): ConnectionFact[] => [
+    {
+      key: "name",
+      label: "Name",
+      htmlFor: "connection-name",
+      value: (
+        <Input
+          id="connection-name"
+          value={newName}
+          disabled={busy}
+          onChange={(event) => {
+            setNewName(event.target.value);
+            setError(null);
+          }}
+        />
+      ),
+    },
+    {
+      key: "endpoint",
+      label: "Endpoint URL",
+      htmlFor: "connection-endpoint",
+      value: (
+        <div className={styles.mono}>
+          <Input
+            id="connection-endpoint"
+            placeholder="https://…/v1"
+            value={newBaseUrl}
+            disabled={busy}
+            onChange={(event) => {
+              setNewBaseUrl(event.target.value);
+              setError(null);
+            }}
+          />
+        </div>
+      ),
+    },
+    ...addVarRows.map(({ key, label }) => ({
+      key,
+      label,
+      htmlFor: `connection-var-${key}`,
+      value: (
+        <Input
+          id={`connection-var-${key}`}
+          value={addVars[key] ?? ""}
+          disabled={busy}
+          onChange={(event) => {
+            setAddVars((current) => ({ ...current, [key]: event.target.value }));
+            setError(null);
+          }}
+        />
+      ),
+    })),
+    {
+      key: "credential",
+      label: json ? "Credential JSON" : "API key",
+      htmlFor: "provider-credential",
+      value: (
+        <Input
+          id="provider-credential"
+          type="password"
+          autoComplete="off"
+          required={required}
+          disabled={busy}
+          aria-describedby={missingCredential ? "provider-credential-error" : undefined}
+          value={value}
+          onChange={(event) => changeValue(event.target.value)}
+        />
+      ),
+      help: "Optional. Leave it empty to use the key this host resolves.",
+      notice: missingCredential ? (
+        <InlineNotice tone="danger" id="provider-credential-error">
+          Enter a credential, or use this host&apos;s access.
+        </InlineNotice>
+      ) : undefined,
+    },
+  ];
+  const savedFacts = (): ConnectionFact[] => [
+    {
+      key: "endpoint",
+      label: "Endpoint",
+      value:
+        editing === "endpoint" ? (
+          <div className={styles.mono}>
+            <Input
+              id="connection-endpoint"
+              aria-label="Endpoint URL"
+              value={endpointDraft}
+              disabled={busy}
+              onChange={(event) => setEndpointDraft(event.target.value)}
+            />
+          </div>
+        ) : (
+          <span className={styles.monoValue}>{row?.baseUrl}</span>
+        ),
+      actions:
+        editing === "endpoint" ? (
+          <>
+            <Button variant="secondary" size="xs" disabled={mutationsBlocked} onClick={() => void saveEndpoint()}>
+              Save
+            </Button>
+            <Button variant="quiet" size="xs" disabled={busy} onClick={closeEndpointEditor}>
+              Cancel
+            </Button>
+          </>
+        ) : (
+          <Button
+            variant="quiet"
+            size="xs"
+            disabled={instanceEditsBlocked}
+            onClick={() => {
+              setEndpointSeed(row?.baseUrl ?? "");
+              setEndpointDraft(row?.baseUrl ?? "");
+              setEndpointClaim(claimOf(row));
+              setEditing("endpoint");
+              setError(null);
+            }}
+          >
+            Edit
+          </Button>
+        ),
+    },
+    ...(storedMode
+      ? [
+          {
+            key: "credential",
+            label: json ? "Credential JSON" : "API key",
+            htmlFor: editing === "key" ? "provider-credential" : undefined,
+            value:
+              editing === "key" ? (
+                <Input
+                  id="provider-credential"
+                  type="password"
+                  autoComplete="off"
+                  required={required}
+                  disabled={busy}
+                  aria-describedby={missingCredential ? "provider-credential-error" : undefined}
+                  value={value}
+                  onChange={(event) => changeValue(event.target.value)}
+                />
+              ) : (
+                <span data-testid={saved || host ? "credential-saved" : undefined}>
+                  {saved || host ? (host ? "Host access" : credentialValue(row)) : "Not set"}
+                </span>
+              ),
+            help:
+              editing === "key" ? (
+                <>
+                  {result || saved ? "The old key stops working when this saves. " : ""}
+                  Or{" "}
+                  <Button
+                    variant="link"
+                    disabled={busy}
+                    onClick={() => {
+                      retireForIntentChange();
+                      acquisitionSource.current = undefined;
+                      setHost(true);
+                      changeValue("");
+                      setResult(null);
+                      setReview(null);
+                      setPhase("idle");
+                      setError(null);
+                    }}
+                  >
+                    use this host&apos;s access instead
+                  </Button>
+                  .
+                  {host && (
+                    <>
+                      <br />
+                      This connection will use whatever the host resolves. Authentication stays on.
+                    </>
+                  )}
+                </>
+              ) : undefined,
+            notice: missingCredential ? (
+              <InlineNotice tone="danger" id="provider-credential-error">
+                Enter a credential, or use this host&apos;s access.
+              </InlineNotice>
+            ) : undefined,
+            actions:
+              editing === "key" ? (
+                <>
+                  <Button
+                    variant="secondary"
+                    size="xs"
+                    disabled={busy || confirmationOwed}
+                    onClick={() => void submit()}
+                  >
+                    Save
+                  </Button>
+                  <Button
+                    variant="quiet"
+                    size="xs"
+                    disabled={busy}
+                    onClick={() => {
+                      setEditing(null);
+                      setHost(false);
+                      changeValue("");
+                      const stored = savedFor(row, false);
+                      acquisitionSource.current = stored ? "store" : undefined;
+                      setSavedAccess(stored);
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  variant="quiet"
+                  size="xs"
+                  disabled={busy}
+                  onClick={() => {
+                    setEditing("key");
+                    setError(null);
+                    document.getElementById("provider-credential")?.focus();
+                  }}
+                >
+                  {saved || host ? "Replace" : "Add key"}
+                </Button>
+              ),
+          },
+        ]
+      : []),
+    {
+      key: "status",
+      label: "Status",
+      value: (
+        <span role="status" data-state={result?.status === "success" ? "success" : undefined}>
+          {status.row}
+        </span>
+      ),
+    },
+  ];
+
+  const facts = adding ? addFacts() : savedFacts();
   return (
     <Dialog
       open
@@ -1736,257 +1991,7 @@ function SelectedConnection({
           </Chip>
         </div>
 
-        <div className={styles.rows}>
-          {adding ? (
-            <>
-              <div className={styles.row}>
-                <label className={styles.rowLabel} htmlFor="connection-name">
-                  Name
-                </label>
-                <div className={styles.rowValue}>
-                  <Input
-                    id="connection-name"
-                    value={newName}
-                    disabled={busy}
-                    onChange={(event) => {
-                      setNewName(event.target.value);
-                      setError(null);
-                    }}
-                  />
-                </div>
-              </div>
-              <div className={styles.row}>
-                <label className={styles.rowLabel} htmlFor="connection-endpoint">
-                  Endpoint URL
-                </label>
-                <div className={styles.rowValue}>
-                  <div className={styles.mono}>
-                    <Input
-                      id="connection-endpoint"
-                      placeholder="https://…/v1"
-                      value={newBaseUrl}
-                      disabled={busy}
-                      onChange={(event) => {
-                        setNewBaseUrl(event.target.value);
-                        setError(null);
-                      }}
-                    />
-                  </div>
-                </div>
-              </div>
-              {addVarRows.map(({ key, label }) => (
-                <div className={styles.row} key={key}>
-                  <label className={styles.rowLabel} htmlFor={`connection-var-${key}`}>
-                    {label}
-                  </label>
-                  <div className={styles.rowValue}>
-                    <Input
-                      id={`connection-var-${key}`}
-                      value={addVars[key] ?? ""}
-                      disabled={busy}
-                      onChange={(event) => {
-                        setAddVars((current) => ({ ...current, [key]: event.target.value }));
-                        setError(null);
-                      }}
-                    />
-                  </div>
-                </div>
-              ))}
-              <div className={styles.row}>
-                <label className={styles.rowLabel} htmlFor="provider-credential">
-                  {json ? "Credential JSON" : "API key"}
-                </label>
-                <div className={styles.rowValue}>
-                  <Input
-                    id="provider-credential"
-                    type="password"
-                    autoComplete="off"
-                    required={required}
-                    disabled={busy}
-                    aria-describedby={missingCredential ? "provider-credential-error" : undefined}
-                    value={value}
-                    onChange={(event) => changeValue(event.target.value)}
-                  />
-                  <span className={styles.rowHelp}>Optional. Leave it empty to use the key this host resolves.</span>
-                  {missingCredential && (
-                    <InlineNotice tone="danger" id="provider-credential-error">
-                      Enter a credential, or use this host's access.
-                    </InlineNotice>
-                  )}
-                </div>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className={styles.row}>
-                <span className={styles.rowLabel}>Endpoint</span>
-                <div className={styles.rowValue}>
-                  {editing === "endpoint" ? (
-                    <div className={styles.mono}>
-                      <Input
-                        id="connection-endpoint"
-                        aria-label="Endpoint URL"
-                        value={endpointDraft}
-                        disabled={busy}
-                        onChange={(event) => setEndpointDraft(event.target.value)}
-                      />
-                    </div>
-                  ) : (
-                    <span className={styles.monoValue}>{row?.baseUrl}</span>
-                  )}
-                </div>
-                <div className={styles.rowActions}>
-                  {editing === "endpoint" ? (
-                    <>
-                      <Button
-                        variant="secondary"
-                        size="xs"
-                        disabled={mutationsBlocked}
-                        onClick={() => void saveEndpoint()}
-                      >
-                        Save
-                      </Button>
-                      <Button variant="quiet" size="xs" disabled={busy} onClick={closeEndpointEditor}>
-                        Cancel
-                      </Button>
-                    </>
-                  ) : (
-                    <Button
-                      variant="quiet"
-                      size="xs"
-                      disabled={instanceEditsBlocked}
-                      onClick={() => {
-                        setEndpointSeed(row?.baseUrl ?? "");
-                        setEndpointDraft(row?.baseUrl ?? "");
-                        setEndpointClaim(claimOf(row));
-                        setEditing("endpoint");
-                        setError(null);
-                      }}
-                    >
-                      Edit
-                    </Button>
-                  )}
-                </div>
-              </div>
-
-              {storedMode && (
-                <div className={styles.row}>
-                  {editing === "key" ? (
-                    <label className={styles.rowLabel} htmlFor="provider-credential">
-                      {json ? "Credential JSON" : "API key"}
-                    </label>
-                  ) : (
-                    <span className={styles.rowLabel}>{json ? "Credential JSON" : "API key"}</span>
-                  )}
-                  <div className={styles.rowValue}>
-                    {editing === "key" ? (
-                      <Input
-                        id="provider-credential"
-                        type="password"
-                        autoComplete="off"
-                        required={required}
-                        disabled={busy}
-                        aria-describedby={missingCredential ? "provider-credential-error" : undefined}
-                        value={value}
-                        onChange={(event) => changeValue(event.target.value)}
-                      />
-                    ) : (
-                      <span data-testid={saved || host ? "credential-saved" : undefined}>
-                        {saved || host ? (host ? "Host access" : credentialValue(row)) : "Not set"}
-                      </span>
-                    )}
-                    {editing === "key" && (
-                      <span className={styles.rowHelp}>
-                        {result || saved ? "The old key stops working when this saves. " : ""}
-                        Or{" "}
-                        <Button
-                          variant="link"
-                          disabled={busy}
-                          onClick={() => {
-                            retireForIntentChange();
-                            acquisitionSource.current = undefined;
-                            setHost(true);
-                            changeValue("");
-                            setResult(null);
-                            setReview(null);
-                            setPhase("idle");
-                            setError(null);
-                          }}
-                        >
-                          use this host's access instead
-                        </Button>
-                        .
-                      </span>
-                    )}
-                    {editing === "key" && host && (
-                      <span className={styles.rowHelp}>
-                        This connection will use whatever the host resolves. Authentication stays on.
-                      </span>
-                    )}
-                    {missingCredential && (
-                      <InlineNotice tone="danger" id="provider-credential-error">
-                        Enter a credential, or use this host's access.
-                      </InlineNotice>
-                    )}
-                  </div>
-                  <div className={styles.rowActions}>
-                    {editing === "key" ? (
-                      <>
-                        <Button
-                          variant="secondary"
-                          size="xs"
-                          disabled={busy || confirmationOwed}
-                          onClick={() => void submit()}
-                        >
-                          Save
-                        </Button>
-                        <Button
-                          variant="quiet"
-                          size="xs"
-                          disabled={busy}
-                          onClick={() => {
-                            setEditing(null);
-                            setHost(false);
-                            changeValue("");
-                            const stored = savedFor(row, false);
-                            acquisitionSource.current = stored ? "store" : undefined;
-                            setSavedAccess(stored);
-                          }}
-                        >
-                          Cancel
-                        </Button>
-                      </>
-                    ) : (
-                      <Button
-                        variant="quiet"
-                        size="xs"
-                        disabled={busy}
-                        onClick={() => {
-                          setEditing("key");
-                          setError(null);
-                          document.getElementById("provider-credential")?.focus();
-                        }}
-                      >
-                        {saved || host ? "Replace" : "Add key"}
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              <div className={styles.row}>
-                <span className={styles.rowLabel}>Status</span>
-                <div className={styles.rowValue}>
-                  <span role="status" data-state={result?.status === "success" ? "success" : undefined}>
-                    {status.row}
-                  </span>
-                </div>
-                <div className={styles.rowActions} />
-              </div>
-            </>
-          )}
-        </div>
-
+        <ConnectionFacts data-testid="connection-facts" rows={facts} />
         {writesRefused && (
           <p className={styles.note} data-state="writes-refused">
             Provider settings are read-only. Repair the host configuration to add or edit a connection.
@@ -2008,34 +2013,40 @@ function SelectedConnection({
             Sign in
           </Button>
         )}
-        {help && modes.includes("apiKey") && <OpenButton href={help.keyUrl} word="Get an API key" />}
-        {help && (
+        {presentation?.keyUrl && modes.includes("apiKey") && (
+          <OpenButton href={presentation.keyUrl} word="Get an API key" />
+        )}
+        {presentation?.billing && (
           <p className={styles.note} data-testid="billing-note">
-            {help.billing}
+            {presentation.billing}
           </p>
         )}
 
         {review && (
           <div className={styles.review} data-testid="access-review">
             <p>Review changed access before contacting the provider.</p>
-            <div className={styles.rows}>
-              <div className={styles.row}>
-                <span className={styles.rowLabel}>Was</span>
-                <div className={styles.rowValue}>
-                  <span className={styles.monoValue} data-destination="previous">
-                    {baseline?.baseUrl ?? "Not configured"}
-                  </span>
-                </div>
-              </div>
-              <div className={styles.row}>
-                <span className={styles.rowLabel}>Now</span>
-                <div className={styles.rowValue}>
-                  <span className={styles.monoValue} data-destination="current">
-                    {review.baseUrl}
-                  </span>
-                </div>
-              </div>
-            </div>
+            <ConnectionFacts
+              rows={[
+                {
+                  key: "previous",
+                  label: "Was",
+                  value: (
+                    <span className={styles.monoValue} data-destination="previous">
+                      {baseline?.baseUrl ?? "Not configured"}
+                    </span>
+                  ),
+                },
+                {
+                  key: "current",
+                  label: "Now",
+                  value: (
+                    <span className={styles.monoValue} data-destination="current">
+                      {review.baseUrl}
+                    </span>
+                  ),
+                },
+              ]}
+            />
             <Button
               disabled={unavailable || confirmationOwed}
               onClick={() => {
@@ -2081,7 +2092,7 @@ function SelectedConnection({
         )}
 
         {!adding && (
-          <Disclosure
+          <ConnectionSettingsDisclosure
             open={settingsOpen}
             onOpenChange={(open) => {
               if (open) {
@@ -2089,72 +2100,34 @@ function SelectedConnection({
               } else setSettingsClaim(undefined);
               setSettingsOpen(open);
             }}
-            summary="All connection settings"
-          >
-            <div className={styles.settings} data-settings-editor>
-              {settingsVarRows.map(({ key, label }) => (
-                <label className={styles.settingsRow} htmlFor={`connection-setting-var-${key}`} key={key}>
-                  <span className={styles.rowLabel}>{label}</span>
-                  <Input
-                    id={`connection-setting-var-${key}`}
-                    value={settingsVars[key] ?? ""}
-                    disabled={instanceEditsBlocked}
-                    onChange={(event) => setSettingsVars((current) => ({ ...current, [key]: event.target.value }))}
-                  />
-                </label>
-              ))}
-              <label className={styles.settingsRow} htmlFor="connection-protocol">
-                <span className={styles.rowLabel}>Protocol</span>
-                <Select
-                  id="connection-protocol"
-                  value={settingsDraft.protocol}
-                  onChange={(event) => setSettingsDraft((current) => ({ ...current, protocol: event.target.value }))}
-                  options={PROTOCOL_OPTIONS}
-                  disabled={instanceEditsBlocked}
-                />
-              </label>
-              <label className={styles.settingsRow} htmlFor="connection-surface">
-                <span className={styles.rowLabel}>Surface</span>
-                <Select
-                  id="connection-surface"
-                  value={settingsDraft.surface}
-                  onChange={(event) => setSettingsDraft((current) => ({ ...current, surface: event.target.value }))}
-                  options={SURFACE_OPTIONS}
-                  disabled={instanceEditsBlocked}
-                />
-              </label>
-              <label className={styles.settingsRow} htmlFor="connection-apikeyenv">
-                <span className={styles.rowLabel}>API key env</span>
-                <Input
-                  id="connection-apikeyenv"
-                  placeholder="e.g. PORTKEY_KEY"
-                  value={settingsDraft.apiKeyEnv}
-                  disabled={instanceEditsBlocked}
-                  onChange={(event) => setSettingsDraft((current) => ({ ...current, apiKeyEnv: event.target.value }))}
-                />
-              </label>
-              <label className={styles.settingsRow} htmlFor="connection-credentialheader">
-                <span className={styles.rowLabel}>Credential header</span>
-                <Input
-                  id="connection-credentialheader"
-                  placeholder="Authorization=Bearer $VAR or $(get-token)"
-                  value={settingsDraft.credentialHeader}
-                  disabled={instanceEditsBlocked}
-                  onChange={(event) =>
-                    setSettingsDraft((current) => ({ ...current, credentialHeader: event.target.value }))
-                  }
-                />
-              </label>
-              <div className={styles.settingsActions}>
+            data-testid="connection-settings"
+            fields={
+              settingsOpen
+                ? connectionSettingsFields({
+                    idPrefix: "connection",
+                    variableRows: settingsVarRows,
+                    values: { vars: settingsVars, ...settingsDraft },
+                    disabled: instanceEditsBlocked,
+                    copy: {
+                      apiKeyEnvLabel: "API key env",
+                      credentialHeaderPlaceholder: "Authorization=Bearer $VAR or $(get-token)",
+                    },
+                    onVariableChange: (key, value) => setSettingsVars((current) => ({ ...current, [key]: value })),
+                    onFieldChange: (field, value) => setSettingsDraft((current) => ({ ...current, [field]: value })),
+                  })
+                : []
+            }
+            actions={
+              <>
                 <Button variant="quiet" size="sm" disabled={busy} onClick={() => leave(onOpenSettings)}>
                   Manage all connections
                 </Button>
                 <Button variant="secondary" size="sm" disabled={mutationsBlocked} onClick={() => void saveSettings()}>
                   Save settings
                 </Button>
-              </div>
-            </div>
-          </Disclosure>
+              </>
+            }
+          />
         )}
       </form>
     </Dialog>
