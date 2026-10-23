@@ -90,7 +90,16 @@ func (jm *jobManager) onHubObservation(watchID string, update appwire.SessionWat
 		jm.mu.Unlock()
 		return nil
 	}
+	if update.Notification != nil && update.Notification.Method == appwire.NotifyEvenerThreadResync {
+		matches := update.Metadata.Ref == cfg.hubRef && update.Metadata.InstanceID == cfg.hubInstance && update.Metadata.GenerationID == cfg.hubGeneration
+		jm.mu.Unlock()
+		if matches {
+			return jm.suspendHubWatch(watchID)
+		}
+		return nil
+	}
 	if update.Snapshot != nil {
+		cfg.hubSuspended = false
 		jm.mu.Unlock()
 		if update.Snapshot.Thread.Evener.AskPending {
 			question := update.Metadata

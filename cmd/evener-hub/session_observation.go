@@ -141,10 +141,50 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 				}
 			}
 		}
+		type readResult struct {
+			response appwire.ThreadReadResponse
+			err      error
+		}
+		// One in-flight read, not a second notification consumer. Keeping this
+		// loop draining lets the shared client's response/handoff progress even
+		// when notifications precede the response on the wire.
+		readDone := make(chan readResult)
+		reading, readAgain := false, false
+		refresh := func() {
+			if reading {
+				readAgain = true
+				return
+			}
+			reading = true
+			go func() {
+				response, err := client.ThreadRead(watchCtx, params)
+				select {
+				case readDone <- readResult{response, err}:
+				case <-watchCtx.Done():
+				}
+			}()
+		}
 		for {
 			select {
 			case <-watchCtx.Done():
 				return
+			case result := <-readDone:
+				reading = false
+				if result.err != nil {
+					return
+				}
+				fresh := result.response
+				meta := appwire.SessionObservationMetadata{Ref: fresh.Thread.Evener.Ref, InstanceID: fresh.Thread.Evener.InstanceID, GenerationID: fresh.BootGeneration}
+				if !send(appwire.SessionWatchUpdate{Snapshot: &fresh, Metadata: meta}) {
+					return
+				}
+				if meta.Ref != initial.Metadata.Ref || meta.InstanceID != initial.Metadata.InstanceID || meta.GenerationID != initial.Metadata.GenerationID {
+					return // The runtime ends the old watch from this replacement cut.
+				}
+				if readAgain {
+					readAgain = false
+					refresh()
+				}
 			case notification, open := <-notifications:
 				if !open {
 					return
@@ -154,9 +194,20 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 					return
 				}
 				base := appwire.SessionObservationMetadata{Ref: ref.String(), InstanceID: read.Thread.Evener.InstanceID, GenerationID: read.BootGeneration}
+				if notification.Method == appwire.NotifyEvenerThreadResync {
+					if !send(appwire.SessionWatchUpdate{Notification: &notification, Metadata: base}) {
+						return
+					}
+					refresh()
+					continue
+				}
 				if notification.Method == appwire.NotifyHistoryUpdated {
 					var history appwire.HistoryUpdatedParams
 					if json.Unmarshal(notification.Params, &history) != nil {
+						continue
+					}
+					if history.BootGeneration != "" && history.BootGeneration != read.BootGeneration {
+						refresh()
 						continue
 					}
 					for _, u := range recordedObservationUpdates(history.Items, request, ref.String(), base.InstanceID, base.GenerationID) {
@@ -180,7 +231,7 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 							return
 						}
 					}
-				case appwire.NotifyEvenerThreadResync, appwire.NotifyThreadClosed:
+				case appwire.NotifyThreadClosed:
 					event = "status"
 				case appwire.NotifyEvenerSandboxEscalationRequested:
 					event = "approval"

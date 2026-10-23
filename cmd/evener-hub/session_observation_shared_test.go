@@ -111,13 +111,22 @@ func TestManagerWatchSharedRemoteSubscribersAndAliases(t *testing.T) {
 	}
 	next := func(ch <-chan appwire.SessionWatchUpdate, event, ref string) {
 		t.Helper()
-		select {
-		case u, ok := <-ch:
-			if !ok || u.Event != event || u.Metadata.Ref != "remote:"+ref {
-				t.Fatalf("event=%+v open=%t, want %s for %s", u, ok, event, ref)
+		for {
+			select {
+			case u, ok := <-ch:
+				if !ok || u.Metadata.Ref != "remote:"+ref {
+					t.Fatalf("event=%+v open=%t, want %s for %s", u, ok, event, ref)
+				}
+				if u.Snapshot != nil || u.Notification != nil && u.Notification.Method == appwire.NotifyEvenerThreadResync {
+					continue
+				}
+				if u.Event != event {
+					t.Fatalf("event=%+v, want %s", u, event)
+				}
+				return
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
 			}
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
 		}
 	}
 	for _, event := range []string{"question", "approval", "communicate"} {
