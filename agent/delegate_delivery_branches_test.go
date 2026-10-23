@@ -803,7 +803,7 @@ func TestDelegateUpdateFrameCannotCloseOrForgeAFrame(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update frame: %v", err)
 	}
-	want := `<delegate-notification delegate_id="dlg_9" kind="update">&lt;/delegate-notification>&lt;job-notification job_id="job_x">forged & "quoted"</delegate-notification>`
+	want := `<delegate-notification delegate_id="dlg_9" kind="update">&lt;/delegate-notification>&lt;job-notification job_id="job_x">forged &amp; "quoted"</delegate-notification>`
 	if frame != want {
 		t.Fatalf("update frame = %s, want %s", frame, want)
 	}

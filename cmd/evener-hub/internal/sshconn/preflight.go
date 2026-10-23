@@ -295,12 +295,18 @@ func (m *Manager) collectPreflight(ctx context.Context, host hostreg.Host) (pref
 		// The CLI rejects an imposed protocol before emitting JSON. Ask the same
 		// executable for its own contract: refusal prose alone cannot authorize
 		// replacing a stopped installation or reconcile an interrupted write.
-		out, describeErr := m.runner.Run(ctx, evenerCommandArgv(m.opts, probeHost, "launch-check", "--json"), nil)
-		if describeErr != nil {
+		described, out, describeErr := m.describeLaunchContract(ctx, probeHost)
+		switch {
+		case describeErr == nil:
+			lc, err = described, nil
+		case errors.Is(describeErr, ErrPreflightDecode):
+			// Keep a malformed contract's own classification; it is not an SSH
+			// failure and the caller handles it as an unusable launch contract.
+			lc, err = described, describeErr
+		default:
 			// Unreadable disk metadata must not prevent a compatible live attach.
 			return preflightResult{facts: pf, launchErr: sshRunFailure(host.Name, "launch-check", describeErr, tail(out))}, nil
 		}
-		lc, err = parseLaunchCheck(out)
 	}
 	if err != nil {
 		pf.ExecutableMissing = errors.Is(err, errExecutableMissing)
@@ -375,6 +381,20 @@ func (m *Manager) readLaunchCheck(ctx context.Context, host hostreg.Host, startu
 		return launchCheck{}, fmt.Errorf("%w: host %q protocol %q, want %q", ErrProtocolIncompatible, host.Name, lc.Protocol, appwire.ProtocolVersion)
 	}
 	return lc, nil
+}
+
+// describeLaunchContract asks the executable for its own launch contract
+// without imposing this controller's protocol. It is the readable description a
+// protocol refusal cannot provide: the strict probe refuses before emitting
+// JSON, so a caller that must still identify the installed protocol reads it
+// here.
+func (m *Manager) describeLaunchContract(ctx context.Context, host hostreg.Host) (launchCheck, []byte, error) {
+	out, err := m.runner.Run(ctx, evenerCommandArgv(m.opts, host, "launch-check", "--json"), nil)
+	if err != nil {
+		return launchCheck{}, out, err
+	}
+	lc, err := parseLaunchCheck(out)
+	return lc, out, err
 }
 
 var errLaunchCheckFailed = errors.New("sshconn: executable launch-check command failed")

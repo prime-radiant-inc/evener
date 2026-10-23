@@ -485,6 +485,35 @@ func (e ProtocolVersionMismatchError) Error() string {
 	return fmt.Sprintf("appwire initialize: server protocol version %q, want %q", e.Got, e.Want)
 }
 
+// legacyProtocolVersion reads the version an older server names when it refuses
+// a newer client's initialize. Servers built before this client compare the
+// announced protocol exactly and answer a newer one with InvalidRequest, not
+// the structured upgradeRequired arm they reserve for an older client. Those
+// binaries cannot change, so the client translates the frozen sentence into the
+// typed mismatch its callers already match.
+func legacyProtocolVersion(message string) (string, bool) {
+	const prefix = "appwire " + MethodInitialize + `: protocol version "`
+	rest, ok := strings.CutPrefix(message, prefix)
+	if !ok {
+		return "", false
+	}
+	announced, rest, ok := strings.Cut(rest, `" is incompatible; want "`)
+	if !ok {
+		return "", false
+	}
+	wanted, ok := strings.CutSuffix(rest, `"`)
+	if !ok {
+		return "", false
+	}
+	if announced != ProtocolVersion || wanted == ProtocolVersion {
+		return "", false
+	}
+	if _, ok := ProtocolVersionNumber(wanted); !ok {
+		return "", false
+	}
+	return wanted, true
+}
+
 func (c *Client) Initialize(ctx context.Context, params InitializeParams) (InitializeResponse, error) {
 	var out InitializeResponse
 	if params.ProtocolVersion == "" {
@@ -494,6 +523,11 @@ func (c *Client) Initialize(ctx context.Context, params InitializeParams) (Initi
 		return out, fmt.Errorf("appwire initialize: protocol version %q, want %q", params.ProtocolVersion, ProtocolVersion)
 	}
 	if err := c.request(ctx, MethodInitialize, params, &out); err != nil {
+		if wire, ok := errors.AsType[WireError](err); ok && wire.Code == CodeInvalidRequest {
+			if wanted, ok := legacyProtocolVersion(wire.Message); ok {
+				return out, ProtocolVersionMismatchError{Got: wanted, Want: ProtocolVersion}
+			}
+		}
 		return out, err
 	}
 	if out.ProtocolVersion != ProtocolVersion {

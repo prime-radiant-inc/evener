@@ -30,9 +30,16 @@ var (
 	// carries no diagnostic to match.
 	ErrSSHAuth = errors.New("sshconn: ssh authentication failed")
 
-	// ErrProtocolIncompatible marks a host whose appwire protocol is not the
-	// controller's. Terminal, and refused before any bridge process starts.
+	// ErrProtocolIncompatible marks a host whose appwire protocol is older than
+	// the controller's. Terminal for the current attempt; an attach may install
+	// this controller's build and restart the host into it.
 	ErrProtocolIncompatible = errors.New("sshconn: host protocol incompatible")
+
+	// ErrHostProtocolNewer marks a host whose appwire protocol is newer than this
+	// controller's. Terminal: this controller cannot speak the host's protocol,
+	// and installing its own older build would downgrade the host, so the
+	// operator updates the controller instead.
+	ErrHostProtocolNewer = errors.New("sshconn: host protocol is newer than this controller")
 
 	// ErrUnsupportedHost marks a host whose os/arch has no evener build.
 	// Terminal; no deploy is attempted.
