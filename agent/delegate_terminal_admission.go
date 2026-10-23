@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -10,26 +9,12 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
-	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/appwire"
 )
 
-// terminalReportCandidate is one accepted terminal communicate call's disposition and
-// target, before it is admitted or refused at finalization.
-type terminalReportCandidate struct {
-	Disposition string
-	Packet      delegatestore.TerminalPacket
-	Blocker     string
-	WaitingOn   string
-}
-
-var (
-	errTerminalReportRefused = errors.New("terminal report refused")
-	errDelegateWaitResolved  = errors.New("delegate wait resolved")
-)
+var errDelegateWaitResolved = errors.New("delegate wait resolved")
 
 // waitForTerminalTarget keeps the run alive until the named waker signals or
 // disappears. Any session notification counts: a job completion, a watch
@@ -91,103 +76,41 @@ func (s *Session) hasQueuedWaitInput(target string) bool {
 	return false
 }
 
-// admitTerminalReport decides whether a done or blocked report may publish.
-// A done report requires an empty, known outstanding-work inventory. A blocked
-// report is admitted with live work and carries that inventory beside it. A
-// refusal steers the delegate once and leaves the run open; it returns
-// admitted=false with a nil error. A non-nil error means the refusal itself
-// could not be delivered.
-func (a *subagent) admitTerminalReport(ctx context.Context, candidate *terminalReportCandidate) (bool, error) {
-	return a.admitTerminalReportWithInventory(ctx, candidate)
+// validateCompletion is a sender rule, not an outstanding-work inventory gate.
+// The lock also admits child starts, including reservations not yet committed.
+func (c *delegateTreeController) validateCompletion(actor delegateActor) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.validateCompletionLocked(actor)
 }
 
-func (a *subagent) admitTerminalReportWithInventory(ctx context.Context, candidate *terminalReportCandidate) (bool, error) {
-	if a == nil || a.sess == nil {
-		return false, errors.New("terminal admission requires a delegate session")
+func (c *delegateTreeController) validateCompletionLocked(actor delegateActor) error {
+	if actor.lease == nil {
+		return nil
 	}
-	if candidate == nil {
-		return false, errors.New("terminal admission requires a candidate")
+	if _, _, err := c.admitLeaseLocked(*actor.lease, delegatestore.PhaseRunning); err != nil {
+		return err
 	}
-	switch candidate.Disposition {
-	case tool.CommunicateEndReasonDone, tool.CommunicateEndReasonBlocked:
-	case tool.CommunicateEndReasonWaitingOnWork:
-		return false, appwire.InvalidParams("waiting_on_work is not a terminal admission")
-	default:
-		return false, appwire.InvalidParams(fmt.Sprintf("unknown delegate disposition %q", candidate.Disposition))
-	}
-
-	work, err := a.sess.outstandingDelegateWorkForAdmission()
-	for attempt := 0; err != nil && attempt < 4; attempt++ {
-		delay := time.Duration(25*(1<<attempt)) * time.Millisecond
-		select {
-		case <-ctx.Done():
-			return false, ctx.Err()
-		case <-time.After(delay):
+	descendants := c.delegateSubtreeIDsLocked(actor.lease.delegateID)
+	for id := range descendants {
+		child := c.durable[id]
+		if child.CurrentRunOpen || child.Phase == delegatestore.PhaseRunning || child.Phase == delegatestore.PhaseSettling || child.Phase == delegatestore.PhaseStopping {
+			return appwire.InvalidParams("communicate done refused while child " + id + " is live, use waiting_on_work or blocked")
 		}
-		work, err = a.sess.outstandingDelegateWorkForAdmission()
 	}
-	if err != nil {
-		return false, err
-	}
-	if len(work.Unknown) != 0 {
-		reason := "The terminal report was refused because outstanding work could not be verified"
-		reason += ". Outstanding: " + strings.Join(work.IDs(), ", ")
-		if steerErr := a.sess.steerTerminalRefusal(reason); steerErr != nil {
-			return false, steerErr
-		}
-		return false, nil
-	}
-
-	if candidate.Disposition == tool.CommunicateEndReasonDone {
-		work.Jobs = a.sess.dropOwnedShellJobs(work.Jobs)
-		if !work.Empty() {
-			reason := "The terminal report was refused because this run still has outstanding work: " +
-				strings.Join(work.IDs(), ", ") +
-				". Finish or settle that work, then report done."
-			if steerErr := a.sess.steerTerminalRefusal(reason); steerErr != nil {
-				return false, steerErr
+	for _, reservation := range c.reservations {
+		parent := reservation.descriptor.ParentDelegateID
+		if !reservation.create {
+			if child := c.durable[reservation.delegateID]; child != nil {
+				parent = child.Descriptor.ParentDelegateID
 			}
-			return false, nil
 		}
-		a.mu.Lock()
-		a.blockedWork = nil
-		a.mu.Unlock()
-		return true, nil
-	}
-
-	if strings.TrimSpace(candidate.Blocker) == "" {
-		return false, appwire.InvalidParams("communicate end_reason blocked requires blocker")
-	}
-	ids := work.IDs()
-	a.mu.Lock()
-	a.blockedWork = append([]string(nil), ids...)
-	a.mu.Unlock()
-	if len(ids) != 0 {
-		candidate.Packet.Metadata = packetMetadataWithOutstandingWork(candidate.Packet.Metadata, ids)
-	}
-	return true, nil
-}
-
-// admitTerminalWait accepts a waiting_on_work report only when the named waker
-// is live and has an existing completion or cancellation path. An accepted wait
-// publishes no packet and leaves the run open.
-func (a *subagent) admitTerminalWait(ctx context.Context, candidate *terminalReportCandidate) (bool, error) {
-	if a == nil || a.sess == nil {
-		return false, errors.New("terminal wait requires a delegate session")
-	}
-	if candidate == nil || strings.TrimSpace(candidate.WaitingOn) == "" {
-		if err := a.sess.steerTerminalRefusal("The wait was refused because it names no job, watch, child delegate, or queued input."); err != nil {
-			return false, err
+		_, descendant := descendants[parent]
+		if parent == actor.lease.delegateID || descendant {
+			return appwire.InvalidParams("communicate done refused while a child start is reserved, use waiting_on_work or blocked")
 		}
-		return false, nil
 	}
-	if err := a.sess.validateWaitTarget(ctx, candidate.WaitingOn); err != nil {
-		if steerErr := a.sess.steerTerminalRefusal("The wait was refused: " + err.Error() + ". Report done, blocked, or wait on a live target."); steerErr != nil {
-			return false, steerErr
-		}
-		return false, nil
-	}
-	return true, nil
+	return nil
 }
 
 // validateWaitTarget resolves a wait target against a live waker. It accepts a
@@ -282,38 +205,66 @@ func splitWaitTarget(target string) (kind, id string) {
 	}
 }
 
-func (s *Session) steerTerminalRefusal(reason string) error {
-	if s == nil {
-		return errors.New("no session to steer")
-	}
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
-		reason = "The terminal report was refused."
-	}
-	if err := s.SteerKind(reason, events.SteeringKindNoToolCalls); err != nil {
-		return fmt.Errorf("steer terminal refusal: %w", err)
-	}
-	return nil
+// delegateToolBatch is process-local authority for one generation's admitted
+// tool execution and synced result persistence. It is never recovered on reopen.
+type delegateToolBatch struct {
+	lease delegateLease
+	done  chan struct{}
 }
+type delegateToolBatchContextKey struct{}
 
-func packetMetadataWithOutstandingWork(metadata json.RawMessage, ids []string) json.RawMessage {
-	fields := map[string]json.RawMessage{}
-	if len(metadata) != 0 {
-		if err := json.Unmarshal(metadata, &fields); err != nil {
-			return metadata
+func (s *Session) beginDelegateToolBatch(ctx context.Context) (context.Context, func(), error) {
+	actor, err := s.delegateActor(ctx)
+	if err != nil {
+		return ctx, nil, err
+	}
+	if actor.lease == nil || s.delegateController == nil {
+		return ctx, func() {}, nil
+	}
+	c := s.delegateController
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, _, err := c.admitLeaseLocked(*actor.lease, delegatestore.PhaseRunning); err != nil {
+		return ctx, nil, err
+	}
+	evidence, err := c.completionEvidenceLocked(*actor.lease)
+	if err != nil {
+		return ctx, nil, err
+	}
+	if evidence.batch != nil || c.hasSettlementClaimLocked(*actor.lease) {
+		return ctx, nil, errDelegateTargetBusy
+	}
+	batch := &delegateToolBatch{lease: *actor.lease, done: make(chan struct{})}
+	evidence.batch = batch
+	end := func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if evidence.batch == batch {
+			evidence.batch = nil
+		}
+		select {
+		case <-batch.done:
+		default:
+			close(batch.done)
 		}
 	}
-	if fields == nil {
-		fields = map[string]json.RawMessage{}
-	}
-	raw, err := json.Marshal(ids)
-	if err != nil {
-		return metadata
-	}
-	fields["outstanding_work"] = raw
-	merged, err := json.Marshal(fields)
-	if err != nil {
-		return metadata
-	}
-	return merged
+	return context.WithValue(ctx, delegateToolBatchContextKey{}, batch), end, nil
 }
+
+func (c *delegateTreeController) ownsPublicationBatchLocked(actor delegateActor) bool {
+	if actor.lease == nil || actor.batch == nil || actor.batch.lease != *actor.lease {
+		return false
+	}
+	evidence, err := c.completionEvidenceLocked(*actor.lease)
+	if err != nil || evidence.batch != actor.batch {
+		return false
+	}
+	select {
+	case <-actor.batch.done:
+		return false
+	default:
+		return true
+	}
+}
+
+func readyClosedChannel() <-chan struct{} { done := make(chan struct{}); close(done); return done }

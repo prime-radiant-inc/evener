@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
@@ -334,15 +335,10 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 	return plans, nil
 }
 
-// PostUpdate records a running delegate's mid-work update in its journal,
-// queued behind the delegate's earlier deliveries and ahead of the report its
-// generation will settle, and plans the update's delivery when it is the
-// delegate's head. A delegate parked in its finalization drain after its
-// terminal communicate can still post: its report is prepared only when the
-// settlement claim is taken, and the fold refuses an update from then on. It
-// refuses a run that is no longer current, a delegate that is stopping or
-// settling, and a blank message; the update is then not queued anywhere.
-func (c *delegateTreeController) PostUpdate(actor delegateActor, message, readiness string) (string, delegateMutationPlans, error) {
+// PostUpdate publishes an accepted nonterminal tuple through the existing outbox.
+// A settlement claim fences new batches, not publication by its still-open
+// owning batch. Prepared, stopped, closed, and stale generations remain refused.
+func (c *delegateTreeController) PostUpdate(actor delegateActor, info schema.CommunicateInfo, packet delegatestore.TerminalPacket, readiness string) (string, delegateMutationPlans, error) {
 	release, err := c.beginRetirementMutation()
 	if err != nil {
 		return "", delegateMutationPlans{}, err
@@ -359,14 +355,17 @@ func (c *delegateTreeController) PostUpdate(actor delegateActor, message, readin
 	if err != nil {
 		return "", delegateMutationPlans{}, err
 	}
-	if c.hasSettlementClaimLocked(lease) {
+	if (actor.batch != nil || c.hasSettlementClaimLocked(lease)) && !c.ownsPublicationBatchLocked(actor) {
 		return "", delegateMutationPlans{}, errDelegateTargetBusy
+	}
+	if deliveryID := c.durable[lease.delegateID].PublicationIDs[info.CallID]; info.CallID != "" && deliveryID != "" {
+		return deliveryID, delegateMutationPlans{deliveries: c.replayDeliveriesForOwnerLocked(c.durable[lease.delegateID].Descriptor.ParentDelegateID)}, nil
 	}
 	appended, err := c.appendLocked(delegatestore.Event{
 		Kind:         delegatestore.EventDelegateUpdatePosted,
 		TS:           c.now(),
 		DelegateID:   lease.delegateID,
-		UpdatePosted: &delegatestore.UpdatePosted{Generation: lease.generation, Message: message, Readiness: readiness},
+		UpdatePosted: &delegatestore.UpdatePosted{Generation: lease.generation, Message: info.Message, Readiness: readiness, Communicate: &info, Packet: &packet},
 	})
 	if err != nil {
 		return "", delegateMutationPlans{}, err
@@ -654,12 +653,21 @@ func (s *Session) earlierInlineResults(plan delegateDeliveryPlan) ([]delegateInl
 			}
 		} else if update := event.UpdatePosted; update != nil {
 			id = delegatestore.UpdateDeliveryID(event.DelegateID, event.Seq)
-			message, _ := json.Marshal(update.Message)
-			packet = &delegatestore.TerminalPacket{Kind: delegatestore.PacketUpdate, Message: message}
+			if update.Packet != nil {
+				captured := cloneDelegateTerminalPacket(*update.Packet)
+				packet = &captured
+			} else {
+				message, _ := json.Marshal(update.Message)
+				packet = &delegatestore.TerminalPacket{Kind: delegatestore.PacketUpdate, Message: message}
+			}
 			if update.Readiness != "" {
-				packet.Metadata, _ = json.Marshal(struct {
-					Readiness string `json:"readiness"`
-				}{Readiness: update.Readiness})
+				fields := map[string]json.RawMessage{}
+				_ = json.Unmarshal(packet.Metadata, &fields)
+				if fields == nil {
+					fields = map[string]json.RawMessage{}
+				}
+				fields["readiness"], _ = json.Marshal(update.Readiness)
+				packet.Metadata, _ = json.Marshal(fields)
 			}
 		}
 		if id == plan.deliveryID {
@@ -1183,6 +1191,22 @@ func delegateNotificationContent(plan delegateDeliveryPlan) (string, error) {
 		// types (say "&amp;") decodes once on clients, a known remainder that
 		// issue #4245 tracks for every notification body.
 		kind, body = "update", escapeNotificationBody(message)
+		var publication struct {
+			Blocker   string `json:"blocker"`
+			WaitingOn string `json:"waiting_on"`
+		}
+		if len(plan.packet.Metadata) != 0 {
+			if err := json.Unmarshal(plan.packet.Metadata, &publication); err != nil {
+				return "", fmt.Errorf("decode update metadata: %w", err)
+			}
+		}
+		if len(plan.packet.StructuredResult) != 0 || publication.Blocker != "" || publication.WaitingOn != "" {
+			packet, err := json.Marshal(terminalPacketForDelivery(plan.packet))
+			if err != nil {
+				return "", fmt.Errorf("marshal delegate update packet: %w", err)
+			}
+			body = string(packet)
+		}
 		if readiness := delegateUpdateReadiness(plan.packet); readiness != "" {
 			attrs = append(attrs, notificationAttr("readiness", readiness))
 		}

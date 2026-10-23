@@ -112,6 +112,7 @@ type delegateTreeController struct {
 type delegateActor struct {
 	rootSessionID string
 	lease         *delegateLease
+	batch         *delegateToolBatch
 }
 
 // describe renders the actor as human-readable provenance for a cancellation
@@ -152,7 +153,10 @@ type delegateGenerationEvidence struct {
 	requirement  delegateCompletionRequirement
 	outcome      delegateCompletionOutcome
 	terminalSeen bool
-	fallback     *delegateFinish
+	// completionAdmitted fences child starts only after accepted done, and dies with this generation.
+	completionAdmitted bool
+	batch              *delegateToolBatch
+	fallback           *delegateFinish
 }
 
 type delegateRuntimeBinding struct {

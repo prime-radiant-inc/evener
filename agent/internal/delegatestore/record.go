@@ -162,7 +162,9 @@ type Aggregate struct {
 	LatestOutcome      *Outcome          `json:"latest_outcome,omitempty"`
 	LatestPacket       *TerminalPacket   `json:"latest_packet,omitempty"`
 	PendingDeliveries  []PendingDelivery `json:"pending_deliveries,omitempty"`
-	PendingStopSeq     uint64            `json:"pending_stop_seq,omitempty"`
+	// PublicationIDs is rebuilt from this generation's update events, including acknowledged calls.
+	PublicationIDs map[string]string `json:"publication_ids,omitempty"`
+	PendingStopSeq uint64            `json:"pending_stop_seq,omitempty"`
 	// PendingStopAt is when the pending subtree stop was REQUESTED, taken from
 	// the request event's own timestamp, and zero whenever PendingStopSeq is.
 	// PendingStopSeq answers "was a stop asked for"; only this answers "how long

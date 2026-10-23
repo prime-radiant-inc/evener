@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -18,19 +19,22 @@ import (
 func delegateDispositionRegistry(t *testing.T, delegate, offersEndReason bool) (*tool.Registry, *[]events.CommunicateData) {
 	t.Helper()
 	delivered := []events.CommunicateData{}
+	record := func(data events.CommunicateData) error {
+		delivered = append(delivered, data)
+		return nil
+	}
 	deps := &toolDeps{
-		emit: func(events.EventKind, events.EventData) {},
-		deliverCommunicate: func(data events.CommunicateData) error {
-			delivered = append(delivered, data)
-			return nil
+		emit:               func(events.EventKind, events.EventData) {},
+		deliverCommunicate: record,
+		abort:              func(context.Context) error { return nil },
+		drainSteering:      func() []steeringMessage { return nil },
+		prependSteering:    func([]steeringMessage) {},
+		resultToolName:     func() string { return "communicate" },
+		setCommunicateTerminal: func(_ context.Context, info schema.CommunicateInfo, _, _ string, _ any) (bool, error) {
+			return true, record(events.CommunicateData{CallID: info.CallID, EndTurn: info.EndTurn, Message: info.Message, EndReason: info.EndReason, Blocker: info.Blocker, WaitingOn: info.WaitingOn})
 		},
-		abort:                  func(context.Context) error { return nil },
-		drainSteering:          func() []steeringMessage { return nil },
-		prependSteering:        func([]steeringMessage) {},
-		resultToolName:         func() string { return "communicate" },
-		setCommunicateTerminal: func(context.Context, string, string, string, any, string) bool { return true },
-		offersEndReason:        offersEndReason,
-		delegate:               delegate,
+		offersEndReason: offersEndReason,
+		delegate:        delegate,
 	}
 	reg := tool.NewRegistry()
 	if err := registerCommunicateTool(reg, deps); err != nil {

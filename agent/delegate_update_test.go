@@ -30,7 +30,7 @@ func TestDelegateControllerPostUpdateQueuesInDeliveryOrder(t *testing.T) {
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	actor := delegateActor{lease: &delegateLease{delegateID: "dlg_target", generation: 1}}
 
-	first, firstPlans, err := c.PostUpdate(actor, "first question", "")
+	first, firstPlans, err := c.PostUpdate(actor, schema.CommunicateInfo{Message: "first question"}, publicationPacket("first question"), "")
 	if err != nil {
 		t.Fatalf("PostUpdate first: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestDelegateControllerPostUpdateQueuesInDeliveryOrder(t *testing.T) {
 		firstPlans.deliveries[0].deliveryID != first || firstPlans.deliveries[0].packet.Kind != delegatestore.PacketUpdate {
 		t.Fatalf("first update %q planned %#v, want its own head plan", first, firstPlans.deliveries)
 	}
-	second, secondPlans, err := c.PostUpdate(actor, "second question", "")
+	second, secondPlans, err := c.PostUpdate(actor, schema.CommunicateInfo{Message: "second question"}, publicationPacket("second question"), "")
 	if err != nil {
 		t.Fatalf("PostUpdate second: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestDelegateControllerPostedUpdateHeadLeavesTheInlineWaiter(t *testing.T) {
 	if _, err := c.AdmitStartInput(lease, func() error { return nil }); err != nil {
 		t.Fatalf("AdmitStartInput: %v", err)
 	}
-	_, plans, err := c.PostUpdate(delegateActor{lease: &lease}, "which table?", "")
+	_, plans, err := c.PostUpdate(delegateActor{lease: &lease}, schema.CommunicateInfo{Message: "which table?"}, publicationPacket("which table?"), "")
 	if err != nil {
 		t.Fatalf("PostUpdate: %v", err)
 	}
@@ -81,9 +81,8 @@ func TestDelegateControllerPostedUpdateHeadLeavesTheInlineWaiter(t *testing.T) {
 }
 
 // A refused update is never queued: the root has no parent, a stale run cannot
-// speak, a stopping or settling delegate's route is closed, a generation whose
-// terminal communicate is latched has said its last, and a blank message says
-// nothing.
+// speak, a stopping delegate's route is closed, a settlement claimant without
+// the owning open batch cannot publish, and a blank message says nothing.
 func TestDelegateControllerPostUpdateRefusals(t *testing.T) {
 	t.Parallel()
 	running := delegateLease{delegateID: "dlg_target", generation: 1}
@@ -105,7 +104,7 @@ func TestDelegateControllerPostUpdateRefusals(t *testing.T) {
 			}
 			return delegateActor{lease: &running}
 		}, errDelegateTargetBusy},
-		{"settling", "which table?", func(t *testing.T, c *delegateTreeController) delegateActor {
+		{"settlement without owning batch", "which table?", func(t *testing.T, c *delegateTreeController) delegateActor {
 			if _, _, err := c.BeginSettlement(running); err != nil {
 				t.Fatalf("BeginSettlement: %v", err)
 			}
@@ -119,7 +118,7 @@ func TestDelegateControllerPostUpdateRefusals(t *testing.T) {
 			t.Parallel()
 			c, _ := newDelegateControllerTestHarness(t, 1, 1)
 			seedDelegateControllerRunning(t, c, "dlg_target", "")
-			_, plans, err := c.PostUpdate(tc.actor(t, c), tc.message, "")
+			_, plans, err := c.PostUpdate(tc.actor(t, c), schema.CommunicateInfo{Message: tc.message}, publicationPacket(tc.message), "")
 			if err == nil || (tc.want != nil && !errors.Is(err, tc.want)) || len(plans.deliveries) != 0 {
 				t.Fatalf("PostUpdate = plans %#v err %v, want %v", plans.deliveries, err, tc.want)
 			}
@@ -155,10 +154,19 @@ func TestDelegateUpdateWakesAnIdleRoot(t *testing.T) {
 	warmStableDelegateUnservedRoot(t, root, fixture)
 
 	pending := rootPendingAttention(root)
-	if len(pending) != 1 || !strings.HasPrefix(pending[0], delegateAttentionID(fixture.delegateID+"/update/")) {
-		t.Fatalf("root attention = %v, want the delegate's update alone", pending)
+	// The direct helper's Complete(true) persists no carrier, so it cannot
+	// suppress the canonical terminal notification or prove model observation.
+	terminalID := delegateAttentionID(fixture.delegateID + "/delivery/1")
+	var updateID string
+	for _, id := range pending {
+		if strings.HasPrefix(id, delegateAttentionID(fixture.delegateID+"/update/")) {
+			updateID = id
+		}
 	}
-	frame := rootAttentionFold(t, root).content[pending[0]].Text()
+	if len(pending) != 2 || updateID == "" || !slices.Contains(pending, terminalID) {
+		t.Fatalf("root attention = %v, want one update and terminal %s", pending, terminalID)
+	}
+	frame := rootAttentionFold(t, root).content[updateID].Text()
 	for _, attr := range []string{`delegate_id="` + fixture.delegateID + `"`, `kind="update"`, ">need the heading from you</delegate-notification>"} {
 		if !strings.Contains(frame, attr) {
 			t.Fatalf("update frame %q lacks %q", frame, attr)
@@ -193,7 +201,7 @@ func TestDelegateUpdateWakesAnIdleRoot(t *testing.T) {
 	if !requestContainsText(requests[len(requests)-1], "need the heading from you") {
 		t.Fatal("the root's notification turn did not present the update")
 	}
-	if got := rootAttentionFold(t, root).resolutions[pending[0]]; got != delegateAttentionConsumed {
+	if got := rootAttentionFold(t, root).resolutions[updateID]; got != delegateAttentionConsumed {
 		t.Fatalf("update attention = %q, want consumed", got)
 	}
 }
@@ -233,7 +241,7 @@ func TestDelegateUpdateNotDeliveredStillSucceeds(t *testing.T) {
 			ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
 			// The refusal the controller gives this lease, which the result's
 			// reason must explain.
-			_, _, refusal := c.PostUpdate(delegateActor{lease: &lease}, "need the schema", "")
+			_, _, refusal := c.PostUpdate(delegateActor{lease: &lease}, schema.CommunicateInfo{Message: "need the schema"}, publicationPacket("need the schema"), "")
 			if refusal == nil {
 				t.Fatal("the controller accepted an update it should refuse")
 			}
@@ -315,15 +323,13 @@ func TestDelegateUpdateReachesARunningRootAtItsNextModelBoundary(t *testing.T) {
 	}
 }
 
-// An update posted while the parent waits in delegate_send on that delegate
-// rides the wait's reply, after the earlier result the parent was holding and
-// before the new report, labelled as an update, and never arrives again as a
-// notification. The delegate is told it was queued.
+// An update takes canonical custody while the parent waits in delegate_send.
+// The reply carries the earlier result, update and new report in order, once
+// each. Only the successful request response consumes their receiver records.
 func TestDelegateSendWaitCarriesAnUpdateAheadOfTheReport(t *testing.T) {
 	t.Parallel()
 	adapter := newMessagingAdapter("WORKER-BRIEF")
-	releaseFirst, firstDeferred := make(chan struct{}), make(chan struct{})
-	var deferredOnce sync.Once
+	releaseFirst := make(chan struct{})
 	sendReply, nextRequest, updateResult := make(chan string, 1), make(chan string, 1), make(chan string, 1)
 	var (
 		mu         sync.Mutex
@@ -336,8 +342,15 @@ func TestDelegateSendWaitCarriesAnUpdateAheadOfTheReport(t *testing.T) {
 		},
 		func(req llm.Request) llm.Response {
 			close(releaseFirst)
-			awaitSignal(t, firstDeferred, "the first generation's report deferred behind the root's turn")
 			id := deferredHeadDelegateID.FindString(deferredHeadToolResults(req.Messages))
+			waitForCondition(t, 30*time.Second, "first generation canonical custody and source settlement", func() bool {
+				c := root.delegateController
+				c.mu.Lock()
+				a := c.durable[id]
+				settled := a != nil && !a.CurrentRunOpen && len(a.PendingDeliveries) == 0 && c.finalizingLocked(id) == nil
+				c.mu.Unlock()
+				return settled && slices.Contains(rootAttentionFold(t, root).order, delegateAttentionID(delegateDeliveryID(id, 1)))
+			})
 			mu.Lock()
 			delegateID = id
 			mu.Unlock()
@@ -346,6 +359,12 @@ func TestDelegateSendWaitCarriesAnUpdateAheadOfTheReport(t *testing.T) {
 		func(req llm.Request) llm.Response {
 			sendReply <- lastToolResultText(req.Messages)
 			nextRequest <- deferredHeadToolResults(req.Messages) + messagesText(req.Messages)
+			fold := rootAttentionFold(t, root)
+			for _, id := range fold.order {
+				if isDelegateUpdateAttentionID(id) && fold.resolutions[id] == delegateAttentionConsumed {
+					t.Error("update consumed before the successful assistant response carrying it")
+				}
+			}
 			return finalResponse("root done")
 		},
 	)
@@ -362,13 +381,7 @@ func TestDelegateSendWaitCarriesAnUpdateAheadOfTheReport(t *testing.T) {
 			return finalResponse("GEN2_REPORT")
 		},
 	)
-	root = newMessagingRoot(t, adapter, func(cfg *SessionConfig) {
-		cfg.testOnly.delegateDeliveryClassified = func(s *Session, isDeferred bool) {
-			if s == root && isDeferred {
-				deferredOnce.Do(func() { close(firstDeferred) })
-			}
-		}
-	})
+	root = newMessagingRoot(t, adapter, nil)
 	// TRIPWIRE: half the send's wait; a send that sits out its wait fails here.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -377,14 +390,17 @@ func TestDelegateSendWaitCarriesAnUpdateAheadOfTheReport(t *testing.T) {
 	}
 	reply := <-sendReply
 	first, update, report := strings.Index(reply, "GEN1_READY"), strings.Index(reply, "UPDATE_ONE"), strings.Index(reply, "GEN2_REPORT")
-	if first < 0 || update < first || report < update || !strings.Contains(reply, "· update]") {
-		t.Fatalf("delegate_send reply = %q, want the held report, then the update labelled as one, then the new report", reply)
+	if first < 0 || update < first || report < update {
+		t.Fatalf("delegate_send reply = %q, want the earlier result, then the update, then the new report", reply)
 	}
-	if n := strings.Count(<-nextRequest, "UPDATE_ONE"); n != 1 {
-		t.Fatalf("the root's next request carries the update %d times, want once, in the reply", n)
+	request := <-nextRequest
+	for _, message := range []string{"GEN1_READY", "UPDATE_ONE", "GEN2_REPORT"} {
+		if n := strings.Count(request, message); n != 1 {
+			t.Fatalf("the root's next request carries %s %d times, want once", message, n)
+		}
 	}
-	if got := <-updateResult; !strings.Contains(got, `"delivery":"queued"`) {
-		t.Fatalf("the delegate's communicate result = %q, want queued behind the held report", got)
+	if got := <-updateResult; !strings.Contains(got, `"delivery":"delivered"`) {
+		t.Fatalf("the delegate's communicate result = %q, want durable receiver custody", got)
 	}
 	mu.Lock()
 	id := delegateID
@@ -392,14 +408,28 @@ func TestDelegateSendWaitCarriesAnUpdateAheadOfTheReport(t *testing.T) {
 	if pending := delegateAggregateSnapshot(t, root.delegateController, id).PendingDeliveries; len(pending) != 0 {
 		t.Fatalf("pending deliveries after the reply = %#v, want all acknowledged", pending)
 	}
-	// With every delivery acknowledged nothing is left to arrive later, so the
-	// update the reply carried never reaches the root as a notification too.
+	// Canonical custody survives the inline carrier. Only its successful
+	// assistant response proves observation and consumes the receiver records.
 	if pending := rootPendingAttention(root); len(pending) != 0 {
 		t.Fatalf("root attention after the reply = %v, want none", pending)
 	}
-	for _, attentionID := range rootAttentionFold(t, root).order {
+	fold := rootAttentionFold(t, root)
+	updates := 0
+	for _, attentionID := range fold.order {
 		if isDelegateUpdateAttentionID(attentionID) {
-			t.Fatalf("the root holds update attention %q, want the update only in the reply", attentionID)
+			updates++
+			if !strings.Contains(fold.content[attentionID].Text(), `kind="update"`) || fold.resolutions[attentionID] != delegateAttentionConsumed || fold.deliveryCommits[strings.TrimPrefix(attentionID, "delegate:")] != "send" {
+				t.Fatalf("update %s lost its kind, consumption or inline carrier: %+v", attentionID, fold)
+			}
+		}
+	}
+	if updates != 1 || len(fold.order) != 3 {
+		t.Fatalf("canonical records = %v, want generations 1 and 2 plus one update", fold.order)
+	}
+	for _, generation := range []uint64{1, 2} {
+		deliveryID := delegateDeliveryID(id, generation)
+		if !slices.Contains(fold.order, delegateAttentionID(deliveryID)) || fold.deliveryCommits[deliveryID] != "send" {
+			t.Fatalf("generation %d lost canonical custody or inline carrier: %+v", generation, fold)
 		}
 	}
 }
@@ -1103,8 +1133,15 @@ func TestDelegateUpdateSurvivesRestart(t *testing.T) {
 		root := restoreSupervisionRoot(t, fixture, nil)
 		warmStableDelegateUnservedRoot(t, root, fixture)
 		pending := rootPendingAttention(root)
-		if len(pending) != 1 {
-			t.Fatalf("root attention before restart = %v, want the update", pending)
+		terminalID := delegateAttentionID(delegateDeliveryID(fixture.delegateID, 1))
+		var updateID string
+		for _, id := range pending {
+			if strings.HasPrefix(id, delegateAttentionID(fixture.delegateID+"/update/")) {
+				updateID = id
+			}
+		}
+		if len(pending) != 2 || updateID == "" || !slices.Contains(pending, terminalID) {
+			t.Fatalf("root attention before restart = %v, want one update and terminal %s", pending, terminalID)
 		}
 		root.Close()
 		restored := restoreSupervisionRoot(t, fixture, nil)
@@ -1121,10 +1158,10 @@ func TestDelegateUpdateSurvivesRestart(t *testing.T) {
 			t.Fatalf("root notification turn: %v", err)
 		}
 		requests := fixture.adapter.Requests()
-		if !requestContainsText(requests[len(requests)-1], "UNREAD_UPDATE") {
-			t.Fatal("the restored root's turn did not present the update")
+		if !requestContainsText(requests[len(requests)-1], "UNREAD_UPDATE") || !requestContainsText(requests[len(requests)-1], "summary written") {
+			t.Fatal("the restored root's turn did not present the update and actual terminal report")
 		}
-		if got := rootAttentionFold(t, restored).resolutions[pending[0]]; got != delegateAttentionConsumed {
+		if got := rootAttentionFold(t, restored).resolutions[updateID]; got != delegateAttentionConsumed {
 			t.Fatalf("update attention after restart = %q, want consumed", got)
 		}
 	})

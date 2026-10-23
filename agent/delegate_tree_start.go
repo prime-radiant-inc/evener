@@ -126,6 +126,11 @@ func (c *delegateTreeController) ReserveCreate(actor delegateActor, descriptor d
 		if _, _, err := c.admitLeaseLocked(*actor.lease, delegatestore.PhaseRunning); err != nil {
 			return nil, err
 		}
+		if evidence, err := c.completionEvidenceLocked(*actor.lease); err != nil {
+			return nil, err
+		} else if evidence.completionAdmitted {
+			return nil, errDelegateTargetBusy
+		}
 		parentID = actor.lease.delegateID
 	}
 	if strings.TrimSpace(descriptor.Task) == "" || strings.TrimSpace(descriptor.AgentType) == "" || !descriptor.Resumable {
@@ -610,6 +615,11 @@ func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID st
 	if actor.lease != nil {
 		if _, _, err := c.admitLeaseLocked(*actor.lease, delegatestore.PhaseRunning); err != nil {
 			return nil, err
+		}
+		if evidence, err := c.completionEvidenceLocked(*actor.lease); err != nil {
+			return nil, err
+		} else if evidence.completionAdmitted {
+			return nil, errDelegateTargetBusy
 		}
 	}
 	aggregate := c.durable[delegateID]

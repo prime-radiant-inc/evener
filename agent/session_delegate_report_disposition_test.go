@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
 )
 
 // A valid waiting_on_work call follows the polling wait path, rather than the
@@ -29,7 +30,7 @@ func rootDispositionRegistry(t *testing.T, validate func(context.Context, string
 		drainSteering:          func() []steeringMessage { return nil },
 		prependSteering:        func([]steeringMessage) {},
 		resultToolName:         func() string { return "communicate" },
-		setCommunicateTerminal: func(context.Context, string, string, string, any, string) bool { return true },
+		setCommunicateTerminal: func(context.Context, schema.CommunicateInfo, string, string, any) (bool, error) { return true, nil },
 		offersEndReason:        true,
 		validateWaitTarget:     validate,
 	}

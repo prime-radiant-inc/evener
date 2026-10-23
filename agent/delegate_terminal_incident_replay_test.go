@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
 )
 
@@ -25,14 +26,9 @@ func TestDelegateTerminalIncidentReplay(t *testing.T) {
 		t.Fatalf("notice = %q, want the in-progress task", notice)
 	}
 
-	admitted, err := (&subagent{sess: s}).admitTerminalReport(context.Background(), &terminalReportCandidate{
-		Disposition: tool.CommunicateEndReasonDone,
-	})
-	if err != nil {
-		t.Fatalf("admitTerminalReport: %v", err)
-	}
-	if !admitted {
-		t.Fatal("a done report with no live waker was refused")
+	admitted, err := s.acceptCommunicateTerminal(context.Background(), schema.CommunicateInfo{Message: "incident replay report", EndTurn: true, EndReason: tool.CommunicateEndReasonDone}, "incident replay report", "", nil)
+	if err != nil || !admitted {
+		t.Fatalf("done acceptance with incomplete task: accepted=%v err=%v", admitted, err)
 	}
 	if got := routeNoToolCalls(EntryNotification, false, false, true); got != runNoToolCalls {
 		t.Fatalf("parent disposition route = %v, want one steering round", got)

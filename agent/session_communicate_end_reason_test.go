@@ -106,20 +106,23 @@ func TestCommunicateDeliversItsEndReason(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			var delivered []events.CommunicateData
+			record := func(data events.CommunicateData) error {
+				delivered = append(delivered, data)
+				return nil
+			}
 			deps := &toolDeps{
-				emit: func(events.EventKind, events.EventData) {},
-				deliverCommunicate: func(data events.CommunicateData) error {
-					delivered = append(delivered, data)
-					return nil
+				emit:               func(events.EventKind, events.EventData) {},
+				deliverCommunicate: record,
+				abort:              func(context.Context) error { return nil },
+				drainSteering:      func() []steeringMessage { return nil },
+				prependSteering:    func([]steeringMessage) {},
+				resultToolName:     func() string { return "communicate" },
+				setCommunicateTerminal: func(_ context.Context, info schema.CommunicateInfo, _, _ string, _ any) (bool, error) {
+					return true, record(events.CommunicateData{CallID: info.CallID, EndTurn: info.EndTurn, Message: info.Message, EndReason: info.EndReason, Blocker: info.Blocker, WaitingOn: info.WaitingOn})
 				},
-				abort:                  func(context.Context) error { return nil },
-				drainSteering:          func() []steeringMessage { return nil },
-				prependSteering:        func([]steeringMessage) {},
-				resultToolName:         func() string { return "communicate" },
-				setCommunicateTerminal: func(context.Context, string, string, string, any, string) bool { return true },
-				offersEndReason:        tc.offered,
-				delegate:               tc.delegate,
-				validateWaitTarget:     func(context.Context, string) error { return nil },
+				offersEndReason:    tc.offered,
+				delegate:           tc.delegate,
+				validateWaitTarget: func(context.Context, string) error { return nil },
 			}
 			reg := tool.NewRegistry()
 			_ = registerCommunicateTool(reg, deps)

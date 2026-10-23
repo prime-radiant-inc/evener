@@ -488,10 +488,6 @@ func (s *Session) deliverCommunicate(data events.CommunicateData) error {
 		return refusal
 	}
 	s.mu.Lock()
-	if !s.comm.called {
-		s.comm.blocker = data.Blocker
-		s.comm.waitingOn = data.WaitingOn
-	}
 	s.noteAgentMessageLocked(data.Message)
 	s.mu.Unlock()
 	s.emit(events.EventCommunicate, data)

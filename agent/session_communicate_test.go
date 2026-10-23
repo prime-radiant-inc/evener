@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -497,9 +498,9 @@ func TestCommunicateCapturesRawStructuredOutput(t *testing.T) {
 		resultToolName: func() string {
 			return "communicate"
 		},
-		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any, _ string) bool {
+		setCommunicateTerminal: func(_ context.Context, _ schema.CommunicateInfo, _, _ string, raw any) (bool, error) {
 			captured = raw
-			return true
+			return true, nil
 		},
 	}
 	reg := tool.NewRegistry()
@@ -544,9 +545,9 @@ func TestCommunicateCapturesEmptyRawStructuredOutputForCustomSchema(t *testing.T
 		resultToolName: func() string {
 			return "communicate"
 		},
-		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any, _ string) bool {
+		setCommunicateTerminal: func(_ context.Context, _ schema.CommunicateInfo, _, _ string, raw any) (bool, error) {
 			captured = raw
-			return true
+			return true, nil
 		},
 	}
 	reg := tool.NewRegistry()

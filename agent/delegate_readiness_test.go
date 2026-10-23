@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
 )
 
 type readinessDeliveryReceiver struct {
@@ -23,7 +24,7 @@ func TestDelegateReadinessUpdateReachesParent(t *testing.T) {
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	actor := delegateActor{lease: &delegateLease{delegateID: "dlg_target", generation: 1}}
 
-	_, plans, err := c.PostUpdate(actor, "ready for review", tool.DelegateReadinessReady)
+	_, plans, err := c.PostUpdate(actor, schema.CommunicateInfo{Message: "ready for review"}, publicationPacket("ready for review"), tool.DelegateReadinessReady)
 	if err != nil {
 		t.Fatalf("PostUpdate: %v", err)
 	}
@@ -57,7 +58,7 @@ func TestDelegateReadinessResolvesInlineWaiter(t *testing.T) {
 		t.Fatalf("AdmitStartInput: %v", err)
 	}
 
-	_, plans, err := c.PostUpdate(delegateActor{lease: &lease}, "ready", tool.DelegateReadinessReady)
+	_, plans, err := c.PostUpdate(delegateActor{lease: &lease}, schema.CommunicateInfo{Message: "ready"}, publicationPacket("ready"), tool.DelegateReadinessReady)
 	if err != nil {
 		t.Fatalf("PostUpdate: %v", err)
 	}
@@ -87,10 +88,10 @@ func TestDelegateReadinessResolvesBehindAHeldUpdate(t *testing.T) {
 		t.Fatalf("AdmitStartInput: %v", err)
 	}
 	actor := delegateActor{lease: &lease}
-	if _, _, err := c.PostUpdate(actor, "first update", ""); err != nil {
+	if _, _, err := c.PostUpdate(actor, schema.CommunicateInfo{Message: "first update"}, publicationPacket("first update"), ""); err != nil {
 		t.Fatalf("PostUpdate first: %v", err)
 	}
-	_, plans, err := c.PostUpdate(actor, "ready", tool.DelegateReadinessReady)
+	_, plans, err := c.PostUpdate(actor, schema.CommunicateInfo{Message: "ready"}, publicationPacket("ready"), tool.DelegateReadinessReady)
 	if err != nil {
 		t.Fatalf("PostUpdate ready: %v", err)
 	}
@@ -108,7 +109,7 @@ func TestDelegateReadinessDoesNotSupersedeTerminalDelivery(t *testing.T) {
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	actor := delegateActor{lease: &delegateLease{delegateID: "dlg_target", generation: 1}}
 
-	_, updates, err := c.PostUpdate(actor, "ready", tool.DelegateReadinessReady)
+	_, updates, err := c.PostUpdate(actor, schema.CommunicateInfo{Message: "ready"}, publicationPacket("ready"), tool.DelegateReadinessReady)
 	if err != nil {
 		t.Fatalf("PostUpdate: %v", err)
 	}

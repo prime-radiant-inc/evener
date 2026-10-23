@@ -113,7 +113,6 @@ type subagent struct {
 	driving               bool                      // a drive-down notification turn (§3), or a committed delegate start not yet handed to its run, is in flight on this idle child
 	fatalRunGated         bool                      // terminal run error freezes automatic drives until an explicit resume
 	finalizing            bool                      // the run accepts no input while owned work drains and terminal state/notify ownership are handed off
-	blockedWork           []string                  // itemized live work admitted beside a blocked report
 	// disposeGated freezes a quiescent, retained TERMINAL child while a dispose op
 	// (spec §P1 step 4) evaluates and evicts it: no wake-edge drive may launch and
 	// no delegate_send may resume the child while it is set. Guarded by sub.mu; set
@@ -1847,18 +1846,6 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		restoreParentDriveNotify = nil
 		if err == nil {
 			res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
-			if errors.Is(err, errTerminalReportRefused) {
-				if restoreParentDriveNotify != nil {
-					a.sess.SetNotifyFunc(restoreParentDriveNotify)
-				}
-				a.mu.Lock()
-				a.finalizing = false
-				a.settlementClaimed = false
-				a.mu.Unlock()
-				input = "Continue with the newly received steering before settling."
-				kind = EntryContinuation
-				continue
-			}
 			if errors.Is(err, errDelegateWaitResolved) {
 				if restoreParentDriveNotify != nil {
 					a.sess.SetNotifyFunc(restoreParentDriveNotify)
@@ -1903,18 +1890,6 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				}
 				if err == nil {
 					res, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
-					if errors.Is(err, errTerminalReportRefused) {
-						if restoreParentDriveNotify != nil {
-							a.sess.SetNotifyFunc(restoreParentDriveNotify)
-						}
-						a.mu.Lock()
-						a.finalizing = false
-						a.settlementClaimed = false
-						a.mu.Unlock()
-						input = "Continue with the newly received steering before settling."
-						kind = EntryContinuation
-						continue
-					}
 					if errors.Is(err, errDelegateWaitResolved) {
 						if restoreParentDriveNotify != nil {
 							a.sess.SetNotifyFunc(restoreParentDriveNotify)
@@ -1977,30 +1952,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			continue
 		}
 		<-settlementClaim.ready
-		if err == nil && a.sess.Communicated() {
-			candidate := a.sess.terminalCandidate()
-			if candidate.Disposition == "" {
-				candidate.Disposition = tool.CommunicateEndReasonDone
-			}
-			if candidate.Disposition == tool.CommunicateEndReasonDone || candidate.Disposition == tool.CommunicateEndReasonBlocked {
-				admitted, admitErr := a.admitTerminalReport(ctx, &candidate)
-				if admitErr != nil {
-					err = errors.Join(err, admitErr)
-				} else if !admitted {
-					a.sess.delegateController.ReleaseSettlementClaim(settlementClaim)
-					if restoreParentDriveNotify != nil {
-						a.sess.SetNotifyFunc(restoreParentDriveNotify)
-					}
-					a.mu.Lock()
-					a.finalizing = false
-					a.settlementClaimed = false
-					a.mu.Unlock()
-					input = "Continue with the newly received steering before settling."
-					kind = EntryContinuation
-					continue
-				}
-			}
-		}
+		<-settlementClaim.batchReady
 		attentionPlans, attentionErr := a.sess.delegateController.AttentionResolutionsForFinalization(settlementClaim)
 		if executeErr := a.sess.executeDelegateMutationPlans(attentionPlans); attentionErr == nil {
 			attentionErr = executeErr
@@ -2182,87 +2134,40 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 	a.sess.mu.Lock()
 	parentDriveNotify := a.sess.notifyFunc
 	a.sess.mu.Unlock()
-	if a.sess.delegateController != nil && a.sess.Communicated() {
-		candidate := a.sess.terminalCandidate()
-		if candidate.Disposition == "" {
-			candidate.Disposition = tool.CommunicateEndReasonDone
-		}
-		switch candidate.Disposition {
-		case tool.CommunicateEndReasonBlocked:
-			admitted, err := a.admitTerminalReport(ctx, &candidate)
-			if err != nil {
-				return result, parentDriveNotify, err
-			}
-			if !admitted {
-				return result, parentDriveNotify, errTerminalReportRefused
-			}
-			return result, parentDriveNotify, nil
-		case tool.CommunicateEndReasonWaitingOnWork:
-			accepted, err := a.admitTerminalWait(ctx, &candidate)
-			if err != nil {
-				return result, parentDriveNotify, err
-			}
-			if accepted {
-				if err := a.waitForTerminalTarget(ctx, candidate.WaitingOn); err != nil {
+	drained := false
+	for {
+		a.sess.mu.Lock()
+		report := a.sess.comm
+		a.sess.mu.Unlock()
+		if a.sess.delegateController != nil && report.called {
+			switch report.endReason {
+			case tool.CommunicateEndReasonBlocked:
+				return report.reply, parentDriveNotify, nil
+			case tool.CommunicateEndReasonWaitingOnWork:
+				if err := a.waitForTerminalTarget(ctx, report.waitingOn); err != nil {
 					return result, parentDriveNotify, err
 				}
 				return result, parentDriveNotify, errDelegateWaitResolved
 			}
-			return result, parentDriveNotify, errTerminalReportRefused
 		}
-	}
-	a.mu.Lock()
-	a.finalizing = true
-	a.mu.Unlock()
-	drained, err := a.sess.DrainJobTreeKeepingReport(ctx)
-	if err != nil {
-		return result, parentDriveNotify, err
-	}
-	if a.sess.delegateController != nil && a.sess.Communicated() {
-		candidate := a.sess.terminalCandidate()
-		if candidate.Disposition == "" {
-			candidate.Disposition = tool.CommunicateEndReasonDone
+		if drained {
+			break
 		}
-		switch candidate.Disposition {
-		case tool.CommunicateEndReasonWaitingOnWork:
-			accepted, err := a.admitTerminalWait(ctx, &candidate)
-			if err != nil {
-				return result, parentDriveNotify, err
-			}
-			if accepted {
-				if err := a.waitForTerminalTarget(ctx, candidate.WaitingOn); err != nil {
-					return result, parentDriveNotify, err
-				}
-				return result, parentDriveNotify, errDelegateWaitResolved
-			}
-			return result, parentDriveNotify, errTerminalReportRefused
-		case tool.CommunicateEndReasonBlocked:
-			admitted, err := a.admitTerminalReport(ctx, &candidate)
-			if err != nil {
-				return result, parentDriveNotify, err
-			}
-			if !admitted {
-				return result, parentDriveNotify, errTerminalReportRefused
-			}
-			return result, parentDriveNotify, nil
-		case tool.CommunicateEndReasonDone:
-			admitted, err := a.admitTerminalReport(ctx, &candidate)
-			if err != nil {
-				return result, parentDriveNotify, err
-			}
-			if !admitted {
-				return result, parentDriveNotify, errTerminalReportRefused
-			}
+		a.mu.Lock()
+		a.finalizing = true
+		a.mu.Unlock()
+		text, err := a.sess.DrainJobTreeKeepingReport(ctx)
+		if err != nil {
+			return result, parentDriveNotify, err
 		}
+		if text != "" {
+			result = text
+		}
+		drained = true
 	}
-	// The report is the latest one the session accepted, taken whole: its
-	// text and its structured output come from the same source, whatever
-	// text the drain's turns returned.
+	// A drain cannot mix a newer reply with an older structured report.
 	if reply, reported := a.sess.communicatedReply(); reported {
-		return reply, parentDriveNotify, nil
-	}
-	if drained != "" {
-		result = drained
+		result = reply
 	}
 	return result, parentDriveNotify, nil
 }
@@ -2360,9 +2265,6 @@ func (a *subagent) stableDelegateFinish(result string, runErr error) delegateFin
 		usage:            cumulativeUsageSnapshot(a.sess.CumulativeUsageSnapshot()),
 		stoppedByUser:    stoppedByUser,
 	}
-	a.mu.Lock()
-	inputs.blockedWork = append([]string(nil), a.blockedWork...)
-	a.mu.Unlock()
 	inputs.captureCommunicateReport(a.sess)
 	reporter := a.sess
 	if controller := a.sess.delegateController; controller != nil {
@@ -2405,7 +2307,6 @@ type delegateTerminalRunInputs struct {
 	disposition             string
 	blocker                 string
 	waitingOn               string
-	blockedWork             []string
 	descriptor              delegatestore.Descriptor
 	startedAt               time.Time
 	endedAt                 time.Time
@@ -2420,7 +2321,7 @@ type delegateTerminalRunInputs struct {
 }
 
 // captureCommunicateReport keeps the accepted human report and structured value
-// paired without changing the generic reply or a failed run's diagnostic text.
+// paired even when a later failure changes the generation's outcome.
 func (inputs *delegateTerminalRunInputs) captureCommunicateReport(sess *Session) {
 	if sess == nil {
 		return
@@ -2433,7 +2334,7 @@ func (inputs *delegateTerminalRunInputs) captureCommunicateReport(sess *Session)
 	inputs.disposition = sess.comm.endReason
 	inputs.blocker = sess.comm.blocker
 	inputs.waitingOn = sess.comm.waitingOn
-	if inputs.communicated && inputs.runErr == nil {
+	if inputs.communicated {
 		inputs.result = sess.comm.text
 	}
 }
@@ -2513,7 +2414,6 @@ func stableDelegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinis
 		finish.outcome = delegatestore.OutcomeCompleted
 		finish.disposition = delegatestore.DispositionReported
 		finish.reason = ""
-		captureDelegateStructuredResult(&packet, inputs)
 	} else if exhaustion, exhausted := budgetExhaustionFromError(inputs.runErr); exhausted {
 		finish.outcome = delegatestore.OutcomeExhausted
 		finish.reason = exhaustion.reason()
@@ -2531,6 +2431,9 @@ func stableDelegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinis
 			packet.Message, _ = json.Marshal(delegateUserStopMessage)
 		}
 	}
+	if inputs.communicated {
+		captureDelegateStructuredResult(&packet, inputs)
+	}
 	if finish.outcome == delegatestore.OutcomeFailed && inputs.runErr != nil {
 		firstLine, _, _ := strings.Cut(strings.TrimSpace(inputs.runErr.Error()), "\n")
 		finish.errorText = boundedFinishText(firstLine)
@@ -2541,7 +2444,6 @@ func stableDelegateFinishFromRun(inputs delegateTerminalRunInputs) delegateFinis
 	metadata.Disposition = inputs.disposition
 	metadata.Blocker = inputs.blocker
 	metadata.WaitingOn = inputs.waitingOn
-	metadata.OutstandingWork = append([]string(nil), inputs.blockedWork...)
 	reportKind := inputs.disposition
 	if reportKind == "" {
 		reportKind = "done"

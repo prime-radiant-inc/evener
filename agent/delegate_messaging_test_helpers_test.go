@@ -256,7 +256,7 @@ func waitForRootAttention(t *testing.T, root *Session, n int) []string {
 // notificationReportWakesParent uses real delegate creation, delivery and
 // provider requests. Worker B cannot send any stimulus until A's report has
 // reached the coordinator and its successful request has consumed that report.
-func notificationReportWakesParent(t *testing.T, polling bool) {
+func notificationReportWakesParent(t *testing.T, _ bool) {
 	t.Helper()
 	const payload = "c18f90d2-45ca-4c50-b17b-a67fb0e92783"
 	adapter := newMessagingAdapter("COORD-BRIEF", "WORKER-A", "WORKER-B")
@@ -269,15 +269,12 @@ func notificationReportWakesParent(t *testing.T, polling bool) {
 	presented := make(chan llm.Request, 1)
 	var siblingID string
 	waitResponse := func() llm.Response {
-		if polling {
-			return toolCallResponse(communicateCallArgs("wait", map[string]any{
-				"message": "waiting", "end_turn": true,
-				"end_reason": "waiting_on_work", "waiting_on": siblingID,
-			}))
-		}
-		// Keep the attempted terminal call: HEAD enters the ordinary drain
-		// before late completion validation, unlike waiting_on_work above.
-		return finalResponse("waiting")
+		// Done with live children is now refused at admission. The old
+		// ordinary-drain route therefore converges on the same valid wait.
+		return toolCallResponse(communicateCallArgs("wait", map[string]any{
+			"message": "waiting", "end_turn": true,
+			"end_reason": "waiting_on_work", "waiting_on": siblingID,
+		}))
 	}
 	adapter.script("root",
 		func(llm.Request) llm.Response {
@@ -353,9 +350,29 @@ func notificationReportWakesParent(t *testing.T, polling bool) {
 	if row := delegateAggregateSnapshot(t, root.delegateController, sibling); !row.CurrentRunOpen {
 		t.Fatal("worker B stopped before it was released")
 	}
-	if got := rootAttentionFold(t, root).order; len(got) != 0 {
-		t.Fatalf("coordinator published a report while B remained live: %v", got)
+	ownerFold := rootAttentionFold(t, root)
+	for _, id := range ownerFold.order {
+		if !strings.HasPrefix(id, "delegate:"+coordinator.owningDelegateID+"/update/") || !strings.Contains(ownerFold.content[id].Text(), `kind="update"`) {
+			t.Fatalf("coordinator published a terminal report while B remained live: %s", id)
+		}
+	}
+	for _, event := range publicationEvents(t, root) {
+		if event.DelegateID == coordinator.owningDelegateID && event.RunFinished != nil {
+			t.Fatal("coordinator RunFinished while B remained live")
+		}
+		if update := event.UpdatePosted; event.DelegateID == coordinator.owningDelegateID && update != nil {
+			if update.Communicate == nil || update.Communicate.EndReason != "waiting_on_work" || update.Communicate.WaitingOn != sibling {
+				t.Fatalf("coordinator publication is not its valid wait: %+v", update)
+			}
+		}
 	}
 	releaseSibling()
-	awaitRootReport(t, root)
+	waitForCondition(t, 30*time.Second, "coordinator RunFinished after sibling release", func() bool {
+		for _, event := range publicationEvents(t, root) {
+			if event.DelegateID == coordinator.owningDelegateID && event.RunFinished != nil {
+				return true
+			}
+		}
+		return false
+	})
 }

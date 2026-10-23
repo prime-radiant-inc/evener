@@ -46,6 +46,7 @@ type delegateSettlementClaim struct {
 	lease         delegateLease
 	mode          delegateSettlementMode
 	ready         <-chan struct{}
+	batchReady    <-chan struct{}
 	runErrorKnown bool
 	runErr        error
 }
@@ -200,6 +201,13 @@ func (c *delegateTreeController) finalizationReadyLocked(claim *delegateSettleme
 	case <-claim.ready:
 	default:
 		return errDelegateTargetBusy
+	}
+	if claim.batchReady != nil {
+		select {
+		case <-claim.batchReady:
+		default:
+			return errDelegateTargetBusy
+		}
 	}
 	live := c.live[claim.lease.delegateID]
 	if live == nil || live.binding == nil || live.binding.lease != claim.lease {

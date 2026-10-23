@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/artifactstore"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
@@ -37,7 +38,7 @@ type toolDeps struct {
 
 	// postDelegateUpdate hands a delegate's end_turn=false message to its
 	// parent (Session.postDelegateUpdate); it returns nil for a root.
-	postDelegateUpdate func(ctx context.Context, message, readiness string) *delegateUpdateDelivery
+	postDelegateUpdate func(ctx context.Context, info schema.CommunicateInfo, packet delegatestore.TerminalPacket, readiness string) *delegateUpdateDelivery
 
 	// steering queue access for the communicate handler.
 	steer               func(msg, kind string) error
@@ -60,7 +61,7 @@ type toolDeps struct {
 	// the blocker and waiting_on targets instead of needs_response.
 	delegate bool
 
-	// validateWaitTarget checks a root's waiting_on target against a live waker.
+	// validateWaitTarget checks waiting_on against a live waker at admission.
 	validateWaitTarget func(ctx context.Context, target string) error
 
 	// memoryToolsStripped reports that this session has no memory namespace
@@ -141,15 +142,14 @@ type toolDeps struct {
 	// (Session.acceptCommunicateTerminal): a call's message/reply/output and its
 	// raw structured value are accepted together under one lock — the first
 	// completed terminal call wins BOTH slots, so one call's structured value can
-	// never fill another call's capture. It returns whether this call won.
-	// Direct tool dependency constructions that predate lease-aware stable
-	// delegates may inject simpler writers.
+	// never fill another call's capture. It validates completion before capture,
+	// records the message, and returns whether this call won or why it was refused.
 	//
 	// structured is the raw output value the model emitted, before communicate
 	// canonicalization, for delegate structured_result capture. Nil means the
 	// call carried no explicit structured output; an explicit JSON null is
 	// passed as json.RawMessage("null"), which is non-nil and therefore present.
-	setCommunicateTerminal func(ctx context.Context, message, reply, output string, structured any, endReason string) bool
+	setCommunicateTerminal func(ctx context.Context, info schema.CommunicateInfo, reply, output string, structured any) (bool, error)
 
 	// runningJobIDs lists this session's own running (session-launched,
 	// non-nested) job ids. The communicate handler uses it to warn when

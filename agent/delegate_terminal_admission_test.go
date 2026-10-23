@@ -2,15 +2,10 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
-
-	"primeradiant.com/evener/agent/internal/delegatestore"
-	"primeradiant.com/evener/agent/internal/tool"
 )
 
 func newAdmissionSession(t *testing.T) (*Session, *jobManager) {
@@ -27,245 +22,21 @@ func newAdmissionSession(t *testing.T) (*Session, *jobManager) {
 	return s, jm
 }
 
-func assertSteerMentions(t *testing.T, s *Session, want string) {
-	t.Helper()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, message := range s.steeringQueue {
-		if strings.Contains(message.Text, want) {
-			return
-		}
-	}
-	t.Fatalf("steering queue %+v does not mention %q", s.steeringQueue, want)
-}
-
-func assertNoSteer(t *testing.T, s *Session) {
-	t.Helper()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.steeringQueue) != 0 {
-		t.Fatalf("steering queue = %+v, want none", s.steeringQueue)
-	}
-}
-
-func TestTerminalAdmissionRefusesDoneWithRunningJob(t *testing.T) {
-	s, jm := newAdmissionSession(t)
-	jm.mu.Lock()
-	jm.running = map[string]*runningJob{"job-1": {}}
-	jm.mu.Unlock()
-
-	admitted, err := (&subagent{sess: s}).admitTerminalReport(context.Background(), &terminalReportCandidate{
-		Disposition: tool.CommunicateEndReasonDone,
-	})
-	if err != nil {
-		t.Fatalf("admitTerminalReport: %v", err)
-	}
-	if admitted {
-		t.Fatal("done was admitted while a job was running")
-	}
-	assertSteerMentions(t, s, "job:job-1")
-}
-
-func TestTerminalAdmissionRefusesSameBatchWatchCreation(t *testing.T) {
-	s, jm := newAdmissionSession(t)
-	jm.mu.Lock()
-	jm.watches = map[watchKey]*watchConfig{
-		{VisibleSessionID: s.id, Target: "job-1", ReceiverSessionID: s.id}: {watchID: "watch-1", receiverSessionID: s.id},
-	}
-	jm.mu.Unlock()
-
-	admitted, err := (&subagent{sess: s}).admitTerminalReport(context.Background(), &terminalReportCandidate{
-		Disposition: tool.CommunicateEndReasonDone,
-	})
-	if err != nil {
-		t.Fatalf("admitTerminalReport: %v", err)
-	}
-	if admitted {
-		t.Fatal("done was admitted while a watch was live")
-	}
-	assertSteerMentions(t, s, "watch:watch-1")
-}
-
-func TestTerminalAdmissionRefusesPendingChildDelivery(t *testing.T) {
-	s, _ := newAdmissionSession(t)
-	deliveryID := seedPendingDeliverySource(t, s)
-
-	admitted, err := (&subagent{sess: s}).admitTerminalReport(context.Background(), &terminalReportCandidate{
-		Disposition: tool.CommunicateEndReasonDone,
-	})
-	if err != nil {
-		t.Fatalf("admitTerminalReport: %v", err)
-	}
-	if admitted {
-		t.Fatal("done was admitted while a child delivery was pending")
-	}
-	assertSteerMentions(t, s, "child-delivery:"+deliveryID)
-}
-
-func TestTerminalAdmissionRefusesUnknownEvidence(t *testing.T) {
-	s, jm := newAdmissionSession(t)
-	jm.dir = t.TempDir()
-
-	admitted, err := (&subagent{sess: s}).admitTerminalReport(context.Background(), &terminalReportCandidate{
-		Disposition: tool.CommunicateEndReasonDone,
-	})
-	if err == nil {
-		t.Fatal("admitTerminalReport error = nil, want unreadable evidence to terminate")
-	}
-	if admitted {
-		t.Fatal("done was admitted with unreadable job evidence")
-	}
-	assertNoSteer(t, s)
-}
-
-func TestTerminalAdmissionPublishesEmptyDone(t *testing.T) {
-	s, _ := newAdmissionSession(t)
-	admitted, err := (&subagent{sess: s}).admitTerminalReport(context.Background(), &terminalReportCandidate{
-		Disposition: tool.CommunicateEndReasonDone,
-	})
-	if err != nil {
-		t.Fatalf("admitTerminalReport: %v", err)
-	}
-	if !admitted {
-		t.Fatal("done was refused with no outstanding work")
-	}
-	assertNoSteer(t, s)
-}
-
-func TestTerminalAdmissionPublishesBlockedWithLiveWork(t *testing.T) {
-	s, jm := newAdmissionSession(t)
-	jm.mu.Lock()
-	jm.running = map[string]*runningJob{"job-1": {}}
-	jm.mu.Unlock()
-	s.comm = communicateResult{
-		called:    true,
-		text:      "waiting on the environment",
-		endReason: tool.CommunicateEndReasonBlocked,
-		blocker:   "repository access",
-	}
-	a := &subagent{sess: s}
-
-	admitted, err := a.admitTerminalReport(context.Background(), &terminalReportCandidate{
-		Disposition: tool.CommunicateEndReasonBlocked,
-		Blocker:     "repository access",
-	})
-	if err != nil {
-		t.Fatalf("admitTerminalReport: %v", err)
-	}
-	if !admitted {
-		t.Fatal("blocked was refused while work was live")
-	}
-	finish := a.stableDelegateFinish("waiting on the environment", nil)
-	if finish.packet == nil {
-		t.Fatal("blocked finish has no packet")
-	}
-	var metadata map[string]any
-	if err := json.Unmarshal(finish.packet.Metadata, &metadata); err != nil {
-		t.Fatalf("packet metadata: %v", err)
-	}
-	if got := metadata["blocker"]; got != "repository access" {
-		t.Fatalf("blocker metadata = %#v, want repository access", got)
-	}
-	work, _ := metadata["outstanding_work"].([]any)
-	if !slices.ContainsFunc(work, func(value any) bool { return value == "job:job-1" }) {
-		t.Fatalf("outstanding_work = %#v, want job:job-1", work)
-	}
-}
-
-func TestTerminalAdmissionBlockedAddsWorkToEmptyMetadata(t *testing.T) {
-	s, jm := newAdmissionSession(t)
-	jm.mu.Lock()
-	jm.running = map[string]*runningJob{"job-1": {}}
-	jm.mu.Unlock()
-	candidate := &terminalReportCandidate{
-		Disposition: tool.CommunicateEndReasonBlocked,
-		Blocker:     "repository access",
-	}
-	admitted, err := (&subagent{sess: s}).admitTerminalReport(context.Background(), candidate)
-	if err != nil {
-		t.Fatalf("admitTerminalReport: %v", err)
-	}
-	if !admitted {
-		t.Fatal("blocked was refused while work was live")
-	}
-	var metadata map[string]any
-	if err := json.Unmarshal(candidate.Packet.Metadata, &metadata); err != nil {
-		t.Fatalf("candidate metadata: %v", err)
-	}
-	work, _ := metadata["outstanding_work"].([]any)
-	if !slices.ContainsFunc(work, func(value any) bool { return value == "job:job-1" }) {
-		t.Fatalf("outstanding_work = %#v, want job:job-1", work)
-	}
-}
-
-func TestTerminalAdmissionBlockedKeepsOwnedShell(t *testing.T) {
+// Jobs, watches, pending notifications, and unreadable inventory are summary
+// data. Only lifecycle-owned child activity participates in done admission.
+func TestTerminalAdmissionInventoryIsReadOnly(t *testing.T) {
 	s, jm := newAdmissionSession(t)
 	jm.mu.Lock()
 	jm.running = map[string]*runningJob{"job-1": {delegateShell: &stableDelegateShellReceipt{jobID: "job-1"}}}
 	jm.mu.Unlock()
-	a := &subagent{sess: s}
-
 	work, err := s.outstandingDelegateWork()
-	if err != nil {
-		t.Fatalf("outstandingDelegateWork: %v", err)
+	if err != nil || !slices.Contains(work.Jobs, "job-1") {
+		t.Fatalf("summary jobs=%v err=%v", work.Jobs, err)
 	}
-	if !slices.Contains(work.Jobs, "job-1") {
-		t.Fatalf("jobs = %v, want the owned shell", work.Jobs)
-	}
-	admitted, err := a.admitTerminalReport(context.Background(), &terminalReportCandidate{
-		Disposition: tool.CommunicateEndReasonBlocked,
-		Blocker:     "access",
-	})
-	if err != nil || !admitted {
-		t.Fatalf("blocked admission = %v, %v; want admitted", admitted, err)
-	}
-	admitted, err = a.admitTerminalReport(context.Background(), &terminalReportCandidate{
-		Disposition: tool.CommunicateEndReasonDone,
-	})
-	if err != nil || !admitted {
-		t.Fatalf("done admission = %v, %v; want the owned shell drained", admitted, err)
-	}
-}
-
-func TestTerminalAdmissionRestartSafety(t *testing.T) {
-	s, jm := newAdmissionSession(t)
-	jm.mu.Lock()
-	jm.running = map[string]*runningJob{"job-1": {}}
-	jm.mu.Unlock()
-
-	packet := delegatestore.TerminalPacket{Metadata: json.RawMessage(`{"run_ended_at":"2026-01-01T00:00:00Z"}`)}
-	refused := &terminalReportCandidate{Disposition: tool.CommunicateEndReasonDone, Packet: packet}
-	admitted, err := (&subagent{sess: s}).admitTerminalReport(context.Background(), refused)
-	if err != nil {
-		t.Fatalf("admitTerminalReport: %v", err)
-	}
-	if admitted {
-		t.Fatal("done was admitted while a job was running")
-	}
-	if string(refused.Packet.Metadata) != string(packet.Metadata) {
-		t.Fatalf("refused candidate metadata = %s, want it unchanged", refused.Packet.Metadata)
-	}
-
-	s.comm = communicateResult{called: true, text: "blocked", endReason: tool.CommunicateEndReasonBlocked, blocker: "access"}
-	a := &subagent{sess: s}
-	blocked := &terminalReportCandidate{
-		Disposition: tool.CommunicateEndReasonBlocked,
-		Blocker:     "access",
-		Packet:      delegatestore.TerminalPacket{Metadata: json.RawMessage(`{"run_ended_at":"2026-01-01T00:00:00Z"}`)},
-	}
-	admitted, err = a.admitTerminalReport(context.Background(), blocked)
-	if err != nil {
-		t.Fatalf("admitTerminalReport blocked: %v", err)
-	}
-	if !admitted {
-		t.Fatal("blocked was refused while work was live")
-	}
-	var metadata map[string]any
-	if err := json.Unmarshal(blocked.Packet.Metadata, &metadata); err != nil {
-		t.Fatalf("blocked metadata: %v", err)
-	}
-	if _, ok := metadata["run_ended_at"]; !ok {
-		t.Fatalf("blocked metadata = %#v, want the prepared run_ended_at preserved", metadata)
+	jm.dir = t.TempDir()
+	work, err = s.outstandingDelegateWork()
+	if err == nil || !slices.Contains(work.Unknown, "job-journal") || !slices.Contains(work.Jobs, "job-1") {
+		t.Fatalf("unknown summary=%+v err=%v", work, err)
 	}
 }
 
@@ -274,78 +45,46 @@ func TestDelegateWaitOnRunningJobKeepsRunOpenAndResumes(t *testing.T) {
 	jm.mu.Lock()
 	jm.running = map[string]*runningJob{"job-1": {}}
 	jm.mu.Unlock()
-	a := &subagent{sess: s}
-
-	accepted, err := a.admitTerminalWait(context.Background(), &terminalReportCandidate{
-		Disposition: tool.CommunicateEndReasonWaitingOnWork,
-		WaitingOn:   "job-1",
-	})
-	if err != nil {
-		t.Fatalf("admitTerminalWait: %v", err)
+	if err := s.validateWaitTarget(context.Background(), "job-1"); err != nil {
+		t.Fatal(err)
 	}
-	if !accepted {
-		t.Fatal("wait on a running job was refused")
-	}
-	assertNoSteer(t, s)
 	work, err := s.outstandingDelegateWork()
-	if err != nil {
-		t.Fatalf("outstandingDelegateWork: %v", err)
+	if err != nil || !slices.Contains(work.Jobs, "job-1") {
+		t.Fatalf("jobs=%v err=%v", work.Jobs, err)
 	}
-	if !slices.Contains(work.Jobs, "job-1") {
-		t.Fatalf("jobs = %v, want the awaited job still live", work.Jobs)
+	if s.terminalWaitSatisfied(context.Background(), "job-1") {
+		t.Fatal("running target satisfied wait")
 	}
-
 	jm.mu.Lock()
 	jm.running = nil
 	jm.mu.Unlock()
-	admitted, err := a.admitTerminalReport(context.Background(), &terminalReportCandidate{
-		Disposition: tool.CommunicateEndReasonDone,
-	})
-	if err != nil {
-		t.Fatalf("admitTerminalReport after wake: %v", err)
-	}
-	if !admitted {
-		t.Fatal("the later done report was refused after the awaited job settled")
+	if !s.terminalWaitSatisfied(context.Background(), "job-1") {
+		t.Fatal("settled target did not wake wait")
 	}
 }
 
-func TestDelegateWaitOnSettledJobIsRefusedAndSteered(t *testing.T) {
+func TestDelegateWaitOnSettledJobIsRefusedAtAdmission(t *testing.T) {
 	s, _ := newAdmissionSession(t)
-	accepted, err := (&subagent{sess: s}).admitTerminalWait(context.Background(), &terminalReportCandidate{
-		Disposition: tool.CommunicateEndReasonWaitingOnWork,
-		WaitingOn:   "job-1",
-	})
-	if err != nil {
-		t.Fatalf("admitTerminalWait: %v", err)
+	if err := s.validateWaitTarget(context.Background(), "job-1"); err == nil {
+		t.Fatal("settled job accepted")
 	}
-	if accepted {
-		t.Fatal("wait on a settled job was accepted")
-	}
-	assertSteerMentions(t, s, "job-1")
 }
 
-func TestDelegateWaitOnRemovedWatchGetsCancellationNotice(t *testing.T) {
+func TestDelegateWaitOnRemovedWatchIsRefusedAtAdmission(t *testing.T) {
 	s, jm := newAdmissionSession(t)
+	key := watchKey{VisibleSessionID: s.id, Target: "job-1", ReceiverSessionID: s.id}
 	jm.mu.Lock()
-	jm.watches = map[watchKey]*watchConfig{
-		{VisibleSessionID: s.id, Target: "job-1", ReceiverSessionID: s.id}: {watchID: "watch-1", receiverSessionID: s.id},
-	}
+	jm.watches = map[watchKey]*watchConfig{key: {watchID: "watch-1", receiverSessionID: s.id}}
 	jm.mu.Unlock()
+	if err := s.validateWaitTarget(context.Background(), "watch-1"); err != nil {
+		t.Fatal(err)
+	}
 	jm.mu.Lock()
-	delete(jm.watches, watchKey{VisibleSessionID: s.id, Target: "job-1", ReceiverSessionID: s.id})
+	delete(jm.watches, key)
 	jm.mu.Unlock()
-
-	accepted, err := (&subagent{sess: s}).admitTerminalWait(context.Background(), &terminalReportCandidate{
-		Disposition: tool.CommunicateEndReasonWaitingOnWork,
-		WaitingOn:   "watch-1",
-	})
-	if err != nil {
-		t.Fatalf("admitTerminalWait: %v", err)
+	if err := s.validateWaitTarget(context.Background(), "watch-1"); err == nil {
+		t.Fatal("removed watch accepted")
 	}
-	if accepted {
-		t.Fatal("wait on a removed watch was accepted")
-	}
-	assertSteerMentions(t, s, "watch-1")
 }
 
 func TestDelegateWaitOnChildMustBeDescendant(t *testing.T) {

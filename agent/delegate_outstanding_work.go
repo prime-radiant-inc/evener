@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
-	"strings"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/goal"
@@ -76,29 +75,6 @@ func (w OutstandingDelegateWork) IDs() []string {
 // the returned error; the snapshot is still returned so a caller can report
 // what it did see.
 func (s *Session) outstandingDelegateWork() (OutstandingDelegateWork, error) {
-	return s.outstandingDelegateWorkInventory(true)
-}
-
-// outstandingDelegateWorkForAdmission omits the attention fold. Finalization
-// resolves attention under its own claim, and reading the fold here would make
-// admission race that resolution.
-func (s *Session) outstandingDelegateWorkForAdmission() (OutstandingDelegateWork, error) {
-	work, err := s.outstandingDelegateWorkInventory(false)
-	if s == nil {
-		return work, err
-	}
-	s.attentionMu.Lock()
-	for id := range s.delegateAttentionArmIDs {
-		work.Attention = append(work.Attention, id)
-	}
-	for id := range s.rootAttentionWakeIDs {
-		work.Attention = append(work.Attention, id)
-	}
-	s.attentionMu.Unlock()
-	return work, err
-}
-
-func (s *Session) outstandingDelegateWorkInventory(includeAttention bool) (OutstandingDelegateWork, error) {
 	var work OutstandingDelegateWork
 	if s == nil {
 		return work, nil
@@ -121,13 +97,11 @@ func (s *Session) outstandingDelegateWorkInventory(includeAttention bool) (Outst
 	work.ChildRuns = s.pendingChildRunIDs()
 	work.ChildDeliveries = s.pendingChildDeliveryIDs()
 
-	if includeAttention {
-		attention, err := s.pendingAttentionIDs()
-		work.Attention = s.dropOwnedShellAttention(attention)
-		if err != nil {
-			work.Unknown = append(work.Unknown, "attention-fold")
-			errs = append(errs, err)
-		}
+	attention, err := s.pendingAttentionIDs()
+	work.Attention = attention
+	if err != nil {
+		work.Unknown = append(work.Unknown, "attention-fold")
+		errs = append(errs, err)
 	}
 
 	work.Goals = s.activeGoalIDs()
@@ -174,47 +148,6 @@ func (s *Session) receiverWatchIDs() []string {
 	return ids
 }
 
-// dropOwnedShellJobs removes stable-delegate-owned shells from a done
-// report's inventory: the finalization drain settles them. A blocked report
-// keeps them, because it bypasses that drain.
-func (s *Session) dropOwnedShellJobs(jobs []string) []string {
-	if s == nil || s.jobManager == nil || len(jobs) == 0 {
-		return jobs
-	}
-	s.jobManager.mu.Lock()
-	defer s.jobManager.mu.Unlock()
-	kept := make([]string, 0, len(jobs))
-	for _, id := range jobs {
-		if job := s.jobManager.running[id]; job != nil && job.delegateShell != nil {
-			continue
-		}
-		kept = append(kept, id)
-	}
-	return kept
-}
-
-// dropOwnedShellAttention removes attention that names a stable delegate's
-// owned shell: the run's finalization resolves that attention, so it is not a
-// waker that can leave the run idle. A shell the run does not own stays.
-func (s *Session) dropOwnedShellAttention(ids []string) []string {
-	if s == nil || s.jobManager == nil || len(ids) == 0 {
-		return ids
-	}
-	s.jobManager.mu.Lock()
-	defer s.jobManager.mu.Unlock()
-	out := make([]string, 0, len(ids))
-	for _, id := range ids {
-		if rest, ok := strings.CutPrefix(id, "shell:"); ok {
-			jobID, _, _ := strings.Cut(rest, ":")
-			if job := s.jobManager.running[jobID]; job != nil && job.delegateShell != nil {
-				continue
-			}
-		}
-		out = append(out, id)
-	}
-	return out
-}
-
 // outstandingWork itemizes the job manager's own obligations. A missing or
 // malformed journal is an Unknown entry, not an empty notification list.
 func (jm *jobManager) outstandingWork() (jobs, watches, notifications, unknown []string, err error) {
@@ -256,9 +189,6 @@ func (jm *jobManager) outstandingWork() (jobs, watches, notifications, unknown [
 	}
 	if jm.stableWatchSettlementRetrying {
 		notifications = append(notifications, "settlement-retry")
-	}
-	if jm.watchCallbacks > 0 {
-		notifications = append(notifications, "watch-callback")
 	}
 	jm.mu.Unlock()
 

@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
@@ -2499,19 +2500,26 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		// Execute tool calls (possibly in parallel) and send results back.
 		s.noteParentJobActivity(jobPhaseToolRunning)
-		results, execErr := s.execToolBatch(ctx, calls, profile, resp.Finish.Reason)
-		execErr = errors.Join(execErr, sessionLifecycleFault(ctx, "exec_tools"))
-		if execErr != nil {
-			return "", progressed, execErr
-		}
-
-		timings.ToolExec = time.Since(tPhaseStart)
-
-		// --- Phase: Persistence ---
-		tPhaseStart = s.sclock().Now()
-
-		if persistErr := errors.Join(s.persistToolResults(ctx, calls, results), sessionLifecycleFault(ctx, "persist_tools")); persistErr != nil {
-			return "", progressed, persistErr
+		var results []tool.ExecResult
+		batchErr := func() error {
+			batchCtx, endBatch, err := s.beginDelegateToolBatch(ctx)
+			if err != nil {
+				return err
+			}
+			defer endBatch()
+			var execErr error
+			results, execErr = s.execToolBatch(batchCtx, calls, profile, resp.Finish.Reason)
+			execErr = errors.Join(execErr, sessionLifecycleFault(ctx, "exec_tools"))
+			if execErr != nil {
+				return execErr
+			}
+			timings.ToolExec = time.Since(tPhaseStart)
+			// The batch stays open through synced result persistence, not just execution.
+			tPhaseStart = s.sclock().Now()
+			return errors.Join(s.persistToolResults(batchCtx, calls, results), sessionLifecycleFault(ctx, "persist_tools"))
+		}()
+		if batchErr != nil {
+			return "", progressed, batchErr
 		}
 
 		timings.Persistence = time.Since(tPhaseStart)

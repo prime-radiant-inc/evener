@@ -1842,9 +1842,9 @@ func TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent(t *testin
 		drainSteering:      func() []steeringMessage { return nil },
 		prependSteering:    func([]steeringMessage) {},
 		resultToolName:     func() string { return "communicate" },
-		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any, _ string) bool {
+		setCommunicateTerminal: func(_ context.Context, _ schema.CommunicateInfo, _, _ string, raw any) (bool, error) {
 			captured = raw
-			return true
+			return true, nil
 		},
 	}
 	reg := toolpkg.NewRegistry()

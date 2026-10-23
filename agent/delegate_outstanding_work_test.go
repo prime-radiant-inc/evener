@@ -142,7 +142,7 @@ func TestOutstandingDelegateWorkReadFailureIsUnknown(t *testing.T) {
 	})
 }
 
-func TestOutstandingDelegateWorkIncludesInFlightWatchCallback(t *testing.T) {
+func TestOutstandingDelegateWorkDoesNotInventWatchCallbackNotification(t *testing.T) {
 	s, jm := newAdmissionSession(t)
 	jm.mu.Lock()
 	jm.watchCallbacks = 1
@@ -152,7 +152,7 @@ func TestOutstandingDelegateWorkIncludesInFlightWatchCallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("outstandingDelegateWork: %v", err)
 	}
-	if !slices.Contains(work.Notifications, "watch-callback") {
-		t.Fatalf("notifications = %v, want watch-callback", work.Notifications)
+	if slices.Contains(work.Notifications, "watch-callback") {
+		t.Fatalf("notifications = %v, callback count is not produced notification evidence", work.Notifications)
 	}
 }

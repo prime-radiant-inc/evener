@@ -39,11 +39,13 @@ a failed delegate-journal commit. A launch claim is not observation and writes
 no consumed marker. Parents continue to drive the child's
 attention, and fresh owner work remains admissible after the attention settles.
 
-Child reports and updates both wake a parent delegate waiting in its ordinary
-finalization drain. The parent's next model request presents the pending
-notification without waiting for another child's update or completion. A live
-sibling still keeps the parent's generation open. A valid `waiting_on_work`
-call also resumes for a child report through its existing polling wait.
+Child reports and updates wake a parent delegate waiting on work. The parent's
+next model request presents the pending notification without waiting for another
+child's update or completion. A delegate cannot claim `done` while a child is
+live, including a reserved child start. That sender check shares the child-start
+admission lock. It is not a task-list, shell-job, watch or attention inventory
+gate, and does not restrict root completion. A valid `waiting_on_work` call
+resumes for a child report through its existing polling wait.
 
 Only notifications not already presented by a successful request whose response
 synced owe a drain turn. The private `observed_notification_ids` field on that
@@ -68,15 +70,41 @@ only a synced successful response records model observation
 
 ## Delegate report preservation
 
-A successfully reported generation's terminal packet `message` is the accepted
+Accepted updates, readiness and valid waits publish immediately through the
+existing update outbox, even while the parent executes tools. The publication
+captures the same call's message, disposition, blocker, wait target and structured
+output. Retrying its call ID in the same generation reuses its delivery identity,
+including after source acknowledgment. Unknown inventory remains unknown, but
+does not erase a valid message.
+
+```mermaid
+flowchart LR
+  C[Accepted communicate] --> U[Update, readiness or wait]
+  U --> O[Existing source outbox]
+  C --> T[Done or blocked]
+  T --> P[TerminalPrepared, recovery evidence only]
+  P --> F[RunFinished, actual outcome]
+  F --> O
+  O --> R[Synced receiver custody]
+```
+
+Done and blocked capture durable `TerminalPrepared` evidence without publishing
+completion. Only `RunFinished` queues the generation's one terminal delivery.
+Finalization waits for both admitted quiet-attention persistence and the admitted
+tool batch, including synced tool-result storage. A settlement claim rejects new
+batches but still lets its same open, exact-generation batch publish updates.
+Closing that batch removes the permission, and restart cannot recover it.
+
+A reported generation's terminal packet `message` is the accepted
 terminal `communicate.message`, with communicate's existing trimming and
 `output.message` fallback. Its structured result remains separate, including a
 different summary, data, artifacts, or a custom-schema value. Both come from the
 same accepted capture under the session lock
 (`delegateTerminalRunInputs.captureCommunicateReport`, `agent/subagents.go`).
-Competing terminal calls cannot replace that capture. Failed, cancelled,
-exhausted, and unreported runs retain their diagnostic result semantics, and
-root-session return values and `CommunicateOutput` keep their structured-output
+Competing terminal calls cannot replace that capture. A later failure, cancellation
+or exhaustion changes the actual outcome and diagnostics, not the accepted
+message or structured value. Unreported runs retain diagnostic result semantics.
+Root-session return values and `CommunicateOutput` keep their structured-output
 semantics.
 
 Settlement persists an immutable terminal packet. Owner notifications and

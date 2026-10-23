@@ -184,11 +184,16 @@ func TestNotificationSourceAckFailureRetainsReceiverWake(t *testing.T) {
 	}
 	wakes := 0
 	root.SetNotifyFunc(func() { wakes++ })
+	// Registration repairs the hint for the already-pending source outbox.
+	baseline := wakes
+	if baseline != 1 {
+		t.Fatalf("registration wakes for pending source delivery = %d, want 1", baseline)
+	}
 	if _, err := deliverDelegatePacket(plans[0], root); err == nil {
 		t.Fatal("closed source journal accepted acknowledgment")
 	}
-	if wakes != 1 {
-		t.Fatalf("durable receiver wakes after source-ack failure = %d, want 1", wakes)
+	if got := wakes - baseline; got != 1 {
+		t.Fatalf("durable receiver wakes after source-ack failure = %d, want 1", got)
 	}
 	after, err := os.ReadFile(journalPath)
 	if err != nil {
@@ -217,8 +222,8 @@ func TestNotificationSourceAckFailureRetainsReceiverWake(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertNotificationRecords(t, path, attentionID, entries[0].Turn.Message, 1)
-	if len(c.durable["dlg_source"].PendingDeliveries) != 0 || wakes != 2 {
-		t.Fatalf("successful retry lost custody transfer or readiness, wakes = %d", wakes)
+	if len(c.durable["dlg_source"].PendingDeliveries) != 0 || wakes-baseline != 2 {
+		t.Fatalf("successful retry lost custody transfer or readiness, delivery wakes = %d", wakes-baseline)
 	}
 }
 

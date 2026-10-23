@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/contextmgr"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/installid"
@@ -2035,51 +2036,61 @@ func (s *Session) communicateEndReason() string {
 	return s.comm.endReason
 }
 
-// terminalCandidate is the accepted terminal communicate's disposition and
-// target, read as one value for admission.
-func (s *Session) terminalCandidate() terminalReportCandidate {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return terminalReportCandidate{
-		Disposition: s.comm.endReason,
-		Blocker:     s.comm.blocker,
-		WaitingOn:   s.comm.waitingOn,
+// acceptCommunicateTerminal captures one whole call under the session lock.
+// Completion admission and child-start admission share the controller lock.
+// Delivery runs off that lock because event subscribers may reenter the tree.
+// A failed capture rolls back both the report and its generation-owned fence.
+func (s *Session) acceptCommunicateTerminal(ctx context.Context, info schema.CommunicateInfo, reply, output string, structured any) (bool, error) {
+	actor, err := s.delegateActor(ctx)
+	if err != nil {
+		return false, err
 	}
-}
-
-// acceptCommunicateTerminal is the atomic terminal-result writer for the
-// communicate tool (issue #570). A call's message, reply, canonical output,
-// and raw structured value are accepted together under s.mu — the first
-// completed terminal call wins BOTH slots, so a later competing call can never
-// pair its structured value with another call's message or fill the winner's
-// still-empty structured slot. It returns whether this call won; losers report
-// accepted:false. The stable-delegate lease, when the context carries one, is
-// recorded after the lock is released.
-func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply, output string, structured any, endReason string) bool {
 	s.mu.Lock()
 	if s.comm.called {
 		s.mu.Unlock()
-		return false
+		return false, nil
 	}
-	blocker := s.comm.blocker
-	waitingOn := s.comm.waitingOn
-	s.comm = communicateResult{
-		called:     true,
-		text:       message,
-		reply:      reply,
-		output:     output,
-		structured: structured,
-		endReason:  endReason,
-		blocker:    blocker,
-		waitingOn:  waitingOn,
+	c := s.delegateController
+	var evidence *delegateGenerationEvidence
+	if actor.lease != nil && c != nil {
+		c.mu.Lock()
+		if _, _, err = c.admitLeaseLocked(*actor.lease, delegatestore.PhaseRunning); err == nil {
+			evidence, err = c.completionEvidenceLocked(*actor.lease)
+		}
+		if err == nil && info.EndReason == tool.CommunicateEndReasonDone {
+			err = c.validateCompletionLocked(actor)
+		}
+		if err != nil {
+			c.mu.Unlock()
+			s.mu.Unlock()
+			return false, err
+		}
 	}
+	previous, latest := s.comm, s.latestReport
+	s.comm = communicateResult{called: true, text: info.Message, reply: reply, output: output, structured: structured, endReason: info.EndReason, blocker: info.Blocker, waitingOn: info.WaitingOn}
 	s.latestReport = s.comm
-	s.mu.Unlock()
-	lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
-	if stableRun && s.delegateController != nil {
-		_ = s.delegateController.recordTerminalSeen(lease)
+	if evidence != nil {
+		evidence.completionAdmitted = info.EndReason == tool.CommunicateEndReasonDone
+		c.mu.Unlock()
 	}
-	return true
+	s.mu.Unlock()
+	if err := s.deliverCommunicate(events.CommunicateData{CallID: info.CallID, EndTurn: info.EndTurn, Message: info.Message, EndReason: info.EndReason, Blocker: info.Blocker, WaitingOn: info.WaitingOn}); err != nil {
+		s.mu.Lock()
+		s.comm, s.latestReport = previous, latest
+		if evidence != nil {
+			c.mu.Lock()
+			evidence.completionAdmitted = false
+			c.mu.Unlock()
+		}
+		s.mu.Unlock()
+		return false, err
+	}
+	if evidence != nil {
+		if err := c.recordTerminalSeen(*actor.lease); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
 // extractOriginalPrompt returns a delegate's assignment or the first user

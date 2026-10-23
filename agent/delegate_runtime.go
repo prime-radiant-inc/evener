@@ -2338,7 +2338,8 @@ func (s *Session) delegateActor(ctx context.Context) (delegateActor, error) {
 		if s.owningDelegateID == "" || lease.delegateID != s.owningDelegateID {
 			return delegateActor{}, errDelegateStaleLease
 		}
-		return delegateActor{lease: &lease}, nil
+		batch, _ := ctx.Value(delegateToolBatchContextKey{}).(*delegateToolBatch)
+		return delegateActor{lease: &lease, batch: batch}, nil
 	}
 	if s.owningDelegateID != "" {
 		return delegateActor{}, errDelegateStaleLease
