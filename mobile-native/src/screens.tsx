@@ -42,6 +42,7 @@ import {
 	buildComposerInput,
 	errorText,
 	formatQuoteBlock,
+	isLatestRetryTurn,
 	latestTurnId,
 	mergeDraftText,
 	type ModelListResponse,
@@ -2801,28 +2802,56 @@ function ConversationScreenView({
 			const live = store.getState();
 			const canonical = live.canonicalSession();
 			const now = document.getSnapshot();
+			// TEMP CI DIAGNOSTIC: removed after the browser-guard run.
+			const activationAction = canonicalFailureAction(
+				canonical,
+				failedTurnId,
+				live.pendingMutations,
+				live.pendingMutationsReady,
+				true,
+			);
+			const activationDiag = (branch: string) => {
+				console.log(
+					`RETRY_DIAG_ACTIVATION ${JSON.stringify({
+						branch,
+						failedTurnId,
+						canonicalTurnId: canonical?.turns.at(-1)?.id ?? null,
+						isLatest: canonical !== null && isLatestRetryTurn(canonical, failedTurnId),
+						hasCurrentFailure: activationAction !== null,
+						actionKind: activationAction?.kind ?? null,
+						actionDisabled: activationAction?.kind === "retry" ? activationAction.disabled : null,
+						entryServiceNull: entry.service === null,
+						attachmentLive: attachment.live,
+						focused,
+						latestReadState: live.latestReadState,
+						pendingMutationsReady: live.pendingMutationsReady,
+						ownPendingTurnInput: ownPendingTurnInput(live.pendingMutations),
+						conversationGeneration: live.conversationGeneration,
+						instanceId: live.conversation?.instanceId ?? null,
+						documentBusy: Boolean(now.submitting || !now.loaded || now.error !== null),
+						documentUnconfirmed: now.record.unconfirmed !== null,
+					})}`,
+				);
+			};
 			// The action may have been captured before a reconnect replaced the
 			// entry's service. Resolve the live one here and submit through it;
 			// requiring equality with the render-captured service turned an enabled
 			// Retry into a silent no-op after the same failure remained current.
+			if (!attachment.live) return activationDiag("attachment-retired");
 			const currentService = entry.service;
-			if (
-				!attachment.live ||
-				currentService === null ||
-				live.ref !== route.params.ref ||
-				live.status !== "open" ||
-				!live.conversation ||
-				!focused ||
-				!screenInFront(navigation, route.key) ||
-				!retryCanSend() ||
-				now.submitting ||
-				!now.loaded ||
-				now.error !== null ||
-				now.record.unconfirmed !== null
-			)
-				return;
+			if (currentService === null) return activationDiag("no-entry-service");
+			if (live.ref !== route.params.ref) return activationDiag("store-ref-mismatch");
+			if (live.status !== "open") return activationDiag("store-not-open");
+			if (!live.conversation) return activationDiag("no-conversation");
+			if (!focused) return activationDiag("not-focused");
+			if (!screenInFront(navigation, route.key)) return activationDiag("not-in-front");
+			if (!retryCanSend()) return activationDiag("retry-cannot-send");
+			if (now.submitting) return activationDiag("document-submitting");
+			if (!now.loaded) return activationDiag("document-not-loaded");
+			if (now.error !== null) return activationDiag("document-error");
+			if (now.record.unconfirmed !== null) return activationDiag("document-unconfirmed");
 			const kind = liveSendKind();
-			if (kind === null) return;
+			if (kind === null) return activationDiag("no-send-kind");
 			const action = canonicalFailureAction(
 				canonical,
 				failedTurnId,
@@ -2830,7 +2859,9 @@ function ConversationScreenView({
 				live.pendingMutationsReady,
 				true,
 			);
-			if (action === null || action.kind !== "retry" || action.disabled) return;
+			if (action === null) return activationDiag("no-current-failure");
+			if (action.kind !== "retry") return activationDiag("action-not-retry");
+			if (action.disabled) return activationDiag("action-disabled");
 			// The runtime runs this once immediately before the durable enqueue and
 			// again before a direct fallback. It reads the shared owners at that
 			// moment, not this render: a retired view, a moved binding, a newer
@@ -2838,15 +2869,64 @@ function ConversationScreenView({
 			// It excludes only this operation's own in-flight document marker.
 			const activationGeneration = live.conversationGeneration;
 			const activationInstance = live.conversation.instanceId ?? live.conversation.threadId;
-			const precondition = () => {
-				if (!attachment.live || !focused || !screenInFront(navigation, route.key) || !connectionReady.current)
-					return false;
-				const bound = entry.service;
-				if (bound === null || bound !== currentService) return false;
+			const preconditionDiag = (branch: string, accepted: boolean) => {
 				const current = store.getState();
-				if (current.ref !== route.params.ref || current.status !== "open") return false;
-				if (!current.conversation || current.conversationGeneration !== activationGeneration) return false;
-				if ((current.conversation.instanceId ?? current.conversation.threadId) !== activationInstance) return false;
+				const currentCanonical = current.canonicalSession();
+				const currentAction = canonicalFailureAction(
+					currentCanonical,
+					failedTurnId,
+					current.pendingMutations,
+					current.pendingMutationsReady,
+					true,
+				);
+				const documentNow = document.getSnapshot();
+				console.log(
+					`RETRY_DIAG_PRECONDITION ${JSON.stringify({
+						branch,
+						accepted,
+						failedTurnId,
+						canonicalTurnId: currentCanonical?.turns.at(-1)?.id ?? null,
+						isLatest: currentCanonical !== null && isLatestRetryTurn(currentCanonical, failedTurnId),
+						hasCurrentFailure: currentAction !== null,
+						actionKind: currentAction?.kind ?? null,
+						actionDisabled: currentAction?.kind === "retry" ? currentAction.disabled : null,
+						entryServiceNull: entry.service === null,
+						capturedServiceMatches: entry.service === currentService,
+						attachmentLive: attachment.live,
+						focused,
+						inFront: screenInFront(navigation, route.key),
+						connectionReady: connectionReady.current,
+						latestReadState: current.latestReadState,
+						pendingMutationsReady: current.pendingMutationsReady,
+						ownPendingTurnInput: ownPendingTurnInput(current.pendingMutations),
+						conversationGeneration: current.conversationGeneration,
+						activationGeneration,
+						capturedGenerationMatches: current.conversationGeneration === activationGeneration,
+						instanceId: current.conversation?.instanceId ?? null,
+						activationInstance,
+						capturedInstanceMatches:
+							(current.conversation?.instanceId ?? current.conversation?.threadId) === activationInstance,
+						documentBusy: Boolean(documentNow.submitting || !documentNow.loaded || documentNow.error !== null),
+						documentUnconfirmed: documentNow.record.unconfirmed !== null,
+					})}`,
+				);
+				return accepted;
+			};
+			const precondition = () => {
+				if (!attachment.live) return preconditionDiag("attachment-retired", false);
+				if (!focused) return preconditionDiag("not-focused", false);
+				if (!screenInFront(navigation, route.key)) return preconditionDiag("not-in-front", false);
+				if (!connectionReady.current) return preconditionDiag("not-connected", false);
+				const bound = entry.service;
+				if (bound === null) return preconditionDiag("no-entry-service", false);
+				if (bound !== currentService) return preconditionDiag("captured-service-replaced", false);
+				const current = store.getState();
+				if (current.ref !== route.params.ref) return preconditionDiag("store-ref-mismatch", false);
+				if (current.status !== "open") return preconditionDiag("store-not-open", false);
+				if (!current.conversation) return preconditionDiag("no-conversation", false);
+				if (current.conversationGeneration !== activationGeneration) return preconditionDiag("generation-moved", false);
+				if ((current.conversation.instanceId ?? current.conversation.threadId) !== activationInstance)
+					return preconditionDiag("instance-moved", false);
 				const currentAction = canonicalFailureAction(
 					current.canonicalSession(),
 					failedTurnId,
@@ -2854,8 +2934,12 @@ function ConversationScreenView({
 					current.pendingMutationsReady,
 					true,
 				);
-				return currentAction !== null && currentAction.kind === "retry" && !currentAction.disabled;
+				if (currentAction === null) return preconditionDiag("no-current-failure", false);
+				if (currentAction.kind !== "retry") return preconditionDiag("action-not-retry", false);
+				if (currentAction.disabled) return preconditionDiag("action-disabled", false);
+				return preconditionDiag("accepted", true);
 			};
+			activationDiag("submit");
 			setActionError(null);
 			try {
 				await document.submitText(TURN_CONTINUATION_TEXT, async (text, images, context) =>

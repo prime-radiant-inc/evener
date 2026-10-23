@@ -196,8 +196,34 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 				await vi.waitFor(check, { timeout });
 			});
 		};
-		const waitOutbox = (hubId: string, count: number) =>
-			waitFor(async () => expect(await outbox(hubId)).toHaveLength(count));
+		// TEMP CI DIAGNOSTIC: removed after the browser-guard run.
+		const retryDiagFacts = (tree: ReactTestRenderer, hubId: string, turnId: string) => {
+			const active = activeEntry(hubId);
+			const state = active.store.getState();
+			const button = retryButtonForTurn(tree, turnId);
+			return {
+				turnId,
+				actionFound: button !== undefined,
+				actionDisabled: button?.props.disabled ?? null,
+				entryServiceNull: active.service === null,
+				latestReadState: state.latestReadState,
+				pendingMutationsReady: state.pendingMutationsReady,
+				canonicalTurnId: state.canonicalSession()?.turns.at(-1)?.id ?? null,
+				attachmentCount: active.attachmentCount,
+			};
+		};
+		const logPress = (tree: ReactTestRenderer, hubId: string, turnId: string) =>
+			console.log(`RETRY_DIAG_PRESS ${JSON.stringify(retryDiagFacts(tree, hubId, turnId))}`);
+		const waitOutbox = async (tree: ReactTestRenderer, hubId: string, count: number, turnId?: string) => {
+			try {
+				await waitFor(async () => expect(await outbox(hubId)).toHaveLength(count));
+			} catch (error) {
+				if (turnId !== undefined) {
+					console.log(`RETRY_DIAG_NO_ROW ${JSON.stringify(retryDiagFacts(tree, hubId, turnId))}`);
+				}
+				throw error;
+			}
+		};
 		const openProvider = async () => {
 			await untilRendered(() => expect(connection?.loading).toBe(false));
 			await act(async () => {
@@ -385,8 +411,9 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 				wire.holdResponses("thread/read");
 				wire.holdNotifications("history/updated", "overlay/upserted", "overlay/delta", "overlay/reset", "overlay/end");
 				await waitRetryReady(failed);
+				logPress(tree, hubId, failed);
 				await pressButton(retryButtonForTurn(tree, failed)!);
-				await waitOutbox(hubId, 1);
+				await waitOutbox(tree, hubId, 1, failed);
 				const [row] = await outbox(hubId);
 				expect(row?.payload.input).toEqual([{ type: "text", text: "continue" }]);
 				expect(wire.requests).toHaveLength(1);
@@ -406,7 +433,7 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 				expectInactive();
 				await act(async () => stale());
 				expect(wire.requests).toHaveLength(1);
-				await waitOutbox(hubId, 1);
+				await waitOutbox(tree, hubId, 1);
 				milestone(fixture.milestonePath, "retry-held", { clientMutationId: row?.clientMutationId });
 				wire.releaseResponses("turn/start");
 				wire.releaseResponses("thread/read");
@@ -484,8 +511,9 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 				const document = await stageDraft(hubId);
 				wire.holdResponses("turn/start");
 				await waitRetryReady(newerFailure);
+				logPress(tree, hubId, newerFailure);
 				await pressButton(retryButtonForTurn(tree, newerFailure)!);
-				await waitOutbox(hubId, 1);
+				await waitOutbox(tree, hubId, 1, newerFailure);
 				const [row] = await outbox(hubId);
 				expect(row?.payload.input).toEqual([{ type: "text", text: "continue" }]);
 				await waitFor(() => expect(wire.requests).toHaveLength(3));
@@ -515,9 +543,10 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 				wire.armed = true;
 				wire.holdResponses("thread/read");
 				await waitRetryReady(failed);
+				logPress(tree, hubId, failed);
 				await pressButton(retryButtonForTurn(tree, failed)!);
 				await untilRendered(() => expect(wire.dropped).toBe(1));
-				await waitOutbox(hubId, 1);
+				await waitOutbox(tree, hubId, 1, failed);
 				const [row] = await outbox(hubId);
 				expect(row?.payload.input).toEqual([{ type: "text", text: "continue" }]);
 				await waitFor(() => expect(wire.requests).toHaveLength(1));
@@ -564,6 +593,7 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 			wire.mode = scenario.mode;
 			wire.armed = true;
 			await waitRetryReady(failed);
+			logPress(tree, hubId, failed);
 			await pressButton(retryButtonForTurn(tree, failed)!);
 			await untilRendered(() => expect(wire.requests.length).toBeGreaterThanOrEqual(1));
 			expect(wire.requests[0]?.params.input).toEqual([{ type: "text", text: "continue" }]);
