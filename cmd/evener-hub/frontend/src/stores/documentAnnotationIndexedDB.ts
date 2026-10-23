@@ -719,18 +719,16 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // Callers run after their transaction settled: the signal can start a retry
   // pass and must never fire inside one. Confirmed entries are never released
   // here: a proven change (or a committed reset) keeps its suppression until
-  // its expiry's deletion completes. A candidate that names an exact entry
-  // releases only that object: another actor can install an entry with the
-  // same identity and requestId, and it is not the caller's to release.
-  #releaseUnconfirmed(
-    owned: readonly { identity: string; requestId?: string | null; entry?: SuppressionEntry }[],
-  ): void {
+  // its expiry's deletion completes. A candidate names the exact entry object
+  // it installed and releases only that object: another actor can install an
+  // entry with the same identity and requestId, and it is not the caller's to
+  // release.
+  #releaseUnconfirmed(owned: readonly { identity: string; entry: SuppressionEntry }[]): void {
     const releasedDocuments = new Set<string>();
     for (const candidate of owned) {
       const entry = this.#suppressedEpochs.get(candidate.identity);
       if (!entry || entry.confirmed) continue;
-      if (candidate.entry !== undefined && entry !== candidate.entry) continue;
-      if (candidate.requestId !== undefined && entry.requestId !== candidate.requestId) continue;
+      if (entry !== candidate.entry) continue;
       this.#suppressedEpochs.delete(candidate.identity);
       releasedDocuments.add(entry.documentKey);
     }
@@ -844,6 +842,10 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const remembered = this.#readStates.get(documentKey)?.get(ticket.namespaceIncarnation);
     const previous = remembered?.accepted;
     let provisional: string | undefined;
+    // The exact entry object this invocation installed. Another invocation of
+    // the same ticket can install its own provisional for the same epoch and
+    // requestId, so validation settles only the object this one put there.
+    let installedProvisional: SuppressionEntry | undefined;
     // The entry this invocation displaced, restored when its validation says
     // not-current so another owner's provisional survives this release.
     let displacedEntry: SuppressionEntry | undefined;
@@ -854,12 +856,13 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         const entry = this.#suppressedEpochs.get(identity);
         if (!entry?.confirmed) {
           displacedEntry = entry;
-          this.#installSuppression(identity, {
+          const provisionalEntry: SuppressionEntry = {
             documentKey,
             namespaceIncarnation: previous.lease.namespaceIncarnation,
             requestId: ticket.requestId,
             confirmed: false,
-          });
+          };
+          if (this.#installSuppression(identity, provisionalEntry)) installedProvisional = provisionalEntry;
           provisional = identity;
         }
       }
@@ -875,7 +878,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     // instead, identity-checked, so the map ends empty. An unconfirmed entry
     // always carries a requestId: suppressEpochForExpiry installs confirmed
     // entries, and the reset's provisioning names its read's ticket.
-    const restoreDisplacedOrRelease = (identity: string): void => {
+    const restoreDisplacedOrRelease = (identity: string, owned: SuppressionEntry): void => {
       if (
         displacedEntry !== undefined &&
         displacedEntry.requestId !== null &&
@@ -885,12 +888,12 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       ) {
         return;
       }
-      this.#releaseUnconfirmed([{ identity, requestId: ticket.requestId }]);
+      this.#releaseUnconfirmed([{ identity, entry: owned }]);
     };
     const finishValidation = (confirmFor?: string): void => {
-      if (!provisional) return;
+      if (provisional === undefined || installedProvisional === undefined) return;
       const entry = this.#suppressedEpochs.get(provisional);
-      if (entry?.requestId !== ticket.requestId) return;
+      if (entry !== installedProvisional) return;
       // Confirm only when the changed path fenced exactly the epoch this
       // provisional names: a peer may have advanced the head in between, and a
       // confirmation for the dead epoch would never be released.
@@ -898,7 +901,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         entry.confirmed = true;
         return;
       }
-      restoreDisplacedOrRelease(provisional);
+      restoreDisplacedOrRelease(provisional, entry);
     };
     // A stale or unchanged validation releases the provisional restriction a
     // concurrent handoff may have refused against. That refusal only records

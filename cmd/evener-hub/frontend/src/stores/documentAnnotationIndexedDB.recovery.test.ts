@@ -877,6 +877,54 @@ test("a non-committing reset releases only the entry it provisioned over a same-
   }
 });
 
+// Two acceptances on the SAME ticket can overlap: the first holds its stale
+// validation while the second installs its own provisional for the same epoch.
+// The first's release must name the exact entry it installed. Matching by the
+// ticket's requestId deletes the second invocation's live provisional and
+// reopens the append window it protects.
+test("a stale same-ticket acceptance keeps its successor's provisional alive", async () => {
+  let fixture: AnnotationFixture | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-same-ticket-provisional-owner",
+    origin: "https://coordination.example",
+  });
+  const sibling = openSiblingRepository(fixture);
+  let holds: ReturnType<typeof holdNextTransactions> | undefined;
+  try {
+    const ticket = await fixture.repository.beginRead(fixture.document);
+    // A sibling read advances the durable read generation, so both
+    // acceptances below can only answer stale.
+    await sibling.beginRead(fixture.document);
+
+    holds = holdNextTransactions([
+      { stores: ACCEPT_STORES, event: "complete" },
+      { stores: ACCEPT_STORES, event: "complete" },
+    ]);
+    const first = fixture.repository.acceptRead(ticket, sampleChangedContent());
+    await holds.reached[0];
+    const second = fixture.repository.acceptRead(ticket, sampleChangedContent());
+    await holds.reached[1];
+
+    // The first validation settles stale first and releases.
+    holds.releaseAt(0);
+    expect(await first).toEqual({ state: "stale-ticket" });
+
+    // The second's entry still protects the window its validation holds.
+    expect(await fixture.repository.handoff(fixture.document, fixture.operation.operationId)).toEqual({
+      state: "pending",
+      reason: "owner-unavailable",
+    });
+
+    holds.release();
+    expect(await second).toEqual({ state: "stale-ticket" });
+  } finally {
+    holds?.release();
+    sibling.close();
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
+
 // Two changed reads of the same accepted epoch overlap. The first installs the
 // provisional that protects its in-flight validation. A second, later read's
 // entry install used to replace that entry; when its validation answers stale,
