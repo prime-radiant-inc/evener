@@ -158,43 +158,49 @@ function OwnedNextNeedsYou({
     }
   }, [clearHoldTimer, clearSuppressBackstop, detachGesture, releasePointerCapture]);
 
-  const armGesture = useCallback(() => {
-    if (gestureCleanupRef.current !== null) return;
-    const owns = (event: PointerEvent) => {
-      const press = pressRef.current;
-      return press !== null && press.pointerId === event.pointerId;
-    };
-    const onMove = (event: PointerEvent) => {
-      if (!owns(event)) return;
-      const press = pressRef.current;
-      if (!press) return;
-      // A hold that already completed opened the list; the press stays alive
-      // until it is released so the one click it emits is still consumed. A
-      // drift must not end that gesture.
-      if (holdCompletedRef.current) return;
-      if (Math.hypot(event.clientX - press.x, event.clientY - press.y) > HOLD_SLOP_PX) cancelHold();
-    };
-    const onUp = (event: PointerEvent) => {
-      if (!owns(event)) return;
-      pointerDownRef.current = false;
-      cancelHold();
-      if (suppressClickRef.current) armSuppressBackstop();
-    };
-    const onCancel = (event: PointerEvent) => {
-      if (!owns(event)) return;
-      pointerDownRef.current = false;
-      holdCompletedRef.current = false;
-      cancelHold();
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-    window.addEventListener("pointercancel", onCancel);
-    gestureCleanupRef.current = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      window.removeEventListener("pointercancel", onCancel);
-    };
-  }, [armSuppressBackstop, cancelHold]);
+  // The gesture belongs to the document the button lives in. A conversation in
+  // a Dockview popout publishes its pointer events in that window, so listeners
+  // on the opener's window would never see the movement that cancels a hold.
+  const armGesture = useCallback(
+    (doc: Document) => {
+      if (gestureCleanupRef.current !== null) return;
+      const owns = (event: PointerEvent) => {
+        const press = pressRef.current;
+        return press !== null && press.pointerId === event.pointerId;
+      };
+      const onMove = (event: PointerEvent) => {
+        if (!owns(event)) return;
+        const press = pressRef.current;
+        if (!press) return;
+        // A hold that already completed opened the list; the press stays alive
+        // until it is released so the one click it emits is still consumed. A
+        // drift must not end that gesture.
+        if (holdCompletedRef.current) return;
+        if (Math.hypot(event.clientX - press.x, event.clientY - press.y) > HOLD_SLOP_PX) cancelHold();
+      };
+      const onUp = (event: PointerEvent) => {
+        if (!owns(event)) return;
+        pointerDownRef.current = false;
+        cancelHold();
+        if (suppressClickRef.current) armSuppressBackstop();
+      };
+      const onCancel = (event: PointerEvent) => {
+        if (!owns(event)) return;
+        pointerDownRef.current = false;
+        holdCompletedRef.current = false;
+        cancelHold();
+      };
+      doc.addEventListener("pointermove", onMove);
+      doc.addEventListener("pointerup", onUp);
+      doc.addEventListener("pointercancel", onCancel);
+      gestureCleanupRef.current = () => {
+        doc.removeEventListener("pointermove", onMove);
+        doc.removeEventListener("pointerup", onUp);
+        doc.removeEventListener("pointercancel", onCancel);
+      };
+    },
+    [armSuppressBackstop, cancelHold],
+  );
 
   const closeList = useCallback((restoreFocus: boolean) => {
     restoreFocusRef.current = restoreFocus;
@@ -215,12 +221,13 @@ function OwnedNextNeedsYou({
     clearSuppressBackstop();
     pointerDownRef.current = true;
     pressRef.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
-    armGesture();
+    const doc = event.currentTarget.ownerDocument ?? document;
+    armGesture(doc);
     try {
       event.currentTarget.setPointerCapture(event.pointerId);
       captureRef.current = { element: event.currentTarget, pointerId: event.pointerId };
     } catch {
-      // jsdom has no pointer capture; the window listeners own the gesture.
+      // jsdom has no pointer capture; the document listeners own the gesture.
     }
     holdTimerRef.current = setTimeout(() => {
       clearHoldTimer();
@@ -232,13 +239,13 @@ function OwnedNextNeedsYou({
     // an early release: the timer never fires and the next click is not
     // consumed as the completed hold's.
     const onVisibilityChange = () => {
-      if (document.visibilityState !== "hidden") return;
+      if (doc.visibilityState !== "hidden") return;
       holdCompletedRef.current = false;
       cancelHold();
     };
-    document.addEventListener("visibilitychange", onVisibilityChange);
+    doc.addEventListener("visibilitychange", onVisibilityChange);
     visibilityCleanupRef.current = () => {
-      document.removeEventListener("visibilitychange", onVisibilityChange);
+      doc.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }
 

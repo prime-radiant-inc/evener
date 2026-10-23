@@ -229,6 +229,33 @@ test("cancellation does not poison the next click", () => {
   expect(window.location.pathname).toBe("/s/local%3Ab");
 });
 
+// A conversation in a Dockview popout publishes its pointer events in that
+// window, so a gesture bound to the opener's window never sees the movement that
+// should cancel the hold. jsdom cannot dispatch a cross-window pointer event,
+// so this pins the binding itself: the press has to listen on its own document
+// and not on the opener's window. Movement cancellation itself is covered
+// behaviorally by the cases around it.
+test("a hold listens for its gesture on the button's own document", ({ onTestFinished }) => {
+  vi.useFakeTimers();
+  installRows();
+  seedSource();
+  render(controlTree());
+  const next = nextTrigger();
+  const documentListeners = vi.spyOn(document, "addEventListener");
+  const windowListeners = vi.spyOn(window, "addEventListener");
+  onTestFinished(() => {
+    documentListeners.mockRestore();
+    windowListeners.mockRestore();
+  });
+
+  fireEvent.pointerDown(next, { button: 0, clientX: 10, clientY: 10, pointerId: 13 });
+
+  const boundTo = (spy: typeof documentListeners) => spy.mock.calls.map(([type]) => type);
+  expect(boundTo(documentListeners)).toContain("pointermove");
+  expect(boundTo(documentListeners)).toContain("pointerup");
+  expect(boundTo(windowListeners)).not.toContain("pointermove");
+});
+
 test("a hidden document cancels a pending hold and never consumes the next click", () => {
   vi.useFakeTimers();
   installRows();
