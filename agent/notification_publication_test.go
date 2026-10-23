@@ -403,14 +403,37 @@ func TestCompletionWithLiveChild(t *testing.T) {
 					return false
 				})
 				count := 0
+				var finished *delegatestore.RunFinished
+				var coordinatorID string
 				for _, e := range publicationEvents(t, root) {
 					if e.Created != nil {
 						count++
+						coordinatorID = e.DelegateID
+					}
+					if e.RunFinished != nil {
+						finished = e.RunFinished
 					}
 				}
 				if count != 1 {
 					t.Fatalf("created=%d, want accepted done to refuse later child creation", count)
 				}
+				settled := publicationReopen(t, root)[coordinatorID]
+				if finished == nil || finished.Outcome.Status != delegatestore.OutcomeCompleted || finished.Disposition != delegatestore.DispositionReported || settled.LatestPacket == nil || settled.LatestPacket.Kind != delegatestore.PacketReported || string(settled.LatestPacket.Message) != `"done-b83f"` {
+					t.Fatalf("done-then-child finish=%+v packet=%+v, want completed reported done-b83f", finished, settled.LatestPacket)
+				}
+				coordinator := root.subagents.sessions()[0]
+				accepted := publicationToolResult(t, coordinator, done.ID)
+				var result struct {
+					Accepted bool `json:"accepted"`
+				}
+				if err := json.Unmarshal([]byte(fmt.Sprint(accepted.Content)), &result); err != nil || accepted.IsError || !result.Accepted {
+					t.Fatalf("done result=%+v decode=%v, want accepted done", accepted, err)
+				}
+				refused := publicationToolResult(t, coordinator, create.ID)
+				if !refused.IsError {
+					t.Fatalf("child result=%+v, want ordinary tool-error refusal", refused)
+				}
+				t.Logf("coordinator=%s generation=%d outcome=%s packet=%s message=%s done accepted=%t child refused=%t", coordinatorID, finished.Generation, finished.Outcome.Status, settled.LatestPacket.Kind, settled.LatestPacket.Message, result.Accepted, refused.IsError)
 				return
 			}
 			var req llm.Request
@@ -443,6 +466,141 @@ func TestCompletionWithLiveChild(t *testing.T) {
 			release()
 		})
 	}
+}
+
+// Done fences child work in its own input, not work a later admitted input owns.
+func TestCompletionAdmissionRetiresOnSameGenerationInput(t *testing.T) {
+	adapter := newMessagingAdapter("CONTINUATION-COORD", "CONTINUATION-CHILD")
+	providerEntered, providerGate := make(chan struct{}), make(chan struct{})
+	doneExecuted, batchGate := make(chan struct{}), make(chan struct{})
+	childGate, inspectGate := make(chan struct{}), make(chan struct{})
+	releaseProvider := sync.OnceFunc(func() { close(providerGate) })
+	releaseBatch := sync.OnceFunc(func() { close(batchGate) })
+	releaseChild := sync.OnceFunc(func() { close(childGate) })
+	releaseInspect := sync.OnceFunc(func() { close(inspectGate) })
+	defer releaseProvider()
+	defer releaseBatch()
+	defer releaseChild()
+	defer releaseInspect()
+	done := publicationCall("continuation-done", map[string]any{"message": "done-before-steer", "end_turn": true, "output": publicationOutput("done-before-steer")})
+	create := delegateToolResponse("continuation-create", "CONTINUATION-CHILD").ToolCalls()[0]
+	continuation, inspected := make(chan llm.Request, 1), make(chan llm.Request, 1)
+	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("coordinator", "CONTINUATION-COORD") }, func(llm.Request) llm.Response { return finalResponse("root-finished") })
+	adapter.script("CONTINUATION-COORD", func(llm.Request) llm.Response {
+		close(providerEntered)
+		<-providerGate
+		return toolCallResponse(done)
+	}, func(req llm.Request) llm.Response {
+		continuation <- req
+		return toolCallResponse(create)
+	}, func(req llm.Request) llm.Response {
+		inspected <- req
+		<-inspectGate
+		target := deferredHeadDelegateID.FindString(lastToolResultText(req.Messages))
+		return toolCallResponse(publicationCall("continuation-wait", map[string]any{"message": "waiting for follow-up child", "end_turn": true, "end_reason": "waiting_on_work", "waiting_on": target}))
+	})
+	adapter.script("CONTINUATION-CHILD", func(llm.Request) llm.Response { <-childGate; return finalResponse("follow-up finished") })
+	root := newMessagingRoot(t, adapter, nil)
+	if _, err := root.ProcessInput(context.Background(), "start", nil); err != nil {
+		t.Fatal(err)
+	}
+	awaitSignal(t, providerEntered, "coordinator initial provider")
+	coordinator := root.subagents.sessions()[0]
+	c := root.delegateController
+	c.mu.Lock()
+	lease := c.live[coordinator.owningDelegateID].binding.lease
+	c.mu.Unlock()
+	// Install only an observer while this provider is held, not admission state.
+	holdDone := sync.OnceFunc(func() { close(doneExecuted); <-batchGate })
+	coordinator.cfg.testOnly.execToolCheckpoint = func(checkpoint string) {
+		if checkpoint == "after_execute" {
+			holdDone()
+		}
+	}
+	releaseProvider()
+	awaitSignal(t, doneExecuted, "accepted done tool")
+	if !coordinator.Communicated() {
+		t.Fatal("initial done was not accepted")
+	}
+	c.mu.Lock()
+	admitted := c.live[lease.delegateID].binding.evidence.completionAdmitted
+	c.mu.Unlock()
+	if !admitted {
+		t.Fatal("initial done did not install child admission fence")
+	}
+	for _, e := range publicationEvents(t, root) {
+		if (e.Created != nil && e.DelegateID != lease.delegateID) || e.RunFinished != nil {
+			t.Fatalf("unexpected child or settlement before steering: %+v", e)
+		}
+	}
+	steer := delegateSendResponse("continue-owner-steer", lease.delegateID, "follow-up-74ac, create the requested child", 0).ToolCalls()[0]
+	result := publicationExecute(root, context.Background(), steer)
+	var steered sendMessageResult
+	if err := json.Unmarshal(result.ToolState, &steered); err != nil || result.IsError || steered.Action != "steered" {
+		t.Fatalf("owner steer=%+v decode=%v, want steering into running generation", result, err)
+	}
+	releaseBatch()
+	var req llm.Request
+	select {
+	case req = <-continuation:
+	case <-time.After(30 * time.Second):
+		t.Fatal("accepted owner steer did not reach a continuation request")
+	}
+	if !requestContainsText(req, "follow-up-74ac") {
+		t.Fatal("continuation request did not carry admitted owner steering")
+	}
+	select {
+	case <-inspected:
+	case <-time.After(30 * time.Second):
+		t.Fatal("continuation did not persist a child-create tool result")
+	}
+	c.mu.Lock()
+	next := c.live[lease.delegateID].binding.lease
+	c.mu.Unlock()
+	if next != lease {
+		t.Fatalf("continuation changed generation lease: before=%+v after=%+v", lease, next)
+	}
+	accepted := publicationToolResult(t, coordinator, done.ID)
+	var doneResult struct {
+		Accepted bool `json:"accepted"`
+	}
+	if err := json.Unmarshal([]byte(fmt.Sprint(accepted.Content)), &doneResult); err != nil || accepted.IsError || !doneResult.Accepted {
+		t.Fatalf("initial done result=%+v decode=%v", accepted, err)
+	}
+	created := publicationToolResult(t, coordinator, create.ID)
+	if created.IsError {
+		t.Fatalf("same-generation continuation child create refused: lease=%+v result=%+v", next, created)
+	}
+	starts, children := 0, 0
+	for _, e := range publicationEvents(t, root) {
+		if e.DelegateID == lease.delegateID && e.RunStarted != nil {
+			starts++
+		}
+		if e.Created != nil && e.Created.Descriptor.ParentDelegateID == lease.delegateID {
+			children++
+		}
+	}
+	if starts != 1 || children != 1 {
+		t.Fatalf("coordinator starts=%d children=%d, want same-generation child creation", starts, children)
+	}
+	t.Logf("coordinator=%s generation=%d lease unchanged, RunStarted=%d accepted done, admitted owner steer carried, child Created=%d", lease.delegateID, lease.generation, starts, children)
+}
+
+func publicationToolResult(t *testing.T, s *Session, callID string) llm.ToolResultData {
+	t.Helper()
+	_, entries, _, err := readTranscript(transcriptPath(s.stateDir, s.ID()), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		for _, part := range entry.Turn.Message.Content {
+			if part.ToolResult != nil && part.ToolResult.ToolCallID == callID {
+				return *part.ToolResult
+			}
+		}
+	}
+	t.Fatalf("session %s has no persisted result for tool call %s", s.ID(), callID)
+	return llm.ToolResultData{}
 }
 
 func TestNotificationPublicationFinalizationJoinsBothFences(t *testing.T) {

@@ -16,6 +16,28 @@ import (
 
 var errDelegateWaitResolved = errors.New("delegate wait resolved")
 
+// recordInputAdmission runs only after entry acceptance, before its first
+// request. A new input retires the previous input's done fence, including for
+// notifications that do not escalate the generation's report requirement.
+func (c *delegateTreeController) recordInputAdmission(lease delegateLease, requiresReport bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, live, err := c.exactLeaseLocked(lease)
+	if err != nil {
+		return err
+	}
+	if requiresReport {
+		if err := c.escalateCompletionRequirementLocked(lease); err != nil {
+			return err
+		}
+	}
+	if evidence := live.binding.evidence; evidence != nil && evidence.completionAdmitted {
+		evidence.completionAdmitted = false
+		c.evidenceVersion++
+	}
+	return nil
+}
+
 // waitForTerminalTarget keeps the run alive until the named waker signals or
 // disappears. Any session notification counts: a job completion, a watch
 // frame, or a child delivery all wake the run to inspect the new evidence.

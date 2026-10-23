@@ -153,7 +153,8 @@ type delegateGenerationEvidence struct {
 	requirement  delegateCompletionRequirement
 	outcome      delegateCompletionOutcome
 	terminalSeen bool
-	// completionAdmitted fences child starts only after accepted done, and dies with this generation.
+	// completionAdmitted fences child starts after accepted done until the next
+	// input is admitted, and never survives this generation.
 	completionAdmitted bool
 	batch              *delegateToolBatch
 	fallback           *delegateFinish

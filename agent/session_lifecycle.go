@@ -2244,9 +2244,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			return "", false, nil
 		}
 	}
-	if delegateEntryRequiresReport(kind) && s.delegateController != nil {
+	if s.delegateController != nil {
 		if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok {
-			if err := s.delegateController.escalateCompletionRequirement(lease); err != nil {
+			if err := s.delegateController.recordInputAdmission(lease, delegateEntryRequiresReport(kind)); err != nil {
 				return "", false, err
 			}
 		}
