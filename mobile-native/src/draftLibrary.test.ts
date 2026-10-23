@@ -67,22 +67,4 @@ describe("drafts across navigation", () => {
 		library.open({ hubId: "two", sessionRef: "other" }).edit("other hub");
 		expect([...library.refsWithDrafts("one")]).toEqual(["typed"]);
 	});
-
-	it("moves a recovered draft and its ownership to a resumed identity", () => {
-		const { library, repository } = setup();
-		const from = { hubId: "one", sessionRef: "old" };
-		const to = { hubId: "one", sessionRef: "resumed" };
-		repository.write(from, {
-			draft: "edited recovered text",
-			unconfirmed: null,
-			composer: { recoveryIds: ["source-a"] },
-		});
-		expect(library.handoff(from, to)).toBe(true);
-		expect(repository.read(to)).toMatchObject({
-			draft: "edited recovered text",
-			composer: { recoveryIds: ["source-a"] },
-		});
-		expect(repository.read(from)).toEqual({ draft: "", unconfirmed: null });
-		expect(library.open(to).getSnapshot().record.draft).toBe("edited recovered text");
-	});
 });

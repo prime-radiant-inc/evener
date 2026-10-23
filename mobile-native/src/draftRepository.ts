@@ -257,26 +257,6 @@ export class DraftRepository {
 		});
 	}
 
-	remove(destination: DraftDestination): void {
-		withSavepoint(this.db, "draft_remove", () => {
-			this.db.runSync(
-				"DELETE FROM draft_image_sets WHERE hub_id = ? AND session_ref = ?",
-				destination.hubId,
-				destination.sessionRef,
-			);
-			this.db.runSync(
-				"DELETE FROM draft_images WHERE hub_id = ? AND session_ref = ?",
-				destination.hubId,
-				destination.sessionRef,
-			);
-			this.db.runSync(
-				"DELETE FROM drafts WHERE hub_id = ? AND session_ref = ?",
-				destination.hubId,
-				destination.sessionRef,
-			);
-		});
-	}
-
 	private writeText(destination: DraftDestination, record: DraftRecord): void {
 		if (
 			record.draft === "" &&
