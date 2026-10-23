@@ -3322,20 +3322,23 @@ test.each(["", "  ", "occupied draft"])(
   async (text) => {
     const storage = new MutationOutboxIndexedDB();
     setMutationStorageForTests(storage);
-    const view = await mountComposerWithHandle("ref_a");
-    await replaceEditorText(textarea(), text);
-    const beforeDraft = readComposerDraft("ref_a");
     const turn = {
       id: "failed_turn",
       status: "failed" as const,
       error: { message: "provider failure" },
       items: [{ id: "original", turnId: "failed_turn", type: "userMessage" as const, text: "original request" }],
     };
+    const view = await mountComposerWithHandle("ref_a", { turns: [{ ...turn, itemsView: "full" }] });
+    await replaceEditorText(textarea(), text);
+    const beforeDraft = readComposerDraft("ref_a");
     view.fake.on("turn/start", ({ clientMutationId }) => {
       throw notAcceptedError(clientMutationId);
     });
     const cap = render(<TurnBlock turn={turn} sessionRef="ref_a" />);
-    fireEvent.click(within(cap.container).getByRole("button", { name: "Retry" }));
+    await flushPendingTurnsProjectionForTests();
+    const retry = within(cap.container).getByRole<HTMLButtonElement>("button", { name: "Retry" });
+    await waitFor(() => expect(retry.disabled).toBe(false));
+    fireEvent.click(retry);
     await flushPendingTurnsProjectionForTests();
     expect(await storage.listRecovery("ref_a")).toHaveLength(1);
     expect(readComposerDraft("ref_a")).toEqual(beforeDraft);
@@ -3380,7 +3383,8 @@ test.each([false, true])("failed-turn Retry preserves a selected and attached dr
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   writeComposerDraft("ref_a", { text: "unsent", skillNames: ["draft-skill"], commandNames: ["draft-command"] });
-  const view = await mountComposerWithHandle("ref_a");
+  const turn = { id: "failed", status: "failed" as const, error: { message: "failed" }, items: [] };
+  const view = await mountComposerWithHandle("ref_a", { turns: [{ ...turn, itemsView: "full" }] });
   pastePngInto(textarea(), "draft.png");
   const image = await screen.findByRole("button", { name: "View draft.png" });
   const beforeDraft = readComposerDraft("ref_a");
@@ -3392,10 +3396,11 @@ test.each([false, true])("failed-turn Retry preserves a selected and attached dr
       turn: { id: "continued", status: "inProgress", itemsView: "" },
     };
   });
-  const cap = render(
-    <TurnBlock turn={{ id: "failed", status: "failed", error: { message: "failed" }, items: [] }} sessionRef="ref_a" />,
-  );
-  fireEvent.click(within(cap.container).getByRole("button", { name: "Retry" }));
+  const cap = render(<TurnBlock turn={turn} sessionRef="ref_a" />);
+  await flushPendingTurnsProjectionForTests();
+  const retry = within(cap.container).getByRole<HTMLButtonElement>("button", { name: "Retry" });
+  await waitFor(() => expect(retry.disabled).toBe(false));
+  fireEvent.click(retry);
   await flushPendingTurnsProjectionForTests();
   expect(view.fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
   if (rejected) expect(await storage.listRecovery("ref_a")).toHaveLength(1);
