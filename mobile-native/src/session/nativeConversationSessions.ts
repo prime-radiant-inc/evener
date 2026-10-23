@@ -98,7 +98,6 @@ export interface NativeConversationSessionsOptions {
 }
 
 interface AttachmentState {
-	handle: NativeConversationAttachment;
 	following: boolean;
 }
 
@@ -215,7 +214,6 @@ class SessionEntry implements NativeConversationSession {
 	attach(): NativeConversationAttachment {
 		const token = Symbol("native-conversation-attachment");
 		const state: AttachmentState = {
-			handle: undefined as unknown as NativeConversationAttachment,
 			// A new reader starts conservatively as not following until its
 			// restoration settles.
 			following: false,
@@ -239,7 +237,6 @@ class SessionEntry implements NativeConversationSession {
 				else this.#applyFollowing();
 			},
 		};
-		state.handle = handle;
 		this.#attachments.set(token, state);
 		this.#applyFollowing();
 		return handle;
