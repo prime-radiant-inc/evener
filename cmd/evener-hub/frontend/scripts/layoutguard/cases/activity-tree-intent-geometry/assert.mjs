@@ -38,6 +38,9 @@ export default function assert(fixtures) {
       }
       if (row.depth !== depth || row.level !== depth + 1) failures.push(`${where}: lost nesting, groups=${row.depth}, aria-level=${row.level}`);
       if (row.intentLength !== 200) failures.push(`${where}: intent has ${row.intentLength} characters, expected 200`);
+      if (!row.statusDot.visible || Math.abs(row.statusDot.width - 8) > EPS || Math.abs(row.statusDot.height - 8) > EPS) {
+        failures.push(`${where}: StatusDot is not its styled 8px box`);
+      }
       const nameMinimum = Math.max(16, Math.min(row.nameTextWidth, row.prefixEllipsisWidth));
       if (row.name.width < nameMinimum) failures.push(`${where}: name ${row.name.width.toFixed(2)}px < ${nameMinimum.toFixed(2)}px, no readable prefix beside ellipsis`);
       if (expected.width === 430 && depth === 0 && row.name.width + EPS < row.nameTextWidth) {

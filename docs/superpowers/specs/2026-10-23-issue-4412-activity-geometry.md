@@ -27,7 +27,11 @@ No ActivityTree unit fixture change is needed: this is a static CSS geometry
 fixture, not a second renderer or a test of activity transport.
 
 Load the real global/tokens, Dialog/Sheet, activity-panel, Button, IconButton,
-OpenButton, and SubagentDot styles. Reproduce the current production hierarchy:
+OpenButton, and SubagentDot styles. Import StatusDot as a real CSS Module in
+each iframe, preserving its class namespace rather than flattening its
+`.danger` together with Button's into the runner's concatenated stylesheet.
+Require the live dot's visible 8px box so a failed module load cannot pass.
+Reproduce the current production hierarchy:
 the Sheet panel and padded body, then `activityPanel > panelColumn > tree`,
 a live delegate row, then each child row in a nested
 `role=group` / `.indentGuide`. Each dense row has the disclosure control,

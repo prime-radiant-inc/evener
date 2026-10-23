@@ -26,7 +26,7 @@ const chevron = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="tr
 function row(width, depth) {
   return `<div class="denseRow" role="treeitem" aria-label="inspect" aria-description="running" aria-level="${depth + 1}" aria-expanded="false" tabindex="${depth === 0 ? 0 : -1}" data-row="${width}-${depth}">
     <button type="button" class="rowToggle" tabindex="-1" aria-label="Show details for inspect" aria-expanded="false">${chevron}</button>
-    <span class="denseKind"><span role="img" aria-label="Working" aria-hidden="true" data-state="fresh" data-shape="dot" class="dot alive working"></span></span>
+    <span class="denseKind"><span role="img" aria-label="Working" aria-hidden="true" data-state="fresh" data-shape="dot" data-status-dot></span></span>
     <span class="denseName denseNameLive">inspect</span>
     <span class="inline" data-open-shell><button type="button" class="button quiet squareSm" tabindex="-1" aria-label="Open conversation" title="Open"><span class="icon">${openIcon}</span></button></span>
     <span class="denseMeta"><span data-intent>${intent}</span> · <span>↑41.2K ↓6.1K</span> · <span class="denseQuiet">12s</span></span>
@@ -45,7 +45,14 @@ function frameDocument(spec) {
       <header class="header"><h2 class="title">Activity</h2></header>
       <div class="body"><div class="activityPanel"><div class="panelColumn"><div class="tree" role="tree">${rows}</div></div></div></div>
       <button type="button" class="closeButton" aria-label="Close">×</button>
-    </div></div></body></html>`;
+    </div></div>
+    <script type="module">
+      // Keep StatusDot's .danger distinct from Button's, as in production.
+      import styles from "/src/widgets/statusdot/statusdot.module.css";
+      for (const dot of document.querySelectorAll("[data-status-dot]")) {
+        dot.className = [styles.dot, styles.alive, styles.working].join(" ");
+      }
+    <\/script></body></html>`;
 }
 
 const frames = widths.map((spec) => {
@@ -113,6 +120,7 @@ function measureFrame({ spec, frame }) {
         depth, level: Number(row.getAttribute("aria-level")), box: box(row),
         contentWidth: row.getBoundingClientRect().width - parseFloat(rowStyle.paddingLeft) - parseFloat(rowStyle.paddingRight),
         intentLength: row.querySelector("[data-intent]").textContent.length,
+        statusDot: box(row.querySelector("[data-status-dot]")),
         name: box(name), nameTextWidth: nameRange.getBoundingClientRect().width, prefixEllipsisWidth,
         button: target, disabled: button.disabled || button.getAttribute("aria-disabled") === "true",
         iconVisible: button.querySelector("svg").checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }),

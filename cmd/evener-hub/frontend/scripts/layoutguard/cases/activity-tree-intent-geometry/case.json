@@ -6,7 +6,6 @@
     "styles/tokens.css",
     "widgets/dialog/dialog.module.css",
     "widgets/sheet/sheet.module.css",
-    "widgets/statusdot/statusdot.module.css",
     "panes/session/chrome/activitypanel.module.css",
     "widgets/button/button.module.css",
     "widgets/iconbutton/iconbutton.module.css",
