@@ -19,6 +19,7 @@ import {
   useBlockedMutationEntries,
   useCanceledMutationEntries,
   usePendingTurnEntries,
+  useQueueStripMutationIds,
   useRecoveryEntries,
 } from "../../composer/queue/pendingTurnsStore";
 import { heldSteerEntries } from "./HeldSteerStack";
@@ -39,7 +40,8 @@ const ANNOUNCEMENTS: Record<HeldSteerOutcome, string> = {
 };
 
 export function HeldSteerAnnouncements({ ref: sessionRef }: { ref: string }): JSX.Element {
-  const held = heldSteerEntries(usePendingTurnEntries(sessionRef));
+  const queueStripIds = useQueueStripMutationIds(sessionRef);
+  const held = heldSteerEntries(usePendingTurnEntries(sessionRef), queueStripIds);
   const recovery = useRecoveryEntries(sessionRef);
   const blocked = useBlockedMutationEntries(sessionRef);
   const canceled = useCanceledMutationEntries(sessionRef);
@@ -60,7 +62,11 @@ export function HeldSteerAnnouncements({ ref: sessionRef }: { ref: string }): JS
     if (prev?.ref !== sessionRef) return;
     const announce = (outcomes: HeldSteerOutcome[]) => setAnnouncement((a) => ({ outcomes, key: a.key + 1 }));
     const appeared = held.some((entry: PendingTurnEntry) => !prev.ids.has(entry.id));
-    const disappeared = [...prev.ids].filter((id) => !ids.has(id));
+    // A local ownership move is neither delivery nor failure. The same
+    // identity is still visibly held by QueueStrip.
+    const disappeared = [...prev.ids].filter(
+      (id) => !ids.has(id) && (!queueStripIds.has(id) || canceled.some((record) => record.clientMutationId === id)),
+    );
     // Departure priority in a same-batch collision (review ruling): a
     // departure is the outcome of a message the reader was already told
     // about and is the event's only audible trace - the departed id never
@@ -81,7 +87,7 @@ export function HeldSteerAnnouncements({ ref: sessionRef }: { ref: string }): JS
     } else if (appeared) {
       announce(["held"]);
     }
-  }, [sessionRef, held, recovery, blocked, canceled, model]);
+  }, [sessionRef, held, recovery, blocked, canceled, model, queueStripIds]);
 
   return (
     <div

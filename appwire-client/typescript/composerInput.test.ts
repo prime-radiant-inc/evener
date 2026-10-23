@@ -1,7 +1,13 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
-import { buildComposerInput, buildInput, formatQuoteBlock, mergeDraftText } from "./composerInput";
+import {
+  buildComposerInput,
+  buildInput,
+  formatQuoteBlock,
+  mergeDraftText,
+  reconcileComposerMentions,
+} from "./composerInput";
 
 // Skill names reach buildInput from drafts, recovery records and queue
 // projections. Any of those can carry a stray space, an empty string or a
@@ -92,4 +98,43 @@ test("formatQuoteBlock preserves a blank line in the middle of the selection as 
 test("formatQuoteBlock formats an empty or whitespace-only selection to an empty string", () => {
   expect(formatQuoteBlock("")).toBe("");
   expect(formatQuoteBlock("   \n  ")).toBe("");
+});
+
+test("deselects a full selected label extended into a larger slash token", () => {
+  const before = "😀 /skill";
+  const mention = { kind: "skill" as const, name: "skill", offset: before.indexOf("/skill") };
+  expect(reconcileComposerMentions(before, "😀 /skillExtra", [mention])).toEqual([]);
+});
+
+test("deselects a selected label when a prefix is inserted inside its reference", () => {
+  expect(reconcileComposerMentions("/skill", "/pkg:skill", [{ kind: "skill", name: "skill", offset: 0 }])).toEqual([]);
+});
+
+test("reconciles selected references with browser token, punctuation, namespace, and UTF-16 boundaries", () => {
+  const mention = { kind: "skill" as const, name: "skill", offset: 0 };
+  expect(reconcileComposerMentions("/skill", "x/skill", [mention])).toEqual([]);
+  expect(reconcileComposerMentions("/skill", "/skill.", [mention])).toEqual([mention]);
+  expect(reconcileComposerMentions("/skill.", "/skill. unrelated", [mention])).toEqual([mention]);
+  expect(reconcileComposerMentions("/plugin", "/plugin:hidden", [{ ...mention, name: "plugin" }])).toEqual([]);
+
+  const before = "😀 /skill.";
+  const nonBMPMention = { ...mention, offset: before.indexOf("/skill") };
+  expect(reconcileComposerMentions(before, "🐈 😀 /skill.", [nonBMPMention])).toEqual([
+    { ...nonBMPMention, offset: "🐈 😀 ".length },
+  ]);
+});
+
+test("preserves complete repeated labels at shifted nonBMP UTF-16 offsets", () => {
+  const before = "😀 /skill /skill";
+  const mentions = [
+    { kind: "skill" as const, name: "skill", offset: before.indexOf("/skill") },
+    { kind: "skill" as const, name: "skill", offset: before.indexOf("/skill", before.indexOf("/skill") + 1) },
+  ];
+  const prefix = "🐈 ";
+  expect(reconcileComposerMentions(before, `${prefix}${before}`, mentions)).toEqual(
+    mentions.map((mention) => ({ ...mention, offset: mention.offset + prefix.length })),
+  );
+  expect(reconcileComposerMentions(before, "😀 /skillExtra /skill", mentions)).toEqual([
+    { kind: "skill", name: "skill", offset: "😀 /skillExtra ".length },
+  ]);
 });

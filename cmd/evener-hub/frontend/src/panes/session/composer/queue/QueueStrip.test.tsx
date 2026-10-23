@@ -30,6 +30,7 @@ import {
   refreshPendingTurnsProjection,
   resetPendingTurnsStoreForTests,
   submitWithPendingTracking,
+  subscribeComposerSubmissionCommitted,
 } from "./pendingTurnsStore";
 import { QueueStrip } from "./QueueStrip";
 import { flushPendingTurnsProjectionForTests } from "./testing/flushPendingTurnsProjection";
@@ -873,7 +874,7 @@ describe("durable recovery rows", () => {
 // delivery is uncertain (blockedUnknown) or settled by the user's own Stop
 // (canceled).
 describe("canceled rows", () => {
-  test("a canceled row renders beside the queue as Canceled by Stop with Retry and no sendable action", async () => {
+  test("a canceled row keeps Retry and offers local editing and removal without a send action", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a");
     await seedCanceled("stopped by user");
@@ -882,7 +883,9 @@ describe("canceled rows", () => {
     const row = await findRow("canceled");
     expect(within(row).getByText("stopped by user")).toBeTruthy();
     expect(within(row).getByRole("button", { name: "Retry" })).toBeTruthy();
-    expect(within(row).queryByRole("button", { name: /edit|send|steer|remove/i })).toBeNull();
+    expect(within(row).queryByRole("button", { name: /send|steer/i })).toBeNull();
+    expect(isDisabled(within(row).getByRole("button", { name: "Edit message" }))).toBe(false);
+    expect(isDisabled(within(row).getByRole("button", { name: "Remove from queue" }))).toBe(false);
     // The header counts it like any other durable row, same as a blocked one.
     expect(queuedCount()).toBe("1");
   });
@@ -960,7 +963,7 @@ describe("canceled rows", () => {
     }));
     renderStrip(defaultProps());
     const pending = await screen.findByText("queued while busy");
-    expect(pending.closest("li")?.getAttribute("data-kind")).toBe("pending");
+    expect(pending.closest("li")?.getAttribute("data-kind")).toBe("waiting");
     expect(pending.closest("li")?.getAttribute("data-busy")).toBe("true");
     // The visible affordance is a non-empty reason span, not a phrase: copy
     // is not a test oracle, so its wording stays free to change. The ?? ""
@@ -1139,6 +1142,120 @@ describe("dismiss a rejected Stop", () => {
     expect(queryRow("refused-stop")).toBeNull();
     expect(queueStrip()).toBeNull();
   });
+
+  test("stale Dismiss refuses and reopened recovery keeps the peer composition", async () => {
+    const { record, row } = await renderRejectedStop();
+    await flushPendingTurnsProjectionForTests();
+    const peer = new MutationOutboxIndexedDB();
+    onTestFinished(() => peer.close());
+    const newer = await peer.updateRecoveryInput(
+      record.clientMutationId,
+      [{ type: "text", text: "peer's newer composition" }],
+      [],
+      "peer's newer composition",
+      [],
+      [],
+      undefined,
+      0,
+    );
+    expect(newer?.compositionRevision).toBe(1);
+    await act(async () => {
+      fireEvent.click(within(row).getByRole("button", { name: "Dismiss" }));
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(getToasts().map((toast) => toast.text)).toContain(
+      "This message changed in another tab. Refresh and try again.",
+    );
+    expect(queryRow("refused-stop")).not.toBeNull();
+    const reopened = new MutationOutboxIndexedDB();
+    onTestFinished(() => reopened.close());
+    expect(await reopened.getRecovery(record.clientMutationId)).toMatchObject({
+      compositionRevision: 1,
+      composerText: "peer's newer composition",
+    });
+  });
+});
+
+test("stale recovery Drain refuses without reporting success or resending", async () => {
+  const fake = connectFakeClient();
+  await hydrate(fake, "ref_a", {
+    evener: {
+      ref: "ref_a",
+      capabilities: CAPABILITIES,
+      queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+    },
+  });
+  const record = await seedRecovery("rejected", "visible recovery text");
+  await flushPendingTurnsProjectionForTests();
+  const peer = new MutationOutboxIndexedDB();
+  onTestFinished(() => peer.close());
+  const newer = await peer.updateRecoveryInput(
+    record.clientMutationId,
+    [{ type: "text", text: "peer's newer composition" }],
+    [],
+    "peer's newer composition",
+    [],
+    [],
+    undefined,
+    0,
+  );
+  expect(newer?.compositionRevision).toBe(1);
+  const onDrainSuccess = vi.fn();
+  const onCommitted = vi.fn();
+  const unsubscribeCommitted = subscribeComposerSubmissionCommitted(onCommitted);
+  onTestFinished(unsubscribeCommitted);
+  const getComposerText = vi.fn(() => ({ text: "visible recovery text", attachments: [], hasPending: false }));
+  renderStrip(
+    defaultProps({
+      activeRecoveryId: record.clientMutationId,
+      activeRecoveryRevision: record.compositionRevision ?? 0,
+      getComposerText,
+      onDrainSuccess,
+    }),
+  );
+  await flushPendingTurnsProjectionForTests();
+  await userEvent.setup().click(await screen.findByRole("button", { name: "Steer queue now" }));
+  await flushPendingTurnsProjectionForTests();
+  expect(onDrainSuccess).not.toHaveBeenCalled();
+  expect(onCommitted).not.toHaveBeenCalled();
+  expect(getToasts().map((toast) => toast.text)).toContain(
+    "This message changed in another tab. Refresh and try again.",
+  );
+  expect(fake.calls.filter(({ method }) => method === "turn/steer" || method === "turn/start")).toEqual([]);
+  expect(getComposerText).toHaveBeenCalled();
+});
+
+test("recovery Drain waits for pending autosaves and uses the committed revision", async () => {
+  const fake = connectFakeClient();
+  await hydrate(fake, "ref_a", {
+    evener: {
+      ref: "ref_a",
+      capabilities: CAPABILITIES,
+      queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+    },
+  });
+  const record = await seedRecovery("rejected", "visible recovery text");
+  await flushPendingTurnsProjectionForTests();
+  const getRecoveryRevision = vi.fn(async () => 1);
+  const resend = vi
+    .spyOn(MutationOutboxIndexedDB.prototype, "resendRecoveryResult")
+    .mockRejectedValue(new Error("scripted resend stop"));
+  onTestFinished(() => resend.mockRestore());
+  renderStrip(
+    defaultProps({
+      activeRecoveryId: record.clientMutationId,
+      activeRecoveryRevision: record.compositionRevision ?? 0,
+      getRecoveryRevision,
+      getComposerText: () => ({ text: "visible recovery text", attachments: [], hasPending: false }),
+    }),
+  );
+  await flushPendingTurnsProjectionForTests();
+  await userEvent.setup().click(await screen.findByRole("button", { name: "Steer queue now" }));
+  await flushPendingTurnsProjectionForTests();
+  expect(getRecoveryRevision).toHaveBeenCalledTimes(1);
+  expect(resend).toHaveBeenCalledTimes(1);
+  expect(resend.mock.calls[0]?.[2]).toMatchObject({ stopEpoch: expect.any(Number) });
+  expect(resend.mock.calls[0]?.[3]).toEqual({ [record.clientMutationId]: 1 });
 });
 
 describe("row rendering", () => {
@@ -2054,30 +2171,33 @@ describe("in-flight row locking", () => {
 });
 
 describe("optimistic pending queue rows", () => {
-  test("a pending queue-method entry from another submission renders as an extra, action-less row", async () => {
+  test("an unattempted local queue-method entry renders once with Edit and Remove", async () => {
     const fake = connectFakeClient();
-    await hydrate(fake, "ref_a", {
-      evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0, depth: 0 } },
+    await hydrate(fake, "ref_a");
+    // Seed the durable local entry the submit path commits, rather than racing
+    // its dispatcher. A click-armed dispatch is what advances this row out of
+    // the unattempted state, and this test renders the state before that.
+    const storage = new MutationOutboxIndexedDB();
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "not yet confirmed" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "not yet confirmed" }] },
     });
-    fake.on("turn/queue", (params) => ({
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread_a",
-        projectionState: "reflected",
-      },
-    }));
+    storage.close();
+    await refreshPendingTurnsProjection("ref_a");
     renderStrip(defaultProps());
+    await flushPendingTurnsProjectionForTests();
 
-    await act(async () => {
-      await submitWithPendingTracking({ ref: "ref_a", text: "not yet confirmed", onFailure: () => {} }, () =>
-        threadsStore.getState().queue("ref_a", "not yet confirmed"),
-      );
-    });
-
-    const row = (await screen.findAllByRole("listitem"))[0]!;
+    const rows = await screen.findAllByRole("listitem");
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
     expect(within(row).getByText("not yet confirmed")).toBeTruthy();
-    expect(within(row).queryByRole("button")).toBeNull();
+    expect(within(row).getByRole("button", { name: "Edit message" })).toBeTruthy();
+    expect(within(row).getByRole("button", { name: "Remove from queue" })).toBeTruthy();
+    expect(screen.getAllByText("not yet confirmed")).toHaveLength(1);
   });
 
   // A queued submission can carry ONLY skills, with no typed prose. The pending
