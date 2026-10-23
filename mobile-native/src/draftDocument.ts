@@ -131,7 +131,14 @@ export class DraftDocument {
 	};
 	private listeners = new Set<() => void>();
 	private forgotten = false;
+	/** Retired after a handoff: ordinary edits must not recreate the source
+	 * draft, while an already pending submission still settles onward. */
+	private retired = false;
 	private unsavedImages = new Map<string, DraftImageData>();
+	// A resumed identity's document that this retired one settles through. A
+	// submission already in flight outlives its screen, and its completion must
+	// clear the capture at the destination that now owns the record.
+	private successor: DraftDocument | undefined;
 
 	imagePreviews(images: DraftImage[] = this.snapshot.record.images ?? []): InputAttachment[] {
 		return images.map((image) => {
@@ -171,7 +178,7 @@ export class DraftDocument {
 		for (const listener of this.listeners) listener();
 	}
 	private persist(record: DraftRecord, retainOnFailure: boolean) {
-		if (this.forgotten) return;
+		if (this.forgotten || this.retired) return;
 		const persisted = releaseEmptyComposerOwnership(record);
 		try {
 			const referenced = new Set(
@@ -212,7 +219,7 @@ export class DraftDocument {
 		};
 	}
 	retry = () => {
-		if (this.forgotten) return;
+		if (this.forgotten || this.retired) return;
 		try {
 			if (this.snapshot.loaded) this.persist(this.snapshot.record, true);
 			else {
@@ -229,6 +236,8 @@ export class DraftDocument {
 	};
 	forget() {
 		this.forgotten = true;
+		this.retired = true;
+		this.successor = undefined;
 		this.unsavedImages.clear();
 		this.update({
 			record: { draft: "", unconfirmed: null },
@@ -236,8 +245,42 @@ export class DraftDocument {
 			error: null,
 		});
 	}
+
+	/** Adopt a record another destination already persisted for this document.
+	 * The live snapshot replaces an empty one immediately, so an already-open
+	 * screen renders the transferred composition without reopening storage. */
+	adopt(record: DraftRecord): void {
+		this.unsavedImages.clear();
+		this.update({ record, loaded: true, submitting: false, error: null });
+	}
+
+	/** Retire this document after a handoff. Ordinary edits stop here, while any
+	 * later settlement for its in-flight submission belongs to the document that
+	 * inherited the record. */
+	retireInto(successor: DraftDocument): void {
+		if (successor === this) return;
+		this.successor = successor;
+		this.retired = true;
+		this.unsavedImages.clear();
+	}
+
+	/** Keep recovered sources out of automatic restore while leaving them
+	 * manually recoverable. A refused handoff uses this so migrated editing rows
+	 * cannot append their stale original composition to an occupied draft. */
+	releaseRecoverySources(ids: readonly string[]): boolean {
+		if (this.forgotten || this.retired || !ids.length) return false;
+		const current = this.snapshot.record;
+		const released = [...new Set([...(current.releasedRecoveryIds ?? []), ...ids])];
+		if (released.length === (current.releasedRecoveryIds?.length ?? 0)) return true;
+		try {
+			this.persist({ ...current, releasedRecoveryIds: released }, true);
+			return true;
+		} catch {
+			return false;
+		}
+	}
 	edit(text: string) {
-		if (!this.snapshot.loaded) return;
+		if (!this.snapshot.loaded || this.retired) return;
 		const record = this.snapshot.record;
 		const mentions =
 			record.composer?.mentions === undefined
@@ -259,7 +302,8 @@ export class DraftDocument {
 	}
 
 	replaceDraft(text: string) {
-		if (!this.snapshot.loaded || this.snapshot.submitting || this.snapshot.record.unconfirmed !== null) return;
+		if (!this.snapshot.loaded || this.retired || this.snapshot.submitting || this.snapshot.record.unconfirmed !== null)
+			return;
 		const record = this.snapshot.record;
 		const owned = !!record.composer?.recoveryIds?.length;
 		try {
@@ -285,7 +329,8 @@ export class DraftDocument {
 
 	appendEditedRecovery(source: MutationRecoveryRecord): "restored" | "already-restored" | "blocked" {
 		const { record, loaded, submitting, error } = this.snapshot;
-		if (this.forgotten || !loaded || submitting || error || !this.isEditedSource(source)) return "blocked";
+		if (this.forgotten || this.retired || !loaded || submitting || error || !this.isEditedSource(source))
+			return "blocked";
 		if (record.completedCommandRecoveryIds?.includes(source.clientMutationId)) return "already-restored";
 		if (
 			[...(record.composer?.recoveryIds ?? []), ...(record.unconfirmedComposer?.recoveryIds ?? [])].includes(
@@ -329,7 +374,7 @@ export class DraftDocument {
 	}
 
 	addImage(image: DraftImageData, cursor?: number) {
-		if (!this.snapshot.loaded) return;
+		if (!this.snapshot.loaded || this.retired) return;
 		const { data: _data, ...reference } = image;
 		const record = this.snapshot.record;
 		const images = record.images ?? [];
@@ -372,7 +417,7 @@ export class DraftDocument {
 	}
 
 	removeImage(id: string) {
-		if (!this.snapshot.loaded) return;
+		if (!this.snapshot.loaded || this.retired) return;
 		const record = this.snapshot.record;
 		const image = record.images?.find((item) => item.id === id);
 		if (!image) return;
@@ -437,6 +482,7 @@ export class DraftDocument {
 		if (
 			!loaded ||
 			this.forgotten ||
+			this.retired ||
 			submitting ||
 			error ||
 			record.unconfirmed !== null ||
@@ -506,7 +552,7 @@ export class DraftDocument {
 							sameSources(current.unconfirmedComposer?.recoveryIds, metadata.recoveryIds))
 					) {
 						const ids = metadata?.recoveryIds ?? [];
-						this.persist(
+						this.completeSubmission(
 							{
 								...current,
 								unconfirmed: null,
@@ -516,11 +562,11 @@ export class DraftDocument {
 								completedCommandRecoveryIds: [...new Set([...(current.completedCommandRecoveryIds ?? []), ...ids])],
 								releasedRecoveryIds: releasedIds(current).filter((id) => !ids.includes(id)),
 							},
-							true,
+							draftCaptureToken,
 						);
 					}
 				} else if (!metadata?.recoveryIds?.length && this.snapshot.record.unconfirmedCaptureToken === draftCaptureToken)
-					this.persist(
+					this.completeSubmission(
 						{
 							...this.snapshot.record,
 							unconfirmed: null,
@@ -528,7 +574,7 @@ export class DraftDocument {
 							unconfirmedComposer: undefined,
 							unconfirmedCaptureToken: undefined,
 						},
-						true,
+						draftCaptureToken,
 					);
 			}
 		} finally {
@@ -536,10 +582,47 @@ export class DraftDocument {
 		}
 	}
 
+	/** Route a completed submission to the document that inherited the record
+	 * during a handoff. Only the capture this submission owns is cleared; the
+	 * successor's current draft, images, selections and newer capture stay. */
+	private completeSubmission(record: DraftRecord, captureToken: string): void {
+		if (this.successor) this.successor.forwardCompletion(record, captureToken);
+		else this.persist(record, true);
+	}
+
+	/** Follow the whole handoff chain: A's completion must reach the document
+	 * that currently owns the record, not an intermediate retired destination. */
+	private forwardCompletion(record: DraftRecord, captureToken: string): void {
+		if (this.successor) this.successor.forwardCompletion(record, captureToken);
+		else this.acceptSubmissionCompletion(record, captureToken);
+	}
+
+	private acceptSubmissionCompletion(settled: DraftRecord, captureToken: string): void {
+		const current = this.snapshot.record;
+		const next: DraftRecord = { ...current };
+		if (current.unconfirmedCaptureToken === captureToken) {
+			next.unconfirmed = null;
+			next.unconfirmedImages = undefined;
+			next.unconfirmedComposer = undefined;
+			next.unconfirmedCaptureToken = undefined;
+		}
+		const completed = settled.completedCommandRecoveryIds ?? [];
+		if (completed.length)
+			next.completedCommandRecoveryIds = [...new Set([...(current.completedCommandRecoveryIds ?? []), ...completed])];
+		const released = settled.releasedRecoveryIds ?? [];
+		if (released.length) next.releasedRecoveryIds = [...new Set([...(current.releasedRecoveryIds ?? []), ...released])];
+		try {
+			this.persist(next, true);
+		} catch {
+			/* The destination keeps its work; the composer's Retry owns the failure. */
+		}
+	}
+
 	/** Clear only the unconfirmed composition whose exact submission token a
 	 * durable mutation row proved it owns. Other captures and current draft work
 	 * remain untouched. A failed local write must stop the caller's action. */
 	clearMatchingUnconfirmedCapture(token: string): boolean {
+		if (this.retired) return true;
 		let durable: DraftRecord;
 		try {
 			durable = this.repository().read(this.destination);
@@ -570,7 +653,7 @@ export class DraftDocument {
 	/** Remove only IDs whose exact-target deletion attempts completed. */
 	finishCompletedCommandRecovery(ids: readonly string[]): boolean {
 		const { record, loaded, error } = this.snapshot;
-		if (this.forgotten || !loaded || error) return false;
+		if (this.forgotten || this.retired || !loaded || error) return false;
 		const remaining = (record.completedCommandRecoveryIds ?? []).filter((id) => !ids.includes(id));
 		if (remaining.length === (record.completedCommandRecoveryIds ?? []).length) return true;
 		try {
@@ -593,6 +676,7 @@ export class DraftDocument {
 		const { record, loaded, error } = this.snapshot;
 		if (
 			this.forgotten ||
+			this.retired ||
 			!loaded ||
 			error ||
 			commit.targetRef !== this.targetKey ||
@@ -621,7 +705,7 @@ export class DraftDocument {
 	/** Call only after runtime acknowledgment succeeds. Failure retains the durable retry marker. */
 	finishRecoveryResendAck(clientMutationId: string): boolean {
 		const { record, loaded, error } = this.snapshot;
-		if (this.forgotten || !loaded || error) return false;
+		if (this.forgotten || this.retired || !loaded || error) return false;
 		if (!record.recoveryResendAcks?.includes(clientMutationId)) return true;
 		const remaining = record.recoveryResendAcks.filter((id) => id !== clientMutationId);
 		try {
@@ -639,6 +723,7 @@ export class DraftDocument {
 		const { record, loaded, submitting, error } = this.snapshot;
 		if (
 			this.forgotten ||
+			this.retired ||
 			!loaded ||
 			submitting ||
 			error ||
@@ -687,6 +772,7 @@ export class DraftDocument {
 	dismiss() {
 		if (
 			!this.snapshot.loaded ||
+			this.retired ||
 			this.snapshot.submitting ||
 			this.snapshot.record.unconfirmedComposer?.recoveryIds?.length
 		)
@@ -710,6 +796,7 @@ export class DraftDocument {
 		const { record, loaded, submitting } = this.snapshot;
 		if (
 			!loaded ||
+			this.retired ||
 			submitting ||
 			record.unconfirmed === null ||
 			record.images?.length ||
@@ -746,6 +833,7 @@ export class DraftDocument {
 		const { record, loaded, submitting, error } = this.snapshot;
 		return (
 			!this.forgotten &&
+			!this.retired &&
 			loaded &&
 			!submitting &&
 			error === null &&
@@ -761,7 +849,7 @@ export class DraftDocument {
 	// tells the user to clear a draft that isn't there.
 	recoveredRestoreBlock(): RecoveredRestoreBlock | null {
 		const { record, loaded, submitting, error } = this.snapshot;
-		if (this.forgotten) return "unavailable";
+		if (this.forgotten || this.retired) return "unavailable";
 		if (!loaded) return "loading";
 		if (submitting) return "sending";
 		if (error !== null) return "unsaved";
