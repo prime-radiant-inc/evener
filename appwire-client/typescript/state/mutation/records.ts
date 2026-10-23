@@ -39,7 +39,7 @@ export interface MutationAttachmentRef {
 // the daemon. Only an explicit user Retry releases it; no scan, reopen, or
 // reclassification path may move it.
 export type MutationOutboxState = "submitting" | "blockedUnknown" | "canceled";
-export type MutationRecoveryKind = "rejected" | "orphaned";
+export type MutationRecoveryKind = "rejected" | "orphaned" | "editing";
 
 // One submission as the client made it. The attachment type is a parameter so
 // a host can carry its own bytes (the web's Blob) on the same record shape
@@ -70,6 +70,9 @@ export interface MutationIntent<A extends MutationAttachmentRef = MutationAttach
   // records all carry them in the one record they already persist.
   composerText?: string;
   composerMentions?: readonly ComposerMention[];
+  // Native local-draft ownership only. Never copied into the RPC payload;
+  // absent on older rows and on hosts that do not use native draft capture.
+  draftCaptureToken?: string;
   // A transcript action did not consume the composer. Refusal recovery stays
   // explicit rather than replacing even an empty draft. Local only, not RPC.
   preserveComposer?: boolean;
@@ -127,6 +130,14 @@ export interface MutationOptimisticRecord<A extends MutationAttachmentRef = Muta
 export interface MutationRecoveryRecord<A extends MutationAttachmentRef = MutationAttachmentRef>
   extends MutationOutboxRecord<A> {
   recoveryKind: MutationRecoveryKind;
+  // Composition CAS version; absent on older records and interpreted as zero.
+  compositionRevision?: number;
+  // Composer pane that last wrote this composition. Stable across child
+  // remounts and distinct for every pane; absent on older or native records.
+  compositionOwnerId?: string;
+  // Local browser draft snapshot incorporated into this recovery row. Not an
+  // RPC field; absent on older rows and on native recovery records.
+  localDraftRevisionId?: string;
   // Why the daemon refused, in its own words. Without it a recovery row can
   // only say that something did not happen: a Steer or Stop refused with
   // nothing on screen explaining why. Optional because records written before
@@ -168,6 +179,7 @@ export function acceptedRecord<A extends MutationAttachmentRef = MutationAttachm
     payload: source.payload,
     attachments: source.attachments,
     optimisticDisplay: source.optimisticDisplay,
+    draftCaptureToken: source.draftCaptureToken,
     state: "accepted",
   };
 }

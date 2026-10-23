@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { composerRests, composerShowsStop } from "./composerSlot";
 
-const idle = { connected: true, canStop: true, text: "", images: 0 };
+const idle = { connected: true, canStop: true, text: "", images: 0, hasSelections: false };
 
 describe("the composer's Stop slot (spec 8.5)", () => {
 	it("shows Stop only for an empty draft while the turn can be stopped", () => {
@@ -22,6 +22,10 @@ describe("the composer's Stop slot (spec 8.5)", () => {
 	it("keeps Send for an image-only draft", () => {
 		expect(composerShowsStop({ ...idle, images: 1 })).toBe(false);
 		expect(composerShowsStop({ ...idle, images: 3 })).toBe(false);
+	});
+
+	it("keeps Send for a selection-only composition", () => {
+		expect(composerShowsStop({ ...idle, hasSelections: true })).toBe(false);
 	});
 
 	it("keeps Send when the turn cannot be stopped, or the hub is away", () => {

@@ -1,4 +1,10 @@
 import type { ComposerMention, InputItem } from "@evener/appwire-client";
+import {
+  canEditQueuedMessage,
+  canRemoveQueuedMessage,
+  matchesQueuedMessageSnapshot,
+  type QueuedMessageStorage,
+} from "@evener/appwire-client/state/mutation";
 import { IDBConnection, requestResult, transactionCompletion, tryAbortTransaction } from "./idbConnection";
 import { ownClientId } from "./mutationClientIdentity";
 import type {
@@ -28,7 +34,16 @@ type MutationOutboxOperation =
   | "updateRecoveryInput"
   | "discardRecovery"
   | "resendRecovery"
+  | "editQueuedMessage"
+  | "removeQueuedMessage"
   | "retargetOutbox";
+
+type VersionedMutationRecoveryRecord = MutationRecoveryRecord & { compositionRevision?: number };
+
+export type MutationRecoveryResendResult =
+  | { status: "sent"; record: MutationOutboxRecord }
+  | { status: "consumed" }
+  | { status: "refused" };
 
 // What retargetOutbox moved to the resumed ref, by store: the caller drives its
 // per-ref bookkeeping when ANY of them moved (an optimistic-only or
@@ -177,7 +192,7 @@ function isCancelableByStop(record: MutationOutboxRecord): boolean {
 // MutationOutboxIndexedDB serializes sequence allocation with each durable
 // transition. Cross-tab correctness comes from IndexedDB readwrite transaction
 // ordering rather than a browser lease or leader election.
-export class MutationOutboxIndexedDB {
+export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAttachment> {
   readonly #connection: IDBConnection;
   readonly #databaseName: string;
   readonly #createMutationId: () => string;
@@ -643,7 +658,8 @@ export class MutationOutboxIndexedDB {
           await requestResult(optimistic.delete(clientMutationId));
         }
         if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
-        if (recoveryRecord) await requestResult(recovery.delete(clientMutationId));
+        if (recoveryRecord && (recoveryRecord.compositionRevision ?? 0) === 0)
+          await requestResult(recovery.delete(clientMutationId));
         return true;
       },
     );
@@ -672,7 +688,8 @@ export class MutationOutboxIndexedDB {
         await this.#discardSupersededNoteRecovery(transaction, source);
         if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
         if (optimisticRecord) await requestResult(optimistic.delete(clientMutationId));
-        if (recoveryRecord) await requestResult(recovery.delete(clientMutationId));
+        if (recoveryRecord && (recoveryRecord.compositionRevision ?? 0) === 0)
+          await requestResult(recovery.delete(clientMutationId));
         settledSource = source;
         return true;
       },
@@ -693,7 +710,8 @@ export class MutationOutboxIndexedDB {
       if (
         record.method === "notes/human/set" &&
         record.targetRef === source.targetRef &&
-        record.intentSequence < source.intentSequence
+        record.intentSequence < source.intentSequence &&
+        (record.compositionRevision ?? 0) === 0
       ) {
         await requestResult(store.delete(record.clientMutationId));
       }
@@ -876,10 +894,63 @@ export class MutationOutboxIndexedDB {
       const outbox = transaction.objectStore(OUTBOX_STORE);
       const record = await requestResult<MutationOutboxRecord | undefined>(outbox.get(clientMutationId));
       if (!record) return undefined;
-      const recovery: MutationRecoveryRecord = { ...record, recoveryKind, recoveryReason };
+      // Note saves own their recovery state and can re-transfer the same row;
+      // only a composer composition may not be replaced once edited.
+      if (record.method !== "notes/human/set") {
+        const existingRecovery = await requestResult<VersionedMutationRecoveryRecord | undefined>(
+          transaction.objectStore(RECOVERY_STORE).get(clientMutationId),
+        );
+        if (existingRecovery && (existingRecovery.compositionRevision ?? 0) > 0) return undefined;
+      }
+      const recovery: VersionedMutationRecoveryRecord = {
+        ...record,
+        recoveryKind,
+        recoveryReason,
+        compositionRevision: 0,
+      };
       await requestResult(transaction.objectStore(RECOVERY_STORE).put(recovery));
       await requestResult(outbox.delete(clientMutationId));
       return recovery;
+    });
+  }
+
+  async editQueuedMessage(
+    expected: MutationOutboxRecord,
+    barrier: MutationStopBarrier,
+  ): Promise<MutationRecoveryRecord | undefined> {
+    return this.#write([OUTBOX_STORE, RECOVERY_STORE, SEQUENCE_STORE], "editQueuedMessage", async (transaction) => {
+      const outbox = transaction.objectStore(OUTBOX_STORE);
+      const record = await requestResult<MutationOutboxRecord | undefined>(outbox.get(expected.clientMutationId));
+      if (!record || !matchesQueuedMessageSnapshot(record, expected) || !canEditQueuedMessage(record)) return undefined;
+      if ((await this.#stopEpochOf(transaction, record.targetRef)) !== barrier.stopEpoch) return undefined;
+      const existingRecovery = await requestResult<VersionedMutationRecoveryRecord | undefined>(
+        transaction.objectStore(RECOVERY_STORE).get(record.clientMutationId),
+      );
+      if (
+        existingRecovery &&
+        existingRecovery.method !== "notes/human/set" &&
+        (existingRecovery.compositionRevision ?? 0) > 0
+      )
+        return undefined;
+      const recovery: VersionedMutationRecoveryRecord = {
+        ...record,
+        recoveryKind: "editing",
+        compositionRevision: 0,
+      };
+      await requestResult(transaction.objectStore(RECOVERY_STORE).put(recovery));
+      await requestResult(outbox.delete(record.clientMutationId));
+      return recovery;
+    });
+  }
+
+  async removeQueuedMessage(expected: MutationOutboxRecord, barrier: MutationStopBarrier): Promise<boolean> {
+    return this.#write([OUTBOX_STORE, SEQUENCE_STORE], "removeQueuedMessage", async (transaction) => {
+      const outbox = transaction.objectStore(OUTBOX_STORE);
+      const record = await requestResult<MutationOutboxRecord | undefined>(outbox.get(expected.clientMutationId));
+      if (!record || !matchesQueuedMessageSnapshot(record, expected) || !canRemoveQueuedMessage(record)) return false;
+      if ((await this.#stopEpochOf(transaction, record.targetRef)) !== barrier.stopEpoch) return false;
+      await requestResult(outbox.delete(record.clientMutationId));
+      return true;
     });
   }
 
@@ -906,13 +977,41 @@ export class MutationOutboxIndexedDB {
     attachments?: MutationAttachment[],
     composerText?: string,
     composerMentions?: readonly ComposerMention[],
+    consumeRecoveryIds?: readonly string[],
+    localDraftRevisionId?: string,
+    expectedCompositionRevision?: number,
+    expectedRecoveryRevisions?: Readonly<Record<string, number>>,
+    compositionOwnerId?: string,
   ): Promise<MutationRecoveryRecord | undefined> {
     return this.#write(RECOVERY_STORE, "updateRecoveryInput", async (transaction) => {
       const store = transaction.objectStore(RECOVERY_STORE);
-      const record = await requestResult<MutationRecoveryRecord | undefined>(store.get(clientMutationId));
+      const record = await requestResult<VersionedMutationRecoveryRecord | undefined>(store.get(clientMutationId));
       if (!record) return undefined;
-      const next: MutationRecoveryRecord = {
+      const sources = [...new Set(consumeRecoveryIds)].filter((id) => id !== clientMutationId);
+      const expected = new Map(Object.entries(expectedRecoveryRevisions ?? {}));
+      // Existing scalar callers remain compatible for the owner only. A
+      // supplied map is authoritative for every row in the transaction.
+      if (expectedRecoveryRevisions === undefined && expectedCompositionRevision !== undefined)
+        expected.set(clientMutationId, expectedCompositionRevision);
+      // A consolidation must be based on the exact durable owner snapshot the
+      // caller merged. Compare inside this transaction, before either writing
+      // the replacement or deleting any secondary recovery rows.
+      if (!expected.has(clientMutationId) || (record.compositionRevision ?? 0) !== expected.get(clientMutationId))
+        return undefined;
+      for (const id of sources) {
+        const source = await requestResult<MutationRecoveryRecord | undefined>(store.get(id));
+        if (
+          !source ||
+          source.targetRef !== record.targetRef ||
+          !expected.has(id) ||
+          ((source as VersionedMutationRecoveryRecord).compositionRevision ?? 0) !== expected.get(id)
+        )
+          return undefined;
+      }
+      const next: VersionedMutationRecoveryRecord = {
         ...record,
+        compositionRevision: (record.compositionRevision ?? 0) + 1,
+        compositionOwnerId,
         payload: { ...record.payload, input },
         optimisticDisplay:
           record.optimisticDisplay && typeof record.optimisticDisplay === "object"
@@ -920,20 +1019,31 @@ export class MutationOutboxIndexedDB {
             : { method: record.method, input },
         attachments: attachments ?? record.attachments,
         composerText: composerText ?? record.composerText,
+        localDraftRevisionId: localDraftRevisionId ?? record.localDraftRevisionId,
         // Locations belong to composerText. A full replacement can omit them
         // to clear old atoms, while a partial update preserves the pair.
         composerMentions: composerText === undefined ? (composerMentions ?? record.composerMentions) : composerMentions,
       };
       await requestResult(store.put(next));
+      for (const id of sources) await requestResult(store.delete(id));
       return next;
     });
   }
 
-  async discardRecovery(clientMutationId: string, shouldDiscard?: () => boolean): Promise<boolean> {
+  async discardRecovery(
+    clientMutationId: string,
+    shouldDiscard?: () => boolean,
+    expectedCompositionRevision?: number,
+  ): Promise<boolean> {
     return this.#write(RECOVERY_STORE, "discardRecovery", async (transaction) => {
       const store = transaction.objectStore(RECOVERY_STORE);
       const record = await requestResult<MutationRecoveryRecord | undefined>(store.get(clientMutationId));
       if (!record) return false;
+      if (
+        expectedCompositionRevision !== undefined &&
+        ((record as VersionedMutationRecoveryRecord).compositionRevision ?? 0) !== expectedCompositionRevision
+      )
+        return false;
       // Evaluate immediately at the durable deletion boundary, after every
       // asynchronous prerequisite. Callers use this to invalidate a discard
       // that became stale while it was waiting to reach storage.
@@ -943,12 +1053,60 @@ export class MutationOutboxIndexedDB {
     });
   }
 
-  async resendRecovery(clientMutationId: string, intent: MutationIntent): Promise<MutationOutboxRecord | undefined> {
+  async resendRecovery(
+    sourceIds: string | readonly string[],
+    intent: MutationIntent,
+    barrier?: MutationStopBarrier,
+    expectedRecoveryRevisions?: Readonly<Record<string, number>>,
+    compositionOwnerId?: string,
+  ): Promise<MutationOutboxRecord | undefined> {
+    const result = await this.resendRecoveryResult(
+      sourceIds,
+      intent,
+      barrier,
+      expectedRecoveryRevisions,
+      compositionOwnerId,
+    );
+    return result.status === "sent" ? result.record : undefined;
+  }
+
+  async resendRecoveryResult(
+    sourceIds: string | readonly string[],
+    intent: MutationIntent,
+    barrier?: MutationStopBarrier,
+    expectedRecoveryRevisions?: Readonly<Record<string, number>>,
+    compositionOwnerId?: string,
+  ): Promise<MutationRecoveryResendResult> {
     if (!intent.targetRef.trim()) throw new Error("targetRef is required");
     return this.#write(ENQUEUE_STORES, "resendRecovery", async (transaction) => {
       const recoveryStore = transaction.objectStore(RECOVERY_STORE);
-      const recovery = await requestResult<MutationRecoveryRecord | undefined>(recoveryStore.get(clientMutationId));
-      if (!recovery) return undefined;
+      const ids = [...new Set(typeof sourceIds === "string" ? [sourceIds] : sourceIds)];
+      if (ids.length === 0) return { status: "refused" };
+      let consumed = false;
+      let refused = false;
+      for (const id of ids) {
+        const recovery = await requestResult<MutationRecoveryRecord | undefined>(recoveryStore.get(id));
+        if (!recovery) {
+          consumed = true;
+          continue;
+        }
+        const durableRevision = (recovery as VersionedMutationRecoveryRecord).compositionRevision ?? 0;
+        // A caller that supplies no map is the legacy resend path and accepts
+        // the durable row as it stands. A supplied map stays authoritative: a
+        // missing id is a stale caller and is refused.
+        const expected = expectedRecoveryRevisions === undefined ? durableRevision : expectedRecoveryRevisions[id];
+        const sameOwner =
+          compositionOwnerId !== undefined &&
+          (recovery as VersionedMutationRecoveryRecord).compositionOwnerId === compositionOwnerId;
+        if (
+          recovery.targetRef !== intent.targetRef ||
+          expected === undefined ||
+          (durableRevision !== expected && !sameOwner)
+        )
+          refused = true;
+      }
+      if (refused) return { status: "refused" };
+      if (consumed) return { status: "consumed" };
       const intentSequence = await this.#allocateSequence(transaction, intent.targetRef);
       const nextMutationId = this.#createMutationId();
       await this.#assertMutationIdAvailable(transaction, nextMutationId);
@@ -972,13 +1130,13 @@ export class MutationOutboxIndexedDB {
         originClientId: ownClientId(),
         intentSequence,
         createdAt: this.#now(),
-        state: "submitting",
+        state: barrier !== undefined && stopEpoch > barrier.stopEpoch ? "canceled" : "submitting",
         attempted: false,
         stopEpochAtEnqueue: stopEpoch,
       };
       await requestResult(transaction.objectStore(OUTBOX_STORE).add(record));
-      await requestResult(recoveryStore.delete(clientMutationId));
-      return record;
+      for (const id of ids) await requestResult(recoveryStore.delete(id));
+      return { status: "sent", record };
     });
   }
 
