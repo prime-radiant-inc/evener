@@ -276,7 +276,11 @@ func TestE2E_ManagerAcceptance(t *testing.T) {
 		if !call.Contains(watchID) {
 			t.Fatalf("completion notice missing watch: %v", call.Texts())
 		}
-		finished := strings.Contains(strings.Join(call.Texts(), "\n"), "completed: accepted terminal done")
+		watches, err := clientRequest[appwire.SessionWatchesResponse](ctx, human, appwire.MethodEvenerThreadWatchesList, appwire.SessionActivityListParams{Ref: managerRef})
+		if err != nil {
+			t.Fatal(err)
+		}
+		finished := acceptanceWatchCompleted(watches, watchID)
 		call.RespondToolCall("communicate", communicateArgs("worker observed"))
 		if finished {
 			break
@@ -599,6 +603,15 @@ func acceptanceHasTool(turns []appwire.Turn, name string) bool {
 			if item.ToolName == name && item.CallID != "" && item.Error == "" {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func acceptanceWatchCompleted(watches appwire.SessionWatchesResponse, watchID string) bool {
+	for _, row := range watches.Watches {
+		if row.Watch.ID == watchID {
+			return row.State == appwire.SessionWatchStateEnded && !row.Watch.Active && row.Watch.EndReason == "completed"
 		}
 	}
 	return false
