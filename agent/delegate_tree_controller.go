@@ -367,8 +367,6 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		deliveryClaims:      make(map[string]*delegateDeliveryClaim),
 		quietClaims:         make(map[uint64]*delegateQuietAttentionClaim),
 		attention:           make(map[string]*delegateAttentionState),
-		laneHandoffs:        make(map[string]struct{}),
-		laneRestores:        make(map[string]int),
 		idleReleaseTimers:   make(map[string]idleReleaseTimerHandle),
 		watchEnqueues:       make(map[uint64]*delegateWatchReceipt),
 		watchDeliveries:     make(map[uint64]*delegateWatchReceipt),
@@ -737,17 +735,39 @@ func (c *delegateTreeController) stableWorktreeSnapshotForOwner(owner *Session, 
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	aggregate := c.durable[delegateID]
-	if aggregate == nil {
-		return stableDelegateWorktreeSnapshot{}, errDelegateNotControllable
-	}
-	if !c.stableDelegateOwnedBySessionLocked(owner, aggregate) {
-		return stableDelegateWorktreeSnapshot{}, errDelegateNotControllable
-	}
-	if aggregate.Descriptor.Isolation != "worktree" {
-		return stableDelegateWorktreeSnapshot{}, fmt.Errorf("delegate %s is not worktree-isolated", delegateID)
+	aggregate, err := c.stableWorktreeOwnedAggregateLocked(owner, delegateID)
+	if err != nil {
+		return stableDelegateWorktreeSnapshot{}, err
 	}
 	return c.stableWorktreeSnapshotLocked(delegateID, aggregate), nil
+}
+
+// stableWorktreeOwnerError validates only the ownership and isolation checks a
+// dispose refusal needs, without building the full snapshot.
+func (c *delegateTreeController) stableWorktreeOwnerError(owner *Session, delegateID string) error {
+	if c == nil || owner == nil {
+		return errDelegateNotControllable
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, err := c.stableWorktreeOwnedAggregateLocked(owner, delegateID)
+	return err
+}
+
+// stableWorktreeOwnedAggregateLocked is the shared ownership/isolation gate.
+// Callers must hold c.mu.
+func (c *delegateTreeController) stableWorktreeOwnedAggregateLocked(owner *Session, delegateID string) (*delegatestore.Aggregate, error) {
+	aggregate := c.durable[delegateID]
+	if aggregate == nil {
+		return nil, errDelegateNotControllable
+	}
+	if !c.stableDelegateOwnedBySessionLocked(owner, aggregate) {
+		return nil, errDelegateNotControllable
+	}
+	if aggregate.Descriptor.Isolation != "worktree" {
+		return nil, fmt.Errorf("delegate %s is not worktree-isolated", delegateID)
+	}
+	return aggregate, nil
 }
 
 func (c *delegateTreeController) stableWorktreeSnapshotLocked(delegateID string, aggregate *delegatestore.Aggregate) stableDelegateWorktreeSnapshot {

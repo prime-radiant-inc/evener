@@ -866,11 +866,7 @@ func (c *delegateTreeController) holdAttentionRestoreLocked(delegateID string) {
 func (c *delegateTreeController) releaseAttentionRestoreHold(delegateID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.attentionRestoreHolds[delegateID] <= 1 {
-		delete(c.attentionRestoreHolds, delegateID)
-		return
-	}
-	c.attentionRestoreHolds[delegateID]--
+	releaseCountedLocked(c.attentionRestoreHolds, delegateID)
 }
 
 // attentionRestoreHeldLocked reports whether an attention wake pass holds

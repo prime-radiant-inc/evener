@@ -12,17 +12,6 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
-// awaitFenceSignal waits for a test rendezvous with a tripwire bound; the
-// rendezvous is the mechanism and the timeout only prevents a hung fixture.
-func awaitFenceSignal(t *testing.T, ch <-chan struct{}, what string) {
-	t.Helper()
-	select {
-	case <-ch:
-	case <-time.After(30 * time.Second):
-		t.Fatalf("timed out waiting for %s", what)
-	}
-}
-
 // seedNestedIdleDelegate seeds an idle, resumable delegate under parentID.
 // workingDir is the parent's lane for a non-isolated child, which is the shape
 // that shares its parent's lane.
@@ -48,6 +37,19 @@ func seedNestedIdleDelegate(t *testing.T, c *delegateTreeController, id, parentI
 	})
 	if err != nil {
 		t.Fatalf("seed nested delegate %s: %v", id, err)
+	}
+}
+
+// assertBusyReservation reports a refused start admission and releases a
+// reservation that unexpectedly succeeded. Coverage is unchanged: every caller
+// still asserts errDelegateTargetBusy.
+func assertBusyReservation(t *testing.T, c *delegateTreeController, reservation *delegateStartReservation, err error, what string) {
+	t.Helper()
+	if reservation != nil {
+		c.AbortStart(reservation)
+	}
+	if !errors.Is(err, errDelegateTargetBusy) {
+		t.Errorf("%s = %v, want errDelegateTargetBusy", what, err)
 	}
 }
 
@@ -83,7 +85,7 @@ func TestDelegateLaneHandoffFencesNestedRestore(t *testing.T) {
 		_, err := r.s.worktreeDispose(context.Background(), parentID, false, false)
 		disposeDone <- err
 	}()
-	awaitFenceSignal(t, seamArrived, "the dispose lane-evaluation seam")
+	waitForTestSignal(t, seamArrived, "the dispose lane-evaluation seam")
 
 	commit, _, commitErr := r.s.delegateController.idleDelegateRestoreCommit(nestedID)
 	installation, installErr := r.s.delegateController.beginIdleRuntimeInstallation(nestedID)
@@ -168,7 +170,7 @@ func TestDelegateLaneHandoffFenceAdmissions(t *testing.T) {
 	seedDelegateControllerIdle(t, c, nestedID, parentID)
 	seedDelegateControllerIdle(t, c, siblingID, "")
 
-	if !c.beginSubtreeLaneHandoff(parentID) {
+	if c.beginSubtreeLaneHandoff(parentID) != laneHandoffAcquired {
 		t.Fatal("clean idle subtree refused its lane handoff")
 	}
 	defer c.endSubtreeLaneHandoff(parentID)
@@ -192,18 +194,10 @@ func TestDelegateLaneHandoffFenceAdmissions(t *testing.T) {
 	if err := c.beginLaneRestore(nestedID); !errors.Is(err, errDelegateTargetBusy) {
 		t.Errorf("nested restore window under the handoff = %v, want errDelegateTargetBusy", err)
 	}
-	if reservation, err := c.ReserveStart(rootDelegateActor("root-session"), parentID); !errors.Is(err, errDelegateTargetBusy) {
-		if reservation != nil {
-			c.AbortStart(reservation)
-		}
-		t.Errorf("target start under the handoff = %v, want errDelegateTargetBusy", err)
-	}
-	if reservation, err := c.reserveOwedAttentionStart(nestedID, "attention-sentinel", 1, nil); !errors.Is(err, errDelegateTargetBusy) {
-		if reservation != nil {
-			c.AbortStart(reservation)
-		}
-		t.Errorf("nested owed attention start under the handoff = %v, want errDelegateTargetBusy", err)
-	}
+	reservation, err := c.ReserveStart(rootDelegateActor("root-session"), parentID)
+	assertBusyReservation(t, c, reservation, err, "target start under the handoff")
+	reservation, err = c.reserveOwedAttentionStart(nestedID, "attention-sentinel", 1, nil)
+	assertBusyReservation(t, c, reservation, err, "nested owed attention start under the handoff")
 
 	if _, _, err := c.idleDelegateRestoreCommit(siblingID); err != nil {
 		t.Errorf("sibling restore commit under another subtree's handoff = %v, want success", err)
@@ -233,12 +227,14 @@ func TestDelegateLaneHandoffRefusesWhileRestoreInFlight(t *testing.T) {
 	if err := c.beginLaneRestore(nestedID); err != nil {
 		t.Fatalf("begin restore window: %v", err)
 	}
-	if c.beginSubtreeLaneHandoff(parentID) {
-		c.endSubtreeLaneHandoff(parentID)
+	if admission := c.beginSubtreeLaneHandoff(parentID); admission != laneHandoffBusy {
+		if admission == laneHandoffAcquired {
+			c.endSubtreeLaneHandoff(parentID)
+		}
 		t.Fatal("handoff admitted while a descendant restore window was open")
 	}
 	c.endLaneRestore(nestedID)
-	if !c.beginSubtreeLaneHandoff(parentID) {
+	if c.beginSubtreeLaneHandoff(parentID) != laneHandoffAcquired {
 		t.Fatal("handoff refused after the restore window closed")
 	}
 	c.endSubtreeLaneHandoff(parentID)
@@ -259,12 +255,14 @@ func TestDelegateLaneHandoffRefusesWhileAttentionRestoreHeld(t *testing.T) {
 	seedDelegateControllerIdle(t, c, nestedID, parentID)
 
 	c.holdAttentionRestore(nestedID)
-	if c.beginSubtreeLaneHandoff(parentID) {
-		c.endSubtreeLaneHandoff(parentID)
+	if admission := c.beginSubtreeLaneHandoff(parentID); admission != laneHandoffBusy {
+		if admission == laneHandoffAcquired {
+			c.endSubtreeLaneHandoff(parentID)
+		}
 		t.Fatal("handoff admitted while a wake pass held the nested runtime")
 	}
 	c.releaseAttentionRestoreHold(nestedID)
-	if !c.beginSubtreeLaneHandoff(parentID) {
+	if c.beginSubtreeLaneHandoff(parentID) != laneHandoffAcquired {
 		t.Fatal("handoff refused after the attention restore hold released")
 	}
 	c.endSubtreeLaneHandoff(parentID)
@@ -288,7 +286,7 @@ func TestDelegateLaneHandoffRefusesInstallationAttach(t *testing.T) {
 		t.Fatalf("begin idle installation before the handoff: %v", err)
 	}
 	defer installation.release()
-	if !c.beginSubtreeLaneHandoff(parentID) {
+	if c.beginSubtreeLaneHandoff(parentID) != laneHandoffAcquired {
 		t.Fatal("handoff refused despite no tracked subtree work")
 	}
 	defer c.endSubtreeLaneHandoff(parentID)
@@ -321,12 +319,16 @@ func TestDelegateLaneHandoffRefusesWhileColdRestoreInFlight(t *testing.T) {
 		close(afterCommit)
 		<-releaseRestore
 	}
-	restoreDone := make(chan error, 1)
+	restoreDone := make(chan struct{}, 1)
 	go func() {
 		_, _, err := r.s.restoreColdDelegateAttentionRuntime(nestedID)
-		restoreDone <- err
+		// The fixture has no saved child metadata, so this restore fails after
+		// its commit. The subject here is the window: it must hold through that
+		// commit and release on return, not whether the restore succeeds.
+		t.Logf("cold restore after its window: %v", err)
+		restoreDone <- struct{}{}
 	}()
-	awaitFenceSignal(t, afterCommit, "the cold restore commit seam")
+	waitForTestSignal(t, afterCommit, "the cold restore commit seam")
 
 	if _, err := r.s.worktreeDispose(context.Background(), parentID, false, false); err == nil {
 		release()
@@ -338,14 +340,7 @@ func TestDelegateLaneHandoffRefusesWhileColdRestoreInFlight(t *testing.T) {
 	assertStableWorktreeResumable(t, r.s.delegateController, parentID, true)
 
 	release()
-	select {
-	case <-restoreDone:
-		// The fixture has no saved child metadata, so this restore fails after
-		// its commit. The subject here is the window: it must hold through that
-		// commit and release on return, not whether the restore succeeds.
-	case <-time.After(30 * time.Second): // TRIPWIRE: fixture rendezvous normally takes milliseconds; this only bounds a deadlock.
-		t.Fatal("cold restore did not finish after its window was released")
-	}
+	waitForTestSignal(t, restoreDone, "the cold restore after its window released")
 	if _, err := r.s.worktreeDispose(context.Background(), parentID, false, false); err != nil {
 		t.Fatalf("dispose retry after the restore window closed: %v", err)
 	}
@@ -371,8 +366,10 @@ func TestDelegateLaneHandoffRefusesSubtreeReservation(t *testing.T) {
 	c.mu.Lock()
 	c.reservations[1] = &delegateStartRecord{token: 1, delegateID: nestedID}
 	c.mu.Unlock()
-	if c.beginSubtreeLaneHandoff(parentID) {
-		c.endSubtreeLaneHandoff(parentID)
+	if admission := c.beginSubtreeLaneHandoff(parentID); admission != laneHandoffBusy {
+		if admission == laneHandoffAcquired {
+			c.endSubtreeLaneHandoff(parentID)
+		}
 		t.Fatal("handoff admitted with a descendant start reservation in flight")
 	}
 
@@ -385,15 +382,17 @@ func TestDelegateLaneHandoffRefusesSubtreeReservation(t *testing.T) {
 	}
 	delete(c.reservations, 1)
 	c.mu.Unlock()
-	if c.beginSubtreeLaneHandoff(parentID) {
-		c.endSubtreeLaneHandoff(parentID)
+	if admission := c.beginSubtreeLaneHandoff(parentID); admission != laneHandoffBusy {
+		if admission == laneHandoffAcquired {
+			c.endSubtreeLaneHandoff(parentID)
+		}
 		t.Fatal("handoff admitted with a create reservation under the subtree in flight")
 	}
 
 	c.mu.Lock()
 	delete(c.reservations, 2)
 	c.mu.Unlock()
-	if !c.beginSubtreeLaneHandoff(parentID) {
+	if c.beginSubtreeLaneHandoff(parentID) != laneHandoffAcquired {
 		t.Fatal("handoff refused after the subtree reservations cleared")
 	}
 	c.endSubtreeLaneHandoff(parentID)
@@ -433,7 +432,7 @@ func TestDelegateLaneHandoffAdditionalAdmissions(t *testing.T) {
 		c, _ := newDelegateControllerTestHarness(t, 8, 8)
 		seedDelegateControllerIdle(t, c, parentID, "")
 		seedDelegateControllerIdle(t, c, nestedID, parentID)
-		if !c.beginSubtreeLaneHandoff(parentID) {
+		if c.beginSubtreeLaneHandoff(parentID) != laneHandoffAcquired {
 			t.Fatal("clean idle subtree refused its handoff")
 		}
 		t.Cleanup(func() { c.endSubtreeLaneHandoff(parentID) })
@@ -445,8 +444,10 @@ func TestDelegateLaneHandoffAdditionalAdmissions(t *testing.T) {
 		seedDelegateControllerIdle(t, c, parentID, "")
 		seedDelegateControllerIdle(t, c, nestedID, parentID)
 		seedControllerRun(t, c, nestedID)
-		if c.beginSubtreeLaneHandoff(parentID) {
-			c.endSubtreeLaneHandoff(parentID)
+		if admission := c.beginSubtreeLaneHandoff(parentID); admission != laneHandoffBusy {
+			if admission == laneHandoffAcquired {
+				c.endSubtreeLaneHandoff(parentID)
+			}
 			t.Fatal("handoff admitted with an active generation in the subtree")
 		}
 	})
@@ -456,12 +457,8 @@ func TestDelegateLaneHandoffAdditionalAdmissions(t *testing.T) {
 		lease := seedControllerRun(t, c, parentID)
 		actor := delegateActor{lease: &lease}
 		descriptor := delegatestore.Descriptor{Task: "fenced child", AgentType: "default", Resumable: true}
-		if reservation, err := c.ReserveCreate(actor, descriptor); !errors.Is(err, errDelegateTargetBusy) {
-			if reservation != nil {
-				c.AbortStart(reservation)
-			}
-			t.Errorf("create under a fenced parent = %v, want errDelegateTargetBusy", err)
-		}
+		reservation, err := c.ReserveCreate(actor, descriptor)
+		assertBusyReservation(t, c, reservation, err, "create under a fenced parent")
 	})
 
 	t.Run("attention start under a handoff", func(t *testing.T) {
@@ -470,12 +467,8 @@ func TestDelegateLaneHandoffAdditionalAdmissions(t *testing.T) {
 		c.mu.Lock()
 		c.live[nestedID] = &delegateLiveState{runtime: runtime}
 		c.mu.Unlock()
-		if reservation, err := c.ReserveAttention(runtime, "attention-sentinel"); !errors.Is(err, errDelegateTargetBusy) {
-			if reservation != nil {
-				c.AbortStart(reservation)
-			}
-			t.Errorf("attention start under the handoff = %v, want errDelegateTargetBusy", err)
-		}
+		reservation, err := c.ReserveAttention(runtime, "attention-sentinel")
+		assertBusyReservation(t, c, reservation, err, "attention start under the handoff")
 	})
 
 	t.Run("commit start under a handoff", func(t *testing.T) {

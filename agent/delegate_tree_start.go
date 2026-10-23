@@ -775,7 +775,8 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 		cancel = c.releaseReservationLocked(record)
 		return delegateStartCommit{}, errDelegateTargetBusy
 	}
-	if c.laneHandoffCoversLocked(record.delegateID) || record.create && c.laneHandoffCoversLocked(record.descriptor.ParentDelegateID) {
+	if c.laneHandoffCoversLocked(record.delegateID) ||
+		(record.create && c.laneHandoffCoversLocked(record.descriptor.ParentDelegateID)) {
 		cancel = c.releaseReservationLocked(record)
 		return delegateStartCommit{}, errDelegateTargetBusy
 	}
