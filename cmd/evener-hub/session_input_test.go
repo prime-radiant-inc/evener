@@ -124,7 +124,7 @@ func TestManagerInputRealHubRuntimePersistsCallerNotTarget(t *testing.T) {
 	defer workerHTTP.Close()
 
 	entries := []appsource.LocalDaemonEntry{
-		{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: managerHTTP.URL, SourceID: "local", ThreadID: managerID, SessionID: managerID, WorkspaceRef: managerRef, InstanceID: managerID, HubToken: "test-token"}, SessionID: managerID},
+		{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: managerHTTP.URL, SourceID: "local", ThreadID: managerID, SessionID: managerID, WorkspaceRef: managerRef, InstanceID: managerID, HubToken: "test-token"}, SessionID: managerID, Manager: true},
 		{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: workerHTTP.URL, SourceID: "local", ThreadID: worker.ID(), SessionID: worker.ID(), WorkspaceRef: workerRef, InstanceID: worker.ID(), HubToken: "test-token", WorkingDir: workDir, StateDir: stateDir}, SessionID: worker.ID()},
 	}
 	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry { return entries }, workerHTTP.Client())

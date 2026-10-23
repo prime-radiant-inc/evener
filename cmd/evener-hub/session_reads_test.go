@@ -164,7 +164,7 @@ func managerReadFixture(t *testing.T) (*sessionOperations, *managerReadSource, *
 	cfg.SessionSeen = hubcore.NewSessionSeenStore(filepath.Join(t.TempDir(), "seen.db"))
 	server := appserver.NewServer(appserver.ServerConfig{})
 	owner := &sessionOperations{cfg: cfg, sources: sources, server: server, relays: newHubRelayFunctions(server, cfg, sources)}
-	return owner, first, second, appwire.ManagerView{Ref: manager, InstanceID: "manager-instance", Setting: setting}
+	return owner, first, second, appwire.ManagerView{Ref: manager, InstanceID: "manager-instance", Manager: true, Setting: setting}
 }
 func managerInvoke(t *testing.T, o *sessionOperations, caller appwire.ManagerView, request appwire.SessionOperationRequest) appwire.SessionOperationResponse {
 	t.Helper()

@@ -126,8 +126,10 @@ func TestManagerModeClearColdRead(t *testing.T) {
 	if cleared.Thread.Evener.Ref != ref {
 		t.Fatalf("Clear ref = %q, want %q", cleared.Thread.Evener.Ref, ref)
 	}
-	if !cleared.Thread.Evener.Manager || !cleared.Thread.Evener.ManagerEditable || cleared.Thread.Evener.ManagerSetting == nil || *cleared.Thread.Evener.ManagerSetting != enabled.View.Setting {
-		t.Fatalf("Clear Manager projection = %+v, want enabled and editable with setting %+v", cleared.Thread.Evener, enabled.View.Setting)
+	// The Manager bit is the session's own start-time property; the toggle
+	// RPC's projection contract is the setting row, shared across Clear.
+	if !cleared.Thread.Evener.ManagerEditable || cleared.Thread.Evener.ManagerSetting == nil || *cleared.Thread.Evener.ManagerSetting != enabled.View.Setting {
+		t.Fatalf("Clear Manager projection = %+v, want editable with setting %+v", cleared.Thread.Evener, enabled.View.Setting)
 	}
 	meta, err := schema.LoadSessionMeta(f.stateDir, instance)
 	if err != nil {
@@ -141,7 +143,7 @@ func TestManagerModeClearColdRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if live.Thread.Evener.Ref != ref || !live.Thread.Evener.Manager {
+	if live.Thread.Evener.Ref != ref {
 		t.Fatalf("live projection = %+v", live.Thread.Evener)
 	}
 	if err := client.ThreadShutdown(t.Context(), appwire.ThreadShutdownParams{Ref: ref}); err != nil {
@@ -166,7 +168,7 @@ func TestManagerModeClearColdRead(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if read.Thread.Evener.Ref != requested || read.Thread.Evener.InstanceID != selected.instance || !read.Thread.Evener.Manager || read.Thread.Evener.ManagerSetting == nil || *read.Thread.Evener.ManagerSetting != enabled.View.Setting {
+		if read.Thread.Evener.Ref != requested || read.Thread.Evener.InstanceID != selected.instance || read.Thread.Evener.ManagerSetting == nil || *read.Thread.Evener.ManagerSetting != enabled.View.Setting {
 			t.Errorf("cold read %s = %+v, want selected instance %s and shared setting %+v", requested, read.Thread.Evener, selected.instance, enabled.View.Setting)
 		}
 		var response appwire.ThreadManagerSetResponse
@@ -203,7 +205,7 @@ func TestManagerModeClearColdRead(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if old.Thread.Evener.InstanceID != initial.Thread.Evener.InstanceID || old.Thread.Evener.Manager != state || old.Thread.Evener.ManagerSetting == nil || *old.Thread.Evener.ManagerSetting != response.View.Setting {
+		if old.Thread.Evener.InstanceID != initial.Thread.Evener.InstanceID || old.Thread.Evener.ManagerSetting == nil || *old.Thread.Evener.ManagerSetting != response.View.Setting {
 			t.Fatalf("historical view failed to share preference without rerouting: %+v", old.Thread.Evener)
 		}
 		enabled = response
@@ -261,7 +263,7 @@ func TestManagerModeClearColdRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resumed.Thread.Evener.Ref != ref || resumed.Thread.Evener.InstanceID != instance || !resumed.Thread.Evener.Manager || resumed.Thread.Evener.ManagerSetting == nil || *resumed.Thread.Evener.ManagerSetting != enabled.View.Setting {
+	if resumed.Thread.Evener.Ref != ref || resumed.Thread.Evener.InstanceID != instance || resumed.Thread.Evener.ManagerSetting == nil || *resumed.Thread.Evener.ManagerSetting != enabled.View.Setting {
 		t.Fatalf("resumed projection = %+v", resumed.Thread.Evener)
 	}
 	// A second Clear leaves the intermediate instance independently readable

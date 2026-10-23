@@ -32,16 +32,13 @@ func TestManagerObservationRecordedCompletionCut(t *testing.T) {
 	defer upstream.Close()
 	entry := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: upstream.URL, SourceID: "local", ThreadID: instance, SessionID: instance, WorkspaceRef: ref, InstanceID: instance, HubToken: "test-token"}
 	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
-		return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: instance}}
+		return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: instance, Manager: true}}
 	}, upstream.Client())
 	sources := appsource.NewRegistry()
 	sources.Add(source)
 	store := hubcore.NewSessionPreferencesStore(filepath.Join(t.TempDir(), "index.db"))
 	hubID, err := store.HubID()
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = store.SetManager(ref, hubID, true); err != nil {
 		t.Fatal(err)
 	}
 	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), SessionPreferences: store}
@@ -109,16 +106,13 @@ func TestManagerWatchRebindDisableAndHubRestart(t *testing.T) {
 	defer upstream.Close()
 	entry := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: upstream.URL, SourceID: "local", ThreadID: instance, SessionID: instance, WorkspaceRef: ref, InstanceID: instance, HubToken: "test-token"}
 	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
-		return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: instance}}
+		return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: instance, Manager: true}}
 	}, upstream.Client())
 	sources := appsource.NewRegistry()
 	sources.Add(source)
 	store := hubcore.NewSessionPreferencesStore(filepath.Join(t.TempDir(), "index.db"))
 	hubID, err := store.HubID()
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = store.SetManager(ref, hubID, true); err != nil {
 		t.Fatal(err)
 	}
 	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), SessionPreferences: store}
@@ -155,15 +149,10 @@ func TestManagerWatchRebindDisableAndHubRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := readFirst(updates)
-	// The actual setting owner cancels active observation consumers on resync.
-	if _, err = store.SetManager(ref, hubID, false); err != nil {
-		t.Fatal(err)
-	}
+	// Resync cancels active observation consumers; a Manager's start-time
+	// property never changes, so the rebind needs no re-enable.
 	owner.resyncThread(first.Snapshot.Thread, ref)
 	awaitClosed(updates)
-	if _, err = store.SetManager(ref, hubID, true); err != nil {
-		t.Fatal(err)
-	}
 	rebound, err := binding.Watch(ctx, request)
 	if err != nil {
 		t.Fatalf("rebound observation: %v", err)

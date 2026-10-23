@@ -71,6 +71,11 @@ type LocalDaemonEntry struct {
 	// appwire.EvenerThread.AskPending so the TUI's per-row ask marker (Task 29)
 	// sees it when attaching through the hub.
 	PendingAsk bool
+	// Manager mirrors hubcore.LiveEntry.Manager — the session's own start-time
+	// Manager property as its daemon projects it. threadFromEntry carries it
+	// into EvenerThread.Manager so hub views read the session's own property,
+	// never a hub-side record.
+	Manager bool
 	// PendingEscalation mirrors hubcore.LiveEntry.PendingEscalation — true
 	// while the daemon reports a blocked sandbox-exemption escalation. The
 	// unprobed fallback folds it out of Clear, matching the daemon's own
@@ -1533,6 +1538,7 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		Evener: appwire.EvenerThread{
 			Ref:                ref,
 			InstanceID:         instanceID,
+			Manager:            item.Manager,
 			Capabilities:       listRowCapabilities(item, status),
 			AskPending:         item.PendingAsk,
 			PendingQuestion:    appwire.ClonePendingQuestion(item.PendingQuestion),

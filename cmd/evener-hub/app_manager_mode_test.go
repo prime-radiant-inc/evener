@@ -90,7 +90,9 @@ func TestManagerModeHumanRPCCanonicalAliasAndProjection(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !read.Thread.Evener.Manager || read.Thread.Evener.ManagerSetting == nil || *read.Thread.Evener.ManagerSetting != response.View.Setting || !read.Thread.Evener.ManagerEditable {
+			// The Manager bit is the session's own start-time property; the
+			// toggle RPC's projection contract is the setting it writes.
+			if read.Thread.Evener.ManagerSetting == nil || *read.Thread.Evener.ManagerSetting != response.View.Setting || !read.Thread.Evener.ManagerEditable {
 				t.Fatalf("updated projection = %+v", read.Thread.Evener)
 			}
 			return
@@ -130,7 +132,9 @@ func TestManagerModeHumanRPCConflictCarriesCurrentView(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !read.Thread.Evener.Manager || read.Thread.Evener.ManagerEditable {
+	// The Manager bit is the session's own start-time property; the selected
+	// authority's projection contract is the setting row it owns.
+	if read.Thread.Evener.ManagerSetting == nil || *read.Thread.Evener.ManagerSetting != selected || read.Thread.Evener.ManagerEditable {
 		t.Fatalf("selected authority projection = %+v", read.Thread.Evener)
 	}
 }
@@ -172,7 +176,9 @@ func TestManagerModeHumanRPCStorageFailureCarriesCurrentView(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !read.Thread.Evener.Manager || read.Thread.Evener.ManagerSetting == nil || *read.Thread.Evener.ManagerSetting != enabled.View.Setting {
+	// The Manager bit is the session's own start-time property; the failed
+	// write's projection contract is the unchanged setting row.
+	if read.Thread.Evener.ManagerSetting == nil || *read.Thread.Evener.ManagerSetting != enabled.View.Setting {
 		t.Fatalf("failed write changed projection: %+v", read.Thread.Evener)
 	}
 	if err := client.Request(t.Context(), appwire.MethodEvenerThreadManagerSet, appwire.ThreadManagerSetParams{Ref: "remote:manager-workspace", Enabled: true}, &response); err == nil {

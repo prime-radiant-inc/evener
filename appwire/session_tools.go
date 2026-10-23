@@ -21,9 +21,13 @@ type ManagerSetting struct {
 // refs remain addressable independently, even when their persisted workspace
 // identity shares one private preference row after Clear.
 type ManagerView struct {
-	Ref        string         `json:"ref"`
-	InstanceID string         `json:"instanceId"`
-	Setting    ManagerSetting `json:"setting"`
+	Ref        string `json:"ref"`
+	InstanceID string `json:"instanceId"`
+	// Manager is the session's own start-time property as its daemon projects
+	// it. It is the admission truth; Setting is the transitional preference
+	// projection that retires with the store.
+	Manager bool           `json:"manager,omitempty"`
+	Setting ManagerSetting `json:"setting"`
 }
 
 type ThreadManagerSetParams struct {

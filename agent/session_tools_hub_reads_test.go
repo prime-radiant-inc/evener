@@ -20,11 +20,9 @@ func (c *managerReadCapture) Invoke(_ context.Context, request appwire.SessionOp
 }
 
 func TestManagerReadProjectionRejectsLocalOnlyArguments(t *testing.T) {
-	root := newMessagingRoot(t, newMessagingAdapter(), nil)
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
 	client := &managerReadCapture{}
-	client.enabled.Store(true)
 	root.SetHubClient(client)
-	root.refreshHubState(t.Context())
 	cases := []struct{ name, args string }{
 		{"read_transcript", `{"hub":{"ref":"local:worker","format":"jsonl"}}`},
 		{"read_transcript", `{"hub":{"ref":"local:worker","expand_turn":4}}`},
@@ -44,11 +42,9 @@ func TestManagerReadProjectionRejectsLocalOnlyArguments(t *testing.T) {
 }
 
 func TestManagerReadProjectionUsesExistingTools(t *testing.T) {
-	root := newMessagingRoot(t, newMessagingAdapter(), nil)
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
 	client := &managerReadCapture{}
-	client.enabled.Store(true)
 	root.SetHubClient(client)
-	root.refreshHubState(t.Context())
 	for _, tc := range []struct {
 		name, args string
 		assert     func(appwire.SessionOperationRequest) bool

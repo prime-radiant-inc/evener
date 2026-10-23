@@ -55,9 +55,9 @@ func TestManagerMetaComesFromSessionConfig(t *testing.T) {
 	client := llm.NewClient()
 	for _, want := range []bool{true, false} {
 		sess, err := agent.NewSession(client, provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), agent.SessionConfig{
-			StateDir:  filepath.Join(root, "state"),
-			Manager:   want,
-			LLMSleep:  noSleep,
+			StateDir: filepath.Join(root, "state"),
+			Manager:  want,
+			LLMSleep: noSleep,
 		})
 		if err != nil {
 			t.Fatal(err)

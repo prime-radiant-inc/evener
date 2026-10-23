@@ -77,8 +77,10 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 	if err != nil {
 		return nil, err
 	}
-	if !view.Setting.Enabled || view.Setting.HubID != b.binding.HubID {
-		return nil, appwire.InvalidRequest("Manager mode is not enabled at this hub")
+	// Admission is the caller's own start-time Manager property, projected by
+	// its daemon; no hub preference decides it.
+	if !view.Manager {
+		return nil, appwire.InvalidRequest("session is not a Manager")
 	}
 	if err := validSessionWatch(request); err != nil {
 		return nil, err
@@ -122,9 +124,9 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 		cleanup()
 		return nil, err
 	}
-	if !current.Setting.Enabled || current.Setting.HubID != view.Setting.HubID || current.Setting.Revision != view.Setting.Revision {
+	if !current.Manager || current.Ref != view.Ref || current.InstanceID != view.InstanceID {
 		cleanup()
-		return nil, appwire.InvalidRequest("Manager setting changed during watch registration")
+		return nil, appwire.InvalidRequest("Manager caller changed during watch registration")
 	}
 	canonical, err := relaySource.ResolveRelaySession(appwire.ThreadReadParams{Ref: ref.String()})
 	if err != nil {
@@ -191,7 +193,7 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 				notification := delivery.Notification
 				delivery.Acknowledge()
 				current, err := b.State(watchCtx)
-				if err != nil || !current.Setting.Enabled || current.Setting.HubID != view.Setting.HubID || current.Setting.Revision != view.Setting.Revision {
+				if err != nil || !current.Manager || current.Ref != view.Ref || current.InstanceID != view.InstanceID {
 					return
 				}
 				base := appwire.SessionObservationMetadata{Ref: ref.String(), InstanceID: read.Thread.Evener.InstanceID, GenerationID: read.BootGeneration}

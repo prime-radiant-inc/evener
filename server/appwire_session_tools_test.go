@@ -46,7 +46,7 @@ func TestSessionToolsLiveBindingCannotBeDisplaced(t *testing.T) {
 	modelClient := llm.NewClient()
 	modelClient.Register(model)
 	dir := t.TempDir()
-	session, err := agent.NewSession(modelClient, provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{StateDir: dir})
+	session, err := agent.NewSession(modelClient, provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{StateDir: dir, Manager: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,8 +94,8 @@ func TestSessionToolsLiveBindingCannotBeDisplaced(t *testing.T) {
 	if _, err := session.ProcessInput(ctx, "use Manager discovery", nil); err != nil {
 		t.Fatalf("original binding no longer serves Manager request: %v", err)
 	}
-	if firstOwner.states.Load() == 0 || firstOwner.invokes.Load() != 1 {
-		t.Fatalf("original socket State/Invoke counts = %d/%d, model calls = %d, tool calls = %d", firstOwner.states.Load(), firstOwner.invokes.Load(), model.calls.Load(), model.toolCalls.Load())
+	if firstOwner.invokes.Load() != 1 {
+		t.Fatalf("original socket Invoke count = %d, model calls = %d, tool calls = %d", firstOwner.invokes.Load(), model.calls.Load(), model.toolCalls.Load())
 	}
 	if secondOwner.states.Load() != 0 || secondOwner.invokes.Load() != 0 {
 		t.Fatalf("rejected socket served State/Invoke: %d/%d", secondOwner.states.Load(), secondOwner.invokes.Load())
@@ -179,27 +179,24 @@ func TestSessionToolsAuthoritySelection(t *testing.T) {
 	for _, hub := range []string{"hub-a", "hub-b"} {
 		life, cancel := context.WithCancel(t.Context())
 		defer cancel()
-		state := &authorityState{view: appwire.ManagerView{Setting: appwire.ManagerSetting{HubID: hub}}}
+		state := &authorityState{}
 		states[hub] = state
-		clients.clients[hub] = &runtimeHubClient{current: func() *agent.Session { return session }, session: session, binding: appwire.SessionBinding{InstanceID: session.ID()}, client: state, ctx: life, cancel: cancel}
+		clients.clients[hub] = &runtimeHubClient{current: func() *agent.Session { return session }, session: session, binding: appwire.SessionBinding{InstanceID: session.ID(), HubID: hub}, client: state, ctx: life, cancel: cancel}
 	}
-	states["hub-a"].view.Setting.Enabled = true
-	states["hub-b"].view.Setting.Enabled = true
-	if _, err := clients.State(t.Context()); err == nil {
-		t.Fatal("conflicting enabled hubs selected by connection order")
+	// Two simultaneous live bindings fail closed: nothing picks an order.
+	if _, err := clients.admitted(t.Context()); err == nil {
+		t.Fatal("simultaneous live bindings selected by connection order")
 	}
-	states["hub-b"].view.Setting.Enabled = false
-	view, err := clients.State(t.Context())
-	if err != nil || view.Setting.HubID != "hub-a" {
-		t.Fatalf("human-enabled authority=%+v err=%v", view, err)
-	}
+	// One live binding is selected by liveness alone, not by any hub setting.
+	clients.clients["hub-b"].cancel()
 	updates, err := clients.Watch(t.Context(), appwire.SessionWatchRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The selection is sticky: a disconnected authority never falls back to
+	// another hub, and a later operation still names the dead selection.
 	clients.clients["hub-a"].cancel()
-	states["hub-b"].view.Setting.Enabled = true
-	if _, err := clients.State(t.Context()); err == nil {
+	if _, err := clients.admitted(t.Context()); err == nil {
 		t.Fatal("disconnected authority silently switched hubs")
 	}
 	select {
@@ -219,24 +216,27 @@ func TestSessionToolsConflictingEnabledHubAfterSelection(t *testing.T) {
 	for _, hub := range []string{"hub-a", "hub-b"} {
 		life, cancel := context.WithCancel(t.Context())
 		defer cancel()
-		state := &authorityState{view: appwire.ManagerView{Setting: appwire.ManagerSetting{HubID: hub}}}
+		state := &authorityState{}
 		states[hub] = state
-		clients.clients[hub] = &runtimeHubClient{current: func() *agent.Session { return session }, session: session, binding: appwire.SessionBinding{InstanceID: session.ID()}, client: state, ctx: life, cancel: cancel}
+		clients.clients[hub] = &runtimeHubClient{current: func() *agent.Session { return session }, session: session, binding: appwire.SessionBinding{InstanceID: session.ID(), HubID: hub}, client: state, ctx: life, cancel: cancel}
 	}
-	states["hub-a"].view.Setting.Enabled = true
-	if view, err := clients.State(t.Context()); err != nil || view.Setting.HubID != "hub-a" {
-		t.Fatalf("first selection = %+v, %v", view, err)
+	// One live binding selects.
+	clients.clients["hub-b"].cancel()
+	if _, err := clients.admitted(t.Context()); err != nil {
+		t.Fatalf("first selection: %v", err)
 	}
-	states["hub-b"].view.Setting.Enabled = true
+	// A second simultaneous live binding after selection conflicts on every
+	// operation rather than displacing or reordering the selection.
+	lifeB, cancelB := context.WithCancel(t.Context())
+	defer cancelB()
+	clients.clients["hub-b"] = &runtimeHubClient{current: func() *agent.Session { return session }, session: session, binding: appwire.SessionBinding{InstanceID: session.ID(), HubID: "hub-b"}, client: states["hub-b"], ctx: lifeB, cancel: cancelB}
 	assertConflict := func(operation string, err error) {
 		t.Helper()
 		var wire appwire.WireError
 		if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
-			t.Fatalf("%s with newly enabled B = %v, want authority conflict", operation, err)
+			t.Fatalf("%s with a second live binding = %v, want authority conflict", operation, err)
 		}
 	}
-	_, err := clients.State(t.Context())
-	assertConflict("State", err)
-	_, err = clients.Invoke(t.Context(), appwire.SessionOperationRequest{Discover: &appwire.ThreadListParams{}})
+	_, err := clients.Invoke(t.Context(), appwire.SessionOperationRequest{Discover: &appwire.ThreadListParams{}})
 	assertConflict("Invoke", err)
 }

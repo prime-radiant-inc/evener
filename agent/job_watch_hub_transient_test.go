@@ -51,7 +51,7 @@ func (c *flakyStateClient) failNext(n int) {
 func TestManagerWatchResolvesTransientFailureWithoutRebind(t *testing.T) {
 	const ref, instance, generation = "local:worker", "worker-instance", "7@worker"
 	ctx := t.Context()
-	root := newMessagingRoot(t, newMessagingAdapter(), nil)
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
 	first := make(chan appwire.SessionWatchUpdate, 1)
 	first <- appwire.SessionWatchUpdate{
 		Snapshot: &appwire.ThreadReadResponse{BootGeneration: generation, Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: ref, InstanceID: instance}}},
@@ -67,7 +67,6 @@ func TestManagerWatchResolvesTransientFailureWithoutRebind(t *testing.T) {
 	base.streams <- first
 	client := &flakyStateClient{managerRecoverClient: base, failed: make(chan struct{}, 1)}
 	root.SetHubClient(client)
-	root.refreshHubState(ctx)
 	result, err := root.configureHubWatchRuntime(ctx, map[string]any{"operation": "create", "hub": map[string]any{"ref": ref, "events": []string{"status"}}})
 	if err != nil {
 		t.Fatal(err)

@@ -816,7 +816,9 @@ export interface EvenerSubagentPreviewResponse {
 
 export interface EvenerThread {
   /**
-   * Manager is the saved human preference, not a runtime tool capability.
+   * Manager is the session's start-time Manager property, reported by the
+   * session itself. It is not a runtime setting: nothing can turn it on or
+   * off after the session starts.
    */
   manager?: boolean;
   /**
@@ -2221,6 +2223,12 @@ export interface ManagerSetting {
 export interface ManagerView {
   ref: string;
   instanceId: string;
+  /**
+   * Manager is the session's own start-time property as its daemon projects
+   * it. It is the admission truth; Setting is the transitional preference
+   * projection that retires with the store.
+   */
+  manager?: boolean;
   setting: ManagerSetting;
 }
 

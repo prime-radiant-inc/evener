@@ -83,16 +83,13 @@ func TestSessionToolsWatchSnapshotHandoff(t *testing.T) {
 	defer upstream.Close()
 	entry := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: upstream.URL, SourceID: "local", ThreadID: instance, SessionID: instance, WorkspaceRef: ref, InstanceID: instance, HubToken: "test-token"}
 	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
-		return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: instance}}
+		return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: instance, Manager: true}}
 	}, upstream.Client())
 	sources := appsource.NewRegistry()
 	sources.Add(source)
 	store := hubcore.NewSessionPreferencesStore(filepath.Join(t.TempDir(), "index.db"))
 	hubID, err := store.HubID()
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = store.SetManager(ref, hubID, true); err != nil {
 		t.Fatal(err)
 	}
 	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), SessionPreferences: store}
@@ -171,7 +168,7 @@ func TestSessionToolsWatchSnapshotHandoff(t *testing.T) {
 	}
 }
 
-func TestSessionToolsAutomaticBindingRevocationReconnect(t *testing.T) {
+func TestSessionToolsAutomaticBindingLifecycleAndReconnect(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
 	const ref = "local:manager-workspace"
@@ -203,13 +200,15 @@ func TestSessionToolsAutomaticBindingRevocationReconnect(t *testing.T) {
 	upstream.Start()
 	defer upstream.Close()
 	entry := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: upstream.URL, SourceID: "local", ThreadID: instance, SessionID: instance, WorkspaceRef: ref, InstanceID: instance, HubToken: "test-token"}
+	// The roster entry carries the session's own start-time Manager property;
+	// there is no hub-side enable to cycle.
 	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
-		return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: instance}}
+		return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: instance, Manager: true}}
 	}, upstream.Client())
 	sources := appsource.NewRegistry()
 	sources.Add(source)
 	store := hubcore.NewSessionPreferencesStore(filepath.Join(t.TempDir(), "index.db"))
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), SessionPreferences: store, Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: entry, SessionID: instance, Status: "active"})}
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), SessionPreferences: store, Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: entry, SessionID: instance, Status: "active", Manager: true})}
 	web := NewWebServer(cfg)
 	hubServer := newHubAppServerWithNavigation(cfg, sources, web.navigation, web.resolveTopLevelSessionRef)
 	hubHTTP := httptest.NewServer(http.HandlerFunc(hubServer.ServeWebSocket))
@@ -237,24 +236,10 @@ func TestSessionToolsAutomaticBindingRevocationReconnect(t *testing.T) {
 	if first.binding.Ref != ref || first.binding.InstanceID != instance {
 		t.Fatalf("discovered binding=%+v", first.binding)
 	}
-	state, err := first.client.State(ctx)
-	if err != nil || state.Setting.Enabled {
-		t.Fatalf("disabled state=%+v err=%v", state, err)
-	}
 	request := appwire.SessionOperationRequest{Discover: &appwire.ThreadListParams{}}
-	if _, err = first.client.Invoke(ctx, request); err == nil {
-		t.Fatal("disabled invocation admitted")
-	}
-	hubID, err := store.HubID()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = store.SetManager(ref, hubID, true); err != nil {
-		t.Fatal(err)
-	}
 	response, err := first.client.Invoke(ctx, request)
 	if err != nil || response.Discover == nil {
-		t.Fatalf("enabled discovery=%+v err=%v", response, err)
+		t.Fatalf("manager discovery=%+v err=%v", response, err)
 	}
 	for _, watch := range []appwire.SessionWatchRequest{{Ref: ref, Events: []string{"unknown"}}} {
 		if _, err := first.client.Watch(ctx, watch); err == nil {
@@ -304,33 +289,6 @@ func TestSessionToolsAutomaticBindingRevocationReconnect(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("no second initial observation")
 	}
-	var changed appwire.ThreadManagerSetResponse
-	if err = human.Request(ctx, appwire.MethodEvenerThreadManagerSet, appwire.ThreadManagerSetParams{Ref: ref, Enabled: false}, &changed); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case _, ok := <-updates:
-		if ok {
-			t.Fatal("revoked consumer remained open")
-		}
-	case <-ctx.Done():
-		t.Fatal("revoked observation did not close")
-	}
-	if _, err = first.client.Invoke(ctx, request); err == nil {
-		t.Fatal("stale enabled state admitted")
-	}
-	if _, err = store.SetManager(ref, hubID, true); err != nil {
-		t.Fatal(err)
-	}
-	updates, err = first.client.Watch(ctx, appwire.SessionWatchRequest{Ref: ref, Events: []string{"status"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-updates:
-	case <-ctx.Done():
-		t.Fatal("no pre-disconnect observation")
-	}
 	// Break the physical websocket without changing discovery identity.
 	select {
 	case socket := <-sockets:
@@ -369,23 +327,27 @@ func TestSessionToolsAutomaticBindingRevocationReconnect(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("shutdown left binding alive")
 	}
-	// A new hub process reconstructs its sources and reads the same durable setting.
+	// A new hub process reconstructs its sources and binds the same Manager.
 	restarted := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
-		return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: instance}}
+		return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: instance, Manager: true}}
 	}, upstream.Client())
 	restartedSources := appsource.NewRegistry()
 	restartedSources.Add(restarted)
 	_ = newHubAppServerWithNavigation(cfg, restartedSources, web.navigation, web.resolveTopLevelSessionRef)
 	restartLife, restartStop := context.WithCancel(ctx)
 	defer restartStop()
-	startSessionTools(restartLife, restartedSources, func(f func()) { workers.Go(f) })
+	var restartWorkers sync.WaitGroup
+	startSessionTools(restartLife, restartedSources, func(f func()) { restartWorkers.Go(f) })
 	third := next()
 	restored, err := third.client.State(ctx)
-	if err != nil || !restored.Setting.Enabled || restored.Setting.HubID != hubID {
+	if err != nil || !restored.Manager || restored.Ref != ref {
 		t.Fatalf("hub restart state=%+v err=%v", restored, err)
 	}
+	if _, err := third.client.Invoke(ctx, request); err != nil {
+		t.Fatalf("restarted binding lost manager discovery: %v", err)
+	}
 	restartStop()
-	workers.Wait()
+	restartWorkers.Wait()
 }
 
 func TestManagerAdmissionRealToolRead(t *testing.T) {
@@ -396,7 +358,7 @@ func TestManagerAdmissionRealToolRead(t *testing.T) {
 	client.Register(adapter)
 	client.Register(&managerNamedAdapter{managerReadAdapter: adapter, name: "anthropic"})
 	stateDir, workDir := t.TempDir(), t.TempDir()
-	session, err := agent.NewSession(client, provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), agent.SessionConfig{StateDir: stateDir, Sandbox: "off", ResolveProfile: func(ref string) (*provider.Profile, error) { return provider.Resolve(provider.EmbeddedRegistry(), ref) }})
+	session, err := agent.NewSession(client, provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), agent.SessionConfig{StateDir: stateDir, Sandbox: "off", Manager: true, ResolveProfile: func(ref string) (*provider.Profile, error) { return provider.Resolve(provider.EmbeddedRegistry(), ref) }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,16 +400,12 @@ func TestManagerAdmissionRealToolRead(t *testing.T) {
 	t.Cleanup(upstream.Close)
 	entry := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: upstream.URL, SourceID: "local", ThreadID: session.ID(), SessionID: session.ID(), WorkspaceRef: ref, InstanceID: session.ID(), HubToken: "test-token", WorkingDir: workDir, StateDir: stateDir}
 	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
-		return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: session.ID()}}
+		return []appsource.LocalDaemonEntry{{Entry: entry, SessionID: session.ID(), Manager: true}}
 	}, upstream.Client())
 	sources := appsource.NewRegistry()
 	sources.Add(source)
 	store := hubcore.NewSessionPreferencesStore(filepath.Join(t.TempDir(), "index.db"))
-	hubID, err := store.HubID()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), SessionPreferences: store, Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: entry, SessionID: session.ID(), Status: "active"})}
+	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), SessionPreferences: store, Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: entry, SessionID: session.ID(), Status: "active", Manager: true})}
 	web := NewWebServer(cfg)
 	_ = newHubAppServerWithNavigation(cfg, sources, web.navigation, web.resolveTopLevelSessionRef)
 	// Establish the real canonical relay, not a test implementation of the hub interface.
@@ -464,16 +422,8 @@ func TestManagerAdmissionRealToolRead(t *testing.T) {
 	if !read.Handoff.Commit() {
 		t.Fatal("initial relay snapshot was not committed")
 	}
-	adapter.step = -1
-	if _, err = session.ProcessInput(ctx, "capture disabled request", nil); err != nil {
-		t.Fatal(err)
-	}
-	assertManagerRequestSurface(t, adapter.requests[0], false)
 	adapter.step = 0
 	adapter.requests = nil
-	if _, err = store.SetManager(ref, hubID, true); err != nil {
-		t.Fatal(err)
-	}
 	if _, err = session.ProcessInput(ctx, "discover sessions and read this session", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -540,7 +490,9 @@ func TestManagerAdmissionRealToolRead(t *testing.T) {
 	if _, err = session.ProcessInput(ctx, "capture disconnected request", nil); err != nil {
 		t.Fatal(err)
 	}
-	assertManagerRequestSurface(t, adapter.requests[len(adapter.requests)-1], false)
+	// The start-time property keeps the Manager surface even while the hub
+	// transport is down; only the operations fail.
+	assertManagerRequestSurface(t, adapter.requests[len(adapter.requests)-1], true)
 	releaseReconnect()
 	reconnected, err := lease.Read(ctx, appwire.ThreadReadParams{Ref: ref, Subscribe: true})
 	if err != nil {
@@ -553,16 +505,6 @@ func TestManagerAdmissionRealToolRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertManagerRequestSurface(t, adapter.requests[len(adapter.requests)-1], true)
-	if _, err = store.SetManager(ref, hubID, false); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = session.ProcessInput(ctx, "capture revoked request", nil); err != nil {
-		t.Fatal(err)
-	}
-	assertManagerRequestSurface(t, adapter.requests[len(adapter.requests)-1], false)
-	if _, err = store.SetManager(ref, hubID, true); err != nil {
-		t.Fatal(err)
-	}
 	adapter.watch, adapter.step = true, 0
 	adapter.requests = nil
 	if _, err = session.ProcessInput(ctx, "install Manager watch over real connection", nil); err != nil {
@@ -611,7 +553,7 @@ func TestSessionToolsRuntimeIdentityReplacement(t *testing.T) {
 		adapter := &managerReadAdapter{}
 		client := llm.NewClient()
 		client.Register(adapter)
-		session, err := agent.NewSession(client, provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), agent.SessionConfig{WorkspaceID: workspace, StateDir: t.TempDir(), Sandbox: "off"})
+		session, err := agent.NewSession(client, provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), agent.SessionConfig{WorkspaceID: workspace, StateDir: t.TempDir(), Sandbox: "off", Manager: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -653,19 +595,11 @@ func TestSessionToolsRuntimeIdentityReplacement(t *testing.T) {
 	setEntry(first)
 	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
 		e := *entry.Load()
-		return []appsource.LocalDaemonEntry{{Entry: e, SessionID: e.SessionID}}
+		return []appsource.LocalDaemonEntry{{Entry: e, SessionID: e.SessionID, Manager: true}}
 	}, upstream.Client())
 	sources := appsource.NewRegistry()
 	sources.Add(source)
 	store := hubcore.NewSessionPreferencesStore(filepath.Join(t.TempDir(), "index.db"))
-	hubID, err := store.HubID()
-	if err != nil {
-		t.Fatal(err)
-	}
-	saved, err := store.SetManager(ref, hubID, true)
-	if err != nil {
-		t.Fatal(err)
-	}
 	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), SessionPreferences: store}
 	web := NewWebServer(cfg)
 	_ = newHubAppServerWithNavigation(cfg, sources, web.navigation, web.resolveTopLevelSessionRef)
@@ -706,11 +640,13 @@ func TestSessionToolsRuntimeIdentityReplacement(t *testing.T) {
 	current.Store(replacement)
 	setIdentity(replacement)
 	setEntry(replacement)
-	// Before any rebind, the old runtime must fail admission via the real getter.
+	// The old runtime keeps its Manager surface: the start-time property never
+	// leaves a session. Its binding is superseded below, and the supersede tests
+	// cover the admission failure on a dead binding against real sockets.
 	if _, err := first.ProcessInput(ctx, "capture obsolete binding", nil); err != nil {
 		t.Fatal(err)
 	}
-	assertManagerRequestSurface(t, firstAdapter.requests[len(firstAdapter.requests)-1], false)
+	assertManagerRequestSurface(t, firstAdapter.requests[len(firstAdapter.requests)-1], true)
 	source.ReconcileSessionTools()
 	select {
 	case <-sockets:
@@ -742,10 +678,6 @@ func TestSessionToolsRuntimeIdentityReplacement(t *testing.T) {
 	}
 	if !useful {
 		t.Fatal("replacement did not complete a useful Manager status read")
-	}
-	after, err := store.Manager(ref)
-	if err != nil || after != saved {
-		t.Fatalf("replacement changed saved Manager setting: before=%+v after=%+v err=%v", saved, after, err)
 	}
 }
 

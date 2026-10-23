@@ -98,8 +98,12 @@ type sessionBindingContextKey struct{}
 type remoteSessionAdmissionKey struct{}
 type localSessionPreferenceKey struct{}
 type localSessionPreference struct {
-	key   string
-	hubID string
+	key string
+	// manager is the caller's own start-time property, projected by its
+	// daemon. It is the admission truth; the preference key is carried only
+	// for the store paths that still read it.
+	manager bool
+	hubID   string
 }
 
 func sessionInputProof(ctx context.Context, callerRef string) (*appwire.SessionActorProof, error) {
@@ -393,16 +397,22 @@ func (b *boundSessionOperations) State(ctx context.Context) (appwire.ManagerView
 			return view, err
 		}
 		thread := read.Thread
-		if thread.Evener.Ref != b.binding.Ref || thread.Evener.InstanceID != b.binding.InstanceID || thread.Evener.ManagerSetting == nil {
-			return view, appwire.SessionUnavailable("remote workspace binding or preference changed")
+		if thread.Evener.Ref != b.binding.Ref || thread.Evener.InstanceID != b.binding.InstanceID {
+			return view, appwire.SessionUnavailable("remote workspace binding changed")
 		}
-		setting := *thread.Evener.ManagerSetting
-		if setting.Enabled && setting.HubID != b.binding.HubID {
-			return view, appwire.Conflict("another hub owns Manager authority")
+		if !thread.Evener.Manager {
+			return view, appwire.InvalidRequest("remote session is not a Manager")
 		}
-		return appwire.ManagerView{Ref: thread.Evener.Ref, InstanceID: thread.Evener.InstanceID, Setting: setting}, nil
+		if thread.Evener.ManagerSetting != nil {
+			setting := *thread.Evener.ManagerSetting
+			if setting.Enabled && setting.HubID != b.binding.HubID {
+				return view, appwire.Conflict("another hub owns Manager authority")
+			}
+			return appwire.ManagerView{Ref: thread.Evener.Ref, InstanceID: thread.Evener.InstanceID, Manager: true, Setting: setting}, nil
+		}
+		return appwire.ManagerView{Ref: thread.Evener.Ref, InstanceID: thread.Evener.InstanceID, Manager: true}, nil
 	}
-	view, key, err := b.localCaller()
+	view, manager, key, err := b.localCaller()
 	if err != nil {
 		return appwire.ManagerView{}, err
 	}
@@ -413,20 +423,21 @@ func (b *boundSessionOperations) State(ctx context.Context) (appwire.ManagerView
 	if setting.Enabled && setting.HubID != b.binding.HubID {
 		return appwire.ManagerView{}, appwire.Conflict("another hub owns Manager authority")
 	}
+	view.Manager = manager
 	view.Setting = setting
 	return view, nil
 }
 
-func (b *boundSessionOperations) localCaller() (appwire.ManagerView, string, error) {
+func (b *boundSessionOperations) localCaller() (appwire.ManagerView, bool, string, error) {
 	thread, err := b.local.SessionToolsThread(b.binding)
 	if err != nil {
-		return appwire.ManagerView{}, "", err
+		return appwire.ManagerView{}, false, "", err
 	}
 	key, err := managerPreferenceRef(b.owner.cfg, thread)
 	if err != nil {
-		return appwire.ManagerView{}, "", err
+		return appwire.ManagerView{}, false, "", err
 	}
-	return appwire.ManagerView{Ref: thread.Evener.Ref, InstanceID: thread.Evener.InstanceID}, key, nil
+	return appwire.ManagerView{Ref: thread.Evener.Ref, InstanceID: thread.Evener.InstanceID}, thread.Evener.Manager, key, nil
 }
 
 func (b *boundSessionOperations) Invoke(ctx context.Context, request appwire.SessionOperationRequest) (appwire.SessionOperationResponse, error) {
@@ -436,8 +447,9 @@ func (b *boundSessionOperations) Invoke(ctx context.Context, request appwire.Ses
 		view, err = b.State(ctx)
 	} else if err = ctx.Err(); err == nil {
 		var key string
-		view, key, err = b.localCaller()
-		ctx = context.WithValue(ctx, localSessionPreferenceKey{}, localSessionPreference{key: key, hubID: b.binding.HubID})
+		var manager bool
+		view, manager, key, err = b.localCaller()
+		ctx = context.WithValue(ctx, localSessionPreferenceKey{}, localSessionPreference{key: key, manager: manager, hubID: b.binding.HubID})
 	}
 	if err != nil {
 		return appwire.SessionOperationResponse{}, err
@@ -471,29 +483,24 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 		return response, err
 	}
 	// caller was resolved from the authenticated connection, never tool arguments.
-	// Direct callers resolve durable state here; bound local callers used the
-	// same row above instead of trusting a previously projected enabled bit.
+	// Admission is the caller's own start-time property, projected by its
+	// daemon: bound local callers resolved it with their thread, remote callers
+	// carry it in the view, and nothing here reads a preference row to decide it.
 	hubID, err := o.cfg.SessionPreferences.HubID()
 	if err != nil {
 		return response, err
+	}
+	manager := caller.Manager
+	if boundLocal {
+		manager = bound.manager
 	}
 	if binding, remote := ctx.Value(remoteSessionAdmissionKey{}).(appwire.SessionBinding); remote {
 		if binding.Ref != caller.Ref || binding.InstanceID != caller.InstanceID || binding.HubID != hubID {
 			return response, appwire.InvalidRequest("remote Manager authority changed")
 		}
-	} else if !boundLocal {
-		thread := appwire.Thread{Evener: appwire.EvenerThread{Ref: caller.Ref, InstanceID: caller.InstanceID}}
-		key, err := managerPreferenceRef(o.cfg, thread)
-		if err != nil {
-			return response, err
-		}
-		setting, err = o.cfg.SessionPreferences.Manager(key)
-		if err != nil {
-			return response, err
-		}
 	}
-	if !setting.Enabled || setting.HubID != hubID {
-		return response, appwire.InvalidRequest("Manager mode is not enabled")
+	if !manager {
+		return response, appwire.InvalidRequest("session is not a Manager")
 	}
 	response.Actor = appwire.SessionActor{Kind: "manager", ManagerRef: caller.Ref}
 	var proof *appwire.SessionActorProof

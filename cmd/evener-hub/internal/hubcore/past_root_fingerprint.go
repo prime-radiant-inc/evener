@@ -40,6 +40,9 @@ var shownMetaFields = []string{
 var notShownMetaFields = []string{
 	// Manager projection reads this separately; navigation retains transcript ID.
 	"WorkspaceID",
+	// Manager is the session's start-time property; the projected thread
+	// carries it, no navigation row does.
+	"Manager",
 	"ProfileID", "CheapModel", "VisionModel", "Config", "Revision",
 	"TurnBudgetWarningEmitted", "LastInputTokens", "NameSource", "NameUpdatedAt",
 	"DivergenceTurn", "Goal", "PinnedNote", "Skills", "HumanNote", "AgentNote",

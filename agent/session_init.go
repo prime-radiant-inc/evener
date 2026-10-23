@@ -1833,6 +1833,14 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	}
 	s.filterUnavailableMemoryTools()
 
+	// Manager is a start-time property carried by the session itself: the
+	// hub tools are installed here, before the first tool cache build, and no
+	// later hub state read can add or remove them. hubClient may still be nil
+	// at this point; it is transport, not authority.
+	s.mu.Lock()
+	s.hubEnabled = s.cfg.Manager
+	s.mu.Unlock()
+
 	// Cache instruction docs once; reused every round for system prompt rebuilds.
 	s.projectDocs, s.projectDocsTruncated = LoadInstructionDocs(s.currentEnv(), personalDocPath(s.cfg.AgentsDocPath), s.profile.ProjectDocFiles()...)
 

@@ -266,7 +266,7 @@ func TestManagerHumanControlsAttributionAndClosedUnion(t *testing.T) {
 	w := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), HubStateRoot: t.TempDir(), SessionPreferences: store, Archive: hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")), PinSections: hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db")), SessionSeen: hubcore.NewSessionSeenStore(filepath.Join(t.TempDir(), "seen.db"))})
 	w.injectMetasForTest([]schema.SessionMeta{topLevelMeta("session-a")})
 	o := &sessionOperations{cfg: w.cfg, sources: w.sources, navigation: w.navigation, resolve: w.resolveTopLevelSessionRef}
-	caller := appwire.ManagerView{Ref: managerRef, InstanceID: "manager-instance", Setting: setting}
+	caller := appwire.ManagerView{Ref: managerRef, InstanceID: "manager-instance", Manager: true, Setting: setting}
 	ctx := context.WithValue(t.Context(), sessionBindingContextKey{}, appwire.SessionBinding{Ref: managerRef, InstanceID: caller.InstanceID, HubID: hubID, BindingID: "authenticated-binding"})
 	archive := &appwire.ArchiveParams{Kind: appwire.ArchiveTargetSession, ID: "local:session-a", Archived: true}
 	bad := appwire.SessionOperationRequest{Control: &appwire.SessionControlRequest{Action: "archive", Archive: archive, Seen: &appwire.SessionSeenSetParams{}}}

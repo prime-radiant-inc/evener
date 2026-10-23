@@ -2510,6 +2510,7 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `ref` | string |  |  |
 | `instanceId` | string |  |  |
+| `manager` | bool | yes |  |
 | `setting` | [appwire.ManagerSetting](#managersetting) |  |  |
 
 

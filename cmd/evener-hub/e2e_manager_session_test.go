@@ -555,6 +555,7 @@ func startManagerThread(ctx context.Context, t *testing.T, client *appwire.Clien
 	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
 		Harness: "evener", CWD: stack.workDir, Model: stack.model,
 		LaunchOverrides: &appwire.LaunchConfigLayer{Sandbox: "off"},
+		Manager:         true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -571,6 +572,9 @@ func startManagerThread(ctx context.Context, t *testing.T, client *appwire.Clien
 			t.Errorf("manager shutdown: %v", err)
 		}
 	})
+	// Transitional: the hub's operation admission still reads the preference
+	// store, so the row must exist until the store's meta-based replacement
+	// lands. The daemon side already honors only the start flag.
 	if _, err := clientRequest[appwire.ThreadManagerSetResponse](ctx, client, appwire.MethodEvenerThreadManagerSet, appwire.ThreadManagerSetParams{Ref: ref, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}

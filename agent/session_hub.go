@@ -1,9 +1,7 @@
 package agent
 
 import (
-	"context"
 	"slices"
-	"time"
 
 	"primeradiant.com/evener/appwire"
 )
@@ -33,31 +31,6 @@ func (s *Session) signalHubBindingLocked() {
 		close(s.hubWatchSignal)
 	}
 	s.hubWatchSignal = make(chan struct{})
-}
-
-func (s *Session) refreshHubState(ctx context.Context) {
-	s.mu.Lock()
-	client, generation := s.hubClient, s.hubGeneration
-	s.mu.Unlock()
-	enabled := false
-	if client != nil {
-		stateCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		state, err := client.State(stateCtx)
-		cancel()
-		enabled = err == nil && state.Setting.Enabled
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if generation != s.hubGeneration {
-		return
-	}
-	if s.hubEnabled == enabled {
-		return
-	}
-	s.hubEnabled = enabled
-	s.rebuildToolDefsCache()
-	// The same lock publishes the prompt and schema before request capture.
-	s.refreshSystemPromptCache(s.env)
 }
 
 func (s *Session) hubToolDenied(name string) bool {

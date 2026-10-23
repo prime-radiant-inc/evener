@@ -329,7 +329,7 @@ func TestE2E_ManagerAcceptance(t *testing.T) {
 		}
 	}
 	// Add a second local Manager and a remote Manager as readable Manager targets.
-	other, err := clientRequest[appwire.ThreadStartResponse](ctx, human, appwire.MethodThreadStart, appwire.ThreadStartParams{Harness: "evener", CWD: local.workDir, Model: local.model})
+	other, err := clientRequest[appwire.ThreadStartResponse](ctx, human, appwire.MethodThreadStart, appwire.ThreadStartParams{Harness: "evener", CWD: local.workDir, Model: local.model, Manager: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +348,7 @@ func TestE2E_ManagerAcceptance(t *testing.T) {
 	}
 	remote := hubStack{addr: addr, token: strings.TrimSpace(string(token)), workDir: hostDir + "/workspace", model: selectedModel}
 	remoteHuman := remote.dialRPC(ctx, t)
-	remoteStarted, err := clientRequest[appwire.ThreadStartResponse](ctx, remoteHuman, appwire.MethodThreadStart, appwire.ThreadStartParams{Harness: "evener", CWD: remote.workDir, Model: selectedModel})
+	remoteStarted, err := clientRequest[appwire.ThreadStartResponse](ctx, remoteHuman, appwire.MethodThreadStart, appwire.ThreadStartParams{Harness: "evener", CWD: remote.workDir, Model: selectedModel, Manager: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,17 +363,16 @@ func TestE2E_ManagerAcceptance(t *testing.T) {
 		t.Fatal(err)
 	}
 	remoteRef := (appwire.Ref{SourceID: remoteHost, ThreadID: remoteID.ThreadID}).String()
-	enabled, err := clientRequest[appwire.ThreadManagerSetResponse](ctx, human, appwire.MethodEvenerThreadManagerSet, appwire.ThreadManagerSetParams{Ref: remoteRef, Enabled: true})
-	if err != nil || !enabled.View.Setting.Enabled {
-		t.Fatalf("human-path remote Manager enable: %+v %v", enabled, err)
-	}
 	for _, target := range []string{otherRef, remoteRef} {
 		read, err := clientRequest[appwire.ThreadReadResponse](ctx, human, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: target})
 		if err != nil {
 			t.Fatalf("read Manager target %s: %v", target, err)
 		}
 		caps := read.Thread.Evener.Capabilities
-		if !read.Thread.Evener.Manager || read.Thread.Evener.ManagerSetting == nil || !read.Thread.Evener.ManagerSetting.Enabled || !caps.Queue || !caps.Steer || !caps.SkillInput || !caps.CommandInput || target == remoteRef && (caps.Clear || caps.Interrupt || caps.ChangeModel) {
+		// The Manager bit is the session's own start-time property as its daemon
+		// reports it; the store-projected ManagerSetting is transitional and not
+		// the source of truth.
+		if !read.Thread.Evener.Manager || !caps.Queue || !caps.Steer || !caps.SkillInput || !caps.CommandInput || target == remoteRef && (caps.Clear || caps.Interrupt || caps.ChangeModel) {
 			t.Fatalf("Manager target %s: %+v %v", target, read.Thread.Evener, err)
 		}
 	}
@@ -399,17 +398,18 @@ func TestE2E_ManagerAcceptance(t *testing.T) {
 		t.Fatalf("remote Manager target: %+v", remoteTarget.Read)
 	}
 	call.RespondToolCall("communicate", communicateArgs("targets read"))
-	// The remote daemon uses its identified peer binding back to the enabling
-	// hub. It reads the other Manager, not an unsupported remote watch.
+	// The remote Manager operates through its own hub under the start-flag
+	// model: it reaches the sessions that hub reaches, starting with itself.
+	// No cross-hub enable or peer binding participates.
 	if _, err := clientRequest[appwire.TurnStartResponse](ctx, remoteHuman, appwire.MethodTurnStart, appwire.TurnStartParams{Ref: remoteLocalRef, ExpectedInstanceID: remoteStarted.Thread.Evener.InstanceID, ClientMutationID: newMutationID(t), Input: []appwire.InputItem{{Type: "text", Text: "ACCEPT-REMOTE-MANAGER"}}}); err != nil {
 		t.Fatal(err)
 	}
 	call = next("ACCEPT-REMOTE-MANAGER")
-	call.RespondToolCall("job_status", map[string]any{"hub": map[string]any{"ref": otherRef}})
+	call.RespondToolCall("job_status", map[string]any{"hub": map[string]any{"ref": remoteLocalRef}})
 	call = next("ACCEPT-REMOTE-MANAGER")
 	var remoteRead appwire.SessionOperationResponse
-	if !managerToolResult(call, &remoteRead) || remoteRead.Actor.Kind != "manager" || remoteRead.Actor.ManagerRef != remoteRef || remoteRead.Read == nil || remoteRead.Read.Thread.Evener.Ref != otherRef || !remoteRead.Read.Thread.Evener.Manager {
-		t.Fatalf("remote Manager read another Manager: %+v refusal=%s", remoteRead, managerToolRefusal(call))
+	if !managerToolResult(call, &remoteRead) || remoteRead.Actor.Kind != "manager" || remoteRead.Actor.ManagerRef != remoteLocalRef || remoteRead.Read == nil || remoteRead.Read.Thread.Evener.Ref != remoteLocalRef || !remoteRead.Read.Thread.Evener.Manager {
+		t.Fatalf("remote Manager read through its own hub: %+v refusal=%s", remoteRead, managerToolRefusal(call))
 	}
 	call.RespondToolCall("communicate", communicateArgs("remote Manager read"))
 	revoked, err := clientRequest[appwire.ThreadManagerSetResponse](ctx, human, appwire.MethodEvenerThreadManagerSet, appwire.ThreadManagerSetParams{Ref: managerRef, Enabled: false})
@@ -451,11 +451,14 @@ func TestE2E_ManagerAcceptance(t *testing.T) {
 	if !ordinarySucceeded {
 		t.Fatalf("ordinary post-revocation request not saved: %v", managerItemSummary(final))
 	}
-	if read, err := clientRequest[appwire.ThreadReadResponse](ctx, human, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: managerRef}); err != nil || read.Thread.Evener.Manager || read.Thread.Evener.ManagerSetting == nil || read.Thread.Evener.ManagerSetting.Enabled {
-		t.Fatalf("revoked Manager state: %+v %v", read.Thread.Evener, err)
+	// The Manager bit is the session's own start-time property, so a store
+	// change cannot demote it: the session reads Manager true for life. The
+	// ordinary request above already proved its ordinary tools still serve.
+	if read, err := clientRequest[appwire.ThreadReadResponse](ctx, human, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: managerRef}); err != nil || !read.Thread.Evener.Manager {
+		t.Fatalf("Manager session demoted by a store change: %+v %v", read.Thread.Evener, err)
 	}
 	if read, err := clientRequest[appwire.ThreadReadResponse](ctx, human, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: workerRef}); err != nil || !read.Thread.Evener.Capabilities.Send || read.Thread.Evener.Manager {
-		t.Fatalf("revocation broke worker: %+v %v", read.Thread.Evener, err)
+		t.Fatalf("worker state after ordinary round: %+v %v", read.Thread.Evener, err)
 	}
 	// Remote model and selected Manager statuses were checked before creation;
 	// persisted remote Manager input confirms its turn ran on the remote daemon.

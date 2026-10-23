@@ -72,7 +72,7 @@ func TestManagerWatchRuntimeRebindAndOffOnOutage(t *testing.T) {
 			name = "off-on during outage"
 		}
 		t.Run(name, func(t *testing.T) {
-			root := newMessagingRoot(t, newMessagingAdapter(), nil)
+			root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
 			first, second := make(chan appwire.SessionWatchUpdate, 2), make(chan appwire.SessionWatchUpdate, 2)
 			first <- snapshot
 			second <- snapshot
@@ -80,7 +80,6 @@ func TestManagerWatchRuntimeRebindAndOffOnOutage(t *testing.T) {
 			client.streams <- first
 			client.streams <- second
 			root.SetHubClient(client)
-			root.refreshHubState(t.Context())
 			result, err := root.configureHubWatchRuntime(t.Context(), map[string]any{"operation": "create", "hub": map[string]any{"ref": ref, "events": []string{"communicate"}, "completion": true}})
 			if err != nil {
 				t.Fatal(err)
@@ -185,13 +184,12 @@ func TestManagerWatchTargetReplacementAndUnsupportedObservation(t *testing.T) {
 		{"unsupported observation", appwire.SessionWatchUpdate{Event: "unsupported", Metadata: appwire.SessionObservationMetadata{Ref: ref, InstanceID: instance, GenerationID: generation, EntryID: "bad", CausalKnown: true}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := newMessagingRoot(t, newMessagingAdapter(), nil)
+			root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
 			stream := make(chan appwire.SessionWatchUpdate, 2)
 			stream <- appwire.SessionWatchUpdate{Snapshot: &appwire.ThreadReadResponse{BootGeneration: generation, Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: ref, InstanceID: instance}}}, Metadata: appwire.SessionObservationMetadata{Ref: ref, InstanceID: instance, GenerationID: generation}}
 			client := &managerRecoverClient{setting: appwire.ManagerSetting{Enabled: true, HubID: "hub-1", Revision: 4}, streams: make(chan chan appwire.SessionWatchUpdate, 1), watches: make(chan struct{}, 1), ended: make(chan struct{}, 1)}
 			client.streams <- stream
 			root.SetHubClient(client)
-			root.refreshHubState(t.Context())
 			if _, err := root.configureHubWatchRuntime(t.Context(), map[string]any{"operation": "create", "hub": map[string]any{"ref": ref, "events": []string{"status"}}}); err != nil {
 				t.Fatal(err)
 			}
@@ -218,14 +216,14 @@ func TestManagerWatchTargetReplacementAndUnsupportedObservation(t *testing.T) {
 func TestManagerWatchUnrecoverableRebindEndsDurably(t *testing.T) {
 	const ref, instance, generation = "local:worker", "worker-instance", "7@worker"
 	ctx := t.Context()
-	root := newMessagingRoot(t, newMessagingAdapter(), nil)
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
 	stream := make(chan appwire.SessionWatchUpdate, 1)
 	stream <- appwire.SessionWatchUpdate{Snapshot: &appwire.ThreadReadResponse{BootGeneration: generation, Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: ref, InstanceID: instance}}}, Metadata: appwire.SessionObservationMetadata{Ref: ref, InstanceID: instance, GenerationID: generation}}
 	base := &managerRecoverClient{setting: appwire.ManagerSetting{Enabled: true, HubID: "hub-1", Revision: 4}, streams: make(chan chan appwire.SessionWatchUpdate, 1), watches: make(chan struct{}, 1), offlineReads: make(chan struct{}, 1), ended: make(chan struct{}, 1)}
 	base.streams <- stream
 	client := &managerRejectedRebindClient{managerRecoverClient: base}
 	root.SetHubClient(client)
-	root.refreshHubState(t.Context())
+
 	if _, err := root.configureHubWatchRuntime(t.Context(), map[string]any{"operation": "create", "hub": map[string]any{"ref": ref, "events": []string{"status"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -291,11 +289,11 @@ func (c *managerWatchClient) Watch(_ context.Context, request appwire.SessionWat
 }
 
 func TestManagerWatchRuntimeToolRegistersAndObserves(t *testing.T) {
-	root := newMessagingRoot(t, newMessagingAdapter(), nil)
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
 	client := &managerWatchClient{setting: appwire.ManagerSetting{Enabled: true, HubID: "hub-1", Revision: 4}, updates: make(chan appwire.SessionWatchUpdate, 8), requests: make(chan appwire.SessionWatchRequest, 2)}
 	client.updates <- appwire.SessionWatchUpdate{Snapshot: &appwire.ThreadReadResponse{Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: "local:worker", InstanceID: "worker-instance"}}, BootGeneration: "7@worker"}, Metadata: appwire.SessionObservationMetadata{Ref: "local:worker", InstanceID: "worker-instance", GenerationID: "7@worker"}}
 	root.SetHubClient(client)
-	root.refreshHubState(t.Context())
+
 	result := root.reg.ExecuteCall(t.Context(), root.currentEnv(), llm.ToolCallData{ID: "watch", Name: "job_watch", Arguments: json.RawMessage(`{"operation":"create","hub":{"ref":"local:worker","events":["communicate"],"completion":true},"intent":"Watching worker completion"}`)})
 	if result.IsError {
 		t.Fatalf("Manager job_watch rejected: %+v", result)
@@ -313,7 +311,7 @@ func TestManagerWatchRuntimeToolRegistersAndObserves(t *testing.T) {
 // An accepted terminal winner, not status or request intent, completes a root
 // watch. This drives the job manager's real durable watch journal and wake rail.
 func TestManagerWatchCompletionAndRestart(t *testing.T) {
-	root := newMessagingRoot(t, newMessagingAdapter(), nil)
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
 	jm := root.jobManager
 	const ref, generation = "local:worker", "7@worker"
 	config := appwire.ManagerSetting{HubID: "hub-1", Enabled: true, Revision: 4}
@@ -357,7 +355,7 @@ func TestManagerWatchCompletionAndRestart(t *testing.T) {
 }
 
 func TestManagerWatchCompletionAfterEarlierSameEntryObservation(t *testing.T) {
-	root := newMessagingRoot(t, newMessagingAdapter(), nil)
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
 	jm := root.jobManager
 	const ref, instance, generation = "local:worker", "worker-instance", "7@worker"
 	watch, err := jm.configureHubWatch(ref, instance, generation, "hub-1", 4, []string{"communicate"}, true)
@@ -394,7 +392,7 @@ func TestManagerWatchCompletionAfterEarlierSameEntryObservation(t *testing.T) {
 }
 
 func TestManagerWatchUnknownCausalityReplay(t *testing.T) {
-	root := newMessagingRoot(t, newMessagingAdapter(), nil)
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
 	jm := root.jobManager
 	const ref, generation = "local:worker", "7@worker"
 	watch, err := jm.configureHubWatch(ref, "worker-instance", generation, "hub-1", 4, []string{"communicate"}, false)
@@ -428,7 +426,7 @@ func TestManagerWatchUnknownCausalityReplay(t *testing.T) {
 }
 
 func TestManagerWatchRebindAndDisable(t *testing.T) {
-	root := newMessagingRoot(t, newMessagingAdapter(), nil)
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
 	jm := root.jobManager
 	watch, err := jm.configureHubWatch("local:worker", "worker-instance", "7@worker", "hub-1", 4, []string{"status"}, false)
 	if err != nil {
@@ -506,7 +504,7 @@ func TestManagerWatchRuntimeRestartAfterEarlierDelivery(t *testing.T) {
 }
 
 func TestManagerWatchSnapshotLiveRaceAndPendingIdentity(t *testing.T) {
-	root := newMessagingRoot(t, newMessagingAdapter(), nil)
+	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
 	jm := root.jobManager
 	const ref, instance, generation = "local:worker", "worker-instance", "7@worker"
 	watch, err := jm.configureHubWatch(ref, instance, generation, "hub-1", 4, []string{"communicate"}, true)

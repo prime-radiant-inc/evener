@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"maps"
 	"sync"
 
 	"primeradiant.com/evener/agent"
@@ -71,9 +70,10 @@ func (s *Server) SetSessionTools(current func() *agent.Session) {
 	})
 }
 
-// Selection follows a human-enabled durable setting, not the first or last
-// socket to arrive. Once selected, disconnect never falls back to another hub.
-// Conflicting enabled authorities fail closed instead of picking an order.
+// Selection follows the live binding, not a hub-side setting: a session
+// started as a Manager carries its own authority. Once selected, disconnect
+// never falls back to another hub. Simultaneous live bindings from distinct
+// hubs fail closed instead of picking an order.
 type runtimeHubClients struct {
 	mu       sync.Mutex
 	clients  map[string]*runtimeHubClient
@@ -89,106 +89,58 @@ func (c *runtimeHubClients) close() {
 	}
 }
 
+// State answers from the session itself, not from any hub preference: the
+// session's start-time Manager property is the whole truth, reported through
+// the wire shape hub-side admission still reads. The revision is this
+// daemon's binding revision: it moves exactly when the set of live hub
+// bindings changes, which is the change a still-store-gated hub watch checks
+// for. It is a compatibility bridge for hub paths that have not moved to the
+// projected Manager bit yet, and it disappears with them.
 func (c *runtimeHubClients) State(ctx context.Context) (appwire.ManagerView, error) {
-	c.mu.Lock()
-	selected, revision := c.selected, c.revision
-	var selectedClient *runtimeHubClient
-	var clients map[string]*runtimeHubClient
-	if selected != "" {
-		selectedClient = c.clients[selected]
-	} else {
-		clients = maps.Clone(c.clients)
+	client, err := c.admitted(ctx)
+	if err != nil {
+		return appwire.ManagerView{}, err
 	}
+	c.mu.Lock()
+	revision := c.revision
 	c.mu.Unlock()
-	var view appwire.ManagerView
-	chosen := ""
-	if selected != "" {
-		var err error
-		view, err = selectedClient.State(ctx)
-		if err != nil {
-			return view, err
-		}
-		if view.Setting.Enabled {
-			if view.Setting.HubID != selected {
-				return view, appwire.Conflict("hub returned another authority")
-			}
-			chosen = selected
-			// Capture the other clients without holding the lock across hub RPCs.
-			// A revision change is rejected below, not silently reselected.
-			type hubClient struct {
-				hub    string
-				client *runtimeHubClient
-			}
-			c.mu.Lock()
-			var others []hubClient
-			for hub, client := range c.clients {
-				if hub != selected {
-					others = append(others, hubClient{hub, client})
-				}
-			}
-			c.mu.Unlock()
-			for _, other := range others {
-				if other.client.valid() != nil {
-					continue
-				}
-				state, err := other.client.State(ctx)
-				if err != nil {
-					return view, err
-				}
-				if state.Setting.Enabled {
-					if state.Setting.HubID != other.hub {
-						return view, appwire.Conflict("hub returned another authority")
-					}
-					return view, appwire.Conflict("multiple hubs claim Manager authority")
-				}
-			}
-		}
-	} else {
-		for hub, client := range clients {
-			if client.valid() != nil {
-				continue
-			}
-			state, err := client.State(ctx)
-			if err != nil {
-				return view, err
-			}
-			if state.Setting.Enabled {
-				if state.Setting.HubID != hub {
-					return view, appwire.Conflict("hub returned another authority")
-				}
-				if chosen != "" {
-					return view, appwire.Conflict("multiple hubs claim Manager authority")
-				}
-				chosen = hub
-				view = state
-			} else if chosen == "" {
-				view = state
-			}
-		}
+	session := client.session
+	setting := appwire.ManagerSetting{Enabled: false, HubID: client.binding.HubID, Revision: revision}
+	if session != nil && session.Meta().Manager {
+		setting.Enabled = true
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if revision != c.revision || selected != c.selected {
-		return appwire.ManagerView{}, appwire.Unavailable("runtime bindings changed during admission")
-	}
-	c.selected = chosen
-	return view, nil
+	return appwire.ManagerView{Ref: client.binding.Ref, InstanceID: client.binding.InstanceID, Manager: session != nil && session.Meta().Manager, Setting: setting}, nil
 }
 
+// admitted returns the hub client operations run through. A Manager session is
+// admitted because it was started as one; nothing here reads hub state. Two
+// simultaneous live bindings fail closed rather than picking an order, even
+// after one was already selected: a second hub installing a live binding means
+// two hubs each believe they own this session.
 func (c *runtimeHubClients) admitted(ctx context.Context) (*runtimeHubClient, error) {
-	view, err := c.State(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if !view.Setting.Enabled {
-		return nil, appwire.InvalidRequest("Manager mode is not enabled")
-	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.selected == "" {
-		return nil, appwire.Unavailable("runtime authority changed")
+	var live []*runtimeHubClient
+	if c.selected != "" {
+		if client := c.clients[c.selected]; client != nil && client.valid() == nil {
+			live = append(live, client)
+		}
 	}
-	return c.clients[c.selected], nil
+	for hub, client := range c.clients {
+		if hub == c.selected || client.valid() != nil {
+			continue
+		}
+		live = append(live, client)
+	}
+	switch {
+	case len(live) == 1:
+		c.selected = live[0].binding.HubID
+		return live[0], nil
+	case len(live) == 0:
+		return nil, appwire.Unavailable("runtime hub binding is not live")
+	default:
+		return nil, appwire.Conflict("multiple hubs hold live runtime bindings")
+	}
 }
 func (c *runtimeHubClients) Invoke(ctx context.Context, p appwire.SessionOperationRequest) (appwire.SessionOperationResponse, error) {
 	client, err := c.admitted(ctx)

@@ -196,7 +196,6 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	if current, ok := store.CurrentInProgress(); ok {
 		effortOverride = normalizeTaskEffort(strings.TrimSpace(current.ReasoningEffort))
 	}
-	s.refreshHubState(ctx)
 	s.mu.Lock()
 	profile = s.profile
 	sys = s.cachedSystemPrompt

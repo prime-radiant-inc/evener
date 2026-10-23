@@ -41,7 +41,11 @@ func managerPreferenceRef(cfg hubcore.WebConfig, thread appwire.Thread) (string,
 	return ref.String(), nil
 }
 
-// projectManagerMode overlays only this hosting hub's local preference. Remote
+// projectManagerMode overlays only this hosting hub's local preference onto
+// the daemon-reported thread. The Manager bit itself is the session's own
+// start-time property, reported by the session's daemon and never overwritten
+// here: the store row projects ManagerSetting and ManagerEditable only, until
+// the store's removal moves those to the session's record too. Remote
 // settings need a connection-bound authority operation, which is not shipped.
 func projectManagerMode(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
 	thread.Evener.ManagerEditable = false
@@ -49,7 +53,6 @@ func projectManagerMode(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Th
 	if err != nil || ref.SourceID != "local" {
 		return thread
 	}
-	thread.Evener.Manager = false
 	thread.Evener.ManagerSetting = nil
 	if cfg.SessionPreferences == nil {
 		return thread
@@ -62,7 +65,6 @@ func projectManagerMode(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Th
 	if err != nil {
 		return thread
 	}
-	thread.Evener.Manager = setting.Enabled
 	thread.Evener.ManagerSetting = &setting
 	hubID, err := cfg.SessionPreferences.HubID()
 	thread.Evener.ManagerEditable = err == nil && (!setting.Enabled || setting.HubID == hubID)
