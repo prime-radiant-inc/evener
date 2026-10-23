@@ -22,9 +22,10 @@ func compatibleConnectManager(t *testing.T, fr *fakeRunner, opts Options) (*Mana
 	t.Helper()
 	effects := &connectEffects{}
 	if opts.BuildBinary != nil {
+		build := opts.BuildBinary
 		opts.BuildBinary = func(ctx context.Context, goos, arch, out string) error {
 			effects.builds++
-			return writeStageBinary(ctx, goos, arch, out)
+			return build(ctx, goos, arch, out)
 		}
 	}
 	run := fr.runFn
@@ -356,6 +357,37 @@ func TestEnsureLiveOlderHubWithNewerDiskRefuses(t *testing.T) {
 	ch, err := m.Ensure(t.Context(), "alpha")
 	if ch != nil || !errors.Is(err, ErrHostProtocolNewer) || !isTerminal(err) || *effects != (connectEffects{}) || attempts != 1 || m.Attached("alpha") {
 		t.Fatalf("live older hub with newer disk: ch=%v err=%v terminal=%v attempts=%d effects=%+v", ch, err, isTerminal(err), attempts, effects)
+	}
+}
+
+func TestDeployRevalidatesInstalledProtocolBeforeWriting(t *testing.T) {
+	diskProtocol := appwire.ProtocolVersion
+	fr := deployRunner(t, func(int) ([]byte, error) {
+		return []byte(fmt.Sprintf(`{"hub_endpoint_schema":1,"protocol":%q,"version":"controller-build","launch_flags":["api-log"]}`, diskProtocol)), nil
+	}, func(int) ([]byte, error) {
+		return []byte(`{"version":"old-running","mobile_api_version":1,"hub_addr":"127.0.0.1:9180","started_at":"2026-01-01T00:00:00Z"}`), nil
+	})
+	attempts := 0
+	fr.startFn = func(context.Context, []string, io.Writer) (Stdio, error) {
+		attempts++
+		if attempts > 1 {
+			return newFakeBridge(appwire.ProtocolVersion).stdio, nil
+		}
+		return initializeReplyBridge(func(request appwire.Request) appwire.Message {
+			return appwire.ErrorMessage(request.ID, legacyIncompatibleRefusal("evener-appwire-v5"))
+		}), nil
+	}
+	m, effects := compatibleConnectManager(t, fr, Options{
+		controllerVersionOverride: "controller-build",
+		BuildBinary: func(ctx context.Context, goos, goarch, out string) error {
+			// Another controller installs a newer build while this one stages.
+			diskProtocol = "evener-appwire-v99"
+			return writeStageBinary(ctx, goos, goarch, out)
+		},
+	})
+	ch, err := m.Ensure(t.Context(), "alpha")
+	if ch != nil || !errors.Is(err, ErrHostProtocolNewer) || !isTerminal(err) || effects.writes != 0 || effects.builds != 1 {
+		t.Fatalf("pre-write revalidation: ch=%v err=%v terminal=%v effects=%+v", ch, err, isTerminal(err), effects)
 	}
 }
 

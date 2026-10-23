@@ -101,7 +101,9 @@ func TestEnsureStoppedProtocolOldRepairsAndStarts(t *testing.T) {
 	if err != nil || ch == nil {
 		t.Fatalf("Connect: channel=%v err=%v builds=%d writes=%d starts=%d", ch, err, s.builds, s.deploys, s.starts)
 	}
-	if s.builds != 1 || s.deploys != 1 || s.starts != 1 || s.descriptions != 1 || s.protocol != appwire.ProtocolVersion || m.pendingRestart("alpha").active() {
+	// One description comes from preflight's self-contract read; the other is the
+	// pre-write revalidation that refuses to overwrite a newer install.
+	if s.builds != 1 || s.deploys != 1 || s.starts != 1 || s.descriptions != 2 || s.protocol != appwire.ProtocolVersion || m.pendingRestart("alpha").active() {
 		t.Fatalf("repair: builds=%d writes=%d starts=%d descriptions=%d protocol=%q pending=%+v", s.builds, s.deploys, s.starts, s.descriptions, s.protocol, m.pendingRestart("alpha"))
 	}
 }
