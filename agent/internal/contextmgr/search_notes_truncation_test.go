@@ -46,7 +46,7 @@ func TestSummarizeToolResult_RegistryCharacterCutHasNoNoteFragment(t *testing.T)
 				if got.IsError || got.Truncated == fitting || got.RecoverableOutput != raw {
 					t.Fatal("unexpected dispatch or recovery state")
 				}
-				summary := summarizeToolResult(toolName, got.Output, json.RawMessage(`{"pattern":"x"}`))
+				summary := summarizeToolResult(toolName, got.Output, got.IsError, json.RawMessage(`{"pattern":"x"}`))
 				if strings.Contains(summary, "§") != fitting {
 					t.Fatalf("note preservation disagrees with fitting state %v: %q", fitting, summary)
 				}
