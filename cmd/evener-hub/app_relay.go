@@ -375,7 +375,7 @@ var observeHubRelayWait func()
 var observeHubRelayPending atomic.Pointer[func(int)]
 var observeHubRelayPendingBackpressure atomic.Pointer[func()]
 var observeHubRelayRoutePublication atomic.Pointer[func()]
-var observeHubRelayDeliveryAccepted atomic.Pointer[func(string)]
+var observeHubRelayDeliveryRead atomic.Pointer[func(string)]
 
 // threadRelayTarget resolves the relay key (source.ID()+":"+threadID) and the
 // bare threadID for a read-shaped request. This is the delivery routing
@@ -678,6 +678,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				served map[string]bool
 			}
 			pendingDeliveries := make([]pendingRelayDelivery, 0, hubRelayPendingDeliveryLimit)
+			// Test-only: report the retained count after every mutation.
 			recordPending := func() {
 				if observe := observeHubRelayPending.Load(); observe != nil {
 					(*observe)(len(pendingDeliveries))
@@ -933,7 +934,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					return
 				}
 				routingKey, routing := relayNotificationRoutingKey(delivery.Notification, handle.canonical.SourceID)
-				if observe := observeHubRelayDeliveryAccepted.Load(); observe != nil {
+				// Test-only: observe each delivery the fan-out reads, before
+				// routing. Daemon-gone deliveries return above and are not seen.
+				if observe := observeHubRelayDeliveryRead.Load(); observe != nil {
 					(*observe)(routingKey)
 				}
 				if routing == relayNotificationTargeted && hasPendingTarget(routingKey) {
@@ -1035,6 +1038,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				if len(pendingDeliveries) < hubRelayPendingDeliveryLimit {
 					deliveryInput = deliveries
 				} else if observe := observeHubRelayPendingBackpressure.Load(); observe != nil {
+					// Test-only: the bound has stopped the delivery input.
 					(*observe)()
 				}
 				var routeChanged <-chan struct{}
@@ -1189,6 +1193,8 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						panic(recovered)
 					}
 				}()
+				// Test-only: hold authoritative publication before any route
+				// binding or resolveRoutesLocked decrement of pendingRoutes.
 				if observe := observeHubRelayRoutePublication.Load(); observe != nil {
 					(*observe)()
 				}

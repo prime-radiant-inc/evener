@@ -42,7 +42,7 @@ the publication instant is observable from the test. Add four unexported
 var observeHubRelayPending atomic.Pointer[func(int)]
 var observeHubRelayPendingBackpressure atomic.Pointer[func()]
 var observeHubRelayRoutePublication atomic.Pointer[func()]
-var observeHubRelayDeliveryAccepted atomic.Pointer[func(string)]
+var observeHubRelayDeliveryRead atomic.Pointer[func(string)]
 ```
 
 - The `observeHubRelayPending` callback is invoked with
@@ -63,9 +63,10 @@ var observeHubRelayDeliveryAccepted atomic.Pointer[func(string)]
   authoritative publication after the response cut. It must not be placed later
   in the closure: route binding and resolution must not begin while the test is
   waiting for capacity.
-- The `observeHubRelayDeliveryAccepted` callback is invoked with the computed
+- The `observeHubRelayDeliveryRead` callback is invoked with the computed
   routing key after the fan-out reads a delivery from its input and before it is
-  buffered or published. The test counts deliveries whose routing key is
+  buffered or published; daemon-gone deliveries return earlier and are not
+  observed. The test counts deliveries whose routing key is
   `childRef`: exactly 64 are accepted before publication release, and at least 65
   after it. That proves a 65th real child delivery was offered and refused by the
   bound, not merely that 64 happened to arrive.

@@ -49,12 +49,12 @@ func TestHubRelayPendingTargetBurstAtCapacity(t *testing.T) {
 	var maxOccupancy, currentOccupancy, burstAccepted atomic.Int64
 	occupancyViolation := make(chan int, 1)
 	backpressure := make(chan struct{})
-	var backpressureOnce sync.Once
+	backpressureReached := sync.OnceFunc(func() { close(backpressure) })
 	publicationEntered := make(chan struct{})
 	publicationReleased := make(chan struct{})
 	releasePublication := sync.OnceFunc(func() { close(publicationReleased) })
 	var publicationArmed atomic.Bool
-	var readStarted atomic.Bool
+	var readStarted bool
 	readFinished := make(chan struct{})
 
 	pendingObservation := func(n int) {
@@ -73,7 +73,7 @@ func TestHubRelayPendingTargetBurstAtCapacity(t *testing.T) {
 		}
 	}
 	backpressureObservation := func() {
-		backpressureOnce.Do(func() { close(backpressure) })
+		backpressureReached()
 	}
 	publicationObservation := func() {
 		if publicationArmed.CompareAndSwap(true, false) {
@@ -89,20 +89,20 @@ func TestHubRelayPendingTargetBurstAtCapacity(t *testing.T) {
 	previousPending := observeHubRelayPending.Swap(&pendingObservation)
 	previousBackpressure := observeHubRelayPendingBackpressure.Swap(&backpressureObservation)
 	previousPublication := observeHubRelayRoutePublication.Swap(&publicationObservation)
-	previousDelivery := observeHubRelayDeliveryAccepted.Swap(&deliveryObservation)
+	previousDelivery := observeHubRelayDeliveryRead.Swap(&deliveryObservation)
 	// Register the restore before the fixture so LIFO runs it after the
 	// fixture's stopCanonicalRelay cleanup. Releasing the publication here also
 	// unblocks every failure path, and the read wait leaves no in-flight read
 	// behind before the observations are dropped.
 	t.Cleanup(func() {
 		releasePublication()
-		if readStarted.Load() {
+		if readStarted {
 			<-readFinished
 		}
 		observeHubRelayPending.Store(previousPending)
 		observeHubRelayPendingBackpressure.Store(previousBackpressure)
 		observeHubRelayRoutePublication.Store(previousPublication)
-		observeHubRelayDeliveryAccepted.Store(previousDelivery)
+		observeHubRelayDeliveryRead.Store(previousDelivery)
 	})
 
 	f := newHubRelayProgressFixture(t, hubcore.RelayLifecycleHooks{})
@@ -110,12 +110,8 @@ func TestHubRelayPendingTargetBurstAtCapacity(t *testing.T) {
 	root, _ := openRootWithRetiredChild(t, f, false)
 
 	f.gateArmed.Store(true)
-	type readOutcome struct {
-		response appwire.ThreadReadResponse
-		err      error
-	}
 	readDone := make(chan readOutcome, 1)
-	readStarted.Store(true)
+	readStarted = true
 	go func() {
 		defer close(readFinished)
 		response, err := root.ThreadRead(ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true})
@@ -227,10 +223,6 @@ func testHubRelayRetiredChildReadProgress(t *testing.T, queuedRead, backgroundCo
 	root, consumers := openRootWithRetiredChild(t, f, backgroundConsumer)
 
 	f.gateArmed.Store(true)
-	type readOutcome struct {
-		response appwire.ThreadReadResponse
-		err      error
-	}
 	readDone := make(chan readOutcome, 1)
 	go func() {
 		response, err := root.ThreadRead(ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true})
@@ -337,6 +329,11 @@ func assertHubRelayRootNotes(ctx context.Context, t *testing.T, root *appwire.Cl
 
 const rootID, childID = "read-progress-root", "read-progress-child"
 const rootRef, childRef = "local:" + rootID, "local:" + childID
+
+type readOutcome struct {
+	response appwire.ThreadReadResponse
+	err      error
+}
 
 func TestHubRelayRoutePublicationUnblocksPendingDelivery(t *testing.T) {
 	oldEntered, oldRelease := make(chan struct{}), make(chan struct{})
