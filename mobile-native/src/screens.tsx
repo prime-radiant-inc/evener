@@ -1,6 +1,7 @@
 import { isValidTranscriptRef } from "@evener/appwire-client";
 import type { CellRendererProps } from "@react-native/virtualized-lists";
 import { bindFilePath, type FileReference } from "@evener/appwire-client/docContent";
+import { ownPendingTurnInput } from "@evener/appwire-client/state/mutation";
 import { useHeaderHeight } from "@react-navigation/elements";
 import type { NavigatorScreenParams } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -2578,6 +2579,68 @@ function ConversationScreenView({
 		if (!live.conversation || pendingQuestions(live.conversation).length > 0) return false;
 		return sendAction(live.conversation, live.pendingMutations, connectionReady.current) !== "none";
 	}, [service, connected, focused, store, controls, commandPending]);
+	// The failure-recovery consumer's read demand. A target storage transition
+	// only fail-closes canonical authority and schedules no authoritative read of
+	// its own: on native that read takes the runtime's read lease and blocks the
+	// target's ordinary dispatch. A mounted failure that could offer Retry is the
+	// one consumer that may afford that block, and only once no own submission is
+	// unresolved (otherwise the read would race the very dispatch it is waiting
+	// on). Keyed on the readiness state and the displayed model, so it re-runs
+	// when the storage notification drops authority or when the failure arrives
+	// while authority is already unavailable.
+	const retryAuthorityDemand = useRef<number | null>(null);
+	useEffect(() => {
+		if (!focused || !connected || !service) return;
+		const current = store.getState();
+		if (current.latestReadState !== "unknown") {
+			retryAuthorityDemand.current = null;
+			return;
+		}
+		if (current.ref !== route.params.ref || current.status !== "open") return;
+		// An uncertified projection or an unresolved own row already disables
+		// Retry; a read now could only block the dispatcher's target.
+		if (!current.pendingMutationsReady || ownPendingTurnInput(current.pendingMutations)) return;
+		const displayedTurnId = latestTurnId(current.conversation ?? undefined);
+		if (displayedTurnId === undefined) return;
+		// The same owner predicate the row uses, with authority removed: true only
+		// for a turn's own failure row on the displayed latest turn, so a warning,
+		// another item's error, a historical failure or a sign-in failure asks for
+		// nothing.
+		const offersRetry = (current.conversation?.items ?? []).some((row) => {
+			if (row.kind !== "failure") return false;
+			return (
+				errorAction(
+					row,
+					{
+						canonical: null,
+						displayedLatestTurnId: displayedTurnId,
+						pendingMutations: current.pendingMutations,
+						pendingMutationsReady: current.pendingMutationsReady,
+					},
+					retryCanSend(),
+				)?.kind === "retry"
+			);
+		});
+		if (!offersRetry) return;
+		// At most one demand per binding while authority stays unavailable: a
+		// discarded read returns to "unknown", and re-asking would spin.
+		if (retryAuthorityDemand.current === current.conversationGeneration) return;
+		retryAuthorityDemand.current = current.conversationGeneration;
+		void current.ensureLatest();
+	}, [
+		snapshot.latestReadState,
+		snapshot.pendingMutationsReady,
+		snapshot.pendingMutations,
+		snapshot.conversation,
+		snapshot.ref,
+		snapshot.status,
+		focused,
+		connected,
+		service,
+		store,
+		route.params.ref,
+		retryCanSend,
+	]);
 	// Continuation uses Send's routing without consuming the current draft. The
 	// clicked turn and the shared store are re-read here, not trusted from the
 	// render that offered the action: a stale callback submits nothing.

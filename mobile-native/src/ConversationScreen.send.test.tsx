@@ -3133,6 +3133,106 @@ describe("Retry's one owner on the shared session binding", () => {
 		expect(pressable(tree, "Retry")?.props.disabled).toBe(false);
 	});
 
+	// The storage transition that drops canonical authority schedules no read of
+	// its own (that read blocks the target's ordinary dispatch). The mounted
+	// failure is the consumer that may demand it: without any explicit
+	// ensureLatest, the view's own demand restores authority and enables Retry.
+	it("demands one authoritative read for a displayed failure after a zero-deletion storage notification", async () => {
+		const ref = "ref-retry-auto-read";
+		const { tree, entry, hub } = await mountTracked(failedTurn(ref, "go test exited 1"));
+		expect(pressable(tree, "Retry")?.props.disabled).toBe(false);
+		const targetKey = nativeMutationTargetKey("hub-1", ref);
+		const readsBefore = hub.requests.filter((request) => request.method === "thread/read").length;
+
+		const runtime = getNativeMutationRuntime();
+		const request = hub.client.request;
+		const held = deferred();
+		let hold = true;
+		let heldReads = 0;
+		hub.client.request = async (method, params) => {
+			if (method === "thread/read" && hold) {
+				hold = false;
+				heldReads += 1;
+				await held.gate;
+			}
+			return request(method, params);
+		};
+		try {
+			await act(async () => {
+				await runtime.discardRecovery("no-such-row", targetKey);
+			});
+			// The demand reaches the wire with no explicit call from the test, and
+			// the row is disabled while that read is held.
+			await until(() => expect(heldReads).toBe(1));
+			const heldAction = pressable(tree, "Retry");
+			expect(heldAction).toBeDefined();
+			expect(heldAction?.props.disabled).toBe(true);
+		} finally {
+			await act(async () => held.release());
+			hub.client.request = request;
+		}
+
+		await until(() => expect(entry.store.getState().latestReadState).toBe("ready"));
+		await settle();
+		expect(hub.requests.filter((request) => request.method === "thread/read").length).toBe(readsBefore + 1);
+		expect(pressable(tree, "Retry")?.props.disabled).toBe(false);
+		// The demand is a read, not a submission: one identity, nothing sent.
+		expect(hub.mutations()).toEqual([]);
+		expect(await runtime.storage.listOutbox(targetKey)).toEqual([]);
+	});
+
+	it("does not demand a read when the screen displays no failure", async () => {
+		const ref = "ref-retry-no-failure";
+		const { entry, hub } = await mountTracked(twoTurns(ref));
+		await settle();
+		const runtime = getNativeMutationRuntime();
+		const targetKey = nativeMutationTargetKey("hub-1", ref);
+		const readsBefore = hub.requests.filter((request) => request.method === "thread/read").length;
+
+		await act(async () => {
+			await runtime.discardRecovery("no-such-row", targetKey);
+		});
+		await until(() => expect(entry.store.getState().pendingMutationsReady).toBe(true));
+		await settle();
+		expect(entry.store.getState().latestReadState).toBe("unknown");
+		expect(hub.requests.filter((request) => request.method === "thread/read").length).toBe(readsBefore);
+	});
+
+	it("stays disabled when the demanded read fails", async () => {
+		const ref = "ref-retry-auto-read-fails";
+		const { tree, entry, hub } = await mountTracked(failedTurn(ref, "go test exited 1"));
+		await settle();
+		const enabledAction = pressable(tree, "Retry");
+		expect(enabledAction).toBeDefined();
+		expect(enabledAction?.props.disabled).toBe(false);
+		const enabledPress = enabledAction!.props.onPress;
+		const runtime = getNativeMutationRuntime();
+		const targetKey = nativeMutationTargetKey("hub-1", ref);
+		const readsBefore = hub.requests.filter((request) => request.method === "thread/read").length;
+
+		coordinatorHub.readFails = ref;
+		try {
+			await act(async () => {
+				await runtime.discardRecovery("no-such-row", targetKey);
+			});
+			await until(() =>
+				expect(hub.requests.filter((request) => request.method === "thread/read").length).toBeGreaterThan(readsBefore),
+			);
+			await until(() => expect(entry.store.getState().latestReadState).toBe("error"));
+			await settle();
+			// With the required read failed, the session is in error: the action is
+			// never offered enabled, and the callback captured while it was enabled
+			// re-reads the owners at activation and submits nothing.
+			const afterFailure = pressable(tree, "Retry");
+			expect(afterFailure === undefined || afterFailure.props.disabled === true).toBe(true);
+			act(() => enabledPress());
+			await settle();
+			expect(hub.mutations()).toEqual([]);
+		} finally {
+			coordinatorHub.readFails = null;
+		}
+	});
+
 	it("submits nothing from a stale Retry callback after the canonical advances", async () => {
 		const ref = "ref-retry-stale";
 		const served = failedTurn(ref, "go test exited 1");
