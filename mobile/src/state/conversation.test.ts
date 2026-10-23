@@ -20224,6 +20224,32 @@ describe("store-owned canonical read validity and pending readiness", () => {
 		expect(store.getState().canonicalSession()).not.toBeNull();
 	});
 
+	it("a rejected rehydrate publication settles error and a later accepted read restores ready", async () => {
+		const service = new FakeConversationService();
+		const store = createConversationStore();
+		const openSink = createFakeSink();
+		await store.getState().openProjected(service, openSink, "ref-1");
+		expect(store.getState().latestReadState).toBe("ready");
+		const displayed = store.getState().conversation;
+		expect(displayed).not.toBeNull();
+
+		// The strict activity sink rejects this rehydrate's publication: nothing
+		// commits, so it is not canonical authority. Leaving "reading" here would
+		// strand Retry: the entry actor retries "error" and the screen demand only
+		// handles "unknown".
+		const rejectSink = createFakeSink();
+		rejectSink.setLiveViewResult = () => false;
+		await store.getState().rehydrate(service, rejectSink);
+		expect(store.getState().latestReadState).toBe("error");
+		expect(store.getState().conversation).toBe(displayed);
+		expect(store.getState().canonicalSession()).toBeNull();
+
+		// The retry owner's later accepted publication restores authority.
+		await store.getState().rehydrate(service, openSink);
+		expect(store.getState().latestReadState).toBe("ready");
+		expect(store.getState().canonicalSession()).not.toBeNull();
+	});
+
 	it("retirement resolves an awaited refresh without undoing the commit", async () => {
 		const storage = createStorage({ outbox: [outbox()], optimistic: [] });
 		const service = new FakeConversationService();

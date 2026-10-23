@@ -2435,7 +2435,15 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// Strict activity sink: call setLiveView BEFORE committing the paired
 					// conversation projection. If it returns false, do not commit.
 					const accepted = sink.setLiveView(activity, identity);
-					if (!accepted) return;
+					if (!accepted) {
+						// The sink rejected this publication, so nothing committed and it
+						// is not canonical authority. Settle into the recoverable failure
+						// state rather than leaving "reading": the entry read actor retries
+						// "error", while the screen's demand only handles "unknown". The
+						// displayed model stays readable.
+						markLatest("error");
+						return;
+					}
 					acceptedRehydrate = { generation: gen, sink };
 					adoptRead(conversation);
 					// R1: Success preserves any newer error owner. Only clear error if
