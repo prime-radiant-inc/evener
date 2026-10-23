@@ -4,6 +4,8 @@ Design documentation for the web hub (`cmd/evener-hub`).
 
 ## Current
 
+- **[Message recovery](../product/message-recovery.md)** — local queue Edit/Remove,
+  durable composer ownership, offline recovery and Stop races.
 - **[Session activity](../product/session-activity.md)** — ownership of scoped
   delegate, shell-job and watch reads, compact navigation, pagination and shared
   recovery. Use this contract when changing activity surfaces or subscriptions.

@@ -157,9 +157,227 @@ func TestBackgroundTranscriptsEntrySliceBrowser(t *testing.T) {
 	for i := range entries {
 		skillGuardStopHelper(t, i)
 	}
+	assertBackgroundDisplay(t, milestones)
 	assertBackgroundEntrySlice(t, fixture, milestones)
 	if driverErr != nil {
 		t.Errorf("%v\nfull artifacts (logs, screenshots, dumps): %s", driverErr, fixture.artifact)
+	}
+}
+
+type backgroundDisplaySnapshot struct {
+	Local            map[string]json.RawMessage   `json:"local"`
+	Effective        map[string]json.RawMessage   `json:"effective"`
+	Publications     []map[string]json.RawMessage `json:"publications"`
+	Messages         []json.RawMessage            `json:"messages"`
+	Storage          []backgroundDisplayStorage   `json:"storage"`
+	Persisted        map[string]*string           `json:"persisted"`
+	BroadcastChannel string                       `json:"broadcast_channel"`
+	StorageBlocked   bool                         `json:"storage_blocked"`
+	Origin           string                       `json:"origin"`
+	Href             string                       `json:"href"`
+}
+
+type backgroundDisplayStorage struct {
+	Key          string  `json:"key"`
+	OldValue     *string `json:"old_value"`
+	NewValue     *string `json:"new_value"`
+	URL          string  `json:"url"`
+	Trusted      bool    `json:"trusted"`
+	LocalStorage bool    `json:"local_storage"`
+	Blocked      bool    `json:"blocked"`
+}
+
+// Independent literals pin the whole config, not only a preset or driver flag.
+var backgroundDisplayConfigs = [...]json.RawMessage{
+	json.RawMessage(`{"version":1,"content":{"kind":"preset","level":"full"},"advanced":{"roundTimings":true,"tokenCounts":false,"estimatedCost":true,"systemEvents":false,"promptEvents":true,"hookExits":"all"}}`),
+	json.RawMessage(`{"version":1,"content":{"kind":"preset","level":"tools"},"advanced":{"roundTimings":false,"tokenCounts":true,"estimatedCost":false,"systemEvents":true,"promptEvents":false,"hookExits":"successful"}}`),
+	json.RawMessage(`{"version":1,"content":{"kind":"preset","level":"activity"},"advanced":{"roundTimings":false,"tokenCounts":true,"estimatedCost":true,"systemEvents":true,"promptEvents":false,"hookExits":"none"}}`),
+	json.RawMessage(`{"version":1,"content":{"kind":"preset","level":"intent"},"advanced":{"roundTimings":true,"tokenCounts":false,"estimatedCost":false,"systemEvents":false,"promptEvents":true,"hookExits":"all"}}`),
+}
+
+func backgroundDisplayEqual(a, b any) bool {
+	normalize := func(value any) any {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		var decoded any
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			return err
+		}
+		return decoded
+	}
+	return reflect.DeepEqual(normalize(a), normalize(b))
+}
+
+func assertBackgroundDisplay(t *testing.T, milestonesPath string) {
+	t.Helper()
+	milestones, err := backgroundReadMilestones(milestonesPath)
+	if err != nil {
+		t.Fatalf("read display milestones: %v", err)
+	}
+	var nativeSources [2]string
+	var nativeTargets [2]string
+	for _, transport := range []string{"broadcast", "storage"} {
+		var baseline struct {
+			TargetIDs [2]string                    `json:"target_ids"`
+			Tabs      [2]backgroundDisplaySnapshot `json:"tabs"`
+		}
+		if !skillGuardMilestoneDetail(t, milestones, "display-"+transport+"-baseline", &baseline) {
+			t.Errorf("missing mandatory display %s baseline", transport)
+			continue
+		}
+		if baseline.TargetIDs[0] == "" || baseline.TargetIDs[1] == "" || baseline.TargetIDs[0] == baseline.TargetIDs[1] || baseline.Tabs[0].Origin == "" || baseline.Tabs[0].Origin != baseline.Tabs[1].Origin {
+			t.Errorf("display %s did not use distinct same-origin tabs: %+v", transport, baseline)
+		}
+		if transport == "broadcast" {
+			nativeTargets = baseline.TargetIDs
+		} else {
+			for _, target := range baseline.TargetIDs {
+				if target == nativeTargets[0] || target == nativeTargets[1] {
+					t.Error("storage fallback reused a BroadcastChannel document")
+				}
+			}
+		}
+		for n, tab := range baseline.Tabs {
+			wantChannel := "function"
+			if transport == "storage" {
+				wantChannel = "undefined"
+			}
+			if !backgroundDisplayEqual(tab.Local, map[string]json.RawMessage{}) || len(tab.Effective) != 2 || tab.BroadcastChannel != wantChannel || tab.StorageBlocked != (transport == "broadcast") || tab.Href == "" {
+				t.Errorf("display %s tab %d invalid empty/transport baseline: %+v", transport, n, tab)
+			}
+		}
+		expected := map[string]json.RawMessage{}
+		// This list is deliberately not read from the driver's operation table.
+		for _, operation := range []struct {
+			name   string
+			sender int
+			layout string
+			config int
+		}{
+			{"desktop-v1", 0, "desktop", 0}, {"mobile-v1", 1, "mobile", 1},
+			{"desktop-v2", 0, "desktop", 2}, {"mobile-v2", 1, "mobile", 3},
+			{"clear-desktop", 0, "desktop", -1}, {"clear-mobile", 1, "mobile", -1},
+		} {
+			name := "display-" + transport + "-" + operation.name
+			var record struct {
+				Sender int                          `json:"sender"`
+				Layout string                       `json:"layout"`
+				Before [2]backgroundDisplaySnapshot `json:"before"`
+				After  [2]backgroundDisplaySnapshot `json:"after"`
+			}
+			if !skillGuardMilestoneDetail(t, milestones, name, &record) {
+				t.Errorf("missing mandatory display milestone %q", name)
+				continue
+			}
+			if record.Sender != operation.sender || record.Layout != operation.layout {
+				t.Errorf("%s wrong direction/layout: %+v", name, record)
+			}
+			var oldValue, newValue *string
+			if old, ok := expected[operation.layout]; ok {
+				value := string(old)
+				oldValue = &value
+			}
+			for n, before := range record.Before {
+				if !backgroundDisplayEqual(before.Local, expected) || len(before.Publications) != 0 || len(before.Messages) != 0 || len(before.Storage) != 0 {
+					t.Errorf("%s tab %d wrong before state or observations not reset: %+v", name, n, before)
+				}
+			}
+			if operation.config < 0 {
+				delete(expected, operation.layout)
+			} else {
+				config := backgroundDisplayConfigs[operation.config]
+				expected[operation.layout] = config
+				value := string(config)
+				newValue = &value
+			}
+			for n, after := range record.After {
+				if !backgroundDisplayEqual(after.Local, expected) || len(after.Publications) != 1 || !backgroundDisplayEqual(after.Publications[0], expected) {
+					t.Errorf("%s tab %d wrong full local map or publication history: %+v", name, n, after)
+				}
+				for _, layout := range []string{"desktop", "mobile"} {
+					config, present := expected[layout]
+					var persisted *string
+					if present {
+						value := string(config)
+						persisted = &value
+					} else {
+						config = baseline.Tabs[n].Effective[layout]
+					}
+					if !backgroundDisplayEqual(after.Effective[layout], config) || !reflect.DeepEqual(after.Persisted[layout], persisted) {
+						t.Errorf("%s tab %d wrong %s effective/durable config: %+v", name, n, layout, after)
+					}
+				}
+				if n == operation.sender {
+					if len(after.Storage) != 0 {
+						t.Errorf("%s sender received its own storage event: %+v", name, after.Storage)
+					}
+				} else {
+					want := []backgroundDisplayStorage{{Key: "evener.prefs.transcriptDisplay." + operation.layout, OldValue: oldValue, NewValue: newValue, URL: baseline.Tabs[operation.sender].Href, Trusted: true, LocalStorage: true, Blocked: transport == "broadcast"}}
+					if !reflect.DeepEqual(after.Storage, want) {
+						t.Errorf("%s receiver storage events = %+v, want %+v", name, after.Storage, want)
+					}
+				}
+				if transport == "storage" {
+					if len(after.Messages) != 0 {
+						t.Errorf("%s fallback used BroadcastChannel: %s", name, after.Messages)
+					}
+					continue
+				}
+				if len(after.Messages) != 1 {
+					t.Errorf("%s tab %d expected one native envelope, got %s", name, n, after.Messages)
+					continue
+				}
+				var envelope map[string]any
+				if err := json.Unmarshal(after.Messages[0], &envelope); err != nil {
+					t.Errorf("%s malformed envelope: %v", name, err)
+					continue
+				}
+				source, _ := envelope["sourceId"].(string)
+				if source == "" || (nativeSources[operation.sender] != "" && source != nativeSources[operation.sender]) {
+					t.Errorf("%s unstable or empty source ID: %q", name, source)
+				}
+				nativeSources[operation.sender] = source
+				want := map[string]any{"version": 1, "sourceId": source, "layout": operation.layout, "config": newValue, "fingerprint": newValue}
+				if !backgroundDisplayEqual(envelope, want) {
+					t.Errorf("%s tab %d wrong exact five-field envelope: %s", name, n, after.Messages[0])
+				}
+			}
+		}
+	}
+	if nativeSources[0] == "" || nativeSources[1] == "" || nativeSources[0] == nativeSources[1] {
+		t.Errorf("display native senders must have distinct nonempty source IDs: %q", nativeSources)
+	}
+	var fingerprint struct {
+		Invalid  json.RawMessage              `json:"invalid"`
+		Valid    json.RawMessage              `json:"valid"`
+		Before   [2]backgroundDisplaySnapshot `json:"before"`
+		Rejected [2]backgroundDisplaySnapshot `json:"rejected"`
+		Accepted [2]backgroundDisplaySnapshot `json:"accepted"`
+	}
+	if !skillGuardMilestoneDetail(t, milestones, "display-fingerprint", &fingerprint) {
+		t.Error("missing mandatory display fingerprint rejection and positive control")
+		return
+	}
+	source := "display-guard-fingerprint-control"
+	invalid := map[string]any{"version": 1, "sourceId": source, "layout": "desktop", "config": string(backgroundDisplayConfigs[0]), "fingerprint": string(backgroundDisplayConfigs[1])}
+	valid := map[string]any{"version": 1, "sourceId": source, "layout": "desktop", "config": string(backgroundDisplayConfigs[0]), "fingerprint": string(backgroundDisplayConfigs[0])}
+	if source == nativeSources[0] || source == nativeSources[1] || !backgroundDisplayEqual(fingerprint.Invalid, invalid) || !backgroundDisplayEqual(fingerprint.Valid, valid) {
+		t.Errorf("fingerprint control changed more than the fingerprint or used a real sender identity: %+v", fingerprint)
+	}
+	for n := range 2 {
+		before, rejected, accepted := fingerprint.Before[n], fingerprint.Rejected[n], fingerprint.Accepted[n]
+		want := map[string]json.RawMessage{"desktop": backgroundDisplayConfigs[0]}
+		if !backgroundDisplayEqual(before.Local, map[string]json.RawMessage{}) || len(before.Publications) != 0 || !backgroundDisplayEqual(rejected.Local, before.Local) || len(rejected.Publications) != 0 || !backgroundDisplayEqual(rejected.Messages, []any{invalid}) {
+			t.Errorf("fingerprint mismatch was not observed and rejected without transient publication in tab %d: %+v", n, rejected)
+		}
+		if !backgroundDisplayEqual(accepted.Local, want) || !backgroundDisplayEqual(accepted.Publications, []any{want}) || !backgroundDisplayEqual(accepted.Messages, []any{invalid, valid}) || !backgroundDisplayEqual(accepted.Effective["desktop"], backgroundDisplayConfigs[0]) || !backgroundDisplayEqual(accepted.Effective["mobile"], before.Effective["mobile"]) {
+			t.Errorf("corrected fingerprint was not observed and applied exactly once in tab %d: %+v", n, accepted)
+		}
+		if len(rejected.Storage) != 0 || len(accepted.Storage) != 0 || !reflect.DeepEqual(before.Persisted, rejected.Persisted) || !reflect.DeepEqual(before.Persisted, accepted.Persisted) {
+			t.Errorf("fingerprint injection wrote storage in tab %d", n)
+		}
 	}
 }
 

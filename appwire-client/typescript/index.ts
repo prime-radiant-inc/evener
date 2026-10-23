@@ -131,7 +131,24 @@ export type {
 } from "./commandCatalog";
 export { createCommandCatalog, createSessionCommandCatalog, sessionPluginNames } from "./commandCatalog";
 export type { ComposerMention, InputAttachment } from "./composerInput";
-export { buildComposerInput, buildInput, canonicalSkillNames, formatQuoteBlock, mergeDraftText } from "./composerInput";
+export {
+  buildComposerInput,
+  buildInput,
+  canonicalSkillNames,
+  completeSkillReferenceAt,
+  formatQuoteBlock,
+  isSkillTokenCharacter,
+  mergeDraftText,
+  reconcileComposerMentions,
+  sharedPrefixLength,
+  sharedSuffixLength,
+} from "./composerInput";
+export type { ComposerComposition, RecoveredComposition } from "./composerRecovery";
+export {
+  mergeComposerCompositions,
+  nextComposerImageMarker,
+  recoverMutationComposition,
+} from "./composerRecovery";
 export type { CredentialLayerView, InstanceProviderGroup } from "./credentialLabels";
 export {
   activeSourceLabel,

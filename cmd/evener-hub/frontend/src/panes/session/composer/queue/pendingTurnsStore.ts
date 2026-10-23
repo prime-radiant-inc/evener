@@ -20,27 +20,41 @@ import type {
   MutationAttachment,
   MutationOutboxRecord,
   MutationRecoveryRecord,
+  MutationStopBarrier,
 } from "../../../../stores/mutationOutbox";
+import type { MutationRecoveryResendResult } from "../../../../stores/mutationOutboxIndexedDB";
 import { clearProjectionWorkForTests, trackProjectionWork } from "../../../../stores/projectionWork";
 import {
   type ComposerMutationRoute,
   discardRecoveryMutation,
+  editQueuedMutation,
   type InputAttachment,
+  installQueuedMutationProjection,
   installResumeOnlyProjection,
   notifyReadyForMutationDispatch,
   readMutationPersistence,
+  removeQueuedMutation,
   resendRecoveryMutation,
   retryBlockedMutation,
   subscribeMutationPersistence,
   threadsStore,
   transientRefusalRetryPending,
   updateRecoveryMutation,
+  useEditableQueuedMutationEntries,
   useThreadsStore,
 } from "../../../../stores/threads";
 import { clearDraft, readComposerDraft, readDraftRevision } from "../draft";
 import type { PendingMethod, PendingTurnEntry } from "./pendingReconcile";
 
 export type { PendingMethod, PendingTurnEntry } from "./pendingReconcile";
+
+// Presentation ownership only. The durable selector includes Remove-only
+// promotion and empty drain commands, not just messages with editable input.
+// Do not filter the underlying pending projection used by submission routing.
+export function useQueueStripMutationIds(ref: string): ReadonlySet<string> {
+  const records = useEditableQueuedMutationEntries(ref);
+  return useMemo(() => new Set(records.map((record) => record.clientMutationId)), [records]);
+}
 
 // The client-swap safety, reconciliation and submission bookkeeping now live
 // in the package's pending-turns projection store
@@ -62,6 +76,12 @@ const pendingTurnsStore = createPendingTurnsStore<MutationAttachment>({
   threads: threadsPort,
   draft: draftPort,
   identity: { isOwnMutationRecord },
+});
+
+installQueuedMutationProjection({
+  subscribe: pendingTurnsStore.subscribe,
+  getOutbox: () => pendingTurnsStore.getState().outbox,
+  refresh: refreshPendingTurnsProjection,
 });
 
 // The refs whose durable outbox this projection has actually read and
@@ -471,7 +491,13 @@ export function updateRecoveryPendingTurn(
   skillNames?: readonly string[],
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
-): Promise<boolean> {
+  consumeRecoveryIds?: readonly string[],
+  localDraftRevisionId?: string,
+  expectedCompositionRevision?: number,
+  expectedRecoveryRevisions?: Readonly<Record<string, number>>,
+  compositionOwnerId?: string,
+  composerText?: string,
+): ReturnType<typeof updateRecoveryMutation> {
   // Composer serializes edits before resending. A committed edit must release
   // that chain even when the recovery tray cannot refresh yet.
   return trackProjectionWork(
@@ -484,6 +510,12 @@ export function updateRecoveryPendingTurn(
         skillNames,
         commandNames,
         mentions,
+        consumeRecoveryIds,
+        localDraftRevisionId,
+        expectedCompositionRevision,
+        expectedRecoveryRevisions,
+        compositionOwnerId,
+        composerText,
       );
       void refreshPendingTurnsProjection(ref);
       return updated;
@@ -495,8 +527,22 @@ export function discardRecoveryPendingTurn(
   clientMutationId: string,
   ref: string,
   shouldDiscard?: () => boolean,
+  expectedCompositionRevision?: number,
 ): Promise<boolean> {
-  return mutateThenRefresh(ref, () => discardRecoveryMutation(clientMutationId, ref, shouldDiscard));
+  return mutateThenRefresh(ref, () =>
+    discardRecoveryMutation(clientMutationId, ref, shouldDiscard, expectedCompositionRevision),
+  );
+}
+
+export function editQueuedPendingTurn(
+  clientMutationId: string,
+  ref: string,
+): Promise<MutationRecoveryRecord | undefined> {
+  return mutateThenRefresh(ref, () => editQueuedMutation(clientMutationId, ref));
+}
+
+export function removeQueuedPendingTurn(clientMutationId: string, ref: string): Promise<boolean> {
+  return mutateThenRefresh(ref, () => removeQueuedMutation(clientMutationId, ref));
 }
 
 export function resendRecoveryPendingTurn(
@@ -508,12 +554,15 @@ export function resendRecoveryPendingTurn(
   skillNames?: readonly string[],
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
-): Promise<boolean> {
+  barrierRead?: Promise<MutationStopBarrier>,
+  expectedRecoveryRevisions?: Readonly<Record<string, number>>,
+  compositionOwnerId?: string,
+): Promise<MutationRecoveryResendResult> {
   // Resend publishes its committed handoff directly. Reading the recovery
   // tray again cannot hold up a submission that already has a durable owner.
   return trackProjectionWork(
     (async () => {
-      const record = await resendRecoveryMutation(
+      const result = await resendRecoveryMutation(
         clientMutationId,
         ref,
         route,
@@ -522,9 +571,12 @@ export function resendRecoveryPendingTurn(
         skillNames,
         commandNames,
         mentions,
+        barrierRead,
+        expectedRecoveryRevisions,
+        compositionOwnerId,
       );
       void refreshPendingTurnsProjection(ref);
-      return record !== undefined;
+      return result;
     })(),
   );
 }
