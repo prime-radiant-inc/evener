@@ -24,7 +24,6 @@ import {
 } from "./draft";
 import {
   discardRecoveryPendingTurn,
-  recoveryPendingTurnExists,
   refreshPendingTurnsProjection,
   subscribeComposerSubmissionCommitted,
   updateRecoveryPendingTurn,
@@ -456,20 +455,15 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           nextComposerText,
         );
         if (!updated) {
-          const missing =
-            !disposed &&
-            currentRecoveryId() === clientMutationId &&
-            !(await recoveryPendingTurnExists(clientMutationId));
-          if (missing) {
-            // Another tab consumed the row. Keeping this lease would make
-            // every later submission fail against an owner this tab can no
-            // longer write. Preserve the local composition as an ordinary
-            // draft before retiring it, including anything typed while the
-            // submission guard suppressed autosave.
+          if (!disposed && currentRecoveryId() === clientMutationId) {
+            // The row was consumed or advanced by another pane. Keeping this
+            // stale lease would make every later save and send fail against an
+            // owner this tab can no longer write. Preserve the local
+            // composition as an ordinary draft before retiring it.
             persistDraft(textRef.current);
             setActiveRecoveryId(null);
           }
-          if (!disposed && (missing || currentRecoveryId() === clientMutationId)) {
+          if (!disposed) {
             pushToast("info", "This message changed in another tab. Refresh and try again.");
           }
           return false;

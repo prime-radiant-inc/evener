@@ -1245,7 +1245,8 @@ test("stale recovery persistence refusal preserves the unsent draft and attachme
     await waitFor(() => expect(screen.getByRole("button", { name: "Send" }).hasAttribute("disabled")).toBe(false));
     expect((screen.getByRole("textbox", { name: "Message" }) as HTMLElement).textContent).toBe(submittedText);
     expect(screen.getByRole("button", { name: "Remove recovered.png" })).toBeDefined();
-    expect(source.getSnapshot().activeRecoveryId).toBe(queuedRecord.clientMutationId);
+    expect(source.getSnapshot().activeRecoveryId).toBeNull();
+    expect(readDraft("root")).toBe(submittedText);
     expect(await peer.getRecovery(queuedRecord.clientMutationId)).toMatchObject({
       composerText: "newer composition in another tab",
       payload: { input: [{ type: "text", text: "newer composition in another tab" }] },
