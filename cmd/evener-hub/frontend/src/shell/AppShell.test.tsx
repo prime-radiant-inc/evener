@@ -2246,6 +2246,44 @@ test("mobile mount at a welcome-route attention entry restores it before StackHo
   expect(originLifetime.alive).toBe(true);
 });
 
+// routeDeferred is computed during render from a ref the restoration effect
+// writes, so a restore that changes nothing observable leaves no render behind
+// it. This is the case the review asked for: the phone remounts on an entry it
+// already holds the exact reader for, and a later focus-only move to another
+// existing pane still has to publish that pane's URL.
+test("a focus-only child opening after an already-restored attention entry publishes its URL", async () => {
+  const setMobile = installSwitchableViewport();
+  setMobile(true);
+  window.history.replaceState({}, "", "/s/local%3Aorigin");
+  installLocationForRoute("local:origin");
+  const firstMount = render(<AppShell client={navClient()} />);
+  await screen.findByText(/loading transcript/i);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:origin" }));
+  const origin = workspaceStore.getState().mainPane();
+  if (!origin) throw new Error("missing initial routed reader");
+  act(() => openAttentionSession("local:destination"));
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:destination" }));
+  const back = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+  await act(async () => {
+    window.history.back();
+    await back;
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(origin.id));
+  firstMount.unmount();
+
+  // The live store already holds this entry's reader, focused and placed: the
+  // restoration is a no-op, so nothing about it forces a render.
+  expect(workspaceStore.getState().focusedPaneId).toBe(origin.id);
+  render(<AppShell client={navClient()} />);
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(origin.id));
+
+  act(() => {
+    const child = workspaceStore.getState().openPane("session", { ref: "local:child" }, { slot: "secondary" });
+    workspaceStore.getState().focusPane(child);
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Achild"));
+});
+
 test("a secondary departure restores the exact reader without replacing its main or neighbors", async () => {
   window.history.replaceState({}, "", "/s/local%3Aowner");
   installLocationForRoute("local:owner");
