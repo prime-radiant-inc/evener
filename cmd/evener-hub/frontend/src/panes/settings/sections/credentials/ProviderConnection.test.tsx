@@ -3497,6 +3497,20 @@ test("a query-only endpoint change still requires review before the check", asyn
   ]);
 });
 
+test("the access review shows its facts as eyebrow-labeled PropertyList rows", async () => {
+  const { user, client } = setup(fingerprintList("fp-2024"));
+  await choose(user, "Anthropic");
+  await enterText(user, screen.getByLabelText("API key"), "sk-ant-draft");
+  scriptSave(client, fingerprintList("fp-2025", "store"));
+
+  await user.click(screen.getByRole("button", { name: "Save and test" }));
+
+  const review = await screen.findByTestId("access-review");
+  const terms = review.querySelectorAll("dt");
+  expect(terms).toHaveLength(2);
+  expect([...terms].every((term) => term.className.includes("eyebrowLabel"))).toBe(true);
+});
+
 test("a credential draft is not saved to a destination that changed since it was typed", async () => {
   const { user, client } = setup(fingerprintList("fp-2024"));
   await choose(user, "Anthropic");
