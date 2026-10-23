@@ -819,6 +819,64 @@ test("a non-committing reset releases only the provisional it provisioned", asyn
   }
 });
 
+// A reset provisions suppression for the ticket its read state names, and a
+// changed acceptance on that same ticket installs its own provisional for the
+// SAME epoch with the SAME requestId. The reset's release must name the exact
+// entry it provisioned: matching by requestId deletes the live acceptance's
+// provisional and reopens the append window it protects.
+test("a non-committing reset releases only the entry it provisioned over a same-ticket acceptance", async () => {
+  const resetAttempted = deferred<void>();
+  let fixture: AnnotationFixture | undefined;
+  let holds: ReturnType<typeof holdNextTransactions> | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-reset-same-ticket-provisional",
+    origin: "https://reset.example",
+    beforeCommit: (operation) => {
+      if (operation === "reset") {
+        resetAttempted.resolve();
+        throw new Error("reset fault");
+      }
+    },
+  });
+  try {
+    // The ticket registers BEFORE the reset provisions, so the reset names
+    // THIS ticket when it installs its provisional suppression.
+    const changedTicket = await fixture.repository.beginRead(fixture.document);
+    // The reset aborts, but its abort event is held so its release path has not
+    // run yet. The changed acceptance's validation is held in the same window.
+    holds = holdNextTransactions([
+      { stores: RESET_STORES, event: "abort" },
+      { stores: ACCEPT_STORES, event: "complete" },
+    ]);
+    const reset = fixture.repository.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation);
+    await resetAttempted.promise;
+    await holds.reached[0];
+
+    // The changed acceptance's entry block displaces the reset's provisional
+    // for the same epoch and requestId, and its validation completion is held
+    // so that provisional stays unconfirmed while the reset settles.
+    const changedAcceptance = fixture.repository.acceptRead(changedTicket, sampleChangedContent());
+    void changedAcceptance.catch(() => undefined);
+    await holds.reached[1];
+
+    // The reset's release must skip the acceptance's live provisional, which
+    // answers the handoff pending while its own validation is still in flight.
+    holds.releaseAt(0);
+    await expect(reset).rejects.toThrow("reset fault");
+    expect(await fixture.repository.handoff(fixture.document, fixture.operation.operationId)).toEqual({
+      state: "pending",
+      reason: "owner-unavailable",
+    });
+
+    holds.release();
+    expect(await changedAcceptance).toMatchObject({ state: "expiry-pending" });
+  } finally {
+    holds?.release();
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
+
 // Two changed reads of the same accepted epoch overlap. The first installs the
 // provisional that protects its in-flight validation. A second, later read's
 // entry install used to replace that entry; when its validation answers stale,

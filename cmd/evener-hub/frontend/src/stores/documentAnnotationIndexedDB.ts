@@ -719,12 +719,17 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // Callers run after their transaction settled: the signal can start a retry
   // pass and must never fire inside one. Confirmed entries are never released
   // here: a proven change (or a committed reset) keeps its suppression until
-  // its expiry's deletion completes.
-  #releaseUnconfirmed(owned: readonly { identity: string; requestId?: string | null }[]): void {
+  // its expiry's deletion completes. A candidate that names an exact entry
+  // releases only that object: another actor can install an entry with the
+  // same identity and requestId, and it is not the caller's to release.
+  #releaseUnconfirmed(
+    owned: readonly { identity: string; requestId?: string | null; entry?: SuppressionEntry }[],
+  ): void {
     const releasedDocuments = new Set<string>();
     for (const candidate of owned) {
       const entry = this.#suppressedEpochs.get(candidate.identity);
       if (!entry || entry.confirmed) continue;
+      if (candidate.entry !== undefined && entry !== candidate.entry) continue;
       if (candidate.requestId !== undefined && entry.requestId !== candidate.requestId) continue;
       this.#suppressedEpochs.delete(candidate.identity);
       releasedDocuments.add(entry.documentKey);
@@ -2184,7 +2189,11 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     // and let an unchanged reread treat the epoch as expired, deleting
     // payloads the reset never removed. An independently confirmed expiry (a
     // changed read's proof) keeps its own entry untouched.
-    const provisioned: { identity: string; requestId: string }[] = [];
+    // The installed entry objects, by reference. A changed re-acceptance on the
+    // same ticket installs an entry for the same epoch with the same requestId,
+    // so this reset's matchers must act on the exact objects it installed and
+    // never on a lookalike another actor put in their place.
+    const provisioned: { identity: string; entry: SuppressionEntry }[] = [];
     for (const [documentKey, states] of this.#readStates) {
       if (documentKeyNamespace(documentKey) !== namespaceKey) continue;
       const state = states.get(expectedIncarnation);
@@ -2193,19 +2202,19 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       if (accepted && accepted.lease.namespaceIncarnation === expectedIncarnation) {
         const identity = epochIdentity(accepted.lease);
         if (this.#suppressedEpochs.has(identity)) continue;
-        this.#installSuppression(identity, {
+        const entry: SuppressionEntry = {
           documentKey,
           namespaceIncarnation: expectedIncarnation,
           requestId: state.ticket.requestId,
           confirmed: false,
-        });
-        provisioned.push({ identity, requestId: state.ticket.requestId });
+        };
+        // Only an install that actually happened is this reset's to settle.
+        if (this.#installSuppression(identity, entry)) provisioned.push({ identity, entry });
       }
     }
     const confirmProvisioned = (): void => {
-      for (const { identity, requestId } of provisioned) {
-        const entry = this.#suppressedEpochs.get(identity);
-        if (entry && !entry.confirmed && entry.requestId === requestId) entry.confirmed = true;
+      for (const { identity, entry } of provisioned) {
+        if (this.#suppressedEpochs.get(identity) === entry && !entry.confirmed) entry.confirmed = true;
       }
     };
     // An aborted or non-rotating reset releases what it provisioned. The release
