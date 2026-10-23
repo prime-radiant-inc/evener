@@ -724,13 +724,27 @@ func (s *Session) delegateAttentionFoldLocked() (delegateAttentionFold, error) {
 	}
 	s.mu.Lock()
 	ready := s.transcriptReady
+	writer := s.transcript
 	sessionID := s.id
 	stateDir := s.stateDir
 	s.mu.Unlock()
 	if !ready || sessionID == "" || stateDir == "" {
 		return delegateAttentionFold{}, nil
 	}
-	return s.readDelegateAttentionFold(transcriptPath(stateDir, sessionID), sessionID)
+	fold, err := s.readDelegateAttentionFold(transcriptPath(stateDir, sessionID), sessionID)
+	if err != nil {
+		return delegateAttentionFold{}, err
+	}
+	if len(fold.observed) != 0 || len(fold.resolutions) != 0 {
+		// A complete response or resolution can survive a failed sync and
+		// rollback. Readability alone cannot authorize observation or clear
+		// repair debt. attentionMu keeps this barrier and fold together with
+		// every session append, without discarding or re-appending the record.
+		if err := writer.EstablishDurability(); err != nil {
+			return delegateAttentionFold{}, err
+		}
+	}
+	return fold, nil
 }
 
 // pendingAttentionTurnsLocked returns the turns behind the pending attention
@@ -810,10 +824,10 @@ func (s *Session) restoreAcceptedTrigger(attentionID string, turns []schema.Turn
 	return nil
 }
 
-// acceptDelegateAttention records the exact reserved generation in the child
-// transcript before asking the controller to publish that generation. The
-// reservation remains the per-child claim across both durability boundaries;
-// a journal append failure can therefore replay this same marker and batch.
+// acceptDelegateAttention keeps the controller's exact generation reservation
+// while preparing its pending trigger and remaining FIFO wake IDs. Launch
+// writes no observation marker, so the trigger stays pending until a synced
+// successful response proves presentation.
 func (s *Session) acceptDelegateAttention(reservation *delegateStartReservation) error {
 	if s == nil || s.delegateController == nil {
 		return errDelegateStaleLease

@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"reflect"
+	"sync"
 	"testing"
 
 	"github.com/spf13/afero"
@@ -124,6 +126,98 @@ func TestNotificationObservation(t *testing.T) {
 		}
 		assertNotificationPending(t, reopened, []string{})
 		t.Log("provider requests before restart=1, after restart=2, failed assistant sync left work pending")
+	})
+	t.Run("retained_response_requires_durability", func(t *testing.T) {
+		a := &skillContinuationAdapter{}
+		s := observationSession(t, a, false)
+		observationEnqueue(t, s, "obs-a", "body-a-71c9")
+		fs := observationRetainedWriter(t, s, `"kind":"ASSISTANT"`)
+		a.steps = []func(llm.Request) (llm.Response, error){func(req llm.Request) (llm.Response, error) {
+			observationRequest(t, req, []string{"body-a-71c9"}, nil)
+			return llm.Response{Message: llm.Assistant("answer-822d")}, nil
+		}}
+		if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); !errors.Is(err, transcript.ErrRetainedUnsynced) {
+			t.Fatalf("response append = %v, want retained-unsynced error", err)
+		}
+		observationReceipts(t, s, [][]string{{"obs-a"}}) // readable, but not synced
+		if markers := observationResolutionCount(t, s); markers != 0 {
+			t.Errorf("unsynced response authorized %d resolution records, want 0", markers)
+		}
+		if ids, err := s.pendingNotificationIDs(); err == nil && !reflect.DeepEqual(ids, []string{"obs-a"}) {
+			t.Errorf("unsynced response granted observation: pending=%v, want obs-a or durability error", ids)
+		}
+		if covered := s.unionCoveredAttention(nil); len(covered) != 0 {
+			t.Errorf("unsynced response authorized marker repair: %v", covered)
+		}
+		if err := s.ackNotifications(nil); err == nil {
+			t.Error("repair succeeded while retained response remained unsynced")
+		}
+		fs.release(t)
+		if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+			t.Fatal(err)
+		}
+		assertNotificationPending(t, s, []string{})
+		observationReceipts(t, s, [][]string{{"obs-a"}})
+		observationOneResolution(t, s)
+		fs.assertRecovered(t)
+		reopened := observationReopen(t, s, a)
+		if _, err := reopened.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+			t.Fatal(err)
+		}
+		if len(a.Requests()) != 1 {
+			t.Fatalf("requests after recovery and restart = %d, want 1", len(a.Requests()))
+		}
+		observationReceipts(t, reopened, [][]string{{"obs-a"}})
+		observationOneResolution(t, reopened)
+		t.Log("retained response recovery/restart: requests=1 responses=1 markers=1")
+	})
+	t.Run("retained_resolution_requires_durability", func(t *testing.T) {
+		a := &skillContinuationAdapter{}
+		s := observationSession(t, a, false)
+		observationEnqueue(t, s, "obs-a", "body-a-71c9")
+		fs := observationRetainedWriter(t, s, `"kind":"ATTENTION_RESOLUTION"`)
+		a.steps = []func(llm.Request) (llm.Response, error){func(req llm.Request) (llm.Response, error) {
+			observationRequest(t, req, []string{"body-a-71c9"}, nil)
+			return llm.Response{Message: llm.Assistant("answer-822d")}, nil
+		}}
+		if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); !errors.Is(err, transcript.ErrRetainedUnsynced) {
+			t.Fatalf("resolution append = %v, want retained-unsynced error", err)
+		}
+		observationReceipts(t, s, [][]string{{"obs-a"}}) // this response synced
+		observationOneResolution(t, s)                   // this marker did not
+		if !observationRepairOwed(s) {
+			t.Fatal("failed marker append lost its retry debt")
+		}
+		if err := s.ackNotifications(nil); err == nil {
+			t.Error("repair succeeded while retained resolution remained unsynced")
+		}
+		if !observationRepairOwed(s) {
+			t.Error("unsynced retained resolution cleared retry debt")
+		}
+		fs.release(t)
+		if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+			t.Fatal(err)
+		}
+		s.attentionMu.Lock()
+		unsettled := s.rootAttentionRetry.active || len(s.rootAttentionWakeIDs) != 0
+		s.attentionMu.Unlock()
+		if unsettled {
+			t.Fatal("synced resolution did not clear retry debt")
+		}
+		assertNotificationPending(t, s, []string{})
+		observationReceipts(t, s, [][]string{{"obs-a"}})
+		observationOneResolution(t, s)
+		fs.assertRecovered(t)
+		reopened := observationReopen(t, s, a)
+		if _, err := reopened.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+			t.Fatal(err)
+		}
+		if len(a.Requests()) != 1 {
+			t.Fatalf("requests after recovery and restart = %d, want 1", len(a.Requests()))
+		}
+		observationReceipts(t, reopened, [][]string{{"obs-a"}})
+		observationOneResolution(t, reopened)
+		t.Log("retained resolution recovery/restart: requests=1 responses=1 markers=1")
 	})
 	t.Run("later round failure preserves earlier observation", func(t *testing.T) {
 		a := &skillContinuationAdapter{}
@@ -392,6 +486,144 @@ func (fs observationSyncFS) OpenFile(path string, flag int, mode os.FileMode) (a
 	}
 	return &attentionFailNextSyncFile{File: f, fs: fs.attentionFailNextSyncFS}, nil
 }
+
+// Fault only filesystem operations, starting at the target record's write.
+// Sync (including the recovery barrier) and rollback Truncate keep failing
+// until release, so readable records cannot accidentally become durable.
+type observationRetainedFS struct {
+	afero.Fs
+	mu                           sync.Mutex
+	target                       []byte
+	failing                      bool
+	syncFailures, rollbacks      int
+	successfulSyncsAfterFailures int
+}
+
+func observationRetainedWriter(t *testing.T, s *Session, target string) *observationRetainedFS {
+	t.Helper()
+	fs := &observationRetainedFS{Fs: afero.NewOsFs(), target: []byte(target)}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	old := s.attachedTranscript()
+	w, entries, err := transcript.OpenWriterForSessionWithFS(fs, s.TranscriptPath(), s.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.TrackFailures(entries, s.fork.divergence)
+	s.mu.Lock()
+	s.setTranscriptLocked(w)
+	s.mu.Unlock()
+	// A lifecycle recovery must use the same faulty filesystem as the append.
+	s.cfg.testOnly.delegateAttentionOpenWriter = func(path, id string) (*transcript.Writer, []transcript.Entry, error) {
+		return transcript.OpenWriterForSessionWithFS(fs, path, id)
+	}
+	t.Cleanup(func() { _ = old.Close() })
+	return fs
+}
+
+func (fs *observationRetainedFS) OpenFile(path string, flag int, mode os.FileMode) (afero.File, error) {
+	f, err := fs.Fs.OpenFile(path, flag, mode)
+	if err != nil {
+		return nil, err
+	}
+	return &observationRetainedFile{File: f, fs: fs}, nil
+}
+
+func (fs *observationRetainedFS) release(t *testing.T) {
+	t.Helper()
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if fs.syncFailures < 2 || fs.rollbacks == 0 {
+		t.Fatalf("did not exercise append sync, rollback and recovery barrier: sync faults=%d rollback faults=%d", fs.syncFailures, fs.rollbacks)
+	}
+	fs.failing = false
+	fs.target = nil
+}
+
+func (fs *observationRetainedFS) assertRecovered(t *testing.T) {
+	t.Helper()
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if fs.successfulSyncsAfterFailures == 0 {
+		t.Error("recovery reported success without a successful filesystem sync")
+	}
+}
+
+type observationRetainedFile struct {
+	afero.File
+	fs *observationRetainedFS
+}
+
+func (f *observationRetainedFile) Write(p []byte) (int, error) {
+	f.fs.mu.Lock()
+	if len(f.fs.target) != 0 && bytes.Contains(p, f.fs.target) {
+		f.fs.failing = true
+	}
+	f.fs.mu.Unlock()
+	return f.File.Write(p)
+}
+
+func (f *observationRetainedFile) Sync() error {
+	f.fs.mu.Lock()
+	fail := f.fs.failing
+	if fail {
+		f.fs.syncFailures++
+	}
+	f.fs.mu.Unlock()
+	if fail {
+		return errors.New("injected retained record sync failure")
+	}
+	if err := f.File.Sync(); err != nil {
+		return err
+	}
+	f.fs.mu.Lock()
+	if f.fs.syncFailures != 0 {
+		f.fs.successfulSyncsAfterFailures++
+	}
+	f.fs.mu.Unlock()
+	return nil
+}
+
+func (f *observationRetainedFile) Truncate(size int64) error {
+	f.fs.mu.Lock()
+	fail := f.fs.failing
+	if fail {
+		f.fs.rollbacks++
+	}
+	f.fs.mu.Unlock()
+	if fail {
+		return errors.New("injected retained record rollback failure")
+	}
+	return f.File.Truncate(size)
+}
+
+func observationOneResolution(t *testing.T, s *Session) {
+	t.Helper()
+	if markers := observationResolutionCount(t, s); markers != 1 {
+		t.Fatalf("resolution records = %d, want 1", markers)
+	}
+}
+
+func observationRepairOwed(s *Session) bool {
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	// The paced retry may already have fired. Either its pending timer or the
+	// resulting wake must remain live while this accepted ID still needs repair.
+	_, pending := s.rootAttentionWakeIDs["obs-a"]
+	return pending && (s.rootAttentionRetry.active || s.rootAttentionWake)
+}
+
+func observationResolutionCount(t *testing.T, s *Session) int {
+	t.Helper()
+	markers := 0
+	for _, entry := range notificationRawEntries(t, s.TranscriptPath()) {
+		if r := entry.Turn.AttentionResolution; r != nil && r.AttentionID == "obs-a" {
+			markers++
+		}
+	}
+	return markers
+}
+
 func observationEnqueue(t *testing.T, s *Session, id, body string) {
 	t.Helper()
 	if err := s.enqueueNotification(notification{ID: id, Message: llm.User(body)}); err != nil {
