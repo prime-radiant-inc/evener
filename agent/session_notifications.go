@@ -67,7 +67,7 @@ func (s *Session) ackNotifications(ids []string) error {
 }
 
 // enqueueNotification resolves only controller members. A cold writer borrows
-// the existing delivery claim machinery, which also excludes attention starts
+// the existing active delivery machinery, which also excludes attention starts
 // and runtime restoration while that transcript is open.
 func (c *delegateTreeController) enqueueNotification(ownerSessionID string, n notification) error {
 	if c == nil || ownerSessionID == "" {
@@ -125,26 +125,23 @@ func (c *delegateTreeController) enqueueNotification(ownerSessionID string, n no
 		c.mu.Unlock()
 		return errors.Join(errDelegateDeliveryReceiverUnavailable, err)
 	}
-	// No new queue or store: this is the same cold-writer exclusion that a
-	// source delivery holds between BeginDelivery and CompleteDelivery.
+	// This is active I/O, not a discardable pre-admission claim. Stop joins
+	// active deliveries until the writer has closed and its wake is recorded.
 	c.nextToken++
 	key := "notification:" + ownerID + ":" + n.ID
-	claim := &delegateDeliveryClaim{token: delegateDeliveryClaimToken{processID: c.nextToken, deliveryID: key}, delegateID: ownerID, ownerID: ownerID, cold: true}
-	c.deliveryClaims[key] = claim
+	token := delegateDeliveryToken{processID: c.nextToken, deliveryID: key}
+	c.deliveries[token.processID] = &delegateDeliveryAdmission{token: token, delegateID: ownerID, ownerID: ownerID, cold: true}
 	c.evidenceVersion++
 	c.mu.Unlock()
 	_, err = cold.appendNotificationDurably(n)
-	c.mu.Lock()
-	if c.deliveryClaims[key] == claim {
-		delete(c.deliveryClaims, key)
-		c.evidenceVersion++
+	if err == nil {
+		_, err = c.openDelegateAttention(ownerID, n.ID)
 	}
-	c.mu.Unlock()
-	c.retirementChanged()
+	// There is no source journal to acknowledge for this admission. Releasing
+	// it through the existing completion path also signals a waiting Stop.
+	_, completionErr := c.CompleteDelivery(token, false)
+	err = errors.Join(err, completionErr)
 	if err != nil {
-		return err
-	}
-	if _, err := c.openDelegateAttention(ownerID, n.ID); err != nil {
 		return err
 	}
 	c.notifyStableDelegateAttention()

@@ -64,6 +64,10 @@ type delegateDeliveryAdmission struct {
 	cold       bool
 	inline     bool
 	retryable  bool
+	// receiverCommitted means the cold writer has synced and closed. Only the
+	// source acknowledgment remains, so retries must not reopen that writer or
+	// block the receiver's attention admission.
+	receiverCommitted bool
 	// heldClaim is the receiver's own claim on a held delivery an inline
 	// reply took over, restored if the reply's tool round is abandoned.
 	heldClaim *delegateDeliveryClaim
@@ -613,6 +617,11 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 	if plan.controller.deliveryReceiptIsInline(token) {
 		return plan.controller.CompleteDelivery(token, true)
 	}
+	if plan.controller.deliveryReceiverCommitted(token) {
+		plans, err := plan.controller.CompleteDelivery(token, true)
+		plan.controller.notifyStableDelegateAttention()
+		return plans, err
+	}
 	if receiver == nil {
 		plans, completionErr := plan.controller.CompleteDelivery(token, false)
 		return plans, errors.Join(errDelegateDeliveryReceiverUnavailable, completionErr)
@@ -642,6 +651,13 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 		err = receiver.enqueueNotificationAfterCustody(n, completeCustody)
 	case coldDelegateDeliveryReceiver:
 		_, err = receiver.appendNotificationDurably(n)
+		if err == nil {
+			// Receiver custody precedes source acknowledgment. Close has released
+			// the writer, so retain only the FIFO source receipt and publish the
+			// transcript-backed wake even when the following source append fails.
+			plan.controller.commitColdDeliveryReceiver(token)
+			defer plan.controller.notifyStableDelegateAttention()
+		}
 	default:
 		_, err = receiver.appendDelegateNotificationDurably(attentionID, content)
 	}
@@ -662,8 +678,6 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 		if !receiver.isRootDelegateAttentionReceiver() {
 			plan.controller.notifyStableDelegateAttention()
 		}
-	case coldDelegateDeliveryReceiver:
-		plan.controller.notifyStableDelegateAttention()
 	}
 	return plans, err
 }
@@ -857,7 +871,7 @@ func (c *delegateTreeController) hasDeliveryWorkForOwnerLocked(ownerDelegateID s
 		}
 	}
 	for _, receipt := range c.deliveries {
-		if receipt != nil && receipt.ownerID == ownerDelegateID {
+		if receipt != nil && !receipt.receiverCommitted && receipt.ownerID == ownerDelegateID {
 			return true
 		}
 	}
@@ -890,7 +904,7 @@ func (c *delegateTreeController) retryDeliveryPlanLocked(receipt *delegateDelive
 		return nil
 	}
 	receiver := c.deliveryReceiverLocked(receipt.ownerID)
-	if !receipt.inline && receipt.ownerID != "" && receiver == nil {
+	if !receipt.inline && !receipt.receiverCommitted && receipt.ownerID != "" && receiver == nil {
 		return nil
 	}
 	return &delegateDeliveryPlan{
@@ -929,6 +943,27 @@ func (c *delegateTreeController) deliveryReceiptIsInline(token delegateDeliveryT
 	defer c.mu.Unlock()
 	receipt := c.deliveries[token.processID]
 	return receipt != nil && receipt.token == token && receipt.inline
+}
+
+func (c *delegateTreeController) deliveryReceiverCommitted(token delegateDeliveryToken) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	receipt := c.deliveries[token.processID]
+	return receipt != nil && receipt.token == token && receipt.receiverCommitted
+}
+
+// commitColdDeliveryReceiver is called only after the canonical append, sync
+// and close succeed. The retained receipt still owns source FIFO and Stop's
+// source-ack join, but no longer owns receiver I/O or execution exclusion.
+func (c *delegateTreeController) commitColdDeliveryReceiver(token delegateDeliveryToken) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if receipt := c.deliveries[token.processID]; receipt != nil && receipt.token == token {
+		receipt.receiverCommitted = true
+		receipt.cold = false
+		c.noteDelegateAttentionLocked(receipt.ownerID, delegateAttentionID(token.deliveryID))
+		c.evidenceVersion++
+	}
 }
 
 func (c *delegateTreeController) replayDeliveriesForOwnerLocked(ownerDelegateID string) []delegateDeliveryPlan {

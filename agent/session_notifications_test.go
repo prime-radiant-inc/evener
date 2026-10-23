@@ -23,6 +23,147 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+func TestNotificationColdStopWaitsForWriterClose(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 4, 2)
+	seedDelegateControllerIdle(t, c, "dlg_owner", "")
+	sessionID := c.durable["dlg_owner"].Descriptor.ChildSessionID
+	path := transcriptPath(c.stateDir, sessionID)
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fs := &notificationColdBarrierFS{Fs: afero.NewOsFs(), writeEntered: make(chan struct{}), writeRelease: make(chan struct{}), closeEntered: make(chan struct{}), closeRelease: make(chan struct{})}
+	unblockWrite := sync.OnceFunc(func() { close(fs.writeRelease) })
+	unblockClose := sync.OnceFunc(func() { close(fs.closeRelease) })
+	c.attentionOpen = func(path, id string) (*transcript.Writer, []transcript.Entry, error) {
+		return transcript.OpenWriterForSessionWithFS(fs, path, id)
+	}
+	n := notification{ID: "stop-cold", Message: llm.User("stop-cold-body")}
+	done := make(chan struct{})
+	var acceptanceErr error
+	go func() { acceptanceErr = c.enqueueNotification(sessionID, n); close(done) }()
+	defer func() { unblockWrite(); unblockClose(); <-done }()
+	<-fs.writeEntered
+	stop, _, _, err := c.StopSubtree(rootDelegateActor(c.rootSessionID), "dlg_owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconcile := func() delegateMutationPlans {
+		t.Helper()
+		evidence, err := collectDelegateReconcileEvidence(c.stateDir, c.ReconcileRequirements())
+		if err != nil {
+			t.Fatal(err)
+		}
+		plans, err := c.Reconcile(evidence)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return plans
+	}
+	assertStillOwned := func(stage string) {
+		t.Helper()
+		plans := reconcile()
+		select {
+		case <-stop.done:
+			t.Fatalf("Stop completed before cold writer %s", stage)
+		default:
+		}
+		if len(plans.attention) != 0 {
+			t.Fatalf("Stop planned a second cold writer before %s: %+v", stage, plans.attention)
+		}
+		if err := c.enqueueNotification(sessionID, notification{ID: "second", Message: llm.User("second")}); err == nil {
+			t.Fatal("second cold enqueue admitted during Stop")
+		}
+		fs.mu.Lock()
+		defer fs.mu.Unlock()
+		if fs.active != 1 || fs.peak != 1 {
+			t.Fatalf("cold writers before %s: active=%d peak=%d", stage, fs.active, fs.peak)
+		}
+	}
+	assertStillOwned("append")
+	unblockWrite()
+	<-fs.closeEntered
+	assertNotificationRecords(t, path, n.ID, n.Message, 1)
+	assertStillOwned("close")
+	unblockClose()
+	<-done
+	if acceptanceErr != nil {
+		t.Fatal(acceptanceErr)
+	}
+	for range 3 {
+		plans := reconcile()
+		for _, cleanup := range plans.attention {
+			if err := c.executeDelegateAttentionCleanup(cleanup); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	select {
+	case <-stop.done:
+	default:
+		t.Fatal("Stop did not complete after writer close and cleanup")
+	}
+	assertNotificationRecords(t, path, n.ID, n.Message, 1)
+	resolutions := 0
+	for _, entry := range notificationRawEntries(t, path) {
+		if resolution := entry.Turn.AttentionResolution; resolution != nil && resolution.AttentionID == n.ID {
+			resolutions++
+			if resolution.Disposition != string(delegateAttentionDiscarded) {
+				t.Fatalf("Stop disposition = %q", resolution.Disposition)
+			}
+		}
+	}
+	if resolutions != 1 {
+		t.Fatalf("raw Stop resolutions = %d, want 1", resolutions)
+	}
+}
+
+// Only the external transcript file is blocked. The real controller, writer,
+// sync, Stop admission, evidence collector and cleanup all run unchanged.
+type notificationColdBarrierFS struct {
+	afero.Fs
+	mu                                                     sync.Mutex
+	active, peak, opens                                    int
+	writeOnce, closeOnce                                   sync.Once
+	writeEntered, writeRelease, closeEntered, closeRelease chan struct{}
+}
+
+func (fs *notificationColdBarrierFS) OpenFile(path string, flag int, mode os.FileMode) (afero.File, error) {
+	f, err := fs.Fs.OpenFile(path, flag, mode)
+	if err != nil || flag&os.O_RDWR == 0 {
+		return f, err
+	}
+	fs.mu.Lock()
+	fs.active++
+	fs.opens++
+	fs.peak = max(fs.peak, fs.active)
+	fs.mu.Unlock()
+	return &notificationColdBarrierFile{File: f, fs: fs}, nil
+}
+
+type notificationColdBarrierFile struct {
+	afero.File
+	fs *notificationColdBarrierFS
+}
+
+func (f *notificationColdBarrierFile) Write(p []byte) (int, error) {
+	f.fs.writeOnce.Do(func() { close(f.fs.writeEntered); <-f.fs.writeRelease })
+	return f.File.Write(p)
+}
+
+func (f *notificationColdBarrierFile) Close() error {
+	f.fs.closeOnce.Do(func() { close(f.fs.closeEntered); <-f.fs.closeRelease })
+	err := f.File.Close()
+	f.fs.mu.Lock()
+	f.fs.active--
+	f.fs.mu.Unlock()
+	return err
+}
+
 func TestNotificationSourceAckFailureRetainsReceiverWake(t *testing.T) {
 	t.Parallel()
 	root, path := notificationReceiverForTest(t, nil)
@@ -78,6 +219,131 @@ func TestNotificationSourceAckFailureRetainsReceiverWake(t *testing.T) {
 	assertNotificationRecords(t, path, attentionID, entries[0].Turn.Message, 1)
 	if len(c.durable["dlg_source"].PendingDeliveries) != 0 || wakes != 2 {
 		t.Fatalf("successful retry lost custody transfer or readiness, wakes = %d", wakes)
+	}
+}
+
+func TestNotificationColdSourceAckFailureRetainsReceiverRecovery(t *testing.T) {
+	t.Parallel()
+	root, _ := notificationReceiverForTest(t, nil)
+	c := root.delegateController
+	seedDelegateControllerIdle(t, c, "dlg_owner", "")
+	seedDelegateControllerIdle(t, c, "dlg_source", "dlg_owner")
+	seedDelegateControllerDelivery(t, c, "dlg_source")
+	seedDelegateControllerDelivery(t, c, "dlg_source")
+	sessionID := c.durable["dlg_owner"].Descriptor.ChildSessionID
+	path := transcriptPath(c.stateDir, sessionID)
+	writeEmptyAttentionTranscript(t, path, sessionID)
+	released := make(chan struct{})
+	close(released)
+	fs := &notificationColdBarrierFS{Fs: afero.NewOsFs(), writeEntered: make(chan struct{}), writeRelease: released, closeEntered: make(chan struct{}), closeRelease: released}
+	c.attentionOpen = func(path, id string) (*transcript.Writer, []transcript.Entry, error) {
+		return transcript.OpenWriterForSessionWithFS(fs, path, id)
+	}
+	plans := c.ReplayDeliveries()
+	if len(plans) != 1 {
+		t.Fatalf("plans = %d", len(plans))
+	}
+	first := plans[0]
+	journalPath := filepath.Join(c.stateDir, "delegate-events.jsonl")
+	before, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	wakes := 0
+	root.SetNotifyFunc(func() { wakes++ })
+	if _, err := deliverColdDelegatePacket(first); err == nil {
+		t.Fatal("closed source journal accepted acknowledgment")
+	}
+	after, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) || len(c.durable["dlg_source"].PendingDeliveries) != 2 || c.durable["dlg_source"].PendingDeliveries[0].DeliveryID != first.deliveryID {
+		t.Fatal("failed source acknowledgment lost FIFO custody")
+	}
+	attentionID := delegateAttentionID(first.deliveryID)
+	entries := notificationRawEntries(t, path)
+	if len(entries) != 1 || entries[0].Turn.AttentionID != attentionID {
+		t.Fatalf("cold accepted records = %+v", entries)
+	}
+	if wakes == 0 {
+		t.Error("cold receiver was not woken after durable acceptance and source-ack failure")
+	}
+	if delegateID, selectedID, ok := c.nextIdleDelegateAttention(); !ok || delegateID != "dlg_owner" || selectedID != attentionID {
+		t.Errorf("cold recovery selection = %q, %q, %v", delegateID, selectedID, ok)
+	}
+	coldRetry := c.ReplayDeliveries()
+	if len(coldRetry) != 1 || coldRetry[0].deliveryID != first.deliveryID {
+		t.Fatalf("cold retry did not retain FIFO head: %+v", coldRetry)
+	}
+	if _, err := deliverColdDelegatePacket(coldRetry[0]); err == nil {
+		t.Fatal("cold retry acknowledged while source journal remained closed")
+	}
+	if fs.opens != 1 || fs.active != 0 {
+		t.Fatalf("accepted cold writer reopened for source-ack retry: opens=%d active=%d", fs.opens, fs.active)
+	}
+	assertNotificationRecords(t, path, attentionID, entries[0].Turn.Message, 1)
+	// Reopen the actual receiver while source acknowledgment is still failing.
+	// Admission must be possible now, not merely after that journal is repaired.
+	w, _, err := transcript.OpenWriterForSession(path, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	owner := &Session{id: sessionID, stateDir: c.stateDir, delegateController: c, owningDelegateID: "dlg_owner"}
+	owner.attachTranscript(w)
+	if err := c.AttachIdleRuntime("dlg_owner", owner); err != nil {
+		t.Fatal(err)
+	}
+	assertNotificationPending(t, owner, []string{attentionID})
+	reservation, err := c.ReserveAttention(owner, attentionID)
+	if err != nil {
+		t.Fatalf("durable receiver recovery blocked by failed source acknowledgment: %v", err)
+	}
+	retry := c.ReplayDeliveries()
+	if len(retry) != 1 || retry[0].deliveryID != first.deliveryID {
+		t.Fatalf("failed source head retry = %+v", retry)
+	}
+	if _, err := deliverColdDelegatePacket(retry[0]); err == nil {
+		t.Fatal("retry acknowledged while source journal remained closed")
+	}
+	if err := c.AbortStart(reservation); err != nil {
+		t.Fatal(err)
+	}
+	assertNotificationRecords(t, path, attentionID, entries[0].Turn.Message, 1)
+	reopened, err := delegatestore.Open(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	c.store = reopened
+	retry = c.ReplayDeliveries()
+	if len(retry) != 1 || retry[0].deliveryID != first.deliveryID {
+		t.Fatalf("repaired source retry = %+v", retry)
+	}
+	next, err := deliverColdDelegatePacket(retry[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.durable["dlg_source"].PendingDeliveries) != 1 || len(next.deliveries) != 1 || next.deliveries[0].deliveryID != c.durable["dlg_source"].PendingDeliveries[0].DeliveryID {
+		t.Fatal("successful head acknowledgment did not release exactly the next FIFO delivery")
+	}
+	assertNotificationRecords(t, path, attentionID, entries[0].Turn.Message, 1)
+	events, err := c.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	acks := 0
+	for _, event := range events {
+		if event.DeliveryAcknowledged != nil && event.DeliveryAcknowledged.DeliveryID == first.deliveryID {
+			acks++
+		}
+	}
+	if acks != 1 {
+		t.Fatalf("raw source acknowledgments = %d, want 1", acks)
 	}
 }
 

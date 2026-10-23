@@ -601,8 +601,8 @@ func TestDelegateControllerDeliveryAcknowledgedAppendFailureKeepsReceiptAndHead(
 	if len(plans.deliveries) != 0 || receipt == nil || c.durable["dlg_target"].PendingDeliveries[0].DeliveryID != firstPlan.deliveryID {
 		t.Fatalf("failed ack state plans=%#v receipt=%#v pending=%#v", plans, receipt, c.durable["dlg_target"].PendingDeliveries)
 	}
-	if got := captureDelegateSnapshot(c.durable["dlg_owner"]); got.needsAttention != beforeOwner.needsAttention || got.revision != beforeOwner.revision || len(attentionWakeIDsOf(c, "dlg_owner")) != 0 {
-		t.Fatalf("failed batch published owner attention: before=%#v after=%#v unresolved=%#v", beforeOwner, got, attentionWakeIDsOf(c, "dlg_owner"))
+	if got := captureDelegateSnapshot(c.durable["dlg_owner"]); got.needsAttention != beforeOwner.needsAttention || got.revision != beforeOwner.revision || !reflect.DeepEqual(attentionWakeIDsOf(c, "dlg_owner"), map[string]struct{}{delegateAttentionID(firstPlan.deliveryID): {}}) {
+		t.Fatalf("failed source batch changed owner projection or lost receiver recovery: before=%#v after=%#v unresolved=%#v", beforeOwner, got, attentionWakeIDsOf(c, "dlg_owner"))
 	}
 	if got := readDelegateControllerFile(t, path); !bytes.Equal(got, before) {
 		t.Fatalf("failed delivery batch changed journal bytes")
