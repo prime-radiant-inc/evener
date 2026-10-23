@@ -1761,6 +1761,12 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message {
 	history := make([]llm.Message, 0, len(historyTurns))
 	inline := inlineNotificationPresentations(historyTurns)
+	canonical := make(map[string]bool)
+	for _, turn := range historyTurns {
+		if turn.AttentionID != "" {
+			canonical[turn.AttentionID] = true
+		}
+	}
 	pendingToolCalls := map[string]struct{}{}
 	var deferredSteering []llm.Message
 
@@ -1816,6 +1822,15 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			// Expand aggregated tool results into individual messages.
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
+					for _, binding := range t.DelegateDeliveryCommits {
+						id := delegateAttentionID(binding.DeliveryID)
+						if _, presented := inline[id]; !presented && canonical[id] && binding.ToolCallID == p.ToolResult.ToolCallID {
+							// History reduction changed this carrier. Its ordinary
+							// canonical body is authoritative, not a partial result.
+							p.ToolResult = delegateInlineStatusResult(p.ToolResult)
+							break
+						}
+					}
 					history = append(history, llm.Message{
 						Role:       llm.RoleTool,
 						ToolCallID: p.ToolResult.ToolCallID,

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
@@ -1150,6 +1152,16 @@ func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presented
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	staged := inlineNotificationPresentations(presentedTurns)
+	if len(staged) != 0 {
+		// Old inline-only records have delivery commits but no canonical
+		// acceptance. They remain readable history, never new observations.
+		fold, err := s.delegateAttentionFoldLocked()
+		for id := range staged {
+			if _, accepted := fold.content[id]; err != nil || !accepted {
+				delete(staged, id)
+			}
+		}
+	}
 	for _, turn := range presentedTurns {
 		if turn.AttentionID == "" {
 			continue
@@ -1182,7 +1194,7 @@ func inlineNotificationPresentations(turns []schema.Turn) map[string]struct{} {
 				continue
 			}
 			for _, part := range turn.Message.Content {
-				if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == commit.ToolCallID {
+				if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == commit.ToolCallID && delegateInlineBodyPresented(part.ToolResult) {
 					if ids == nil {
 						ids = make(map[string]struct{})
 					}
@@ -1193,6 +1205,35 @@ func inlineNotificationPresentations(turns []schema.Turn) map[string]struct{} {
 		}
 	}
 	return ids
+}
+
+// Tool state is not presentation. It only supplies the original rendering to
+// compare with the actual bounded body. Any shaping loses inline coverage and
+// uses ordinary canonical delivery instead. UseNumber preserves JSON numbers
+// when the result includes structured output.
+func delegateInlineBodyPresented(result *llm.ToolResultData) bool {
+	if result == nil || len(result.ToolState) == 0 {
+		return false
+	}
+	var state delegateSendResult
+	decoder := json.NewDecoder(bytes.NewReader(result.ToolState))
+	decoder.UseNumber()
+	if decoder.Decode(&state) != nil || state.DelegateID == "" {
+		return false
+	}
+	body, ok := result.Content.(string)
+	return ok && body == formatDelegateSend(state)
+}
+
+// A fallback may only shrink an already bounded body. Keep the call/result
+// pair and private state, but do not present a partial notification twice.
+func delegateInlineStatusResult(result *llm.ToolResultData) *llm.ToolResultData {
+	status := *result
+	status.Content = ""
+	if body, ok := result.Content.(string); ok && utf8.RuneCountInString(body) >= len("[Result available in notification]") {
+		status.Content = "[Result available in notification]"
+	}
+	return &status
 }
 
 // stagedNotificationObservationIDs names only this settled request's candidates.

@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	taskpkg "primeradiant.com/evener/agent/task"
@@ -122,18 +123,27 @@ func TestInjectPostToolSteering_LoopDetectionKeepsVisionCleanupOwnedUntilDrainCo
 	}
 }
 
-func TestDelegateAttention_DeliveryCommitUsesCallerToolResultFsync(t *testing.T) {
+func TestDelegateAttention_InlineCarrierFsyncFollowsCanonicalCustody(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	fs := newDelegateToolResultBarrierFS()
+	fs.Fs = afero.NewOsFs()
+	sess := newDelegateToolResultPersistenceSession(t, c, fs)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	lease, firstWaiter := startDelegateDeliveryGeneration(t, c, "dlg_target", true)
 	firstPlan := finishDelegateDeliveryGeneration(t, c, lease, "first").deliveries[0]
-	if _, err := deliverDelegatePacket(firstPlan, nil); err != nil {
+	if _, err := deliverDelegatePacket(firstPlan, sess); err != nil {
 		t.Fatalf("handoff inline delivery: %v", err)
 	}
 	resolution := <-firstWaiter.resolution
-	fs := newDelegateToolResultBarrierFS()
-	sess := newDelegateToolResultPersistenceSession(t, c, fs)
+	id := delegateAttentionID(firstPlan.deliveryID)
+	assertNotificationPending(t, sess, []string{id})
+	if n := notificationCanonicalCount(t, sess, id); n != 1 {
+		t.Fatalf("canonical entries before carrier=%d", n)
+	}
 	fs.blockSync = true
+	var once sync.Once
+	release := func() { once.Do(func() { close(fs.allowSync) }) }
+	t.Cleanup(release)
 	sess.queueDelegateDeliveryCommit("delegate-send", resolution.commit)
 
 	done := make(chan error, 1)
@@ -143,54 +153,79 @@ func TestDelegateAttention_DeliveryCommitUsesCallerToolResultFsync(t *testing.T)
 	case err := <-done:
 		t.Fatalf("caller tool-result append returned before fsync: %v", err)
 	}
-	if got := len(c.durable["dlg_target"].PendingDeliveries); got != 1 {
-		t.Fatalf("pending deliveries at blocked fsync = %d, want 1", got)
+	if got := len(pendingDeliveryIDs(c, "dlg_target")); got != 0 {
+		t.Fatalf("source pending at blocked carrier fsync = %d, want 0", got)
 	}
-	close(fs.allowSync)
+	release()
 	if err := <-done; err != nil {
 		t.Fatalf("append caller tool results: %v", err)
 	}
-	entries := decodeTranscriptEntries(t, fs.Fs, "/caller.jsonl")
+	entries := decodeTranscriptEntries(t, fs.Fs, sess.TranscriptPath())
 	last := entries[len(entries)-1].Turn
 	if len(last.DelegateDeliveryCommits) != 1 || last.DelegateDeliveryCommits[0].ToolCallID != "delegate-send" || last.DelegateDeliveryCommits[0].DeliveryID != firstPlan.deliveryID {
 		t.Fatalf("persisted delivery commits = %#v", last.DelegateDeliveryCommits)
 	}
+	assertNotificationPending(t, sess, []string{id})
 }
 
-func TestDelegateAttention_DeliveryCommitAppendFailureLeavesNAndNPlusOnePending(t *testing.T) {
+func TestDelegateAttention_InlineCarrierAppendFailureKeepsCanonicalNAndNPlusOne(t *testing.T) {
 	c, firstPlan, firstWaiter, _, secondWaiter := controllerWithTwoDelegateDeliveries(t, true, true)
-	if _, err := deliverDelegatePacket(firstPlan, nil); err != nil {
+	fs := &transcriptWriteFailFS{Fs: afero.NewOsFs()}
+	sess := newDelegateToolResultPersistenceSession(t, c, fs)
+	plans, err := deliverDelegatePacket(firstPlan, sess)
+	if err != nil {
 		t.Fatalf("handoff inline delivery: %v", err)
 	}
+	if err := sess.executeDelegateMutationPlans(plans); err != nil {
+		t.Fatal(err)
+	}
 	resolution := <-firstWaiter.resolution
-	fs := &transcriptWriteFailFS{Fs: afero.NewMemMapFs()}
-	sess := newDelegateToolResultPersistenceSession(t, c, fs)
+	second := waitedResolution(t, secondWaiter)
+	if second.packet == nil || second.commit == nil || second.fallback {
+		t.Fatalf("second canonical delivery resolution=%#v", second)
+	}
+	want := []string{delegateAttentionID(firstPlan.deliveryID), delegateAttentionID(delegateDeliveryID("dlg_target", 2))}
+	assertNotificationPending(t, sess, want)
 	sess.queueDelegateDeliveryCommit("delegate-send", resolution.commit)
 	fs.fail = true
 
 	if err := appendDelegateToolResultFixture(sess, "delegate-send"); !errors.Is(err, errInjectedTranscriptWrite) {
 		t.Fatalf("append caller tool results = %v, want injected failure", err)
 	}
-	if got := len(c.durable["dlg_target"].PendingDeliveries); got != 2 {
-		t.Fatalf("pending deliveries after append failure = %d, want 2", got)
+	if got := len(pendingDeliveryIDs(c, "dlg_target")); got != 0 {
+		t.Fatalf("source pending after carrier failure = %d, want 0", got)
 	}
-	c.mu.Lock()
-	secondStillWaiting := c.live["dlg_target"].waiters[2] == secondWaiter
-	c.mu.Unlock()
-	if !secondStillWaiting {
-		t.Fatal("N+1 waiter was released after N caller append failure")
+	assertNotificationPending(t, sess, want)
+	for _, entry := range notificationRawEntries(t, sess.TranscriptPath()) {
+		if entry.Turn.Kind == schema.TurnToolResults || len(entry.Turn.ObservedNotificationIDs) != 0 {
+			t.Fatal("failed carrier published a result or observation")
+		}
 	}
 }
 
-func TestDelegateAttention_DeliveryCommitReleasesNPlusOneOnlyAfterNFsync(t *testing.T) {
+func TestDelegateAttention_CanonicalNPlusOnePrecedesOptionalCarrierFsync(t *testing.T) {
 	c, firstPlan, firstWaiter, _, secondWaiter := controllerWithTwoDelegateDeliveries(t, true, true)
-	if _, err := deliverDelegatePacket(firstPlan, nil); err != nil {
+	fs := newDelegateToolResultBarrierFS()
+	fs.Fs = afero.NewOsFs()
+	sess := newDelegateToolResultPersistenceSession(t, c, fs)
+	plans, err := deliverDelegatePacket(firstPlan, sess)
+	if err != nil {
 		t.Fatalf("handoff inline delivery: %v", err)
 	}
+	if err := sess.executeDelegateMutationPlans(plans); err != nil {
+		t.Fatal(err)
+	}
 	resolution := <-firstWaiter.resolution
-	fs := newDelegateToolResultBarrierFS()
-	sess := newDelegateToolResultPersistenceSession(t, c, fs)
+	second := waitedResolution(t, secondWaiter)
+	if second.packet == nil || second.commit == nil || second.fallback {
+		t.Fatalf("N+1 resolution before carrier=%#v", second)
+	}
+	want := []string{delegateAttentionID(firstPlan.deliveryID), delegateAttentionID(delegateDeliveryID("dlg_target", 2))}
+	assertNotificationPending(t, sess, want)
 	fs.blockSync = true
+	var once sync.Once
+	release := func() { once.Do(func() { close(fs.allowSync) }) }
+	t.Cleanup(release)
 	sess.queueDelegateDeliveryCommit("delegate-send", resolution.commit)
 
 	done := make(chan error, 1)
@@ -200,44 +235,44 @@ func TestDelegateAttention_DeliveryCommitReleasesNPlusOneOnlyAfterNFsync(t *test
 	case err := <-done:
 		t.Fatalf("caller tool-result append returned before fsync: %v", err)
 	}
-	select {
-	case got := <-secondWaiter.resolution:
-		t.Fatalf("N+1 released before N fsync: %#v", got)
-	default:
+	if got := len(pendingDeliveryIDs(c, "dlg_target")); got != 0 {
+		t.Fatalf("source pending at carrier barrier=%d", got)
 	}
-	close(fs.allowSync)
+	release()
 	if err := <-done; err != nil {
 		t.Fatalf("append caller tool results: %v", err)
 	}
-	select {
-	case got := <-secondWaiter.resolution:
-		if got.packet == nil || got.commit == nil || got.fallback {
-			t.Fatalf("N+1 resolution = %#v", got)
+	assertNotificationPending(t, sess, want)
+	var canonicalOrder []string
+	for _, entry := range notificationRawEntries(t, sess.TranscriptPath()) {
+		if entry.Turn.AttentionID != "" {
+			canonicalOrder = append(canonicalOrder, entry.Turn.AttentionID)
 		}
-	default:
-		t.Fatal("N+1 was not released after N caller fsync")
+	}
+	if len(canonicalOrder) != 2 || canonicalOrder[0] != want[0] || canonicalOrder[1] != want[1] {
+		t.Fatalf("canonical FIFO=%v, want %v", canonicalOrder, want)
 	}
 }
 
 func TestDelegateAttention_DeliveryCommitsPreserveExactToolCallPairsAndStayProviderPrivate(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 2, 2)
+	fs := afero.NewOsFs()
+	sess := newDelegateToolResultPersistenceSession(t, c, fs)
 	seedDelegateControllerIdle(t, c, "dlg_first", "")
 	seedDelegateControllerIdle(t, c, "dlg_second", "")
 	firstLease, firstWaiter := startDelegateDeliveryGeneration(t, c, "dlg_first", true)
 	firstPlan := finishDelegateDeliveryGeneration(t, c, firstLease, "first result").deliveries[0]
 	secondLease, secondWaiter := startDelegateDeliveryGeneration(t, c, "dlg_second", true)
 	secondPlan := finishDelegateDeliveryGeneration(t, c, secondLease, "second result").deliveries[0]
-	if _, err := deliverDelegatePacket(firstPlan, nil); err != nil {
+	if _, err := deliverDelegatePacket(firstPlan, sess); err != nil {
 		t.Fatalf("deliver first packet: %v", err)
 	}
-	if _, err := deliverDelegatePacket(secondPlan, nil); err != nil {
+	if _, err := deliverDelegatePacket(secondPlan, sess); err != nil {
 		t.Fatalf("deliver second packet: %v", err)
 	}
 	firstResolution := <-firstWaiter.resolution
 	secondResolution := <-secondWaiter.resolution
 
-	fs := afero.NewMemMapFs()
-	sess := newDelegateToolResultPersistenceSession(t, c, fs)
 	sess.queueDelegateDeliveryCommit("call-first", firstResolution.commit)
 	sess.queueDelegateDeliveryCommit("call-second", secondResolution.commit)
 	calls := []llm.ToolCallData{
@@ -252,11 +287,24 @@ func TestDelegateAttention_DeliveryCommitsPreserveExactToolCallPairsAndStayProvi
 		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call-second", Name: "delegate_send", Content: results[0].Output}},
 		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call-first", Name: "delegate_send", Content: results[1].Output}},
 	}
+	for i, id := range []string{"dlg_second", "dlg_first"} {
+		output := "second result"
+		if i == 1 {
+			output = "first result"
+		}
+		state := delegateSendResult{DelegateID: id, Action: "completed", Output: &output}
+		encoded, err := json.Marshal(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		results[i].Output, results[i].ToolState = formatDelegateSend(state), encoded
+		parts[i].ToolResult.Content, parts[i].ToolResult.ToolState = results[i].Output, encoded
+	}
 	if err := sess.appendToolResults(context.Background(), calls, results, parts); err != nil {
 		t.Fatalf("append paired delegate results: %v", err)
 	}
 
-	entries := decodeTranscriptEntries(t, fs, "/caller.jsonl")
+	entries := decodeTranscriptEntries(t, fs, sess.TranscriptPath())
 	persisted := entries[len(entries)-1].Turn
 	want := map[string]string{
 		"call-first":  firstPlan.deliveryID,
@@ -277,10 +325,18 @@ func TestDelegateAttention_DeliveryCommitsPreserveExactToolCallPairsAndStayProvi
 	sess.mu.Lock()
 	live := sess.history[len(sess.history)-1]
 	sess.mu.Unlock()
-	if len(live.DelegateDeliveryCommits) != 0 {
-		t.Fatalf("live provider turn exposed delivery commits = %#v", live.DelegateDeliveryCommits)
+	if len(live.DelegateDeliveryCommits) != 2 {
+		t.Fatalf("live internal projection identities = %#v", live.DelegateDeliveryCommits)
 	}
-	providerJSON, err := json.Marshal(expandHistory([]schema.Turn{live}, replayScope{}))
+	for i, binding := range persisted.DelegateDeliveryCommits {
+		if binding.ToolCallID != calls[i].ID || live.DelegateDeliveryCommits[i] != binding {
+			t.Fatalf("live/persisted identity pair %d: live=%#v persisted=%#v", i, live.DelegateDeliveryCommits[i], binding)
+		}
+	}
+	assistant := schema.NewTurn(schema.TurnAssistant, toolCallResponse(calls...).Message)
+	providerMessages := expandHistory([]schema.Turn{assistant, live}, replayScope{})
+	notificationValidToolPairs(t, llm.Request{Messages: providerMessages})
+	providerJSON, err := json.Marshal(providerMessages)
 	if err != nil {
 		t.Fatalf("marshal provider history: %v", err)
 	}
@@ -291,12 +347,13 @@ func TestDelegateAttention_DeliveryCommitsPreserveExactToolCallPairsAndStayProvi
 
 func newDelegateToolResultPersistenceSession(t *testing.T, c *delegateTreeController, fs afero.Fs) *Session {
 	t.Helper()
-	writer, err := transcript.NewWriterWithFS(fs, "/caller.jsonl", transcript.Header{SessionID: "caller"})
+	writer, err := transcript.NewWriterWithFS(fs, transcriptPath(c.stateDir, c.rootSessionID), transcript.Header{SessionID: c.rootSessionID})
 	if err != nil {
 		t.Fatalf("NewWriterWithFS: %v", err)
 	}
 	t.Cleanup(func() { _ = writer.Close() })
-	sess := &Session{id: "caller", delegateController: c}
+	profile := NewOpenAIProfile("gpt-5.4")
+	sess := &Session{id: c.rootSessionID, stateDir: c.stateDir, delegateController: c, profile: profile, contextMgr: contextmgr.NewManager(profile, nil, nil)}
 	sess.attachTranscript(writer)
 	c.rootRuntime = sess
 	return sess
@@ -304,8 +361,14 @@ func newDelegateToolResultPersistenceSession(t *testing.T, c *delegateTreeContro
 
 func appendDelegateToolResultFixture(sess *Session, callID string) error {
 	calls := []llm.ToolCallData{{ID: callID, Name: "delegate_send"}}
-	results := []tool.ExecResult{{CallID: callID, ToolName: "delegate_send", Output: `{"status":"completed"}`}}
-	parts := []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: callID, Name: "delegate_send", Content: results[0].Output}}}
+	output := "first"
+	state := delegateSendResult{DelegateID: "dlg_target", Action: "completed", Output: &output}
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	results := []tool.ExecResult{{CallID: callID, ToolName: "delegate_send", Output: formatDelegateSend(state), ToolState: encoded}}
+	parts := []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: callID, Name: "delegate_send", Content: results[0].Output, ToolState: encoded}}}
 	return sess.appendToolResults(context.Background(), calls, results, parts)
 }
 

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/spf13/afero"
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/schema"
@@ -90,7 +91,7 @@ func notificationAwait(t *testing.T, ch <-chan struct{}) {
 		t.Fatal("async boundary did not complete")
 	}
 }
-func notificationSession(t *testing.T, a *notificationDeliveryAdapter, env execenv.ExecutionEnvironment, delivered chan struct{}) *Session {
+func notificationSession(t *testing.T, a *notificationDeliveryAdapter, env execenv.ExecutionEnvironment, delivered chan struct{}, configure ...func(*SessionConfig)) *Session {
 	t.Helper()
 	client := llm.NewClient()
 	client.Register(a)
@@ -98,6 +99,9 @@ func notificationSession(t *testing.T, a *notificationDeliveryAdapter, env exece
 	cfg.testOnly.disableDelegateIdleRelease = true
 	var once sync.Once
 	cfg.testOnly.subagentBeforeGenerationReleased = func(*subagent, delegateLease) { once.Do(func() { close(delivered) }) }
+	for _, apply := range configure {
+		apply(&cfg)
+	}
 	s, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.4")), env, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -503,8 +507,20 @@ func notificationInlineFallback(t *testing.T, mode string) {
 		},
 		func(_ context.Context, req llm.Request) (llm.Response, error) {
 			if mode == "timeout before result" {
-				if !strings.Contains(lastToolResultText(req.Messages), "running in background") {
-					t.Errorf("send result=%s, want timed-out fallback", lastToolResultText(req.Messages))
+				var state delegateSendResult
+				found := false
+				for _, message := range req.Messages {
+					for _, part := range message.Content {
+						if part.ToolResult != nil && part.ToolResult.ToolCallID == "send" {
+							found = true
+							if err := json.Unmarshal(part.ToolResult.ToolState, &state); err != nil {
+								t.Fatal(err)
+							}
+						}
+					}
+				}
+				if !found || !state.TimedOut || !state.RunningInBackground {
+					t.Errorf("send timeout state: found=%t timed_out=%t running_in_background=%t", found, state.TimedOut, state.RunningInBackground)
 				}
 				return finalResponse("timeout turn ended"), nil
 			}
@@ -698,6 +714,328 @@ func notificationSameBatchSubscribers(t *testing.T, mode string) {
 	}
 	assertNotificationPending(t, s, []string{})
 	t.Log("canonical records=3, each next-request payload=1, pending after successful response=0")
+}
+
+func TestNotificationInlineHistoricalCarrierDoesNotCreateObservation(t *testing.T) {
+	for _, withState := range []bool{false, true} {
+		t.Run(fmt.Sprintf("structured_state_%t", withState), func(t *testing.T) {
+			notificationHistoricalCarrier(t, withState)
+		})
+	}
+}
+
+func notificationHistoricalCarrier(t *testing.T, withState bool) {
+	t.Helper()
+	stateDir := t.TempDir()
+	const sessionID = "historical-inline-owner"
+	path := transcriptPath(stateDir, sessionID)
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID, ProfileID: "openai", Model: "gpt-5.4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := notificationToolCall("historical-send", "delegate_send", map[string]any{"to": "dlg_historical", "message": "old task"})
+	message := "historical-payload-4b16"
+	state := delegateSendResult{DelegateID: "dlg_historical", Action: "completed", Output: &message}
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	carrier := schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "historical-send", Name: "delegate_send", Content: formatDelegateSend(state), ToolState: encoded}}}})
+	if !withState {
+		carrier.Message.Content[0].ToolResult.Content = message
+		carrier.Message.Content[0].ToolResult.ToolState = nil
+	}
+	carrier.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: "historical-send", DeliveryID: delegateDeliveryID("dlg_historical", 1)}}
+	for _, turn := range []schema.Turn{schema.NewTurn(schema.TurnAssistant, call.Message), carrier} {
+		if err := w.AppendDurable(turn); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	a := &notificationDeliveryAdapter{root: sessionID}
+	step := func(_ context.Context, req llm.Request) (llm.Response, error) {
+		notificationValidToolPairs(t, req)
+		if n := notificationRequestCount(req, "historical-payload-4b16"); n != 1 {
+			t.Errorf("historical presentations=%d, want 1", n)
+		}
+		return finalResponse("historical response"), nil
+	}
+	a.rootSteps = []func(context.Context, llm.Request) (llm.Response, error){step, step}
+	client := llm.NewClient()
+	client.Register(a)
+	meta := schema.SessionMeta{ID: sessionID, ProfileID: "openai", Model: "gpt-5.4"}
+	for reopen := 0; reopen < 2; reopen++ {
+		s, err := RestoreSessionFromMeta(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.4")), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, stateDir)
+		if err != nil {
+			t.Fatalf("reopen %d: %v", reopen, err)
+		}
+		_, runErr := s.ProcessInput(context.Background(), "continue historical", nil)
+		s.Close()
+		if runErr != nil {
+			t.Fatal(runErr)
+		}
+		if _, err := readDelegateAttentionFold(path, sessionID); err != nil {
+			t.Fatalf("fold after successful response %d: %v", reopen, err)
+		}
+	}
+	for _, entry := range notificationRawEntries(t, path) {
+		if entry.Turn.AttentionID != "" || len(entry.Turn.ObservedNotificationIDs) != 0 {
+			t.Fatalf("historical-only carrier gained canonical acceptance/observation: %+v", entry.Turn)
+		}
+	}
+}
+
+// This is installed through the real strategy configuration and publication
+// path, not by handing the presentation helper a preselected history slice.
+type notificationReducingStrategy struct {
+	spyStrategy
+	mode string
+	ran  bool
+}
+
+func (s *notificationReducingStrategy) ManageContext(_ context.Context, history *[]schema.Turn, _ int, _ func(events.EventKind, events.EventData)) error {
+	for i, turn := range *history {
+		if len(turn.DelegateDeliveryCommits) == 0 {
+			continue
+		}
+		s.ran = true
+		if s.mode == "carrier removal" {
+			// Remove the assistant call and its result together, preserving pairs.
+			filtered := make([]schema.Turn, 0, len(*history)-2)
+			for at, candidate := range *history {
+				remove := at == i
+				for _, part := range candidate.Message.Content {
+					remove = remove || (part.ToolCall != nil && part.ToolCall.ID == "send-inline")
+				}
+				if !remove {
+					filtered = append(filtered, candidate)
+				}
+			}
+			*history = filtered
+			return nil
+		}
+		turn.Message.Content = append([]llm.ContentPart(nil), turn.Message.Content...)
+		for j, part := range turn.Message.Content {
+			if part.ToolResult != nil {
+				result := *part.ToolResult
+				result.Content = "strategy omitted tool body"
+				if s.mode == "unicode body reduction" {
+					result.Content = strings.Repeat("界", 12)
+				}
+				turn.Message.Content[j].ToolResult = &result
+			}
+		}
+		(*history)[i] = turn
+	}
+	return nil
+}
+
+func TestNotificationInlineDeliveryTruncatedCarrier(t *testing.T) {
+	for _, mode := range []string{"registry clipping", "body reduction", "unicode body reduction", "carrier removal"} {
+		t.Run(mode, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "notification-gate.txt"), []byte("gate"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			gate := &notificationReadGate{LocalExecutionEnvironment: execenv.NewLocalExecutionEnvironment(dir), entered: make(chan struct{}), release: make(chan struct{})}
+			var gateOnce sync.Once
+			release := func() { gateOnce.Do(func() { close(gate.release) }) }
+			t.Cleanup(release)
+			settled := []chan struct{}{make(chan struct{}), make(chan struct{}), make(chan struct{})}
+			firstRelease := make(chan struct{})
+			a := &notificationDeliveryAdapter{}
+			childCalls := 0
+			a.child = func(ctx context.Context, _ llm.Request) (llm.Response, error) {
+				childCalls++
+				if childCalls == 1 {
+					select {
+					case <-firstRelease:
+					case <-ctx.Done():
+						return llm.Response{}, ctx.Err()
+					}
+				}
+				message := fmt.Sprintf("shaped-payload-774b-%d", childCalls)
+				if mode == "registry clipping" && childCalls != 2 {
+					message += strings.Repeat(fmt.Sprint(childCalls), 40000)
+				}
+				return toolCallResponse(communicateCall(fmt.Sprint("report", childCalls), message)), nil
+			}
+			var delegateID string
+			a.rootSteps = []func(context.Context, llm.Request) (llm.Response, error){
+				func(context.Context, llm.Request) (llm.Response, error) {
+					return notificationToolCall("create", "delegate", map[string]any{"prompt": "shaping task"}), nil
+				},
+				func(_ context.Context, req llm.Request) (llm.Response, error) {
+					close(firstRelease)
+					notificationAwait(t, settled[0])
+					delegateID = deferredHeadDelegateID.FindString(lastToolResultText(req.Messages))
+					response := notificationToolCall("send-zero", "delegate_send", map[string]any{"to": delegateID, "message": "second task"})
+					read := notificationToolCall("read-gate", "read_file", map[string]any{"file_path": "notification-gate.txt", "intent": "reading fixture"})
+					send := notificationToolCall("send-inline", "delegate_send", map[string]any{"to": delegateID, "message": "third task", "max_wait_ms": 60000})
+					response.Message.Content = append(response.Message.Content, read.Message.Content...)
+					response.Message.Content = append(response.Message.Content, send.Message.Content...)
+					return response, nil
+				},
+				func(_ context.Context, req llm.Request) (llm.Response, error) {
+					notificationValidToolPairs(t, req)
+					for generation := 1; generation <= 3; generation++ {
+						if n := notificationRequestCount(req, fmt.Sprintf("shaped-payload-774b-%d", generation)); n != 1 {
+							t.Errorf("generation %d presentations=%d, want 1", generation, n)
+						}
+					}
+					for _, m := range req.Messages {
+						for _, part := range m.Content {
+							if mode == "unicode body reduction" && part.ToolResult != nil && part.ToolResult.ToolCallID == "send-inline" && len([]rune(fmt.Sprint(part.ToolResult.Content))) > 12 {
+								t.Errorf("status fallback exceeded reduced character budget: %d", len([]rune(fmt.Sprint(part.ToolResult.Content))))
+							}
+							// Registry warnings and the recovery footer sit outside the body cap.
+							if part.ToolResult != nil && part.ToolResult.Name == "delegate_send" && len(fmt.Sprint(part.ToolResult.Content)) > jobToolResultDefaultMaxChar+512 {
+								t.Errorf("delegate_send output bypassed limit: %d", len(fmt.Sprint(part.ToolResult.Content)))
+							}
+							if mode == "registry clipping" && part.ToolResult != nil && part.ToolResult.ToolCallID == "send-inline" {
+								var state delegateSendResult
+								if err := json.Unmarshal(part.ToolResult.ToolState, &state); err != nil {
+									t.Fatal(err)
+								}
+								if len(state.EarlierResults) != 2 || len(formatDelegateSend(state)) <= jobToolResultDefaultMaxChar {
+									t.Fatalf("registry clipping setup: earlier=%d full size=%d", len(state.EarlierResults), len(formatDelegateSend(state)))
+								}
+							}
+						}
+					}
+					return finalResponse("shaped response"), nil
+				},
+			}
+			strategy := &notificationReducingStrategy{mode: mode}
+			s := notificationSession(t, a, gate, make(chan struct{}), func(cfg *SessionConfig) {
+				if mode != "registry clipping" {
+					cfg.testOnly.contextStrategyOverride = strategy
+				}
+				cfg.testOnly.subagentBeforeGenerationReleased = func(_ *subagent, lease delegateLease) { close(settled[lease.generation-1]) }
+			})
+			done := make(chan error, 1)
+			go func() { _, err := s.ProcessInput(context.Background(), "start shaping", nil); done <- err }()
+			notificationAwait(t, gate.entered)
+			notificationAwait(t, settled[1])
+			release()
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			if mode != "registry clipping" && !strategy.ran {
+				t.Fatal("configured strategy did not shape a carrier")
+			}
+			var observed []string
+			for _, entry := range notificationRawEntries(t, s.TranscriptPath()) {
+				if mode == "registry clipping" && len(entry.Turn.DelegateDeliveryCommits) != 0 {
+					t.Errorf("clipped carrier retained presentation bindings: %v", entry.Turn.DelegateDeliveryCommits)
+				}
+				observed = append(observed, entry.Turn.ObservedNotificationIDs...)
+			}
+			want := []string{}
+			for i := 1; i <= 3; i++ {
+				id := delegateAttentionID(delegateDeliveryID(delegateID, uint64(i)))
+				want = append(want, id)
+				if n := notificationCanonicalCount(t, s, id); n != 1 {
+					t.Errorf("canonical records for %s=%d", id, n)
+				}
+			}
+			slices.Sort(observed)
+			if !slices.Equal(observed, want) {
+				t.Errorf("successful response IDs=%v, want %v", observed, want)
+			}
+			assertNotificationPending(t, s, []string{})
+			t.Logf("canonical records=3, final-request payload counts=[1 1 1], successful response IDs=%v", observed)
+		})
+	}
+}
+
+func TestNotificationInlineDeliveryCanceledBeforeBindingTake(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notification-gate.txt"), []byte("gate"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	gate := &notificationReadGate{LocalExecutionEnvironment: execenv.NewLocalExecutionEnvironment(dir), entered: make(chan struct{}), release: make(chan struct{})}
+	delivered := make(chan struct{})
+	firstRelease := make(chan struct{})
+	a := &notificationDeliveryAdapter{}
+	childCalls := 0
+	a.child = func(ctx context.Context, _ llm.Request) (llm.Response, error) {
+		childCalls++
+		if childCalls == 1 {
+			select {
+			case <-firstRelease:
+			case <-ctx.Done():
+				return llm.Response{}, ctx.Err()
+			}
+		}
+		return toolCallResponse(communicateCall(fmt.Sprint("report", childCalls), fmt.Sprint("cancel-payload-b831-", childCalls))), nil
+	}
+	var delegateID string
+	a.rootSteps = []func(context.Context, llm.Request) (llm.Response, error){
+		func(context.Context, llm.Request) (llm.Response, error) {
+			return notificationToolCall("create", "delegate", map[string]any{"prompt": "cancel task"}), nil
+		},
+		func(_ context.Context, req llm.Request) (llm.Response, error) {
+			close(firstRelease)
+			notificationAwait(t, delivered)
+			delegateID = deferredHeadDelegateID.FindString(lastToolResultText(req.Messages))
+			response := notificationToolCall("send", "delegate_send", map[string]any{"to": delegateID, "message": "second task", "max_wait_ms": 60000})
+			read := notificationToolCall("read-gate", "read_file", map[string]any{"file_path": "notification-gate.txt", "intent": "reading fixture"})
+			response.Message.Content = append(response.Message.Content, read.Message.Content...)
+			return response, nil
+		},
+		func(_ context.Context, req llm.Request) (llm.Response, error) {
+			notificationValidToolPairs(t, req)
+			for i := 1; i <= 2; i++ {
+				if n := notificationRequestCount(req, fmt.Sprint("cancel-payload-b831-", i)); n != 1 {
+					t.Errorf("generation %d presentations=%d, want 1", i, n)
+				}
+			}
+			return finalResponse("resumed response"), nil
+		},
+	}
+	s := notificationSession(t, a, gate, delivered)
+	taken := false
+	s.cfg.testOnly.delegateDeliveryCommitsTaken = func() { taken = true }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := s.ProcessInput(ctx, "start cancellation", nil); done <- err }()
+	notificationAwait(t, gate.entered)
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled batch error=%v", err)
+	}
+	if taken {
+		t.Fatal("cancellation happened after binding collection")
+	}
+	want := []string{delegateAttentionID(delegateDeliveryID(delegateID, 1)), delegateAttentionID(delegateDeliveryID(delegateID, 2))}
+	assertNotificationPending(t, s, want)
+	for _, entry := range notificationRawEntries(t, s.TranscriptPath()) {
+		if len(entry.Turn.ObservedNotificationIDs) != 0 {
+			t.Fatalf("canceled batch observed %v", entry.Turn.ObservedNotificationIDs)
+		}
+	}
+	if _, err := s.ProcessInput(context.Background(), "resume cancellation", nil); err != nil {
+		t.Fatal(err)
+	}
+	var observed []string
+	for _, entry := range notificationRawEntries(t, s.TranscriptPath()) {
+		observed = append(observed, entry.Turn.ObservedNotificationIDs...)
+	}
+	slices.Sort(observed)
+	if !slices.Equal(observed, want) {
+		t.Errorf("resumed response IDs=%v, want %v", observed, want)
+	}
+	for _, id := range want {
+		if n := notificationCanonicalCount(t, s, id); n != 1 {
+			t.Errorf("canonical records for %s=%d", id, n)
+		}
+	}
+	assertNotificationPending(t, s, []string{})
+	t.Logf("cancellation before binding collection, canonical records=2, resumed payload counts=[1 1], response IDs=%v", observed)
 }
 
 type notificationToolResultFailFS struct {

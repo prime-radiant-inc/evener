@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -606,8 +607,18 @@ func TestDelegateControllerDeliveryAcknowledgedAppendFailureKeepsReceiptAndHead(
 	if err := inline.store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	result := llm.ToolResultNamed("inline-call-1", "delegate_send", "done one", false)
-	result.Content = append(result.Content, llm.ToolResultNamed("inline-call-2", "delegate_send", "done two", false).Content...)
+	result := llm.Message{Role: llm.RoleTool}
+	for index, id := range inlineIDs {
+		output := "inline"
+		state := delegateSendResult{DelegateID: id, Action: "completed", Output: &output}
+		encoded, err := json.Marshal(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result.Content = append(result.Content, llm.ContentPart{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
+			ToolCallID: fmt.Sprintf("inline-call-%d", index+1), Name: "delegate_send", Content: formatDelegateSend(state), ToolState: encoded,
+		}})
+	}
 	if err := root.appendToolResultsWithDeliveryCommitsDurably(result, result, inlineCommits, nil); err != nil {
 		t.Fatalf("projection attempted source acknowledgment again: %v", err)
 	}

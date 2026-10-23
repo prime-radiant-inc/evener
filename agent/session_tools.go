@@ -1138,6 +1138,11 @@ func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []
 				IsError:    true,
 			}
 		}
+		if call.Name == "delegate_send" {
+			// This abandoned batch persists no inline identities. Preserve its
+			// valid result pair, leaving the payload to canonical delivery.
+			res.Output = delegateInlineStatusResult(&llm.ToolResultData{Content: res.Output}).Content.(string)
+		}
 		parts = append(parts, llm.ContentPart{
 			Kind: llm.ContentToolResult,
 			ToolResult: &llm.ToolResultData{
@@ -1333,8 +1338,45 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 	persistedTurn := liveTurn
 	persistedTurn.Message = persisted
 	persistedTurn.SkillState = skillState.Clone()
+	// Only the final bounded output can establish a presentation binding.
+	// A clipped result becomes status-only, with ordinary canonical delivery
+	// still responsible for every packet in that result.
+	presentedCalls := make(map[string]bool)
+	for i, part := range liveTurn.Message.Content {
+		if part.ToolResult == nil {
+			continue
+		}
+		for _, binding := range commits {
+			if part.ToolResult.ToolCallID != binding.toolCallID {
+				continue
+			}
+			if delegateInlineBodyPresented(part.ToolResult) {
+				presentedCalls[binding.toolCallID] = true
+			} else {
+				liveTurn.Message.Content = append([]llm.ContentPart(nil), liveTurn.Message.Content...)
+				liveTurn.Message.Content[i].ToolResult = delegateInlineStatusResult(part.ToolResult)
+			}
+			break
+		}
+	}
+	for i, part := range persistedTurn.Message.Content {
+		if part.ToolResult == nil {
+			continue
+		}
+		for _, binding := range commits {
+			if part.ToolResult.ToolCallID != binding.toolCallID {
+				continue
+			}
+			if !presentedCalls[binding.toolCallID] || !delegateInlineBodyPresented(part.ToolResult) {
+				delete(presentedCalls, binding.toolCallID)
+				persistedTurn.Message.Content = append([]llm.ContentPart(nil), persistedTurn.Message.Content...)
+				persistedTurn.Message.Content[i].ToolResult = delegateInlineStatusResult(part.ToolResult)
+			}
+			break
+		}
+	}
 	for _, binding := range commits {
-		if binding.commit != nil {
+		if binding.commit != nil && presentedCalls[binding.toolCallID] {
 			persistedTurn.DelegateDeliveryCommits = append(persistedTurn.DelegateDeliveryCommits, schema.DelegateDeliveryCommit{
 				ToolCallID: binding.toolCallID,
 				DeliveryID: binding.commit.deliveryID,

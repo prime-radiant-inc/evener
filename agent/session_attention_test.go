@@ -1693,27 +1693,23 @@ func TestDelegateAttention_RestartReplaysCallerDeliveryCommitWithoutDuplicateToo
 		t.Fatalf("initial nested delivery plans = %#v, want serialized head", plans)
 	}
 	firstPlan := plans[0]
-	token, admitted, err := c.BeginDelivery(firstPlan)
+	_, admitted, err := c.BeginDelivery(firstPlan)
 	if err != nil || !admitted {
 		t.Fatalf("BeginDelivery = admitted:%t err:%v", admitted, err)
 	}
-	commit := &delegateToolResultCommit{controller: c, token: token, deliveryID: firstPlan.deliveryID}
-
 	fs := newAttentionSyncBarrierFS()
 	path := transcriptPath(stateDir, ownerSessionID)
 	writer, err := transcript.NewWriterWithFS(fs, path, transcript.Header{SessionID: ownerSessionID})
 	if err != nil {
 		t.Fatalf("NewWriterWithFS: %v", err)
 	}
-	// This fixture writes a historical caller commit, with metadata supplied
-	// explicitly below. Carrier persistence no longer needs a live source store.
-	original := &Session{id: ownerSessionID, delegateController: c}
-	original.attachTranscript(writer)
-	c.rootRuntime = original
-	original.queueDelegateDeliveryCommit("delegate-send-N", commit)
+	// Preserve the historical inline-only/no-state shape. New carrier writes
+	// require presentation proof, but restore must still read old records.
+	carrier := schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("delegate-send-N", "delegate_send", `{"status":"completed"}`, false))
+	carrier.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: "delegate-send-N", DeliveryID: firstPlan.deliveryID}}
 	fs.arm()
 	appendDone := make(chan error, 1)
-	go func() { appendDone <- appendDelegateToolResultFixture(original, "delegate-send-N") }()
+	go func() { appendDone <- writer.AppendDurable(carrier) }()
 	select {
 	case <-fs.syncEntered:
 	case err := <-appendDone:
