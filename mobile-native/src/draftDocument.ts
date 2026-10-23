@@ -132,6 +132,10 @@ export class DraftDocument {
 	private listeners = new Set<() => void>();
 	private forgotten = false;
 	private unsavedImages = new Map<string, DraftImageData>();
+	// A resumed identity's document that this retired one settles through. A
+	// submission already in flight outlives its screen, and its completion must
+	// clear the capture at the destination that now owns the record.
+	private successor: DraftDocument | undefined;
 
 	imagePreviews(images: DraftImage[] = this.snapshot.record.images ?? []): InputAttachment[] {
 		return images.map((image) => {
@@ -172,6 +176,10 @@ export class DraftDocument {
 	}
 	private persist(record: DraftRecord, retainOnFailure: boolean) {
 		if (this.forgotten) return;
+		if (this.successor) {
+			this.successor.persist(record, retainOnFailure);
+			return;
+		}
 		const persisted = releaseEmptyComposerOwnership(record);
 		try {
 			const referenced = new Set(
@@ -229,12 +237,27 @@ export class DraftDocument {
 	};
 	forget() {
 		this.forgotten = true;
+		this.successor = undefined;
 		this.unsavedImages.clear();
 		this.update({
 			record: { draft: "", unconfirmed: null },
 			loaded: false,
 			error: null,
 		});
+	}
+
+	/** Adopt a record another destination already persisted for this document.
+	 * The live snapshot replaces an empty one immediately, so an already-open
+	 * screen renders the transferred composition without reopening storage. */
+	adopt(record: DraftRecord): void {
+		this.unsavedImages.clear();
+		this.update({ record, loaded: true, submitting: false, error: null });
+	}
+
+	/** Retire this document after a handoff: any later settlement for its
+	 * in-flight submission belongs to the document that inherited the record. */
+	transferSettlementTo(successor: DraftDocument): void {
+		if (successor !== this) this.successor = successor;
 	}
 	edit(text: string) {
 		if (!this.snapshot.loaded) return;

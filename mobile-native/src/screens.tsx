@@ -2662,6 +2662,13 @@ export function ConversationScreen({
 					// The rows followed the resume; the pane has to as well, or the
 					// message and the work it starts land on a ref nobody is showing.
 					onResolvedIdentity: (resolved) => {
+						// The draft and its recovery ownership follow the same identity:
+						// a replacement screen that loaded the resumed ref must show the
+						// edited composition, not the retired ref's stranded copy.
+						drafts.handoff(
+							{ hubId: route.params.hubId, sessionRef: ref },
+							{ hubId: route.params.hubId, sessionRef: resolved },
+						);
 						navigation.replace("Conversation", {
 							hubId: route.params.hubId,
 							ref: resolved,

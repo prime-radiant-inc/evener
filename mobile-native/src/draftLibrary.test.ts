@@ -67,4 +67,67 @@ describe("drafts across navigation", () => {
 		library.open({ hubId: "two", sessionRef: "other" }).edit("other hub");
 		expect([...library.refsWithDrafts("one")]).toEqual(["typed"]);
 	});
+
+	it("hands edited recovery ownership and images to an already-open resumed identity", () => {
+		const { library, repository } = setup();
+		const from = { hubId: "one", sessionRef: "old" };
+		const to = { hubId: "one", sessionRef: "resumed" };
+		repository.write(
+			from,
+			{
+				draft: "recovered [image 1]",
+				unconfirmed: null,
+				images: [{ id: "photo", marker: 1, mediaType: "image/png" }],
+				composer: { skillNames: ["review"], commandNames: ["compact"], recoveryIds: ["source-a"] },
+			},
+			[{ id: "photo", marker: 1, mediaType: "image/png", data: "AQID" }],
+		);
+		library.open(from).edit("edited recovered [image 1]");
+		// The resumed screen mounted before the handoff and is holding its empty
+		// snapshot: the transfer must adopt into that live document.
+		const destination = library.open(to);
+
+		expect(library.handoff(from, to)).toBe(true);
+		expect(destination.getSnapshot().record).toMatchObject({
+			draft: "edited recovered [image 1]",
+			unconfirmed: null,
+			images: [{ id: "photo", marker: 1, mediaType: "image/png" }],
+			composer: { skillNames: ["review"], commandNames: ["compact"], recoveryIds: ["source-a"] },
+		});
+		expect(repository.imageInputs(to, destination.getSnapshot().record.images ?? [])).toEqual([
+			expect.objectContaining({ data: "AQID" }),
+		]);
+		expect(repository.read(from)).toEqual({ draft: "", unconfirmed: null });
+		expect([...library.refsWithDrafts("one")]).toEqual(["resumed"]);
+		expect(library.open(to)).toBe(destination);
+	});
+
+	it("keeps a pending submission's capture under the resumed identity and clears it on completion", async () => {
+		const { library, repository } = setup();
+		const from = { hubId: "one", sessionRef: "old" };
+		const to = { hubId: "one", sessionRef: "resumed" };
+		const source = library.open(from);
+		source.edit("pending message");
+		let settle!: (sent: boolean) => void;
+		const submitted = source.submit(
+			() =>
+				new Promise<boolean>((resolve) => {
+					settle = resolve;
+				}),
+		);
+		const token = repository.read(from).unconfirmedCaptureToken;
+		expect(token).toBeDefined();
+		expect(repository.read(from).unconfirmed).toBe("pending message");
+
+		expect(library.handoff(from, to)).toBe(true);
+		expect(repository.read(to)).toMatchObject({
+			unconfirmed: "pending message",
+			unconfirmedCaptureToken: token,
+		});
+
+		settle(true);
+		await submitted;
+		expect(repository.read(to)).toEqual({ draft: "", unconfirmed: null });
+		expect(repository.read(from)).toEqual({ draft: "", unconfirmed: null });
+	});
 });
