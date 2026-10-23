@@ -9,6 +9,7 @@ import { installRetryWireFault } from "../../cmd/evener-hub/frontend/scripts/ret
 import { ConnectionProvider, useConnection } from "./ConnectionProvider";
 import { NativePreferencesProvider } from "./NativePreferencesProvider";
 import { ConversationScreen } from "./screens";
+import { TimelineItem } from "./TimelineItem";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import { MutationOutboxSQLite } from "./mutationOutboxStorage";
 import {
@@ -155,6 +156,22 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 			tree.root.findAll(
 				(node) => String(node.type) === "Pressable" && (node.props.accessibilityLabel ?? textOf(node)) === "Retry",
 			);
+		// The action's owner is the failure row for the named turn, not
+		// whichever Retry Pressable happens to come first in the tree. A
+		// transition can leave an older failure's row mounted while a newer
+		// turn is canonical; pressing that row would correctly be refused.
+		const retryButtonForTurn = (tree: ReactTestRenderer, turnId: string) => {
+			for (const row of tree.root.findAllByType(TimelineItem)) {
+				const item = row.props.item as { kind?: string; turnId?: string };
+				if (item.kind !== "failure" || item.turnId !== turnId) continue;
+				const button = row.findAll(
+					(node: ReactTestInstance) =>
+						String(node.type) === "Pressable" && (node.props.accessibilityLabel ?? textOf(node)) === "Retry",
+				)[0];
+				if (button) return button;
+			}
+			return undefined;
+		};
 		const sendButtons = (tree: ReactTestRenderer) =>
 			tree.root.findAll(
 				(node) =>
@@ -297,14 +314,15 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 			// notification or a new-turn frame can move the entry through the
 			// readiness gap where activation correctly refuses, leaving no durable
 			// row. Wait for the shared entry to certify both reads and for the
-			// rendered Pressable to offer the action before every Retry press.
-			const waitRetryReady = async () => {
+			// current failure turn's own Pressable to offer the action before every
+			// Retry press.
+			const waitRetryReady = async (turnId: string) => {
 				await waitFor(() => {
 					const state = entry().store.getState();
 					expect(state.latestReadState).toBe("ready");
 					expect(state.pendingMutationsReady).toBe(true);
-					expect(state.canonicalSession()).not.toBeNull();
-					const button = retryButtons(tree)[0];
+					expect(state.canonicalSession()?.turns.at(-1)?.id).toBe(turnId);
+					const button = retryButtonForTurn(tree, turnId);
 					expect(button).toBeDefined();
 					expect(button?.props.disabled).toBe(false);
 					expect(button?.props.accessibilityState?.disabled).not.toBe(true);
@@ -357,16 +375,16 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 				// same store beneath it.
 				expect(retryButtons(tree)).toHaveLength(1);
 				const failed = failedTurnId();
-				const stale = retryButtons(tree)[0]!.props.onPress;
+				const stale = retryButtonForTurn(tree, failed)!.props.onPress;
 				await act(async () => tree.update(<App views={2} front={0} />));
-				const otherPress = retryButtons(tree)[0]!.props.onPress;
+				const otherPress = retryButtonForTurn(tree, failed)!.props.onPress;
 				wire.mode = "normal";
 				wire.armed = true;
 				wire.holdResponses("turn/start");
 				wire.holdResponses("thread/read");
 				wire.holdNotifications("history/updated", "overlay/upserted", "overlay/delta", "overlay/reset", "overlay/end");
-				await waitRetryReady();
-				await pressButton(retryButtons(tree)[0]!);
+				await waitRetryReady(failed);
+				await pressButton(retryButtonForTurn(tree, failed)!);
 				await waitOutbox(hubId, 1);
 				const [row] = await outbox(hubId);
 				expect(row?.payload.input).toEqual([{ type: "text", text: "continue" }]);
@@ -412,7 +430,7 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 			if (scenario.mode === "latest-only") {
 				await mount(1);
 				const failed = failedTurnId();
-				const stale = retryButtons(tree)[0]!.props.onPress;
+				const stale = retryButtonForTurn(tree, failed)!.props.onPress;
 				wire.mode = "normal";
 				wire.armed = true;
 				wire.holdResponses("thread/read");
@@ -450,7 +468,10 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 				await act(async () => composer(tree).props.onChangeText("RETRY_NEWER_FAIL"));
 				await pressButton(sendButtons(tree)[0]!);
 				await untilRendered(() => {
-					const button = retryButtons(tree)[0];
+					const latest = entry().store.getState().canonicalSession()?.turns.at(-1);
+					expect(latest?.id).toBeDefined();
+					expect(latest?.status).toBe("failed");
+					const button = latest === undefined ? undefined : retryButtonForTurn(tree, latest.id);
 					expect(button).toBeDefined();
 					expect(button?.props.disabled).toBe(false);
 				});
@@ -461,11 +482,13 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 				// Stage draft text and an image; Retry must leave both untouched.
 				const document = await stageDraft(hubId);
 				wire.holdResponses("turn/start");
-				await waitRetryReady();
-				await pressButton(retryButtons(tree)[0]!);
+				await waitRetryReady(newerFailure);
+				await pressButton(retryButtonForTurn(tree, newerFailure)!);
 				await waitOutbox(hubId, 1);
 				const [row] = await outbox(hubId);
 				expect(row?.payload.input).toEqual([{ type: "text", text: "continue" }]);
+				await waitFor(() => expect(wire.requests).toHaveLength(3));
+				expect(row?.clientMutationId).toBe(wire.requests[2]?.params.clientMutationId);
 				expectDraftIntact(document);
 				milestone(fixture.milestonePath, "newest-retry", { clientMutationId: row?.clientMutationId });
 				wire.releaseResponses("turn/start");
@@ -486,16 +509,18 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 				await mount(1);
 				const document = await stageDraft(hubId);
 				const failed = failedTurnId();
-				const stale = retryButtons(tree)[0]!.props.onPress;
+				const stale = retryButtonForTurn(tree, failed)!.props.onPress;
 				wire.mode = "lost-reply";
 				wire.armed = true;
 				wire.holdResponses("thread/read");
-				await waitRetryReady();
-				await pressButton(retryButtons(tree)[0]!);
+				await waitRetryReady(failed);
+				await pressButton(retryButtonForTurn(tree, failed)!);
 				await untilRendered(() => expect(wire.dropped).toBe(1));
 				await waitOutbox(hubId, 1);
 				const [row] = await outbox(hubId);
 				expect(row?.payload.input).toEqual([{ type: "text", text: "continue" }]);
+				await waitFor(() => expect(wire.requests).toHaveLength(1));
+				expect(row?.clientMutationId).toBe(wire.requests[0]?.params.clientMutationId);
 				// Neither a fresh provider nor reconnect is allowed to certify
 				// loaded-empty while these real durable rows remain unresolved.
 				const remounted = await remount();
@@ -537,8 +562,8 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 			const failed = failedTurnId();
 			wire.mode = scenario.mode;
 			wire.armed = true;
-			await waitRetryReady();
-			await pressButton(retryButtons(tree)[0]!);
+			await waitRetryReady(failed);
+			await pressButton(retryButtonForTurn(tree, failed)!);
 			await untilRendered(() => expect(wire.requests.length).toBeGreaterThanOrEqual(1));
 			expect(wire.requests[0]?.params.input).toEqual([{ type: "text", text: "continue" }]);
 			expectDraftIntact(document);
