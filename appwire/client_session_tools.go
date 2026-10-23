@@ -41,58 +41,6 @@ func (c *Client) SetSessionTools(binding SessionBinding, owner SessionHubClient)
 	c.sessionTools = newClientSessionTools(binding, owner)
 }
 
-// AddSessionTools installs a separately scoped Manager binding on an attached
-// bridge. Unlike a local daemon connection, one bridge transports many live
-// remote Manager workspaces. The caller must have completed identify first.
-func (c *Client) AddSessionTools(binding SessionBinding, owner SessionHubClient) error {
-	if binding.BindingID == "" || binding.Ref == "" || binding.InstanceID == "" || binding.HubID == "" || owner == nil {
-		return InvalidParams("complete runtime binding and owner required")
-	}
-	state := newClientSessionTools(binding, owner)
-	c.sessionToolsMu.Lock()
-	defer c.sessionToolsMu.Unlock()
-	if c.sessionToolBindings == nil {
-		c.sessionToolBindings = map[string]*clientSessionTools{}
-	}
-	if _, exists := c.sessionToolBindings[binding.BindingID]; exists {
-		state.cancel()
-		return Conflict("runtime binding ID already installed")
-	}
-	c.sessionToolBindings[binding.BindingID] = state
-	return nil
-}
-
-// BindSessionToolsID installs exactly the chosen binding over the already
-// identified bridge; local daemon BindSessionTools keeps its prior contract.
-func (c *Client) BindSessionToolsID(ctx context.Context, bindingID string) error {
-	c.sessionToolsMu.Lock()
-	state := c.sessionToolBindings[bindingID]
-	c.sessionToolsMu.Unlock()
-	if state == nil || !c.Features().SessionTools {
-		return Unavailable("peer does not support this session binding")
-	}
-	var result SessionBinding
-	if err := c.Request(ctx, MethodRuntimeSessionBind, state.binding, &result); err != nil {
-		c.RemoveSessionTools(bindingID)
-		return err
-	}
-	if result != state.binding {
-		c.RemoveSessionTools(bindingID)
-		return InvalidRequest("runtime binding identity changed")
-	}
-	return nil
-}
-
-func (c *Client) RemoveSessionTools(bindingID string) {
-	c.sessionToolsMu.Lock()
-	state := c.sessionToolBindings[bindingID]
-	delete(c.sessionToolBindings, bindingID)
-	c.sessionToolsMu.Unlock()
-	if state != nil {
-		state.cancel()
-	}
-}
-
 func (c *Client) BindSessionTools(ctx context.Context) error {
 	if c.sessionTools == nil || !c.Features().SessionTools {
 		return Unavailable("peer does not support session tools")
@@ -108,7 +56,7 @@ func (c *Client) BindSessionTools(ctx context.Context) error {
 }
 
 // IdentifySessionToolsPeer runs after initialize negotiated SessionTools and
-// before any forwarding or binding on this connection. Reconnect repeats it.
+// before any input forwarding on this bridge. Reconnect repeats it.
 func (c *Client) IdentifySessionToolsPeer(ctx context.Context, params SessionToolsPeerParams) (SessionToolsPeerResponse, error) {
 	var response SessionToolsPeerResponse
 	if !c.Features().SessionTools {
@@ -167,8 +115,8 @@ func (c *Client) sendSessionFrameOrClose(ctx context.Context, message Message) e
 }
 
 func (c *Client) receiveSessionRequest(ctx context.Context, req Request) {
-	// Every reverse request, including cleanup, identifies one binding. Never
-	// fall back to the local owner when an ID is absent or belongs to a peer.
+	// Every reverse request, including cleanup, must identify this connection's
+	// single binding. An absent or stale ID cannot reach its owner.
 	var key struct {
 		BindingID string `json:"bindingId"`
 	}
@@ -180,15 +128,6 @@ func (c *Client) receiveSessionRequest(ctx context.Context, req Request) {
 	if key.BindingID != "" && c.sessionTools != nil && key.BindingID == c.sessionTools.binding.BindingID {
 		state = c.sessionTools
 	}
-	c.sessionToolsMu.Lock()
-	if selected := c.sessionToolBindings[key.BindingID]; selected != nil {
-		if state != nil {
-			state = nil // duplicate IDs must not resolve ambiguously
-		} else {
-			state = selected
-		}
-	}
-	c.sessionToolsMu.Unlock()
 	if state == nil {
 		c.respondSessionRequest(ctx, req.ID, nil, InvalidRequest("unknown runtime binding"))
 		return

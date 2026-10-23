@@ -2,6 +2,7 @@ package appserver
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,20 +12,14 @@ import (
 // TestSessionToolsBindDoesNotBlockFrameReception pins that a slow binding
 // installation cannot stop the connection's frame reader.
 //
-// bindSessionTools took sessionMu and held it across sessionToolsBind, whose
-// context is the connection lifetime, not the request's. The hub's callback
-// waits for the daemon to install the binding with no deadline. So a Manager
-// daemon that could not install its binding parked every inbound frame on that
-// connection until the connection itself closed — including reverse responses
-// for unrelated in-flight work.
-//
-// The reservation is what makes this safe to fix: the slot is claimed under the
-// lock, the wait happens outside it, and the commit or rollback rechecks that the
-// reservation still holds.
+// The slot is claimed under sessionMu, but the callback waits outside it. The
+// connection lifetime bounds installation, not an individual request deadline.
 func TestSessionToolsBindDoesNotBlockFrameReception(t *testing.T) {
 	server := NewServer(ServerConfig{})
 	installing := make(chan struct{})
 	release := make(chan struct{})
+	releaseInstall := sync.OnceFunc(func() { close(release) })
+	defer releaseInstall()
 	var installReturned bool
 	server.InstallSessionTools(func(context.Context, appwire.SessionBinding, appwire.SessionHubClient) error {
 		close(installing)
@@ -70,7 +65,7 @@ func TestSessionToolsBindDoesNotBlockFrameReception(t *testing.T) {
 		t.Fatal("an uninstalled binding was routable before its installation finished")
 	}
 
-	close(release)
+	releaseInstall()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
@@ -81,5 +76,79 @@ func TestSessionToolsBindDoesNotBlockFrameReception(t *testing.T) {
 	}
 	if conn.sessionTools == nil || conn.sessionTools.binding.BindingID != "binding-slow" {
 		t.Fatal("completed binding was not installed")
+	}
+}
+
+func TestSessionToolsFailedBindReleasesReservation(t *testing.T) {
+	server := NewServer(ServerConfig{})
+	var failed context.Context
+	server.InstallSessionTools(func(ctx context.Context, _ appwire.SessionBinding, _ appwire.SessionHubClient) error {
+		if failed == nil {
+			failed = ctx
+			return appwire.Unavailable("installation refused")
+		}
+		return nil
+	})
+	conn := server.NewConnection("retry-bind")
+	conn.sessionLifetime = t.Context()
+	t.Cleanup(conn.closeSessionTools)
+	request := appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodRuntimeSessionBind, appwire.SessionBinding{
+		BindingID: "binding", Ref: "local:one", InstanceID: "instance", HubID: "hub-a",
+	})
+	result := conn.bindSessionTools(t.Context(), *request.Request)
+	if result.Error == nil || result.Error.Error.Code != appwire.CodeUnavailable {
+		t.Fatalf("failed installation = %+v, want unavailable", result)
+	}
+	if failed.Err() == nil || conn.sessionTools != nil || conn.sessionToolsInstalling != nil {
+		t.Fatal("failed installation retained its context or binding slot")
+	}
+	result = conn.bindSessionTools(t.Context(), *request.Request)
+	if result.Error != nil || conn.sessionTools == nil || conn.sessionToolsInstalling != nil {
+		t.Fatalf("retry did not install a single binding: %+v", result)
+	}
+}
+
+func TestSessionToolsCloseCancelsInFlightBind(t *testing.T) {
+	server := NewServer(ServerConfig{})
+	installing := make(chan context.Context, 1)
+	release := make(chan struct{})
+	releaseInstall := sync.OnceFunc(func() { close(release) })
+	defer releaseInstall()
+	server.InstallSessionTools(func(ctx context.Context, _ appwire.SessionBinding, _ appwire.SessionHubClient) error {
+		installing <- ctx
+		<-release
+		return nil
+	})
+	conn := server.NewConnection("close-bind")
+	conn.sessionLifetime = t.Context()
+	t.Cleanup(conn.closeSessionTools)
+	done := make(chan appwire.Message, 1)
+	go func() {
+		request := appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodRuntimeSessionBind, appwire.SessionBinding{
+			BindingID: "binding", Ref: "local:one", InstanceID: "instance", HubID: "hub-a",
+		})
+		done <- conn.bindSessionTools(t.Context(), *request.Request)
+	}()
+	var installCtx context.Context
+	select {
+	case installCtx = <-installing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("bind never reached the install callback")
+	}
+	conn.closeSessionTools()
+	if installCtx.Err() == nil {
+		t.Fatal("connection close did not cancel the installation")
+	}
+	releaseInstall()
+	select {
+	case result := <-done:
+		if result.Error == nil || result.Error.Error.Code != appwire.CodeConflict {
+			t.Fatalf("abandoned installation = %+v, want conflict", result)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("bind never returned after the connection closed")
+	}
+	if conn.sessionTools != nil || conn.sessionToolsInstalling != nil {
+		t.Fatal("abandoned installation restored the closed connection's binding")
 	}
 }

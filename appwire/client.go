@@ -27,11 +27,9 @@ var errClientClosed = errors.New("appwire client closed")
 const NotificationBufferCap = 4096
 
 type Client struct {
-	sessionTools        *clientSessionTools
-	sessionToolsMu      sync.Mutex
-	sessionToolBindings map[string]*clientSessionTools
-	transport           Transport
-	nextID              atomic.Int64
+	sessionTools *clientSessionTools
+	transport    Transport
+	nextID       atomic.Int64
 	// sendSlot is the client's single frame-write slot: a one-token channel
 	// semaphore taken before transport.Send and released after it returns, so
 	// exactly one goroutine is ever inside Send. A channel rather than a mutex
@@ -446,11 +444,6 @@ func (c *Client) markClosed(err error) {
 	if c.sessionTools != nil {
 		c.sessionTools.cancel()
 	}
-	c.sessionToolsMu.Lock()
-	for _, binding := range c.sessionToolBindings {
-		binding.cancel()
-	}
-	c.sessionToolsMu.Unlock()
 	c.closedMu.Lock()
 	defer c.closedMu.Unlock()
 	select {

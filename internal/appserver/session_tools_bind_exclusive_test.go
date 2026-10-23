@@ -2,6 +2,8 @@ package appserver
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -9,18 +11,14 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-// TestSessionToolsConcurrentLocalAndPeerBindStayExclusive pins that releasing the
-// connection lock across the installation wait did not let two binds claim the
-// same connection.
-//
-// The local binding slot is singular: borrow the lock away and a local bind and an
-// identified peer bind can both pass the "is it taken?" checks before either
-// commits. The reservation keeps that exclusion while the wait happens outside the
-// lock, which is the whole point of the change.
-func TestSessionToolsConcurrentLocalAndPeerBindStayExclusive(t *testing.T) {
+// The installation wait must release the reader's lock without letting another
+// bind or peer identification claim the connection before it commits.
+func TestSessionToolsConcurrentBindsStayExclusive(t *testing.T) {
 	server := NewServer(ServerConfig{})
 	installing := make(chan struct{})
 	release := make(chan struct{})
+	releaseInstall := sync.OnceFunc(func() { close(release) })
+	defer releaseInstall()
 	var installs atomic.Int32
 	server.InstallSessionTools(func(context.Context, appwire.SessionBinding, appwire.SessionHubClient) error {
 		// Only the first installation blocks. The second is the bind that must be
@@ -53,31 +51,32 @@ func TestSessionToolsConcurrentLocalAndPeerBindStayExclusive(t *testing.T) {
 		t.Fatal("local bind never reached the install callback")
 	}
 
-	// With the local bind still waiting, the connection is already claimed: even
-	// identifying as a peer must be refused, and a peer bind certainly must.
+	// The pending bind already owns the single slot, before it is routable.
 	localCtx := context.WithValue(context.Background(), connectionContextKey{}, conn)
-	if err := IdentifySessionToolsPeer(localCtx, "hub-a"); err == nil {
-		t.Fatal("identified a peer while a local binding installation held the connection")
+	err := IdentifySessionToolsPeer(localCtx, "hub-a")
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+		t.Fatalf("identify during local binding installation = %v, want conflict", err)
 	}
-	conn.peerMu.Lock()
-	conn.peerHubID = "hub-a"
-	conn.peerMu.Unlock()
-	peerRequest := appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodRuntimeSessionBind, appwire.SessionBinding{
-		BindingID: "peer-binding", Ref: "remote:one", InstanceID: "remote:one", HubID: "hub-a",
+	if got := SessionToolsPeerID(localCtx); got != "" {
+		t.Fatalf("refused identification installed peer identity %q", got)
+	}
+	secondRequest := appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodRuntimeSessionBind, appwire.SessionBinding{
+		BindingID: "second-binding", Ref: "local:two", InstanceID: "local:two", HubID: "hub-a",
 	})
-	peer := conn.bindSessionTools(localCtx, *peerRequest.Request)
-	if peer.Error == nil {
-		t.Fatal("identified peer bind succeeded while a local bind held the connection")
+	second := conn.bindSessionTools(localCtx, *secondRequest.Request)
+	if second.Error == nil || second.Error.Error.Code != appwire.CodeConflict {
+		t.Fatalf("second bind during installation = %+v, want conflict", second)
 	}
-	if peer.Error.Error.Code != appwire.CodeConflict {
-		t.Fatalf("peer refusal = %+v, want conflict", peer.Error.Error)
+	if installs.Load() != 1 {
+		t.Fatalf("concurrent installations = %d, want 1", installs.Load())
 	}
 
-	close(release)
+	releaseInstall()
 	select {
 	case result := <-localDone:
 		if result.Error != nil {
-			t.Fatalf("local bind failed after the peer was refused: %+v", result.Error)
+			t.Fatalf("first bind failed after the second was refused: %+v", result.Error)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("local bind never completed")
@@ -85,7 +84,7 @@ func TestSessionToolsConcurrentLocalAndPeerBindStayExclusive(t *testing.T) {
 	if conn.sessionTools == nil || conn.sessionTools.binding.BindingID != "local-binding" {
 		t.Fatal("local binding was not installed")
 	}
-	if len(conn.sessionBindings) != 0 {
-		t.Fatalf("reservation leaked into installed bindings: %+v", conn.sessionBindings)
+	if conn.sessionToolsInstalling != nil {
+		t.Fatal("completed installation retained its reservation")
 	}
 }

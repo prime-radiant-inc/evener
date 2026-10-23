@@ -2,14 +2,73 @@ package appserver
 
 import (
 	"context"
+	"errors"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 )
 
+func TestSessionToolsIdentifiedPeerRefusesRuntimeBindings(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	server := NewServer(ServerConfig{})
+	var installs atomic.Int32
+	server.InstallSessionTools(func(context.Context, appwire.SessionBinding, appwire.SessionHubClient) error {
+		installs.Add(1)
+		return nil
+	})
+	HandleTyped(server.Router(), appwire.MethodHubSessionToolsIdentify, func(ctx context.Context, params appwire.SessionToolsPeerParams) (appwire.SessionToolsPeerResponse, error) {
+		return appwire.SessionToolsPeerResponse{HubID: "hub-server"}, IdentifySessionToolsPeer(ctx, params.HubID)
+	})
+	endpoint := serveWebSocketHTTP(t, server)
+	for range 2 { // Reconnect must repeat identification without inheriting a binding.
+		client := appwire.NewClient(dialRawAppWire(t, endpoint))
+		defer client.Close()
+		client.Start(ctx)
+		if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			t.Fatal(err)
+		}
+		conn := registeredConnection(t, server)
+		peerCtx := context.WithValue(ctx, connectionContextKey{}, conn)
+		if got := SessionToolsPeerID(peerCtx); got != "" {
+			t.Fatalf("new connection inherited peer identity %q", got)
+		}
+		for range 2 { // Identifying as the same peer is idempotent.
+			response, err := client.IdentifySessionToolsPeer(ctx, appwire.SessionToolsPeerParams{HubID: "hub-peer"})
+			if err != nil || response.HubID != "hub-server" {
+				t.Fatalf("identify response = %+v, error = %v", response, err)
+			}
+		}
+		_, err := client.IdentifySessionToolsPeer(ctx, appwire.SessionToolsPeerParams{HubID: "another-hub"})
+		var wire appwire.WireError
+		if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+			t.Fatalf("changing peer identity = %v, want conflict", err)
+		}
+		for _, hubID := range []string{"hub-peer", "another-hub"} {
+			binding := appwire.SessionBinding{BindingID: "binding", Ref: "local:workspace", InstanceID: "instance", HubID: hubID}
+			err := client.Request(ctx, appwire.MethodRuntimeSessionBind, binding, nil)
+			if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+				t.Fatalf("identified peer runtime bind for %q = %v, installs = %d, want conflict without installation", hubID, err, installs.Load())
+			}
+		}
+		if installs.Load() != 0 {
+			t.Fatalf("identified bridge installed %d runtime bindings", installs.Load())
+		}
+		if got := SessionToolsPeerID(peerCtx); got != "hub-peer" {
+			t.Fatalf("refused binds changed peer identity to %q", got)
+		}
+		if err := client.Close(); err != nil {
+			t.Fatal(err)
+		}
+		waitUnregistered(t, server)
+	}
+}
+
 // The daemon's local binding and an identified hub peer are different
 // authorities. The same physical connection cannot become both, in either
-// order, but two workspaces of the *same* identified peer may share it.
+// order.
 func TestSessionToolsRemoteBindingAuthorityOrdering(t *testing.T) {
 	newConnection := func() (*Connection, context.Context) {
 		t.Helper()
@@ -30,7 +89,7 @@ func TestSessionToolsRemoteBindingAuthorityOrdering(t *testing.T) {
 	}
 	assertConflict := func(t *testing.T, err appwire.WireError) {
 		t.Helper()
-		if err.Code != appwire.CodeConflict || err.Message != sessionToolsAuthorityConflict {
+		if err.Code != appwire.CodeConflict {
 			t.Fatalf("authority conflict = %+v", err)
 		}
 	}
@@ -57,43 +116,5 @@ func TestSessionToolsRemoteBindingAuthorityOrdering(t *testing.T) {
 			t.Fatal("local binding replaced identified peer authority")
 		}
 		assertConflict(t, result.Error.Error)
-	})
-	t.Run("two peer workspaces", func(t *testing.T) {
-		conn, ctx := newConnection()
-		if err := IdentifySessionToolsPeer(ctx, "hub-a"); err != nil {
-			t.Fatal(err)
-		}
-		for _, binding := range []struct{ id, ref string }{{"peer-one", "local:one"}, {"peer-two", "local:two"}} {
-			if result := bind(conn, ctx, binding.id, binding.ref, "hub-a"); result.Error != nil {
-				t.Fatalf("peer workspace %s refused: %+v", binding.ref, result.Error)
-			}
-			if got, ok := SessionToolsPeerBinding(ctx, binding.id); !ok || got.Ref != binding.ref {
-				t.Fatalf("peer binding lookup: %+v, found=%v", got, ok)
-			}
-		}
-		other, otherCtx := newConnection()
-		if err := IdentifySessionToolsPeer(otherCtx, "hub-a"); err != nil {
-			t.Fatal(err)
-		}
-		for _, lookup := range []struct {
-			ctx context.Context
-			id  string
-		}{
-			{ctx, ""}, {ctx, "unknown"}, {otherCtx, "peer-one"},
-		} {
-			if got, ok := SessionToolsPeerBinding(lookup.ctx, lookup.id); ok {
-				t.Fatalf("unknown or foreign binding %q resolved to %+v", lookup.id, got)
-			}
-		}
-		if result := bind(other, otherCtx, "foreign-owner", "local:foreign", "hub-b"); result.Error == nil {
-			t.Fatal("peer installed binding naming another hub")
-		} else {
-			assertConflict(t, result.Error.Error)
-		}
-		if result := bind(conn, ctx, "local-three", "local:three", "hub-b"); result.Error == nil {
-			t.Fatal("local binding installed alongside peer bindings")
-		} else {
-			assertConflict(t, result.Error.Error)
-		}
 	})
 }

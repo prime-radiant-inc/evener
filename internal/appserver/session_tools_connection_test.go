@@ -14,6 +14,7 @@ type blockedSessionInvokeOwner struct {
 
 type lifetimeSessionWatchOwner struct {
 	started chan context.Context
+	updates chan appwire.SessionWatchUpdate
 }
 
 func (*lifetimeSessionWatchOwner) State(context.Context) (appwire.ManagerView, error) {
@@ -24,6 +25,9 @@ func (*lifetimeSessionWatchOwner) Invoke(context.Context, appwire.SessionOperati
 }
 func (o *lifetimeSessionWatchOwner) Watch(ctx context.Context, _ appwire.SessionWatchRequest) (<-chan appwire.SessionWatchUpdate, error) {
 	o.started <- ctx
+	if o.updates != nil {
+		return o.updates, nil
+	}
 	return make(chan appwire.SessionWatchUpdate), nil
 }
 
@@ -37,6 +41,74 @@ func (o *blockedSessionInvokeOwner) Invoke(ctx context.Context, _ appwire.Sessio
 }
 func (*blockedSessionInvokeOwner) Watch(context.Context, appwire.SessionWatchRequest) (<-chan appwire.SessionWatchUpdate, error) {
 	return nil, appwire.Unavailable("unused")
+}
+
+func TestSessionToolsReconnectRestoresSingleRuntime(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	server := NewServer(ServerConfig{})
+	type installation struct {
+		ctx     context.Context
+		runtime appwire.SessionHubClient
+	}
+	bound := make(chan installation, 1)
+	server.InstallSessionTools(func(ctx context.Context, _ appwire.SessionBinding, runtime appwire.SessionHubClient) error {
+		bound <- installation{ctx: ctx, runtime: runtime}
+		return nil
+	})
+	endpoint := serveWebSocketHTTP(t, server)
+	for range 2 {
+		client := appwire.NewClient(dialRawAppWire(t, endpoint))
+		defer client.Close()
+		owner := &lifetimeSessionWatchOwner{started: make(chan context.Context, 1), updates: make(chan appwire.SessionWatchUpdate, 1)}
+		client.SetSessionTools(appwire.SessionBinding{Ref: "local:workspace", InstanceID: "instance", HubID: "hub", BindingID: "binding"}, owner)
+		client.Start(ctx)
+		if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.BindSessionTools(ctx); err != nil {
+			t.Fatal(err)
+		}
+		installed := <-bound
+		if _, err := installed.runtime.State(ctx); err != nil {
+			t.Fatal(err)
+		}
+		updates, err := installed.runtime.Watch(ctx, appwire.SessionWatchRequest{Ref: "local:workspace"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ownerCtx := <-owner.started
+		owner.updates <- appwire.SessionWatchUpdate{Event: appwire.NotifyThreadStatusChanged}
+		select {
+		case update, ok := <-updates:
+			if !ok || update.Event != appwire.NotifyThreadStatusChanged {
+				t.Fatalf("watch update = %+v, open = %v", update, ok)
+			}
+		case <-ctx.Done():
+			t.Fatal("watch observation did not reach the runtime")
+		}
+		if err := client.Close(); err != nil {
+			t.Fatal(err)
+		}
+		for _, ended := range []context.Context{installed.ctx, ownerCtx} {
+			select {
+			case <-ended.Done():
+			case <-ctx.Done():
+				t.Fatal("disconnect retained the runtime or its watch owner")
+			}
+		}
+		select {
+		case _, ok := <-updates:
+			if ok {
+				t.Fatal("disconnected runtime retained watch updates")
+			}
+		case <-ctx.Done():
+			t.Fatal("disconnect did not close runtime watch updates")
+		}
+		if _, err := installed.runtime.State(ctx); err == nil {
+			t.Fatal("disconnected runtime accepted a state read")
+		}
+	}
 }
 
 func TestSessionToolsCancelledInvokeReleasesOwner(t *testing.T) {
