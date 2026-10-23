@@ -63,6 +63,19 @@ const scroll = (ref) => `${column(ref)} [data-testid="transcript-virtual-list"] 
 const stagedPNG = 'button[aria-label="View staged.png"] img';
 const errors = [];
 const consoleEvents = [];
+// The deliberate held ancestor is an active session drawn in the read-only
+// cascade surface, which provokes kata 5gdv's known diagnostic ("composer is
+// showing a working session with no Stop"). Only that exact marker for the
+// fixture's held ancestor is allowed; every other warning still fails.
+const knownDiagnostics = [];
+let allowStoplessAncestor = false;
+const stoplessComposerWarning = (params) => {
+  if (!allowStoplessAncestor) return false;
+  const marker = params.args?.[0]?.value;
+  if (typeof marker !== "string" || !marker.startsWith("[evener 5gdv] composer is showing a working session with no Stop.")) return false;
+  const ref = params.args?.[1]?.preview?.properties?.find((property) => property.name === "ref")?.value;
+  return ref === fixture.refs[1];
+};
 const frames = [];
 const readingPoints = [];
 let failed = false;
@@ -707,14 +720,23 @@ async function assertSpineStatus(ref, ...states) {
   if (glyphState === "working" && reducedMotion) {
     assert.equal(status.animation, "none", "reduced motion keeps the running indicator still");
   }
-  const axNodes = await queryAccessibilityTree(driver.send, `${scope(ref)} [data-runtime-state]`);
-  const axNames = (axNodes ?? []).filter((node) => !node.ignored && node.name?.value).map((node) => node.name.value);
+  // Chrome's accessibility tree can trail a status transition by a frame.
+  // Poll until it agrees with the rendered label, bounded as a tripwire; a
+  // genuinely competing name never converges and still fails below.
+  let axNames = [];
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const axNodes = await queryAccessibilityTree(driver.send, `${scope(ref)} [data-runtime-state]`);
+    axNames = (axNodes ?? []).filter((node) => !node.ignored && node.name?.value).map((node) => node.name.value);
+    if (axNames.length > 0 && axNames.every((name) => name === text)) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
   assert.ok(axNames.length > 0, "the compact status exposes an accessible label in the real tree");
   assert.ok(
     axNames.every((name) => name === text),
     `the real accessibility tree names the status only with its exact runtime text ${q(text)}, got ${q(axNames)}`,
   );
   driver.milestone("compact-spine-status", { ref, ...status });
+  return status;
 }
 
 async function installSourceTrace() {
@@ -976,6 +998,47 @@ async function sourceMutationJourney() {
   }
   driver.milestone("queued-source-single-delivery", { clientMutationId: queued.params.clientMutationId, recipient: ref });
   await capture("queued-source-single-delivery");
+}
+
+// The fixture holds the first rendered ancestor's (refs[1]) final provider
+// round, so the spine is genuinely active when the browser drills it in. This
+// leg releases that hold and confirms the resting idle state; the existing
+// source-mutation idle coverage stays untouched.
+async function dottedAncestorStatus(ref) {
+  const active = await assertSpineStatus(ref, "active");
+  await driver.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+  assert.equal(await read('matchMedia("(prefers-reduced-motion: reduce)").matches'), true, "reduced motion is actually emulated before the stillness assertion");
+  const activeReduced = await assertSpineStatus(ref, "active");
+  await driver.send("Emulation.setEmulatedMedia", { features: [] });
+  await capture("dotted-ancestor-status");
+  await observeGeometryAndFocus(ref);
+  const releasedAfter = frames.length;
+  driver.control("release-ancestor-provider");
+  await waitFrames(() => frames.slice(releasedAfter).some(frame => frame.direction === "Network.webSocketFrameReceived" && frame.method === "thread/status/changed" && frame.params.ref === ref && frame.params.status.type === "idle"), "actual rendered ancestor settles after its provider release");
+  const idle = await assertSpineStatus(ref, "idle");
+  allowStoplessAncestor = false;
+  assert.equal(await read("document.activeElement === window.__cascadeFocused"), true, "ancestor status changes preserve focused element");
+  assert.deepEqual(await read("window.__cascadeGeometryChanges"), [], "ancestor provider completion never changes geometry");
+  await read("window.__cascadeGeometryObserver.disconnect()");
+  driver.milestone("dotted-ancestor-status", { ref, active: active.state, reducedMotionActive: activeReduced.state, idle: idle.state, glyph: active.glyphState, knownDiagnostics: knownDiagnostics.length });
+}
+
+// Enter once, prove the held ancestor while it is a spine, and release it
+// before the source-reading setup. The live delegate row remounts the source
+// reader, so the source's own reading checks run after the release. The page
+// then reloads before the baseline journey: unmounting and re-entering alone
+// would reuse the released subscription's stale active metadata instead of the
+// live idle notification (#4878), and the reload makes every subscription
+// re-read it.
+async function dottedAncestorJourney() {
+  allowStoplessAncestor = true;
+  await driver.click(sourceAgents);
+  await drill(fixture.edges[0], 1);
+  await drill(fixture.edges[1], 2);
+  await drill(fixture.edges[2], 3);
+  await dottedAncestorStatus(fixture.refs[1]);
+  await pinSourceDom();
+  await returnToSource();
 }
 
 // Both rows come from the root's real project catalog. A native row click,
@@ -1529,6 +1592,26 @@ async function waitFrames(predicate, label) {
   });
 }
 
+// Page.reload resolves before the old document is replaced, so a following
+// openSession can see the outgoing document's rail row and composer and return
+// against it. Wait for the reload's own load event before re-opening.
+async function reloadDocument() {
+  const loaded = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => finish(new Error("reload did not fire its load event")), 15000);
+    const handler = (event) => {
+      if (JSON.parse(event.data).method === "Page.loadEventFired") finish();
+    };
+    const finish = (error) => {
+      clearTimeout(timer);
+      driver.page.ws.removeEventListener("message", handler);
+      error ? reject(error) : resolve();
+    };
+    driver.page.ws.addEventListener("message", handler);
+  });
+  await driver.send("Page.reload", { ignoreCache: true });
+  await loaded;
+}
+
 const sent = (after = 0) => frames.slice(after).filter(f => f.direction === "Network.webSocketFrameSent");
 const answered = (request) => frames.some(f => f.direction === "Network.webSocketFrameReceived" && f.id === request.id && Object.hasOwn(f, "result") && !f.error);
 
@@ -1606,7 +1689,10 @@ try {
     if (value.method === "Runtime.exceptionThrown") errors.push(value.params);
     if (value.method === "Runtime.consoleAPICalled") {
       consoleEvents.push(value.params);
-      if (["error", "warning"].includes(value.params.type)) errors.push(value.params);
+      if (["error", "warning"].includes(value.params.type)) {
+        if (value.params.type === "warning" && stoplessComposerWarning(value.params)) knownDiagnostics.push(value.params);
+        else errors.push(value.params);
+      }
     }
     if (["Network.webSocketFrameSent", "Network.webSocketFrameReceived"].includes(value.method)) {
       try { frames.push({ direction: value.method, requestId: value.params.requestId, ...JSON.parse(value.params.response.payloadData) }); } catch {}
@@ -1700,6 +1786,16 @@ try {
   fixture.sourcePaneId = await read(`document.querySelector(${q(`${sourceFooter} [data-pane-id]`)})?.dataset.paneId`);
   assert.ok(fixture.sourcePaneId, "source has a committed Dockview pane ID");
   fixture.sourceTabCount = await read("document.querySelectorAll('.dv-tab').length");
+  await dottedAncestorJourney();
+  await reloadDocument();
+  await driver.openSession(fixture.rootRef);
+  const restoredSourcePaneId = await read(`document.querySelector(${q(`${sourceFooter} [data-pane-id]`)})?.dataset.paneId`);
+  assert.ok(restoredSourcePaneId, "reloaded source has a committed Dockview pane ID");
+  assert.equal(restoredSourcePaneId, fixture.sourcePaneId, "reload restores the saved source pane identity");
+  const restoredTabCount = await read("document.querySelectorAll('.dv-tab').length");
+  assert.equal(restoredTabCount, fixture.sourceTabCount, "reload restores the saved tab count");
+  fixture.sourcePaneId = restoredSourcePaneId;
+  fixture.sourceTabCount = restoredTabCount;
   await driver.focusComposer(fixture.rootRef);
   await driver.typeText(fixture.rootRef, "CASCADE_UNSENT_SOURCE_DRAFT");
   await driver.typeText(fixture.rootRef, " /cascade-source");
@@ -1943,6 +2039,7 @@ try {
   } finally {
     try {
       writeFileSync(path.join(fixture.artifactDir, "console.json"), JSON.stringify(consoleEvents, null, 2));
+      writeFileSync(path.join(fixture.artifactDir, "known-diagnostics.json"), JSON.stringify(knownDiagnostics, null, 2));
       writeFileSync(path.join(fixture.artifactDir, "rpc-frames.json"), JSON.stringify(frames, null, 2));
       writeFileSync(path.join(fixture.artifactDir, "reading-points.json"), JSON.stringify(readingPoints, null, 2));
       if (driver.page) writeFileSync(path.join(fixture.artifactDir, "reading-attempt.json"), JSON.stringify(await read('window.__cascadeReadingAttempt ?? null'), null, 2));

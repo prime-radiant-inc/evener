@@ -113,13 +113,28 @@ func TestAgentCascadeBrowser(t *testing.T) {
 	// when a completion notice becomes the most recent user-role message.
 	scriptErr := make(chan error, 1)
 	releaseProvider := make(chan struct{})
+	releaseAncestor := make(chan struct{})
 	var inputsMu sync.Mutex
 	providerInputs := make(map[string]int)
 	ready := make(chan struct{})
+	var readyOnce sync.Once
+	signalReady := func() { readyOnce.Do(func() { close(ready) }) }
 	go func() {
 		phases := make(map[int]int)
 		toolOwners := make(map[string]int)
 		completed := make(map[int]bool)
+		ancestorHeld := false
+		// The held ancestor never reaches the completed accounting, so its
+		// role lowers the target by one wherever readiness is checked.
+		maybeSignalReady := func() {
+			readyAt := 7 + cascadePagingDelegates
+			if ancestorHeld {
+				readyAt--
+			}
+			if len(completed) == readyAt {
+				signalReady()
+			}
+		}
 		for {
 			call, err := provider.Next(ctx.Done())
 			if err != nil {
@@ -204,6 +219,34 @@ func TestAgentCascadeBrowser(t *testing.T) {
 			}
 			phase := phases[role]
 			phases[role]++
+			// The first rendered ancestor (role 1) is never the origin. Its
+			// final round is held so the compact spine is genuinely active
+			// while the browser drills it in, then released to rest idle.
+			// Answering it in a goroutine keeps this serial provider loop free
+			// to finish every other role: delegation is asynchronous, so this
+			// round arrives while refs[2..6] are still starting.
+			if role == 1 && phase == 1 {
+				if err := os.WriteFile(filepath.Join(artifacts, "provider-ancestor-held.json"), []byte(`{"role":1,"phase":1}`), 0600); err != nil {
+					scriptErr <- err
+					return
+				}
+				// The loop owns the maps; register the held call here so a
+				// follow-up request that names it still resolves its role.
+				toolOwners[call.ToolCallID()] = role
+				ancestorHeld = true
+				// The other roles may already be complete if the serial loop
+				// reached them first; in that order this hold branch owns the
+				// readiness signal.
+				maybeSignalReady()
+				go func(call *fakellm.Call) {
+					select {
+					case <-releaseAncestor:
+						call.RespondToolCall("communicate", communicateArgs("CASCADE_ANCESTOR_BUSY_REPLY"))
+					case <-ctx.Done():
+					}
+				}(call)
+				continue
+			}
 			if role == 0 && phase < cascadePagingDelegates {
 				toolOwners[call.ToolCallID()] = role
 				call.RespondToolCall("delegate", map[string]any{
@@ -234,9 +277,7 @@ func TestAgentCascadeBrowser(t *testing.T) {
 			call.RespondToolCall("communicate", communicateArgs(text))
 			if !completed[role] {
 				completed[role] = true
-				if len(completed) == 7+cascadePagingDelegates {
-					close(ready)
-				}
+				maybeSignalReady()
 			}
 		}
 	}()
@@ -328,7 +369,10 @@ func TestAgentCascadeBrowser(t *testing.T) {
 	controlDone := make(chan error, 1)
 	go func() {
 		defer watcher.Close()
-		controlDone <- cascadeAwaitProviderRelease(ctx, watcher, filepath.Join(artifacts, "control.jsonl"), releaseProvider)
+		controlDone <- cascadeAwaitProviderRelease(ctx, watcher, filepath.Join(artifacts, "control.jsonl"), map[string]chan struct{}{
+			"release-provider":          releaseProvider,
+			"release-ancestor-provider": releaseAncestor,
+		})
 	}()
 	defer func() {
 		cancel()
@@ -368,7 +412,7 @@ func TestAgentCascadeBrowser(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, required := range []string{
-		"root-child", "six-edges", "compact-spine-status", "narrow-independent-scroll", "parent-selection-leaf-scope",
+		"root-child", "six-edges", "compact-spine-status", "dotted-ancestor-status", "narrow-independent-scroll", "parent-selection-leaf-scope",
 		"peek-tasks-single-escape", "keyboard-branch-reduced-motion", "return-source",
 		"reconnect-extent-closed-peek", "pending-image-success", "pending-image-failure",
 		"unresolved-storage-source", "queued-source-single-delivery", "live-status-stable-geometry",
@@ -390,6 +434,26 @@ func TestAgentCascadeBrowser(t *testing.T) {
 		if !found {
 			t.Fatalf("missing observed milestone %s", required)
 		}
+	}
+	var observed struct {
+		Active              string `json:"active"`
+		ReducedMotionActive string `json:"reducedMotionActive"`
+		Idle                string `json:"idle"`
+	}
+	for line := range strings.SplitSeq(string(milestones), "\n") {
+		var value struct {
+			Milestone string          `json:"milestone"`
+			Detail    json.RawMessage `json:"detail"`
+		}
+		if json.Unmarshal([]byte(line), &value) != nil || value.Milestone != "dotted-ancestor-status" {
+			continue
+		}
+		if err := json.Unmarshal(value.Detail, &observed); err != nil {
+			t.Fatalf("dotted ancestor milestone detail: %v", err)
+		}
+	}
+	if observed.Active != "active" || observed.ReducedMotionActive != "active" || observed.Idle != "idle" {
+		t.Fatalf("observed dotted ancestor states = %+v, want active/active/idle", observed)
 	}
 	inputsMu.Lock()
 	for _, token := range []string{"CASCADE_BUSY_INPUT", "CASCADE_QUEUE_INPUT", "CASCADE_UNSENT", "CASCADE_NEWER", "CASCADE_MIXED_INPUT", "CASCADE_OVERLAP_COMMAND_BODY"} {
@@ -834,7 +898,8 @@ func cascadeLatestUserContent(call *fakellm.Call) (string, error) {
 	return "", nil
 }
 
-func cascadeAwaitProviderRelease(ctx context.Context, watcher *fsnotify.Watcher, controlPath string, release chan struct{}) error {
+func cascadeAwaitProviderRelease(ctx context.Context, watcher *fsnotify.Watcher, controlPath string, releases map[string]chan struct{}) error {
+	handled := make(map[string]bool, len(releases))
 	for {
 		body, err := os.ReadFile(controlPath)
 		if err != nil {
@@ -850,11 +915,20 @@ func cascadeAwaitProviderRelease(ctx context.Context, watcher *fsnotify.Watcher,
 				if err := json.Unmarshal([]byte(line), &record); err != nil {
 					return fmt.Errorf("cascade control record: %w", err)
 				}
-				if record.Command == "release-provider" {
-					close(release)
-					return nil
+				release, ok := releases[record.Command]
+				if !ok {
+					return fmt.Errorf("unexpected cascade control command %q", record.Command)
 				}
-				return fmt.Errorf("unexpected cascade control command %q", record.Command)
+				// The file is re-read on every event, so a record already seen
+				// must not close its channel twice.
+				if handled[record.Command] {
+					continue
+				}
+				handled[record.Command] = true
+				close(release)
+			}
+			if len(handled) == len(releases) {
+				return nil
 			}
 		}
 		select {
