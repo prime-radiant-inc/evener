@@ -625,3 +625,31 @@ func TestDelegateLaneHandoffDisposesNestedLaneUnderParentFence(t *testing.T) {
 		t.Error("nested lane still registered or locked after the parent's handoff")
 	}
 }
+
+// TestDelegateLaneHandoffKeepsCloseBudgetLockWhileRestoreInFlight covers the
+// budget-exempt close tail: an expired close budget must not unlock a lane while
+// a descendant restore window is open, and must unlock it once that window
+// closes.
+func TestDelegateLaneHandoffKeepsCloseBudgetLockWhileRestoreInFlight(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	parentID, lanePath, _ := r.seedStableIsolationLane(t)
+	const nestedID = "dlg_nested_budget_tail"
+	seedNestedIdleDelegate(t, r.s.delegateController, nestedID, parentID, lanePath)
+
+	if err := r.s.delegateController.beginLaneRestore(nestedID); err != nil {
+		t.Fatalf("open descendant restore window: %v", err)
+	}
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	r.s.disposeDelegateLanesAtClose(expired)
+	if present, locked, _ := r.laneLocked(t, lanePath); !present || !locked {
+		t.Fatalf("close budget tail released the lane while a descendant restore was in flight: present=%t locked=%t", present, locked)
+	}
+
+	r.s.delegateController.endLaneRestore(nestedID)
+	r.s.disposeDelegateLanesAtClose(expired)
+	if present, locked, _ := r.laneLocked(t, lanePath); !present || locked {
+		t.Errorf("close budget tail did not unlock the lane after the restore window closed: present=%t locked=%t", present, locked)
+	}
+}

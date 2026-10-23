@@ -316,10 +316,26 @@ var ObserveCloseStopJoinBudget func(stopDeadline, cascadeDeadline time.Time, cas
 // sidecar (so P3's grace keys on a fresh mtime) and release the disposer's own
 // lock — two cheap constant-cost ops, no predicate evaluation and no remove. It
 // uses a non-expiring background git runner precisely because the budget is
-// already spent, so a lane is never left locked. Returns a human-readable note
-// for the aggregated tail warning, or "" for a lane not ours to touch.
+// already spent. The lock is kept when an admission is in flight in the lane's
+// subtree, because unlocking would expose the installing runtime to a later
+// prune; the retention is reported in the tail warning. Returns a
+// human-readable note for the aggregated tail warning, or "" for a lane not
+// ours to touch.
 func (s *Session) touchUnlockLaneTail(local *execenv.LocalExecutionEnvironment, lane isolationLane) string {
 	lanePath := filepath.Clean(lane.path)
+	if s.delegateController != nil {
+		switch s.delegateController.beginSubtreeLaneHandoff(lane.delegateID) {
+		case laneHandoffAcquired:
+			defer s.delegateController.endSubtreeLaneHandoff(lane.delegateID)
+		case laneHandoffAlreadyCovered:
+			// Closing or an ancestor's handoff already fences this lane.
+		default:
+			// An admission is in flight in this lane's subtree. Unlocking here
+			// would expose the lane to a later prune while its runtime is still
+			// installing; keep the lock and report the retention.
+			return lane.delegateID + " at " + lanePath + " (descendant admission in flight; lock retained)"
+		}
+	}
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
 		return ""
 	}

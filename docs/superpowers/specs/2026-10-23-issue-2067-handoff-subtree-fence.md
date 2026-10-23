@@ -193,6 +193,12 @@ a later explicit `dispose` or resume. Retaining the lock is deliberate: the
 refusal means an install may be in flight into the lane, and unlocking it would
 expose the lane to a later `prune`.
 
+The budget-exempt close tail (`touchUnlockLaneTail`) takes the same admission
+before touching or unlocking a lane whose close pass ran out of budget. A
+`busy` result keeps the lock and reports the retention in the tail warning;
+`alreadyCovered` and `acquired` unlock as before. Without this, an expired close
+budget could unlock a lane while a descendant restore was still installing.
+
 A close-time disposal whose lane is already covered by a **strict ancestor's**
 in-flight handoff proceeds under that ancestor's fence instead of acquiring a
 second, self-refusing one. The ancestor fence already excludes every admission
@@ -270,6 +276,11 @@ worktree harness with real dispose:
    owns a worktree-isolated delegate lane is disposed; the nested lane is gone,
    not retained or left locked. This test fails on the fence-first close
    behavior with "nested lane was retained (and left locked)".
+6. **Expired close budget**: with a descendant restore window open, an
+   already-expired budget drives the close tail; the lane stays locked. After
+   the window closes, the same tail unlocks it. This test fails without the
+   tail admission with "close budget tail released the lane while a descendant
+   restore was in flight".
 
 Commands:
 
