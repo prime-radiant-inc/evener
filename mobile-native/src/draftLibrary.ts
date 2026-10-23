@@ -72,6 +72,7 @@ export class DraftLibrary {
 			existing.unconfirmed !== null ||
 			(existing.composer?.recoveryIds?.length ?? 0) > 0 ||
 			(existing.unconfirmedComposer?.recoveryIds?.length ?? 0) > 0 ||
+			(existing.parkedCompositions?.length ?? 0) > 0 ||
 			(existing.composer?.skillNames?.length ?? 0) > 0 ||
 			(existing.unconfirmedComposer?.skillNames?.length ?? 0) > 0 ||
 			(existing.composer?.commandNames?.length ?? 0) > 0 ||
@@ -85,7 +86,11 @@ export class DraftLibrary {
 			this.pending.delete(this.handoffKey(to));
 			return false;
 		}
-		const images = [...(snapshot.record.images ?? []), ...(snapshot.record.unconfirmedImages ?? [])];
+		const images = [
+			...(snapshot.record.images ?? []),
+			...(snapshot.record.unconfirmedImages ?? []),
+			...(snapshot.record.parkedCompositions ?? []).flatMap((parked) => parked.images ?? []),
+		];
 		let additions;
 		try {
 			additions = images.map((image) => {
@@ -125,7 +130,11 @@ export class DraftLibrary {
 
 	private releaseRefusedSources(source: DraftDocument, destination: DraftDocument): void {
 		const record = source.getSnapshot().record;
-		const ids = [...(record.composer?.recoveryIds ?? []), ...(record.unconfirmedComposer?.recoveryIds ?? [])];
+		const ids = [
+			...(record.composer?.recoveryIds ?? []),
+			...(record.unconfirmedComposer?.recoveryIds ?? []),
+			...(record.parkedCompositions ?? []).flatMap((parked) => parked.composer?.recoveryIds ?? []),
+		];
 		if (ids.length) destination.releaseRecoverySources(ids);
 	}
 

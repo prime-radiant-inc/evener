@@ -14,7 +14,13 @@ import type { MutationRecoveryRecord } from "@evener/appwire-client/state/mutati
 import type { ConversationMutationContext } from "../../mobile/src/state/conversationMutation";
 import type { DraftImage, DraftImageData } from "./draftImages";
 import { restoreUnconfirmedDraft } from "./draftRecovery";
-import type { DraftComposerMetadata, DraftDestination, DraftRecord, DraftRepository } from "./draftRepository";
+import type {
+	DraftComposerMetadata,
+	DraftDestination,
+	DraftParkedComposition,
+	DraftRecord,
+	DraftRepository,
+} from "./draftRepository";
 import type { RecoveryResendCommit } from "./mutationOutboxStorage";
 
 function sameSources(owned: readonly string[] | undefined, supplied: readonly string[]): boolean {
@@ -63,6 +69,14 @@ function withReleasedRecoveryIds(record: DraftRecord, ids: string[]): DraftRecor
 	return withoutIds;
 }
 
+/** An empty park list is absent state, not a record field. */
+function withParkedCompositions(record: DraftRecord, parks: DraftRecord["parkedCompositions"]): DraftRecord {
+	if (parks?.length) return { ...record, parkedCompositions: parks };
+	if (record.parkedCompositions === undefined) return record;
+	const { parkedCompositions: _omitted, ...withoutParks } = record;
+	return withoutParks;
+}
+
 function releaseEmptyComposerOwnership(record: DraftRecord): DraftRecord {
 	const releasedRecoveryIds = releasedIds(record);
 	const base = withReleasedRecoveryIds(record, releasedRecoveryIds);
@@ -100,6 +114,10 @@ function composition(text: string, images: DraftImage[] = [], metadata?: DraftCo
 		commandNames: metadata?.commandNames ?? [],
 		...(metadata?.mentions === undefined ? {} : { mentions: metadata.mentions }),
 	};
+}
+
+function parkedRecoveryIds(parks: readonly DraftParkedComposition[] | undefined): string[] {
+	return (parks ?? []).flatMap((parked) => parked.composer?.recoveryIds ?? []);
 }
 
 interface DraftSnapshot {
@@ -158,6 +176,8 @@ export class DraftDocument {
 		private createImageId: () => string = () =>
 			`reissue-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
 		private createCaptureToken: () => string = Crypto.randomUUID,
+		private createParkId: () => string = () =>
+			`park-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
 	) {
 		this.retry();
 	}
@@ -179,10 +199,14 @@ export class DraftDocument {
 	}
 	private persist(record: DraftRecord, retainOnFailure: boolean) {
 		if (this.forgotten || this.retired) return;
-		const persisted = releaseEmptyComposerOwnership(record);
+		const persisted = releaseEmptyComposerOwnership(withParkedCompositions(record, record.parkedCompositions));
 		try {
 			const referenced = new Set(
-				[...(persisted.images ?? []), ...(persisted.unconfirmedImages ?? [])].map((image) => image.id),
+				[
+					...(persisted.images ?? []),
+					...(persisted.unconfirmedImages ?? []),
+					...(persisted.parkedCompositions ?? []).flatMap((parked) => parked.images ?? []),
+				].map((image) => image.id),
 			);
 			this.repository().write(
 				this.destination,
@@ -308,7 +332,9 @@ export class DraftDocument {
 		const owned = !!record.composer?.recoveryIds?.length;
 		try {
 			// A replacement is not an edit of the recovered message. Park the old
-			// composition until retained-source proof can safely restore it.
+			// composition in its own record so reconciliation cannot append it to
+			// the replacement, and keep its sources owned by the park until the
+			// user explicitly restores it.
 			this.persist(
 				{
 					...record,
@@ -316,9 +342,17 @@ export class DraftDocument {
 					images: undefined,
 					composer: undefined,
 					releasedRecoveryIds: releasedIds(record),
-					unconfirmed: owned ? record.draft : null,
-					unconfirmedImages: owned ? record.images : undefined,
-					unconfirmedComposer: owned ? record.composer : undefined,
+					parkedCompositions: owned
+						? [
+								...(record.parkedCompositions ?? []),
+								{
+									id: this.createParkId(),
+									text: record.draft,
+									images: record.images,
+									composer: record.composer,
+								},
+							]
+						: record.parkedCompositions,
 				},
 				true,
 			);
@@ -335,7 +369,8 @@ export class DraftDocument {
 		if (
 			[...(record.composer?.recoveryIds ?? []), ...(record.unconfirmedComposer?.recoveryIds ?? [])].includes(
 				source.clientMutationId,
-			)
+			) ||
+			parkedRecoveryIds(record.parkedCompositions).includes(source.clientMutationId)
 		)
 			return "already-restored";
 		const recovered = recoverMutationComposition(source);
@@ -391,15 +426,16 @@ export class DraftDocument {
 		const position = Math.max(0, Math.min(cursor ?? record.draft.length, record.draft.length));
 		const markerValue = markerText(marker);
 		const text = insertMarker(record.draft, position, position, markerValue).value;
-		const composer = record.composer?.mentions
-			? {
-					...record.composer,
-					mentions: record.composer.mentions.map((mention) => ({
-						...mention,
-						offset: mention.offset >= position ? mention.offset + markerValue.length : mention.offset,
-					})),
-				}
-			: record.composer;
+		// The insertion can land inside a selected label. Reconcile against the
+		// resulting text so a split label loses its mention and canonical
+		// selection, while a surviving label keeps its shifted offset.
+		const composer = reconcileEditedComposer(
+			record,
+			text,
+			record.composer?.mentions === undefined
+				? undefined
+				: reconcileComposerMentions(record.draft, text, record.composer.mentions),
+		);
 		this.unsavedImages.set(image.id, { ...image, marker });
 		try {
 			this.persist(
@@ -792,17 +828,55 @@ export class DraftDocument {
 			/* Retry retains the requested recovery state. */
 		}
 	}
+	/** Discard only the selected park, leaving other parks and any unconfirmed send. */
+	dismissParked(id: string) {
+		const { record, loaded, submitting } = this.snapshot;
+		const parked = record.parkedCompositions?.find((candidate) => candidate.id === id);
+		if (!loaded || submitting || parked === undefined) return;
+		const parkedIds = parked.composer?.recoveryIds ?? [];
+		try {
+			this.persist(
+				{
+					...record,
+					parkedCompositions: record.parkedCompositions?.filter((candidate) => candidate.id !== id),
+					releasedRecoveryIds: [...new Set([...releasedIds(record), ...parkedIds])],
+				},
+				true,
+			);
+		} catch {
+			// A failed save changed nothing durably: keep the prior park and
+			// its source ownership visible so those sources stay protected.
+			this.update({ record });
+		}
+	}
+	/** Restore only the selected park, leaving other parks and any unconfirmed send. */
+	restoreParked(id: string) {
+		const { record, loaded, submitting } = this.snapshot;
+		const parked = record.parkedCompositions?.find((candidate) => candidate.id === id);
+		if (!loaded || submitting || parked === undefined) return;
+		if (record.images?.length || occupiedMetadata(record.composer)) return;
+		const text = restoreUnconfirmedDraft(record.draft, parked.text);
+		if (text === null) return;
+		try {
+			this.persist(
+				{
+					...record,
+					draft: text,
+					images: parked.images,
+					composer: parked.composer,
+					parkedCompositions: record.parkedCompositions?.filter((candidate) => candidate.id !== id),
+				},
+				true,
+			);
+		} catch {
+			/* Unsaved recovered text stays visible. */
+		}
+	}
 	restore() {
 		const { record, loaded, submitting } = this.snapshot;
-		if (
-			!loaded ||
-			this.retired ||
-			submitting ||
-			record.unconfirmed === null ||
-			record.images?.length ||
-			occupiedMetadata(record.composer) ||
-			record.unconfirmedComposer?.recoveryIds?.length
-		)
+		if (!loaded || this.retired || submitting) return;
+		if (record.unconfirmed === null) return;
+		if (record.images?.length || occupiedMetadata(record.composer) || record.unconfirmedComposer?.recoveryIds?.length)
 			return;
 		const text = restoreUnconfirmedDraft(record.draft, record.unconfirmed);
 		if (text === null) return;
