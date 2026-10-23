@@ -1297,6 +1297,199 @@ test("stale recovery persistence refusal preserves the unsent composition under 
   }
 });
 
+test("identical-composition refusal keeps the recovery owner for a later edit and Send", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  const { fake } = await setup(false, storage);
+  const text = "same [image 1]";
+  const input: InputItem[] = [
+    { type: "text", text },
+    { type: "image", mediaType: "image/png", data: "AQID", name: "same.png" },
+  ];
+  const queuedRecord = await storage.enqueueIntent({
+    targetRef: "root",
+    threadId: "thread-a",
+    method: "turn/start",
+    attachments: [
+      {
+        presentationId: "same-presentation",
+        marker: 1,
+        name: "same.png",
+        mediaType: "image/png",
+        blob: new Blob([Uint8Array.of(1, 2, 3)], { type: "image/png" }),
+      },
+    ],
+    composerText: text,
+    payload: { ref: "root", input },
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  await storage.transferToRecovery(queuedRecord.clientMutationId, "rejected");
+  const source = createTestComposerSource("root");
+  const peer = new MutationOutboxIndexedDB();
+  const localAttachments = [{ marker: 1, name: "same.png", mediaType: "image/png", data: "AQID" }];
+  const deliveredInputs: InputItem[][] = [];
+  try {
+    mount(fake, source);
+    await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(queuedRecord.clientMutationId));
+    const peerRecovery = await peer.getRecovery(queuedRecord.clientMutationId);
+    if (!peerRecovery) throw new Error("missing peer recovery fixture");
+    // Another pane rewrites the identical composition, advancing only the revision.
+    await act(async () => {
+      await peer.updateRecoveryInput(
+        queuedRecord.clientMutationId,
+        input,
+        undefined,
+        text,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { [queuedRecord.clientMutationId]: recoveryCompositionRevision(peerRecovery) },
+      );
+    });
+    let saved = false;
+    await act(async () => {
+      saved = await source.queueRecoveryPersistence(queuedRecord.clientMutationId, text, localAttachments, []);
+      await flushPendingTurnsProjectionForTests();
+    });
+    expect(saved).toBe(false);
+    expect(source.getSnapshot().activeRecoveryId).toBe(queuedRecord.clientMutationId);
+    expect(await peer.getRecovery(queuedRecord.clientMutationId)).toMatchObject({
+      composerText: text,
+      payload: { input },
+    });
+
+    // Editing still persists the same owner and its attachment bytes.
+    const edited = "same [image 1] edited";
+    act(() => source.editText(edited));
+    await act(async () => {
+      await Promise.resolve();
+      await source.flushRecoveryWrites();
+      await flushPendingTurnsProjectionForTests();
+    });
+    expect((await peer.getRecovery(queuedRecord.clientMutationId))?.composerText).toBe(edited);
+    expect((await peer.listRecovery("root")).filter((record) => record.method === "turn/start")).toHaveLength(1);
+
+    fake.on("turn/start", (params) => {
+      deliveredInputs.push(params.input ?? []);
+      return {
+        turn: { id: "identical-send", status: "inProgress", itemsView: "full", items: [] },
+        receipt: {
+          clientMutationId: params.clientMutationId,
+          disposition: "applied",
+          threadId: "thread-a",
+          projectionState: "reflected",
+        },
+      };
+    });
+    await userEvent.setup().click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(deliveredInputs).toHaveLength(1));
+    expect(deliveredInputs[0]).toContainEqual({
+      type: "image",
+      mediaType: "image/png",
+      data: "AQID",
+      name: "same.png",
+    });
+    await waitFor(async () => expect(await peer.getRecovery(queuedRecord.clientMutationId)).toBeUndefined());
+    act(() => cleanup());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await flushPendingTurnsProjectionForTests();
+    });
+  } finally {
+    act(() => source.dispose());
+    peer.close();
+    storage.close();
+  }
+});
+
+test("reload restores the selected fresh owner over an older rejected peer row", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  const { fake } = await setup(false, storage);
+  const localText = "local [image 1]";
+  const input: InputItem[] = [
+    { type: "text", text: localText },
+    { type: "image", mediaType: "image/png", data: "AQID", name: "local.png" },
+  ];
+  const queuedRecord = await storage.enqueueIntent({
+    targetRef: "root",
+    threadId: "thread-a",
+    method: "turn/start",
+    attachments: [
+      {
+        presentationId: "local-presentation",
+        marker: 1,
+        name: "local.png",
+        mediaType: "image/png",
+        blob: new Blob([Uint8Array.of(1, 2, 3)], { type: "image/png" }),
+      },
+    ],
+    composerText: localText,
+    payload: { ref: "root", input },
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  await storage.transferToRecovery(queuedRecord.clientMutationId, "rejected");
+  const source = createTestComposerSource("root");
+  const peer = new MutationOutboxIndexedDB();
+  let replacement: ReturnType<typeof createTestComposerSource> | undefined;
+  try {
+    mount(fake, source);
+    await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(queuedRecord.clientMutationId));
+    const peerRecovery = await peer.getRecovery(queuedRecord.clientMutationId);
+    if (!peerRecovery) throw new Error("missing peer recovery fixture");
+    const peerText = "older peer work";
+    await act(async () => {
+      await peer.updateRecoveryInput(
+        queuedRecord.clientMutationId,
+        [{ type: "text", text: peerText }],
+        [],
+        peerText,
+        [],
+        [],
+        undefined,
+        undefined,
+        { [queuedRecord.clientMutationId]: recoveryCompositionRevision(peerRecovery) },
+      );
+    });
+    let saved = false;
+    await act(async () => {
+      saved = await source.queueRecoveryPersistence(
+        queuedRecord.clientMutationId,
+        localText,
+        [{ marker: 1, name: "local.png", mediaType: "image/png", data: "AQID" }],
+        [],
+      );
+      await flushPendingTurnsProjectionForTests();
+    });
+    expect(saved).toBe(false);
+    const preserved = (await peer.listRecovery("root")).find(
+      (record) => record.clientMutationId !== queuedRecord.clientMutationId,
+    );
+    expect(preserved).toBeDefined();
+    expect(source.getSnapshot().activeRecoveryId).toBe(preserved?.clientMutationId);
+
+    act(() => cleanup());
+    source.dispose();
+    replacement = createTestComposerSource("root");
+    mount(fake, replacement);
+    await waitFor(() => expect(replacement?.getSnapshot().freshRecoveryRef).toBe("root"));
+    await waitFor(() => expect(replacement?.getSnapshot().activeRecoveryId).toBe(preserved?.clientMutationId));
+    expect(replacement.getSnapshot().text).toBe(localText);
+    expect(replacement.attachments.getState().items).toEqual([
+      expect.objectContaining({ marker: 1, name: "local.png", mediaType: "image/png", data: "AQID" }),
+    ]);
+    act(() => cleanup());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await flushPendingTurnsProjectionForTests();
+    });
+  } finally {
+    act(() => replacement?.dispose());
+    act(() => source.dispose());
+    peer.close();
+    storage.close();
+  }
+});
+
 test("an Edit claim completing after pane disposal stays recoverable without touching its replacement", async () => {
   const { storage, fake } = await setup();
   const original = await queued(storage, "original pane input");

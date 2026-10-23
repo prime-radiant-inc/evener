@@ -24,6 +24,7 @@ import { patchSelectionText, type SkillEditorValue } from "./skillDocument";
 
 const STORAGE_PREFIX = "evener.composer.draft.v1.";
 const STRUCTURED_STORAGE_PREFIX = "evener.composer.draft.v2.";
+const RECOVERY_SELECTION_PREFIX = "evener.composer.recovery.v1.";
 const draftRevisions = new Map<string, number>();
 
 // A composer draft: the textarea's text plus the canonical names of the
@@ -57,6 +58,27 @@ export function draftStorageKey(ref: string): string {
 
 export function composerDraftStorageKey(ref: string): string {
   return `${STRUCTURED_STORAGE_PREFIX}${ref}`;
+}
+
+// The recovery row this pane last owned, remembered across reload so
+// restoration can choose it over an older row for the same ref. This names an
+// owner, not draft text: the recovery transaction owns the composition.
+export function readRecoverySelection(ref: string): string | undefined {
+  try {
+    const value = localStorage.getItem(`${RECOVERY_SELECTION_PREFIX}${ref}`);
+    return value === null || value === "" ? undefined : value;
+  } catch {
+    return undefined;
+  }
+}
+
+export function writeRecoverySelection(ref: string, clientMutationId: string | null): void {
+  try {
+    if (clientMutationId === null) localStorage.removeItem(`${RECOVERY_SELECTION_PREFIX}${ref}`);
+    else localStorage.setItem(`${RECOVERY_SELECTION_PREFIX}${ref}`, clientMutationId);
+  } catch {
+    // Best-effort, like every other composer draft persistence.
+  }
 }
 
 function isStoredComposerDraft(value: unknown): value is ComposerDraft {

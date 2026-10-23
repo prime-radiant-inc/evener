@@ -624,11 +624,54 @@ test("preserveRecoveryComposition reuses a row that already holds the compositio
   const preserved = await f.storage.preserveRecoveryComposition(
     original,
     original.payload.input as InputItem[],
-    original.attachments,
+    // A new staging of the same bytes is still the same composition.
+    original.attachments.map((attachment) => ({ ...attachment, presentationId: "restaged" })),
     original.composerText ?? "",
     original.composerMentions,
     "pane-owner",
   );
   expect(preserved?.clientMutationId).toBe(original.clientMutationId);
   expect(await f.storage.listRecovery(original.targetRef)).toHaveLength(1);
+});
+
+test("preserveRecoveryComposition writes a fresh row when marker associations differ", async () => {
+  const f = fixture();
+  const input: InputItem[] = [
+    { type: "text", text: "keep this [image 1]" },
+    { type: "image", mediaType: "image/png", data: "AQID", name: "local.png" },
+  ];
+  const outbox = await f.storage.enqueueIntent({
+    ...queuedIntent(),
+    attachments: [
+      {
+        presentationId: "stale",
+        marker: 1,
+        name: "local.png",
+        mediaType: "image/png",
+        blob: new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }),
+      },
+    ],
+    composerText: "keep this [image 1]",
+    payload: { input },
+  });
+  const original = await f.storage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!original) throw new Error("failed to seed recovery");
+  const preserved = await f.storage.preserveRecoveryComposition(
+    original,
+    input,
+    [
+      {
+        presentationId: "local",
+        marker: 2,
+        name: "local.png",
+        mediaType: "image/png",
+        blob: new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }),
+      },
+    ],
+    "keep this [image 1]",
+    [],
+    "pane-owner",
+  );
+  expect(preserved?.clientMutationId).not.toBe(original.clientMutationId);
+  expect(await f.storage.listRecovery(original.targetRef)).toHaveLength(2);
 });

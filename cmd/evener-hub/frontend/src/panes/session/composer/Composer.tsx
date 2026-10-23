@@ -100,7 +100,7 @@ import { CurrentWork } from "./CurrentWork";
 import styles from "./composer.module.css";
 import { consumeComposerFocus, requestComposerFocus, useComposerFocusRequest } from "./composerFocus";
 import { STEER_RECOVERY_FENCED_REASON, steerTooltipLabel, submitTooltipLabel } from "./controlTooltips";
-import { clearDraft, clearPersistedDraft, readDraftRevision } from "./draft";
+import { clearDraft, clearPersistedDraft, readDraftRevision, readRecoverySelection } from "./draft";
 import { useNarrowComposer } from "./narrowComposer";
 import { pendingTurnEntries, QueueStrip, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
 import {
@@ -512,9 +512,14 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     // loads an empty composer and then resends the user's next keystrokes as a
     // turn/start -- a Stop becoming a message. QueueStrip renders it as a
     // failure with its reason instead.
-    const record = recoveryEntries.find(
+    // Prefer the row this pane owned before reload: a newer row with the same
+    // target can sit beside an older peer row, and intent order alone would
+    // restore the peer's composition.
+    const selectedRecoveryId = readRecoverySelection(ref);
+    const restorable = recoveryEntries.filter(
       (entry) => entry.recoveryKind === "rejected" && entry.method !== "turn/interrupt" && !entry.preserveComposer,
     );
+    const record = restorable.find((entry) => entry.clientMutationId === selectedRecoveryId) ?? restorable[0];
     if (!record) return;
     const recovered = recoveryComposerDraft(record);
     const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });

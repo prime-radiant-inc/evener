@@ -49,11 +49,18 @@ function sameRecoveryComposition(
   input: readonly InputItem[],
   composerText: string,
   composerMentions: readonly ComposerMention[] | undefined,
+  attachments: readonly MutationAttachment[],
 ): boolean {
   return (
     record.composerText === composerText &&
     JSON.stringify(record.payload.input ?? []) === JSON.stringify(input) &&
-    JSON.stringify(record.composerMentions ?? []) === JSON.stringify(composerMentions ?? [])
+    JSON.stringify(record.composerMentions ?? []) === JSON.stringify(composerMentions ?? []) &&
+    // Markers pair an image with its "[image N]" anchor, so two records with
+    // the same bytes and text but different associations are not the same
+    // composition. Presentation IDs name a staging of those bytes, not the
+    // composition, and are deliberately excluded.
+    JSON.stringify(record.attachments.map(({ marker, name, mediaType }) => ({ marker, name, mediaType }))) ===
+      JSON.stringify(attachments.map(({ marker, name, mediaType }) => ({ marker, name, mediaType })))
   );
 }
 
@@ -1065,7 +1072,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       const stale = await requestResult<VersionedMutationRecoveryRecord | undefined>(
         recoveryStore.get(base.clientMutationId),
       );
-      if (stale && sameRecoveryComposition(stale, input, composerText, composerMentions)) return stale;
+      if (stale && sameRecoveryComposition(stale, input, composerText, composerMentions, attachments)) return stale;
       const intentSequence = await this.#allocateSequence(transaction, base.targetRef);
       const clientMutationId = this.#createMutationId();
       await this.#assertMutationIdAvailable(transaction, clientMutationId);

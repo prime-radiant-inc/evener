@@ -21,6 +21,7 @@ import {
   readComposerDraftSnapshot,
   readDraftRevision,
   writeComposerDraft,
+  writeRecoverySelection,
 } from "./draft";
 import {
   discardRecoveryPendingTurn,
@@ -323,6 +324,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       ? { clientMutationId: record.clientMutationId, compositionRevision: recoveryCompositionRevision(record) }
       : null;
     recoveryBaseRecord = record;
+    writeRecoverySelection(ref, activeRecoveryId);
     state.setState({ activeRecoveryId });
   }
   function persistDraft(text: string): void {
@@ -472,15 +474,16 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
               currentRecoveryId() === clientMutationId &&
               recoveryReplacementEpochRef.current === replacementEpoch
             ) {
-              if (preserved && preserved.clientMutationId !== clientMutationId) {
-                // Own the fresh row: later edits update it, Send consumes it,
-                // and a reload restores its attachment bytes.
+              if (preserved) {
+                // Own the returned row, including the identical-composition
+                // fast path and its current revision: later edits update it,
+                // Send consumes it, and a reload restores its attachment
+                // bytes.
                 setActiveRecoveryId(preserved);
               } else {
-                // Preservation failed, or the peer's row already holds this
-                // exact composition. Fall back to the ordinary draft only in
-                // the failure case, where nothing durable carries the images.
-                if (!preserved) persistDraft(textRef.current);
+                // Preservation failed, so nothing durable carries the images.
+                // Fall back to the ordinary draft and retire the lease.
+                persistDraft(textRef.current);
                 setActiveRecoveryId(null);
               }
             }

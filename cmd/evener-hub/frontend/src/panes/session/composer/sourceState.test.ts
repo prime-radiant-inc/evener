@@ -309,6 +309,92 @@ test("a stale recovery refusal preserves image-bearing work under a fresh owner"
   }
 });
 
+// The identical-composition fast path reuses the peer's advanced row. The
+// pane must own that row at its current revision, or later edits and Send
+// would leave the durable composition behind.
+test("an identical-composition refusal keeps the same recovery owner at its current revision", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const text = "keep this [image 1]";
+  const input: InputItem[] = [
+    { type: "text", text },
+    { type: "image", mediaType: "image/png", data: "AQID", name: "recovered.png" },
+  ];
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    threadId: "thread-a",
+    method: "turn/start",
+    attachments: [
+      {
+        presentationId: "recovered-presentation",
+        marker: 1,
+        name: "recovered.png",
+        mediaType: "image/png",
+        blob: new Blob([Uint8Array.of(1, 2, 3)], { type: "image/png" }),
+      },
+    ],
+    composerText: text,
+    payload: { ref: "root", input },
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+
+  const source = createTestComposerSource("root");
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    await source.activateRecovery(recovery);
+    // Another pane writes the identical composition, advancing only its revision.
+    const peerRecovery = await peer.getRecovery(original.clientMutationId);
+    if (!peerRecovery) throw new Error("missing peer recovery fixture");
+    const advanced = await peer.updateRecoveryInput(
+      original.clientMutationId,
+      input,
+      undefined,
+      text,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        [original.clientMutationId]:
+          (peerRecovery as MutationRecoveryRecord & { compositionRevision?: number }).compositionRevision ?? 0,
+      },
+    );
+    expect(advanced).toBeDefined();
+    const advancedRevision =
+      (advanced as (MutationRecoveryRecord & { compositionRevision?: number }) | undefined)?.compositionRevision ?? 0;
+    const localAttachments = [{ marker: 1, name: "recovered.png", mediaType: "image/png", data: "AQID" }];
+    const saved = await source.queueRecoveryPersistence(original.clientMutationId, text, localAttachments, []);
+    expect(saved).toBe(false);
+    expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+    expect(source.continuity.recoveryOwnerLeaseRef.current).toEqual({
+      clientMutationId: original.clientMutationId,
+      compositionRevision: advancedRevision,
+    });
+
+    // A later edit still persists the same owner and its attachment bytes.
+    const edited = "keep this [image 1] edited";
+    source.editText(edited);
+    expect(await source.queueRecoveryPersistence(original.clientMutationId, edited, localAttachments, [])).toBe(true);
+    expect(await peer.getRecovery(original.clientMutationId)).toMatchObject({
+      composerText: edited,
+      payload: {
+        input: [
+          { type: "text", text: edited },
+          { type: "image", mediaType: "image/png", data: "AQID", name: "recovered.png" },
+        ],
+      },
+    });
+    expect((await peer.listRecovery("root")).filter((record) => record.method === "turn/start")).toHaveLength(1);
+  } finally {
+    source.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
 test("failed source draft write cannot acquire another source's revision token", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
