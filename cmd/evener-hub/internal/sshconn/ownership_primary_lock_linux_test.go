@@ -18,7 +18,7 @@ import (
 )
 
 func TestRemoteSelectedLockRejectsNonregular(t *testing.T) {
-	for _, phase := range []string{"initial-symlink", "directory", "missing", "before-read", "before-acceptance"} {
+	for _, phase := range []string{"initial-symlink", "initial-only", "directory", "missing", "before-read", "before-read-only", "before-acceptance"} {
 		t.Run(phase, func(t *testing.T) {
 			base := t.TempDir()
 			rootA, rootB := filepath.Join(base, "root A"), filepath.Join(base, "root B")
@@ -47,9 +47,18 @@ func TestRemoteSelectedLockRejectsNonregular(t *testing.T) {
 			switch phase {
 			case "initial-symlink":
 				err = os.Symlink(lockA, lockB)
+			case "initial-only":
+				// Symlink only for the initial stat. If the initial guard is
+				// removed, the wrapper restores a regular hard link so the later
+				// guards cannot be what refuses.
+				err = os.Symlink(lockA, lockB)
 			case "directory":
 				err = os.Mkdir(lockB, 0700)
 			case "missing":
+			case "before-read-only":
+				// Regular for the initial stat, symlink only for the pre-read
+				// guard, regular again before acceptance.
+				err = os.Link(lockA, lockB)
 			default:
 				// Replacing this hard link with a symlink preserves the followed
 				// device/inode, so the existing identity pin alone cannot refuse it.
@@ -60,10 +69,18 @@ func TestRemoteSelectedLockRejectsNonregular(t *testing.T) {
 			}
 			// These functions inject a concurrent pathname replacement, not a
 			// different stat identity or synthetic /proc/locks observation.
+			marker := filepath.Join(base, "phase-marker")
 			const prefix = `
 stat() {
  command stat "$@" || return
  if [ "$phase" = before-read ]; then
+  rm -- "$lockB" && ln -s -- "$lockA" "$lockB" || return
+ fi
+ if [ "$phase" = initial-only ]; then
+  rm -- "$lockB" && ln -- "$lockA" "$lockB" || return
+ fi
+ if [ "$phase" = before-read-only ] && [ ! -e "$marker" ]; then
+  : > "$marker" || return
   rm -- "$lockB" && ln -s -- "$lockA" "$lockB" || return
  fi
 }
@@ -72,13 +89,16 @@ awk() {
  if [ "$phase" = before-acceptance ]; then
   rm -- "$lockB" && ln -s -- "$lockA" "$lockB" || return
  fi
+ if [ "$phase" = before-read-only ]; then
+  rm -- "$lockB" && ln -- "$lockA" "$lockB" || return
+ fi
 }
 `
 			calls := 0
 			fr := &fakeRunner{runFn: func(ctx context.Context, argv []string, _ io.Reader) ([]byte, error) {
 				calls++
 				cmd := exec.CommandContext(ctx, "/bin/sh", "-c", prefix+strings.Join(argv[12:], " "))
-				cmd.Env = append(selectedLockToolEnv(t), "phase="+phase, "lockA="+lockA, "lockB="+lockB)
+				cmd.Env = append(selectedLockToolEnv(t), "phase="+phase, "lockA="+lockA, "lockB="+lockB, "marker="+marker)
 				return cmd.Output()
 			}}
 			m := newTestManager(t, testRegistry(t), fr, Options{})
