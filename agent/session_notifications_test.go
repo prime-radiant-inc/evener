@@ -737,8 +737,12 @@ func TestNotificationAcceptance(t *testing.T) {
 			fs.writeErr = syscall.ENOSPC
 			pending := append(bad.deliveries, good...)
 			if route == "pump" {
-				root.pendingDelegateDeliveries = pending
-				err = root.flushPendingDelegateDeliveries()
+				for _, plan := range pending {
+					if _, failure := deliverDelegatePacket(plan, nil); !errors.Is(failure, errDelegateDeliveryReceiverUnavailable) {
+						t.Fatalf("initial unavailable receiver = %v", failure)
+					}
+				}
+				err = root.replayDelegateDeliveries()
 			} else {
 				err = root.executeDelegateMutationPlans(delegateMutationPlans{deliveries: pending})
 			}

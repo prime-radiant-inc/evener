@@ -1485,16 +1485,16 @@ func TestDelegateIdleRelease_PregateRefusesLocalRetirementResidue(t *testing.T) 
 	// Virtual time has not moved, so the finalize-armed grace timer cannot
 	// fire behind the plant.
 	runtime.delegateDeliveryMu.Lock()
-	runtime.pendingDelegateDeliveries = append(runtime.pendingDelegateDeliveries, delegateDeliveryPlan{})
+	runtime.delegateDeliveryPumping = true
 	runtime.delegateDeliveryMu.Unlock()
 	if runtime.releaseIdleRuntimeAfterFinalize() {
-		t.Fatal("release succeeded with a queued delegate delivery; the pre-gate must refuse")
+		t.Fatal("release succeeded with an active delivery pass; the pre-gate must refuse")
 	}
 	if !stillResident() {
 		t.Fatal("refused release released the runtime anyway")
 	}
 	runtime.delegateDeliveryMu.Lock()
-	runtime.pendingDelegateDeliveries = nil
+	runtime.delegateDeliveryPumping = false
 	runtime.delegateDeliveryMu.Unlock()
 
 	// Residue 2: restore side effects still settling on this manager.

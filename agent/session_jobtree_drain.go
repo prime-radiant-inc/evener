@@ -239,22 +239,6 @@ func (s *Session) ManagedJobsFinalizedForTest() bool {
 // all of it — a root whose direct managed job finished after spawning its own
 // fire-and-return managed job or stable delegate is not quiescent until that
 // descendant's work drains too.
-//
-// hasPendingDelegateDeliveries matters here for a straddle PRI-2441's own fix
-// does not cover: acceptDelegateDeliveryPlan defers a delivery into that queue
-// (instead of delivering it inline) whenever the receiving session is
-// SessionProcessing at that instant — e.g. a second, unrelated delegate's
-// completion targeting this session while the drain's own notification turn is
-// already running one delivery. The defer calls notify() exactly once; nothing
-// else about the session's state changes. Without this check, that one wake can
-// be consumed by a later pass with the delivery still sitting unflushed, and
-// the drain declares quiescence with a real completion undelivered. kickDriveTree
-// (below) is what actually resolves a pending delivery once this check keeps the
-// drain from quiescing prematurely — the two halves both matter, see kickDriveTreeWith.
-//
-// A store read error is propagated (not folded into quiescence): the drain must
-// neither Close() on an unreadable store nor spin on it forever, so the loop
-// surfaces the failure instead.
 func (s *Session) treeHasOutstandingWork() (bool, error) {
 	if s.jobManager != nil {
 		n, err := s.jobManager.outstandingDrainJobCount()
@@ -529,8 +513,7 @@ func (jm *jobManager) describeUndisposedJobs(ids []string) string {
 //   - a driving child (sub.driving): a drive turn is in flight;
 //   - a pending caller-targeted watch send (hasPendingWatchSends): deliverable;
 //   - a queued notification at any level (peekNotifications > 0): deliverable now;
-//   - a pending delegate delivery (hasPendingDelegateDeliveries): deliverable —
-//     kickDriveTree flushes it every pass, so it never sits long enough to wedge.
+//   - a pending source delivery: the paced transport retry can transfer custody.
 //
 // When outstanding is true but none of those exist, the outstanding work is
 // composed entirely of terminal-but-undelivered notifications that the
@@ -1653,34 +1636,6 @@ func waitDrainWake(ctx context.Context, wake <-chan struct{}, recheck <-chan tim
 // grandchild subtree makes progress even when the intervening session's own rail
 // carries no immediate signal. All the underlying operations are idempotent and
 // self-terminating, so repeated kicks are safe.
-//
-// Flushing delegate deliveries here matters specifically for the drain: a
-// delivery deferred by acceptDelegateDeliveryPlan (because the receiving
-// session was SessionProcessing at that instant) sits in pendingDelegateDeliveries
-// until something calls flushPendingDelegateDeliveries, and outside a live turn
-// nothing else will — the drain loop's own notification turns only run when
-// treeHasOutstandingWork already sees something to report, which a merely
-// PENDING delivery does not become until it is flushed. Without this call the
-// wake treeHasOutstandingWork now waits on (see its doc) would never resolve:
-// the drain would sit correctly refusing to quiesce, but nothing would ever
-// convert the pending delivery into the notification/attention state that lets
-// it quiesce for real. Calling it here, every pass, before the outstanding
-// check, closes that gap the same way rematerializeDurablePendings closes the
-// durable/in-memory job-notification gap just below.
-//
-// flushPendingDelegateDeliveries carries no s.state check of its own — its four
-// other call sites are all safe only because each runs ON the owning session's
-// own turn goroutine. This recursion instead calls it from the ANCESTOR's drain
-// goroutine, so a child that is actively running/driving/finalizing must be
-// skipped (see the busy check in the loop below), matching the gate
-// driveSubagentNotificationTurn already applies before touching a child's own
-// turn machinery: flushing into a busy child's history at a point its own round
-// loop did not choose can splice a delivery between an in-flight tool call and
-// its result. Only the flush is skipped, not the rest of the kick (watch-send
-// delivery and recursion into grandchildren still run) — the child's own
-// pending count still holds the ancestor's drain open via treeHasOutstandingWork
-// (which reads it recursively too), and the child's own turn flushes it at its
-// next natural boundary once it stops being busy.
 func (s *Session) kickDriveTree(ctx context.Context) error {
 	return s.kickDriveTreeWith(ctx, func(sess *Session, ctx context.Context) error {
 		return sess.drainPendingWatchSends(ctx)
@@ -1688,22 +1643,10 @@ func (s *Session) kickDriveTree(ctx context.Context) error {
 }
 
 func (s *Session) kickDriveTreeWith(ctx context.Context, drain func(*Session, context.Context) error) error {
-	return s.kickDriveTreeWithFlush(ctx, drain, true)
-}
-
-// kickDriveTreeWithFlush is kickDriveTreeWith's recursive body. flushDeliveries
-// gates only this session's own flushPendingDelegateDeliveries call — see
-// kickDriveTree's doc for why a busy child must not have it called on its
-// behalf from the ancestor's goroutine. The root/direct caller always passes
-// true: DrainJobTree only ever starts once the caller's own turn has already
-// ended (PRI-2441's premise), so the top-level session is never mid-turn here.
-func (s *Session) kickDriveTreeWithFlush(ctx context.Context, drain func(*Session, context.Context) error, flushDeliveries bool) error {
-	s.drivePendingStableDelegateAttention()
-	if flushDeliveries {
-		if err := s.flushPendingDelegateDeliveries(); err != nil {
-			return err
-		}
+	if err := s.replayDelegateDeliveries(); err != nil {
+		return err
 	}
+	s.drivePendingStableDelegateAttention()
 	if err := s.rematerializeDurablePendings(); err != nil {
 		return err
 	}
@@ -1712,13 +1655,12 @@ func (s *Session) kickDriveTreeWithFlush(ctx context.Context, drain func(*Sessio
 	}
 	for _, sub := range s.liveDirectSubagents() {
 		sub.mu.Lock()
-		childBusy := sub.running || sub.driving || sub.finalizing
 		child := sub.sess
 		sub.mu.Unlock()
 		if child == nil || s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id) {
 			continue
 		}
-		if err := child.kickDriveTreeWithFlush(ctx, drain, !childBusy); err != nil {
+		if err := child.kickDriveTreeWith(ctx, drain); err != nil {
 			return err
 		}
 	}

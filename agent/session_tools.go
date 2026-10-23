@@ -162,9 +162,14 @@ func stableDelegateSendTool(ctx context.Context, s *Session, args map[string]any
 			}
 			return nil, errors.New("delegate result cannot be committed outside a tool round")
 		}
-		for _, commit := range commits {
-			s.queueDelegateDeliveryCommit(callID, commit)
+		earlier := outcome.result.Earlier[:0]
+		for i, commit := range outcome.earlierCommits {
+			if s.queueDelegateDeliveryCommit(callID, commit) {
+				earlier = append(earlier, outcome.result.Earlier[i])
+			}
 		}
+		outcome.result.Earlier = earlier
+		s.queueDelegateDeliveryCommit(callID, outcome.commit)
 	}
 	return marshalDelegateSendResult(outcome.result, maxChars)
 }
@@ -1211,10 +1216,6 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 		if persistErr != nil {
 			return
 		}
-		persistErr = s.flushPendingDelegateDeliveries()
-		if persistErr != nil {
-			return
-		}
 		// Persist the completed tool round so resumed sessions always include
 		// tool_result turns for any prior assistant tool calls.
 		s.maybeAutoSave()
@@ -1231,9 +1232,9 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 	return persistErr
 }
 
-func (s *Session) queueDelegateDeliveryCommit(callID string, commit *delegateToolResultCommit) {
+func (s *Session) queueDelegateDeliveryCommit(callID string, commit *delegateToolResultCommit) bool {
 	if s == nil || callID == "" || commit == nil {
-		return
+		return false
 	}
 	s.delegateDeliveryMu.Lock()
 	s.mu.Lock()
@@ -1242,13 +1243,24 @@ func (s *Session) queueDelegateDeliveryCommit(callID string, commit *delegateToo
 	if closing {
 		s.delegateDeliveryMu.Unlock()
 		_, _ = commit.Complete(false)
-		return
+		return false
+	}
+	// Only one result in the current tool batch carries each identity. This
+	// projection binding neither consumes the canonical record nor observes it.
+	for _, pending := range s.delegateDeliveryCommits {
+		for _, attached := range pending {
+			if attached.deliveryID == commit.deliveryID && attached.controller == commit.controller {
+				s.delegateDeliveryMu.Unlock()
+				return false
+			}
+		}
 	}
 	if s.delegateDeliveryCommits == nil {
 		s.delegateDeliveryCommits = make(map[string][]*delegateToolResultCommit)
 	}
 	s.delegateDeliveryCommits[callID] = append(s.delegateDeliveryCommits[callID], commit)
 	s.delegateDeliveryMu.Unlock()
+	return true
 }
 
 func (s *Session) abortDelegateDeliveryCommits() {
@@ -1329,6 +1341,7 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 			})
 		}
 	}
+	liveTurn.DelegateDeliveryCommits = append([]schema.DelegateDeliveryCommit(nil), persistedTurn.DelegateDeliveryCommits...)
 	if err := s.appendTurnAfterTranscriptWrite(
 		persistedTurn,
 		func() error { return s.writeTranscriptSyncedLocked(persistedTurn) },
@@ -1361,7 +1374,7 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 		}
 	}
 	if requeue {
-		s.requeueReplayableDelegateDeliveries(nil)
+		s.scheduleDelegateDeliveryRetry()
 	}
 	return errors.Join(completionErrs...)
 }

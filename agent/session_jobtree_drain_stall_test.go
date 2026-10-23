@@ -294,17 +294,7 @@ func TestDrainStallWatchdogSparePendingDelegateDelivery(t *testing.T) {
 	clk := agenttest.NewFakeClock()
 	sess := newSession(t, withConfig(SessionConfig{clock: clk}))
 
-	// Seed the queue the way acceptDelegateDeliveryPlan does (append under
-	// delegateDeliveryMu), so the test pins the signal subtreeHasLiveComponent
-	// reads rather than a production deferral path.
-	sess.delegateDeliveryMu.Lock()
-	sess.pendingDelegateDeliveries = append(sess.pendingDelegateDeliveries, delegateDeliveryPlan{})
-	sess.delegateDeliveryMu.Unlock()
-	defer func() {
-		sess.delegateDeliveryMu.Lock()
-		sess.pendingDelegateDeliveries = nil
-		sess.delegateDeliveryMu.Unlock()
-	}()
+	seedPendingDeliverySource(t, sess)
 
 	if !sess.hasPendingDelegateDeliveries() {
 		t.Fatal("precondition: expected a pending delegate delivery")

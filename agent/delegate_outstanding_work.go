@@ -354,11 +354,6 @@ func (s *Session) pendingChildDeliveryIDs() []string {
 		return nil
 	}
 	var ids []string
-	s.delegateDeliveryMu.Lock()
-	for _, plan := range s.pendingDelegateDeliveries {
-		ids = append(ids, plan.deliveryID)
-	}
-	s.delegateDeliveryMu.Unlock()
 	if s.delegateController != nil {
 		s.delegateController.mu.Lock()
 		for id := range s.delegateController.delegateSubtreeIDsLocked(s.owningDelegateID) {

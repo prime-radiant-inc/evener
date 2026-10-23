@@ -173,7 +173,7 @@ func effectiveReasoningEffort(cfg, override string, escalated bool) string {
 // cut from. That list is the round's, not the request's: the retry after a
 // rejected anchor rebuilds from it, and nothing on the wire ever carries it.
 func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request, fullHistory []llm.Message, reasoningEffort string, err error) {
-	if err := s.flushPendingDelegateDeliveries(); err != nil {
+	if err := s.replayDelegateDeliveries(); err != nil {
 		return nil, "", nil, llm.Request{}, nil, "", err
 	}
 	// A skill-bearing steering message whose admission never reached durable
@@ -1760,6 +1760,7 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 // outgoing request while staying untouched in the stored transcript.
 func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message {
 	history := make([]llm.Message, 0, len(historyTurns))
+	inline := inlineNotificationPresentations(historyTurns)
 	pendingToolCalls := map[string]struct{}{}
 	var deferredSteering []llm.Message
 
@@ -1796,6 +1797,9 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 		inFlight := scope.active() && i >= scope.InFlightFrom
 		switch t.Kind {
 		case schema.TurnSteering:
+			if _, presentedInline := inline[t.AttentionID]; presentedInline {
+				continue
+			}
 			if len(pendingToolCalls) > 0 {
 				deferredSteering = append(deferredSteering, t.Message)
 			} else {

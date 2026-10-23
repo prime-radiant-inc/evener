@@ -1033,11 +1033,10 @@ type Session struct {
 	transcript *transcript.Writer
 	// attentionMu serializes transcript-backed attention resolution for this
 	// resident Session. The transcript remains the only stored attention state.
-	attentionMu               sync.Mutex
-	attentionCallbacks        int // guarded by attentionMu; includes pre-retirement-attachment callbacks
-	delegateDeliveryMu        sync.Mutex
-	delegateDeliveryCommits   map[string][]*delegateToolResultCommit
-	pendingDelegateDeliveries []delegateDeliveryPlan
+	attentionMu             sync.Mutex
+	attentionCallbacks      int // guarded by attentionMu; includes pre-retirement-attachment callbacks
+	delegateDeliveryMu      sync.Mutex
+	delegateDeliveryCommits map[string][]*delegateToolResultCommit
 	// attentionFoldCursor is the incremental fold of this Session's own
 	// transcript behind its attention reads. Guarded by attentionMu.
 	attentionFoldCursor delegateAttentionFoldCursor
@@ -1105,7 +1104,6 @@ type Session struct {
 	delegateAttentionArmIDs   map[string]struct{}
 	delegateAttentionArmRetry notificationRetry
 	stableAttentionRetry      notificationRetry
-	delegateDeliveryWake      bool
 	delegateDeliveryPumping   bool
 	delegateDeliveryRetry     notificationRetry
 	// transcriptReady records that attachTranscript has run, i.e. that the

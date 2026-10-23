@@ -1705,7 +1705,9 @@ func TestDelegateAttention_RestartReplaysCallerDeliveryCommitWithoutDuplicateToo
 	if err != nil {
 		t.Fatalf("NewWriterWithFS: %v", err)
 	}
-	original := &Session{id: ownerSessionID, stateDir: stateDir, delegateController: c}
+	// This fixture writes a historical caller commit, with metadata supplied
+	// explicitly below. Carrier persistence no longer needs a live source store.
+	original := &Session{id: ownerSessionID, delegateController: c}
 	original.attachTranscript(writer)
 	c.rootRuntime = original
 	original.queueDelegateDeliveryCommit("delegate-send-N", commit)
@@ -1721,8 +1723,8 @@ func TestDelegateAttention_RestartReplaysCallerDeliveryCommitWithoutDuplicateToo
 		t.Fatalf("close crashed controller store: %v", err)
 	}
 	fs.release()
-	if err := <-appendDone; err == nil {
-		t.Fatal("crashed process unexpectedly acknowledged through its closed delegate store")
+	if err := <-appendDone; err != nil {
+		t.Fatalf("caller carrier persistence retried source acknowledgment: %v", err)
 	}
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close crashed transcript writer: %v", err)
@@ -1767,11 +1769,8 @@ func TestDelegateAttention_RestartReplaysCallerDeliveryCommitWithoutDuplicateToo
 	pending := append([]delegatestore.PendingDelivery(nil), fresh.delegateController.durable["dlg_target"].PendingDeliveries...)
 	claims := len(fresh.delegateController.deliveryClaims)
 	fresh.delegateController.mu.Unlock()
-	fresh.delegateDeliveryMu.Lock()
-	queued := append([]delegateDeliveryPlan(nil), fresh.pendingDelegateDeliveries...)
-	fresh.delegateDeliveryMu.Unlock()
-	if len(pending) != 1 || pending[0].DeliveryID != delegateDeliveryID("dlg_target", 2) || claims != 1 || len(queued) != 1 || queued[0].deliveryID != pending[0].DeliveryID {
-		t.Fatalf("cold replay pending=%#v claims=%d queued=%#v, want only claimed N+1 queued for attachment", pending, claims, queued)
+	if len(pending) != 1 || pending[0].DeliveryID != delegateDeliveryID("dlg_target", 2) || claims != 0 {
+		t.Fatalf("cold replay pending=%#v claims=%d, want unclaimed source N+1 until attachment", pending, claims)
 	}
 
 	rootPath := transcriptPath(stateDir, rootSessionID)
@@ -1781,7 +1780,7 @@ func TestDelegateAttention_RestartReplaysCallerDeliveryCommitWithoutDuplicateToo
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
 	fresh.attachTranscript(reopened)
-	if err := fresh.flushPendingDelegateDeliveries(); err != nil {
+	if err := fresh.replayDelegateDeliveries(); err != nil {
 		t.Fatalf("release N+1 after transcript attachment: %v", err)
 	}
 
@@ -1880,12 +1879,11 @@ func TestDelegateAttention_BootstrapDrainsRestoredStopAttention(t *testing.T) {
 	if got := fold.resolutions[attentionID]; got != delegateAttentionDiscarded {
 		t.Fatalf("restored stop attention disposition = %q, want discarded", got)
 	}
-	fresh.delegateDeliveryMu.Lock()
-	queued := append([]delegateDeliveryPlan(nil), fresh.pendingDelegateDeliveries...)
-	fresh.delegateDeliveryMu.Unlock()
-	if claims != 1 || len(queued) != 1 || queued[0].deliveryID != delegateDeliveryID(delegateID, 1) {
-		t.Fatalf("restored stop delivery claims=%d queued=%#v, want one preserved terminal delivery", claims, queued)
+	pendingIDs := pendingDeliveryIDs(fresh.delegateController, delegateID)
+	if claims != 0 || !reflect.DeepEqual(pendingIDs, []string{delegateDeliveryID(delegateID, 1)}) {
+		t.Fatalf("stop source pending=%v claims=%d", pendingIDs, claims)
 	}
+
 }
 
 func TestDelegateAttention_RestoreReconcilesColdCommitBeforeProviderMetadata(t *testing.T) {
@@ -2116,8 +2114,7 @@ func TestDelegateAttention_ColdReplayRefoldsMixedSameOwnerCommits(t *testing.T) 
 	}
 	pump := &Session{delegateController: c}
 	c.rootRuntime = pump
-	pump.pendingDelegateDeliveries = append(pump.pendingDelegateDeliveries, pending...)
-	if err := pump.flushPendingDelegateDeliveries(); err != nil {
+	if err := pump.executeDelegateMutationPlans(delegateMutationPlans{deliveries: pending}); err != nil {
 		t.Fatalf("flush mixed cold replay: %v", err)
 	}
 
@@ -2541,8 +2538,7 @@ func TestDelegateAttention_BootstrapFlushRoutesNestedDeliveryToOwner(t *testing.
 	if len(plans) != 1 || plans[0].ownerDelegateID != "dlg_parent" {
 		t.Fatalf("nested delivery plans = %#v", plans)
 	}
-	root.pendingDelegateDeliveries = append(root.pendingDelegateDeliveries, plans[0])
-	if err := root.flushPendingDelegateDeliveries(); err != nil {
+	if err := root.executeDelegateMutationPlans(delegateMutationPlans{deliveries: plans}); err != nil {
 		t.Fatalf("flush pending nested delivery: %v", err)
 	}
 
@@ -2688,18 +2684,15 @@ func TestDelegateAttention_FailedFlushRetainsDeliveryForLiveRetry(t *testing.T) 
 	if len(plans) != 1 {
 		t.Fatalf("ReplayDeliveries = %#v", plans)
 	}
-	root.pendingDelegateDeliveries = append(root.pendingDelegateDeliveries, plans[0])
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close transcript writer: %v", err)
 	}
-	if err := root.flushPendingDelegateDeliveries(); err == nil {
+	if err := root.executeDelegateMutationPlans(delegateMutationPlans{deliveries: plans}); err == nil {
 		t.Fatal("flush with closed transcript writer succeeded")
 	}
-	root.delegateDeliveryMu.Lock()
-	queued := append([]delegateDeliveryPlan(nil), root.pendingDelegateDeliveries...)
-	root.delegateDeliveryMu.Unlock()
-	if len(queued) != 1 || queued[0].deliveryID != plans[0].deliveryID || queued[0].claim == plans[0].claim {
-		t.Fatalf("retry queue = %#v, want fresh claim for %q", queued, plans[0].deliveryID)
+	replay := c.ReplayDeliveries()
+	if len(replay) != 1 || replay[0].deliveryID != plans[0].deliveryID || replay[0].claim == plans[0].claim {
+		t.Fatalf("source retry=%#v", replay)
 	}
 	c.mu.Lock()
 	pending := append([]delegatestore.PendingDelivery(nil), c.durable["dlg_target"].PendingDeliveries...)
@@ -2742,12 +2735,6 @@ func TestDelegateAttention_FailedMutationQueueRetainsOtherOwners(t *testing.T) {
 	}
 	if err := root.executeDelegateMutationPlans(delegateMutationPlans{deliveries: plans}); err == nil {
 		t.Fatal("multi-owner delivery execution unexpectedly succeeded")
-	}
-	root.delegateDeliveryMu.Lock()
-	queued := append([]delegateDeliveryPlan(nil), root.pendingDelegateDeliveries...)
-	root.delegateDeliveryMu.Unlock()
-	if len(queued) != 1 || queued[0].delegateID != "dlg_a_root" {
-		t.Fatalf("multi-owner retry queue = %#v, want only failed head", queued)
 	}
 	if len(c.durable["dlg_a_root"].PendingDeliveries) != 1 || len(c.durable["dlg_z_child"].PendingDeliveries) != 0 {
 		t.Fatal("failed source lost its head or unrelated source did not transfer custody")
@@ -2802,66 +2789,29 @@ func TestDelegateAttention_FailedTerminalDeliveryRetriesFromRootPump(t *testing.
 	if err := child.executeDelegateMutationPlans(plans); err == nil {
 		t.Fatal("terminal delivery unexpectedly survived injected owner transcript failure")
 	}
-	child.delegateDeliveryMu.Lock()
-	childQueued := len(child.pendingDelegateDeliveries)
-	child.delegateDeliveryMu.Unlock()
-	root.delegateDeliveryMu.Lock()
-	rootQueued := len(root.pendingDelegateDeliveries)
-	root.delegateDeliveryMu.Unlock()
-	if childQueued != 0 || rootQueued != 1 {
-		t.Fatalf("delivery retry ownership child=%d root=%d, want child=0 root=1", childQueued, rootQueued)
+	if child.delegateDeliveryResiduePending() || !root.delegateDeliveryResiduePending() {
+		t.Fatal("source retry is not owned by root pump")
 	}
-	select {
-	case <-wakes:
-	default:
-		t.Fatal("root retry drive emitted no wake")
-	}
-	if !root.sessionWorkPending() {
-		t.Fatal("root retry drive did not expose autonomous work")
-	}
-
+	// The timer retries transport directly. It does not require a model turn.
 	fs.failNextSync()
-	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
-		t.Fatalf("consume first root delivery wake: %v", err)
-	}
-	c.mu.Lock()
-	remainingAfterRetryFailure := len(c.durable["dlg_target"].PendingDeliveries)
-	c.mu.Unlock()
-	if remainingAfterRetryFailure != 1 {
-		t.Fatalf("pending deliveries after second transient failure = %d, want 1", remainingAfterRetryFailure)
-	}
-	select {
-	case <-wakes:
-		t.Fatal("second transient failure spun an immediate retry")
-	default:
-	}
-	root.delegateDeliveryMu.Lock()
-	retryActive := root.delegateDeliveryRetry.active
-	retryDelay := root.delegateDeliveryRetry.delay
-	root.delegateDeliveryMu.Unlock()
-	if !retryActive || retryDelay != 0 {
-		t.Fatalf("paced root retry state active=%v delay=%v, want active with initial delay", retryActive, retryDelay)
-	}
 	clock.Advance(jobNotificationRetryInitialDelay)
+	clock.Drain()
+	if len(pendingDeliveryIDs(c, "dlg_target")) != 1 {
+		t.Fatal("failed retry lost source head")
+	}
+	clock.Advance(2 * jobNotificationRetryInitialDelay)
+	clock.Drain()
+	if len(pendingDeliveryIDs(c, "dlg_target")) != 0 {
+		t.Fatal("paced retry did not transfer custody")
+	}
 	select {
 	case <-wakes:
-	// TRIPWIRE: in-process notify channel with a fake clock already advanced
-	// past the retry delay; only fires on a genuine hang.
-	case <-time.After(30 * time.Second):
-		t.Fatal("second transient failure did not re-arm a paced wake")
-	}
-	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
-		t.Fatalf("consume paced root delivery wake: %v", err)
-	}
-	c.mu.Lock()
-	remaining := len(c.durable["dlg_target"].PendingDeliveries)
-	c.mu.Unlock()
-	if remaining != 0 {
-		t.Fatalf("pending terminal deliveries after root retry = %d, want 0", remaining)
+	default:
+		t.Fatal("successful retry did not wake receiver")
 	}
 }
 
-func TestDelegateAttention_DeliveryDeferredDuringProcessingArmsWake(t *testing.T) {
+func TestDelegateAttention_DeliveryDuringProcessingTakesCustodyAndArmsWake(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	seedDelegateControllerDelivery(t, c, "dlg_target")
@@ -2875,13 +2825,18 @@ func TestDelegateAttention_DeliveryDeferredDuringProcessingArmsWake(t *testing.T
 	root.attachTranscript(writer)
 	c.rootRuntime = root
 	wakes := make(chan struct{}, 1)
-	root.SetNotifyFunc(func() { wakes <- struct{}{} })
+	root.SetNotifyFunc(func() {
+		select {
+		case wakes <- struct{}{}:
+		default:
+		}
+	})
 	plans := c.ReplayDeliveries()
 	if len(plans) != 1 {
 		t.Fatalf("ReplayDeliveries = %#v", plans)
 	}
 	_, deferred, err := root.acceptDelegateDeliveryPlan(plans[0])
-	if err != nil || !deferred {
+	if err != nil || deferred {
 		t.Fatalf("accept processing delivery = deferred %v err %v", deferred, err)
 	}
 	select {

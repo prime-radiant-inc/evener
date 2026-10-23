@@ -88,9 +88,7 @@ func TestTerminalAdmissionRefusesSameBatchWatchCreation(t *testing.T) {
 
 func TestTerminalAdmissionRefusesPendingChildDelivery(t *testing.T) {
 	s, _ := newAdmissionSession(t)
-	s.delegateDeliveryMu.Lock()
-	s.pendingDelegateDeliveries = []delegateDeliveryPlan{{deliveryID: "delivery-1"}}
-	s.delegateDeliveryMu.Unlock()
+	deliveryID := seedPendingDeliverySource(t, s)
 
 	admitted, err := (&subagent{sess: s}).admitTerminalReport(context.Background(), &terminalReportCandidate{
 		Disposition: tool.CommunicateEndReasonDone,
@@ -101,7 +99,7 @@ func TestTerminalAdmissionRefusesPendingChildDelivery(t *testing.T) {
 	if admitted {
 		t.Fatal("done was admitted while a child delivery was pending")
 	}
-	assertSteerMentions(t, s, "child-delivery:delivery-1")
+	assertSteerMentions(t, s, "child-delivery:"+deliveryID)
 }
 
 func TestTerminalAdmissionRefusesUnknownEvidence(t *testing.T) {

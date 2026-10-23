@@ -1693,9 +1693,6 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// Idle transition: clear the in-turn flag and kick a goal that was set in the
 		// turn-tail window (after the gate's store read) so it is not stranded until
 		// the next user message (spec §7). No-op when no fresh goal is pending.
-		if err := s.flushPendingDelegateDeliveries(); err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: "delegate delivery retry at processing boundary failed: " + err.Error()})
-		}
 		goalKicked := s.settleGoalOnIdle()
 		// A steer this input recorded whose store mark the store refused gets
 		// its mark now, through the steering table; nothing when none waits.

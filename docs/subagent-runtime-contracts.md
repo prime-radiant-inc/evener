@@ -56,6 +56,16 @@ leaves index repair for the generation's end without failing the parent or
 stopping healthy siblings (`Session.ackNotifications`, `Session.drainJobTreeWith`,
 `Session.settlePresentedDelegateAttention`, `agent/session_jobtree_drain.go`).
 
+Reports take synced receiver custody during model calls and tool execution,
+without waiting in a second receiver queue. Writer serialization and request
+construction keep tool calls paired with their results. An inline waiter is a
+subscriber to that canonical delivery ID: the selected request presents its
+persisted tool result when it carries the ID, otherwise the ordinary notification.
+Timeout, cancellation and failed tool-result storage leave ordinary delivery
+usable. Source acknowledgment follows receiver custody, not waiter resolution;
+only a synced successful response records model observation
+(`deliverDelegatePacket`, `expandHistory`).
+
 ## Delegate report preservation
 
 A successfully reported generation's terminal packet `message` is the accepted
@@ -75,9 +85,8 @@ both prepared-before-settlement and settled-but-undelivered windows. Recovery
 does not ask the child to report again or allocate a new generation or delivery
 identity (`delegateTreeController.Reconcile`, `agent/delegate_tree_restore.go`,
 and `deliverDelegatePacket`, `agent/delegate_delivery.go`). Existing receipts,
-storage limits, and preview bounds still apply. This contract neither changes
-notification timing nor reconstructs detailed reports absent from historical
-packets.
+storage limits, and preview bounds still apply. Recovery does not reconstruct
+detailed reports absent from historical packets.
 
 ## Effective capability policy
 

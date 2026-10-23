@@ -3295,7 +3295,17 @@ func (s *Session) bootstrapDelegateResources() error {
 	s.delegateRootSessionID = s.id
 	s.ownsDelegateController = true
 	controller.emitUpdate = s.emitStableDelegateUpdate
-	s.pendingDelegateDeliveries = append(s.pendingDelegateDeliveries, pendingDeliveries...)
+	// Bootstrap has no attached resident writer yet. Return unadmitted claims
+	// to their source journals, then replay directly once attachTranscript
+	// establishes the resident writer. No receiver inbox owns these plans.
+	controller.mu.Lock()
+	for _, plan := range pendingDeliveries {
+		if claim := controller.deliveryClaims[plan.deliveryID]; claim != nil && claim.token == plan.claim {
+			delete(controller.deliveryClaims, plan.deliveryID)
+			controller.evidenceVersion++
+		}
+	}
+	controller.mu.Unlock()
 	return nil
 }
 

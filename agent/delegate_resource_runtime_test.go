@@ -798,9 +798,6 @@ func TestDelegateResourceRuntime_CallerNestedPersistsAtNextModelBoundary(t *test
 	if err := receiver.executeDelegateMutationPlans(plans); err != nil {
 		t.Fatalf("queue caller delivery: %v", err)
 	}
-	if err := receiver.flushPendingDelegateDeliveries(); err != nil {
-		t.Fatalf("flush at model boundary: %v", err)
-	}
 	snapshot := receiver.delegateModelHistorySnapshot()
 	if len(snapshot) != 1 || snapshot[0].AttentionID != delegateAttentionID(plans.deliveries[0].deliveryID) {
 		t.Fatalf("next model-boundary history = %#v", snapshot)

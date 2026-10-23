@@ -54,9 +54,6 @@ func TestOutstandingDelegateWorkItemizesEachCategory(t *testing.T) {
 			{JobID: "notif-1"},
 			{JobID: "dup"},
 		},
-		pendingDelegateDeliveries: []delegateDeliveryPlan{
-			{deliveryID: "delivery-1"},
-		},
 		delegateAttentionArmIDs: map[string]struct{}{
 			"attention-arm": {},
 		},
@@ -66,9 +63,10 @@ func TestOutstandingDelegateWorkItemizesEachCategory(t *testing.T) {
 		delegateController: &delegateTreeController{
 			durable: delegatestore.State{
 				"dlg-1": {
-					DelegateID:     "dlg-1",
-					Phase:          delegatestore.PhaseRunning,
-					CurrentRunOpen: true,
+					DelegateID:        "dlg-1",
+					Phase:             delegatestore.PhaseRunning,
+					CurrentRunOpen:    true,
+					PendingDeliveries: []delegatestore.PendingDelivery{{DeliveryID: "delivery-1"}},
 				},
 			},
 		},

@@ -1149,7 +1149,7 @@ func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presented
 	}
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
-	var staged map[string]struct{}
+	staged := inlineNotificationPresentations(presentedTurns)
 	for _, turn := range presentedTurns {
 		if turn.AttentionID == "" {
 			continue
@@ -1166,6 +1166,33 @@ func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presented
 		staged[turn.AttentionID] = struct{}{}
 	}
 	s.attentionStagedIDs = staged
+}
+
+// inlineNotificationPresentations selects only carriers in this exact history
+// snapshot whose result is actually projected. A waiter or a commit in some
+// other snapshot cannot hide the canonical steering message or earn coverage.
+func inlineNotificationPresentations(turns []schema.Turn) map[string]struct{} {
+	var ids map[string]struct{}
+	for _, turn := range turns {
+		if turn.Kind != schema.TurnToolResults {
+			continue
+		}
+		for _, commit := range turn.DelegateDeliveryCommits {
+			if commit.DeliveryID == "" || commit.ToolCallID == "" {
+				continue
+			}
+			for _, part := range turn.Message.Content {
+				if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == commit.ToolCallID {
+					if ids == nil {
+						ids = make(map[string]struct{})
+					}
+					ids[delegateAttentionID(commit.DeliveryID)] = struct{}{}
+					break
+				}
+			}
+		}
+	}
+	return ids
 }
 
 // stagedNotificationObservationIDs names only this settled request's candidates.

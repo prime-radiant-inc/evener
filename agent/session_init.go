@@ -639,7 +639,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		}
 	}
 	s.attachTranscript(tw)
-	if err := s.flushPendingDelegateDeliveries(); err != nil {
+	if err := s.replayDelegateDeliveries(); err != nil {
 		return nil, fmt.Errorf("replay delegate deliveries: %w", err)
 	}
 	if err := s.rearmRootDelegateAttentionFromTranscript(nil); err != nil {
@@ -1465,10 +1465,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			return nil, err
 		}
 	}
-	s.delegateDeliveryMu.Lock()
-	hadPendingDelegateDeliveries := len(s.pendingDelegateDeliveries) != 0
-	s.delegateDeliveryMu.Unlock()
-	if err := s.flushPendingDelegateDeliveries(); err != nil {
+	hadPendingDelegateDeliveries := s.hasPendingDelegateDeliveries()
+	if err := s.replayDelegateDeliveries(); err != nil {
 		return nil, fmt.Errorf("replay delegate deliveries: %w", err)
 	}
 	if tw != nil && hadPendingDelegateDeliveries {
