@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { openSessionRoute } from "../shell/routing";
 import type { AttentionEntry } from "./attention";
 import { fireOsNotification, playTone } from "./channels";
 
@@ -96,13 +97,34 @@ describe("fireOsNotification", () => {
   });
 
   test("click navigates to the session pane", () => {
+    window.history.replaceState({}, "", "/");
     vi.stubGlobal("Notification", FakeNotification);
     const focus = vi.spyOn(window, "focus").mockImplementation(() => {});
     const push = vi.spyOn(window.history, "pushState");
     fireOsNotification(entry({ ref: "local:r1" }));
     FakeNotification.instances[0]?.onclick?.();
     expect(focus).toHaveBeenCalledOnce();
-    expect(push).toHaveBeenCalledWith({}, "", "/s/local%3Ar1");
+    expect(push).toHaveBeenCalledOnce();
+    expect(push.mock.calls[0]?.[2]).toBe("/s/local%3Ar1");
+    const state = push.mock.calls[0]?.[0] as { __evenerRouteEntry?: unknown } | undefined;
+    expect(typeof state?.__evenerRouteEntry).toBe("string");
+  });
+
+  test("Back after a notification click returns to the session the reader had open", async () => {
+    window.history.replaceState({}, "", "/");
+    openSessionRoute("local:reader");
+    const readerEntryId = (window.history.state as { __evenerRouteEntry?: unknown }).__evenerRouteEntry;
+    vi.stubGlobal("Notification", FakeNotification);
+    vi.spyOn(window, "focus").mockImplementation(() => {});
+    fireOsNotification(entry({ ref: "local:r1" }));
+    FakeNotification.instances[0]?.onclick?.();
+
+    const back = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+    window.history.back();
+    await back;
+
+    expect(window.location.pathname).toBe("/s/local%3Areader");
+    expect((window.history.state as { __evenerRouteEntry?: unknown }).__evenerRouteEntry).toBe(readerEntryId);
   });
 });
 

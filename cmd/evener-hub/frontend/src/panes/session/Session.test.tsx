@@ -6928,11 +6928,16 @@ test("a pending approval suppresses the control and returns when it resolves", a
   renderAttentionSession(fake, pane);
   await screen.findByRole("textbox", { name: "Message" });
   await flushPendingTurnsProjectionForTests();
+  // The approval has to be in the hydrated model before the control's absence
+  // counts as suppression, or this case can pass while the model is still
+  // loading and then resolve an approval the read installs afterwards.
+  await screen.findByRole("group", { name: "Sandbox approval" });
   await waitFor(() => expect(screen.queryByTestId("next-needs-you")).toBeNull());
 
   await act(async () => {
     await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
   });
+  await waitFor(() => expect(screen.queryByRole("group", { name: "Sandbox approval" })).toBeNull());
   await waitFor(() => expect(screen.getByTestId("next-needs-you")).toBeTruthy());
 });
 
