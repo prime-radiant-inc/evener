@@ -190,7 +190,7 @@ func TestRound12PendingRestartSurvivesAnUnknownIdentity(t *testing.T) {
 		case strings.Contains(joined, "XDG_STATE_HOME"):
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case strings.Contains(joined, "launch-check"):
-			return []byte(`{"protocol":"evener-appwire-v7","version":"dev","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"dev","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "test -d /opt/evener/bin"):
 			return nil, nil
 		case strings.Contains(joined, "evener_resolve"):
@@ -219,6 +219,7 @@ func TestRound12PendingRestartSurvivesAnUnknownIdentity(t *testing.T) {
 		}
 	}, startFn: goodStartFn(t)}
 	requireProtocolUpgrade(t, fr)
+	modelLegacySelectedProcess(t, fr, host)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "dev",
 		BuildBinary:               writeStageBinary,
@@ -509,17 +510,20 @@ func TestRound12UnrelatedHealthBodyIsNotTheHostsHub(t *testing.T) {
 			return []byte(body), nil
 		}}
 		m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "newsha"})
-		if got, ok := m.probeRunningHub(context.Background(), host); ok {
+		if got, ok := m.probeRunningHub(context.Background(), host, selectedRestartFacts()); ok {
 			t.Fatalf("an unrelated body was read as the host's hub: %s -> %+v", body, got)
 		}
 	}
 
-	// The host's own hub, reporting the configured endpoint, is recognized.
+	// Discovery now returns the selected hub's validated endpoint report, not
+	// an arbitrary health object from a configured listener.
+	report := remoteEndpointFixture("/home/dev/.config/evener/hub.toml", "127.0.0.1:9180", "boot-one")
+	report.Running.Version = "newsha"
 	fr := &fakeRunner{runFn: func(_ context.Context, _ []string, _ io.Reader) ([]byte, error) {
-		return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"0.0.0.0:9180"}`), nil
+		return []byte(mustOwnerJSON(t, report)), nil
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "newsha"})
-	got, ok := m.probeRunningHub(context.Background(), host)
+	got, ok := m.probeRunningHub(context.Background(), host, selectedRestartFacts())
 	if !ok || got.version != "newsha" {
 		t.Fatalf("the host's hub was not recognized: (%+v,%v)", got, ok)
 	}

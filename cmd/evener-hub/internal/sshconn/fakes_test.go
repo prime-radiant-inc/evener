@@ -2,6 +2,7 @@ package sshconn
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
@@ -225,7 +227,7 @@ func (b *fakeBridge) floodNotifications(n int) error {
 // is appwire.ProtocolVersion itself, not a literal, so a protocol bump cannot
 // leave this shared fixture speaking a stale version (which reads as an
 // old-protocol host and refuses every attach that uses it).
-var goodLaunchCheck = `{"protocol":"` + appwire.ProtocolVersion + `","version":"dev","launch_flags":["api-log"]}`
+var goodLaunchCheck = `{"hub_endpoint_schema":1,"protocol":"` + appwire.ProtocolVersion + `","version":"dev","launch_flags":["api-log"]}`
 
 // cannedRun returns a runFn answering the standard preflight commands, with
 // optional substring-keyed overrides consulted first.
@@ -238,6 +240,8 @@ func cannedRun(overrides map[string][]byte) func(context.Context, []string, io.R
 			}
 		}
 		switch {
+		case strings.HasSuffix(joined, "hub endpoint --json"):
+			return []byte(`{"schema_version":1,"state":"running","config_path":"/home/dev/.config/evener/hub.toml","hub_state_root":"/home/dev/.local/state/evener","configured_listen_addr":"127.0.0.1:9180","listen_source":"default","running":{"schema_version":1,"boot_id":"canned-boot","pid":4242,"started_at":"2026-10-15T00:00:00Z","config_path":"/home/dev/.config/evener/hub.toml","hub_state_root":"/home/dev/.local/state/evener","requested_listen_addr":"127.0.0.1:9180","listen_source":"default","bound_addr":"127.0.0.1:9180","local_url":"http://127.0.0.1:9180","loopback_url":"http://127.0.0.1:9180","version":"dev"}}`), nil
 		case strings.HasSuffix(joined, "uname -s"):
 			return []byte("Linux\n"), nil
 		case strings.HasSuffix(joined, "uname -m"):
@@ -297,6 +301,11 @@ func deployRunner(t *testing.T, launch func(call int) ([]byte, error), health fu
 // and running it against facts the controller could never read would test
 // nothing.
 func deployRunnerFor(t *testing.T, goos, goarch string, launch func(call int) ([]byte, error), health func(call int) ([]byte, error)) *fakeRunner {
+	fr, _ := deployRunnerForFixture(t, goos, goarch, launch, health)
+	return fr
+}
+
+func deployRunnerForFixture(t *testing.T, goos, goarch string, launch func(call int) ([]byte, error), health func(call int) ([]byte, error)) (*fakeRunner, *selectedProcessFixture) {
 	t.Helper()
 	osName, ok := map[string]string{"linux": "Linux", "darwin": "Darwin"}[goos]
 	if !ok {
@@ -307,7 +316,7 @@ func deployRunnerFor(t *testing.T, goos, goarch string, launch func(call int) ([
 		t.Skipf("deployRunnerFor: preflight's mapArch cannot round-trip GOARCH %q, so no host facts for it exist and this test cannot run on this platform", goarch)
 	}
 	launchCalls, healthCalls := 0, 0
-	return &fakeRunner{
+	fr := &fakeRunner{
 		runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 			joined := strings.Join(argv, " ")
 			switch {
@@ -325,11 +334,13 @@ func deployRunnerFor(t *testing.T, goos, goarch string, launch func(call int) ([
 				return out, err
 			case strings.Contains(joined, "test -d /opt/evener/bin"):
 				return nil, nil
+			case strings.Contains(joined, "if test -x /opt/evener/bin/evener"):
+				return nil, nil // This fixture's installed executable is runnable.
 			case strings.Contains(joined, "evener_resolve"):
 				return []byte("/opt/evener/bin/evener\n"), nil
 			case strings.Contains(joined, "list-units"):
 				return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
-			case strings.Contains(joined, "systemctl restart"):
+			case strings.Contains(joined, "systemctl restart"), strings.Contains(joined, "systemctl start"):
 				return nil, nil
 			case strings.Contains(joined, "api/health"):
 				out, err := health(healthCalls)
@@ -346,4 +357,96 @@ func deployRunnerFor(t *testing.T, goos, goarch string, launch func(call int) ([
 		},
 		startFn: goodStartFn(t),
 	}
+	fixture := modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "", "")
+	fixture.darwin = goos == "darwin"
+	initialStart := ""
+	fixture.observe = func(f *selectedProcessFixture) {
+		if health == nil {
+			f.stopped = true
+			return
+		}
+		out, err := health(healthCalls)
+		if f.mutated {
+			healthCalls++
+		}
+		if err != nil {
+			f.stopped = true
+			return
+		}
+		var state struct {
+			Version string `json:"version"`
+			SHA     string `json:"backend_git_sha"`
+			Started string `json:"started_at"`
+		}
+		if err := json.Unmarshal(out, &state); err != nil {
+			t.Fatalf("fixture health state: %v", err)
+		}
+		f.stopped = false
+		f.before, f.after, f.sha = state.Version, state.Version, state.SHA
+		if state.Started != "" {
+			if initialStart == "" {
+				initialStart = state.Started
+			}
+			f.mutated = state.Started != initialStart && state.Started != "0001-01-01T00:00:00Z"
+			started, err := time.Parse(time.RFC3339Nano, state.Started)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.reportedStart = &started
+		}
+	}
+	return fr, fixture
+}
+
+// registeredTestHost supplies the registry generation to fixtures written before
+// lifecycle recovery retained the full registration. Nonzero generations remain
+// untouched so stale-registration negative controls still exercise rejection.
+func registeredTestHost(t *testing.T, m *Manager, host hostreg.Host) hostreg.Host {
+	t.Helper()
+	if host.Generation != 0 {
+		return host
+	}
+	current, ok := m.reg.Get(host.Name)
+	if !ok || !current.Equal(host) {
+		t.Fatalf("fixture registration does not match %q", host.Name)
+	}
+	return current
+}
+
+// modelLegacySelectedProcess adds the selected lock/process/service evidence
+// omitted by fixtures written for the old health-only manager. The existing
+// fake still supplies the served build and all mutation effects.
+func modelLegacySelectedProcess(t *testing.T, fr *fakeRunner, host hostreg.Host) *selectedProcessFixture {
+	t.Helper()
+	base := fr.runFn
+	exe := host.EvenerPath
+	if exe == "" {
+		exe = "/opt/evener/bin/evener"
+	}
+	f := modelSelectedProcess(t, fr, exe, "", "")
+	if host.EvenerPath == "" {
+		f.endpointAlias = "evener hub endpoint --json"
+	}
+	f.observe = func(f *selectedProcessFixture) {
+		out, err := base(t.Context(), rawCommandArgv(Options{}, host, hubHealthRemote("127.0.0.1:9180")), nil)
+		if err != nil {
+			f.stopped = true
+			return
+		}
+		var health struct {
+			Version string    `json:"version"`
+			SHA     string    `json:"backend_git_sha"`
+			Started time.Time `json:"started_at"`
+		}
+		if json.Unmarshal(out, &health) != nil || health.Version == "" {
+			f.stopped = true
+			return
+		}
+		f.stopped = false
+		f.before, f.after, f.sha = health.Version, health.Version, health.SHA
+		if !health.Started.IsZero() {
+			f.reportedStart = &health.Started
+		}
+	}
+	return f
 }

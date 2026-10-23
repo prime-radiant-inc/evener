@@ -68,10 +68,9 @@ type Host struct {
 	Name string
 	SSH  string
 	User string
-	// EvenerPath, ConfigPath, and Addr carry the host's non-default locations:
-	// the binary, its hub.toml, and the hub's listen address. Consumers need
-	// them to attach with the host's own configuration rather than a default
-	// that would address the wrong process.
+	// EvenerPath and ConfigPath select the owning executable and configuration.
+	// Addr is listener intent only for explicitly authorized fresh bootstrap,
+	// never a connection, presence or restart target.
 	EvenerPath string
 	ConfigPath string
 	Addr       string

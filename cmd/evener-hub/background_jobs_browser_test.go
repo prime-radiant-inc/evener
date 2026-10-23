@@ -6,10 +6,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -106,7 +108,7 @@ func TestBackgroundJobsBrowser(t *testing.T) {
 	waitFor := func(name string) string {
 		return fmt.Sprintf("while ! test -e %q; do sleep 0.02; done; ", barrier(name))
 	}
-	for index := 0; index < backgroundJobsBrowserCount; index++ {
+	for index := range backgroundJobsBrowserCount {
 		command := fmt.Sprintf("printf 'BACKGROUND_JOB_%03d\\n'", index)
 		switch index {
 		case 0:
@@ -340,7 +342,7 @@ func TestBackgroundJobsBrowser(t *testing.T) {
 		t.Fatal(err)
 	}
 	found := make(map[string]bool)
-	for _, line := range strings.Split(string(milestones), "\n") {
+	for line := range strings.SplitSeq(string(milestones), "\n") {
 		var record struct {
 			Milestone string `json:"milestone"`
 		}
@@ -355,7 +357,7 @@ func TestBackgroundJobsBrowser(t *testing.T) {
 	}
 	stopNotices()
 	<-providerDone
-	runJobOutputPagingJourney(t, ctx, &stack, provider)
+	runJobOutputPagingJourney(ctx, t, &stack, provider)
 }
 
 func backgroundJobsAwaitOutput(ctx context.Context, client *appwire.Client, ref, jobID, want string) error {
@@ -405,7 +407,7 @@ func backgroundJobsReadUntil(ctx context.Context, client *appwire.Client, ref st
 				break
 			}
 			if page.Page.NextCursor == "" || page.Page.NextCursor == cursor {
-				return nil, fmt.Errorf("actual Jobs cursor does not advance")
+				return nil, errors.New("actual Jobs cursor does not advance")
 			}
 			cursor = page.Page.NextCursor
 		}
@@ -419,7 +421,7 @@ func backgroundJobsReadUntil(ctx context.Context, client *appwire.Client, ref st
 				return nil, fmt.Errorf("actual Jobs state did not arrive: %w, last rows %+v", ctx.Err(), rows)
 			case note, ok := <-client.Notifications():
 				if !ok {
-					return nil, fmt.Errorf("actual Jobs subscription closed")
+					return nil, errors.New("actual Jobs subscription closed")
 				}
 				wake = backgroundJobsInvalidated(note, ref, scope)
 			}
@@ -429,7 +431,7 @@ func backgroundJobsReadUntil(ctx context.Context, client *appwire.Client, ref st
 		// A bounded snapshot cannot starve that read under continuous traffic.
 		for queued := len(client.Notifications()); queued > 0; queued-- {
 			if _, ok := <-client.Notifications(); !ok {
-				return nil, fmt.Errorf("actual Jobs subscription closed")
+				return nil, errors.New("actual Jobs subscription closed")
 			}
 		}
 	}
@@ -442,11 +444,7 @@ func backgroundJobsInvalidated(note appwire.Notification, ref string, scope appw
 		if json.Unmarshal(note.Params, &changed) != nil || (changed.Ref != ref && changed.Ref != scope.Ref) || changed.SessionID != scope.SessionID {
 			return false
 		}
-		for _, resource := range changed.Resources {
-			if resource == appwire.SessionActivityResourceJobs {
-				return true
-			}
-		}
+		return slices.Contains(changed.Resources, appwire.SessionActivityResourceJobs)
 	case appwire.NotifyEvenerThreadResync:
 		var resync appwire.ThreadResyncParams
 		return json.Unmarshal(note.Params, &resync) == nil && (resync.Ref == ref || resync.Ref == scope.Ref)

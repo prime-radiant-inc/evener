@@ -3,14 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
-import { searchForWorkspaceRoot } from "vite";
+import { runnerImport, searchForWorkspaceRoot } from "vite";
 import { configDefaults, defineConfig, type Plugin } from "vitest/config";
 
 // The dev server proxies every hub-owned route to a locally running evener-hub.
 // Cookies are port-agnostic on localhost, so the /auth/<token> capability flow
 // works through the proxy unchanged.
-const hub = process.env.EVENER_HUB_ADDR ?? "http://127.0.0.1:9180";
-
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // The AppWire TypeScript package lives at the repo root (appwire-client/typescript),
@@ -45,6 +43,17 @@ function restoreDistPlaceholder(): Plugin {
   };
 }
 
+// Config loading precedes resolve.alias, so a static package import cannot
+// resolve here. Vite imports by package name with its source alias before it
+// evaluates the plain config object that browser/editorial configs merge.
+const { module: hubOriginModule } = await runnerImport("@evener/appwire-client/hubOrigin", {
+  resolve: { alias: { "@evener/appwire-client/hubOrigin": path.join(appwirePackageDir, "hubOrigin.ts") } },
+});
+const { parseHubOrigin } = hubOriginModule as typeof import("@evener/appwire-client/hubOrigin");
+if (Object.hasOwn(process.env, "EVENER_HUB_ADDR"))
+  throw new Error("EVENER_HUB_ADDR has been removed; set EVENER_HUB_URL to an HTTP(S) origin.");
+const hub = parseHubOrigin(process.env.EVENER_HUB_URL ?? "http://127.0.0.1:9180");
+
 export default defineConfig({
   plugins: [react(), restoreDistPlaceholder()],
   // Keep the dep-optimizer cache inside this checkout by default. Vite defaults
@@ -73,6 +82,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@evener/appwire-client/docContent": path.join(appwirePackageDir, "docContent.ts"),
+      "@evener/appwire-client/hubOrigin": path.join(appwirePackageDir, "hubOrigin.ts"),
       "@evener/appwire-client/pairing": path.join(appwirePackageDir, "pairing.ts"),
       "@evener/appwire-client/state/navigation": path.join(appwirePackageDir, "state", "navigation", "index.ts"),
       "@evener/appwire-client/state/credentials": path.join(appwirePackageDir, "state", "credentials", "index.ts"),

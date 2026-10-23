@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -145,7 +146,7 @@ func TestAgentCascadeBrowser(t *testing.T) {
 			mixedInput, mixedDocs, err := cascadeCurrentMixedInput(call)
 			if err != nil {
 				if captureErr := cascadeRecordMixedProviderCall(artifacts, call, role, mixedInput, mixedDocs); captureErr != nil {
-					err = fmt.Errorf("mixed provider parse: %w, capture: %v", err, captureErr)
+					err = fmt.Errorf("mixed provider parse: %w, capture: %w", err, captureErr)
 				}
 				scriptErr <- err
 				return
@@ -194,7 +195,7 @@ func TestAgentCascadeBrowser(t *testing.T) {
 					return
 				}
 				if !cascadeMixedAttachmentNoteValid(mixedInput) {
-					scriptErr <- fmt.Errorf("mixed source input lost its two ordered persisted first/last images")
+					scriptErr <- errors.New("mixed source input lost its two ordered persisted first/last images")
 					return
 				}
 				toolOwners[call.ToolCallID()] = role
@@ -264,7 +265,7 @@ func TestAgentCascadeBrowser(t *testing.T) {
 	refs := []string{rootRef}
 	edges := make([]appwire.SessionDelegate, 0, 6)
 	var branch appwire.SessionDelegate
-	for level := 0; level < 6; level++ {
+	for level := range 6 {
 		owner := refs[level]
 		page, err := client.ThreadDelegatesList(ctx, appwire.SessionActivityListParams{Ref: owner, Scope: appwire.SessionActivityScopeSession, Limit: 200})
 		if err != nil {
@@ -378,7 +379,7 @@ func TestAgentCascadeBrowser(t *testing.T) {
 		"Shift-Space-interruption-precedence", "wheel-interruption-precedence", "pill-interruption-precedence", "phone-reader-width-reflow", "phone-reader-width-return",
 	} {
 		found := false
-		for _, line := range strings.Split(string(milestones), "\n") {
+		for line := range strings.SplitSeq(string(milestones), "\n") {
 			var value struct {
 				Milestone string `json:"milestone"`
 			}
@@ -495,7 +496,7 @@ func TestCascadeMixedProducerContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	var recorded struct {
-		CurrentUserMessages []any `json:"currentUserMessages"`
+		CurrentUserMessages []any `json:"currentUserMessages"` //nolint:tagliatelle // Matches the recorded provider-mixed.json evidence field currentUserMessages.
 	}
 	body, err := os.ReadFile(filepath.Join(dir, "provider-mixed.json"))
 	if err != nil {
@@ -702,8 +703,8 @@ func cascadeCurrentMixedInput(call *fakellm.Call) (skillGuardMessage, []skillGua
 	// selected-skill carriers follow the operative prose/command message.
 	messages, _ := call.Body["messages"].([]any)
 	var docs []skillGuardDocument
-	for i := len(messages) - 1; i >= 0; i-- {
-		message, ok := messages[i].(map[string]any)
+	for _, raw := range slices.Backward(messages) {
+		message, ok := raw.(map[string]any)
 		if !ok || message["role"] != "user" {
 			break
 		}
@@ -725,9 +726,10 @@ func cascadeValidateMixedInput(role int, input skillGuardMessage, docs []skillGu
 	var texts []string
 	images := 0
 	for _, part := range input.Content {
-		if part.Kind == "text" {
+		switch part.Kind {
+		case "text":
 			texts = append(texts, part.Text)
-		} else if part.Kind == "image_url" {
+		case "image_url":
 			images++
 		}
 	}
@@ -822,8 +824,8 @@ func cascadeWireUserMessage(message map[string]any) (skillGuardMessage, error) {
 
 func cascadeLatestUserContent(call *fakellm.Call) (string, error) {
 	messages, _ := call.Body["messages"].([]any)
-	for i := len(messages) - 1; i >= 0; i-- {
-		message, ok := messages[i].(map[string]any)
+	for _, raw := range slices.Backward(messages) {
+		message, ok := raw.(map[string]any)
 		if ok && message["role"] == "user" {
 			content, err := json.Marshal(message["content"])
 			return string(content), err
@@ -841,7 +843,7 @@ func cascadeAwaitProviderRelease(ctx context.Context, watcher *fsnotify.Watcher,
 		// A notification may precede the final newline of an append. Only complete
 		// records can release the real provider call.
 		if end := strings.LastIndexByte(string(body), '\n'); end >= 0 {
-			for _, line := range strings.Split(string(body[:end]), "\n") {
+			for line := range strings.SplitSeq(string(body[:end]), "\n") {
 				var record struct {
 					Command string `json:"command"`
 				}
@@ -870,8 +872,8 @@ func cascadeRequestRole(call *fakellm.Call, toolOwners map[string]int) (int, err
 		return role, nil
 	}
 	messages, _ := call.Body["messages"].([]any)
-	for i := len(messages) - 1; i >= 0; i-- {
-		message, ok := messages[i].(map[string]any)
+	for _, raw := range slices.Backward(messages) {
+		message, ok := raw.(map[string]any)
 		if !ok || message["role"] != "user" {
 			continue
 		}
@@ -880,7 +882,7 @@ func cascadeRequestRole(call *fakellm.Call, toolOwners map[string]int) (int, err
 			return 0, err
 		}
 		matches := []int{}
-		for role := 0; role < 7+cascadePagingDelegates; role++ {
+		for role := range 7 + cascadePagingDelegates {
 			if strings.Contains(string(content), cascadeRoleToken(role)) {
 				matches = append(matches, role)
 			}
@@ -892,5 +894,5 @@ func cascadeRequestRole(call *fakellm.Call, toolOwners map[string]int) (int, err
 			return 0, fmt.Errorf("ambiguous provider user payload, roles %v", matches)
 		}
 	}
-	return 0, fmt.Errorf("provider request has no cascade role sentinel or admitted tool identity")
+	return 0, errors.New("provider request has no cascade role sentinel or admitted tool identity")
 }

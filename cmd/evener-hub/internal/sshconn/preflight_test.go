@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -184,21 +186,6 @@ func TestParseLaunchCheck(t *testing.T) {
 		if _, err := parseLaunchCheck([]byte(out)); !errors.Is(err, ErrPreflightDecode) {
 			t.Fatalf("parseLaunchCheck(%s) err = %v, want ErrPreflightDecode", out, err)
 		}
-	}
-}
-
-func TestIsProtocolMismatchOutput(t *testing.T) {
-	yes := []string{
-		`unsupported appwire protocol "evener-appwire-v4" (supported "evener-appwire-v7")`,
-		`evener launch-check protocol "x" does not match Hub protocol "y"`,
-	}
-	for _, s := range yes {
-		if !isProtocolMismatchOutput([]byte(s)) {
-			t.Errorf("isProtocolMismatchOutput(%q) = false, want true", s)
-		}
-	}
-	if isProtocolMismatchOutput([]byte("connection refused")) {
-		t.Error("unrelated output classified as protocol mismatch")
 	}
 }
 
@@ -385,6 +372,13 @@ func TestPreflightExecutableMissingComesFromTheProbe(t *testing.T) {
 			wantMissing: false,
 		},
 		{
+			name:        "an unsearchable ancestor cannot verify absence",
+			launchOut:   []byte(notFound),
+			launchErr:   exitStatus(t, 126),
+			probeErr:    exitStatus(t, 2),
+			wantMissing: false,
+		},
+		{
 			name:        "a probe that cannot run is not absence",
 			launchOut:   []byte(notFound),
 			launchErr:   exitStatus(t, 127),
@@ -461,6 +455,13 @@ func TestPreflightExecutableMissingComesFromTheProbe(t *testing.T) {
 			if errors.Is(err, ErrExecutableMissing) {
 				t.Fatalf("preflight err = %v; a missing executable must be verified by the probe, not by the launch-check's status or text", err)
 			}
+			if tc.probeErr == nil {
+				if !errors.Is(err, ErrEndpointMigration) || !isTerminal(err) {
+					t.Fatalf("present binary without contract: %v", err)
+				}
+				return
+			}
+
 			if !errors.Is(err, ErrSSHStart) {
 				t.Fatalf("preflight err = %v, want the retryable ErrSSHStart class", err)
 			}
@@ -468,18 +469,191 @@ func TestPreflightExecutableMissingComesFromTheProbe(t *testing.T) {
 	}
 }
 
-// TestExecutableProbeRemote pins the dedicated probe's shape and quoting: the
-// answer is the 0/1 exit status alone for both forms (test -x for a path,
-// command -v for a bare name), and a run target carrying a space or a shell
-// metacharacter reaches the remote shell as one literal word.
+// A present selected path, including an unreadable file, cannot authorize a
+// fresh install. Execute the actual shell probes rather than simulate statuses.
+func TestPreflightPresentFileIsNotFreshInstall(t *testing.T) {
+	for _, selection := range []string{"fallback", "explicit"} {
+		for _, mode := range []os.FileMode{0600, 0000} {
+			t.Run(fmt.Sprintf("%s/%o", selection, mode), func(t *testing.T) {
+				root := t.TempDir()
+				t.Setenv("HOME", root)
+				t.Setenv("PATH", root)
+				target := filepath.Join(root, ".local", "bin", "evener")
+				if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(target, []byte("sentinel installed file"), mode); err != nil {
+					t.Fatal(err)
+				}
+				host := hostreg.Host{Name: "selected", SSH: "remote"}
+				if selection == "explicit" {
+					host.EvenerPath = target
+				}
+				base := cannedRun(nil)
+				fr := &fakeRunner{runFn: func(ctx context.Context, argv []string, in io.Reader) ([]byte, error) {
+					remote := strings.Join(argv[12:], " ")
+					if strings.Contains(remote, "launch-check") || strings.HasPrefix(remote, "if ") {
+						return (execRunner{}).Run(ctx, []string{"/bin/sh", "-c", remote}, in)
+					}
+					return base(ctx, argv, in)
+				}}
+				bridgeFailure := errors.New("present junk binary cannot start a bridge")
+				fr.startFn = func(context.Context, []string, io.Writer) (Stdio, error) {
+					return nil, bridgeFailure
+				}
+				m := newTestManager(t, testRegistry(t, host), fr, Options{BuildBinary: func(context.Context, string, string, string) error {
+					t.Error("present file reached fresh-install build")
+					return errors.New("unexpected build")
+				}})
+				pf, err := m.preflight(t.Context(), host)
+				if pf.ExecutableMissing || !errors.Is(err, ErrEndpointMigration) || !isTerminal(err) {
+					t.Fatalf("present mode %o: ExecutableMissing=%v err=%v", mode, pf.ExecutableMissing, err)
+				}
+				if ch, err := m.Ensure(t.Context(), host.Name); ch != nil || !errors.Is(err, ErrEndpointMigration) || !errors.Is(err, bridgeFailure) {
+					t.Fatalf("Ensure channel=%v err=%v", ch, err)
+				}
+				if len(fr.recordedStarts()) != 1 {
+					t.Fatal("present file must get one read-only bridge attempt")
+				}
+				for _, argv := range fr.recordedRuns() {
+					remote := strings.Join(argv[12:], " ")
+					if strings.Contains(remote, "api/health") || strings.Contains(remote, "systemctl") || strings.Contains(remote, "kill") || strings.Contains(remote, "mktemp") {
+						t.Fatalf("present file reached lifecycle: %v", argv)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestPreflightGenuinelyMissingFileCanInstall(t *testing.T) {
+	for _, selection := range []string{"fallback absent", "explicit absent", "fallback disappeared"} {
+		t.Run(selection, func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("HOME", root)
+			t.Setenv("PATH", root)
+			target := filepath.Join(root, ".local", "bin", "evener")
+			host := hostreg.Host{Name: "selected", SSH: "remote"}
+			if selection == "explicit absent" {
+				host.EvenerPath = target
+			}
+			if selection == "fallback disappeared" {
+				if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(target, []byte("installed sentinel"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			base := cannedRun(nil)
+			fr := &fakeRunner{runFn: func(ctx context.Context, argv []string, in io.Reader) ([]byte, error) {
+				remote := strings.Join(argv[12:], " ")
+				if strings.Contains(remote, "launch-check") || strings.HasPrefix(remote, "if ") {
+					out, err := (execRunner{}).Run(ctx, []string{"/bin/sh", "-c", remote}, in)
+					if selection == "fallback disappeared" && strings.HasPrefix(remote, `if [ -n "${HOME-}" ]`) {
+						if removeErr := os.Remove(target); removeErr != nil {
+							t.Fatal(removeErr)
+						}
+					}
+					return out, err
+				}
+				return base(ctx, argv, in)
+			}}
+			m := newTestManager(t, testRegistry(t, host), fr, Options{BuildBinary: writeStageBinary})
+			pf, err := m.preflight(t.Context(), host)
+			if err != nil || !pf.ExecutableMissing {
+				t.Fatalf("genuinely absent target: ExecutableMissing=%v err=%v", pf.ExecutableMissing, err)
+			}
+		})
+	}
+}
+
+func TestExecutableProbeFilesystemPresence(t *testing.T) {
+	root := t.TempDir()
+	for _, tc := range []struct {
+		name string
+		mode os.FileMode
+		want int
+	}{
+		{"missing", 0, 1},
+		{"missing/parent/evener", 0, 1},
+		{"nonexecutable", 0600, 0},
+		{"unreadable", 0000, 0},
+		{"executable", 0700, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target := filepath.Join(root, tc.name)
+			if tc.want == 0 {
+				if err := os.WriteFile(target, []byte("installed sentinel"), tc.mode); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err := (execRunner{}).Run(t.Context(), []string{"/bin/sh", "-c", executableProbeRemote(target)}, nil)
+			got := 0
+			if err != nil {
+				var exit *exec.ExitError
+				if !errors.As(err, &exit) {
+					t.Fatal(err)
+				}
+				got = exit.ExitCode()
+			}
+			if got != tc.want {
+				t.Fatalf("probe exit=%d err=%v, want %d", got, err, tc.want)
+			}
+		})
+	}
+	t.Run("dangling symlink", func(t *testing.T) {
+		target := filepath.Join(root, "dangling")
+		if err := os.Symlink(filepath.Join(root, "missing-target"), target); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := (execRunner{}).Run(t.Context(), []string{"/bin/sh", "-c", executableProbeRemote(target)}, nil); err != nil {
+			t.Fatalf("present symlink: %v", err)
+		}
+	})
+	t.Run("inaccessible ancestor", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root bypasses directory search permissions")
+		}
+		dir := filepath.Join(root, "inaccessible")
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(dir, "evener")
+		if err := os.WriteFile(target, []byte("installed sentinel"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(dir, 0000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := os.Chmod(dir, 0700); err != nil {
+				t.Error(err)
+			}
+		})
+		_, err := (execRunner{}).Run(t.Context(), []string{"/bin/sh", "-c", executableProbeRemote(target)}, nil)
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 2 {
+			t.Fatalf("inaccessible file must remain unknown, err=%v", err)
+		}
+	})
+}
+
+// Pin path quoting independently, with a literal ancestor-search contract.
 func TestExecutableProbeRemote(t *testing.T) {
+	const ancestorSearch = `; while :; do
+case "$p" in */*) p=${p%/*}; [ -n "$p" ] || p=/ ;; *) p=. ;; esac
+if test -e "$p" || test -L "$p"; then
+  if test -d "$p" && test -x "$p"; then exit 1; else exit 2; fi
+fi
+done`
 	cases := []struct {
 		target string
 		want   string
 	}{
-		{"/opt/evener/bin/evener", "if test -x /opt/evener/bin/evener; then exit 0; else exit 1; fi"},
-		{"/opt/my evener/bin/evener", "if test -x '/opt/my evener/bin/evener'; then exit 0; else exit 1; fi"},
-		{"/opt/evener/bin/evener; rm -rf /", "if test -x '/opt/evener/bin/evener; rm -rf /'; then exit 0; else exit 1; fi"},
+		{"/opt/evener/bin/evener", "if test -e /opt/evener/bin/evener || test -L /opt/evener/bin/evener; then exit 0; fi; p=/opt/evener/bin/evener" + ancestorSearch},
+		{"/opt/my evener/bin/evener", "if test -e '/opt/my evener/bin/evener' || test -L '/opt/my evener/bin/evener'; then exit 0; fi; p='/opt/my evener/bin/evener'" + ancestorSearch},
+		{"/opt/evener/bin/evener; rm -rf /", "if test -e '/opt/evener/bin/evener; rm -rf /' || test -L '/opt/evener/bin/evener; rm -rf /'; then exit 0; fi; p='/opt/evener/bin/evener; rm -rf /'" + ancestorSearch},
 		{"evener", "if command -v evener >/dev/null 2>&1; then exit 0; else exit 1; fi"},
 		{"my evener", "if command -v 'my evener' >/dev/null 2>&1; then exit 0; else exit 1; fi"},
 	}

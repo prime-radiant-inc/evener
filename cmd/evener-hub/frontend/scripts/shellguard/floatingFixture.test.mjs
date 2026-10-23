@@ -318,10 +318,15 @@ describe("floating fixture panel-wait witness", () => {
     try {
       const send = vi.fn(() => new Promise(() => {}));
       const pending = describeFloatingFailure({ send }, CONTEXT, ORIGINAL);
-      await vi.advanceTimersByTimeAsync(WITNESS_READ_MS + 1);
-      const witness = witnessOf(await pending);
-      expect(witness.unreadable).toEqual(["witness"]);
-      expect(witness.error).toContain(`did not return within ${WITNESS_READ_MS}ms`);
+      const settled = vi.fn();
+      void pending.then(settled, settled);
+      await vi.advanceTimersByTimeAsync(WITNESS_READ_MS - 1);
+      expect(settled).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toHaveBeenCalledTimes(1);
+      const failure = await pending;
+      expect(failure.cause).toBe(ORIGINAL);
+      expect(witnessOf(failure).unreadable).toEqual(["witness"]);
     } finally {
       vi.useRealTimers();
     }

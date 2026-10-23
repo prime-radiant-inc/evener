@@ -32,7 +32,7 @@ const RootVar = "EVENER_HUB_TEST_ENV_ROOT"
 // retiredEvenerEnvVars are names the product no longer declares but that a
 // developer machine may still export from when it did. envvars cannot list them
 // (nothing reads them any more), so they are carried here.
-var retiredEvenerEnvVars = []string{"EVENER_API_TOKEN"}
+var retiredEvenerEnvVars = []string{"EVENER_API_TOKEN", "EVENER_HUB_ADDR"}
 
 // Env is a throwaway environment root and the knowledge of whether this process
 // created it. Anything a test needs for the whole run rather than for one case —

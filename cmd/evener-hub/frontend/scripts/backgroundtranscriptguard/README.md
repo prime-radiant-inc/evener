@@ -120,7 +120,7 @@ as well as the raw records; a file's existence alone is not visual acceptance.
 
 - Hub and Vite share the hostname (`127.0.0.1`); cookies are port-agnostic, so
   the hub's `/auth/<token>` capability cookie flows to the Vite origin.
-- Before Vite starts, the driver sets `EVENER_HUB_ADDR` to the fixture hub's
+- Before Vite starts, the driver sets `EVENER_HUB_URL` to the fixture hub's
   base URL (from `--hub-url`). The dev server (`vite.config.ts`) proxies `/rpc`
   (WebSocket), `/api`, `/auth`, `/doc` and `/s` to it.
 - The driver authenticates by navigating to the hub auth URL, then loads the

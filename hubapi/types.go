@@ -9,6 +9,7 @@ const MobileAPIVersion = 1
 // HealthResponse is returned by GET /api/health.
 type HealthResponse struct {
 	Version          string             `json:"version"`
+	BootID           string             `json:"boot_id"`
 	MobileAPIVersion int                `json:"mobile_api_version"`
 	StartedAt        time.Time          `json:"started_at"`
 	HubAddr          string             `json:"hub_addr"`

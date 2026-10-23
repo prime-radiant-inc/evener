@@ -439,14 +439,14 @@ func TestEnsureInstallerFallbackDeploysPinnedRelease(t *testing.T) {
 			return []byte("x86_64\n"), nil
 		case strings.HasSuffix(joined, "id -u"):
 			return []byte("1000\n"), nil
-		case strings.Contains(joined, "XDG_STATE_HOME"):
+		case argv[len(argv)-1] == envProbeScript:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case strings.Contains(joined, "launch-check"):
 			launchCalls++
 			if launchCalls == 1 {
-				return []byte(`{"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
 			}
-			return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "evener-install.XXXXXX"):
 			return nil, nil
 		case strings.Contains(joined, "api/health"):
@@ -460,6 +460,7 @@ func TestEnsureInstallerFallbackDeploysPinnedRelease(t *testing.T) {
 		}
 	}, startFn: goodStartFn(t)}
 	requireProtocolUpgrade(t, fr)
+	modelLegacySelectedProcess(t, fr, host)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
@@ -515,14 +516,14 @@ func TestInstallerFallbackRecordsDefaultRunTarget(t *testing.T) {
 			return []byte("x86_64\n"), nil
 		case strings.HasSuffix(joined, "id -u"):
 			return []byte("1000\n"), nil
-		case strings.Contains(joined, "XDG_STATE_HOME"):
+		case argv[len(argv)-1] == envProbeScript:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case strings.Contains(joined, "launch-check"):
 			launchCalls++
 			if launchCalls == 1 {
-				return []byte(`{"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
 			}
-			return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "evener-install.XXXXXX"):
 			return nil, nil
 		case strings.Contains(joined, "api/health"):
@@ -539,6 +540,9 @@ func TestInstallerFallbackRecordsDefaultRunTarget(t *testing.T) {
 		}
 	}, startFn: goodStartFn(t)}
 	requireProtocolUpgrade(t, fr)
+	fixture := modelSelectedProcess(t, fr, "/home/dev/.local/bin/evener", "oldsha", "newsha")
+	fixture.sha = "newsha"
+	fixture.endpointAlias = "evener hub endpoint --json"
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
@@ -777,8 +781,8 @@ func TestResolveDeployCommandIsPortableAcrossReadlinkVariants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.TrimSpace(out); got != want {
-		t.Fatalf("resolver output = %q, want %q", got, want)
+	if out != want+"\n" {
+		t.Fatalf("resolver output = %q, want %q", out, want+"\n")
 	}
 
 	// The pre-fix command must fail under the same shim: this is the darwin
@@ -795,7 +799,7 @@ func TestResolveDeployCommandIsPortableAcrossReadlinkVariants(t *testing.T) {
 	if err == nil {
 		t.Fatalf("resolver succeeded for a missing path (stdout %q)", out)
 	}
-	if strings.TrimSpace(out) != "" {
+	if out != "" {
 		t.Fatalf("resolver printed %q for a missing path, want nothing", out)
 	}
 
@@ -832,7 +836,7 @@ func TestResolveDeployCommandIsPortableAcrossReadlinkVariants(t *testing.T) {
 	if ctx.Err() != nil {
 		t.Fatal("resolver hung on a symlink cycle")
 	}
-	if strings.TrimSpace(cycOut.String()) != "" {
+	if cycOut.Len() != 0 {
 		t.Fatalf("resolver printed %q for a symlink cycle, want nothing", cycOut.String())
 	}
 }
@@ -963,8 +967,8 @@ func TestDeployBuildsFromTheConfiguredSource(t *testing.T) {
 		t.Fatalf("go build did not run: %v", err)
 	}
 	want, _ := filepath.EvalSymlinks(source)
-	if strings.TrimSpace(string(got)) != want {
-		t.Fatalf("go build ran in %q, want the configured source %q", strings.TrimSpace(string(got)), want)
+	if string(got) != want+"\n" {
+		t.Fatalf("go build cwd output = %q, want the configured source %q", got, want+"\n")
 	}
 	args, err := os.ReadFile(argsMarker)
 	if err != nil {
@@ -1209,11 +1213,9 @@ func TestVerifyBuildRevisionRefusesDirtyController(t *testing.T) {
 	}
 }
 
-// TestDeployTargetUsesFirstLineOfCommandV pins the finding that deployTarget ran
-// the whole `command -v evener` output through TrimSpace: trailing noise would be
-// folded into the path handed to the resolver, unlike resolveDeployTarget's own
-// first-line read.
-func TestDeployTargetUsesFirstLineOfCommandV(t *testing.T) {
+// Multi-line output could be noise or a pathname containing LF. Neither can
+// identify one executable, so do not turn the first line into write authority.
+func TestDeployTargetRefusesMultilineCommandV(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	var resolverJoined string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
@@ -1231,14 +1233,8 @@ func TestDeployTargetUsesFirstLineOfCommandV(t *testing.T) {
 	m := newTestManager(t, testRegistry(t, host), fr, Options{})
 
 	got, err := m.deployTarget(context.Background(), host, Preflight{})
-	if err != nil {
-		t.Fatalf("deployTarget: %v (the first line of `command -v` output must be the path)", err)
-	}
-	if got != "/usr/local/bin/evener" {
-		t.Fatalf("deployTarget = %q, want the first line", got)
-	}
-	if resolverJoined == "" {
-		t.Fatal("the resolver was not invoked with the first line alone")
+	if !errors.Is(err, ErrDeploy) || got != "" || resolverJoined != "" {
+		t.Fatalf("ambiguous path reached resolver: target=%q err=%v resolver=%q", got, err, resolverJoined)
 	}
 }
 
@@ -1345,23 +1341,30 @@ func TestEnsureMissingEvenerReachesTheInstallerFallback(t *testing.T) {
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
 		switch {
+		case strings.HasPrefix(argv[len(argv)-1], `if [ -n "${HOME-}" ]`):
+			return nil, nil // no installer-default binary
 		case strings.HasSuffix(joined, "uname -s"):
 			return []byte("Linux\n"), nil
 		case strings.HasSuffix(joined, "uname -m"):
 			return []byte("x86_64\n"), nil
 		case strings.HasSuffix(joined, "id -u"):
 			return []byte("1000\n"), nil
-		case strings.Contains(joined, "XDG_STATE_HOME"):
+		case argv[len(argv)-1] == envProbeScript:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case strings.Contains(joined, "launch-check"):
-			if strings.Contains(joined, " evener launch-check") {
+			if strings.Contains(joined, " evener launch-check") || !installerRan {
 				// No evener on the host's non-interactive PATH.
 				return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
 			}
-			return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, executableProbeRemote("evener")):
 			// The dedicated executable probe: absent.
 			return nil, exitStatus(t, 1)
+		case strings.Contains(joined, executableProbeRemote("/home/dev/.local/bin/evener")):
+			if !installerRan {
+				return nil, exitStatus(t, 1)
+			}
+			return nil, nil
 		case strings.Contains(joined, "list-units"):
 			return nil, nil
 		case strings.Contains(joined, "lsof -ti :9180"):
@@ -1383,6 +1386,8 @@ func TestEnsureMissingEvenerReachesTheInstallerFallback(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}, startFn: goodStartFn(t)}
+	selected := modelSelectedProcess(t, fr, "/home/dev/.local/bin/evener", "newsha", "newsha")
+	selected.stopped, selected.adhoc = true, true
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
@@ -1429,7 +1434,7 @@ func TestDeployInstallerPreservesExistingHubTarget(t *testing.T) {
 		case strings.Contains(joined, "command -v evener"):
 			return []byte("/usr/local/bin/evener\n"), nil
 		case strings.Contains(joined, "launch-check"):
-			return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "evener-install.XXXXXX"):
 			installerJoined = joined
 			return nil, nil
@@ -1593,7 +1598,7 @@ func TestDevControllerWithoutADeployPathAttaches(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	fr := &fakeRunner{
 		runFn: cannedRun(map[string][]byte{
-			"launch-check": []byte(`{"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`),
+			"launch-check": []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`),
 			// A running hub matching the on-disk build, so nothing is deployed,
 			// restarted, or bootstrapped: this is the attach path.
 			"api/health": []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`),
@@ -1738,14 +1743,14 @@ func postDeployBuildRunner(t *testing.T, postDeploy string) *fakeRunner {
 			return []byte("x86_64\n"), nil
 		case strings.HasSuffix(joined, "id -u"):
 			return []byte("1000\n"), nil
-		case strings.Contains(joined, "XDG_STATE_HOME"):
+		case argv[len(argv)-1] == envProbeScript:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case strings.Contains(joined, "launch-check"):
 			launchCalls++
 			if launchCalls == 1 {
-				return []byte(`{"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":[]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":[]}`), nil
 			}
-			return []byte(fmt.Sprintf(`{"protocol":"evener-appwire-v7","version":%q,"launch_flags":["api-log"]}`, postDeploy)), nil
+			return []byte(fmt.Sprintf(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":%q,"launch_flags":["api-log"]}`, postDeploy)), nil
 		case strings.Contains(joined, "test -d /opt/evener/bin"):
 			return nil, nil
 		case strings.Contains(joined, "list-units"):
@@ -1796,6 +1801,7 @@ func TestEnsurePostDeployBuildMismatchRefusesTerminally(t *testing.T) {
 	t.Run("a stopped host whose installed artifact reports another build", func(t *testing.T) {
 		fr := postDeployBuildRunner(t, "othersha")
 		requireProtocolUpgrade(t, fr)
+		modelLegacySelectedProcess(t, fr, host)
 		m := newTestManager(t, testRegistry(t, host), fr, opts)
 		testDeployRecorder(t, m)
 		testRestartRecorder(t, m)
@@ -1820,9 +1826,9 @@ func TestEnsurePostDeployBuildMismatchRefusesTerminally(t *testing.T) {
 		fr := deployRunner(t,
 			func(call int) ([]byte, error) {
 				if call == 0 {
-					return []byte(`{"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
+					return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
 				}
-				return []byte(`{"protocol":"evener-appwire-v7","version":"othersha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"othersha","launch_flags":["api-log"]}`), nil
 			},
 			func(int) ([]byte, error) {
 				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
@@ -1842,9 +1848,9 @@ func TestEnsurePostDeployBuildMismatchRefusesTerminally(t *testing.T) {
 		fr := deployRunner(t,
 			func(call int) ([]byte, error) {
 				if call == 0 {
-					return []byte(`{"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
+					return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
 				}
-				return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 			},
 			func(int) ([]byte, error) {
 				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
@@ -1879,13 +1885,16 @@ func TestDeployArtifactUnusableIsTerminal(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr := deployRunner(t,
 		func(int) ([]byte, error) {
-			return []byte(`{"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
 		},
 		func(int) ([]byte, error) {
 			return nil, errors.New("curl: (7) Failed to connect")
 		},
 	)
 	requireProtocolUpgrade(t, fr)
+	// The live protocol mismatch, not an old disk label or failed legacy health
+	// request, authorizes testing the operator artifact's deployment refusal.
+	modelSelectedProcess(t, fr, host.EvenerPath, "oldsha", "oldsha")
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
@@ -1940,10 +1949,10 @@ func TestEnsureWrongArtifactAgainstRunningHubRefusesBeforeRestart(t *testing.T) 
 		func(call int) ([]byte, error) {
 			if call == 0 {
 				// The on-disk binary before the deploy.
-				return []byte(`{"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
 			}
 			// The artifact the deploy wrote: right platform, foreign identity.
-			return []byte(`{"protocol":"evener-appwire-v7","version":"othersha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"othersha","launch_flags":["api-log"]}`), nil
 		},
 		func(int) ([]byte, error) {
 			// The running hub, and any process restarted onto the wrong artifact,
@@ -1988,6 +1997,7 @@ func TestEnsureWrongArtifactAgainstRunningHubRefusesBeforeRestart(t *testing.T) 
 	// cannot re-push and re-restart the same artifact. (A fresh manual attempt
 	// pushes again — that is the manager's per-attempt behavior, not a loop; the
 	// loop the ordering opened was deploy -> restart -> ErrRestart -> deploy.)
+	host = registeredTestHost(t, m, host)
 	hostGate := m.hostLock(host.Name)
 	defer m.releaseHostLock(host.Name)
 	if more := m.reconnectOnce(context.Background(), host, hostGate); more {
@@ -2041,11 +2051,11 @@ func TestEnsureRestartOnlyMismatchAttachesTheServingBuild(t *testing.T) {
 			if call == 0 {
 				// The on-disk binary already matches, so ensureDecision chooses no
 				// deploy and falls to the stale-process restart.
-				return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 			}
 			// The re-read after the restart finds the on-disk file is not the
 			// controller's build. That is the host's business: nothing was deployed.
-			return []byte(`{"protocol":"evener-appwire-v7","version":"othersha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"othersha","launch_flags":["api-log"]}`), nil
 		},
 		func(call int) ([]byte, error) {
 			if call == 0 {
@@ -2057,6 +2067,7 @@ func TestEnsureRestartOnlyMismatchAttachesTheServingBuild(t *testing.T) {
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		},
 	)
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },

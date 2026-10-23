@@ -43,7 +43,8 @@ build-llmcall` builds `./llmcall`; run that path or install it separately on you
 | --- | --- | --- |
 | `EVENER_ALLOWED_DECISIONS` | no | Sets allowed communicate.output.decision values for workflow routing, as a JSON array or comma-separated list; not tool approval modes. |
 | `EVENER_HOST_TEMP_BASES` | no | OS path list of absolute directories that replaces /tmp and /var/tmp as the world-usable host temp bases session temp containers are created in and the startup crashed-scratch sweep walks; each must be a world-writable sticky directory. Set but empty or malformed is refused, never replaced by the defaults. |
-| `EVENER_HUB_ADDR` | no | Default hub address for local development tooling (the Vite dev-server proxy and browser guards). |
+| `EVENER_HUB_LISTEN_ADDR` | no | Hub server listener as host:port; overrides hub.toml addr. |
+| `EVENER_HUB_URL` | no | Hub client HTTP(S) origin for development tooling. |
 | `EVENER_LOGIN_HEADLESS` | no | Overrides OpenAI login flow detection: 1 for device-code, 0 for browser. |
 | `EVENER_MODEL` | no | Default model as provider/model when --model is omitted. |
 | `EVENER_OFFLINE` | no | Set to 1 to disable models.dev refresh; the provider registry can still use a newer valid local catalog cache. |

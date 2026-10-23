@@ -482,6 +482,14 @@ const restored: DevicePairingInvitation = decodeInvitation(wire); void restored;
       cjsTypeUses: `const bytes: Uint8Array = client.encodeInvitation({invitation:"01".repeat(24),origin:"http://hub.local:9180",tailnet:true,expiresAt:0}); void bytes;`,
       smoke: `assert.equal(client.decodeInvitation(client.encodeInvitation({invitation:"01".repeat(24),origin:"http://hub.local:9180",tailnet:true,expiresAt:0})).origin, "http://hub.local:9180");`,
     },
+    "./hubOrigin": {
+      esmTypeUses: `const origin: string = parseHubOrigin("https://hub.example:443/");
+const code: HubOriginCode = "path"; void origin; void code;`,
+      cjsTypeUses: `const error: client.HubOriginError = new client.HubOriginError("path", "path"); void error;`,
+      smoke: `assert.equal(client.parseHubOrigin("https://HUB.example:443/"), "https://hub.example");
+assert.equal(client.hubRPCURL("http://[::ffff:127.0.0.1]"), "ws://[::ffff:7f00:1]/rpc");
+assert.equal(new client.HubOriginError("path", "path").code, "path");`,
+    },
     "./docContent": {
       esmTypeUses: `const read: (session: string, path: string, port: DocPort) => Promise<DocFileContent> = readDocFile;
 const cap: number = DOC_FILE_MAX_BYTES; void read; void cap;`,

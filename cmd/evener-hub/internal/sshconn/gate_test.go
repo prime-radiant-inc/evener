@@ -268,7 +268,7 @@ func TestEnsureDeployHookRunsUnderTheGateBeforeAnyRemoteWrite(t *testing.T) {
 		runFn: cannedRun(map[string][]byte{
 			// The on-disk build and the running hub are an older revision, so the
 			// ladder decides to deploy this controller's build.
-			"launch-check": []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`),
+			"launch-check": []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`),
 			"api/health":   []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`),
 		}),
 		startFn: goodStartFn(t),
@@ -315,9 +315,9 @@ func ensureDeployTestHarness(t *testing.T, restartErr error) (*Manager, *hostops
 	fr := deployRunner(t,
 		func(call int) ([]byte, error) {
 			if call == 0 {
-				return []byte(`{"protocol":"evener-appwire-v4","version":"oldsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v4","version":"oldsha","launch_flags":["api-log"]}`), nil
 			}
-			return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 		},
 		func(int) ([]byte, error) {
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
@@ -326,6 +326,7 @@ func ensureDeployTestHarness(t *testing.T, restartErr error) (*Manager, *hostops
 	store := ensureDeployTestStore(t)
 	var recordID string
 	var seen []ensureCommandSighting
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 	innerRun := fr.runFn
 	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 		command := strings.Join(argv, " ")
@@ -458,7 +459,7 @@ func ensureRestartTestHarness(t *testing.T, restartErr error) (*Manager, *hostop
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr := deployRunner(t,
 		func(int) ([]byte, error) {
-			return []byte(`{"protocol":"` + appwire.ProtocolVersion + `","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"` + appwire.ProtocolVersion + `","version":"newsha","launch_flags":["api-log"]}`), nil
 		},
 		func(call int) ([]byte, error) {
 			// The pre-decision probe sees the stale process; the probes after
@@ -472,6 +473,7 @@ func ensureRestartTestHarness(t *testing.T, restartErr error) (*Manager, *hostop
 	store := ensureDeployTestStore(t)
 	var recordID string
 	var seen []ensureCommandSighting
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 	innerRun := fr.runFn
 	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 		command := strings.Join(argv, " ")
@@ -584,13 +586,14 @@ func TestEnsureRestartOnlyRefusesWithoutARecorder(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr := deployRunner(t,
 		func(int) ([]byte, error) {
-			return []byte(`{"protocol":"` + appwire.ProtocolVersion + `","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"` + appwire.ProtocolVersion + `","version":"newsha","launch_flags":["api-log"]}`), nil
 		},
 		func(int) ([]byte, error) {
 			return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		},
 	)
 	var commands []string
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 	innerRun := fr.runFn
 	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 		commands = append(commands, strings.Join(argv, " "))
@@ -622,13 +625,14 @@ func TestEnsureDeployRefusesWithoutARecorder(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr := deployRunner(t,
 		func(int) ([]byte, error) {
-			return []byte(`{"protocol":"` + appwire.ProtocolVersion + `","version":"oldsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"` + appwire.ProtocolVersion + `","version":"oldsha","launch_flags":["api-log"]}`), nil
 		},
 		func(int) ([]byte, error) {
 			return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		},
 	)
 	var commands []string
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 	innerRun := fr.runFn
 	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 		commands = append(commands, strings.Join(argv, " "))

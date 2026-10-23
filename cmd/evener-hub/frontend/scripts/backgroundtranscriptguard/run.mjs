@@ -15,7 +15,7 @@
 //
 // Arguments (validated before Chrome starts):
 //   --url            the hub's real /auth/<token> URL to authenticate first
-//   --hub-url        the fixture hub base URL; exported as EVENER_HUB_ADDR for
+//   --hub-url        the fixture hub base URL; exported as EVENER_HUB_URL for
 //                    the Vite proxy BEFORE Vite starts
 //   --artifact-dir   where screenshots/dumps survive for triage
 //   --control-path-a helper alpha's fixture control JSONL
@@ -872,7 +872,8 @@ async function main() {
   loadConfig(process.argv.slice(2));
   // The Vite child inherits this environment; the dev server proxies /rpc and
   // the hub HTTP routes to the fixture hub. Set BEFORE startBrowserGuard.
-  process.env.EVENER_HUB_ADDR = HUB_URL;
+  delete process.env.EVENER_HUB_ADDR;
+  process.env.EVENER_HUB_URL = HUB_URL;
 
   let guard;
   try {

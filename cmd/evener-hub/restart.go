@@ -14,6 +14,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/hubapi"
+	"primeradiant.com/evener/internal/hubendpoint"
 )
 
 type restartOptions struct {
@@ -27,7 +28,7 @@ func parseRestartOptions(args []string, stderr io.Writer) (restartOptions, error
 	opts := restartOptions{configPath: DefaultConfigPath(), timeout: 30 * time.Second}
 	fs := flag.NewFlagSet("evener hub restart", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&opts.addr, "addr", "", "override hub loopback address (default: hub.toml addr, else 127.0.0.1:9180)")
+	fs.StringVar(&opts.addr, "addr", "", "hub loopback address (default: verified running endpoint)")
 	fs.StringVar(&opts.configPath, "config", opts.configPath, "path to hub.toml")
 	fs.DurationVar(&opts.timeout, "timeout", opts.timeout, "how long to wait for the new hub process")
 	fs.Usage = func() {
@@ -62,38 +63,57 @@ func runHubRestart(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
-	cfg, err := deps.loadConfig(opts.configPath, opts.configExplicit)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] config: %v\n", err)
-		return err
-	}
-	addr := opts.addr
-	if addr == "" {
-		addr = cfg.Addr
-	}
-	addr = loopbackAddr(addr)
-	// Validate the dialable address before reading the credential or sending
-	// the health probe: resolveHubURL is what rejects userinfo and non-loopback
-	// hosts, and the health probe carries the bearer token.
-	if _, err := resolveHubURL(addr); err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
-		return err
-	}
-	token, err := readAuthToken(cfg.HubStateRoot)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
-		return err
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout)
 	defer cancel()
-	baseline, err := readHubStartedAt(ctx, addr)
+	// Validate explicit destinations before endpoint discovery or credentials.
+	if opts.addr != "" {
+		if _, err := attachOrigin("http://" + opts.addr); err != nil {
+			_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+			return err
+		}
+	}
+	endpointOpts := endpointOptions{configPath: opts.configPath, configExplicit: opts.configExplicit}
+	report, err := resolveHubEndpoint(ctx, endpointOpts, deps)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] endpoint: %v\n", err)
+		return err
+	}
+	if report.Running == nil {
+		err := fmt.Errorf("%w: selected hub is %s (%s)", errNoHubAt, report.State, report.Reason)
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
+	}
+	origin, err := attachOrigin(report.Running.LoopbackURL)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
+	}
+	if opts.addr != "" {
+		selected, _ := attachOrigin("http://" + opts.addr)
+		if selected.String() != origin.String() {
+			_, _ = fmt.Fprintf(stderr, "[hub] %v\n", hubendpoint.ErrIdentityMismatch)
+			return hubendpoint.ErrIdentityMismatch
+		}
+		origin = selected
+	}
+	configIdentity, err := selectRestartConfigIdentity(endpointOpts, report)
+	if err != nil {
+		err = fmt.Errorf("%w: selected config: %w", hubendpoint.ErrIdentityMismatch, err)
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
+	}
+	token, err := readAuthToken(report.Running.HubStateRoot)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
+	}
+	baseline, err := readHubStartedAt(ctx, origin)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] health: %v\n", err)
 		return err
 	}
 
-	client, err := dialHubControl(ctx, addr, token)
+	client, err := dialHubControl(ctx, origin, token, *report.Running)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
@@ -118,7 +138,7 @@ func runHubRestart(args []string, stderr io.Writer, deps mainDeps) error {
 		}
 	}
 
-	if err := waitForNewIncarnation(ctx, addr, baseline); err != nil {
+	if err := waitForNewIncarnation(ctx, endpointOpts, deps, report, configIdentity, baseline); err != nil {
 		confirmErr := err
 		if requestErr != nil {
 			confirmErr = fmt.Errorf("%w; %w", requestErr, err)
@@ -147,20 +167,16 @@ func isAmbiguousRestartFailure(err error) bool {
 	return true
 }
 
-func dialHubControl(ctx context.Context, addr, token string) (*appwire.Client, error) {
-	hubURL, err := resolveHubURL(addr)
+func dialHubControl(ctx context.Context, origin hubendpoint.Origin, token string, record hubendpoint.Record) (*appwire.Client, error) {
+	httpClient, err := hubendpoint.HTTPClientWithBearer(nil, token, origin, &record)
 	if err != nil {
 		return nil, err
 	}
-	header := http.Header{}
-	if token != "" {
-		header.Set("Authorization", "Bearer "+token)
-	}
 	dialCtx, cancel := context.WithTimeout(ctx, attachDialTimeout)
 	defer cancel()
-	ws, err := appwire.DialWebSocketWithHeaders(dialCtx, hubURL, attachDialClient, header)
+	ws, err := appwire.DialWebSocketWithHeaders(dialCtx, origin.RPCURL(), httpClient, nil)
 	if err != nil {
-		return nil, fmt.Errorf("%w %s: %w", errNoHubAt, addr, err)
+		return nil, fmt.Errorf("%w %s: %w", errNoHubAt, origin.String(), err)
 	}
 	client := appwire.NewClient(ws)
 	client.Start(ctx)
@@ -174,12 +190,19 @@ func dialHubControl(ctx context.Context, addr, token string) (*appwire.Client, e
 // readHubStartedAt probes the auth-exempt health endpoint. It deliberately
 // sends no credential: there is nothing to authenticate, and a misconfigured
 // address must never receive the hub token.
-func readHubStartedAt(ctx context.Context, addr string) (time.Time, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/api/health", nil)
+var restartHealthClient = &http.Client{
+	Transport: &http.Transport{Proxy: nil},
+	CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+}
+
+func readHubStartedAt(ctx context.Context, origin hubendpoint.Origin) (time.Time, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, origin.String()+"/api/health", nil)
 	if err != nil {
 		return time.Time{}, err
 	}
-	resp, err := attachDialClient.Do(req)
+	resp, err := restartHealthClient.Do(req)
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -194,7 +217,7 @@ func readHubStartedAt(ctx context.Context, addr string) (time.Time, error) {
 	return health.StartedAt, nil
 }
 
-func waitForNewIncarnation(ctx context.Context, addr string, previous time.Time) error {
+func waitForNewIncarnation(ctx context.Context, opts endpointOptions, deps mainDeps, selected hubendpoint.Report, configIdentity restartConfigIdentity, previous time.Time) error {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -202,10 +225,82 @@ func waitForNewIncarnation(ctx context.Context, addr string, previous time.Time)
 		case <-ctx.Done():
 			return fmt.Errorf("hub did not restart: %w", ctx.Err())
 		case <-ticker.C:
-			next, err := readHubStartedAt(ctx, addr)
-			if err == nil && !next.Equal(previous) {
+			// The replacement may bind a different configured listener. Pin the
+			// selected config/root, not the predecessor's address.
+			report, err := resolveHubEndpoint(ctx, opts, deps)
+			if err != nil {
+				continue
+			}
+			if !configIdentity.matchesConfirmation(report.ConfigPath) || (configIdentity.file == nil && report.ConfigExists) || report.HubStateRoot != selected.HubStateRoot {
+				return hubendpoint.ErrIdentityMismatch
+			}
+			if report.Running == nil {
+				continue
+			}
+			if !configIdentity.matchesConfirmation(report.Running.ConfigPath) || report.Running.HubStateRoot != selected.HubStateRoot {
+				return hubendpoint.ErrIdentityMismatch
+			}
+			origin, err := attachOrigin(report.Running.LoopbackURL)
+			if err != nil {
+				return err
+			}
+			next, err := readHubStartedAt(ctx, origin)
+			if err == nil && !next.IsZero() && next.Equal(report.Running.StartedAt) && !next.Equal(previous) {
 				return nil
 			}
 		}
 	}
+}
+
+type restartConfigIdentity struct {
+	file          os.FileInfo
+	canonicalPath string
+	absentPath    string
+}
+
+func selectRestartConfigIdentity(opts endpointOptions, report hubendpoint.Report) (restartConfigIdentity, error) {
+	file, err := os.Stat(report.ConfigPath)
+	if err == nil {
+		identity := restartConfigIdentity{file: file, canonicalPath: report.ConfigPath}
+		if !report.ConfigExists || report.Running == nil || !identity.matches(report.Running.ConfigPath) || report.Running.HubStateRoot != report.HubStateRoot {
+			return restartConfigIdentity{}, hubendpoint.ErrIdentityMismatch
+		}
+		return identity, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) || opts.configExplicit || report.ConfigExists {
+		return restartConfigIdentity{}, err
+	}
+	defaultPath, defaultErr := endpointConfigPath(DefaultConfigPath(), false)
+	selectedPath, selectedErr := endpointConfigPath(opts.configPath, false)
+	identity := restartConfigIdentity{absentPath: defaultPath}
+	if defaultErr != nil || selectedErr != nil || selectedPath != defaultPath || report.ConfigPath != defaultPath || !identity.matches(report.ConfigPath) || (report.Running != nil && !identity.matches(report.Running.ConfigPath)) {
+		return restartConfigIdentity{}, hubendpoint.ErrIdentityMismatch
+	}
+	return identity, nil
+}
+
+func (selected restartConfigIdentity) matchesConfirmation(path string) bool {
+	if selected.file != nil && path == selected.canonicalPath {
+		// Startup may atomically prune host metadata at the same canonical
+		// pathname, but must leave a regular file rather than a symlink or other
+		// type. Another pathname still needs the frozen file identity.
+		current, err := os.Lstat(path)
+		return err == nil && current.Mode().IsRegular()
+	}
+	return selected.matches(path)
+}
+
+func (selected restartConfigIdentity) matches(path string) bool {
+	if selected.file != nil {
+		current, err := os.Stat(path)
+		return err == nil && os.SameFile(selected.file, current)
+	}
+	// A file-less selection has no inode. Pin its default pathname and require
+	// absence, including no dangling symlink, for the whole confirmation.
+	defaultPath, err := endpointConfigPath(DefaultConfigPath(), false)
+	if err != nil || selected.absentPath == "" || path != selected.absentPath || defaultPath != selected.absentPath {
+		return false
+	}
+	_, err = os.Lstat(path)
+	return errors.Is(err, os.ErrNotExist)
 }
