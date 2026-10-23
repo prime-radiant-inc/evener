@@ -44,12 +44,12 @@ func TestHubSpawnSlashCatalogOffersGardeningMemoryToFreshRoot(t *testing.T) {
 // control, the helper must derive from it instead of returning a fixed true.
 func TestFreshSpawnSkillAvailabilityHasNoLaunchMemoryControl(t *testing.T) {
 	for _, typ := range []reflect.Type{
-		reflect.TypeOf(launchconfig.Layer{}),
-		reflect.TypeOf(appwire.LaunchConfigLayer{}),
-		reflect.TypeOf(appwire.SpawnSlashCatalogParams{}),
+		reflect.TypeFor[launchconfig.Layer](),
+		reflect.TypeFor[appwire.LaunchConfigLayer](),
+		reflect.TypeFor[appwire.SpawnSlashCatalogParams](),
 	} {
-		for i := 0; i < typ.NumField(); i++ {
-			if name := typ.Field(i).Name; strings.Contains(name, "Memory") {
+		for field := range typ.Fields() {
+			if name := field.Name; strings.Contains(name, "Memory") {
 				t.Fatalf("%s gained memory control %q; freshSpawnSkillAvailability must derive from it", typ, name)
 			}
 		}
