@@ -181,6 +181,9 @@ function usePathname(): string {
       setPathname(nextPathname);
     };
     window.addEventListener("popstate", onPopState);
+    // A child mount effect may already have canonicalized the focused pane's
+    // URL. Subscribe before catching up so that first navigation is not lost.
+    onPopState();
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
   return pathname;
@@ -1039,6 +1042,10 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: workspacePanesVersion is a deliberate trigger-only dep for route-owned primary replacement ordering
   useEffect(() => {
+    // StackHost publishes focused-pane navigation in its child effect, before
+    // this parent effect runs. Let usePathname's next render reconcile that
+    // route instead of reopening the session the user just left with Back.
+    if (pathname !== window.location.pathname) return;
     if (route?.type === "settings" || route?.type === "spawn" || route?.type === "session") {
       if (routePlacementInProgressRef.current) {
         const armedPathname = routePlacementPathnameRef.current;

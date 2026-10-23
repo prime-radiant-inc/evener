@@ -4664,6 +4664,71 @@ function installMobileViewport(): void {
   );
 }
 
+test("ordinary mobile toolbar Back publishes only the Welcome transition", async () => {
+  vi.stubGlobal("innerWidth", 390);
+  installMobileViewport();
+  installLocationForRoute("local:origin");
+  window.history.pushState({}, "", "/s/local%3Aorigin");
+  const client = navClient();
+  client.on("thread/read", () => ({ thread: threadStartResponse("local:origin").thread }));
+  const user = userEvent.setup();
+  render(<AppShell client={client} />);
+  await screen.findByRole("textbox", { name: "Message" });
+  expect(workspaceStore.getState().mainPane()).toMatchObject({
+    type: "session",
+    params: { ref: "local:origin" },
+  });
+  expect(window.location.pathname).toBe("/s/local%3Aorigin");
+  expect(getDockviewApi()).toBeNull();
+
+  const events: { method: "push" | "replace"; path: string }[] = [];
+  const pushState = window.history.pushState.bind(window.history);
+  const replaceState = window.history.replaceState.bind(window.history);
+  const push = vi.spyOn(window.history, "pushState").mockImplementation((...args) => {
+    pushState(...args);
+    events.push({ method: "push", path: window.location.pathname });
+  });
+  const replace = vi.spyOn(window.history, "replaceState").mockImplementation((...args) => {
+    replaceState(...args);
+    events.push({ method: "replace", path: window.location.pathname });
+  });
+  try {
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    await waitFor(() => {
+      const workspace = workspaceStore.getState();
+      expect(workspace.panes.find((pane) => pane.id === workspace.focusedPaneId)?.type).toBe("welcome");
+      expect(window.location.pathname).toBe("/");
+      expect(document.querySelector("[data-stacked-pane-type]")?.getAttribute("data-stacked-pane-type")).toBe(
+        "welcome",
+      );
+    });
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+    expect(events).toEqual([{ method: "push", path: "/" }]);
+  } finally {
+    push.mockRestore();
+    replace.mockRestore();
+  }
+});
+
+test("mobile unencoded session mount still reconciles later location ownership", async () => {
+  vi.stubGlobal("innerWidth", 390);
+  installMobileViewport();
+  installLocationForRoute("local:origin");
+  window.history.pushState({}, "", "/s/local:origin");
+  const client = navClient();
+  client.on("thread/read", () => ({ thread: threadStartResponse("local:origin").thread }));
+  render(<AppShell client={client} />);
+  await screen.findByRole("textbox", { name: "Message" });
+  expect(window.location.pathname).toBe("/s/local%3Aorigin");
+  expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:origin" });
+
+  act(() => installLocationForRoute("local:origin", "local:owner"));
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" }));
+  expect(paneFor("local:origin")).toMatchObject({ type: "session", slot: "secondary" });
+  expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:origin")?.id);
+  expect(window.location.pathname).toBe("/s/local%3Aorigin");
+});
+
 test.each(["phone", "desktop"])(
   "%s keeps an opened child focused after the already placed parent location settles",
   async (host) => {
