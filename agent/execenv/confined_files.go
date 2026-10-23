@@ -1,11 +1,25 @@
 package execenv
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"sync"
 )
+
+// GrepConfinedFiles searches path using the ordinary confined grep walk, but
+// names every result relative to the environment's root, including explicit
+// file targets. Memory tools use that name directly in subsequent reads.
+// Selection and skip paths remain relative to the search base.
+func (e *LocalExecutionEnvironment) GrepConfinedFiles(ctx context.Context, pattern, path, globFilter string, caseInsensitive bool, maxResults int, outputMode string, ctxLines int, skip func(rel string) bool) (string, error) {
+	layer := e.sandbox()
+	if layer == nil {
+		return "", errors.New("scope-relative search requires a confined environment")
+	}
+	defer layer.release()
+	return layer.grepNative(ctx, pattern, resolveGrepDir(path, e.RootDir), globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip, e.RootDir)
+}
 
 // RemoveConfinedFile removes only an admitted regular file, without reading it.
 // It requires captured filesystem authority, never an unrestricted fallback.
