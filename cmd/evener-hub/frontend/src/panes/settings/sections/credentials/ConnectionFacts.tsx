@@ -14,9 +14,57 @@ export interface ConnectionFact {
   value: ReactNode;
   help?: ReactNode;
   /** A refusal or state that follows the help line, as the card's rows place
-   * it: value, then help, then the notice. */
+   * it: value, then help, then the notice. Settings rows never set it. */
   notice?: ReactNode;
   actions?: ReactNode;
+}
+
+/** Matches FormRow's documented help-id scheme (widgets/formrow/index.tsx):
+ * a field's help is `${htmlFor}-help`. */
+function helpIdFor(htmlFor: string | undefined): string | undefined {
+  return htmlFor === undefined ? undefined : `${htmlFor}-help`;
+}
+
+/** One row, in either the facts grid (label, value, and an optional action) or
+ * the full editor's settings grid (label and control, help below). */
+function ConnectionFactRow({ row, settings }: { row: ConnectionFact; settings: boolean }) {
+  const helpId = helpIdFor(row.htmlFor);
+  if (settings) {
+    return (
+      <div className={styles.settingsRow}>
+        {row.htmlFor !== undefined ? (
+          <label className={styles.rowLabel} htmlFor={row.htmlFor}>
+            {row.label}
+          </label>
+        ) : (
+          <span className={styles.rowLabel}>{row.label}</span>
+        )}
+        <span className={styles.settingField}>{row.value}</span>
+        {row.help !== undefined && (
+          <span className={`${styles.rowHelp} ${styles.settingHelp}`} id={helpId}>
+            {row.help}
+          </span>
+        )}
+      </div>
+    );
+  }
+  return (
+    <div className={styles.row}>
+      <dt className={styles.rowLabel}>
+        {row.htmlFor !== undefined ? <label htmlFor={row.htmlFor}>{row.label}</label> : row.label}
+      </dt>
+      <dd className={styles.rowValue}>
+        {row.value}
+        {row.help !== undefined && (
+          <span className={styles.rowHelp} id={helpId}>
+            {row.help}
+          </span>
+        )}
+        {row.notice}
+      </dd>
+      {row.actions !== undefined && <dd className={styles.rowActions}>{row.actions}</dd>}
+    </div>
+  );
 }
 
 /** The connection facts grid. The provider card and the settings sheet render
@@ -24,44 +72,17 @@ export interface ConnectionFact {
 export function ConnectionFacts({ rows, "data-testid": testId }: { rows: ConnectionFact[]; "data-testid"?: string }) {
   return (
     <dl className={styles.rows} data-testid={testId}>
-      {rows.map((row) => {
-        const helpId = row.htmlFor === undefined ? undefined : `${row.htmlFor}-help`;
-        return (
-          <div className={styles.row} key={row.key}>
-            <dt className={styles.rowLabel}>
-              {row.htmlFor !== undefined ? <label htmlFor={row.htmlFor}>{row.label}</label> : row.label}
-            </dt>
-            <dd className={styles.rowValue}>
-              {row.value}
-              {row.help !== undefined && (
-                <span className={styles.rowHelp} id={helpId}>
-                  {row.help}
-                </span>
-              )}
-              {row.notice}
-            </dd>
-            {row.actions !== undefined && <dd className={styles.rowActions}>{row.actions}</dd>}
-          </div>
-        );
-      })}
+      {rows.map((row) => (
+        <ConnectionFactRow key={row.key} row={row} settings={false} />
+      ))}
     </dl>
   );
-}
-
-/** One field of the full connection editor. */
-interface ConnectionSetting {
-  key: string;
-  label: string;
-  htmlFor: string;
-  control: ReactNode;
-  help?: ReactNode;
 }
 
 /** The five fields of the full connection editor, built once so the card and
  * the settings sheet cannot drift into different controls or ids. */
 export function connectionSettingsFields({
-  variableIdPrefix,
-  fieldIdPrefix,
+  idPrefix,
   variableRows,
   values,
   disabled,
@@ -69,8 +90,7 @@ export function connectionSettingsFields({
   onVariableChange,
   onFieldChange,
 }: {
-  variableIdPrefix: string;
-  fieldIdPrefix: string;
+  idPrefix: string;
   variableRows: { key: string; label: string }[];
   values: {
     vars: Record<string, string>;
@@ -90,17 +110,17 @@ export function connectionSettingsFields({
   };
   onVariableChange(key: string, value: string): void;
   onFieldChange(field: "protocol" | "surface" | "apiKeyEnv" | "credentialHeader", value: string): void;
-}): ConnectionSetting[] {
+}): ConnectionFact[] {
   const { vars, protocol, surface, apiKeyEnv, credentialHeader } = values;
   const { apiKeyEnvLabel, credentialHeaderPlaceholder, credentialHeaderHelp } = copy;
   return [
     ...variableRows.map(({ key, label }) => {
-      const id = `${variableIdPrefix}-var-${key}`;
+      const id = `${idPrefix}-var-${key}`;
       return {
         key,
         label,
         htmlFor: id,
-        control: (
+        value: (
           <Input
             id={id}
             value={vars[key] ?? ""}
@@ -113,10 +133,10 @@ export function connectionSettingsFields({
     {
       key: "protocol",
       label: "Protocol",
-      htmlFor: `${fieldIdPrefix}-protocol`,
-      control: (
+      htmlFor: `${idPrefix}-protocol`,
+      value: (
         <Select
-          id={`${fieldIdPrefix}-protocol`}
+          id={`${idPrefix}-protocol`}
           value={protocol}
           onChange={(event) => onFieldChange("protocol", event.target.value)}
           options={PROTOCOL_OPTIONS}
@@ -127,10 +147,10 @@ export function connectionSettingsFields({
     {
       key: "surface",
       label: "Surface",
-      htmlFor: `${fieldIdPrefix}-surface`,
-      control: (
+      htmlFor: `${idPrefix}-surface`,
+      value: (
         <Select
-          id={`${fieldIdPrefix}-surface`}
+          id={`${idPrefix}-surface`}
           value={surface}
           onChange={(event) => onFieldChange("surface", event.target.value)}
           options={SURFACE_OPTIONS}
@@ -141,10 +161,10 @@ export function connectionSettingsFields({
     {
       key: "apiKeyEnv",
       label: apiKeyEnvLabel,
-      htmlFor: `${fieldIdPrefix}-apikeyenv`,
-      control: (
+      htmlFor: `${idPrefix}-apikeyenv`,
+      value: (
         <Input
-          id={`${fieldIdPrefix}-apikeyenv`}
+          id={`${idPrefix}-apikeyenv`}
           placeholder="e.g. PORTKEY_KEY"
           value={apiKeyEnv}
           disabled={disabled}
@@ -155,10 +175,10 @@ export function connectionSettingsFields({
     {
       key: "credentialHeader",
       label: "Credential header",
-      htmlFor: `${fieldIdPrefix}-credentialheader`,
-      control: (
+      htmlFor: `${idPrefix}-credentialheader`,
+      value: (
         <Input
-          id={`${fieldIdPrefix}-credentialheader`}
+          id={`${idPrefix}-credentialheader`}
           placeholder={credentialHeaderPlaceholder}
           value={credentialHeader}
           disabled={disabled}
@@ -182,7 +202,7 @@ export function ConnectionSettingsDisclosure({
 }: {
   open: boolean;
   onOpenChange(open: boolean): void;
-  fields: ConnectionSetting[];
+  fields: ConnectionFact[];
   actions?: ReactNode;
   "data-testid"?: string;
 }) {
@@ -190,17 +210,7 @@ export function ConnectionSettingsDisclosure({
     <Disclosure open={open} onOpenChange={onOpenChange} summary="All connection settings">
       <div className={styles.settings} data-settings-editor data-testid={testId}>
         {fields.map((field) => (
-          <div className={styles.settingsRow} key={field.key}>
-            <label className={styles.rowLabel} htmlFor={field.htmlFor}>
-              {field.label}
-            </label>
-            <span className={styles.settingField}>{field.control}</span>
-            {field.help !== undefined && (
-              <span className={`${styles.rowHelp} ${styles.settingHelp}`} id={`${field.htmlFor}-help`}>
-                {field.help}
-              </span>
-            )}
-          </div>
+          <ConnectionFactRow key={field.key} row={field} settings />
         ))}
         {actions !== undefined && <div className={styles.settingsActions}>{actions}</div>}
       </div>

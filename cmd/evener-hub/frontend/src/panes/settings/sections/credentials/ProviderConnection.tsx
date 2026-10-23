@@ -114,43 +114,46 @@ export interface ProviderConnectionProps {
 }
 
 // Presentation only. Authentication capabilities always come from the catalogue.
-// The labels double as the popular set: the picker's short list is exactly the
-// providers whose names the card already knows.
-const PROVIDER_LABELS = new Map<string, string>([
-  ["anthropic", "Anthropic"],
-  ["openai", "OpenAI"],
-  ["openai-codex", "OpenAI Codex"],
-  ["google", "Gemini"],
-  ["openrouter", "OpenRouter"],
-  // The registry entry whose setup has no usable base URL: how an endpoint
-  // outside the catalogue is added. Its display name is the path, not the
-  // registry's internal "OpenAI-compatible endpoint".
-  ["openai-compatible", "Custom endpoint"],
-]);
-const POPULAR_PROVIDER_IDS = new Set(PROVIDER_LABELS.keys());
-
-const HELP: Record<string, { keyUrl: string; billing: string }> = {
+// One table owns both the display name and the optional key-help copy; the
+// popular set is exactly its keys, so a name and its status cannot drift apart.
+const PROVIDERS: Record<string, { label: string; keyUrl?: string; billing?: string }> = {
   anthropic: {
+    label: "Anthropic",
     keyUrl: "https://console.anthropic.com/settings/keys",
     billing: "Claude subscriptions do not include API billing. API usage is billed separately.",
   },
   openai: {
+    label: "OpenAI",
     keyUrl: "https://platform.openai.com/api-keys",
     billing: "ChatGPT subscriptions do not include API billing. API usage is billed separately.",
   },
   "openai-codex": {
+    label: "OpenAI Codex",
     keyUrl: "https://developers.openai.com/codex",
     billing: "Codex access comes from your ChatGPT/Codex subscription. Sign in instead of pasting a key.",
   },
   google: {
+    label: "Gemini",
     keyUrl: "https://aistudio.google.com/apikey",
     billing: "Gemini API billing and limits are separate from your chat subscription.",
   },
   openrouter: {
+    label: "OpenRouter",
     keyUrl: "https://openrouter.ai/settings/keys",
     billing: "API billing uses your OpenRouter credits.",
   },
+  // The registry entry whose setup has no usable base URL: how an endpoint
+  // outside the catalogue is added. Its display name is the path, not the
+  // registry's internal "OpenAI-compatible endpoint". It has no key-help copy.
+  "openai-compatible": {
+    label: "Custom endpoint",
+  },
 };
+const POPULAR_PROVIDER_IDS = new Set(Object.keys(PROVIDERS));
+
+function providerPresentation(row: ProviderDescriptor) {
+  return Object.hasOwn(PROVIDERS, row.id) ? PROVIDERS[row.id] : undefined;
+}
 
 function findSetupIn(
   listing: { instances: InstanceEntry[]; availableProviders: ProviderDescriptor[] },
@@ -315,7 +318,7 @@ function ProviderChoice({
   onSelect(row: ProviderDescriptor): void;
 }) {
   const descriptionId = useId();
-  const label = PROVIDER_LABELS.get(row.id) ?? row.name ?? row.id;
+  const label = providerPresentation(row)?.label ?? row.name ?? row.id;
   return (
     <ListRow
       label={label}
@@ -364,7 +367,9 @@ export function ProviderConnection(props: ProviderConnectionProps) {
   }, [store.error]);
   const popular = store.availableProviders.filter((row) => POPULAR_PROVIDER_IDS.has(row.id));
   const matching = store.availableProviders.filter((row) =>
-    `${row.id} ${row.name ?? ""} ${PROVIDER_LABELS.get(row.id) ?? ""}`.toLowerCase().includes(search.toLowerCase()),
+    `${row.id} ${row.name ?? ""} ${providerPresentation(row)?.label ?? ""}`
+      .toLowerCase()
+      .includes(search.toLowerCase()),
   );
   const listingUnavailable = store.loading || !!store.error;
   if (selected)
@@ -591,7 +596,7 @@ function SelectedConnection({
   const needsKey = storedMode && !adding && row?.activeSource !== "store";
   const [editing, setEditing] = useState<EditingRow>(() => (needsKey ? "key" : null));
   const busy = phase === "saving" || phase === "refreshing" || phase === "checking";
-  const help = Object.hasOwn(HELP, effectiveProvider.id) ? HELP[effectiveProvider.id] : undefined;
+  const presentation = providerPresentation(effectiveProvider);
   const unavailable = connection !== "ready" || store.loading;
   // The hub refuses instance mutations while its provider config is broken;
   // credential store writes are a separate path and stay available.
@@ -600,7 +605,7 @@ function SelectedConnection({
   // Every instance-editor mutation is gated by one fact: either the listing
   // refuses edits, or a landed write still owes its confirming read.
   const mutationsBlocked = instanceEditsBlocked || confirmationOwed;
-  const providerLabel = PROVIDER_LABELS.get(effectiveProvider.id) ?? effectiveProvider.name ?? effectiveProvider.id;
+  const providerLabel = presentation?.label ?? effectiveProvider.name ?? effectiveProvider.id;
   const status = statusOf();
 
   const setPhase = useCallback((next: Phase) => {
@@ -1674,23 +1679,7 @@ function SelectedConnection({
     return "Test connection";
   }
   const primaryLabel = primaryActionLabel();
-  // The add card has no settings disclosure, so its keystrokes never build
-  // the full editor's fields.
-  const settingsFields = adding
-    ? []
-    : connectionSettingsFields({
-        variableIdPrefix: "connection-setting",
-        fieldIdPrefix: "connection",
-        variableRows: settingsVarRows,
-        values: { vars: settingsVars, ...settingsDraft },
-        disabled: instanceEditsBlocked,
-        copy: {
-          apiKeyEnvLabel: "API key env",
-          credentialHeaderPlaceholder: "Authorization=Bearer $VAR or $(get-token)",
-        },
-        onVariableChange: (key, value) => setSettingsVars((current) => ({ ...current, [key]: value })),
-        onFieldChange: (field, value) => setSettingsDraft((current) => ({ ...current, [field]: value })),
-      });
+
   const addFacts = (): ConnectionFact[] => [
     {
       key: "name",
@@ -2024,10 +2013,12 @@ function SelectedConnection({
             Sign in
           </Button>
         )}
-        {help && modes.includes("apiKey") && <OpenButton href={help.keyUrl} word="Get an API key" />}
-        {help && (
+        {presentation?.keyUrl && modes.includes("apiKey") && (
+          <OpenButton href={presentation.keyUrl} word="Get an API key" />
+        )}
+        {presentation?.billing && (
           <p className={styles.note} data-testid="billing-note">
-            {help.billing}
+            {presentation.billing}
           </p>
         )}
 
@@ -2110,7 +2101,22 @@ function SelectedConnection({
               setSettingsOpen(open);
             }}
             data-testid="connection-settings"
-            fields={settingsFields}
+            fields={
+              settingsOpen
+                ? connectionSettingsFields({
+                    idPrefix: "connection",
+                    variableRows: settingsVarRows,
+                    values: { vars: settingsVars, ...settingsDraft },
+                    disabled: instanceEditsBlocked,
+                    copy: {
+                      apiKeyEnvLabel: "API key env",
+                      credentialHeaderPlaceholder: "Authorization=Bearer $VAR or $(get-token)",
+                    },
+                    onVariableChange: (key, value) => setSettingsVars((current) => ({ ...current, [key]: value })),
+                    onFieldChange: (field, value) => setSettingsDraft((current) => ({ ...current, [field]: value })),
+                  })
+                : []
+            }
             actions={
               <>
                 <Button variant="quiet" size="sm" disabled={busy} onClick={() => leave(onOpenSettings)}>

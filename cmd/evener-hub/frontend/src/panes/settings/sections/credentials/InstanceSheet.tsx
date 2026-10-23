@@ -740,30 +740,6 @@ export function InstanceSheet({
         : "keeps-old-name"
       : undefined;
   const headingState = instance === undefined ? undefined : credentialState(instance, undefined);
-  const connectionSettings =
-    draft === null
-      ? []
-      : connectionSettingsFields({
-          variableIdPrefix: ids,
-          fieldIdPrefix: ids,
-          variableRows: varRows(draft, template),
-          values: {
-            vars: draft.vars,
-            protocol: draft.protocol,
-            surface: draft.surface,
-            apiKeyEnv: draft.apiKeyEnv,
-            credentialHeader: draft.credentialHeader,
-          },
-          disabled: busy,
-          copy: {
-            apiKeyEnvLabel: "API key environment variable",
-            credentialHeaderPlaceholder: "Authorization=Bearer $VAR",
-            credentialHeaderHelp:
-              "NAME=VALUE; the value must reference a $VARIABLE or run a $(command), never a literal secret.",
-          },
-          onVariableChange: updateVar,
-          onFieldChange: (field, value) => update({ [field]: value }),
-        });
 
   return (
     <Sheet
@@ -840,7 +816,30 @@ export function InstanceSheet({
                 open={settingsOpen}
                 onOpenChange={setSettingsOpen}
                 data-testid="connection-settings"
-                fields={connectionSettings}
+                fields={
+                  settingsOpen
+                    ? connectionSettingsFields({
+                        idPrefix: ids,
+                        variableRows: varRows(draft, template),
+                        values: {
+                          vars: draft.vars,
+                          protocol: draft.protocol,
+                          surface: draft.surface,
+                          apiKeyEnv: draft.apiKeyEnv,
+                          credentialHeader: draft.credentialHeader,
+                        },
+                        disabled: busy,
+                        copy: {
+                          apiKeyEnvLabel: "API key environment variable",
+                          credentialHeaderPlaceholder: "Authorization=Bearer $VAR",
+                          credentialHeaderHelp:
+                            "NAME=VALUE; the value must reference a $VARIABLE or run a $(command), never a literal secret.",
+                        },
+                        onVariableChange: updateVar,
+                        onFieldChange: (field, value) => update({ [field]: value }),
+                      })
+                    : []
+                }
               />
               {formError !== null && (
                 <InlineNotice tone="danger" data-reason={formError.reason}>
