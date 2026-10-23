@@ -1586,10 +1586,12 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
   // Slash options prevent mousedown's default focus transfer, so only leaving
   // the editor closes its completion menu. The card owns collapse separately.
   function isEditorEvent(target: EventTarget | null): boolean {
-    // Element from the form's own window: a conversation in a Dockview popout
-    // builds its editor in that realm, and `instanceof` is per-realm.
-    const ElementCtor = formRef.current?.ownerDocument.defaultView?.Element ?? Element;
-    const element = target instanceof ElementCtor ? target : null;
+    // Realm-independent: Dockview *moves* an existing editor into a popout
+    // window, which changes its ownerDocument but keeps its original realm and
+    // prototype, so any `instanceof Element` - the opener's or the popout's -
+    // rejects it. nodeType and closest survive adoption.
+    const element =
+      target !== null && typeof target === "object" && (target as Node).nodeType === 1 ? (target as Element) : null;
     return element !== null && element.closest('[role="textbox"]') !== null && !!formRef.current?.contains(element);
   }
 

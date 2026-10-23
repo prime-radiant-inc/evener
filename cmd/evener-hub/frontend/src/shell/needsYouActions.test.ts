@@ -1694,3 +1694,63 @@ test("a held next response does not act after the focused session is cleared in 
   expect(window.history.length).toBe(before.history);
   controller.dispose();
 });
+
+// A retry of a populated page keeps its rows and clears the error while it is in
+// flight. If demand went away then, the control would unmount and its visibility
+// effect would cancel the navigation that started the retry.
+test("a populated page's retry keeps demand available while it is in flight", async () => {
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params) => {
+    if (params.resource === "manifest") {
+      return wireSnapshot(
+        params,
+        manifest({
+          generation_id: "retrying-page",
+          sections: { live: { count: 0 }, needs_you: { count: 1 }, pin_sections: { count: 0 } },
+        }),
+        '"manifest"',
+        1,
+        "retrying-page",
+      );
+    }
+    if (params.resource === "section") {
+      return wireSnapshot(
+        params,
+        {
+          sessions: [
+            {
+              ref: "local:a",
+              host_id: "local",
+              session_id: "local:a",
+              title: "local:a",
+              project: "Proj",
+              state: "awaiting",
+              kind: "session",
+              live: true,
+              children: [],
+            },
+          ],
+          remaining: 0,
+        },
+        '"page"',
+        1,
+        "retrying-page",
+      );
+    }
+    throw new Error(`unexpected resource ${params.resource}`);
+  });
+  navigationStore.init(client, capability("retrying-page"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const pageKey = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
+  const page = navigationStore.getState().resources.get(keyID(pageKey));
+  if (!page) throw new Error("missing needs-you page");
+  const resources = new Map(navigationStore.getState().resources);
+  resources.set(keyID(pageKey), { ...page, loading: true, stale: true, error: null });
+  const visibleResourceKeys = new Set(navigationStore.getState().visibleResourceKeys);
+  visibleResourceKeys.add(keyID(pageKey));
+  navigationStore.setState({ resources, visibleResourceKeys });
+
+  const controller = createNeedsYouController();
+  expect(controller.getSnapshot().canLoadMore).toBe(true);
+  controller.dispose();
+});

@@ -127,7 +127,18 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
     const loading = [...state.resources.values()].some(
       (resource) => resource.key.kind === "section" && resource.key.section === "needs_you" && resource.loading,
     );
-    const canLoadMore = !hasManifest || failed || remaining > 0 || count > uniqueRows.length;
+    // A retry of a populated page keeps its rows while it is in flight and has
+    // cleared the error. If demand vanished then, the control would unmount and
+    // its visibility effect would cancel the very navigation that started the
+    // retry.
+    const retryingPopulatedPage = [...state.resources.values()].some(
+      (resource) =>
+        resource.key.kind === "section" &&
+        resource.key.section === "needs_you" &&
+        resource.loading &&
+        ((resource.data as { sessions?: unknown[] } | null)?.sessions?.length ?? 0) > 0,
+    );
+    const canLoadMore = retryingPopulatedPage || !hasManifest || failed || remaining > 0 || count > uniqueRows.length;
     const canLoadInitialPage = !hasReadManifest && state.mode === "v3" && state.manifest?.loading === true;
     return Object.freeze({
       choices: Object.freeze(choices.map((choice) => Object.freeze(choice))),

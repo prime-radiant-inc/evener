@@ -52,9 +52,17 @@ export function FocusScope({ trap = false, autoFocus = true, children }: FocusSc
     }
     return () => {
       const target = restoreTargetRef.current;
-      const ElementCtor = doc.defaultView?.HTMLElement ?? HTMLElement;
-      if (target instanceof ElementCtor && doc.contains(target)) {
-        target.focus();
+      // Realm-independent: a node adopted into another window keeps its original
+      // prototype, so `instanceof HTMLElement` from either window rejects it.
+      const focusable =
+        target !== null && typeof target === "object" && (target as Node).nodeType === 1
+          ? (target as HTMLElement)
+          : null;
+      // Its document as it is now: an adopted node belongs to the window it was
+      // moved into, not to the one this scope mounted in.
+      const home = focusable?.ownerDocument ?? doc;
+      if (focusable !== null && home.contains(focusable) && typeof focusable.focus === "function") {
+        focusable.focus();
       }
     };
   }, [autoFocus]);
