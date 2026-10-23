@@ -358,7 +358,15 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         return;
       }
     }
-    if ((focusedPane?.type === "session" || focusedPane?.type === "sessionZoom") && goBackInAttentionHistory()) return;
+    // Attention Back belongs to the reader the current entry owns. A cascade
+    // opened over that reader is a local step, and its own Back returns to the
+    // reader rather than jumping past it to the entry's source.
+    if (
+      (focusedPane?.type === "session" || focusedPane?.type === "sessionZoom") &&
+      attentionEntryOwnsPane(focusedPane) &&
+      goBackInAttentionHistory()
+    )
+      return;
     let target = popValidBackTarget(backStackRef.current, panes, focusedPaneId);
     if (!target && focusedPane?.type === "transcript") {
       const params = focusedPane.params as { ref?: unknown; parentRef?: unknown };
