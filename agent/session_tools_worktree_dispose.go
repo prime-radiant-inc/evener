@@ -66,6 +66,14 @@ func (s *Session) disposeStableDelegateLane(ctx context.Context, id string, forc
 	if s.delegateController == nil {
 		return WorktreeDisposeResult{}, errors.New("manage_worktree dispose: stable delegate controller is unavailable")
 	}
+	// Fence the whole subtree before the quiescence snapshot and keep it through
+	// the lane teardown: the point-in-time reads below cannot see a cold-restore
+	// commit, and a descendant that starts after the read would run in a lane
+	// being unlocked and removed.
+	if !s.delegateController.beginSubtreeLaneHandoff(id) {
+		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s became active while disposing; retry once it is idle", id)
+	}
+	defer s.delegateController.endSubtreeLaneHandoff(id)
 	state, err := s.delegateController.stableWorktreeSnapshotForOwner(s, id)
 	if err != nil {
 		if errors.Is(err, errDelegateNotControllable) {

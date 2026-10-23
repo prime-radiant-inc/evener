@@ -112,6 +112,16 @@ func (s *Session) disposeOneStableDelegateLane(ctx context.Context, local *exece
 	if lanePath == "" || lanePath == "." {
 		return "", false
 	}
+	// A mid-tree delegate session closes while the shared controller is still
+	// live: fence its lane's subtree so a descendant cold restore cannot install
+	// into the lane this close is about to unlock and remove. The root close has
+	// already set c.closing, which refuses every admission on its own.
+	if !s.delegateController.controllerClosing() {
+		if !s.delegateController.beginSubtreeLaneHandoff(lane.delegateID) {
+			return lane.delegateID + " at " + lanePath + " (descendant admission in flight; retained)", true
+		}
+		defer s.delegateController.endSubtreeLaneHandoff(lane.delegateID)
+	}
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
 		return "", false
 	}

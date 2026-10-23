@@ -89,6 +89,12 @@ type delegateTreeController struct {
 	// drops all of it at once. Process-local.
 	attention             map[string]*delegateAttentionState
 	attentionRestoreHolds map[string]int
+	// laneHandoffs fences an in-flight worktree-lane handoff over the whole
+	// subtree rooted at the key delegate. laneRestores counts cold attention
+	// restore windows from their commit through runtime installation. Both are
+	// guarded by mu; see delegate_lane_handoff.go.
+	laneHandoffs map[string]struct{}
+	laneRestores map[string]int
 	// attentionDriveSeq orders selections for delegateAttentionState.driveTurn.
 	attentionDriveSeq uint64
 	idleReleaseTimers map[string]idleReleaseTimerHandle
@@ -361,6 +367,8 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		deliveryClaims:      make(map[string]*delegateDeliveryClaim),
 		quietClaims:         make(map[uint64]*delegateQuietAttentionClaim),
 		attention:           make(map[string]*delegateAttentionState),
+		laneHandoffs:        make(map[string]struct{}),
+		laneRestores:        make(map[string]int),
 		idleReleaseTimers:   make(map[string]idleReleaseTimerHandle),
 		watchEnqueues:       make(map[uint64]*delegateWatchReceipt),
 		watchDeliveries:     make(map[uint64]*delegateWatchReceipt),

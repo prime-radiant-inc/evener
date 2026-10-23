@@ -112,6 +112,17 @@ or whose tree is dirty (pass `force_dirty`) — but unlike the automatic collect
 below, `dispose` *will* retire a rebase- or squash-merged lane, on the model's
 judgment that the work actually landed.
 
+`dispose` fences the whole delegate subtree for the lane handoff, not only the
+named delegate. While the lane is being unlocked and removed, a descendant
+delegate — including a non-isolated child sharing its parent's lane — cannot be
+created, started, cold-restored, or have its runtime installed. A descendant
+start or attention restore already in flight makes `dispose` refuse with the
+retryable "became active" path and leaves the lane intact. A mid-tree delegate
+session's own close applies the same fence before collecting its child lanes; a
+root session's close already refuses new delegate admission before lane
+disposal. If a close-time fence is refused, the lane is retained rather than
+destroyed under the install.
+
 **Behavior change: a session's own merged delegate lanes no longer survive its
 close.** A session now disposes the isolation lanes it created whose commits are
 reachable from the branch they were cut from — collecting them at its own close

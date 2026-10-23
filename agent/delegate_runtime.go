@@ -911,9 +911,19 @@ func (s *Session) restoreColdDelegateAttentionRuntime(delegateID string, gates .
 		return nil, nil, retirementErr
 	}
 	defer retirementRelease()
+	// Hold the restore window from before the commit through installation, so a
+	// lane handoff starting in this span refuses instead of tearing the lane down
+	// under the runtime being installed.
+	if err := s.delegateController.beginLaneRestore(delegateID); err != nil {
+		return nil, nil, err
+	}
+	defer s.delegateController.endLaneRestore(delegateID)
 	started, parentID, err := s.delegateController.idleDelegateRestoreCommit(delegateID)
 	if err != nil {
 		return nil, nil, err
+	}
+	if observer := s.delegateRestoreAfterCommit; observer != nil {
+		observer(delegateID)
 	}
 	owner, err := s.restoreColdDelegateOwnerRuntime(parentID, gates...)
 	if err != nil {
