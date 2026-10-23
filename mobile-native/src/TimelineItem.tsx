@@ -8,6 +8,7 @@ import {
 } from "@evener/appwire-client";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { HoldingModal } from "./alerts/HoldingModal";
 import { copyText } from "./clipboard";
@@ -493,19 +494,30 @@ function AgentMessage({
 		[markdown, quote],
 	);
 	const accessibility = useMemo(() => menuAccessibility(menu), [menu]);
-	const contextMenu = useMemo(() => menu.map((entry) => ({ text: entry.label, onPress: entry.run })), [menu]);
+	// A Pressable here would become the touch responder and every link in the
+	// prose would go dead (#4839). A long-press gesture waits for the hold and
+	// leaves a short tap to the text view, so links still open. The detector
+	// needs one host view, and this View is also what covers a diagram-only
+	// reply and every segment of a message with a diagram in it.
+	const holdForMenu = useMemo(
+		() =>
+			Gesture.LongPress()
+				.runOnJS(true)
+				.onStart(() => showMenu(menu, menuPreview(markdown))),
+		[menu, markdown],
+	);
 	return (
 		<>
-			{/* The markdown view owns touch and hold through its own context menu.
-			A wrapping Pressable would take the touch before any link, and every
-			file link in the prose would go dead. */}
-			<MarkdownResponse
-				markdown={markdown || "…"}
-				selectable={false}
-				fileContext={fileContext}
-				contextMenu={contextMenu}
-				{...accessibility}
-			/>
+			<GestureDetector gesture={holdForMenu}>
+				<View>
+					<MarkdownResponse
+						markdown={markdown || "…"}
+						selectable={false}
+						fileContext={fileContext}
+						{...accessibility}
+					/>
+				</View>
+			</GestureDetector>
 			<HoldingModal
 				visible={selecting}
 				animationType="slide"

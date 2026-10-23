@@ -80,17 +80,12 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 	accessibilityActions,
 	onAccessibilityAction,
 	fileContext,
-	contextMenu,
 }: {
 	markdown: string;
 	selectable?: boolean;
 	accessibilityActions?: AccessibilityActionInfo[];
 	onAccessibilityAction?: (event: AccessibilityActionEvent) => void;
 	fileContext?: NativeFileOpenContext;
-	/** Actions for a touch and hold on the text itself. The markdown view owns
-	 * them natively, so a tap on a link still reaches that link: a wrapping
-	 * Pressable would take the touch first and every link would go dead. */
-	contextMenu?: readonly { text: string; onPress(): void }[];
 }) {
 	const colors = useColors();
 	// useColors returns a new object each render, but every color in it comes
@@ -132,10 +127,6 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 		},
 		[],
 	);
-	// A caller that owns touch and hold passes its own actions; otherwise the
-	// selection menu keeps the built-in Copy response item.
-	const copyResponse = useMemo(() => [{ text: "Copy response", onPress: () => void copyText(markdown) }], [markdown]);
-	const menuItems = contextMenu ? [...contextMenu] : selectable ? copyResponse : undefined;
 	return (
 		<>
 			{rendered.map((segment, index) =>
@@ -191,7 +182,18 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 							if (url.toLowerCase().startsWith("evener-file:")) return;
 							showLink(url);
 						}}
-						contextMenuItems={menuItems}
+						contextMenuItems={
+							selectable
+								? [
+										{
+											text: "Copy response",
+											onPress: () => {
+												void copyText(markdown);
+											},
+										},
+									]
+								: undefined
+						}
 						accessibilityActions={accessibilityActions}
 						onAccessibilityAction={onAccessibilityAction}
 					/>

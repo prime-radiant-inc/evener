@@ -318,7 +318,7 @@ function thread(ref: string): Thread {
 	} as unknown as Thread;
 }
 
-import { Linking } from "react-native";
+import { Linking, ActionSheetIOS } from "react-native";
 beforeEach(() => {
 	vi.mocked(Linking.openURL).mockClear();
 	alertRequests.length = 0;
@@ -363,13 +363,14 @@ it("opens files through actual TimelineItem event props and preserves ordinary r
 	]);
 	expect(Linking.openURL).not.toHaveBeenCalled();
 	expect(text.props.selectable).toBe(false);
-	// The message menu rides on the markdown view's own touch and hold; see
-	// TimelineItem's guard test for why no wrapper may sit above the prose.
-	const items = text.props.contextMenuItems as { text: string; onPress(): void }[];
-	// No quote handler here, so no "Quote in reply".
-	expect(items.map((item) => item.text)).toEqual(["Copy", "Select text"]);
-	act(() => items.find((item) => item.text === "Select text")?.onPress());
-	act(() => items.find((item) => item.text === "Copy")?.onPress());
+	// The menu rides on a hold gesture above the prose; see TimelineItem's
+	// guard test for why no wrapper that takes a tap may sit above it.
+	const detector = tree.root.findAllByType("GestureDetector" as never)[0];
+	const hold = detector?.props.gesture as { handlers: { onStart?(): void } } | undefined;
+	act(() => hold?.handlers.onStart?.());
+	const [options, choose] = vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mock.calls.at(-1)!;
+	expect(options.options).toEqual(["Copy", "Select text", "Cancel"]);
+	act(() => choose(options.options.indexOf("Copy")));
 	expect(Clipboard.setStringAsync).toHaveBeenCalledWith(original);
 });
 it("opens a report link filed in the session artifacts instead of the browser", () => {
