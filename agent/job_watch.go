@@ -249,6 +249,7 @@ type watchConfig struct {
 	generation        string
 	pending           map[jobstore.WatchSendKey]*jobstore.WatchSendState
 	pendingOrder      []jobstore.WatchSendKey
+	producedUpdateSeq map[jobstore.WatchSendKey]uint64
 	settledUpdateSeq  map[jobstore.WatchSendKey]uint64
 	settledOrder      []jobstore.WatchSendKey
 	rejectingDelivery bool
@@ -3286,7 +3287,6 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 	kind := ev.Kind
 	var notifications []jobNotification
 	var deliveries []watchSendDelivery
-	var overBudget []*watchConfig
 
 	jm.mu.Lock()
 	for _, cfg := range jm.watches {
@@ -3295,16 +3295,9 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 		if !dec.matched {
 			continue
 		}
-		// The match is offered to the breaker before the rails split: the send
-		// rail counts its delivery only when the frame settles, which a frame the
-		// receiver never takes never reaches, so latching at the match is what
-		// bounds an unsettled watch. A refused match is a match this watch is no
-		// longer entitled to, so nothing is built from it.
-		accepted, crossedBudget := !cfg.budgetTripped, false
-		if cfg.send != nil {
-			accepted, crossedBudget = noteConditionFireLocked(cfg)
-		}
-		if !accepted {
+		// Source persistence spends the firing and trips the breaker. A failed
+		// append must leave both the matched payload and its budget retryable.
+		if cfg.budgetTripped {
 			continue
 		}
 		if dec.send {
@@ -3322,28 +3315,13 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 			}
 			notifications = append(notifications, n)
 		}
-		if crossedBudget {
-			overBudget = append(overBudget, cfg)
-		}
 	}
 	jm.mu.Unlock()
 
-	// Called from Session.emit; only persist + wake here so watch delivery does
-	// not re-enter session event emission (spec §3).
-	//
-	// The fired sends are recorded BEFORE the over-budget teardown, the way the
-	// output rail and the attach scan already order it, so the frame whose match
-	// crossed the budget is pending by the time its watch is torn down and
-	// leaves on the terminal-flush rail: the budget bounds how many times a
-	// watch may fire, not whether a frame it already produced reaches its
-	// receiver. The teardown's cleared notification still rides out with this
-	// event's matched notifications, so the model is woken once for both.
+	// Session.emit may synchronously transfer canonical receiver custody here.
+	// Source persistence precedes budget teardown, and model presentation still
+	// waits for the receiver's safe execution boundary.
 	jm.recordWatchSendsAndKick(deliveries)
-	for _, cfg := range overBudget {
-		if notification, ok := jm.autoClearWatchOverBudgetNotification(cfg); ok {
-			notifications = append(notifications, notification)
-		}
-	}
 	jm.enqueueWatchNotifications(notifications)
 }
 
@@ -3587,7 +3565,6 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 	}
 	var notifications []jobNotification
 	var deliveries []watchSendDelivery
-	var overBudget []*watchConfig
 
 	root := events.SessionEvent{SessionID: jm.sessionID, Provenance: provenance.Union(jobProvenanceForWatch(jm, jobID), p)}
 	jm.mu.Lock()
@@ -3606,11 +3583,7 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 		}
 		matches := cfg.outputMatcher.FeedAtWithProvenance(chunk, endOffset, root.Provenance)
 		for i, match := range matches {
-			accepted, crossedBudget := !cfg.budgetTripped && cfg.conditionFires+i < watchDeliveryBudget, false
-			if cfg.send != nil {
-				accepted, crossedBudget = noteConditionFireLocked(cfg)
-			}
-			if !accepted {
+			if cfg.budgetTripped || cfg.conditionFires+i >= watchDeliveryBudget {
 				break
 			}
 			matchRoot := root
@@ -3620,24 +3593,12 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 			} else {
 				notifications = append(notifications, jm.watchNotificationFromWatch(cfg, jobID, "output_match: "+match.Text, match.Provenance))
 			}
-			if crossedBudget {
-				overBudget = append(overBudget, cfg)
-				// The matcher hands back every match in the chunk at once, and
-				// the teardown this crossing schedules cannot run until jm.mu is
-				// released. Without this break the rest of the chunk would fire a
-				// watch that is already over budget — one chunk carrying a
-				// thousand matches would deliver a thousand frames. The crossing
-				// match itself has been recorded above: it is inside the budget,
-				// and it is the last one this watch gets.
-				break
-			}
 		}
 	}
 	jm.mu.Unlock()
 
 	jm.enqueueWatchNotifications(notifications)
 	jm.recordWatchSendsAndKick(deliveries)
-	jm.autoClearOverBudgetWatches(overBudget)
 }
 
 // prepareAttachScanLocked primes a freshly installed output_match matcher for a
@@ -3720,7 +3681,7 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 	if cfg.send != nil {
 		root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, jobID)}
 		jm.mu.Lock()
-		accepted, crossedBudget := noteConditionFireLocked(cfg)
+		accepted := !cfg.budgetTripped
 		if !accepted {
 			jm.mu.Unlock()
 			return false
@@ -3728,9 +3689,6 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 		delivery := jm.watchSendSnapshot(cfg, jobID, reason, root)
 		jm.mu.Unlock()
 		jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
-		if crossedBudget {
-			jm.autoClearWatchOverBudget(cfg)
-		}
 		return true
 	}
 	jm.mu.Lock()
@@ -3922,24 +3880,24 @@ func watchEverDelivered(cfg *watchConfig) bool {
 // already terminal, and it is idempotent — the notice it appends is itself a
 // watch-send frame, so a repeat pass reads that watch as having spoken.
 func (jm *jobManager) noticeUnrestoredWatchEnds() error {
-	if len(jm.watchesLostAtRestore) == 0 {
-		return nil
+	stored, err := jm.store.LoadEvents()
+	if err != nil {
+		return err
 	}
 	// A receiver that can't be routed to — its Session not yet reconstructed,
 	// or gone for good — must not hold every OTHER lost watch's end notice
 	// hostage. Log the aggregate and keep going; restore itself never fails on
 	// a notification-delivery miss.
-	if err := jm.notifyRestartCancelledCallbackWatches(); err != nil && jm.emit != nil {
+	if err := jm.notifyRestartCancelledCallbackWatches(stored); err != nil && jm.emit != nil {
 		jm.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("restart callback cancellation: %v", err)}, nil)
+	}
+	if len(jm.watchesLostAtRestore) == 0 {
+		return nil
 	}
 	// One journal read for both consumers: LoadEvents returns the raw events
 	// and Fold derives the same job records Load would fold from them, so this
 	// path does one readAllLocked+fold instead of two. No cache is added — the
 	// events are a local of this call only.
-	stored, err := jm.store.LoadEvents()
-	if err != nil {
-		return err
-	}
 	recs := jobstore.Fold(stored)
 	spoke := watchGenerationsThatSpoke(stored)
 	for _, watch := range jm.watchesLostAtRestore {
@@ -3998,7 +3956,10 @@ func (jm *jobManager) noticeUnrestoredWatchEnds() error {
 	return nil
 }
 
-func (jm *jobManager) notifyRestartCancelledCallbackWatches() error {
+func (jm *jobManager) notifyRestartCancelledCallbackWatches(stored []jobstore.Event) error {
+	if jm.retirementOwner != nil || jm.delegateController != nil {
+		return jm.produceRestartCallbackNotices(stored)
+	}
 	receivers := make(map[string]struct{})
 	for _, watch := range jm.watchesLostAtRestore {
 		if watch == nil || watch.SendTo != "" {
@@ -4040,6 +4001,64 @@ func (jm *jobManager) notifyRestartCancelledCallbackWatches() error {
 		}
 		jm.enqueue(jobNotification{Kind: jobNotificationKindWatch, Status: jobNotificationEventWatch, Reason: callbackWatchesCancelledAtRestartMessage})
 	}
+	return errors.Join(errs...)
+}
+
+// The runtime_lost batch is the restart notice's source authority. Its first
+// sequence and recipient identify one payload even if no pending append or
+// receiver write succeeded before another process restart. The existing send
+// journal retains transport/ack work, not a second system-notification queue.
+func (jm *jobManager) produceRestartCallbackNotices(stored []jobstore.Event) error {
+	watches := jobstore.FoldWatches(stored)
+	recorded := make(map[string]bool)
+	for _, event := range stored {
+		if event.WatchSend != nil {
+			recorded[event.WatchSend.DeliveryID] = true
+		}
+	}
+	var batchSeq, previousSeq int64
+	var batchTime time.Time
+	var errs []error
+	for _, event := range stored {
+		if event.Kind != jobstore.EventWatchCleared || event.Watch == nil || event.Watch.EndReason != "runtime_lost" {
+			continue
+		}
+		if previousSeq+1 != event.Seq || !batchTime.Equal(event.TS) {
+			batchSeq, batchTime = event.Seq, event.TS
+		}
+		previousSeq = event.Seq
+		watch := watches[event.WatchID]
+		if watch == nil || watch.Generation != event.Watch.Generation || watch.SendTo != "" {
+			continue
+		}
+		receiver := watch.ReceiverSessionID
+		if receiver == "" {
+			receiver = jm.sessionID
+		}
+		id := fmt.Sprintf("restart-%s-%d-%s", jm.sessionID, batchSeq, receiver)
+		if recorded[id] {
+			continue
+		}
+		recorded[id] = true // one notice per receiver in this restart batch
+		cfg := &watchConfig{
+			id: watch.WatchID, watchID: watch.WatchID, generation: watch.Generation,
+			target: watch.Target, receiverSessionID: receiver,
+			receiverDelegateID: watch.ReceiverDelegateID,
+			pending:            make(map[jobstore.WatchSendKey]*jobstore.WatchSendState),
+		}
+		jm.mu.Lock()
+		d := jm.watchSendSnapshot(cfg, watch.Target, "runtime_lost", events.SessionEvent{SessionID: jm.sessionID})
+		d.deliveryID = id
+		d.provenance = provenance.WithWatch(nil, cfg.watchID, cfg.generation, id, jm.sessionID, watch.Target)
+		d.callback, d.endNotice, d.allowAfterTerminalExpiry = true, true, true
+		jm.rememberDetachedPendingLocked(cfg)
+		jm.mu.Unlock()
+		d.frame = systemNotification(callbackWatchesCancelledAtRestartMessage)
+		if _, _, _, err := jm.recordWatchSend(d); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	jm.dispatchProducedWatchSends()
 	return errors.Join(errs...)
 }
 
@@ -4395,7 +4414,8 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 // A persist failure after a durable prefix landed (persisted=true) still
 // returns ok=true with the persisted state, so the journal and the runtime
 // map can be reconciled against it instead of a ghost ok=false.
-// Pure observation: no delivery, no Session calls (spec §3).
+// Source persistence precedes firing lifecycle transitions. The caller pumps
+// canonical receiver custody after this source-side work completes.
 func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.WatchSendState, cfg *watchConfig, ok bool, err error) {
 	if d.cfg == nil || (d.send == nil && !d.callback) || !jm.isCurrentWatchSendDelivery(d) {
 		return jobstore.WatchSendState{}, nil, false, nil
@@ -4421,7 +4441,7 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.Watch
 	// state so the recorded evidence carries the ancestry that tripped it.
 	persistedState, persisted, perr := jm.persistPendingWatchSend(state, d)
 	if perr != nil {
-		if d.allowAfterTerminalExpiry && !persisted {
+		if !persisted {
 			jm.rememberUnpersistedTerminalPendingWatchSend(d.cfg, state)
 		}
 		if !persisted {
@@ -4437,6 +4457,7 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.Watch
 		return jobstore.WatchSendState{}, nil, false, nil
 	}
 	state = persistedState
+	jm.finishProducedWatchFiring(d.cfg)
 	if terr != nil {
 		return jobstore.WatchSendState{}, nil, false, jm.dropWatchSend(state, d.cfg, terr.Error())
 	}
@@ -4446,10 +4467,9 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.Watch
 	return state, d.cfg, true, nil
 }
 
-// recordWatchSendsAndKick is the observation-side half of watch delivery:
-// persist every fired send, enqueue caller wake tokens, kick the owner. It
-// never delivers (spec §3); the owner's loop drains and delivers on wake. With
-// nothing recorded there is nothing to drain, so the owner is left undisturbed.
+// recordWatchSendsAndKick persists fired sends and pumps canonical custody
+// immediately, including while tools run. Wake tokens and kicks schedule only
+// later presentation or retry, not source production or receiver acceptance.
 func (jm *jobManager) recordWatchSendsAndKick(deliveries []watchSendDelivery) {
 	tokens, recorded := jm.recordWatchSends(deliveries)
 	jm.dispatchProducedWatchSends()
@@ -4471,7 +4491,10 @@ func (jm *jobManager) recordWatchSends(deliveries []watchSendDelivery) (tokens [
 	}
 	deliveries = jm.snapshotWatchSendFrames(deliveries)
 	for _, d := range deliveries {
-		state, _, ok, _ := jm.recordWatchSend(d)
+		state, _, ok, err := jm.recordWatchSend(d)
+		if err != nil {
+			jm.kick()
+		}
 		if !ok {
 			continue // recordWatchSend already produced diagnostics/drops
 		}
@@ -4564,36 +4587,17 @@ func (jm *jobManager) deliverPendingWatchSend(cfg *watchConfig, state jobstore.W
 		return false, nil
 	}
 	if ensurePending {
-		unproducedCallback := false
-		if state.CallbackFrame {
-			fold, err := jm.store.LoadWatchSends()
-			if err != nil {
-				return false, err
-			}
-			pending := fold.Pending[state.Key]
-			unproducedCallback = pending == nil || pending.DeliveryID != state.DeliveryID
-		}
 		if err := jm.appendWatchSendPendingState(cfg, state); err != nil {
 			jm.enqueueWatchNotifications([]jobNotification{
 				watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 			})
 			return false, err
 		}
-		if unproducedCallback {
-			jm.mu.Lock()
-			crossed := false
-			if strings.HasPrefix(state.TriggerReason, "event: ") || strings.HasPrefix(state.TriggerReason, "output_match: ") {
-				_, crossed = noteConditionFireLocked(cfg)
-			}
-			if callbackFiringReason(state.TriggerReason) {
-				jm.countWatchDeliveryLocked(cfg)
-			}
-			jm.mu.Unlock()
-			if crossed {
-				jm.autoClearWatchOverBudget(cfg)
-			}
-		}
+		jm.mu.Lock()
+		jm.noteProducedWatchFiringLocked(cfg, state)
+		jm.mu.Unlock()
 	}
+	jm.finishProducedWatchFiring(cfg)
 	if state.ReceiverDelegateID != "" && jm.delegateController != nil {
 		accepted, closed, err := jm.delegateController.notificationCustodyAndClosure(state.ReceiverSessionID, stableWatchAttentionID(state))
 		if err != nil {
@@ -4601,7 +4605,7 @@ func (jm *jobManager) deliverPendingWatchSend(cfg *watchConfig, state jobstore.W
 		}
 		if closed {
 			if accepted {
-				return true, jm.settleWatchSendDelivered(cfg, state)
+				return true, jm.settleAcceptedWatchSend(cfg, state)
 			}
 			return false, jm.dropWatchSend(state, cfg, "receiver permanently closed before custody")
 		}
@@ -4613,9 +4617,17 @@ func (jm *jobManager) deliverPendingWatchSend(cfg *watchConfig, state jobstore.W
 		if err := jm.acceptWatchFrame(state); err != nil {
 			return false, err
 		}
-		return true, jm.settleWatchSendDelivered(cfg, state)
+		return true, jm.settleAcceptedWatchSend(cfg, state)
 	}
 	return false, jm.dropWatchSend(state, cfg, "retired loose watch receiver")
+}
+
+func (jm *jobManager) settleAcceptedWatchSend(cfg *watchConfig, state jobstore.WatchSendState) error {
+	err := jm.settleWatchSendDelivered(cfg, state)
+	if err != nil {
+		jm.noteUnsettledWatchSend(cfg, state, false)
+	}
+	return err
 }
 
 // acceptWatchFrame transfers custody without starting the source's model loop.
@@ -4634,7 +4646,14 @@ func (jm *jobManager) acceptWatchFrame(state jobstore.WatchSendState) error {
 // dispatchProducedWatchSends pumps transport through the existing delivery
 // claims. A failed destination leaves the journal pending for the host's drain.
 func (jm *jobManager) dispatchProducedWatchSends() {
-	fold, err := jm.store.LoadWatchSends()
+	jm.dispatchProducedWatchSendsFrom(jm.store.LoadWatchSends)
+}
+
+func (jm *jobManager) dispatchProducedWatchSendsFrom(load watchSendLoader) {
+	if _, err := jm.retryStableWatchSettlements(); err != nil {
+		jm.kick()
+	}
+	fold, err := load()
 	if err != nil {
 		jm.kick()
 		return
@@ -4778,7 +4797,7 @@ func (jm *jobManager) noteUnsettledWatchSend(cfg *watchConfig, state jobstore.Wa
 	defer jm.mu.Unlock()
 	// A frame whose receipt is gone was retired meanwhile (its watch cleared
 	// or the frame dropped); nothing would ever clear a note for it.
-	if _, held := jm.stableWatchReceipts[state.DeliveryID]; !held {
+	if _, held := jm.stableWatchReceipts[state.DeliveryID]; state.StableReceiver && !held {
 		return
 	}
 	if jm.unsettledWatchSends == nil {
@@ -5204,6 +5223,18 @@ func (jm *jobManager) retryStableWatchSettlements() (bool, error) {
 	}()
 	for {
 		for _, retry := range retries {
+			if !retry.state.StableReceiver {
+				if retry.unarmed {
+					if err := jm.acceptWatchFrame(retry.state); err != nil {
+						return true, err
+					}
+				}
+				if err := jm.settleWatchSendDelivered(retry.cfg, retry.state); err != nil {
+					return true, err
+				}
+				jm.forgetStableWatchSettlementRetry(retry.state)
+				continue
+			}
 			controller := jm.delegateController
 			if controller == nil {
 				return true, errors.New("stable watch controller is unavailable")
@@ -5266,6 +5297,9 @@ func (jm *jobManager) planWatchSendPending(state jobstore.WatchSendState, d watc
 		return watchSendPendingRecord{}
 	}
 	cfg := d.cfg
+	if cfg.budgetTripped && (strings.HasPrefix(state.TriggerReason, "event: ") || strings.HasPrefix(state.TriggerReason, "output_match: ")) {
+		return watchSendPendingRecord{}
+	}
 	if settled, ok := cfg.settledUpdateSeq[state.Key]; ok && state.UpdateSeq <= settled {
 		return watchSendPendingRecord{}
 	}
@@ -5392,6 +5426,7 @@ func (jm *jobManager) storeWatchSendPendingRecord(record watchSendPendingRecord,
 	}
 	persisted := record.persisted
 	cfg.pending[record.key] = &persisted
+	jm.noteProducedWatchFiringLocked(cfg, persisted)
 	if detached || cfg.rejectingDelivery || jm.closing {
 		jm.rememberDetachedPendingLocked(cfg)
 	}
@@ -5832,12 +5867,10 @@ type pendingWatchSendDelivery struct {
 	unarmed bool
 }
 
-// drainPendingWatchSends is the ONLY executor of watch-send delivery. Call it
-// solely from loop-owned code: never from event observation, never under
-// responseSideEffectsMu (spec §3/§4.2). A wake submits an EntryNotification; an
-// all-token batch renders and settles in the notification turn; an EMPTY accept
-// hits finishNotificationNoop → finishProcessingAtBoundary → here, so
-// delegate-only wakes deliver with zero model turns.
+// drainPendingWatchSends retries transport and settles source acknowledgements
+// from loop-owned code. Producer dispatch also transfers canonical custody,
+// independently of this drain. Neither path grants model observation, which
+// remains tied to presentation at a safe execution boundary.
 type watchSendDrainResult struct {
 	observerHandoff bool
 }
@@ -6251,7 +6284,12 @@ func (s *Session) retryRestoredPendingWatchSends(_ context.Context) error {
 	if s == nil || s.jobManager == nil {
 		return nil
 	}
+	return s.retryRestoredPendingWatchSendsFrom(s.jobManager.store.LoadWatchSends)
+}
+
+func (s *Session) retryRestoredPendingWatchSendsFrom(load watchSendLoader) error {
 	deliveries := s.jobManager.pendingWatchSendDeliveries(nil)
+	dispatch := false
 	for _, delivery := range deliveries {
 		if delivery.state.Key.ResolvedSendTo == runtimeMessageAliasCaller && s.jobManager.retirementOwner == nil && s.jobManager.delegateController == nil {
 			if s.jobManager != nil && s.jobManager.enqueue != nil {
@@ -6260,12 +6298,15 @@ func (s *Session) retryRestoredPendingWatchSends(_ context.Context) error {
 			continue
 		}
 		if delivery.state.StableReceiver || delivery.state.CallbackFrame || delivery.state.ReceiverSessionID != "" {
-			s.jobManager.dispatchProducedWatchSends()
+			dispatch = true
 			continue
 		}
 		if err := s.jobManager.dropWatchSend(delivery.state, delivery.cfg, "retired loose watch receiver"); err != nil {
 			return err
 		}
+	}
+	if dispatch {
+		s.jobManager.dispatchProducedWatchSendsFrom(load)
 	}
 	return nil
 }
@@ -6637,23 +6678,20 @@ func (jm *jobManager) enqueueWatchNotifications(notifications []jobNotification)
 }
 
 func (jm *jobManager) produceCallbackNotifications(notifications []jobNotification) error {
+	var errs []error
 	for _, n := range notifications {
 		cfg := n.callbackConfig
 		if cfg == nil {
 			continue
 		}
-		// Serialize callback source production, not receiver delivery. This keeps
-		// concurrent source events from stepping past the same condition budget.
-		jm.watchCallbackMu.Lock()
 		jm.mu.Lock()
 		trigger := n.callbackTrigger
 		condition := strings.HasPrefix(trigger, "event: ") || strings.HasPrefix(trigger, "output_match: ")
 		if condition && cfg.budgetTripped {
 			jm.mu.Unlock()
-			jm.watchCallbackMu.Unlock()
 			continue
 		}
-		d := jm.watchSendSnapshot(cfg, cfg.target, trigger, events.SessionEvent{SessionID: jm.sessionID, Provenance: n.Provenance})
+		d := jm.watchSendSnapshot(cfg, cfg.target, trigger, events.SessionEvent{SessionID: jm.sessionID, Provenance: n.Provenance}).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, n.Provenance))
 		d.callback = true
 		// Terminal notices and callbacks that entered before a clear retain their
 		// source home independently of the declarative registration.
@@ -6662,27 +6700,47 @@ func (jm *jobManager) produceCallbackNotifications(notifications []jobNotificati
 		jm.mu.Unlock()
 		d.frame = (&Session{}).formatJobNotificationReminder([]deliverableJobNotification{{notification: n}})
 		if _, _, ok, err := jm.recordWatchSend(d); err != nil {
-			jm.watchCallbackMu.Unlock()
-			return err
+			errs = append(errs, err)
+			continue
 		} else if !ok {
-			jm.watchCallbackMu.Unlock()
-			return errDelegateTargetBusy
-		}
-		jm.mu.Lock()
-		crossedBudget := false
-		if condition {
-			_, crossedBudget = noteConditionFireLocked(cfg)
-		}
-		if callbackFiringReason(trigger) {
-			jm.countWatchDeliveryLocked(cfg)
-		}
-		jm.mu.Unlock()
-		jm.watchCallbackMu.Unlock()
-		if crossedBudget {
-			jm.autoClearWatchOverBudget(cfg)
+			errs = append(errs, errDelegateTargetBusy)
+			continue
 		}
 	}
-	return nil
+	return errors.Join(errs...)
+}
+
+// noteProducedWatchFiringLocked spends a firing only after its source append.
+// The per-key sequence fence prevents a partial-write retry charging it twice.
+func (jm *jobManager) noteProducedWatchFiringLocked(cfg *watchConfig, state jobstore.WatchSendState) {
+	if cfg.producedUpdateSeq[state.Key] >= state.UpdateSeq {
+		return
+	}
+	if cfg.producedUpdateSeq == nil {
+		cfg.producedUpdateSeq = make(map[jobstore.WatchSendKey]uint64)
+	}
+	cfg.producedUpdateSeq[state.Key] = state.UpdateSeq
+	if strings.HasPrefix(state.TriggerReason, "event: ") || strings.HasPrefix(state.TriggerReason, "output_match: ") {
+		noteConditionFireLocked(cfg)
+	}
+	if state.CallbackFrame && callbackFiringReason(state.TriggerReason) {
+		jm.countWatchDeliveryLocked(cfg)
+	}
+	if cfg.oneShot {
+		cfg.firedPendingEnd = true
+	}
+}
+
+func (jm *jobManager) finishProducedWatchFiring(cfg *watchConfig) {
+	jm.mu.Lock()
+	budget, oneShot := cfg.budgetTripped, cfg.oneShot && cfg.firedPendingEnd
+	jm.mu.Unlock()
+	if budget {
+		jm.autoClearWatchOverBudget(cfg)
+	}
+	if oneShot {
+		jm.endFiredOneShot(cfg)
+	}
 }
 
 func callbackFiringReason(reason string) bool {

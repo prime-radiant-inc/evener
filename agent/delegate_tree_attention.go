@@ -980,10 +980,11 @@ func (c *delegateTreeController) residentDelegateRuntimeLocked(delegateID string
 
 // idleRestorableLocked reports whether delegateID can be restored cold for
 // an attention wake: idle, resumable, not stopping, not being reclaimed, on
-// a controller that is not closing.
+// a controller that is not closing, with no active receiver custody writer.
+// Committed receiver custody with only source acknowledgement left is not a hold.
 func (c *delegateTreeController) idleRestorableLocked(delegateID string) bool {
 	aggregate := c.durable[delegateID]
-	return !c.closing && aggregate != nil && aggregate.Phase == delegatestore.PhaseIdle && aggregate.Resumable && aggregate.PendingStopSeq == 0 && !c.reclamationCoversLocked(delegateID)
+	return !c.closing && aggregate != nil && aggregate.Phase == delegatestore.PhaseIdle && aggregate.Resumable && aggregate.PendingStopSeq == 0 && !c.reclamationCoversLocked(delegateID) && !c.hasDeliveryWorkForOwnerLocked(delegateID)
 }
 
 // AttachIdleRuntime installs only the exact lazily restored runtime identity.
