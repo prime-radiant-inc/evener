@@ -1,4 +1,4 @@
-import { type ComposerMention, isLatestRetryTurn, TURN_CONTINUATION_TEXT } from "@evener/appwire-client";
+import { type ComposerMention, isLatestRetryTurn, isTurnError, TURN_CONTINUATION_TEXT } from "@evener/appwire-client";
 // threads.ts tracks the ThreadModel for every ref currently open in a pane,
 // refcounted across panes sharing the same ref, and routes live wire
 // notifications into the reducer for whichever tracked model(s) they target.
@@ -7674,6 +7674,14 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // whose client already has unresolved send/queue input.
     const model = threadsStore.getState().threads.get(ref);
     if (!model || !isLatestRetryTurn(model, expectedTurnId)) return;
+    // Identity alone is not a failure. An authoritative refresh can keep the
+    // same latest turn id and drop its error (or replace the turn), so the
+    // activation resolves the current turn by that id and requires it to still
+    // carry the failure the captured action belonged to. The shared wire
+    // predicate is the same one the end-cap uses to show the action; a missing
+    // turn or missing error submits nothing.
+    const currentTurn = model.turns.find((turn) => turn.id === expectedTurnId);
+    if (currentTurn === undefined || !isTurnError(currentTurn.error)) return;
     if (ownPendingTurnInputNow(ref) || retryActivationsInFlight.has(ref)) return;
     retryActivationsInFlight.add(ref);
     try {

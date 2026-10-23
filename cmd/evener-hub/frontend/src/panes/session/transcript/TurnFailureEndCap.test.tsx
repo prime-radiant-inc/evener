@@ -259,7 +259,9 @@ test("activation rechecks the canonical latest turn and a stale callback submits
   expect(turns[turns.length - 1]?.id).toBe("turn_2");
   // A callback captured while turn_1 looked latest: the model advanced after
   // the render, so the activation's own recheck must refuse it.
-  await threadsStore.getState().continueTurn("ref_a", "turn_1");
+  await act(async () => {
+    await threadsStore.getState().continueTurn("ref_a", "turn_1");
+  });
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
   expect(await storage.listOutbox("ref_a")).toHaveLength(0);
 });
@@ -371,6 +373,49 @@ test("a repeated press creates no second continuation", async () => {
   const button = screen.getByRole("button", { name: "Retry" });
   fireEvent.click(button);
   fireEvent.click(button);
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
+});
+
+test("a captured Retry callback submits nothing when the same latest turn loses its error", async () => {
+  const { fake, storage } = await connectedThread();
+  act(() => seedModel([failedTurn()]));
+  render(<TurnFailureEndCap error={{ message: "boom" }} turnId="turn_1" sessionRef="ref_a" />);
+  await flushPendingTurnsProjectionForTests();
+  expect(threadsStore.getState().pendingProjectionLoadedRefs.has("ref_a")).toBe(true);
+  expect(retryButton()?.disabled).toBe(false);
+
+  // An authoritative refresh keeps the same canonical latest turn ID but
+  // removes its error. The activation captured with turn_1 must submit
+  // nothing: identity alone is not a failure.
+  act(() => seedModel([failedTurn({ error: undefined })]));
+  await flushPendingTurnsProjectionForTests();
+  const turns = threadsStore.getState().threads.get("ref_a")?.turns ?? [];
+  expect(turns[turns.length - 1]?.id).toBe("turn_1");
+
+  await act(async () => {
+    await threadsStore.getState().continueTurn("ref_a", "turn_1");
+  });
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+  expect(await storage.listOutbox("ref_a")).toHaveLength(0);
+});
+
+test("a captured Retry callback still submits when the same latest turn's error changed", async () => {
+  const { fake } = await connectedThread();
+  act(() => seedModel([failedTurn()]));
+  render(<TurnFailureEndCap error={{ message: "boom" }} turnId="turn_1" sessionRef="ref_a" />);
+  await flushPendingTurnsProjectionForTests();
+  expect(retryButton()?.disabled).toBe(false);
+
+  // The control: the same turn still carries a failure, though a different
+  // one, so the captured activation remains valid.
+  act(() =>
+    seedModel([failedTurn({ error: { message: "provider rotated", cause: { kind: "provider", status: 503 } } })]),
+  );
+  await flushPendingTurnsProjectionForTests();
+
+  await act(async () => {
+    await threadsStore.getState().continueTurn("ref_a", "turn_1");
+  });
   await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
 });
 
