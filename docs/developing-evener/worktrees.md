@@ -121,7 +121,15 @@ retryable "became active" path and leaves the lane intact. A mid-tree delegate
 session's own close applies the same fence before collecting its child lanes; a
 root session's close already refuses new delegate admission before lane
 disposal. If a close-time fence is refused, the lane is retained rather than
-destroyed under the install.
+destroyed under the install. It keeps its lock, because the refusal means an
+install may still be in flight into that lane; resume the owning session or
+dispose of the lane explicitly once the work settles.
+
+Disposing a resident delegate also tears its child session down, and that
+session's own close collects its delegate lanes. Those nested lanes are disposed
+under the parent's already-held subtree fence rather than acquiring a second
+fence that the parent's handoff would refuse; only an admission in flight in a
+nested lane's own subtree retains that lane, and it stays locked.
 
 **Behavior change: a session's own merged delegate lanes no longer survive its
 close.** A session now disposes the isolation lanes it created whose commits are

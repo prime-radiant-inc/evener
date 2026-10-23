@@ -71,6 +71,14 @@ func (s *Session) disposeStableDelegateLane(ctx context.Context, id string, forc
 	// commit, and a descendant that starts after the read would run in a lane
 	// being unlocked and removed.
 	if !s.delegateController.beginSubtreeLaneHandoff(id) {
+		// Distinguish a permanent ownership refusal from the retryable busy
+		// path: a caller retrying an id it can never dispose must be told so.
+		if _, ownerErr := s.delegateController.stableWorktreeSnapshotForOwner(s, id); ownerErr != nil {
+			if errors.Is(ownerErr, errDelegateNotControllable) {
+				return WorktreeDisposeResult{}, fmt.Errorf("invalid_request: manage_worktree dispose: %s is not a direct worktree-isolated delegate of this session", id)
+			}
+			return WorktreeDisposeResult{}, fmt.Errorf("invalid_request: manage_worktree dispose: %w", ownerErr)
+		}
 		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s became active while disposing; retry once it is idle", id)
 	}
 	defer s.delegateController.endSubtreeLaneHandoff(id)

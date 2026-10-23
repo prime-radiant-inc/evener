@@ -12,6 +12,17 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
+// awaitFenceSignal waits for a test rendezvous with a tripwire bound; the
+// rendezvous is the mechanism and the timeout only prevents a hung fixture.
+func awaitFenceSignal(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
 // seedNestedIdleDelegate seeds an idle, resumable delegate under parentID.
 // workingDir is the parent's lane for a non-isolated child, which is the shape
 // that shares its parent's lane.
@@ -72,7 +83,7 @@ func TestDelegateLaneHandoffFencesNestedRestore(t *testing.T) {
 		_, err := r.s.worktreeDispose(context.Background(), parentID, false, false)
 		disposeDone <- err
 	}()
-	<-seamArrived
+	awaitFenceSignal(t, seamArrived, "the dispose lane-evaluation seam")
 
 	commit, _, commitErr := r.s.delegateController.idleDelegateRestoreCommit(nestedID)
 	installation, installErr := r.s.delegateController.beginIdleRuntimeInstallation(nestedID)
@@ -82,7 +93,12 @@ func TestDelegateLaneHandoffFencesNestedRestore(t *testing.T) {
 	_, _, restoreErr := r.s.restoreColdDelegateAttentionRuntime(nestedID)
 
 	close(seamRelease)
-	disposeErr := <-disposeDone
+	var disposeErr error
+	select {
+	case disposeErr = <-disposeDone:
+	case <-time.After(30 * time.Second): // TRIPWIRE: fixture rendezvous normally takes milliseconds; this only bounds a deadlock.
+		t.Fatal("dispose did not return after the lane-evaluation seam released")
+	}
 
 	if !errors.Is(commitErr, errDelegateTargetBusy) {
 		t.Errorf("nested restore commit during its parent lane handoff = %v, want errDelegateTargetBusy (commit %+v)", commitErr, commit.lease)
@@ -130,6 +146,11 @@ func TestDelegateLaneHandoffReleasedAfterAbortedHandoff(t *testing.T) {
 	if commit.lease.delegateID != nestedID {
 		t.Fatalf("restore commit delegate = %q, want %q", commit.lease.delegateID, nestedID)
 	}
+	installation, err := r.s.delegateController.beginIdleRuntimeInstallation(nestedID)
+	if err != nil {
+		t.Fatalf("descendant installation admission after an aborted handoff = %v, want success", err)
+	}
+	installation.release()
 }
 
 // TestDelegateLaneHandoffFenceAdmissions covers the admission points that can
@@ -290,6 +311,9 @@ func TestDelegateLaneHandoffRefusesWhileColdRestoreInFlight(t *testing.T) {
 
 	afterCommit := make(chan struct{})
 	releaseRestore := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseRestore) }) }
+	t.Cleanup(release)
 	r.s.delegateRestoreAfterCommit = func(delegateID string) {
 		if delegateID != nestedID {
 			return
@@ -302,9 +326,10 @@ func TestDelegateLaneHandoffRefusesWhileColdRestoreInFlight(t *testing.T) {
 		_, _, err := r.s.restoreColdDelegateAttentionRuntime(nestedID)
 		restoreDone <- err
 	}()
-	<-afterCommit
+	awaitFenceSignal(t, afterCommit, "the cold restore commit seam")
 
 	if _, err := r.s.worktreeDispose(context.Background(), parentID, false, false); err == nil {
+		release()
 		t.Fatal("dispose ran while a descendant cold restore was in flight")
 	}
 	if !laneWorktreePresent(lanePath) {
@@ -312,9 +337,12 @@ func TestDelegateLaneHandoffRefusesWhileColdRestoreInFlight(t *testing.T) {
 	}
 	assertStableWorktreeResumable(t, r.s.delegateController, parentID, true)
 
-	close(releaseRestore)
+	release()
 	select {
 	case <-restoreDone:
+		// The fixture has no saved child metadata, so this restore fails after
+		// its commit. The subject here is the window: it must hold through that
+		// commit and release on return, not whether the restore succeeds.
 	case <-time.After(30 * time.Second): // TRIPWIRE: fixture rendezvous normally takes milliseconds; this only bounds a deadlock.
 		t.Fatal("cold restore did not finish after its window was released")
 	}
@@ -369,4 +397,238 @@ func TestDelegateLaneHandoffRefusesSubtreeReservation(t *testing.T) {
 		t.Fatal("handoff refused after the subtree reservations cleared")
 	}
 	c.endSubtreeLaneHandoff(parentID)
+}
+
+// seedControllerRun makes an existing idle delegate take one running
+// generation, without appending a duplicate creation event.
+func seedControllerRun(t *testing.T, c *delegateTreeController, delegateID string) delegateLease {
+	t.Helper()
+	lease := delegateLease{delegateID: delegateID, generation: 1}
+	c.mu.Lock()
+	_, err := c.appendLocked(delegateControllerRunStartedEvent(delegateID, 1, delegatestore.TriggerInitial, time.Unix(10, 0).UTC()))
+	if err == nil {
+		c.live[delegateID] = &delegateLiveState{binding: &delegateRuntimeBinding{
+			lease:  lease,
+			cancel: func() {},
+			ready:  true,
+		}}
+	}
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("seed run for %s: %v", delegateID, err)
+	}
+	return lease
+}
+
+// TestDelegateLaneHandoffAdditionalAdmissions covers the remaining gates from
+// the spec's admission table, so removing any one of them fails a test.
+func TestDelegateLaneHandoffAdditionalAdmissions(t *testing.T) {
+	t.Parallel()
+	const (
+		parentID = "dlg_gate_parent"
+		nestedID = "dlg_gate_nested"
+	)
+	newFencedPair := func(t *testing.T) *delegateTreeController {
+		t.Helper()
+		c, _ := newDelegateControllerTestHarness(t, 8, 8)
+		seedDelegateControllerIdle(t, c, parentID, "")
+		seedDelegateControllerIdle(t, c, nestedID, parentID)
+		if !c.beginSubtreeLaneHandoff(parentID) {
+			t.Fatal("clean idle subtree refused its handoff")
+		}
+		t.Cleanup(func() { c.endSubtreeLaneHandoff(parentID) })
+		return c
+	}
+
+	t.Run("active generation refuses the handoff", func(t *testing.T) {
+		c, _ := newDelegateControllerTestHarness(t, 8, 8)
+		seedDelegateControllerIdle(t, c, parentID, "")
+		seedDelegateControllerIdle(t, c, nestedID, parentID)
+		seedControllerRun(t, c, nestedID)
+		if c.beginSubtreeLaneHandoff(parentID) {
+			c.endSubtreeLaneHandoff(parentID)
+			t.Fatal("handoff admitted with an active generation in the subtree")
+		}
+	})
+
+	t.Run("create under a fenced parent", func(t *testing.T) {
+		c := newFencedPair(t)
+		lease := seedControllerRun(t, c, parentID)
+		actor := delegateActor{lease: &lease}
+		descriptor := delegatestore.Descriptor{Task: "fenced child", AgentType: "default", Resumable: true}
+		if reservation, err := c.ReserveCreate(actor, descriptor); !errors.Is(err, errDelegateTargetBusy) {
+			if reservation != nil {
+				c.AbortStart(reservation)
+			}
+			t.Errorf("create under a fenced parent = %v, want errDelegateTargetBusy", err)
+		}
+	})
+
+	t.Run("attention start under a handoff", func(t *testing.T) {
+		c := newFencedPair(t)
+		runtime := &Session{id: "child-" + nestedID, owningDelegateID: nestedID, delegateController: c}
+		c.mu.Lock()
+		c.live[nestedID] = &delegateLiveState{runtime: runtime}
+		c.mu.Unlock()
+		if reservation, err := c.ReserveAttention(runtime, "attention-sentinel"); !errors.Is(err, errDelegateTargetBusy) {
+			if reservation != nil {
+				c.AbortStart(reservation)
+			}
+			t.Errorf("attention start under the handoff = %v, want errDelegateTargetBusy", err)
+		}
+	})
+
+	t.Run("commit start under a handoff", func(t *testing.T) {
+		c := newFencedPair(t)
+		receipt := &delegateStartReservation{delegateID: nestedID}
+		record := &delegateStartRecord{
+			receipt:      receipt,
+			token:        7,
+			delegateID:   nestedID,
+			generation:   1,
+			capacityKind: delegateTurnCapacity,
+			ctx:          context.Background(),
+			done:         make(chan struct{}),
+		}
+		c.mu.Lock()
+		c.reservations[record.token] = record
+		c.mu.Unlock()
+		if _, err := c.commitStart(receipt); !errors.Is(err, errDelegateTargetBusy) {
+			t.Errorf("commit under the handoff = %v, want errDelegateTargetBusy", err)
+		}
+		c.mu.Lock()
+		_, leaked := c.reservations[record.token]
+		c.mu.Unlock()
+		if leaked {
+			t.Error("refused commit leaked its reservation")
+		}
+	})
+
+	t.Run("attach runtime under a handoff", func(t *testing.T) {
+		c := newFencedPair(t)
+		lease := seedControllerRun(t, c, nestedID)
+		if err := c.AttachRuntime(lease, &Session{id: "child-" + nestedID, owningDelegateID: nestedID, delegateController: c}); !errors.Is(err, errDelegateTargetBusy) {
+			t.Errorf("runtime attach under the handoff = %v, want errDelegateTargetBusy", err)
+		}
+	})
+
+	t.Run("cold restore under a closed ancestor", func(t *testing.T) {
+		c, _ := newDelegateControllerTestHarness(t, 8, 8)
+		seedNestedIdleDelegate(t, c, parentID, "", "/tmp/fenced-parent-lane")
+		c.mu.Lock()
+		c.durable[parentID].Descriptor.Isolation = "worktree"
+		c.mu.Unlock()
+		seedDelegateControllerIdle(t, c, nestedID, parentID)
+		owner := &Session{id: "root-session", delegateController: c}
+		if _, _, _, err := c.closeStableWorktreeResumability(owner, parentID, "test-close", false); err != nil {
+			t.Fatalf("close parent resumability: %v", err)
+		}
+		if _, _, err := c.idleDelegateRestoreCommit(nestedID); !errors.Is(err, errDelegateTargetBusy) {
+			t.Errorf("cold restore under a closed ancestor = %v, want errDelegateTargetBusy", err)
+		}
+	})
+}
+
+// TestDelegateLaneHandoffDisposesNestedLaneUnderParentFence covers the close
+// path inside an explicit dispose: tearing down the target's child session runs
+// that session's own lane disposal while the target's handoff is held. The
+// ancestor fence already excludes admissions into the nested lane, so the
+// nested lane must still be disposed rather than retained with its lock held.
+func TestDelegateLaneHandoffDisposesNestedLaneUnderParentFence(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	parentID, parentLanePath, _ := r.seedStableIsolationLane(t)
+
+	// Model the target's resident child session, which is what runs the close
+	// that disposes its own delegate lanes during the parent's handoff.
+	parentSession := newSession(t, withDir(parentLanePath), withConfig(r.s.cfg))
+	parentSession.id = "child-" + parentID
+	parentSession.stateDir = r.stateDir
+	parentSession.owningDelegateID = parentID
+	parentSession.delegateController = r.s.delegateController
+	parentSession.delegateRootSessionID = r.s.id
+	parentSession.ownsDelegateController = false
+	parentSession.mu.Lock()
+	parentSession.worktreeGitVersionOK = true
+	parentSession.mu.Unlock()
+	r.s.subagents.mu.Lock()
+	r.s.subagents.subs[parentSession.id] = &subagent{sess: parentSession}
+	r.s.subagents.mu.Unlock()
+
+	// Create the nested lane from the parent session so its lock marker names
+	// that session, exactly as a child spawned by the parent would.
+	const nestedID = "dlg_nested_lane_under_dispose"
+	c := r.s.delegateController
+	nestedPath, _, _, _, _, err := parentSession.createDelegateWorktree(context.Background(), nestedID, "")
+	if err != nil {
+		t.Fatalf("create nested delegate worktree: %v", err)
+	}
+	lease := delegateLease{delegateID: nestedID, generation: 1}
+	c.mu.Lock()
+	_, err = c.appendLocked(
+		delegatestore.Event{
+			Kind:       delegatestore.EventDelegateCreated,
+			DelegateID: nestedID,
+			Created: &delegatestore.DelegateCreated{Descriptor: delegatestore.Descriptor{
+				ChildSessionID:   "child-" + nestedID,
+				TranscriptRef:    encodeRef("", "child-"+nestedID),
+				ParentDelegateID: parentID,
+				OwnerSessionID:   r.s.id,
+				VisibleSessionID: r.s.id,
+				Task:             "nested worktree fixture",
+				AgentType:        "default",
+				ToolNameCeiling:  []string{"communicate"},
+				WorkingDir:       nestedPath,
+				LocalEnvPolicy:   "default",
+				Isolation:        "worktree",
+				Resumable:        true,
+			}},
+		},
+		delegateControllerRunStartedEvent(nestedID, 1, delegatestore.TriggerInitial, time.Unix(10, 0).UTC()),
+	)
+	if err == nil {
+		c.live[nestedID] = &delegateLiveState{binding: &delegateRuntimeBinding{
+			lease:  lease,
+			cancel: func() {},
+			ready:  true,
+		}}
+		c.turnsInUse++
+	}
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("seed nested delegate: %v", err)
+	}
+	plans, err := c.FinishGeneration(lease, delegateFinish{
+		outcome: delegatestore.OutcomeFailed,
+		reason:  "fixture complete",
+		endedAt: time.Unix(20, 0).UTC(),
+	})
+	if err != nil {
+		t.Fatalf("finish nested delegate: %v", err)
+	}
+	for _, plan := range plans.deliveries {
+		token, admitted, deliveryErr := c.BeginDelivery(plan)
+		if deliveryErr != nil || !admitted {
+			t.Fatalf("begin nested fixture delivery: admitted=%t err=%v", admitted, deliveryErr)
+		}
+		if _, deliveryErr := c.CompleteDelivery(token, true); deliveryErr != nil {
+			t.Fatalf("acknowledge nested fixture delivery: %v", deliveryErr)
+		}
+	}
+	if !laneWorktreePresent(nestedPath) {
+		t.Fatal("nested lane fixture was not created")
+	}
+
+	if _, err := r.s.worktreeDispose(context.Background(), parentID, false, false); err != nil {
+		t.Fatalf("dispose parent with nested lane: %v", err)
+	}
+	if laneWorktreePresent(nestedPath) {
+		t.Error("nested lane was retained (and left locked) during the parent's handoff")
+	}
+	if r.branchExists(t, nestedID) {
+		t.Error("nested lane branch was retained during the parent's handoff")
+	}
+	if reg, locked, _ := r.laneLocked(t, nestedPath); reg || locked {
+		t.Error("nested lane still registered or locked after the parent's handoff")
+	}
 }

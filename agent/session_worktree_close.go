@@ -117,10 +117,15 @@ func (s *Session) disposeOneStableDelegateLane(ctx context.Context, local *exece
 	// into the lane this close is about to unlock and remove. The root close has
 	// already set c.closing, which refuses every admission on its own.
 	if !s.delegateController.controllerClosing() {
-		if !s.delegateController.beginSubtreeLaneHandoff(lane.delegateID) {
+		if s.delegateController.beginSubtreeLaneHandoff(lane.delegateID) {
+			defer s.delegateController.endSubtreeLaneHandoff(lane.delegateID)
+		} else if !s.delegateController.laneHandoffCoveredByAncestor(lane.delegateID) {
+			// A refusal without a covering ancestor handoff means work is in
+			// flight in this lane's own subtree; retain it (and its lock).
 			return lane.delegateID + " at " + lanePath + " (descendant admission in flight; retained)", true
 		}
-		defer s.delegateController.endSubtreeLaneHandoff(lane.delegateID)
+		// An ancestor's handoff already fences this lane's whole subtree, so
+		// this disposal can proceed without a second, self-refusing fence.
 	}
 	if _, err := os.Stat(filepath.Join(lanePath, ".git")); err != nil {
 		return "", false

@@ -183,8 +183,19 @@ when the shared controller is not itself closing. A root session's close sets
 close already refuses every admission. A mid-tree delegate session closes while
 the shared controller is still live; its own close disposes *its* worktree
 children's lanes, and that path needs the fence. If the fence is refused there,
-the lane is retained (kept, not destroyed) for a later explicit `dispose` or
-resume.
+the lane is retained (kept, not destroyed, with its lock intact) for a later
+explicit `dispose` or resume. Retaining the lock is deliberate: the refusal
+means an install may be in flight into the lane, and unlocking it would expose
+the lane to a later `prune`.
+
+A close-time disposal whose lane is already covered by a **strict ancestor's**
+in-flight handoff proceeds under that ancestor's fence instead of acquiring a
+second, self-refusing one. The ancestor fence already excludes every admission
+into the whole subtree, and removing a different lane cannot install into the
+ancestor's lane. Without this, every explicit dispose of a resident delegate
+whose child session owns its own lanes would tear that child session down inside
+the parent's handoff, refuse each nested lane's disposal, and strand those lanes
+locked and unreclaimable.
 
 ## Lock ordering and deadlock analysis
 
@@ -243,8 +254,17 @@ worktree harness with real dispose:
    the handoff cannot `attach` once the handoff starts; a held handoff refuses
    the target's start, a nested owed attention start, and a second handoff;
    `beginSubtreeLaneHandoff` refuses on a descendant reservation and on a
-   create reservation parented inside the subtree; after release, admissions
-   succeed again; a delegate outside the fenced subtree is unaffected.
+   create reservation parented inside the subtree, and on an
+   attention-restore hold; after release, admissions succeed again; a delegate
+   outside the fenced subtree is unaffected.
+   Additional cases pin every remaining gate: an active generation refuses the
+   handoff, a create under a fenced parent, an attention start, a commit, and
+   an `AttachRuntime` are refused, and a cold restore under a closed ancestor
+   is refused.
+5. **Nested lane under a parent handoff**: a resident target whose child session
+   owns a worktree-isolated delegate lane is disposed; the nested lane is gone,
+   not retained or left locked. This test fails on the fence-first close
+   behavior with "nested lane was retained (and left locked)".
 
 Commands:
 

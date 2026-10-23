@@ -69,6 +69,9 @@ func (c *delegateTreeController) beginSubtreeLaneHandoff(delegateID string) bool
 			return false
 		}
 	}
+	if c.laneHandoffs == nil {
+		c.laneHandoffs = make(map[string]struct{})
+	}
 	c.laneHandoffs[delegateID] = struct{}{}
 	return true
 }
@@ -94,6 +97,39 @@ func (c *delegateTreeController) controllerClosing() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.closing
+}
+
+// laneHandoffCoveredByAncestor reports whether an in-flight handoff rooted at a
+// strict ancestor already fences delegateID. A close-time disposal running
+// inside that handoff can proceed under the ancestor's fence; refusing it would
+// retain (and lock) a nested lane on every explicit dispose of a delegate whose
+// child session owns its own lanes.
+func (c *delegateTreeController) laneHandoffCoveredByAncestor(delegateID string) bool {
+	if c == nil || delegateID == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.laneHandoffCoveredByAncestorLocked(delegateID)
+}
+
+// laneHandoffCoveredByAncestorLocked is the locked form. Callers must hold c.mu.
+func (c *delegateTreeController) laneHandoffCoveredByAncestorLocked(delegateID string) bool {
+	aggregate := c.durable[delegateID]
+	if aggregate == nil {
+		return false
+	}
+	for id := aggregate.Descriptor.ParentDelegateID; id != ""; {
+		if _, covered := c.laneHandoffs[id]; covered {
+			return true
+		}
+		parent := c.durable[id]
+		if parent == nil {
+			return false
+		}
+		id = parent.Descriptor.ParentDelegateID
+	}
+	return false
 }
 
 // laneHandoffCoversLocked reports whether delegateID or any of its ancestors
