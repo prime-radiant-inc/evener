@@ -347,13 +347,14 @@ func TestStandDownConsumesNoWakeState(t *testing.T) {
 		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
 	}
 
-	s.mu.Lock()
-	armed := s.notificationSchedule.hinted || s.notificationSchedule.retry.active
+	// Match the live naming retry's lock order for a coherent armed snapshot.
 	s.turnNameRetryMu.Lock()
-	armed = armed || s.turnNameRetry.active
-	s.turnNameRetryMu.Unlock()
-	pending := len(notificationTestPending(t, s))
+	s.mu.Lock()
+	armed := s.notificationSchedule.hinted || s.notificationSchedule.retry.active || s.turnNameRetry.active
 	s.mu.Unlock()
+	s.turnNameRetryMu.Unlock()
+	// Durable membership is independent of the in-memory scheduling snapshot.
+	pending := len(notificationTestPending(t, s))
 	if pending == 0 {
 		t.Fatal("the stand-down dropped the pending attention ids outright")
 	}
