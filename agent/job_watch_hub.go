@@ -81,9 +81,17 @@ func hubObservationIdentity(m appwire.SessionObservationMetadata) string {
 	return m.InstanceID + "/" + m.GenerationID + "/" + m.EntryID
 }
 
-// onHubObservation accepts only recorded, generation-matched evidence. The
+// onHubObservation accepts evidence from the bound serving generation. Turn
+// identity, not the serving boot, selects recorded completion evidence. The
 // terminal send is persisted after the watch's clear and before its wake token.
 func (jm *jobManager) onHubObservation(watchID string, update appwire.SessionWatchUpdate) error {
+	return jm.onHubObservationEvidence(watchID, update, false)
+}
+
+// recorded means the evidence came from an already validated snapshot. Its
+// execution provenance need not name the current serving boot, so do not fill
+// missing provenance with the subscription's identity.
+func (jm *jobManager) onHubObservationEvidence(watchID string, update appwire.SessionWatchUpdate, recorded bool) error {
 	jm.mu.Lock()
 	_, cfg, ok := jm.watchConfigByIDLocked(watchID)
 	if !ok || cfg.hubRef == "" {
@@ -99,6 +107,24 @@ func (jm *jobManager) onHubObservation(watchID string, update appwire.SessionWat
 		return nil
 	}
 	if update.Snapshot != nil {
+		read := update.Snapshot
+		if read.Thread.Evener.Ref != cfg.hubRef || read.Thread.Evener.InstanceID != cfg.hubInstance || read.BootGeneration != cfg.hubGeneration {
+			jm.mu.Unlock()
+			return nil
+		}
+		if !cfg.hubTurnBound {
+			cfg.hubTurnID = read.Thread.Evener.ActiveTurnID
+			if cfg.hubTurnID == "" {
+				// A fresh idle watch catches up only with the latest work, never
+				// an older done hidden behind later unfinished work.
+				for _, turn := range read.Thread.Turns {
+					if turn.ID != appwire.SystemPreludeTurnID {
+						cfg.hubTurnID = turn.ID
+					}
+				}
+			}
+			cfg.hubTurnBound = cfg.hubTurnID != ""
+		}
 		cfg.hubSuspended = false
 		jm.mu.Unlock()
 		if update.Snapshot.Thread.Evener.AskPending {
@@ -123,11 +149,11 @@ func (jm *jobManager) onHubObservation(watchID string, update appwire.SessionWat
 					continue
 				}
 				meta := *item.Observation
-				meta.Ref = cfg.hubRef
-				meta.InstanceID = update.Snapshot.Thread.Evener.InstanceID
-				meta.GenerationID = update.Snapshot.BootGeneration
+				if meta.TurnID == "" {
+					meta.TurnID = turn.ID
+				}
 				u := appwire.SessionWatchUpdate{Metadata: meta, Event: "communicate"}
-				if err := jm.onHubObservation(watchID, u); err != nil {
+				if err := jm.onHubObservationEvidence(watchID, u, true); err != nil {
 					return err
 				}
 			}
@@ -135,7 +161,7 @@ func (jm *jobManager) onHubObservation(watchID string, update appwire.SessionWat
 		return nil
 	}
 	m := update.Metadata
-	if m.Ref != cfg.hubRef || m.InstanceID != cfg.hubInstance || m.GenerationID != cfg.hubGeneration {
+	if !recorded && (m.Ref != cfg.hubRef || m.InstanceID != cfg.hubInstance || m.GenerationID != cfg.hubGeneration) {
 		jm.mu.Unlock()
 		return nil
 	}
@@ -145,12 +171,19 @@ func (jm *jobManager) onHubObservation(watchID string, update appwire.SessionWat
 		jm.mu.Unlock()
 		return fmt.Errorf("unsupported hub observation %q; re-register", update.Event)
 	}
-	entryIdentity := hubObservationIdentity(m)
+	// Delivery identity belongs to this subscription, not the historical boot.
+	identityMetadata := m
+	identityMetadata.InstanceID, identityMetadata.GenerationID = cfg.hubInstance, cfg.hubGeneration
+	entryIdentity := hubObservationIdentity(identityMetadata)
 	if entryIdentity == "" {
 		jm.mu.Unlock()
 		return nil
 	}
-	complete := cfg.hubCompletion && m.CausalKnown && m.TerminalAccepted != nil && *m.TerminalAccepted && m.EndTurn && m.EndReason == "done"
+	if !cfg.hubTurnBound && m.TurnID != "" {
+		cfg.hubTurnID, cfg.hubTurnBound = m.TurnID, true
+	}
+	matchingTurn := !cfg.hubTurnBound || m.TurnID == cfg.hubTurnID
+	complete := cfg.hubCompletion && matchingTurn && m.CausalKnown && m.TerminalAccepted != nil && *m.TerminalAccepted && m.EndTurn && m.EndReason == "done"
 	identity := entryIdentity + ":" + update.Event
 	if complete {
 		// One recorded entry can first arrive without an acceptance verdict.

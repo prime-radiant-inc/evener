@@ -34,6 +34,9 @@ func sessionWatchSelected(request appwire.SessionWatchRequest, event string) boo
 
 func observationMetadata(item appwire.ThreadItem, ref, instance, generation string) appwire.SessionObservationMetadata {
 	m := *item.Observation
+	// These fields scope delivery to the serving subscription. They do not
+	// establish the original execution's boot. TurnID and the recorded typed
+	// acceptance verdict identify the work, and the snapshot stays unchanged.
 	m.Ref, m.InstanceID, m.GenerationID = ref, instance, generation
 	if m.EntryID == "" {
 		m.EntryID = item.TranscriptKey
