@@ -123,6 +123,7 @@ class SessionEntry implements NativeConversationSession {
 	#liveHost: NativeMutationHost | null = null;
 	#service: NativeConversationService | null = null;
 	#bindingClient: AppwireClientLike | null = null;
+	#bindingPending = false;
 	#readSettled: Promise<void> = Promise.resolve();
 	#retired = false;
 	#readFailures = 0;
@@ -359,7 +360,10 @@ class SessionEntry implements NativeConversationSession {
 	}
 
 	#bindPending(): void {
-		if (this.#retired || this.#service === null) return;
+		if (this.#retired || this.#service === null || this.#bindingPending) return;
+		// Binding publishes null rows before the store installs its port. Its
+		// synchronous subscriber must not start another bind in that interval.
+		this.#bindingPending = true;
 		try {
 			this.store
 				.getState()
@@ -369,6 +373,8 @@ class SessionEntry implements NativeConversationSession {
 		} catch {
 			// The mutations database could not be opened. The conversation stays
 			// usable; a later connection change retries the bind.
+		} finally {
+			this.#bindingPending = false;
 		}
 	}
 

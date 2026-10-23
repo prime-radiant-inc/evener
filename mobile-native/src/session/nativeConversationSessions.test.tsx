@@ -17,6 +17,7 @@ import {
 	type NativeConversationAttachment,
 	NativeConversationSessions,
 	type NativeConversationService,
+	type NativeConversationSession,
 } from "./nativeConversationSessions";
 import {
 	NativeConversationSessionsProvider,
@@ -329,6 +330,110 @@ describe("service surface", () => {
 });
 
 describe("durable pending seam", () => {
+	function pendingReady(entry: NativeConversationSession): Promise<void> {
+		if (entry.store.getState().pendingMutationsReady) return Promise.resolve();
+		return new Promise((resolve) => {
+			const unsubscribe = entry.store.subscribe(() => {
+				if (!entry.store.getState().pendingMutationsReady) return;
+				unsubscribe();
+				resolve();
+			});
+		});
+	}
+
+	it.each(["/clear replacement reopen", "initial read failure recovery"] as const)(
+		"keeps one pending subscription through %s, refreshes once and fully releases",
+		async (transition) => {
+			let subscriptions = 0;
+			const subscribeStorage = runtime.subscribeStorage.bind(runtime);
+			vi.spyOn(runtime, "subscribeStorage").mockImplementation((listener) => {
+				subscriptions += 1;
+				const release = subscribeStorage(listener);
+				return () => {
+					subscriptions -= 1;
+					release();
+				};
+			});
+			const pendingRead = vi.spyOn(runtime, "read");
+			const retryStarted = deferred<void>();
+			const retryReply = deferred<ThreadReadResponse>();
+			let attempts = 0;
+			let served = thread("ref-1");
+			const client = hub("ref-1", () => {
+				if (transition === "initial read failure recovery") {
+					attempts += 1;
+					if (attempts === 1) return Promise.reject(new Error("initial read failed"));
+					retryStarted.resolve();
+					return retryReply.promise;
+				}
+				return Promise.resolve({ thread: served });
+			});
+			const listenersReleased = deferred<void>();
+			const onStateChange = client.onStateChange.bind(client);
+			vi.spyOn(client, "onStateChange").mockImplementation((listener) => {
+				const release = onStateChange(listener);
+				return () => {
+					release();
+					if (client.listenerCount === 0) listenersReleased.resolve();
+				};
+			});
+			connected(client);
+			const a = sessions.attach("hub-1", "ref-1");
+			const b = sessions.attach("hub-1", "ref-1");
+			const entry = a.entry;
+			if (transition === "initial read failure recovery") {
+				await retryStarted.promise;
+				expect(entry.readActor.failures).toBe(1);
+				retryReply.resolve({ thread: served });
+			} else {
+				await entry.readSettled();
+				await pendingReady(entry);
+				expect(subscriptions).toBe(1);
+				// Exercise /clear's projected replacement reopen boundary, not its
+				// admission receipt. Obtain the replacement from the real service's
+				// wire read instead of fabricating a receipt or a store projection.
+				served = { ...thread("ref-1"), id: "replacement-thread" };
+				const service = entry.service!;
+				const replacement = await service.readProjection("ref-1");
+				await entry.store.getState().openProjected(service, entry.activitySink, "ref-1", replacement);
+				expect(entry.store.getState().conversation?.threadId).toBe("replacement-thread");
+			}
+			await pendingReady(entry);
+			expect(entry.store.getState().status).toBe("open");
+			expect(subscriptions).toBe(1);
+
+			const beforeRefresh = pendingRead.mock.calls.length;
+			await entry.store.getState().refreshPendingMutations();
+			expect(pendingRead.mock.calls.length - beforeRefresh).toBe(1);
+			expect(entry.store.getState().pendingMutationsReady).toBe(true);
+
+			// A real committed zero-row discard still notifies storage subscribers.
+			// Leaked subscriptions multiply these reads even if their rows are fenced.
+			const target = nativeMutationTargetKey("hub-1", "ref-1");
+			const beforeNotification = pendingRead.mock.calls.length;
+			await runtime.discardRecovery("absent-mutation", target);
+			await pendingReady(entry);
+			expect(pendingRead.mock.calls.length - beforeNotification).toBe(1);
+
+			a.release();
+			expect(subscriptions).toBe(1);
+			b.release();
+			expect(subscriptions).toBe(0);
+			expect(entry.store.getState().status).toBe("closed");
+			expect(entry.service).toBeNull();
+			expect(entry.liveHost).toBeNull();
+			expect(runtime.targetClient("hub-1", "ref-1")).toBeUndefined();
+			expect(sessions.size).toBe(0);
+			await listenersReleased.promise;
+			expect(client.listenerCount).toBe(0);
+
+			const afterRelease = pendingRead.mock.calls.length;
+			await runtime.discardRecovery("absent-mutation", target);
+			expect(pendingRead.mock.calls.length).toBe(afterRelease);
+			expect(entry.store.getState().pendingMutations).toBeNull();
+		},
+	);
+
 	it("binds a real mutation, keeps its identity across entries, and disposes both subscriptions", async () => {
 		// Real DetailLevels over an in-memory port, with counted subscribe/release.
 		const values = new Map<string, string>();
