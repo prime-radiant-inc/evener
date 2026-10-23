@@ -141,6 +141,15 @@ describe("hover-card failure witness", () => {
     expect(witness.error).toContain("Runtime.evaluate transport lost");
   });
 
+  test("an unserializable witness keeps the original error and marks the payload unreadable", async () => {
+    const original = new Error("f83a9a");
+    const send = async () => ({ result: { result: { value: { big: 1n } } } });
+    const failure = await describeHoverFailure({ send }, original);
+
+    expect(failure.cause).toBe(original);
+    expect(witnessOf(failure, original)).toMatchObject({ partial: true, unreadable: ["payload"] });
+  });
+
   test("full evidence still reaches the operator when every element is present", async () => {
     installGuard();
     const original = new Error("session hover card 1400px 560 light: card is not row-centered");
