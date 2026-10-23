@@ -17,6 +17,16 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// Omitting ampersand escaping would make literal sender entities ambiguous.
+func TestEscapeNotificationBodyPreservesLiteralEntities(t *testing.T) {
+	t.Parallel()
+	const text = `& < &lt; &amp; &amp;lt; " > ' &quot; &gt; &#39;`
+	const want = `&amp; &lt; &amp;lt; &amp;amp; &amp;amp;lt; " > ' &amp;quot; &amp;gt; &amp;#39;`
+	if got := escapeNotificationBody(text); got != want {
+		t.Fatalf("escaped body = %q, want %q", got, want)
+	}
+}
+
 func TestFormatJobNotification(t *testing.T) {
 	t.Parallel()
 	code := 0

@@ -3467,7 +3467,7 @@ function overlayRecord(items: readonly OverlayItem[] | undefined): Record<string
   return record;
 }
 
-function itemIdentity(item: ItemModel): string {
+function itemIdentity(item: Pick<ItemModel, "id" | "transcriptKey">): string {
   return item.transcriptKey ?? item.id;
 }
 
@@ -3727,8 +3727,9 @@ function dropItemsInRange(turns: TurnModel[], from: ThreadItemPosition, to?: Thr
 // Drops the overlay state history now covers: a stream once history holds an
 // item of its round, a preview once history holds the agentMessage of its
 // communicate call, and a tool's execution state once its history item carries
-// the completing TOOL_RESULTS entry. Returns overlay itself when nothing is
-// covered.
+// the completing TOOL_RESULTS entry. A notice already laid into history owns
+// its row there, so its live copy goes too. Returns overlay itself when
+// nothing is covered.
 function pruneCoveredOverlay(
   turns: readonly TurnModel[],
   overlay: Record<string, OverlayItem>,
@@ -3737,8 +3738,14 @@ function pruneCoveredOverlay(
   const rounds = new Set<string>();
   const communicated = new Set<string>();
   const completed = new Set<string>();
+  const unrecordedNotices = new Set(
+    Object.values(overlay)
+      .filter((item) => item.kind === "notice")
+      .map((item) => itemIdentity(item.item)),
+  );
   for (const turn of turns) {
     for (const item of turn.items) {
+      if (unrecordedNotices.size > 0) unrecordedNotices.delete(itemIdentity(item));
       if (item.roundId) rounds.add(item.roundId);
       if (item.type === "agentMessage" && item.callId) communicated.add(item.callId);
       if (item.completedAtEntry && item.transcriptKey) completed.add(item.transcriptKey);
@@ -3752,6 +3759,8 @@ function pruneCoveredOverlay(
         return item.callId !== undefined && communicated.has(item.callId);
       case "tool":
         return item.historyKey !== undefined && completed.has(item.historyKey);
+      case "notice":
+        return !unrecordedNotices.has(itemIdentity(item.item));
       default:
         return false;
     }

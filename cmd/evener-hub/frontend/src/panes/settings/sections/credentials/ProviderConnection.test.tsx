@@ -204,6 +204,34 @@ test("the popular providers are what the picker shows first", async () => {
   expect(screen.queryByLabelText("Search providers")).toBeNull();
 });
 
+// An endpoint outside the catalogue is added through openai-compatible, whose
+// setup row carries no usable base URL. It has to be reachable from the short
+// list, under the name that says what it is for, rather than only after the
+// reader opens the whole catalogue.
+test("the custom endpoint is in the popular set and opens the connection card", async () => {
+  const { user } = setup({
+    instances: [],
+    availableProviders: [provider("openai-compatible", "OpenAI-compatible endpoint")],
+  });
+  const choice = await screen.findByRole("button", { name: "Custom endpoint" });
+  expect(screen.queryByLabelText("Search providers")).toBeNull();
+  await user.click(choice);
+  expect(screen.getByRole("dialog", { name: "Custom endpoint" })).toBeTruthy();
+  expect(screen.getByLabelText("API key")).toBeTruthy();
+});
+
+// The card's rows and its full editor are the components the settings sheet
+// renders too, so the two surfaces cannot drift into different connection UIs.
+test("the connection card renders its facts and settings through the shared components", async () => {
+  const { user } = setup();
+  await choose(user);
+  expect(screen.getByTestId("connection-facts")).toBeTruthy();
+  await act(async () => {
+    fireEvent.click(screen.getByText("All connection settings"));
+  });
+  expect(screen.getByTestId("connection-settings")).toBeTruthy();
+});
+
 // The reveal swaps the popular set for the whole catalogue (the popular rows
 // are in it too), and closing it puts the short list back - one control, both
 // directions, no second label to keep in sync.

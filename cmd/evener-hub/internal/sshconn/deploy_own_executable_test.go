@@ -122,14 +122,17 @@ func crossTarget() (string, string) {
 	return runtime.GOOS, "arm64"
 }
 
-// installRunner records every remote command and fails the installer invocation,
-// so a test can prove the installer fallback was the path taken — and which ref
-// it was pinned to — without scripting a whole install. Commands other than the
-// installer fail as unexpected.
+// installRunner answers the pre-write protocol check with a compatible contract
+// and fails the installer invocation, so a test can prove the installer fallback
+// was the path taken — and which ref it was pinned to — without scripting a
+// whole install. Any other command fails as unexpected.
 func installRunner(t *testing.T) *fakeRunner {
 	t.Helper()
 	return &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
+		if strings.Contains(joined, "launch-check") {
+			return []byte(fmt.Sprintf(`{"hub_endpoint_schema":1,"protocol":%q,"version":"dev","launch_flags":["api-log"]}`, appwire.ProtocolVersion)), nil
+		}
 		if strings.Contains(joined, "EVENER_INSTALL_VERSION=") {
 			return nil, errors.New("installer refused by the test's runner")
 		}

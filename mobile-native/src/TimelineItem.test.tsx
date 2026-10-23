@@ -28,6 +28,9 @@ vi.mock("react-native", async () => ({
 }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
+vi.mock("react-native-gesture-handler", async () =>
+	(await import("./renderNative.testkit")).gestureDetectorModuleMock(),
+);
 vi.mock("expo-clipboard", () => ({ setStringAsync: native.setStringAsync }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 // Attachments are not under test here, and the image leaf drags in the
@@ -112,6 +115,25 @@ function accessibilityActionsOf(root: ReactTestInstance) {
 			);
 			act(() => node.props.onAccessibilityAction({ nativeEvent: { actionName: action?.name } }));
 		},
+	};
+}
+
+/** Holds the agent's message the way the long-press gesture does, by firing
+ * the hold gesture's onStart, and returns the menu it opened: its options,
+ * and a way to pick one the way ActionSheetIOS calls back. */
+function holdMessage(root: ReactTestInstance) {
+	const detector = root.findAllByType("GestureDetector" as never).at(-1);
+	const gesture = detector?.props.gesture as { handlers: { onStart?(): void } } | undefined;
+	if (!gesture?.handlers.onStart) throw new Error("the message has no hold gesture");
+	act(() => gesture.handlers.onStart?.());
+	const [options, pick] = native.showActionSheetWithOptions.mock.calls.at(-1) as [
+		{ options: string[]; cancelButtonIndex: number },
+		(index: number) => void,
+	];
+	return {
+		options: options.options,
+		cancelButtonIndex: options.cancelButtonIndex,
+		choose: (label: string) => act(() => pick(options.options.indexOf(label))),
 	};
 }
 
@@ -248,14 +270,14 @@ describe("the agent's message", () => {
 		...over,
 	});
 
-	it("offers Copy, Quote in reply and Select text on touch and hold, in place of the selection menu", () => {
+	it("offers Copy, Quote in reply and Select text on touch and hold, and Quote quotes the text", () => {
 		const quote = vi.fn();
 		const tree = render(<TimelineItem item={reply()} hubId="hub" sessionRef="s" quote={quote} />);
 		const markdown = tree.root.findByType("EnrichedMarkdownText" as never);
 		expect(markdown.props.selectable).toBe(false);
-		expect(markdown.props.contextMenuItems).toBeUndefined();
-
-		const menu = longPress(tree.root);
+		// The menu rides on a hold gesture, so a tap on a link inside the prose
+		// still reaches that link instead of a wrapping pressable.
+		const menu = holdMessage(tree.root);
 		expect(menu.options).toEqual(["Copy", "Quote in reply", "Select text", "Cancel"]);
 		expect(menu.cancelButtonIndex).toBe(3);
 		menu.choose("Quote in reply");
@@ -264,7 +286,7 @@ describe("the agent's message", () => {
 
 	it("copies the markdown source", async () => {
 		const tree = render(<TimelineItem item={reply()} hubId="hub" sessionRef="s" />);
-		longPress(tree.root).choose("Copy");
+		holdMessage(tree.root).choose("Copy");
 		await vi.waitFor(() => expect(native.announceForAccessibility).toHaveBeenCalledWith("Copied"));
 		expect(native.setStringAsync).toHaveBeenCalledWith("Done. **All** tests pass.\nNext: ship.");
 	});
@@ -272,7 +294,7 @@ describe("the agent's message", () => {
 	it("opens the message as selectable serif text in a full-screen view, closed by Done", () => {
 		const tree = render(<TimelineItem item={reply()} hubId="hub" sessionRef="s" />);
 		expect(tree.root.findAllByType("Modal" as never)).toEqual([]);
-		longPress(tree.root).choose("Select text");
+		holdMessage(tree.root).choose("Select text");
 
 		const modal = tree.root.findByType("Modal" as never);
 		const text = modal.findAll(
@@ -287,6 +309,59 @@ describe("the agent's message", () => {
 		);
 		act(() => done[0].props.onPress());
 		expect(tree.root.findAllByType("Modal" as never)).toEqual([]);
+	});
+
+	// A Pressable around the markdown view becomes the touch responder, so the
+	// native text view never sees a tap and every file link in the prose is dead.
+	// It happened (issue #4839): the message menu wrapped the text, and a report
+	// link rendered as a blue link that did nothing when pressed.
+	it("adds no view above the prose that would take a tap before its links", () => {
+		const tree = render(<TimelineItem item={reply()} hubId="hub" sessionRef="s" />);
+		const markdown = tree.root.findByType("EnrichedMarkdownText" as never);
+		for (let ancestor = markdown.parent; ancestor; ancestor = ancestor.parent) {
+			expect(ancestor.props.onLongPress).toBeUndefined();
+			expect(ancestor.props.onStartShouldSetResponder).toBeUndefined();
+			expect(ancestor.props.onStartShouldSetResponderCapture).toBeUndefined();
+		}
+	});
+
+	// A reply that is only a diagram has no prose to select, but its message
+	// menu must still open from a hold on the diagram.
+	it("keeps the hold menu on a reply that is only a mermaid diagram", () => {
+		const tree = render(
+			<TimelineItem item={reply({ markdown: "```mermaid\ngraph TD; A-->B\n```" })} hubId="hub" sessionRef="s" />,
+		);
+		const menu = holdMessage(tree.root);
+		expect(menu.options).toEqual(["Copy", "Select text", "Cancel"]);
+	});
+
+	// A reply with a diagram between its prose renders several segments, and
+	// the hold must cover them all through one gesture. The detector attaches
+	// its native handler to the first native view of its single child, so the
+	// child must be one host View holding the whole message: a fragment or a
+	// component child never receives the attachment, and the hold would be
+	// dead on the device while the tests stay green.
+	it("covers every segment of a reply with a diagram between its prose with one hold", () => {
+		const tree = render(
+			<TimelineItem
+				item={reply({ markdown: "before\n\n```mermaid\ngraph TD; A-->B\n```\n\nafter" })}
+				hubId="hub"
+				sessionRef="s"
+			/>,
+		);
+		const detectors = tree.root.findAllByType("GestureDetector" as never);
+		expect(detectors).toHaveLength(1);
+		const [child] = detectors[0].children as unknown as ({ type: unknown } | null)[];
+		expect(child?.type).toBe("View");
+		for (const segment of tree.root.findAllByType("EnrichedMarkdownText" as never)) {
+			const covered = (() => {
+				for (let ancestor = segment.parent; ancestor; ancestor = ancestor.parent) {
+					if (ancestor.type === ("GestureDetector" as never)) return true;
+				}
+				return false;
+			})();
+			expect(covered).toBe(true);
+		}
 	});
 
 	it("gives VoiceOver the menu's items as actions on the message itself", () => {

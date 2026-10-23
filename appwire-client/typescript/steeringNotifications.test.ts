@@ -4,6 +4,7 @@ import { expect, test } from "vitest";
 import delegateUserStopGo from "../../agent/delegate_user_stop.go?raw";
 import foldGo from "../../agent/internal/delegatestore/fold.go?raw";
 import {
+  decodeNotificationEntities,
   type ParsedNotification,
   parseSteeringNotifications,
   type SteeringFragment,
@@ -39,6 +40,56 @@ function notif(notifications: ParsedNotification[], i: number): ParsedNotificati
 // how a transcript recorded while it WAS emitted must still replay). The prose classifier that used to
 // guess a steering "kind" from wording is gone (SteeringItem.tsx routes on
 // ItemModel.steeringKind instead); this pins that its exports stay gone.
+
+test("real producer corpus preserves literal sender entities", () => {
+  const sender = `& < &lt; &amp; &amp;lt; " > ' &quot; &gt; &#39;`;
+  const parse = (name: NotificationWireCase) => notif(wireNotifications(name), 0);
+  expect(parse("job-literal-entities").excerpt).toBe(sender);
+  expect(parse("delegate-update-literal-entities").message).toBe(sender);
+  expect(parse("delegate-update-literal-entities").name).toBe(sender);
+  expect(parse("watch-note-literal-entities").prose).toContain(`Note: ${sender}`);
+});
+
+test("body decoder decodes only lt and amp once", () => {
+  expect(decodeNotificationEntities("&lt; &amp; &amp;lt; &amp;amp;lt; &quot; &gt; &#39; &#x27;")).toBe(
+    "< & &lt; &amp;lt; &quot; &gt; &#39; &#x27;",
+  );
+});
+
+test("two-entity bodies preserve sender text in job excerpts and delegate updates", () => {
+  const sender = `& < &lt; &amp; &amp;lt; " > ' &quot; &gt; &#39;`;
+  const wire = `&amp; &lt; &amp;lt; &amp;amp; &amp;amp;lt; " > ' &amp;quot; &amp;gt; &amp;#39;`;
+  const [job, update] = notificationsOf(
+    parseSteeringNotifications(
+      `<job-notification job_id="job_1" event="completed">Done.\nexcerpt:\n${wire}</job-notification>\n` +
+        `<delegate-notification delegate_id="dlg_1" kind="update">${wire}</delegate-notification>`,
+    ),
+  );
+  expect(job?.excerpt).toBe(sender);
+  expect(update?.message).toBe(sender);
+});
+
+test("old full-escaped JSON bodies stay literal and do not extract an envelope", () => {
+  const oldBody = `{&quot;message&quot;:&quot;a &gt; b&quot;,&quot;data&quot;:{},&quot;artifacts&quot;:[]}`;
+  const [job] = notificationsOf(
+    parseSteeringNotifications(
+      `<job-notification job_id="job_old" event="completed" job_type="delegate">Done.\nexcerpt:\n${oldBody}</job-notification>`,
+    ),
+  );
+  expect(job?.excerpt).toBe(oldBody);
+  expect(job?.message).toBeUndefined();
+});
+
+test("full-escaped notification attributes still decode", () => {
+  const [job, update] = notificationsOf(
+    parseSteeringNotifications(
+      `<job-notification job_id="job_1" event="completed" intent="a &lt; b &amp; c &gt; d &quot;q&quot; &#39;s&#39;">Done.</job-notification>\n` +
+        `<delegate-notification delegate_id="dlg_1" kind="update" name="a &lt; b &amp; c &gt; d &quot;q&quot; &#39;s&#39;">hello</delegate-notification>`,
+    ),
+  );
+  expect(job?.intent).toBe(`a < b & c > d "q" 's'`);
+  expect(update?.name).toBe(`a < b & c > d "q" 's'`);
+});
 
 test("no longer exports a prose classifier", async () => {
   const mod = await import("./steeringNotifications");
@@ -585,15 +636,15 @@ boom
 });
 
 // --- kata 77sf: producer-escaped job output must not terminate or forge the
-// wrapper. agent/job_notify.go's escapeNotificationText HTML-entity-escapes
-// & (first), <, >, and " before interpolating job/watch-derived text into a
+// wrapper. agent/job_notify.go's escapeNotificationBody HTML-entity-escapes
+// & (first) and < before interpolating job/watch-derived text into a
 // <job-notification> block. These tests mirror that producer contract with a
 // test-local escaper (the same order) to prove the parser still sees exactly
 // one card when the underlying job output is wrapper-shaped text. -------
 
-// escapeLikeProducer mirrors agent/job_notify.go's escapeNotificationText.
+// escapeLikeProducer mirrors agent/job_notify.go's escapeNotificationBody.
 function escapeLikeProducer(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
 }
 
 test("a producer-escaped excerpt containing wrapper-shaped delimiters still parses as exactly one card", () => {
@@ -658,12 +709,9 @@ excerpt:
 });
 
 // A delegate's communicate envelope rides the excerpt as body content, so
-// the producer escapes it exactly like any other body text (kata 77sf) -
-// including the envelope's OWN JSON double-quotes, which become &quot;. That
-// text must be decoded back before JSON.parse, or a real producer-escaped
-// envelope (as opposed to the hand-typed unescaped JSON the other
-// communicate tests use) never parses at all.
-test("a producer-escaped delegate communicate envelope still parses (its own JSON quotes are escaped like any other body content)", () => {
+// the producer escapes & and < but leaves its JSON quotes intact. Decode
+// exactly once before JSON.parse to recover the message and concerns.
+test("a producer-escaped delegate communicate envelope still parses with literal JSON quotes", () => {
   const envelopeJson = JSON.stringify({ message: "R & D done", data: { status: "ok", concerns: ["edge <case>"] } });
   const block = `<job-notification job_id="j" event="completed" job_type="delegate" status="completed" reason="" output_bytes="0">
 Job j completed.
@@ -708,7 +756,7 @@ excerpt:
 test("a timer notification keeps its prose and watch id", () => {
   const block = `<job-notification job_id="" event="watch" job_type="watch" description="" status="watch" reason="repeat" output_bytes="0" watch_id="w1">
 Timer fired (every 300s), 3 times since your last turn.
-Note: PR #123: newer than id 456 &lt;x&gt;
+Note: PR #123: newer than id 456 &lt;x>
 </job-notification>`;
   const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
   expect(n.type).toBe("watch");
@@ -1065,21 +1113,10 @@ Job job_a1b2 watch. Output is available through read_transcript if needed.
   expect(n.tone).toBe("warning");
 });
 
-// --- RoboRev combined review of 5c202de (MEDIUM): body entity symmetry -----
-// The producer escapes attribute values fully (&, <, >, " — kata 77sf) but
-// notification bodies only for "<" (kata 72kp) — except the watch-note lane,
-// which pre-escapes "&" (agent/job_watch.go's watchNotificationFromWatch), so
-// a note body carries the same "&"-first order as attribute values. A note
-// literally containing "&lt;" rides the wire as "&amp;lt;" and the card's
-// single full decode must restore the literal "&lt;" text — never "<".
-// escapeNoteLikeProducer mirrors that lane: "&"-first pre-escape composed
-// with the body's "<"-only escaping.
-
-// escapeNoteLikeProducer mirrors the watch-note producer lane:
-// watchNotificationFromWatch's "&" pre-escape composed with
-// escapeNotificationBody's "<"-only escaping.
+// Watch notes use the same central body encoder as excerpts. A note's literal
+// "&lt;" rides as "&amp;lt;" and decodes once back to "&lt;", never "<".
 function escapeNoteLikeProducer(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  return escapeLikeProducer(s);
 }
 
 test("a note containing literal entity text round-trips to the literal text, not a decode (MEDIUM)", () => {
