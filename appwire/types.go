@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -31,6 +33,37 @@ import (
 // reachable in ordinary operation because daemons outlive the hub that spawned
 // them, so an operator who rebuilds and restarts the hub has one.
 const ProtocolVersion = "evener-appwire-v7"
+
+// ProtocolVersionNumber returns the N in "evener-appwire-vN". Only the
+// canonical decimal spelling is a protocol version, so "v05" and "v5-rc1" are
+// not.
+func ProtocolVersionNumber(version string) (int, bool) {
+	digits, ok := strings.CutPrefix(version, "evener-appwire-v")
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.Atoi(digits)
+	if err != nil || n < 0 || strconv.Itoa(n) != digits {
+		return 0, false
+	}
+	return n, true
+}
+
+// OlderProtocolVersion reports whether version is a canonical AppWire protocol
+// version older than this build's ProtocolVersion.
+func OlderProtocolVersion(version string) bool {
+	n, ok := ProtocolVersionNumber(version)
+	current, currentOK := ProtocolVersionNumber(ProtocolVersion)
+	return ok && currentOK && n < current
+}
+
+// NewerProtocolVersion reports whether version is a canonical AppWire protocol
+// version newer than this build's ProtocolVersion.
+func NewerProtocolVersion(version string) bool {
+	n, ok := ProtocolVersionNumber(version)
+	current, currentOK := ProtocolVersionNumber(ProtocolVersion)
+	return ok && currentOK && n > current
+}
 
 // ThreadStatusRestartRequired identifies a live daemon that cannot serve this
 // hub's protocol. Its current activity is unavailable until explicitly restarted.
