@@ -1480,6 +1480,9 @@ test("late built-in success does not consume newer edited recovery work", async 
   expect(fake.calls.filter((call) => messageMutationMethods.has(call.method))).toEqual([]);
   await flushPendingTurnsProjectionForTests();
   await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  await act(async () => {
     cleanup();
     reopenedSource.dispose();
   });
