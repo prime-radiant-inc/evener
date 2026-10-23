@@ -1617,6 +1617,15 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		pendingRefreshWaiters.clear();
 		for (const waiter of waiters) waiter();
 	}
+	// Demand a fresh read of the bound durable projection for an explicit
+	// lifecycle event (a connection recovery or a canonical read demand), not a
+	// storage notification. No timer and no loop: a failure leaves readiness false
+	// and the next explicit event tries again.
+	function demandBoundPendingRead(): void {
+		const demand = pendingDemandRead;
+		if (demand === null) return;
+		void demand();
+	}
 	// Advanced only by forgetPendingProvenance (close/reset). A read's provenance
 	// write is fenced on THIS, not on pendingGeneration: a read in flight across a
 	// same-target rebind or a thread open still observed a durable record of this
@@ -2085,6 +2094,11 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					await get().openProjected(service, sink, ref);
 					return;
 				}
+				// Connection recovery is an explicit freshness event for the retained
+				// durable projection too. The bound port survives a suspend, so its
+				// idempotent rebind performs no read; without this, one transient
+				// pending-read failure would strand Retry until a full remount.
+				demandBoundPendingRead();
 				const gen = ++conversationGen;
 				bindingEpoch += 1;
 				loadOlderToken += 1;
@@ -2518,11 +2532,17 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// R1: failure may set error only if error/page/mutation owners all
 					// remain unchanged. Check binding epoch, generation, token, page
 					// owner, mutation-owner revision, and error-owner revision.
+					// Latest-read validity is this read's own fact, not a display
+					// owner's: it settles on the binding epoch, generation and
+					// operation token alone. A page that started while this read was
+					// outstanding (or a newer mutation/error owner) may keep its error
+					// text, but leaving "reading" here would strand canonical authority
+					// and the read actor, which observes exactly this state.
 					const currentSnapshot = get();
+					const latestCurrent =
+						entryEpoch === bindingEpoch && currentSnapshot.conversationGeneration === gen && token === rehydrateToken;
+					if (!latestCurrent) return;
 					if (
-						entryEpoch === bindingEpoch &&
-						currentSnapshot.conversationGeneration === gen &&
-						token === rehydrateToken &&
 						entryLoadOlderToken === loadOlderToken &&
 						entryMutationRev === mutationOwnerRev &&
 						entryErrorRev === errorOwnerRev
@@ -2531,6 +2551,8 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 							error: err instanceof Error ? err.message : String(err),
 							latestReadState: "error",
 						});
+					} else {
+						markLatest("error");
 					}
 				}
 			},
@@ -2980,6 +3002,10 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// Requested authority is not authority: drop `ready` now, and let only
 				// the accepted publication below restore it.
 				markLatest("reading");
+				// The same explicit demand recovers a pending projection whose read
+				// failed while Retry's consumer (which waits for readiness) could not
+				// ask for one. A storage read, so it never blocks ordinary dispatch.
+				demandBoundPendingRead();
 				return scheduler.request(binding.ref, async () => {
 					if (!isBindingCurrent(binding)) return;
 					if (binding.sink === null) return;

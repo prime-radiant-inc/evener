@@ -20091,6 +20091,78 @@ describe("store-owned canonical read validity and pending readiness", () => {
 		expect(storage.snapshot().outbox.map((record) => record.clientMutationId)).toEqual(["cmid-1"]);
 	});
 
+	it("a failed latest read that raced pagination still settles latest-read error", async () => {
+		const service = new FakeConversationService();
+		service.olderCursor = "cursor-1";
+		service.olderItems = {
+			turnsPage: turnsPage([wireTurnFragment("t2", [{ type: "userMessage", id: "old-1", text: "old" }])]),
+		};
+		const store = createConversationStore();
+		await store.getState().openProjected(service, createFakeSink(), "ref-1");
+		expect(store.getState().latestReadState).toBe("ready");
+
+		const latestRead = deferred<ConversationReadProjection>();
+		service.readProjectionBlock = latestRead.promise;
+		const readStarted = deferred<void>();
+		const readProjection = service.readProjection.bind(service);
+		service.readProjection = async (ref: string) => {
+			readStarted.resolve();
+			return readProjection(ref);
+		};
+		const latest = store.getState().ensureLatest();
+		// The read is outstanding (its tokens captured) before the page starts.
+		await readStarted.promise;
+		expect(store.getState().latestReadState).toBe("reading");
+		// A page starts and completes while that read is outstanding. Its page
+		// token moves, which must not silence the failed read's own validity.
+		const page = await store.getState().loadOlder(service);
+		expect(page.status).toBe("loaded");
+
+		latestRead.reject(new Error("read failed"));
+		await latest;
+		expect(store.getState().latestReadState).toBe("error");
+		expect(store.getState().canonicalSession()).toBeNull();
+		// The reader's displayed error still comes only from an owner entitled to
+		// overwrite it; the page owner changed, so no error text was published.
+		expect(store.getState().error).toBeNull();
+
+		// The one read actor retries; a later successful latest read restores
+		// canonical authority.
+		service.readProjectionBlock = null;
+		await store.getState().ensureLatest();
+		expect(store.getState().latestReadState).toBe("ready");
+		expect(store.getState().canonicalSession()).not.toBeNull();
+	});
+
+	it("a transient pending-read failure recovers on connection recovery", async () => {
+		const storage = createStorage({ outbox: [outbox()], optimistic: [] });
+		storage.hold();
+		const service = new FakeConversationService();
+		const sink = createFakeSink();
+		const store = createConversationStore();
+		await store.getState().openProjected(service, sink, "ref-1");
+		store.getState().bindPendingMutations(storage.port);
+		expect(storage.reads).toHaveLength(1);
+		storage.reads[0]!.reject(new Error("storage unavailable"));
+		await storage.reads[0]!.promise.catch(() => undefined);
+		expect(store.getState().pendingMutationsReady).toBe(false);
+
+		// Reconnect a retained conversation: the bound port survives, so an
+		// idempotent rebind would perform no read and the transient failure would
+		// strand Retry until a full remount.
+		store.getState().suspendProjected();
+		const resuming = store.getState().resumeProjected(service, sink, "ref-1");
+		expect(storage.reads).toHaveLength(2);
+		storage.reads[1]!.resolve({ outbox: [outbox({ clientMutationId: "cmid-2" })], optimistic: [] });
+		await storage.reads[1]!.promise;
+		await resuming;
+
+		expect(store.getState().pendingMutationsReady).toBe(true);
+		expect(store.getState().pendingMutations?.map((row) => row.id)).toEqual(["cmid-2"]);
+		expect(store.getState().latestReadState).toBe("ready");
+		expect(store.getState().canonicalSession()).not.toBeNull();
+	});
+
 	it("retirement resolves an awaited refresh without undoing the commit", async () => {
 		const storage = createStorage({ outbox: [outbox()], optimistic: [] });
 		const service = new FakeConversationService();

@@ -686,6 +686,10 @@ function ConversationScreenView({
 		// ("reading") must not be duplicated, and an error belongs to the
 		// entry's read actor.
 		if (current.ref !== route.params.ref || current.latestReadState === "unknown") void current.ensureLatest();
+		// A pending projection whose read failed is disabled for Retry until a
+		// fresh read certifies it; focus is an explicit recovery event for that
+		// storage read (which never blocks dispatch), not a second canonical read.
+		else if (!current.pendingMutationsReady) void current.refreshPendingMutations();
 	}, [focused, service, connected, store, route.params.ref]);
 	// One entry-owned read actor: the transcript's quiet retry line follows its
 	// failure count. Views only subscribe; they never start a timer.
