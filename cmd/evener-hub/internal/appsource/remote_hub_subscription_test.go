@@ -50,7 +50,11 @@ func newPushableRemote(t *testing.T, id string, handle func(method string, param
 			calls = append(calls, remoteCall{method: msg.Request.Method, params: msg.Request.Params})
 			mu.Unlock()
 			if msg.Request.Method == appwire.MethodInitialize {
-				data, _ := json.Marshal(appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"})
+				data, _ := json.Marshal(appwire.InitializeResponse{
+					ProtocolVersion: appwire.ProtocolVersion,
+					SourceID:        "local",
+					Features:        allForwardedFeatures(),
+				})
 				if err := server.Send(ctx, appwire.ResponseMessage(msg.Request.ID, json.RawMessage(data))); err != nil {
 					return
 				}

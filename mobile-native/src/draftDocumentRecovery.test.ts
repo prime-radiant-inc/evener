@@ -15,12 +15,18 @@ function setup() {
 	databases.push(db);
 	const repository = new DraftRepository(port);
 	const destination = { hubId: "studio", sessionRef: "local/session-42" };
+	let nextCapture = 0;
 	return {
 		db,
 		port,
 		repository,
 		destination,
-		document: new DraftDocument(() => repository, destination),
+		document: new DraftDocument(
+			() => repository,
+			destination,
+			undefined,
+			() => `draft-recovery-capture-${++nextCapture}`,
+		),
 	};
 }
 afterEach(() => {
@@ -75,6 +81,7 @@ describe("atomic recovery restore", () => {
 		expect(repository.read(destination)).toEqual({
 			draft: "recovered text",
 			unconfirmed: "submitted earlier",
+			unconfirmedCaptureToken: "draft-recovery-capture-1",
 		});
 	});
 

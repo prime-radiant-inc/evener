@@ -40,7 +40,7 @@ func (s *RemoteHubSource) mutationCall(ctx context.Context, method string, clien
 		}
 		return s.remoteHubMutationCallError(clientMutationID, err)
 	}
-	return s.translateOut(out)
+	return s.translateOut(client, out)
 }
 
 // remoteHubMutationCallError reports a lost mutation response as outcome
