@@ -423,6 +423,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	verbose := fs.Bool("verbose", false, "emit NDJSON events to stderr")
 	appReplaySize := fs.Int("app-replay-size", 0, "AppWire notification replay ring size (default 1000)")
 	nonInteractive := fs.Bool("non-interactive", false, "mark this daemon session as headless/non-interactive")
+	managerMode := fs.Bool("manager", false, "start this session as a Manager of the sessions its hub can reach (a start-time property; persisted with the session)")
 	agentName := fs.String("agent", "", "agent persona name (default: default)")
 	var skillsDirs cmdutil.StringSliceFlag
 	fs.Var(&skillsDirs, "skills-dir", "extra skill directory (repeatable)")
@@ -696,6 +697,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		ExportATIFProviderHandles:   *exportATIFProviderHandles,
 		VisionModel:                 visionModelVal,
 		NonInteractive:              *nonInteractive,
+		Manager:                     *managerMode,
 		SystemPromptAsUser:          *systemPromptAsUser,
 		ModelFallbacks:              []string(modelFallbacks),
 		OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,

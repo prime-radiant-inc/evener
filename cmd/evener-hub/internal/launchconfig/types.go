@@ -88,6 +88,11 @@ type Resolved struct {
 	// unconditionally so the child always sees an explicit value — a zero
 	// here means "automatic retirement disabled", never "flag absent".
 	DaemonIdleTimeout time.Duration
+	// Manager starts the daemon as a Manager of the sessions its hub can reach.
+	// Like DaemonIdleTimeout it is a runtime-only launch parameter, never read
+	// from or written to launch.toml: the Hub assigns it from the start request,
+	// and the daemon persists it with the session so a resume keeps it.
+	Manager bool
 }
 
 // TrustState describes the in-repo .evener/launch.toml trust outcome.

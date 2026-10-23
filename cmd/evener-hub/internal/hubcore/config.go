@@ -307,6 +307,9 @@ type SpawnRequest struct {
 	AppReplaySize int
 	Env           []string // populated by ToEnv during Spawn
 	Provider      string   // instance the launch selected; gated against the registry before spawning
+	// Manager starts this session as a Manager. Assigned from the start request,
+	// never from launch config, and persisted by the daemon with the session.
+	Manager bool
 }
 
 // ResumeRequest carries the resolved state needed to resume a saved session.

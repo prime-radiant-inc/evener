@@ -96,6 +96,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		PluginRoot:    cfg.PluginRoot,
 		AgentsDocPath: hubAgentsDocPath(cfg),
 		Provider:      plan.modelRef.Provider,
+		Manager:       params.Manager,
 	})
 	if err != nil {
 		return appwire.ThreadStartResponse{}, appwire.HubLaunchError(err.Error())
