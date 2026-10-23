@@ -127,6 +127,16 @@ the existing durability barrier, never a blind reappend. A checkpoint can repair
 a missing activation-completion marker as completed; a crash after a resumption
 claim instead uses ordinary interrupted-execution recovery.
 
+Direct user Stop also restores a cold yielded runtime on its original lease,
+without borrowing execution capacity or entering the model. Attachment installs
+the existing yielded cancellation tail before publishing resident ownership.
+The restore callback gate and drive guard exclude execution until cancellation
+admission, then release on success or failure. This ends only that run, not its
+descendants or owed messages. Retained pending input can legitimately start a
+successor after cancellation, exactly as for a resident run. No input means no
+Stop-created successor. Unreadable live-wait proof is an error that can be retried,
+while a genuinely idle cold delegate still answers `notRunning`.
+
 There is no wait-target polling loop, ticker or fabricated continuation prompt.
 Ordinary non-checkpoint idle dispatch retains successor-generation semantics.
 A pre-checkpoint

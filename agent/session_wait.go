@@ -569,9 +569,12 @@ func (c *delegateTreeController) abandonWaitingRuntimeRestore(lease delegateLeas
 	}
 }
 
-func (c *delegateTreeController) attachWaitingRuntime(lease delegateLease, runtime *Session) error {
+func (c *delegateTreeController) attachWaitingRuntime(lease delegateLease, sub *subagent) error {
+	sub.mu.Lock()
+	defer sub.mu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	runtime := sub.sess
 	run, live, err := c.exactLeaseLocked(lease)
 	if err != nil {
 		return err
@@ -589,9 +592,45 @@ func (c *delegateTreeController) attachWaitingRuntime(lease delegateLease, runti
 	if err != nil || owner != nil && owner != live || ownerID != "" && ownerID != lease.delegateID {
 		return errDelegateTargetBusy
 	}
+	sub.bindYieldCancellationLocked(live.binding)
 	c.setResidentRuntimeLocked(live, runtime)
 	live.binding.runtime = runtime
 	live.binding.ready = true
 	c.evidenceVersion++
 	return nil
+}
+
+// Reuse restore installation and its callback gate, but keep every new runtime's
+// drive guard until the caller has admitted direct cancellation. Finishing is
+// mandatory even on failure: deferred source repair and callbacks remain owed.
+func (s *Session) restoreWaitingDelegateForUserStop(id string) (*subagent, func() error, error) {
+	c := s.delegateController
+	c.mu.Lock()
+	expected := delegateLease{delegateID: id, generation: c.durable[id].Generation}
+	c.mu.Unlock()
+	gate := &owedBootstrapRestore{held: true, holdDrives: true, pending: make(map[*Session]func()), done: make(map[*subagent]bool)}
+	finish := func() error {
+		defer gate.open()
+		var err error
+		for _, runtime := range gate.restored {
+			err = errors.Join(err, runtime.sub.sess.runDeferredRestoreSideEffects())
+		}
+		return err
+	}
+	_, sub, err := s.restoreColdDelegateAttentionRuntime(id, gate)
+	if err != nil {
+		// A concurrent restore can win installation. Use its tracked object,
+		// never a discarded candidate. Otherwise preserve retryable uncertainty.
+		childID, _ := c.childSessionIDFor(id)
+		if current := s.subagentForChild(childID); current != nil {
+			c.mu.Lock()
+			live := c.live[id]
+			matching := live != nil && live.binding != nil && live.binding.lease == expected && live.binding.ready && live.binding.runtime == current.sess && live.runtime == current.sess
+			c.mu.Unlock()
+			if matching {
+				return current, finish, nil
+			}
+		}
+	}
+	return sub, finish, err
 }

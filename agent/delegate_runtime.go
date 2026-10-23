@@ -939,11 +939,12 @@ const (
 )
 
 type owedBootstrapRestore struct {
-	mu       sync.Mutex
-	held     bool
-	pending  map[*Session]func()
-	done     map[*subagent]bool
-	restored []owedBootstrapRuntime
+	mu         sync.Mutex
+	held       bool
+	holdDrives bool // direct Stop owns restored drive guards until cancellation admission
+	pending    map[*Session]func()
+	done       map[*subagent]bool
+	restored   []owedBootstrapRuntime
 }
 type owedBootstrapRuntime struct {
 	deferredOwedDelegateAttentionStart
@@ -976,10 +977,18 @@ func (g *owedBootstrapRestore) open() {
 	g.mu.Lock()
 	g.held = false
 	pending := g.pending
+	restored := g.restored
 	g.pending = nil
 	g.restored = nil
 	g.done = nil
 	g.mu.Unlock()
+	if g.holdDrives {
+		for _, runtime := range restored {
+			if releaseDriveGuard(runtime.sub) {
+				runtime.owner.delegateController.requestSessionWake(runtime.sub.id)
+			}
+		}
+	}
 	for _, drive := range pending {
 		drive()
 	}
@@ -995,6 +1004,21 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 		err = errors.New("delegate attention runtime is unavailable")
 		finishRestore(nil, err)
 		return nil, err
+	}
+	// Before attachment the not-ready lease excludes callbacks installed by
+	// restoreIdleForSend. Carry that exclusion across attachment with the same
+	// drive guard used by send/attention, until direct Stop admits cancellation.
+	guarded, gateOwnsGuard := restored && len(gates) != 0 && gates[0].holdDrives, false
+	guardedSub := sub
+	if guarded {
+		sub.mu.Lock()
+		sub.driving = true
+		sub.mu.Unlock()
+		defer func() {
+			if !gateOwnsGuard {
+				releaseDriveGuard(guardedSub)
+			}
+		}()
 	}
 	var installation *delegateIdleRuntimeInstallation
 	if mode == delegateRuntimeAttachIdle {
@@ -1015,7 +1039,7 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 		case delegateRuntimeAttachStarted:
 			return s.delegateController.AttachRuntime(started.lease, selected.sess)
 		case delegateRuntimeAttachWaiting:
-			return s.delegateController.attachWaitingRuntime(started.lease, selected.sess)
+			return s.delegateController.attachWaitingRuntime(started.lease, selected)
 		default:
 			return errDelegateTargetBusy
 		}
@@ -1041,20 +1065,12 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 		owner.delegateRestoreBeforeSideEffects(sub.sess)
 	}
 	bindStableDelegateActivityToOwner(sub.sess, s.delegateController, started.lease, owner)
-	if mode == delegateRuntimeAttachWaiting {
-		sub.mu.Lock()
-		s.delegateController.mu.Lock()
-		if live := s.delegateController.live[started.lease.delegateID]; live != nil && live.binding != nil && live.binding.lease == started.lease {
-			sub.bindYieldCancellationLocked(live.binding)
-		}
-		s.delegateController.mu.Unlock()
-		sub.mu.Unlock()
-	}
 	if restored && len(gates) != 0 {
 		if err := gates[0].add(owner, sub, started); err != nil {
 			finishRestore(nil, err)
 			return nil, err
 		}
+		gateOwnsGuard = guarded
 	} else if restored {
 		if err := sub.sess.runDeferredRestoreSideEffects(); err != nil {
 			sub.sess.emit(events.EventWarning, warningDataFromError("restored delegate side effects incomplete", err))

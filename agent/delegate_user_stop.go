@@ -38,14 +38,30 @@ func (s *Session) StopDelegateRun(delegateID string) (appwire.DelegateStopOutcom
 		return "", fmt.Errorf("%w %q", ErrUnknownDelegate, delegateID)
 	}
 	sub := s.subagentForChild(childSessionID)
+	finishRestore := func() error { return nil }
 	if sub == nil {
-		return appwire.DelegateStopNotRunning, nil
+		controller.mu.Lock()
+		run := controller.durable[delegateID]
+		waiting := run != nil && run.CurrentRunOpen && run.Phase == delegatestore.PhaseRunning
+		controller.mu.Unlock()
+		if !waiting {
+			return appwire.DelegateStopNotRunning, nil
+		}
+		var err error
+		sub, finishRestore, err = s.restoreWaitingDelegateForUserStop(delegateID)
+		if err != nil {
+			return "", errors.Join(err, finishRestore())
+		}
 	}
-	switch _, err := sub.requestRunCancel(true); {
-	case errors.Is(err, errSubagentNotRunning), errors.Is(err, errSubagentSettling):
+	_, cancelErr := sub.requestRunCancel(true)
+	restoreErr := finishRestore()
+	switch {
+	case restoreErr != nil:
+		return "", errors.Join(cancelErr, restoreErr)
+	case errors.Is(cancelErr, errSubagentNotRunning), errors.Is(cancelErr, errSubagentSettling):
 		return appwire.DelegateStopNotRunning, nil
-	case err != nil:
-		return "", err
+	case cancelErr != nil:
+		return "", cancelErr
 	}
 	return appwire.DelegateStopStopping, nil
 }

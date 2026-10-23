@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -736,6 +737,381 @@ func TestDirectUserStopYieldedWait(t *testing.T) {
 	})
 	if requests := len(adapter.requestsFor("USER-WAIT-63")); requests != 3 {
 		t.Fatalf("retained child result model requests=%d want3", requests)
+	}
+}
+
+func TestColdDirectUserStopYieldedWait(t *testing.T) {
+	for _, test := range []struct {
+		name                     string
+		pending, failedRead      bool
+		resident, concurrentStop bool
+		refuseCancel             bool
+		activeSibling            bool
+	}{
+		{name: "cold_empty"},
+		{name: "cold_empty_active_sibling", activeSibling: true},
+		{name: "cold_pending", pending: true},
+		{name: "cold_read_repair", pending: true, failedRead: true},
+		{name: "cold_concurrent_stop", pending: true, concurrentStop: true},
+		{name: "cold_admission_retry", pending: true, refuseCancel: true},
+		{name: "resident_pending", pending: true, resident: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			adapter := newMessagingAdapter("COLD-STOP-84", "COLD-CHILD-84", "COLD-BUSY-84")
+			fifo, releaseShell := waitProducerFIFO(t)
+			defer releaseShell()
+			successor := make(chan llm.Request, 1)
+			childGate := make(chan struct{})
+			releaseChild := sync.OnceFunc(func() { close(childGate) })
+			defer releaseChild()
+			busyGate := make(chan struct{})
+			releaseBusy := sync.OnceFunc(func() { close(busyGate) })
+			defer releaseBusy()
+			adapter.script("COLD-BUSY-84", func(llm.Request) llm.Response { <-busyGate; return finalResponse("cold-busy-result-84") })
+			adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("cold-stop", "COLD-STOP-84") }, func(llm.Request) llm.Response { return finalResponse("root-84") })
+			adapter.script("COLD-STOP-84", func(llm.Request) llm.Response { return delegateToolResponse("cold-child", "COLD-CHILD-84") }, func(req llm.Request) llm.Response {
+				return waitResponseFor("cold-stop-wait-84", deferredHeadDelegateID.FindString(lastToolResultText(req.Messages)))
+			}, func(req llm.Request) llm.Response {
+				// The child's own wait publication is real unrelated input to its parent.
+				var childID string
+				for _, msg := range req.Messages {
+					if id := deferredHeadDelegateID.FindString(msg.Text()); id != "" {
+						childID = id
+					}
+				}
+				return waitResponseFor("cold-stop-wait-again-84", childID)
+			}, func(req llm.Request) llm.Response {
+				successor <- req
+				if !test.pending {
+					return finalResponse("cold-stop-retained-child-result-84")
+				}
+				var childID string
+				for _, msg := range req.Messages {
+					if id := deferredHeadDelegateID.FindString(msg.Text()); id != "" {
+						childID = id
+					}
+				}
+				return waitResponseFor("cold-stop-successor-wait-84", childID)
+			}, func(llm.Request) llm.Response { return finalResponse("cold-stop-retained-child-result-84") })
+			adapter.script("COLD-CHILD-84", func(llm.Request) llm.Response {
+				args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
+				return toolCallResponse(llm.ToolCallData{ID: "cold-shell-84", Name: "shell", Type: "function", Arguments: args})
+			}, func(req llm.Request) llm.Response {
+				return waitResponseFor("cold-child-wait-84", regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages)))
+			}, func(llm.Request) llm.Response {
+				<-childGate
+				return finalResponse("cold-stop-retained-child-payload-84")
+			})
+			root := newMessagingRoot(t, adapter, nil)
+			if _, err := root.ProcessInput(context.Background(), "start-84", nil); err != nil {
+				t.Fatal(err)
+			}
+			owner := root.subagents.sessions()[0]
+			sub := root.getSub(owner.ID())
+			adapter.waitForRequests(t, "COLD-STOP-84", 3)
+			child := owner.subagents.sessions()[0]
+			childSub := owner.getSub(child.ID())
+			waitForCondition(t, 3*time.Second, "cold Stop fixture both yielded", func() bool {
+				sub.mu.Lock()
+				parentRunning := sub.running
+				sub.mu.Unlock()
+				childSub.mu.Lock()
+				defer childSub.mu.Unlock()
+				return !parentRunning && !childSub.running
+			})
+			// Keep the original executor out while accepting real addressed custody,
+			// then work only on an exact copy of that persisted state.
+			sub.mu.Lock()
+			sub.driving = true
+			sub.mu.Unlock()
+			defer releaseDriveGuard(sub)
+			if test.pending {
+				if err := root.delegateController.enqueueNotification(owner.ID(), notification{ID: "pending-cold-stop-84", Message: llm.UserMachinery("pending-cold-stop-payload-84")}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			copyDir := root.stateDir
+			if !test.resident {
+				copyDir = copyWaitingState(t, root.stateDir)
+			}
+			meta, err := schema.LoadSessionMeta(copyDir, root.ID())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var denyRestore atomic.Bool
+			denyRestore.Store(true)
+			restored := root
+			if !test.resident {
+				restored, err = RestoreSessionFromMetaWithConfig(root.client, root.profile, execenv.NewLocalExecutionEnvironment(meta.EnvInfo.WorkingDir), meta, RestoreSessionConfig{
+					StateDir: copyDir, ForceRealIO: true, clock: agenttest.NewFakeClock(),
+					AcquireSessionOwnership: func(id string) error {
+						if denyRestore.Load() && (id == owner.ID() || id == child.ID()) {
+							return fmt.Errorf("fixture ownership unavailable")
+						}
+						return nil
+					},
+					testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, disableDelegateIdleRelease: true},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(restored.Close)
+				if resident := restored.subagentForChild(owner.ID()); resident != nil {
+					t.Fatal("fixture did not remain cold behind ownership refusal")
+				}
+			}
+			fold, err := readExistingDelegateAttentionFold(transcriptPath(copyDir, owner.ID()), owner.ID())
+			if err != nil || (len(fold.pendingIDs()) != 0) != test.pending {
+				t.Fatalf("cold pending evidence=%v err=%v", fold.pendingIDs(), err)
+			}
+			c := restored.delegateController
+			if !test.resident {
+				restored.delegateRestoreBeforeSideEffects = func(target *Session) {
+					if target.ID() != owner.ID() {
+						return
+					}
+					// The normal callback exists and the lease is already attached,
+					// but gate.add has not installed its wrapper yet.
+					if err := target.requestNotificationWake(); err != nil {
+						t.Error(err)
+					}
+					current := restored.subagentForChild(target.ID())
+					current.mu.Lock()
+					guarded, running := current.driving, current.running
+					current.mu.Unlock()
+					if !guarded || running || len(adapter.requestsFor("COLD-STOP-84")) != 3 {
+						t.Errorf("pre-gate callback escaped guard: guarded=%v running=%v", guarded, running)
+					}
+					if test.concurrentStop {
+						if outcome, err := restored.StopDelegateRun(owner.owningDelegateID); err != nil || outcome != appwire.DelegateStopStopping {
+							t.Errorf("concurrent Stop=%s err=%v", outcome, err)
+						}
+						if delegateAggregateSnapshot(t, c, owner.owningDelegateID).CurrentRunOpen {
+							t.Error("concurrent Stop reached an attached wait without its yielded cancellation tail")
+						}
+					}
+					if test.refuseCancel {
+						c.mu.Lock()
+						c.closing = true
+						c.mu.Unlock()
+					}
+				}
+			}
+			if test.failedRead {
+				c.mu.Lock()
+				c.attentionOpen = func(string, string) (*transcript.Writer, []transcript.Entry, error) {
+					return nil, nil, fmt.Errorf("cold wait proof unavailable")
+				}
+				c.mu.Unlock()
+				if outcome, err := restored.StopDelegateRun(owner.owningDelegateID); err == nil || outcome != "" {
+					t.Fatalf("unreadable live wait Stop=%s err=%v, want retryable error", outcome, err)
+				}
+				c.mu.Lock()
+				c.attentionOpen = nil
+				c.mu.Unlock()
+			}
+			var busyID string
+			if test.activeSibling {
+				adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("cold-busy", "COLD-BUSY-84") }, func(llm.Request) llm.Response { return finalResponse("root-busy-84") })
+				if _, err := restored.ProcessInput(context.Background(), "busy-84", nil); err != nil {
+					t.Fatal(err)
+				}
+				adapter.waitForRequests(t, "COLD-BUSY-84", 1)
+				for _, candidate := range restored.subagents.sessions() {
+					if candidate.ID() != owner.ID() {
+						busyID = candidate.owningDelegateID
+					}
+				}
+				if busyID == "" {
+					t.Fatal("active sibling missing")
+				}
+			}
+			denyRestore.Store(false)
+			beforeCalls := len(adapter.requestsFor("COLD-STOP-84"))
+			outcome, err := restored.StopDelegateRun(owner.owningDelegateID)
+			if test.refuseCancel {
+				if err != nil || outcome != appwire.DelegateStopNotRunning {
+					t.Fatalf("refused cancellation=%s err=%v", outcome, err)
+				}
+				current := restored.subagentForChild(owner.ID())
+				current.mu.Lock()
+				guarded := current.driving
+				current.mu.Unlock()
+				if guarded {
+					t.Fatal("failed cancellation orphaned the restored drive guard")
+				}
+				c.mu.Lock()
+				c.closing = false
+				c.mu.Unlock()
+				outcome, err = restored.StopDelegateRun(owner.owningDelegateID)
+			}
+			wantOutcome := appwire.DelegateStopStopping
+			if test.concurrentStop {
+				wantOutcome = appwire.DelegateStopNotRunning // the other Stop already settled this lease
+			}
+			if err != nil || outcome != wantOutcome {
+				t.Fatalf("cold direct Stop=%s err=%v, want stopping", outcome, err)
+			}
+			if test.resident && releaseDriveGuard(sub) {
+				c.requestSessionWake(owner.ID())
+			}
+			wantStarts, wantCalls := 1, beforeCalls
+			if test.pending {
+				wantStarts, wantCalls = 2, beforeCalls+1
+				select {
+				case req := <-successor:
+					found := 0
+					for _, msg := range req.Messages {
+						found += strings.Count(msg.Text(), "pending-cold-stop-payload-84")
+					}
+					if found != 1 {
+						t.Fatalf("successor canonical payload count=%d want1", found)
+					}
+				case <-time.After(3 * time.Second):
+					t.Fatal("retained pending input did not drive successor")
+				}
+				waitForCondition(t, 3*time.Second, "legitimate successor yielded", func() bool {
+					run := delegateAggregateSnapshot(t, c, owner.owningDelegateID)
+					current := restored.subagentForChild(owner.ID())
+					current.mu.Lock()
+					defer current.mu.Unlock()
+					return run.Generation == 2 && run.CurrentRunOpen && !current.running
+				})
+			} else {
+				if again, err := restored.StopDelegateRun(owner.owningDelegateID); err != nil || again != appwire.DelegateStopNotRunning {
+					t.Fatalf("repeated cold Stop=%s err=%v", again, err)
+				}
+			}
+			if got := len(adapter.requestsFor("COLD-STOP-84")); got != wantCalls {
+				t.Fatalf("cold Stop model requests=%d want%d", got, wantCalls)
+			}
+			data, err := readTranscriptFull(transcriptPath(copyDir, owner.ID()), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			observations := 0
+			for _, entry := range data.Entries {
+				if cp := entry.Turn.WaitCheckpoint; cp != nil && cp.Generation == 1 && cp.ResumedByTurnID != "" && cp.CommunicateCallID == "cold-stop-wait-again-84" {
+					t.Fatalf("cold Stop resumed final generation1 wait=%+v", cp)
+				}
+				for _, id := range entry.Turn.ObservedNotificationIDs {
+					if id == "pending-cold-stop-84" {
+						observations++
+					}
+				}
+			}
+			wantObservations := 0
+			if test.pending {
+				wantObservations = 1
+			}
+			if observations != wantObservations {
+				t.Fatalf("durable canonical observations=%d want%d", observations, wantObservations)
+			}
+			childRun := delegateAggregateSnapshot(t, c, child.owningDelegateID)
+			if !childRun.CurrentRunOpen || childRun.Generation != 1 || childRun.LatestOutcome != nil {
+				t.Fatalf("cold direct Stop changed descendant=%+v", childRun)
+			}
+			starts, finishes, attributed := 0, 0, 0
+			for _, event := range publicationEvents(t, restored) {
+				if event.DelegateID != owner.owningDelegateID {
+					continue
+				}
+				if prepared := event.TerminalPrepared; prepared != nil && prepared.Generation == 1 && bytes.Contains(prepared.Packet.Message, []byte(delegateUserStopMessage)) {
+					attributed++
+				}
+				if event.RunStarted != nil {
+					starts++
+				}
+				if event.RunFinished != nil {
+					finishes++
+					if event.RunFinished.Generation != 1 || event.RunFinished.Outcome.Status != delegatestore.OutcomeCancelled {
+						t.Fatalf("cold direct Stop attribution=%+v", event.RunFinished)
+					}
+				}
+			}
+			if starts != wantStarts || finishes != 1 || attributed != 1 {
+				t.Fatalf("cold direct Stop starts=%d finishes=%d attributed=%d, want%d,1,1", starts, finishes, attributed, wantStarts)
+			}
+			wantTurns := 0
+			if test.activeSibling {
+				wantTurns = 1
+				if !delegateAggregateSnapshot(t, c, busyID).CurrentRunOpen {
+					t.Fatal("cold direct Stop ended unrelated sibling")
+				}
+			}
+			if test.pending && !test.resident {
+				// Reopening the successor reconstructs its child. The copied shell
+				// has no surviving in-process producer, so that child's same lease
+				// legitimately resumes on the durable interruption notification.
+				adapter.waitForRequests(t, "COLD-CHILD-84", 3)
+				wantTurns = 1
+			}
+			c.mu.Lock()
+			turns, drives := c.turnsInUse, c.drivesInUse
+			c.mu.Unlock()
+			if turns != wantTurns || drives != 0 {
+				t.Fatalf("cold Stop capacity: turns=%d drives=%d want%d,0", turns, drives, wantTurns)
+			}
+			if !test.pending {
+				if test.activeSibling {
+					releaseBusy()
+					waitForCondition(t, 3*time.Second, "unrelated sibling settlement", func() bool {
+						return !delegateAggregateSnapshot(t, c, busyID).CurrentRunOpen
+					})
+				}
+				return // no synthetic input is added merely to make Stop execute
+			}
+			releaseShell()
+			adapter.waitForRequests(t, "COLD-CHILD-84", 3)
+			releaseChild()
+			waitForCondition(t, 3*time.Second, "retained child report observed by successor", func() bool {
+				run := delegateAggregateSnapshot(t, c, owner.owningDelegateID)
+				return run.Generation == 2 && !run.CurrentRunOpen
+			})
+			childRun = delegateAggregateSnapshot(t, c, child.owningDelegateID)
+			if childRun.Generation != 1 || childRun.CurrentRunOpen || childRun.LatestOutcome == nil || childRun.LatestOutcome.Status != delegatestore.OutcomeCompleted {
+				t.Fatalf("retained child outcome=%+v", childRun)
+			}
+			if ids, err := restored.subagentForChild(owner.ID()).sess.pendingNotificationIDs(); err != nil || len(ids) != 0 {
+				t.Fatalf("retained source obligations not observed: ids=%v err=%v", ids, err)
+			}
+		})
+	}
+}
+
+func TestColdDirectUserStopIdle(t *testing.T) {
+	adapter := newMessagingAdapter("COLD-IDLE-85")
+	adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("cold-idle", "COLD-IDLE-85") }, func(llm.Request) llm.Response { return finalResponse("root-85") })
+	adapter.script("COLD-IDLE-85", func(llm.Request) llm.Response { return finalResponse("idle-85") })
+	root := newMessagingRoot(t, adapter, nil)
+	if _, err := root.ProcessInput(context.Background(), "start-85", nil); err != nil {
+		t.Fatal(err)
+	}
+	owner := root.subagents.sessions()[0]
+	waitForCondition(t, 3*time.Second, "idle fixture settlement", func() bool {
+		return !delegateAggregateSnapshot(t, root.delegateController, owner.owningDelegateID).CurrentRunOpen
+	})
+	copyDir := copyWaitingState(t, root.stateDir)
+	meta, err := schema.LoadSessionMeta(copyDir, root.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := RestoreSessionFromMetaWithConfig(root.client, root.profile, execenv.NewLocalExecutionEnvironment(meta.EnvInfo.WorkingDir), meta, RestoreSessionConfig{
+		StateDir: copyDir, ForceRealIO: true, clock: agenttest.NewFakeClock(),
+		testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, disableDelegateIdleRelease: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restored.Close)
+	if restored.subagentForChild(owner.ID()) != nil {
+		t.Fatal("idle fixture unexpectedly resident")
+	}
+	if outcome, err := restored.StopDelegateRun(owner.owningDelegateID); err != nil || outcome != appwire.DelegateStopNotRunning {
+		t.Fatalf("cold idle Stop=%s err=%v want notRunning", outcome, err)
+	}
+	if got := len(adapter.requestsFor("COLD-IDLE-85")); got != 1 {
+		t.Fatalf("cold idle Stop requests=%d want1", got)
 	}
 }
 
