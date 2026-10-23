@@ -79,14 +79,6 @@ func renderStrategyCheckpointSections(opening, sections, carry string, earlier [
 		sections + carry + "[END CHECKPOINT]"
 }
 
-// carriesStrategyPartnerMessages recognizes only the layout we render. Legacy
-// raw logs may quote checkpoint examples: their headings cannot establish who
-// said something. Fencing the entire free-text body protects the new format.
-func carriesStrategyPartnerMessages(text string) bool {
-	_, ok := parseStrategyCheckpoint(text)
-	return ok
-}
-
 type parsedStrategyCheckpoint struct {
 	modelText     string
 	navigation    string
@@ -95,6 +87,9 @@ type parsedStrategyCheckpoint struct {
 	isLogSnapshot bool
 }
 
+// parseStrategyCheckpoint recognizes only the layout we render. Legacy raw logs
+// may quote checkpoint examples: their headings cannot establish who said
+// something. Fencing the entire free-text body protects the new format.
 func parseStrategyCheckpoint(text string) (parsedStrategyCheckpoint, bool) {
 	opening, heading := strategyCheckpointOpening(text)
 	if opening == "" {
