@@ -139,6 +139,34 @@ again before the final push if it moved. Shepherd the PR against main; admin
 squash only with all required checks green and every RoboRev finding low or
 conclusively refuted. Verify GitHub's merge state and SHA before cleanup.
 
+## Review amendment — document history compatibility
+
+The current-head review found another document capability helper still using
+the old Google rejection: `unrepresentableHistoryKinds` in
+`agent/session_set_model.go`. Keep this helper inside the bounded document
+capability scope rather than changing model-switch policy generally.
+
+When scanning a user-message document, reuse
+`llm.DeliversUserMessageDocuments(protocol)` to recognize representable input.
+A session containing a user PDF must switch to a Google target successfully
+without changing its history or attachment bytes. Keep the existing protocol
+restrictions for audio and for non-user documents: Google assistant documents
+remain unrepresentable, and Chat Completions still cannot carry user documents.
+Do not change catalog membership, fallback selection or persistence policy.
+
+Add red-first `SetModel` coverage for Google user-document success and history
+preservation. Keep the rejection coverage strict by testing Google assistant
+documents, Chat Completions user documents, and audio. The existing
+byte-identical rejection test must use an assistant document for Google now.
+Run these focused model-switch checks with the other commands above:
+
+```sh
+go test ./agent -run 'TestSetModel_.*(Document|Audio|Rejection)|TestUnrepresentable' -count=1
+```
+
+Freeze and independently PAR-review this amendment before implementation, then
+review its implementation diff and renew current-head branch/PR review and CI.
+
 ## Sources
 
 - GitHub issue [#4463](https://github.com/prime-radiant-inc/evener/issues/4463)
@@ -151,5 +179,6 @@ conclusively refuted. Verify GitHub's merge state and SHA before cleanup.
 - `agent/provider/profile.go`: own-row document modality gate.
 - `agent/session_tools.go` and `agent/internal/cheapmodel/caller.go`: vision
   route, refusal fallback and retry ownership.
+- `agent/session_set_model.go`: document-history compatibility preflight.
 - Product subsystem map S15/S16 and `docs/developing-evener/testing.md`:
   provider ownership and deterministic verification boundary.
