@@ -865,12 +865,18 @@ test("a fresh retained-source read observes removal while reconciliation is queu
 	const f = fixture();
 	const id = await richSource(f);
 	await editQueuedMessageIntoDraft(f.runtime, key, id, f.document);
-	f.document.replaceDraft("replacement");
+	// The capture must exist for reconciliation to read retained sources at all.
+	await f.document.submit(async () => false);
 	const before = structuredClone(f.document.getSnapshot().record);
+	expect(before.unconfirmedComposer?.recoveryIds).toEqual([id]);
 	const pending = reconcileEditedResends(f.runtime, key, f.document);
 	expect(await f.runtime.discardRecovery(id, key)).toBe(true);
 	await pending;
 	expect(f.document.getSnapshot().record).toEqual(before);
+	// The removed source proves nothing about admission, so the captured
+	// composition stays intact instead of being restored or cleared.
+	expect(f.document.getSnapshot().record.unconfirmed).toBe(before.unconfirmed);
+	expect(f.document.getSnapshot().record.unconfirmedComposer?.recoveryIds).toEqual([id]);
 	expect((await f.runtime.read(key)).recovery).toEqual([]);
 	expect(f.client.calls).toEqual([]);
 });
