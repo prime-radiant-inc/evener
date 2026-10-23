@@ -745,6 +745,20 @@ export async function attentionJourney(ctx) {
   // 320 px: the tightest scene the control must survive.
   await driver.send("Emulation.setDeviceMetricsOverride", { width: 320, height: 700, deviceScaleFactor: 1, mobile: false });
   await controlVisible(null);
+  // The list dismisses on any outer scroll or resize, and this leg is the first
+  // thing after the geometry matrix's own scrolling and viewport changes. A
+  // stray event landing after the hold opens the list closes it again, which
+  // reads as "the hold never opened". Settle both before pressing.
+  await read(`(() => {
+    window.__holdSettleAt = performance.now();
+    window.__holdSettleWatch ??= (() => {
+      const mark = () => { window.__holdSettleAt = performance.now(); };
+      window.addEventListener("scroll", mark, true);
+      window.addEventListener("resize", mark);
+      return true;
+    })();
+  })()`);
+  await wait(`performance.now() - window.__holdSettleAt > 400`, "no scroll or resize is in flight before the hold");
   const holdStart = await read("location.pathname");
   const holdPoint = await nativePressNext();
   await new Promise((resolve) => setTimeout(resolve, 620));
