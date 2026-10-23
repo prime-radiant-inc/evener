@@ -9,7 +9,9 @@ fails, without inheriting the session scratch whose lifetime they outlive.
 The issue's requested behavior is the approved scope for this unattended fix.
 
 Only the detached-environment construction in `agent/execenv/local.go`, its tests,
-and this specification change. Attached command construction and sandbox policy
+this specification, and the matching environment contract in
+`docs/job-control.md` change. The owning-guide correction is the approved review
+amendment to the initial scope. Attached command construction and sandbox policy
 remain unchanged. No client-specific behavior changes.
 
 ## Environment contract
@@ -71,6 +73,8 @@ fixture-owned temp directories. Force actual provisioning failure with
 `sandbox.SetWorldTempBasesForTesting(nil)`, not only a pre-set failure flag.
 Use the existing world-temp helper for successful provisioning. Keep these
 process-global seam tests serial and await each detached receipt's `Done`.
+Skip the detached-launch regression outside Linux/macOS, where detached
+execution is unsupported even if the POSIX temp container is supported.
 
 Add cases for successful container replacement (including scratch-naming), a
 real inherited TMPDIR surviving failure, scratch-naming TMPDIR removal on

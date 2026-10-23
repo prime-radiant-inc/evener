@@ -192,6 +192,9 @@ func TestDetachCommandStartFailureReturnsZeroAndClosesStreams(t *testing.T) {
 // process-wide provisioning candidates. The launcher fake records the real
 // DetachCommand environment without starting a long-lived process.
 func TestDetachCommandTmpDirFallback(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("detached execution is unsupported on this platform")
+	}
 	requireContainerPlatform(t)
 	for _, tc := range []struct {
 		name      string
