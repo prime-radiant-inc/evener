@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"slices"
 
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/llm"
@@ -60,10 +61,51 @@ func (s *Session) hasUnackedNotifications() (bool, error) {
 	return len(ids) != 0, err
 }
 
-// ackNotifications records coverage already proved by the caller, not merely
-// execution admission. The existing durable resolutions remain authoritative.
+// ackNotifications repairs the derived resolution index. Synced assistant
+// receipts already own observation, even if this append fails. Old resolution
+// records remain readable and keep their original generation claims.
 func (s *Session) ackNotifications(ids []string) error {
-	return s.resolveAttentionDurably(ids, delegateAttentionConsumed)
+	s.attentionMu.Lock()
+	fold, err := s.delegateAttentionFoldLocked()
+	s.attentionMu.Unlock()
+	if err != nil {
+		return err
+	}
+	toResolve := slices.Clone(ids)
+	var settled []string
+	for _, id := range fold.order {
+		_, observed := fold.observed[id]
+		_, resolved := fold.resolutions[id]
+		if observed && !resolved {
+			toResolve = appendUniqueStrings(toResolve, id)
+		}
+		if observed || resolved {
+			settled = append(settled, id)
+		}
+	}
+	// Historical consumed resolutions may carry a nonzero resume generation.
+	// They are already indexed and must not be rewritten as generation zero.
+	toResolve = slices.DeleteFunc(toResolve, func(id string) bool {
+		return fold.resolutions[id] == delegateAttentionConsumed
+	})
+	if len(toResolve) == 0 && len(settled) == 0 {
+		return nil
+	}
+	if len(toResolve) != 0 {
+		if err := s.resolveAttentionDurably(toResolve, delegateAttentionConsumed); err != nil {
+			return err
+		}
+	}
+	s.attentionMu.Lock()
+	for _, id := range append(settled, toResolve...) {
+		delete(s.rootAttentionWakeIDs, id)
+	}
+	if len(s.rootAttentionWakeIDs) == 0 {
+		s.rootAttentionWake = false
+		s.resetRootAttentionRetryLocked()
+	}
+	s.attentionMu.Unlock()
+	return nil
 }
 
 // enqueueNotification resolves only controller members. A cold writer borrows

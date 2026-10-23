@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2688,7 +2689,7 @@ func assistantHistoryMessage(message llm.Message) llm.Message {
 
 // appendAssistantTurn appends an assistant turn that carries the full response
 // metadata (usage stats and response ID) alongside the message content.
-func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttemptMetadata) error {
+func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttemptMetadata, observedNotificationIDs ...string) error {
 	t := schema.Turn{
 		Kind:                            schema.TurnAssistant,
 		Message:                         assistantHistoryMessage(resp.Message),
@@ -2707,10 +2708,20 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		ResponseRequestFingerprint:      finalAttempt.RequestFingerprint,
 		ResponseContextMarker:           finalAttempt.ContextMarker,
 		RoundID:                         s.roundIDForModelCall(),
+		ObservedNotificationIDs:         slices.Clone(observedNotificationIDs),
 	}
+	var receiptErr error
 	err := s.appendTurnAfterTranscriptWrite(
 		t,
-		func() error { return s.writeTranscriptDurableLocked(t) },
+		func() error {
+			if len(t.ObservedNotificationIDs) != 0 {
+				// A recorded line alone is not observation credit. The receipt
+				// and response cross the same strict filesystem sync boundary.
+				receiptErr = s.writeTranscriptSyncedLocked(t)
+				return receiptErr
+			}
+			return s.writeTranscriptDurableLocked(t)
+		},
 		func() {
 			s.history = append(s.history, t)
 			// The round's entry is recorded: the next model call is a new
@@ -2720,6 +2731,9 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 			s.noteAgentMessageLocked(lastAgentText(t.Message))
 		},
 	)
+	// The append pair adopts a retained unsynced line to avoid duplicating it.
+	// Adoption must not promote notification coverage before its sync succeeds.
+	err = errors.Join(err, receiptErr)
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}

@@ -1070,6 +1070,7 @@ func publicTranscriptEntry(entry transcript.Entry) (transcript.Entry, bool) {
 	entry.Turn.AttentionResolution = nil
 	entry.Turn.DelegateDeliveryCommits = nil
 	entry.Turn.NotificationProvenance = nil
+	entry.Turn.ObservedNotificationIDs = nil
 	return entry, true
 }
 
@@ -1133,6 +1134,7 @@ func publicTranscriptLine(line []byte, seq int) ([]byte, bool, error) {
 	delete(turn, "attention_resolution")
 	delete(turn, "delegate_delivery_commits")
 	delete(turn, "notification_provenance")
+	delete(turn, "observed_notification_ids")
 	encodedTurn, err := json.Marshal(turn)
 	if err != nil {
 		return nil, false, fmt.Errorf("encode public transcript turn: %w", err)

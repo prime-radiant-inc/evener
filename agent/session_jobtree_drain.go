@@ -1735,18 +1735,14 @@ func (s *Session) hasUndrivenDelegateAttention(driven map[string]struct{}) bool 
 }
 
 // settlePresentedDelegateAttention records the notifications the last turn showed the
-// model in driven and retries the consumed marker of any still pending. A
-// failed marker write leaves a notification the model already saw pending. The
-// turn's coverage survives until the next turn starts, so only the marker is
-// retried; if that fails too, the notification stays pending for the generation's
-// end and this drain runs no more turns for it.
+// model in driven and retries its derived consumed markers. A synced response
+// already proves observation, so missing markers no longer mean pending model
+// work. Retry bookkeeping independently, never another model turn.
 func (s *Session) settlePresentedDelegateAttention(driven map[string]struct{}) {
 	for _, id := range s.presentedDelegateAttentionIDs() {
 		driven[id] = struct{}{}
 	}
-	if s.hasPendingOwnDelegateAttention() {
-		if err := s.finishAttentionTurn(nil, nil); err != nil {
-			s.emit(events.EventWarning, warningDataFromError("delegate notification consumption failed; left pending for its next generation", err))
-		}
+	if err := s.finishAttentionTurn(nil, nil); err != nil {
+		s.emit(events.EventWarning, warningDataFromError("delegate notification receipt index repair failed", err))
 	}
 }

@@ -515,6 +515,26 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// inside is the single gate, whichever path built the history; staging
 	// follows the skill rebuilds because credit belongs to what the request
 	// actually carries.
+	if req.HistoryMode == llm.HistoryModeResponsesDelta {
+		pending, pendingErr := s.pendingNotificationIDs()
+		if pendingErr != nil {
+			return profile, sys, history, req, fullHistory, reasoningEffort, pendingErr
+		}
+		if len(pending) != 0 {
+			// Unknown server-side prefix coverage must not run a successful
+			// delta over and over while these notifications remain pending.
+			req.Messages = fullHistory
+			req.PreviousResponseID = ""
+			req.ConversationID = ""
+			req.Continuation = nil
+			req.HistoryMode = llm.HistoryModeFullHistory
+			fullHistory = nil
+			req = responsesContinuationFullHistoryWithInputEstimate(resolvedTargetOf(profile), req)
+			if req, _, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
+				return profile, sys, history, req, fullHistory, reasoningEffort, err
+			}
+		}
+	}
 	s.stagePresentedAttentionCoverage(ctx, presentedTurns)
 	return profile, sys, history, req, fullHistory, reasoningEffort, nil
 }
@@ -1028,7 +1048,7 @@ func effectiveRecordedInputTokens(usage llm.Usage, fullHistoryEstimate int, hasS
 // /delta/end, skipping start/delta when the assistant already streamed) and appends
 // the assistant turn to history unless the response was empty without phase metadata.
 // It runs under withResponseSideEffects and returns its abort error.
-func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, modelResp sessionModelResponse, txt string, skipHistory bool, finalAttempt ModelAttemptMetadata) error {
+func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, modelResp sessionModelResponse, txt string, skipHistory bool, finalAttempt ModelAttemptMetadata, settled llm.Request) error {
 	var persistErr error
 	if err := s.withResponseSideEffects(ctx, func() {
 		if !modelResp.StreamedAssistant {
@@ -1036,11 +1056,13 @@ func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, 
 				Model: resp.Model,
 			})
 		}
-		if !skipHistory {
-			persistErr = s.appendAssistantTurn(resp, finalAttempt)
+		observed := s.stagedNotificationObservationIDs(settled)
+		if !skipHistory || len(observed) != 0 {
+			persistErr = s.appendAssistantTurn(resp, finalAttempt, observed...)
 			if persistErr != nil {
 				return
 			}
+			s.promoteStagedAttentionCoverage(settled)
 		}
 		if !modelResp.StreamedAssistant && strings.TrimSpace(txt) != "" {
 			s.emit(events.EventAssistantTextDelta, events.AssistantTextDeltaData{Delta: txt})

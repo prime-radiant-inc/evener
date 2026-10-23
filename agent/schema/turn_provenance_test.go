@@ -9,6 +9,27 @@ import (
 	"primeradiant.com/evener/agent/provenance"
 )
 
+func TestTurnObservedNotificationIDsRoundTrip(t *testing.T) {
+	t.Parallel()
+	var turn Turn
+	if err := json.Unmarshal([]byte(`{"kind":"ASSISTANT","observed_notification_ids":["obs-a","obs-b"]}`), &turn); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(turn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw struct {
+		IDs []string `json:"observed_notification_ids"`
+	}
+	if err := json.Unmarshal(encoded, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(raw.IDs, []string{"obs-a", "obs-b"}) {
+		t.Fatalf("round-trip observation IDs = %v", raw.IDs)
+	}
+}
+
 func TestTurnNotificationProvenanceRoundTrip(t *testing.T) {
 	t.Parallel()
 	data := []byte(`{"kind":"STEERING","notification_provenance":{"watch_keys":[{"watch_id":"watch_accept","watch_generation":"wg_accept"}]}}`)

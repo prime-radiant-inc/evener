@@ -450,6 +450,9 @@ type Turn struct {
 	// NotificationProvenance is private causal metadata of accepted attention.
 	// The first accepted record owns it, including on idempotent delivery retries.
 	NotificationProvenance *provenance.Causal `json:"notification_provenance,omitempty"`
+	// ObservedNotificationIDs is private evidence of the exact request answered
+	// by this durably recorded assistant response, not an execution launch claim.
+	ObservedNotificationIDs []string `json:"observed_notification_ids,omitempty"`
 	// OriginalOrdinal is set on a copy a compaction fold re-appends after its
 	// markers: the entry ordinal of the entry it copies. Copies are model
 	// history for resume, and are neither projected nor announced.

@@ -33,10 +33,10 @@ symbols so readers can locate the implementation after line numbers change.
 
 Stable attention drives revalidate transcript-owned pending IDs after claiming
 the retained child for a start (`Session.driveStableDelegateAttention`). A delayed
-drive cannot reserve an ID an intervening generation already consumed and
-finished. A start already accepted into the transcript retains its exact
-reservation and generation across a failed delegate-journal commit; retry does
-not create a second marker or generation. Parents continue to drive the child's
+drive cannot reserve an ID an intervening generation already observed and
+finished. An admitted start retains its exact reservation and generation across
+a failed delegate-journal commit. A launch claim is not observation and writes
+no consumed marker. Parents continue to drive the child's
 attention, and fresh owner work remains admissible after the attention settles.
 
 Child reports and updates both wake a parent delegate waiting in its ordinary
@@ -45,11 +45,15 @@ notification without waiting for another child's update or completion. A live
 sibling still keeps the parent's generation open. A valid `waiting_on_work`
 call also resumes for a child report through its existing polling wait.
 
-Only notifications not already presented by a successful request owe a drain
-turn. If the consumed-marker write fails, the drain retries the marker rather
-than asking the model to observe the same notification again. A second marker
-failure leaves it pending for the generation's end without failing the parent
-or stopping healthy siblings (`Session.drainJobTreeWith`,
+Only notifications not already presented by a successful request whose response
+synced owe a drain turn. The private `observed_notification_ids` field on that
+assistant response records the exact successful attempt's coverage, including
+retries and full-history fallback. Pending notifications force full history when
+a Responses delta cannot prove coverage. Compaction preserves unobserved bodies.
+If the derived consumed-marker write fails, the drain or a reopened session
+repairs the marker without another provider request. A second marker failure
+leaves index repair for the generation's end without failing the parent or
+stopping healthy siblings (`Session.ackNotifications`, `Session.drainJobTreeWith`,
 `Session.settlePresentedDelegateAttention`, `agent/session_jobtree_drain.go`).
 
 ## Delegate report preservation

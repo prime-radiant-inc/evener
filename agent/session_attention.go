@@ -206,6 +206,7 @@ type delegateAttentionFold struct {
 	order             []string
 	content           map[string]llm.Message
 	turns             map[string]schema.Turn
+	observed          map[string]struct{}
 	resolutions       map[string]delegateAttentionResolution
 	resumeGenerations map[string]uint64
 	deliveryCommits   map[string]string
@@ -243,6 +244,17 @@ func extendDelegateAttention(prior delegateAttentionFold, entries []transcript.E
 				fold.content[turn.AttentionID] = turn.Message
 				fold.turns[turn.AttentionID] = turn
 				fold.order = append(fold.order, turn.AttentionID)
+			}
+		}
+		if len(turn.ObservedNotificationIDs) != 0 {
+			if turn.Kind != schema.TurnAssistant || turn.Message.Role != llm.RoleAssistant {
+				return delegateAttentionFold{}, errors.New("notification observation requires an assistant response")
+			}
+			for _, id := range turn.ObservedNotificationIDs {
+				if _, accepted := fold.content[id]; !accepted {
+					return delegateAttentionFold{}, fmt.Errorf("notification %q observed before acceptance", id)
+				}
+				fold.observed[id] = struct{}{}
 			}
 		}
 		resolution := turn.AttentionResolution
@@ -327,6 +339,7 @@ func newDelegateAttentionFold() delegateAttentionFold {
 	return delegateAttentionFold{
 		content:           make(map[string]llm.Message),
 		turns:             make(map[string]schema.Turn),
+		observed:          make(map[string]struct{}),
 		resolutions:       make(map[string]delegateAttentionResolution),
 		resumeGenerations: make(map[string]uint64),
 		deliveryCommits:   make(map[string]string),
@@ -338,6 +351,7 @@ func (f delegateAttentionFold) clone() delegateAttentionFold {
 		order:             slices.Clone(f.order),
 		content:           maps.Clone(f.content),
 		turns:             maps.Clone(f.turns),
+		observed:          maps.Clone(f.observed),
 		resolutions:       maps.Clone(f.resolutions),
 		resumeGenerations: maps.Clone(f.resumeGenerations),
 		deliveryCommits:   maps.Clone(f.deliveryCommits),
@@ -347,7 +361,8 @@ func (f delegateAttentionFold) clone() delegateAttentionFold {
 func (f delegateAttentionFold) pendingIDs() []string {
 	pending := make([]string, 0, len(f.order))
 	for _, attentionID := range f.order {
-		if _, resolved := f.resolutions[attentionID]; !resolved {
+		_, observed := f.observed[attentionID]
+		if _, resolved := f.resolutions[attentionID]; !resolved && !observed {
 			pending = append(pending, attentionID)
 		}
 	}
@@ -360,7 +375,8 @@ func (f delegateAttentionFold) pendingTurns(keep string) []schema.Turn {
 	var turns []schema.Turn
 	for _, attentionID := range f.order {
 		_, resolved := f.resolutions[attentionID]
-		if resolved && attentionID != keep {
+		_, observed := f.observed[attentionID]
+		if (resolved || observed) && attentionID != keep {
 			continue
 		}
 		if turn, ok := f.turns[attentionID]; ok {
@@ -802,22 +818,20 @@ func (s *Session) acceptDelegateAttention(reservation *delegateStartReservation)
 	if s == nil || s.delegateController == nil {
 		return errDelegateStaleLease
 	}
-	attentionID, generation, err := s.delegateController.attentionReservationIdentity(reservation, s)
+	attentionID, _, err := s.delegateController.attentionReservationIdentity(reservation, s)
 	if err != nil {
 		return err
 	}
-	// The latch goes up before the consumed marker can land: a fold that sees
-	// the item resolved must already find it latched. It stays up when the
-	// resolution fails, since a failed verification read can follow a marker
-	// that did land, and the retry needs the trigger's turn.
+	// The reservation claims the generation, not model observation. Keep the
+	// trigger pending until a synced successful response proves presentation.
 	s.holdAcceptedTrigger(attentionID)
-	if err := s.resolveAttentionDurablyForGeneration([]string{attentionID}, delegateAttentionConsumed, generation); err != nil {
-		return err
-	}
 	pendingIDs, err := s.pendingDelegateAttentionIDs()
 	if err != nil {
 		return err
 	}
+	// The existing controller claim takes the trigger separately from the
+	// remaining FIFO wake IDs. Removing it here is not a transcript receipt.
+	pendingIDs = slices.DeleteFunc(pendingIDs, func(id string) bool { return id == attentionID })
 	if err := s.delegateController.prepareAttentionStart(reservation, s, pendingIDs); err != nil {
 		return err
 	}
@@ -934,12 +948,9 @@ func (s *Session) beginRootDelegateAttentionTurn() []string {
 	return ids
 }
 
-// finishAttentionTurn consumes, at the end of a turn, the attention the turn
-// owes: the root runs its notification rail (finishRootDelegateAttentionTurn).
-// Any other session consumes only what its settled requests presented
-// (coversPresentedAttention), and only when the turn succeeded; a failed
-// delegate turn leaves the items pending for a later generation, and the
-// paced retry and the paused notice stay the root's.
+// finishAttentionTurn repairs the derived index of synced response receipts.
+// Earlier successful rounds remain observed when a later round fails. The
+// root owns the paced retry and paused notice for work still unobserved.
 func (s *Session) finishAttentionTurn(ids []string, turnErr error) error {
 	if s.isRootDelegateAttentionReceiver() {
 		return s.finishRootDelegateAttentionTurn(ids, turnErr)
@@ -948,45 +959,28 @@ func (s *Session) finishAttentionTurn(ids []string, turnErr error) error {
 	if turnErr == nil {
 		covered = s.unionCoveredAttention(ids)
 	}
-	if len(covered) == 0 {
-		return nil
-	}
 	// The delegate's noted wakes stay; see clearResolvedDelegateAttention.
-	return s.resolveAttentionDurably(covered, delegateAttentionConsumed)
+	// A prior round's durable response remains observation even if a later
+	// round failed. ackNotifications repairs those receipts too.
+	return s.ackNotifications(covered)
 }
 
-// finishRootDelegateAttentionTurn consumes the exact selected IDs only after a
-// successful model turn and durable resolution markers — plus any still-pending
-// attention this turn's built requests already presented to the model, which
-// needs no wake of its own. Failures keep the transcript-owned IDs pending and
-// arrange a paced retry wake.
+// finishRootDelegateAttentionTurn repairs observed IDs, then arranges retries
+// for unobserved work after a failed turn. Selection alone grants no credit.
 func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) error {
-	// A failed turn never resolves, so on that path the union serves only as
-	// the emptiness gate that arms the paced-retry backstop — and a non-empty
-	// snapshot already passes it. Skip the fold read there; keep it for an
-	// empty snapshot, where a covered-but-pending item needs the backstop.
-	// The union reads the fold only when this turn covered something.
-	//
-	// When it finds nothing, the early return below leaves a set wake flag
-	// untouched on purpose. The flag coalesces; the liveness carrier is the
-	// mid-turn arm's own guaranteed kick (armRootDelegateAttention → notify →
-	// the serve loop's parked EntryNotification), not the retry scheduler the
-	// flag suppresses.
-	if turnErr == nil || len(ids) == 0 {
-		ids = s.unionCoveredAttention(ids)
-	}
-	if len(ids) == 0 {
+	covered := s.unionCoveredAttention(nil)
+	// An empty call must not arm execution. A mid-turn arrival retains the
+	// wake its own acceptance armed, even if this request did not include it.
+	if len(ids) == 0 && len(covered) == 0 {
 		return nil
 	}
-	var resolutionErr error
-	if turnErr == nil {
-		err := s.resolveAttentionDurably(ids, delegateAttentionConsumed)
-		if err == nil {
+	resolutionErr := s.ackNotifications(covered)
+	if resolutionErr == nil {
+		pending, err := s.pendingDelegateAttentionIDs()
+		resolutionErr = err
+		if err == nil && (turnErr == nil || len(pending) == 0) {
 			s.attentionMu.Lock()
 			s.rootAttentionPaused = false
-			for _, id := range ids {
-				delete(s.rootAttentionWakeIDs, id)
-			}
 			if len(s.rootAttentionWakeIDs) == 0 {
 				s.rootAttentionWake = false
 				s.resetRootAttentionRetryLocked()
@@ -994,7 +988,6 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 			s.attentionMu.Unlock()
 			return nil
 		}
-		resolutionErr = err
 	}
 	// A PERMANENT provider failure — a 401 from a dead credential, a
 	// request the provider will refuse every time — cannot be retried into
@@ -1017,7 +1010,7 @@ func (s *Session) finishRootDelegateAttentionTurn(ids []string, turnErr error) e
 	// Transient failures keep the retry, which is their delivery
 	// guarantee, and a resolution failure with no turn error is a storage
 	// flap, retryable by nature.
-	permanent := turnErr != nil && !roundWasCancelled(turnErr) && llm.Classify(turnErr) == llm.ErrorClassPermanent
+	permanent := resolutionErr == nil && turnErr != nil && !roundWasCancelled(turnErr) && llm.Classify(turnErr) == llm.ErrorClassPermanent
 	s.attentionMu.Lock()
 	// Clear the flag even while a wake is pending. This turn may have honored
 	// that wake and then declined — its resolution failed — and the drain
@@ -1161,9 +1154,20 @@ func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presented
 	s.attentionStagedIDs = staged
 }
 
-// promoteStagedAttentionCoverage credits the staged set of a round whose
-// call settled as settled, the request that actually answered. Called by the
-// round loop on the success path only.
+// stagedNotificationObservationIDs names only this settled request's candidates.
+// A delta has no verified coverage of its server-side prefix. The returned IDs
+// become authoritative only when recorded with the successful response.
+func (s *Session) stagedNotificationObservationIDs(settled llm.Request) []string {
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	if settled.HistoryMode == llm.HistoryModeResponsesDelta {
+		return nil
+	}
+	return slices.Sorted(maps.Keys(s.attentionStagedIDs))
+}
+
+// promoteStagedAttentionCoverage caches the staged set only after the successful
+// response and its receipt have synced. settled is the attempt that answered.
 //
 // A responses-continuation delta carries only new items; any older steering
 // turn lives in server-side state this session cannot verify, so a round that
@@ -1199,32 +1203,24 @@ func (s *Session) resetAttentionCoverage() {
 	s.attentionMu.Unlock()
 }
 
-// unionCoveredAttention adds to the selected IDs the covered
-// deliveries still pending in the durable fold. A successful turn settles only
-// when every round's call settled, so each covered item reached the model in
-// a settled call of this very turn; an item appended after the final request
-// was built stays uncovered and keeps the wake it armed.
-//
-// The pending filter is load-bearing. A presented steering turn whose item is
-// already resolved under another disposition (a stop-drain discard, a
-// conflicting cold resolution) would otherwise poison the batch: validation
-// rejects the whole resolve atomically, and the wake would retry the item
-// forever. A fold read failure degrades to the selected IDs alone; the wake
-// path retries.
-func (s *Session) unionCoveredAttention(ids []string) []string {
+// unionCoveredAttention returns observed deliveries still missing a derived
+// marker, in arrival order. Selected IDs alone never prove observation. The
+// resolution filter excludes legacy and discarded records from repair batches.
+func (s *Session) unionCoveredAttention(_ []string) []string {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
-	if len(s.attentionCoveredIDs) == 0 {
-		return ids
-	}
-	pending, err := s.pendingDelegateAttentionIDsLocked()
+	fold, err := s.delegateAttentionFoldLocked()
 	if err != nil {
-		return ids
+		return nil
 	}
-	out := slices.Clone(ids)
-	for _, id := range pending {
-		if _, ok := s.attentionCoveredIDs[id]; ok {
-			out = appendUniqueStrings(out, id)
+	var out []string
+	for _, id := range fold.order {
+		if _, resolved := fold.resolutions[id]; resolved {
+			continue
+		}
+		_, observed := fold.observed[id]
+		if observed {
+			out = append(out, id)
 		}
 	}
 	return out
@@ -1518,6 +1514,10 @@ func (s *Session) resetStableDelegateAttentionRetryDelay() {
 func (s *Session) rearmRootDelegateAttentionFromTranscript(entries []transcript.Entry) error {
 	if !s.isRootDelegateAttentionReceiver() {
 		return nil
+	}
+	// A synced response needs index repair, never another provider request.
+	if err := s.ackNotifications(nil); err != nil {
+		return err
 	}
 	// Read the durable holds before attentionMu — the order the live Stop
 	// path established, where the store's state mutex never nests inside

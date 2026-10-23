@@ -2375,12 +2375,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			}
 			return "", progressed, ferr
 		}
-		// The round settled, so its staged attention is now covered. A round
-		// that failed — or was retried after compaction folded the steering
-		// turn away — never reaches here, so coverage always means
-		// "presented in a settled call of this turn".
-		s.promoteStagedAttentionCoverage(req)
-
 		if abortErr := errors.Join(s.abortResponseProcessing(ctx), sessionLifecycleFault(ctx, "abort_after_log")); abortErr != nil {
 			return "", progressed, abortErr
 		}
@@ -2423,7 +2417,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		noContent := rc.NoContent
 		skipHistory := rc.SkipHistory
 
-		if abortErr := errors.Join(s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory, attempt), sessionLifecycleFault(ctx, "emit_assistant")); abortErr != nil {
+		if abortErr := errors.Join(s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory, attempt, req), sessionLifecycleFault(ctx, "emit_assistant")); abortErr != nil {
 			return "", progressed, abortErr
 		}
 		// pause_turn: model needs another turn (e.g. server-side web search still running).
@@ -2947,6 +2941,15 @@ func (s *Session) acceptDelegateAttentionInput() {
 // stands down before reaching here when a served session could not be named, so
 // every wake that gets this far can address its own turn.
 func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (proceed bool) {
+	if err := s.ackNotifications(nil); err != nil {
+		s.attentionMu.Lock()
+		s.rootAttentionWake = false
+		s.scheduleRootAttentionRetryLocked()
+		s.attentionMu.Unlock()
+		s.emit(events.EventWarning, warningDataFromError("Notification receipt repair failed", err))
+		s.finishNotificationNoop()
+		return false
+	}
 	s.drivePendingStableDelegateAttention()
 	// Drive signal (b) (spec §3): a child driven on its pending caller-targeted
 	// watch sends may have no token queued yet (the drive was launched on the

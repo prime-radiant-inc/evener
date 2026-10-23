@@ -31,43 +31,21 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T) {
+func TestDelegateAttention_LaunchClaimDoesNotObserve(t *testing.T) {
 	const (
 		sessionID = "child-dlg_target"
 		firstID   = "delegate:delivery-attention-1"
 		secondID  = "delegate:delivery-attention-2"
 	)
-	fs := newAttentionSyncBarrierFS()
-	c, runtime, path := newDelegateAttentionAcceptanceHarness(t, sessionID, fs, firstID, secondID)
+	c, runtime, path := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, firstID, secondID)
 	beforeRevision := c.durable["dlg_target"].ProjectionRevision
 	reservation, err := c.ReserveAttention(runtime, firstID)
 	if err != nil {
 		t.Fatalf("ReserveAttention: %v", err)
 	}
 
-	// The trigger is latched by the time its consumed marker is being made
-	// durable, so a fold that sees the item resolved already knows to keep it.
-	// The hook runs inside the resolution's attentionMu section.
-	var latchedDuringResolution string
-	fs.atSync = func() { latchedDuringResolution = runtime.attentionAcceptedID }
-	fs.arm()
-	type startResult struct {
-		started delegateStartCommit
-		err     error
-	}
-	done := make(chan startResult, 1)
-	go func() {
-		startErr := runtime.acceptDelegateAttention(reservation)
-		var started delegateStartCommit
-		if startErr == nil {
-			started, startErr = c.CommitStart(reservation)
-		}
-		done <- startResult{started: started, err: startErr}
-	}()
-	select {
-	case <-fs.syncEntered:
-	case result := <-done:
-		t.Fatalf("attention acceptance returned before fsync: %#v", result)
+	if err := runtime.acceptDelegateAttention(reservation); err != nil {
+		t.Fatal(err)
 	}
 	c.mu.Lock()
 	blockedAggregate := c.durable["dlg_target"]
@@ -76,34 +54,36 @@ func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T) {
 	_, firstStillUnresolved := attentionWakeIDsOf(c, "dlg_target")[firstID]
 	c.mu.Unlock()
 	if blockedGeneration != 0 || !blockedNeedsAttention || !firstStillUnresolved {
-		t.Fatalf("acceptance published before resolution fsync: generation=%d needs=%t unresolved=%#v", blockedGeneration, blockedNeedsAttention, attentionWakeIDsOf(c, "dlg_target"))
+		t.Fatalf("acceptance published before start commit: generation=%d needs=%t unresolved=%#v", blockedGeneration, blockedNeedsAttention, attentionWakeIDsOf(c, "dlg_target"))
 	}
-	fs.release()
-	first := <-done
-	if first.err != nil {
-		t.Fatalf("accept first attention: %v", first.err)
+	if _, err := c.ReserveAttention(runtime, secondID); !errors.Is(err, errDelegateTargetBusy) {
+		t.Fatalf("second reservation bypassed first claim: %v", err)
 	}
-	if latchedDuringResolution != firstID {
-		t.Fatalf("trigger latched while its consumed marker was made durable = %q, want %q", latchedDuringResolution, firstID)
+	first, err := c.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("commit first attention: %v", err)
+	}
+	if runtime.attentionAcceptedID != firstID {
+		t.Fatalf("claimed trigger = %q, want %q", runtime.attentionAcceptedID, firstID)
 	}
 	aggregate := c.durable["dlg_target"]
 	if aggregate.Generation != 1 || aggregate.Trigger != delegatestore.TriggerAttention || !aggregate.CurrentRunOpen || !aggregate.NeedsAttention || aggregate.ProjectionRevision != beforeRevision+1 {
 		t.Fatalf("nonfinal acceptance aggregate = %#v, want generation 1 open with unchanged true attention", aggregate)
 	}
 	if got := attentionWakeIDsOf(c, "dlg_target"); !reflect.DeepEqual(got, map[string]struct{}{secondID: {}}) {
-		t.Fatalf("unresolved IDs after nonfinal consumption = %#v", got)
+		t.Fatalf("unclaimed wake IDs after first launch = %#v", got)
 	}
 	fold, err := readDelegateAttentionFold(path, sessionID)
 	if err != nil {
 		t.Fatalf("read attention fold: %v", err)
 	}
-	if got := fold.resolutions[firstID]; got != delegateAttentionConsumed || fold.resumeGenerations[firstID] != 1 {
-		t.Fatalf("first resolution = %q generation %d, want consumed/1", got, fold.resumeGenerations[firstID])
+	if got := fold.pendingIDs(); !reflect.DeepEqual(got, []string{firstID, secondID}) || len(fold.resolutions) != 0 {
+		t.Fatalf("launch changed model observation: pending=%v resolutions=%v", got, fold.resolutions)
 	}
-	if _, err := c.FinishGeneration(first.started.lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "first handled"}); err != nil {
+	if _, err := c.FinishGeneration(first.lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "first handled"}); err != nil {
 		t.Fatalf("FinishGeneration first: %v", err)
 	}
-	reportFinalizeTailDone(t, c, first.started.lease, runtime)
+	reportFinalizeTailDone(t, c, first.lease, runtime)
 	secondReservation, err := c.ReserveAttention(runtime, secondID)
 	if err != nil {
 		t.Fatalf("ReserveAttention second: %v", err)
@@ -116,23 +96,23 @@ func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T) {
 		t.Fatalf("commit final attention: %v", err)
 	}
 	aggregate = c.durable["dlg_target"]
-	if aggregate.Generation != 2 || aggregate.NeedsAttention || len(attentionWakeIDsOf(c, "dlg_target")) != 0 {
+	if aggregate.Generation != 2 || !aggregate.NeedsAttention || !reflect.DeepEqual(attentionWakeIDsOf(c, "dlg_target"), map[string]struct{}{firstID: {}}) {
 		t.Fatalf("final acceptance aggregate=%#v unresolved=%#v", aggregate, attentionWakeIDsOf(c, "dlg_target"))
 	}
 	fold, err = readDelegateAttentionFold(path, sessionID)
 	if err != nil {
 		t.Fatalf("read final attention fold: %v", err)
 	}
-	if got := fold.resolutions[secondID]; got != delegateAttentionConsumed || fold.resumeGenerations[secondID] != 2 {
-		t.Fatalf("second resolution = %q generation %d, want consumed/2", got, fold.resumeGenerations[secondID])
+	if got := fold.pendingIDs(); !reflect.DeepEqual(got, []string{firstID, secondID}) || len(fold.resolutions) != 0 {
+		t.Fatalf("second launch changed model observation: pending=%v resolutions=%v", got, fold.resolutions)
 	}
 	events, err := c.store.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	tail := events[len(events)-2:]
-	if tail[0].Kind != delegatestore.EventDelegateAttentionChanged || tail[0].AttentionChanged == nil || tail[0].AttentionChanged.NeedsAttention || tail[1].Kind != delegatestore.EventDelegateRunStarted || tail[1].RunStarted.Generation != second.lease.generation {
-		t.Fatalf("final-clear/run-start batch tail = %#v", tail)
+	last := events[len(events)-1]
+	if last.Kind != delegatestore.EventDelegateRunStarted || last.RunStarted.Generation != second.lease.generation {
+		t.Fatalf("second launch journal tail = %#v", last)
 	}
 }
 
@@ -469,22 +449,14 @@ func TestDelegateAttention_StopLeavesBoundAttentionForDiscard(t *testing.T) {
 			sessionID   = "child-dlg_target"
 			attentionID = "delegate:delivery-admitted"
 		)
-		fs := newAttentionSyncBarrierFS()
-		c, runtime, path := newDelegateAttentionAcceptanceHarness(t, sessionID, fs, attentionID)
+		c, runtime, path := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, attentionID)
 		reservation, err := c.ReserveAttention(runtime, attentionID)
 		if err != nil {
 			t.Fatalf("ReserveAttention: %v", err)
 		}
-		fs.arm()
-		accepted := make(chan error, 1)
-		go func() {
-			acceptErr := runtime.acceptDelegateAttention(reservation)
-			if acceptErr == nil {
-				_, acceptErr = c.CommitStart(reservation)
-			}
-			accepted <- acceptErr
-		}()
-		<-fs.syncEntered
+		if err := runtime.acceptDelegateAttention(reservation); err != nil {
+			t.Fatal(err)
+		}
 		stopped := make(chan error, 1)
 		go func() {
 			_, _, _, stopErr := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
@@ -495,9 +467,8 @@ func TestDelegateAttention_StopLeavesBoundAttentionForDiscard(t *testing.T) {
 			t.Fatalf("stop returned before admitted acceptance committed: %v", err)
 		default:
 		}
-		fs.release()
-		if err := <-accepted; err != nil {
-			t.Fatalf("accept admitted attention: %v", err)
+		if _, err := c.CommitStart(reservation); err != nil {
+			t.Fatalf("commit admitted attention: %v", err)
 		}
 		if err := <-stopped; err != nil {
 			t.Fatalf("StopSubtree after acceptance: %v", err)
@@ -506,8 +477,8 @@ func TestDelegateAttention_StopLeavesBoundAttentionForDiscard(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read admitted attention fold: %v", err)
 		}
-		if fold.resolutions[attentionID] != delegateAttentionConsumed || fold.resumeGenerations[attentionID] != 1 {
-			t.Fatalf("admitted resolution = %q generation %d", fold.resolutions[attentionID], fold.resumeGenerations[attentionID])
+		if got := fold.pendingIDs(); !reflect.DeepEqual(got, []string{attentionID}) || len(fold.resolutions) != 0 {
+			t.Fatalf("admitted launch consumed unobserved notification: pending=%v resolutions=%v", got, fold.resolutions)
 		}
 		events, err := c.store.Load()
 		if err != nil {
@@ -591,50 +562,48 @@ func attachDelegateAttentionTranscriptForTest(t *testing.T, c *delegateTreeContr
 	c.noteDelegateAttention(delegateID, attentionID)
 }
 
-func TestDelegateAttention_ResolutionFailureLeavesGenerationStoppable(t *testing.T) {
+func TestDelegateAttention_LaunchClaimRetryLeavesGenerationStoppable(t *testing.T) {
 	const (
 		sessionID   = "child-dlg_target"
 		attentionID = "attention-resolution-failure"
 	)
-	fs := newAttentionAmbiguousSyncFS()
-	c, runtime, path := newDelegateAttentionAcceptanceHarness(t, sessionID, fs, attentionID)
+	c, runtime, path := newDelegateAttentionAcceptanceHarness(t, sessionID, nil, attentionID)
 	reservation, err := c.ReserveAttention(runtime, attentionID)
 	if err != nil {
 		t.Fatalf("ReserveAttention: %v", err)
 	}
-	fs.failNextResolutionDurability()
-	if err := runtime.acceptDelegateAttention(reservation); err == nil {
-		t.Fatal("consumed attention resolution unexpectedly survived injected sync failure")
+	if err := runtime.acceptDelegateAttention(reservation); err != nil {
+		t.Fatal(err)
 	}
-	// The marker may have landed, so the retry still needs the trigger's turn.
+	// Repeating the claim before CommitStart must retain the same generation.
 	runtime.attentionMu.Lock()
 	latched := runtime.attentionAcceptedID
 	runtime.attentionMu.Unlock()
 	if latched != attentionID {
-		t.Fatalf("trigger latched after the ambiguous failure = %q, want %q", latched, attentionID)
+		t.Fatalf("trigger latched before start commit = %q, want %q", latched, attentionID)
 	}
 	fold, err := readDelegateAttentionFold(path, sessionID)
 	if err != nil {
-		t.Fatalf("read ambiguous attention resolution: %v", err)
+		t.Fatalf("read attention claim: %v", err)
 	}
-	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed || fold.resumeGenerations[attentionID] != 1 {
-		t.Fatalf("page-cache-visible attention resolution = %q generation %d, want consumed/1", got, fold.resumeGenerations[attentionID])
+	if got := fold.pendingIDs(); !reflect.DeepEqual(got, []string{attentionID}) || len(fold.resolutions) != 0 {
+		t.Fatalf("launch claimed observation: pending=%v resolutions=%v", got, fold.resolutions)
 	}
 	if aggregate := c.durable["dlg_target"]; aggregate.Generation != 0 || aggregate.CurrentRunOpen || !aggregate.NeedsAttention {
-		t.Fatalf("failed resolution admitted generation: %#v", aggregate)
+		t.Fatalf("uncommitted claim admitted generation: %#v", aggregate)
 	}
 	if len(c.reservations) != 1 || c.live["dlg_target"].binding != nil {
-		t.Fatalf("failed resolution lost retry claim or installed binding: reservations=%#v live=%#v", c.reservations, c.live["dlg_target"])
+		t.Fatalf("acceptance lost retry claim or installed binding: reservations=%#v live=%#v", c.reservations, c.live["dlg_target"])
 	}
 	if err := runtime.acceptDelegateAttention(reservation); err != nil {
-		t.Fatalf("retry ambiguous attention resolution: %v", err)
+		t.Fatalf("retry attention claim: %v", err)
 	}
 	started, err := c.CommitStart(reservation)
 	if err != nil {
 		t.Fatalf("commit retried attention generation: %v", err)
 	}
-	if got := fs.successfulSyncsAfterFailure(); got == 0 {
-		t.Fatal("attention retry established no successful child-transcript durability barrier")
+	if started.lease.generation != 1 {
+		t.Fatalf("retried launch generation = %d, want 1", started.lease.generation)
 	}
 	if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target"); err != nil {
 		t.Fatalf("StopSubtree after recovered acceptance: %v", err)
@@ -684,7 +653,7 @@ func TestDelegateAttention_ArmClaimSpansFoldAndOpen(t *testing.T) {
 
 	// The reservation is the controller-side blocker that used to deadlock
 	// armDelegateAttentionOnce while it held attentionMu. The acceptance path
-	// must resolve the exact ID before it can close that blocker.
+	// must claim the exact ID before it can close that blocker.
 	consumeDone := make(chan error, 1)
 	go func() {
 		err := runtime.acceptDelegateAttention(reservation)
@@ -718,8 +687,8 @@ func TestDelegateAttention_ArmClaimSpansFoldAndOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read attention fold: %v", err)
 	}
-	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
-		t.Fatalf("attention resolution = %q, want consumed", got)
+	if got := fold.pendingIDs(); !reflect.DeepEqual(got, []string{attentionID}) || len(fold.resolutions) != 0 {
+		t.Fatalf("claim resolved unobserved attention: pending=%v resolutions=%v", got, fold.resolutions)
 	}
 	events, err := c.store.Load()
 	if err != nil {
@@ -729,8 +698,11 @@ func TestDelegateAttention_ArmClaimSpansFoldAndOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fold controller journal: %v", err)
 	}
-	if state["dlg_target"].NeedsAttention || len(attentionWakeIDsOf(c, "dlg_target")) != 0 {
-		t.Fatalf("consumed attention reopened: state=%#v wakeIDs=%#v", state["dlg_target"], attentionWakeIDsOf(c, "dlg_target"))
+	if aggregate := state["dlg_target"]; aggregate.Generation != 1 || !aggregate.CurrentRunOpen {
+		t.Fatalf("interleaved arm changed the claimed generation: %#v", aggregate)
+	}
+	if _, err := c.ReserveAttention(runtime, attentionID); !errors.Is(err, errDelegateTargetBusy) {
+		t.Fatalf("interleaved arm admitted a second live generation: %v", err)
 	}
 }
 
@@ -3635,9 +3607,12 @@ func TestRootDelegateAttention_CoverageCreditsOnlySettledRounds(t *testing.T) {
 		t.Fatalf("unsettled coverage was consumed: pending = %#v, want the delivery kept", pending)
 	}
 
-	// The retry's round settles with the item presented: promotion credits
-	// it, and finish consumes.
+	// The retry's round settles with the item presented. Its response receipt
+	// syncs before promotion, and finish repairs the derived marker.
 	root.stagePresentedAttentionCoverage(context.Background(), historyTurns)
+	if err := root.appendAssistantTurn(llm.Response{Message: llm.Assistant("settled response")}, ModelAttemptMetadata{}, root.stagedNotificationObservationIDs(llm.Request{})...); err != nil {
+		t.Fatal(err)
+	}
 	root.promoteStagedAttentionCoverage(llm.Request{})
 	if err := root.finishRootDelegateAttentionTurn(nil, nil); err != nil {
 		t.Fatalf("finish with settled coverage: %v", err)
@@ -3653,9 +3628,8 @@ func TestRootDelegateAttention_CoverageCreditsOnlySettledRounds(t *testing.T) {
 
 // An accepted notification turn with an EMPTY begin snapshot can only fail on
 // coverage — and coverage failures warn instead of failing the turn. The item
-// stays pending, and because the turn declined to honor the wake it was
-// flagged for, finish arranges a paced retry even while the flag is set (the
-// drain skips the notification rung right after a notification turn).
+// remains observed, and the paced retry repairs its missing derived marker
+// without repeating either successful provider round.
 func TestRootDelegateAttention_EmptySnapshotCoverageFailureWarnsAndRetries(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
@@ -3665,11 +3639,13 @@ func TestRootDelegateAttention_EmptySnapshotCoverageFailureWarnsAndRetries(t *te
 		content     = `<delegate-notification delegate_id="dlg_emptyfail">coverage resolution will fail</delegate-notification>`
 	)
 	var root *Session
+	requests := 0
 	root = newSession(t,
 		withDir(stateDir),
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, clock: clock}),
 		withSteps(
 			func(llm.Request) llm.Response {
+				requests++
 				if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
 					t.Errorf("mid-turn append: %v", err)
 				}
@@ -3679,9 +3655,12 @@ func TestRootDelegateAttention_EmptySnapshotCoverageFailureWarnsAndRetries(t *te
 				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 			},
 			func(llm.Request) llm.Response {
+				requests++
 				return toolCallResponse(communicateCall("empty-fail-turn", "steering handled"))
 			},
 			func(llm.Request) llm.Response {
+				requests++
+				t.Error("index repair repeated successful model work")
 				return toolCallResponse(communicateCall("empty-fail-retry", "delivery consumed by the paced retry wake"))
 			},
 		),
@@ -3698,8 +3677,11 @@ func TestRootDelegateAttention_EmptySnapshotCoverageFailureWarnsAndRetries(t *te
 	if err != nil {
 		t.Fatalf("read fold after failed coverage resolution: %v", err)
 	}
-	if pending := fold.pendingIDs(); !reflect.DeepEqual(pending, []string{attentionID}) {
-		t.Fatalf("pending after failed coverage resolution = %#v, want the delivery kept", pending)
+	if pending := fold.pendingIDs(); len(pending) != 0 {
+		t.Fatalf("observed notification became pending after index failure: %v", pending)
+	}
+	if _, observed := fold.observed[attentionID]; !observed || len(fold.resolutions) != 0 {
+		t.Fatalf("failed index repair lost its response receipt or wrote a marker: observed=%v resolutions=%v", fold.observed, fold.resolutions)
 	}
 	if !root.sessionWorkPending() {
 		t.Fatal("failed coverage resolution left no autonomous work to recover consumption")
@@ -3721,6 +3703,9 @@ func TestRootDelegateAttention_EmptySnapshotCoverageFailureWarnsAndRetries(t *te
 	}
 	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
 		t.Fatalf("attention disposition = %q, want consumed by the paced retry wake", got)
+	}
+	if requests != 2 {
+		t.Fatalf("provider requests across index retry = %d, want 2 original rounds", requests)
 	}
 }
 
@@ -3763,12 +3748,8 @@ func TestRootDelegateAttention_PanicUnwindDoesNotConsumeCoverage(t *testing.T) {
 	}
 }
 
-// Coverage consumption is an optimization over the wake path: when its
-// resolution append fails, a covering NON-notification turn still succeeds —
-// the item stays pending, its armed wake fires, and the follow-up
-// notification turn consumes it — instead of failing the user's turn with
-// the optimization's error. The injected writer fails exactly one
-// ATTENTION_RESOLUTION sync: the covering turn's own attempt.
+// A derived marker failure must not fail the user's successful turn. The armed
+// wake repairs its durable receipt without another provider request.
 func TestRootDelegateAttention_CoveredResolutionFailureDoesNotFailUserTurn(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
@@ -3777,12 +3758,13 @@ func TestRootDelegateAttention_CoveredResolutionFailureDoesNotFailUserTurn(t *te
 		content     = `<delegate-notification delegate_id="dlg_resfail">resolution will fail</delegate-notification>`
 	)
 	var root *Session
-	var wakeTurnSaw bool
+	requests := 0
 	root = newSession(t,
 		withDir(stateDir),
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
 		withSteps(
 			func(llm.Request) llm.Response {
+				requests++
 				if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
 					t.Errorf("mid-turn append: %v", err)
 				}
@@ -3791,13 +3773,16 @@ func TestRootDelegateAttention_CoveredResolutionFailureDoesNotFailUserTurn(t *te
 				}
 				return toolCallResponse(llm.ToolCallData{ID: "round-one", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"})
 			},
-			func(llm.Request) llm.Response {
+			func(req llm.Request) llm.Response {
+				requests++
+				if !requestContainsText(req, content) {
+					t.Error("successful covering request omitted the notification")
+				}
 				return toolCallResponse(communicateCall("resolution-failure-turn", "answer stands"))
 			},
-			// The armed wake's follow-up notification turn, which the failed
-			// coverage resolution left the item pending for.
-			func(req llm.Request) llm.Response {
-				wakeTurnSaw = requestContainsText(req, content)
+			func(llm.Request) llm.Response {
+				requests++
+				t.Error("receipt repair issued another provider request")
 				return toolCallResponse(communicateCall("resolution-failure-wake", "delivery consumed by the wake"))
 			},
 		),
@@ -3806,8 +3791,8 @@ func TestRootDelegateAttention_CoveredResolutionFailureDoesNotFailUserTurn(t *te
 	if _, err := root.ProcessInput(context.Background(), "question", nil); err != nil {
 		t.Fatalf("covering user turn (or its recovery wake) failed with the coverage resolution error: %v", err)
 	}
-	if !wakeTurnSaw {
-		t.Fatal("the recovery wake turn did not present the delivery before consuming it")
+	if requests != 2 {
+		t.Fatalf("provider requests across receipt repair = %d, want 2 original rounds", requests)
 	}
 	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
 	if err != nil {
@@ -3816,13 +3801,14 @@ func TestRootDelegateAttention_CoveredResolutionFailureDoesNotFailUserTurn(t *te
 	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
 		t.Fatalf("attention disposition = %q, want consumed by the recovery wake after the failed coverage resolution", got)
 	}
+	if _, observed := fold.observed[attentionID]; !observed {
+		t.Fatal("repaired marker has no durable response receipt")
+	}
 }
 
-// A failed turn never resolves, so on that path the union serves only as the
-// emptiness gate that arms the paced-retry backstop. A non-empty begin
-// snapshot already passes that gate; unioning it with the fold would read the
-// fold only to discard the result. Skip it.
-func TestRootDelegateAttention_FailedTurnWithSnapshotSkipsFoldRead(t *testing.T) {
+// Memory-only coverage is not a receipt, even with a selected wake snapshot.
+// Consult durable evidence within a bounded number of reads and keep the retry.
+func TestRootDelegateAttention_FailedTurnWithSnapshotConsultsDurableReceipts(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	root := newSession(t,
@@ -3853,20 +3839,24 @@ func TestRootDelegateAttention_FailedTurnWithSnapshotSkipsFoldRead(t *testing.T)
 	if err := root.finishRootDelegateAttentionTurn([]string{snapshotID}, errors.New("turn failed")); err != nil {
 		t.Fatalf("failed turn with snapshot: %v", err)
 	}
-	if foldReads != 0 {
-		t.Fatalf("failed turn with a non-empty snapshot read the fold %d times, want 0", foldReads)
+	if foldReads < 1 || foldReads > 3 {
+		t.Fatalf("failed turn with a non-empty snapshot read the fold %d times, want 1..3", foldReads)
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending := fold.pendingIDs(); !reflect.DeepEqual(pending, []string{snapshotID, coveredID}) || len(fold.resolutions) != 0 {
+		t.Fatalf("memory-only coverage acknowledged a notification: pending=%v resolutions=%v", pending, fold.resolutions)
 	}
 	if !root.sessionWorkPending() {
 		t.Fatal("failed turn left no paced retry for the still-pending attention")
 	}
 }
 
-// The empty-snapshot counterpart is the backstop, and it MUST keep reading
-// the fold: a settled round presented mid-turn attention before the turn
-// failed, the drain skips the notification rung right after a notification
-// turn, and only this gate arms the paced retry that eventually consumes the
-// item.
-func TestRootDelegateAttention_FailedEmptySnapshotTurnStillReadsFold(t *testing.T) {
+// Without a durable response, memory-only coverage must neither acknowledge
+// the item nor suppress the wake acceptance already armed.
+func TestRootDelegateAttention_FailedEmptySnapshotMemoryOnlyCoverageKeepsWake(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	root := newSession(t,
@@ -3877,8 +3867,10 @@ func TestRootDelegateAttention_FailedEmptySnapshotTurnStillReadsFold(t *testing.
 	if _, err := root.appendDelegateNotificationDurably(coveredID, `<delegate-notification delegate_id="dlg_coveredgate">gate needs the fold</delegate-notification>`); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
+	if err := root.armDelegateAttention(coveredID); err != nil {
+		t.Fatal(err)
+	}
 	root.attentionMu.Lock()
-	root.rootAttentionWakeIDs = map[string]struct{}{coveredID: {}}
 	root.attentionCoveredIDs = map[string]struct{}{coveredID: {}}
 	root.attentionMu.Unlock()
 
@@ -3892,8 +3884,15 @@ func TestRootDelegateAttention_FailedEmptySnapshotTurnStillReadsFold(t *testing.
 	if err := root.finishRootDelegateAttentionTurn(nil, errors.New("turn failed")); err != nil {
 		t.Fatalf("failed empty-snapshot turn: %v", err)
 	}
-	if foldReads != 1 {
-		t.Fatalf("failed empty-snapshot turn read the fold %d times, want exactly 1 (the backstop gate)", foldReads)
+	if foldReads < 1 || foldReads > 3 {
+		t.Fatalf("failed empty-snapshot turn read the fold %d times, want 1..3", foldReads)
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending := fold.pendingIDs(); !reflect.DeepEqual(pending, []string{coveredID}) || len(fold.resolutions) != 0 || !root.rootAttentionWake {
+		t.Fatalf("memory-only coverage lost unobserved work: pending=%v resolutions=%v wake=%t", pending, fold.resolutions, root.rootAttentionWake)
 	}
 	if !root.sessionWorkPending() {
 		t.Fatal("failed empty-snapshot turn left no paced retry for the covered-but-pending attention")
@@ -3979,18 +3978,22 @@ func TestRootDelegateAttention_FailedEmptyCoverageTurnRefiresViaArmKick(t *testi
 	}
 }
 
-func TestRootDelegateAttention_FailedConsumptionRemainsPendingAndRearms(t *testing.T) {
+func TestRootDelegateAttention_FailedIndexRepairRearmsWithoutRepeatingModelWork(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	clock := agenttest.NewFakeClock()
+	requests := 0
 	root := newSession(t,
 		withDir(stateDir),
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, clock: clock}),
 		withSteps(
 			func(llm.Request) llm.Response {
+				requests++
 				return toolCallResponse(communicateCall("root-attention-first", "first attempt"))
 			},
 			func(llm.Request) llm.Response {
+				requests++
+				t.Error("index repair repeated successful model work")
 				return toolCallResponse(communicateCall("root-attention-retry", "retry complete"))
 			},
 		),
@@ -4018,8 +4021,11 @@ func TestRootDelegateAttention_FailedConsumptionRemainsPendingAndRearms(t *testi
 	if err != nil {
 		t.Fatalf("read failed root attention fold: %v", err)
 	}
-	if pending := fold.pendingIDs(); !reflect.DeepEqual(pending, []string{attentionID}) {
-		t.Fatalf("pending after failed consumption = %#v, want exact attention", pending)
+	if pending := fold.pendingIDs(); len(pending) != 0 {
+		t.Fatalf("observed notification became pending after index failure: %v", pending)
+	}
+	if _, observed := fold.observed[attentionID]; !observed || len(fold.resolutions) != 0 {
+		t.Fatalf("index fault lost response receipt or retained marker: observed=%v resolutions=%v", fold.observed, fold.resolutions)
 	}
 	if !root.sessionWorkPending() {
 		t.Fatal("failed root attention consumption cleared autonomous work")
@@ -4041,6 +4047,9 @@ func TestRootDelegateAttention_FailedConsumptionRemainsPendingAndRearms(t *testi
 	}
 	if pending := fold.pendingIDs(); len(pending) != 0 {
 		t.Fatalf("pending after successful retry = %#v", pending)
+	}
+	if requests != 1 || fold.resolutions[attentionID] != delegateAttentionConsumed {
+		t.Fatalf("retry did not repair only the index: requests=%d resolutions=%v", requests, fold.resolutions)
 	}
 }
 
