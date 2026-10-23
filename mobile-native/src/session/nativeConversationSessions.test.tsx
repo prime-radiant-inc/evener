@@ -63,6 +63,33 @@ function thread(ref: string): Thread {
 	} as unknown as Thread;
 }
 
+/** A thread with `count` recorded user rows in one completed turn, enough to
+ * cross the store's 500-row live-end cap. */
+function threadWithRows(ref: string, count: number): Thread {
+	const served = thread(ref);
+	(served as unknown as { evener: { capabilities: Record<string, unknown> } }).evener.capabilities = {
+		...CAPABILITIES,
+		pageBefore: true,
+	};
+	(served as unknown as { turns: unknown[] }).turns = [
+		{
+			id: "turn_1",
+			status: "completed",
+			itemsView: "default",
+			items: Array.from({ length: count }, (_, index) => ({
+				id: `u-${index}`,
+				turnId: "turn_1",
+				type: "userMessage",
+				status: "completed",
+				text: `message ${index}`,
+				transcriptKey: `turn_1:${index}:0`,
+				position: { entry: index, item: 0 },
+			})),
+		},
+	];
+	return served;
+}
+
 interface Deferred<T> {
 	readonly promise: Promise<T>;
 	resolve(value: T): void;
@@ -180,6 +207,28 @@ describe("two attachments", () => {
 		expect(b.entry.store.getState().canonicalSession()?.threadId).toBe("thread-ref-1");
 		expect(b.entry.retired).toBe(false);
 		expect(runtime.targetClient("hub-1", "ref-1")).toBe(client);
+	});
+
+	it("trims only when every attached reader follows the live end", async () => {
+		const client = hub("ref-1", () => Promise.resolve({ thread: threadWithRows("ref-1", 510) }));
+		connected(client);
+
+		const a = sessions.attach("hub-1", "ref-1");
+		const b = sessions.attach("hub-1", "ref-1");
+		await vi.waitFor(() => expect(a.entry.store.getState().status).toBe("open"));
+
+		// A new reader starts conservatively as not following, so nothing trims
+		// and the older rows a reader may be looking at stay.
+		expect(a.entry.store.getState().conversation?.items.length).toBeGreaterThan(500);
+
+		// One follower is not enough: the other reader is still above the end.
+		a.setFollowingLiveEnd(true);
+		await settle();
+		expect(a.entry.store.getState().conversation?.items.length).toBeGreaterThan(500);
+
+		b.setFollowingLiveEnd(true);
+		await settle();
+		expect(a.entry.store.getState().conversation?.items.length).toBe(500);
 	});
 });
 

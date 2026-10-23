@@ -8,6 +8,7 @@ import { installRetryWireFault } from "../../cmd/evener-hub/frontend/scripts/ret
 import { ConnectionProvider, useConnection } from "./ConnectionProvider";
 import { NativePreferencesProvider } from "./NativePreferencesProvider";
 import { ConversationScreen } from "./screens";
+import { NativeConversationSessionsProvider } from "./session/NativeConversationSessionsProvider";
 import { drafts } from "./nativeDrafts";
 import { pressable, render, unmountMountedTrees, untilRendered } from "./renderNative.testkit";
 
@@ -62,17 +63,19 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 			return (
 				<ConnectionProvider>
 					<NativePreferencesProvider>
-						<Probe />
-						{show ? (
-							<ConversationScreen
-								navigation={navigation}
-								route={{
-									key: "retry",
-									name: "Conversation",
-									params: { hubId: connection?.activeProfile?.id ?? "", ref: scenario.ref, title: "Session" },
-								}}
-							/>
-						) : null}
+						<NativeConversationSessionsProvider>
+							<Probe />
+							{show ? (
+								<ConversationScreen
+									navigation={navigation}
+									route={{
+										key: "retry",
+										name: "Conversation",
+										params: { hubId: connection?.activeProfile?.id ?? "", ref: scenario.ref, title: "Session" },
+									}}
+								/>
+							) : null}
+						</NativeConversationSessionsProvider>
 					</NativePreferencesProvider>
 				</ConnectionProvider>
 			);

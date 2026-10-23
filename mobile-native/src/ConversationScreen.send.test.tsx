@@ -42,6 +42,11 @@ import {
 } from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
 import { ConversationScreen } from "./screens";
+import type { NativeConversationSessions } from "./session/nativeConversationSessions";
+import {
+	NativeConversationSessionsProvider,
+	useNativeConversationSessions,
+} from "./session/NativeConversationSessionsProvider";
 import { nativeDisclosureStore, setDisclosureOpenAll } from "./nativeDisclosure";
 import { rowDisclosureIds, sessionDisclosureScope } from "./session/disclosureKeys";
 import { NotesSheet, notesHosts } from "./session/NotesSheet";
@@ -74,6 +79,8 @@ import { SubagentScreen } from "./subagents/SubagentScreen";
 import { flattenSubagents } from "./subagents/subagentModel";
 import { DisplayPreferences } from "./display/displayPreferences";
 import { DisplayProvider } from "./display/displayContext";
+import { displayForLevel } from "./session/detailLevels";
+import { detailLevels } from "./session/nativeDetailLevels";
 
 const memoryStorage = () => {
 	const values = new Map<string, string>();
@@ -136,6 +143,22 @@ vi.mock("./NativePreferencesProvider", () => ({
 }));
 
 type ConversationScreenProps = ComponentProps<typeof ConversationScreen>;
+
+/** Every screen mounts under the one real sessions provider, as the app's
+ * navigator does; the registry is constructed by the provider itself. */
+function SessionScreen(props: ConversationScreenProps) {
+	return (
+		<NativeConversationSessionsProvider>
+			<ConversationScreen {...props} />
+		</NativeConversationSessionsProvider>
+	);
+}
+
+/** The provider's registry, for a test that drives two views of one session. */
+function RegistryProbe({ seen }: { seen: { current: NativeConversationSessions | null } }) {
+	seen.current = useNativeConversationSessions();
+	return null;
+}
 
 const navigation = {
 	isFocused: () => true,
@@ -447,7 +470,7 @@ async function mount(
 	// read's clock, before handing the live renderer back to the case.
 	let tree!: ReactTestRenderer;
 	await act(async () => {
-		const screen = <ConversationScreen route={route} navigation={navigation} />;
+		const screen = <SessionScreen route={route} navigation={navigation} />;
 		tree = render(display ? <DisplayProvider value={display}>{screen}</DisplayProvider> : screen);
 	});
 	if (barLaysOut) {
@@ -864,7 +887,7 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		};
 		act(() =>
 			tree.update(
-				<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
+				<SessionScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
 			),
 		);
 	}
@@ -1334,6 +1357,14 @@ describe("opening a session", () => {
 		);
 		act(() => transcriptList(tree).props.onContentSizeChange(390, contentHeight));
 	};
+	/** The bottom bar lays out once per mount, so a view that remounts for a new
+	 * session key needs it again before its opening cap can start. */
+	const layOutBottomBar = (tree: ReactTestRenderer) => {
+		const bar = tree.root.findAll(
+			(node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar",
+		)[0];
+		if (bar) act(() => bar.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 0 } } }));
+	};
 	const savePosition = (ref: string, itemKey = "a-turn_2", turnsSeen = "turn_2") =>
 		nativePlatform.kv.set(
 			"evener.reader-positions",
@@ -1531,7 +1562,11 @@ describe("opening a session", () => {
 			expect(opacity(tree)).toBe(0);
 			const moved = { ...route, params: { ...route.params, ref: next } };
 			navigationState.state = { index: 0, routes: [moved] };
-			act(() => tree.update(<ConversationScreen route={moved} navigation={navigation} />));
+			act(() => tree.update(<SessionScreen route={moved} navigation={navigation} />));
+			// A new session key commits a fresh attachment and view body.
+			await advanceFakeTimers(0);
+			layOutBottomBar(tree);
+			layOutViewport(tree);
 			await advanceFakeTimers(0);
 			// The first session's cap has 400ms left; the second's starts afresh.
 			await advanceFakeTimers(999);
@@ -1564,7 +1599,10 @@ describe("opening a session", () => {
 			expect(opacity(tree)).toBe(1);
 			const moved = { ...route, params: { ...route.params, ref: next } };
 			navigationState.state = { index: 0, routes: [moved] };
-			act(() => tree.update(<ConversationScreen route={moved} navigation={navigation} />));
+			act(() => tree.update(<SessionScreen route={moved} navigation={navigation} />));
+			await advanceFakeTimers(0);
+			layOutBottomBar(tree);
+			layOutViewport(tree);
 			await advanceFakeTimers(0);
 			// The second session's saved row is loaded but unmeasured too: it
 			// gets a fresh first cap, hidden through it.
@@ -1815,6 +1853,17 @@ function transcriptList(tree: ReactTestRenderer) {
 		(node) =>
 			typeof node.type === "function" && Array.isArray(node.props.data) && typeof node.props.renderItem === "function",
 	)[0];
+}
+
+/** Lays out a freshly mounted view's transcript and bottom bar, which a
+ * session-key switch remounts. */
+function layOutSessionView(tree: ReactTestRenderer) {
+	act(() => transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
+	act(() => transcriptList(tree).props.onContentSizeChange(390, 20_000));
+	const bar = tree.root.findAll(
+		(node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar",
+	)[0];
+	if (bar) act(() => bar.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 0 } } }));
 }
 
 // Saves a reading position on hub-1 for the session ref, at the top of the
@@ -2175,6 +2224,177 @@ it("shows nothing for a loaded conversation with no rows: the composer invites",
 	for (const words of ["No messages", "Loading", "Pull down"]) expect(renderedText(tree)).not.toContain(words);
 });
 
+// Two mounted views of one session borrow one registry entry: the same
+// canonical store, service and activity sink, and one live target
+// registration. The shared code is the real native store/service/runtime.
+describe("two mounted views of one session", () => {
+	const routeFor = (key: string, ref: string) =>
+		({
+			key,
+			name: "Conversation",
+			params: { hubId: "hub-1", ref, title: "Session" },
+		}) as unknown as ConversationScreenProps["route"];
+
+	function mountTwo(ref: string, served: Thread) {
+		const hub = hubClient(served);
+		harness.connection = {
+			...screenConnection(hub.client, "ready"),
+			profiles: [{ id: "hub-1", name: "Work hub", origin: "https://hub.test" }],
+			error: null,
+			disconnect: () => {},
+		};
+		const a = routeFor("conversation-two-a", ref);
+		const b = routeFor("conversation-two-b", ref);
+		navigationState.state = { index: 1, routes: [a, b] };
+		const seen = { current: null as NativeConversationSessions | null };
+		let tree!: ReactTestRenderer;
+		act(() => {
+			tree = render(
+				<NativeConversationSessionsProvider>
+					<RegistryProbe seen={seen} />
+					<ConversationScreen route={a} navigation={navigation} />
+					<ConversationScreen route={b} navigation={navigation} />
+				</NativeConversationSessionsProvider>,
+			);
+		});
+		return { tree, hub, seen, a, b };
+	}
+
+	function lists(tree: ReactTestRenderer) {
+		return tree.root.findAll(
+			(node) =>
+				typeof node.type === "function" &&
+				Array.isArray(node.props.data) &&
+				typeof node.props.renderItem === "function",
+		);
+	}
+
+	function deferredRead() {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		return { gate, release };
+	}
+
+	it("shares one canonical entry and both views see a newer publication", async () => {
+		const ref = "ref-two-views";
+		const served = twoTurns(ref);
+		const { tree, seen } = mountTwo(ref, served);
+		await settle();
+
+		const registry = seen.current!;
+		const entry = registry.entryFor("hub-1", ref)!;
+		expect(entry).toBeDefined();
+		expect(entry.attachmentCount).toBe(2);
+		expect(entry.store.getState().status).toBe("open");
+
+		(served as unknown as { turns: unknown[] }).turns.push({
+			id: "turn_3",
+			status: "completed",
+			itemsView: "default",
+			items: [
+				{ id: "u-turn_3", turnId: "turn_3", type: "userMessage", status: "completed", text: "newest question" },
+				{ id: "a-turn_3", turnId: "turn_3", type: "agentMessage", status: "completed", text: "newest reply" },
+			],
+		});
+		await act(async () => {
+			await entry.store.getState().ensureLatest();
+		});
+		await settle();
+
+		expect(entry.store.getState().canonicalSession()?.turns.at(-1)?.id).toBe("turn_3");
+		const views = lists(tree);
+		expect(views.length).toBeGreaterThanOrEqual(2);
+		for (const view of views) expect(JSON.stringify(view.props.data)).toContain("newest reply");
+	});
+
+	it("shares the session display level without recreating the binding", async () => {
+		const ref = "ref-two-views-level";
+		const { tree, seen } = mountTwo(ref, twoTurns(ref));
+		await settle();
+		const entry = seen.current!.entryFor("hub-1", ref)!;
+		const store = entry.store;
+		const service = entry.service;
+
+		act(() => detailLevels("hub-1").set(ref, "chat"));
+		await settle();
+
+		expect(seen.current!.entryFor("hub-1", ref)!.store).toBe(store);
+		expect(entry.service).toBe(service);
+		expect(store.getState().displayConfig).toEqual(displayForLevel("chat", null).config);
+		const views = lists(tree);
+		expect(views.length).toBeGreaterThanOrEqual(2);
+		const data = views.map((view) => JSON.stringify(view.props.data));
+		expect(new Set(data).size).toBe(1);
+	});
+
+	it("lets a surviving view observe a read held when its sibling closes", async () => {
+		const ref = "ref-two-views-held";
+		const served = twoTurns(ref);
+		const { tree, hub, seen, b } = mountTwo(ref, served);
+		await settle();
+		const registry = seen.current!;
+		const entry = registry.entryFor("hub-1", ref)!;
+		const original = hub.client.request.bind(hub.client);
+		const held = deferredRead();
+		let hold = true;
+		hub.client.request = async (method: string, params: Record<string, unknown>) => {
+			if (method === "thread/read" && hold) {
+				hold = false;
+				await held.gate;
+			}
+			return original(method, params);
+		};
+		let reading!: Promise<void>;
+		await act(async () => {
+			reading = entry.store.getState().ensureLatest();
+		});
+
+		act(() => {
+			tree.update(
+				<NativeConversationSessionsProvider>
+					<RegistryProbe seen={seen} />
+					<ConversationScreen route={b} navigation={navigation} />
+				</NativeConversationSessionsProvider>,
+			);
+		});
+		expect(entry.attachmentCount).toBe(1);
+		expect(entry.retired).toBe(false);
+
+		await act(async () => {
+			held.release();
+		});
+		await act(async () => {
+			await reading;
+		});
+		await settle();
+		expect(entry.store.getState().status).toBe("open");
+		expect(entry.store.getState().canonicalSession()).not.toBeNull();
+		expect(lists(tree).length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("retires the entry on the last release, and a reopen reads afresh", async () => {
+		const ref = "ref-two-views-reopen";
+		const first = mountTwo(ref, twoTurns(ref));
+		await settle();
+		const firstEntry = first.seen.current!.entryFor("hub-1", ref)!;
+		expect(firstEntry.attachmentCount).toBe(2);
+
+		act(() => first.tree.unmount());
+		expect(firstEntry.retired).toBe(true);
+		expect(first.seen.current!.entryFor("hub-1", ref)).toBeUndefined();
+
+		const second = mountTwo(ref, twoTurns(ref));
+		await settle();
+		const nextEntry = second.seen.current!.entryFor("hub-1", ref)!;
+		expect(nextEntry).not.toBe(firstEntry);
+		expect(nextEntry.store).not.toBe(firstEntry.store);
+		expect(nextEntry.store.getState().status).toBe("open");
+		expect(nextEntry.store.getState().canonicalSession()).not.toBeNull();
+	});
+});
+
 // Rows' open state lives in one app-wide store, scoped by session. Leaving a
 // session drops its scope, so the store stays bounded.
 it("forgets a session's open rows when you leave it", async () => {
@@ -2468,9 +2688,7 @@ it("doesn't page older history while the hub is away", async () => {
 		params: { hubId: "hub-1", ref: "ref-older-away", title: "Session" },
 	};
 	act(() =>
-		tree.update(
-			<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
-		),
+		tree.update(<SessionScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />),
 	);
 	await settle();
 	scrollTo(tree, 100);
@@ -2723,10 +2941,10 @@ it("opens a session switched to in place at its own newer reply, never the last 
 	};
 	navigationState.state = { index: 0, routes: [route as unknown as { key: string; name: string }] };
 	act(() =>
-		tree.update(
-			<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
-		),
+		tree.update(<SessionScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />),
 	);
+	await settle();
+	layOutSessionView(tree);
 	await settle();
 	expect(renderedText(tree)).toContain("ask turn_2");
 	const indexes = flatListCalls
@@ -2893,7 +3111,7 @@ it("keeps the Session sheet and a half-typed name through a connection blip, and
 		const route = { key: "conversation-ref-blip", name: "Conversation", params: { ...params, title: "Session" } };
 		act(() =>
 			tree.update(
-				<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
+				<SessionScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
 			),
 		);
 	};
@@ -2949,7 +3167,7 @@ describe("a session that can't take a message yet (ruling 20)", () => {
 		};
 		act(() =>
 			tree.update(
-				<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
+				<SessionScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
 			),
 		);
 	}
@@ -3795,7 +4013,7 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		};
 		act(() =>
 			tree.update(
-				<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
+				<SessionScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
 			),
 		);
 		await settle();
@@ -4044,7 +4262,7 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		};
 		act(() =>
 			tree.update(
-				<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
+				<SessionScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
 			),
 		);
 		await settle();
@@ -4102,7 +4320,7 @@ it("puts a quote held for this session into the draft when it comes back to the 
 	const [route] = navigationState.state.routes;
 	if (!route) throw new Error("no route");
 	const rerender = async () => {
-		act(() => tree.update(<ConversationScreen route={route as never} navigation={navigation} />));
+		act(() => tree.update(<SessionScreen route={route as never} navigation={navigation} />));
 		await settle();
 	};
 	// The Reader over this session holds a quote, and another session's.
@@ -5070,7 +5288,11 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 				route,
 			] as never,
 		};
-		const tree = render(<SubagentScreen route={route as never} navigation={navigation as never} />);
+		const tree = render(
+			<NativeConversationSessionsProvider>
+				<SubagentScreen route={route as never} navigation={navigation as never} />
+			</NativeConversationSessionsProvider>,
+		);
 		await settle();
 		return { tree, hub };
 	}
@@ -5331,7 +5553,13 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			name: "Subagent",
 			params: { hubId: "hub-1", ref: "local:fix", title: "Fix race in tree settle", coordinator: COORDINATOR },
 		};
-		act(() => tree.update(<SubagentScreen route={route as never} navigation={navigation as never} />));
+		act(() =>
+			tree.update(
+				<NativeConversationSessionsProvider>
+					<SubagentScreen route={route as never} navigation={navigation as never} />
+				</NativeConversationSessionsProvider>,
+			),
+		);
 		await settle();
 		expect(pressable(tree, "Stop subagent")).toBeUndefined();
 	});
@@ -5357,7 +5585,13 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		};
 		const upgraded = hubClient(subagent(true));
 		harness.connection = { ...harness.connection, client: upgraded.client };
-		act(() => tree.update(<SubagentScreen route={route as never} navigation={navigation as never} />));
+		act(() =>
+			tree.update(
+				<NativeConversationSessionsProvider>
+					<SubagentScreen route={route as never} navigation={navigation as never} />
+				</NativeConversationSessionsProvider>,
+			),
+		);
 		await settle();
 		expect(pressable(tree, "Stop subagent")).toBeDefined();
 	});
@@ -5669,7 +5903,7 @@ describe("Send while offline (phase 6, spec 8.5)", () => {
 		harness.connection = live
 			? { ...harness.connection, state: "ready", downSince: null }
 			: { ...harness.connection, ...droppedConnection(harness.connection) };
-		act(() => tree.update(<ConversationScreen route={route} navigation={navigation} />));
+		act(() => tree.update(<SessionScreen route={route} navigation={navigation} />));
 		await settle();
 	}
 	const outbox = (ref: string) => getNativeMutationRuntime().storage.listOutbox(nativeMutationTargetKey("hub-1", ref));
@@ -5705,7 +5939,7 @@ describe("Send while offline (phase 6, spec 8.5)", () => {
 			params: { hubId: "hub-1", ref, title: "Session" },
 		} as unknown as Route;
 		navigationState.state = { index: 0, routes: [route] };
-		const tree = render(<ConversationScreen route={route} navigation={navigation} />);
+		const tree = render(<SessionScreen route={route} navigation={navigation} />);
 		await settle();
 		await type(tree, "not yet");
 		expect(pressable(tree, "Send when you're back online")?.props.accessibilityState).toMatchObject({

@@ -13,7 +13,10 @@
 import type { AppwireClientLike, TranscriptDisplayConfigV1 } from "@evener/appwire-client";
 import { createActivityStore } from "../../../mobile/src/state/activity";
 import { createConversationStore, type LiveActivitySink } from "../../../mobile/src/state/conversation";
-import { createConversationMutationPendingPort } from "../../../mobile/src/state/conversationMutation";
+import {
+	createConversationMutationPendingPort,
+	type ConversationMutationSubmitter,
+} from "../../../mobile/src/state/conversationMutation";
 import { createConversationService } from "../../../mobile/src/services/conversation";
 import { createDurableSubmitter, createNativeMutationHost, type NativeMutationHost } from "../nativeMutationHost";
 import {
@@ -23,6 +26,7 @@ import {
 	type NativeMutationRuntime,
 } from "../nativeMutationRuntime";
 import { outboxFlush } from "../outbox/nativeOutboxFlush";
+import { reconnectDelay } from "../hubConnection";
 import { type DetailLevels, displayForLevel } from "./detailLevels";
 import { detailLevels as levelsForHub } from "./nativeDetailLevels";
 
@@ -33,13 +37,15 @@ export type NativeConversationActivity = ReturnType<typeof createActivityStore>;
  * entry hands out this exact object; no per-view adapter narrows it. */
 export type NativeConversationService = ReturnType<typeof createConversationService<NativeMutationReadLease>>;
 
-/** Placeholder for Task 5d: the one entry-owned read-retry actor. It owns no
- * timer yet; views never create their own. Retirement cancels it before the
- * store closes. */
+/** The one entry-owned read-retry actor. It moves the screen's former backoff
+ * into the entry so every view observes one failure count and one timer.
+ * Retirement cancels it before the store closes. */
 export interface NativeConversationReadActor {
 	/** Consecutive read failures the transcript's retry line reads. */
 	readonly failures: number;
 	readonly cancelled: boolean;
+	readonly getFailures: () => number;
+	subscribe(listener: () => void): () => void;
 	cancel(): void;
 }
 
@@ -48,6 +54,9 @@ export interface NativeConversationSession {
 	readonly ref: string;
 	readonly key: string;
 	readonly store: NativeConversationStore;
+	/** The stable submitter the store admits mutations through, shared so a
+	 * view's command and steer paths use the same live host lookup. */
+	readonly mutationSubmitter: ConversationMutationSubmitter;
 	readonly activity: NativeConversationActivity;
 	/** The exact sink object every open/read of this entry binds. */
 	readonly activitySink: LiveActivitySink;
@@ -98,6 +107,7 @@ class SessionEntry implements NativeConversationSession {
 	readonly ref: string;
 	readonly key: string;
 	readonly store: NativeConversationStore;
+	readonly mutationSubmitter: ConversationMutationSubmitter;
 	readonly activity: NativeConversationActivity;
 	readonly activitySink: LiveActivitySink;
 	readonly readActor: NativeConversationReadActor;
@@ -116,6 +126,11 @@ class SessionEntry implements NativeConversationSession {
 	#bindingClient: AppwireClientLike | null = null;
 	#readSettled: Promise<void> = Promise.resolve();
 	#retired = false;
+	#readFailures = 0;
+	#retryTimer: ReturnType<typeof setTimeout> | null = null;
+	#retryQueued = false;
+	#retrying = false;
+	#readListeners = new Set<() => void>();
 
 	constructor(options: {
 		hubId: string;
@@ -138,25 +153,35 @@ class SessionEntry implements NativeConversationSession {
 		const activity = createActivityStore();
 		this.activity = activity;
 		this.activitySink = activity.getState();
+		this.mutationSubmitter = createDurableSubmitter(() => this.#liveHost);
 		this.store = createConversationStore({
 			mutationHubId: this.hubId,
-			mutationSubmitter: createDurableSubmitter(() => this.#liveHost),
+			mutationSubmitter: this.mutationSubmitter,
 			displayConfig: this.#displayConfig,
 		});
-		let cancelled = false;
+		const entry = this;
 		this.readActor = {
 			get failures() {
-				return 0;
+				return entry.#readFailures;
 			},
 			get cancelled() {
-				return cancelled;
+				return entry.#retired;
 			},
-			cancel: () => {
-				cancelled = true;
+			getFailures: () => entry.#readFailures,
+			subscribe: (listener) => {
+				entry.#readListeners.add(listener);
+				return () => {
+					entry.#readListeners.delete(listener);
+				};
 			},
+			cancel: () => entry.#clearRetry(),
 		};
 		this.#unsubscribeLevels = this.#levels.subscribe(() => this.#applyDisplayConfig());
-		this.#unsubscribeStore = this.store.subscribe(() => this.#rebindPendingIfNeeded());
+		this.#unsubscribeStore = this.store.subscribe(() => {
+			this.#rebindPendingIfNeeded();
+			this.#observeRead();
+		});
+		this.#observeRead();
 	}
 
 	get liveHost(): NativeMutationHost | null {
@@ -283,6 +308,7 @@ class SessionEntry implements NativeConversationSession {
 		this.#bindingClient = null;
 		this.#liveHost = null;
 		this.#service = null;
+		this.#clearRetry();
 		// Fence the store binding before releasing the service/host, so a late
 		// response from the old client can never reconcile the replacement.
 		this.store.getState().suspendProjected();
@@ -345,6 +371,74 @@ class SessionEntry implements NativeConversationSession {
 		if (this.#retired || this.#service === null) return;
 		const state = this.store.getState();
 		if (state.status === "open" && state.pendingMutations === null) this.#bindPending();
+	}
+
+	/** Mirror the existing per-screen retry: an error starts the count at one,
+	 * an open read clears it, and each timer retry counts only when the store is
+	 * still in error when it settles. */
+	#observeRead(): void {
+		if (this.#retired) return;
+		const status = this.store.getState().status;
+		if (status === "open") {
+			this.#clearRetry();
+			this.#setReadFailures(0);
+			return;
+		}
+		if (status !== "error") return;
+		this.#setReadFailures(this.#readFailures === 0 ? 1 : this.#readFailures);
+		this.#scheduleRetry();
+	}
+
+	#setReadFailures(failures: number): void {
+		if (this.#readFailures === failures) return;
+		this.#readFailures = failures;
+		for (const listener of [...this.#readListeners]) listener();
+	}
+
+	#scheduleRetry(): void {
+		if (this.#retired || this.#retryTimer !== null || this.#retryQueued || this.#retrying) return;
+		if (this.#service === null) return;
+		const delay = reconnectDelay(this.#readFailures - 1);
+		// The first retry is due at once. A microtask keeps that promise without
+		// depending on a zero-delay timer turn, which a test's fake clock does
+		// not owe between two reads.
+		if (delay === 0) {
+			this.#retryQueued = true;
+			queueMicrotask(() => {
+				this.#retryQueued = false;
+				this.#retryRead();
+			});
+			return;
+		}
+		this.#retryTimer = setTimeout(() => {
+			this.#retryTimer = null;
+			this.#retryRead();
+		}, delay);
+	}
+
+	#retryRead(): void {
+		const service = this.#service;
+		if (this.#retired || service === null) return;
+		if (this.store.getState().status !== "error") return;
+		const attempt = this.#readFailures;
+		this.#retrying = true;
+		const settle = () => {
+			this.#retrying = false;
+			if (this.#retired) return;
+			// Only a retry that left the store in error counts. A newer read that
+			// took over ("opening") does not; if it fails, the status returns to
+			// error and the next observation re-arms at the same step.
+			if (this.store.getState().status === "error") {
+				this.#setReadFailures(attempt + 1);
+				this.#scheduleRetry();
+			}
+		};
+		void this.store.getState().resumeProjected(service, this.activitySink, this.ref).then(settle, settle);
+	}
+
+	#clearRetry(): void {
+		if (this.#retryTimer !== null) clearTimeout(this.#retryTimer);
+		this.#retryTimer = null;
 	}
 }
 
