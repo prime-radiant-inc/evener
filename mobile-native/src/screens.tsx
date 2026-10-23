@@ -2829,6 +2829,7 @@ export function ConversationScreen({
 	const representedRecoveryIds = [
 		...(draft.record.composer?.recoveryIds ?? []),
 		...(draft.record.unconfirmedComposer?.recoveryIds ?? []),
+		...(draft.record.parkedComposition?.composer?.recoveryIds ?? []),
 		...(draft.record.completedCommandRecoveryIds ?? []),
 	];
 	const recoveryRows = projectNativeMutationRecovery(recovery.targetKey, recovery.snapshot).filter(
@@ -2845,6 +2846,7 @@ export function ConversationScreen({
 			.map((row) => row.clientMutationId),
 		captured: draft.record.unconfirmedComposer?.recoveryIds,
 		owned: draft.record.composer?.recoveryIds,
+		parked: draft.record.parkedComposition?.composer?.recoveryIds,
 		released: draft.record.releasedRecoveryIds,
 		completed: draft.record.completedCommandRecoveryIds,
 		acks: draft.record.recoveryResendAcks,
@@ -2903,7 +2905,16 @@ export function ConversationScreen({
 			conversation,
 			localPending,
 			unconfirmedSend === null
-				? null
+				? draft.record.parkedComposition === undefined
+					? null
+					: {
+							text: draft.record.parkedComposition.text,
+							sentText: translateAttachmentMarkers(
+								draft.record.parkedComposition.text,
+								draft.record.parkedComposition.images,
+							),
+							caption: "Replaced by your new draft",
+						}
 				: {
 						text: unconfirmedSend,
 						sentText: translateAttachmentMarkers(unconfirmedSend, draft.record.unconfirmedImages),

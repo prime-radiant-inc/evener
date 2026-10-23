@@ -88,6 +88,9 @@ function localQueuedEditReady({ document, encodingAttachments }: LocalQueuedEdit
 export interface UnconfirmedSend {
 	text: string;
 	sentText: string;
+	/** Overrides the "couldn't confirm" caption for work that never reached
+	 * transport, such as a composition a replacement set aside. */
+	caption?: string;
 }
 
 const CAPTIONS: Record<GhostState, string> = {
@@ -206,7 +209,7 @@ export function ghosts(
 			key: "draft:unconfirmed",
 			state,
 			text: unconfirmedDraft.text,
-			caption: sending && !connected ? WAITING_TO_SEND : CAPTIONS[state],
+			caption: unconfirmedDraft.caption ?? (sending && !connected ? WAITING_TO_SEND : CAPTIONS[state]),
 			buttons: sending ? [] : confirmButtons,
 			menu: sending ? [] : ["edit"],
 			// The outbox row this ghost stands in for, when there is one: Discard

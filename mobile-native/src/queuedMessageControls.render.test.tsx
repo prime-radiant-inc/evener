@@ -30,8 +30,16 @@ import { ghosts, isQueuedGhost, type Ghost, type GhostAction } from "./session/g
 import { withGhostRows, isGhostRow } from "./session/transcriptRows";
 import { QueueSheet, queueHosts } from "./QueueSheet";
 import { sheetKey } from "./sheet/sheetHosts";
-import { render, settle, screenConnection, pressable, unmountMountedTrees } from "./renderNative.testkit";
+import {
+	alertRequests,
+	render,
+	settle,
+	screenConnection,
+	pressable,
+	unmountMountedTrees,
+} from "./renderNative.testkit";
 import { answerFleetRead } from "./session/fleetTestUtils";
+import { sessionInfoHosts } from "./session/SessionInfoSheet";
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
 	uuid: 0,
@@ -220,6 +228,7 @@ async function mount(
 	command = false,
 	draftText?: string,
 	selectionKind: "skill" | "command" = "skill",
+	options: { goal?: { objective: string; status: "active"; iterations: number } } = {},
 ) {
 	const ref = `queued-${++serial}`;
 	if (selectionOnly)
@@ -252,6 +261,7 @@ async function mount(
 		evener: {
 			ref,
 			instanceId: "instance",
+			...(options.goal === undefined ? {} : { goal: options.goal }),
 			capabilities: {
 				send: true,
 				steer: true,
@@ -264,7 +274,7 @@ async function mount(
 				changeModel: false,
 				changeVisionModel: false,
 				sharedNotes: false,
-				goal: false,
+				goal: options.goal !== undefined,
 				rename: false,
 			},
 			queue: { revision: 0, depth: 0, preview: [], texts: [], ids: [] },
@@ -1801,4 +1811,104 @@ it.each([false, true])("nativeQueuedControlsPreserveAndResendOnce held=%s", asyn
 	await f.reopen();
 	expect(await f.runtime.storage.getOutbox(removed)).toBeUndefined();
 	expect(f.document.getSnapshot().record.draft).toBe("");
+});
+
+async function editRecoveryIntoDraft(f: Awaited<ReturnType<typeof mount>>, text: string) {
+	await f.offline();
+	const source = await enqueue(f, text);
+	const host = queueHosts.get(sheetKey("hub-1", f.ref));
+	const ghost = host?.ghosts.find(
+		(item) => item.origin.kind === "pending" && item.origin.clientMutationId === source.clientMutationId,
+	);
+	if (!host || !ghost) throw new Error("no local ghost");
+	await act(async () => {
+		await host.act(ghost, "edit");
+	});
+	expect(f.document.getSnapshot().record.composer?.recoveryIds).toEqual([source.clientMutationId]);
+	await reconnect(f);
+	return source;
+}
+
+async function replaceDraftWithGoal(f: Awaited<ReturnType<typeof mount>>) {
+	vi.stubGlobal("requestAnimationFrame", (frame: (time: number) => void) => {
+		frame(0);
+		return 0;
+	});
+	alertRequests.length = 0;
+	await act(async () => {
+		sessionInfoHosts.get(sheetKey("hub-1", f.ref))?.editGoal();
+	});
+	expect(alertRequests).toHaveLength(1);
+	const replace = alertRequests[0].buttons?.find((button) => button.text === "Replace draft");
+	expect(replace).toBeDefined();
+	await act(async () => {
+		replace?.onPress?.();
+	});
+	await settle();
+	vi.unstubAllGlobals();
+}
+
+it.each([
+	["without parked images", false],
+	["with parked images", true],
+] as const)("goal edit replaces an edited recovery %s", async (_label, withImage) => {
+	const f = await mount(false, false, undefined, "skill", {
+		goal: { objective: "ship", status: "active", iterations: 1 },
+	});
+	const source = await editRecoveryIntoDraft(f, "old goal work");
+	if (withImage)
+		await act(async () => {
+			f.document.addImage({ id: "old-image", marker: 3, mediaType: "image/png", data: "AQID" }, 0);
+		});
+	const before = f.document.getSnapshot().record;
+	expect(before.draft).toContain("old goal work");
+	expect(before.images?.map((image) => image.id)).toEqual(withImage ? ["old-image"] : []);
+
+	await replaceDraftWithGoal(f);
+
+	let record = f.document.getSnapshot().record;
+	expect(record.draft).toBe("/goal ship");
+	expect(record.composer).toBeUndefined();
+	expect(record.images).toBeUndefined();
+	expect(record.unconfirmed).toBeNull();
+	expect(record.parkedComposition?.text).toBe(before.draft);
+	expect(record.parkedComposition?.composer?.recoveryIds).toEqual([source.clientMutationId]);
+	expect(record.parkedComposition?.images?.map((image) => image.id)).toEqual(withImage ? ["old-image"] : []);
+
+	// The screen's own reconciliation must leave the replacement alone.
+	await act(async () => {
+		await reconcileEditedResends(f.runtime, f.targetKey, f.document);
+		const retained = (await f.runtime.read(f.targetKey)).recovery.filter((row) => row.recoveryKind === "editing");
+		for (const row of retained)
+			await editQueuedMessageIntoDraft(f.runtime, f.targetKey, row.clientMutationId, f.document);
+	});
+	record = f.document.getSnapshot().record;
+	expect(record.draft).toBe("/goal ship");
+	expect(record.parkedComposition?.text).toBe(before.draft);
+
+	// The parked image must not route the goal through ordinary message dispatch.
+	const request = f.client.request;
+	f.client.request = async (method, params) => {
+		if (method !== "goal/set") return request(method, params);
+		f.requests.push({ method, params: params as Record<string, unknown> });
+		return { started: true } as never;
+	};
+	const send = pressable(f.tree, "Set goal");
+	expect(send?.props.disabled).toBe(false);
+	await act(async () => send?.props.onPress());
+	await settle();
+	expect(f.requests.filter((item) => item.method === "goal/set")).toHaveLength(1);
+	expect(f.requests.filter((item) => item.method.startsWith("turn/"))).toHaveLength(0);
+
+	// Sending the goal leaves the parked work recoverable as its own composition.
+	record = f.document.getSnapshot().record;
+	expect(record.parkedComposition?.text).toBe(before.draft);
+	expect(record.parkedComposition?.images?.map((image) => image.id)).toEqual(withImage ? ["old-image"] : []);
+	await act(async () => {
+		f.document.restore();
+	});
+	record = f.document.getSnapshot().record;
+	expect(record.draft).toBe(before.draft);
+	expect(record.parkedComposition).toBeUndefined();
+	expect(record.composer?.recoveryIds).toEqual([source.clientMutationId]);
 });

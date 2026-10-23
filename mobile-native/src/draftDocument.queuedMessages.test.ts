@@ -504,23 +504,50 @@ it("restores captured edits only with every retained source, merging newer work 
 	expect(calls).toBe(1);
 });
 
-it("replacement parks edited composition durably instead of relabeling unrelated replacement text", () => {
+it("replacement parks edited composition separately instead of relabeling or restoring it", () => {
 	document.appendEditedRecovery(recovery());
 	const original = repository.read(destination);
 	document.replaceDraft("replacement");
+	const parked = document.getSnapshot().record;
+	expect(parked).toMatchObject({
+		draft: "replacement",
+		unconfirmed: null,
+		parkedComposition: {
+			text: original.draft,
+			images: original.images,
+			composer: original.composer,
+		},
+	});
+	expect(parked.composer).toBeUndefined();
+	expect(document.imagePreviews(parked.parkedComposition?.images).map((i) => i.data)).toEqual(["AP8H"]);
 	reopen();
 	expect(document.getSnapshot().record).toMatchObject({
 		draft: "replacement",
-		unconfirmed: original.draft,
-		unconfirmedImages: original.images,
-		unconfirmedComposer: original.composer,
+		parkedComposition: {
+			text: original.draft,
+			images: original.images,
+			composer: original.composer,
+		},
 	});
-	expect(document.getSnapshot().record.composer).toBeUndefined();
-	expect(document.imagePreviews(document.getSnapshot().record.unconfirmedImages).map((i) => i.data)).toEqual(["AP8H"]);
+	// Retained-source proof never appends the park to the replacement.
+	expect(document.restoreEditedRecovery([recovery()])).toBe(false);
+	expect(document.getSnapshot().record.draft).toBe("replacement");
+	// An explicit restore after clearing the composer brings the park back whole.
+	document.edit("");
+	document.restore();
+	expect(document.getSnapshot().record).toMatchObject({
+		draft: original.draft,
+		images: original.images,
+		composer: original.composer,
+	});
+	expect(document.getSnapshot().record.parkedComposition).toBeUndefined();
+	// Discard drops the park without leaving a recovery owner behind.
+	document.replaceDraft("replacement");
 	document.dismiss();
 	document.restore();
-	expect(repository.read(destination).unconfirmedComposer?.recoveryIds).toEqual(["source-a"]);
-	expect(document.restoreEditedRecovery([recovery()])).toBe(true);
+	expect(repository.read(destination).parkedComposition).toBeUndefined();
+	expect(repository.read(destination).releasedRecoveryIds).toEqual(["source-a"]);
+	expect(repository.read(destination).draft).toBe("replacement");
 });
 
 it.each(["dismiss", "restore"] as const)(
@@ -700,16 +727,19 @@ it("failed replacement retains original durable recovery and can save the parked
 	database.exec("PRAGMA query_only = ON");
 	document.replaceDraft("replacement");
 	expect(repository.read(destination)).toEqual(original);
-	expect(document.getSnapshot().record.unconfirmedComposer?.recoveryIds).toEqual(["source-a"]);
+	expect(document.getSnapshot().record.parkedComposition?.composer?.recoveryIds).toEqual(["source-a"]);
 	database.exec("PRAGMA query_only = OFF");
 	document.retry();
 	reopen();
 	expect(document.getSnapshot().record).toMatchObject({
 		draft: "replacement",
-		unconfirmed: original.draft,
-		unconfirmedComposer: original.composer,
+		parkedComposition: {
+			text: original.draft,
+			images: original.images,
+			composer: original.composer,
+		},
 	});
-	expect(document.imagePreviews(document.getSnapshot().record.unconfirmedImages)[0]?.data).toBe("AP8H");
+	expect(document.imagePreviews(document.getSnapshot().record.parkedComposition?.images)[0]?.data).toBe("AP8H");
 });
 
 it("failed emptying keeps recovery ownership until the release save commits", () => {

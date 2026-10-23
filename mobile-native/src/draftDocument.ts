@@ -264,7 +264,9 @@ export class DraftDocument {
 		const owned = !!record.composer?.recoveryIds?.length;
 		try {
 			// A replacement is not an edit of the recovered message. Park the old
-			// composition until retained-source proof can safely restore it.
+			// composition in its own record so reconciliation cannot append it to
+			// the replacement, and keep its sources owned by the park until the
+			// user explicitly restores it.
 			this.persist(
 				{
 					...record,
@@ -272,9 +274,9 @@ export class DraftDocument {
 					images: undefined,
 					composer: undefined,
 					releasedRecoveryIds: releasedIds(record),
-					unconfirmed: owned ? record.draft : null,
-					unconfirmedImages: owned ? record.images : undefined,
-					unconfirmedComposer: owned ? record.composer : undefined,
+					parkedComposition: owned
+						? { text: record.draft, images: record.images, composer: record.composer }
+						: record.parkedComposition,
 				},
 				true,
 			);
@@ -290,7 +292,8 @@ export class DraftDocument {
 		if (
 			[...(record.composer?.recoveryIds ?? []), ...(record.unconfirmedComposer?.recoveryIds ?? [])].includes(
 				source.clientMutationId,
-			)
+			) ||
+			(record.parkedComposition?.composer?.recoveryIds ?? []).includes(source.clientMutationId)
 		)
 			return "already-restored";
 		const recovered = recoverMutationComposition(source);
@@ -346,15 +349,16 @@ export class DraftDocument {
 		const position = Math.max(0, Math.min(cursor ?? record.draft.length, record.draft.length));
 		const markerValue = markerText(marker);
 		const text = insertMarker(record.draft, position, position, markerValue).value;
-		const composer = record.composer?.mentions
-			? {
-					...record.composer,
-					mentions: record.composer.mentions.map((mention) => ({
-						...mention,
-						offset: mention.offset >= position ? mention.offset + markerValue.length : mention.offset,
-					})),
-				}
-			: record.composer;
+		// The insertion can land inside a selected label. Reconcile against the
+		// resulting text so a split label loses its mention and canonical
+		// selection, while a surviving label keeps its shifted offset.
+		const composer = reconcileEditedComposer(
+			record,
+			text,
+			record.composer?.mentions === undefined
+				? undefined
+				: reconcileComposerMentions(record.draft, text, record.composer.mentions),
+		);
 		this.unsavedImages.set(image.id, { ...image, marker });
 		try {
 			this.persist(
@@ -692,13 +696,17 @@ export class DraftDocument {
 		)
 			return;
 		try {
+			const record = this.snapshot.record;
+			const parkedIds = record.parkedComposition?.composer?.recoveryIds ?? [];
 			this.persist(
 				{
-					...this.snapshot.record,
+					...record,
 					unconfirmed: null,
 					unconfirmedImages: undefined,
 					unconfirmedComposer: undefined,
 					unconfirmedCaptureToken: undefined,
+					parkedComposition: undefined,
+					releasedRecoveryIds: [...new Set([...releasedIds(record), ...parkedIds])],
 				},
 				true,
 			);
@@ -708,9 +716,29 @@ export class DraftDocument {
 	}
 	restore() {
 		const { record, loaded, submitting } = this.snapshot;
+		if (!loaded || submitting) return;
+		const parked = record.parkedComposition;
+		if (record.unconfirmed === null && parked !== undefined) {
+			if (record.images?.length || occupiedMetadata(record.composer)) return;
+			const text = restoreUnconfirmedDraft(record.draft, parked.text);
+			if (text === null) return;
+			try {
+				this.persist(
+					{
+						...record,
+						draft: text,
+						images: parked.images,
+						composer: parked.composer,
+						parkedComposition: undefined,
+					},
+					true,
+				);
+			} catch {
+				/* Unsaved recovered text stays visible. */
+			}
+			return;
+		}
 		if (
-			!loaded ||
-			submitting ||
 			record.unconfirmed === null ||
 			record.images?.length ||
 			occupiedMetadata(record.composer) ||
