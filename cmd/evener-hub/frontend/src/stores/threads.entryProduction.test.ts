@@ -1347,13 +1347,22 @@ it("production opening publishes its hold before child measurement and settles a
       }),
     );
   }
+  // Keep the opening pending while attachment measurements commit, rather
+  // than assuming the child measures synchronously during render.
+  const releaseOpening = deferred<void>();
+  const originalLookup = storage.getLatestWindow.bind(storage);
+  vi.spyOn(storage, "getLatestWindow").mockImplementationOnce(async (...args) => {
+    await releaseOpening.promise;
+    return originalLookup(...args);
+  });
   const opening = threadsStore.getState().ensureThread("local:a");
-  const mounted = render(createElement(Reader));
+  const mounted = await act(async () => render(createElement(Reader)));
   try {
     expect(publications[0]).toEqual({ pending: true, bodies: 0 });
     expect(measurements.some((entry) => entry.pending)).toBe(true);
     expect(measurements.filter((entry) => entry.pending).every((entry) => entry.top === 0)).toBe(true);
     await act(async () => {
+      releaseOpening.resolve();
       await opening;
       await settleEntryTranscriptForTests("local:a");
       geometry.notify();
@@ -1363,6 +1372,8 @@ it("production opening publishes its hold before child measurement and settles a
     expect(listRef.current?.getScrollElement()?.scrollTop).toBe(200);
     expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads);
   } finally {
+    releaseOpening.resolve();
+    await opening;
     mounted.unmount();
     geometry.restore();
     unsubscribe();
