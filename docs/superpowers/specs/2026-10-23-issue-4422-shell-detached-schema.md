@@ -48,6 +48,8 @@ substring or presence.
 ## The seam
 
 `agent/internal/tool` gains `DefShellWithDetach(detachAvailable bool)`.
+`ShellModeProperty(detachAvailable bool)` is the shared constructor for the
+capability-dependent `mode` property.
 `DefShell()` remains the fully capable form (`DefShellWithDetach(true)`) for the
 profile's environment-independent seed definitions. The session decides:
 
@@ -102,9 +104,9 @@ path that can change the answer rebuilds it:
 The registered shell definition keeps the fully capable enum. That is deliberate: the
 issue is an advertisement defect, not a refusal defect, and the handler's
 `ErrDetachUnsupported` behavior must not change. The registry copy is not what the
-model sees: every provider profile's capability set includes `shell_search`, so shell
-is always advertised through the profile loop in `rebuildToolDefsCache`, never through
-the fallback that exposes registry definitions.
+model sees: every built-in profile's capability set includes `shell_search`, so shell
+is advertised through the profile loop, and the registry fallback applies the same
+session definition when a profile omits it.
 
 ## Scope and non-goals
 
@@ -153,7 +155,9 @@ hardcoded "false forever after a swap" implementation cannot pass:
    `agent/execenv/detach_test.go` uses), swap it in, assert
    `DetachSupported() == false`, assert the advertised `mode` enum is exactly
    `["foreground", "background"]`, and assert a `mode:"detached"` call through the
-   registered shell handler still refuses with `ErrDetachUnsupported`.
+   registered shell handler and through the real preparation path (`execTool`) still
+   refuses with `ErrDetachUnsupported`. Golden-check the session-advertised `mode`
+   description against the new golden file.
 3. Capable return: swap the same session onto a plain, detach-capable clone, assert
    `DetachSupported() == true`, assert the enum is exactly
    `["foreground", "background", "detached"]`, and assert a real registered `shell`
