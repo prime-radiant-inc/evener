@@ -204,7 +204,16 @@ func safeWaitBoundary(checkpoint schema.WaitCheckpointInfo, entries []transcript
 			}
 		case schema.TurnCommunicate:
 			info := turn.Communicate
-			if info == nil || !info.EndTurn || info.EndReason != "waiting_on_work" || info.CallID != checkpoint.CommunicateCallID || info.WaitingOn != checkpoint.WaitingOn {
+			if completed || info == nil || !pending[info.CallID] {
+				return false
+			}
+			if info.CallID != checkpoint.CommunicateCallID {
+				if info.EndTurn || communicated {
+					return false
+				}
+				break // An earlier nonterminal update still needs its result below.
+			}
+			if !info.EndTurn || info.EndReason != "waiting_on_work" || info.WaitingOn != checkpoint.WaitingOn {
 				return false
 			}
 			communicated = true
@@ -239,12 +248,8 @@ func safeWaitBoundary(checkpoint schema.WaitCheckpointInfo, entries []transcript
 				}
 				delete(pending, result.ToolCallID)
 				if result.ToolCallID == checkpoint.CommunicateCallID {
-					var state struct {
-						Accepted  bool   `json:"accepted"`
-						EndTurn   bool   `json:"end_turn"`
-						EndReason string `json:"end_reason"`
-					}
-					if result.IsError || json.Unmarshal(result.ToolState, &state) != nil || !state.Accepted || !state.EndTurn || state.EndReason != "waiting_on_work" {
+					var state communicateEndState
+					if result.Name != "communicate" || result.IsError || json.Unmarshal(result.ToolState, &state) != nil || state.EndReason != "waiting_on_work" {
 						return false
 					}
 					accepted = true

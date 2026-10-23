@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"primeradiant.com/evener/agent/doctor"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
@@ -34,8 +36,14 @@ func TestWaitCheckpointRecovery(t *testing.T) {
 		waiting, uncertain                                bool
 	}{
 		{name: "safe completed batch", waiting: true},
+		{name: "completed progress then wait", after: "progress", waiting: true},
+		{name: "unfinished progress then wait", after: "progress unfinished"},
+		{name: "wait result without paired call", after: "omit call"},
+		{name: "wait result wrong call identity", after: "wrong result call"},
 		{name: "missing waker interruption", after: "missing waker", waiting: true},
 		{name: "shell source replay", after: "shell source", waiting: true},
+		{name: "partial source pending tail", after: "partial source pending", waiting: true},
+		{name: "partial source identity tail", after: "partial source identity", waiting: true},
 		{name: "unreadable waker evidence", after: "unreadable source", waiting: true},
 		{name: "explicit Stop retains ownership", after: "stop", waiting: true},
 		{name: "interrupted tool without checkpoint", inflight: true, omitCheckpoint: true},
@@ -47,6 +55,7 @@ func TestWaitCheckpointRecovery(t *testing.T) {
 		{name: "resumed checkpoint", after: "resumed"},
 		{name: "later interrupted execution", after: "execution"},
 		{name: "later same-span tool", after: "tool"},
+		{name: "later same-span communicate", after: "communicate"},
 		{name: "later failed completion", after: "failed"},
 		{name: "later other-span completion", after: "other failed"},
 		{name: "later question", after: "question"},
@@ -78,21 +87,68 @@ func TestWaitCheckpointRecovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			w.BeginExecution("execution-1", false)
+			s := &Session{id: childID, stateDir: c.stateDir, profile: NewOpenAIProfile("gpt-5.2"), restoredMetaIsSubagent: true}
+			s.attachTranscript(w)
+			// The real wait validator needs a live waker at tool admission. These
+			// tests remove it before reopening and separately seed durable sources.
+			s.inputQueue = []queuedInput{{ID: "fixture-job"}}
+			reg := tool.NewRegistry()
+			if err := registerCommunicateTool(reg, newToolDeps(s)); err != nil {
+				t.Fatal(err)
+			}
 			record := func(turn schema.Turn, place transcript.Placement) {
 				t.Helper()
 				if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorSynced, Place: place}); err != nil {
 					t.Fatal(err)
 				}
 			}
-			record(schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("fixture-input")}, transcript.PlaceSession)
-			record(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call-1", Name: "communicate", Arguments: json.RawMessage(`{"message":"fixture-report","end_turn":true,"end_reason":"waiting_on_work","waiting_on":"fixture-job"}`)}}}}}, transcript.PlaceSession)
-			if !tc.inflight {
-				record(schema.Turn{Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: "call-1", EndTurn: true, EndReason: "waiting_on_work", WaitingOn: "fixture-job", Message: "fixture-report"}}, transcript.PlaceSession)
-				state := json.RawMessage(`{"accepted":true,"end_turn":true,"end_reason":"waiting_on_work"}`)
-				if tc.refused {
-					state = json.RawMessage(`{"accepted":false,"end_turn":true,"end_reason":"waiting_on_work"}`)
+			var calls []llm.ToolCallData
+			var results []tool.ExecResult
+			communicate := func(call llm.ToolCallData, endTurn, refused bool) {
+				t.Helper()
+				if tc.after != "omit call" {
+					calls = append(calls, call)
+					record(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}, transcript.PlaceSession)
 				}
-				record(schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call-1", Name: "communicate", ToolState: state}}}}}, transcript.PlaceSession)
+				if tc.inflight {
+					return
+				}
+				if refused {
+					// Exercise the real first-terminal-wins refusal, not a guessed
+					// state payload or an executor error substituted for refusal.
+					s.comm.called = true
+				}
+				res := reg.ExecuteCall(context.WithValue(context.Background(), ctxToolCallID, call.ID), nil, call)
+				var output struct {
+					Accepted bool `json:"accepted"`
+					EndTurn  bool `json:"end_turn"`
+				}
+				if res.IsError || json.Unmarshal([]byte(res.Output), &output) != nil || output.Accepted == refused || output.EndTurn != endTurn || res.CallID != call.ID || res.ToolName != call.Name {
+					t.Fatalf("registered communicate result = %+v, parsed %+v", res, output)
+				}
+				if endTurn && !refused {
+					if string(res.ToolState) != `{"communicate_end_reason":"waiting_on_work"}` {
+						t.Fatalf("actual accepted wait state = %s", res.ToolState)
+					}
+				} else if len(res.ToolState) != 0 {
+					t.Fatalf("progress/refused call acquired accepted end state: %s", res.ToolState)
+				}
+				if tc.after == "progress unfinished" && !endTurn {
+					return // A real completed call whose result never reached disk.
+				}
+				if tc.after == "wrong result call" {
+					res.CallID = "call-other"
+				}
+				results = append(results, res)
+				record(schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: res.CallID, Name: res.ToolName, Content: res.Output, IsError: res.IsError, ToolState: res.ToolState}}}}}, transcript.PlaceSession)
+			}
+			record(schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("fixture-input")}, transcript.PlaceSession)
+			if tc.after == "progress" || tc.after == "progress unfinished" {
+				communicate(communicateCallArgs("call-progress", map[string]any{"message": "fixture-progress", "end_turn": false}), false, false)
+			}
+			communicate(communicateCallArgs("call-1", map[string]any{"message": "fixture-report", "end_turn": true, "end_reason": "waiting_on_work", "waiting_on": "fixture-job"}), true, tc.refused)
+			s.inputQueue = nil
+			if !tc.inflight {
 				if !tc.omitCompletion {
 					record(schema.Turn{Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}}, transcript.PlaceCompletion)
 				}
@@ -102,8 +158,6 @@ func TestWaitCheckpointRecovery(t *testing.T) {
 				tc.change(&checkpoint)
 			}
 			if !tc.omitCheckpoint {
-				s := &Session{id: childID}
-				s.attachTranscript(w)
 				if tc.name == "wrong session" {
 					record(schema.Turn{Kind: schema.TurnWaitCheckpoint, WaitCheckpoint: &checkpoint}, transcript.PlaceInTurn("execution-1"))
 				} else if err := s.persistWaitCheckpoint(checkpoint); err != nil {
@@ -121,6 +175,8 @@ func TestWaitCheckpointRecovery(t *testing.T) {
 				record(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("fixture-next")}, transcript.PlaceSession)
 			case "tool":
 				record(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "late-call", Name: "read_file"}}}}}, transcript.PlaceInTurn("execution-1"))
+			case "communicate":
+				record(schema.Turn{Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: "late-call", Message: "late progress"}}, transcript.PlaceInTurn("execution-1"))
 			case "failed":
 				record(schema.Turn{Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnFailed}}, transcript.PlaceInTurn("execution-1"))
 			case "other failed":
@@ -136,6 +192,48 @@ func TestWaitCheckpointRecovery(t *testing.T) {
 			original, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
+			}
+			// Verify the persisted evidence independently of the recovery predicate.
+			data, err := readTranscriptFull(path, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var diskCalls []llm.ToolCallData
+			var diskResults []llm.ToolResultData
+			var messages []schema.CommunicateInfo
+			for _, entry := range data.Entries {
+				if info := entry.Turn.Communicate; info != nil && info.CallID != "late-call" {
+					messages = append(messages, *info)
+				}
+				for _, part := range entry.Turn.Message.Content {
+					if part.ToolCall != nil && part.ToolCall.Name == "communicate" {
+						diskCalls = append(diskCalls, *part.ToolCall)
+					}
+					if part.ToolResult != nil && part.ToolResult.Name == "communicate" {
+						diskResults = append(diskResults, *part.ToolResult)
+					}
+				}
+			}
+			if !reflect.DeepEqual(diskCalls, calls) || len(diskResults) != len(results) {
+				t.Fatalf("persisted call/result pairs differ: calls=%+v results=%+v", diskCalls, diskResults)
+			}
+			for i, result := range diskResults {
+				want := results[i]
+				if result.ToolCallID != want.CallID || result.Content != want.Output || result.IsError != want.IsError || !bytes.Equal(result.ToolState, want.ToolState) {
+					t.Fatalf("persisted result %d differs from real registry result: %+v, %+v", i, result, want)
+				}
+			}
+			wantMessages := 1
+			if tc.inflight || tc.refused {
+				wantMessages = 0
+			} else if tc.after == "progress" || tc.after == "progress unfinished" {
+				wantMessages = 2
+			}
+			if len(messages) != wantMessages || wantMessages > 0 && (messages[len(messages)-1].CallID != "call-1" || !messages[len(messages)-1].EndTurn || messages[len(messages)-1].WaitingOn != "fixture-job") {
+				t.Fatalf("accepted/refused messages = %+v, want %d", messages, wantMessages)
+			}
+			if wantMessages == 2 && (messages[0].CallID != "call-progress" || messages[0].EndTurn || messages[0].Message != "fixture-progress") {
+				t.Fatalf("earlier progress was not delivered: %+v", messages)
 			}
 			switch tc.after {
 			case "truncated":
@@ -302,7 +400,7 @@ func TestWaitCheckpointRecovery(t *testing.T) {
 					t.Fatalf("source evidence did not retry: %v", err)
 				}
 			}
-			if tc.after == "shell source" {
+			if tc.after == "shell source" || tc.after == "partial source pending" || tc.after == "partial source identity" {
 				sourcePath := filepath.Join(jobsDir(c.stateDir, childID), "jobs.jsonl")
 				now := time.Unix(20, 0)
 				appendDelegateShellEventsAt(t, sourcePath,
@@ -310,6 +408,51 @@ func TestWaitCheckpointRecovery(t *testing.T) {
 					jobstore.Event{Kind: jobstore.EventJobFinished, TS: now, JobID: "fixture-job", Status: jobstore.StatusCompleted, EndedAt: &now, TerminalGen: "terminal-1"},
 					jobstore.Event{Kind: jobstore.EventJobNotificationPending, TS: now, JobID: "fixture-job", TerminalGen: "terminal-1"},
 				)
+				if tc.after != "shell source" {
+					complete, err := os.ReadFile(sourcePath)
+					if err != nil {
+						t.Fatal(err)
+					}
+					cut := bytes.LastIndexByte(bytes.TrimSuffix(complete, []byte{'\n'}), '\n') + 1
+					if tc.after == "partial source identity" {
+						cut = 0
+					}
+					partial := complete[:cut+len(`{"kind":`)]
+					if err := os.WriteFile(sourcePath, partial, 0o600); err != nil {
+						t.Fatal(err)
+					}
+					beforeJournal, err := os.ReadFile(journalPath)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for range 2 {
+						if _, err := reconcileDelegateResourcesForBootstrap(reopened); err == nil {
+							t.Error("partial source fabricated absence instead of retryable uncertainty")
+						}
+						fold, err := readExistingDelegateAttentionFold(path, childID)
+						if err != nil || len(fold.pendingIDs()) != 0 || len(fold.resolutions) != 0 {
+							t.Errorf("partial source pending IDs=%v resolutions=%v, %v", fold.pendingIDs(), fold.resolutions, err)
+						}
+						run := reopened.durable["dlg_wait"]
+						if !run.CurrentRunOpen || run.Generation != 1 || run.Phase != delegatestore.PhaseRunning || run.LatestOutcome != nil || run.PreparedTerminal != nil {
+							t.Errorf("partial source changed open generation: %+v", run)
+						}
+						for checkPath, want := range map[string][]byte{sourcePath: partial, path: original, journalPath: beforeJournal} {
+							if got, err := os.ReadFile(checkPath); err != nil || !bytes.Equal(got, want) {
+								t.Errorf("uncertain recovery modified %s: %v", checkPath, err)
+							}
+						}
+					}
+					if t.Failed() {
+						return
+					}
+					if err := os.WriteFile(sourcePath, complete, 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := reconcileDelegateResourcesForBootstrap(reopened); err != nil {
+						t.Fatalf("repaired source did not retry via bootstrap reconciliation: %v", err)
+					}
+				}
 				if err := repairWaitCheckpointWakersForBootstrap(reopened); err != nil {
 					t.Fatal(err)
 				}
@@ -326,8 +469,18 @@ func TestWaitCheckpointRecovery(t *testing.T) {
 					}
 				}
 				fold, err := readExistingDelegateAttentionFold(path, childID)
-				if err != nil || len(fold.pendingIDs()) != 1 || fold.pendingIDs()[0] != "shell:fixture-job:terminal-1" || !run.CurrentRunOpen || run.Generation != 1 {
+				run = reopened.durable["dlg_wait"]
+				if err != nil || len(fold.pendingIDs()) != 1 || fold.pendingIDs()[0] != "shell:fixture-job:terminal-1" || len(fold.resolutions) != 0 || !run.CurrentRunOpen || run.Generation != 1 || run.Phase != delegatestore.PhaseRunning || run.LatestOutcome != nil || run.PreparedTerminal != nil {
 					t.Fatalf("shell replay did not retain exact wait custody/generation: %+v, %v", fold, err)
+				}
+				custody := 0
+				for _, entry := range notificationRawEntries(t, path) {
+					if entry.Turn.AttentionID == "shell:fixture-job:terminal-1" {
+						custody++
+					}
+				}
+				if custody != 1 {
+					t.Fatalf("raw repaired source custody records = %d, want exactly one", custody)
 				}
 			}
 			if tc.after == "missing waker" {
@@ -355,6 +508,63 @@ func TestWaitCheckpointRecovery(t *testing.T) {
 				if !run.CurrentRunOpen || run.LatestOutcome != nil {
 					t.Fatal("missing waker interruption settled the waiting generation")
 				}
+			}
+		})
+	}
+}
+
+func TestWaitCheckpointSourceCompleteness(t *testing.T) {
+	for _, tail := range []string{"pending notification", "producer identity"} {
+		t.Run(tail, func(t *testing.T) {
+			c, _ := newDelegateControllerTestHarness(t, 1, 1)
+			childID := identifier.MustNewSessionID()
+			created := delegateControllerCreatedEvent("dlg_wait", "")
+			created.Created.Descriptor.ChildSessionID = childID
+			c.mu.Lock()
+			_, err := c.appendLocked(created, delegateControllerRunStartedEvent("dlg_wait", 1, delegatestore.TriggerInitial, time.Unix(10, 0)))
+			c.mu.Unlock()
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(jobsDir(c.stateDir, childID), "jobs.jsonl")
+			now := time.Unix(20, 0)
+			appendDelegateShellEventsAt(t, path,
+				jobstore.Event{Kind: jobstore.EventJobStarted, TS: now, JobID: "fixture-job", Type: jobstore.JobShell, OwnerSessionID: childID, ParentDelegateID: "dlg_wait", StartedAt: &now},
+				jobstore.Event{Kind: jobstore.EventJobFinished, TS: now, JobID: "fixture-job", Status: jobstore.StatusCompleted, EndedAt: &now, TerminalGen: "terminal-1"},
+				jobstore.Event{Kind: jobstore.EventJobNotificationPending, TS: now, JobID: "fixture-job", TerminalGen: "terminal-1"},
+			)
+			complete, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cut := bytes.LastIndexByte(bytes.TrimSuffix(complete, []byte{'\n'}), '\n') + 1
+			if tail == "producer identity" {
+				cut = 0
+			}
+			partial := complete[:cut+len(`{"kind":`)]
+			if err := os.WriteFile(path, partial, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			checkpoint := schema.WaitCheckpointInfo{SessionID: childID, DelegateID: "dlg_wait", WaitingOn: "fixture-job"}
+			if available, err := waitCheckpointSourceAvailable(c, checkpoint); available || err == nil {
+				t.Fatalf("partial %s source = %v, %v, want retryable uncertainty", tail, available, err)
+			}
+			if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, partial) {
+				t.Fatalf("source read changed partial bytes: %v", err)
+			}
+			if err := os.WriteFile(path, complete, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if available, err := waitCheckpointSourceAvailable(c, checkpoint); !available || err != nil {
+				t.Fatalf("repaired source = %v, %v", available, err)
+			}
+			// A complete JSON record needs no newline to prove honest absence.
+			if err := os.WriteFile(path, bytes.TrimSuffix(complete, []byte{'\n'}), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			checkpoint.WaitingOn = "absent-job"
+			if available, err := waitCheckpointSourceAvailable(c, checkpoint); available || err != nil {
+				t.Fatalf("complete source without trailing newline = %v, %v, want honest absence", available, err)
 			}
 		})
 	}

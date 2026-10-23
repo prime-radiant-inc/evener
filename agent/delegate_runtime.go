@@ -3437,7 +3437,7 @@ func waitCheckpointSourceAvailable(c *delegateTreeController, checkpoint schema.
 	}
 	if kind == "" || kind == "job" || kind == "watch" {
 		for _, path := range c.stableWatchBootstrapSnapshot().storePaths {
-			journal, err := jobstore.ReadEvents(path)
+			journal, offset, err := jobstore.ScanEventsFrom(context.Background(), path, 0, jobstore.ScanLimits{})
 			if err != nil {
 				return false, fmt.Errorf("wait source journal %s: %w", path, err)
 			}
@@ -3454,6 +3454,18 @@ func waitCheckpointSourceAvailable(c *delegateTreeController, checkpoint schema.
 						return true, nil
 					}
 				}
+			}
+			// A tolerant forensic prefix can prove a retained source, but cannot
+			// prove absence while an undecoded final record may contain it.
+			info, err := os.Stat(path)
+			if os.IsNotExist(err) && offset == 0 {
+				continue
+			}
+			if err != nil {
+				return false, fmt.Errorf("wait source journal %s: %w", path, err)
+			}
+			if offset != info.Size() {
+				return false, fmt.Errorf("wait source journal %s: incomplete scan at byte %d of %d", path, offset, info.Size())
 			}
 		}
 	}
