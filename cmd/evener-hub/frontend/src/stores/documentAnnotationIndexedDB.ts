@@ -1186,7 +1186,11 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
           if (await this.#durableIncarnationIs(namespace, validation.namespaceIncarnation)) {
             return { state: "stale-ticket" };
           }
-          restoreInstalledSuppression();
+          // "Not current" can mean the read faulted rather than that a reset
+          // retired the incarnation: nothing swept this entry, so the restore
+          // itself is the listing change a refused handoff was waiting on.
+          // Settle exactly when this invocation's install was restored.
+          if (restoreInstalledSuppression()) this.#settleTransition({ signal: true, documentKey });
           return { state: "stale-ticket" };
         }
         // The fence transaction may have committed before its completion was

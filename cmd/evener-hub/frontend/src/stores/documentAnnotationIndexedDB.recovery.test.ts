@@ -1481,6 +1481,69 @@ test("a retained fence superseded by a peer reset releases silently", async () =
   }
 });
 
+// The superseded arm reads the durable incarnation to decide whether a sweep
+// will settle its confirmed entry. An UNREADABLE identity answers "not current",
+// which is not the same fact as a peer reset: nothing swept this adapter's
+// entry, so the restore itself changes the listing. It is the only observation
+// of that restored eligibility, and it must publish like the hook-rejection
+// arm's settle-when-acted, or a handoff that refused pending against the
+// confirmed entry has no trigger.
+test("a superseded fence whose durable identity is unreadable publishes its restore", async () => {
+  let fixture: AnnotationFixture | undefined;
+  let sibling: ReturnType<typeof openSiblingRepository> | undefined;
+  let armed = false;
+  let namespaceReads = 0;
+  const get = IDBObjectStore.prototype.get;
+  const getSpy = vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(function (
+    this: IDBObjectStore,
+    ...args: Parameters<IDBObjectStore["get"]>
+  ) {
+    if (armed && this.name === ANNOTATION_NAMESPACES_STORE) {
+      namespaceReads += 1;
+      // The fence's own current-identity read passes; the restore's durable
+      // question is the one that faults.
+      if (namespaceReads === 2) throw new Error("identity read fault");
+    }
+    return get.apply(this, args);
+  });
+  const listener = vi.fn();
+  try {
+    fixture = await openAnnotationFixture({
+      databaseName: "annotation-superseded-unreadable",
+      origin: "https://coordination.example",
+      beforeExpiryFence: async () => {
+        const peer = sibling;
+        const current = fixture;
+        if (!peer || !current) throw new Error("fixture missing");
+        // A peer fences the epoch first, so this invocation's fence is refused
+        // by its own durable re-check.
+        const peerTicket = await peer.beginRead(current.document);
+        expect(await peer.acceptRead(peerTicket, sampleChangedContent())).toMatchObject({
+          state: "expiry-pending",
+        });
+        // Let the peer's wake land, then measure only this adapter's own settle.
+        await settleRealTasks(() => false, 6);
+        listener.mockClear();
+        armed = true;
+      },
+    });
+    sibling = openSiblingRepository(fixture);
+    fixture.repository.subscribe(fixture.document, listener);
+
+    const ticket = await fixture.repository.beginRead(fixture.document);
+    expect(await fixture.repository.acceptRead(ticket, sampleChangedContent())).toEqual({ state: "stale-ticket" });
+    // The restore lifted this adapter's confirmed entry; that listing change is
+    // this adapter's to publish.
+    expect(namespaceReads).toBe(2);
+    expect(listener).toHaveBeenCalled();
+  } finally {
+    getSpy.mockRestore();
+    sibling?.close();
+    fixture?.repository.close();
+    fixture?.drafts.close();
+  }
+});
+
 // A fence hook that rejects runs after this invocation installed its confirmed
 // suppression but before any fence committed. Nothing durable expired, so the
 // epoch must stay listed and savable: release exactly this invocation's install.
