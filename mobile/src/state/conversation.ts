@@ -2993,7 +2993,13 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// consumer that can afford the read (the Retry surface/entry read
 					// actor) demands it through ensureLatest at a point where no
 					// ordinary dispatch is in flight.
-					markLatest("unknown");
+					// A storage transition invalidates live-tail authority, but it must
+					// not erase an outstanding latest-read failure: the entry read actor
+					// keys its retry on "error", and "unknown" would cancel that retry
+					// (and clear its failure count) without a successful read, leaving
+					// the runtime's dispatch gate blocked. Only an accepted ready
+					// publication (or retirement) clears the failure.
+					if (get().latestReadState !== "error") markLatest("unknown");
 				});
 				void read();
 				return () => {

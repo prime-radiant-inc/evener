@@ -20191,6 +20191,39 @@ describe("store-owned canonical read validity and pending readiness", () => {
 		expect(store.getState().canonicalSession()).not.toBeNull();
 	});
 
+	it("a storage notification preserves an outstanding latest-read failure", async () => {
+		const storage = createStorage({ outbox: [outbox()], optimistic: [] });
+		const service = new FakeConversationService();
+		const store = createConversationStore();
+		await store.getState().openProjected(service, createFakeSink(), "ref-1");
+		store.getState().bindPendingMutations(storage.port);
+		await store.getState().refreshPendingMutations();
+		expect(store.getState().pendingMutationsReady).toBe(true);
+
+		// A retained-open latest read fails. The entry read actor keys its retry
+		// demand on exactly this state; "unknown" would cancel it without a read.
+		const failedRead = deferred<ConversationReadProjection>();
+		service.readProjectionBlock = failedRead.promise;
+		const latest = store.getState().ensureLatest();
+		failedRead.reject(new Error("read failed"));
+		await latest;
+		expect(store.getState().latestReadState).toBe("error");
+		expect(store.getState().canonicalSession()).toBeNull();
+
+		// A target storage notification races the failure. It invalidates display
+		// authority, but the outstanding failure and its retry demand survive.
+		storage.notify({ outbox: [], optimistic: [] });
+		expect(store.getState().latestReadState).toBe("error");
+		expect(store.getState().canonicalSession()).toBeNull();
+
+		// The actor retries; the retry's accepted read clears the failure and
+		// restores canonical authority.
+		service.readProjectionBlock = null;
+		await store.getState().ensureLatest();
+		expect(store.getState().latestReadState).toBe("ready");
+		expect(store.getState().canonicalSession()).not.toBeNull();
+	});
+
 	it("retirement resolves an awaited refresh without undoing the commit", async () => {
 		const storage = createStorage({ outbox: [outbox()], optimistic: [] });
 		const service = new FakeConversationService();
