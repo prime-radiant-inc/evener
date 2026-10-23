@@ -3207,10 +3207,12 @@ func (e *LocalExecutionEnvironment) DetachCommand(ctx context.Context, command, 
 	// about the scratch, and its TMPDIR must be the world-usable container the
 	// session's end keeps for it — never the scratch, which a confined env's
 	// TMPDIR names.
-	// With no container, TMPDIR is left unset rather than pointed at scratch.
+	// With no container, keep the inherited TMPDIR unless this env names scratch.
 	container := e.unsandboxedTmpDir()
+	dropTmpDir := container != "" || e.tmpDirNamesScratch()
 	env = slices.DeleteFunc(env, func(kv string) bool {
-		return strings.HasPrefix(kv, envvars.EVENERScratchDir.Name+"=") || strings.HasPrefix(kv, envvars.TmpDir.Name+"=")
+		return strings.HasPrefix(kv, envvars.EVENERScratchDir.Name+"=") ||
+			(dropTmpDir && strings.HasPrefix(kv, envvars.TmpDir.Name+"="))
 	})
 	if container != "" {
 		env = append(env, envvars.TmpDir.Assignment(container))

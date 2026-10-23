@@ -2903,11 +2903,19 @@ it("follows an identity-changing resume driven by a queued Send", async () => {
 	expect(settlesFor()).toHaveLength(2);
 	const options = settlesFor()[1]?.[3] as { onResolvedIdentity?: (ref: string) => void } | undefined;
 	if (!options?.onResolvedIdentity) throw new Error("queued recovery passed no identity callback");
+	act(() => field(tree)?.props.onChangeText("handoff draft"));
 	act(() => options.onResolvedIdentity?.("ref-queued-identity-resolved"));
 	expect(navigation.replace).toHaveBeenCalledWith(
 		"Conversation",
 		expect.objectContaining({ ref: "ref-queued-identity-resolved" }),
 	);
+	expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: "ref-queued-identity-resolved" }).draft).toBe(
+		"handoff draft",
+	);
+	expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: "ref-queued-identity" })).toEqual({
+		draft: "",
+		unconfirmed: null,
+	});
 	settle.mockRestore();
 });
 

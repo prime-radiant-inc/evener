@@ -589,6 +589,13 @@ export function ConversationScreen({
 		[route.params.hubId, route.params.ref],
 	);
 	const draft = useSyncExternalStore(document.subscribe, document.getSnapshot);
+	// A handoff can fail its storage write while the resume itself already moved
+	// the rows. Retry it as the replacement screen mounts and whenever the draft
+	// becomes writable again; the source composition stays under the old ref
+	// until the destination write commits.
+	useEffect(() => {
+		if (draft.loaded && !draft.error) drafts.retryPendingHandoffs();
+	}, [draft.loaded, draft.error, draft.record]);
 	const imageSelection = useMemo(() => new ImageSelection(document, nativeImagePicker), [document]);
 	const imageState = useSyncExternalStore(imageSelection.subscribe, imageSelection.getSnapshot);
 	// Follows the screen in front rather than focus, so a photo being attached
@@ -2662,6 +2669,13 @@ export function ConversationScreen({
 					// The rows followed the resume; the pane has to as well, or the
 					// message and the work it starts land on a ref nobody is showing.
 					onResolvedIdentity: (resolved) => {
+						// The draft and its recovery ownership follow the same identity:
+						// a replacement screen that loaded the resumed ref must show the
+						// edited composition, not the retired ref's stranded copy.
+						drafts.handoff(
+							{ hubId: route.params.hubId, sessionRef: ref },
+							{ hubId: route.params.hubId, sessionRef: resolved },
+						);
 						navigation.replace("Conversation", {
 							hubId: route.params.hubId,
 							ref: resolved,
@@ -2826,9 +2840,13 @@ export function ConversationScreen({
 	// existing durable draft still references these sources, so Discard must not
 	// expose them. An initial append failure leaves the prior record unchanged
 	// and therefore keeps its unrepresented source visible for recovery.
+	const parkedRecoveryIds = (draft.record.parkedCompositions ?? []).flatMap(
+		(parked) => parked.composer?.recoveryIds ?? [],
+	);
 	const representedRecoveryIds = [
 		...(draft.record.composer?.recoveryIds ?? []),
 		...(draft.record.unconfirmedComposer?.recoveryIds ?? []),
+		...parkedRecoveryIds,
 		...(draft.record.completedCommandRecoveryIds ?? []),
 	];
 	const recoveryRows = projectNativeMutationRecovery(recovery.targetKey, recovery.snapshot).filter(
@@ -2845,6 +2863,7 @@ export function ConversationScreen({
 			.map((row) => row.clientMutationId),
 		captured: draft.record.unconfirmedComposer?.recoveryIds,
 		owned: draft.record.composer?.recoveryIds,
+		parked: parkedRecoveryIds,
 		released: draft.record.releasedRecoveryIds,
 		completed: draft.record.completedCommandRecoveryIds,
 		acks: draft.record.recoveryResendAcks,
@@ -2919,11 +2938,18 @@ export function ConversationScreen({
 						readiness: { document: draft, encodingAttachments: imageState.busy },
 					}
 				: undefined,
+			draft.record.parkedCompositions?.map((parked) => ({
+				id: parked.id,
+				text: parked.text,
+				sentText: translateAttachmentMarkers(parked.text, parked.images),
+			})) ?? [],
 		),
 		{ connected, composerLoaded: draft.loaded },
 	);
 	const canEditGhost = document.canRestoreRecoveredDraft();
 	const ghostEditHint = document.recoveredRestoreHint();
+	const canEditParked = canEditGhost && !imageState.busy;
+	const parkedEditHint = imageState.busy ? "Wait for the image to finish preparing." : ghostEditHint;
 	// The transcript list's rows: the conversation's, its usage lines when they
 	// have anything to show, then the ghosts.
 	const ghostsKey = JSON.stringify(allGhosts);
@@ -3040,6 +3066,11 @@ export function ConversationScreen({
 						nativeMutationTargetKey(route.params.hubId, route.params.ref),
 					);
 			} else if (action === "edit") document.restore();
+			return null;
+		}
+		if (origin.kind === "parked") {
+			if (action === "discard") document.dismissParked(origin.parkId);
+			else if (action === "edit" && !imageSelection.getSnapshot().busy) document.restoreParked(origin.parkId);
 			return null;
 		}
 		if (origin.kind === "recovery") {
@@ -3239,7 +3270,17 @@ export function ConversationScreen({
 		disabled: ghostBusy,
 		canEdit: canEditGhost,
 		editHint: ghostEditHint,
+		canEditParked,
+		parkedEditHint,
 		draftAttachments: <ImageAttachments document={document} selection={imageSelection} uncertain />,
+		parkedAttachments: (parkId) => (
+			<ImageAttachments
+				document={document}
+				selection={imageSelection}
+				uncertain
+				images={draft.record.parkedCompositions?.find((parked) => parked.id === parkId)?.images ?? []}
+			/>
+		),
 		onAction: (ghost, action) => {
 			void runGhostAction(ghost, action).then((message) => {
 				if (message) toaster.show(message);
