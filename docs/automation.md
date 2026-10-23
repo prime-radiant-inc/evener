@@ -100,43 +100,33 @@ Use doctor to inspect retained state, then correct the specific setup or runtime
 
 For a persistent application rather than a one-shot process, use [AppWire integration](integrations.md). For agent tool lifetimes, see [Job control](job-control.md).
 
-## Local Manager preference
+## Manager sessions
 
-The hub exposes the human-only AppWire method `evener/thread/manager/set` with
-`{ref, enabled}`. The local hub supplies its own nonsecret authority ID; callers
-cannot choose it in JSON. The response's `view` contains the selected thread's
-`ref`, `instanceId` and `setting` (`hubId`, `enabled`, `revision`). A refused write
-carries the current view in error data when storage can still be read.
+Start a Manager by setting `manager: true` in the AppWire `thread/start`
+parameters. Anyone authorized to start a session may supply it. Manager is an
+immutable session property: an existing session cannot gain or lose it.
 
-The hosting hub stores one preference per workspace in `index.db`. Enabling
-selects authority, disabling releases it, and only a real change advances the
-revision. Disconnect, Clear and restart retain the setting; new sessions and
-forks start off. Saved historical instances keep their own navigation refs while
-explicit persisted workspace identity shares the preference. Legacy sessions
-without that identity use their own saved ID, not inferred earlier history.
+The session saves the bit in its metadata. Resume, process restart and Clear
+preserve it. Fresh roots and forks do not inherit it; a new Manager requires an
+explicit `manager: true` start. A missing bit means false, so existing sessions
+remain ordinary without migration.
 
-For a remotely hosted Manager, the hosting hub keeps this row while the
-enabling hub owns reachable targets. An authenticated identified bridge restores
-known enabled bindings on reconnect. Cold-start discovery can lag the first
-Manager turn after the enabling hub restarts, leaving that turn with ordinary
-tools. A row revoked while the host is offline stays revoked after reconnect,
-but no explanatory end notice is proven delivered to that remote Manager.
+The daemon reports `thread.evener.manager`, and the hub reads that projection
+rather than storing a separate preference. Web **Session Details** and native
+**Session Info** show a read-only Manager indication. Normal refresh preserves
+loaded history pages when their source identity still matches, and preserves
+unsent input. Reconnect may replace stale pages with the latest authoritative
+window.
 
-Thread reads expose `manager`, `managerSetting` and `managerEditable`. The web
-session Details panel and native session Info sheet show the human Manager switch
-and selected hub identity. An unavailable setting is not a confirmed off value;
-unknown or noneditable settings cannot be changed. A pending write keeps the last
-confirmed value and blocks a second toggle. Failures and reconnects trigger an
-authoritative re-read rather than replaying the toggle.
-
-A committed change sends the existing scoped `evener/thread/resync` hint to other
-subscribers. Connected refresh preserves loaded history pages when their source
-identity still matches, and preserves unsent input. Reconnect may replace stale
-pages with the latest authoritative window.
+A Manager reaches sessions through its own hub, including connected hosts and
+other Managers. A Manager hosted on another machine uses that machine's hub,
+not the controller through which someone viewed or started it. See
+[remote Manager and input support](evener-hub-remote-operations.md#remote-manager-and-input-support)
+for routing and capability limits.
 
 ## Manager discovery, status and bounded reads
 
-An authenticated live runtime can use `job_list` with
+An authenticated live Manager runtime can use `job_list` with
 `{"hub":{"mode":"discovery"}}` to discover reachable sessions and sources,
 then `job_status` with `{"hub":{"ref":"local:WORKSPACE_ID"}}` to read a
 source-qualified session's status through the existing hub read owner. Use a
@@ -175,18 +165,18 @@ artifact arguments are rejected on hub reads, not silently interpreted there.
 Read responses stay below the tool result cap; use returned structured
 `followUps` to fetch the next page instead of treating a preview as complete.
 
-Only the human switch grants Manager mode. The hub rechecks its current setting
-on every operation, and the connection supplies caller identity. Model requests
-publish the Manager schemas and guidance together. A disconnect removes that
-surface without clearing the saved preference; reconnection restores it when
-the setting still permits it. Another connected hub cannot silently replace the
-selected authority.
+Session configuration supplies the Manager schemas and guidance independently
+of transport availability. A disconnect leaves that tool surface intact;
+individual calls may report unavailable while healthy ordinary work continues.
+The authenticated connection supplies caller identity, and the hub checks the
+daemon's Manager projection before admitting an operation. Tool arguments cannot
+grant Manager status or choose a different caller.
 
 ## Start an independent worker from a Manager
 
 A Manager can call `delegate` with `prompt` and
 `hub:{cwd,model,watch:{events,completion}}`. This creates an empty, independent
-top-level session on the Manager's local hub. It attaches the requested
+ordinary top-level session on the Manager's local hub. It attaches the requested
 `job_watch` and reads its initial state **before** submitting the prompt with
 `turn/start`. Use `events:["question","communicate"]` and `completion:true` to
 receive question and terminal-result notices even when no browser is open.

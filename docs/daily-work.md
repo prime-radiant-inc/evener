@@ -4,16 +4,19 @@ A useful Evener session ends with a result you can inspect, not just a convincin
 
 This guide assumes you have completed [provider setup](getting-started.md#connect-a-provider-in-new-session). The browser instructions use your hub, normally `http://127.0.0.1:9180`. The CLI runs one request at a time and resumes saved sessions explicitly. It does not offer the browser's interactive Send, Steer, and Stop controls.
 
-When you enable **Manager** for a session, that session can manage sessions reachable through the enabling hub, including connected hosts and other Managers. It sends text or typed input with `delegate_send` and a source-qualified ref, input mode (`start`, `queue`, or `steer`), client mutation ID and target instance ID. The hub uses the same guarded send and retry path as your browser; a notification cannot answer a pending question. `session_control` takes one action and its typed `arguments`: approval, resume, fork, clear, model, vision model, reasoning effort, compact, drain queue, promote or cancel a queued message, rename, goal, human notes, remove URL, archive or unarchive, delete, pin, unpin, or mark seen or unread. New queued input still belongs to `delegate_send`, not queue editing. `job_stop` uses a `hub` mode for turn interruption, `delegate` (one `dlg_` run; children survive), `owned_delegate` (a `dlg_` subtree, including descendants), `job` (one `job_` shell job; `includeChildren` also stops its immediate shell children, not grandchildren), shutdown, or force-stop. A settled `owned_delegate` answers `already_stopped` without another stop. Ordinary human `job_stop` behavior remains unchanged. Deletion remains limited to ended or confirmed-crashed local sessions. Disabling Manager removes the management branches without changing ordinary owned-delegate messages or your browser controls.
+A session started as a **Manager** can manage sessions reachable through its own hub, including connected hosts and other Managers. It sends text or typed input with `delegate_send` and a source-qualified ref, input mode (`start`, `queue`, or `steer`), client mutation ID and target instance ID. The hub uses the same guarded send and retry path as your browser; a notification cannot answer a pending question. `session_control` takes one action and its typed `arguments`: approval, resume, fork, clear, model, vision model, reasoning effort, compact, drain queue, promote or cancel a queued message, rename, goal, human notes, remove URL, archive or unarchive, delete, pin, unpin, or mark seen or unread. New queued input still belongs to `delegate_send`, not queue editing. `job_stop` uses a `hub` mode for turn interruption, `delegate` (one `dlg_` run; children survive), `owned_delegate` (a `dlg_` subtree, including descendants), `job` (one `job_` shell job; `includeChildren` also stops its immediate shell children, not grandchildren), shutdown, or force-stop. A settled `owned_delegate` answers `already_stopped` without another stop. Ordinary human `job_stop` behavior remains unchanged. Deletion remains limited to ended or confirmed-crashed local sessions.
 
-Enable the switch in web **Session Details** or native **Session Info** before
-the first Manager turn. The hosting hub saves the setting across disconnect,
-restart and Clear; fresh sessions and forks start with it off. A connected
-remote Manager uses the hub that enabled it as its authority, not whichever
-machine hosts its daemon. A cold restart of that enabling hub can leave its
-first turn with ordinary tools until remote discovery completes. If the remote
-Manager is revoked while its host is offline, the next turn loses Manager tools,
-but an explanatory end notice has not been proven delivered.
+Set `manager: true` in the AppWire `thread/start` parameters to start a Manager.
+Anyone authorized to start a session may set it. This immutable bit lives in
+session metadata and survives resume, process restart and Clear. Fresh roots
+and forks do not inherit it; a new Manager requires an explicit start parameter.
+An absent bit means false, and existing sessions stay ordinary without migration.
+
+Web **Session Details** and native **Session Info** show a read-only Manager
+indication from `thread.evener.manager`, which the daemon owns and the hub reads.
+A remotely hosted Manager uses its own host's hub. Losing transport does not
+remove its Manager schemas: calls may report unavailable while healthy ordinary
+work continues. See [Manager sessions](automation.md#manager-sessions).
 
 For an unattended local worker, have the Manager call `delegate` with
 `hub:{cwd,model,watch:{events:["question","approval"],completion:true}}`.
@@ -149,7 +152,7 @@ returning restores it.
 An approval is different: it gates one specific action. Outside a sandbox,
 `read_file`, `write_file`, and `edit_file` denials can be escalated to a card
 with **Allow** and **Deny**, and the tool call waits until you answer. The model
-cannot approve its own request or later see that decision. An enabled Manager
+cannot approve its own request or later see that decision. A Manager
 session can act for it through `session_control`; that decision is attributed
 to the Manager. Shell and kernel denials, patches, and browse calls stay final,
 as they do without a UI. See [sandbox escalation](sandboxing.md) for exactly

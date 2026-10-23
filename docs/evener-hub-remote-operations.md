@@ -85,15 +85,45 @@ A managed host needs SSH connectivity, the required tools, and repository/config
 
 ### Remote Manager and input support
 
-A session running on a managed host can be enabled as a Manager through the controller hub. That enabling hub defines which sessions it can discover and control. The hosting hub keeps the saved Manager preference, and a second controller cannot take over while the first hub owns it. Reconnecting does not transfer ownership; the enabling hub checks the hosting hub's current preference before admitting each Manager operation. If the route is down, Manager operations report unavailable, but ordinary session actions continue where their transport is healthy.
+A Manager manages sessions reachable through its own hub. Start it with
+`manager: true` in the AppWire `thread/start` parameters; anyone authorized to
+start a session may set that immutable bit. The daemon persists and reports it,
+and the hub reads the projection. A Manager on hub B uses B for `job_status`
+and other management calls, even when someone views or starts it through hub A.
+Hub A does not install a runtime binding on B's Manager.
 
-When a known Manager bridge reconnects, the controller fetches the hosting hub's current setting and revision over the fresh identified connection and waits for the daemon binding before announcing that host attached. A disabled or changed row does not restore. **Cold-start discovery is not yet a readiness guarantee:** after the enabling hub restarts, it discovers remote enabled rows on the existing attach event, but the first Manager turn can arrive before that discovery finishes and temporarily see ordinary tools. The saved authority remains at the hosting hub; Manager tools return only after discovery binds the daemon. No additional subscription or credential is created for this restoration.
+```mermaid
+flowchart LR
+  Manager[Manager on A] --> A[Hub A, existing RemoteHubSource]
+  A --> Bridge[Authenticated identified SSH bridge]
+  Bridge --> B[Hub B]
+  B --> Worker[Ordinary worker on B]
+```
 
-When a remote Manager row is disabled during an SSH bridge outage, re-adding that host leaves the row disabled and the Manager's next turn has the ordinary tool surface. That turn does not explain why Manager tools disappeared. An end notice to the remotely hosted Manager across this revocation has not been qualified; do not rely on one to learn that observation stopped. The existing local-watch end notice applies only to a watch that was actually registered, and does not turn a remote subscriber stream into a Manager observation lease.
+A local Manager on hub A sends to an ordinary worker on SSH-hosted hub B through
+A's existing `RemoteHubSource`. Manager input uses a private envelope on that
+authenticated, identified bridge. B qualifies the caller with A's durable hub ID
+before saving its attribution, so the actor cannot be mistaken for a session on B.
+The real-stack [TestE2E_ManagerAcceptance](../cmd/evener-hub/e2e_manager_acceptance_test.go)
+exercises `delegate_send`, the remote worker's `ask_user`, the Manager's answer,
+and the saved actors. It also checks a Manager on B using B's own hub for `job_status`.
 
-The existing authenticated hub connection exchanges the hubs' persisted IDs before it forwards Manager settings or installs a Manager binding. This is an identity claim by a cooperating hub on that connection, **not** proof that two mutually hostile peers cannot share its credentials. A hub bearer token is not a hub identity, and neither a tool argument nor a browser RPC parameter can select the enabling hub.
+The existing authenticated connection exchanges the hubs' persisted IDs. This
+identifies cooperating hubs; it is **not cryptographic isolation between hostile
+token holders**. A hub bearer token is not a hub identity. Tool arguments cannot
+supply caller authority or actor metadata.
 
-The shared remote source carries text Send, Queue and Steer, plus skill and command input **only when the target advertises those capabilities**. Human and Manager input use the same remote mutation receipts and target validation. Unsupported input modes stay unavailable; unrelated remote mutations are not advertised. Reads, status and sandbox approval use their existing routes. Disconnecting a peer does not promote the hosting hub to Manager authority.
+Session configuration supplies Manager schemas even while transport is down.
+Calls may report unavailable, but healthy ordinary session work continues.
+Resume, process restart and Clear preserve the Manager bit; fresh roots and forks
+do not inherit it. See [Manager sessions](automation.md#manager-sessions).
+
+The shared remote source carries text Send, Queue and Steer, plus skill and command input **only when the target advertises those capabilities**. Human and Manager input use the same remote mutation receipts and target validation. Unsupported input modes stay unavailable; unrelated remote mutations are not advertised. Reads, status and sandbox approval use their existing routes.
+
+Manager worker creation remains local to the Manager's own hub. Remote creation
+through the Manager's `delegate` branch is deferred; start a worker through the
+remote host's own client, then use its source-qualified ref. Discovery of an empty
+remote host and its model catalog does not create a worker there.
 
 The remote sandbox-approval route is implemented but has not been exercised
 with a live remote prompt; local no-browser approval does not prove that branch.
