@@ -2938,11 +2938,18 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				pendingUnsubscribe = port.subscribe(() => {
 					// A target storage transition: readiness drops before this read
 					// starts (prior rows stay for display, never as a verified empty
-					// snapshot), and the shared canonical latest-window read is
-					// requested through the store's one scheduler, so a settled row
-					// leaving storage cannot leave the old model looking current.
+					// snapshot), and canonical authority is fail-closed at once.
 					void demandFreshRead();
-					void get().ensureLatest();
+					// Deliberately NOT `ensureLatest()` here. On native that read
+					// takes the runtime's authoritative-read lease, which blocks the
+					// target between the outbox dispatcher's post-mark client recheck
+					// and its request — no turn/start or turn/queue leaves the phone
+					// and the attempted row parks blockedUnknown. Retry authority only
+					// needs to be unavailable until an accepted publication; a
+					// consumer that can afford the read (the Retry surface/entry read
+					// actor) demands it through ensureLatest at a point where no
+					// ordinary dispatch is in flight.
+					markLatest("unknown");
 				});
 				void read();
 				return () => {

@@ -20004,7 +20004,7 @@ describe("store-owned canonical read validity and pending readiness", () => {
 		expect(store.getState().pendingMutations?.map((row) => row.id)).toEqual(["cmid-1"]);
 	});
 
-	it("a target storage notification clears readiness synchronously before its read starts", async () => {
+	it("a target storage notification clears readiness synchronously without demanding the dispatch-blocking read", async () => {
 		const storage = createStorage({ outbox: [outbox()], optimistic: [] });
 		const service = new FakeConversationService();
 		const canonicalRead = deferred<ConversationReadProjection>();
@@ -20013,11 +20013,12 @@ describe("store-owned canonical read validity and pending readiness", () => {
 		store.getState().bindPendingMutations(storage.port);
 		await store.getState().refreshPendingMutations();
 		expect(store.getState().pendingMutationsReady).toBe(true);
+		const readsAfterOpen = service.readProjectionCalls.length;
 		const priorRows = store.getState().pendingMutations;
 		expect(priorRows).toHaveLength(1);
 
-		// Hold both the canonical read the notification requests and the
-		// pending read it starts.
+		// Hold the pending read the notification starts; hold the canonical read
+		// only for the demand this test makes explicitly afterwards.
 		service.readProjectionBlock = canonicalRead.promise;
 		storage.hold();
 		storage.notify({ outbox: [], optimistic: [] });
@@ -20025,16 +20026,22 @@ describe("store-owned canonical read validity and pending readiness", () => {
 		expect(store.getState().pendingMutationsReady).toBe(false);
 		// Prior rows stay readable for display, never as a verified empty set.
 		expect(store.getState().pendingMutations).toBe(priorRows);
-		expect(store.getState().latestReadState).toBe("reading");
+		// Canonical authority is fail-closed at once, and the store does not
+		// itself start the authoritative read: on native that read blocks the
+		// target's ordinary dispatch between the dispatcher's mark and request.
+		expect(store.getState().latestReadState).toBe("unknown");
 		expect(store.getState().canonicalSession()).toBeNull();
+		expect(service.readProjectionCalls).toHaveLength(readsAfterOpen);
 
 		storage.reads[0]!.resolve({ outbox: [], optimistic: [] });
 		await storage.reads[0]!.promise;
 		expect(store.getState().pendingMutationsReady).toBe(true);
 		expect(store.getState().pendingMutations).toEqual([]);
 		// The pending read alone never restores canonical authority.
-		expect(store.getState().latestReadState).toBe("reading");
+		expect(store.getState().latestReadState).toBe("unknown");
 
+		// A consumer that can afford the read demands it; its accepted
+		// publication restores authority.
 		canonicalRead.resolve(projectionOf(store.getState().conversation!));
 		await store.getState().ensureLatest();
 		expect(store.getState().latestReadState).toBe("ready");
