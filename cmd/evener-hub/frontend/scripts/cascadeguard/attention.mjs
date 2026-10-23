@@ -937,9 +937,14 @@ export async function attentionJourney(ctx) {
   await new Promise((resolve) => setTimeout(resolve, 1000));
   await wait(`document.querySelectorAll(${q(ROW)}).length > 50 || document.querySelector(${q(LOAD_MORE)}) === null`, "the attention list reaches its later page");
   const allRows = await read(`[...document.querySelectorAll(${q(ROW)})].map((row) => row.dataset.ref)`);
-  const laterRows = allRows.filter((ref) => !firstPageRows.includes(ref));
-  assert.ok(allRows.length > 50 && laterRows.length >= 2,
-    `a real later page exists beyond the 50-row boundary, got ${allRows.length} rows and ${laterRows.length} past it`);
+  // The store may already have merged the hub's second page before this leg
+  // reads the list, so the rows past the first page are identified by the
+  // page boundary (50) rather than by which rows this leg's press added. The
+  // press path itself is proven by the transport-retry leg's single offset-50
+  // read; this assertion proves the later page is present and reachable.
+  const laterRows = allRows.slice(50);
+  assert.ok(allRows.length === 52 && laterRows.length === 2,
+    `the list carries both pages with two rows past the 50-row boundary, got ${allRows.length} rows and ${laterRows.length} past it`);
   const laterRef = laterRows[0];
   const laterRow = await wait(`(() => {
     const row = document.querySelector(${q(`${ROW}[data-ref="${laterRef}"]`)});
@@ -993,6 +998,9 @@ export async function attentionJourney(ctx) {
   await driver.typeText(rootRef, "CASCADE_ROLE_0_SENTINEL CASCADE_ATTENTION_NEWER");
   const newer = await driver.composerState(rootRef);
   await driver.clickSubmit(rootRef, { text: newer.text, chips: newer.chips, tiles: newer.tiles });
+  // Sending puts the reader at the end. Scroll away again before the reply
+  // arrives, or the new turn lands in view and correctly raises no pill.
+  await wheelAway(sourcePortExpr, -900);
   await driver.waitForTurnIdle(rootRef);
   // Blur first: the control and its measured clearance row are present when
   // the pill is first observed.
