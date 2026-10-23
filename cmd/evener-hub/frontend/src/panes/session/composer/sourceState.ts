@@ -62,6 +62,15 @@ function recoveryCompositionFingerprint(composition: RecoveryComposition): strin
   });
 }
 type SelectionMeta = { commandNames: string[]; mentions: ComposerMention[] | undefined };
+function compositionIsEmpty(composition: RecoveryComposition): boolean {
+  return (
+    composition.text.trim() === "" &&
+    composition.attachments.length === 0 &&
+    composition.skillNames.length === 0 &&
+    composition.commandNames.length === 0 &&
+    (composition.mentions?.length ?? 0) === 0
+  );
+}
 export interface ComposerSubmissionSnapshot {
   text: string;
   attachments: PendingAttachment[];
@@ -550,6 +559,16 @@ export function createComposerSourceState(
         }
         const lease = recoveryOwnerLeaseRef.current;
         if (!lease || lease.clientMutationId !== clientMutationId) return false;
+        // Capture the whole composition before awaiting storage. Disposal
+        // clears the attachment store, so a refused update after disposal must
+        // preserve these bytes rather than the emptied live state.
+        const refusalSnapshot: RecoveryComposition = {
+          text: textRef.current,
+          attachments: operations.toInputAttachments(),
+          skillNames: [...skillNamesRef.current],
+          commandNames: [...selectionMetaRef.current.commandNames],
+          mentions: selectionMetaRef.current.mentions,
+        };
         const updated = await updateRecoveryPendingTurn(
           clientMutationId,
           ref,
@@ -566,15 +585,16 @@ export function createComposerSourceState(
           nextComposerText,
         );
         if (!updated) {
-          if (!disposed && currentRecoveryId() === clientMutationId) {
+          if (currentRecoveryId() === clientMutationId) {
             // The row was consumed or advanced by another pane. Keeping this
             // stale lease would make every later save and send fail against an
             // owner this tab can no longer write. A draft carries no image
             // bytes, so preserve the complete local composition under a fresh
             // recovery owner before retiring the lease.
-            const preserved = hasEmptyComposition()
+            const emptyAtRefusal = compositionIsEmpty(refusalSnapshot);
+            const preserved = emptyAtRefusal
               ? null
-              : await preserveStaleRecovery(clientMutationId, localDraftRevisionId);
+              : await preserveStaleRecovery(clientMutationId, localDraftRevisionId, refusalSnapshot);
             if (preserved) rememberPreservedSelection(preserved, clientMutationId);
             if (
               !disposed &&
@@ -588,7 +608,7 @@ export function createComposerSourceState(
                 // bytes.
                 cancelPreservationRetry();
                 setActiveRecoveryId(preserved);
-              } else if (hasEmptyComposition()) {
+              } else if (emptyAtRefusal) {
                 // Nothing left to preserve; retire the unusable stale lease.
                 setActiveRecoveryId(null);
               } else {
@@ -653,21 +673,29 @@ export function createComposerSourceState(
   async function preserveStaleRecovery(
     clientMutationId: string,
     localDraftRevisionId?: string,
+    composition?: RecoveryComposition,
   ): Promise<MutationRecoveryRecord | undefined> {
     const base = recoveryBaseRecord;
     if (!base || base.clientMutationId !== clientMutationId) return undefined;
     // A retry has no fresh revision argument. The owned row's revision is the
     // proof that the composition already incorporated that persisted draft.
     const carriedDraftRevisionId = localDraftRevisionId ?? base.localDraftRevisionId;
+    const current = composition ?? {
+      text: textRef.current,
+      attachments: operations.toInputAttachments(),
+      skillNames: [...skillNamesRef.current],
+      commandNames: [...selectionMetaRef.current.commandNames],
+      mentions: selectionMetaRef.current.mentions,
+    };
     try {
       return await preserveRecoveryPendingTurn(
         base,
         ref,
-        textRef.current,
-        operations.toInputAttachments(),
-        skillNamesRef.current,
-        selectionMetaRef.current.commandNames,
-        selectionMetaRef.current.mentions,
+        current.text,
+        [...current.attachments],
+        current.skillNames,
+        current.commandNames,
+        current.mentions,
         compositionOwnerId,
         carriedDraftRevisionId,
       );

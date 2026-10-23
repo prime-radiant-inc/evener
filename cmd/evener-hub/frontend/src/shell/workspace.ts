@@ -878,17 +878,23 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
         params: entry.params.paneParams,
         slot: index === 0 ? "main" : "secondary",
       }));
-      // Reattach each restored session to its persisted seat. A desktop layout
-      // carries the seat it saved; a seat that has never been persisted falls
-      // back to the pane id.
+      // Reattach each restored session to this tab's persisted seat, then the
+      // shared layout's saved seat, then the pane id.
       const savedSeats = migrated.composerSeats ?? {};
       const usedSeats = new Set<string>();
       for (const pane of panes) {
         if (pane.type !== "session" && pane.type !== "sessionZoom") continue;
         const ref = pane.type === "session" ? refParam(pane.params) : null;
         const saved = savedSeats[pane.id];
-        const stored = typeof saved === "string" ? saved : ref === null ? undefined : readRefComposerSeat(ref);
-        pane.composerSeatId = stored !== undefined && !usedSeats.has(stored) ? stored : pane.id;
+        // This tab's own mapping wins over the shared layout's saved seat:
+        // another tab may have saved a different seat for the same ref.
+        const candidates = [
+          ref === null ? undefined : readRefComposerSeat(ref),
+          typeof saved === "string" ? saved : undefined,
+          pane.id,
+        ];
+        const seat = candidates.find((candidate) => candidate !== undefined && !usedSeats.has(candidate));
+        pane.composerSeatId = seat ?? pane.id;
         usedSeats.add(pane.composerSeatId);
         if (ref !== null) writeComposerSeat(ref, pane.composerSeatId);
       }

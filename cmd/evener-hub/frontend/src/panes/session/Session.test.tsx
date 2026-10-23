@@ -6077,3 +6077,112 @@ test("a disposed pane keeps the preserved selection for reopening", async ({ onT
   );
   await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe(localText));
 });
+
+test("a pane disposed before a refused update still preserves its composition", async ({ onTestFinished }) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(stubSessionSlots);
+  class HeldRefusalStorage extends MutationOutboxIndexedDB {
+    holdNextRefusal = true;
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+
+    override async updateRecoveryInput(
+      ...args: Parameters<MutationOutboxIndexedDB["updateRecoveryInput"]>
+    ): ReturnType<MutationOutboxIndexedDB["updateRecoveryInput"]> {
+      const result = await super.updateRecoveryInput(...args);
+      if (result === undefined && this.holdNextRefusal) {
+        this.holdNextRefusal = false;
+        this.reached.resolve();
+        await this.release.promise;
+      }
+      return result;
+    }
+  }
+  const storage = new HeldRefusalStorage();
+  setMutationStorageForTests(storage);
+  onTestFinished(() => storage.close());
+  const ref = "local:refused-disposal";
+  const image = { type: "image" as const, mediaType: "image/png", data: "AQID", name: "local.png" };
+  const original = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "old [image 1]" }, image] },
+    attachments: [
+      {
+        presentationId: "local-image",
+        marker: 1,
+        name: "local.png",
+        mediaType: "image/png",
+        blob: new Blob([Uint8Array.of(1, 2, 3)], { type: "image/png" }),
+      },
+    ],
+    composerText: "old [image 1]",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old [image 1]" }, image] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+
+  const source = createTestComposerSource(ref, undefined, "pane-a");
+  onTestFinished(() => source.dispose());
+  await source.activateRecovery(recovery);
+  const localText = "local [image 1]";
+  source.editText(localText);
+  const peer = new MutationOutboxIndexedDB();
+  onTestFinished(() => peer.close());
+  const peerRecovery = await peer.getRecovery(original.clientMutationId);
+  if (!peerRecovery) throw new Error("missing peer recovery fixture");
+  await peer.updateRecoveryInput(
+    original.clientMutationId,
+    [{ type: "text", text: "peer composition" }],
+    [],
+    "peer composition",
+    [],
+    [],
+    undefined,
+    undefined,
+    {
+      [original.clientMutationId]:
+        (peerRecovery as MutationRecoveryRecord & { compositionRevision?: number }).compositionRevision ?? 0,
+    },
+  );
+
+  const saving = source.queueRecoveryPersistence(
+    original.clientMutationId,
+    localText,
+    [{ marker: 1, name: "local.png", mediaType: "image/png", data: "AQID" }],
+    [],
+  );
+  await storage.reached.promise;
+  source.dispose();
+  storage.release.resolve();
+  await saving;
+
+  const preserved = (await storage.listRecovery(ref)).find(
+    (record) => record.clientMutationId !== original.clientMutationId,
+  );
+  expect(preserved).toMatchObject({
+    composerText: localText,
+    payload: { input: [{ type: "text", text: localText }, image] },
+  });
+  expect(readRecoverySelection(ref, source.recoverySelectionOwnerId)).toBe(preserved?.clientMutationId);
+
+  await refreshPendingTurnsProjection(ref);
+  const pane: OpenPaneRecord = {
+    id: "pane_refused_reopen",
+    type: "session",
+    params: { ref },
+    slot: "main",
+    composerSeatId: "pane-a",
+  };
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  const fake = connectFakeClient();
+  fake.on("thread/read", ({ ref: readRef }) => readResponse(readRef ?? ref));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId={pane.id} focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe(localText));
+  expect(screen.getByRole("button", { name: "View local.png" })).toBeTruthy();
+});

@@ -30,6 +30,13 @@ import { bindFilePath } from "@evener/appwire-client/docContent";
 import type { DockviewApi } from "dockview-core";
 import { beforeEach, describe, expect, test } from "vitest";
 import { openDocBeside } from "../panes/doc/openDoc";
+import {
+  composerSelectionScope,
+  readRecoverySelection,
+  writeComposerSeat,
+  writeRecoverySelection,
+} from "../panes/session/composer/draft";
+import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { paneFor } from "./paneRegistry";
 import {
   conversationOpenParentRef,
@@ -362,4 +369,36 @@ test("a removed legacy duplicate keeps the saved conversation focused", () => {
   // Focus follows the conversation that pane became, not whatever unrelated
   // panel the removal left selected.
   expect(workspaceStore.getState().focusedPaneId).toBe("p2");
+});
+
+test("restore prefers this tab's seat over another tab's saved layout seat", () => {
+  installLocalStorage(new MemoryStorage());
+  writeComposerSeat("ref_a", "tab-a-seat");
+  writeRecoverySelection("ref_a", composerSelectionScope("tab-a-seat"), "preserved-local");
+  const saved = {
+    panels: {
+      p1: {
+        id: "p1",
+        contentComponent: "default",
+        params: { paneType: "session", paneParams: { ref: "ref_a" } },
+      },
+    },
+    composerSeats: { p1: "other-tab-seat" },
+    activeGroup: "group-1",
+  };
+  const fake = new FakeDockviewApi();
+  fake.serialized = saved;
+  fake.fromJSONBehavior = (data) => {
+    const layout = data as { panels?: Record<string, { params?: unknown }> };
+    fake.panels = Object.entries(layout.panels ?? {}).map(([id, panel]) => ({ id, params: panel.params }));
+    fake.activePanel = { id: "p1" };
+  };
+  registerDockviewApi(asDockviewApi(fake));
+
+  expect(workspaceStore.getState().restoreLayout(saved)).toBe(true);
+
+  const pane = workspaceStore.getState().panes.find((record) => record.id === "p1");
+  if (!pane?.composerSeatId) throw new Error("restored pane lacks its seat");
+  expect(pane.composerSeatId).toBe("tab-a-seat");
+  expect(readRecoverySelection("ref_a", composerSelectionScope(pane.composerSeatId))).toBe("preserved-local");
 });
