@@ -32,7 +32,7 @@ Extend `agent/steering_notification_wire_fixture_test.go` using real producers a
 
 ## Non-goals and recovery
 
-No migration, stored-frame rewrite, codec version field, backward-compatibility shim, unrelated renderer change, notification framing redesign, or change to terminal packet JSON. Reverting the code change is the only recovery action; no persisted data is modified by this work. Scope is the producer escape/caller adjustment, shared decoder, relevant producer/notificationwire tests and corpus, and this spec.
+No migration, stored-frame rewrite, codec version field, backward-compatibility shim, unrelated renderer change, notification framing redesign, or change to terminal packet JSON. Reverting the code change is the only recovery action; no persisted data is modified by this work. Scope is the producer escape/caller adjustment, shared decoder, relevant producer/notificationwire tests and corpus, and this spec. The final review amendment also authorizes updating only the matching body-contract paragraph in `docs/job-control.md` so the owning guide stays evergreen.
 
 ## Verification and delivery
 

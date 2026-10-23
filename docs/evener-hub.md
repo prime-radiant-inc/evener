@@ -495,21 +495,25 @@ that connection; their absence does not trigger deployment.
 flowchart TD
     A[Connect] --> B{Running hub handshake}
     B -->|Compatible| C[Use existing channel and build]
-    B -->|Proven incompatible| D[Install suitable build and verify replacement]
+    B -->|Proven older| D[Install suitable build and verify replacement]
+    B -->|Proven newer| N[Refuse and update the controller]
     B -->|Authentication, transport or malformed response| E[Report connection failure]
     B -->|No hub listening| F{Installed launch contract usable}
     F -->|Yes| G[Start installed build and verify connection]
-    F -->|Verified missing or incompatible| D
+    F -->|Verified missing or older| D
+    F -->|Verified newer| N
     F -->|Malformed or unknown| E
 ```
 
-Connect can still install software on a fresh or incompatible host. A stopped
-compatible installation is started without replacement on an explicit Connect;
-background reconnect does not start a stopped hub. An unclassified handshake
-failure is a connection error, not permission to overwrite the installation.
-The same rule applies to malformed or incomplete cold-start launch metadata.
-Use `--no-deploy` to prohibit both pushes and installer fallback. Explicit Deploy
-retains its plan, confirmation and requested-build checks.
+Connect can still install software on a fresh or older host. A host whose
+protocol is newer than the controller's is refused rather than downgraded: the
+controller must be updated. A stopped compatible installation is started without
+replacement on an explicit Connect; background reconnect does not start a
+stopped hub. An unclassified handshake failure is a connection error, not
+permission to overwrite the installation. The same rule applies to malformed or
+incomplete cold-start launch metadata. Use `--no-deploy` to prohibit both pushes
+and installer fallback. Explicit Deploy retains its plan, confirmation and
+requested-build checks.
 
 The source rules below apply **when installation is required**, not on every
 Connect:
