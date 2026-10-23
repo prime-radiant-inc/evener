@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/execsupport/shellquote"
@@ -503,6 +505,7 @@ func acceptanceRemoteManagerInput(ctx context.Context, t *testing.T, provider *f
 	if err != nil || !managerCall.Contains(opening) {
 		t.Fatalf("remote input driver: call=%v err=%v", managerCall, err)
 	}
+	var queueMutations []string
 	for _, message := range []string{task, answer} {
 		managerCall.RespondToolCall("delegate_send", map[string]any{"to": target, "input_mode": "start", "message": message, "client_mutation_id": newMutationID(t), "expected_instance_id": instance})
 		var targetCall *fakellm.Call
@@ -532,6 +535,7 @@ func acceptanceRemoteManagerInput(ctx context.Context, t *testing.T, provider *f
 				return thread.Evener.AskPending && thread.Evener.PendingQuestion != nil && thread.Evener.PendingQuestion.Question == question
 			})
 		} else {
+			managerCall, targetCall, queueMutations = acceptanceRemoteQueueControls(ctx, t, provider, remoteHuman, managerCall, targetCall, workerRef, target, instance, opening, task)
 			targetCall.RespondToolCall("communicate", communicateArgs("remote answer received"))
 		}
 	}
@@ -550,6 +554,27 @@ func acceptanceRemoteManagerInput(ctx context.Context, t *testing.T, provider *f
 		t.Fatal(err)
 	}
 	wantActor := (appwire.Ref{SourceID: hubID, ThreadID: caller.ThreadID}).String()
+	stateDir, err := resolveEvenerStateDirWithStateHome(remote.workDir, "", filepath.Join(filepath.Dir(remote.workDir), "home", "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(stateDir, "mutations", instance+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved struct {
+		Journal map[string]struct {
+			Actor schema.SessionActor `json:"actor"`
+		} `json:"journal"`
+	}
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range queueMutations {
+		if record, ok := saved.Journal[id]; !ok || record.Actor.Kind != "manager" || record.Actor.ManagerRef != wantActor {
+			t.Errorf("remote queue mutation %s saved actor=%+v exists=%t, want %s", id, record.Actor, ok, wantActor)
+		}
+	}
 	for _, message := range []string{task, answer} {
 		found := false
 		for _, turn := range turns {

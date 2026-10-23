@@ -297,7 +297,7 @@ func WithManagerInputCaller(ctx context.Context, callerRef string) context.Conte
 }
 
 func (s *RemoteHubSource) requestOn(ctx context.Context, client *appwire.Client, method string, params any, out any) error {
-	if caller, _ := ctx.Value(managerInputCallerKey{}).(string); caller != "" && (method == appwire.MethodTurnStart || method == appwire.MethodTurnQueue || method == appwire.MethodTurnSteer || method == appwire.MethodEvenerSandboxEscalationResolve) {
+	if caller, _ := ctx.Value(managerInputCallerKey{}).(string); caller != "" && (method == appwire.MethodTurnStart || method == appwire.MethodTurnQueue || method == appwire.MethodTurnSteer || method == appwire.MethodTurnDrainAsSteer || method == appwire.MethodTurnPromoteQueuedAsSteer || method == appwire.MethodEvenerSandboxEscalationResolve) {
 		// The source translated the target ref first. The caller metadata came
 		// from the bound hub owner and must never reach the ordinary human RPC.
 		encoded, err := json.Marshal(params)

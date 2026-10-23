@@ -136,6 +136,26 @@ func (o *sessionOperations) registerRemoteInput() {
 			}
 			p.ManagerProof = proof
 			return o.Steer(ctx, p)
+		case appwire.MethodTurnDrainAsSteer:
+			var p appwire.TurnDrainAsSteerParams
+			if err := decode(&p); err != nil {
+				return nil, err
+			}
+			if p.ManagerProof != nil {
+				return nil, appwire.InvalidParams("actor metadata is not a bridge argument")
+			}
+			p.ManagerProof = proof
+			return drainQueueControl(ctx, o.cfg, o.sources, p)
+		case appwire.MethodTurnPromoteQueuedAsSteer:
+			var p appwire.TurnPromoteQueuedAsSteerParams
+			if err := decode(&p); err != nil {
+				return nil, err
+			}
+			if p.ManagerProof != nil {
+				return nil, appwire.InvalidParams("actor metadata is not a bridge argument")
+			}
+			p.ManagerProof = proof
+			return promoteQueuedControl(ctx, o.cfg, o.sources, p)
 		case appwire.MethodEvenerSandboxEscalationResolve:
 			var p appwire.SandboxEscalationResolveParams
 			if err := decode(&p); err != nil {
