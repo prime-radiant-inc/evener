@@ -310,24 +310,33 @@ func waitRetryMilestone(ctx context.Context, t *testing.T, path, name string, dr
 }
 
 // retryJourneyCalls fans the real provider requests into one channel so each
-// scenario answers exactly the call it means while the driver runs.
-func retryJourneyCalls(ctx context.Context, provider *fakellm.Server) <-chan *fakellm.Call {
+// scenario answers exactly the call it means while the driver runs. The
+// returned stop cancels this consumer and waits for it to leave provider.Next:
+// a consumer still parked there when the next scenario starts would consume
+// that scenario's first request, exactly the legacy responder teardown avoids.
+func retryJourneyCalls(ctx context.Context, provider *fakellm.Server) (<-chan *fakellm.Call, func()) {
+	consumerCtx, cancel := context.WithCancel(ctx)
 	calls := make(chan *fakellm.Call, 8)
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		defer close(calls)
 		for {
-			call, err := provider.Next(ctx.Done())
+			call, err := provider.Next(consumerCtx.Done())
 			if err != nil {
 				return
 			}
 			select {
 			case calls <- call:
-			case <-ctx.Done():
+			case <-consumerCtx.Done():
 				return
 			}
 		}
 	}()
-	return calls
+	return calls, func() {
+		cancel()
+		<-done
+	}
 }
 
 func nextRetryCall(ctx context.Context, t *testing.T, calls <-chan *fakellm.Call, what string, driverDone <-chan error) *fakellm.Call {
@@ -376,7 +385,8 @@ func runRetryRepeatedPressJourney(t *testing.T, ctx context.Context, stack hubSt
 	defer cancel()
 	original := "RETRY_ORIGINAL_browser_repeated_press"
 	ref := startRetryJourneyThread(t, ctx, stack, client, provider, original)
-	calls := retryJourneyCalls(ctx, provider)
+	calls, stopCalls := retryJourneyCalls(ctx, provider)
+	defer stopCalls()
 	dir := t.TempDir()
 	milestonePath := filepath.Join(dir, "milestones.jsonl")
 	driverDone := make(chan error, 1)
@@ -413,7 +423,8 @@ func runRetryLatestOnlyJourney(t *testing.T, ctx context.Context, stack hubStack
 	defer cancel()
 	original := "RETRY_ORIGINAL_browser_latest_only"
 	ref := startRetryJourneyThread(t, ctx, stack, client, provider, original)
-	calls := retryJourneyCalls(ctx, provider)
+	calls, stopCalls := retryJourneyCalls(ctx, provider)
+	defer stopCalls()
 	dir := t.TempDir()
 	milestonePath := filepath.Join(dir, "milestones.jsonl")
 	driverDone := make(chan error, 1)
@@ -463,7 +474,8 @@ func runRetryReloadUnresolvedJourney(t *testing.T, ctx context.Context, stack hu
 	defer cancel()
 	original := "RETRY_ORIGINAL_browser_reload_unresolved"
 	ref := startRetryJourneyThread(t, ctx, stack, client, provider, original)
-	calls := retryJourneyCalls(ctx, provider)
+	calls, stopCalls := retryJourneyCalls(ctx, provider)
+	defer stopCalls()
 	dir := t.TempDir()
 	milestonePath := filepath.Join(dir, "milestones.jsonl")
 	driverDone := make(chan error, 1)
@@ -503,7 +515,8 @@ func runRetryDelayedPendingJourney(t *testing.T, ctx context.Context, stack hubS
 	defer cancel()
 	original := "RETRY_ORIGINAL_browser_delayed_pending"
 	ref := startRetryJourneyThread(t, ctx, stack, client, provider, original)
-	calls := retryJourneyCalls(ctx, provider)
+	calls, stopCalls := retryJourneyCalls(ctx, provider)
+	defer stopCalls()
 	dir := t.TempDir()
 	milestonePath := filepath.Join(dir, "milestones.jsonl")
 	driverDone := make(chan error, 1)
@@ -543,7 +556,8 @@ func runRetryNativeTwoViewsJourney(t *testing.T, ctx context.Context, stack hubS
 	defer cancel()
 	original := "RETRY_ORIGINAL_native_two_views"
 	ref := startRetryJourneyThread(t, ctx, stack, client, provider, original)
-	calls := retryJourneyCalls(ctx, provider)
+	calls, stopCalls := retryJourneyCalls(ctx, provider)
+	defer stopCalls()
 	dir := t.TempDir()
 	milestonePath := filepath.Join(dir, "milestones.jsonl")
 	driverDone := make(chan error, 1)
@@ -587,7 +601,8 @@ func runRetryNativeLatestOnlyJourney(t *testing.T, ctx context.Context, stack hu
 	defer cancel()
 	original := "RETRY_ORIGINAL_native_latest_only"
 	ref := startRetryJourneyThread(t, ctx, stack, client, provider, original)
-	calls := retryJourneyCalls(ctx, provider)
+	calls, stopCalls := retryJourneyCalls(ctx, provider)
+	defer stopCalls()
 	dir := t.TempDir()
 	milestonePath := filepath.Join(dir, "milestones.jsonl")
 	driverDone := make(chan error, 1)
@@ -646,7 +661,8 @@ func runRetryNativeRemountJourney(t *testing.T, ctx context.Context, stack hubSt
 	defer cancel()
 	original := "RETRY_ORIGINAL_native_remount"
 	ref := startRetryJourneyThread(t, ctx, stack, client, provider, original)
-	calls := retryJourneyCalls(ctx, provider)
+	calls, stopCalls := retryJourneyCalls(ctx, provider)
+	defer stopCalls()
 	dir := t.TempDir()
 	milestonePath := filepath.Join(dir, "milestones.jsonl")
 	driverDone := make(chan error, 1)

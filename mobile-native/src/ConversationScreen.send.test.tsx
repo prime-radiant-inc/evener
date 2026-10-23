@@ -3054,7 +3054,7 @@ describe("Retry's one owner on the shared session binding", () => {
 			);
 		});
 		await settle();
-		return { tree, hub, entry: seen.current!.entryFor("hub-1", ref)! };
+		return { tree, hub, route, seen, entry: seen.current!.entryFor("hub-1", ref)! };
 	}
 
 	function nextTurn(id: string, status: "completed" | "failed") {
@@ -3423,6 +3423,46 @@ describe("Retry's one owner on the shared session binding", () => {
 		act(() => stale());
 		await settle();
 		expect(hub.mutations()).toEqual([]);
+	});
+
+	it("submits nothing from a Retry callback captured before a reconnect, and a fresh callback still submits", async () => {
+		const ref = "ref-retry-reconnect";
+		const served = failedTurn(ref, "go test exited 1");
+		const { tree, hub, entry, route, seen } = await mountTracked(served);
+		const document = drafts.open({ hubId: "hub-1", sessionRef: ref });
+		const oldService = entry.service;
+		const oldGeneration = entry.store.getState().conversationGeneration;
+		const stale = pressable(tree, "Retry")!.props.onPress;
+
+		// A rebuilt client resumes the same failed turn behind a fresh service.
+		const reconnected = hubClient(served);
+		harness.connection = { ...harness.connection, client: reconnected.client };
+		act(() =>
+			tree.update(
+				<NativeConversationSessionsProvider>
+					<RegistryProbe seen={seen} />
+					<ConversationScreen route={route} navigation={navigation} />
+				</NativeConversationSessionsProvider>,
+			),
+		);
+		await settle();
+		expect(entry.service).not.toBe(oldService);
+		expect(entry.store.getState().conversationGeneration).toBeGreaterThan(oldGeneration);
+		await until(() => expect(entry.store.getState().canonicalSession()).not.toBeNull());
+		await until(() => expect(pressable(tree, "Retry")?.props.disabled).toBe(false));
+
+		// The captured callback still names the same failed turn, but its service
+		// and generation are retired: it must submit nothing and leave no marker.
+		act(() => stale());
+		await settle();
+		expect(hub.mutations()).toEqual([]);
+		expect(reconnected.mutations()).toEqual([]);
+		expect(await getNativeMutationRuntime().storage.listOutbox(nativeMutationTargetKey("hub-1", ref))).toEqual([]);
+		expect(document.getSnapshot().record.unconfirmed).toBeNull();
+
+		// A fresh action from the current attachment still submits exactly once.
+		await press(tree, "Retry");
+		await until(() => expect(reconnected.mutations()).toEqual(["turn/start"]));
 	});
 
 	it("refuses a retained Retry callback after the same turn's error changes to Sign in", async () => {

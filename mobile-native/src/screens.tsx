@@ -2789,6 +2789,17 @@ function ConversationScreenView({
 			const now = document.getSnapshot();
 			if (
 				!attachment.live ||
+				// The captured service and binding must still be the live ones. A
+				// reconnect resumes the same failed turn behind a new service and
+				// generation; submitting through the old service would return before
+				// dispatch and leave an uncertainty marker for a message never sent.
+				service === null ||
+				service !== entry.service ||
+				live.ref !== route.params.ref ||
+				live.status !== "open" ||
+				live.conversationGeneration !== bindingGeneration ||
+				!bindingInstance ||
+				live.conversation?.instanceId !== bindingInstance ||
 				!focused ||
 				!screenInFront(navigation, route.key) ||
 				!retryCanSend() ||
@@ -2814,7 +2825,14 @@ function ConversationScreenView({
 			// canonical outcome or an unresolved own row refuses with not-sent.
 			// It excludes only this operation's own in-flight document marker.
 			const precondition = () => {
-				if (!attachment.live || !focused || !screenInFront(navigation, route.key) || !connectionReady.current)
+				if (
+					!attachment.live ||
+					service === null ||
+					service !== entry.service ||
+					!focused ||
+					!screenInFront(navigation, route.key) ||
+					!connectionReady.current
+				)
 					return false;
 				const current = store.getState();
 				if (current.ref !== route.params.ref || current.status !== "open") return false;
