@@ -3926,6 +3926,22 @@ test("a /queue typed over a recovered edit resends its body atomically", async (
   expect(readDraft("ref_a")).toBe("");
 });
 
+test("a failed /queue resend keeps the invocation as the recovery composer text", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "retry me");
+  await mountComposer("ref_a");
+  await flushPendingTurnsProjectionForTests();
+  replaceEditorText(textarea(), "/queue replacement");
+  const resend = vi
+    .spyOn(MutationOutboxIndexedDB.prototype, "resendRecoveryResult")
+    .mockRejectedValue(new Error("scripted resend failure"));
+  onTestFinished(() => resend.mockRestore());
+  fireEvent.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  expect((await storage.getRecovery(recovered.clientMutationId))?.composerText).toBe("/queue replacement");
+});
+
 test("blanking an attachment-free recovered draft discards it durably", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);

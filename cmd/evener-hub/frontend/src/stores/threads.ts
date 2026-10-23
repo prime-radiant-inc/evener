@@ -3426,6 +3426,7 @@ export async function updateRecoveryMutation(
   expectedCompositionRevision?: number,
   expectedRecoveryRevisions?: Readonly<Record<string, number>>,
   compositionOwnerId?: string,
+  composerText?: string,
 ): Promise<MutationRecoveryRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
@@ -3433,7 +3434,7 @@ export async function updateRecoveryMutation(
     clientMutationId,
     buildInput(text, attachments, skillNames, commandNames, mentions),
     durableAttachments(attachments),
-    text,
+    composerText ?? text,
     mentions,
     consumeRecoveryIds,
     localDraftRevisionId,

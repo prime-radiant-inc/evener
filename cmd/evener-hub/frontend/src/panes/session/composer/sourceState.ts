@@ -122,6 +122,7 @@ export interface ComposerSourceState {
     names: readonly string[],
     commands?: readonly string[],
     mentions?: readonly ComposerMention[],
+    composerText?: string,
   ): Promise<boolean>;
   clearIfUnchanged(
     text: string,
@@ -375,6 +376,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     nextSkillNames: readonly string[],
     nextCommandNames: readonly string[] = selectionMetaRef.current.commandNames,
     nextMentions: readonly ComposerMention[] | undefined = selectionMetaRef.current.mentions,
+    nextComposerText?: string,
   ): Promise<boolean> {
     if (disposed) return Promise.resolve(false);
     const isEmptyCleanup =
@@ -451,6 +453,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           lease.compositionRevision,
           { [clientMutationId]: lease.compositionRevision },
           compositionOwnerId,
+          nextComposerText,
         );
         if (!updated) {
           const missing =

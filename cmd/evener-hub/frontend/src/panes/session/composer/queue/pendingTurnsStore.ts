@@ -497,6 +497,7 @@ export function updateRecoveryPendingTurn(
   expectedCompositionRevision?: number,
   expectedRecoveryRevisions?: Readonly<Record<string, number>>,
   compositionOwnerId?: string,
+  composerText?: string,
 ): ReturnType<typeof updateRecoveryMutation> {
   // Composer serializes edits before resending. A committed edit must release
   // that chain even when the recovery tray cannot refresh yet.
@@ -515,6 +516,7 @@ export function updateRecoveryPendingTurn(
         expectedCompositionRevision,
         expectedRecoveryRevisions,
         compositionOwnerId,
+        composerText,
       );
       void refreshPendingTurnsProjection(ref);
       return updated;

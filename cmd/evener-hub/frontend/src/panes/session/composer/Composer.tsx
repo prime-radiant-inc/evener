@@ -1106,6 +1106,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
                 submittedSkillNames,
                 submittedCommandNames,
                 submittedMentions,
+                clearDraftText,
               );
               if (!persisted) {
                 throw recoveryWriteRefusal;
