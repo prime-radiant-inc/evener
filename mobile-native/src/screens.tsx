@@ -2702,16 +2702,22 @@ function ConversationScreenView({
 	// when the storage notification drops authority or when the failure arrives
 	// while authority is already unavailable.
 	const retryAuthorityDemand = useRef<{ generation: number; failureTurnId: string } | null>(null);
+	// Reset the demand on the store's ready PUBLICATION, not when a passive
+	// effect happens to observe it: a storage notification can invalidate a
+	// freshly published ready in the same batch, before effects flush, and a
+	// missed transition would leave the consumed token refusing the next read.
+	// The subscription runs synchronously inside the store's set.
+	useEffect(
+		() =>
+			store.subscribe((state) => {
+				if (state.latestReadState === "ready") retryAuthorityDemand.current = null;
+			}),
+		[store],
+	);
 	useEffect(() => {
 		if (!focused || !connected || !service) return;
 		const current = store.getState();
 		if (current.ref !== route.params.ref || current.status !== "open") return;
-		// Only a ready publication clears the demand: the next invalidation of this
-		// same failure may ask again. "reading" and a discarded "unknown" keep the
-		// token, so a discarded reply cannot spawn another read.
-		if (current.latestReadState === "ready") {
-			retryAuthorityDemand.current = null;
-		}
 		// An uncertified projection or an unresolved own row already disables
 		// Retry; a read now could only block the dispatcher's target.
 		if (!current.pendingMutationsReady || ownPendingTurnInput(current.pendingMutations)) return;

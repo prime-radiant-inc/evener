@@ -3325,6 +3325,89 @@ describe("Retry's one owner on the shared session binding", () => {
 		}
 	});
 
+	// A passive effect can miss a ready transition: an accepted read publishes
+	// ready and a storage notification invalidates it in the same batch, before
+	// effects flush. The demand token must reset on the store's ready
+	// PUBLICATION, or it stays consumed and refuses the next read.
+	it("resets the demand token when a ready publication is invalidated before effects flush", async () => {
+		const ref = "ref-retry-ready-invalidated";
+		readHistory.live = true;
+		const { tree, entry, hub } = await mountTracked(failedTurn(ref, "go test exited 1"));
+		await settle();
+		const held = entry.store.getState().conversation!;
+		expect(held.history).toBeDefined();
+		act(() =>
+			entry.store.setState({
+				conversation: { ...held, history: held.history && { ...held.history, length: 10 } },
+			}),
+		);
+
+		const runtime = getNativeMutationRuntime();
+		const targetKey = nativeMutationTargetKey("hub-1", ref);
+		const request = hub.client.request;
+		let replyLength = 0;
+		let reads = 0;
+		const gates: (() => void)[] = [];
+		hub.client.request = async (method, params) => {
+			if (method !== "thread/read") return request(method, params);
+			reads += 1;
+			await new Promise<void>((resolve) => gates.push(resolve));
+			const response = (await request(method, params)) as {
+				snapshot?: { incarnation: string; length: number };
+			};
+			return { ...response, snapshot: { incarnation: "inc-1", length: replyLength } };
+		};
+		try {
+			// Consume the token: a demanded read whose shorter reply is discarded.
+			await act(async () => {
+				await runtime.discardRecovery("no-such-row", targetKey);
+			});
+			await until(() => expect(reads).toBe(1));
+			await act(async () => gates[0]?.());
+			await until(() => expect(entry.store.getState().latestReadState).toBe("unknown"));
+			expect(reads).toBe(1);
+
+			// A real accepted read publishes ready, and a storage transition
+			// invalidates it in the same publication turn — synchronously, before
+			// any passive effect can observe the ready state.
+			let invalidated = false;
+			const invalidateBeforeEffects = entry.store.subscribe((state) => {
+				if (invalidated || state.latestReadState !== "ready") return;
+				invalidated = true;
+				entry.store.setState({ latestReadState: "unknown" });
+			});
+			let accepted!: Promise<void>;
+			replyLength = 10;
+			try {
+				act(() => {
+					accepted = entry.store.getState().ensureLatest();
+				});
+				await until(() => expect(reads).toBe(2));
+				await act(async () => {
+					gates[1]?.();
+					await accepted;
+				});
+			} finally {
+				invalidateBeforeEffects();
+			}
+			expect(invalidated).toBe(true);
+
+			// The invalidation re-runs the demand effect (reading -> unknown). The
+			// token reset with the ready publication, so this demand reads exactly
+			// once; a missed transition would leave it consumed and issue none.
+			await until(() => expect(reads).toBe(3));
+			replyLength = 10;
+			await act(async () => gates[2]?.());
+			await until(() => expect(entry.store.getState().latestReadState).toBe("ready"));
+			await settle();
+			expect(pressable(tree, "Retry")?.props.disabled).toBe(false);
+			expect(hub.mutations()).toEqual([]);
+			expect(reads).toBe(3);
+		} finally {
+			hub.client.request = request;
+		}
+	});
+
 	it("submits nothing from a stale Retry callback after the canonical advances", async () => {
 		const ref = "ref-retry-stale";
 		const served = failedTurn(ref, "go test exited 1");
