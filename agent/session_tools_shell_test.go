@@ -1689,11 +1689,8 @@ func TestShellModeDetachedFollowsEnvironment(t *testing.T) {
 		}
 		want := []any{"foreground", "background"}
 		requireShellModeEnum(t, s, "sandboxed session", want...)
-		wantDescription, _ := tool.ShellModeProperty(false)["description"].(string)
 		description, _ := advertisedShellMode(t, s)["description"].(string)
-		if description != wantDescription {
-			t.Fatalf("sandboxed session mode description = %q, want the detach-unavailable form", description)
-		}
+		agenttest.CheckGolden(t, filepath.Join("testdata", "detachedshell", "mode-description-unavailable.md"), []byte(description+"\n"), *updatePromptGoldens, "Regenerate with `go test ./agent -run '^TestShellModeDetachedFollowsEnvironment$' -count=1 -update-prompt` and read the diff.")
 		preparedMode, _ := s.shellToolForValidation(s.reg.Get("shell")).Definition.Parameters["properties"].(map[string]any)["mode"].(map[string]any)
 		if got := preparedMode["enum"]; !reflect.DeepEqual(got, want) {
 			t.Fatalf("shell repair schema mode enum = %#v, want %#v; validation prose would still list detached", got, want)
