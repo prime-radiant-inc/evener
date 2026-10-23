@@ -120,19 +120,24 @@ Controller state, guarded by `c.mu`:
 
 Linearization is under `c.mu`:
 
-- `beginSubtreeLaneHandoff(id) bool` refuses when any member of
-  `subtreeMembersLocked(id)` has a start reservation (including a create
-  reservation whose descriptor names a subtree member as parent), a cold-restore
-  window, an attention-restore hold (`attentionRestoreHeldLocked`), an active
-  durable generation (`stableWorktreeSubtreeActiveLocked`), is already covered
-  by an in-flight handoff anywhere above it, or is itself the root of an
-  in-flight handoff. The durable-activity condition covers a send start that has
-  already committed its run but has not yet attached its runtime; the
-  reservation condition covers the pre-commit half. The hold condition honors
-  the existing invariant that a wake pass owns its restored runtime until its
-  reservation decision, and the hold outlives the restore window: the pass may
-  read transcripts and take its turn before `ReserveAttention`, so the window
-  alone would leave that gap open. On success it records `laneHandoffs[id]`.
+- `beginSubtreeLaneHandoff(id) laneHandoffAdmission` makes one decision under
+  `c.mu`. It returns `busy` when any member of `subtreeMembersLocked(id)` has a
+  start reservation (including a create reservation whose descriptor names a
+  subtree member as parent), a cold-restore window, an attention-restore hold
+  (`attentionRestoreHeldLocked`), an active durable generation
+  (`stableWorktreeSubtreeActiveLocked`), or is itself the root of an in-flight
+  handoff. It returns `alreadyCovered` when the controller is closing or a
+  strict ancestor's handoff already fences the subtree, so a close-time
+  disposal may proceed under that coverage without recording anything. It
+  returns `acquired` and records `laneHandoffs[id]` otherwise. The
+  durable-activity condition covers a send start that has already committed its
+  run but has not yet attached its runtime; the reservation condition covers
+  the pre-commit half. The hold condition honors the existing invariant that a
+  wake pass owns its restored runtime until its reservation decision, and the
+  hold outlives the restore window: the pass may read transcripts and take its
+  turn before `ReserveAttention`, so the window alone would leave that gap open.
+  Because the refusal reason comes from the same locked decision, the close
+  path needs no separate `controllerClosing` or covered-by-ancestor query.
 - `endSubtreeLaneHandoff(id)` deletes it. Every acquire pairs with a deferred
   release.
 - `beginLaneRestore(id) error` refuses when `laneHandoffCoversLocked(id)`, then
@@ -177,16 +182,16 @@ and `disposeUnchangedLaneMechanics`. A refusal returns the existing
 "became active while disposing; retry once it is idle" busy path; it does not
 partially close resumability or touch the lane.
 
-Close-time lane disposal gets the same fence in `disposeOneStableDelegateLane`
-when the shared controller is not itself closing. A root session's close sets
-`c.closing` in `closeRuntimeTree` before `disposeDelegateLanesAtClose`, so root
-close already refuses every admission. A mid-tree delegate session closes while
-the shared controller is still live; its own close disposes *its* worktree
-children's lanes, and that path needs the fence. If the fence is refused there,
-the lane is retained (kept, not destroyed, with its lock intact) for a later
-explicit `dispose` or resume. Retaining the lock is deliberate: the refusal
-means an install may be in flight into the lane, and unlocking it would expose
-the lane to a later `prune`.
+Close-time lane disposal uses the same admission in
+`disposeOneStableDelegateLane`. A root session's close sets `c.closing` in
+`closeRuntimeTree` before `disposeDelegateLanesAtClose`, so `begin` returns
+`alreadyCovered` and the root close disposes as before. A mid-tree delegate
+session closes while the shared controller is still live; its own close
+disposes *its* worktree children's lanes, and that path acquires the fence. A
+`busy` result retains the lane (kept, not destroyed, with its lock intact) for
+a later explicit `dispose` or resume. Retaining the lock is deliberate: the
+refusal means an install may be in flight into the lane, and unlocking it would
+expose the lane to a later `prune`.
 
 A close-time disposal whose lane is already covered by a **strict ancestor's**
 in-flight handoff proceeds under that ancestor's fence instead of acquiring a
