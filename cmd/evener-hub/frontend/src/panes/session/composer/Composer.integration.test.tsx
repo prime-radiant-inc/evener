@@ -628,7 +628,12 @@ test.each([
     } else {
       await userEvent.setup().click(screen.getByRole("button", { name: "Send" }));
     }
-    await hold.reached;
+    // Restored recovery does not mean its projection finished publishing: Send
+    // first autosaves it. Own this wait with act while acceptance is held;
+    // a full projection drain cannot settle until the held write is released.
+    await act(async () => {
+      await hold.reached;
+    });
     act(() => cleanup());
     if (action === "close") workspaceStore.getState().closePane(pane.id);
     else resetWorkspaceStoreForTests();
@@ -2026,6 +2031,10 @@ test("the composer's Stop button cancels the row a mid-swap resume moved to the 
     await waitFor(() => expect(drainHeld).toBe(true));
     // The drive settled; its retarget already moved the parked row to the resumed
     // ref, where it waits because that ref is fenced.
+    // Restored identity does not mean its projection finished publishing. The
+    // trailing retarget pauses before real storage, so it does not block this
+    // outermost drain before the raw read.
+    await flushPendingTurnsProjectionForTests();
     const moved = await storage.listOutbox(toRef);
     expect(moved).toHaveLength(1);
     const movedId = moved[0]?.clientMutationId;
@@ -2212,7 +2221,11 @@ test("a plain send exposes its durable pending entry while the network remains u
 
   await user.type(textarea() as HTMLDivElement, "ha");
   await user.click(screen.getByRole("button", { name: /^send\b/i }));
-  await storage.committed;
+  // Durable state does not mean its projection finished publishing. Own the
+  // commit marker wait with act, then drain its notification and hook refresh.
+  await act(async () => {
+    await storage.committed;
+  });
   await flushPendingTurnsProjectionForTests();
 
   expect(result.current).toHaveLength(1);
