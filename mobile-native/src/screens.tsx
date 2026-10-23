@@ -589,6 +589,13 @@ export function ConversationScreen({
 		[route.params.hubId, route.params.ref],
 	);
 	const draft = useSyncExternalStore(document.subscribe, document.getSnapshot);
+	// A handoff can fail its storage write while the resume itself already moved
+	// the rows. Retry it as the replacement screen mounts and whenever the draft
+	// becomes writable again; the source composition stays under the old ref
+	// until the destination write commits.
+	useEffect(() => {
+		if (draft.loaded && !draft.error) drafts.retryPendingHandoffs();
+	}, [draft.loaded, draft.error, draft.record]);
 	const imageSelection = useMemo(() => new ImageSelection(document, nativeImagePicker), [document]);
 	const imageState = useSyncExternalStore(imageSelection.subscribe, imageSelection.getSnapshot);
 	// Follows the screen in front rather than focus, so a photo being attached

@@ -176,10 +176,6 @@ export class DraftDocument {
 	}
 	private persist(record: DraftRecord, retainOnFailure: boolean) {
 		if (this.forgotten) return;
-		if (this.successor) {
-			this.successor.persist(record, retainOnFailure);
-			return;
-		}
 		const persisted = releaseEmptyComposerOwnership(record);
 		try {
 			const referenced = new Set(
@@ -529,7 +525,7 @@ export class DraftDocument {
 							sameSources(current.unconfirmedComposer?.recoveryIds, metadata.recoveryIds))
 					) {
 						const ids = metadata?.recoveryIds ?? [];
-						this.persist(
+						this.completeSubmission(
 							{
 								...current,
 								unconfirmed: null,
@@ -539,11 +535,11 @@ export class DraftDocument {
 								completedCommandRecoveryIds: [...new Set([...(current.completedCommandRecoveryIds ?? []), ...ids])],
 								releasedRecoveryIds: releasedIds(current).filter((id) => !ids.includes(id)),
 							},
-							true,
+							draftCaptureToken,
 						);
 					}
 				} else if (!metadata?.recoveryIds?.length && this.snapshot.record.unconfirmedCaptureToken === draftCaptureToken)
-					this.persist(
+					this.completeSubmission(
 						{
 							...this.snapshot.record,
 							unconfirmed: null,
@@ -551,11 +547,43 @@ export class DraftDocument {
 							unconfirmedComposer: undefined,
 							unconfirmedCaptureToken: undefined,
 						},
-						true,
+						draftCaptureToken,
 					);
 			}
 		} finally {
 			this.update({ submitting: false });
+		}
+	}
+
+	/** Route a completed submission to the document that inherited the record
+	 * during a handoff. Only the capture this submission owns is cleared; the
+	 * successor's current draft, images, selections and newer capture stay. */
+	private completeSubmission(record: DraftRecord, captureToken: string): void {
+		if (!this.successor) {
+			this.persist(record, true);
+			return;
+		}
+		this.successor.acceptSubmissionCompletion(record, captureToken);
+	}
+
+	private acceptSubmissionCompletion(settled: DraftRecord, captureToken: string): void {
+		const current = this.snapshot.record;
+		const next: DraftRecord = { ...current };
+		if (current.unconfirmedCaptureToken === captureToken) {
+			next.unconfirmed = null;
+			next.unconfirmedImages = undefined;
+			next.unconfirmedComposer = undefined;
+			next.unconfirmedCaptureToken = undefined;
+		}
+		const completed = settled.completedCommandRecoveryIds ?? [];
+		if (completed.length)
+			next.completedCommandRecoveryIds = [...new Set([...(current.completedCommandRecoveryIds ?? []), ...completed])];
+		const released = settled.releasedRecoveryIds ?? [];
+		if (released.length) next.releasedRecoveryIds = [...new Set([...(current.releasedRecoveryIds ?? []), ...released])];
+		try {
+			this.persist(next, true);
+		} catch {
+			/* The destination keeps its work; the composer's Retry owns the failure. */
 		}
 	}
 
