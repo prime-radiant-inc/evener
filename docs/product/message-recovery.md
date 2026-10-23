@@ -98,6 +98,14 @@ the last saved draft still owns its source IDs; those sources stay hidden from
 Discard while Retry saving preserves the captured composition. Restored image
 capacity can also complete a pending append. Recovery never sends automatically.
 
+An identity-changing resume carries the edited draft to the resumed ref before
+the replacement screen opens: its text, image bytes, skill and command
+selections, recovery source IDs, and any pending submission's capture token and
+settlement markers move together, and recovery resend receipts move with their
+sources. An already-open resumed draft adopts the transferred record
+immediately. The retired ref keeps no draft or recovery ownership. A resumed
+destination that already holds work is left untouched.
+
 An ordinary native submit stores its full `unconfirmed` composition with a local
 capture token. If enqueue commits but draft confirmation fails, that token also
 remains on the local mutation row, tying the row to that uncertainty copy. Before
