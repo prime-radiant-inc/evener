@@ -4649,6 +4649,12 @@ export interface ThreadStartParams {
   reasoningEffort?: string;
   nonInteractive?: boolean;
   launchOverrides?: LaunchConfigLayer;
+  /**
+   * Manager starts this session as a Manager of the sessions its hub can
+   * reach. It is a start-time property, not a setting: the daemon persists it
+   * with the session, so a resume keeps it and nothing can turn it off.
+   */
+  manager?: boolean;
 }
 
 export interface ThreadStartResponse {

@@ -2507,6 +2507,10 @@ type ThreadStartParams struct {
 	ReasoningEffort string             `json:"reasoningEffort,omitempty"`
 	NonInteractive  *bool              `json:"nonInteractive,omitempty"`
 	LaunchOverrides *LaunchConfigLayer `json:"launchOverrides,omitempty"`
+	// Manager starts this session as a Manager of the sessions its hub can
+	// reach. It is a start-time property, not a setting: the daemon persists it
+	// with the session, so a resume keeps it and nothing can turn it off.
+	Manager bool `json:"manager,omitempty"`
 }
 
 type ThreadStartResponse struct {

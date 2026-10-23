@@ -4616,6 +4616,7 @@ Underlying Go kind: `string` (no struct fields).
 | `reasoningEffort` | string | yes |  |
 | `nonInteractive` | \*bool | yes |  |
 | `launchOverrides` | \*[appwire.LaunchConfigLayer](#launchconfiglayer) | yes |  |
+| `manager` | bool | yes |  |
 
 
 ### `ThreadStartResponse`
