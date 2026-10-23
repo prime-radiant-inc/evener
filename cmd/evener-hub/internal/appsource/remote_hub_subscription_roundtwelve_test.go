@@ -115,7 +115,10 @@ func TestRemoteHubNestedThreadNotificationMasksUnforwardedCapabilities(t *testin
 // notification's other fields — including ones this hub does not understand —
 // must reach the client exactly as the remote sent them.
 func TestRemoteHubNotificationMaskPreservesUnrelatedFields(t *testing.T) {
-	source := NewRemoteHubSource("host", nil, nil)
+	remote := newPushableRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+		return scriptedReply{result: appwire.EmptyResponse{}}
+	})
+	source := remote.source
 	daemonSet, err := json.Marshal(allRemoteThreadCapabilities())
 	if err != nil {
 		t.Fatalf("marshal capability set: %v", err)
@@ -129,7 +132,7 @@ func TestRemoteHubNotificationMaskPreservesUnrelatedFields(t *testing.T) {
 	translated, threadID, ok := source.translateNotification(appwire.Notification{
 		Method: appwire.NotifyThreadStatusChanged,
 		Params: params,
-	})
+	}, remote.client)
 	if !ok || threadID != "S" {
 		t.Fatalf("translateNotification = (%+v, %q, %v), want thread S routed", translated, threadID, ok)
 	}

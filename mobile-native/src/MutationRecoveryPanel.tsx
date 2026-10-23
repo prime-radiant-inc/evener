@@ -209,18 +209,15 @@ export interface RecoveryPanelSurface {
 	discard(row: NativeMutationRecoveryRow): void;
 }
 
-// Owns the screen's recovery state: it acquires the runtime lazily (only once
-// connected, so a screen that never reaches a live conversation never opens the
-// mutations database), follows the landed hook's projection, and turns the two
+// Owns the screen's recovery state: it acquires the runtime lazily in an effect,
+// including while offline, follows the landed hook's projection, and turns the two
 // failure paths the runtime deliberately propagates - a failed acquisition and
 // a rejected discard - into visible state a Retry can clear.
 export function useRecoveryPanel({
-	connected,
 	hubId,
 	targetRef,
 	acquire = getNativeMutationRuntime,
 }: {
-	connected: boolean;
 	hubId: string;
 	targetRef: string;
 	acquire?: () => NativeMutationRecoveryRuntime;
@@ -242,7 +239,7 @@ export function useRecoveryPanel({
 	const scope = `${targetKey}::${attempt}`;
 
 	useEffect(() => {
-		if (!connected || runtime !== null) return;
+		if (runtime !== null) return;
 		try {
 			setRuntime(acquire());
 			// A successful acquisition supersedes any earlier failure, whatever
@@ -253,7 +250,7 @@ export function useRecoveryPanel({
 		} catch (error) {
 			setFailure({ scope, error });
 		}
-	}, [connected, runtime, acquire, scope]);
+	}, [runtime, acquire, scope]);
 
 	const projection = useNativeMutationRecovery(runtime, targetKey);
 	// Retry re-acquires: the landed hook re-reads whenever its runtime identity
