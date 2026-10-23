@@ -1461,32 +1461,26 @@ export class Driver {
   // reader). A wait that only polls mounted rows therefore misses a reply the
   // app really rendered whenever the reader is scrolled back far enough for
   // the reply's row to fall outside the mounted window -- the reader is not at
-  // fault, but the observation is. This barrier puts the tail in view (the
-  // reader's own jump-to-latest gesture) before the wait starts, so the list
-  // mounts the newest rows and keeps following appends. It re-issues the
-  // scroll on every poll because a pending view restore can clamp the first
-  // write, and it releases only once the port reports the app's own at-bottom
-  // threshold (4px).
-  transcriptTailExpr(ref) {
+  // fault, but the observation is.
+  //
+  // The correction belongs INSIDE every poll, not in a separate barrier before
+  // the wait. A retained-view restore is applied after its measurements or
+  // opening settlement, so it can land after the reader was first observed at
+  // the bottom and scroll the view back; a barrier that released on that first
+  // observation would leave the later reply unmounted for the rest of the
+  // wait. Correcting on each poll means a restore at any point during the wait
+  // is undone by the next poll (80ms), and the reply row mounts. The at-bottom
+  // threshold is the app's own (4px); the write itself is the reader's own
+  // jump-to-latest destination.
+  withTranscriptTail(ref, conditionExpr) {
     return `(() => {
       const pane = ${this.paneScopeExpr(ref)};
       const section = pane && pane.querySelector("[data-testid='transcript-virtual-list']");
       const port = section && section.firstElementChild;
-      if (!port) return null;
-      if (port.scrollHeight - port.scrollTop - port.clientHeight <= 4) return true;
-      port.scrollTop = port.scrollHeight;
-      return null; })()`;
-  }
-
-  async ensureTranscriptTail(ref, { timeoutMs = 15000 } = {}) {
-    try {
-      await this.waitPage(this.transcriptTailExpr(ref), {
-        timeoutMs,
-        label: `transcript tail in view for ${ref}`,
-      });
-    } catch (error) {
-      throw await this.dumpPageState(ref, error);
-    }
+      if (port && port.scrollHeight - port.scrollTop - port.clientHeight > 4) {
+        port.scrollTop = port.scrollHeight;
+      }
+      return ${conditionExpr}; })()`;
   }
 
   // waitForContinuationReply is the POSITIVE end-of-turn proof for a turn whose
@@ -1544,7 +1538,6 @@ export class Driver {
     if (!Array.isArray(turnsBefore)) {
       throw new Error("waitForContinuationReply needs the turnIds() captured before the release that dispatches the continuation");
     }
-    await this.ensureTranscriptTail(ref);
     const expr = `(() => {
       const pane = ${this.paneScopeExpr(ref)};
       if (!pane) return null;
@@ -1565,7 +1558,7 @@ export class Driver {
         return block.slice(at + ${text.length}).includes(${JSON.stringify(REPLY_TEXT)});
       }) ? true : null; })()`;
     try {
-      await this.waitPage(expr, {
+      await this.waitPage(this.withTranscriptTail(ref, expr), {
         timeoutMs,
         label: `the continuation leg carrying ${JSON.stringify(text)} to complete in its own turn`,
       });
@@ -1634,12 +1627,10 @@ export class Driver {
   // prose; a baseline of mounted reply rows cannot tell a new reply from an
   // older row mounting back in.
   async waitForReply(ref, prose, { timeoutMs = 25000 } = {}) {
-    // The reply can arrive while the reader is scrolled away, where the
-    // virtual list does not mount its row; see ensureTranscriptTail.
-    await this.ensureTranscriptTail(ref);
+    const expr = `(() => ${this.turnTextsExpr(ref)}.some((text) => text.includes(${JSON.stringify(prose)}) && text.includes(${JSON.stringify(REPLY_TEXT)})) ? true : null)()`;
     try {
       await this.waitPage(
-        `(() => ${this.turnTextsExpr(ref)}.some((text) => text.includes(${JSON.stringify(prose)}) && text.includes(${JSON.stringify(REPLY_TEXT)})) ? true : null)()`,
+        this.withTranscriptTail(ref, expr),
         { timeoutMs, label: `the reply to ${JSON.stringify(prose)} in ${ref}` },
       );
     } catch (error) {
@@ -1712,9 +1703,11 @@ export class Driver {
   // so a text the virtualized transcript split across two rows still matches.
   async waitForTranscriptInput(text, { timeoutMs = STEERED_TURN_INPUT_TIMEOUT_MS, ref = this.sessionA } = {}) {
     try {
-      await this.ensureTranscriptTail(ref);
       await this.waitPage(
-        `(() => ${this.turnTextsExpr(ref)}.some((turn) => turn.includes(${JSON.stringify(text)})) ? true : null)()`,
+        this.withTranscriptTail(
+          ref,
+          `(() => ${this.turnTextsExpr(ref)}.some((turn) => turn.includes(${JSON.stringify(text)})) ? true : null)()`,
+        ),
         { timeoutMs, label: `input ${JSON.stringify(text)} visible in the transcript` },
       );
     } catch (error) {

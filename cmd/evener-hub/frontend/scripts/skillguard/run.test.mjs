@@ -326,12 +326,12 @@ describe("waitForReply brings a virtualized transcript tail into view", () => {
 
   // The driver's waitPage loop, minus the clock: it re-evaluates the real
   // expression until it reads non-null, as the real poll does once per tick.
-  function scriptWaitPage(d) {
+  function scriptWaitPage(d, { attempts = 20, delayMs = 0 } = {}) {
     d.waitPage = async (exprSource, { label } = {}) => {
-      for (let attempt = 0; attempt < 20; attempt += 1) {
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
         const value = evaluateExpr(exprSource);
         if (value !== null && value !== undefined && value !== false) return value;
-        await new Promise((resolve) => setTimeout(resolve, 0));
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
       throw new Error(`timed out waiting for ${label}`);
     };
@@ -360,5 +360,64 @@ describe("waitForReply brings a virtualized transcript tail into view", () => {
     scriptWaitPage(d);
     await expect(d.waitForReply("ref_a", PROSE)).resolves.toBeUndefined();
     expect(port.scrollTop).toBe(900);
+  });
+
+  // The app applies a retained-view restore only after its measurements and
+  // opening settlement, so the restore can land AFTER a one-shot barrier has
+  // already observed the bottom. This scripts that ordering: the restore fires
+  // 5ms into the wait, brings the reply with it, and scrolls back to the top.
+  // A barrier that resolved on the first bottom observation would leave the
+  // reply unmounted for the rest of the wait; correcting the tail on every
+  // poll brings it back and observes the reply.
+  test("a retained-view restore that lands after the first bottom observation is corrected", async () => {
+    document.body.innerHTML = `<div><div data-pane-scaffold="session:ref_a">
+      <section data-testid="transcript-virtual-list"><div id="port"></div></section>
+    </div></div>`;
+    const pane = document.querySelector("[data-pane-scaffold='session:ref_a']");
+    const port = document.getElementById("port");
+    const replyExpr = `(() => ${driver.turnTextsExpr("ref_a")}.some((text) => text.includes(${JSON.stringify(PROSE)}) && text.includes("skillguard turn complete")) ? true : null)()`;
+    let scrollTopValue = 0;
+    let replyReady = false;
+    let restoredAwayWithReplyUnseen = false;
+    const mountReplyIfReady = () => {
+      if (!replyReady || scrollTopValue < 896) return;
+      if (pane.querySelector("[data-testid='turn-block']")) return;
+      const row = document.createElement("div");
+      row.setAttribute("data-testid", "turn-block");
+      row.setAttribute("data-turn-id", "turn_m12");
+      row.textContent = `${PROSE} /pkg:probe skillguard turn complete`;
+      pane.appendChild(row);
+    };
+    Object.defineProperty(port, "scrollHeight", { configurable: true, get: () => 1000 });
+    Object.defineProperty(port, "clientHeight", { configurable: true, get: () => 100 });
+    Object.defineProperty(port, "scrollTop", {
+      configurable: true,
+      get: () => scrollTopValue,
+      set: (value) => {
+        scrollTopValue = value;
+        mountReplyIfReady();
+      },
+    });
+    const restore = setTimeout(() => {
+      replyReady = true;
+      scrollTopValue = 0;
+      for (const row of pane.querySelectorAll("[data-testid='turn-block']")) row.remove();
+      // At this instant the wait's own predicate cannot see the reply: the
+      // restore moved the reader away from the row the virtual list unmounted.
+      restoredAwayWithReplyUnseen = evaluateExpr(replyExpr) === null;
+    }, 5);
+    try {
+      const d = new Driver({ url: "http://127.0.0.1/", artifactDir: "", controlPath: "", milestonePath: "" });
+      // A timed-out wait dumps the page; with no CDP page, let that dump fail
+      // through its own catch instead of masking the timeout with a TypeError.
+      d.page = { send: () => Promise.reject(new Error("no page in this scripted test")) };
+      scriptWaitPage(d, { attempts: 200, delayMs: 1 });
+      await expect(d.waitForReply("ref_a", PROSE)).resolves.toBeUndefined();
+    } finally {
+      clearTimeout(restore);
+    }
+    expect(restoredAwayWithReplyUnseen).toBe(true);
+    expect(port.scrollTop).toBeGreaterThanOrEqual(896);
+    expect(document.querySelector("[data-testid='turn-block']")?.getAttribute("data-turn-id")).toBe("turn_m12");
   });
 });
