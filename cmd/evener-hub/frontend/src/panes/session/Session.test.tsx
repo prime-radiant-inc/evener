@@ -17,6 +17,7 @@ import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../../s
 import { ClientProvider } from "../../shell/clientContext";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { urlToPane } from "../../shell/routing";
+import { openTopLevelSession } from "../../shell/sessionPlacement";
 import * as StatusBarModule from "../../shell/statusbar/StatusBar";
 import { resetMobileViewportForTests } from "../../shell/useIsMobile";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
@@ -58,7 +59,13 @@ import * as SessionChromeModule from "./chrome/SessionChrome";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
 import { askPendingStatusChanged } from "./composer/askDock/askDockTestUtils";
 import * as ComposerModule from "./composer/Composer";
-import { readDraft, readRecoverySelection, writeDraft } from "./composer/draft";
+import {
+  composerSelectionScope,
+  readDraft,
+  readRecoverySelection,
+  writeDraft,
+  writeRecoverySelection,
+} from "./composer/draft";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
 import { retainedConversationComposer } from "./composer/retainedComposer";
@@ -5638,4 +5645,81 @@ test("a resumed seat without a source adoption carries its selected recovery own
   const resumedComposer = retainedConversationComposer(lifetime, resumed);
   expect(resumedComposer?.recoverySelectionOwnerId).toBe(scope);
   expect(readRecoverySelection(resumed, scope)).toBe("preserved-row");
+});
+
+test("an ordinary session resume restores the selected recovery over an older peer row", async ({ onTestFinished }) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(stubSessionSlots);
+  const oldRef = "local:old";
+  const resumed = "local:resumed";
+  const fake = connectFakeClient();
+  fake.on("thread/read", ({ ref: readRef }) => readResponse(readRef ?? resumed));
+
+  const peerInput = [{ type: "text" as const, text: "peer work" }];
+  const peer = await mutationStorage.enqueueIntent({
+    targetRef: resumed,
+    method: "turn/start",
+    payload: { ref: resumed, input: peerInput },
+    attachments: [],
+    composerText: "peer work",
+    optimisticDisplay: { method: "turn/start", input: peerInput },
+  });
+  await mutationStorage.transferToRecovery(peer.clientMutationId, "rejected");
+  const localText = "local [image 1]";
+  const localInput = [
+    { type: "text" as const, text: localText },
+    { type: "image" as const, mediaType: "image/png", data: "AQID", name: "preserved.png" },
+  ];
+  const preserved = await mutationStorage.enqueueIntent({
+    targetRef: resumed,
+    method: "turn/start",
+    payload: { ref: resumed, input: localInput },
+    attachments: [
+      {
+        presentationId: "preserved-presentation",
+        marker: 1,
+        name: "preserved.png",
+        mediaType: "image/png",
+        blob: new Blob([Uint8Array.of(1, 2, 3)], { type: "image/png" }),
+      },
+    ],
+    composerText: localText,
+    optimisticDisplay: { method: "turn/start", input: localInput },
+  });
+  await mutationStorage.transferToRecovery(preserved.clientMutationId, "rejected");
+  expect((await mutationStorage.listRecovery(resumed)).map((record) => record.clientMutationId)).toEqual([
+    peer.clientMutationId,
+    preserved.clientMutationId,
+  ]);
+  await refreshPendingTurnsProjection(resumed);
+
+  const oldPane: OpenPaneRecord = { id: "pane_session_old", type: "session", params: { ref: oldRef }, slot: "main" };
+  workspaceStore.setState({ panes: [oldPane], focusedPaneId: oldPane.id });
+  const oldComposer = conversationPaneLifetime(oldPane).composer;
+  if (!oldComposer) throw new Error("outgoing session lifetime lacks its composer");
+  // The resumed-identity carry already records the selection under the
+  // outgoing pane's scope; placement must map it to the destination pane.
+  writeRecoverySelection(resumed, oldComposer.recoverySelectionOwnerId, preserved.clientMutationId);
+
+  openTopLevelSession(resumed);
+  const placed = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.type === "session" && (pane.params as { ref?: unknown }).ref === resumed);
+  if (!placed) throw new Error("route placement did not open the resumed session");
+  expect(placed.id).not.toBe(oldPane.id);
+  expect(readRecoverySelection(resumed, oldComposer.recoverySelectionOwnerId)).toBe(preserved.clientMutationId);
+  expect(readRecoverySelection(resumed, composerSelectionScope(placed.id))).toBe(preserved.clientMutationId);
+  const placedComposer = conversationPaneLifetime(placed).composer;
+  expect(placedComposer?.recoverySelectionOwnerId).toBe(composerSelectionScope(placed.id));
+  expect(readRecoverySelection(resumed, placedComposer?.recoverySelectionOwnerId ?? "")).toBe(
+    preserved.clientMutationId,
+  );
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: resumed }} paneId={placed.id} focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe(localText));
+  expect(screen.getByRole("button", { name: "View preserved.png" })).toBeTruthy();
 });

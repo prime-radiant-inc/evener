@@ -14,6 +14,7 @@ import type { DockviewApi, IDockviewPanel, SerializedDockview } from "dockview-c
 import { useEffect } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import { transferRecoverySelection } from "../panes/session/composer/draft";
 import { type PaneTypeId, paneFor } from "./paneRegistry";
 import { paramString, refParam } from "./routing";
 import { isMobileViewport } from "./useIsMobile";
@@ -601,6 +602,11 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     }
 
     const id = nextPaneId(type);
+    // A route replacement opens a new pane id, so the destination composer
+    // reads a different recovery-selection scope. Move the outgoing pane's
+    // choice for the routed ref with it.
+    const nextRef = refParam(params);
+    if (main !== null && nextRef !== null) transferRecoverySelection(nextRef, main.id, id);
     set({ panes: [{ id, type, params, slot: "main" }], focusedPaneId: id });
     return id;
   },

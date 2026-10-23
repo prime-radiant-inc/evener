@@ -16,6 +16,7 @@ import {
 import {
   clearDraft,
   clearPersistedDraftIfRevisionMatches,
+  composerSelectionScope,
   markDraftEdited,
   readComposerDraft,
   readComposerDraftRevisionId,
@@ -181,7 +182,7 @@ export function createComposerSourceState(
 ): ComposerSourceState {
   const compositionOwnerId = ownerId ?? defaultCompositionOwners.get(ref) ?? createSecureUUID();
   const recoverySelectionOwnerId =
-    selectionOwnerId === undefined ? ownClientId() : `${ownClientId()}:${selectionOwnerId}`;
+    selectionOwnerId === undefined ? ownClientId() : composerSelectionScope(selectionOwnerId);
   if (ownerId === undefined && !defaultCompositionOwners.has(ref))
     defaultCompositionOwners.set(ref, compositionOwnerId);
   const initial = readComposerDraftSnapshot(ref);

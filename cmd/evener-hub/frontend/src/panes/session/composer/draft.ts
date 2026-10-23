@@ -19,6 +19,7 @@
 // canonical skill selections survive a reload next to its text. The v1 key
 // held plain text only; see readComposerDraft for the approved transition.
 import { canonicalSkillNames } from "@evener/appwire-client";
+import { ownClientId } from "../../../stores/mutationClientIdentity";
 import { createSecureUUID } from "../../../stores/secureUUID";
 import { patchSelectionText, type SkillEditorValue } from "./skillDocument";
 
@@ -69,6 +70,11 @@ function recoverySelectionStorageKey(ref: string, selectionOwnerId: string): str
   return `${RECOVERY_SELECTION_PREFIX}${encodeURIComponent(selectionOwnerId)}.${encodeURIComponent(ref)}`;
 }
 
+/** The selection scope a pane with this id reads and writes. */
+export function composerSelectionScope(paneId: string): string {
+  return `${ownClientId()}:${paneId}`;
+}
+
 export function readRecoverySelection(ref: string, selectionOwnerId: string): string | undefined {
   try {
     const value = localStorage.getItem(recoverySelectionStorageKey(ref, selectionOwnerId));
@@ -98,6 +104,19 @@ export function carryRecoverySelection(fromRef: string, toRef: string, selection
   if (selected === undefined) return;
   if (readRecoverySelection(toRef, selectionOwnerId) !== undefined) return;
   writeRecoverySelection(toRef, selectionOwnerId, selected);
+}
+
+// A route placement that replaces a session pane opens a new pane id, so the
+// destination composer reads a different scope. Move the selection with the
+// pane, leaving an already-established destination choice alone.
+export function transferRecoverySelection(ref: string, fromPaneId: string, toPaneId: string): void {
+  if (fromPaneId === toPaneId) return;
+  const fromScope = composerSelectionScope(fromPaneId);
+  const toScope = composerSelectionScope(toPaneId);
+  const selected = readRecoverySelection(ref, fromScope);
+  if (selected === undefined) return;
+  if (readRecoverySelection(ref, toScope) !== undefined) return;
+  writeRecoverySelection(ref, toScope, selected);
 }
 
 function isStoredComposerDraft(value: unknown): value is ComposerDraft {
