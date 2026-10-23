@@ -22,6 +22,8 @@ export interface GhostRowHost {
 	editHint: string | null;
 	/** The images an unconfirmed send carried, shown in its bubble. */
 	draftAttachments?: ReactNode;
+	/** The images a parked replacement set aside, shown in its bubble. */
+	parkedAttachments?: ReactNode;
 	onAction(ghost: Ghost, action: GhostAction): void;
 	onMore(): void;
 }
@@ -42,7 +44,13 @@ export function GhostRowView({ row }: { row: GhostRow }) {
 			canEdit={host.canEdit}
 			editHint={host.editHint}
 			backdrop="page"
-			attachments={ghost.origin.kind === "draft" || ghost.showDraftAttachments ? host.draftAttachments : undefined}
+			attachments={
+				ghost.origin.kind === "parked"
+					? host.parkedAttachments
+					: ghost.origin.kind === "draft" || ghost.showDraftAttachments
+						? host.draftAttachments
+						: undefined
+			}
 			onAction={(action) => host.onAction(ghost, action)}
 		/>
 	);

@@ -16,7 +16,7 @@ import {
 } from "@evener/appwire-client/state/mutation";
 import type { NativeMutationRecoveryRow } from "../MutationRecoveryPanel";
 
-export type GhostState = "steering" | "queued" | "held" | "sending" | "unconfirmed" | "refused";
+export type GhostState = "steering" | "queued" | "held" | "sending" | "unconfirmed" | "parked" | "refused";
 
 export type GhostAction = "steerNow" | "sendNow" | "edit" | "cancel" | "check" | "discard";
 
@@ -37,6 +37,7 @@ export type GhostOrigin =
 	// A draft that stands in for a matched outbox row carries that row's id, so
 	// its Discard can clear both (the draft's uncertainty and the row).
 	| { kind: "draft"; clientMutationId?: string }
+	| { kind: "parked" }
 	| { kind: "recovery"; row: RecoveryGhostRow };
 
 export interface Ghost {
@@ -88,9 +89,6 @@ function localQueuedEditReady({ document, encodingAttachments }: LocalQueuedEdit
 export interface UnconfirmedSend {
 	text: string;
 	sentText: string;
-	/** Overrides the "couldn't confirm" caption for work that never reached
-	 * transport, such as a composition a replacement set aside. */
-	caption?: string;
 }
 
 const CAPTIONS: Record<GhostState, string> = {
@@ -99,6 +97,7 @@ const CAPTIONS: Record<GhostState, string> = {
 	held: "Held · you stopped this turn",
 	sending: "Sending…",
 	unconfirmed: "Couldn't confirm this was sent",
+	parked: "Replaced by your new draft",
 	refused: "Couldn't send this",
 };
 
@@ -123,6 +122,7 @@ export function ghosts(
 	recovery: readonly RecoveryGhostRow[],
 	connected: boolean,
 	local?: LocalQueuedMessages,
+	parkedDraft?: UnconfirmedSend | null,
 ): Ghost[] {
 	// Another client's rows aren't yours to watch.
 	const own = (pending ?? []).filter((entry) => entry.fromThisClient);
@@ -209,12 +209,23 @@ export function ghosts(
 			key: "draft:unconfirmed",
 			state,
 			text: unconfirmedDraft.text,
-			caption: unconfirmedDraft.caption ?? (sending && !connected ? WAITING_TO_SEND : CAPTIONS[state]),
+			caption: sending && !connected ? WAITING_TO_SEND : CAPTIONS[state],
 			buttons: sending ? [] : confirmButtons,
 			menu: sending ? [] : ["edit"],
 			// The outbox row this ghost stands in for, when there is one: Discard
 			// must clear both, or the row returns as its own ghost.
 			origin: sameSend === undefined ? { kind: "draft" } : { kind: "draft", clientMutationId: sameSend.id },
+		});
+	}
+	if (parkedDraft !== null && parkedDraft !== undefined) {
+		out.push({
+			key: "draft:parked",
+			state: "parked",
+			text: parkedDraft.text,
+			caption: CAPTIONS.parked,
+			buttons: ["discard"],
+			menu: ["edit"],
+			origin: { kind: "parked" },
 		});
 	}
 	for (const row of recovery) out.push(recoveryGhost(row, confirmButtons));

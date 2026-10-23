@@ -543,11 +543,97 @@ it("replacement parks edited composition separately instead of relabeling or res
 	expect(document.getSnapshot().record.parkedComposition).toBeUndefined();
 	// Discard drops the park without leaving a recovery owner behind.
 	document.replaceDraft("replacement");
-	document.dismiss();
+	document.dismissParked();
 	document.restore();
 	expect(repository.read(destination).parkedComposition).toBeUndefined();
 	expect(repository.read(destination).releasedRecoveryIds).toEqual(["source-a"]);
 	expect(repository.read(destination).draft).toBe("replacement");
+});
+
+it("dismisses only the composition the selected ghost represents", async () => {
+	document.appendEditedRecovery(recovery());
+	document.replaceDraft("/goal one");
+	await document.submit(async () => false);
+	const parked = structuredClone(repository.read(destination).parkedComposition);
+	expect(parked?.composer?.recoveryIds).toEqual(["source-a"]);
+
+	// Discarding the uncertain send leaves the hidden park and its owner alone.
+	document.dismiss();
+	expect(repository.read(destination)).toMatchObject({
+		draft: "",
+		unconfirmed: null,
+		parkedComposition: parked,
+	});
+	expect(repository.read(destination).releasedRecoveryIds).toBeUndefined();
+
+	// Discarding the park releases only its own sources.
+	document.dismissParked();
+	expect(repository.read(destination).parkedComposition).toBeUndefined();
+	expect(repository.read(destination).releasedRecoveryIds).toEqual(["source-a"]);
+});
+
+it("restores only the parked composition beside an unconfirmed send", async () => {
+	document.appendEditedRecovery(recovery());
+	document.replaceDraft("/goal one");
+	await document.submit(async () => false);
+
+	document.restoreParked();
+	expect(document.getSnapshot().record).toMatchObject({
+		draft: "[image 1] tail",
+		unconfirmed: "/goal one",
+		composer: { recoveryIds: ["source-a"] },
+	});
+	expect(document.getSnapshot().record.parkedComposition).toBeUndefined();
+});
+
+it("keeps every park and its ownership across repeated replacements", () => {
+	document.appendEditedRecovery(recovery("source-a"));
+	document.replaceDraft("/goal one");
+	expect(
+		document.appendEditedRecovery(
+			recovery("source-b", {
+				payload: { input: [{ type: "text", text: "B work" }] },
+				attachments: [],
+				composerText: "B work",
+				composerMentions: undefined,
+			}),
+		),
+	).toBe("restored");
+
+	document.replaceDraft("/goal two");
+	expect(document.getSnapshot().record).toMatchObject({
+		draft: "/goal two",
+		parkedComposition: {
+			text: "[image 1] tail\n\n/goal one\n\nB work",
+			composer: { recoveryIds: ["source-a", "source-b"] },
+		},
+	});
+	const parkedImageIds = document.getSnapshot().record.parkedComposition?.images?.map((image) => image.id);
+	expect(parkedImageIds).toHaveLength(1);
+	expect(parkedImageIds?.[0]).toMatch(/^recovered-\d+$/);
+	// Neither parked owner is appended to the latest replacement.
+	expect(document.appendEditedRecovery(recovery("source-a"))).toBe("already-restored");
+	expect(document.appendEditedRecovery(recovery("source-b"))).toBe("already-restored");
+	expect(document.getSnapshot().record.draft).toBe("/goal two");
+});
+
+it("retries an unsaved image after a replacement parks it", () => {
+	document.appendEditedRecovery(recovery());
+	const recoveredImageId = document.getSnapshot().record.images?.[0]?.id;
+	const pending = { id: "pending", marker: 2, mediaType: "image/png", data: "BAUG" };
+	database.exec("PRAGMA query_only = ON");
+	document.addImage(pending);
+	expect(document.getSnapshot().record.images?.map((image) => image.id)).toEqual([recoveredImageId, "pending"]);
+	database.exec("PRAGMA query_only = OFF");
+
+	document.replaceDraft("/goal");
+	expect(document.getSnapshot().error).toBeNull();
+	const parked = document.getSnapshot().record.parkedComposition;
+	expect(parked?.images?.map((image) => image.id)).toEqual([recoveredImageId, "pending"]);
+	expect(document.imagePreviews(parked?.images).map((image) => image.data)).toEqual(["AP8H", "BAUG"]);
+	document.retry();
+	expect(document.getSnapshot().error).toBeNull();
+	expect(document.imagePreviews(parked?.images).map((image) => image.data)).toEqual(["AP8H", "BAUG"]);
 });
 
 it.each(["dismiss", "restore"] as const)(

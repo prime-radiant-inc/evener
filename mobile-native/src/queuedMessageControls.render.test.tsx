@@ -1874,6 +1874,8 @@ it.each([
 	expect(record.parkedComposition?.text).toBe(before.draft);
 	expect(record.parkedComposition?.composer?.recoveryIds).toEqual([source.clientMutationId]);
 	expect(record.parkedComposition?.images?.map((image) => image.id)).toEqual(withImage ? ["old-image"] : []);
+	if (withImage)
+		expect(f.tree.root.findAll((node) => node.props.accessibilityLabel === "Image 3: attachment")).not.toHaveLength(0);
 
 	// The screen's own reconciliation must leave the replacement alone.
 	await act(async () => {
@@ -1911,4 +1913,26 @@ it.each([
 	expect(record.draft).toBe(before.draft);
 	expect(record.parkedComposition).toBeUndefined();
 	expect(record.composer?.recoveryIds).toEqual([source.clientMutationId]);
+});
+
+it("parked ghost Discard keeps an unrelated unconfirmed send", async () => {
+	const f = await mount(false, false, undefined, "skill", {
+		goal: { objective: "ship", status: "active", iterations: 1 },
+	});
+	await editRecoveryIntoDraft(f, "old goal work");
+	await replaceDraftWithGoal(f);
+	await act(async () => {
+		await f.document.submit(async () => false);
+	});
+	await settle();
+
+	const parked = f.tree.root.findAll((node) => node.props.ghost?.origin?.kind === "parked")[0];
+	expect(parked).toBeDefined();
+	await act(async () => {
+		await parked?.props.onAction("discard");
+	});
+
+	const record = f.document.getSnapshot().record;
+	expect(record.parkedComposition).toBeUndefined();
+	expect(record.unconfirmed).toBe("/goal ship");
 });

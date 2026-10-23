@@ -2905,16 +2905,7 @@ export function ConversationScreen({
 			conversation,
 			localPending,
 			unconfirmedSend === null
-				? draft.record.parkedComposition === undefined
-					? null
-					: {
-							text: draft.record.parkedComposition.text,
-							sentText: translateAttachmentMarkers(
-								draft.record.parkedComposition.text,
-								draft.record.parkedComposition.images,
-							),
-							caption: "Replaced by your new draft",
-						}
+				? null
 				: {
 						text: unconfirmedSend,
 						sentText: translateAttachmentMarkers(unconfirmedSend, draft.record.unconfirmedImages),
@@ -2930,6 +2921,15 @@ export function ConversationScreen({
 						readiness: { document: draft, encodingAttachments: imageState.busy },
 					}
 				: undefined,
+			draft.record.parkedComposition === undefined
+				? null
+				: {
+						text: draft.record.parkedComposition.text,
+						sentText: translateAttachmentMarkers(
+							draft.record.parkedComposition.text,
+							draft.record.parkedComposition.images,
+						),
+					},
 		),
 		{ connected, composerLoaded: draft.loaded },
 	);
@@ -3051,6 +3051,11 @@ export function ConversationScreen({
 						nativeMutationTargetKey(route.params.hubId, route.params.ref),
 					);
 			} else if (action === "edit") document.restore();
+			return null;
+		}
+		if (origin.kind === "parked") {
+			if (action === "discard") document.dismissParked();
+			else if (action === "edit") document.restoreParked();
 			return null;
 		}
 		if (origin.kind === "recovery") {
@@ -3251,6 +3256,14 @@ export function ConversationScreen({
 		canEdit: canEditGhost,
 		editHint: ghostEditHint,
 		draftAttachments: <ImageAttachments document={document} selection={imageSelection} uncertain />,
+		parkedAttachments: (
+			<ImageAttachments
+				document={document}
+				selection={imageSelection}
+				uncertain
+				images={draft.record.parkedComposition?.images}
+			/>
+		),
 		onAction: (ghost, action) => {
 			void runGhostAction(ghost, action).then((message) => {
 				if (message) toaster.show(message);
