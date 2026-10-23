@@ -347,6 +347,14 @@ interface SuppressionEntry {
   abandoned: boolean;
 }
 
+// The exact entry object a caller installed, under the epoch identity it put
+// it under. An actor settles only the object it installed, never a lookalike
+// another actor installed for the same identity.
+interface OwnedSuppressionEntry {
+  identity: string;
+  entry: SuppressionEntry;
+}
+
 interface ReadState {
   ticket: ReadTicket;
   accepted?: { lease: AcceptedSourceLease };
@@ -727,19 +735,18 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // it installed and releases only that object: another actor can install an
   // entry with the same identity and requestId, and it is not the caller's to
   // release.
-  #releaseUnconfirmed(owned: readonly { identity: string; entry: SuppressionEntry }[]): void {
+  #releaseUnconfirmed(owned: readonly OwnedSuppressionEntry[]): void {
     const releasedDocuments = new Set<string>();
     for (const candidate of owned) {
-      const entry = this.#suppressedEpochs.get(candidate.identity);
-      if (!entry || entry.confirmed) continue;
-      if (entry !== candidate.entry) {
+      if (!this.#holdsInstalledEntry(candidate.identity, candidate.entry)) {
         // A displacer owns the identity now: this invocation's captured entry is
         // dead to it, and a later restore must not resurrect it.
         candidate.entry.abandoned = true;
         continue;
       }
+      if (candidate.entry.confirmed) continue;
       this.#suppressedEpochs.delete(candidate.identity);
-      releasedDocuments.add(entry.documentKey);
+      releasedDocuments.add(candidate.entry.documentKey);
     }
     if (releasedDocuments.size === 0) return;
     // These entries HID their epoch from listAnnotations, so removing them
@@ -844,17 +851,13 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       return { state: "stale-ticket" };
     }
     this.#liveAcceptances.add(ticket.requestId);
-    // Entry, before the first await: a locally current read of changed content
-    // installs or transfers unconfirmed suppression for the original accepted
-    // epoch, so an overlapping append sees it at its own final guard. A confirmed
-    // entry never transfers.
+    // Entry, before the first await: a locally current changed read installs or
+    // transfers unconfirmed suppression for the original accepted epoch, so an
+    // overlapping append sees it at its own final guard.
     const remembered = this.#readStates.get(documentKey)?.get(ticket.namespaceIncarnation);
     const previous = remembered?.accepted;
-    let provisional: string | undefined;
-    // The exact entry object this invocation installed. Another invocation of
-    // the same ticket can install its own provisional for the same epoch and
-    // requestId, so validation settles only the object this one put there.
-    let installedProvisional: SuppressionEntry | undefined;
+    // The entry-stage provisional this invocation installed, by exact object.
+    let installedProvisional: OwnedSuppressionEntry | undefined;
     // The entry this invocation displaced, restored when its validation says
     // not-current so another owner's provisional survives this release.
     let displacedEntry: SuppressionEntry | undefined;
@@ -872,8 +875,9 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
             confirmed: false,
             abandoned: false,
           };
-          if (this.#installSuppression(identity, provisionalEntry)) installedProvisional = provisionalEntry;
-          provisional = identity;
+          if (this.#installSuppression(identity, provisionalEntry)) {
+            installedProvisional = { identity, entry: provisionalEntry };
+          }
         }
       }
     }
@@ -881,11 +885,12 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     // from the real durable validation result, never a caller-supplied
     // boolean. The release helper signals the boundary.
     // Restore the entry this invocation displaced only while its owner is
-    // still live: the displaced entry belongs to another ticket, and that
-    // ticket's registration is what will confirm or release it. An owner that
-    // retired can never act again, so restoring its entry would leak an
-    // unconfirmed suppression forever. Release this invocation's own install
-    // instead, identity-checked, so the map ends empty. An unconfirmed entry
+    // still live: the displaced entry belongs to another ticket, or an earlier
+    // invocation of this ticket, and that owner's registration is what will
+    // confirm or release it. An owner that retired can never act again, so
+    // restoring its entry would leak an unconfirmed suppression forever.
+    // Release this invocation's own install instead, released by object
+    // reference, so the map ends empty. An unconfirmed entry
     // always carries a requestId: suppressEpochForExpiry installs confirmed
     // entries, and the reset's provisioning names its read's ticket.
     const restoreDisplacedOrRelease = (identity: string, owned: SuppressionEntry): void => {
@@ -902,22 +907,22 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       this.#releaseUnconfirmed([{ identity, entry: owned }]);
     };
     const finishValidation = (confirmFor?: string): void => {
-      if (provisional === undefined || installedProvisional === undefined) return;
-      const entry = this.#suppressedEpochs.get(provisional);
-      if (entry !== installedProvisional) {
+      if (installedProvisional === undefined) return;
+      const { identity, entry: owned } = installedProvisional;
+      if (!this.#holdsInstalledEntry(identity, owned)) {
         // The map holds a displacer's object: this invocation's install never
         // reaches its confirmation, so mark it dead against any stale restore.
-        installedProvisional.abandoned = true;
+        owned.abandoned = true;
         return;
       }
       // Confirm only when the changed path fenced exactly the epoch this
       // provisional names: a peer may have advanced the head in between, and a
       // confirmation for the dead epoch would never be released.
-      if (confirmFor !== undefined && provisional === confirmFor) {
-        entry.confirmed = true;
+      if (confirmFor !== undefined && identity === confirmFor) {
+        owned.confirmed = true;
         return;
       }
-      restoreDisplacedOrRelease(provisional, entry);
+      restoreDisplacedOrRelease(identity, owned);
     };
     // A stale or unchanged validation releases the provisional restriction a
     // concurrent handoff may have refused against. That refusal only records
@@ -1109,7 +1114,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // own hook outcome and its own fence-or-reject settle, so this arm owes
       // nothing for it.
       const restoreInstalledSuppression = (): boolean => {
-        if (this.#suppressedEpochs.get(suppressionIdentity) !== installedSuppression) {
+        if (!this.#holdsInstalledEntry(suppressionIdentity, installedSuppression)) {
           // A displacer owns the identity now: this invocation's confirmed
           // install is dead to it, and no stale restore may re-install it.
           installedSuppression.abandoned = true;
@@ -1120,7 +1125,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         // is not this invocation's to delete. A foreign prior is restored only
         // while its owner never abandoned it, so a live sibling's provisional
         // stays protected until that owner settles it.
-        if (priorSuppression === undefined || priorSuppression === installedProvisional) {
+        if (priorSuppression === undefined || priorSuppression === installedProvisional?.entry) {
           this.#suppressedEpochs.delete(suppressionIdentity);
         } else if (priorSuppression.abandoned || !this.#installSuppression(suppressionIdentity, priorSuppression)) {
           this.#suppressedEpochs.delete(suppressionIdentity);
@@ -1239,9 +1244,9 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     } finally {
       this.#liveAcceptances.delete(ticket.requestId);
       // Retire only this invocation's own registration: a newer read that
-      // registered while this acceptance was settling keeps its ticket. One
-      // lookup serves the check and the retirement; #ownsRegistration stays
-      // for callers with no local handle.
+      // registered while this acceptance was settling keeps its ticket. The
+      // requestId key is shared by overlapping invocations of one ticket, so
+      // the registration this retires is the one they all registered.
       const issuedForDocument = this.#issuedReads.get(documentKey);
       if (issuedForDocument?.get(ticket.namespaceIncarnation)?.requestId === ticket.requestId) {
         issuedForDocument.delete(ticket.namespaceIncarnation);
@@ -1255,6 +1260,11 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // registration they own.
   #ownsRegistration(documentKey: string, namespaceIncarnation: string, requestId: string): boolean {
     return this.#issuedReads.get(documentKey)?.get(namespaceIncarnation)?.requestId === requestId;
+  }
+
+  // An actor settles only the entry object it installed under an identity.
+  #holdsInstalledEntry(identity: string, entry: SuppressionEntry): boolean {
+    return this.#suppressedEpochs.get(identity) === entry;
   }
 
   // Whether a prior reset in this adapter retired the incarnation. Guards the
@@ -2022,7 +2032,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
           // longer durable, whose rows and expiry the peer deleted and whose
           // namespace wake is the publisher - leaves the entry inert here.
           if (
-            this.#suppressedEpochs.get(identity) === record.suppression &&
+            this.#holdsInstalledEntry(identity, record.suppression) &&
             !(await this.#durableIncarnationIs(record.namespace, record.namespaceIncarnation))
           ) {
             this.#suppressedEpochs.delete(identity);
@@ -2213,18 +2223,10 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     expectedIncarnation: string,
   ): Promise<{ committed: boolean; incarnation: string }> {
     const namespaceKey = annotationNamespaceKey(namespace);
-    // Reset's suppression is provisional until its transaction commits: the
-    // entries still cancel in-flight handoffs and hide listings while the
-    // reset runs, but an ABORTED reset must not leave confirmed suppression
-    // behind - surviving entries would vanish live annotations from listings
-    // and let an unchanged reread treat the epoch as expired, deleting
-    // payloads the reset never removed. An independently confirmed expiry (a
-    // changed read's proof) keeps its own entry untouched.
-    // The installed entry objects, by reference. A changed re-acceptance on the
-    // same ticket installs an entry for the same epoch with the same requestId,
-    // so this reset's matchers must act on the exact objects it installed and
-    // never on a lookalike another actor put in their place.
-    const provisioned: { identity: string; entry: SuppressionEntry }[] = [];
+    // Reset's suppression is provisional until its transaction commits, so an
+    // ABORTED reset cannot leave confirmed suppression behind; an independently
+    // confirmed expiry keeps its own entry untouched.
+    const provisioned: OwnedSuppressionEntry[] = [];
     for (const [documentKey, states] of this.#readStates) {
       if (documentKeyNamespace(documentKey) !== namespaceKey) continue;
       const state = states.get(expectedIncarnation);
@@ -2246,7 +2248,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     }
     const confirmProvisioned = (): void => {
       for (const { identity, entry } of provisioned) {
-        if (this.#suppressedEpochs.get(identity) === entry && !entry.confirmed) entry.confirmed = true;
+        if (this.#holdsInstalledEntry(identity, entry) && !entry.confirmed) entry.confirmed = true;
       }
     };
     // An aborted or non-rotating reset releases what it provisioned. The release

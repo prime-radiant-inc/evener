@@ -827,9 +827,8 @@ test("a non-committing reset releases only the provisional it provisioned", asyn
 // provisional and reopens the append window it protects.
 test("a non-committing reset releases only the entry it provisioned over a same-ticket acceptance", async () => {
   const resetAttempted = deferred<void>();
-  let fixture: AnnotationFixture | undefined;
   let holds: ReturnType<typeof holdNextTransactions> | undefined;
-  fixture = await openAnnotationFixture({
+  const fixture = await openAnnotationFixture({
     databaseName: "annotation-reset-same-ticket-provisional",
     origin: "https://reset.example",
     beforeCommit: (operation) => {
@@ -884,8 +883,7 @@ test("a non-committing reset releases only the entry it provisioned over a same-
 // ticket's requestId deletes the second invocation's live provisional and
 // reopens the append window it protects.
 test("a stale same-ticket acceptance keeps its successor's provisional alive", async () => {
-  let fixture: AnnotationFixture | undefined;
-  fixture = await openAnnotationFixture({
+  const fixture = await openAnnotationFixture({
     databaseName: "annotation-same-ticket-provisional-owner",
     origin: "https://coordination.example",
   });
