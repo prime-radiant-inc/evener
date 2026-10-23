@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/execsupport/shellquote"
@@ -373,8 +374,17 @@ func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight
 	// this source, so the default does not shadow it; every other source keeps
 	// the push — -build-source cross-compiles, and an explicitly named artifact
 	// keeps its own terminal mismatch refusal, which names the flag to fix.
+	guardedWrite := func(target string) error {
+		if err := m.refuseNewerInstalledProtocol(ctx, host, target); err != nil {
+			return err
+		}
+		if beforeWrite != nil {
+			return beforeWrite(target)
+		}
+		return nil
+	}
 	if m.canBuild() && !m.ownExecutableCannotServe(facts) {
-		return m.deployPush(ctx, host, facts, beforeWrite, retainedTarget...)
+		return m.deployPush(ctx, host, facts, guardedWrite, retainedTarget...)
 	}
 	if len(retainedTarget) != 0 {
 		// The installer writes a share directory and replaces the launch path
@@ -394,9 +404,26 @@ func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight
 			return "", fmt.Errorf("%w: host %q: this controller's own executable targets %s/%s but the host runs %s/%s, and the installer fallback has no published artifact to pin for this controller's build (a dev or dirty controller has none, and a release needs a stamped tag); %s",
 				errOwnExecutableCannotServe, host.Name, runtime.GOOS, runtime.GOARCH, facts.OS, facts.Arch, m.deployHelp())
 		}
-		return m.deployInstaller(ctx, host, facts, beforeWrite)
+		return m.deployInstaller(ctx, host, facts, guardedWrite)
 	}
-	return m.deployInstaller(ctx, host, facts, beforeWrite)
+	return m.deployInstaller(ctx, host, facts, guardedWrite)
+}
+
+// refuseNewerInstalledProtocol re-reads the executable at target immediately
+// before a deploy writes over it. Preflight facts can age while a build stages,
+// and another controller may install a newer build in that window. The
+// executable's own contract is the only current evidence; a read failure,
+// including a missing target on a fresh install, is not proof of a newer
+// installation and leaves the existing deploy rules in charge.
+func (m *Manager) refuseNewerInstalledProtocol(ctx context.Context, host hostreg.Host, target string) error {
+	probeHost := host
+	probeHost.EvenerPath = target
+	described, _, err := m.describeLaunchContract(ctx, probeHost)
+	if err == nil && appwire.NewerProtocolVersion(described.Protocol) {
+		return fmt.Errorf("%w: host %q's installed executable speaks %q, newer than this controller's %q; update the controller instead of downgrading the host",
+			ErrHostProtocolNewer, host.Name, described.Protocol, appwire.ProtocolVersion)
+	}
+	return nil
 }
 
 // TargetMatches reports whether a build for buildOS/buildArch can serve a host
