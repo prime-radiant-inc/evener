@@ -160,7 +160,7 @@ elif cmd == 'ps':
     pid=str(s['pid'])
     if f.get('generation_change') and s['built'] and s['pid']==101: birth='Fri Oct 16 08:01:00 2026'
     else: birth='Fri Oct 16 08:00:00 2026'
-    if args==['-p',pid,'-o','uid=']: print(os.getuid()+1 if f.get('wrong_user') else os.getuid())
+    if args==['-p',pid,'-o','uid=']: print(('  ' if f.get('padded_uid') else '')+str(os.getuid()+1 if f.get('wrong_user') else os.getuid()))
     elif args==['-p',pid,'-o','lstart=']: print(birth)
     elif args==['-p',pid,'-ww','-o','command=']: print(' '.join(live_argv())+(' unexpected' if f.get('wrong_argv') else ''))
     else: refuse()
@@ -255,6 +255,7 @@ else: refuse()
 # Last column: (build calls, selected kickstart calls).
 cases=[
  ('selected_endpoint',{},[],True,(1,1)),
+ ('padded_uid',{'padded_uid':True},[],True,(1,1)),
  ('inplace_flag',{'inplace':True},[],True,(1,1)),
  ('inplace_space_flag',{'inplace':True,'separate_flags':True},[],True,(1,1)),
  ('inplace_config',{'inplace':True,'toml_listener':True},[],True,(1,1)),

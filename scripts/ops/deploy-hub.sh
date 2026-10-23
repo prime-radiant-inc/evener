@@ -295,7 +295,10 @@ function processArgvMatches(actual, def, report) {
 async function processIdentity(def, ms = inspectMS, evidence) {
     if (!def.pid) return '';
     const pid = String(def.pid);
-    need(await text('ps', ['-p', pid, '-o', 'uid='], {ms}) === String(uid), 'selected service effective user differs');
+    // ps pads the numeric uid field; trim only this numeric field, never the
+    // command arguments or other identity text.
+    const ownerUID = (await text('ps', ['-p', pid, '-o', 'uid='], {ms})).trim();
+    need(/^[0-9]+$/.test(ownerUID) && Number(ownerUID) === uid, 'selected service effective user differs');
     const birth = await text('ps', ['-p', pid, '-o', 'lstart='], {ms});
     need(string(birth), 'selected process birth unavailable');
     const actual = await text('ps', ['-p', pid, '-ww', '-o', 'command='], {ms});
