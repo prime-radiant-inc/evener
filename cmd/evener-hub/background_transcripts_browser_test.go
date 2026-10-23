@@ -634,16 +634,16 @@ func assertBackgroundTwoTabLive(t *testing.T, milestones []skillGuardMilestone, 
 	t.Helper()
 	type renderedRow struct {
 		ID     string `json:"id"`
-		TurnID string `json:"turnId"`
+		TurnID string `json:"turnId"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field turnId.
 		Text   string `json:"text"`
 	}
 	var live struct {
 		Tabs []struct {
-			BeforeRows []renderedRow `json:"beforeRows"`
-			AfterRows  []renderedRow `json:"afterRows"`
+			BeforeRows []renderedRow `json:"beforeRows"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field beforeRows.
+			AfterRows  []renderedRow `json:"afterRows"`  //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field afterRows.
 			Items      []struct {
 				backgroundItemIdentity
-				CallID string `json:"callId"`
+				CallID string `json:"callId"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field callId.
 			} `json:"items"`
 			Output string `json:"output"`
 		} `json:"tabs"`
@@ -656,13 +656,14 @@ func assertBackgroundTwoTabLive(t *testing.T, milestones []skillGuardMilestone, 
 	}
 	for index, tab := range live.Tabs {
 		for phase, rows := range [][]renderedRow{tab.BeforeRows, tab.AfterRows} {
-			var text string
+			var textBuilder strings.Builder
 			for _, row := range rows {
 				if row.ID == "" || row.TurnID != producer.assistantTurnID {
 					t.Errorf("tab %d phase %d rendered a different producer: %+v", index, phase, row)
 				}
-				text += row.Text
+				textBuilder.WriteString(row.Text)
 			}
+			text := textBuilder.String()
 			if strings.Count(text, backgroundBeforeEviction) != 1 || strings.Count(text, backgroundAfterEviction) != phase {
 				t.Errorf("tab %d phase %d has missing or duplicate live output: %q", index, phase, text)
 			}

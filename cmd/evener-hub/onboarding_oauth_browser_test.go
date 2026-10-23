@@ -305,12 +305,12 @@ func testOnboardingOAuthAt(t *testing.T, scenario string, view onboardingView) {
 		stage := r.URL.Query().Get("stage")
 		entries, err := rendezvous.List(guard.run)
 		if err != nil {
-			http.Error(w, err.Error(), 500)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		device, exchanges, _, models := fixture.counts()
 		if len(entries) != 0 {
-			http.Error(w, "session before Start", 500)
+			http.Error(w, "session before Start", http.StatusInternalServerError)
 			return
 		}
 		switch stage {
@@ -325,12 +325,12 @@ func testOnboardingOAuthAt(t *testing.T, scenario string, view onboardingView) {
 				stages[stage] = true
 				stageMu.Unlock()
 			default:
-				http.Error(w, "issuer has not observed the poll yet", 500)
+				http.Error(w, "issuer has not observed the poll yet", http.StatusInternalServerError)
 				return
 			}
 		case "oauth-cancelled-intent", "oauth-changed-intent":
 			if exchanges != 0 || models != 0 {
-				http.Error(w, fmt.Sprintf("late effect before intent was settled: exchanges=%d models=%d", exchanges, models), 500)
+				http.Error(w, fmt.Sprintf("late effect before intent was settled: exchanges=%d models=%d", exchanges, models), http.StatusInternalServerError)
 				return
 			}
 			stageMu.Lock()
@@ -350,11 +350,11 @@ func testOnboardingOAuthAt(t *testing.T, scenario string, view onboardingView) {
 			// flow may have started yet, or its exchange would stand in for
 			// the retired one.
 			if device != 1 {
-				http.Error(w, fmt.Sprintf("device starts=%d at settlement, want only the retired flow's", device), 500)
+				http.Error(w, fmt.Sprintf("device starts=%d at settlement, want only the retired flow's", device), http.StatusInternalServerError)
 				return
 			}
 			if exchanges != 1 {
-				http.Error(w, fmt.Sprintf("retired poll exchanges=%d, want its in-flight exchange completed once", exchanges), 500)
+				http.Error(w, fmt.Sprintf("retired poll exchanges=%d, want its in-flight exchange completed once", exchanges), http.StatusInternalServerError)
 				return
 			}
 			stageMu.Lock()
@@ -362,7 +362,7 @@ func testOnboardingOAuthAt(t *testing.T, scenario string, view onboardingView) {
 			stageMu.Unlock()
 		case "oauth-cancelled":
 			if exchanges != 1 {
-				http.Error(w, fmt.Sprintf("released late poll exchanges=%d, want the in-flight request completed once", exchanges), 500)
+				http.Error(w, fmt.Sprintf("released late poll exchanges=%d, want the in-flight request completed once", exchanges), http.StatusInternalServerError)
 				return
 			}
 			// Cancel retires the dialog's ownership, not an already-running
@@ -373,11 +373,11 @@ func testOnboardingOAuthAt(t *testing.T, scenario string, view onboardingView) {
 			// established by a count.
 			record, err := openai.LoadAuth(hub.state, "openai-codex")
 			if err != nil {
-				http.Error(w, fmt.Sprintf("cancelled flow saved no usable OAuth record: %v", err), 500)
+				http.Error(w, fmt.Sprintf("cancelled flow saved no usable OAuth record: %v", err), http.StatusInternalServerError)
 				return
 			}
 			if record.Provider != "openai-codex" || record.AccessToken != fixture.access || record.Email != "onboarding-oauth@example.invalid" {
-				http.Error(w, "cancelled flow saved a record that does not match the scripted exchange", 500)
+				http.Error(w, "cancelled flow saved a record that does not match the scripted exchange", http.StatusInternalServerError)
 				return
 			}
 			stageMu.Lock()
@@ -385,20 +385,20 @@ func testOnboardingOAuthAt(t *testing.T, scenario string, view onboardingView) {
 			stageMu.Unlock()
 		case "oauth-endpoint-change":
 			if err := editOnboardingEndpoint(r.Context(), hub, guard, provider.URL+"/moved/v1"); err != nil {
-				http.Error(w, err.Error(), 500)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 		case "oauth-endpoint-changed":
 			if exchanges != 1 {
-				http.Error(w, fmt.Sprintf("released late poll exchanges=%d, want the in-flight request completed once", exchanges), 500)
+				http.Error(w, fmt.Sprintf("released late poll exchanges=%d, want the in-flight request completed once", exchanges), http.StatusInternalServerError)
 				return
 			}
 			if models != 0 {
-				http.Error(w, fmt.Sprintf("changed flow checked models: models=%d", models), 500)
+				http.Error(w, fmt.Sprintf("changed flow checked models: models=%d", models), http.StatusInternalServerError)
 				return
 			}
 			if _, err := openai.LoadAuth(hub.state, "openai-codex"); !errors.Is(err, openai.ErrAuthNotFound) {
-				http.Error(w, fmt.Sprintf("changed flow persisted access: %v", err), 500)
+				http.Error(w, fmt.Sprintf("changed flow persisted access: %v", err), http.StatusInternalServerError)
 				return
 			}
 			stageMu.Lock()
@@ -430,7 +430,7 @@ func testOnboardingOAuthAt(t *testing.T, scenario string, view onboardingView) {
 		args = append(args, "--evidence-dir", guard.evidenceDir)
 	}
 	cmd := exec.CommandContext(ctx, "node", args...)
-	cmd.Dir = filepath.Join(guard.repo, "cmd/evener-hub/frontend")
+	cmd.Dir = filepath.Join(guard.repo, "cmd", "evener-hub", "frontend")
 	cmd.Cancel = func() error { return onboardingGuardCancel(cmd.Process) }
 	cmd.WaitDelay = 15 * time.Second
 	out, err := cmd.CombinedOutput()
@@ -522,7 +522,7 @@ func TestOnboardingEvidenceGuardCancellationStopsBrowser(t *testing.T) {
 		"--work", t.TempDir(),
 		"--scenario", "auto",
 	)
-	cmd.Dir = filepath.Join(repo, "cmd/evener-hub/frontend")
+	cmd.Dir = filepath.Join(repo, "cmd", "evener-hub", "frontend")
 	cmd.Cancel = func() error { return onboardingGuardCancel(cmd.Process) }
 	cmd.WaitDelay = 15 * time.Second
 	var stderr strings.Builder
@@ -622,9 +622,9 @@ func onboardingGuardProcessSnapshot() (string, error) {
 
 func onboardingGuardProfileArg(command string) string {
 	const prefix = "--user-data-dir="
-	for _, field := range strings.Fields(command) {
-		if strings.HasPrefix(field, prefix) {
-			return strings.TrimPrefix(field, prefix)
+	for field := range strings.FieldsSeq(command) {
+		if profile, ok := strings.CutPrefix(field, prefix); ok {
+			return profile
 		}
 	}
 	return ""
@@ -634,7 +634,7 @@ func onboardingGuardProfileArg(command string) string {
 // Chrome launched for a skillguard profile, with their captured identity.
 func parseOnboardingGuardBrowsers(snapshot string, parent int) []onboardingGuardBrowser {
 	var browsers []onboardingGuardBrowser
-	for _, line := range strings.Split(snapshot, "\n") {
+	for line := range strings.SplitSeq(snapshot, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 4 {
 			continue
@@ -664,7 +664,7 @@ func parseOnboardingGuardBrowsers(snapshot string, parent int) []onboardingGuard
 // a process row: the same pid, the same process group, and the same profile
 // argument. A reused numeric id with another pid or argv is not ownership.
 func onboardingGuardBrowserAlive(snapshot string, browser onboardingGuardBrowser) bool {
-	for _, line := range strings.Split(snapshot, "\n") {
+	for line := range strings.SplitSeq(snapshot, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 4 {
 			continue
@@ -725,7 +725,7 @@ func onboardingGuardBrowsersGroupAlive(snapshot string, browsers []onboardingGua
 // onboardingGuardBrowserGroupAlive reports whether any process still belongs
 // to the captured browser's process group.
 func onboardingGuardBrowserGroupAlive(snapshot string, browser onboardingGuardBrowser) bool {
-	for _, line := range strings.Split(snapshot, "\n") {
+	for line := range strings.SplitSeq(snapshot, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 4 {
 			continue
