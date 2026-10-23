@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -165,6 +166,20 @@ func TestRetryContinuationJourney(t *testing.T) {
 	t.Run("browser/delayed-pending", func(t *testing.T) {
 		runRetryDelayedPendingJourney(t, ctx, stack, client, provider)
 	})
+	// The native one-owner journeys: two mounted views of one binding, a newer
+	// running/successful/failed turn, and a remount while a durable row is
+	// unresolved. Each scripts only the external provider; faults stay at the
+	// WebSocket boundary and the milestones are the native driver's own
+	// assertions.
+	t.Run("native/two-views", func(t *testing.T) {
+		runRetryNativeTwoViewsJourney(t, ctx, stack, client, provider)
+	})
+	t.Run("native/latest-only", func(t *testing.T) {
+		runRetryNativeLatestOnlyJourney(t, ctx, stack, client, provider)
+	})
+	t.Run("native/remount-unresolved", func(t *testing.T) {
+		runRetryNativeRemountJourney(t, ctx, stack, client, provider)
+	})
 }
 
 func retryContinuationDriverCommand(ctx context.Context, args ...string) *exec.Cmd {
@@ -173,6 +188,36 @@ func retryContinuationDriverCommand(ctx context.Context, args ...string) *exec.C
 	// profile before the existing bounded forced-stop policy takes over.
 	configureBackgroundDriverCommand(cmd)
 	return cmd
+}
+
+// retryNativeJourneyDriver runs the actual native screen test against the real
+// hub. The fixture only scripts the external provider; the WebSocket fault is
+// the driver's own transport hold.
+func retryNativeJourneyDriver(ctx context.Context, stack hubStack, dir, milestonePath, ref, mode string) error {
+	fixture := map[string]any{
+		"url":           hubedge.AuthURLFor("http://"+stack.addr, stack.token),
+		"origin":        "http://" + stack.addr,
+		"token":         stack.token,
+		"artifactDir":   dir,
+		"milestonePath": milestonePath,
+		"scenarios":     []map[string]string{{"ref": ref, "mode": mode}},
+	}
+	data, err := json.Marshal(fixture)
+	if err != nil {
+		return err
+	}
+	fixturePath := filepath.Join(dir, "connection.json")
+	if err := os.WriteFile(fixturePath, data, 0600); err != nil {
+		return err
+	}
+	driver := retryContinuationDriverCommand(ctx, "node_modules/vitest/vitest.mjs", "run", "--maxWorkers=1", "src/ConversationScreen.retryJourney.test.tsx")
+	driver.Dir = "../../mobile-native"
+	driver.Env = append(os.Environ(), "EVENER_RETRY_JOURNEY="+fixturePath)
+	output, err := driver.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("native driver: %w\n%s", err, output)
+	}
+	return nil
 }
 
 // startRetryJourneyThread starts one thread whose first provider request is a
@@ -485,5 +530,184 @@ func runRetryDelayedPendingJourney(t *testing.T, ctx context.Context, stack hubS
 	}
 	if len(thread.Turns) != 3 || thread.Turns[1].Status != "failed" || thread.Turns[2].Status != "completed" {
 		t.Fatal("expected the prelude, the failed original turn, and one completed continuation")
+	}
+}
+
+// runRetryNativeTwoViewsJourney mounts two views of one session, presses the
+// shared Retry once, and holds the provider response while the native driver
+// independently holds acceptance at the WebSocket boundary and proves the
+// durable row's identity matches the wire, with no second identity on repeat.
+func runRetryNativeTwoViewsJourney(t *testing.T, ctx context.Context, stack hubStack, client *appwire.Client, provider *fakellm.Server) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	original := "RETRY_ORIGINAL_native_two_views"
+	ref := startRetryJourneyThread(t, ctx, stack, client, provider, original)
+	calls := retryJourneyCalls(ctx, provider)
+	dir := t.TempDir()
+	milestonePath := filepath.Join(dir, "milestones.jsonl")
+	driverDone := make(chan error, 1)
+	go func() {
+		driverDone <- retryNativeJourneyDriver(ctx, stack, dir, milestonePath, ref, "two-views")
+	}()
+
+	continuation := nextRetryCall(ctx, t, calls, "the one continuation", driverDone)
+	if texts := continuation.Texts(); !slices.Contains(texts, "user: "+original) || !slices.Contains(texts, "user: continue") {
+		t.Fatalf("continuation lost the original input: %v", texts)
+	}
+	if texts := continuation.Texts(); slices.Contains(texts, "user: RETRY_UNSENT_DRAFT") {
+		t.Fatal("the staged draft reached the provider")
+	}
+	// Hold acceptance until the driver has observed the unresolved durable row
+	// in both mounted views.
+	waitRetryMilestone(ctx, t, milestonePath, "retry-held", driverDone)
+	continuation.RespondToolCall("communicate", communicateArgs("RETRY_DONE_two-views"))
+
+	if err := <-driverDone; err != nil {
+		t.Fatal(err)
+	}
+	thread := readRetryJourneyThread(ctx, t, client, ref)
+	counts := retryUserInputCounts(thread)
+	if counts[original] != 1 || counts["continue"] != 1 || len(counts) != 2 {
+		t.Fatalf("authoritative user input counts: %v", counts)
+	}
+	if len(thread.Turns) != 3 || thread.Turns[1].Status != "failed" || thread.Turns[2].Status != "completed" {
+		t.Fatal("expected the prelude, the failed original turn, and one completed continuation")
+	}
+	assertRetryNativeCanonicalIDs(t, milestonePath, thread)
+}
+
+// runRetryNativeLatestOnlyJourney advances a real session through a newer
+// running turn with no display items, a successful turn, and a newer failed
+// turn. The older action must be gone at every step and a stale callback must
+// submit nothing; only the newer failure's Retry sends the one continuation.
+func runRetryNativeLatestOnlyJourney(t *testing.T, ctx context.Context, stack hubStack, client *appwire.Client, provider *fakellm.Server) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	original := "RETRY_ORIGINAL_native_latest_only"
+	ref := startRetryJourneyThread(t, ctx, stack, client, provider, original)
+	calls := retryJourneyCalls(ctx, provider)
+	dir := t.TempDir()
+	milestonePath := filepath.Join(dir, "milestones.jsonl")
+	driverDone := make(chan error, 1)
+	go func() {
+		driverDone <- retryNativeJourneyDriver(ctx, stack, dir, milestonePath, ref, "latest-only")
+	}()
+
+	running := nextRetryCall(ctx, t, calls, "the newer running turn", driverDone)
+	if texts := running.Texts(); !slices.Contains(texts, "user: "+original) || !slices.Contains(texts, "user: RETRY_RUNNING_NEW") {
+		t.Fatalf("newer running turn lost its inputs: %v", texts)
+	}
+	// Hold the running turn until the native driver has observed the newer
+	// running identity with zero items and no older action.
+	waitRetryMilestone(ctx, t, milestonePath, "running-empty", driverDone)
+	running.RespondToolCall("communicate", communicateArgs("RETRY_RUNNING_DONE"))
+
+	failing := nextRetryCall(ctx, t, calls, "the newer failing turn", driverDone)
+	if texts := failing.Texts(); !slices.Contains(texts, "user: RETRY_NEWER_FAIL") {
+		t.Fatalf("newer failing turn lost its input: %v", texts)
+	}
+	failing.RespondHTTPError(http.StatusBadRequest, "retry_fixture_native_newer")
+
+	newest := nextRetryCall(ctx, t, calls, "the newest retry", driverDone)
+	if texts := newest.Texts(); !slices.Contains(texts, "user: continue") {
+		t.Fatalf("the newer failure's Retry did not send the continuation: %v", texts)
+	}
+	if texts := newest.Texts(); slices.Contains(texts, "user: RETRY_UNSENT_DRAFT") {
+		t.Fatal("the staged draft reached the provider")
+	}
+	waitRetryMilestone(ctx, t, milestonePath, "newest-retry", driverDone)
+	newest.RespondToolCall("communicate", communicateArgs("RETRY_NEWEST_DONE"))
+
+	if err := <-driverDone; err != nil {
+		t.Fatal(err)
+	}
+	thread := readRetryJourneyThread(ctx, t, client, ref)
+	counts := retryUserInputCounts(thread)
+	if counts[original] != 1 || counts["RETRY_RUNNING_NEW"] != 1 || counts["RETRY_NEWER_FAIL"] != 1 || counts["continue"] != 1 {
+		t.Fatalf("authoritative user input counts: %v", counts)
+	}
+	if len(thread.Turns) != 5 ||
+		thread.Turns[1].Status != "failed" || thread.Turns[2].Status != "completed" ||
+		thread.Turns[3].Status != "failed" || thread.Turns[4].Status != "completed" {
+		t.Fatalf("turn outcomes: %+v", thread.Turns)
+	}
+	assertRetryNativeCanonicalIDs(t, milestonePath, thread)
+}
+
+// runRetryNativeRemountJourney replaces the view tree while the acceptance
+// reply is outstanding. The new attachments must read the same unresolved
+// durable row, keep Retry inactive, and let the outbox recover exactly one
+// continuation after the lost reply is replayed on reconnect.
+func runRetryNativeRemountJourney(t *testing.T, ctx context.Context, stack hubStack, client *appwire.Client, provider *fakellm.Server) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	original := "RETRY_ORIGINAL_native_remount"
+	ref := startRetryJourneyThread(t, ctx, stack, client, provider, original)
+	calls := retryJourneyCalls(ctx, provider)
+	dir := t.TempDir()
+	milestonePath := filepath.Join(dir, "milestones.jsonl")
+	driverDone := make(chan error, 1)
+	go func() {
+		driverDone <- retryNativeJourneyDriver(ctx, stack, dir, milestonePath, ref, "remount-unresolved")
+	}()
+
+	continuation := nextRetryCall(ctx, t, calls, "the lost-reply continuation", driverDone)
+	if texts := continuation.Texts(); !slices.Contains(texts, "user: "+original) || !slices.Contains(texts, "user: continue") {
+		t.Fatalf("continuation lost the original input: %v", texts)
+	}
+	if texts := continuation.Texts(); slices.Contains(texts, "user: RETRY_UNSENT_DRAFT") {
+		t.Fatal("the staged draft reached the provider")
+	}
+	// Hold the acceptance until the driver has remounted and proved the new
+	// view keeps Retry inactive against the same durable row.
+	waitRetryMilestone(ctx, t, milestonePath, "remounted-unresolved", driverDone)
+	continuation.RespondToolCall("communicate", communicateArgs("RETRY_RECOVERED_REMOUNT"))
+
+	if err := <-driverDone; err != nil {
+		t.Fatal(err)
+	}
+	thread := readRetryJourneyThread(ctx, t, client, ref)
+	counts := retryUserInputCounts(thread)
+	if counts[original] != 1 || counts["continue"] != 1 || len(counts) != 2 {
+		t.Fatalf("authoritative user input counts after recovery: %v", counts)
+	}
+	if len(thread.Turns) != 3 || thread.Turns[1].Status != "failed" || thread.Turns[2].Status != "completed" {
+		t.Fatal("expected the prelude, the failed original turn, and one completed continuation")
+	}
+	assertRetryNativeCanonicalIDs(t, milestonePath, thread)
+}
+
+// Compare the native canonical model's actual IDs, including its successor,
+// with an independent hub read, not provider output copy or an invented ID.
+func assertRetryNativeCanonicalIDs(t *testing.T, path string, thread appwire.Thread) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var event struct {
+			Milestone string `json:"milestone"`
+			Detail    struct {
+				TurnIDs []string `json:"turnIds"`
+			} `json:"detail"`
+		}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Milestone == "canonical-settled" {
+			seen = event.Detail.TurnIDs
+		}
+	}
+	want := make([]string, len(thread.Turns))
+	for i, turn := range thread.Turns {
+		want[i] = turn.ID
+	}
+	if !slices.Equal(seen, want) {
+		t.Fatalf("native canonical IDs %v differ from hub IDs %v", seen, want)
 	}
 }

@@ -99,10 +99,14 @@ retries keep their own recovery behavior.
 
 Retry appears only on the newest failed turn. Once a newer turn starts, even
 before it shows any item, the older failure keeps its message but loses the
-action; a newer failure offers its own. Retry is inactive while that client
-still has an unresolved send or queue in its outbox, including after a reload,
-and a repeated press while it is inactive sends nothing. Pressing an older
-action after the conversation has advanced does not submit either.
+action; a newer failure offers its own. The canonical session store owns the
+newest-turn identity; the durable outbox owns unresolved submissions. Native
+views of the same session share one binding. Unknown or failed canonical or
+pending reads keep Retry inactive until fresh owner state is available.
+Retry stays inactive while that client has an unresolved send or queue until
+the outbox settles, including after a reload or remount. A repeated press
+while it is inactive sends nothing. Pressing an older action after the
+conversation has advanced does not submit either.
 
 A useful steering message is specific:
 
