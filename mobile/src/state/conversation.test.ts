@@ -20250,6 +20250,93 @@ describe("store-owned canonical read validity and pending readiness", () => {
 		expect(store.getState().canonicalSession()).not.toBeNull();
 	});
 
+	// A deferred older page is not a latest-window read: its own invalidation
+	// branch must not rewrite whichever read state the latest authority is in.
+	function holdInvalidatedHistory(store: ReturnType<typeof createConversationStore>, service: FakeConversationService) {
+		const held = store.getState().conversation!;
+		store.setState({
+			conversation: {
+				...held,
+				history: held.history && {
+					...held.history,
+					invalidatedAtGeneration: 0,
+					awaited: { bootGeneration: "1", epoch: 1 },
+					pendingIncarnation: "inc-2",
+				},
+			},
+			olderCursor: "cursor-1",
+		});
+		// The page of the incarnation the thread already awaits defers: the merge
+		// leaves the invalidated history in place with no newer signal.
+		service.olderItems = {
+			turnsPage: {
+				data: [wireTurn("t-old", 5, 1)],
+				nextCursor: "cursor-2",
+				bootGeneration: "1",
+				epoch: 1,
+				snapshot: { incarnation: "inc-2", length: 1 },
+			},
+			nextCursor: "cursor-2",
+		};
+	}
+
+	it("a deferred older page during a held latest read keeps it reading", async () => {
+		const service = new FakeConversationService();
+		service.openConv = makeConversation({}, true);
+		const store = createConversationStore();
+		await store.getState().openProjected(service, createFakeSink(), "ref-1");
+		expect(store.getState().latestReadState).toBe("ready");
+		holdInvalidatedHistory(store, service);
+
+		const latestRead = deferred<ConversationReadProjection>();
+		service.readProjectionBlock = latestRead.promise;
+		const readStarted = deferred<void>();
+		const readProjection = service.readProjection.bind(service);
+		service.readProjection = async (ref: string) => {
+			readStarted.resolve();
+			return readProjection(ref);
+		};
+		const latest = store.getState().ensureLatest();
+		await readStarted.promise;
+		expect(store.getState().latestReadState).toBe("reading");
+
+		const page = await store.getState().loadOlder(service);
+		expect(page.status).toBe("ignored");
+		expect(store.getState().latestReadState).toBe("reading");
+		expect(store.getState().canonicalSession()).toBeNull();
+
+		latestRead.reject(new Error("read failed"));
+		await latest;
+	});
+
+	it("a deferred older page during a failed latest read keeps error and its retry demand", async () => {
+		const service = new FakeConversationService();
+		service.openConv = makeConversation({}, true);
+		const store = createConversationStore();
+		await store.getState().openProjected(service, createFakeSink(), "ref-1");
+		expect(store.getState().latestReadState).toBe("ready");
+		holdInvalidatedHistory(store, service);
+
+		const failedRead = deferred<ConversationReadProjection>();
+		service.readProjectionBlock = failedRead.promise;
+		const latest = store.getState().ensureLatest();
+		failedRead.reject(new Error("read failed"));
+		await latest;
+		expect(store.getState().latestReadState).toBe("error");
+
+		const page = await store.getState().loadOlder(service);
+		expect(page.status).toBe("ignored");
+		// The failure, which is the entry read actor's retry demand, survives.
+		expect(store.getState().latestReadState).toBe("error");
+		expect(store.getState().canonicalSession()).toBeNull();
+
+		// The actor retries; the accepted read restores authority.
+		service.readProjectionBlock = null;
+		await store.getState().ensureLatest();
+		expect(store.getState().latestReadState).toBe("ready");
+		expect(store.getState().canonicalSession()).not.toBeNull();
+	});
+
 	it("retirement resolves an awaited refresh without undoing the commit", async () => {
 		const storage = createStorage({ outbox: [outbox()], optimistic: [] });
 		const service = new FakeConversationService();

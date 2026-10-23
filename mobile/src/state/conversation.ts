@@ -2756,10 +2756,14 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 								heldHistory.pendingIncarnation !== mergedHistory.pendingIncarnation;
 							if (newlyInvalidated) {
 								requestRehydrate(currentConv.ref);
-							} else {
+							} else if (get().latestReadState === "ready") {
 								// An already-invalid thread with no newer signal owes no
 								// scheduled read of its own: no accepted current window
-								// backs the display, and none is in flight.
+								// backs the display. Only a ready model loses authority
+								// here: a page is not a latest-window read, so it must not
+								// rewrite "reading" (a read in flight, which a rewrite would
+								// make the Retry surface demand again) or "error" (the entry
+								// read actor's retry demand, which "unknown" would cancel).
 								markLatest("unknown");
 							}
 							return { status: "ignored" };
