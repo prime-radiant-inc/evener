@@ -1,4 +1,4 @@
-import { memo, useLayoutEffect, useMemo, useRef } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { type AccessibilityActionEvent, type AccessibilityActionInfo, Alert, Linking } from "react-native";
 import { EnrichedMarkdownText } from "react-native-enriched-markdown";
 import { copyText } from "./clipboard";
@@ -80,12 +80,17 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 	accessibilityActions,
 	onAccessibilityAction,
 	fileContext,
+	contextMenu,
 }: {
 	markdown: string;
 	selectable?: boolean;
 	accessibilityActions?: AccessibilityActionInfo[];
 	onAccessibilityAction?: (event: AccessibilityActionEvent) => void;
 	fileContext?: NativeFileOpenContext;
+	/** Actions for a touch and hold on the text itself. The markdown view owns
+	 * them natively, so a tap on a link still reaches that link: a wrapping
+	 * Pressable would take the touch first and every link would go dead. */
+	contextMenu?: readonly { text: string; onPress(): void }[];
 }) {
 	const colors = useColors();
 	// useColors returns a new object each render, but every color in it comes
@@ -116,10 +121,17 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 	const current = useRef<typeof rendered | null>(null);
 	useLayoutEffect(() => {
 		current.current = rendered;
-		return () => {
-			current.current = null;
-		};
 	}, [rendered]);
+	// Retire presses only when this view goes away. Nulling on every re-run of
+	// the effect above would open a window on each publish where a tap on a
+	// link returns early, and a live session publishes constantly: that made
+	// every file link in the prose dead (#4839).
+	useEffect(
+		() => () => {
+			current.current = null;
+		},
+		[],
+	);
 	return (
 		<>
 			{rendered.map((segment, index) =>
@@ -176,16 +188,18 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 							showLink(url);
 						}}
 						contextMenuItems={
-							selectable
-								? [
-										{
-											text: "Copy response",
-											onPress: () => {
-												void copyText(markdown);
+							contextMenu
+								? [...contextMenu]
+								: selectable
+									? [
+											{
+												text: "Copy response",
+												onPress: () => {
+													void copyText(markdown);
+												},
 											},
-										},
-									]
-								: undefined
+										]
+									: undefined
 						}
 						accessibilityActions={accessibilityActions}
 						onAccessibilityAction={onAccessibilityAction}

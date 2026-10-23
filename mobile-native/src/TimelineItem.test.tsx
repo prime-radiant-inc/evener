@@ -253,18 +253,19 @@ describe("the agent's message", () => {
 		const tree = render(<TimelineItem item={reply()} hubId="hub" sessionRef="s" quote={quote} />);
 		const markdown = tree.root.findByType("EnrichedMarkdownText" as never);
 		expect(markdown.props.selectable).toBe(false);
-		expect(markdown.props.contextMenuItems).toBeUndefined();
-
-		const menu = longPress(tree.root);
-		expect(menu.options).toEqual(["Copy", "Quote in reply", "Select text", "Cancel"]);
-		expect(menu.cancelButtonIndex).toBe(3);
-		menu.choose("Quote in reply");
+		// The markdown view owns touch and hold, so a tap on a link inside the
+		// prose still reaches that link instead of a wrapping pressable.
+		const items = markdown.props.contextMenuItems as { text: string; onPress(): void }[];
+		expect(items.map((item) => item.text)).toEqual(["Copy", "Quote in reply", "Select text"]);
+		act(() => items.find((item) => item.text === "Quote in reply")?.onPress());
 		expect(quote).toHaveBeenCalledWith("Done. **All** tests pass.\nNext: ship.");
 	});
 
 	it("copies the markdown source", async () => {
 		const tree = render(<TimelineItem item={reply()} hubId="hub" sessionRef="s" />);
-		longPress(tree.root).choose("Copy");
+		const markdown = tree.root.findByType("EnrichedMarkdownText" as never);
+		const items = markdown.props.contextMenuItems as { text: string; onPress(): void }[];
+		act(() => items.find((item) => item.text === "Copy")?.onPress());
 		await vi.waitFor(() => expect(native.announceForAccessibility).toHaveBeenCalledWith("Copied"));
 		expect(native.setStringAsync).toHaveBeenCalledWith("Done. **All** tests pass.\nNext: ship.");
 	});
@@ -272,7 +273,9 @@ describe("the agent's message", () => {
 	it("opens the message as selectable serif text in a full-screen view, closed by Done", () => {
 		const tree = render(<TimelineItem item={reply()} hubId="hub" sessionRef="s" />);
 		expect(tree.root.findAllByType("Modal" as never)).toEqual([]);
-		longPress(tree.root).choose("Select text");
+		const markdown = tree.root.findByType("EnrichedMarkdownText" as never);
+		const items = markdown.props.contextMenuItems as { text: string; onPress(): void }[];
+		act(() => items.find((item) => item.text === "Select text")?.onPress());
 
 		const modal = tree.root.findByType("Modal" as never);
 		const text = modal.findAll(
@@ -287,6 +290,20 @@ describe("the agent's message", () => {
 		);
 		act(() => done[0].props.onPress());
 		expect(tree.root.findAllByType("Modal" as never)).toEqual([]);
+	});
+
+	// A Pressable around the markdown view becomes the touch responder, so the
+	// native text view never sees a tap and every file link in the prose is dead.
+	// It happened (issue #4839): the message menu wrapped the text, and a report
+	// link rendered as a blue link that did nothing when pressed.
+	it("adds no view above the prose that would take a tap before its links", () => {
+		const tree = render(<TimelineItem item={reply()} hubId="hub" sessionRef="s" />);
+		const markdown = tree.root.findByType("EnrichedMarkdownText" as never);
+		for (let ancestor = markdown.parent; ancestor; ancestor = ancestor.parent) {
+			expect(ancestor.props.onLongPress).toBeUndefined();
+			expect(ancestor.props.onStartShouldSetResponder).toBeUndefined();
+			expect(ancestor.props.onStartShouldSetResponderCapture).toBeUndefined();
+		}
 	});
 
 	it("gives VoiceOver the menu's items as actions on the message itself", () => {

@@ -318,7 +318,7 @@ function thread(ref: string): Thread {
 	} as unknown as Thread;
 }
 
-import { Linking, ActionSheetIOS } from "react-native";
+import { Linking } from "react-native";
 beforeEach(() => {
 	vi.mocked(Linking.openURL).mockClear();
 	alertRequests.length = 0;
@@ -363,12 +363,13 @@ it("opens files through actual TimelineItem event props and preserves ordinary r
 	]);
 	expect(Linking.openURL).not.toHaveBeenCalled();
 	expect(text.props.selectable).toBe(false);
-	expect(text.props.contextMenuItems).toBeUndefined();
-	const hold = tree.root.findAll((node) => typeof node.props.onLongPress === "function")[0];
-	act(() => hold.props.onLongPress());
-	const [options, choose] = vi.mocked(ActionSheetIOS.showActionSheetWithOptions).mock.calls.at(-1)!;
-	expect(options.options).toEqual(["Copy", "Select text", "Cancel"]);
-	act(() => choose(options.options.indexOf("Copy")));
+	// The message menu rides on the markdown view's own touch and hold, so a tap
+	// reaches a link inside the prose (issue #4839).
+	const items = text.props.contextMenuItems as { text: string; onPress(): void }[];
+	// No quote handler here, so no "Quote in reply".
+	expect(items.map((item) => item.text)).toEqual(["Copy", "Select text"]);
+	act(() => items.find((item) => item.text === "Select text")?.onPress());
+	act(() => items.find((item) => item.text === "Copy")?.onPress());
 	expect(Clipboard.setStringAsync).toHaveBeenCalledWith(original);
 });
 it("opens a report link filed in the session artifacts instead of the browser", () => {

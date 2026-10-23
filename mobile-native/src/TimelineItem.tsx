@@ -493,13 +493,19 @@ function AgentMessage({
 		[markdown, quote],
 	);
 	const accessibility = useMemo(() => menuAccessibility(menu), [menu]);
+	const contextMenu = useMemo(() => menu.map((entry) => ({ text: entry.label, onPress: entry.run })), [menu]);
 	return (
 		<>
-			{/* The markdown view stays VoiceOver's element (it reads the
-			formatting and its links); the pressable only adds touch and hold. */}
-			<Pressable accessible={false} onLongPress={() => showMenu(menu, menuPreview(markdown))}>
-				<MarkdownResponse markdown={markdown || "…"} selectable={false} fileContext={fileContext} {...accessibility} />
-			</Pressable>
+			{/* The markdown view owns touch and hold through its own context menu.
+			A wrapping Pressable would take the touch before any link, and every
+			file link in the prose would go dead. */}
+			<MarkdownResponse
+				markdown={markdown || "…"}
+				selectable={false}
+				fileContext={fileContext}
+				contextMenu={contextMenu}
+				{...accessibility}
+			/>
 			<HoldingModal
 				visible={selecting}
 				animationType="slide"
