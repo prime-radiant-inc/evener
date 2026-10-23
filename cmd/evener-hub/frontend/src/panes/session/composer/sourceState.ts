@@ -315,34 +315,50 @@ export function createComposerSourceState(
         recoveryReplacementEpochRef.current !== replacementEpoch
       )
         return;
-      void retryPreservation(clientMutationId, replacementEpoch);
+      enqueuePreservationRetry(clientMutationId, replacementEpoch);
     }, delay);
   }
 
-  async function retryPreservation(clientMutationId: string, replacementEpoch: number): Promise<void> {
-    if (disposed || currentRecoveryId() !== clientMutationId) return;
-    if (hasEmptyComposition()) {
-      cancelPreservationRetry();
-      setActiveRecoveryId(null);
-      return;
-    }
-    if (operations.hasPending) {
-      schedulePreservationRetry(clientMutationId, replacementEpoch);
-      return;
-    }
-    const preserved = await preserveStaleRecovery(clientMutationId);
-    if (
-      disposed ||
-      currentRecoveryId() !== clientMutationId ||
-      recoveryReplacementEpochRef.current !== replacementEpoch
-    )
-      return;
-    if (preserved) {
-      cancelPreservationRetry();
-      setActiveRecoveryId(preserved);
-    } else {
-      schedulePreservationRetry(clientMutationId, replacementEpoch);
-    }
+  // Queue the retry on the same chain as autosaves. A retry running beside a
+  // stale autosave would preserve against the original id twice, leaving two
+  // fresh rows for one composition.
+  function enqueuePreservationRetry(clientMutationId: string, replacementEpoch: number): void {
+    const operation = recoveryWrites
+      .catch(() => undefined)
+      .then(async () => {
+        if (
+          disposed ||
+          currentRecoveryId() !== clientMutationId ||
+          recoveryReplacementEpochRef.current !== replacementEpoch
+        )
+          return;
+        if (hasEmptyComposition()) {
+          cancelPreservationRetry();
+          setActiveRecoveryId(null);
+          return;
+        }
+        if (operations.hasPending) {
+          schedulePreservationRetry(clientMutationId, replacementEpoch);
+          return;
+        }
+        const preserved = await preserveStaleRecovery(clientMutationId);
+        if (
+          disposed ||
+          currentRecoveryId() !== clientMutationId ||
+          recoveryReplacementEpochRef.current !== replacementEpoch
+        )
+          return;
+        if (preserved) {
+          cancelPreservationRetry();
+          setActiveRecoveryId(preserved);
+        } else {
+          schedulePreservationRetry(clientMutationId, replacementEpoch);
+        }
+      });
+    recoveryWrites = operation.then(
+      () => undefined,
+      () => undefined,
+    );
   }
 
   const ownsDraft = () => ownedDraftRevisionRef.current === readDraftRevision(ref);

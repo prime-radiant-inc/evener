@@ -506,6 +506,123 @@ test("a failed preservation keeps ownership and retries once storage recovers", 
   }
 });
 
+test("a preservation retry racing a delayed autosave leaves exactly one fresh owner", async () => {
+  class OverlappingPreservationStorage extends MutationOutboxIndexedDB {
+    preservationCalls = 0;
+    private reachedSignal!: () => void;
+    readonly preservationReached = new Promise<void>((resolve) => {
+      this.reachedSignal = resolve;
+    });
+    private releasedSignal!: () => void;
+    readonly releasePreservation = new Promise<void>((resolve) => {
+      this.releasedSignal = resolve;
+    });
+
+    releaseHeldPreservation(): void {
+      this.releasedSignal();
+    }
+
+    override async preserveRecoveryComposition(
+      ...args: Parameters<MutationOutboxIndexedDB["preserveRecoveryComposition"]>
+    ): ReturnType<MutationOutboxIndexedDB["preserveRecoveryComposition"]> {
+      this.preservationCalls += 1;
+      if (this.preservationCalls === 1) {
+        throw new Error("storage unavailable");
+      }
+      if (this.preservationCalls === 2) {
+        this.reachedSignal();
+        await this.releasePreservation;
+      }
+      return super.preserveRecoveryComposition(...args);
+    }
+  }
+  const storage = new OverlappingPreservationStorage();
+  setMutationStorageForTests(storage);
+  const text = "keep this [image 1]";
+  const input: InputItem[] = [
+    { type: "text", text },
+    { type: "image", mediaType: "image/png", data: "AQID", name: "recovered.png" },
+  ];
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    threadId: "thread-a",
+    method: "turn/start",
+    attachments: [
+      {
+        presentationId: "recovered-presentation",
+        marker: 1,
+        name: "recovered.png",
+        mediaType: "image/png",
+        blob: new Blob([Uint8Array.of(1, 2, 3)], { type: "image/png" }),
+      },
+    ],
+    composerText: text,
+    payload: { ref: "root", input },
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+
+  const source = createTestComposerSource("root");
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    await source.activateRecovery(recovery);
+    const peerRecovery = await peer.getRecovery(original.clientMutationId);
+    if (!peerRecovery) throw new Error("missing peer recovery fixture");
+    const peerText = "newer composition in another tab";
+    await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: peerText }],
+      [],
+      peerText,
+      [],
+      [],
+      undefined,
+      undefined,
+      {
+        [original.clientMutationId]:
+          (peerRecovery as MutationRecoveryRecord & { compositionRevision?: number }).compositionRevision ?? 0,
+      },
+    );
+    const localAttachments = [{ marker: 1, name: "recovered.png", mediaType: "image/png", data: "AQID" }];
+
+    // The first refusal fails preservation and schedules the retry.
+    expect(await source.queueRecoveryPersistence(original.clientMutationId, text, localAttachments, [])).toBe(false);
+    expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+
+    // A stale autosave holds its preservation write while the retry timer
+    // fires. Both may attempt preservation against the original id; only one
+    // fresh owner must survive.
+    const delayedAutosave = source.queueRecoveryPersistence(original.clientMutationId, text, localAttachments, []);
+    await storage.preservationReached;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    storage.releaseHeldPreservation();
+    await delayedAutosave;
+    await Promise.resolve();
+    await source.flushRecoveryWrites();
+
+    const rows = await storage.listRecovery("root");
+    const preserved = rows.filter((record) => record.clientMutationId !== original.clientMutationId);
+    expect(preserved).toHaveLength(1);
+    expect(source.getSnapshot().activeRecoveryId).toBe(preserved[0]?.clientMutationId);
+    expect(preserved[0]).toMatchObject({
+      composerText: text,
+      payload: {
+        input: [
+          { type: "text", text },
+          { type: "image", mediaType: "image/png", data: "AQID", name: "recovered.png" },
+        ],
+      },
+    });
+    expect(await peer.getRecovery(original.clientMutationId)).toMatchObject({ composerText: peerText });
+  } finally {
+    source.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
 test("recovery selection is scoped to its pane owner", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);

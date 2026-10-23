@@ -1,3 +1,4 @@
+import { carryRecoverySelection } from "../panes/session/composer/draft";
 import { type ComposerSourceState, createComposerSourceState } from "../panes/session/composer/sourceState";
 import type { TranscriptReadView } from "../panes/session/transcript/transcriptReadView";
 import type { JobLogReader } from "../panes/transcript/jobLogReader";
@@ -68,7 +69,9 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
       // state; a fresh one for the resumed identity loads the draft the
       // resume carried, and any state already created for the resumed ref
       // keeps its newer work.
-      lifetime.composers.get(sourceRef)?.dispose();
+      const retired = lifetime.composers.get(sourceRef);
+      if (retired) carryRecoverySelection(sourceRef, resumedRef, retired.recoverySelectionOwnerId);
+      retired?.dispose();
       lifetime.composers.delete(sourceRef);
       sourceRef = resumedRef;
     },

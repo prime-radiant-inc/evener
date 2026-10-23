@@ -88,6 +88,18 @@ export function writeRecoverySelection(ref: string, selectionOwnerId: string, cl
   }
 }
 
+// A successful resume changes the ref, and the recovery rows move with it.
+// Carry this pane's selected owner before the replacement composer reads the
+// new ref, so it does not fall back to an older peer row. A selection already
+// established under the destination stays: it is the pane's newer choice.
+export function carryRecoverySelection(fromRef: string, toRef: string, selectionOwnerId: string): void {
+  if (fromRef === toRef) return;
+  const selected = readRecoverySelection(fromRef, selectionOwnerId);
+  if (selected === undefined) return;
+  if (readRecoverySelection(toRef, selectionOwnerId) !== undefined) return;
+  writeRecoverySelection(toRef, selectionOwnerId, selected);
+}
+
 function isStoredComposerDraft(value: unknown): value is ComposerDraft {
   if (typeof value !== "object" || value === null) return false;
   const record = value as Partial<ComposerDraft>;

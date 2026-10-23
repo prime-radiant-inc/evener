@@ -1,7 +1,9 @@
 import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
+import { readRecoverySelection, writeRecoverySelection } from "../panes/session/composer/draft";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
+import type { MutationRecoveryRecord } from "../stores/mutationOutbox";
 import { conversationPaneLifetime, disposeConversationPaneLifetime } from "./paneLifetime";
 import { registerPaneForTests } from "./paneRegistry";
 import { type OpenPaneRecord, registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
@@ -21,6 +23,25 @@ afterEach(() => resetWorkspaceStoreForTests());
 
 function rootPane(): OpenPaneRecord {
   return { id: "session-1", type: "session", params: { ref: "root" }, slot: "main" };
+}
+
+function recovery(id: string, text: string, intentSequence: number): MutationRecoveryRecord {
+  const input = [{ type: "text" as const, text }];
+  return {
+    version: 1,
+    clientMutationId: id,
+    intentSequence,
+    createdAt: 1,
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input },
+    composerText: text,
+    recoveryKind: "rejected",
+    state: "submitting",
+    attempted: false,
+  } as MutationRecoveryRecord;
 }
 
 test("the same committed pane retains its source owner across focus changes", () => {
@@ -106,4 +127,38 @@ test.each([false, true])("layout restore success %s disposes only committed repl
     expect(conversationPaneLifetime(restored).composer).toBe(composer);
     expect(composer?.getSnapshot().text).toBe("keep this draft");
   }
+});
+
+test("a resumed identity carries the pane's selected recovery owner", () => {
+  const pane = rootPane();
+  const lifetime = conversationPaneLifetime(pane);
+  const composer = lifetime.composer;
+  if (!composer) throw new Error("session lifetime lacks its source");
+  const peer = recovery("peer-row", "older peer work", 1);
+  const preserved = recovery("preserved-row", "local [image 1]", 2);
+  composer.setActiveRecoveryId(preserved);
+  const scope = composer.recoverySelectionOwnerId;
+
+  lifetime.adoptResumedSource("resumed");
+  const resumed = lifetime.composer;
+  if (!resumed) throw new Error("resumed lifetime lacks its source");
+  expect(resumed.recoverySelectionOwnerId).toBe(scope);
+  const selected = readRecoverySelection("resumed", resumed.recoverySelectionOwnerId);
+  expect(selected).toBe(preserved.clientMutationId);
+  expect(selected).not.toBe(peer.clientMutationId);
+  lifetime.dispose();
+});
+
+test("a resumed identity keeps the destination's own recovery selection", () => {
+  const pane = rootPane();
+  const lifetime = conversationPaneLifetime(pane);
+  const composer = lifetime.composer;
+  if (!composer) throw new Error("session lifetime lacks its source");
+  const scope = composer.recoverySelectionOwnerId;
+  writeRecoverySelection("resumed", scope, "destination-row");
+  composer.setActiveRecoveryId(recovery("preserved-row", "local [image 1]", 2));
+
+  lifetime.adoptResumedSource("resumed");
+  expect(readRecoverySelection("resumed", scope)).toBe("destination-row");
+  lifetime.dispose();
 });
