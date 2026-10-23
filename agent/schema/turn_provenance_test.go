@@ -2,9 +2,35 @@ package schema
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/agent/provenance"
 )
+
+func TestTurnNotificationProvenanceRoundTrip(t *testing.T) {
+	t.Parallel()
+	data := []byte(`{"kind":"STEERING","notification_provenance":{"watch_keys":[{"watch_id":"watch_accept","watch_generation":"wg_accept"}]}}`)
+	var turn Turn
+	if err := json.Unmarshal(data, &turn); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(turn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw struct {
+		Provenance *provenance.Causal `json:"notification_provenance"`
+	}
+	if err := json.Unmarshal(encoded, &raw); err != nil {
+		t.Fatal(err)
+	}
+	want := &provenance.Causal{WatchKeys: []provenance.WatchKey{{WatchID: "watch_accept", WatchGeneration: "wg_accept"}}}
+	if !reflect.DeepEqual(raw.Provenance, want) {
+		t.Fatalf("round-trip provenance = %#v, want %#v", raw.Provenance, want)
+	}
+}
 
 func TestTurnRoundTripsCanonicalAttemptProvenance(t *testing.T) {
 	want := Turn{

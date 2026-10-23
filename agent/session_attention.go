@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/foldcache"
+	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -373,7 +374,7 @@ func appendColdDelegateNotificationDurablyWithOpen(path, expectedSessionID, atte
 	return appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, attentionID, llm.User(content), now, open)
 }
 
-func appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, attentionID string, message llm.Message, now time.Time, open delegateAttentionWriterOpener) (appended bool, err error) {
+func appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, attentionID string, message llm.Message, now time.Time, open delegateAttentionWriterOpener, causal ...*provenance.Causal) (appended bool, err error) {
 	if expectedSessionID == "" || attentionID == "" {
 		return false, errors.New("cold delegate attention identity is incomplete")
 	}
@@ -414,6 +415,9 @@ func appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, 
 	turn.Timestamp = now.UTC()
 	turn.AttentionID = attentionID
 	turn.StableTurnID = newQueueEntryID()
+	if len(causal) != 0 {
+		turn.NotificationProvenance = provenance.Clone(causal[0])
+	}
 	// The synced door is the durability owner's door: it records AND syncs,
 	// or errors. A read-back would find a retained (recorded but unsynced)
 	// line and wrongly call it durable, so this side of delegate attention asks
@@ -518,7 +522,7 @@ func delegateAttentionTurn(attentionID string, message llm.Message, now time.Tim
 // appendDelegateNotificationDurably. Escalation of a fenced delegate's
 // attention transfers the exact original message under its original identity,
 // so both the resident and the cold writers stay byte-identical on replay.
-func (s *Session) appendDelegateAttentionMessageDurably(attentionID string, message llm.Message) (appended bool, err error) {
+func (s *Session) appendDelegateAttentionMessageDurably(attentionID string, message llm.Message, causal ...*provenance.Causal) (appended bool, err error) {
 	if s == nil {
 		return false, errors.New("delegate attention session is nil")
 	}
@@ -573,6 +577,9 @@ func (s *Session) appendDelegateAttentionMessageDurably(attentionID string, mess
 		return false, nil
 	}
 	turn := delegateAttentionTurn(attentionID, message, s.sclock().Now())
+	if len(causal) != 0 {
+		turn.NotificationProvenance = provenance.Clone(causal[0])
+	}
 	// The synced door records AND syncs, or errors; a retained (recorded but
 	// unsynced) line the read-back would find is not durable. Attention
 	// arrives from delivery goroutines at any time, so it joins the running
@@ -1140,6 +1147,12 @@ func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presented
 		if turn.AttentionID == "" {
 			continue
 		}
+		// Lineage is conservative, unlike durable observation credit. Union
+		// the selected history before dispatch so resulting events retain both
+		// this notification and the activation's existing origins. Retries and
+		// continuation deltas may retain this lineage without earning coverage;
+		// only promoteStagedAttentionCoverage can grant that credit.
+		s.unionActiveProvenance(turn.NotificationProvenance)
 		if staged == nil {
 			staged = make(map[string]struct{})
 		}

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/llm"
 )
 
@@ -446,6 +447,9 @@ type Turn struct {
 	ModelSwitch *ModelSwitchInfo `json:"model_switch,omitempty"`
 	// Notice carries a presentational notice on TurnNotice entries.
 	Notice *NoticeInfo `json:"notice,omitempty"`
+	// NotificationProvenance is private causal metadata of accepted attention.
+	// The first accepted record owns it, including on idempotent delivery retries.
+	NotificationProvenance *provenance.Causal `json:"notification_provenance,omitempty"`
 	// OriginalOrdinal is set on a copy a compaction fold re-appends after its
 	// markers: the entry ordinal of the entry it copies. Copies are model
 	// history for resume, and are neither projected nor announced.

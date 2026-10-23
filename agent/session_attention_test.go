@@ -2774,8 +2774,28 @@ func TestDelegateAttention_FailedMutationQueueRetainsOtherOwners(t *testing.T) {
 	root.delegateDeliveryMu.Lock()
 	queued := append([]delegateDeliveryPlan(nil), root.pendingDelegateDeliveries...)
 	root.delegateDeliveryMu.Unlock()
-	if len(queued) != 2 || queued[0].delegateID != "dlg_a_root" || queued[1].delegateID != "dlg_z_child" {
-		t.Fatalf("multi-owner retry queue = %#v, want failed head plus unprocessed owner", queued)
+	if len(queued) != 1 || queued[0].delegateID != "dlg_a_root" {
+		t.Fatalf("multi-owner retry queue = %#v, want only failed head", queued)
+	}
+	if len(c.durable["dlg_a_root"].PendingDeliveries) != 1 || len(c.durable["dlg_z_child"].PendingDeliveries) != 0 {
+		t.Fatal("failed source lost its head or unrelated source did not transfer custody")
+	}
+	journal, err := c.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var acknowledged []string
+	for _, event := range journal {
+		if event.Kind == delegatestore.EventDelegateDeliveryAcknowledged {
+			acknowledged = append(acknowledged, event.DelegateID)
+		}
+	}
+	if len(acknowledged) != 1 || acknowledged[0] != "dlg_z_child" {
+		t.Fatalf("source journal acknowledgments = %v, want only dlg_z_child", acknowledged)
+	}
+	entries := notificationRawEntries(t, ownerPath)
+	if len(entries) != 1 || entries[0].Turn.Kind != schema.TurnSteering || entries[0].Turn.AttentionID != "delegate:dlg_z_child/delivery/1" {
+		t.Fatalf("unrelated owner's raw transcript = %+v, want exactly one canonical delivery", entries)
 	}
 }
 
