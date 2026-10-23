@@ -18,6 +18,7 @@ import (
 	"slices"
 	"time"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 )
@@ -283,6 +284,10 @@ func (m *Manager) restartForOperation(ctx context.Context, host hostreg.Host, fa
 	}
 	// Attachment proves the running hub's protocol, not the executable that
 	// will replace it. Cached facts cannot settle a pending installation either.
+	if facts.LaunchCheckKnown && appwire.NewerProtocolVersion(facts.Protocol) {
+		return RestartResult{}, fmt.Errorf("%w: host %q's installed executable speaks %q, newer than this controller's %q; update the controller instead of downgrading the host",
+			ErrHostProtocolNewer, host.Name, facts.Protocol, appwire.ProtocolVersion)
+	}
 	pending := m.authorizeDeploymentRestart(host.Name)
 	if pending.deployment && (err != nil || pending.needsDeployment(facts)) {
 		// This explicit Restart authorizes replacement even when the unfinished
