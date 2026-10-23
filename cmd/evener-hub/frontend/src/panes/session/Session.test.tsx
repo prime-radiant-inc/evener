@@ -22,6 +22,7 @@ import { resetMobileViewportForTests } from "../../shell/useIsMobile";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "../../stores/activityPanel";
 import { connectionStore } from "../../stores/connection";
+import type { MutationRecoveryRecord } from "../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { sessionActivitySnapshot } from "../../stores/sessionActivity";
@@ -57,9 +58,10 @@ import * as SessionChromeModule from "./chrome/SessionChrome";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
 import { askPendingStatusChanged } from "./composer/askDock/askDockTestUtils";
 import * as ComposerModule from "./composer/Composer";
-import { readDraft, writeDraft } from "./composer/draft";
+import { readDraft, readRecoverySelection, writeDraft } from "./composer/draft";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
+import { retainedConversationComposer } from "./composer/retainedComposer";
 import { settleActivityDiscovery } from "./testing/activityDiscovery";
 import { CommittedSession as Session } from "./testing/CommittedSession";
 import { installControlledImageEncoding } from "./testing/imageEncoding";
@@ -5572,4 +5574,68 @@ test("a resume survives a collapsed column in another cascade until that cascade
   );
   await act(async () => {});
   expect(threadsStore.getState().resumedIdentities.has(ref)).toBe(false);
+});
+
+test("a resumed seat without a source adoption carries its selected recovery owner", async () => {
+  const ref = "local:child";
+  const resumed = "local:child-resumed";
+  const fake = connectFakeClient();
+  fake.on("thread/read", ({ ref: readRef }) => transcriptRead(readRef));
+  const pane: OpenPaneRecord = {
+    id: "cascade",
+    type: "sessionZoom",
+    slot: "secondary",
+    params: {
+      ref,
+      source: { type: "session", params: { ref: "local:root" } },
+      edges: [{ ownerRef: "local:root", childRef: ref, delegateId: "d1" }],
+    },
+  };
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  const lifetime = conversationPaneLifetime(pane);
+  const composer = retainedConversationComposer(lifetime, ref);
+  if (!composer) throw new Error("cascade lifetime lacks its composer");
+  const preserved = {
+    version: 1,
+    clientMutationId: "preserved-row",
+    intentSequence: 2,
+    createdAt: 1,
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [] },
+    attachments: [],
+    optimisticDisplay: null,
+    composerText: "local work",
+    recoveryKind: "rejected",
+    state: "submitting",
+    attempted: false,
+  } as MutationRecoveryRecord;
+  composer.setActiveRecoveryId(preserved);
+  const scope = composer.recoverySelectionOwnerId;
+  // A non-source cascade column follows the resumed identity without adopting
+  // the pane lifetime's source conversation.
+  const seat: ConversationSeat = {
+    readView: null,
+    composerSource: composer,
+    keepViewRemount: () => true,
+    viewFallbackId: pane.id,
+    focused: false,
+    keyboardScrollPaneId: null,
+    onResumedIdentity: () => true,
+  };
+  render(
+    <ClientProvider client={fake}>
+      <ConversationBody ref={ref} seat={seat} render={({ content }) => <div>{content}</div>} />
+    </ClientProvider>,
+  );
+  await act(async () => {});
+
+  act(() => {
+    threadsStore.setState((state) => ({ resumedIdentities: new Map(state.resumedIdentities).set(ref, resumed) }));
+  });
+  await act(async () => {});
+
+  const resumedComposer = retainedConversationComposer(lifetime, resumed);
+  expect(resumedComposer?.recoverySelectionOwnerId).toBe(scope);
+  expect(readRecoverySelection(resumed, scope)).toBe("preserved-row");
 });

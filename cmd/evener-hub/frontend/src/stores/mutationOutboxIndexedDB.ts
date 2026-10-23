@@ -1095,7 +1095,9 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         recoveryReason: base.recoveryReason,
         compositionRevision: 0,
         compositionOwnerId,
-        localDraftRevisionId,
+        // The fresh owner inherits the base's incorporation proof unless the
+        // caller supplies its own verified revision.
+        localDraftRevisionId: localDraftRevisionId ?? base.localDraftRevisionId,
         state: "submitting",
         attempted: false,
         unresolvedAttempts: 0,

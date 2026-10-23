@@ -13,6 +13,7 @@ import { createTestComposerSource } from "../testing/composerSource";
 import { installControlledImageEncoding } from "../testing/imageEncoding";
 import { createAttachmentOperations, useAttachments } from "./attachments/useAttachments";
 import {
+  composerDraftStorageKey,
   draftStorageKey,
   markDraftEdited,
   readComposerDraft,
@@ -499,6 +500,131 @@ test("a failed preservation keeps ownership and retries once storage recovers", 
       expect.objectContaining({ marker: 1, name: "recovered.png", mediaType: "image/png", data: "AQID" }),
     ]);
   } finally {
+    source.dispose();
+    reloaded?.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
+test("a preservation retry keeps the incorporated draft revision for reload", async () => {
+  class FailingPreservationStorage extends MutationOutboxIndexedDB {
+    failNextPreservation = true;
+
+    override async preserveRecoveryComposition(
+      ...args: Parameters<MutationOutboxIndexedDB["preserveRecoveryComposition"]>
+    ): ReturnType<MutationOutboxIndexedDB["preserveRecoveryComposition"]> {
+      if (this.failNextPreservation) {
+        this.failNextPreservation = false;
+        throw new Error("storage unavailable");
+      }
+      return super.preserveRecoveryComposition(...args);
+    }
+  }
+  const storage = new FailingPreservationStorage();
+  setMutationStorageForTests(storage);
+  const draftRevisionId = writeComposerDraft("root", { text: "draft A", skillNames: [] });
+  if (!draftRevisionId) throw new Error("missing draft revision fixture");
+  const mergedText = "draft A\n\nrecovery B";
+  const input: InputItem[] = [
+    { type: "text", text: mergedText },
+    { type: "image", mediaType: "image/png", data: "AQID", name: "recovered.png" },
+  ];
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    threadId: "thread-a",
+    method: "turn/start",
+    attachments: [
+      {
+        presentationId: "recovered-presentation",
+        marker: 1,
+        name: "recovered.png",
+        mediaType: "image/png",
+        blob: new Blob([Uint8Array.of(1, 2, 3)], { type: "image/png" }),
+      },
+    ],
+    composerText: mergedText,
+    payload: { ref: "root", input },
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const incorporated = await storage.updateRecoveryInput(
+    original.clientMutationId,
+    input,
+    undefined,
+    mergedText,
+    [],
+    undefined,
+    draftRevisionId,
+    0,
+  );
+  if (!incorporated) throw new Error("failed to seed incorporated draft revision");
+
+  const source = createTestComposerSource("root");
+  // A mounted Composer owns the follow-up autosave; keep it out of this test
+  // so the retry's own row is the state reload sees.
+  const unbind = source.bindEditor({ read: () => source.editor.read(), write: () => {} });
+  const peer = new MutationOutboxIndexedDB();
+  let reloaded: ReturnType<typeof createTestComposerSource> | undefined;
+  try {
+    await source.activateRecovery(incorporated);
+    // Activation clears the incorporated snapshot; restore the exact stored
+    // revision so reload can still prove the composition already consumed it.
+    localStorage.setItem(
+      composerDraftStorageKey("root"),
+      JSON.stringify({
+        text: "draft A",
+        skillNames: [],
+        revisionId: draftRevisionId,
+        editedAt: Date.now(),
+      }),
+    );
+
+    const peerRecovery = await peer.getRecovery(original.clientMutationId);
+    if (!peerRecovery) throw new Error("missing peer recovery fixture");
+    const peerText = "newer composition in another tab";
+    await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: peerText }],
+      [],
+      peerText,
+      [],
+      [],
+      undefined,
+      undefined,
+      {
+        [original.clientMutationId]:
+          (peerRecovery as MutationRecoveryRecord & { compositionRevision?: number }).compositionRevision ?? 0,
+      },
+    );
+    const localAttachments = [{ marker: 1, name: "recovered.png", mediaType: "image/png", data: "AQID" }];
+    expect(await source.queueRecoveryPersistence(original.clientMutationId, mergedText, localAttachments, [])).toBe(
+      false,
+    );
+
+    // The retry (not the failed first attempt) creates the fresh row.
+    const deadline = Date.now() + 2_000;
+    while (source.getSnapshot().activeRecoveryId === original.clientMutationId && Date.now() < deadline)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    const preserved = (await storage.listRecovery("root")).find(
+      (record) => record.clientMutationId !== original.clientMutationId,
+    );
+    expect(preserved?.localDraftRevisionId).toBe(draftRevisionId);
+
+    // Reload before any follow-up autosave: the proof must prevent a second
+    // append of the same stored draft.
+    source.dispose();
+    reloaded = createTestComposerSource("root");
+    if (!preserved) throw new Error("missing preserved recovery fixture");
+    const reloadedRow = await storage.getRecovery(preserved.clientMutationId);
+    if (!reloadedRow) throw new Error("missing preserved recovery row");
+    await expect(reloaded.activateRecovery(reloadedRow)).resolves.toBe(true);
+    expect(reloaded.getSnapshot().text).toBe(mergedText);
+    expect(reloaded.attachments.getState().items).toEqual([
+      expect.objectContaining({ marker: 1, name: "recovered.png", mediaType: "image/png", data: "AQID" }),
+    ]);
+  } finally {
+    unbind();
     source.dispose();
     reloaded?.dispose();
     peer.close();

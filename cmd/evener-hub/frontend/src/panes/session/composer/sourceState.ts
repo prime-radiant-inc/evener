@@ -642,6 +642,9 @@ export function createComposerSourceState(
   ): Promise<MutationRecoveryRecord | undefined> {
     const base = recoveryBaseRecord;
     if (!base || base.clientMutationId !== clientMutationId) return undefined;
+    // A retry has no fresh revision argument. The owned row's revision is the
+    // proof that the composition already incorporated that persisted draft.
+    const carriedDraftRevisionId = localDraftRevisionId ?? base.localDraftRevisionId;
     try {
       return await preserveRecoveryPendingTurn(
         base,
@@ -652,7 +655,7 @@ export function createComposerSourceState(
         selectionMetaRef.current.commandNames,
         selectionMetaRef.current.mentions,
         compositionOwnerId,
-        localDraftRevisionId,
+        carriedDraftRevisionId,
       );
     } catch (error) {
       if (!disposed)

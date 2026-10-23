@@ -14,7 +14,7 @@ import { TopNotesPanel } from "./chrome/TopNotesPanel";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { AskDock, AskDockAnnouncements, useAskDockActivationEpoch, useAskDockPending } from "./composer/askDock";
 import { Composer } from "./composer/Composer";
-import { carryComposerDraft } from "./composer/draft";
+import { carryComposerDraft, carryRecoverySelection } from "./composer/draft";
 import {
   useBlockedMutationEntries,
   usePendingTurnEntries,
@@ -169,6 +169,11 @@ export function ConversationBody({
   const resumedIdentity = useThreadsStore((s) => s.resumedIdentities.get(ref));
   useEffect(() => {
     if (resumedIdentity === undefined) return;
+    // Every seat follows the resumed identity, so carry the selected recovery
+    // owner here, before the replacement composer reads the new ref. A seat
+    // without a composer has no selection to move.
+    const selectionOwnerId = seat.composerSource?.recoverySelectionOwnerId;
+    if (selectionOwnerId !== undefined) carryRecoverySelection(ref, resumedIdentity, selectionOwnerId);
     carryComposerDraft(ref, resumedIdentity);
     const applied = seat.onResumedIdentity?.(resumedIdentity);
     if (applied !== false && !otherRetainedViewOf(ref, seat.viewFallbackId)) {
