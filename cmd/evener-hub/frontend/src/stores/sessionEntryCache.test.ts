@@ -1339,37 +1339,48 @@ it("preserves a longer peer read and its cursor after a shorter compatible read"
   });
 });
 
-it("stores requested aliases separately from resolved identity with typed session metadata", async () => {
-  const name = `entry-cache-${crypto.randomUUID()}`;
-  const factory = new IDBFactory();
-  databases.push({ factory, name });
-  const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
-  caches.push(cache);
-  const resolvedIdentity = {
-    clientId: "client-main",
-    hostId: "host-resolved",
-    sessionId: "session-resolved",
-    incarnation: "boot-7",
-  };
-  const historyKey = entryHistoryKey(resolvedIdentity);
-  const metadata: TranscriptSessionMetadata = {
-    historyKey,
-    requestedRefs: [
-      { clientId: "client-main", ref: "alias://production" },
-      { clientId: "client-main", ref: "session://stable-name" },
-    ],
-    resolvedIdentity,
-    savedAt: 1_791_550_000_000,
-    accessedAt: 1_791_550_012_345,
-    formatVersion: 1,
-  };
-  const batch = { historyKey, clearEpoch: 0, items: [], sessionMetadata: metadata };
+it.each([Date.UTC(2026, 9, 23, 12, 46, 52, 345), Date.UTC(2100, 0, 1)])(
+  "stores requested aliases separately from resolved identity with typed session metadata (ambient clock %i)",
+  async (ambientNow) => {
+    const fixtureNow = 1_791_550_012_345;
+    // Either ambient clock expires this fixture if the cache loses its injected clock.
+    vi.spyOn(Date, "now").mockReturnValue(ambientNow);
+    const name = `entry-cache-${crypto.randomUUID()}`;
+    const factory = new IDBFactory();
+    databases.push({ factory, name });
+    const cache = new SessionEntryCache({
+      indexedDB: factory,
+      keyRange: IDBKeyRange,
+      databaseName: name,
+      now: () => fixtureNow,
+    });
+    caches.push(cache);
+    const resolvedIdentity = {
+      clientId: "client-main",
+      hostId: "host-resolved",
+      sessionId: "session-resolved",
+      incarnation: "boot-7",
+    };
+    const historyKey = entryHistoryKey(resolvedIdentity);
+    const metadata: TranscriptSessionMetadata = {
+      historyKey,
+      requestedRefs: [
+        { clientId: "client-main", ref: "alias://production" },
+        { clientId: "client-main", ref: "session://stable-name" },
+      ],
+      resolvedIdentity,
+      savedAt: fixtureNow - 12_345,
+      accessedAt: fixtureNow,
+      formatVersion: 1,
+    };
+    const batch = { historyKey, clearEpoch: 0, items: [], sessionMetadata: metadata };
 
-  await expect(cache.commitBatch(batch)).resolves.toMatchObject({ outcome: "committed" });
-  expect.soft(await readEntryMeta(factory, name, historyKey)).toMatchObject(metadata);
-  expect(metadata.requestedRefs).not.toContainEqual({ clientId: "client-main", ref: resolvedIdentity.sessionId });
-  await expect(cache.getSessionMetadata(historyKey)).resolves.toEqual(metadata);
-});
+    await expect(cache.commitBatch(batch)).resolves.toMatchObject({ outcome: "committed" });
+    expect.soft(await readEntryMeta(factory, name, historyKey)).toMatchObject(metadata);
+    expect(metadata.requestedRefs).not.toContainEqual({ clientId: "client-main", ref: resolvedIdentity.sessionId });
+    await expect(cache.getSessionMetadata(historyKey)).resolves.toEqual(metadata);
+  },
+);
 
 it("accounts exact session metadata bytes across histories, replacement, item-only writes, and abort", async () => {
   const name = `entry-cache-${crypto.randomUUID()}`;
