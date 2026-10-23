@@ -1141,6 +1141,50 @@ test("a stale-incarnation reset's release reaches the runtime trigger", async ()
   fixture.drafts.close();
 });
 
+// A committed reset retires the suppression entries a refused handoff is
+// waiting on and drops their retained expiry records. Those entries hid the
+// epoch that blocked the handoff, so the reset's continuation is the
+// eligibility-restoring event. Settling only the namespace wake leaves the
+// runtime's recorded need with no storage-success trigger: the handoff waits
+// for unrelated activity before a pass reclaims it.
+test("a committed reset's settle spends the need its retired suppression recorded", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+  });
+  const passes = vi.spyOn(fixture.repository, "retryPendingWithOutcome");
+  try {
+    // A confirmed suppression without an expiry row hides the saved operation,
+    // so its handoff answers retryable pending and records the runtime's need.
+    fixture.repository.suppressEpochForExpiry(fixture.operation.lease);
+    expect(await fixture.runtime.handoff(fixture.document, fixture.operation.operationId)).toEqual({
+      state: "pending",
+      reason: "owner-unavailable",
+    });
+    fixture.storageSuccess.mockClear();
+
+    // The reset commits on its own: no test-driven trigger follows it.
+    expect(await fixture.repository.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation)).toMatchObject({
+      committed: true,
+    });
+    await settleRealTasks(() => passes.mock.calls.length > 0, 50);
+    expect(fixture.storageSuccess).toHaveBeenCalledTimes(1);
+    await fixture.runtime.whenIdle();
+    expect(passes).toHaveBeenCalledTimes(1);
+
+    // The pass spent the need: a later trigger with no retained work starts
+    // no second pass.
+    fixture.runtime.storageSucceeded();
+    await fixture.runtime.whenIdle();
+    expect(passes).toHaveBeenCalledTimes(1);
+  } finally {
+    fixture.repository.close();
+    fixture.drafts.close();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // The dismissal lifecycle of a saved note.
 // ---------------------------------------------------------------------------

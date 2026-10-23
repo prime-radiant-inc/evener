@@ -2330,7 +2330,10 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // it replaces the older tombstone structurally.
       this.#retiredIncarnations.set(namespaceKey, expectedIncarnation);
       // Reset wakes every registration in its exact namespace, and no other.
-      this.#settleTransition({ namespaceKey });
+      // It is also the eligibility-restoring event for a handoff that refused
+      // pending against an entry the sweep below retires: that refusal recorded
+      // the runtime's retry need, and this continuation is its only trigger.
+      this.#settleTransition({ namespaceKey, signal: true });
       // A live ticket names its own issuance incarnation. The reset just retired
       // exactly one incarnation, so only registrations naming it are dead: a
       // read that registered in the NEW incarnation before this continuation
