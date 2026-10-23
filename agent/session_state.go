@@ -281,6 +281,10 @@ func (s *Session) Meta() schema.SessionMeta {
 // and lose the mutation on the next restore.
 func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionURL) schema.SessionMeta {
 	originalPrompt := s.extractOriginalPrompt()
+	// Read the registry-derived verdict before taking s.mu: the predicate reads
+	// s.cfg and the tool registry, and every meta save must persist the current
+	// answer rather than a value cached at construction.
+	memorySaveUnavailable := !s.memorySaveInstructionsEnabled()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -343,6 +347,7 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		DivergenceTurn:           divergence,
 		ForkLabel:                s.fork.label,
 		IsSubagent:               isSubagent,
+		MemorySaveUnavailable:    memorySaveUnavailable,
 		Origin:                   s.origin,
 		Goal:                     s.goalSnapshotForMeta(),
 		PinnedNote:               s.pinnedNote,
