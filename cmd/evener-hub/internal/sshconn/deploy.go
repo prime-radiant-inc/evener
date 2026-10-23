@@ -419,14 +419,11 @@ func (m *Manager) refuseNewerInstalledProtocol(ctx context.Context, host hostreg
 	probeHost := host
 	probeHost.EvenerPath = target
 	described, _, err := m.describeLaunchContract(ctx, probeHost)
-	if err != nil {
-		return nil
+	if err == nil && appwire.NewerProtocolVersion(described.Protocol) {
+		return fmt.Errorf("%w: host %q's installed executable speaks %q, newer than this controller's %q; update the controller instead of downgrading the host",
+			ErrHostProtocolNewer, host.Name, described.Protocol, appwire.ProtocolVersion)
 	}
-	if !appwire.NewerProtocolVersion(described.Protocol) {
-		return nil
-	}
-	return fmt.Errorf("%w: host %q's installed executable speaks %q, newer than this controller's %q; update the controller instead of downgrading the host",
-		ErrHostProtocolNewer, host.Name, described.Protocol, appwire.ProtocolVersion)
+	return nil
 }
 
 // TargetMatches reports whether a build for buildOS/buildArch can serve a host

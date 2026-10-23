@@ -349,12 +349,11 @@ func TestClientInitializeDoesNotTranslateAnotherErrorCode(t *testing.T) {
 		Data:    ErrorData{EvenerErrorInfo: ErrorInternal},
 	})
 	err := <-done
-	var mismatch ProtocolVersionMismatchError
-	if errors.As(err, &mismatch) {
+	if mismatch, ok := errors.AsType[ProtocolVersionMismatchError](err); ok {
 		t.Fatalf("a non-InvalidRequest error became a protocol mismatch: %+v", mismatch)
 	}
-	var wire WireError
-	if !errors.As(err, &wire) || wire.Code != CodeInternalError {
+	wire, ok := errors.AsType[WireError](err)
+	if !ok || wire.Code != CodeInternalError {
 		t.Fatalf("err = %v (%T), want the original InternalError", err, err)
 	}
 }
@@ -374,12 +373,10 @@ func TestClientInitializeLeavesGenericInvalidRequestAlone(t *testing.T) {
 	request := <-transport.writes
 	transport.reads <- ErrorMessage(request.Request.ID, InvalidRequest("unsupported appwire protocol"))
 	err := <-done
-	var wire WireError
-	if !errors.As(err, &wire) {
+	if _, ok := errors.AsType[WireError](err); !ok {
 		t.Fatalf("err = %v (%T), want WireError", err, err)
 	}
-	var mismatch ProtocolVersionMismatchError
-	if errors.As(err, &mismatch) {
+	if mismatch, ok := errors.AsType[ProtocolVersionMismatchError](err); ok {
 		t.Fatalf("generic invalid request became a protocol mismatch: %+v", mismatch)
 	}
 }
