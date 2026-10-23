@@ -8,11 +8,25 @@ import {
 	type QuestionSelections,
 } from "./questionAnswers";
 import { type SqliteSync, withSavepoint } from "./sqliteSync";
+import type { ComposerMention } from "@evener/appwire-client";
+
+export interface DraftComposerMetadata {
+	skillNames?: string[];
+	commandNames?: string[];
+	mentions?: ComposerMention[];
+	recoveryIds?: string[];
+}
 export interface DraftRecord {
 	draft: string;
 	unconfirmed: string | null;
 	images?: DraftImage[];
 	unconfirmedImages?: DraftImage[];
+	unconfirmedCaptureToken?: string;
+	composer?: DraftComposerMetadata;
+	unconfirmedComposer?: DraftComposerMetadata;
+	recoveryResendAcks?: string[];
+	completedCommandRecoveryIds?: string[];
+	releasedRecoveryIds?: string[];
 }
 
 export interface DraftDestination {
@@ -40,6 +54,19 @@ export class DraftRepository {
       unconfirmed TEXT,
       PRIMARY KEY (hub_id, session_ref)
     )`);
+		const draftColumns = new Set(
+			db.getAllSync<{ name: string }>("PRAGMA table_info(drafts)").map((column) => column.name),
+		);
+		for (const [name, type] of [
+			["composer", "TEXT"],
+			["unconfirmed_composer", "TEXT"],
+			["unconfirmed_capture_token", "TEXT"],
+			["recovery_resend_acks", "TEXT"],
+			["completed_command_recovery_ids", "TEXT"],
+			["released_recovery_ids", "TEXT"],
+		] as const) {
+			if (!draftColumns.has(name)) db.execSync(`ALTER TABLE drafts ADD COLUMN ${name} ${type}`);
+		}
 		db.execSync(`CREATE TABLE IF NOT EXISTS question_drafts (
           hub_id TEXT NOT NULL, session_ref TEXT NOT NULL, signature TEXT NOT NULL,
           selections TEXT NOT NULL, PRIMARY KEY (hub_id, session_ref)
@@ -106,12 +133,32 @@ export class DraftRepository {
 		);
 	}
 	read(destination: DraftDestination): DraftRecord {
-		const record = this.db.getFirstSync<DraftRecord>(
-			"SELECT draft, unconfirmed FROM drafts WHERE hub_id = ? AND session_ref = ?",
+		const draftRow = this.db.getFirstSync<{
+			draft: string;
+			unconfirmed: string | null;
+			composer: string | null;
+			unconfirmed_composer: string | null;
+			unconfirmed_capture_token: string | null;
+			recovery_resend_acks: string | null;
+			completed_command_recovery_ids: string | null;
+			released_recovery_ids: string | null;
+		}>(
+			"SELECT draft, unconfirmed, composer, unconfirmed_composer, unconfirmed_capture_token, recovery_resend_acks, completed_command_recovery_ids, released_recovery_ids FROM drafts WHERE hub_id = ? AND session_ref = ?",
 			destination.hubId,
 			destination.sessionRef,
-		) ?? { draft: "", unconfirmed: null };
-		const row = this.db.getFirstSync<{
+		);
+		const record: DraftRecord = { draft: draftRow?.draft ?? "", unconfirmed: draftRow?.unconfirmed ?? null };
+		if (draftRow?.composer) record.composer = JSON.parse(draftRow.composer) as DraftComposerMetadata;
+		if (draftRow?.unconfirmed_composer)
+			record.unconfirmedComposer = JSON.parse(draftRow.unconfirmed_composer) as DraftComposerMetadata;
+		if (draftRow?.unconfirmed_capture_token) record.unconfirmedCaptureToken = draftRow.unconfirmed_capture_token;
+		if (draftRow?.recovery_resend_acks)
+			record.recoveryResendAcks = JSON.parse(draftRow.recovery_resend_acks) as string[];
+		if (draftRow?.completed_command_recovery_ids)
+			record.completedCommandRecoveryIds = JSON.parse(draftRow.completed_command_recovery_ids) as string[];
+		if (draftRow?.released_recovery_ids)
+			record.releasedRecoveryIds = JSON.parse(draftRow.released_recovery_ids) as string[];
+		const imageRow = this.db.getFirstSync<{
 			images: string;
 			unconfirmed_images: string;
 		}>(
@@ -119,9 +166,9 @@ export class DraftRepository {
 			destination.hubId,
 			destination.sessionRef,
 		);
-		if (row) {
-			const images = parseImages(row.images);
-			const unconfirmedImages = parseImages(row.unconfirmed_images);
+		if (imageRow) {
+			const images = parseImages(imageRow.images);
+			const unconfirmedImages = parseImages(imageRow.unconfirmed_images);
 			for (const image of [...images, ...unconfirmedImages]) this.requireImage(destination, image);
 			if (images.length) record.images = images;
 			if (unconfirmedImages.length) record.unconfirmedImages = unconfirmedImages;
@@ -211,7 +258,16 @@ export class DraftRepository {
 	}
 
 	private writeText(destination: DraftDestination, record: DraftRecord): void {
-		if (record.draft === "" && record.unconfirmed === null) {
+		if (
+			record.draft === "" &&
+			record.unconfirmed === null &&
+			!record.composer &&
+			!record.unconfirmedComposer &&
+			!record.unconfirmedCaptureToken &&
+			!record.recoveryResendAcks?.length &&
+			!record.completedCommandRecoveryIds?.length &&
+			!record.releasedRecoveryIds?.length
+		) {
 			this.db.runSync(
 				"DELETE FROM drafts WHERE hub_id = ? AND session_ref = ?",
 				destination.hubId,
@@ -220,23 +276,40 @@ export class DraftRepository {
 			return;
 		}
 		this.db.runSync(
-			`INSERT INTO drafts (hub_id, session_ref, draft, unconfirmed)
-       VALUES (?, ?, ?, ?)
+			`INSERT INTO drafts (hub_id, session_ref, draft, unconfirmed, composer, unconfirmed_composer, unconfirmed_capture_token, recovery_resend_acks, completed_command_recovery_ids, released_recovery_ids)
+			       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (hub_id, session_ref) DO UPDATE SET
-         draft = excluded.draft, unconfirmed = excluded.unconfirmed`,
+	         draft = excluded.draft, unconfirmed = excluded.unconfirmed,
+	         composer = excluded.composer, unconfirmed_composer = excluded.unconfirmed_composer,
+		         unconfirmed_capture_token = excluded.unconfirmed_capture_token,
+		         recovery_resend_acks = excluded.recovery_resend_acks,
+		         completed_command_recovery_ids = excluded.completed_command_recovery_ids,
+		         released_recovery_ids = excluded.released_recovery_ids`,
 			destination.hubId,
 			destination.sessionRef,
 			record.draft,
 			record.unconfirmed,
+			record.composer ? JSON.stringify(record.composer) : null,
+			record.unconfirmedComposer ? JSON.stringify(record.unconfirmedComposer) : null,
+			record.unconfirmedCaptureToken ?? null,
+			record.recoveryResendAcks?.length ? JSON.stringify(record.recoveryResendAcks) : null,
+			record.completedCommandRecoveryIds?.length ? JSON.stringify(record.completedCommandRecoveryIds) : null,
+			record.releasedRecoveryIds?.length ? JSON.stringify(record.releasedRecoveryIds) : null,
 		);
 	}
 
-	/** The sessions on a hub with a draft worth marking: typed or unconfirmed
-	 * text, or images alone (an image-only draft lives only in
-	 * draft_image_sets, since write deletes its empty drafts row). */
+	/** User composition and recovery ownership are discoverable. Acknowledgment
+	 * housekeeping and empty metadata alone are not draft indicators. */
 	refsWithDrafts(hubId: string): Set<string> {
 		const rows = this.db.getAllSync<{ session_ref: string }>(
-			`SELECT session_ref FROM drafts WHERE hub_id = ? AND (draft != '' OR unconfirmed IS NOT NULL)
+			`SELECT session_ref FROM drafts WHERE hub_id = ? AND (
+           draft != '' OR unconfirmed IS NOT NULL
+           OR json_array_length(composer, '$.skillNames') > 0
+           OR json_array_length(composer, '$.commandNames') > 0
+           OR json_array_length(composer, '$.recoveryIds') > 0
+           OR json_array_length(unconfirmed_composer, '$.skillNames') > 0
+           OR json_array_length(unconfirmed_composer, '$.commandNames') > 0
+           OR json_array_length(unconfirmed_composer, '$.recoveryIds') > 0)
        UNION SELECT session_ref FROM draft_image_sets WHERE hub_id = ?`,
 			hubId,
 			hubId,

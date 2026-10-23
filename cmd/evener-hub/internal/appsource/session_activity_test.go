@@ -62,7 +62,7 @@ func TestSessionActivityRemoteReferences(t *testing.T) {
 	}})
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := source.translateOut(tc.value); err != nil {
+			if err := source.translateOutWithForwarded(tc.value, appwire.ThreadCapabilities{}); err != nil {
 				t.Fatal(err)
 			}
 			tc.check(t)
@@ -79,7 +79,7 @@ func TestSessionActivityRemoteJobTranscriptAnchors(t *testing.T) {
 				Page:    appwire.SessionActivityPage{NextCursor: "opaque"},
 				Jobs:    []appwire.JobActivityJob{{JobID: "same-id", OwnerRef: "local:owner", TranscriptRef: anchor, HasOutput: true}},
 			}
-			if err := source.translateOut(&page); err != nil {
+			if err := source.translateOutWithForwarded(&page, appwire.ThreadCapabilities{}); err != nil {
 				t.Fatal(err)
 			}
 			if page.Context.Ref != "east:owner" || page.Jobs[0].OwnerRef != "east:owner" || page.Jobs[0].TranscriptRef != anchor || page.Jobs[0].JobID != "same-id" || !page.Jobs[0].HasOutput || page.Page.NextCursor != "opaque" {
@@ -103,7 +103,7 @@ func TestSessionActivityRemoteJobsRejectUnsupportedStructuralRefs(t *testing.T) 
 				page.Context.Ref = "nested:owner"
 			}
 			var wire appwire.WireError
-			if err := source.translateOut(&page); !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
+			if err := source.translateOutWithForwarded(&page, appwire.ThreadCapabilities{}); !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
 				t.Fatalf("unsupported %s ref: %v", field, err)
 			}
 		})

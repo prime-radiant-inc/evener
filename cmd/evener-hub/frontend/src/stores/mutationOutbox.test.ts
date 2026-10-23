@@ -99,9 +99,13 @@ describe("MutationOutboxIndexedDB", () => {
     setMutationClientIdentityForTests("tab-a");
     const original = await store.enqueueIntent(intent("needs a retry"));
     await store.transferToRecovery(original.clientMutationId, "rejected");
+    const recovered = await store.getRecovery(original.clientMutationId);
+    if (!recovered) throw new Error("missing recovered resend fixture");
     // The resend is a fresh submission by whichever client performed it.
     setMutationClientIdentityForTests("tab-b");
-    const resent = await store.resendRecovery(original.clientMutationId, intent("retry text"));
+    const resent = await store.resendRecovery(original.clientMutationId, intent("retry text"), undefined, {
+      [original.clientMutationId]: recovered.compositionRevision ?? 0,
+    });
     expect(resent?.originClientId).toBe("tab-b");
     expect(await store.getOutbox(resent!.clientMutationId)).toMatchObject({ originClientId: "tab-b" });
   });
@@ -194,6 +198,8 @@ describe("MutationOutboxIndexedDB", () => {
     seedId = "mutation-recovery-source";
     const recoverySource = await seeded.enqueueIntent(intent("needs a retry"));
     await seeded.transferToRecovery(recoverySource.clientMutationId, "rejected");
+    const recovered = await seeded.getRecovery(recoverySource.clientMutationId);
+    if (!recovered) throw new Error("missing recovery collision fixture");
 
     // The resend mints the id the optimistic store already holds: it must
     // reject and leave the recovery row queued for a later, honest retry.
@@ -203,7 +209,11 @@ describe("MutationOutboxIndexedDB", () => {
       createMutationId: () => "mutation-seeded",
       now: () => 1234,
     });
-    await expect(colliding.resendRecovery(recoverySource.clientMutationId, intent("retry text"))).rejects.toThrow();
+    await expect(
+      colliding.resendRecovery(recoverySource.clientMutationId, intent("retry text"), undefined, {
+        [recoverySource.clientMutationId]: recovered.compositionRevision ?? 0,
+      }),
+    ).rejects.toThrow();
 
     expect(await colliding.getRecovery(recoverySource.clientMutationId)).toMatchObject({ recoveryKind: "rejected" });
     expect(await colliding.getOptimistic("mutation-seeded")).toBeDefined();
@@ -273,7 +283,11 @@ describe("MutationOutboxIndexedDB", () => {
     });
     const original = await storage.enqueueIntent(intent("resent after the stop"));
     await storage.transferToRecovery(original.clientMutationId, "rejected", "not accepted");
-    const resent = await storage.resendRecovery(original.clientMutationId, intent("resent fresh"));
+    const recovered = await storage.getRecovery(original.clientMutationId);
+    if (!recovered) throw new Error("missing post-stop recovery fixture");
+    const resent = await storage.resendRecovery(original.clientMutationId, intent("resent fresh"), undefined, {
+      [original.clientMutationId]: recovered.compositionRevision ?? 0,
+    });
     if (!resent) throw new Error("expected the resend to create a row");
 
     await storage.markAttempted(resent.clientMutationId);
@@ -620,6 +634,11 @@ describe("MutationOutboxIndexedDB", () => {
         { type: "image", mediaType: "image/png", data: "CQgH", name: "new.png" },
       ],
       [newAttachment],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      0,
     );
 
     expect(updated?.payload.input).toEqual([
@@ -655,6 +674,9 @@ describe("MutationOutboxIndexedDB", () => {
         undefined,
         composerText,
         nextMentions,
+        undefined,
+        undefined,
+        0,
       );
       const expected = mode === "partial" ? mentions : nextMentions;
       expect(updated?.composerMentions).toEqual(expected);
@@ -720,11 +742,18 @@ describe("MutationOutboxIndexedDB", () => {
         input: [{ type: "text", text: "edited" }],
       },
     };
+    const currentRecovery = await origin.getRecovery(recovered.clientMutationId);
+    if (!currentRecovery) throw new Error("missing recovered resend fixture");
+    const recoveredRevision = currentRecovery.compositionRevision ?? 0;
 
     const winners = (
       await Promise.all([
-        tabA.resendRecovery(recovered.clientMutationId, freshIntent),
-        tabB.resendRecovery(recovered.clientMutationId, freshIntent),
+        tabA.resendRecovery(recovered.clientMutationId, freshIntent, undefined, {
+          [recovered.clientMutationId]: recoveredRevision,
+        }),
+        tabB.resendRecovery(recovered.clientMutationId, freshIntent, undefined, {
+          [recovered.clientMutationId]: recoveredRevision,
+        }),
       ])
     ).filter(Boolean);
 
@@ -745,11 +774,14 @@ describe("MutationOutboxIndexedDB", () => {
     await origin.transferToRecovery(rejected.clientMutationId, "rejected");
     const tabA = new MutationOutboxIndexedDB({ indexedDB, databaseName, createMutationId });
     const tabB = new MutationOutboxIndexedDB({ indexedDB, databaseName, createMutationId });
+    const recovered = await origin.getRecovery(rejected.clientMutationId);
+    if (!recovered) throw new Error("missing recovered resend fixture");
+    const expectedRecoveryRevisions = { [rejected.clientMutationId]: recovered.compositionRevision ?? 0 };
 
     const winners = (
       await Promise.all([
-        tabA.resendRecovery(rejected.clientMutationId, intent("retry me")),
-        tabB.resendRecovery(rejected.clientMutationId, intent("retry me")),
+        tabA.resendRecovery(rejected.clientMutationId, intent("retry me"), undefined, expectedRecoveryRevisions),
+        tabB.resendRecovery(rejected.clientMutationId, intent("retry me"), undefined, expectedRecoveryRevisions),
       ])
     ).filter((record) => record !== undefined);
 
@@ -783,7 +815,11 @@ describe("MutationOutboxIndexedDB", () => {
     const original = await store.enqueueIntent(originalIntent);
     await store.transferToRecovery(original.clientMutationId, "rejected");
 
-    const resent = await store.resendRecovery(original.clientMutationId, originalIntent);
+    const recovered = await store.getRecovery(original.clientMutationId);
+    if (!recovered) throw new Error("missing recovered attachment fixture");
+    const resent = await store.resendRecovery(original.clientMutationId, originalIntent, undefined, {
+      [original.clientMutationId]: recovered.compositionRevision ?? 0,
+    });
     const attachment = resent?.attachments[0];
     expect(attachment?.presentationId).toBe("presentation-1");
     expect(attachment?.name).toBe("proof.png");

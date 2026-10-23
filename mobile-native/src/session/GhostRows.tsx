@@ -16,6 +16,8 @@ import type { GhostRow } from "./transcriptRows";
  * (#3247). */
 export interface GhostRowHost {
 	disabled: boolean;
+	/** Rejected/uncertain restore only. Local merge readiness comes from
+	 * ghosts(..., local), shared with the QueueSheet host. */
 	canEdit: boolean;
 	editHint: string | null;
 	/** The images an unconfirmed send carried, shown in its bubble. */
@@ -40,7 +42,7 @@ export function GhostRowView({ row }: { row: GhostRow }) {
 			canEdit={host.canEdit}
 			editHint={host.editHint}
 			backdrop="page"
-			attachments={ghost.origin.kind === "draft" ? host.draftAttachments : undefined}
+			attachments={ghost.origin.kind === "draft" || ghost.showDraftAttachments ? host.draftAttachments : undefined}
 			onAction={(action) => host.onAction(ghost, action)}
 		/>
 	);
