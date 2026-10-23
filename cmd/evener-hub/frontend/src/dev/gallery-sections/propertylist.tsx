@@ -30,6 +30,16 @@ export default function PropertyListGallerySection() {
             ]}
           />
         </div>
+        <h3>inline, eyebrowLabels: a card's fact rows</h3>
+        <div className={styles.sample}>
+          <PropertyList
+            eyebrowLabels
+            rows={[
+              { label: "Was", value: "https://old.example/v1", mono: true, wrap: true },
+              { label: "Now", value: "https://new.example/v1", mono: true, wrap: true },
+            ]}
+          />
+        </div>
         <h3>stacked: label over value, optional help</h3>
         <div className={styles.sample}>
           <PropertyList
