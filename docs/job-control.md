@@ -60,9 +60,14 @@ In a [Manager session](automation.md#manager-sessions), call
 `job_watch(operation="create", hub={"ref": "local:<workspace>", "events":
 ["communicate"], "completion": true})` to watch the target's recorded observations
 through the Manager's own hub. `status`, `question`, `approval`, and `communicate`
-are supported event selectors; omit `events` to watch only completion. A root
-completion means the **accepted** terminal winner for the watched instance and
-generation had `endTurn: true` and `endReason: "done"`.
+are supported event selectors; omit `events` to watch only completion.
+Completion means the **accepted** terminal winner for the watched execution
+had `endTurn: true` and `endReason: "done"`. An active or question-pending watch
+binds the authoritative active turn and retains it across reconnect, even when
+later work is active. A fresh idle watch may catch up with the latest recorded
+completed work across a daemon restart, but never skip later unfinished work
+to accept an older done. The serving generation scopes the subscription, not
+the original historical execution.
 Questions, waits, rejected terminal calls, and idle state do not complete it.
 The watch removes itself before delivering a completion wake.
 
@@ -78,14 +83,14 @@ Unstamped replay entries remain readable in history and generate a replay-gap
 notice instead of an automatic event trigger. Human session consumers keep
 their own relay subscriptions, and watch notices never answer human questions.
 
-The Manager watch lease is local-only. Remote `job_watch` is neither advertised
-nor supported: the remote subscriber stream lacks the proven generation/entry
-evidence and snapshot handoff required by that lease. Remote status reads,
-input and approval remain available, but a sandbox approval caused by a live
-remote prompt has not been exercised end to end. Polling the human subscriber
-stream does not supply that missing observation lease. Manager schemas come from
-session configuration and remain present during a transport outage, even when a
-call cannot reach its target.
+Local and remote Manager watches use the hub's shared, connection-owned
+subscription path. Use a canonical `HOST:WORKSPACE_ID` ref for a remote target.
+Resync re-reads the authoritative snapshot even for completion-only watches,
+while the notification drain continues. Each Manager and human client keeps
+its own subscription lifetime. Remote question/answer/completion is qualified;
+sandbox approval caused by a live remote prompt remains unexercised end to end.
+Manager schemas come from session configuration and remain present during a
+transport outage, even when a call cannot reach its target.
 
 ## Summary
 

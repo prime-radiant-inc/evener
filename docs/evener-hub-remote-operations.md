@@ -128,7 +128,12 @@ remote host and its model catalog does not create a worker there.
 The remote sandbox-approval route is implemented but has not been exercised
 with a live remote prompt; local no-browser approval does not prove that branch.
 
-**Remote Manager `job_watch` is not supported.** A request returns an explicit unsupported error; reads, status, input and approvals for that target remain available. The canonical Manager observation lease currently exists only for local daemons. Remote notifications reach browser subscribers through the hub's existing AppWire relay, not through that lease. Qualifying remote watches requires a shared lease over the existing remote relay with the same snapshot handoff and generation/entry evidence, not another upstream subscription or a fabricated identity. Local Manager watches continue to work.
+**Remote Manager `job_watch` uses the same shared hub subscription path as human clients.** It supports targeted status, question, approval and communicate notifications plus accepted terminal completion. Question/answer/completion and saved Manager actor attribution are qualified through real two-hub SSH acceptance without a browser. A Manager attach or clear preserves existing human subscribers. Daemon socket reconnect is separately checked for local and remote routing with the original human subscriber retained; this is not a claim about SSH bridge reconnect. Resync re-reads authoritative state regardless of event selectors, retains the watched execution on the same generation, and ends the old watch on replacement. Live remote sandbox approval remains unexercised end to end.
+
+Run the actual SSH acceptance explicitly with
+`EVENER_SSH_E2E=1 EVENER_SSH_E2E_DEPLOY=1 go test ./cmd/evener-hub -run '^TestE2E_ManagerAcceptance$' -count=1`.
+It uses a new test-owned localhost SSH directory and reaps fixture daemons before removal.
+`TestE2E_ManagerRemoteSharedInput` exercises real remote-wire routing locally, not SSH.
 
 **Connect preserves a compatible running hub.** The controller verifies its live AppWire handshake and uses that same channel without replacing the binary or restarting the process. A different build label or unavailable cross-platform artifact does not prevent connection. Host details report the remote process's build, or unknown when the handshake omits build metadata.
 

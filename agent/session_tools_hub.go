@@ -348,7 +348,7 @@ func managerWatchDefinition(def llm.ToolDefinition) llm.ToolDefinition {
 			"completion": map[string]any{"type": "boolean"},
 		}, "required": []string{"ref"},
 	}
-	def.Description += " In a Manager session, operation=create and hub={ref,events,completion} watches recorded local observations through its own hub. Accepted terminal done for the watched generation alone ends completion watches. Connection loss suspends, and runtime restart requires re-registration. Remote watches require an observation lease and are not supported."
+	def.Description += " In a Manager session, operation=create and hub={ref,events,completion} watches local or remote sessions through the shared hub subscription path. Completion requires accepted terminal done for the watched execution. Active or question-pending watches retain their turn across reconnect; fresh idle watches catch up only with the latest recorded work. Connection loss suspends, target replacement ends the watch, and Manager runtime restart requires re-registration."
 	def.Parameters = params
 	return def
 }
