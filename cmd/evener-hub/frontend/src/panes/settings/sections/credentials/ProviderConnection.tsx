@@ -2033,21 +2033,13 @@ function SelectedConnection({
                   label: "Was",
                   mono: true,
                   wrap: true,
-                  value: (
-                    <span className={styles.monoValue} data-destination="previous">
-                      {baseline?.baseUrl ?? "Not configured"}
-                    </span>
-                  ),
+                  value: <span data-destination="previous">{baseline?.baseUrl ?? "Not configured"}</span>,
                 },
                 {
                   label: "Now",
                   mono: true,
                   wrap: true,
-                  value: (
-                    <span className={styles.monoValue} data-destination="current">
-                      {review.baseUrl}
-                    </span>
-                  ),
+                  value: <span data-destination="current">{review.baseUrl}</span>,
                 },
               ]}
             />

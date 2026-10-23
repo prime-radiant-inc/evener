@@ -3506,8 +3506,6 @@ test("the access review shows its facts as eyebrow-labeled PropertyList rows", a
   await user.click(screen.getByRole("button", { name: "Save and test" }));
 
   const review = await screen.findByTestId("access-review");
-  // The two facts render as one shared fact-row list, labels in the eyebrow
-  // idiom rather than the card's own row markup.
   const terms = review.querySelectorAll("dt");
   expect(terms).toHaveLength(2);
   expect([...terms].every((term) => term.className.includes("eyebrowLabel"))).toBe(true);
