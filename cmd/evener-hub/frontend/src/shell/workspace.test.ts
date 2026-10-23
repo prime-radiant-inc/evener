@@ -96,6 +96,29 @@ test("attention reuses presented and parked targets in their proper seats", () =
   expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([x, "pane_session_4"]);
 });
 
+test("restoring a departed main reader displaces the host's welcome fallback", () => {
+  // A -> Next B leaves A parked. Closing B empties main, so the host fills it
+  // with its welcome placeholder; Back to A must restore A's own main seat
+  // rather than opening a second pane beside a screen that says nothing is
+  // open.
+  const state = workspaceStore.getState();
+  const a = state.openPane("session", { ref: "local:a" });
+  const origin = captureAttentionPlacement();
+  if (!origin) throw new Error("missing main origin");
+  const b = presentAttentionTarget("local:b");
+  if (!b) throw new Error("missing destination");
+  expect(b.pane.slot).toBe("main");
+  state.closePane(b.pane.id);
+  const welcome = state.openPane("welcome");
+  expect(workspaceStore.getState().mainPane()?.id).toBe(welcome);
+
+  expect(restoreAttentionPlacement(origin)).toBe(true);
+  const restored = workspaceStore.getState();
+  expect(restored.mainPane()?.id).toBe(a);
+  expect(restored.panes.some((pane) => pane.type === "welcome")).toBe(false);
+  expect(restored.focusedPaneId).toBe(a);
+});
+
 test.each(["open", "toggle", "replace"] as const)("ordinary %s does not focus a parked match", (action) => {
   const id = workspaceStore.getState().openPane("session", { ref: "local:a" });
   const origin = captureAttentionPlacement();

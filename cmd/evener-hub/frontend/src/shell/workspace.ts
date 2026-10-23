@@ -889,12 +889,20 @@ export function substituteAttentionPane(
   const pane: OpenPaneRecord =
     typeof target === "string" ? { id: nextPaneId("session"), type: "session", params: { ref: target }, slot } : target;
   if (source) source.slot = "parked";
-  pane.slot = slot === "main" && state.mainPane() !== null && state.mainPane() !== pane ? "secondary" : slot;
+  // A welcome pane in main IS main's empty state (see openPane's placement
+  // rule above): the host installs it after the pane a reader left is closed,
+  // so restoring that reader's main seat displaces the placeholder instead of
+  // stacking beside a screen that says nothing is open. Any other real main
+  // still wins, and the restored reader becomes its secondary.
+  const main = state.mainPane();
+  const displacesWelcome = slot === "main" && main !== null && main !== pane && main.type === "welcome";
+  pane.slot = slot === "main" && main !== null && main !== pane && !displacesWelcome ? "secondary" : slot;
   // Like retype ownership transfer, install runtime bindings before observers
   // can capture the newly committed presentation.
   bind(pane);
+  const kept = displacesWelcome ? state.panes.filter((held) => held.id !== main?.id) : state.panes;
   workspaceStore.setState({
-    panes: state.panes.includes(pane) ? [...state.panes] : [...state.panes, pane],
+    panes: kept.includes(pane) ? [...kept] : [...kept, pane],
     focusedPaneId: pane.id,
   });
   return pane;
