@@ -342,6 +342,8 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 	if config != nil {
 		childConfig = config.Clone()
 	}
+	// A fork or aside is a new ordinary session, not a resumed Manager.
+	childConfig.Manager = false
 	childMeta := schema.SessionMeta{
 		ID:                 childID,
 		WorkspaceID:        childID,
