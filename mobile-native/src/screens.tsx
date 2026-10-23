@@ -2513,6 +2513,7 @@ function ConversationScreenView({
 			kind: "send" | "queue" | "resume",
 			text: string,
 			images: Parameters<typeof buildComposerInput>[1],
+			precondition?: () => boolean,
 		) => {
 			// A fenced session takes the message durably first, with the same
 			// request an offline send writes, and only then resumes: the resume's
@@ -2523,7 +2524,10 @@ function ConversationScreenView({
 				const live = store.getState();
 				const target = mutationTarget(live);
 				if (target === null || client === null) return false;
-				await getNativeMutationRuntime().submit(offlineRequest(target, "resume", buildComposerInput(text, images)));
+				await getNativeMutationRuntime().submit({
+					...offlineRequest(target, "resume", buildComposerInput(text, images)),
+					...(precondition === undefined ? {} : { precondition }),
+				});
 				haptic("light");
 				// The message is durably admitted, so it is sent: the resume is the
 				// recovery it needs, not part of the send's success. Reporting a
@@ -2542,7 +2546,7 @@ function ConversationScreenView({
 				return true;
 			}
 			const previous = store.getState().lastAcceptedMutation;
-			await store.getState()[kind](through, buildComposerInput(text, images));
+			await store.getState()[kind](through, buildComposerInput(text, images), precondition);
 			const accepted = store.getState().lastAcceptedMutation;
 			const admitted = accepted != null && accepted !== previous && accepted.kind === kind;
 			// Spec 16.6: a light impact on send, Send's and an error row's Retry's.
@@ -2606,14 +2610,54 @@ function ConversationScreenView({
 				true,
 			);
 			if (action === null || action.kind !== "retry" || action.disabled) return;
+			// The runtime runs this once immediately before the durable enqueue and
+			// again before a direct fallback. It reads the shared owners at that
+			// moment, not this render: a retired view, a moved binding, a newer
+			// canonical outcome or an unresolved own row refuses with not-sent.
+			// It excludes only this operation's own in-flight document marker.
+			const precondition = () => {
+				if (!attachment.live || !focused || !screenInFront(navigation, route.key) || !connectionReady.current)
+					return false;
+				const current = store.getState();
+				if (current.ref !== route.params.ref || current.status !== "open") return false;
+				if (current.conversationGeneration !== bindingGeneration) return false;
+				if (!bindingInstance || current.conversation?.instanceId !== bindingInstance) return false;
+				const currentAction = errorAction(
+					{ id: failureRowIdentity(failedTurnId), title: "", detail: "", turnId: failedTurnId },
+					{
+						canonical: current.canonicalSession(),
+						displayedLatestTurnId: latestTurnId(current.conversation ?? undefined),
+						pendingMutations: current.pendingMutations,
+						pendingMutationsReady: current.pendingMutationsReady,
+					},
+					true,
+				);
+				return currentAction !== null && currentAction.kind === "retry" && !currentAction.disabled;
+			};
 			setActionError(null);
 			try {
-				await document.submitText(TURN_CONTINUATION_TEXT, async (text, images) => deliver(service, kind, text, images));
+				await document.submitText(TURN_CONTINUATION_TEXT, async (text, images) =>
+					deliver(service, kind, text, images, precondition),
+				);
 			} catch {
 				// As with Send, a refusal leaves the unconfirmed ghost to say so.
 			}
 		},
-		[attachment, focused, navigation, route.key, retryCanSend, store, document, liveSendKind, deliver, service],
+		[
+			attachment,
+			focused,
+			navigation,
+			route.key,
+			route.params.ref,
+			bindingGeneration,
+			bindingInstance,
+			retryCanSend,
+			store,
+			document,
+			liveSendKind,
+			deliver,
+			service,
+		],
 	);
 
 	const runErrorAction = useCallback(

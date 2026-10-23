@@ -1,5 +1,6 @@
 import { insertMarker, markerText, MAX_ATTACHMENTS, stripMarker } from "@evener/appwire-client";
 import type { InputAttachment } from "@evener/appwire-client";
+import { MutationNotSentError } from "../../mobile/src/state/conversationMutation";
 import type { DraftImage, DraftImageData } from "./draftImages";
 import { restoreUnconfirmedDraft } from "./draftRecovery";
 import type { DraftDestination, DraftRecord, DraftRepository } from "./draftRepository";
@@ -197,7 +198,7 @@ export class DraftDocument {
 		preserveDraft: boolean,
 		operation: (text: string, images: InputAttachment[]) => Promise<boolean>,
 		reissued?: InputAttachment[],
-	) {
+	): Promise<boolean | "not-sent" | undefined> {
 		const { record, loaded, submitting, error } = this.snapshot;
 		const images = preserveDraft ? [] : (record.images ?? []);
 		const outbound = reissued ?? images;
@@ -235,15 +236,24 @@ export class DraftDocument {
 		);
 		this.update({ submitting: true });
 		try {
-			if (await operation(text, inputImages))
-				this.persist(
-					{
-						...this.snapshot.record,
-						unconfirmed: null,
-						unconfirmedImages: undefined,
-					},
-					true,
-				);
+			if (!(await operation(text, inputImages))) return false;
+			this.persist(
+				{
+					...this.snapshot.record,
+					unconfirmed: null,
+					unconfirmedImages: undefined,
+				},
+				true,
+			);
+			return true;
+		} catch (error) {
+			// A proven local refusal made no durable row and no request. Clear only
+			// this operation's uncertainty marker; the live draft, selections and
+			// images stay, and no unconfirmed ghost is left behind. Ordinary throws
+			// keep their existing uncertain recovery.
+			if (!(error instanceof MutationNotSentError)) throw error;
+			this.persist({ ...this.snapshot.record, unconfirmed: null, unconfirmedImages: undefined }, true);
+			return "not-sent";
 		} finally {
 			this.update({ submitting: false });
 		}

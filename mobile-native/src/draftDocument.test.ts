@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { MutationNotSentError } from "../../mobile/src/state/conversationMutation";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
@@ -335,5 +336,47 @@ it("retains uncertain structured replies and prevents a second dispatch", async 
 	expect(reopened.getSnapshot().record).toEqual({
 		draft: "ordinary draft",
 		unconfirmed: "structured reply",
+	});
+});
+
+describe("a mutation proven not sent", () => {
+	it("clears only its own uncertainty marker and keeps the edited draft and images", async () => {
+		const { document, repository, destination } = setup();
+		document.edit("keep me");
+		document.addImage({ id: "photo", marker: 1, mediaType: "image/png", data: "AQID" });
+		const before = document.getSnapshot().record;
+		const outcome = await document.submitText("continue", async () => {
+			throw new MutationNotSentError("the session retired");
+		});
+		expect(outcome).toBe("not-sent");
+		expect(document.getSnapshot().submitting).toBe(false);
+		expect(repository.read(destination)).toEqual(before);
+		expect(repository.imageInputs(destination, repository.read(destination).images ?? [])[0]?.data).toBe("AQID");
+	});
+
+	it("leaves an ordinary false outcome uncertain, as before", async () => {
+		const { document, repository, destination } = setup();
+		document.edit("keep me");
+		const outcome = await document.submitText("continue", async () => false);
+		expect(outcome).toBe(false);
+		expect(repository.read(destination)).toEqual({
+			draft: "keep me",
+			unconfirmed: "continue",
+		});
+	});
+
+	it("propagates an ordinary throw with its uncertainty marker intact", async () => {
+		const { document, repository, destination } = setup();
+		document.edit("keep me");
+		await expect(
+			document.submitText("continue", async () => {
+				throw new Error("wire exploded");
+			}),
+		).rejects.toThrow("wire exploded");
+		expect(document.getSnapshot().submitting).toBe(false);
+		expect(repository.read(destination)).toEqual({
+			draft: "keep me",
+			unconfirmed: "continue",
+		});
 	});
 });

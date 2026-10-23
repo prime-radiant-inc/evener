@@ -96,7 +96,11 @@ import type {
 	LiveConversationService,
 } from "../services/conversation";
 import type { ActivityIdentity, NotificationOutcome } from "./activity";
-import type { ConversationMutationPendingPort, ConversationMutationSubmitter } from "./conversationMutation";
+import {
+	type ConversationMutationPendingPort,
+	type ConversationMutationSubmitter,
+	MutationNotSentError,
+} from "./conversationMutation";
 
 export type ConversationStatus = "idle" | "opening" | "open" | "error" | "closed";
 
@@ -422,8 +426,8 @@ export interface ConversationState {
 	open(service: ConversationService, ref: string): Promise<void>;
 	loadOlder(service: ConversationService): Promise<LoadOlderResult>;
 	setDraft(text: string): void;
-	send(service: ConversationService, input: InputItem[]): Promise<void>;
-	queue(service: ConversationService, input: InputItem[]): Promise<void>;
+	send(service: ConversationService, input: InputItem[], precondition?: () => boolean): Promise<void>;
+	queue(service: ConversationService, input: InputItem[], precondition?: () => boolean): Promise<void>;
 	interrupt(service: ConversationService): Promise<void>;
 	close(): void;
 	applyNotification(n: AnyNotification): void;
@@ -590,6 +594,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		opBinding: RequestBinding,
 		conversation: MobileConversation,
 		input: InputItem[],
+		precondition?: () => boolean,
 	): Promise<MutationReceipt | undefined> {
 		return mutationSubmitter!.submit({
 			kind,
@@ -598,6 +603,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			threadId: conversation.threadId,
 			instanceId: conversation.instanceId ?? conversation.threadId,
 			input,
+			...(precondition === undefined ? {} : { precondition }),
 		});
 	}
 
@@ -610,8 +616,9 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		opBinding: RequestBinding,
 		conversation: MobileConversation,
 		input: InputItem[],
+		precondition?: () => boolean,
 	): Promise<MutationReceipt | undefined> {
-		if (mutationSubmitter !== undefined) return submitMutation(kind, opBinding, conversation, input);
+		if (mutationSubmitter !== undefined) return submitMutation(kind, opBinding, conversation, input, precondition);
 		switch (kind) {
 			case "send":
 				return service.send(input);
@@ -2994,7 +3001,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				});
 			},
 
-			async send(service, input) {
+			async send(service, input, precondition) {
 				const state = get();
 				if (state.conversation === null) return;
 				requireControl(state.conversation, "send", "send");
@@ -3033,7 +3040,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// it.
 				const entryErrorRev = errorOwnerRev;
 				try {
-					const receipt = await dispatchMutation(service, "send", opBinding, state.conversation, input);
+					const receipt = await dispatchMutation(service, "send", opBinding, state.conversation, input, precondition);
 					// C1: Recheck the exact operation binding after the await.
 					if (!isBindingCurrent(opBinding)) return;
 					// F4: Check mutationId — out-of-order completion cannot clear a
@@ -3061,6 +3068,15 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						drainTrailingReread();
 					}
 				} catch (err) {
+					// A proven local refusal made nothing durable and sent nothing:
+					// hand the outcome back even when this view's binding has since
+					// retired, so the shared document keeps the draft and leaves no
+					// ghost. Only a still-current binding owns the store's marker.
+					if (err instanceof MutationNotSentError) {
+						if (isBindingCurrent(opBinding) && get().pendingMutation?.mutationId === mutationId)
+							set({ pendingMutation: null, pendingSend: null });
+						throw err;
+					}
 					// C1: Recheck the exact operation binding after the await.
 					if (!isBindingCurrent(opBinding)) return;
 					handleMutationError(
@@ -3083,7 +3099,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				}
 			},
 
-			async queue(service, input) {
+			async queue(service, input, precondition) {
 				const state = get();
 				if (state.conversation === null) return;
 				requireQueue(state.conversation, state.pendingMutations);
@@ -3114,7 +3130,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// I1: Capture error-owner revision AFTER installing pending+error-clear.
 				const entryErrorRev = errorOwnerRev;
 				try {
-					const receipt = await dispatchMutation(service, "queue", opBinding, state.conversation, input);
+					const receipt = await dispatchMutation(service, "queue", opBinding, state.conversation, input, precondition);
 					// C1: Recheck the exact operation binding after the await.
 					if (!isBindingCurrent(opBinding)) return;
 					if (get().pendingMutation?.mutationId === mutationId) {
@@ -3136,6 +3152,11 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						drainTrailingReread();
 					}
 				} catch (err) {
+					if (err instanceof MutationNotSentError) {
+						if (isBindingCurrent(opBinding) && get().pendingMutation?.mutationId === mutationId)
+							set({ pendingMutation: null, pendingSend: null });
+						throw err;
+					}
 					// C1: Recheck the exact operation binding after the await.
 					if (!isBindingCurrent(opBinding)) return;
 					handleMutationError(

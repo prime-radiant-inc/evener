@@ -3149,6 +3149,108 @@ describe("Retry's one owner on the shared session binding", () => {
 		await settle();
 		expect(hub.mutations()).toEqual([]);
 	});
+
+	it("refuses Retry before commit when its view retires while startup is held, preserving the draft", async () => {
+		const ref = "ref-retry-retire-before";
+		const { tree, hub } = await mountTracked(failedTurn(ref, "go test exited 1"));
+		const destination = { hubId: "hub-1", sessionRef: ref };
+		const document = drafts.open(destination);
+		await type(tree, "keep this");
+		act(() =>
+			document.addImage({ id: "draft-image", marker: 1, mediaType: "image/png", name: "draft.png", data: "AQID" }),
+		);
+		const before = document.getSnapshot().record;
+		const runtime = getNativeMutationRuntime();
+		const start = runtime.start.bind(runtime);
+		const held = deferred();
+		let hold = true;
+		runtime.start = async () => {
+			if (hold) {
+				hold = false;
+				await held.gate;
+			}
+			return start();
+		};
+		try {
+			act(() => pressable(tree, "Retry")!.props.onPress());
+			await until(() => expect(document.getSnapshot().submitting).toBe(true));
+			// The only view goes away while the runtime is still starting.
+			act(() => tree.unmount());
+			await act(async () => {
+				held.release();
+				await vi.waitFor(() => expect(document.getSnapshot().submitting).toBe(false));
+			});
+		} finally {
+			runtime.start = start;
+		}
+		expect(hub.mutations()).toEqual([]);
+		expect(await runtime.storage.listOutbox("")).toEqual([]);
+		expect(document.getSnapshot().record).toEqual(before);
+	});
+
+	it("leaves a committed Retry row owned by the runtime after its view retires", async () => {
+		const ref = "ref-retry-retire-after";
+		const { tree, hub } = await mountTracked(failedTurn(ref, "go test exited 1"));
+		const runtime = getNativeMutationRuntime();
+		const key = nativeMutationTargetKey("hub-1", ref);
+		const held = deferred();
+		const request = hub.client.request;
+		let hold = true;
+		hub.client.request = async (method, params) => {
+			if (method === "turn/start" && hold) {
+				hold = false;
+				await held.gate;
+			}
+			return request(method, params);
+		};
+		act(() => pressable(tree, "Retry")!.props.onPress());
+		await act(async () => {
+			await vi.waitFor(async () => expect(await runtime.storage.listOutbox(key)).toHaveLength(1));
+		});
+		act(() => tree.unmount());
+		// Committed before retirement: the runtime owns the row, not the view.
+		expect(await runtime.storage.listOutbox(key)).toHaveLength(1);
+		await act(async () => {
+			held.release();
+		});
+		const [row] = await runtime.storage.listOutbox(key);
+		if (row) await runtime.storage.discardUndelivered(row.clientMutationId, key);
+	});
+
+	it("creates one identity for repeated Retry presses while the precondition is pending", async () => {
+		const ref = "ref-retry-repeat";
+		const { tree, hub } = await mountTracked(failedTurn(ref, "go test exited 1"));
+		const document = drafts.open({ hubId: "hub-1", sessionRef: ref });
+		const runtime = getNativeMutationRuntime();
+		const start = runtime.start.bind(runtime);
+		const held = deferred();
+		let hold = true;
+		runtime.start = async () => {
+			if (hold) {
+				hold = false;
+				await held.gate;
+			}
+			return start();
+		};
+		const button = pressable(tree, "Retry")!;
+		try {
+			act(() => button.props.onPress());
+			await until(() => expect(document.getSnapshot().submitting).toBe(true));
+			// A second press cannot enter the shared document while the first
+			// operation owns it.
+			act(() => button.props.onPress());
+		} finally {
+			await act(async () => {
+				held.release();
+				await vi.waitFor(() => expect(document.getSnapshot().submitting).toBe(false));
+			});
+			runtime.start = start;
+		}
+		await act(async () => {
+			await vi.waitFor(() => expect(hub.mutations()).toEqual(["turn/start"]));
+		});
+		expect(hub.requests.filter((request) => request.method === "turn/start")).toHaveLength(1);
+	});
 });
 
 // Send is the single recovery action: a fenced session's error row offers no
