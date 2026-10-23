@@ -32,6 +32,7 @@ import {
   installQueuedMutationProjection,
   installResumeOnlyProjection,
   notifyReadyForMutationDispatch,
+  preserveRecoveryMutation,
   readMutationPersistence,
   removeQueuedMutation,
   resendRecoveryMutation,
@@ -519,6 +520,36 @@ export function updateRecoveryPendingTurn(
       );
       void refreshPendingTurnsProjection(ref);
       return updated;
+    })(),
+  );
+}
+
+export function preserveRecoveryPendingTurn(
+  base: MutationRecoveryRecord,
+  ref: string,
+  text: string,
+  attachments: InputAttachment[],
+  skillNames?: readonly string[],
+  commandNames?: readonly string[],
+  mentions?: readonly ComposerMention[],
+  compositionOwnerId?: string,
+  localDraftRevisionId?: string,
+): ReturnType<typeof preserveRecoveryMutation> {
+  return trackProjectionWork(
+    (async () => {
+      const preserved = await preserveRecoveryMutation(
+        base,
+        ref,
+        text,
+        attachments,
+        skillNames,
+        commandNames,
+        mentions,
+        compositionOwnerId,
+        localDraftRevisionId,
+      );
+      void refreshPendingTurnsProjection(ref);
+      return preserved;
     })(),
   );
 }

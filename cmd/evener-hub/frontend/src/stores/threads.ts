@@ -3447,6 +3447,36 @@ export async function updateRecoveryMutation(
   return record;
 }
 
+// Preserve a stale pane's complete composition under a fresh recovery owner.
+// The staled row is never written: the fresh owner reuses its method and
+// target, and carries the local text, selections and attachment bytes.
+export async function preserveRecoveryMutation(
+  base: MutationRecoveryRecord,
+  targetRef: string,
+  text: string,
+  attachments: InputAttachment[],
+  skillNames?: readonly string[],
+  commandNames?: readonly string[],
+  mentions?: readonly ComposerMention[],
+  compositionOwnerId?: string,
+  localDraftRevisionId?: string,
+): Promise<MutationRecoveryRecord | undefined> {
+  const runtime = requireMutationRuntime();
+  await runtime.start;
+  const record = await runtime.storage.preserveRecoveryComposition(
+    base,
+    buildInput(text, attachments, skillNames, commandNames, mentions),
+    durableAttachments(attachments),
+    text,
+    mentions,
+    compositionOwnerId,
+    localDraftRevisionId,
+  );
+  if (!record) return undefined;
+  notifyMutationPersistence([targetRef]);
+  return record;
+}
+
 export async function discardRecoveryMutation(
   clientMutationId: string,
   targetRef: string,
