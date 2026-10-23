@@ -161,8 +161,10 @@ With the test and seams in place:
    (`TestHubRelayRetiredChildDoesNotBlockRootRead`,
    `TestHubRelayRetiredChildReadWithBackgroundConsumer`,
    `TestHubRelayQueuedReadDoesNotHoldPreCutAcknowledgement`,
-   `TestHubRelayPendingTargetBurstMakesProgress`) unchanged and green. Do not
-   weaken or replace their assertions.
+   `TestHubRelayPendingTargetBurstMakesProgress`) green. Their assertions are
+   unchanged; their shared fixture setup is extracted into
+   `openRootWithRetiredChild` with no behavior change. Do not weaken or replace
+   their assertions.
 
 ## Non-goals
 
