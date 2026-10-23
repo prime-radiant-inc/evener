@@ -3,11 +3,14 @@ import {
   type AttentionPlacementEntry,
   attentionPlacementIsValid,
   captureAttentionPlacement,
+  onAttentionPaneRetype,
   presentAttentionTarget,
+  refreshAttentionPlacement,
   releaseUnreferencedAttentionPanes,
   restoreAttentionPlacement,
 } from "./attentionPlacement";
 import { navigate, observeRouteHistory, paneToURL, routeHistoryEntryId } from "./routing";
+import { workspaceStore } from "./workspace";
 
 const STATE_KEY = "__evenerAttention";
 // Not crypto.randomUUID(): an ordinary HTTP origin outside localhost is not a
@@ -121,6 +124,48 @@ observeRouteHistory((previousState, nextState, previousURL, nextURL, transition)
   });
   cursor = branch.length - 1;
   retainBranchEntries();
+});
+
+// Closing the reader an attention entry owns retires that entry: the route
+// still names the closed conversation, and ordinary reconciliation would reopen
+// it - replacing the primary slot and taking parked source readers, and their
+// staged work, with it. Retiring first leaves the address bar naming the reader
+// the host actually kept.
+workspaceStore.subscribe((state, previous) => {
+  if (state.panes === previous.panes) return;
+  const token = tokenAt(history.state);
+  if (!token || token.generation !== generation) return;
+  const binding = entries.get(key(token));
+  if (!binding || state.panes.includes(binding.placement.pane)) return;
+  retireAttentionEntry(binding);
+});
+
+function retireAttentionEntry(binding: HistoryBinding): void {
+  const state = workspaceStore.getState();
+  const survivor =
+    state.panes.find((pane) => pane.id === state.focusedPaneId && pane.slot !== "parked") ??
+    state.panes.find((pane) => pane.slot === "main") ??
+    null;
+  const url = survivor ? paneToURL(survivor.type, survivor.params) : null;
+  entries.delete(key(binding.token));
+  branch = branch.map((entry) =>
+    entry.token && key(entry.token) === key(binding.token) ? { ...entry, token: null } : entry,
+  );
+  cursor = branchIndex(null, `${location.pathname}${location.search}${location.hash}`);
+  navigate(url ?? "/", { replace: true });
+}
+
+// A drill inside the cascade an attention entry owns keeps the same pane and
+// lifetime: refresh that entry instead of letting it fall invalid, or the
+// address bar turns into an ordinary route that reopens the pre-drill reader
+// and steals focus from the drill's leaf. Other entries keep their own
+// snapshots and stay invalid, so a stale historical reader is never revived.
+onAttentionPaneRetype((_previous, replacement) => {
+  const token = tokenAt(history.state);
+  if (!token || token.generation !== generation) return;
+  const binding = entries.get(key(token));
+  if (!binding || binding.placement.pane !== replacement) return;
+  refreshAttentionPlacement(binding.placement);
 });
 
 /** Runtime token for the current, still-valid attention-owned browser entry. */

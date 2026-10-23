@@ -36,6 +36,7 @@ interface Binding {
   seat: Seat;
 }
 const bindings = new WeakMap<OpenPaneRecord, Binding>();
+const retypeListeners = new Set<(previous: OpenPaneRecord, replacement: OpenPaneRecord) => void>();
 const entries = new WeakMap<
   AttentionPlacementEntry,
   { seat: Seat; revision: number; view: TranscriptReadView | null }
@@ -172,6 +173,28 @@ export function releaseUnreferencedAttentionPanes(retained: ReadonlySet<OpenPane
   if (panes.length !== state.panes.length) workspaceStore.setState({ panes });
 }
 
+/** Called after an in-place retype has moved a pane's lifetime to its replacement. */
+export function onAttentionPaneRetype(listener: (previous: OpenPaneRecord, replacement: OpenPaneRecord) => void): void {
+  retypeListeners.add(listener);
+}
+
+// A drill inside a cascade keeps the same pane and lifetime, so an entry that
+// owns that pane still describes the reader - it just reads a different leaf.
+// Re-capturing keeps the entry valid instead of letting its route fall back to
+// ordinary placement, which would reopen the pre-drill reader beside it.
+export function refreshAttentionPlacement(entry: AttentionPlacementEntry): boolean {
+  const binding = bindings.get(entry.pane);
+  if (!binding) return false;
+  const reader = readerIdentity(binding.pane);
+  const lifetime = reader ? conversationPaneLifetime(binding.pane) : null;
+  const view = reader && lifetime ? retainedTranscriptReadView(lifetime, reader.ref, reader.role) : null;
+  entry.lifetimeSerial = lifetime?.serial ?? null;
+  entry.requestedRef = reader?.ref ?? null;
+  entry.readViewId = view?.id ?? null;
+  entries.set(entry, { seat: binding.seat, revision: binding.revision, view });
+  return true;
+}
+
 // The host uses only this one-seat transition, then clears it. It inserts the
 // destination before removing the source so a sole-panel group stays alive.
 export function attentionPanelAnchor(pane: OpenPaneRecord): OpenPaneRecord | null {
@@ -191,4 +214,5 @@ onPaneRetype((previous, replacement) => {
   if (binding.seat.anchor === previous) binding.seat.anchor = replacement;
   bindings.delete(previous);
   bindings.set(replacement, binding);
+  for (const listener of retypeListeners) listener(previous, replacement);
 });

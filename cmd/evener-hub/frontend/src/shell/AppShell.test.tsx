@@ -2284,6 +2284,41 @@ test("a focus-only child opening after an already-restored attention entry publi
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Achild"));
 });
 
+// Closing the attention target is the reader saying no to that conversation.
+// The route still names it, so ordinary reconciliation used to reopen it - and
+// with another session owning main, that replacement took the whole workspace,
+// parked source readers included. The entry has to be retired when its reader
+// is closed.
+test("closing an attention target retires its route instead of reopening it", async () => {
+  window.history.replaceState({}, "", "/s/local%3Asource");
+  installLocationForRoute("local:source");
+  render(<AppShell client={navClient()} />);
+  await screen.findByText(/loading transcript/i);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:source" }));
+  const source = workspaceStore.getState().mainPane();
+  if (!source) throw new Error("missing source reader");
+  const sourceLifetime = conversationPaneLifetime(source);
+
+  act(() => openAttentionSession("local:target"));
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:target" }));
+  expect(source.slot).toBe("parked");
+
+  const target = workspaceStore.getState().mainPane();
+  if (!target) throw new Error("missing attention target");
+  act(() => workspaceStore.getState().closePane(target.id));
+
+  await waitFor(() => expect(workspaceStore.getState().panes.some((pane) => pane.id === target.id)).toBe(false));
+  // Nothing may reopen the closed conversation, and the parked source keeps its
+  // exact lifetime.
+  expect(workspaceStore.getState().panes.some((pane) => (pane.params as { ref?: string }).ref === "local:target")).toBe(
+    false,
+  );
+  expect(workspaceStore.getState().panes).toContain(source);
+  expect(conversationPaneLifetime(source)).toBe(sourceLifetime);
+  expect(sourceLifetime.alive).toBe(true);
+  expect(window.location.pathname).not.toBe("/s/local%3Atarget");
+});
+
 test("a secondary departure restores the exact reader without replacing its main or neighbors", async () => {
   window.history.replaceState({}, "", "/s/local%3Aowner");
   installLocationForRoute("local:owner");

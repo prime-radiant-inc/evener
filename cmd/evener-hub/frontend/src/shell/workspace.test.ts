@@ -3,6 +3,7 @@ import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { parseZoomParams } from "../panes/zoom/intent";
+import { currentAttentionEntryToken, openAttentionSession } from "./attentionHistory";
 import {
   captureAttentionPlacement,
   presentAttentionTarget,
@@ -117,6 +118,36 @@ test("restoring a departed main reader displaces the host's welcome fallback", (
   expect(restored.mainPane()?.id).toBe(a);
   expect(restored.panes.some((pane) => pane.type === "welcome")).toBe(false);
   expect(restored.focusedPaneId).toBe(a);
+});
+
+// A drill keeps the same pane and lifetime but reads a different leaf, so the
+// entry that owns that pane still describes the reader. If it fell invalid, its
+// route would be treated as ordinary and AppShell would reopen the pre-drill
+// reader beside the drill, taking focus off the leaf.
+test("a drill inside an attention entry's cascade keeps the entry bound to its route", async () => {
+  window.history.replaceState({}, "", "/s/local%3Aa");
+  const a = workspaceStore.getState().openPane("session", { ref: "local:a" });
+  workspaceStore.getState().focusPane(a);
+  openAttentionSession("local:b");
+  const b = presentAttentionTarget("local:b");
+  if (!b) throw new Error("missing attention destination");
+  openAttentionSession("local:c");
+  const back = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+  window.history.back();
+  await back;
+  const token = currentAttentionEntryToken();
+  if (!token) throw new Error("the destination entry lost its token before the drill");
+
+  workspaceStore.getState().focusPane(b.pane.id);
+  expect(
+    workspaceStore.getState().retypePane(b.pane, "sessionZoom", {
+      ref: "local:leaf",
+      source: { type: "session", params: { ref: "local:b" } },
+      edges: [],
+    }),
+  ).toBe(true);
+
+  expect(currentAttentionEntryToken()).toBe(token);
 });
 
 test.each(["open", "toggle", "replace"] as const)("ordinary %s does not focus a parked match", (action) => {
