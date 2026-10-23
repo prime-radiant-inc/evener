@@ -2840,9 +2840,13 @@ export function ConversationScreen({
 	// existing durable draft still references these sources, so Discard must not
 	// expose them. An initial append failure leaves the prior record unchanged
 	// and therefore keeps its unrepresented source visible for recovery.
+	const parkedRecoveryIds = (draft.record.parkedCompositions ?? []).flatMap(
+		(parked) => parked.composer?.recoveryIds ?? [],
+	);
 	const representedRecoveryIds = [
 		...(draft.record.composer?.recoveryIds ?? []),
 		...(draft.record.unconfirmedComposer?.recoveryIds ?? []),
+		...parkedRecoveryIds,
 		...(draft.record.completedCommandRecoveryIds ?? []),
 	];
 	const recoveryRows = projectNativeMutationRecovery(recovery.targetKey, recovery.snapshot).filter(
@@ -2859,6 +2863,7 @@ export function ConversationScreen({
 			.map((row) => row.clientMutationId),
 		captured: draft.record.unconfirmedComposer?.recoveryIds,
 		owned: draft.record.composer?.recoveryIds,
+		parked: parkedRecoveryIds,
 		released: draft.record.releasedRecoveryIds,
 		completed: draft.record.completedCommandRecoveryIds,
 		acks: draft.record.recoveryResendAcks,
@@ -2933,11 +2938,18 @@ export function ConversationScreen({
 						readiness: { document: draft, encodingAttachments: imageState.busy },
 					}
 				: undefined,
+			draft.record.parkedCompositions?.map((parked) => ({
+				id: parked.id,
+				text: parked.text,
+				sentText: translateAttachmentMarkers(parked.text, parked.images),
+			})) ?? [],
 		),
 		{ connected, composerLoaded: draft.loaded },
 	);
 	const canEditGhost = document.canRestoreRecoveredDraft();
 	const ghostEditHint = document.recoveredRestoreHint();
+	const canEditParked = canEditGhost && !imageState.busy;
+	const parkedEditHint = imageState.busy ? "Wait for the image to finish preparing." : ghostEditHint;
 	// The transcript list's rows: the conversation's, its usage lines when they
 	// have anything to show, then the ghosts.
 	const ghostsKey = JSON.stringify(allGhosts);
@@ -3054,6 +3066,11 @@ export function ConversationScreen({
 						nativeMutationTargetKey(route.params.hubId, route.params.ref),
 					);
 			} else if (action === "edit") document.restore();
+			return null;
+		}
+		if (origin.kind === "parked") {
+			if (action === "discard") document.dismissParked(origin.parkId);
+			else if (action === "edit" && !imageSelection.getSnapshot().busy) document.restoreParked(origin.parkId);
 			return null;
 		}
 		if (origin.kind === "recovery") {
@@ -3253,7 +3270,17 @@ export function ConversationScreen({
 		disabled: ghostBusy,
 		canEdit: canEditGhost,
 		editHint: ghostEditHint,
+		canEditParked,
+		parkedEditHint,
 		draftAttachments: <ImageAttachments document={document} selection={imageSelection} uncertain />,
+		parkedAttachments: (parkId) => (
+			<ImageAttachments
+				document={document}
+				selection={imageSelection}
+				uncertain
+				images={draft.record.parkedCompositions?.find((parked) => parked.id === parkId)?.images ?? []}
+			/>
+		),
 		onAction: (ghost, action) => {
 			void runGhostAction(ghost, action).then((message) => {
 				if (message) toaster.show(message);
