@@ -293,6 +293,23 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 					expect(button.props.accessibilityState?.disabled).toBe(true);
 				}
 			};
+			// A press must land on the owners' stable answer. Under load a storage
+			// notification or a new-turn frame can move the entry through the
+			// readiness gap where activation correctly refuses, leaving no durable
+			// row. Wait for the shared entry to certify both reads and for the
+			// rendered Pressable to offer the action before every Retry press.
+			const waitRetryReady = async () => {
+				await waitFor(() => {
+					const state = entry().store.getState();
+					expect(state.latestReadState).toBe("ready");
+					expect(state.pendingMutationsReady).toBe(true);
+					expect(state.canonicalSession()).not.toBeNull();
+					const button = retryButtons(tree)[0];
+					expect(button).toBeDefined();
+					expect(button?.props.disabled).toBe(false);
+					expect(button?.props.accessibilityState?.disabled).not.toBe(true);
+				});
+			};
 			const expectSettled = async () => {
 				await waitFor(async () => {
 					const rows = await getNativeMutationRuntime().read(nativeMutationTargetKey(hubId, scenario.ref));
@@ -348,6 +365,7 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 				wire.holdResponses("turn/start");
 				wire.holdResponses("thread/read");
 				wire.holdNotifications("history/updated", "overlay/upserted", "overlay/delta", "overlay/reset", "overlay/end");
+				await waitRetryReady();
 				await pressButton(retryButtons(tree)[0]!);
 				await waitOutbox(hubId, 1);
 				const [row] = await outbox(hubId);
@@ -443,6 +461,7 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 				// Stage draft text and an image; Retry must leave both untouched.
 				const document = await stageDraft(hubId);
 				wire.holdResponses("turn/start");
+				await waitRetryReady();
 				await pressButton(retryButtons(tree)[0]!);
 				await waitOutbox(hubId, 1);
 				const [row] = await outbox(hubId);
@@ -471,6 +490,7 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 				wire.mode = "lost-reply";
 				wire.armed = true;
 				wire.holdResponses("thread/read");
+				await waitRetryReady();
 				await pressButton(retryButtons(tree)[0]!);
 				await untilRendered(() => expect(wire.dropped).toBe(1));
 				await waitOutbox(hubId, 1);
@@ -517,6 +537,7 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 			const failed = failedTurnId();
 			wire.mode = scenario.mode;
 			wire.armed = true;
+			await waitRetryReady();
 			await pressButton(retryButtons(tree)[0]!);
 			await untilRendered(() => expect(wire.requests.length).toBeGreaterThanOrEqual(1));
 			expect(wire.requests[0]?.params.input).toEqual([{ type: "text", text: "continue" }]);
