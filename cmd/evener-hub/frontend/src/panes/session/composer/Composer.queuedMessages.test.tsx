@@ -1211,6 +1211,8 @@ test("stale recovery persistence refusal preserves the unsent draft and attachme
     await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(queuedRecord.clientMutationId));
     await screen.findByRole("button", { name: "Remove recovered.png" });
     const submittedText = source.getSnapshot().text;
+    // Restored attachments do not mean the recovery projection has finished publishing.
+    await flushPendingTurnsProjectionForTests();
     const peerRecovery = await peer.getRecovery(queuedRecord.clientMutationId);
     if (!peerRecovery) throw new Error("missing peer recovery fixture");
 
@@ -1247,6 +1249,8 @@ test("stale recovery persistence refusal preserves the unsent draft and attachme
     expect(screen.getByRole("button", { name: "Remove recovered.png" })).toBeDefined();
     expect(source.getSnapshot().activeRecoveryId).toBeNull();
     expect(readDraft("root")).toBe(submittedText);
+    // Enabled Send does not mean the recovery projection has finished publishing.
+    await flushPendingTurnsProjectionForTests();
     expect(await peer.getRecovery(queuedRecord.clientMutationId)).toMatchObject({
       composerText: "newer composition in another tab",
       payload: { input: [{ type: "text", text: "newer composition in another tab" }] },
