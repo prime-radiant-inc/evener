@@ -682,8 +682,12 @@ export async function attentionJourney(ctx) {
       assert.ok(!intersects(sample.next, sample.more), `${label} Next and More are distinct hit areas`);
       assert.ok(!intersects(sample.control, sample.composer), `${label} the control never overlaps the composer`);
       assert.ok(!intersects(sample.control, sample.send), `${label} the control never overlaps Send/Stop`);
-      assert.ok(sample.clearanceHeight === 0 || Math.abs(sample.clearanceHeight - sample.stack.height) <= 0.5,
-        `${label} the end clearance matches the measured stack, got ${sample.clearance?.height} vs ${sample.stack?.height}`);
+      // Everything from the reader's own bottom edge up to the stack's top:
+      // the stack's height plus the inset it floats above that edge.
+      const requiredClearance = sample.port && sample.stack ? sample.port.bottom - sample.stack.top : null;
+      assert.ok(
+        sample.clearanceHeight === 0 || (requiredClearance !== null && Math.abs(sample.clearanceHeight - requiredClearance) <= 0.5),
+        `${label} the end clearance reaches the stack top, got ${sample.clearanceHeight} vs ${requiredClearance ?? "unmeasured"}`);
       assert.ok(sample.stack && sample.stack.height > 0, `${label} the floating stack owns a measured height`);
       if (sample.pill) {
         assert.ok(!intersects(sample.pill, sample.next), `${label} New Content and Next do not overlap`);
@@ -692,10 +696,17 @@ export async function attentionJourney(ctx) {
       assert.ok(sample.nextOverflow.button <= Math.min(18 * 16, width * 0.55) + 18,
         `${label} the long title stays inside the compact ceiling, got ${sample.nextOverflow.button}`);
       // At the end the reader's own last content row sits above the stack.
-      await read(`(() => { const port = ${sourcePortExpr}; if (port) port.scrollTop = port.scrollHeight; })()`);
+      // The sizer can grow after a width change lands: a tall row above the
+      // viewport re-measures, scroll anchoring holds the visible content still,
+      // and the reader ends up short of the end. A person at the end scrolls
+      // again, so the poll re-pins the reader before it measures.
       const bottom = await wait(`(() => {
         const port = ${sourcePortExpr};
         if (!port) return null;
+        if (port.scrollTop + port.clientHeight < port.scrollHeight - 1) {
+          port.scrollTop = port.scrollHeight;
+          return null;
+        }
         const rows = [...port.querySelectorAll('[data-index]')].filter(node => node.textContent.trim() !== '');
         const last = rows.at(-1);
         const body = document.querySelector('.dv-active-group [data-pane-scaffold^="session:"]')
@@ -708,12 +719,14 @@ export async function attentionJourney(ctx) {
         // The row can be taller than the reader after a resize. Require part of
         // it inside the viewport and its end above the stack's bottom edge.
         if (box.top > portBox.bottom - 2 || box.bottom < portBox.top + 2) return null;
-        // The final row's own content must be hit-testable (nothing paints over
-        // it) and the row must end above the bottom edge of the floating stack.
-        const y = Math.min(Math.max(box.top + 8, portBox.top + 2), portBox.bottom - 2);
-        const hit = document.elementFromPoint(box.x + Math.min(10, box.width / 2), y);
         const stackBox = stack.getBoundingClientRect();
-        return last.contains(hit) && box.bottom <= stackBox.bottom + 1
+        // The final row's own content must be hit-testable (nothing paints over
+        // it) and the row must end above the stack's TOP edge, the edge the end
+        // clearance is measured to.
+        const y = Math.min(Math.max(box.top + 8, portBox.top + 2), Math.min(portBox.bottom, stackBox.top) - 2);
+        if (y <= box.top) return null;
+        const hit = document.elementFromPoint(box.x + Math.min(10, box.width / 2), y);
+        return last.contains(hit) && box.bottom <= stackBox.top + 1
           ? { lastBottom: box.bottom, stackTop: stackBox.top, stackBottom: stackBox.bottom } : null;
       })()`, `${label}: final transcript content scrolls above the floating controls`);
       geometry.push({ width, theme, next: sample.next, more: sample.more, stack: sample.stack, pill: sample.pill, send: sample.send, clearance: sample.clearanceHeight, lastRowBottom: bottom.lastBottom, stackTop: bottom.stackTop, stackBottom: bottom.stackBottom });
@@ -935,7 +948,14 @@ export async function attentionJourney(ctx) {
     await activate(LOAD_MORE, "the list's Load more control").catch(() => undefined);
   }
   await new Promise((resolve) => setTimeout(resolve, 1000));
-  await wait(`document.querySelectorAll(${q(ROW)}).length > 50 || document.querySelector(${q(LOAD_MORE)}) === null`, "the attention list reaches its later page");
+  // A panel that has opened but not been given its first page yet satisfies
+  // every "no Load more control" reading, so the wait has to see rows before it
+  // can say the list reached its later page.
+  await wait(`(() => {
+    const rows = document.querySelectorAll(${q(ROW)}).length;
+    if (rows === 0) return null;
+    return rows > 50 || document.querySelector(${q(LOAD_MORE)}) === null ? rows : null;
+  })()`, "the attention list reaches its later page");
   const allRows = await read(`[...document.querySelectorAll(${q(ROW)})].map((row) => row.dataset.ref)`);
   // The store may already have merged the hub's second page before this leg
   // reads the list, so the rows past the first page are identified by the
