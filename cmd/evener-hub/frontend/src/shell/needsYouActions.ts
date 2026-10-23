@@ -10,6 +10,7 @@ import {
 import { navigationStore } from "../stores/navigation/store";
 import { threadsStore } from "../stores/threads";
 import { openAttentionSession } from "./attentionHistory";
+import { chromeStore } from "./chromeStore";
 import { focusedSessionPaneId, focusedSessionRef } from "./focusedSession";
 import { paletteStore } from "./palette/paletteController";
 import { existingConversationPaneLifetime } from "./paneLifetime";
@@ -186,6 +187,7 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
   let unsubscribeWorkspace = () => {};
   let unsubscribePalette = () => {};
   let unsubscribeRoute = () => {};
+  let unsubscribeChrome = () => {};
   const onPopState = () => {
     routeSerial += 1;
     cancel();
@@ -206,8 +208,17 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
       .slice(batch.indexOf(record) + 1)
       .some((later) => later.type === "attributes" && later.target === record.target && later.oldValue === "true");
   };
+  // Every document the shell might open a modal in: the opener's, and the
+  // focused reader's own (a Dockview popout is a separate window, and Dockview
+  // warns us of it through PaneScaffold's published document).
+  const observedDocuments = new Set<Document>();
+  const modalIn = (doc: Document): boolean => !!doc.querySelector('[aria-modal="true"]');
+  const anyModalOpen = (): boolean => {
+    for (const doc of observedDocuments) if (modalIn(doc)) return true;
+    return false;
+  };
   const modalObserver = new MutationObserver((records) => {
-    const next = !!document.querySelector('[aria-modal="true"]');
+    const next = anyModalOpen();
     // A UI mutation that opens a modal is a new modal-open transition. This is
     // true even when another modal is already open (the palette itself is one),
     // and even when the new modal closes again before this callback runs. Only
@@ -238,10 +249,39 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
   // build the controller while it renders and still release every resource the
   // moment observation has begun. A controller built by a render React discards
   // never observes anything and has nothing to release.
+  const focusedPaneDocument = (): Document | null => {
+    const focused = workspaceStore.getState().focusedPaneId;
+    return focused ? (chromeStore.getState().paneDocuments.get(focused) ?? null) : null;
+  };
+  const observeModalDocument = (doc: Document | null): void => {
+    if (!doc || observedDocuments.has(doc) || !doc.documentElement) return;
+    observedDocuments.add(doc);
+    modalObserver.observe(doc.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeOldValue: true,
+      attributeFilter: ["aria-modal"],
+    });
+  };
+  // A reader adopted into a popout reports a new document; start watching it and
+  // treat a modal already open there as the modal transition it is.
+  const syncModalDocuments = () => {
+    const before = observedDocuments.size;
+    observeModalDocument(typeof document === "undefined" ? null : document);
+    observeModalDocument(focusedPaneDocument());
+    if (observedDocuments.size === before) return;
+    const next = anyModalOpen();
+    if (next === modalOpen) return;
+    modalOpen = next;
+    cancel();
+    emit();
+  };
   const start = () => {
     if (started || disposed) return;
     started = true;
-    modalOpen = typeof document !== "undefined" && !!document.querySelector('[aria-modal="true"]');
+    syncModalDocuments();
+    modalOpen = anyModalOpen();
     if (navigationStore.getState().manifest?.data) hasReadManifest = true;
     unsubscribeNavigation = navigationStore.subscribe((state, previous) => {
       if (state.manifest?.data) hasReadManifest = true;
@@ -265,13 +305,7 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
       cancel();
     });
     window.addEventListener("popstate", onPopState);
-    modalObserver.observe(document.documentElement, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeOldValue: true,
-      attributeFilter: ["aria-modal"],
-    });
+    unsubscribeChrome = chromeStore.subscribe(() => syncModalDocuments());
     snapshot = read();
   };
   if (!options.observeOnSubscribe) start();
@@ -390,6 +424,7 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
       unsubscribeWorkspace();
       unsubscribePalette();
       unsubscribeRoute();
+      unsubscribeChrome();
       window.removeEventListener("popstate", onPopState);
       modalObserver.disconnect();
       listeners.clear();

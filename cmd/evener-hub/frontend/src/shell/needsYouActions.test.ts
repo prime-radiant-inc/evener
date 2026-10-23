@@ -12,6 +12,7 @@ import "../panes/transcript";
 import "../panes/zoom";
 import { enterAgentCascade, popAgentCascade, reconcileCascadeBinding } from "../panes/zoom/actions";
 import { activityDelegate } from "../stores/sessionActivityTestUtils";
+import { chromeStore } from "./chromeStore";
 import { focusedSessionRef } from "./focusedSession";
 import { createNeedsYouController, type NeedsYouController } from "./needsYouActions";
 import { closePalette, openPalette, paletteStore } from "./palette/paletteController";
@@ -1752,5 +1753,62 @@ test("a populated page's retry keeps demand available while it is in flight", as
 
   const controller = createNeedsYouController();
   expect(controller.getSnapshot().canLoadMore).toBe(true);
+  controller.dispose();
+});
+
+// A Dockview popout is a separate document. A modal opened there while Next is
+// waiting for a page has to block (and cancel) that action; watching only the
+// opener's document let the late page navigate away and dismiss the dialog.
+test("a modal in the focused reader's own document blocks a pending next", async () => {
+  const client = new FakeClient("ready");
+  let releasePage!: () => void;
+  let entered!: () => void;
+  const pageEntered = new Promise<void>((resolve) => (entered = resolve));
+  client.on("evener/navigation/read", (params) => {
+    if (params.resource === "manifest") {
+      return wireSnapshot(
+        params,
+        manifest({
+          generation_id: "popout-modal",
+          sections: { live: { count: 0 }, needs_you: { count: 1 }, pin_sections: { count: 0 } },
+        }),
+        '"manifest"',
+        1,
+        "popout-modal",
+      );
+    }
+    if (params.resource === "section") {
+      entered();
+      return new Promise((resolve) => {
+        releasePage = () =>
+          resolve(
+            wireSnapshot(params, { sessions: [{ ref: "local:target" }], remaining: 0 }, '"page"', 1, "popout-modal"),
+          );
+      });
+    }
+    throw new Error(`unexpected resource ${params.resource}`);
+  });
+  navigationStore.init(client, capability("popout-modal"));
+  const a = workspaceStore.getState().openPane("session", { ref: "local:a" });
+  workspaceStore.getState().focusPane(a);
+  const controller = createNeedsYouController();
+  const before = { path: window.location.pathname, history: window.history.length };
+  const pending = controller.next();
+  await pageEntered;
+
+  // The reader is adopted into a popout, and a dialog opens there.
+  const popout = document.implementation.createHTMLDocument("popout");
+  const dialog = popout.createElement("div");
+  dialog.setAttribute("aria-modal", "true");
+  popout.body.appendChild(dialog);
+  chromeStore.getState().setPaneDocumentFor(a, popout);
+  await Promise.resolve();
+  expect(controller.getSnapshot().blocked).toBe(true);
+
+  releasePage();
+  await pending;
+  expect(workspaceStore.getState().focusedPaneId).toBe(a);
+  expect(window.location.pathname).toBe(before.path);
+  expect(window.history.length).toBe(before.history);
   controller.dispose();
 });
