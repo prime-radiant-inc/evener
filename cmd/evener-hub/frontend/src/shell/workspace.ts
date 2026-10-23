@@ -894,7 +894,9 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
           pane.id,
         ];
         const seat = candidates.find((candidate) => candidate !== undefined && !usedSeats.has(candidate));
-        pane.composerSeatId = seat ?? pane.id;
+        // Every candidate can already be taken when this tab's mapping and a
+        // foreign layout both point at another restored pane's id.
+        pane.composerSeatId = seat ?? createSecureUUID();
         usedSeats.add(pane.composerSeatId);
         if (ref !== null) writeComposerSeat(ref, pane.composerSeatId);
       }

@@ -6186,3 +6186,185 @@ test("a pane disposed before a refused update still preserves its composition", 
   await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe(localText));
   expect(screen.getByRole("button", { name: "View local.png" })).toBeTruthy();
 });
+
+test("typing during a delayed refusal survives after an empty save snapshot", async ({ onTestFinished }) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(stubSessionSlots);
+  class HeldRefusalStorage extends MutationOutboxIndexedDB {
+    holdNextRefusal = true;
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+
+    override async updateRecoveryInput(
+      ...args: Parameters<MutationOutboxIndexedDB["updateRecoveryInput"]>
+    ): ReturnType<MutationOutboxIndexedDB["updateRecoveryInput"]> {
+      const result = await super.updateRecoveryInput(...args);
+      if (result === undefined && this.holdNextRefusal) {
+        this.holdNextRefusal = false;
+        this.reached.resolve();
+        await this.release.promise;
+      }
+      return result;
+    }
+  }
+  const storage = new HeldRefusalStorage();
+  setMutationStorageForTests(storage);
+  onTestFinished(() => storage.close());
+  const ref = "local:typing-refusal";
+  const original = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+
+  const source = createTestComposerSource(ref, undefined, "pane-a");
+  onTestFinished(() => source.dispose());
+  await source.activateRecovery(recovery);
+  const unbind = source.bindEditor({ read: () => source.editor.read(), write: () => {} });
+  onTestFinished(unbind);
+  source.editText("");
+  const peer = new MutationOutboxIndexedDB();
+  onTestFinished(() => peer.close());
+  const peerRecovery = await peer.getRecovery(original.clientMutationId);
+  if (!peerRecovery) throw new Error("missing peer recovery fixture");
+  await peer.updateRecoveryInput(
+    original.clientMutationId,
+    [{ type: "text", text: "peer composition" }],
+    [],
+    "peer composition",
+    [],
+    [],
+    undefined,
+    undefined,
+    {
+      [original.clientMutationId]:
+        (peerRecovery as MutationRecoveryRecord & { compositionRevision?: number }).compositionRevision ?? 0,
+    },
+  );
+
+  const saving = source.queueRecoveryPersistence(original.clientMutationId, "stale save", [], []);
+  await storage.reached.promise;
+  const typed = "typed during refusal";
+  source.editText(typed);
+  storage.release.resolve();
+  await saving;
+
+  const preserved = (await storage.listRecovery(ref)).find(
+    (record) => record.clientMutationId !== original.clientMutationId,
+  );
+  expect(preserved).toMatchObject({ composerText: typed });
+  expect(source.getSnapshot().activeRecoveryId).toBe(preserved?.clientMutationId);
+  expect(readRecoverySelection(ref, source.recoverySelectionOwnerId)).toBe(preserved?.clientMutationId);
+
+  await refreshPendingTurnsProjection(ref);
+  const pane: OpenPaneRecord = {
+    id: "pane_typing_reopen",
+    type: "session",
+    params: { ref },
+    slot: "main",
+    composerSeatId: "pane-a",
+  };
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  const fake = connectFakeClient();
+  fake.on("thread/read", ({ ref: readRef }) => readResponse(readRef ?? ref));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId={pane.id} focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe(typed));
+});
+
+test("preservation after a resume lands under the resumed identity", async ({ onTestFinished }) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(stubSessionSlots);
+  class HeldPreservationStorage extends MutationOutboxIndexedDB {
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+
+    override async preserveRecoveryComposition(
+      ...args: Parameters<MutationOutboxIndexedDB["preserveRecoveryComposition"]>
+    ): ReturnType<MutationOutboxIndexedDB["preserveRecoveryComposition"]> {
+      this.reached.resolve();
+      await this.release.promise;
+      return super.preserveRecoveryComposition(...args);
+    }
+  }
+  const storage = new HeldPreservationStorage();
+  setMutationStorageForTests(storage);
+  onTestFinished(() => storage.close());
+  const oldRef = "local:resume-old";
+  const resumed = "local:resume-new";
+  const original = await storage.enqueueIntent({
+    targetRef: oldRef,
+    method: "turn/start",
+    payload: { ref: oldRef, input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+
+  const source = createTestComposerSource(oldRef, undefined, "pane-a");
+  onTestFinished(() => source.dispose());
+  await source.activateRecovery(recovery);
+  const localText = "local work across resume";
+  source.editText(localText);
+  const peer = new MutationOutboxIndexedDB();
+  onTestFinished(() => peer.close());
+  const peerRecovery = await peer.getRecovery(original.clientMutationId);
+  if (!peerRecovery) throw new Error("missing peer recovery fixture");
+  await peer.updateRecoveryInput(
+    original.clientMutationId,
+    [{ type: "text", text: "peer composition" }],
+    [],
+    "peer composition",
+    [],
+    [],
+    undefined,
+    undefined,
+    {
+      [original.clientMutationId]:
+        (peerRecovery as MutationRecoveryRecord & { compositionRevision?: number }).compositionRevision ?? 0,
+    },
+  );
+
+  const saving = source.queueRecoveryPersistence(original.clientMutationId, localText, [], []);
+  await storage.reached.promise;
+  await storage.retargetOutbox(oldRef, resumed, { threadId: "thread-new", instanceId: "instance-new" });
+  source.dispose();
+  storage.release.resolve();
+  await saving;
+
+  const preserved = (await storage.listRecovery(resumed)).find(
+    (record) => record.clientMutationId !== original.clientMutationId,
+  );
+  expect(preserved).toMatchObject({ targetRef: resumed, composerText: localText });
+  expect(readRecoverySelection(resumed, source.recoverySelectionOwnerId)).toBe(preserved?.clientMutationId);
+
+  await refreshPendingTurnsProjection(resumed);
+  const pane: OpenPaneRecord = {
+    id: "pane_resume_reopen",
+    type: "session",
+    params: { ref: resumed },
+    slot: "main",
+    composerSeatId: "pane-a",
+  };
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  const fake = connectFakeClient();
+  fake.on("thread/read", ({ ref: readRef }) => readResponse(readRef ?? resumed));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: resumed }} paneId={pane.id} focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe(localText));
+});

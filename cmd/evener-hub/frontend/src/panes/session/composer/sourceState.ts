@@ -374,6 +374,15 @@ export function createComposerSourceState(
   }
 
   const ownsDraft = () => ownedDraftRevisionRef.current === readDraftRevision(ref);
+  function liveComposition(): RecoveryComposition {
+    return {
+      text: textRef.current,
+      attachments: operations.toInputAttachments(),
+      skillNames: [...skillNamesRef.current],
+      commandNames: [...selectionMetaRef.current.commandNames],
+      mentions: selectionMetaRef.current.mentions,
+    };
+  }
   function currentDraftText(): string {
     return ownsDraft() ? textRef.current : readComposerDraft(ref).text;
   }
@@ -436,9 +445,12 @@ export function createComposerSourceState(
   // replacement composer already made.
   function rememberPreservedSelection(preserved: MutationRecoveryRecord, staleId: string): void {
     if (preserved.clientMutationId === staleId) return;
-    const current = readRecoverySelection(ref, recoverySelectionOwnerId);
+    // Preservation may have committed under a resumed ref; the destination
+    // composer reads the selection under that newer identity.
+    const targetRef = preserved.targetRef;
+    const current = readRecoverySelection(targetRef, recoverySelectionOwnerId);
     if (current !== undefined && current !== staleId) return;
-    writeRecoverySelection(ref, recoverySelectionOwnerId, preserved.clientMutationId);
+    writeRecoverySelection(targetRef, recoverySelectionOwnerId, preserved.clientMutationId);
   }
   function persistDraft(text: string): void {
     if (disposed) return;
@@ -591,10 +603,14 @@ export function createComposerSourceState(
             // owner this tab can no longer write. A draft carries no image
             // bytes, so preserve the complete local composition under a fresh
             // recovery owner before retiring the lease.
-            const emptyAtRefusal = compositionIsEmpty(refusalSnapshot);
+            // While the pane is alive its live composition may have changed
+            // during the wait; only a disposed pane must use the snapshot
+            // captured before disposal cleared the attachment store.
+            const refusalComposition = disposed ? refusalSnapshot : liveComposition();
+            const emptyAtRefusal = compositionIsEmpty(refusalComposition);
             const preserved = emptyAtRefusal
               ? null
-              : await preserveStaleRecovery(clientMutationId, localDraftRevisionId, refusalSnapshot);
+              : await preserveStaleRecovery(clientMutationId, localDraftRevisionId, refusalComposition);
             if (preserved) rememberPreservedSelection(preserved, clientMutationId);
             if (
               !disposed &&
@@ -680,13 +696,7 @@ export function createComposerSourceState(
     // A retry has no fresh revision argument. The owned row's revision is the
     // proof that the composition already incorporated that persisted draft.
     const carriedDraftRevisionId = localDraftRevisionId ?? base.localDraftRevisionId;
-    const current = composition ?? {
-      text: textRef.current,
-      attachments: operations.toInputAttachments(),
-      skillNames: [...skillNamesRef.current],
-      commandNames: [...selectionMetaRef.current.commandNames],
-      mentions: selectionMetaRef.current.mentions,
-    };
+    const current = composition ?? liveComposition();
     try {
       return await preserveRecoveryPendingTurn(
         base,

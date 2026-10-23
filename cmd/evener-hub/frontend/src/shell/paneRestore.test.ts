@@ -402,3 +402,49 @@ test("restore prefers this tab's seat over another tab's saved layout seat", () 
   expect(pane.composerSeatId).toBe("tab-a-seat");
   expect(readRecoverySelection("ref_a", composerSelectionScope(pane.composerSeatId))).toBe("preserved-local");
 });
+
+test("restore allocates a fresh seat when every candidate is already used", () => {
+  installLocalStorage(new MemoryStorage());
+  writeComposerSeat("ref_a", "p2");
+  const saved = {
+    panels: {
+      p1: {
+        id: "p1",
+        contentComponent: "default",
+        params: { paneType: "session", paneParams: { ref: "ref_a" } },
+      },
+      p2: {
+        id: "p2",
+        contentComponent: "default",
+        params: {
+          paneType: "sessionZoom",
+          paneParams: {
+            ref: "ref_a",
+            source: { type: "session", params: { ref: "local:root" } },
+            edges: [],
+          },
+        },
+      },
+    },
+    composerSeats: { p1: "p2", p2: "p2" },
+    activeGroup: "group-1",
+  };
+  const fake = new FakeDockviewApi();
+  fake.serialized = saved;
+  fake.fromJSONBehavior = (data) => {
+    const layout = data as { panels?: Record<string, { params?: unknown }> };
+    fake.panels = Object.entries(layout.panels ?? {}).map(([id, panel]) => ({ id, params: panel.params }));
+    fake.activePanel = { id: "p1" };
+  };
+  registerDockviewApi(asDockviewApi(fake));
+
+  expect(workspaceStore.getState().restoreLayout(saved)).toBe(true);
+
+  expect(workspaceStore.getState().panes).toHaveLength(2);
+  const seats = workspaceStore
+    .getState()
+    .panes.map((pane) => pane.composerSeatId)
+    .filter((seat): seat is string => seat !== undefined);
+  expect(seats).toHaveLength(2);
+  expect(new Set(seats).size).toBe(2);
+});
