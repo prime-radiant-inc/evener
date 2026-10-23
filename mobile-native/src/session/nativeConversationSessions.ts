@@ -124,6 +124,8 @@ class SessionEntry implements NativeConversationSession {
 	#service: NativeConversationService | null = null;
 	#bindingClient: AppwireClientLike | null = null;
 	#bindingPending = false;
+	#pendingPort: ReturnType<typeof createConversationMutationPendingPort> | null = null;
+	#unbindPending: (() => void) | null = null;
 	#readSettled: Promise<void> = Promise.resolve();
 	#retired = false;
 	#readFailures = 0;
@@ -252,7 +254,15 @@ class SessionEntry implements NativeConversationSession {
 			this.#dropBinding();
 			return;
 		}
-		if (client === this.#bindingClient && this.#liveHost !== null && client.state === "ready") return;
+		if (client === this.#bindingClient && this.#service !== null && client.state === "ready") {
+			// A later ready event can retry a missing host through one explicit
+			// authoritative read, without replacing the healthy service.
+			if (this.#liveHost === null) {
+				const read = this.store.getState().ensureLatest();
+				this.#readSettled = Promise.allSettled([this.#readSettled, read]).then(() => undefined);
+			}
+			return;
+		}
 		this.#dropBinding();
 		this.#startBinding(client);
 	}
@@ -279,6 +289,8 @@ class SessionEntry implements NativeConversationSession {
 		this.#liveHost = null;
 		this.#service = null;
 		this.#bindingClient = null;
+		this.#pendingPort = null;
+		this.#unbindPending = null;
 		this.store.getState().close();
 		service?.close();
 		host?.dispose();
@@ -314,6 +326,7 @@ class SessionEntry implements NativeConversationSession {
 		this.#bindingClient = null;
 		this.#liveHost = null;
 		this.#service = null;
+		this.#pendingPort = null;
 		this.#clearRetry();
 		// Fence the store binding before releasing the service/host, so a late
 		// response from the old client can never reconcile the replacement.
@@ -322,26 +335,43 @@ class SessionEntry implements NativeConversationSession {
 		host?.dispose();
 	}
 
-	#startBinding(client: AppwireClientLike): void {
-		this.#bindingClient = client;
+	#acquireHost(client: AppwireClientLike, binding: number): NativeMutationHost | null {
+		if (this.#retired || binding !== this.#bindingGeneration || client !== this.#bindingClient) return null;
+		if (this.#liveHost !== null) return this.#liveHost;
 		let host: NativeMutationHost;
 		try {
-			host = createNativeMutationHost(this.#runtime(), this.hubId, this.ref, client);
+			const runtime = this.#runtime();
+			host = createNativeMutationHost(runtime, this.hubId, this.ref, client);
+			this.#pendingPort = createConversationMutationPendingPort(runtime, this.key);
 		} catch {
-			// The mutations database or the client binding could not be created.
-			// The entry stays inert: a later connection change retries, and the
-			// stable submitter refuses rather than admitting work nobody dispatches.
-			this.#bindingClient = null;
-			return;
+			// History is independent of local durable storage. Leave pending rows
+			// unverified and retry only on a later authoritative-read demand.
+			// A disconnected healthy seam normally survives for offline sends;
+			// it cannot certify readiness for this failed runtime acquisition.
+			this.#unbindPending?.();
+			this.#unbindPending = null;
+			return null;
 		}
 		this.#liveHost = host;
 		void host.start().catch(() => undefined);
-		// The callbacks capture this binding's exact host object, never a lookup
-		// that might later name another client's host.
+		this.#bindPending();
+		return host;
+	}
+
+	#startBinding(client: AppwireClientLike): void {
+		this.#bindingClient = client;
+		const binding = this.#bindingGeneration;
+		// Service/read ownership never depends on opening the mutations DB.
+		// Once acquired, this closure keeps its exact host even if the entry
+		// later replaces the client. A hostless read has no lease to reconcile.
+		let host: NativeMutationHost | null = null;
 		const service = createConversationService<NativeMutationReadLease>(client, {
 			resolveDisplayConfig: () => this.#displayConfig,
-			onReadStart: (ref, expectedThreadId) => host.beginRead(ref, expectedThreadId),
-			onReadComplete: (lease, response) => host.reconcileRead(lease, response),
+			onReadStart: (ref, expectedThreadId) => {
+				host ??= this.#acquireHost(client, binding);
+				return host?.beginRead(ref, expectedThreadId);
+			},
+			onReadComplete: (lease, response) => host?.reconcileRead(lease, response),
 		});
 		this.#service = service;
 		const state = this.store.getState();
@@ -360,16 +390,13 @@ class SessionEntry implements NativeConversationSession {
 	}
 
 	#bindPending(): void {
-		if (this.#retired || this.#service === null || this.#bindingPending) return;
+		const port = this.#pendingPort;
+		if (this.#retired || this.#service === null || port === null || this.#bindingPending) return;
 		// Binding publishes null rows before the store installs its port. Its
 		// synchronous subscriber must not start another bind in that interval.
 		this.#bindingPending = true;
 		try {
-			this.store
-				.getState()
-				.bindPendingMutationsIfUnbound(
-					createConversationMutationPendingPort(this.#runtime(), nativeMutationTargetKey(this.hubId, this.ref)),
-				);
+			this.#unbindPending = this.store.getState().bindPendingMutationsIfUnbound(port) ?? this.#unbindPending;
 		} catch {
 			// The mutations database could not be opened. The conversation stays
 			// usable; a later connection change retries the bind.

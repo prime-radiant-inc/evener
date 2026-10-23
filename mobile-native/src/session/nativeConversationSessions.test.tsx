@@ -12,7 +12,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NativeMutationRuntime, nativeMutationTargetKey } from "../nativeMutationRuntime";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "../sqliteSync.testkit";
 import { render, settle, unmountMountedTrees } from "../renderNative.testkit";
+import { failureRowIdentity } from "../projectedRows";
 import { DetailLevels } from "./detailLevels";
+import { errorAction } from "./errorAction";
 import {
 	type NativeConversationAttachment,
 	NativeConversationSessions,
@@ -340,6 +342,133 @@ describe("durable pending seam", () => {
 			});
 		});
 	}
+
+	it.each(["ensureLatest", "ready connection"] as const)(
+		"keeps history readable after runtime acquisition fails and recovers on %s without duplicate owners or reads",
+		async (event) => {
+			const acquire = vi
+				.fn(() => runtime)
+				.mockImplementationOnce(() => {
+					throw new Error("mutations database unavailable");
+				});
+			sessions = new NativeConversationSessions({ runtime: acquire, flushOutbox: () => {} });
+			const register = vi.spyOn(runtime, "registerTarget");
+			const subscribe = vi.spyOn(runtime, "subscribeStorage");
+			const readStarted = deferred<void>();
+			const readReply = deferred<ThreadReadResponse>();
+			const served = threadWithRows("ref-1", 1);
+			served.turns = served.turns?.map((turn) => ({
+				...turn,
+				status: "failed" as const,
+				error: { message: "turn failed" },
+			}));
+			let holdRead = true;
+			const client = hub("ref-1", () => {
+				readStarted.resolve();
+				return holdRead ? readReply.promise : Promise.resolve({ thread: served });
+			});
+			connected(client);
+			const a = sessions.attach("hub-1", "ref-1");
+			const b = sessions.attach("hub-1", "ref-1");
+			const entry = a.entry;
+			const service = entry.service;
+			expect(service).not.toBeNull();
+			await readStarted.promise;
+			expect(acquire).toHaveBeenCalledTimes(1);
+			expect(reads(client)).toBe(1);
+			readReply.resolve({ thread: served });
+			await entry.readSettled();
+			expect(entry.store.getState().status).toBe("open");
+			expect(entry.store.getState().conversation?.items.length).toBeGreaterThan(0);
+			expect(entry.store.getState().canonicalSession()).not.toBeNull();
+			expect(entry.liveHost).toBeNull();
+			expect(entry.store.getState().pendingMutations).toBeNull();
+			expect(entry.store.getState().pendingMutationsReady).toBe(false);
+			expect(acquire).toHaveBeenCalledTimes(1);
+			expect(register).not.toHaveBeenCalled();
+			expect(subscribe).not.toHaveBeenCalled();
+			const retry = () => {
+				const state = entry.store.getState();
+				return errorAction(
+					{ id: failureRowIdentity("turn_1"), turnId: "turn_1", title: "", detail: "" },
+					{
+						canonical: state.canonicalSession(),
+						displayedLatestTurnId: state.conversation?.turns.at(-1)?.id,
+						pendingMutations: state.pendingMutations,
+						pendingMutationsReady: state.pendingMutationsReady,
+					},
+					true,
+				);
+			};
+			expect(retry()).toMatchObject({ kind: "retry", disabled: true });
+
+			// Hold the real storage read, not a fabricated healthy-empty snapshot.
+			const storageStarted = deferred<void>();
+			const storageRelease = deferred<void>();
+			const realRead = runtime.read.bind(runtime);
+			vi.spyOn(runtime, "read").mockImplementation(async (target) => {
+				storageStarted.resolve();
+				await storageRelease.promise;
+				return realRead(target);
+			});
+			holdRead = false;
+			if (event === "ensureLatest") await entry.store.getState().ensureLatest();
+			else {
+				connected(client);
+				await entry.readSettled();
+			}
+			await storageStarted.promise;
+			expect(entry.service).toBe(service);
+			expect(b.entry).toBe(entry);
+			expect(acquire).toHaveBeenCalledTimes(2);
+			expect(register).toHaveBeenCalledTimes(1);
+			expect(subscribe).toHaveBeenCalledTimes(1);
+			expect(reads(client)).toBe(2); // Initial read and the explicit recovery read only.
+			expect(entry.liveHost).not.toBeNull();
+			expect(runtime.targetClient("hub-1", "ref-1")).toBe(client);
+			expect(entry.store.getState().pendingMutationsReady).toBe(false);
+			expect(retry()).toMatchObject({ kind: "retry", disabled: true });
+			storageRelease.resolve();
+			await pendingReady(entry);
+			expect(entry.store.getState().pendingMutations).toEqual([]);
+			expect(retry()).toMatchObject({ kind: "retry", disabled: false });
+			expect(reads(client)).toBe(2);
+			a.release();
+			b.release();
+			expect(runtime.targetClient("hub-1", "ref-1")).toBeUndefined();
+		},
+	);
+
+	it("does not certify a retained pending seam when runtime acquisition fails on reconnect", async () => {
+		const acquire = vi.fn(() => runtime);
+		sessions = new NativeConversationSessions({ runtime: acquire, flushOutbox: () => {} });
+		const client = hub("ref-1");
+		connected(client);
+		const a = sessions.attach("hub-1", "ref-1");
+		const entry = a.entry;
+		await entry.readSettled();
+		await pendingReady(entry);
+		expect(entry.store.getState().pendingMutationsReady).toBe(true);
+		sessions.setConnection("hub-1", null);
+		acquire.mockImplementationOnce(() => {
+			throw new Error("mutations database unavailable");
+		});
+		connected(client);
+		await entry.readSettled();
+		expect(entry.store.getState().status).toBe("open");
+		expect(entry.store.getState().canonicalSession()).not.toBeNull();
+		expect(entry.liveHost).toBeNull();
+		expect(entry.store.getState().pendingMutations).toBeNull();
+		expect(entry.store.getState().pendingMutationsReady).toBe(false);
+		expect(acquire).toHaveBeenCalledTimes(2);
+		const service = entry.service;
+		await entry.store.getState().ensureLatest();
+		await pendingReady(entry);
+		expect(entry.service).toBe(service);
+		expect(entry.liveHost).not.toBeNull();
+		expect(acquire).toHaveBeenCalledTimes(3);
+		expect(reads(client)).toBe(3);
+	});
 
 	it.each(["/clear replacement reopen", "initial read failure recovery"] as const)(
 		"keeps one pending subscription through %s, refreshes once and fully releases",
