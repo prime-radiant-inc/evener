@@ -43,6 +43,7 @@ func TestManagerObservationRecordedCompletionCut(t *testing.T) {
 	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test"}
 	server := appserver.NewServer(appserver.ServerConfig{})
 	owner := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelayFunctions(server, cfg, sources), server: server}
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, owner.Read)
 	binding := &boundSessionOperations{owner: owner, local: source, binding: appwire.SessionBinding{Ref: ref, InstanceID: instance, HubID: "hub-test", BindingID: "binding"}}
 	for _, invalid := range []string{"unknown", "assistant.tool"} {
 		if _, err := binding.Watch(ctx, appwire.SessionWatchRequest{Ref: ref, Events: []string{invalid}}); err == nil {
@@ -160,6 +161,7 @@ func TestManagerWatchRebindCancellationAndHubRestart(t *testing.T) {
 	cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), HubID: "hub-test"}
 	server := appserver.NewServer(appserver.ServerConfig{})
 	owner := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelayFunctions(server, cfg, sources), server: server}
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, owner.Read)
 	binding := &boundSessionOperations{owner: owner, local: source, binding: appwire.SessionBinding{Ref: ref, InstanceID: instance, HubID: "hub-test", BindingID: "binding"}}
 	readFirst := func(updates <-chan appwire.SessionWatchUpdate) appwire.SessionWatchUpdate {
 		t.Helper()
@@ -212,6 +214,7 @@ func TestManagerWatchRebindCancellationAndHubRestart(t *testing.T) {
 	cancelSecond()
 	awaitClosed(rebound)
 	restarted := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelayFunctions(server, cfg, sources), server: server}
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, restarted.Read)
 	restartedBinding := &boundSessionOperations{owner: restarted, local: source, binding: binding.binding}
 	thirdCtx, cancelThird := context.WithCancel(ctx)
 	defer cancelThird()
