@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { memo, useLayoutEffect, useMemo, useRef } from "react";
 import { type AccessibilityActionEvent, type AccessibilityActionInfo, Alert, Linking } from "react-native";
 import { EnrichedMarkdownText } from "react-native-enriched-markdown";
 import { copyText } from "./clipboard";
@@ -120,8 +120,10 @@ export const MarkdownResponse = memo(function MarkdownResponse({
 	// Retire presses only when this view goes away. Nulling on every re-run of
 	// the effect above would open a window on each publish where a tap on a
 	// link returns early, and a live session publishes constantly: that made
-	// every file link in the prose dead (#4839).
-	useEffect(
+	// every file link in the prose dead (#4839). Layout cleanup runs at the
+	// unmount commit, not after paint, so a native callback already in flight
+	// cannot act on a message that has just disappeared.
+	useLayoutEffect(
 		() => () => {
 			current.current = null;
 		},
