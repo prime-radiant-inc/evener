@@ -12,6 +12,9 @@ export class DraftLibrary {
 	/** A handoff whose destination write has not committed yet. Retrying after
 	 * storage recovers keeps the moved recovery rows and their draft together. */
 	private pending = new Map<string, { from: DraftDestination; to: DraftDestination }>();
+	/** Documents retired by a handoff, kept per hub so hub removal still
+	 * invalidates a source the live document map no longer holds. */
+	private retired = new Map<string, Set<DraftDocument>>();
 	constructor(
 		private repository: () => DraftStorage,
 		private createImageId: () => string = () =>
@@ -40,18 +43,29 @@ export class DraftLibrary {
 	handoff(from: DraftDestination, to: DraftDestination): boolean {
 		if (from.hubId === to.hubId && from.sessionRef === to.sessionRef) return true;
 		const source = this.open(from);
-		const snapshot = source.getSnapshot();
+		let snapshot = source.getSnapshot();
+		if (!snapshot.loaded) {
+			source.retry();
+			snapshot = source.getSnapshot();
+		}
 		if (!snapshot.loaded) {
 			this.deferHandoff(from, to);
 			return false;
 		}
 		const destination = this.open(to);
-		const current = destination.getSnapshot();
+		let current = destination.getSnapshot();
+		if (!current.loaded || current.error !== null) {
+			// A failed load is transient: retry it before deciding, and keep the
+			// pending handoff so a later retry can still transfer the composition.
+			destination.retry();
+			current = destination.getSnapshot();
+		}
+		if (!current.loaded || current.error !== null || current.submitting) {
+			this.deferHandoff(from, to);
+			return false;
+		}
 		const existing = current.record;
 		if (
-			!current.loaded ||
-			current.submitting ||
-			current.error !== null ||
 			existing.draft !== "" ||
 			(existing.images?.length ?? 0) > 0 ||
 			(existing.unconfirmedImages?.length ?? 0) > 0 ||
@@ -67,6 +81,7 @@ export class DraftLibrary {
 			existing.releasedRecoveryIds?.length
 		) {
 			// Existing destination work is a permanent refusal, never a retry.
+			this.releaseRefusedSources(source, destination);
 			this.pending.delete(this.handoffKey(to));
 			return false;
 		}
@@ -86,7 +101,8 @@ export class DraftLibrary {
 		this.pending.delete(this.handoffKey(to));
 		destination.adopt(snapshot.record);
 		if (destination !== source) {
-			source.transferSettlementTo(destination);
+			source.retireInto(destination);
+			this.rememberRetired(from.hubId, source);
 			const sessions = this.hubs.get(from.hubId);
 			if (sessions?.get(from.sessionRef) === source) sessions.delete(from.sessionRef);
 		}
@@ -107,6 +123,21 @@ export class DraftLibrary {
 		this.pending.set(this.handoffKey(to), { from, to });
 	}
 
+	private releaseRefusedSources(source: DraftDocument, destination: DraftDocument): void {
+		const record = source.getSnapshot().record;
+		const ids = [...(record.composer?.recoveryIds ?? []), ...(record.unconfirmedComposer?.recoveryIds ?? [])];
+		if (ids.length) destination.releaseRecoverySources(ids);
+	}
+
+	private rememberRetired(hubId: string, document: DraftDocument): void {
+		let documents = this.retired.get(hubId);
+		if (!documents) {
+			documents = new Set();
+			this.retired.set(hubId, documents);
+		}
+		documents.add(document);
+	}
+
 	private handoffKey(destination: DraftDestination): string {
 		return JSON.stringify([destination.hubId, destination.sessionRef]);
 	}
@@ -121,6 +152,8 @@ export class DraftLibrary {
 		} finally {
 			for (const [key, { from, to }] of this.pending)
 				if (from.hubId === hubId || to.hubId === hubId) this.pending.delete(key);
+			for (const document of this.retired.get(hubId) ?? []) document.forget();
+			this.retired.delete(hubId);
 			for (const document of this.hubs.get(hubId)?.values() ?? []) document.forget();
 			this.hubs.delete(hubId);
 		}
