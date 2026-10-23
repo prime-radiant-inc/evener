@@ -281,3 +281,84 @@ describe("skillguard Chrome profile fits the singleton socket budget", () => {
     }
   });
 });
+
+// The transcript is a virtual list: a row exists in the DOM only while the
+// reader's position (plus a small overscan) keeps it mounted, and a reader
+// away from the bottom does not follow appends. A reply that arrived while the
+// guard was editing a newer draft was therefore rendered by the app yet absent
+// from every mounted turn-block, and the old wait polled those blocks until
+// its 25s timeout -- the failure reported as "timed out ... waiting for the
+// reply to PROSE_DELAY_14i ..." (#4823). waitForReply must put the tail in view
+// first, the reader's own jump-to-latest gesture, and only then look for the
+// turn. This scripts that exact virtual-list behaviour: the reply's row mounts
+// only once the transcript port is scrolled to the bottom.
+describe("waitForReply brings a virtualized transcript tail into view", () => {
+  const PROSE = "PROSE_DELAY_14i submitted then edited while held";
+
+  function renderVirtualTranscript({ atBottom }) {
+    document.body.innerHTML = `<div><div data-pane-scaffold="session:ref_a">
+      <section data-testid="transcript-virtual-list"><div id="port"></div></section>
+    </div></div>`;
+    const port = document.getElementById("port");
+    let scrollTopValue = atBottom ? 900 : 0;
+    const mountTailRow = () => {
+      if (scrollTopValue < 896) return;
+      if (document.querySelector("[data-testid='turn-block']")) return;
+      const row = document.createElement("div");
+      row.setAttribute("data-testid", "turn-block");
+      row.setAttribute("data-turn-id", "turn_m12");
+      row.textContent = `${PROSE} /pkg:probe skillguard turn complete`;
+      document.querySelector("[data-pane-scaffold='session:ref_a']").appendChild(row);
+    };
+    Object.defineProperty(port, "scrollHeight", { configurable: true, get: () => 1000 });
+    Object.defineProperty(port, "clientHeight", { configurable: true, get: () => 100 });
+    Object.defineProperty(port, "scrollTop", {
+      configurable: true,
+      get: () => scrollTopValue,
+      set: (value) => {
+        scrollTopValue = value;
+        mountTailRow();
+      },
+    });
+    if (atBottom) mountTailRow();
+    return port;
+  }
+
+  // The driver's waitPage loop, minus the clock: it re-evaluates the real
+  // expression until it reads non-null, as the real poll does once per tick.
+  function scriptWaitPage(d) {
+    d.waitPage = async (exprSource, { label } = {}) => {
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const value = evaluateExpr(exprSource);
+        if (value !== null && value !== undefined && value !== false) return value;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      throw new Error(`timed out waiting for ${label}`);
+    };
+  }
+
+  test("the reply predicate alone cannot see the unmounted tail row", () => {
+    renderVirtualTranscript({ atBottom: false });
+    const replyExpr = `(() => ${driver.turnTextsExpr("ref_a")}.some((text) => text.includes(${JSON.stringify(PROSE)}) && text.includes("skillguard turn complete")) ? true : null)()`;
+    expect(evaluateExpr(replyExpr)).toBeNull();
+  });
+
+  test("waitForReply scrolls the tail into view, mounting and observing the reply", async () => {
+    const port = renderVirtualTranscript({ atBottom: false });
+    const d = new Driver({ url: "http://127.0.0.1/", artifactDir: "", controlPath: "", milestonePath: "" });
+    scriptWaitPage(d);
+    await expect(d.waitForReply("ref_a", PROSE)).resolves.toBeUndefined();
+    // The barrier moved the port to the end (the row mounted), it did not
+    // poll a row the reader's position never exposed.
+    expect(port.scrollTop).toBeGreaterThanOrEqual(896);
+    expect(document.querySelector("[data-testid='turn-block']")?.getAttribute("data-turn-id")).toBe("turn_m12");
+  });
+
+  test("an already-following transcript needs no scroll", async () => {
+    const port = renderVirtualTranscript({ atBottom: true });
+    const d = new Driver({ url: "http://127.0.0.1/", artifactDir: "", controlPath: "", milestonePath: "" });
+    scriptWaitPage(d);
+    await expect(d.waitForReply("ref_a", PROSE)).resolves.toBeUndefined();
+    expect(port.scrollTop).toBe(900);
+  });
+});
