@@ -1386,6 +1386,14 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 	s.jobNotifyRetry.generation++
 	generation := s.jobNotifyRetry.generation
 	s.sclock().AfterFunc(delay, func() {
+		// A reset cannot cancel this one-shot. Reject an already superseded
+		// firing before admission would create a lease and reset idle eligibility.
+		s.pendingJobNotifsMu.Lock()
+		stale := s.jobNotifyRetry.generation != generation
+		s.pendingJobNotifsMu.Unlock()
+		if stale {
+			return
+		}
 		release, err := s.beginJobNotifyCallback()
 		if err != nil {
 			// Admission was refused for this one-shot firing (a real TryClaim
@@ -1406,6 +1414,7 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 		}
 		defer release()
 		s.pendingJobNotifsMu.Lock()
+		// A reset may have landed between the precheck and admission.
 		if s.jobNotifyRetry.generation != generation {
 			s.pendingJobNotifsMu.Unlock()
 			return
