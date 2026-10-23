@@ -7,6 +7,38 @@ import { installRetryWireFault } from "./wireFault.mjs";
 const fixture = JSON.parse(readFileSync(0, "utf8"));
 const driver = new Driver(fixture);
 const q = JSON.stringify;
+
+// A new readonly connection sees committed durable state, not the pending UI
+// projection. Abort creation so an absent database cannot masquerade as empty.
+async function readDurableRetry(clientMutationId) {
+  const database = await new Promise((resolve, reject) => {
+    const request = indexedDB.open("evener-mutation-outbox");
+    request.onupgradeneeded = () => request.transaction.abort();
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result);
+  });
+  try {
+    const stores = ["outbox", "optimistic", "recovery"];
+    const transaction = database.transaction(stores, "readonly");
+    const rows = {};
+    await new Promise((resolve, reject) => {
+      transaction.oncomplete = resolve;
+      transaction.onabort = () => reject(transaction.error);
+      transaction.onerror = () => reject(transaction.error);
+      for (const store of stores) {
+        const request = transaction.objectStore(store).get(clientMutationId);
+        request.onsuccess = () => {
+          const record = request.result;
+          rows[store] = record ? { clientMutationId: record.clientMutationId, state: record.state } : null;
+        };
+      }
+    });
+    return rows;
+  } finally {
+    database.close();
+  }
+}
+
 try {
   await driver.start();
   await driver.send("Page.addScriptToEvaluateOnNewDocument", { source: `(${installRetryWireFault.toString()})()` });
@@ -60,6 +92,32 @@ try {
     if (scenario.mode === "lost-reply") {
       assert.equal(wire.dropped, 1);
       assert.equal(new Set(wire.requests.map((request) => request.params.clientMutationId)).size, 1);
+      const clientMutationId = wire.requests[0].params.clientMutationId;
+      console.log("retryguard: continued output observed before durable settlement check", { clientMutationId });
+      // Recreate the production client without clearing its IndexedDB or draft.
+      await navigateTo(driver.page, await evaluate(driver.send, "location.href"));
+      await driver.openSession(scenario.ref);
+      await driver.waitPage(`window.__retryWire.reads.some((read) => read.ref === ${q(scenario.ref)} && read.subscribed)`, {
+        label: "reopened client read the session",
+      });
+      await driver.waitPage(`document.body.textContent.includes("RETRY_DONE_${scenario.mode}")`, {
+        label: "continued output after reopen",
+      });
+      await driver.waitPage(`${editor}.textContent === "RETRY_UNSENT_DRAFT"`, { label: "draft restored after reopen" });
+      const durableRead = `(${readDurableRetry.toString()})(${q(clientMutationId)})`;
+      try {
+        await driver.waitPage(`${durableRead}.then((rows) => Object.values(rows).every((row) => row === null))`, {
+          label: `durable Retry settlement for ${clientMutationId}`,
+        });
+      } catch (error) {
+        assert.deepEqual(await evaluate(driver.send, durableRead), { outbox: null, optimistic: null, recovery: null },
+          `unsettled durable Retry ${clientMutationId}`);
+        throw error;
+      }
+      assert.deepEqual(await evaluate(driver.send, durableRead), { outbox: null, optimistic: null, recovery: null });
+      assert.deepEqual(await evaluate(driver.send, "window.__retryWire.requests"), [], "reopen must not resend Retry");
+      assert.equal(await evaluate(driver.send, `${editor}.textContent`), "RETRY_UNSENT_DRAFT");
+      console.log("retryguard: durable Retry settled after reopen", { clientMutationId });
     } else {
       assert.equal(wire.requests.length, scenario.mode === "refused" ? 2 : 1);
     }

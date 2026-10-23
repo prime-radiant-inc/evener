@@ -96,7 +96,11 @@ import type {
 	LiveConversationService,
 } from "../services/conversation";
 import type { ActivityIdentity, NotificationOutcome } from "./activity";
-import type { ConversationMutationPendingPort, ConversationMutationSubmitter } from "./conversationMutation";
+import type {
+	ConversationMutationContext,
+	ConversationMutationPendingPort,
+	ConversationMutationSubmitter,
+} from "./conversationMutation";
 
 export type ConversationStatus = "idle" | "opening" | "open" | "error" | "closed";
 
@@ -400,8 +404,8 @@ export interface ConversationState {
 	open(service: ConversationService, ref: string): Promise<void>;
 	loadOlder(service: ConversationService): Promise<LoadOlderResult>;
 	setDraft(text: string): void;
-	send(service: ConversationService, input: InputItem[]): Promise<void>;
-	queue(service: ConversationService, input: InputItem[]): Promise<void>;
+	send(service: ConversationService, input: InputItem[], context?: ConversationMutationContext): Promise<void>;
+	queue(service: ConversationService, input: InputItem[], context?: ConversationMutationContext): Promise<void>;
 	interrupt(service: ConversationService): Promise<void>;
 	close(): void;
 	applyNotification(n: AnyNotification): void;
@@ -549,6 +553,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		opBinding: RequestBinding,
 		conversation: MobileConversation,
 		input: InputItem[],
+		context?: ConversationMutationContext,
 	): Promise<MutationReceipt | undefined> {
 		return mutationSubmitter!.submit({
 			kind,
@@ -557,6 +562,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			threadId: conversation.threadId,
 			instanceId: conversation.instanceId ?? conversation.threadId,
 			input,
+			...context,
 		});
 	}
 
@@ -569,8 +575,9 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		opBinding: RequestBinding,
 		conversation: MobileConversation,
 		input: InputItem[],
+		context?: ConversationMutationContext,
 	): Promise<MutationReceipt | undefined> {
-		if (mutationSubmitter !== undefined) return submitMutation(kind, opBinding, conversation, input);
+		if (mutationSubmitter !== undefined) return submitMutation(kind, opBinding, conversation, input, context);
 		switch (kind) {
 			case "send":
 				return service.send(input);
@@ -2806,7 +2813,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				return get().bindPendingMutations(port);
 			},
 
-			async send(service, input) {
+			async send(service, input, context) {
 				const state = get();
 				if (state.conversation === null) return;
 				requireControl(state.conversation, "send", "send");
@@ -2845,7 +2852,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// it.
 				const entryErrorRev = errorOwnerRev;
 				try {
-					const receipt = await dispatchMutation(service, "send", opBinding, state.conversation, input);
+					const receipt = await dispatchMutation(service, "send", opBinding, state.conversation, input, context);
 					// C1: Recheck the exact operation binding after the await.
 					if (!isBindingCurrent(opBinding)) return;
 					// F4: Check mutationId — out-of-order completion cannot clear a
@@ -2895,7 +2902,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				}
 			},
 
-			async queue(service, input) {
+			async queue(service, input, context) {
 				const state = get();
 				if (state.conversation === null) return;
 				requireQueue(state.conversation, state.pendingMutations);
@@ -2926,7 +2933,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// I1: Capture error-owner revision AFTER installing pending+error-clear.
 				const entryErrorRev = errorOwnerRev;
 				try {
-					const receipt = await dispatchMutation(service, "queue", opBinding, state.conversation, input);
+					const receipt = await dispatchMutation(service, "queue", opBinding, state.conversation, input, context);
 					// C1: Recheck the exact operation binding after the await.
 					if (!isBindingCurrent(opBinding)) return;
 					if (get().pendingMutation?.mutationId === mutationId) {
