@@ -14,7 +14,11 @@ import type { DockviewApi, IDockviewPanel, SerializedDockview } from "dockview-c
 import { useEffect } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { transferRecoverySelection } from "../panes/session/composer/draft";
+import {
+  composerSelectionScope,
+  readRecoverySelection,
+  transferRecoverySelection,
+} from "../panes/session/composer/draft";
 import { type PaneTypeId, paneFor } from "./paneRegistry";
 import { paramString, refParam } from "./routing";
 import { isMobileViewport } from "./useIsMobile";
@@ -285,6 +289,26 @@ function nextPaneId(type: PaneTypeId): string {
   return `pane_${type}_${nextPaneSeq}`;
 }
 
+// A placement that gives a session ref a new pane id also gives its composer a
+// new selection scope. The outgoing seat has already carried its selection
+// under this ref; move it to the pane that will host the composer. Only one
+// pane owns a selection for a ref, but a replacing caller names its outgoing
+// pane first so the primary path does not depend on scan order.
+function transferSessionSelectionToNewPane(
+  ref: string | null,
+  newPaneId: string,
+  panes: readonly OpenPaneRecord[],
+  outgoing?: OpenPaneRecord | null,
+): void {
+  if (ref === null) return;
+  for (const pane of outgoing ? [outgoing, ...panes] : panes) {
+    if (pane.id === newPaneId) continue;
+    if (readRecoverySelection(ref, composerSelectionScope(pane.id)) === undefined) continue;
+    transferRecoverySelection(ref, pane.id, newPaneId);
+    return;
+  }
+}
+
 // The live DockviewApi, registered by DockHost once dockview is ready and
 // cleared again on unmount. layoutJSON()/restoreLayout() are the only two
 // locked methods that need it - both stay inert (null / false) with no host
@@ -537,6 +561,9 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     } else {
       const existing = state.panes.find((p) => p.type === type && sameParams(p.params, params));
       if (existing) {
+        // The placement reuses a pane instead of creating one; it is still the
+        // destination for the ref's carried selection.
+        if (type === "session") transferSessionSelectionToNewPane(refParam(params), existing.id, state.panes);
         if (!keepFocus && state.focusedPaneId !== existing.id) set({ focusedPaneId: existing.id });
         return existing.id;
       }
@@ -562,6 +589,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     // 2026-07-26-subagent-opens-beside-main.md §A). Such a pane displaces
     // nothing: it never wanted the slot welcome is holding.
     const id = nextPaneId(type);
+    transferSessionSelectionToNewPane(type === "session" ? refParam(params) : null, id, state.panes);
     const main = state.panes.find((p) => p.slot === "main");
     const refusesMain = opts?.slot === "secondary";
     const displaced = !refusesMain && type !== "welcome" && main?.type === "welcome" ? main : undefined;
@@ -605,8 +633,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     // A route replacement opens a new pane id, so the destination composer
     // reads a different recovery-selection scope. Move the outgoing pane's
     // choice for the routed ref with it.
-    const nextRef = refParam(params);
-    if (main !== null && nextRef !== null) transferRecoverySelection(nextRef, main.id, id);
+    transferSessionSelectionToNewPane(type === "session" ? refParam(params) : null, id, state.panes, main);
     set({ panes: [{ id, type, params, slot: "main" }], focusedPaneId: id });
     return id;
   },
