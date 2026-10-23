@@ -509,6 +509,7 @@ export interface UseTranscriptViewRegistrationOptions {
 export interface UseTranscriptViewRegistrationResult {
   restoreAfterMeasurement(): void;
   hasRetainedPlacement(): boolean;
+  isPlacementPending(): boolean;
   restoreAfterLayout(layout: CommittedVirtualListLayout): void;
 }
 
@@ -864,6 +865,7 @@ export function useTranscriptViewRegistration(
   return {
     restoreAfterMeasurement,
     restoreAfterLayout,
+    isPlacementPending: () => pendingRef.current !== null,
     hasRetainedPlacement: () => {
       const captured = pendingRef.current?.captured ?? retainedTranscriptCapture(id, logicalRef);
       return captured !== undefined && !captured.followingBottom;
@@ -917,7 +919,7 @@ export interface UseTranscriptScrollResult {
   /** Capture the top stable row immediately before changing view mode. */
   captureViewAnchor: () => void;
   /** Finish a pending restore after VirtualList reports new measurements. */
-  restoreViewAnchorAfterMeasurement: () => void;
+  restoreViewAnchorAfterMeasurement: (layout?: CommittedVirtualListLayout) => void;
 }
 
 function totalItemCount(model: ThreadModel | undefined): number {
@@ -1570,6 +1572,32 @@ export function useTranscriptScroll({
     pending: openingPending,
   });
 
+  const resumeOpening = useCallback(
+    (layout?: CommittedVirtualListLayout) => {
+      const list = listRef.current;
+      const port = list?.getScrollElement();
+      const previous = openingTransitionRef.current;
+      if (!port || openingPendingRef.current || previous.ref !== ref || previous.port !== port || !previous.pending)
+        return;
+      // Real readers resume only after child registration and our own placement.
+      // Older handles without committed geometry retain their immediate check.
+      if (
+        list?.isMeasurementReady &&
+        (!layout?.isCurrent() ||
+          layout.virtualizer.scrollElement !== port ||
+          pendingInitialEndRef.current === ref ||
+          pendingViewAnchorRef.current !== null)
+      )
+        return;
+      openingTransitionRef.current = { ref, port, pending: false };
+      port.removeAttribute("data-opening-hold");
+      const metrics = measure(port);
+      if (isNearTop(metrics.scrollTop) && !contentIsUnmeasured(port)) loadOlderRef.current().catch(() => {});
+      else if (shouldAutoLoadOlder(port)) loadOlderRef.current().catch(() => {});
+    },
+    [ref, listRef, measure],
+  );
+
   // While the recorded opening is pending, hold BOTH paging triggers: stamp the
   // scroll port so the short-page row's own geometry check holds (that row owns
   // its own observer), and gate the near-top trigger above. When the opening
@@ -1593,15 +1621,11 @@ export function useTranscriptScroll({
       openingTransitionRef.current = { ref, port, pending: true };
       return;
     }
-    port.removeAttribute("data-opening-hold");
-    if (!previous.pending) return;
-    openingTransitionRef.current = { ref, port, pending: false };
-    // Resume only through the SAME readiness gates the normal triggers keep:
-    // near-top demand still requires measured content, and short-page demand
-    // still goes through shouldAutoLoadOlder (whose own guards apply).
-    const metrics = measure(port);
-    if (isNearTop(metrics.scrollTop) && !contentIsUnmeasured(port)) loadOlderRef.current().catch(() => {});
-    else if (shouldAutoLoadOlder(port)) loadOlderRef.current().catch(() => {});
+    if (!previous.pending) {
+      port.removeAttribute("data-opening-hold");
+      return;
+    }
+    resumeOpening();
   });
 
   const rowIndexForTurn = useCallback((turnId: string, sourceIndex: number): number => {
@@ -1731,52 +1755,63 @@ export function useTranscriptScroll({
     };
   }, [listRef, measure, measureAnchors]);
 
-  const restoreViewAnchorAfterMeasurement = useCallback(() => {
-    if (pendingInitialEndRef.current === ref) {
-      const list = listRef.current;
-      const el = list?.getScrollElement();
-      if (!el || list?.isMeasurementReady?.() === false) return;
-      pendingInitialEndRef.current = null;
-      // An end request made against the initial sizer can be clamped to zero.
-      // Finish that fresh-open default once the real measured sizer commits.
-      const retained = retainedPlacements.get(el);
-      if (retained?.logicalRef !== ref && gestureFramesLeftRef.current <= 0) {
-        scrollToLastRow(listRef, renderedRowCountRef.current);
-        const metrics = measure(el);
-        el.scrollTop = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
+  const restorePendingViewAnchor = useCallback(
+    (layout?: CommittedVirtualListLayout) => {
+      if (pendingInitialEndRef.current === ref) {
+        const list = listRef.current;
+        const el = list?.getScrollElement();
+        if (!el || (list?.isMeasurementReady?.() === false && !layout?.isCurrent())) return;
+        pendingInitialEndRef.current = null;
+        // An end request made against the initial sizer can be clamped to zero.
+        // Finish that fresh-open default once the real measured sizer commits.
+        const retained = retainedPlacements.get(el);
+        if (retained?.logicalRef !== ref && gestureFramesLeftRef.current <= 0) {
+          scrollToLastRow(listRef, renderedRowCountRef.current);
+          const metrics = measure(el);
+          el.scrollTop = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
+        }
       }
-    }
-    const pending = pendingViewAnchorRef.current;
-    if (!pending) return;
-    const el = listRef.current?.getScrollElement();
-    if (!el) return;
+      const pending = pendingViewAnchorRef.current;
+      if (!pending) return;
+      const el = listRef.current?.getScrollElement();
+      if (!el) return;
 
-    const measured = measureAnchors(el);
-    const positions = anchorEntries?.map((entry) => ({ ...entry, offset: 0 })) ?? measured;
-    const restored = pending.target ?? (pending.anchor ? restoreTopAnchor(pending.anchor, positions) : undefined);
-    if (!restored) {
-      const m = measure(el);
-      el.scrollTop = pending.proportion * Math.max(0, m.scrollHeight - m.clientHeight);
-      pendingViewAnchorRef.current = null;
-      return;
-    }
+      const measured = measureAnchors(el);
+      const positions = anchorEntries?.map((entry) => ({ ...entry, offset: 0 })) ?? measured;
+      const restored = pending.target ?? (pending.anchor ? restoreTopAnchor(pending.anchor, positions) : undefined);
+      if (!restored) {
+        const m = measure(el);
+        el.scrollTop = pending.proportion * Math.max(0, m.scrollHeight - m.clientHeight);
+        pendingViewAnchorRef.current = null;
+        return;
+      }
 
-    const current = measured.find((position) => position.id === restored.id);
-    if (current) {
-      el.scrollTop += current.offset - restored.offset;
-      pendingViewAnchorRef.current = null;
-      return;
-    }
+      const current = measured.find((position) => position.id === restored.id);
+      if (current) {
+        el.scrollTop += current.offset - restored.offset;
+        pendingViewAnchorRef.current = null;
+        return;
+      }
 
-    // Keep the target and desired offset pending. VirtualList's onChange seam
-    // calls this function again after scrollToIndex renders/measures the row.
-    // Mark first because react-virtual can notify synchronously from the call.
-    if (!pending.scrollRequested) {
-      pending.target = restored;
-      pending.scrollRequested = true;
-      listRef.current?.scrollToIndex(restored.index, { align: "start" });
-    }
-  }, [ref, listRef, measure, measureAnchors, anchorEntries]);
+      // Keep the target and desired offset pending. VirtualList's onChange seam
+      // calls this function again after scrollToIndex renders/measures the row.
+      // Mark first because react-virtual can notify synchronously from the call.
+      if (!pending.scrollRequested) {
+        pending.target = restored;
+        pending.scrollRequested = true;
+        listRef.current?.scrollToIndex(restored.index, { align: "start" });
+      }
+    },
+    [ref, listRef, measure, measureAnchors, anchorEntries],
+  );
+
+  const restoreViewAnchorAfterMeasurement = useCallback(
+    (layout?: CommittedVirtualListLayout) => {
+      restorePendingViewAnchor(layout);
+      if (layout) resumeOpening(layout);
+    },
+    [restorePendingViewAnchor, resumeOpening],
+  );
 
   // Mount / (re)attach. Guarded by initializedRef so the one-time restore-
   // or-default-to-bottom positioning and baseline recording happen exactly

@@ -17,7 +17,7 @@ import { useStore } from "zustand";
 import { workspaceStore } from "../../../shell/workspace";
 import { transcriptDisplayStore } from "../../../stores/transcriptDisplay";
 import { createTranscriptRenderContext, TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
-import { VirtualList, type VirtualListHandle } from "../../../widgets";
+import { type CommittedVirtualListLayout, VirtualList, type VirtualListHandle } from "../../../widgets";
 import { modelLabel } from "../chrome/statusFormat";
 import { exchangeClosersFor } from "./exchangeClosers";
 import { exchangeOpenersFor } from "./exchangeOpeners";
@@ -315,7 +315,7 @@ export interface TranscriptBodyProps {
   loadOlderRow?: ReactNode;
   liveOverlay?: ReactNode;
   listRef?: RefObject<VirtualListHandle | null>;
-  onMeasurementsChange?: () => void;
+  onMeasurementsChange?: (layout?: CommittedVirtualListLayout) => void;
   trailingContent?: ReactNode;
   /**
    * An extra row appended AFTER the last transcript row, inside the virtual
@@ -510,7 +510,11 @@ export function TranscriptBody({
             viewRegistration.restoreAfterMeasurement();
           }
         }}
-        onLayout={viewRegistration.restoreAfterLayout}
+        onLayout={(layout) => {
+          viewRegistration.restoreAfterLayout(layout);
+          if (onMeasurementsChange && !viewRegistration.isPlacementPending() && layout.isCurrent())
+            onMeasurementsChange(layout);
+        }}
       />
     </section>
   );
