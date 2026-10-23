@@ -451,14 +451,14 @@ func detachSupportedBy(env execenv.ExecutionEnvironment) bool {
 	return ok && reporter.DetachSupported()
 }
 
-// shellToolForValidation returns the shell tool the session judges a call
-// against during preparation. The registry keeps the fully capable schema so a
-// mode:"detached" call still reaches DetachCommand's refusal, but the repair
-// and validation prose shown to the model must not list a mode this
-// environment refuses (issue #4422), so this copy replaces the mode property
-// with the advertised one and preserves the registry's intent parameter. Every
-// other tool and every capable environment is returned unchanged.
-func (s *Session) shellToolForValidation(t *tool.RegisteredTool) *tool.RegisteredTool {
+// shellToolForDiagnostics returns the shell tool whose repair and schema-error
+// prose preparation renders. Validation still uses the registry's compiled
+// schema, so a mode:"detached" call passes preparation and reaches
+// DetachCommand's refusal; this copy only replaces the mode property those
+// diagnostics describe, because they must not list a mode this environment
+// refuses (issue #4422). It preserves the registry's intent parameter, and
+// returns every other tool and every capable environment unchanged.
+func (s *Session) shellToolForDiagnostics(t *tool.RegisteredTool) *tool.RegisteredTool {
 	if t == nil || t.Definition.Name != "shell" || detachSupportedBy(s.currentEnv()) {
 		return t
 	}

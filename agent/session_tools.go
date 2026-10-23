@@ -794,7 +794,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 			argsJSON = string(canonical)
 		}
 	}
-	prep := prepareToolCall(call, s.shellToolForValidation(s.reg.Get(call.Name)), visibleNames, requestedVisible, s.resultToolName(), finishReason)
+	prep := prepareToolCall(call, s.shellToolForDiagnostics(s.reg.Get(call.Name)), visibleNames, requestedVisible, s.resultToolName(), finishReason)
 	call = prep.Call
 	prevalidated := true
 	if len(prep.Changes) > 0 {

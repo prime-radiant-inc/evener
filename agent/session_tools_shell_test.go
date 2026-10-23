@@ -1691,11 +1691,19 @@ func TestShellModeDetachedFollowsEnvironment(t *testing.T) {
 		requireShellModeEnum(t, s, "sandboxed session", want...)
 		description, _ := advertisedShellMode(t, s)["description"].(string)
 		agenttest.CheckGolden(t, filepath.Join("testdata", "detachedshell", "mode-description-unavailable.md"), []byte(description+"\n"), *updatePromptGoldens, "Regenerate with `go test ./agent -run '^TestShellModeDetachedFollowsEnvironment$' -count=1 -update-prompt` and read the diff.")
-		preparedMode, _ := s.shellToolForValidation(s.reg.Get("shell")).Definition.Parameters["properties"].(map[string]any)["mode"].(map[string]any)
+		preparedMode, _ := s.shellToolForDiagnostics(s.reg.Get("shell")).Definition.Parameters["properties"].(map[string]any)["mode"].(map[string]any)
 		if got := preparedMode["enum"]; !reflect.DeepEqual(got, want) {
 			t.Fatalf("shell repair schema mode enum = %#v, want %#v; validation prose would still list detached", got, want)
 		}
 		requireDetachUnsupported(t, s)
+		res := s.execTool(context.Background(), llm.ToolCallData{
+			ID:        "detached-through-preparation",
+			Name:      "shell",
+			Arguments: json.RawMessage(`{"command":"true","mode":"detached"}`),
+		}, "")
+		if !res.IsError || !errors.Is(res.Err, execenv.ErrDetachUnsupported) {
+			t.Fatalf("sandboxed detached call through preparation = (%q, %v), want ErrDetachUnsupported", res.Output, res.Err)
+		}
 	})
 
 	t.Run("capable return restores the enum and acceptance", func(t *testing.T) {

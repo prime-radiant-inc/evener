@@ -68,8 +68,10 @@ profile's environment-independent seed definitions. The session decides:
   documented contract — the definitions sent to the model — stays true for shell
   instead of quietly advertising the profile's static enum in a second place. Its
   consumer compares names only, so the substitution changes no prompt output.
-- `Session.shellToolForValidation` gives call preparation the same narrowed mode
-  property, preserving the registry's intent parameter. Without it, a
+- `Session.shellToolForDiagnostics` gives call preparation the same narrowed mode
+  property for its repair and schema-error prose, preserving the registry's intent
+  parameter; validation still uses the registry's compiled schema, so a detached call
+  passes preparation and reaches the refusal. Without it, a
   schema-invalid mode (for example `"daemon"`) would be explained to the model from
   the registry's fully capable enum and still list `detached` as allowed. The
   registry's compiled schema stays fully capable, so a valid `mode:"detached"` call
