@@ -71,6 +71,48 @@ admission lock. It is not a task-list, shell-job, watch or attention inventory
 gate, and does not restrict root completion. A valid `waiting_on_work` call
 resumes for a child report through its existing polling wait.
 
+### Durable wait recovery, reader foundation
+
+`agent/session_wait.go` defines private `WAIT_CHECKPOINT` yield/resumption
+records. They never enter model history or public/UI content. Raw forensic
+readers retain them without adding numbered public turns or execution spans.
+The latest nonduplicate checkpoint is evidence, not execution authority.
+
+Before generic `runtime_lost`, cold recovery checks the session, descriptor,
+delegate and journal generation, the same accepted `communicate` call, all tool
+results, successful execution completion and absence of later contradicting
+execution, question or approval state. Stop and existing writer, restore,
+reservation and finalization fences still own admission. The existing owned
+writer's `EstablishDurability` barrier must succeed, readable bytes alone do not
+prove a safe yield. Read/durability errors leave retryable uncertainty without
+truncating the evidence or fabricating an outcome. Missing or inconsistent safe
+boundary evidence retains ordinary interrupted-runtime reconciliation.
+
+```mermaid
+flowchart LR
+  R[Cold open generation] --> V[Validate checkpoint and execution, establish durability]
+  V --> W[Keep PhaseRunning and CurrentRunOpen, same generation]
+  W --> C[Existing addressed custody and source replay]
+  C --> T[Task9, attach and claim the same generation]
+```
+
+This reader foundation leaves the generation cold, unbound and on the existing
+reconciliation order. It writes no terminal outcome and starts no replacement
+generation. Existing shell/watch repair and delegate FIFO outboxes retain their
+transport obligations until synced receiver custody. Independently proven cold
+waits can accept notifications through the existing cold writer admission, but
+acceptance neither consumes them nor resumes execution. A missing/nonrestorable
+named producer yields one addressed `wait-interrupted:<session>:<execution>:<call>`
+notification, not a false completion. Source-read failure does not mean absence.
+Root checkpoints may omit delegate, generation and named target.
+
+**Task9 owns production checkpoint calls, executor yield, attachment and claim of
+this same open lease, resumption records and notification-triggered execution.**
+Those paths are not implemented by this reader foundation. Ordinary resident
+and non-checkpoint idle dispatch retain their existing paths. A pre-checkpoint
+reader cannot safely restore a yielded generation, downgrade requires retaining
+the checkpoint-aware reader, not a legacy compatibility route.
+
 Only notifications not already presented by a successful request whose response
 synced owe a drain turn. The private `observed_notification_ids` field on that
 assistant response records the exact successful attempt's coverage, including

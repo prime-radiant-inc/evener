@@ -460,13 +460,23 @@ func TestNotificationAcceptance(t *testing.T) {
 		unblock := sync.OnceFunc(func() { close(release) })
 		defer unblock()
 		adapter := newMessagingAdapter()
-		adapter.script("root", func(llm.Request) llm.Response { close(entered); <-release; return finalResponse("payload-end") })
+		adapter.script("root", func(req llm.Request) llm.Response {
+			if requestContainsText(req, "payload-7c41") {
+				t.Error("notification appeared in an earlier request snapshot")
+			}
+			close(entered)
+			<-release
+			return jobListResponse("acceptance-boundary")
+		}, func(req llm.Request) llm.Response {
+			if !requestContainsText(req, "payload-7c41") {
+				t.Error("current continuation omitted the running arrival")
+			}
+			return finalResponse("payload-end")
+		})
 		s := newMessagingRoot(t, adapter, nil)
 		done := make(chan error, 1)
 		go func() { _, err := s.ProcessInput(context.Background(), "payload-start", nil); done <- err }()
 		<-entered
-		wakes := 0
-		s.SetNotifyFunc(func() { wakes++ })
 		err := s.enqueueNotification(n)
 		if err == nil {
 			assertNotificationRecords(t, transcriptPath(s.stateDir, s.ID()), n.ID, n.Message, 1)
@@ -479,26 +489,34 @@ func TestNotificationAcceptance(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if wakes == 0 {
-			t.Fatal("running receiver did not request readiness")
+		if requests := adapter.requestsFor("root"); len(requests) != 2 {
+			t.Fatalf("provider requests = %d, want one continuation, no duplicate", len(requests))
+		}
+		assertNotificationRecords(t, transcriptPath(s.stateDir, s.ID()), n.ID, n.Message, 1)
+		for _, entry := range notificationRawEntries(t, transcriptPath(s.stateDir, s.ID())) {
+			if entry.Turn.AttentionID == n.ID && !reflect.DeepEqual(entry.Turn.NotificationProvenance, n.Provenance) {
+				t.Fatal("running notification lost persisted provenance")
+			}
+		}
+		assertNotificationObservedOnce(t, transcriptPath(s.stateDir, s.ID()), n.ID)
+		if pending, err := s.pendingNotificationIDs(); err != nil || len(pending) != 0 {
+			t.Fatalf("running arrival remained pending after observation: %v, %v", pending, err)
 		}
 	})
 	t.Run("cold receiver", func(t *testing.T) {
-		c, _ := newDelegateControllerTestHarness(t, 2, 1)
-		seedDelegateControllerIdle(t, c, "dlg_target", "")
-		root, _ := notificationReceiverForTest(t, nil)
-		c.rootRuntime = root
-		wakes := 0
-		root.SetNotifyFunc(func() { wakes++ })
-		sessionID := c.durable["dlg_target"].Descriptor.ChildSessionID
-		path := transcriptPath(c.stateDir, sessionID)
-		writer, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := writer.Close(); err != nil {
-			t.Fatal(err)
-		}
+		fixture := newColdStableDelegateFixture(t, "")
+		sessionID := fixture.childID
+		path := transcriptPath(fixture.stateDir, sessionID)
+		fixture.adapter.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+			if req.SessionID != sessionID || !requestContainsText(req, "payload-7c41") {
+				t.Errorf("notification did not reach the exact cold receiver: session=%s", req.SessionID)
+			}
+			assertNotificationRecords(t, path, n.ID, n.Message, 1)
+			return finalResponse("cold-receiver-done")
+		}}
+		// No root input loop or provider turn drives this child's restoration.
+		root := restoreSupervisionRoot(t, fixture, nil)
+		c := root.delegateController
 		if err := c.enqueueNotification(sessionID, n); err != nil {
 			t.Fatal(err)
 		}
@@ -507,16 +525,6 @@ func TestNotificationAcceptance(t *testing.T) {
 		}
 		assertNotificationRecords(t, path, n.ID, n.Message, 1)
 		assertNotificationProvenance(t, path, n.Provenance)
-		fold, err := readDelegateAttentionFold(path, sessionID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !reflect.DeepEqual(fold.pendingIDs(), []string{n.ID}) {
-			t.Fatalf("pending = %v", fold.pendingIDs())
-		}
-		if wakes != 2 {
-			t.Fatalf("cold wakes = %d, want 2", wakes)
-		}
 		changed := n
 		changed.Message = llm.User("payload-conflict")
 		if err := c.enqueueNotification(sessionID, changed); err == nil {
@@ -525,6 +533,15 @@ func TestNotificationAcceptance(t *testing.T) {
 		assertNotificationRecords(t, path, n.ID, n.Message, 1)
 		if err := c.enqueueNotification("foreign-session", n); !errors.Is(err, errDelegateDeliveryReceiverUnavailable) {
 			t.Fatalf("foreign receiver error = %v", err)
+		}
+		waitForStableSupervisionRun(t, root, sessionID)
+		if requests := supervisionRequestCount(fixture.adapter); requests != 1 {
+			t.Fatalf("provider requests = %d, want one child request and no parent request", requests)
+		}
+		assertNotificationObservedOnce(t, path, n.ID)
+		fold, err := readDelegateAttentionFold(path, sessionID)
+		if err != nil || len(fold.pendingIDs()) != 0 {
+			t.Fatalf("cold receiver did not consume its observed notification: %+v, %v", fold, err)
 		}
 	})
 	t.Run("duplicate ID and body repairs wake", func(t *testing.T) {
@@ -815,6 +832,37 @@ func notificationRawEntries(t *testing.T, path string) []transcript.Entry {
 		t.Fatal(err)
 	}
 	return entries
+}
+
+func assertNotificationObservedOnce(t *testing.T, path, id string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observations := 0
+	for _, line := range bytes.Split(bytes.TrimSpace(data), []byte("\n"))[1:] {
+		var raw struct {
+			Turn struct {
+				Kind     string   `json:"kind"`
+				Observed []string `json:"observed_notification_ids"`
+			} `json:"turn"`
+		}
+		if err := json.Unmarshal(line, &raw); err != nil {
+			t.Fatal(err)
+		}
+		for _, observed := range raw.Turn.Observed {
+			if observed == id {
+				observations++
+				if raw.Turn.Kind != "ASSISTANT" {
+					t.Fatal("observation was not on a persisted assistant response")
+				}
+			}
+		}
+	}
+	if observations != 1 {
+		t.Fatalf("persisted observations of %s = %d, want 1", id, observations)
+	}
 }
 
 func assertNotificationRecords(t *testing.T, path, id string, message llm.Message, count int) {

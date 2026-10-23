@@ -19,12 +19,14 @@ func TranscriptOnlySamples() []schema.Turn {
 	}
 	completion := sample(schema.TurnCompletion, "t_sample_execution")
 	completion.Completion = &schema.TurnCompletionInfo{Status: schema.TurnCompleted, CompletedAt: at, DurationMS: 42}
+	wait := sample(schema.TurnWaitCheckpoint, "t_sample_execution")
+	wait.WaitCheckpoint = &schema.WaitCheckpointInfo{SessionID: "sample-session", ExecutionTurnID: "t_sample_execution", CommunicateCallID: "sample-call"}
 	reopen := sample(schema.TurnReopen, "turn_m9")
 	// Shares completion's turn id rather than getting its own: recovery
 	// reopens a crashed turn under its old id (agent/session_execution.go's
 	// TurnReopen, transcript.Writer.BeginExecution(turnID, reopen=true)), so
 	// a turn's entries can follow other turns' entries non-adjacently in the
-	// file. InterleaveTranscriptOnly cycles through all seven samples
+	// file. InterleaveTranscriptOnly cycles through all samples
 	// repeatedly across a long fixture, so this pairing revisits
 	// "t_sample_execution" every cycle, exercising exactly that shape for
 	// window pagination and the reference oracles that check it.
@@ -43,6 +45,7 @@ func TranscriptOnlySamples() []schema.Turn {
 	}
 	return []schema.Turn{
 		completion,
+		wait,
 		reopen,
 		communicate,
 		notice("t_sample_gap_repair", schema.NoticeInfo{Kind: schema.NoticeToolRepair, ToolRepair: &schema.ToolRepairNotice{ToolName: "read_file", CallID: "sample-call", Changes: []string{"renamed argument"}}}),

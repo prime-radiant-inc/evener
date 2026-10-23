@@ -3173,6 +3173,10 @@ func (s *Session) bootstrapDelegateResources() error {
 		_ = store.Close()
 		return fmt.Errorf("open delegate controller: %w", err)
 	}
+	if err := validateWaitCheckpointsForBootstrap(controller); err != nil {
+		_ = store.Close()
+		return fmt.Errorf("validate wait checkpoints: %w", err)
+	}
 	if err := repairStableWatchDeliveriesForBootstrap(controller); err != nil {
 		_ = store.Close()
 		return fmt.Errorf("repair stable watch deliveries: %w", err)
@@ -3306,6 +3310,24 @@ func (c *delegateTreeController) runtimeForDelegateOwnerLocked(row delegateSnaps
 	return nil
 }
 
+// Watch replay must still precede source repair, which may supersede a pending
+// watch frame. Validate open wait evidence first, before replay can open a cold
+// writer and trim an uncertain tail. Reconcile independently rechecks it later.
+func validateWaitCheckpointsForBootstrap(c *delegateTreeController) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, lease := range c.reconcileOrder {
+		run := c.durable[lease.delegateID]
+		if run == nil || !run.CurrentRunOpen || run.Generation != lease.generation || run.Phase != delegatestore.PhaseRunning || run.PendingStopSeq != 0 {
+			continue
+		}
+		if _, err := c.readSafeDelegateWaitLocked(run); err != nil {
+			return fmt.Errorf("delegate %s wait evidence: %w", lease.delegateID, err)
+		}
+	}
+	return nil
+}
+
 func reconcileDelegateResourcesForBootstrap(controller *delegateTreeController) ([]delegateDeliveryPlan, error) {
 	var deliveries []delegateDeliveryPlan
 	// Each Reconcile hands back a retirement-mutation lease, and bootstrap
@@ -3346,12 +3368,97 @@ func reconcileDelegateResourcesForBootstrap(controller *delegateTreeController) 
 		stopPending := controller.stop != nil
 		controller.mu.Unlock()
 		if !stopPending {
-			return deliveries, nil
+			return deliveries, repairWaitCheckpointWakersForBootstrap(controller)
 		}
 		if len(plans.updates) == 0 && len(plans.deliveries) == 0 && len(plans.shellRepairs) == 0 && len(plans.attention) == 0 {
 			return nil, errors.New("restored delegate stop made no reconciliation progress")
 		}
 	}
+}
+
+// A missing producer is not runtime loss of the waiting delegate. Keep its
+// generation open and deliver one honest interruption through existing custody.
+// Existing source repair/replay still owns shell, watch and child outboxes.
+func repairWaitCheckpointWakersForBootstrap(c *delegateTreeController) error {
+	c.mu.Lock()
+	var checkpoints []schema.WaitCheckpointInfo
+	for _, lease := range c.reconcileOrder {
+		run := c.durable[lease.delegateID]
+		live := c.live[lease.delegateID]
+		if run == nil || !run.CurrentRunOpen || run.Generation != lease.generation || run.Phase != delegatestore.PhaseRunning || run.PendingStopSeq != 0 || live != nil && (live.runtime != nil || live.binding != nil) {
+			continue
+		}
+		checkpoint, err := readWaitCheckpoint(transcriptPath(c.stateDir, run.Descriptor.ChildSessionID), run.Descriptor.ChildSessionID)
+		if err != nil {
+			c.mu.Unlock()
+			return err
+		}
+		if checkpoint != nil && checkpoint.WaitingOn != "" {
+			checkpoints = append(checkpoints, *checkpoint)
+		}
+	}
+	c.mu.Unlock()
+	for _, checkpoint := range checkpoints {
+		fold, err := readExistingDelegateAttentionFold(transcriptPath(c.stateDir, checkpoint.SessionID), checkpoint.SessionID)
+		if err != nil {
+			return err
+		}
+		if len(fold.pendingIDs()) != 0 {
+			continue // Already accepted addressed input is itself a durable waker.
+		}
+		available, err := waitCheckpointSourceAvailable(c, checkpoint)
+		if err != nil {
+			return err // Failed evidence is retryable, not a missing producer.
+		}
+		if available {
+			continue
+		}
+		if err := c.enqueueNotification(checkpoint.SessionID, notification{
+			ID:      "wait-interrupted:" + checkpoint.SessionID + ":" + checkpoint.ExecutionTurnID + ":" + checkpoint.CommunicateCallID,
+			Message: llm.UserMachinery("The wait for " + checkpoint.WaitingOn + " was interrupted by restart, its producer is absent or cannot be restored. Reassess the work, no completion is implied."),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func waitCheckpointSourceAvailable(c *delegateTreeController, checkpoint schema.WaitCheckpointInfo) (bool, error) {
+	kind, id := splitWaitTarget(checkpoint.WaitingOn)
+	if kind == "" || kind == "child" {
+		c.mu.Lock()
+		_, descendant := c.delegateSubtreeIDsLocked(checkpoint.DelegateID)[id]
+		child := c.durable[id]
+		available := descendant && child != nil && (child.CurrentRunOpen || len(child.PendingDeliveries) != 0)
+		c.mu.Unlock()
+		if available {
+			return true, nil
+		}
+	}
+	if kind == "" || kind == "job" || kind == "watch" {
+		for _, path := range c.stableWatchBootstrapSnapshot().storePaths {
+			journal, err := jobstore.ReadEvents(path)
+			if err != nil {
+				return false, fmt.Errorf("wait source journal %s: %w", path, err)
+			}
+			if kind == "" || kind == "job" {
+				for _, job := range jobstore.Fold(journal) {
+					if job.JobID == id && job.OwnerSessionID == checkpoint.SessionID && (!job.Status.IsTerminal() || job.NotifyState == jobstore.NotifyPending) {
+						return true, nil
+					}
+				}
+			}
+			if kind == "" || kind == "watch" {
+				for _, send := range jobstore.FoldWatchSends(journal).Pending {
+					if send != nil && send.Key.WatchID == id && send.StableReceiver && send.ReceiverSessionID == checkpoint.SessionID {
+						return true, nil
+					}
+				}
+			}
+		}
+	}
+	// Process-local input queues and watch callbacks do not survive restart.
+	return false, nil
 }
 
 func missingDelegateRestoreInputs(

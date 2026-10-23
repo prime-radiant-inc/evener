@@ -470,8 +470,8 @@ func ProjectEntryParts(turnID string, entryIndex int, turn schema.Turn, reg *Too
 			return []appwire.ThreadItem{item}, []int{0}
 		}
 		return nil, nil
-	case schema.TurnCompletion, schema.TurnReopen:
-		// These set the turn's status; they display nothing.
+	case schema.TurnCompletion, schema.TurnReopen, schema.TurnWaitCheckpoint:
+		// Execution status and private recovery evidence display nothing.
 		return nil, nil
 	default:
 		return ProjectTurnParts(turnID, entryIndex, turn, reg, imageProjector, outputImageProjector)

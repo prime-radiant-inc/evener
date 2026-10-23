@@ -85,6 +85,9 @@ const (
 	// TurnReopen marks a turn that recovery reclaimed and runs again under
 	// the same TurnID: the turn is open again until its next completion.
 	TurnReopen TurnKind = "TURN_REOPEN"
+	// TurnWaitCheckpoint records an activation's yield or its later resumption.
+	// It is private transcript evidence, not conversation or model history.
+	TurnWaitCheckpoint TurnKind = "WAIT_CHECKPOINT"
 	// TurnCommunicate records a communicate message at the moment it is
 	// delivered — the detail rides Turn.Communicate.
 	TurnCommunicate TurnKind = "COMMUNICATE"
@@ -113,7 +116,7 @@ func (k TurnKind) PublicTranscript() bool {
 // they exist for the history projection alone.
 func (k TurnKind) TranscriptOnly() bool {
 	switch k {
-	case TurnCompletion, TurnReopen, TurnCommunicate, TurnNotice:
+	case TurnCompletion, TurnReopen, TurnWaitCheckpoint, TurnCommunicate, TurnNotice:
 		return true
 	default:
 		return false
@@ -152,6 +155,19 @@ type TurnCompletionInfo struct {
 	Status      TurnCompletionStatus `json:"status"`
 	CompletedAt time.Time            `json:"completed_at"`
 	DurationMS  int64                `json:"duration_ms"`
+}
+
+// WaitCheckpointInfo identifies one yielded activation. A later record with
+// the same identity and a nonempty ResumedByTurnID claims its resumption.
+// Generation is evidence to check against the delegate journal, not a ledger.
+type WaitCheckpointInfo struct {
+	SessionID         string `json:"session_id"`
+	DelegateID        string `json:"delegate_id,omitempty"`
+	Generation        uint64 `json:"generation,omitempty"`
+	ExecutionTurnID   string `json:"execution_turn_id"`
+	CommunicateCallID string `json:"communicate_call_id"`
+	WaitingOn         string `json:"waiting_on,omitempty"`
+	ResumedByTurnID   string `json:"resumed_by_turn_id,omitempty"`
 }
 
 // CommunicateInfo is the persisted form of one delivered communicate message.
@@ -499,6 +515,8 @@ type Turn struct {
 	// Usage carries the token-usage stats reported by the provider; set only on
 	// assistant turns.
 	Usage llm.Usage `json:"usage"`
+	// WaitCheckpoint is private yield/resumption evidence on TurnWaitCheckpoint.
+	WaitCheckpoint *WaitCheckpointInfo `json:"wait_checkpoint,omitempty"`
 }
 
 // NewTurn creates a Turn with the current UTC time.

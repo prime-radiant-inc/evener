@@ -348,7 +348,11 @@ func (c *delegateTreeController) enqueueNotification(ownerSessionID string, n no
 			c.mu.Unlock()
 			return errDelegateDeliveryReceiverUnavailable
 		}
-		receiver = c.deliveryReceiverLocked(ownerID)
+		receiver, err = c.deliveryReceiverWithEvidenceLocked(ownerID)
+		if err != nil {
+			c.mu.Unlock()
+			return err
+		}
 	}
 	if resident, ok := receiver.(*Session); ok {
 		if resident.ID() != ownerSessionID {

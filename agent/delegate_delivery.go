@@ -913,21 +913,34 @@ func (c *delegateTreeController) replayDeliveriesForOwnerLocked(ownerDelegateID 
 }
 
 func (c *delegateTreeController) deliveryReceiverLocked(ownerDelegateID string) delegateDeliveryReceiver {
+	// Existing source delivery retries retain their obligation when selection
+	// fails. Notification admission also needs the underlying uncertainty error.
+	receiver, _ := c.deliveryReceiverWithEvidenceLocked(ownerDelegateID)
+	return receiver
+}
+
+func (c *delegateTreeController) deliveryReceiverWithEvidenceLocked(ownerDelegateID string) (delegateDeliveryReceiver, error) {
 	if ownerDelegateID == "" {
-		return c.rootRuntime
+		return c.rootRuntime, nil
 	}
 	if live := c.live[ownerDelegateID]; live != nil && live.runtime != nil {
-		return live.runtime
+		return live.runtime, nil
 	}
-	if owner := c.durable[ownerDelegateID]; owner != nil && owner.Phase == delegatestore.PhaseIdle && owner.Descriptor.TranscriptRef != "" {
+	if owner := c.durable[ownerDelegateID]; owner != nil && owner.Descriptor.TranscriptRef != "" {
+		if owner.Phase != delegatestore.PhaseIdle {
+			waiting, err := c.readSafeDelegateWaitLocked(owner)
+			if err != nil || !waiting {
+				return nil, err
+			}
+		}
 		return coldDelegateDeliveryReceiver{
 			stateDir:      c.stateDir,
 			transcriptRef: owner.Descriptor.TranscriptRef,
 			now:           c.now,
 			open:          c.attentionOpen,
-		}
+		}, nil
 	}
-	return nil
+	return nil, nil
 }
 
 func (c *delegateTreeController) recheckNotificationReceivers() bool {
