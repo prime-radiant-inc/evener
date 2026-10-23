@@ -1039,7 +1039,9 @@ type TaskAggregate struct {
 }
 
 type EvenerThread struct {
-	// Manager is the saved human preference, not a runtime tool capability.
+	// Manager is the session's start-time Manager property, reported by the
+	// session itself. It is not a runtime setting: nothing can turn it on or
+	// off after the session starts.
 	Manager bool `json:"manager,omitempty"`
 	// ManagerSetting is absent when the hosting preference cannot be resolved.
 	ManagerSetting *ManagerSetting `json:"managerSetting,omitempty"`
