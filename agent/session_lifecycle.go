@@ -1216,9 +1216,11 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// turn's own buffered record can poison the writer while it runs, and
 		// this loop then carries straight on into the follow-up or drained
 		// message behind it. The writer's own lock is taken outside s.mu (an
-		// append holds it across a write and an fsync), and poisoned is never
-		// cleared, so a stale read costs one turn that then meets the writer's
-		// own refusal.
+		// append holds it across a write and an fsync). A writer an attention
+		// reopen replaced is not the session's writer any more: the gate
+		// revalidates a refusal against the attached writer, and a close or
+		// poison that lands after a healthy decision is the stale read the next
+		// round's gate re-samples.
 		if err := s.refuseTurnOnUnhealthyTranscript(processCtx); err != nil {
 			// A steering carrier claimed at the tail below owns the active-turn
 			// slot until something hands it back; a refusal here is before the
@@ -1741,12 +1743,14 @@ func (s *Session) endInputAtTurnFailure() {
 // telling the caller the input finished normally while its message or steer stays
 // unclaimed.
 //
-// It reads the writer's own lock outside s.mu (an append holds that lock across
-// a write and an fsync), and neither fact is ever cleared, so a stale read costs
-// one turn that then meets the writer's own refusal.
+// A writer an attention reopen replaced is not the session's writer any more.
+// The gate discards a refusal decided on a writer that is no longer attached
+// and decides again on the replacement (refuseOnCurrentUnhealthyTranscript), so
+// the closed or repaired handle a reopen left behind cannot refuse a healthy
+// session. A genuinely closed or poisoned current writer still refuses.
 func (s *Session) refuseTurnOnUnhealthyTranscript(ctx context.Context) error {
-	s.failClosedOnUnhealthyTranscript()
-	refusal := s.refuseOnUnhealthyTranscript(s.attachedTranscript())
+	s.failClosedOnTranscriptCreation()
+	refusal := s.refuseOnCurrentUnhealthyTranscript()
 	if refusal == nil {
 		return nil
 	}
@@ -1754,6 +1758,45 @@ func (s *Session) refuseTurnOnUnhealthyTranscript(ctx context.Context) error {
 	s.finishProcessingAtFailureBoundary(ctx)
 	s.endInputAtTurnFailure()
 	return refusal
+}
+
+// refuseOnCurrentUnhealthyTranscript decides the refusal on the writer attached
+// now, and treats a refusal as final only when that writer is still attached at
+// a fresh s.mu read.
+//
+// A reopen publishes its replacement under s.mu and closes the writer it
+// replaced after releasing s.mu, so a gate that sampled the old writer can read
+// it closed or still poisoned from a partial tail the reopen already cut off.
+// Discarding a refusal from a writer that is no longer attached is what keeps
+// that stale sample from refusing a healthy session.
+//
+// Each retry requires a completed replacement: reopens install freshly opened
+// writers and never re-attach an old one, so each pass decides on a new writer
+// generation, and the gate never reopens anything itself. The decision reads the
+// writer's own lock outside s.mu; a close after a healthy decision is the
+// pre-existing stale read that the next round's gate re-samples.
+func (s *Session) refuseOnCurrentUnhealthyTranscript() error {
+	writer := s.attachedTranscript()
+	for {
+		if hook := s.cfg.testOnly.turnGateSampledTranscript; hook != nil {
+			hook(writer)
+		}
+		refusal := s.refuseOnUnhealthyTranscript(writer)
+		if refusal == nil {
+			return nil
+		}
+		current := s.attachedTranscript()
+		if current != writer {
+			writer = current
+			continue
+		}
+		if errors.Is(refusal, transcript.ErrWriterPoisoned) {
+			if failedClosed := s.failClosed(refusal); failedClosed != nil {
+				refusal = failedClosed
+			}
+		}
+		return refusal
+	}
 }
 
 // refuseBeforeClaimingOnUnhealthyTranscript reports why a durable claim must not
