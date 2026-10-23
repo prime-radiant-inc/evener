@@ -29,6 +29,9 @@ interface NotificationWireFixture {
 
 /** The recorded case names, in the order the fixture lists them. */
 export type NotificationWireCase =
+  | "job-literal-entities"
+  | "delegate-update-literal-entities"
+  | "watch-note-literal-entities"
   | "delegate-reported"
   | "delegate-failed-unnamed"
   | "delegate-stopped"

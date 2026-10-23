@@ -1236,11 +1236,8 @@ func delegateNotificationContent(plan delegateDeliveryPlan) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		// An update's body is the delegate's own words, with "<" escaped so
-		// they can neither close this frame nor open another. Like a job
-		// output excerpt, only "<" is escaped: a literal entity the delegate
-		// types (say "&amp;") decodes once on clients, a known remainder that
-		// issue #4245 tracks for every notification body.
+		// The shared body codec preserves literal entities and escapes "<"
+		// so the delegate's own words cannot close or forge a frame.
 		kind, body = "update", escapeNotificationBody(message)
 	} else {
 		packet, err := json.Marshal(plan.packet)

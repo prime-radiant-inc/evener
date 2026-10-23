@@ -143,10 +143,20 @@ describe("delegate and job notifications", () => {
 		const notificationRows = rows.filter((row: TimelineRow) => row.id.startsWith("item_steering_"));
 		expect(notificationRows).toHaveLength(notificationWireItems().length);
 		for (const row of notificationRows) {
-			const text = renderedText(
-				render(<TimelineItem item={row} hubId="hub" sessionRef={`markup-${level}`} delegates={delegates} />),
-			);
-			expect(text).not.toMatch(/<\/?(delegate|job)-notification|&lt;|"kind"|excerpt:/);
+			const tree = render(<TimelineItem item={row} hubId="hub" sessionRef={`markup-${level}`} delegates={delegates} />);
+			const text = renderedText(tree);
+			expect(text).not.toMatch(/<\/?(delegate|job)-notification|"kind"|excerpt:/);
+			// Literal entities the sender typed are content, not leaked framing.
+			const sender = `& < &lt; &amp; &amp;lt; " > ' &quot; &gt; &#39;`;
+			if (row.id === notificationWireItem("delegate-update-literal-entities").id) {
+				expect(outcomes(tree)).toEqual(["update"]);
+				expect(textOf(headline(tree))).toContain(sender);
+				expect(detail(tree)).toBe(sender);
+			} else if (row.id === notificationWireItem("watch-note-literal-entities").id) {
+				expect(text).toContain(sender);
+			} else {
+				expect(text).not.toContain("&lt;");
+			}
 		}
 	});
 

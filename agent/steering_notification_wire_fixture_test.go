@@ -153,12 +153,33 @@ func TestSteeringNotificationWireFixtures(t *testing.T) {
 	frame := func(n jobNotification, excerpt notificationExcerpt) string {
 		return formatJobNotificationBlock(n, excerpt, true)
 	}
+	const entityText = `& < &lt; &amp; &amp;lt; " > ' &quot; &gt; &#39;`
+	entityMessage, err := json.Marshal(entityText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entityWatch := newTestJM(t).watchNotificationFromWatch(&watchConfig{note: entityText}, "", "entity note", nil)
 
 	cases := []struct {
 		name string
 		note string
 		turn schema.Turn
 	}{
+		{
+			name: "job-literal-entities",
+			note: "Literal sender entities survive a real job excerpt body round trip.",
+			turn: notificationWireReminder(frame(shellCompleted, notificationExcerpt{text: entityText, complete: true})),
+		},
+		{
+			name: "delegate-update-literal-entities",
+			note: "Literal sender entities survive a real delegate update body round trip, while attributes retain their full codec.",
+			turn: notificationWireAttention("entity_update", notificationWireBarePacketFrame(t, "dlg_entities", entityText, delegatestore.TerminalPacket{Kind: delegatestore.PacketUpdate, Message: entityMessage})),
+		},
+		{
+			name: "watch-note-literal-entities",
+			note: "Condition watch notes pass through the central body encoder exactly once.",
+			turn: notificationWireReminder(frame(entityWatch, notificationExcerpt{})),
+		},
 		{
 			name: "delegate-reported",
 			note: "A named subagent communicated its report and finished. The body is the TerminalPacket JSON; message is a JSON string.",
