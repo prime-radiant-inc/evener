@@ -1195,16 +1195,26 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	// Mark the session as in-turn for the duration of this input. SetGoal/ClearGoal
 	// read this under s.mu to coordinate the idle kick against the drain-loop gate
 	// (spec §7): while it is set, an idle kick is suppressed (the gate backs the
-	// goal); it is cleared as the last act of this call (the deferred clear below),
-	// mutually exclusive on s.mu with "set goal + read flag" and "clear goal".
+	// goal). Idle goal settle clears it, and the deferred clear below covers
+	// other exits, mutually exclusive on s.mu with goal mutations.
 	s.goalInTurn = true
+	// The goal flag can clear at idle settle before this input returns. Common
+	// readiness suppresses hints for the entire input lifetime through release.
+	s.notificationSchedule.running = true
 	s.notificationSchedule.hinted = false
 	s.mu.Unlock()
 	defer func() {
+		if hook := s.cfg.testOnly.notificationExecutionRelease; hook != nil {
+			hook(false)
+		}
 		s.mu.Lock()
 		s.goalInTurn = false
+		s.notificationSchedule.running = false
 		s.notificationSchedule.version++
 		s.mu.Unlock()
+		if hook := s.cfg.testOnly.notificationExecutionRelease; hook != nil {
+			hook(true)
+		}
 		s.dispatchNotificationWake()
 	}()
 
@@ -2167,14 +2177,20 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			case refusal == turnNameFenced, s.runningTurnNameHasOwner():
 				s.scheduleRunningTurnNameRetry(jobNotificationRetryMaxDelay)
 			default:
+				s.turnNameRetryMu.Lock()
+				s.turnNameRetry.generation++
+				s.turnNameRetry.active = false
+				s.mu.Lock()
+				s.notificationSchedule.nameBlocked = true
+				s.notificationSchedule.version++
+				s.mu.Unlock()
+				s.turnNameRetryMu.Unlock()
 				s.emit(events.EventWarning, events.WarningData{
 					Message: "a turn name is held with no pending mutation to release it; deferring this wake would never resume",
 				})
 			}
 			return "", false, nil
 		}
-		// Named: drop any backoff this session accumulated standing down.
-		s.resetRunningTurnNameRetry()
 		rootAttentionIDs = s.notificationSnapshot()
 	}
 
@@ -2244,6 +2260,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			}
 		}
 	}
+
+	// An admitted input has acquired its execution authority. Retire any
+	// earlier name refusal, including one waiting for this owner mutation.
+	s.resetRunningTurnNameRetry()
 
 	var toolSigs []string
 	var toolSigFailed []bool

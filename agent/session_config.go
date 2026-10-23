@@ -353,6 +353,10 @@ type testConfig struct {
 	// test cannot produce one without closing the session, which closes the
 	// claim path too. Nil in production.
 	failTurnBeforeRecording func() error
+	// notificationExecutionRelease observes either side of the common input
+	// release lock, before readiness dispatch. Both calls are outside s.mu.
+	// Tests block one side to place a concurrent append at this exact boundary.
+	notificationExecutionRelease func(released bool)
 	// clientMutationStartAnnounced observes a start that has claimed and
 	// announced, immediately before the turn runs -- the window a close lands in,
 	// where the post-run give-back decides whether the claim goes back. Nil in

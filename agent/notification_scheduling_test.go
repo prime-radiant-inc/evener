@@ -4,9 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -208,73 +207,10 @@ func TestNotificationScheduling(t *testing.T) {
 		}
 	}
 	t.Run("capacity refusal recovers without parent input", func(t *testing.T) {
-		fixture := newColdStableDelegateFixture(t, "")
-		reached := make(chan llm.Request, 1)
-		fixture.adapter.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response { reached <- req; return finalResponse("capacity-recovered-73af") }}
-		root := restoreSupervisionRoot(t, fixture, nil)
-		c := root.delegateController
-		c.mu.Lock()
-		c.driveLimit = 1
-		generation := c.durable[fixture.delegateID].Generation
-		if !c.reserveCapacityLocked(delegateDriveCapacity) {
-			t.Fatal("saturate capacity")
-		}
-		c.mu.Unlock()
-		if err := root.delegateController.enqueueNotification(fixture.childID, notification{ID: "capacity-817f", Message: llm.User("capacity-body-98af")}); err != nil {
-			t.Fatal(err)
-		}
-		c.mu.Lock()
-		started := c.durable[fixture.delegateID].Generation != generation
-		c.mu.Unlock()
-		if started {
-			t.Fatal("receiver admitted a generation without capacity")
-		}
-		select {
-		case <-reached:
-			t.Fatal("receiver bypassed capacity")
-		default:
-		}
-		c.mu.Lock()
-		c.releaseCapacityLocked(delegateDriveCapacity)
-		c.mu.Unlock()
-		c.recheckNotificationReceivers()
-		select {
-		case req := <-reached:
-			observationRequest(t, req, []string{"capacity-body-98af"}, nil)
-		case <-time.After(5 * time.Second):
-			t.Fatal("capacity release stranded receiver without parent input")
-		}
-		waitForStableSupervisionRun(t, root, fixture.childID)
+		testNotificationCompetition(t, false, 1)
 	})
 	t.Run("failed receiver does not block healthy sibling", func(t *testing.T) {
-		fixture := newColdStableDelegateFixture(t, "")
-		reached := make(chan llm.Request, 1)
-		fixture.adapter.steps = []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return finalResponse("healthy-warm-79af") },
-			func(req llm.Request) llm.Response { reached <- req; return finalResponse("healthy-handled-78ae") },
-		}
-		root := restoreSupervisionRoot(t, fixture, nil)
-		healthy := root.createDelegate(context.Background(), delegateArgs{Task: "healthy sibling-19ab"})
-		if healthy.Err != nil {
-			t.Fatal(healthy.Err)
-		}
-		waitForStableSupervisionRun(t, root, healthy.ChildSessionID)
-		if err := os.Remove(filepath.Join(fixture.stateDir, sessionsSubdir, fixture.childID+".meta.json")); err != nil {
-			t.Fatal(err)
-		}
-		if err := root.delegateController.enqueueNotification(fixture.childID, notification{ID: "broken-781a", Message: llm.User("broken-body-61af")}); err != nil {
-			t.Fatal(err)
-		}
-		if err := root.delegateController.enqueueNotification(healthy.ChildSessionID, notification{ID: "healthy-817a", Message: llm.User("healthy-body-91ac")}); err != nil {
-			t.Fatal(err)
-		}
-		select {
-		case req := <-reached:
-			observationRequest(t, req, []string{"healthy-body-91ac"}, []string{"broken-body-61af"})
-		case <-time.After(5 * time.Second):
-			t.Fatal("failed cold receiver blocked healthy sibling")
-		}
-		waitForStableSupervisionRun(t, root, healthy.ChildSessionID)
+		testNotificationCompetition(t, true, 1)
 	})
 	t.Run("capacity recheck preserves unadmitted fairness", func(t *testing.T) {
 		fixture := newColdStableDelegateFixture(t, "")
@@ -350,6 +286,78 @@ func TestNotificationScheduling(t *testing.T) {
 // executor releases. The wake callback is the daemon adapter, not an executor.
 func TestNotificationAtExecutorRelease(t *testing.T) {
 	t.Parallel()
+	for _, released := range []bool{false, true} {
+		name := "concurrent publication before release lock"
+		if released {
+			name = "concurrent publication after release lock before dispatch"
+		}
+		t.Run(name, func(t *testing.T) {
+			a := &skillContinuationAdapter{}
+			s := observationSession(t, a, false)
+			wakes := make(chan struct{}, 8)
+			s.SetNotifyFunc(func() { wakes <- struct{}{} })
+			observationEnqueue(t, s, "boundary-a", "boundary-first-713a")
+			<-wakes
+			boundary, resume := make(chan struct{}), make(chan struct{})
+			var resumeOnce sync.Once
+			unblock := func() { resumeOnce.Do(func() { close(resume) }) }
+			t.Cleanup(unblock)
+			updateSessionTestConfig(s, func(cfg *testConfig) {
+				cfg.notificationExecutionRelease = func(idle bool) {
+					if idle == released {
+						close(boundary)
+						<-resume
+					}
+				}
+			})
+			a.steps = []func(llm.Request) (llm.Response, error){
+				func(req llm.Request) (llm.Response, error) {
+					observationRequest(t, req, []string{"boundary-first-713a"}, []string{"boundary-next-82ac"})
+					return llm.Response{Message: llm.Assistant("boundary-first-response-813f")}, nil
+				},
+				func(req llm.Request) (llm.Response, error) {
+					observationRequest(t, req, []string{"boundary-next-82ac"}, nil)
+					return llm.Response{Message: llm.Assistant("boundary-next-response-719e")}, nil
+				},
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification)
+				done <- err
+			}()
+			select {
+			case <-boundary:
+			case <-time.After(5 * time.Second):
+				t.Fatal("executor did not reach the release lock boundary")
+			}
+			// The old input is blocked at release while another goroutine's append
+			// publishes through the real common readiness path.
+			observationEnqueue(t, s, "boundary-b", "boundary-next-82ac")
+			assertNotificationPending(t, s, []string{"boundary-b"})
+			if !released && len(wakes) != 0 {
+				t.Fatal("publication bypassed the still-running executor")
+			}
+			if released && len(wakes) != 1 {
+				t.Fatal("idle publication did not claim the handoff wake")
+			}
+			unblock()
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			if len(wakes) != 1 {
+				t.Fatalf("publication and release produced %d wakes, want one", len(wakes))
+			}
+			<-wakes
+			updateSessionTestConfig(s, func(cfg *testConfig) { cfg.notificationExecutionRelease = nil })
+			if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+				t.Fatal(err)
+			}
+			assertNotificationPending(t, s, []string{})
+			if got := len(a.Requests()); got != 2 || len(wakes) != 0 {
+				t.Fatalf("provider requests=%d wakes=%d, want two requests and no redundant wake", got, len(wakes))
+			}
+		})
+	}
 	t.Run("storage recovery after release budget", func(t *testing.T) {
 		h := newStandDownHarness(t)
 		turnID, refusal := h.sess.mintRunningTurnID()
@@ -450,6 +458,60 @@ func TestNotificationAtExecutorRelease(t *testing.T) {
 	}
 }
 
+func TestNotificationExecutionReleaseOnUnwind(t *testing.T) {
+	for _, cause := range []string{"error", "cancellation", "panic"} {
+		t.Run(cause, func(t *testing.T) {
+			a := &skillContinuationAdapter{}
+			s := observationSession(t, a, false)
+			wakes := make(chan struct{}, 8)
+			s.SetNotifyFunc(func() { wakes <- struct{}{} })
+			observationEnqueue(t, s, "unwind-pending", "unwind-body-29ae")
+			<-wakes
+			failure := errors.New("controlled pre-incorporation failure")
+			if cause == "cancellation" {
+				failure = context.Canceled
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			updateSessionTestConfig(s, func(cfg *testConfig) {
+				cfg.failTurnBeforeRecording = func() error {
+					if !s.notificationExecutionState().running {
+						t.Error("input did not publish its running lifetime")
+					}
+					if cause == "panic" {
+						panic(failure)
+					}
+					if cause == "cancellation" {
+						cancel()
+						return ctx.Err()
+					}
+					return failure
+				}
+			})
+			var recovered any
+			var err error
+			func() {
+				defer func() { recovered = recover() }()
+				_, err = s.ProcessInputKind(ctx, "", nil, EntryNotification)
+			}()
+			if cause == "panic" {
+				if recovered != failure {
+					t.Fatalf("recovered=%v, want controlled panic", recovered)
+				}
+			} else if !errors.Is(err, failure) || recovered != nil {
+				t.Fatalf("error=%v panic=%v, want controlled error", err, recovered)
+			}
+			if s.notificationExecutionState().running {
+				t.Fatal("input unwind retained common execution suppression")
+			}
+			assertNotificationPending(t, s, []string{"unwind-pending"})
+			if got := len(a.Requests()); got != 0 || len(wakes) != 1 {
+				t.Fatalf("unwind provider requests=%d wakes=%d, want no request and one retained-work hint", got, len(wakes))
+			}
+		})
+	}
+}
+
 // notificationTestPending reads durable receiver membership, not wake state.
 // Fixture identities and paths are immutable for the lifetime of these tests.
 func notificationTestPending(t testing.TB, s *Session) map[string]struct{} {
@@ -465,8 +527,8 @@ func notificationTestPending(t testing.TB, s *Session) map[string]struct{} {
 	return ids
 }
 
-// These projection readers preserve historical controller-record assertions.
-// They never wake or execute a receiver, and are not readiness inputs.
+// This passive projection reader preserves controller-record assertions.
+// It neither selects nor mutates receivers, and is not a readiness input.
 func (c *delegateTreeController) hasPendingDelegateAttention() bool {
 	if c == nil {
 		return false
@@ -483,49 +545,4 @@ func (c *delegateTreeController) hasPendingDelegateAttention() bool {
 		}
 	}
 	return false
-}
-
-func notificationTestProjectedReceiver(c *delegateTreeController) (string, string, bool) {
-	if c == nil {
-		return "", "", false
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	var selected, attention string
-	var turn uint64
-	for id, state := range c.attention {
-		if len(state.wakeIDs) == 0 || state.parked || !c.delegateAttentionWakeEligibleLocked(id) {
-			continue
-		}
-		ready, _ := c.attentionWakeAncestorGateLocked(id)
-		if !ready {
-			continue
-		}
-		if selected == "" || state.driveTurn < turn || state.driveTurn == turn && id < selected {
-			selected, turn, attention = id, state.driveTurn, ""
-			for candidate := range state.wakeIDs {
-				if attention == "" || candidate < attention {
-					attention = candidate
-				}
-			}
-		}
-	}
-	return selected, attention, selected != ""
-}
-func notificationTestTakeProjectedReceiver(c *delegateTreeController) (string, string, bool) {
-	id, attention, ok := notificationTestProjectedReceiver(c)
-	if ok {
-		c.mu.Lock()
-		c.attentionDriveSeq++
-		c.attentionStateLocked(id).driveTurn = c.attentionDriveSeq
-		c.holdAttentionRestoreLocked(id)
-		c.mu.Unlock()
-	}
-	return id, attention, ok
-}
-func notificationTestProjectionRunnable(c *delegateTreeController) bool {
-	if _, _, ok := notificationTestProjectedReceiver(c); ok {
-		return true
-	}
-	return c != nil && len(c.permanentlyFencedDelegateAttention()) != 0
 }

@@ -60,9 +60,6 @@ func TestDelegateAttentionWake_ClosedAncestorRefusesReserveAndNextIdle(t *testin
 	if _, err := c.ReserveAttention(grandchild, grandchildAttentionID); !errors.Is(err, errDelegateTargetBusy) {
 		t.Fatalf("ReserveAttention under closed grandparent = %v, want target_busy", err)
 	}
-	if delegateID, attentionID, pending := notificationTestProjectedReceiver(c); pending {
-		t.Fatalf("nextIdleDelegateAttention offered %s/%s under a closed ancestor", delegateID, attentionID)
-	}
 	c.mu.Lock()
 	childGeneration := c.durable["dlg_child"].Generation
 	grandchildGeneration := c.durable["dlg_grandchild"].Generation
@@ -172,9 +169,6 @@ func TestDelegateAttentionWake_StoppingAncestorParksAttentionForLaterDelivery(t 
 	if _, err := c.ReserveAttention(child, attentionID); !errors.Is(err, errDelegateTargetBusy) {
 		t.Fatalf("ReserveAttention during ancestor stop = %v, want target_busy", err)
 	}
-	if delegateID, _, pending := notificationTestProjectedReceiver(c); pending {
-		t.Fatalf("nextIdleDelegateAttention offered %s during ancestor stop", delegateID)
-	}
 	c.mu.Lock()
 	_, parked := attentionWakeIDsOf(c, "dlg_child")[attentionID]
 	c.mu.Unlock()
@@ -196,10 +190,6 @@ func TestDelegateAttentionWake_StoppingAncestorParksAttentionForLaterDelivery(t 
 		t.Fatalf("append subtree stop completion: %v", err)
 	}
 
-	delegateID, gotAttentionID, pending := notificationTestProjectedReceiver(c)
-	if !pending || delegateID != "dlg_child" || gotAttentionID != attentionID {
-		t.Fatalf("post-stop attention = delegate:%q attention:%q pending:%t, want parked attention deliverable", delegateID, gotAttentionID, pending)
-	}
 	reservation, err := c.ReserveAttention(child, attentionID)
 	if err != nil {
 		t.Fatalf("ReserveAttention after ancestor resumed: %v", err)
@@ -404,9 +394,6 @@ func TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce(t *tes
 	if !root.hasPendingNotifications() {
 		t.Fatal("root escalation notification was not armed for the root model")
 	}
-	if delegateID, _, pending := notificationTestProjectedReceiver(root.delegateController); pending {
-		t.Fatalf("nextIdleDelegateAttention still offers %s after escalation", delegateID)
-	}
 	root.delegateController.mu.Lock()
 	generation := root.delegateController.durable[grandchildDelegateID].Generation
 	root.delegateController.mu.Unlock()
@@ -487,9 +474,6 @@ func TestStableDelegateAttention_ColdRestoreEscalatesFencedDescendantOnce(t *tes
 	}
 	if content != "attention" {
 		t.Fatalf("cold transferred content = %q, want the original message", content)
-	}
-	if delegateID, _, pending := notificationTestProjectedReceiver(fresh.delegateController); pending {
-		t.Fatalf("cold restore armed fenced attention for %s", delegateID)
 	}
 	if fresh.delegateController.hasPendingDelegateAttention() {
 		t.Fatal("cold restore left fenced attention pending, feeding an unbounded retry loop")
@@ -621,9 +605,6 @@ func TestDelegateAttentionWake_AncestorStopFenceParksUncoveredChild(t *testing.T
 	if _, err := c.ReserveAttention(child, attentionID); !errors.Is(err, errDelegateTargetBusy) {
 		t.Fatalf("ReserveAttention under stopping ancestor = %v, want target_busy", err)
 	}
-	if delegateID, _, pending := notificationTestProjectedReceiver(c); pending {
-		t.Fatalf("nextIdleDelegateAttention offered %s under a stopping ancestor", delegateID)
-	}
 	if plans := c.permanentlyFencedDelegateAttention(); len(plans) != 0 {
 		t.Fatalf("stopping ancestor classified as permanent: %#v", plans)
 	}
@@ -637,10 +618,6 @@ func TestDelegateAttentionWake_AncestorStopFenceParksUncoveredChild(t *testing.T
 	c.mu.Unlock()
 	if err != nil {
 		t.Fatalf("append subtree stop completion: %v", err)
-	}
-	delegateID, gotAttentionID, pending := notificationTestProjectedReceiver(c)
-	if !pending || delegateID != "dlg_child" || gotAttentionID != attentionID {
-		t.Fatalf("post-stop attention = delegate:%q attention:%q pending:%t, want the parked wake deliverable", delegateID, gotAttentionID, pending)
 	}
 	reservation, err := c.ReserveAttention(child, attentionID)
 	if err != nil {

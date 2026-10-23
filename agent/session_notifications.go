@@ -15,14 +15,17 @@ import (
 type notificationSchedule struct {
 	version          uint64
 	hinted           bool
+	running          bool // outer-input suppression, not admission authority
 	paused           bool
 	retry            notificationRetry
 	admissionBlocked bool
+	nameBlocked      bool
 	releaseTurnID    string
 }
 
-// notificationExecutionState snapshots receiver execution ownership, not
-// producer membership. Durable pending IDs remain in the transcript fold.
+// notificationExecutionState snapshots execution suppression and recovery,
+// not admission authority or producer membership. Host/lease admission remains
+// authoritative, and durable pending IDs remain in the transcript fold.
 type notificationExecutionState struct {
 	version    uint64
 	held       bool
@@ -34,8 +37,8 @@ func (s *Session) notificationExecutionState() notificationExecutionState {
 	s.mu.Lock()
 	state := notificationExecutionState{
 		version:    s.notificationSchedule.version,
-		held:       s.closingOrClosedLocked() || len(s.askPending) != 0 || s.notificationSchedule.paused,
-		running:    s.goalInTurn,
+		held:       s.closingOrClosedLocked() || len(s.askPending) != 0 || s.notificationSchedule.paused || s.notificationSchedule.nameBlocked,
+		running:    s.notificationSchedule.running,
 		recovering: s.notificationSchedule.retry.active || s.notificationSchedule.releaseTurnID != "",
 	}
 	s.mu.Unlock()
@@ -124,7 +127,7 @@ func (s *Session) dispatchNotificationWake() error {
 			continue
 		}
 		f := s.notifyFunc
-		wake := f != nil && !s.notificationSchedule.hinted && !s.goalInTurn && !s.closingOrClosedLocked() && len(s.askPending) == 0
+		wake := f != nil && !s.notificationSchedule.hinted && !s.notificationSchedule.running && !s.closingOrClosedLocked() && len(s.askPending) == 0
 		if wake {
 			s.notificationSchedule.hinted = true
 		}
@@ -468,7 +471,9 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 	if hook := root.cfg.testOnly.afterDelegateAttentionRestore; hook != nil {
 		hook(id, sub)
 	}
-	return sub.sess.requestNotificationWake()
+	// Callback installation can refuse before AttachIdleRuntime completes.
+	// Attachment releases that existing admission hold, as on the resident path.
+	return sub.sess.releaseNotificationAdmission()
 }
 
 func (c *delegateTreeController) scheduleSessionWakeRetry(sessionID string) {

@@ -162,6 +162,10 @@ func (s *Session) clearStoreUnhealthyWarning() {
 // a full core.
 func (s *Session) scheduleRunningTurnNameRetry(ceiling time.Duration) {
 	s.turnNameRetryMu.Lock()
+	s.mu.Lock()
+	s.notificationSchedule.nameBlocked = true
+	s.notificationSchedule.version++
+	s.mu.Unlock()
 	if s.turnNameRetry.active {
 		s.turnNameRetryMu.Unlock()
 		return
@@ -182,19 +186,27 @@ func (s *Session) scheduleRunningTurnNameRetry(ceiling time.Duration) {
 		}
 		s.turnNameRetry.active = false
 		s.turnNameRetry.delay = min(delay*2, ceiling)
+		s.mu.Lock()
+		s.notificationSchedule.nameBlocked = false
+		s.notificationSchedule.version++
+		s.mu.Unlock()
 		s.turnNameRetryMu.Unlock()
 		s.notify()
 	})
 }
 
 // resetRunningTurnNameRetry drops the backoff and cancels any armed retry once
-// a wake has been named. Bumping the generation is what stops an already-armed
+// an input is admitted. Bumping the generation stops an already-armed
 // timer firing a wake nothing is waiting for.
 func (s *Session) resetRunningTurnNameRetry() {
 	s.turnNameRetryMu.Lock()
 	s.turnNameRetry.generation++
 	s.turnNameRetry.active = false
 	s.turnNameRetry.delay = jobNotificationRetryInitialDelay
+	s.mu.Lock()
+	s.notificationSchedule.nameBlocked = false
+	s.notificationSchedule.version++
+	s.mu.Unlock()
 	s.turnNameRetryMu.Unlock()
 }
 

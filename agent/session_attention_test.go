@@ -2265,27 +2265,22 @@ func TestDelegateAttention_PostAckArmReadFailureRetriesExactID(t *testing.T) {
 }
 
 func TestDelegateAttention_ColdPostAckReadFailureRetriesExactID(t *testing.T) {
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerIdle(t, c, "dlg_target", "")
-	const attentionID = "watch:cold-post-ack:1"
-	path := transcriptPath(c.stateDir, "child-dlg_target")
-	writeDelegateAttentionTranscript(t, path, "child-dlg_target", attentionID)
-
+	fixture := newColdStableDelegateFixture(t, "")
 	clock := agenttest.NewFakeClock()
-	root := &Session{
-		id:                     "root-session",
-		stateDir:               c.stateDir,
-		state:                  SessionIdle,
-		clock:                  clock,
-		delegateController:     c,
-		delegateRootSessionID:  "root-session",
-		ownsDelegateController: true,
+	reached := make(chan llm.Request, 1)
+	fixture.adapter.steps = []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+		reached <- req
+		return finalResponse("cold read recovery handled")
+	}}
+	root := restoreSupervisionRoot(t, fixture, clock)
+	c := root.delegateController
+	const attentionID = "watch:cold-post-ack:1"
+	const body = "cold-post-ack-body-13ae"
+	path := transcriptPath(c.stateDir, fixture.childID)
+	if _, err := appendColdDelegateAttentionMessageDurablyWithOpen(path, fixture.childID, attentionID, llm.User(body), clock.Now(), c.attentionOpen); err != nil {
+		t.Fatal(err)
 	}
-	c.rootRuntime = root
-	wakes := make(chan struct{}, 1)
-	root.SetNotifyFunc(func() { wakes <- struct{}{} })
 	retryTimersBefore := clock.BlockedCount()
-
 	backup := path + ".readable"
 	if err := os.Rename(path, backup); err != nil {
 		t.Fatalf("hide cold attention transcript: %v", err)
@@ -2294,7 +2289,7 @@ func TestDelegateAttention_ColdPostAckReadFailureRetriesExactID(t *testing.T) {
 		_ = os.Rename(backup, path)
 		t.Fatalf("install cold attention read fault: %v", err)
 	}
-	err := c.armColdDelegateAttention("dlg_target", attentionID)
+	err := c.armColdDelegateAttention(fixture.delegateID, attentionID)
 	if err == nil {
 		t.Fatal("cold post-ack attention fold unexpectedly succeeded")
 	}
@@ -2307,16 +2302,35 @@ func TestDelegateAttention_ColdPostAckReadFailureRetriesExactID(t *testing.T) {
 	if got := clock.BlockedCount(); got != retryTimersBefore {
 		t.Fatalf("cold fold failure created a second arm mirror timer: got %d, want baseline %d", got, retryTimersBefore)
 	}
-	if root.sessionWorkPending() || len(attentionWakeIDsOf(c, "dlg_target")) != 0 {
-		t.Fatalf("failed cold fold published unverified attention: work=%t unresolved=%#v", root.sessionWorkPending(), attentionWakeIDsOf(c, "dlg_target"))
+	c.mu.Lock()
+	unverified := len(attentionWakeIDsOf(c, fixture.delegateID))
+	c.mu.Unlock()
+	if root.sessionWorkPending() || unverified != 0 || len(fixture.adapter.Requests()) != 0 {
+		t.Fatalf("failed cold fold published unverified work: root=%t unresolved=%d requests=%d", root.sessionWorkPending(), unverified, len(fixture.adapter.Requests()))
 	}
-	if err := c.armColdDelegateAttention("dlg_target", attentionID); err != nil {
+	if err := c.armColdDelegateAttention(fixture.delegateID, attentionID); err != nil {
 		t.Fatalf("caller retry cold attention: %v", err)
 	}
-	<-wakes
-	delegateID, gotAttentionID, pending := notificationTestProjectedReceiver(c)
-	if !pending || delegateID != "dlg_target" || gotAttentionID != attentionID {
-		t.Fatalf("retried cold attention = delegate:%q attention:%q pending:%t", delegateID, gotAttentionID, pending)
+	select {
+	case req := <-reached:
+		observationRequest(t, req, []string{body}, nil)
+	case <-time.After(5 * time.Second):
+		c.mu.Lock()
+		generation := c.durable[fixture.delegateID].Generation
+		receiver := c.live[fixture.delegateID].runtime
+		c.mu.Unlock()
+		receiver.mu.Lock()
+		schedule := receiver.notificationSchedule
+		receiver.mu.Unlock()
+		t.Fatalf("caller retry did not reach the exact cold receiver's provider: generation=%d schedule=%+v", generation, schedule)
+	}
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	fold, err := readDelegateAttentionFold(path, fixture.childID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, observed := fold.observed[attentionID]; !observed || len(fold.pendingIDs()) != 0 {
+		t.Fatal("caller retry did not successfully observe the exact durable notification")
 	}
 }
 

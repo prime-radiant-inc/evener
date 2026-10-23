@@ -200,23 +200,30 @@ func TestStableSupervisionFailureSnapshotCapturesArmRetryIDs(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("warm result") },
-		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("no action")} },
+		func(req llm.Request) llm.Response {
+			observationRequest(t, req, []string{"arm-retry-sentinel-attention:diagnostic-z", "arm-retry-sentinel-attention:diagnostic-a"}, nil)
+			return llm.Response{Message: llm.Assistant("no action")}
+		},
 	}
 	clock := agenttest.NewFakeClockAt(time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC))
 	root := restoreSupervisionRoot(t, fixture, clock)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
+	sub.sess.mu.Lock()
+	notify := sub.sess.notifyFunc
+	sub.sess.mu.Unlock()
+	sub.sess.SetNotifyFunc(nil)
 	if !sub.trySetDisposeGate() {
 		t.Fatal("gate quiescent child during arm retry")
 	}
 	defer sub.clearDisposeGate()
 	for _, id := range []string{"attention:diagnostic-z", "attention:diagnostic-a"} {
-		if appended, err := sub.sess.appendDelegateNotificationDurably(id, "arm-retry-sentinel"); err != nil || !appended {
-			t.Fatalf("append retry attention %q = %t, %v", id, appended, err)
+		if err := sub.sess.enqueueNotification(notification{ID: id, Message: llm.User("arm-retry-sentinel-" + id)}); err != nil {
+			t.Fatalf("enqueue retry notification %q: %v", id, err)
 		}
 	}
 	// Make the real filesystem read fail without changing or truncating the
-	// writer's bytes. The fake clock keeps both admitted retries observable.
+	// writer's bytes. One receiver-scoped retry owns both durable messages.
 	path := transcriptPath(root.stateDir, fixture.childID)
 	backup := path + ".diagnostic-arm-backup"
 	if err := os.Rename(path, backup); err != nil {
@@ -244,27 +251,28 @@ func TestStableSupervisionFailureSnapshotCapturesArmRetryIDs(t *testing.T) {
 			restore()
 		}
 	})
-	for _, id := range []string{"attention:diagnostic-z", "attention:diagnostic-a"} {
-		if err := sub.sess.requestNotificationWake(); err == nil {
-			t.Fatalf("arm %q against directory transcript succeeded", id)
-		}
+	if err := sub.sess.requestNotificationWake(); err == nil {
+		t.Fatal("receiver fold read against directory transcript succeeded")
+	}
+	if err := sub.sess.requestNotificationWake(); err != nil {
+		t.Fatalf("coalesced receiver retry repeated the failed fold read: %v", err)
 	}
 	restore()
 	restored = true
 	snapshot := uncontendedStableSupervisionSnapshot(t, root, sub, fixture.adapter)
-	if !reflect.DeepEqual(snapshot["arm_retry_ids"], []string{"attention:diagnostic-a", "attention:diagnostic-z"}) ||
+	if snapshot["notification_retry"] != true ||
 		!reflect.DeepEqual(snapshot["pending_attention_ids"], []string{"attention:diagnostic-z", "attention:diagnostic-a"}) ||
-		!reflect.DeepEqual(snapshot["blocking_predicates"], []string{"arm_retry_ids", "pending_attention_ids"}) {
+		!reflect.DeepEqual(snapshot["blocking_predicates"], []string{"notification_retry", "pending_attention_ids"}) {
 		t.Fatalf("populated arm retry diagnostics = %#v", snapshot)
 	}
 	clock.Advance(jobNotificationRetryInitialDelay)
 	clock.Drain()
 	snapshot = uncontendedStableSupervisionSnapshot(t, root, sub, fixture.adapter)
-	if !reflect.DeepEqual(snapshot["arm_retry_ids"], []string{}) || snapshot["needs_attention"] != true || snapshot["generation"] != uint64(1) {
+	if snapshot["notification_retry"] != false || snapshot["needs_attention"] != true || snapshot["generation"] != uint64(1) {
 		t.Fatalf("successful retry diagnostics = %#v", snapshot)
 	}
 	sub.clearDisposeGate()
-	sub.sess.notify()
+	sub.sess.SetNotifyFunc(notify)
 	waitForStableSupervisionRun(t, root, fixture.childID, fixture.adapter)
 }
 
@@ -478,12 +486,12 @@ func stableSupervisionFailureSnapshot(root *Session, sub *subagent, adapter *fak
 	snapshot["goroutine_stacks"] = strings.Join(stacks, "\n\n")
 	snapshot["goroutine_stacks_truncated"] = n == len(buf)
 	blockers := []string{}
-	for _, key := range []string{"running", "driving", "subagent_finalizing", "current_run_open", "controller_finalizing"} {
+	for _, key := range []string{"running", "driving", "subagent_finalizing", "current_run_open", "controller_finalizing", "notification_retry"} {
 		if snapshot[key] == true {
 			blockers = append(blockers, key)
 		}
 	}
-	for _, key := range []string{"arm_retry_ids", "pending_attention_ids"} {
+	for _, key := range []string{"pending_attention_ids"} {
 		if ids, ok := snapshot[key].([]string); ok && len(ids) != 0 {
 			blockers = append(blockers, key)
 		}

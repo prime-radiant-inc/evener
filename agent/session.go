@@ -1061,10 +1061,9 @@ type Session struct {
 	// turn; promoteStagedAttentionCoverage clears it. Guarded by attentionMu.
 	attentionAcceptedID string
 
-	// turnNameRetryMu guards turnNameRetry alone. The paced wake it schedules
-	// runs while the session goroutine is mid-stand-down, so it must not queue
-	// behind s.mu -- and notify() takes s.mu, which this must never be held
-	// across.
+	// turnNameRetryMu guards naming retry generations and the warning latch.
+	// Publishing or clearing their common readiness deferral takes s.mu inside
+	// this lock. No I/O or wake callback runs under either lock.
 	turnNameRetryMu sync.Mutex
 	// turnNameRetry paces the re-wake for a notification that stood down
 	// unnamed. See scheduleRunningTurnNameRetry (session_active_turn.go).
@@ -1072,9 +1071,8 @@ type Session struct {
 	// turnNameStoreUnhealthy latches the client-mutation-store failure warning
 	// to once per unhealthy episode. See warnStoreUnhealthyOnce.
 	turnNameStoreUnhealthy bool
-	// releaseRetryMu guards runningTurnReleaseRetry alone, for the same reason
-	// turnNameRetryMu guards turnNameRetry: the re-attempt it schedules runs on
-	// the clock's goroutine and can reach notify(), which takes s.mu.
+	// releaseRetryMu guards runningTurnReleaseRetry alone. Its clock callback
+	// can reach notify(), so callbacks run outside this lock too.
 	//
 	// It is deliberately not turnNameRetryMu's state. Minting and releasing the
 	// name fail independently -- a release can be losing writes while nothing

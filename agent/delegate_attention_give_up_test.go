@@ -114,15 +114,30 @@ func TestUndeliverableDelegateAttentionParksUntilNewAttention(t *testing.T) {
 	if controller.hasPendingDelegateAttention() {
 		t.Fatal("a parked delegate still reads as pending attention, so the retry keeps spinning")
 	}
-	if delegateID, _, pending := notificationTestProjectedReceiver(controller); pending {
-		t.Fatalf("the drive still selects parked delegate %s", delegateID)
+	controller.mu.Lock()
+	parkedBefore := attentionParkedOf(controller, fenced.grandchildDelegateID)
+	failuresBefore := attentionRestoreFailuresOf(controller, fenced.grandchildDelegateID)
+	controller.mu.Unlock()
+	if !parkedBefore {
+		t.Fatal("failed receiver was not parked")
+	}
+	controller.recheckNotificationReceivers()
+	controller.mu.Lock()
+	failuresAfter := attentionRestoreFailuresOf(controller, fenced.grandchildDelegateID)
+	controller.mu.Unlock()
+	if failuresAfter != failuresBefore {
+		t.Fatal("production recheck retried the parked receiver")
 	}
 
 	if _, err := controller.openDelegateAttention(fenced.grandchildDelegateID, "delegate:fresh-attention"); err != nil {
 		t.Fatalf("open fresh attention: %v", err)
 	}
-	if delegateID, _, pending := notificationTestProjectedReceiver(controller); !pending || delegateID != fenced.grandchildDelegateID {
-		t.Fatalf("after fresh attention: selected %q pending=%t, want the unparked grandchild", delegateID, pending)
+	controller.mu.Lock()
+	parkedAfter := attentionParkedOf(controller, fenced.grandchildDelegateID)
+	_, retained := attentionWakeIDsOf(controller, fenced.grandchildDelegateID)["delegate:fresh-attention"]
+	controller.mu.Unlock()
+	if parkedAfter || !retained || !controller.hasPendingDelegateAttention() {
+		t.Fatalf("fresh attention: parked=%t retained=%t, want unparked pending identity", parkedAfter, retained)
 	}
 	root.Close()
 
@@ -448,19 +463,25 @@ func TestAParkedDelegateWithALiveRuntimeCanReserveItsAttention(t *testing.T) {
 
 // A parked delegate that nothing fences is not the cold-restore drive's
 // work, so it neither reads as runnable nor wakes the drive.
-func TestAParkedUnfencedDelegateIsNotRunnable(t *testing.T) {
+func TestParkingPreservesUnfencedDelegateAttention(t *testing.T) {
 	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
 	seedDelegateControllerIdle(t, c, "dlg_parked", "")
 	if !c.noteDelegateAttention("dlg_parked", "delegate:dlg_parked") {
 		t.Fatal("note attention")
 	}
-	if !notificationTestProjectionRunnable(c) {
-		t.Fatal("this test is not in the state it means to be: the unparked delegate is not runnable")
+	if !c.hasPendingDelegateAttention() {
+		t.Fatal("this test is not in the state it means to be: the unparked delegate is not pending")
 	}
 	c.parkDelegateAttention("dlg_parked")
-	if notificationTestProjectionRunnable(c) {
-		t.Fatal("a parked, unfenced delegate reads as runnable")
+	if c.hasPendingDelegateAttention() {
+		t.Fatal("a parked, unfenced delegate reads as pending")
+	}
+	c.mu.Lock()
+	_, retained := attentionWakeIDsOf(c, "dlg_parked")["delegate:dlg_parked"]
+	c.mu.Unlock()
+	if !retained {
+		t.Fatal("parking discarded the pending identity")
 	}
 }
 

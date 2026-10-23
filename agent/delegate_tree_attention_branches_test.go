@@ -435,24 +435,24 @@ func TestHasPendingDelegateAttentionEmptyIDs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// hasRunnableDelegateAttention
+// Passive pending record projection
 // ---------------------------------------------------------------------------
 
-func TestHasRunnableDelegateAttentionNil(t *testing.T) {
+func TestPendingDelegateAttentionProjectionNil(t *testing.T) {
 	t.Parallel()
 	var c *delegateTreeController
-	if notificationTestProjectionRunnable(c) {
+	if c.hasPendingDelegateAttention() {
 		t.Fatalf("expected false for nil controller")
 	}
 }
 
-func TestHasRunnableDelegateAttentionEmpty(t *testing.T) {
+func TestPendingDelegateAttentionProjectionEmpty(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
 		attention: map[string]*delegateAttentionState{},
 		durable:   map[string]*delegatestore.Aggregate{},
 	}
-	if notificationTestProjectionRunnable(c) {
+	if c.hasPendingDelegateAttention() {
 		t.Fatalf("expected false for empty")
 	}
 }
@@ -474,27 +474,25 @@ func TestRetryDelegateAttentionLaterNilRoot(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// nextIdleDelegateAttention
+// Exact receiver entry rejects missing targets
 // ---------------------------------------------------------------------------
 
-func TestNextIdleDelegateAttentionNil(t *testing.T) {
+func TestRequestSessionWakeNilController(t *testing.T) {
 	t.Parallel()
 	var c *delegateTreeController
-	_, _, ok := notificationTestProjectedReceiver(c)
-	if ok {
-		t.Fatalf("expected false for nil controller")
+	if err := c.requestSessionWake("missing"); !errors.Is(err, errDelegateDeliveryReceiverUnavailable) {
+		t.Fatalf("nil controller wake = %v, want unavailable", err)
 	}
 }
 
-func TestNextIdleDelegateAttentionEmpty(t *testing.T) {
+func TestRequestSessionWakeUnknownReceiver(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
 		attention: map[string]*delegateAttentionState{},
 		durable:   map[string]*delegatestore.Aggregate{},
 	}
-	_, _, ok := notificationTestProjectedReceiver(c)
-	if ok {
-		t.Fatalf("expected false for empty")
+	if err := c.requestSessionWake("missing"); !errors.Is(err, errDelegateDeliveryReceiverUnavailable) {
+		t.Fatalf("unknown receiver wake = %v, want unavailable", err)
 	}
 }
 

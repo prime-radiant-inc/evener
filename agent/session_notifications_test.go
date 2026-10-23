@@ -257,8 +257,12 @@ func TestNotificationColdSourceAckFailureRetainsReceiverRecovery(t *testing.T) {
 	if err := c.store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	wakes := 0
-	root.SetNotifyFunc(func() { wakes++ })
+	// This storage/lease fixture has no executable root. Keep restoration
+	// detached while the shared source journal is closed, then attach the
+	// receiver below to check actual ReserveAttention admission independently.
+	c.mu.Lock()
+	c.rootRuntime = nil
+	c.mu.Unlock()
 	if _, err := deliverColdDelegatePacket(first); err == nil {
 		t.Fatal("closed source journal accepted acknowledgment")
 	}
@@ -274,11 +278,11 @@ func TestNotificationColdSourceAckFailureRetainsReceiverRecovery(t *testing.T) {
 	if len(entries) != 1 || entries[0].Turn.AttentionID != attentionID {
 		t.Fatalf("cold accepted records = %+v", entries)
 	}
-	if wakes == 0 {
-		t.Error("cold receiver was not woken after durable acceptance and source-ack failure")
-	}
-	if delegateID, selectedID, ok := notificationTestProjectedReceiver(c); !ok || delegateID != "dlg_owner" || selectedID != attentionID {
-		t.Errorf("cold recovery selection = %q, %q, %v", delegateID, selectedID, ok)
+	c.mu.Lock()
+	_, retained := attentionWakeIDsOf(c, "dlg_owner")[attentionID]
+	c.mu.Unlock()
+	if !retained {
+		t.Error("cold recovery lost the durably accepted pending identity")
 	}
 	coldRetry := c.ReplayDeliveries()
 	if len(coldRetry) != 1 || coldRetry[0].deliveryID != first.deliveryID {
@@ -298,7 +302,11 @@ func TestNotificationColdSourceAckFailureRetainsReceiverRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = w.Close() })
-	owner := &Session{id: sessionID, stateDir: c.stateDir, delegateController: c, owningDelegateID: "dlg_owner"}
+	owner := &Session{id: sessionID, stateDir: c.stateDir, delegateController: c, owningDelegateID: "dlg_owner",
+		// Storage/lease assertions below hold a reservation across source retries.
+		// There is deliberately no executor to consume or wait on that reservation.
+		notificationSchedule: notificationSchedule{paused: true},
+	}
 	owner.attachTranscript(w)
 	if err := c.AttachIdleRuntime("dlg_owner", owner); err != nil {
 		t.Fatal(err)

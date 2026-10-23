@@ -5,11 +5,13 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 // standDownHarness is a served session on a fake clock with a notify counter,
@@ -41,7 +43,7 @@ type standDownHarness struct {
 	warnings []string
 }
 
-func newStandDownHarness(t *testing.T) *standDownHarness {
+func newStandDownHarness(t *testing.T, opts ...sessionOpt) *standDownHarness {
 	t.Helper()
 	h := &standDownHarness{
 		clock:   agenttest.NewFakeClock(),
@@ -49,7 +51,7 @@ func newStandDownHarness(t *testing.T) *standDownHarness {
 		drained: make(chan struct{}, 1),
 		warned:  make(chan string, 64),
 	}
-	h.sess = newTestSessionForEnvctx(t)
+	h.sess = newTestSessionForEnvctx(t, opts...)
 	h.sess.clock = h.clock
 	// A real drain, not a flag: ConsumeEventsLossless is the only writer of
 	// authoritativeConsumer, and an unserved session never stands down at all.
@@ -173,6 +175,94 @@ func (h *standDownHarness) standDown(t *testing.T) {
 	t.Helper()
 	if _, err := h.sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+}
+
+func TestNotificationStandDownPreservesCanonicalWork(t *testing.T) {
+	for _, cause := range []string{"store", "owned", "fenced", "ownerless"} {
+		t.Run(cause, func(t *testing.T) {
+			var calls atomic.Int32
+			h := newStandDownHarness(t, withSteps(func(req llm.Request) llm.Response {
+				calls.Add(1)
+				observationRequest(t, req, []string{"refused-payload-73a1"}, nil)
+				return finalResponse("repaired-response-19b7")
+			}))
+			switch cause {
+			case "store":
+				h.failWrites(t)
+			case "owned":
+				h.seedOwnedRunningTurn(t)
+			case "fenced", "ownerless":
+				if err := h.sess.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+					if cause == "fenced" {
+						snapshot.InterruptFence = &clientMutationInterruptFence{ClientMutationID: "cm-fence"}
+					} else {
+						snapshot.NextTurnSequence++
+						snapshot.ActiveTurnID = appwire.ClientMutationTurnID(snapshot.NextTurnSequence)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			observationEnqueue(t, h.sess, "refused-canonical-73a1", "refused-payload-73a1")
+			<-h.woken // The original accepted notification's wake, not a retry.
+			baseline := h.wakeCount()
+			timersBefore := h.clock.BlockedCount()
+			for range 3 {
+				h.standDown(t)
+			}
+			if got := h.wakeCount() - baseline; got != 0 {
+				t.Fatalf("canonical pending work immediately re-woke %d times after naming refusal, want zero", got)
+			}
+			assertNotificationPending(t, h.sess, []string{"refused-canonical-73a1"})
+			if calls.Load() != 0 {
+				t.Fatal("provider ran without acquiring the durable name")
+			}
+			wantTimers := timersBefore + 1
+			if cause == "ownerless" {
+				wantTimers = timersBefore
+			}
+			if got := h.clock.BlockedCount(); got != wantTimers {
+				t.Fatalf("retry timers = %d, want %d", got, wantTimers)
+			}
+			state := h.sess.notificationExecutionState()
+			if state.running || !state.held {
+				t.Fatalf("refusal release state: running=%t held=%t, want released but name-blocked", state.running, state.held)
+			}
+			h.sess.clientMutations.faults.BeforeEffectSnapshotRename = nil
+			if err := h.sess.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+				snapshot.ActiveTurnID = ""
+				snapshot.InterruptFence = nil
+				delete(snapshot.PendingExecutions, "cm-owner")
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			h.clock.Advance(jobNotificationRetryInitialDelay)
+			if cause == "ownerless" {
+				if got := h.wakeCount() - baseline; got != 0 {
+					t.Fatalf("unrelated ownerless name acquired an automatic wake: %d", got)
+				}
+			} else {
+				<-h.woken
+				if got := h.wakeCount() - baseline; got != 1 {
+					t.Fatalf("paced recovery wakes = %d, want one", got)
+				}
+			}
+			h.standDown(t)
+			if calls.Load() != 1 {
+				t.Fatalf("provider requests after repair = %d, want one", calls.Load())
+			}
+			assertNotificationPending(t, h.sess, []string{})
+			fold, err := h.sess.readDelegateAttentionFold(transcriptPath(h.sess.stateDir, h.sess.ID()), h.sess.ID())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, observed := fold.observed["refused-canonical-73a1"]; !observed {
+				t.Fatal("successful provider response did not record exact notification observation")
+			}
+		})
 	}
 }
 

@@ -753,13 +753,13 @@ func (c *delegateTreeController) armColdDelegateAttention(delegateID, attentionI
 	}
 	defer release()
 	armed, err := c.armColdDelegateAttentionOnce(delegateID, attentionID)
-	c.mu.Lock()
-	root := c.rootRuntime
-	c.mu.Unlock()
-	if err == nil && armed && root != nil {
-		root.notify()
+	if err != nil || !armed {
+		return err
 	}
-	return err
+	c.mu.Lock()
+	sessionID := c.durable[delegateID].Descriptor.ChildSessionID
+	c.mu.Unlock()
+	return c.requestSessionWake(sessionID)
 }
 
 func (c *delegateTreeController) armColdDelegateAttentionOnce(delegateID, attentionID string) (bool, error) {
