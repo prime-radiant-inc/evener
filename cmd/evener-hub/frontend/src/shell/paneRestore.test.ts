@@ -181,7 +181,7 @@ describe("boot-time registration lets a persisted layout with lazy panes restore
     expect(workspaceStore.getState().panes).toEqual([
       // slot is re-derived from the restored grid order (workspace.ts's
       // restoreLayout): the first panel is the top-left/main one.
-      { id: "p1", type: "session", params: { ref: "ref_a" }, slot: "main" },
+      { id: "p1", type: "session", params: { ref: "ref_a" }, slot: "main", composerSeatId: expect.any(String) },
       { id: "p2", type: "sessionTasks", params: { ref: "ref_a" }, slot: "secondary" },
       { id: "p4", type: "sessionDetails", params: { ref: "ref_a" }, slot: "secondary" },
       { id: "p5", type: "doc", params: { session: "ref_a", path: "notes.md", kind: "file" }, slot: "secondary" },
@@ -189,6 +189,12 @@ describe("boot-time registration lets a persisted layout with lazy panes restore
     ]);
     expect(fake.panels.map((pane) => pane.id)).not.toContain("p3");
     expect(workspaceStore.getState().focusedPaneId).toBe("p4");
+    const savedSeat = workspaceStore.getState().panes.find((pane) => pane.id === "p1")?.composerSeatId;
+    expect(typeof savedSeat).toBe("string");
+    const roundTripped = workspaceStore.getState().layoutJSON() as { composerSeats?: Record<string, string> };
+    expect(roundTripped.composerSeats).toEqual({ p1: savedSeat });
+    expect(workspaceStore.getState().restoreLayout(roundTripped)).toBe(true);
+    expect(workspaceStore.getState().panes.find((pane) => pane.id === "p1")?.composerSeatId).toBe(savedSeat);
     expect(
       workspaceStore
         .getState()
@@ -235,10 +241,25 @@ test("a saved session-ref transcript pane restores as the live conversation pane
 
   expect(ok).toBe(true);
   expect(workspaceStore.getState().panes).toEqual([
-    { id: "p1", type: "session", params: { ref: "ref_a" }, slot: "main" },
-    { id: "p6", type: "session", params: { ref: "ref_b" }, slot: "secondary" },
+    { id: "p1", type: "session", params: { ref: "ref_a" }, slot: "main", composerSeatId: expect.any(String) },
+    { id: "p6", type: "session", params: { ref: "ref_b" }, slot: "secondary", composerSeatId: expect.any(String) },
     { id: "p7", type: "transcript", params: { ref: "job:job-2", parentRef: "ref_a" }, slot: "secondary" },
   ]);
+  const seats = workspaceStore
+    .getState()
+    .panes.filter((pane) => pane.type === "session")
+    .map((pane) => pane.composerSeatId);
+  expect(seats.every((seat) => typeof seat === "string")).toBe(true);
+  expect(new Set(seats).size).toBe(seats.length);
+  const roundTripped = workspaceStore.getState().layoutJSON() as { composerSeats?: Record<string, string> };
+  expect(roundTripped.composerSeats).toEqual({ p1: seats[0], p6: seats[1] });
+  expect(workspaceStore.getState().restoreLayout(roundTripped)).toBe(true);
+  expect(
+    workspaceStore
+      .getState()
+      .panes.filter((pane) => pane.type === "session")
+      .map((pane) => pane.composerSeatId),
+  ).toEqual(seats);
 });
 
 test("a layout holding both a session pane and a legacy transcript pane for one conversation restores it once", () => {
