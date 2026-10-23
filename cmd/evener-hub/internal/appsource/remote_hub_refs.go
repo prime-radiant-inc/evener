@@ -394,6 +394,9 @@ func (s *RemoteHubSource) fromRemoteThread(thread appwire.Thread) (appwire.Threa
 		thread.Evener.PendingEscalations[index].Ref = s.fromRemoteNestedRef(thread.Evener.PendingEscalations[index].Ref)
 	}
 	s.fromRemoteDiagnostics(thread.Evener.Diagnostics)
+	for i := range thread.Turns {
+		s.translateTurnActors(&thread.Turns[i])
+	}
 	// The remote hub stamps its own origin-relative image URLs into the thread;
 	// the shared visitor moves every one of them onto the host-qualified
 	// controller route the browser fetches them from.
@@ -415,6 +418,52 @@ func (s *RemoteHubSource) fromRemoteNestedRef(raw string) string {
 		return raw
 	}
 	return appwire.Ref{SourceID: s.id, ThreadID: ref.ThreadID}.String()
+}
+
+func (s *RemoteHubSource) translateItemActor(item *appwire.ThreadItem) {
+	if item.Actor != nil && item.Actor.Kind == "manager" {
+		actor := *item.Actor
+		actor.ManagerRef = s.fromRemoteNestedRef(actor.ManagerRef)
+		item.Actor = &actor
+	}
+}
+
+func (s *RemoteHubSource) translateTurnActors(turn *appwire.Turn) {
+	for i := range turn.Items {
+		s.translateItemActor(&turn.Items[i])
+	}
+}
+
+// Visit only the typed item actor, preserving unknown fields and payload strings.
+func (s *RemoteHubSource) translateRawItemActor(raw json.RawMessage) json.RawMessage {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || fields == nil {
+		return raw
+	}
+	var actor map[string]json.RawMessage
+	if json.Unmarshal(fields["actor"], &actor) != nil || actor == nil {
+		return raw
+	}
+	var kind, ref string
+	if json.Unmarshal(actor["kind"], &kind) != nil || kind != "manager" || json.Unmarshal(actor["managerRef"], &ref) != nil {
+		return raw
+	}
+	actor["managerRef"], _ = json.Marshal(s.fromRemoteNestedRef(ref))
+	fields["actor"], _ = json.Marshal(actor)
+	encoded, _ := json.Marshal(fields)
+	return encoded
+}
+
+func (s *RemoteHubSource) translateRawTurnActors(raw json.RawMessage) json.RawMessage {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || fields == nil {
+		return raw
+	}
+	if items, ok := fields["items"]; ok {
+		fields["items"] = s.rewriteRawArray(items, s.translateRawItemActor)
+	}
+	encoded, _ := json.Marshal(fields)
+	return encoded
 }
 
 // translateThreadRaw rewrites a thread object's ref-bearing fields at the JSON
@@ -443,6 +492,9 @@ func (s *RemoteHubSource) translateThreadRaw(raw json.RawMessage) (json.RawMessa
 		return nil, err
 	}
 	fields["source"] = source
+	if turns, ok := fields["turns"]; ok {
+		fields["turns"] = s.rewriteRawArray(turns, s.translateRawTurnActors)
+	}
 	if evener, ok := fields["evener"]; ok && len(evener) > 0 {
 		var evenerFields map[string]json.RawMessage
 		if err := json.Unmarshal(evener, &evenerFields); err != nil {
@@ -557,6 +609,7 @@ func (s *RemoteHubSource) translateOut(out any) error {
 			return err
 		}
 		response.Thread = thread
+		s.translateTurnActors(&response.Turn)
 		rewriteTurnImageURLs(s.id, &response.Turn)
 	case *appwire.ThreadResumeResponse:
 		thread, err := s.fromRemoteThread(response.Thread)
@@ -583,16 +636,20 @@ func (s *RemoteHubSource) translateOut(out any) error {
 		response.Ref = ref
 	case *appwire.ThreadTurnsListResponse:
 		for index := range response.Data {
+			s.translateTurnActors(&response.Data[index])
 			rewriteTurnImageURLs(s.id, &response.Data[index])
 		}
 	case *appwire.ThreadTurnItemsListResponse:
 		for index := range response.Data {
+			s.translateItemActor(&response.Data[index])
 			rewriteItemImageURLs(s.id, &response.Data[index])
 		}
 	case *appwire.TurnStartResponse:
+		s.translateTurnActors(&response.Turn)
 		rewriteTurnImageURLs(s.id, &response.Turn)
 	case *appwire.EvenerSubagentPreviewResponse:
 		for index := range response.Items {
+			s.translateItemActor(&response.Items[index])
 			rewriteItemImageURLs(s.id, &response.Items[index])
 		}
 	case *appwire.SessionActivitySummary:
