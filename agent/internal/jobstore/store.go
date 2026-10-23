@@ -1008,12 +1008,17 @@ func cloneFoldWatches(in map[string]*WatchRecord) map[string]*WatchRecord {
 
 func cloneFoldSends(in WatchSendRecord) WatchSendRecord {
 	out := WatchSendRecord{}
-	if in.Pending == nil {
-		return out
+	if in.Pending != nil {
+		out.Pending = make(map[WatchSendKey]*WatchSendState, len(in.Pending))
+		for k, v := range in.Pending {
+			out.Pending[k] = cloneWatchSend(v)
+		}
 	}
-	out.Pending = make(map[WatchSendKey]*WatchSendState, len(in.Pending))
-	for k, v := range in.Pending {
-		out.Pending[k] = cloneWatchSend(v)
+	if in.Superseded != nil {
+		out.Superseded = make(map[string]*WatchSendState, len(in.Superseded))
+		for k, v := range in.Superseded {
+			out.Superseded[k] = cloneWatchSend(v)
+		}
 	}
 	return out
 }

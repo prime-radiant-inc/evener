@@ -448,7 +448,8 @@ type watchSendDelivery struct {
 	eventData  events.EventData
 	// endNotice marks the teardown frame a watch sends when it ends without ever
 	// having fired, so the durable state says what the trigger prose only implies.
-	endNotice bool
+	endNotice  bool
+	restartSeq int64
 	// self-influence classification, stamped at the observation site; fuseDepth
 	// drives the runaway fuse, the rest the gradient inform.
 	selfInfluence bool
@@ -1639,7 +1640,10 @@ func watchSendKeyLess(a, b jobstore.WatchSendKey) bool {
 	if a.WatchID != b.WatchID {
 		return a.WatchID < b.WatchID
 	}
-	return a.WatchGeneration < b.WatchGeneration
+	if a.WatchGeneration != b.WatchGeneration {
+		return a.WatchGeneration < b.WatchGeneration
+	}
+	return a.RestartSeq < b.RestartSeq
 }
 
 func (jm *jobManager) clearWatch(key watchKey) (watchResult, error) {
@@ -4048,6 +4052,7 @@ func (jm *jobManager) produceRestartCallbackNotices(stored []jobstore.Event) err
 		}
 		jm.mu.Lock()
 		d := jm.watchSendSnapshot(cfg, watch.Target, "runtime_lost", events.SessionEvent{SessionID: jm.sessionID})
+		d.restartSeq = batchSeq
 		d.deliveryID = id
 		d.provenance = provenance.WithWatch(nil, cfg.watchID, cfg.generation, id, jm.sessionID, watch.Target)
 		d.callback, d.endNotice, d.allowAfterTerminalExpiry = true, true, true
@@ -4461,10 +4466,19 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.Watch
 	if terr != nil {
 		return jobstore.WatchSendState{}, nil, false, jm.dropWatchSend(state, d.cfg, terr.Error())
 	}
-	if state.SelfInfluenceDepth >= runawaySelfInfluenceDepth {
-		return jobstore.WatchSendState{}, nil, false, jm.dropWatchSend(state, d.cfg, "runaway")
+	if rejected, err := jm.rejectRunawayWatchSend(d.cfg, state); rejected {
+		return jobstore.WatchSendState{}, nil, false, err
 	}
 	return state, d.cfg, true, nil
+}
+
+// The persisted, post-coalescing depth owns this decision on every attempt,
+// including recovery after the initial source append or terminal append failed.
+func (jm *jobManager) rejectRunawayWatchSend(cfg *watchConfig, state jobstore.WatchSendState) (bool, error) {
+	if state.SelfInfluenceDepth < runawaySelfInfluenceDepth {
+		return false, nil
+	}
+	return true, jm.dropWatchSend(state, cfg, "runaway")
 }
 
 // recordWatchSendsAndKick persists fired sends and pumps canonical custody
@@ -4525,6 +4539,7 @@ func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string)
 			ResolvedWatchedIdentity: d.watchedIdentity,
 			ResolvedSendTo:          resolvedSendTo,
 			WatchGeneration:         d.generation,
+			RestartSeq:              d.restartSeq,
 		},
 		DeliveryID:               deliveryID,
 		CallbackFrame:            d.callback,
@@ -4598,6 +4613,9 @@ func (jm *jobManager) deliverPendingWatchSend(cfg *watchConfig, state jobstore.W
 		jm.mu.Unlock()
 	}
 	jm.finishProducedWatchFiring(cfg)
+	if rejected, err := jm.rejectRunawayWatchSend(cfg, state); rejected {
+		return false, err
+	}
 	if state.ReceiverDelegateID != "" && jm.delegateController != nil {
 		accepted, closed, err := jm.delegateController.notificationCustodyAndClosure(state.ReceiverSessionID, stableWatchAttentionID(state))
 		if err != nil {
@@ -4658,6 +4676,7 @@ func (jm *jobManager) dispatchProducedWatchSendsFrom(load watchSendLoader) {
 		jm.kick()
 		return
 	}
+	jm.settleSupersededWatchSends(fold.Superseded)
 	for _, d := range jm.pendingWatchSendDeliveries(nil) {
 		pending := fold.Pending[d.state.Key]
 		ensurePending := pending == nil || pending.DeliveryID != d.state.DeliveryID || pending.UpdateSeq != d.state.UpdateSeq
@@ -4665,6 +4684,52 @@ func (jm *jobManager) dispatchProducedWatchSendsFrom(load watchSendLoader) {
 			jm.kick()
 		}
 	}
+}
+
+// A replacement pending head cannot settle an accepted predecessor. The source
+// history retains candidates until their exact terminal event, and the existing
+// receiver transcript decides custody. Candidates never enter the delivery rail.
+func (jm *jobManager) settleSupersededWatchSends(candidates map[string]*jobstore.WatchSendState) {
+	states := make([]*jobstore.WatchSendState, 0, len(candidates))
+	for _, state := range candidates {
+		states = append(states, state)
+	}
+	sort.SliceStable(states, func(i, j int) bool { return watchSendStateLess(states[i], states[j]) })
+	for _, state := range states {
+		if !jm.claimWatchSendDelivery(state.DeliveryID) {
+			continue
+		}
+		err := jm.settleSupersededWatchSend(*state)
+		jm.releaseWatchSendDeliveryClaim(state.DeliveryID)
+		if err != nil {
+			jm.kick()
+		}
+	}
+}
+
+func (jm *jobManager) settleSupersededWatchSend(state jobstore.WatchSendState) error {
+	if jm.watchSendDelivered(state.DeliveryID) {
+		return nil
+	}
+	var accepted bool
+	var err error
+	if jm.delegateController != nil {
+		accepted, _, err = jm.delegateController.notificationCustodyAndClosure(state.ReceiverSessionID, stableWatchAttentionID(state))
+	} else if owner := jm.retirementOwner; owner != nil && owner.ID() == state.ReceiverSessionID {
+		accepted, err = owner.notificationSourceAccepted(stableWatchAttentionID(state))
+	} else {
+		return errDelegateDeliveryReceiverUnavailable
+	}
+	if err != nil || !accepted {
+		return err
+	}
+	jm.mu.Lock()
+	cfg := jm.watchConfigForKeyLocked(state.Key)
+	jm.mu.Unlock()
+	if cfg == nil {
+		cfg = &watchConfig{watchID: state.Key.WatchID, generation: state.Key.WatchGeneration}
+	}
+	return jm.settleWatchSendDelivered(cfg, state)
 }
 
 func (jm *jobManager) dropWatchSend(state jobstore.WatchSendState, cfg *watchConfig, reason string) error {
