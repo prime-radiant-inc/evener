@@ -224,7 +224,7 @@ func TestContextManager_CumulativeUsage_ThreadSafe(t *testing.T) {
 func TestSummarizeToolResult_ReadFile(t *testing.T) {
 	// Simulate a read_file result: line-numbered content (cat -n style, tab separator).
 	lines := "1\tpackage main\n2\tfunc main() {}\n"
-	got := summarizeToolResult("read_file", lines, json.RawMessage(`{"file_path":"auth.go"}`))
+	got := summarizeToolResult("read_file", lines, false, json.RawMessage(`{"file_path":"auth.go"}`))
 	want := "[read_file: auth.go, 2 lines]"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -233,7 +233,7 @@ func TestSummarizeToolResult_ReadFile(t *testing.T) {
 
 func TestSummarizeToolResult_Shell_Success(t *testing.T) {
 	output := "ok\nexit_code=0 duration_ms=42 timed_out=false\n"
-	got := summarizeToolResult("shell", output, json.RawMessage(`{"command":"go test"}`))
+	got := summarizeToolResult("shell", output, false, json.RawMessage(`{"command":"go test"}`))
 	want := `[shell: "go test" → exit 0]`
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -242,7 +242,7 @@ func TestSummarizeToolResult_Shell_Success(t *testing.T) {
 
 func TestSummarizeToolResult_Shell_Failure(t *testing.T) {
 	output := "FAIL\nexit_code=1 duration_ms=42 timed_out=false\n"
-	got := summarizeToolResult("shell", output, json.RawMessage(`{"command":"go test"}`))
+	got := summarizeToolResult("shell", output, true, json.RawMessage(`{"command":"go test"}`))
 	want := `[shell: "go test" → exit 1]`
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -252,7 +252,7 @@ func TestSummarizeToolResult_Shell_Failure(t *testing.T) {
 func TestSummarizeToolResult_Shell_LongCommand(t *testing.T) {
 	longCmd := "this is a very long command that exceeds sixty characters in length and should be truncated"
 	output := "ok\nexit_code=0 duration_ms=1 timed_out=false\n"
-	got := summarizeToolResult("shell", output, json.RawMessage(`{"command":"`+longCmd+`"}`))
+	got := summarizeToolResult("shell", output, false, json.RawMessage(`{"command":"`+longCmd+`"}`))
 	// Command should be truncated to 60 chars.
 	if len(got) > 100 {
 		t.Fatalf("summary too long: %q", got)
@@ -264,7 +264,7 @@ func TestSummarizeToolResult_Shell_LongCommand(t *testing.T) {
 
 func TestSummarizeToolResult_Grep(t *testing.T) {
 	output := "file1.go:10:TODO fix\nfile2.go:20:TODO cleanup\n"
-	got := summarizeToolResult("grep", output, json.RawMessage(`{"pattern":"TODO"}`))
+	got := summarizeToolResult("grep", output, false, json.RawMessage(`{"pattern":"TODO"}`))
 	want := `[grep: "TODO" → 2 matches]`
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -273,7 +273,7 @@ func TestSummarizeToolResult_Grep(t *testing.T) {
 
 func TestSummarizeToolResult_Glob(t *testing.T) {
 	output := "a.go\nb.go\nc.go\n"
-	got := summarizeToolResult("glob", output, json.RawMessage(`{"pattern":"*.go"}`))
+	got := summarizeToolResult("glob", output, false, json.RawMessage(`{"pattern":"*.go"}`))
 	want := `[glob: "*.go" → 3 files]`
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -308,7 +308,7 @@ func TestSummarizeToolResult_SearchNotes(t *testing.T) {
 		{"call_grep_capped", "grep", `[grep: "package|func" → 1 matches; results truncated at 1; narrow the path or glob_filter, or raise max_results]`},
 		{"call_glob_excluded", "glob", `[glob: "**/plan.md" → 0 files; 0 matches after excluding 1 dotfile/gitignored path(s); set include_ignored to include them]`},
 	} {
-		if got := summarizeToolResult(tc.tool, outputs[tc.call], json.RawMessage(args[tc.call])); got != tc.want {
+		if got := summarizeToolResult(tc.tool, outputs[tc.call], false, json.RawMessage(args[tc.call])); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.call, got, tc.want)
 		}
 	}
@@ -318,7 +318,7 @@ func TestSummarizeToolResult_SearchNotes(t *testing.T) {
 // counted, notes kept.
 func TestSummarizeToolResult_MemorySearch(t *testing.T) {
 	output := "notes.md:1:x\n\n[results truncated at 1; narrow the path or glob_filter, or raise max_results]"
-	got := summarizeToolResult("memory_search", output, json.RawMessage(`{"pattern":"x"}`))
+	got := summarizeToolResult("memory_search", output, false, json.RawMessage(`{"pattern":"x"}`))
 	want := `[memory_search: "x" → 1 matches; results truncated at 1; narrow the path or glob_filter, or raise max_results]`
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -355,7 +355,7 @@ func TestSummarizeToolResult_RepeatedSearchNudgeIsNotANote(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repeated := repeatedToolOutput(t, tc.tool, tc.body)
-			got := summarizeToolResult(tc.tool, repeated, json.RawMessage(`{"pattern":"x"}`))
+			got := summarizeToolResult(tc.tool, repeated, false, json.RawMessage(`{"pattern":"x"}`))
 			if got != tc.want {
 				t.Fatalf("a repeated %s's nudge read as one of its notes: got %q, want %q", tc.tool, got, tc.want)
 			}
@@ -408,7 +408,7 @@ func TestSummarizeToolResult_SearchKeepsItsNotes(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := summarizeToolResult(tc.tool, tc.output, json.RawMessage(`{"pattern":"x"}`))
+			got := summarizeToolResult(tc.tool, tc.output, false, json.RawMessage(`{"pattern":"x"}`))
 			if got != tc.want {
 				t.Fatalf("got %q, want %q", got, tc.want)
 			}
@@ -417,7 +417,7 @@ func TestSummarizeToolResult_SearchKeepsItsNotes(t *testing.T) {
 }
 
 func TestSummarizeToolResult_EditFile(t *testing.T) {
-	got := summarizeToolResult("edit_file", "OK", json.RawMessage(`{"file_path":"auth.go"}`))
+	got := summarizeToolResult("edit_file", "OK", false, json.RawMessage(`{"file_path":"auth.go"}`))
 	want := "[edit_file: auth.go → OK]"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -425,7 +425,7 @@ func TestSummarizeToolResult_EditFile(t *testing.T) {
 }
 
 func TestSummarizeToolResult_WriteFile(t *testing.T) {
-	got := summarizeToolResult("write_file", "OK", json.RawMessage(`{"file_path":"new.go"}`))
+	got := summarizeToolResult("write_file", "OK", false, json.RawMessage(`{"file_path":"new.go"}`))
 	want := "[write_file: new.go → OK]"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -433,7 +433,7 @@ func TestSummarizeToolResult_WriteFile(t *testing.T) {
 }
 
 func TestSummarizeToolResult_ApplyPatch(t *testing.T) {
-	got := summarizeToolResult("apply_patch", "OK", json.RawMessage(`{"patch":"*** Begin Patch\n*** Update File: auth.go\n"}`))
+	got := summarizeToolResult("apply_patch", "OK", false, json.RawMessage(`{"patch":"*** Begin Patch\n*** Update File: auth.go\n"}`))
 	want := "[apply_patch → OK]"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -442,7 +442,7 @@ func TestSummarizeToolResult_ApplyPatch(t *testing.T) {
 
 func TestSummarizeToolResult_WebFetch(t *testing.T) {
 	content := "Here is some fetched content from the web page"
-	got := summarizeToolResult("web_fetch", content, json.RawMessage(`{"url":"https://example.com"}`))
+	got := summarizeToolResult("web_fetch", content, false, json.RawMessage(`{"url":"https://example.com"}`))
 	want := fmt.Sprintf("[web_fetch: https://example.com → %d chars]", len(content))
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -450,13 +450,13 @@ func TestSummarizeToolResult_WebFetch(t *testing.T) {
 }
 
 func TestSummarizeToolResult_Delegate(t *testing.T) {
-	got := summarizeToolResult("delegate", `{"job_id":"job_abc123"}`, json.RawMessage(`{"task":"do stuff"}`))
+	got := summarizeToolResult("delegate", `{"job_id":"job_abc123"}`, false, json.RawMessage(`{"task":"do stuff"}`))
 	want := "[delegate: job_abc123]"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 
-	got = summarizeToolResult("delegate", `{"status":"running"}`, json.RawMessage(`{"task":"do stuff"}`))
+	got = summarizeToolResult("delegate", `{"status":"running"}`, false, json.RawMessage(`{"task":"do stuff"}`))
 	want = "[delegate: 20 chars]"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -464,7 +464,7 @@ func TestSummarizeToolResult_Delegate(t *testing.T) {
 }
 
 func TestSummarizeToolResult_TaskList(t *testing.T) {
-	got := summarizeToolResult("task_list", `[{"id":1},{"id":2},{"id":3}]`, json.RawMessage(`{}`))
+	got := summarizeToolResult("task_list", `[{"id":1},{"id":2},{"id":3}]`, false, json.RawMessage(`{}`))
 	want := "[task_list: view → 3 tasks]"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -473,7 +473,7 @@ func TestSummarizeToolResult_TaskList(t *testing.T) {
 
 func TestSummarizeToolResult_UseSkill(t *testing.T) {
 	body := "This is the skill body with instructions"
-	got := summarizeToolResult("use_skill", body, json.RawMessage(`{"skill_name":"tdd"}`))
+	got := summarizeToolResult("use_skill", body, false, json.RawMessage(`{"skill_name":"tdd"}`))
 	want := fmt.Sprintf("[use_skill: tdd → %d chars]", len(body))
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -482,7 +482,7 @@ func TestSummarizeToolResult_UseSkill(t *testing.T) {
 
 func TestSummarizeToolResult_UnknownTool(t *testing.T) {
 	content := "some output"
-	got := summarizeToolResult("custom_tool", content, json.RawMessage(`{}`))
+	got := summarizeToolResult("custom_tool", content, false, json.RawMessage(`{}`))
 	want := "[custom_tool: 11 chars]"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -3278,7 +3278,7 @@ func TestCheckpoint_ShedOrder_DropsOversizedWorkingNote(t *testing.T) {
 // --- buildSummaryPrompt ---
 
 var updateSummaryPromptGoldens = flag.Bool("update-prompt", false,
-	"rewrite agent/internal/contextmgr/testdata/summaryprompt from the current summary prompts")
+	"rewrite agent/internal/contextmgr/testdata summary prompt and search summary goldens")
 
 // The summary prompt is pinned whole, per shape, in testdata/summaryprompt:
 // the default mandatory-sections prompt and the caller-instruction prompt that
