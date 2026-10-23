@@ -10,7 +10,10 @@ export interface TranscriptTestGeometry {
 // A held frame runs these first, as a browser's rendering update runs its scroll
 // steps before it takes that frame's animation frame callbacks.
 const scrollStepCallbacks = new WeakSet<FrameRequestCallback>();
-const heldRenderingUpdates = new WeakMap<typeof window.requestAnimationFrame, () => void>();
+const heldRenderingUpdates = new WeakMap<
+  typeof window.requestAnimationFrame,
+  (scrollSteps?: FrameRequestCallback) => void
+>();
 
 /** Holds browser scheduling, never the virtualizer's request or direction fields. */
 export function holdReaderFrames() {
@@ -26,16 +29,21 @@ export function holdReaderFrames() {
   window.cancelAnimationFrame = (id) => {
     pending.delete(id);
   };
-  const release = () => {
-    const run = (scrollSteps: boolean) => {
-      for (const [id, callback] of [...pending]) {
-        if (scrollStepCallbacks.has(callback) !== scrollSteps || !pending.delete(id)) continue;
-        callback(performance.now());
-      }
-    };
+  const release = (scrollSteps?: FrameRequestCallback) => {
+    // notify's scroll wakeup may belong to a restored holder. Run it here once,
+    // alongside this holder's scroll steps, without consuming handler-created work.
+    const scrollCallbacks = new Set<FrameRequestCallback>(scrollSteps ? [scrollSteps] : []);
+    for (const [id, callback] of pending) {
+      if (!scrollStepCallbacks.has(callback)) continue;
+      pending.delete(id);
+      scrollCallbacks.add(callback);
+    }
+    for (const callback of scrollCallbacks) callback(performance.now());
     // A scroll handler's frame request joins this frame; its writes' events wait for the next.
-    run(true);
-    run(false);
+    for (const [id, callback] of [...pending]) {
+      if (scrollStepCallbacks.has(callback) || !pending.delete(id)) continue;
+      callback(performance.now());
+    }
   };
   heldRenderingUpdates.set(window.requestAnimationFrame, release);
   return {
@@ -189,7 +197,7 @@ export function installTranscriptGeometry(
     notify(include = () => true) {
       // One rendering update: scroll steps, this frame's callbacks, then observations.
       const release = heldRenderingUpdates.get(window.requestAnimationFrame);
-      if (release) release();
+      if (release) release(runScrollSteps);
       else runScrollSteps();
       for (const observer of [...observers]) {
         const entries: ResizeObserverEntry[] = [...observer.targets].flatMap((target) => {

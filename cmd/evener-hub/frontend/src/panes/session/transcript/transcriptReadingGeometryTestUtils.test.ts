@@ -127,6 +127,56 @@ test("filtered notify measures after the current batch and leaves callback-creat
   }
 });
 
+test("notify preserves pending scroll steps across nested holder restoration", () => {
+  const port = document.createElement("div");
+  const sizer = document.createElement("div");
+  sizer.style.height = "2000px";
+  port.append(sizer);
+  document.body.append(port);
+  const geometry = installTranscriptGeometry(
+    () => ({ width: 100, viewportHeight: 500, rowHeights: [] }),
+    () => port,
+  );
+  const outer = holdReaderFrames();
+  const inner = holdReaderFrames();
+  const order: string[] = [];
+  const observer = new ResizeObserver(() => order.push("resize"));
+  observer.observe(port);
+  try {
+    port.addEventListener("scroll", () => {
+      order.push(`scroll ${port.scrollTop}`);
+      requestAnimationFrame(() => order.push("handler"));
+      if (port.scrollTop === 300) port.scrollTop = 400;
+    });
+    port.scrollTop = 300;
+    inner.restore();
+    requestAnimationFrame(() => order.push("outer"));
+    geometry.notify();
+    expect(order).toEqual(["scroll 300", "outer", "handler", "resize"]);
+    geometry.notify();
+    expect(order).toEqual(["scroll 300", "outer", "handler", "resize", "scroll 400", "handler", "resize"]);
+    port.scrollTop = 500;
+    geometry.notify();
+    expect(order).toEqual([
+      "scroll 300",
+      "outer",
+      "handler",
+      "resize",
+      "scroll 400",
+      "handler",
+      "resize",
+      "scroll 500",
+      "handler",
+      "resize",
+    ]);
+  } finally {
+    inner.restore();
+    outer.restore();
+    geometry.restore();
+    port.remove();
+  }
+});
+
 test("notify uses the installed holder and stops using it after restore", () => {
   const port = document.createElement("div");
   document.body.append(port);
