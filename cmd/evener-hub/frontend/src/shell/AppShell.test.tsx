@@ -4710,6 +4710,25 @@ test("ordinary mobile toolbar Back publishes only the Welcome transition", async
   }
 });
 
+test("mobile unencoded session mount still reconciles later location ownership", async () => {
+  vi.stubGlobal("innerWidth", 390);
+  installMobileViewport();
+  installLocationForRoute("local:origin");
+  window.history.pushState({}, "", "/s/local:origin");
+  const client = navClient();
+  client.on("thread/read", () => ({ thread: threadStartResponse("local:origin").thread }));
+  render(<AppShell client={client} />);
+  await screen.findByRole("textbox", { name: "Message" });
+  expect(window.location.pathname).toBe("/s/local%3Aorigin");
+  expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:origin" });
+
+  act(() => installLocationForRoute("local:origin", "local:owner"));
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" }));
+  expect(paneFor("local:origin")).toMatchObject({ type: "session", slot: "secondary" });
+  expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:origin")?.id);
+  expect(window.location.pathname).toBe("/s/local%3Aorigin");
+});
+
 test.each(["phone", "desktop"])(
   "%s keeps an opened child focused after the already placed parent location settles",
   async (host) => {

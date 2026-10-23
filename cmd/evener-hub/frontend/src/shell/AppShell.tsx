@@ -181,6 +181,9 @@ function usePathname(): string {
       setPathname(nextPathname);
     };
     window.addEventListener("popstate", onPopState);
+    // A child mount effect may already have canonicalized the focused pane's
+    // URL. Subscribe before catching up so that first navigation is not lost.
+    onPopState();
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
   return pathname;
