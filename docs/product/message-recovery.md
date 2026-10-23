@@ -98,6 +98,15 @@ the last saved draft still owns its source IDs; those sources stay hidden from
 Discard while Retry saving preserves the captured composition. Restored image
 capacity can also complete a pending append. Recovery never sends automatically.
 
+Replacing a recovered draft with a goal command parks the previous composition —
+its text, images and recovery source IDs — in the native draft record instead of
+re-appending it, so reconciliation leaves the goal composition alone and `/goal`
+still routes as a built-in command. The park appears as a draft ghost: Edit
+restores it whole once the composer is empty, and Discard clears it and releases
+its source IDs. Inserting an image reconciles mentions against the resulting
+text: a label the insertion splits loses its mention and canonical selection,
+while a label before or after the insertion keeps its shifted offset.
+
 An ordinary native submit stores its full `unconfirmed` composition with a local
 capture token. If enqueue commits but draft confirmation fails, that token also
 remains on the local mutation row, tying the row to that uncertainty copy. Before
