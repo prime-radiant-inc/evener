@@ -7267,8 +7267,8 @@ test("an unavailable /steer over an active recovery is refused without consuming
   await flushPendingTurnsProjectionForTests();
   replaceEditorText(textarea(), "/steer go left");
   fireEvent.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
   await act(async () => {
-    await flushPendingTurnsProjectionForTests();
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
   expect(toastKinds()).toContain("error");
