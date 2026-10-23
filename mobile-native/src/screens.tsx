@@ -2934,6 +2934,8 @@ export function ConversationScreen({
 	);
 	const canEditGhost = document.canRestoreRecoveredDraft();
 	const ghostEditHint = document.recoveredRestoreHint();
+	const canEditParked = canEditGhost && !imageState.busy;
+	const parkedEditHint = imageState.busy ? "Wait for the image to finish preparing." : ghostEditHint;
 	// The transcript list's rows: the conversation's, its usage lines when they
 	// have anything to show, then the ghosts.
 	const ghostsKey = JSON.stringify(allGhosts);
@@ -3054,7 +3056,7 @@ export function ConversationScreen({
 		}
 		if (origin.kind === "parked") {
 			if (action === "discard") document.dismissParked(origin.parkId);
-			else if (action === "edit") document.restoreParked(origin.parkId);
+			else if (action === "edit" && !imageSelection.getSnapshot().busy) document.restoreParked(origin.parkId);
 			return null;
 		}
 		if (origin.kind === "recovery") {
@@ -3254,6 +3256,8 @@ export function ConversationScreen({
 		disabled: ghostBusy,
 		canEdit: canEditGhost,
 		editHint: ghostEditHint,
+		canEditParked,
+		parkedEditHint,
 		draftAttachments: <ImageAttachments document={document} selection={imageSelection} uncertain />,
 		parkedAttachments: (parkId) => (
 			<ImageAttachments

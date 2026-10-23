@@ -7,6 +7,7 @@ import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterAll, afterEach, expect, it, vi } from "vitest";
 import { buildComposerInput, MAX_ATTACHMENTS, type Thread } from "@evener/appwire-client";
 import { ActionSheetIOS } from "react-native";
+import { launchImageLibraryAsync } from "expo-image-picker";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { Storage } from "expo-sqlite/kv-store";
 import { ConversationScreen } from "./screens";
@@ -46,6 +47,7 @@ const harness = vi.hoisted(() => ({
 	kvFailure: "" as "" | "read" | "write",
 	rpcFailure: "" as string,
 	reopenKV: () => {},
+	manipulate: vi.fn(),
 }));
 const navigationState = vi.hoisted(() => ({ state: { index: 0, routes: [] as { key: string; name: string }[] } }));
 const sqlite = vi.hoisted(() => ({
@@ -179,9 +181,20 @@ vi.mock("expo-file-system", () => ({
 }));
 vi.mock("expo-image-manipulator", () => ({
 	ImageManipulator: {
+		manipulate: (uri: string) => harness.manipulate(uri),
 		manipulateAsync: vi.fn(async () => ({ uri: "manipulated" })),
 	},
 	SaveFormat: { JPEG: "jpeg" },
+}));
+harness.manipulate.mockImplementation(() => ({
+	resize: () => {},
+	renderAsync: async () => ({
+		width: 100,
+		height: 100,
+		saveAsync: async () => ({ base64: "AQID", uri: "encoded" }),
+		release: () => {},
+	}),
+	release: () => {},
 }));
 vi.mock("expo-image-picker", () => ({
 	launchImageLibraryAsync: vi.fn(async () => ({ canceled: true, assets: [] })),
@@ -1407,7 +1420,15 @@ function journey() {
 			/>
 		) : (
 			<GhostRowContext.Provider
-				value={{ disabled: false, canEdit: false, editHint: null, onAction: actOn, onMore: () => {} }}
+				value={{
+					disabled: false,
+					canEdit: false,
+					editHint: null,
+					canEditParked: false,
+					parkedEditHint: null,
+					onAction: actOn,
+					onMore: () => {},
+				}}
 			>
 				{withGhostRows([], list)
 					.filter(isGhostRow)
@@ -1955,4 +1976,82 @@ it("text-only parked ghost never shows an unrelated send's images", async () => 
 	const parked = f.tree.root.findAll((node) => node.props.ghost?.origin?.kind === "parked")[0];
 	expect(parked).toBeDefined();
 	expect(parked?.props.attachments?.props.images).toEqual([]);
+});
+
+it("parked Edit waits for a deferred encoder and keeps the pending image", async () => {
+	const f = await mount(false, false, undefined, "skill", {
+		goal: { objective: "ship", status: "active", iterations: 1 },
+	});
+	await editRecoveryIntoDraft(f, "old goal work");
+	await act(async () => {
+		for (let index = 0; index < 8; index++)
+			f.document.addImage({
+				id: `parked-${index}`,
+				marker: index + 1,
+				mediaType: "image/png",
+				data: "AQID",
+			});
+	});
+	await replaceDraftWithGoal(f);
+	await act(async () => {
+		f.document.edit("");
+	});
+	const parked = f.tree.root.findAll((node) => node.props.ghost?.origin?.kind === "parked")[0];
+	expect(parked).toBeDefined();
+	expect(f.document.getSnapshot().record.parkedCompositions?.[0]?.images).toHaveLength(8);
+
+	vi.mocked(launchImageLibraryAsync).mockResolvedValueOnce({
+		canceled: false,
+		assets: [
+			{
+				uri: "photo.jpg",
+				fileName: "picked.jpg",
+				mimeType: "image/jpeg",
+				fileSize: 100,
+				width: 4000,
+				height: 3000,
+			},
+		],
+	} as never);
+	let finish!: () => void;
+	harness.manipulate.mockImplementationOnce(() => ({
+		resize: () => {},
+		renderAsync: () =>
+			new Promise((resolve) => {
+				finish = () =>
+					resolve({
+						width: 100,
+						height: 100,
+						saveAsync: async () => ({ base64: "AQID", uri: "encoded" }),
+						release: () => {},
+					});
+			}),
+		release: () => {},
+	}));
+	const show = vi.mocked(ActionSheetIOS.showActionSheetWithOptions);
+	show.mockClear();
+	await act(async () => pressable(f.tree, "Add")?.props.onPress());
+	const chooseLibrary = show.mock.calls.at(-1)?.[1] as ((index: number) => void) | undefined;
+	expect(chooseLibrary).toBeDefined();
+	await act(async () => chooseLibrary?.(0));
+	await settle();
+
+	// Encoding is in flight: parked Edit is disabled and refuses a stale press.
+	const busyParked = f.tree.root.findAll((node) => node.props.ghost?.origin?.kind === "parked")[0];
+	expect(busyParked?.props.canEdit).toBe(false);
+	await act(async () => {
+		parked?.props.onAction("edit");
+	});
+	await settle();
+	expect(f.document.getSnapshot().record.draft).toBe("");
+	expect(f.document.getSnapshot().record.parkedCompositions).toHaveLength(1);
+
+	await act(async () => {
+		finish();
+	});
+	await settle();
+	await vi.waitFor(() =>
+		expect(f.document.getSnapshot().record.images?.map((image) => image.name)).toEqual(["picked.jpg"]),
+	);
+	expect(f.document.getSnapshot().record.parkedCompositions?.[0]?.images).toHaveLength(8);
 });
