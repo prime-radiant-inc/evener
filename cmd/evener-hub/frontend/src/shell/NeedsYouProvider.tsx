@@ -49,3 +49,7 @@ export function useNeedsYou(): NeedsYouValue {
   if (!value) throw new Error("useNeedsYou must be used within NeedsYouProvider");
   return value;
 }
+
+export function useOptionalNeedsYou(): NeedsYouValue | null {
+  return useContext(NeedsYouContext);
+}

@@ -207,6 +207,8 @@ export function ConversationBody({
     if (!attentionOwner) setOverlayHeight(0);
   }, [attentionOwner]);
   const attentionHidden = editing || askPending || approvalPending;
+  // Production panes borrow the shell's shared owner; a bare conversation
+  // fixture outside AppShell has no floating control.
   const attentionOverlay = attentionOwner ? (
     <NextNeedsYou sessionRef={ref} viewId={seat.readView?.id ?? seat.viewFallbackId} hidden={attentionHidden} />
   ) : undefined;

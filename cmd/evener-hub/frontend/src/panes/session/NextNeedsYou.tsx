@@ -11,7 +11,7 @@ import type {
   PointerEvent as ReactPointerEvent,
 } from "react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useNeedsYou } from "../../shell/NeedsYouProvider";
+import { useOptionalNeedsYou } from "../../shell/NeedsYouProvider";
 import { Button, IconButton, ListRow, Popover } from "../../widgets";
 import { LONG_PRESS_MS, POINTER_CLICK_WINDOW_MS } from "../../widgets/hovercard";
 import { requireClass } from "../../widgets/internal/requireClass";
@@ -48,8 +48,19 @@ function attentionReasonLabel(reason: string | undefined): string | undefined {
   return undefined;
 }
 
-export function NextNeedsYou({ sessionRef, viewId, hidden }: NextNeedsYouProps): ReactElement | null {
-  const { controller, snapshot } = useNeedsYou();
+export function NextNeedsYou(props: NextNeedsYouProps): ReactElement | null {
+  const needsYou = useOptionalNeedsYou();
+  if (needsYou === null) return null;
+  return <OwnedNextNeedsYou {...props} needsYou={needsYou} />;
+}
+
+function OwnedNextNeedsYou({
+  sessionRef,
+  viewId,
+  hidden,
+  needsYou,
+}: NextNeedsYouProps & { needsYou: NonNullable<ReturnType<typeof useOptionalNeedsYou>> }): ReactElement | null {
+  const { controller, snapshot } = needsYou;
   const [listOpen, setListOpen] = useState(false);
   const listOpenRef = useRef(listOpen);
   listOpenRef.current = listOpen;

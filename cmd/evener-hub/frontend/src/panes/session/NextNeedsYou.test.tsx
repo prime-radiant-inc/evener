@@ -124,6 +124,12 @@ afterEach(() => {
   window.history.replaceState({}, "", "/");
 });
 
+test("renders nothing when the shell has no needs-you owner", () => {
+  const view = render(<NextNeedsYou sessionRef="local:a" viewId="view:a" hidden={false} />);
+
+  expect(view.container.firstChild).toBeNull();
+});
+
 test("hold opens once without navigating", () => {
   vi.useFakeTimers();
   installRows();
