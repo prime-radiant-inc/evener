@@ -3668,6 +3668,7 @@ test("a losing cross-tab recovered send does not issue a second request", async 
 
   await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBeNull());
   expect(editor.textContent).toBe("edit me [image 1]");
+  expect(readDraft("ref_a")).toBe("edit me [image 1]");
   expect(screen.getByRole("button", { name: "Remove proof.png" })).toBeTruthy();
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
   expect(toastKinds()).toEqual(["info"]);

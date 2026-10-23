@@ -460,7 +460,10 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           if (missing) {
             // Another tab consumed the row. Keeping this lease would make
             // every later submission fail against an owner this tab can no
-            // longer write.
+            // longer write. Preserve the local composition as an ordinary
+            // draft before retiring it, including anything typed while the
+            // submission guard suppressed autosave.
+            persistDraft(textRef.current);
             setActiveRecoveryId(null);
           }
           if (!disposed && (missing || currentRecoveryId() === clientMutationId)) {
