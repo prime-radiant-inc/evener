@@ -55,6 +55,9 @@ vi.mock("react-native", async () => ({
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("react-native-enriched-markdown", () => ({ EnrichedMarkdownText: "EnrichedMarkdownText" }));
+vi.mock("react-native-gesture-handler", async () =>
+	(await import("./renderNative.testkit")).gestureDetectorModuleMock(),
+);
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
 // An external native seam: the real TranscriptImages module reaches SecureStore
 // at import time, so it is faked here rather than mocking the product module.

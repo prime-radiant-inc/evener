@@ -118,8 +118,8 @@ type RemoteHubSource struct {
 	hostNotifyDropped atomic.Int64
 
 	// probeMu guards probe (the last successful probe, cached against the
-	// client it ran on) and facts (the preflight seam HostCapabilities reads
-	// while probing). It is never held across a wire call.
+	// client it ran on) and the facts/handshake seams HostCapabilities reads
+	// while probing. It is never held across a wire call.
 	probeMu sync.Mutex
 	probe   *remoteHubProbe
 }
@@ -283,7 +283,7 @@ func (s *RemoteHubSource) callOn(ctx context.Context, client *appwire.Client, me
 		}
 		return s.mapCallError(err)
 	}
-	return s.translateOut(out)
+	return s.translateOut(client, out)
 }
 
 // mapCallError mirrors LocalDaemonSource's error shapes for a remote hub: a

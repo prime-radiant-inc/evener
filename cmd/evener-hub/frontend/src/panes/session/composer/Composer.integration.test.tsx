@@ -490,7 +490,22 @@ test.each([
           optimisticDisplay: { method: "turn/start", input },
         })
       : null;
-    if (original) await storage.transferToRecovery(original.clientMutationId, "rejected");
+    if (original) {
+      await storage.transferToRecovery(original.clientMutationId, "rejected");
+      // Automatic restoration must adopt an already-advanced durable revision,
+      // not assume zero: Send below persists through that lease.
+      const bumped = await storage.updateRecoveryInput(
+        original.clientMutationId,
+        input,
+        [],
+        "Run /skill-1 ",
+        undefined,
+        undefined,
+        undefined,
+        0,
+      );
+      if (!bumped) throw new Error("missing advanced revision fixture");
+    }
     const source = createTestComposerSource("root");
     const fake = await mountComposer("root", skillFocusThread("root"), source);
     await settleActivityDiscovery("root");
@@ -515,19 +530,23 @@ test.each([
     const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
     try {
       await user.click(screen.getByRole("button", { name: "Send" }));
-      await hold.reached;
+      await act(async () => {
+        await hold.reached;
+      });
       expect(source.getSnapshot().activeRecoveryId).toBe(original?.clientMutationId ?? null);
-      const durable = await storage.listOutbox("root");
+      const durable = await act(async () => storage.listOutbox("root"));
       expect(durable).toHaveLength(1);
       const mutationId = durable[0]?.clientMutationId;
       expect(mutationId).toEqual(expect.any(String));
       expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
       if (newer) await selectSkill(user, "skill-2");
-      cleanup();
+      act(() => cleanup());
       await act(async () => {
         hold.release();
         await delivered.promise;
       });
+      // The released write's own notification starts a projection refresh;
+      // settle it before the test observes the result.
       await flushPendingTurnsProjectionForTests();
       expect(source.getSnapshot().activeRecoveryId).toBeNull();
       expect(source.getSnapshot().text).toBe(newer ? "Run /skill-2 " : "");
@@ -542,9 +561,18 @@ test.each([
         { method: "turn/start", params: expect.objectContaining({ ref: "root", clientMutationId: mutationId, input }) },
       ]);
       expect(fake.calls.filter((call) => call.method === "turn/steer")).toEqual([]);
+      // Retire the mounted subscribers before draining the release's trailing
+      // projection refresh, so a late store update cannot escape the act
+      // boundary through a component that is about to unmount anyway.
+      act(() => cleanup());
+      await flushPendingTurnsProjectionForTests();
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      await flushPendingTurnsProjectionForTests();
       if (original) expect(await storage.getRecovery(original.clientMutationId)).toBeUndefined();
     } finally {
-      hold.release();
+      act(() => hold.release());
     }
   },
 );
@@ -594,14 +622,14 @@ test.each([
     pending === "recovery edit" ? ["recovery"] : ["outbox", "optimistic", "recovery", "sequences"],
   );
   try {
-    let completion: Promise<void> | undefined;
+    let completion: Promise<boolean> | undefined;
     if (pending === "recovery edit") {
       completion = source.queueRecoveryPersistence(original.clientMutationId, "Run /skill-1 ", [], ["skill-1"]);
     } else {
       await userEvent.setup().click(screen.getByRole("button", { name: "Send" }));
     }
     await hold.reached;
-    cleanup();
+    act(() => cleanup());
     if (action === "close") workspaceStore.getState().closePane(pane.id);
     else resetWorkspaceStoreForTests();
     const replacementPane: OpenPaneRecord = { ...pane, params: { ref: "root" } };
@@ -623,7 +651,7 @@ test.each([
     const replacementRecoveryId = pending === "recovery edit" ? original.clientMutationId : null;
     expect(replacementSource.getSnapshot().activeRecoveryId).toBe(replacementRecoveryId);
     await act(async () => {
-      hold.release();
+      act(() => hold.release());
       if (completion) await completion;
       else await delivered.promise;
     });

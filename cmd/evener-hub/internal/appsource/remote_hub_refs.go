@@ -86,44 +86,79 @@ func (s *RemoteHubSource) fromRemoteRefString(raw string) (string, error) {
 	return appwire.Ref{SourceID: s.id, ThreadID: ref.ThreadID}.String(), nil
 }
 
-// remoteForwardedThreadCapabilities lists the thread actions this source can
-// forward to the remote hub today. It is the controller-side half of the
-// capability answer: maskRemoteThreadCapabilities intersects it with the remote
-// hub's own claim, so an action reaches a remote session only when this set names
-// it AND the remote advertises it.
+// forwardedRemoteThreadCapabilities is the controller-side half of a remote
+// thread's capability answer: the actions this source can forward to a host
+// whose initialize handshake advertises features. maskRemoteThreadCapabilities
+// intersects it with the remote daemon's own claim, so a client sees an action
+// only when both the remote session supports it and this controller can carry
+// it.
 //
-// Shutdown is the one entry. The controller forwards thread/shutdown on the owning
-// host's client, and the remote hub serves it against its own local daemon, so a
-// controller can stop a session it did not host. The intersection keeps the remote
-// daemon's own claim in charge: a remote that does not advertise Shutdown stays
-// refused. The remaining lifecycle verbs and the turn mutations are implemented in
-// remote_hub_mutations.go but stay masked until the host capability probe can say
-// the host supports them.
+// Attachment owns protocol compatibility: an installed channel passes the
+// attach handshake's exact AppWire version check, so the peer routes every v7
+// mutation this source implements in remote_hub_mutations.go. The FeatureSet
+// still narrows the five actions it names. A hub that disclaims TurnStart,
+// TurnSteer, ThreadClear, ThreadShutdown or ForkFromTurn stays masked even when
+// its daemon claims the action.
 //
-// A capability not named here stays masked, so a field added to
-// appwire.ThreadCapabilities later starts masked until a component names the method
-// that answers for it. TestRemoteHubCapabilitiesMatchForwardedMethods holds the
-// correspondence between this set and those methods; change the two together.
-func remoteForwardedThreadCapabilities() appwire.ThreadCapabilities {
-	return appwire.ThreadCapabilities{Shutdown: true}
+// The remaining actions have no hub-level feature bit. They ride the remote
+// daemon's own claim: a daemon that advertises the action comes from a build
+// that serves its route, and this source's forwarder is the other half of the
+// intersection.
+//
+// PageBefore stays off: the controller cannot yet join a remote page to its
+// paging window (#3176). Every field starts masked, so a capability added to
+// appwire.ThreadCapabilities later stays invisible until this policy names the
+// method that answers for it.
+func forwardedRemoteThreadCapabilities(features appwire.FeatureSet) appwire.ThreadCapabilities {
+	return appwire.ThreadCapabilities{
+		Send:              features.TurnStart,
+		Steer:             features.TurnSteer,
+		Interrupt:         true,
+		Compact:           true,
+		Clear:             features.ThreadClear,
+		ForkFromTurn:      features.ForkFromTurn,
+		Shutdown:          features.ThreadShutdown,
+		ChangeModel:       true,
+		ChangeVisionModel: true,
+		Queue:             true,
+		Goal:              true,
+		SharedNotes:       true,
+		Rename:            true,
+		SkillInput:        true,
+		CommandInput:      true,
+		StopSubagent:      true,
+	}
+}
+
+// forwardedThreadCapabilitiesFor returns the forwarded set for client. The
+// probe's handshake snapshot is authoritative once it has run; otherwise the
+// client's own initialize response supplies the same features. A nil client is
+// the notification translator's test-only shape and fails closed.
+func (s *RemoteHubSource) forwardedThreadCapabilitiesFor(client *appwire.Client) appwire.ThreadCapabilities {
+	if features, ok := s.cachedCapabilityFeatures(client); ok {
+		return forwardedRemoteThreadCapabilities(features)
+	}
+	if client == nil {
+		return appwire.ThreadCapabilities{}
+	}
+	return forwardedRemoteThreadCapabilities(client.Features())
 }
 
 // maskRemoteThreadCapabilities intersects the capability set a remote hub reported
-// for its own thread with the actions this source can carry today.
+// for its own thread with the actions this source can carry for that host.
 //
 // The remote hub reports the capabilities of its OWN session daemon: they describe
 // what the remote daemon can do, not what this controller can forward. Forwarding
 // the remote's set verbatim would advertise an action this controller cannot carry:
 // it would fail with an internal error the moment a client used one (the hub gates
 // each of them on exactly these fields — cmd/evener-hub's threadActionAvailable).
-// Component 05c implements the mutations but forwards only Shutdown here; the
-// other flags turn on with 05d's host capability probe.
+// forwarded is forwardedRemoteThreadCapabilities over the host's handshake
+// feature set.
 //
 // Fields are listed one by one rather than copied wholesale so a capability added
 // to appwire.ThreadCapabilities later starts masked until a component names the
 // method that answers for it.
-func maskRemoteThreadCapabilities(remote appwire.ThreadCapabilities) appwire.ThreadCapabilities {
-	forwarded := remoteForwardedThreadCapabilities()
+func maskRemoteThreadCapabilities(remote, forwarded appwire.ThreadCapabilities) appwire.ThreadCapabilities {
 	return appwire.ThreadCapabilities{
 		Send:              remote.Send && forwarded.Send,
 		Steer:             remote.Steer && forwarded.Steer,
@@ -164,7 +199,7 @@ const capabilitiesField = "capabilities"
 // capabilities object in a payload this source is translating. A value it cannot
 // decode is returned byte-for-byte: the mask narrows the actions a client can
 // reach, and must never drop or re-mint a field a newer remote hub sent.
-func maskRemoteCapabilitiesRaw(raw json.RawMessage) json.RawMessage {
+func maskRemoteCapabilitiesRaw(raw json.RawMessage, forwarded appwire.ThreadCapabilities) json.RawMessage {
 	if len(raw) == 0 {
 		return raw
 	}
@@ -172,7 +207,7 @@ func maskRemoteCapabilitiesRaw(raw json.RawMessage) json.RawMessage {
 	if err := json.Unmarshal(raw, &remote); err != nil {
 		return raw
 	}
-	masked, err := json.Marshal(maskRemoteThreadCapabilities(remote))
+	masked, err := json.Marshal(maskRemoteThreadCapabilities(remote, forwarded))
 	if err != nil {
 		return raw
 	}
@@ -345,9 +380,9 @@ func (s *RemoteHubSource) translateNestedRefs(raw json.RawMessage) json.RawMessa
 // Nested session handles inside Evener.Diagnostics (a job's or delegate's
 // transcriptRef) and Evener.PendingEscalations (each entry's ref, which clients
 // route an escalation card by) are translated too; see translateNestedRef.
-func (s *RemoteHubSource) fromRemoteThread(thread appwire.Thread) (appwire.Thread, error) {
+func (s *RemoteHubSource) fromRemoteThread(thread appwire.Thread, forwarded appwire.ThreadCapabilities) (appwire.Thread, error) {
 	thread.Source = s.id
-	thread.Evener.Capabilities = maskRemoteThreadCapabilities(thread.Evener.Capabilities)
+	thread.Evener.Capabilities = maskRemoteThreadCapabilities(thread.Evener.Capabilities, forwarded)
 	ref, err := s.fromRemoteRefString(thread.Evener.Ref)
 	if err != nil {
 		return appwire.Thread{}, err
@@ -405,7 +440,7 @@ func (s *RemoteHubSource) fromRemoteNestedRef(raw string) string {
 // InstanceID and everything else pass through byte-for-byte. Nested session
 // handles under Evener (diagnostics job/delegate transcriptRefs, and each
 // pendingEscalations entry's ref) are rewritten as well.
-func (s *RemoteHubSource) translateThreadRaw(raw json.RawMessage) (json.RawMessage, error) {
+func (s *RemoteHubSource) translateThreadRaw(raw json.RawMessage, forwarded appwire.ThreadCapabilities) (json.RawMessage, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return nil, err
@@ -448,7 +483,7 @@ func (s *RemoteHubSource) translateThreadRaw(raw json.RawMessage) (json.RawMessa
 			evenerFields[key] = encoded
 		}
 		if rawCapabilities, ok := evenerFields[capabilitiesField]; ok {
-			evenerFields[capabilitiesField] = maskRemoteCapabilitiesRaw(rawCapabilities)
+			evenerFields[capabilitiesField] = maskRemoteCapabilitiesRaw(rawCapabilities, forwarded)
 		}
 		if rawEscalations, ok := evenerFields[pendingEscalationsField]; ok && len(rawEscalations) > 0 {
 			evenerFields[pendingEscalationsField] = s.translatePendingEscalationsRaw(rawEscalations)
@@ -500,10 +535,29 @@ func (s *RemoteHubSource) fromRemoteRefOrOpaque(raw string) string {
 
 // translateOut applies outbound translation to whichever response type embeds
 // a Thread, Turn, or ThreadItem: refs are rewritten into the controller
-// namespace and every remote-stamped image URL is moved onto the
+// namespace, thread capabilities are masked to the actions this host's effective
+// policy forwards, and every remote-stamped image URL is moved onto the
 // host-qualified controller route (see rewriteThreadImageURLs). Responses
 // without either (e.g. model/list) pass through unchanged.
-func (s *RemoteHubSource) translateOut(out any) error {
+//
+// The forwarded set is resolved lazily inside the dispatcher, only in the cases
+// that carry a thread. A non-thread response never pays for it, and the
+// dispatcher has one type switch rather than a pre-scan that must be kept in
+// sync with it.
+func (s *RemoteHubSource) translateOut(client *appwire.Client, out any) error {
+	return s.translateOutWithCapabilities(out, func() appwire.ThreadCapabilities {
+		return s.forwardedThreadCapabilitiesFor(client)
+	})
+}
+
+// translateOutWithForwarded is translateOut over an already-decided capability
+// set, for callers that must not consult the host facts (tests, and any future
+// path that owns its own effective set).
+func (s *RemoteHubSource) translateOutWithForwarded(out any, forwarded appwire.ThreadCapabilities) error {
+	return s.translateOutWithCapabilities(out, func() appwire.ThreadCapabilities { return forwarded })
+}
+
+func (s *RemoteHubSource) translateOutWithCapabilities(out any, forwarded func() appwire.ThreadCapabilities) error {
 	switch response := out.(type) {
 	case *appwire.ThreadListResponse:
 		// Translate rows independently: a row from a nested remote hub carries a
@@ -513,9 +567,10 @@ func (s *RemoteHubSource) translateOut(out any) error {
 		if len(response.Data) == 0 {
 			break
 		}
+		fwd := forwarded()
 		translated := make([]appwire.Thread, 0, len(response.Data))
 		for index := range response.Data {
-			thread, err := s.fromRemoteThread(response.Data[index])
+			thread, err := s.fromRemoteThread(response.Data[index], fwd)
 			if err != nil {
 				continue
 			}
@@ -523,32 +578,32 @@ func (s *RemoteHubSource) translateOut(out any) error {
 		}
 		response.Data = translated
 	case *appwire.ThreadReadResponse:
-		thread, err := s.fromRemoteThread(response.Thread)
+		thread, err := s.fromRemoteThread(response.Thread, forwarded())
 		if err != nil {
 			return err
 		}
 		response.Thread = thread
 	case *appwire.ThreadStartResponse:
-		thread, err := s.fromRemoteThread(response.Thread)
+		thread, err := s.fromRemoteThread(response.Thread, forwarded())
 		if err != nil {
 			return err
 		}
 		response.Thread = thread
 		rewriteTurnImageURLs(s.id, &response.Turn)
 	case *appwire.ThreadResumeResponse:
-		thread, err := s.fromRemoteThread(response.Thread)
+		thread, err := s.fromRemoteThread(response.Thread, forwarded())
 		if err != nil {
 			return err
 		}
 		response.Thread = thread
 	case *appwire.ThreadForkResponse:
-		thread, err := s.fromRemoteThread(response.Thread)
+		thread, err := s.fromRemoteThread(response.Thread, forwarded())
 		if err != nil {
 			return err
 		}
 		response.Thread = thread
 	case *appwire.ThreadClearResponse:
-		thread, err := s.fromRemoteThread(response.Thread)
+		thread, err := s.fromRemoteThread(response.Thread, forwarded())
 		if err != nil {
 			return err
 		}

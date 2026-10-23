@@ -1,7 +1,7 @@
 import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "@evener/appwire-client";
 import { ErrorEndpointConflict, ErrorInstanceRenamePersisted, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
@@ -742,6 +742,35 @@ describe("the form", () => {
     expect(field("API key environment variable").value).toBe("PORTKEY_KEY");
     expect(field("Credential header").value).toBe("Authorization=Bearer $PORTKEY_KEY");
     expect(screen.getByTestId("base-provider").textContent).toBe("openai");
+  });
+
+  test("renders the connection facts and settings through the card's shared components", () => {
+    renderSheet(WORK, {}, [OPENAI]);
+    const facts = screen.getByTestId("connection-facts");
+    expect(within(facts).getByLabelText("Name")).toBeTruthy();
+    expect(within(facts).getByLabelText("Base URL")).toBeTruthy();
+    const settings = screen.getByTestId("connection-settings");
+    expect(within(settings).getByLabelText("Protocol")).toBeTruthy();
+    expect(within(settings).getByLabelText("Surface")).toBeTruthy();
+    expect(within(settings).getByLabelText("API key environment variable")).toBeTruthy();
+    expect(within(settings).getByLabelText("Credential header")).toBeTruthy();
+  });
+
+  test("editing through the shared connection settings still issues the same instance edit", async () => {
+    const V = instance({ name: "work", providerId: "openai" });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => ({ instances: [V], availableProviders: [OPENAI] }));
+    connectionStore.getState().connect(fake);
+    renderSheet(V, {}, [OPENAI]);
+    const user = userEvent.setup();
+    const settings = screen.getByTestId("connection-settings");
+    await user.selectOptions(within(settings).getByLabelText("Protocol"), "anthropic");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      protocol: "anthropic",
+      originClientId: "test-tab",
+    });
   });
 
   test("renders one input per base-provider variable, labelled by env var name, plus authored extras", () => {

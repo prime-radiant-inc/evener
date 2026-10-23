@@ -10,11 +10,17 @@ function setup() {
 	databases.push(db);
 	const repository = new DraftRepository(port);
 	const destination = { hubId: "studio", sessionRef: "local/session-42" };
+	let nextCapture = 0;
 	return {
 		db,
 		repository,
 		destination,
-		document: new DraftDocument(() => repository, destination),
+		document: new DraftDocument(
+			() => repository,
+			destination,
+			undefined,
+			() => `draft-document-capture-${++nextCapture}`,
+		),
 	};
 }
 afterEach(() => {
@@ -213,6 +219,7 @@ describe("durable draft lifecycle", () => {
 			expect(repository.read(destination)).toEqual({
 				draft: "",
 				unconfirmed: "submitted",
+				unconfirmedCaptureToken: "draft-document-capture-1",
 			});
 			document.edit("newer draft");
 			return true;
@@ -234,6 +241,7 @@ describe("durable draft lifecycle", () => {
 		expect(reopened.getSnapshot().record).toEqual({
 			draft: "newer",
 			unconfirmed: "uncertain",
+			unconfirmedCaptureToken: "draft-document-capture-1",
 		});
 		reopened.restore();
 		expect(reopened.getSnapshot().record.draft).toBe("newer");
@@ -262,6 +270,7 @@ describe("durable draft lifecycle", () => {
 		expect(repository.read(destination)).toEqual({
 			draft: "",
 			unconfirmed: "input",
+			unconfirmedCaptureToken: "draft-document-capture-1",
 		});
 		expect(document.getSnapshot().submitting).toBe(false);
 	});
@@ -314,6 +323,7 @@ it("checkpoints a structured reply without consuming the ordinary draft", async 
 		expect(repository.read(destination)).toEqual({
 			draft: "ordinary draft",
 			unconfirmed: "structured reply",
+			unconfirmedCaptureToken: "draft-document-capture-1",
 		});
 		return true;
 	});
@@ -336,6 +346,7 @@ it("retains uncertain structured replies and prevents a second dispatch", async 
 	expect(reopened.getSnapshot().record).toEqual({
 		draft: "ordinary draft",
 		unconfirmed: "structured reply",
+		unconfirmedCaptureToken: "draft-document-capture-1",
 	});
 });
 
@@ -362,6 +373,7 @@ describe("a mutation proven not sent", () => {
 		expect(repository.read(destination)).toEqual({
 			draft: "keep me",
 			unconfirmed: "continue",
+			unconfirmedCaptureToken: "draft-document-capture-1",
 		});
 	});
 
@@ -377,6 +389,7 @@ describe("a mutation proven not sent", () => {
 		expect(repository.read(destination)).toEqual({
 			draft: "keep me",
 			unconfirmed: "continue",
+			unconfirmedCaptureToken: "draft-document-capture-1",
 		});
 	});
 });

@@ -569,11 +569,10 @@ func TestHubRPCThreadReadSubscribeDeliversMaskedRemoteStatus(t *testing.T) {
 			if status.Capabilities == nil {
 				t.Fatal("relayed status capabilities = nil, want the read path's masked set")
 			}
-			// The daemon claims Shutdown as well, so this pins both halves of the
-			// mask: the one forwarded action survives, every unforwarded one is
-			// dropped. An expectation of the empty set would only show that a claim
-			// containing no forwarded action stays empty.
-			if want := (appwire.ThreadCapabilities{Shutdown: true}); *status.Capabilities != want {
+			// The peer advertises every hub-level feature, so the daemon's own
+			// claim survives intact except for the fields the effective policy
+			// still masks (PageBefore) and the ones this claim does not include.
+			if want := daemonSet; *status.Capabilities != want {
 				t.Fatalf("relayed status capabilities = %+v, want %+v", *status.Capabilities, want)
 			}
 			return
@@ -595,7 +594,11 @@ func scriptedRemoteThreadT1With(caps appwire.ThreadCapabilities) func(string, js
 	return func(method string, _ json.RawMessage) any {
 		switch method {
 		case appwire.MethodInitialize:
-			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+			return appwire.InitializeResponse{
+				ProtocolVersion: appwire.ProtocolVersion,
+				SourceID:        "local",
+				Features:        allRemoteThreadFeatures(),
+			}
 		case appwire.MethodThreadRead:
 			return appwire.ThreadReadResponse{Thread: appwire.Thread{
 				ID:     "t1",
