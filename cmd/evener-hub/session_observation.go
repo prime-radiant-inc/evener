@@ -204,6 +204,12 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 					refresh()
 					continue
 				}
+				// The shared human relay deliberately fans malformed and untargeted
+				// frames out unchanged. Receipt alone cannot identify watched work.
+				// Keep alias routing with that relay, but require target evidence here.
+				if _, routing := relayNotificationRoutingKey(notification, ref.SourceID); routing != relayNotificationTargeted {
+					continue
+				}
 				if notification.Method == appwire.NotifyHistoryUpdated {
 					var history appwire.HistoryUpdatedParams
 					if json.Unmarshal(notification.Params, &history) != nil {
