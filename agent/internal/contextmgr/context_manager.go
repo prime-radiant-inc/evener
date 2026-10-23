@@ -2630,7 +2630,14 @@ func (cm *Manager) summarizeFoldWithDigest(ctx context.Context, history []schema
 		b.WriteString("\nThe conversation:\n")
 	}
 	if digest != nil {
-		b.WriteString(digest(history[:cutoff], cm.resultToolName()))
+		source := history[:cutoff]
+		if checkpointed != nil {
+			// The checkpoint may have trimmed a kept message too, so the
+			// omitted-message prelude alone cannot restore its original source.
+			// Keep the new prediction or durable log as additional context.
+			source = append(slices.Clip(partnerSource), history[0])
+		}
+		b.WriteString(digest(source, cm.resultToolName()))
 	} else {
 		for i := range cutoff {
 			t := history[i]

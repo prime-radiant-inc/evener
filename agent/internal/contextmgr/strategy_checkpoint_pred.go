@@ -117,14 +117,15 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 	}
 
 	// Layer 3: Predictive checkpoint (replaces deterministic checkpoint).
-	// checkpointed is what a deterministic fallback checkpoint folded this
-	// pass, which the summary completing that fold reads the partner's
-	// messages from (summarizeFold). A predictive checkpoint carries them
-	// whole itself, so it needs none.
+	// A checkpoint's carry can middle-trim messages. A summary completing this
+	// fold must still read the original sources, whichever checkpoint succeeds.
 	var checkpointed []schema.Turn
 	if p >= s.cm.CheckpointThreshold || (tripwire && assumptionStillGoverns(tripwireProf, prof)) {
 		turnsBefore := len(*history)
 		before := s.cm.estimateTokensFor(prof, *history)
+		if cutoff := foldCutoff(*history, s.cm.PreserveRecentTurns); cutoff >= 0 {
+			checkpointed = (*history)[:cutoff:cutoff]
+		}
 		result, err := s.predictiveCheckpoint(ctx, *history, s.cm.PreserveRecentTurns)
 		if err != nil {
 			// Fall back to deterministic checkpoint on error.

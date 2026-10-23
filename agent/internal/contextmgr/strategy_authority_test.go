@@ -338,6 +338,77 @@ func TestStrategyFallbackSeesWholeEarlierContext(t *testing.T) {
 	}
 }
 
+func TestStrategyFallbackReadsOriginalUserMessages(t *testing.T) {
+	const quote = `Do not publish FALLBACK_MIDDLE_HOLD_582.`
+	const generated = "GENERATED_FALLBACK_CONTEXT_693"
+	for _, route := range []string{"session-log", "ooda", "predictive", "predictor-fallback"} {
+		for _, mode := range []string{"older-omitted", "newest-trimmed"} {
+			t.Run(route+"/"+mode, func(t *testing.T) {
+				var checkpointText string
+				var summaryRequests []string
+				cm := authorityRequestManager(func(req llm.Request) (llm.Response, error) {
+					if checkpointText == "" {
+						if route == "predictor-fallback" {
+							return llm.Response{}, errors.New("unavailable")
+						}
+						return llm.Response{Message: llm.Assistant(generated)}, nil
+					}
+					summaryRequests = append(summaryRequests, req.Messages[0].Text())
+					return llm.Response{Message: llm.Assistant(emptySummaryReply)}, nil
+				})
+				cm.SetProfile(testProfile("openai", "test", 50_000))
+				cm.CheckpointThreshold, cm.SummarizeThreshold = 0.00001, 0.00001
+				cm.Meta = CompactionMeta{SessionID: "FALLBACK_SOURCE_704", TranscriptKept: true}
+				sls := &SessionLogStrategy{cm: cm, log: mustNewSessionLog(t, filepath.Join(t.TempDir(), "log.jsonl"))}
+				if err := sls.log.Append(sessionlog.SessionLogEntry{Turn: 1, Action: "assistant", Outcome: "success", Summary: generated}); err != nil {
+					t.Fatal(err)
+				}
+				var strategy Strategy = sls
+				switch route {
+				case "ooda":
+					strategy = &OODAStrategy{SessionLogStrategy: sls}
+				case "predictive", "predictor-fallback":
+					strategy = NewCheckpointPredStrategy(cm)
+				}
+				padding := 16_000
+				if mode == "newest-trimmed" {
+					padding = 40_000
+				}
+				message := strings.Repeat("a", padding) + quote + strings.Repeat("b", padding)
+				history := []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User(message))}
+				if mode == "older-omitted" {
+					history = append(history, schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("c", 32_000))))
+				}
+				tail := moreTurns()[2:]
+				history = append(history, tail...)
+				emit := func(_ events.EventKind, data events.EventData) {
+					if event, ok := data.(events.ContextCompactionData); ok && (event.Layer == "session_log_checkpoint" || event.Layer == "checkpoint_pred") {
+						checkpointText = history[0].Message.Text()
+					}
+				}
+				if err := strategy.ManageContext(context.Background(), &history, 0, emit); err != nil {
+					t.Fatal(err)
+				}
+				if checkpointText == "" || strings.Contains(checkpointText, quote) {
+					t.Fatal("fixture did not remove the middle hold at the checkpoint boundary")
+				}
+				if history[0].Kind != schema.TurnSummary || len(summaryRequests) == 0 {
+					t.Fatal("summary fallback did not run")
+				}
+				if !strings.Contains(strings.Join(summaryRequests, "\n"), quote) {
+					t.Error("original middle hold never reached the fallback summarizer")
+				}
+				if route != "predictor-fallback" && !strings.Contains(summaryRequests[len(summaryRequests)-1], generated) {
+					t.Error("fallback lost the newly generated checkpoint context")
+				}
+				if len(history) < 1+len(tail) || !reflect.DeepEqual(history[1:1+len(tail)], tail) {
+					t.Error("summary changed the preserved recent tail")
+				}
+			})
+		}
+	}
+}
+
 func TestStrategyRejectsTruncatedPredictorAndFork(t *testing.T) {
 	for _, name := range []string{"predictive", "session-log", "ooda"} {
 		t.Run(name, func(t *testing.T) {

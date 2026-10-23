@@ -122,9 +122,13 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	}
 
 	// Layer 3 (replaced): Session-log checkpoint.
+	var checkpointed []schema.Turn
 	if p >= s.cm.CheckpointThreshold || (tripwire && assumptionStillGoverns(tripwireProf, prof)) {
 		turnsBefore := len(*history)
 		before := s.cm.estimateTokensFor(prof, *history)
+		if cutoff := foldCutoff(*history, s.cm.PreserveRecentTurns); cutoff >= 0 {
+			checkpointed = (*history)[:cutoff:cutoff]
+		}
 		*history = s.sessionLogCheckpointWithMeta(*history, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx))
 		after := s.cm.estimateTokensFor(prof, *history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
@@ -145,7 +149,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	if p >= s.cm.SummarizeThreshold && s.cm.client != nil {
 		turnsBefore := len(*history)
 		before := s.cm.estimateTokensFor(prof, *history)
-		result, err := s.cm.summarizeStrategyFold(ctx, *history, s.cm.PreserveRecentTurns, nil)
+		result, err := s.cm.summarizeStrategyFold(ctx, *history, s.cm.PreserveRecentTurns, checkpointed)
 		if err != nil {
 			emitFn(events.EventWarning, summarizerFailureWarning(err))
 		} else {
