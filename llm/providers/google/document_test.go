@@ -55,8 +55,7 @@ func TestToGeminiContents_AssistantDocumentsRemainUnsupported(t *testing.T) {
 	_, contents, err := toGeminiContents("gemini", []llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 		{Kind: llm.ContentDocument, Document: &llm.DocumentData{Data: []byte("%PDF-1.4")}},
 	}}}, false)
-	var cfgErr *llm.ConfigurationError
-	if !errors.As(err, &cfgErr) || contents != nil {
+	if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok || contents != nil {
 		t.Fatalf("assistant document: contents=%v err=%v, want configuration refusal", contents, err)
 	}
 }
@@ -65,8 +64,7 @@ func TestToGeminiContents_AudioRemainsUnsupported(t *testing.T) {
 	t.Parallel()
 	for _, role := range []llm.Role{llm.RoleUser, llm.RoleAssistant} {
 		_, _, err := toGeminiContents("gemini", []llm.Message{{Role: role, Content: []llm.ContentPart{{Kind: llm.ContentAudio, Audio: &llm.AudioData{Data: []byte{1}}}}}}, false)
-		var cfgErr *llm.ConfigurationError
-		if !errors.As(err, &cfgErr) {
+		if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok {
 			t.Fatalf("%s audio: %v, want configuration refusal", role, err)
 		}
 	}

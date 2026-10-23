@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -24,14 +25,14 @@ func TestDescribeImage_GooglePDFRoutingAndSingleDelivery(t *testing.T) {
 			type wirePart struct {
 				Text       string `json:"text"`
 				InlineData *struct {
-					MIMEType string `json:"mimeType"`
+					MIMEType string `json:"mimeType"` //nolint:tagliatelle // Gemini's wire schema uses camelCase.
 					Data     string `json:"data"`
-				} `json:"inlineData"`
+				} `json:"inlineData"` //nolint:tagliatelle // Gemini's wire schema uses camelCase.
 				FunctionResponse *struct {
 					Name     string            `json:"name"`
 					Response map[string]string `json:"response"`
 					Parts    []json.RawMessage `json:"parts"`
-				} `json:"functionResponse"`
+				} `json:"functionResponse"` //nolint:tagliatelle // Gemini's wire schema uses camelCase.
 			}
 			type wireRequest struct {
 				Contents []struct {
@@ -103,7 +104,7 @@ func TestDescribeImage_GooglePDFRoutingAndSingleDelivery(t *testing.T) {
 				t.Fatalf("PDF inlineData=%+v", media)
 			}
 			decoded, err := base64.StdEncoding.DecodeString(media.Data)
-			if err != nil || string(decoded) != string(pdf) {
+			if err != nil || !bytes.Equal(decoded, pdf) {
 				t.Fatalf("PDF bytes changed: decoded=%q err=%v", decoded, err)
 			}
 
@@ -137,7 +138,7 @@ func TestDescribeImage_GooglePDFRoutingAndSingleDelivery(t *testing.T) {
 					}
 				}
 			}
-			if responses != 1 || descriptions != 1 || string(retained.ImageData) != string(pdf) {
+			if responses != 1 || descriptions != 1 || !bytes.Equal(retained.ImageData, pdf) {
 				t.Fatalf("responses=%d descriptions=%d retainedPDF=%q", responses, descriptions, retained.ImageData)
 			}
 		})
