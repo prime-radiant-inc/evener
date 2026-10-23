@@ -278,7 +278,18 @@ func readTranscriptTool(deps *toolDeps) tool.RegisteredTool {
 		NormalizeArgs: normalizeRetainedReadArgsForValidation,
 		Exec: func(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
-			return execReadTranscript(deps, args)
+			value, err := execReadTranscript(deps, args)
+			if err != nil {
+				return nil, err
+			}
+			if envelope, markdown := value.(readMarkdownEnvelope); markdown && !strings.HasPrefix(envelope.TranscriptRef, "job:") {
+				encoded, err := json.MarshalIndent(value, "", "  ")
+				if err != nil {
+					return nil, err
+				}
+				return tool.StateResult{Output: string(encoded), RequireCompleteOutput: true}, nil
+			}
+			return value, nil
 		},
 	}
 }
@@ -1238,17 +1249,20 @@ func readMarkdownPage(path, root, ref string, meta schema.SessionMeta, rangeArg 
 			continuation = &transcriptTurnContinuation{ExpandTurn: *expandTurn, OffsetBytes: end}
 		}
 	}
+	if rmeta.RangeError != "" {
+		return nil, errors.New(rmeta.RangeError)
+	}
 
 	// Surface a range warning prominently when a malformed range was given.
 	if rangeWarning != "" {
-		content = spliceRangeWarning(content, rangeWarning)
+		content = spliceRangeWarning(content, rangeWarning, &rmeta.Evidence)
 	}
 
 	// Self-announcing window: when the render is a window (not the whole session),
 	// splice a line after the header naming the window so the model knows it is
 	// seeing a subset. We compute start/end from the effective (clamped) range to
 	// report honest first/last turn numbers.
-	if rmeta.TurnsRendered < rmeta.TurnsTotal {
+	if rmeta.TurnsRendered < rmeta.TurnsTotal && rmeta.SelectedTurns == nil {
 		content = spliceWindowLine(content, rmeta)
 	}
 
@@ -1269,14 +1283,18 @@ func readMarkdownPage(path, root, ref string, meta schema.SessionMeta, rangeArg 
 		Expansion:    expansion,
 		Continuation: continuation,
 	}
-	return boundReadMarkdownEnvelope(envelope)
+	bounded, err := boundReadMarkdownEnvelope(envelope, &rmeta.Evidence)
+	if err != nil {
+		return nil, err
+	}
+	return bounded, nil
 }
 
-func boundReadMarkdownEnvelope(envelope readMarkdownEnvelope) (readMarkdownEnvelope, error) {
-	return boundReadMarkdownEnvelopeWithHint(envelope, transcriptExpansionReadHint)
+func boundReadMarkdownEnvelope(envelope readMarkdownEnvelope, evidence ...*transcriptEvidence) (readMarkdownEnvelope, error) {
+	return boundReadMarkdownEnvelopeWithHint(envelope, transcriptExpansionReadHint, evidence...)
 }
 
-func boundReadMarkdownEnvelopeWithHint(envelope readMarkdownEnvelope, exactReadHint string) (readMarkdownEnvelope, error) {
+func boundReadMarkdownEnvelopeWithHint(envelope readMarkdownEnvelope, exactReadHint string, evidence ...*transcriptEvidence) (readMarkdownEnvelope, error) {
 	encoded, err := json.MarshalIndent(envelope, "", "  ")
 	if err != nil {
 		return readMarkdownEnvelope{}, fmt.Errorf("encode transcript expansion: %w", err)
@@ -1288,7 +1306,7 @@ func boundReadMarkdownEnvelopeWithHint(envelope readMarkdownEnvelope, exactReadH
 		// Reuse the measurement above: the envelope is unchanged, and struct
 		// marshaling is deterministic, so re-serializing here would reproduce
 		// the exact same bytes. Skips one redundant full MarshalIndent probe.
-		return boundReadMarkdownContentWithHintSized(envelope, hardCapChars, exactReadHint, encoded)
+		return boundReadMarkdownContentWithHintSized(envelope, hardCapChars, exactReadHint, encoded, evidence...)
 	}
 
 	raw, err := decodeTranscriptExpansion(envelope.Expansion)
@@ -1298,7 +1316,7 @@ func boundReadMarkdownEnvelopeWithHint(envelope readMarkdownEnvelope, exactReadH
 
 	// The caller's max_bytes budget applies to raw expansion bytes. Shrink the
 	// human markdown first so JSON escaping never changes that paging contract.
-	bounded, boundErr := boundReadMarkdownContentWithHintSized(envelope, hardCapChars, exactReadHint, encoded)
+	bounded, boundErr := boundReadMarkdownContentWithHintSized(envelope, hardCapChars, exactReadHint, encoded, evidence...)
 	if boundErr == nil {
 		return bounded, nil
 	}
@@ -1307,7 +1325,7 @@ func boundReadMarkdownEnvelopeWithHint(envelope readMarkdownEnvelope, exactReadH
 	// itself. Keep the hard backstop by fitting the largest honest raw prefix.
 	empty := transcriptEnvelopeWithExpansionBytes(envelope, nil)
 	contentTarget := hardCapChars - min(64<<10, hardCapChars/3)
-	empty, err = boundReadMarkdownContentWithHint(empty, contentTarget, exactReadHint)
+	empty, err = boundReadMarkdownContentWithHint(empty, contentTarget, exactReadHint, evidence...)
 	if err != nil {
 		return readMarkdownEnvelope{}, err
 	}
@@ -1332,12 +1350,12 @@ func boundReadMarkdownEnvelopeWithHint(envelope readMarkdownEnvelope, exactReadH
 	return transcriptEnvelopeWithExpansionBytes(envelope, raw[:best]), nil
 }
 
-func boundReadMarkdownContentWithHint(envelope readMarkdownEnvelope, maxEncodedBytes int, exactReadHint string) (readMarkdownEnvelope, error) {
+func boundReadMarkdownContentWithHint(envelope readMarkdownEnvelope, maxEncodedBytes int, exactReadHint string, evidence ...*transcriptEvidence) (readMarkdownEnvelope, error) {
 	encoded, err := json.MarshalIndent(envelope, "", "  ")
 	if err != nil {
 		return readMarkdownEnvelope{}, fmt.Errorf("encode transcript envelope: %w", err)
 	}
-	return boundReadMarkdownContentWithHintSized(envelope, maxEncodedBytes, exactReadHint, encoded)
+	return boundReadMarkdownContentWithHintSized(envelope, maxEncodedBytes, exactReadHint, encoded, evidence...)
 }
 
 // boundReadMarkdownContentWithHintSized is boundReadMarkdownContentWithHint
@@ -1345,7 +1363,7 @@ func boundReadMarkdownContentWithHint(envelope readMarkdownEnvelope, maxEncodedB
 // bytes from a MarshalIndent of the identical envelope value, so every size
 // comparison below observes the same length a fresh probe would produce and
 // truncation boundaries cannot shift; only the redundant re-serialize is gone.
-func boundReadMarkdownContentWithHintSized(envelope readMarkdownEnvelope, maxEncodedBytes int, exactReadHint string, encoded []byte) (readMarkdownEnvelope, error) {
+func boundReadMarkdownContentWithHintSized(envelope readMarkdownEnvelope, maxEncodedBytes int, exactReadHint string, encoded []byte, evidence ...*transcriptEvidence) (readMarkdownEnvelope, error) {
 	if len(encoded) <= maxEncodedBytes {
 		return envelope, nil
 	}
@@ -1354,13 +1372,14 @@ func boundReadMarkdownContentWithHintSized(envelope readMarkdownEnvelope, maxEnc
 	// RuneCountInString reports the same count as len([]rune(original)) without
 	// allocating a full rune slice over up-to-200k content.
 	keep := utf8.RuneCountInString(original)
+	headEnd, tailStart := len(original), len(original)
 	for len(encoded) > maxEncodedBytes && keep > 0 {
 		next := keep * maxEncodedBytes / len(encoded)
 		if next >= keep {
 			next = keep - 1
 		}
 		keep = next
-		envelope.Content = boundOversizedTurnEvidenceWithHint(original, keep, exactReadHint)
+		envelope.Content, headEnd, tailStart = boundTurnEvidenceIntervals(original, keep, exactReadHint)
 		envelope.Meta.Truncated = true
 		var err error
 		encoded, err = json.MarshalIndent(envelope, "", "  ")
@@ -1370,6 +1389,11 @@ func boundReadMarkdownContentWithHintSized(envelope readMarkdownEnvelope, maxEnc
 	}
 	if len(encoded) > maxEncodedBytes {
 		return readMarkdownEnvelope{}, fmt.Errorf("transcript metadata exceeds %d-byte output limit", maxEncodedBytes)
+	}
+	for _, e := range evidence {
+		if e != nil && !e.retain(headEnd, tailStart, len(original), len(envelope.Content)) {
+			return readMarkdownEnvelope{}, errors.New(userRangeTooLarge)
+		}
 	}
 	return envelope, nil
 }
@@ -1583,13 +1607,13 @@ func spliceWindowLine(content string, rm readMeta) string {
 		"\n_Showing turns %d–%d of %d. For the whole shape use format=outline; for other turns set range._\n",
 		rm.FirstRendered, rm.LastRendered, rm.TurnsTotal,
 	)
-	return spliceAfterHeader(content, line)
+	return spliceAfterHeader(content, line, &rm.Evidence)
 }
 
 // spliceRangeWarning inserts a one-line range warning after the document header block.
-func spliceRangeWarning(content, warning string) string {
+func spliceRangeWarning(content, warning string, evidence ...*transcriptEvidence) string {
 	warningLine := fmt.Sprintf("\n> [range warning] %s\n", warning)
-	return spliceAfterHeader(content, warningLine)
+	return spliceAfterHeader(content, warningLine, evidence...)
 }
 
 // resolvedSessionMeta returns the render metadata for the resolved transcript.
