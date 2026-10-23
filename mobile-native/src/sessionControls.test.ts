@@ -1,14 +1,11 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { describe, expect, it, vi } from "vitest";
 import { WireError } from "@evener/appwire-client";
-import type { ManagerView, ModelListResponse, Thread } from "@evener/appwire-client";
-import { deferred } from "@evener/appwire-client/testing/deferred";
-import { createConversationStore } from "../../mobile/src/state/conversation";
+import type { ModelListResponse, Thread } from "@evener/appwire-client";
 import { type ConversationClientLike, createConversationService } from "../../mobile/src/services/conversation";
 import { SessionControls } from "./sessionControls";
 
 async function boundary(actions: {
-	manager?: (enabled: boolean) => Promise<ManagerView>;
 	rename?: (name: string) => Promise<void>;
 	compact?: () => Promise<void>;
 	shutdown?: () => Promise<void>;
@@ -33,8 +30,6 @@ async function boundary(actions: {
 		source: "local",
 		turns: [],
 		evener: {
-			managerEditable: true,
-			managerSetting: { hubId: "hub", enabled: false, revision: 0 },
 			ref: "local:test",
 			instanceId: "instance",
 			queue: { revision: 0 },
@@ -58,12 +53,6 @@ async function boundary(actions: {
 	const wire: ConversationClientLike = Object.assign(new FakeClient("ready"), {
 		request: async (method, params) => {
 			if (method === "thread/read") return { thread };
-			if (method === "evener/thread/manager/set") {
-				const view = await actions.manager!((params as { enabled: boolean }).enabled);
-				thread.evener.managerSetting = view.setting;
-				thread.evener.manager = view.setting.enabled;
-				return { view };
-			}
 			if (method === "model/list") return actions.models?.() ?? { data: [] };
 			if (method === "thread/model/set") {
 				const { modelProvider, model } = params as {
@@ -100,72 +89,6 @@ async function boundary(actions: {
 }
 
 describe("conversation-owned session controls", () => {
-	it("Manager pending prevents duplicate writes and reconciles the canonical response", async () => {
-		const response = deferred<ManagerView>();
-		const manager = vi.fn(() => response.promise);
-		const service = await boundary({ manager });
-		const store = createConversationStore();
-		await store.getState().open(service, "local:test");
-		store.getState().setDraft("unsent-sentinel");
-		const controls = new SessionControls(
-			service,
-			async () => {},
-			() => {},
-			() => true,
-			() => store.getState().conversation,
-			() => true,
-			null,
-			(view) => store.getState().acceptManagerView(view),
-		);
-		const first = controls.setManager(true);
-		expect(controls.getSnapshot().pending).toBe("setManager");
-		expect(await controls.setManager(false)).toBe(false);
-		expect(manager).toHaveBeenCalledTimes(1);
-		expect(store.getState().conversation?.managerSetting?.enabled).toBe(false);
-		const view = { ref: "local:test", instanceId: "instance", setting: { hubId: "hub", enabled: true, revision: 1 } };
-		response.resolve(view);
-		expect(await first).toBe(true);
-		expect(store.getState().conversation?.managerSetting).toEqual(view.setting);
-		expect(store.getState().draft).toBe("unsent-sentinel");
-		expect(controls.getSnapshot().pending).toBeNull();
-		store.getState().reset();
-	});
-
-	it.each([false, true])(
-		"Manager failure retains the last confirmation and reconciles optional view=%s",
-		async (withView) => {
-			const view = {
-				ref: "local:test",
-				instanceId: "instance",
-				setting: { hubId: "other-hub", enabled: true, revision: 2 },
-			};
-			const service = await boundary({
-				manager: async () => {
-					throw new WireError("fixture", -32000, withView ? { view } : undefined);
-				},
-			});
-			const store = createConversationStore();
-			await store.getState().open(service, "local:test");
-			const initial = store.getState().conversation?.managerSetting;
-			const controls = new SessionControls(
-				service,
-				async () => {
-					throw new Error("offline");
-				},
-				() => {},
-				() => true,
-				() => store.getState().conversation,
-				() => true,
-				null,
-				(next) => store.getState().acceptManagerView(next),
-			);
-			expect(await controls.setManager(true)).toBe(false);
-			expect(controls.getSnapshot().error).not.toBeNull();
-			expect(controls.getSnapshot().pending).toBeNull();
-			expect(store.getState().conversation?.managerSetting).toEqual(withView ? view.setting : initial);
-			store.getState().reset();
-		},
-	);
 	it("allows force stop while ordinary composer mutation is blocked", async () => {
 		let stopped = 0;
 		const controls = new SessionControls(

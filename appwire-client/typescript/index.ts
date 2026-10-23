@@ -487,7 +487,6 @@ export type {
 } from "./reducer";
 export {
   applyHistoryReadFailure,
-  applyManagerView,
   applyNotification,
   applyOverlayEndForTranscriptHandoff,
   applyReadModel,

@@ -302,119 +302,107 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-describe("Manager setting", () => {
+describe("Manager start-time projection", () => {
   const ref = "local:historical";
-  const off = { hubId: "hub-one", enabled: false, revision: 2 };
-  const on = { ...off, enabled: true, revision: 3 };
-  function seed(target = ref) {
-    putThreadModel(
-      target,
-      hydrateThread(
-        readResponse(target, {
-          evener: { ref, capabilities: CAPABILITIES, queue: {}, managerEditable: true, managerSetting: off },
-        }),
-        target,
-        1,
-      ),
-    );
-  }
 
-  test("Manager subscriber refresh retains loaded pages, reconnect reconciles the setting and draft", async () => {
-    const fake = connectFakeClient();
-    let setting = off;
-    const turn = (entry: number) => ({
-      id: `turn_${entry}`,
-      status: "completed",
-      itemsView: "fragment",
-      items: [
-        {
-          id: `item_${entry}`,
-          transcriptKey: `entry-${entry}/item-0`,
-          turnId: `turn_${entry}`,
-          type: "agentMessage",
-          text: `sentinel-${entry}`,
-          version: entry,
-          position: { entry, item: 0 },
-        },
-      ],
-    });
-    fake.on("thread/read", () => ({
-      ...versionedReadResponse(
-        ref,
-        {
-          turns: [turn(30)],
-          evener: {
-            ref,
-            capabilities: CAPABILITIES,
-            queue: {},
-            manager: setting.enabled,
-            managerEditable: true,
-            managerSetting: setting,
+  test.each([true, false, undefined])(
+    "Manager %s refresh retains identity, loaded pages and draft through reconnect",
+    async (manager) => {
+      const fake = connectFakeClient();
+      let name = "name-before";
+      const turn = (entry: number) => ({
+        id: `turn_${entry}`,
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: `item_${entry}`,
+            transcriptKey: `entry-${entry}/item-0`,
+            turnId: `turn_${entry}`,
+            type: "agentMessage",
+            text: `sentinel-${entry}`,
+            version: entry,
+            position: { entry, item: 0 },
           },
-        },
-        31,
-      ),
-      olderCursor: "page-2",
-    }));
-    fake.on("thread/turns/list", ({ cursor }) => ({
-      data: [turn(cursor === "page-2" ? 20 : 10)],
-      nextCursor: cursor === "page-2" ? "page-3" : undefined,
-      bootGeneration: "1",
-      epoch: 1,
-      snapshot: { incarnation: "inc-1", length: 31 },
-    }));
-    await threadsStore.getState().ensureThread(ref);
-    await threadsStore.getState().loadOlderTurns(ref);
-    await threadsStore.getState().loadOlderTurns(ref);
-    writeDraft(ref, "unsent-sentinel");
-    const retained = () => {
-      expect(
-        threadsStore
-          .getState()
-          .threads.get(ref)
-          ?.turns.flatMap((item) => item.items)
-          .map((item) => item.id),
-      ).toEqual(["item_10", "item_20", "item_30"]);
-      expect(
-        threadsStore
-          .getState()
-          .threads.get(ref)
-          ?.turns.flatMap((item) => item.items)
-          .find((item) => item.id === "item_10")?.text,
-      ).toBe("sentinel-10");
+        ],
+      });
+      fake.on("thread/read", () => ({
+        ...versionedReadResponse(
+          ref,
+          {
+            name,
+            turns: [turn(30)],
+            evener: {
+              ref,
+              capabilities: CAPABILITIES,
+              queue: {},
+              manager,
+            },
+          },
+          31,
+        ),
+        olderCursor: "page-2",
+      }));
+      fake.on("thread/turns/list", ({ cursor }) => ({
+        data: [turn(cursor === "page-2" ? 20 : 10)],
+        nextCursor: cursor === "page-2" ? "page-3" : undefined,
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 31 },
+      }));
+      await threadsStore.getState().ensureThread(ref);
+      await threadsStore.getState().loadOlderTurns(ref);
+      await threadsStore.getState().loadOlderTurns(ref);
+      writeDraft(ref, "unsent-sentinel");
+      const retained = () => {
+        expect(threadsStore.getState().threads.get(ref)).toMatchObject({
+          ref,
+          instanceId: `thr_${ref}`,
+          manager: manager === true,
+        });
+        expect(
+          threadsStore
+            .getState()
+            .threads.get(ref)
+            ?.turns.flatMap((item) => item.items)
+            .map((item) => item.id),
+        ).toEqual(["item_10", "item_20", "item_30"]);
+        expect(
+          threadsStore
+            .getState()
+            .threads.get(ref)
+            ?.turns.flatMap((item) => item.items)
+            .find((item) => item.id === "item_10")?.text,
+        ).toBe("sentinel-10");
+        expect(readComposerDraft(ref).text).toBe("unsent-sentinel");
+      };
+      retained();
+      name = "name-after-resync";
+      fake.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: `thr_${ref}` } });
+      await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.name).toBe(name));
+      retained();
+      fake.emitStateChange("reconnecting");
+      name = "name-after-reconnect";
+      fake.emitReady();
+      await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.name).toBe(name));
+      // Reconnect deliberately starts a fresh transcript baseline. An epochless
+      // hint does not, and must retain every loaded page.
       expect(readComposerDraft(ref).text).toBe("unsent-sentinel");
-    };
-    retained();
-    // Another subscriber changes the hub setting. This tab receives only its
-    // recipient-specific public hint, never a setting or a private workspace key.
-    const writer = new FakeClient("ready");
-    writer.on("evener/thread/manager/set", ({ enabled }) => {
-      setting = { ...setting, enabled, revision: 3 };
-      return { view: { ref, instanceId: `thr_${ref}`, setting } };
-    });
-    await writer.request("evener/thread/manager/set", { ref, enabled: true });
-    fake.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: `thr_${ref}` } });
-    await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.managerSetting).toEqual(on));
-    retained();
-    fake.emitStateChange("reconnecting");
-    setting = { ...setting, enabled: false, revision: 4 };
-    fake.emitReady();
-    await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.managerSetting).toEqual(setting));
-    // Reconnect deliberately starts a fresh transcript baseline. The Manager
-    // hint above does not, and must retain every loaded page.
-    expect(readComposerDraft(ref).text).toBe("unsent-sentinel");
-    expect(
-      threadsStore
-        .getState()
-        .threads.get(ref)
-        ?.turns.flatMap((turn) => turn.items)
-        .map((item) => item.id),
-    ).toEqual(["item_30"]);
-    expect(fake.calls.filter((call) => call.method === "evener/thread/manager/set")).toHaveLength(0);
-    clearDraft(ref);
-  });
+      expect(
+        threadsStore
+          .getState()
+          .threads.get(ref)
+          ?.turns.flatMap((turn) => turn.items)
+          .map((item) => item.id),
+      ).toEqual(["item_30"]);
+      await threadsStore.getState().loadOlderTurns(ref);
+      await threadsStore.getState().loadOlderTurns(ref);
+      retained();
+      clearDraft(ref);
+    },
+  );
 
-  test("Manager subscriber hint during an in-flight read gets the new setting", async () => {
+  test("Manager subscriber hint during an in-flight read gets the latest session projection", async () => {
     const fake = connectFakeClient();
     const reading = deferred<void>();
     const held = deferred<ThreadReadResponse>();
@@ -426,149 +414,40 @@ describe("Manager setting", () => {
     await reading.promise;
     fake.on("thread/read", () =>
       readResponse(ref, {
+        name: "latest-session-name",
         evener: {
           ref,
           capabilities: CAPABILITIES,
           queue: {},
           manager: true,
-          managerEditable: true,
-          managerSetting: on,
         },
       }),
     );
     fake.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: `thr_${ref}` } });
     held.resolve(
       readResponse(ref, {
-        evener: { ref, capabilities: CAPABILITIES, queue: {}, managerEditable: true, managerSetting: off },
+        evener: { ref, capabilities: CAPABILITIES, queue: {}, manager: true },
       }),
     );
     await opening;
-    await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.managerSetting).toEqual(on));
+    await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.name).toBe("latest-session-name"));
+    expect(threadsStore.getState().threads.get(ref)?.manager).toBe(true);
     expect(fake.calls.filter((call) => call.method === "thread/read").length).toBeGreaterThanOrEqual(2);
   });
 
-  test("Manager confirmed view survives a subsequent repository publication", async () => {
+  test("Manager start flag survives a subsequent repository publication", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () =>
-      readResponse(ref, {
-        evener: { ref, capabilities: CAPABILITIES, queue: {}, managerEditable: true, managerSetting: off },
-      }),
+      readResponse(ref, { evener: { ref, capabilities: CAPABILITIES, queue: {}, manager: true } }),
     );
     await threadsStore.getState().ensureThread(ref);
-    fake.on("evener/thread/manager/set", () => ({ view: { ref, instanceId: `thr_${ref}`, setting: on } }));
-    fake.on("thread/read", () => {
-      throw new Error("fixture-offline");
-    });
-    await threadsStore.getState().setManager(ref, true);
-    expect(threadsStore.getState().threads.get(ref)?.managerSetting).toEqual(on);
+    expect(threadsStore.getState().threads.get(ref)?.manager).toBe(true);
     fake.emitNotification({
       method: "thread/status/changed",
       params: { ref, threadId: `thr_${ref}`, status: { type: "active" } },
     });
     await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("active"));
-    expect(threadsStore.getState().threads.get(ref)?.managerSetting).toEqual(on);
-  });
-
-  test("Manager pending blocks duplicate toggles and publishes only confirmed views", async () => {
-    const fake = connectFakeClient();
-    seed();
-    const response = deferred<MethodTypes["evener/thread/manager/set"]["result"]>();
-    fake.on("evener/thread/manager/set", () => response.promise);
-    fake.on("thread/read", () =>
-      readResponse(ref, {
-        evener: {
-          ref,
-          capabilities: CAPABILITIES,
-          queue: {},
-          manager: true,
-          managerEditable: true,
-          managerSetting: on,
-        },
-      }),
-    );
-    const first = threadsStore.getState().setManager(ref, true);
-    expect(threadsStore.getState().managerPending.has(ref)).toBe(true);
-    expect(threadsStore.getState().threads.get(ref)?.managerSetting).toEqual(off);
-    await threadsStore.getState().setManager(ref, false);
-    expect(fake.calls.filter((call) => call.method === "evener/thread/manager/set")).toHaveLength(1);
-    response.resolve({ view: { ref, instanceId: `thr_${ref}`, setting: on } });
-    await first;
-    expect(threadsStore.getState().managerPending.has(ref)).toBe(false);
-    expect(threadsStore.getState().threads.get(ref)?.managerSetting).toEqual(on);
-    expect(fake.calls.find((call) => call.method === "evener/thread/manager/set")?.params).toEqual({
-      ref,
-      enabled: true,
-    });
-  });
-
-  test.each([false, true])(
-    "Manager failure retains confirmed setting and consumes optional error view=%s",
-    async (withView) => {
-      const fake = connectFakeClient();
-      seed();
-      const current = { ...on, hubId: "other-hub" };
-      fake.on("evener/thread/manager/set", () => {
-        throw new WireError(
-          "fixture-refusal",
-          -32000,
-          withView ? { view: { ref, instanceId: `thr_${ref}`, setting: current } } : undefined,
-        );
-      });
-      fake.on("thread/read", () => {
-        throw new Error("fixture-offline");
-      });
-      await expect(threadsStore.getState().setManager(ref, true)).rejects.toBeDefined();
-      expect(threadsStore.getState().managerPending.has(ref)).toBe(false);
-      expect(threadsStore.getState().threads.get(ref)?.managerSetting).toEqual(withView ? current : off);
-      if (withView) expect(threadsStore.getState().threads.get(ref)?.managerEditable).toBe(false);
-    },
-  );
-
-  test("Manager late response cannot cross a replacement instance", async () => {
-    const fake = connectFakeClient();
-    seed();
-    const response = deferred<MethodTypes["evener/thread/manager/set"]["result"]>();
-    fake.on("evener/thread/manager/set", () => response.promise);
-    const first = threadsStore.getState().setManager(ref, true);
-    const replacement = hydrateThread(
-      readResponse(ref, {
-        id: "replacement",
-        evener: {
-          ref,
-          capabilities: CAPABILITIES,
-          queue: {},
-          instanceId: "replacement",
-          managerEditable: true,
-          managerSetting: off,
-        },
-      }),
-      ref,
-      1,
-    );
-    putThreadModel(ref, replacement);
-    fake.on("thread/read", () => {
-      throw new Error("fixture-offline");
-    });
-    response.resolve({ view: { ref, instanceId: `thr_${ref}`, setting: on } });
-    await first;
-    expect(threadsStore.getState().threads.get(ref)?.managerSetting).toEqual(off);
-    expect(threadsStore.getState().threads.get(ref)?.instanceId).toBe("replacement");
-  });
-
-  test("Manager unknown or read-only authority cannot submit", async () => {
-    const fake = connectFakeClient();
-    for (const projection of [{}, { managerEditable: false, managerSetting: on }]) {
-      putThreadModel(
-        ref,
-        hydrateThread(
-          readResponse(ref, { evener: { ref, capabilities: CAPABILITIES, queue: {}, ...projection } }),
-          ref,
-          1,
-        ),
-      );
-      await expect(threadsStore.getState().setManager(ref, true)).rejects.toBeDefined();
-    }
-    expect(fake.calls.filter((call) => call.method === "evener/thread/manager/set")).toHaveLength(0);
+    expect(threadsStore.getState().threads.get(ref)).toMatchObject({ ref, manager: true });
   });
 });
 

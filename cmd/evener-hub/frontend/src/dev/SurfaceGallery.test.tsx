@@ -8,22 +8,16 @@ import SurfaceGallery, { SURFACE_GALLERY_SECTIONS } from "./SurfaceGallery";
 import ChromeSurfaceSection from "./surface-sections/chrome";
 
 test.each([
-  ["confirmed-off", false],
-  ["confirmed-on", true],
-  ["unknown", false],
-  ["read-only", true],
-])("Manager gallery %s renders the real disconnected Details panel", (state, checked) => {
+  ["ordinary", false],
+  ["manager", true],
+  ["existing", false],
+])("Manager gallery %s projects a read-only session role", (state, manager) => {
   render(<ChromeSurfaceSection />);
   const row = screen.getAllByTestId(`manager-fixture-${state}`)[0];
-  fireEvent.click(within(row!).getByRole("button", { name: "Details" }));
-  const toggle = screen.getByRole("switch", { name: "Manager" });
-  expect(toggle.getAttribute("aria-checked")).toBe(String(checked));
-  expect(toggle.hasAttribute("disabled")).toBe(true);
-  if (state === "unknown") expect(screen.queryByTestId("session-details-manager-hub")).toBeNull();
-  else
-    expect(screen.getByTestId("session-details-manager-hub").textContent).toBe(
-      state === "read-only" ? "fixture-other-hub" : "fixture-local-hub",
-    );
+  if (!row) throw new Error("missing fixture row");
+  fireEvent.click(within(row).getByRole("button", { name: "Details" }));
+  expect(screen.queryByRole("switch")).toBeNull();
+  expect(screen.queryByTestId("session-details-manager") !== null).toBe(manager);
 });
 
 afterEach(() => {

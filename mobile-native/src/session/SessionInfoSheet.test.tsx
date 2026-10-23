@@ -2,11 +2,7 @@
 // sessionInfoHosts the way ConversationScreen provides one. The host's
 // controls are a SessionControls-shaped fake whose calls are recorded; only
 // native edges are mocked.
-import type { Thread, ThreadCapabilities, ThreadManagerSetResponse } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { deferred } from "@evener/appwire-client/testing/deferred";
-import { createConversationService } from "../../../mobile/src/services/conversation";
-import { createConversationStore } from "../../../mobile/src/state/conversation";
+import type { ThreadCapabilities } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -23,7 +19,7 @@ import {
 	unmountMountedTrees,
 } from "../renderNative.testkit";
 import type { Routes } from "../screens";
-import { SessionControls } from "../sessionControls";
+import type { SessionControls } from "../sessionControls";
 import { markers, withTestID } from "../markerTestUtils";
 import { sheetKey } from "../sheet/sheetHosts";
 import type { ToastMessage } from "../Toast";
@@ -205,86 +201,19 @@ afterEach(() => {
 });
 
 describe("what the sheet shows (spec 8.6)", () => {
-	it("Manager uses server authority and refuses unknown or offline edits", () => {
-		const { host } = provide(
-			conversation({
-				manager: true,
-				managerEditable: false,
-				managerSetting: { hubId: "other-hub", enabled: true, revision: 4 },
-			}),
-			{ controls: null, ready: false },
-		);
+	it.each([true, false, undefined])("Manager projection %s has no session mutation control", (manager) => {
+		const { host } = provide(conversation({ manager }), { controls: null, ready: false });
 		const tree = sheet();
-		const control = () => tree.root.findByType("Switch" as never);
-		expect(control().props.value).toBe(true);
-		expect(control().props.disabled).toBe(true);
-		act(() => replaceHost({ ...host, session: conversation() }));
-		expect(control().props.disabled).toBe(true);
-		expect(control().props.value).toBe(false);
+		expect(tree.root.findAllByType("Switch" as never)).toHaveLength(0);
+		const group = withTestID(tree, "group:manager");
+		expect(group).toHaveLength(manager ? 1 : 0);
+		if (manager) {
+			expect(group[0]?.findAll((node) => typeof node.props.onPress === "function")).toHaveLength(0);
+		}
+		act(() => replaceHost({ ...host, session: conversation({ ref: "remote:ordinary" }) }));
+		expect(withTestID(tree, "group:manager")).toHaveLength(0);
 	});
 
-	it("Manager switch stays confirmed and disabled until the real control settles", async () => {
-		const client = new FakeClient("ready");
-		const thread: Thread = {
-			id: "thread-1",
-			sessionId: "session",
-			preview: "",
-			ephemeral: false,
-			modelProvider: "test",
-			createdAt: 1,
-			updatedAt: 1,
-			status: { type: "idle" },
-			cwd: "/test",
-			cliVersion: "test",
-			source: "evener",
-			evener: {
-				ref: REF,
-				instanceId: "instance",
-				capabilities: NONE,
-				queue: { revision: 0 },
-				managerEditable: true,
-				managerSetting: { hubId: "hub", enabled: false, revision: 0 },
-			},
-		};
-		client.on("thread/read", () => ({ thread }));
-		const response = deferred<ThreadManagerSetResponse>();
-		client.on("evener/thread/manager/set", () => response.promise);
-		const service = createConversationService(client);
-		const store = createConversationStore();
-		await store.getState().open(service, REF);
-		const controls = new SessionControls(
-			service,
-			async () => {
-				await store.getState().open(service, REF);
-			},
-			() => {},
-			() => true,
-			() => store.getState().conversation,
-			() => true,
-			null,
-			(view) => store.getState().acceptManagerView(view),
-		);
-		const { host } = provide(store.getState().conversation!, { controls });
-		const unsubscribe = store.subscribe((state) => {
-			if (state.conversation) replaceHost({ ...host, session: state.conversation });
-		});
-		const tree = sheet();
-		const control = () => tree.root.findByType("Switch" as never);
-		act(() => control().props.onValueChange(true));
-		expect(control().props.disabled).toBe(true);
-		expect(control().props.value).toBe(false);
-		expect(client.calls.filter((call) => call.method === "evener/thread/manager/set")).toHaveLength(1);
-		thread.evener.manager = true;
-		thread.evener.managerSetting = { hubId: "hub", enabled: true, revision: 1 };
-		await act(async () => {
-			response.resolve({ view: { ref: REF, instanceId: "instance", setting: thread.evener.managerSetting! } });
-		});
-		expect(control().props.value).toBe(true);
-		expect(control().props.disabled).toBe(false);
-		unsubscribe();
-		controls.dispose();
-		store.getState().reset();
-	});
 	it("leads with the name and the state line, with no header title", () => {
 		provide(conversation());
 		const tree = sheet();

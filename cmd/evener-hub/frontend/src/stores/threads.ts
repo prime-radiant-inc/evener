@@ -30,7 +30,6 @@ import type {
 import {
   acquireThreadSubscription,
   applyHistoryReadFailure,
-  applyManagerView,
   applyNotification,
   applyReadResponse,
   buildComposerInput,
@@ -406,8 +405,6 @@ export interface ThreadsStoreState {
   // this resolves once the intent itself is durably committed.
   cancelQueued(ref: string, index: number, expectedEntryId: string): Promise<void>;
   setModel(ref: string, modelProvider: string, model: string): Promise<void>;
-  managerPending: ReadonlySet<string>;
-  setManager(ref: string, enabled: boolean): Promise<void>;
   setReasoningEffort(ref: string, level: string): Promise<void>;
   setVisionModel(ref: string, visionModel: string): Promise<void>;
   // Sets or clears the session's /goal objective (an empty objective
@@ -6829,59 +6826,6 @@ function replaceThread(
 
 export const threadsStore = createStore<ThreadsStoreState>(() => ({
   threads: new Map(),
-  managerPending: new Set(),
-  async setManager(ref, enabled) {
-    if (threadsStore.getState().managerPending.has(ref)) return;
-    const initial = trackedThreadModel(ref);
-    if (!initial?.managerEditable || !initial.managerSetting)
-      throw new Error("Manager setting is read-only or unavailable.");
-    const client = requireClient();
-    const epoch = readyEpoch;
-    const current = () =>
-      wiredClient === client && readyEpoch === epoch && trackedThreadModel(ref)?.instanceId === initial.instanceId;
-    threadsStore.setState((state) => ({ managerPending: new Set([...state.managerPending, ref]) }));
-    const publish = (view: unknown) => {
-      if (!current()) return;
-      const state = threadsStore.getState();
-      // A canonical response may name a separately open alias. Only the
-      // response's exact public ref and instance can accept its fields.
-      for (const [target, model] of new Map([...state.watchedThreads, ...state.threads])) {
-        const next = applyManagerView(model, view);
-        if (next === model) continue;
-        const fields = {
-          manager: next.manager,
-          managerSetting: next.managerSetting,
-          managerEditable: next.managerEditable,
-        };
-        entryTranscriptRoute(target)?.repository?.acceptResponseFields(fields);
-        threadsStore.setState((held) => ({
-          threads: replaceThread(held.threads, target, (value) => applyManagerView(value, view)),
-          watchedThreads: replaceThread(held.watchedThreads, target, (value) => applyManagerView(value, view)),
-        }));
-      }
-    };
-    try {
-      const response = await client.request("evener/thread/manager/set", { ref, enabled });
-      publish(response.view);
-    } catch (error) {
-      if (error instanceof WireError && error.data && typeof error.data === "object" && "view" in error.data)
-        publish(error.data.view);
-      throw error;
-    } finally {
-      // The view does not grant editability. Re-read even on response loss;
-      // never replay a toggle. A failed read retains the last confirmed view.
-      if (current())
-        await threadsStore
-          .getState()
-          .refreshThread(ref)
-          .catch(() => undefined);
-      threadsStore.setState((state) => {
-        const pending = new Set(state.managerPending);
-        pending.delete(ref);
-        return { managerPending: pending };
-      });
-    }
-  },
   mutationWriteStalled: false,
   mutationReconciliationFailures: new Set(),
   mutationReconciliationStorageBlocked: new Set(),

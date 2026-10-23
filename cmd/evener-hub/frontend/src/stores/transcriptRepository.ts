@@ -886,9 +886,7 @@ export class TranscriptRepository {
   }
 
   /** Apply response metadata after the caller's generation and intent fences. */
-  acceptResponseFields(
-    fields: Partial<Pick<ThreadModel, "goal" | "humanNote" | "manager" | "managerEditable" | "managerSetting">>,
-  ): void {
+  acceptResponseFields(fields: Partial<Pick<ThreadModel, "goal" | "humanNote">>): void {
     if (this.#disposed || this.#sealed || !this.#model) return;
     this.#model = { ...this.#model, ...fields };
     this.#publish();

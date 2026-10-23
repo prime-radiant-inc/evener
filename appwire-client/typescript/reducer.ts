@@ -19,7 +19,6 @@ import type {
   EvenerDelegateInfo,
   HistoryUpdatedParams,
   InputItem,
-  ManagerView,
   OutputImage,
   OverlayDeltaParams,
   OverlayItem,
@@ -36,33 +35,6 @@ import type {
 } from "./types.gen";
 import { THREAD_ITEM_EVENT_KINDS } from "./types.gen";
 import { hasWarningText } from "./warningText";
-
-/** A mutation view changes only its selected public instance, never history or
- * routing. Error data may omit the view. Editability still comes from a read. */
-export function applyManagerView<M extends ThreadModel>(model: M, raw: unknown): M {
-  if (!raw || typeof raw !== "object") return model;
-  const view = raw as Partial<ManagerView>;
-  const setting = view.setting;
-  if (
-    view.ref !== model.ref ||
-    view.instanceId !== model.instanceId ||
-    !setting ||
-    typeof setting.hubId !== "string" ||
-    typeof setting.enabled !== "boolean" ||
-    !Number.isSafeInteger(setting.revision) ||
-    setting.revision < 0 ||
-    setting.revision < (model.managerSetting?.revision ?? 0)
-  )
-    return model;
-  return {
-    ...model,
-    manager: setting.enabled,
-    managerSetting: { ...setting },
-    // A view cannot grant editability for a newly selected authority. The
-    // following read supplies that permission, including for a successful enable.
-    managerEditable: model.managerSetting?.hubId === setting.hubId ? model.managerEditable : false,
-  };
-}
 
 function cloneStableDelegate(delegate: EvenerDelegateInfo): EvenerDelegateInfo {
   // JSON objects are open at runtime. Explicitly discard the delegate_send
@@ -2493,8 +2465,6 @@ function threadFields(resp: ThreadReadResponse, ref: string, now: number): Omit<
     reasoningEffort: thread.evener.reasoningEffort,
     visionModel: thread.evener.visionModel ?? "",
     manager: thread.evener.manager ?? false,
-    managerEditable: thread.evener.managerEditable ?? false,
-    managerSetting: thread.evener.managerSetting,
     askPending: thread.evener.askPending ?? false,
     // Go wire-nullable-array rule: omitempty absent means empty, not missing.
     pendingEscalations: thread.evener.pendingEscalations ?? [],
@@ -4461,8 +4431,8 @@ function applyHistoryUpdated<M extends ThreadModel>(model: M, params: HistoryUpd
 }
 
 // Versioned resync invalidates history. A hub's epochless hint only requests
-// a read (Manager setting changes use it too), whose identity determines
-// whether history changed. Invalidating here would drop all loaded pages.
+// a read, whose identity determines whether history changed. Invalidating here
+// would drop all loaded pages.
 function applyResync<M extends ThreadModel>(model: M, params: ThreadResyncParams, now: number): M {
   const held = model.history;
   if (!held) return model;

@@ -20,8 +20,7 @@
 // heading too.
 //
 // Every value comes off the live ThreadModel the status row already reads - no
-// fetch for accounting. The human Manager setting uses the shared mutation
-// owner and keeps its last confirmed value while a write is pending.
+// fetch for accounting. Manager is the session's own start-time property.
 //
 // Cost is EvenerThread.Cost: the "~$X.XX" string appwire.EstimateCost derives
 // server-side from the thread's cumulative usage at the model's catalog price.
@@ -33,17 +32,7 @@
 import type { ThreadModel } from "@evener/appwire-client";
 import { formatTokenCount } from "@evener/appwire-client";
 import { forwardRef, type ReactNode, useImperativeHandle, useState } from "react";
-import { useConnectionStore } from "../../../stores/connection";
-import { threadsStore, useThreadsStore } from "../../../stores/threads";
-import {
-  Button,
-  InlineNotice,
-  Meter,
-  PropertyList,
-  Sheet,
-  type StackedPropertyListRow,
-  Switch,
-} from "../../../widgets";
+import { Button, Meter, PropertyList, Sheet, type StackedPropertyListRow } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { formatTimestamp, sessionTokens, tokenUnitLabel } from "./detailsAccounting";
 import styles from "./detailspanel.module.css";
@@ -126,9 +115,6 @@ function Section({ title, rows }: { title: string; rows: (StackedPropertyListRow
 
 /** Shared details body used by the mobile Sheet and desktop pane. */
 export function DetailsPanelBody({ model, now }: DetailsPanelBodyProps) {
-  const connected = useConnectionStore((state) => state.state === "ready");
-  const pending = useThreadsStore((state) => state.managerPending.has(model.ref));
-  const [managerError, setManagerError] = useState<{ ref: string; message: string } | null>(null);
   const showContext = model.contextWindow > 0 && !isEndedStatus(model.status.type);
   // Remaining is the context window minus what is used, floored at zero - the
   // daemon's own definition of the figure (agent/schema/context_metrics.go's
@@ -158,40 +144,9 @@ export function DetailsPanelBody({ model, now }: DetailsPanelBodyProps) {
           detailRow("model", "session-details-model", modelLabel(model.modelProvider, model.model), true),
           detailRow("state", "session-details-state", model.status.type),
           detailRow("session id", "session-details-id", model.threadId, true),
+          model.manager && detailRow("role", "session-details-manager", "Manager"),
         ]}
       />
-      <section className={CLASS.section}>
-        <Switch
-          label="Manager"
-          checked={model.managerSetting?.enabled ?? false}
-          pending={pending}
-          disabled={!pending && (!connected || !model.managerEditable || !model.managerSetting)}
-          description={
-            !model.managerSetting ? (
-              "Manager setting unavailable."
-            ) : model.managerSetting.hubId ? (
-              <>
-                Hub: <span data-testid="session-details-manager-hub">{model.managerSetting.hubId}</span>
-              </>
-            ) : (
-              "New sessions and forks start with Manager off."
-            )
-          }
-          onChange={(enabled) => {
-            setManagerError(null);
-            void threadsStore
-              .getState()
-              .setManager(model.ref, enabled)
-              .catch(() => {
-                setManagerError({
-                  ref: model.ref,
-                  message: "Could not confirm Manager. Reconnect to check the saved setting before trying again.",
-                });
-              });
-          }}
-        />
-        {managerError?.ref === model.ref && <InlineNotice tone="danger">{managerError.message}</InlineNotice>}
-      </section>
       <Section
         title="Usage"
         rows={[
