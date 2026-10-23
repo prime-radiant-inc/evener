@@ -8,6 +8,7 @@
 // pure function.
 
 import { isLocalHost, normalizeHost } from "../stores/hostRouting";
+import { createSecureUUID } from "../stores/secureUUID";
 import type { PaneTypeId } from "./paneRegistry";
 
 const ROUTE_ENTRY_KEY = "__evenerRouteEntry";
@@ -257,7 +258,9 @@ export function navigate(
   const priorState = window.history.state && typeof window.history.state === "object" ? window.history.state : {};
   const state = {
     ...(options.attentionEntry ? { ...priorState, __evenerAttention: options.attentionEntry } : {}),
-    [ROUTE_ENTRY_KEY]: crypto.randomUUID(),
+    // Guarded: an ordinary HTTP origin outside localhost is not a secure
+    // context, and crypto.randomUUID() does not exist there.
+    [ROUTE_ENTRY_KEY]: createSecureUUID(),
   };
   if (options.replace) window.history.replaceState(state, "", target);
   else window.history.pushState(state, "", target);

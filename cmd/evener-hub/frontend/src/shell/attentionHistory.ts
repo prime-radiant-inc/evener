@@ -1,3 +1,4 @@
+import { createSecureUUID } from "../stores/secureUUID";
 import {
   type AttentionPlacementEntry,
   attentionPlacementIsValid,
@@ -9,7 +10,10 @@ import {
 import { navigate, observeRouteHistory, paneToURL, routeHistoryEntryId } from "./routing";
 
 const STATE_KEY = "__evenerAttention";
-const generation = crypto.randomUUID();
+// Not crypto.randomUUID(): an ordinary HTTP origin outside localhost is not a
+// secure context, so that call does not exist there - and this one runs at
+// module load, before any route renders.
+const generation = createSecureUUID();
 interface Token {
   generation: string;
   id: string;
