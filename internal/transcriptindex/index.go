@@ -27,9 +27,9 @@ const (
 	// formatVersion is the sidecar's layout. projectionID names the projection
 	// its records reproduce; either changing rebuilds every index.
 	formatVersion = 6
-	// v9 retains suppressed COMMUNICATE echoes as observation contributors.
-	// Older indexes lack those links despite having the same JSON field shape.
-	projectionID = "transcript-read-model-v9"
+	// v10 links terminal results for every suppressed COMMUNICATE echo, not
+	// only the first call sharing a visible assistant row.
+	projectionID = "transcript-read-model-v10"
 
 	// tailBytes is how much of the covered prefix's end validation compares,
 	// the check the attention fold cursor uses (agent/session_attention.go).

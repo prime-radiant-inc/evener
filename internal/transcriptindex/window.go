@@ -867,6 +867,7 @@ func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, err
 		if record.Completer.Length > 0 {
 			contributors = append(contributors, record.Completer)
 		}
+		var echoes []appwire.ThreadItem
 		var completedAtEntry uint64
 		for _, c := range contributors {
 			entry, err := r.entry(c.Offset, c.Length)
@@ -879,8 +880,18 @@ func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, err
 					return appwire.ThreadItem{}, err
 				}
 				for _, communication := range projected {
-					if communication.CallID == callID {
-						item.CallID, item.Observation = callID, communication.Observation
+					if communication.Observation != nil {
+						echoes = append(echoes, communication)
+					}
+				}
+				continue
+			}
+			if len(echoes) > 0 && (entry.Kind == schema.TurnToolResults || entry.Kind == schema.TurnTool) {
+				for i := range echoes {
+					if echoes[i].Observation.EndTurn {
+						if accepted := apptranscript.CommunicateTerminalAccepted(*entry, echoes[i].CallID); accepted != nil {
+							echoes[i].Observation.TerminalAccepted = accepted
+						}
 					}
 				}
 				continue
@@ -908,6 +919,16 @@ func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, err
 				return appwire.ThreadItem{}, err
 			}
 			item = foldCall(item, items, callID)
+		}
+		if len(echoes) > 0 {
+			winner := echoes[0]
+			for _, echo := range echoes {
+				if accepted := echo.Observation.TerminalAccepted; echo.Observation.EndTurn && accepted != nil && *accepted {
+					winner = echo
+					break
+				}
+			}
+			item.CallID, item.Observation = winner.CallID, winner.Observation
 		}
 		item.CompletedAtEntry = completedAtEntry
 		// A new-format item that spans entries keeps its opener's identity.

@@ -709,18 +709,11 @@ func (b *builder) completeCommunications(slot uint64, entry *schema.Turn, c cont
 				if uint64(record.Turn) != slot || record.Call.Len == 0 || record.Opener.Ordinal >= c.Ordinal {
 					continue
 				}
-				call, err := b.x.strings.get(record.Call)
+				matches, err := b.communicationMatches(record, id)
 				if err != nil {
 					return err
 				}
-				if string(call) != id {
-					continue
-				}
-				opener, err := b.x.readEntry(record.Opener.Offset, record.Opener.Length)
-				if err != nil {
-					return err
-				}
-				if opener.Kind != schema.TurnAssistant && (opener.Kind != schema.TurnCommunicate || opener.Communicate == nil || opener.Communicate.CallID != id) {
+				if !matches {
 					continue
 				}
 				if err := b.addContributor(position-1, c, c.Ordinal+1); err != nil {
@@ -736,6 +729,33 @@ func (b *builder) completeCommunications(slot uint64, entry *schema.Turn, c cont
 		}
 	}
 	return nil
+}
+
+// A visible assistant row can carry several echoing calls. Its Call field is
+// only the first, so match the recorded contributors rather than that shortcut.
+func (b *builder) communicationMatches(record itemRecord, id string) (bool, error) {
+	data, err := b.x.strings.get(record.Middle)
+	if err != nil {
+		return false, err
+	}
+	contributors, err := decodeContributors(data)
+	if err != nil {
+		return false, err
+	}
+	contributors = append(contributors, record.Opener)
+	if record.Completer.Length > 0 {
+		contributors = append(contributors, record.Completer)
+	}
+	for _, c := range contributors {
+		entry, err := b.x.readEntry(c.Offset, c.Length)
+		if err != nil {
+			return false, err
+		}
+		if entry.Kind == schema.TurnCommunicate && entry.Communicate != nil && entry.Communicate.CallID == id {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // attachCommunicationEcho keeps the visible assistant item and records the
