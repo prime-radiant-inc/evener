@@ -243,8 +243,8 @@ func (c *Client) receiveSessionRequest(ctx context.Context, req Request) {
 
 func (c *Client) respondSessionRequest(ctx context.Context, id ID, value any, err error) {
 	if err != nil {
-		wire, ok := err.(WireError)
-		if !ok {
+		var wire WireError
+		if !errors.As(err, &wire) {
 			wire = Unavailable(err.Error())
 		}
 		c.sendSessionFrameOrClose(ctx, ErrorMessage(id, wire))

@@ -5,10 +5,79 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
 )
+
+type errorSessionOwner struct{ err error }
+
+func (o errorSessionOwner) State(context.Context) (ManagerView, error) { return ManagerView{}, o.err }
+func (o errorSessionOwner) Invoke(context.Context, SessionOperationRequest) (SessionOperationResponse, error) {
+	return SessionOperationResponse{}, o.err
+}
+func (o errorSessionOwner) Watch(context.Context, SessionWatchRequest) (<-chan SessionWatchUpdate, error) {
+	return nil, o.err
+}
+
+func TestSessionToolsReverseWrappedErrorPreservesRecoveryData(t *testing.T) {
+	t.Parallel()
+	for _, stage := range []string{"notAccepted", "created"} {
+		for _, wrapped := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/wrapped=%t", stage, wrapped), func(t *testing.T) {
+				data := map[string]any{"acceptance": stage}
+				if stage == "created" {
+					data["createdRef"], data["createdInstanceID"] = "local:worker", "worker-instance"
+				}
+				wire := WireError{Code: -32042, Message: "fixture", Data: data}
+				var err error = wire
+				if wrapped {
+					err = fmt.Errorf("creation: %w", wire)
+				}
+				got := reverseSessionError(t, err)
+				if got.Code != wire.Code || !reflect.DeepEqual(got.Data, data) {
+					t.Fatalf("reverse error lost recovery contract: %+v", got)
+				}
+			})
+		}
+	}
+	t.Run("nonwire", func(t *testing.T) {
+		got := reverseSessionError(t, errors.New("fixture"))
+		want := Unavailable("unused")
+		if got.Code != want.Code {
+			t.Fatalf("nonwire code=%d, want %d", got.Code, want.Code)
+		}
+	})
+}
+
+func reverseSessionError(t *testing.T, ownerError error) WireError {
+	t.Helper()
+	transport := newMemoryTransport()
+	client := NewClient(transport)
+	client.SetSessionTools(SessionBinding{BindingID: "binding"}, errorSessionOwner{ownerError})
+	t.Cleanup(client.sessionTools.cancel)
+	request := RequestMessage(NewIntID(-1), MethodRuntimeSessionInvoke, SessionRuntimeRequest{BindingID: "binding", Operation: &SessionOperationRequest{Discover: &ThreadListParams{}}})
+	client.receiveSessionRequest(t.Context(), *request.Request)
+	select {
+	case reply := <-transport.writes:
+		if reply.Error == nil || reply.IDString() != "-1" {
+			t.Fatalf("unexpected reverse response: %+v", reply)
+		}
+		raw, err := json.Marshal(reply.Error)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded Message
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		return decoded.Error.Error
+	case <-t.Context().Done():
+		t.Fatal("reverse response did not arrive")
+		return WireError{}
+	}
+}
 
 func TestSessionToolsClosedOperationUnion(t *testing.T) {
 	for _, raw := range []string{`{}`, `{"discover":{},"read":{"ref":"local:a"}}`, `{"method":"thread/read"}`, `{"discover":{},"caller":"local:forged"}`, `{"read":{"ref":"local:a","includeTurns":true}}`, `{"read":{"ref":"local:a","subscribe":true}}`} {
