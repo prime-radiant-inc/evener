@@ -312,18 +312,18 @@ describe("messages that didn't make it (spec 14)", () => {
 			[],
 			true,
 			undefined,
-			unsent("same words"),
+			[{ id: "park-a", ...unsent("same words") }],
 		);
 		expect(list.map((ghost) => [ghost.key, ghost.origin.kind])).toEqual([
 			["pending:unrelated", "pending"],
-			["draft:parked", "parked"],
+			["draft:parked:park-a", "parked"],
 		]);
 		expect(list[1]).toMatchObject({
 			state: "parked",
 			text: "same words",
 			buttons: ["discard"],
 			menu: ["edit"],
-			origin: { kind: "parked" },
+			origin: { kind: "parked", parkId: "park-a" },
 		});
 	});
 

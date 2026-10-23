@@ -37,7 +37,7 @@ export type GhostOrigin =
 	// A draft that stands in for a matched outbox row carries that row's id, so
 	// its Discard can clear both (the draft's uncertainty and the row).
 	| { kind: "draft"; clientMutationId?: string }
-	| { kind: "parked" }
+	| { kind: "parked"; parkId: string }
 	| { kind: "recovery"; row: RecoveryGhostRow };
 
 export interface Ghost {
@@ -91,6 +91,11 @@ export interface UnconfirmedSend {
 	sentText: string;
 }
 
+/** One composition a deliberate replacement set aside. */
+export interface ParkedDraft extends UnconfirmedSend {
+	id: string;
+}
+
 const CAPTIONS: Record<GhostState, string> = {
 	steering: "Steering · arrives at the next step",
 	queued: "Queued · sends when this turn ends",
@@ -122,7 +127,7 @@ export function ghosts(
 	recovery: readonly RecoveryGhostRow[],
 	connected: boolean,
 	local?: LocalQueuedMessages,
-	parkedDraft?: UnconfirmedSend | null,
+	parkedDrafts?: readonly ParkedDraft[],
 ): Ghost[] {
 	// Another client's rows aren't yours to watch.
 	const own = (pending ?? []).filter((entry) => entry.fromThisClient);
@@ -217,15 +222,15 @@ export function ghosts(
 			origin: sameSend === undefined ? { kind: "draft" } : { kind: "draft", clientMutationId: sameSend.id },
 		});
 	}
-	if (parkedDraft !== null && parkedDraft !== undefined) {
+	for (const parked of parkedDrafts ?? []) {
 		out.push({
-			key: "draft:parked",
+			key: `draft:parked:${parked.id}`,
 			state: "parked",
-			text: parkedDraft.text,
+			text: parked.text,
 			caption: CAPTIONS.parked,
 			buttons: ["discard"],
 			menu: ["edit"],
-			origin: { kind: "parked" },
+			origin: { kind: "parked", parkId: parked.id },
 		});
 	}
 	for (const row of recovery) out.push(recoveryGhost(row, confirmButtons));

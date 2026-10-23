@@ -1871,9 +1871,9 @@ it.each([
 	expect(record.composer).toBeUndefined();
 	expect(record.images).toBeUndefined();
 	expect(record.unconfirmed).toBeNull();
-	expect(record.parkedComposition?.text).toBe(before.draft);
-	expect(record.parkedComposition?.composer?.recoveryIds).toEqual([source.clientMutationId]);
-	expect(record.parkedComposition?.images?.map((image) => image.id)).toEqual(withImage ? ["old-image"] : []);
+	expect(record.parkedCompositions?.[0]?.text).toBe(before.draft);
+	expect(record.parkedCompositions?.[0]?.composer?.recoveryIds).toEqual([source.clientMutationId]);
+	expect(record.parkedCompositions?.[0]?.images?.map((image) => image.id)).toEqual(withImage ? ["old-image"] : []);
 	if (withImage)
 		expect(f.tree.root.findAll((node) => node.props.accessibilityLabel === "Image 3: attachment")).not.toHaveLength(0);
 
@@ -1886,7 +1886,7 @@ it.each([
 	});
 	record = f.document.getSnapshot().record;
 	expect(record.draft).toBe("/goal ship");
-	expect(record.parkedComposition?.text).toBe(before.draft);
+	expect(record.parkedCompositions?.[0]?.text).toBe(before.draft);
 
 	// The parked image must not route the goal through ordinary message dispatch.
 	const request = f.client.request;
@@ -1904,14 +1904,14 @@ it.each([
 
 	// Sending the goal leaves the parked work recoverable as its own composition.
 	record = f.document.getSnapshot().record;
-	expect(record.parkedComposition?.text).toBe(before.draft);
-	expect(record.parkedComposition?.images?.map((image) => image.id)).toEqual(withImage ? ["old-image"] : []);
+	expect(record.parkedCompositions?.[0]?.text).toBe(before.draft);
+	expect(record.parkedCompositions?.[0]?.images?.map((image) => image.id)).toEqual(withImage ? ["old-image"] : []);
 	await act(async () => {
-		f.document.restore();
+		f.document.restoreParked(record.parkedCompositions?.[0]?.id ?? "");
 	});
 	record = f.document.getSnapshot().record;
 	expect(record.draft).toBe(before.draft);
-	expect(record.parkedComposition).toBeUndefined();
+	expect(record.parkedCompositions).toBeUndefined();
 	expect(record.composer?.recoveryIds).toEqual([source.clientMutationId]);
 });
 
@@ -1933,6 +1933,26 @@ it("parked ghost Discard keeps an unrelated unconfirmed send", async () => {
 	});
 
 	const record = f.document.getSnapshot().record;
-	expect(record.parkedComposition).toBeUndefined();
+	expect(record.parkedCompositions).toBeUndefined();
 	expect(record.unconfirmed).toBe("/goal ship");
+});
+
+it("text-only parked ghost never shows an unrelated send's images", async () => {
+	const f = await mount(false, false, undefined, "skill", {
+		goal: { objective: "ship", status: "active", iterations: 1 },
+	});
+	await editRecoveryIntoDraft(f, "old goal work");
+	await replaceDraftWithGoal(f);
+	await act(async () => {
+		f.document.addImage({ id: "other", marker: 5, mediaType: "image/png", data: "AQID" });
+		await f.document.submit(async () => false);
+	});
+	await settle();
+
+	const record = f.document.getSnapshot().record;
+	expect(record.parkedCompositions?.[0]?.images ?? []).toEqual([]);
+	expect(record.unconfirmedImages?.map((image) => image.id)).toEqual(["other"]);
+	const parked = f.tree.root.findAll((node) => node.props.ghost?.origin?.kind === "parked")[0];
+	expect(parked).toBeDefined();
+	expect(parked?.props.attachments?.props.images).toEqual([]);
 });

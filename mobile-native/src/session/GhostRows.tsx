@@ -22,8 +22,8 @@ export interface GhostRowHost {
 	editHint: string | null;
 	/** The images an unconfirmed send carried, shown in its bubble. */
 	draftAttachments?: ReactNode;
-	/** The images a parked replacement set aside, shown in its bubble. */
-	parkedAttachments?: ReactNode;
+	/** The images a parked replacement set aside, by park identity. */
+	parkedAttachments?: (parkId: string) => ReactNode;
 	onAction(ghost: Ghost, action: GhostAction): void;
 	onMore(): void;
 }
@@ -46,7 +46,7 @@ export function GhostRowView({ row }: { row: GhostRow }) {
 			backdrop="page"
 			attachments={
 				ghost.origin.kind === "parked"
-					? host.parkedAttachments
+					? host.parkedAttachments?.(ghost.origin.parkId)
 					: ghost.origin.kind === "draft" || ghost.showDraftAttachments
 						? host.draftAttachments
 						: undefined

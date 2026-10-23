@@ -512,40 +512,43 @@ it("replacement parks edited composition separately instead of relabeling or res
 	expect(parked).toMatchObject({
 		draft: "replacement",
 		unconfirmed: null,
-		parkedComposition: {
-			text: original.draft,
-			images: original.images,
-			composer: original.composer,
-		},
+		parkedCompositions: [
+			{
+				text: original.draft,
+				images: original.images,
+				composer: original.composer,
+			},
+		],
 	});
 	expect(parked.composer).toBeUndefined();
-	expect(document.imagePreviews(parked.parkedComposition?.images).map((i) => i.data)).toEqual(["AP8H"]);
+	expect(document.imagePreviews(parked.parkedCompositions?.[0]?.images).map((i) => i.data)).toEqual(["AP8H"]);
 	reopen();
 	expect(document.getSnapshot().record).toMatchObject({
 		draft: "replacement",
-		parkedComposition: {
-			text: original.draft,
-			images: original.images,
-			composer: original.composer,
-		},
+		parkedCompositions: [
+			{
+				text: original.draft,
+				images: original.images,
+				composer: original.composer,
+			},
+		],
 	});
 	// Retained-source proof never appends the park to the replacement.
 	expect(document.restoreEditedRecovery([recovery()])).toBe(false);
 	expect(document.getSnapshot().record.draft).toBe("replacement");
 	// An explicit restore after clearing the composer brings the park back whole.
 	document.edit("");
-	document.restore();
+	document.restoreParked(document.getSnapshot().record.parkedCompositions?.[0]?.id ?? "");
 	expect(document.getSnapshot().record).toMatchObject({
 		draft: original.draft,
 		images: original.images,
 		composer: original.composer,
 	});
-	expect(document.getSnapshot().record.parkedComposition).toBeUndefined();
+	expect(document.getSnapshot().record.parkedCompositions).toBeUndefined();
 	// Discard drops the park without leaving a recovery owner behind.
 	document.replaceDraft("replacement");
-	document.dismissParked();
-	document.restore();
-	expect(repository.read(destination).parkedComposition).toBeUndefined();
+	document.dismissParked(document.getSnapshot().record.parkedCompositions?.[0]?.id ?? "");
+	expect(repository.read(destination).parkedCompositions).toBeUndefined();
 	expect(repository.read(destination).releasedRecoveryIds).toEqual(["source-a"]);
 	expect(repository.read(destination).draft).toBe("replacement");
 });
@@ -554,7 +557,7 @@ it("dismisses only the composition the selected ghost represents", async () => {
 	document.appendEditedRecovery(recovery());
 	document.replaceDraft("/goal one");
 	await document.submit(async () => false);
-	const parked = structuredClone(repository.read(destination).parkedComposition);
+	const parked = structuredClone(repository.read(destination).parkedCompositions?.[0]);
 	expect(parked?.composer?.recoveryIds).toEqual(["source-a"]);
 
 	// Discarding the uncertain send leaves the hidden park and its owner alone.
@@ -562,13 +565,13 @@ it("dismisses only the composition the selected ghost represents", async () => {
 	expect(repository.read(destination)).toMatchObject({
 		draft: "",
 		unconfirmed: null,
-		parkedComposition: parked,
+		parkedCompositions: [parked],
 	});
 	expect(repository.read(destination).releasedRecoveryIds).toBeUndefined();
 
 	// Discarding the park releases only its own sources.
-	document.dismissParked();
-	expect(repository.read(destination).parkedComposition).toBeUndefined();
+	document.dismissParked(parked?.id ?? "");
+	expect(repository.read(destination).parkedCompositions).toBeUndefined();
 	expect(repository.read(destination).releasedRecoveryIds).toEqual(["source-a"]);
 });
 
@@ -577,13 +580,13 @@ it("restores only the parked composition beside an unconfirmed send", async () =
 	document.replaceDraft("/goal one");
 	await document.submit(async () => false);
 
-	document.restoreParked();
+	document.restoreParked(document.getSnapshot().record.parkedCompositions?.[0]?.id ?? "");
 	expect(document.getSnapshot().record).toMatchObject({
 		draft: "[image 1] tail",
 		unconfirmed: "/goal one",
 		composer: { recoveryIds: ["source-a"] },
 	});
-	expect(document.getSnapshot().record.parkedComposition).toBeUndefined();
+	expect(document.getSnapshot().record.parkedCompositions).toBeUndefined();
 });
 
 it("keeps every park and its ownership across repeated replacements", () => {
@@ -603,18 +606,61 @@ it("keeps every park and its ownership across repeated replacements", () => {
 	document.replaceDraft("/goal two");
 	expect(document.getSnapshot().record).toMatchObject({
 		draft: "/goal two",
-		parkedComposition: {
-			text: "[image 1] tail\n\n/goal one\n\nB work",
-			composer: { recoveryIds: ["source-a", "source-b"] },
-		},
+		parkedCompositions: [
+			{ text: "[image 1] tail", composer: { recoveryIds: ["source-a"] } },
+			{ text: "/goal one\n\nB work", composer: { recoveryIds: ["source-b"] } },
+		],
 	});
-	const parkedImageIds = document.getSnapshot().record.parkedComposition?.images?.map((image) => image.id);
+	const parkedImageIds = document.getSnapshot().record.parkedCompositions?.[0]?.images?.map((image) => image.id);
 	expect(parkedImageIds).toHaveLength(1);
 	expect(parkedImageIds?.[0]).toMatch(/^recovered-\d+$/);
 	// Neither parked owner is appended to the latest replacement.
 	expect(document.appendEditedRecovery(recovery("source-a"))).toBe("already-restored");
 	expect(document.appendEditedRecovery(recovery("source-b"))).toBe("already-restored");
 	expect(document.getSnapshot().record.draft).toBe("/goal two");
+});
+
+it("keeps repeated parks within the attachment limit", () => {
+	const images = (count: number) =>
+		Array.from({ length: count }, (_, index) => ({
+			presentationId: `image-${index}`,
+			marker: index + 1,
+			name: `image-${index}.png`,
+			mediaType: "image/png",
+		}));
+	const input = (count: number) => [
+		...Array.from({ length: count }, () => ({ type: "image", mediaType: "image/png", data: "AP8H" })),
+		{ type: "text", text: "body" },
+	];
+	document.appendEditedRecovery(
+		recovery("source-a", {
+			attachments: images(8),
+			payload: { input: input(8) },
+			composerText: "eight images",
+			composerMentions: undefined,
+		}),
+	);
+	document.replaceDraft("/goal one");
+	document.appendEditedRecovery(
+		recovery("source-b", {
+			attachments: images(1),
+			payload: { input: input(1) },
+			composerText: "one image",
+			composerMentions: undefined,
+		}),
+	);
+
+	document.replaceDraft("/goal two");
+	expect(document.getSnapshot().error).toBeNull();
+	const parks = document.getSnapshot().record.parkedCompositions;
+	expect(parks?.map((parked) => parked.images?.length)).toEqual([8, 1]);
+	expect(document.imagePreviews(parks?.[0]?.images)).toHaveLength(8);
+	expect(document.imagePreviews(parks?.[1]?.images)).toHaveLength(1);
+	// Later saving still works; the ninth image reference is not in one park.
+	document.edit("later");
+	document.retry();
+	expect(document.getSnapshot().error).toBeNull();
+	expect(repository.read(destination).draft).toBe("later");
 });
 
 it("retries an unsaved image after a replacement parks it", () => {
@@ -628,7 +674,7 @@ it("retries an unsaved image after a replacement parks it", () => {
 
 	document.replaceDraft("/goal");
 	expect(document.getSnapshot().error).toBeNull();
-	const parked = document.getSnapshot().record.parkedComposition;
+	const parked = document.getSnapshot().record.parkedCompositions?.[0];
 	expect(parked?.images?.map((image) => image.id)).toEqual([recoveredImageId, "pending"]);
 	expect(document.imagePreviews(parked?.images).map((image) => image.data)).toEqual(["AP8H", "BAUG"]);
 	document.retry();
@@ -813,19 +859,21 @@ it("failed replacement retains original durable recovery and can save the parked
 	database.exec("PRAGMA query_only = ON");
 	document.replaceDraft("replacement");
 	expect(repository.read(destination)).toEqual(original);
-	expect(document.getSnapshot().record.parkedComposition?.composer?.recoveryIds).toEqual(["source-a"]);
+	expect(document.getSnapshot().record.parkedCompositions?.[0]?.composer?.recoveryIds).toEqual(["source-a"]);
 	database.exec("PRAGMA query_only = OFF");
 	document.retry();
 	reopen();
 	expect(document.getSnapshot().record).toMatchObject({
 		draft: "replacement",
-		parkedComposition: {
-			text: original.draft,
-			images: original.images,
-			composer: original.composer,
-		},
+		parkedCompositions: [
+			{
+				text: original.draft,
+				images: original.images,
+				composer: original.composer,
+			},
+		],
 	});
-	expect(document.imagePreviews(document.getSnapshot().record.parkedComposition?.images)[0]?.data).toBe("AP8H");
+	expect(document.imagePreviews(document.getSnapshot().record.parkedCompositions?.[0]?.images)[0]?.data).toBe("AP8H");
 });
 
 it("failed emptying keeps recovery ownership until the release save commits", () => {

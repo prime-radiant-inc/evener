@@ -21,9 +21,9 @@ export interface DraftRecord {
 	unconfirmed: string | null;
 	images?: DraftImage[];
 	unconfirmedImages?: DraftImage[];
-	/** Work a deliberate replacement (the goal editor) set aside. Its recovery
-	 * sources stay owned here, never merged into the replacement. */
-	parkedComposition?: DraftParkedComposition;
+	/** Work deliberate replacements (the goal editor) set aside, each kept
+	 * whole with its own recovery sources and never merged into a replacement. */
+	parkedCompositions?: DraftParkedComposition[];
 	unconfirmedCaptureToken?: string;
 	composer?: DraftComposerMetadata;
 	unconfirmedComposer?: DraftComposerMetadata;
@@ -33,6 +33,7 @@ export interface DraftRecord {
 }
 
 export interface DraftParkedComposition {
+	id: string;
 	text: string;
 	images?: DraftImage[];
 	composer?: DraftComposerMetadata;
@@ -163,18 +164,8 @@ export class DraftRepository {
 		if (draftRow?.unconfirmed_composer)
 			record.unconfirmedComposer = JSON.parse(draftRow.unconfirmed_composer) as DraftComposerMetadata;
 		if (draftRow?.parked_composition) {
-			const parked = JSON.parse(draftRow.parked_composition) as {
-				text?: unknown;
-				images?: unknown;
-				composer?: unknown;
-			};
-			const images = parseImages(JSON.stringify(parked.images ?? []));
-			for (const image of images) this.requireImage(destination, image);
-			record.parkedComposition = {
-				text: typeof parked.text === "string" ? parked.text : "",
-				...(images.length ? { images } : {}),
-				...(parked.composer ? { composer: parked.composer as DraftComposerMetadata } : {}),
-			};
+			const parks = this.readParks(destination, draftRow.parked_composition);
+			if (parks.length) record.parkedCompositions = parks;
 		}
 		if (draftRow?.unconfirmed_capture_token) record.unconfirmedCaptureToken = draftRow.unconfirmed_capture_token;
 		if (draftRow?.recovery_resend_acks)
@@ -199,6 +190,25 @@ export class DraftRepository {
 			if (unconfirmedImages.length) record.unconfirmedImages = unconfirmedImages;
 		}
 		return record;
+	}
+
+	private readParks(destination: DraftDestination, value: string): DraftParkedComposition[] {
+		const parsed = JSON.parse(value) as unknown;
+		const entries = Array.isArray(parsed) ? parsed : [parsed];
+		return entries.flatMap((entry, index) => {
+			if (!entry || typeof entry !== "object") return [];
+			const parked = entry as { id?: unknown; text?: unknown; images?: unknown; composer?: unknown };
+			const images = parseImages(JSON.stringify(parked.images ?? []));
+			for (const image of images) this.requireImage(destination, image);
+			return [
+				{
+					id: typeof parked.id === "string" && parked.id ? parked.id : `parked-legacy-${index}`,
+					text: typeof parked.text === "string" ? parked.text : "",
+					...(images.length ? { images } : {}),
+					...(parked.composer ? { composer: parked.composer as DraftComposerMetadata } : {}),
+				},
+			];
+		});
 	}
 
 	private requireImage(destination: DraftDestination, image: DraftImage) {
@@ -229,7 +239,9 @@ export class DraftRepository {
 	write(destination: DraftDestination, record: DraftRecord, additions: DraftImageData[] = []): void {
 		const images = parseImages(JSON.stringify(record.images ?? []));
 		const unconfirmedImages = parseImages(JSON.stringify(record.unconfirmedImages ?? []));
-		const parkedImages = parseImages(JSON.stringify(record.parkedComposition?.images ?? []));
+		const parkedImages = (record.parkedCompositions ?? []).flatMap((parked) =>
+			parseImages(JSON.stringify(parked.images ?? [])),
+		);
 		const referenced = [...images, ...unconfirmedImages, ...parkedImages];
 		withSavepoint(this.db, "draft_write", () => {
 			for (const image of additions) {
@@ -289,7 +301,7 @@ export class DraftRepository {
 			record.unconfirmed === null &&
 			!record.composer &&
 			!record.unconfirmedComposer &&
-			!record.parkedComposition &&
+			!record.parkedCompositions?.length &&
 			!record.unconfirmedCaptureToken &&
 			!record.recoveryResendAcks?.length &&
 			!record.completedCommandRecoveryIds?.length &&
@@ -319,7 +331,7 @@ export class DraftRepository {
 			record.unconfirmed,
 			record.composer ? JSON.stringify(record.composer) : null,
 			record.unconfirmedComposer ? JSON.stringify(record.unconfirmedComposer) : null,
-			record.parkedComposition ? JSON.stringify(record.parkedComposition) : null,
+			record.parkedCompositions?.length ? JSON.stringify(record.parkedCompositions) : null,
 			record.unconfirmedCaptureToken ?? null,
 			record.recoveryResendAcks?.length ? JSON.stringify(record.recoveryResendAcks) : null,
 			record.completedCommandRecoveryIds?.length ? JSON.stringify(record.completedCommandRecoveryIds) : null,

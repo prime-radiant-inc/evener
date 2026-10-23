@@ -69,6 +69,14 @@ function withReleasedRecoveryIds(record: DraftRecord, ids: string[]): DraftRecor
 	return withoutIds;
 }
 
+/** An empty park list is absent state, not a record field. */
+function withParkedCompositions(record: DraftRecord, parks: DraftRecord["parkedCompositions"]): DraftRecord {
+	if (parks?.length) return { ...record, parkedCompositions: parks };
+	if (record.parkedCompositions === undefined) return record;
+	const { parkedCompositions: _omitted, ...withoutParks } = record;
+	return withoutParks;
+}
+
 function releaseEmptyComposerOwnership(record: DraftRecord): DraftRecord {
 	const releasedRecoveryIds = releasedIds(record);
 	const base = withReleasedRecoveryIds(record, releasedRecoveryIds);
@@ -108,27 +116,8 @@ function composition(text: string, images: DraftImage[] = [], metadata?: DraftCo
 	};
 }
 
-/** Repeated replacements accumulate: every parked composition keeps its text,
- * images and recovery ownership, with markers remapped so they stay distinct. */
-function mergeParkedCompositions(
-	existing: DraftParkedComposition | undefined,
-	incoming: DraftParkedComposition,
-): DraftParkedComposition {
-	if (existing === undefined) return incoming;
-	const merged = mergeComposerCompositions(composition(existing.text, existing.images, existing.composer), {
-		...composition(incoming.text, incoming.images, incoming.composer),
-		imageReferences: "recorded",
-	});
-	return {
-		text: merged.text,
-		...(merged.attachments.length ? { images: merged.attachments } : {}),
-		composer: {
-			skillNames: merged.skillNames,
-			commandNames: merged.commandNames,
-			mentions: merged.mentions,
-			recoveryIds: [...new Set([...(existing.composer?.recoveryIds ?? []), ...(incoming.composer?.recoveryIds ?? [])])],
-		},
-	};
+function parkedRecoveryIds(parks: readonly DraftParkedComposition[] | undefined): string[] {
+	return (parks ?? []).flatMap((parked) => parked.composer?.recoveryIds ?? []);
 }
 
 interface DraftSnapshot {
@@ -180,6 +169,8 @@ export class DraftDocument {
 		private createImageId: () => string = () =>
 			`reissue-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
 		private createCaptureToken: () => string = Crypto.randomUUID,
+		private createParkId: () => string = () =>
+			`park-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
 	) {
 		this.retry();
 	}
@@ -201,13 +192,13 @@ export class DraftDocument {
 	}
 	private persist(record: DraftRecord, retainOnFailure: boolean) {
 		if (this.forgotten) return;
-		const persisted = releaseEmptyComposerOwnership(record);
+		const persisted = releaseEmptyComposerOwnership(withParkedCompositions(record, record.parkedCompositions));
 		try {
 			const referenced = new Set(
 				[
 					...(persisted.images ?? []),
 					...(persisted.unconfirmedImages ?? []),
-					...(persisted.parkedComposition?.images ?? []),
+					...(persisted.parkedCompositions ?? []).flatMap((parked) => parked.images ?? []),
 				].map((image) => image.id),
 			);
 			this.repository().write(
@@ -307,13 +298,17 @@ export class DraftDocument {
 					images: undefined,
 					composer: undefined,
 					releasedRecoveryIds: releasedIds(record),
-					parkedComposition: owned
-						? mergeParkedCompositions(record.parkedComposition, {
-								text: record.draft,
-								images: record.images,
-								composer: record.composer,
-							})
-						: record.parkedComposition,
+					parkedCompositions: owned
+						? [
+								...(record.parkedCompositions ?? []),
+								{
+									id: this.createParkId(),
+									text: record.draft,
+									images: record.images,
+									composer: record.composer,
+								},
+							]
+						: record.parkedCompositions,
 				},
 				true,
 			);
@@ -330,7 +325,7 @@ export class DraftDocument {
 			[...(record.composer?.recoveryIds ?? []), ...(record.unconfirmedComposer?.recoveryIds ?? [])].includes(
 				source.clientMutationId,
 			) ||
-			(record.parkedComposition?.composer?.recoveryIds ?? []).includes(source.clientMutationId)
+			parkedRecoveryIds(record.parkedCompositions).includes(source.clientMutationId)
 		)
 			return "already-restored";
 		const recovered = recoverMutationComposition(source);
@@ -747,16 +742,17 @@ export class DraftDocument {
 			/* Retry retains the requested recovery state. */
 		}
 	}
-	/** Discard only the parked replacement, leaving any unconfirmed send. */
-	dismissParked() {
+	/** Discard only the selected park, leaving other parks and any unconfirmed send. */
+	dismissParked(id: string) {
 		const { record, loaded, submitting } = this.snapshot;
-		if (!loaded || submitting || record.parkedComposition === undefined) return;
-		const parkedIds = record.parkedComposition.composer?.recoveryIds ?? [];
+		const parked = record.parkedCompositions?.find((candidate) => candidate.id === id);
+		if (!loaded || submitting || parked === undefined) return;
+		const parkedIds = parked.composer?.recoveryIds ?? [];
 		try {
 			this.persist(
 				{
 					...record,
-					parkedComposition: undefined,
+					parkedCompositions: record.parkedCompositions?.filter((candidate) => candidate.id !== id),
 					releasedRecoveryIds: [...new Set([...releasedIds(record), ...parkedIds])],
 				},
 				true,
@@ -765,21 +761,22 @@ export class DraftDocument {
 			/* Retry retains the requested recovery state. */
 		}
 	}
-	/** Restore only the parked replacement, leaving any unconfirmed send. */
-	restoreParked() {
+	/** Restore only the selected park, leaving other parks and any unconfirmed send. */
+	restoreParked(id: string) {
 		const { record, loaded, submitting } = this.snapshot;
-		if (!loaded || submitting || record.parkedComposition === undefined) return;
+		const parked = record.parkedCompositions?.find((candidate) => candidate.id === id);
+		if (!loaded || submitting || parked === undefined) return;
 		if (record.images?.length || occupiedMetadata(record.composer)) return;
-		const text = restoreUnconfirmedDraft(record.draft, record.parkedComposition.text);
+		const text = restoreUnconfirmedDraft(record.draft, parked.text);
 		if (text === null) return;
 		try {
 			this.persist(
 				{
 					...record,
 					draft: text,
-					images: record.parkedComposition.images,
-					composer: record.parkedComposition.composer,
-					parkedComposition: undefined,
+					images: parked.images,
+					composer: parked.composer,
+					parkedCompositions: record.parkedCompositions?.filter((candidate) => candidate.id !== id),
 				},
 				true,
 			);
@@ -790,16 +787,8 @@ export class DraftDocument {
 	restore() {
 		const { record, loaded, submitting } = this.snapshot;
 		if (!loaded || submitting) return;
-		if (record.unconfirmed === null) {
-			this.restoreParked();
-			return;
-		}
-		if (
-			record.unconfirmed === null ||
-			record.images?.length ||
-			occupiedMetadata(record.composer) ||
-			record.unconfirmedComposer?.recoveryIds?.length
-		)
+		if (record.unconfirmed === null) return;
+		if (record.images?.length || occupiedMetadata(record.composer) || record.unconfirmedComposer?.recoveryIds?.length)
 			return;
 		const text = restoreUnconfirmedDraft(record.draft, record.unconfirmed);
 		if (text === null) return;

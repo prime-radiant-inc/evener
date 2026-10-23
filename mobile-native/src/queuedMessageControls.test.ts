@@ -729,12 +729,12 @@ test.each(["confirmation", "restoration"] as const)(
 		const before = structuredClone(f.document.getSnapshot().record);
 		f.drafts.exec("PRAGMA query_only = ON");
 		if (phase === "confirmation") await reconcileEditedResends(f.runtime, key, f.document);
-		else f.document.restore();
+		else f.document.restoreParked(before.parkedCompositions?.[0]?.id ?? "");
 		expect(f.document.getSnapshot().error).not.toBeNull();
 		expect(f.repository.read(destination)).toEqual(before);
 		expect(
 			f.document
-				.imagePreviews(phase === "confirmation" ? before.unconfirmedImages : before.parkedComposition?.images)
+				.imagePreviews(phase === "confirmation" ? before.unconfirmedImages : before.parkedCompositions?.[0]?.images)
 				.map((i) => i.data),
 		).toEqual(["AP8H"]);
 		if (phase === "confirmation") expect(await f.runtime.readRecoveryResend(key, [id])).toBeDefined();
@@ -744,7 +744,7 @@ test.each(["confirmation", "restoration"] as const)(
 		if (phase === "confirmation") f.document.edit("latest");
 		f.document.retry();
 		if (phase === "confirmation") await reconcileEditedResends(f.runtime, key, f.document);
-		else f.document.restore();
+		else f.document.restoreParked(before.parkedCompositions?.[0]?.id ?? "");
 		expect(f.document.getSnapshot().record.unconfirmed).toBeNull();
 		expect(f.document.getSnapshot().record.draft).toBe(phase === "confirmation" ? "latest" : "[image 1] /skill");
 		expect(f.document.getSnapshot().record.recoveryResendAcks).toBeUndefined();

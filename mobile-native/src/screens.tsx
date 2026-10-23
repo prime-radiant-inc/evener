@@ -2826,10 +2826,13 @@ export function ConversationScreen({
 	// existing durable draft still references these sources, so Discard must not
 	// expose them. An initial append failure leaves the prior record unchanged
 	// and therefore keeps its unrepresented source visible for recovery.
+	const parkedRecoveryIds = (draft.record.parkedCompositions ?? []).flatMap(
+		(parked) => parked.composer?.recoveryIds ?? [],
+	);
 	const representedRecoveryIds = [
 		...(draft.record.composer?.recoveryIds ?? []),
 		...(draft.record.unconfirmedComposer?.recoveryIds ?? []),
-		...(draft.record.parkedComposition?.composer?.recoveryIds ?? []),
+		...parkedRecoveryIds,
 		...(draft.record.completedCommandRecoveryIds ?? []),
 	];
 	const recoveryRows = projectNativeMutationRecovery(recovery.targetKey, recovery.snapshot).filter(
@@ -2846,7 +2849,7 @@ export function ConversationScreen({
 			.map((row) => row.clientMutationId),
 		captured: draft.record.unconfirmedComposer?.recoveryIds,
 		owned: draft.record.composer?.recoveryIds,
-		parked: draft.record.parkedComposition?.composer?.recoveryIds,
+		parked: parkedRecoveryIds,
 		released: draft.record.releasedRecoveryIds,
 		completed: draft.record.completedCommandRecoveryIds,
 		acks: draft.record.recoveryResendAcks,
@@ -2921,15 +2924,11 @@ export function ConversationScreen({
 						readiness: { document: draft, encodingAttachments: imageState.busy },
 					}
 				: undefined,
-			draft.record.parkedComposition === undefined
-				? null
-				: {
-						text: draft.record.parkedComposition.text,
-						sentText: translateAttachmentMarkers(
-							draft.record.parkedComposition.text,
-							draft.record.parkedComposition.images,
-						),
-					},
+			draft.record.parkedCompositions?.map((parked) => ({
+				id: parked.id,
+				text: parked.text,
+				sentText: translateAttachmentMarkers(parked.text, parked.images),
+			})) ?? [],
 		),
 		{ connected, composerLoaded: draft.loaded },
 	);
@@ -3054,8 +3053,8 @@ export function ConversationScreen({
 			return null;
 		}
 		if (origin.kind === "parked") {
-			if (action === "discard") document.dismissParked();
-			else if (action === "edit") document.restoreParked();
+			if (action === "discard") document.dismissParked(origin.parkId);
+			else if (action === "edit") document.restoreParked(origin.parkId);
 			return null;
 		}
 		if (origin.kind === "recovery") {
@@ -3256,12 +3255,12 @@ export function ConversationScreen({
 		canEdit: canEditGhost,
 		editHint: ghostEditHint,
 		draftAttachments: <ImageAttachments document={document} selection={imageSelection} uncertain />,
-		parkedAttachments: (
+		parkedAttachments: (parkId) => (
 			<ImageAttachments
 				document={document}
 				selection={imageSelection}
 				uncertain
-				images={draft.record.parkedComposition?.images}
+				images={draft.record.parkedCompositions?.find((parked) => parked.id === parkId)?.images ?? []}
 			/>
 		),
 		onAction: (ghost, action) => {
