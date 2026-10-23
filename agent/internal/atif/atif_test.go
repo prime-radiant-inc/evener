@@ -1263,6 +1263,28 @@ func TestConvertToATIF_FinalMetricsPromptWireVolume(t *testing.T) {
 	if got := empty.FinalMetrics.Extra["prompt_wire_tokens"]; got != 0 {
 		t.Errorf("empty trajectory prompt_wire_tokens = %v, want 0", got)
 	}
+	emptyData, err := json.Marshal(empty)
+	if err != nil {
+		t.Fatalf("json.Marshal empty: %v", err)
+	}
+	var emptyRaw struct {
+		FinalMetrics struct {
+			Extra map[string]int `json:"extra"`
+		} `json:"final_metrics"`
+	}
+	if err := json.Unmarshal(emptyData, &emptyRaw); err != nil {
+		t.Fatalf("json.Unmarshal empty: %v", err)
+	}
+	for _, key := range []string{"cache_read_tokens", "prompt_wire_tokens"} {
+		got, ok := emptyRaw.FinalMetrics.Extra[key]
+		if !ok {
+			t.Errorf("empty trajectory JSON final_metrics.extra missing %q; want explicit zero", key)
+			continue
+		}
+		if got != 0 {
+			t.Errorf("empty trajectory JSON final_metrics.extra[%q] = %d, want 0", key, got)
+		}
+	}
 }
 
 func TestConvertToATIF_RawUsage(t *testing.T) {
