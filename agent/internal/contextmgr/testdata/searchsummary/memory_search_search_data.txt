@@ -1,0 +1,22 @@
+success
+[memory_search: "p" → 2 matches]
+success_empty
+[memory_search: "p" → 0 matches]
+success_marker_filename
+[memory_search: "p" → 1 matches]
+success_full_park_body
+[memory_search: "p" → 1 matches; The failures so far:; 1. FAILURE_SENTINEL; 2. FAILURE_SENTINEL]
+error_similar_words
+[memory_search: "p" → 1 matches]
+error_missing_delimiter
+[memory_search: "p" → 2 matches]
+error_embedded_marker
+[memory_search: "p" → 1 matches]
+error_later_marker
+[memory_search: "p" → 2 matches]
+error_leading_space
+[memory_search: "p" → 1 matches]
+error_marker_in_note
+[memory_search: "p" → 1 matches; NOTE_SENTINEL evener did not execute this call: SENTINEL]
+error_wrong_case
+[memory_search: "p" → 1 matches]

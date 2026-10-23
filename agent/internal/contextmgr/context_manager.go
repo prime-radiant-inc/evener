@@ -987,7 +987,7 @@ func maskObservations(history []schema.Turn, preserveRecent int, resultToolName 
 // strictly shorter than the original. summarize is injected (summarizeToolResult)
 // and args are the matching tool-call arguments. When mask is false newContent
 // is empty and the caller leaves the result untouched.
-func maskToolResultContent(tr *llm.ToolResultData, resultToolName string, summarize func(name string, content any, args json.RawMessage) string, args json.RawMessage) (newContent string, mask bool) {
+func maskToolResultContent(tr *llm.ToolResultData, resultToolName string, summarize func(name string, content any, isError bool, args json.RawMessage) string, args json.RawMessage) (newContent string, mask bool) {
 	// Never mask error results.
 	if tr.IsError {
 		return "", false
@@ -1006,7 +1006,7 @@ func maskToolResultContent(tr *llm.ToolResultData, resultToolName string, summar
 		return "", false
 	}
 
-	summary := summarize(tr.Name, content, args)
+	summary := summarize(tr.Name, content, tr.IsError, args)
 	// Skip masking if the summary is not shorter than the original.
 	if len(summary) >= len(content) {
 		return "", false
@@ -1056,7 +1056,7 @@ func communicateArgsFromHistory(history []schema.Turn, toolCallID string) (endTu
 }
 
 // summarizeToolResult generates a one-line summary for a tool result.
-func summarizeToolResult(toolName string, content any, args json.RawMessage) string {
+func summarizeToolResult(toolName string, content any, isError bool, args json.RawMessage) string {
 	contentStr := fmt.Sprint(content)
 	var argsMap map[string]any
 	if len(args) > 0 {
@@ -1071,6 +1071,13 @@ func summarizeToolResult(toolName string, content any, args json.RawMessage) str
 			return fmt.Sprint(v)
 		}
 		return ""
+	}
+
+	// Match the breaker's exact leading parkPrefix (agent/internal/tool/breaker.go).
+	// Successful search data can start with the same bytes, so require its error flag.
+	if isError && (toolName == "grep" || toolName == "glob" || toolName == "memory_search") &&
+		strings.HasPrefix(contentStr, "evener did not execute this call: ") {
+		return searchSummary(fmt.Sprintf("%s: %q → refused", toolName, getArg("pattern")), contentStr)
 	}
 
 	switch toolName {
