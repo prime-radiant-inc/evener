@@ -332,7 +332,7 @@ func cmgpCheckPureManagerHelpers(t *testing.T, token string, history []schema.Tu
 		{"communicate", "body", `{}`},
 		{"other", "body", `{}`},
 	} {
-		if got := summarizeToolResult(tc.name, tc.content, json.RawMessage(tc.args)); got == "" {
+		if got := summarizeToolResult(tc.name, tc.content, false, json.RawMessage(tc.args)); got == "" {
 			t.Fatalf("empty summary for %s", tc.name)
 		}
 	}
