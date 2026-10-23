@@ -165,22 +165,48 @@ refresh claim or admission coordinator is introduced.
 
 ## Task 6: Native one-owner Retry
 
-- Keep the clicked failure's turn ID through `runErrorAction` and
-  `retryFailedTurn`; do not lose it at the row boundary.
-- Use `isLatestRetryTurn` on the shared canonical store and
-  `ownPendingTurnInput` over the shared runtime pending projection. Show the
-  action only for the latest own failure; render it disabled while own input is
-  unresolved; recheck both at activation before the existing
-  `document.submitText(TURN_CONTINUATION_TEXT, ...)` path.
-- Preserve `errorAction` sign-in precedence and the existing refusal/recovery
-  paths.
-- Tests: extend `mobile-native/src/session/errorAction.test.ts` and
-  `mobile-native/src/ConversationScreen.retryJourney.test.tsx` with the
-  transition table and activation races; add a two-view shared-store lost-reply
-  case.
+Split into two bounded steps.
+
+### Task 6a: Action identity, predicates, activation
+
+- `errorAction` returns an internal action descriptor carrying the clicked
+  failed turn ID and disabled state; Sign in precedence remains independent.
+  `TimelineItem`/`ErrorRow` carry the source turn ID and set the existing
+  Pressable's `disabled` plus accessibility state together. No design-system
+  widget/props change.
+- Eligibility uses the shared store's `canonicalSession` (only while ready),
+  `pendingMutationsReady`, `isLatestRetryTurn`, and `ownPendingTurnInput`, plus
+  the existing own-failure, connection, focus, capabilities and document-busy
+  checks. Retry is hidden unless the canonical latest own failure is the
+  clicked row; disabled while pending input or canonical/pending readiness is
+  unknown.
+- `retryFailedTurn`/`runErrorAction` retain the clicked turn ID; activation
+  rechecks the current shared store, `handle.live`, attachment focus/binding and
+  document state before the existing `document.submitText(TURN_CONTINUATION_TEXT,
+  ...)` path. A stale callback submits nothing.
+- Tests: `session/errorAction.test.ts` transition table; `TimelineItem.test.tsx`
+  and row tests for source identity + actual disabled/accessibility; screen
+  tests for latest, pending, unknown/failed readiness, two views, stale
+  activation and Sign in precedence.
+
+### Task 6b: Non-wire precondition and `not-sent`
+
+- Add an optional internal `precondition: () => boolean` to
+  `ConversationMutationRequest`, passed from the Retry action through the entry
+  submitter. Recheck the originating attachment, binding, expected source turn
+  and pending readiness/entries immediately before runtime enqueue, and again
+  before direct fallback. No protocol/persistent field.
+- `DraftDocument.submitText` distinguishes a proven local `not-sent` refusal
+  from ordinary false/throw outcomes: clear only that operation's uncertainty
+  marker, keep the live draft text/images, no durable row, no false unconfirmed
+  ghost. Ordinary refusal/recovery behavior unchanged.
+- Tests: retirement while startup is held refuses before commit with no durable
+  row; retirement after commit leaves the row owned by the runtime; `not-sent`
+  preserves an edited draft and images; ordinary outcomes unchanged.
 
 Acceptance: the native unit and journey tests fail before the wiring and pass
 after; no `conversationAdmission` availability policy is introduced.
+
 
 ## Task 7: Native real journey and docs
 
