@@ -3,6 +3,7 @@ import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { parseZoomParams } from "../panes/zoom/intent";
+import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { conversationPaneLifetime } from "./paneLifetime";
 import { type PaneDescriptor, type PaneProps, type PaneTypeId, registerPaneForTests } from "./paneRegistry";
 import {
@@ -507,7 +508,13 @@ describe("replacePrimary", () => {
     const sessionId = workspace.replacePrimary("session", { ref: "local:session-b" });
 
     expect(workspaceStore.getState().panes).toEqual([
-      { id: sessionId, type: "session", params: { ref: "local:session-b" }, slot: "main" },
+      {
+        id: sessionId,
+        type: "session",
+        params: { ref: "local:session-b" },
+        slot: "main",
+        composerSeatId: expect.any(String),
+      },
     ]);
     expect(workspaceStore.getState().focusedPaneId).toBe(sessionId);
   });
@@ -523,7 +530,13 @@ describe("replacePrimary", () => {
 
     expect(repeatedId).toBe(mainId);
     expect(workspaceStore.getState().panes).toEqual([
-      { id: mainId, type: "session", params: { ref: "local:session-a" }, slot: "main" },
+      {
+        id: mainId,
+        type: "session",
+        params: { ref: "local:session-a" },
+        slot: "main",
+        composerSeatId: expect.any(String),
+      },
       { id: secondaryId, type: "doc", params: { ref: "secondary" }, slot: "secondary" },
     ]);
   });
@@ -1251,4 +1264,21 @@ describe("currentSessionRef", () => {
     });
     expect(currentSessionRef(workspaceStore.getState())).toBe("local:a");
   });
+});
+
+test("independent session panes on one ref keep distinct selection seats", () => {
+  installLocalStorage(new MemoryStorage());
+  const workspace = workspaceStore.getState();
+  const mainId = workspace.replacePrimary("session", { ref: "local:shared" });
+  const docId = workspace.openPane("doc", { ref: "doc" });
+  const doc = workspaceStore.getState().panes.find((pane) => pane.id === docId);
+  if (!doc) throw new Error("missing doc pane");
+  expect(workspace.retypePane(doc, "session", { ref: "local:shared" })).toBe(true);
+
+  const sessions = workspaceStore
+    .getState()
+    .panes.filter((pane) => pane.type === "session" && (pane.params as { ref?: unknown }).ref === "local:shared");
+  expect(sessions.map((pane) => pane.id).sort()).toEqual([docId, mainId].sort());
+  expect(new Set(sessions.map((pane) => pane.composerSeatId)).size).toBe(2);
+  for (const pane of sessions) expect(pane.composerSeatId).toBeDefined();
 });

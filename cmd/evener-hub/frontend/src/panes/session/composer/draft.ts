@@ -26,6 +26,7 @@ import { patchSelectionText, type SkillEditorValue } from "./skillDocument";
 const STORAGE_PREFIX = "evener.composer.draft.v1.";
 const STRUCTURED_STORAGE_PREFIX = "evener.composer.draft.v2.";
 const RECOVERY_SELECTION_PREFIX = "evener.composer.recovery.v2.";
+const COMPOSER_SEAT_PREFIX = "evener.composer.seat.v1.";
 const draftRevisions = new Map<string, number>();
 
 // A composer draft: the textarea's text plus the canonical names of the
@@ -92,6 +93,35 @@ export function writeRecoverySelection(ref: string, selectionOwnerId: string, cl
   } catch {
     // Best-effort, like every other composer draft persistence.
   }
+}
+
+// A conversation seat's stable selection scope. Pane ids survive desktop
+// layout restore but not a mobile reload, so the scope is stored beside the
+// pane and the routed ref: the replaced or reconstructed pane reads the same
+// seat rather than a freshly allocated id.
+function storedSeat(key: string): string | undefined {
+  try {
+    const value = localStorage.getItem(key);
+    return value === null || value === "" ? undefined : value;
+  } catch {
+    return undefined;
+  }
+}
+
+function storeSeat(key: string, seatId: string): void {
+  try {
+    localStorage.setItem(key, seatId);
+  } catch {
+    // Best-effort, like every other composer persistence.
+  }
+}
+
+export function readRefComposerSeat(ref: string): string | undefined {
+  return storedSeat(`${COMPOSER_SEAT_PREFIX}ref.${encodeURIComponent(ref)}`);
+}
+
+export function writeComposerSeat(ref: string, seatId: string): void {
+  storeSeat(`${COMPOSER_SEAT_PREFIX}ref.${encodeURIComponent(ref)}`, seatId);
 }
 
 // A successful resume changes the ref, and the recovery rows move with it.

@@ -63,6 +63,7 @@ import {
   composerSelectionScope,
   readDraft,
   readRecoverySelection,
+  readRefComposerSeat,
   writeDraft,
   writeRecoverySelection,
 } from "./composer/draft";
@@ -5694,6 +5695,9 @@ test("an ordinary session resume restores the selected recovery over an older pe
   await refreshPendingTurnsProjection(resumed);
 
   const oldPane: OpenPaneRecord = { id: "pane_session_old", type: "session", params: { ref: oldRef }, slot: "main" };
+  // Advance the pane-id counter so the resumed placement lands on a later id
+  // than the post-reload allocation, as a navigated session does on mobile.
+  workspaceStore.getState().openPane("session", { ref: "local:noise" }, { slot: "secondary" });
   workspaceStore.setState({ panes: [oldPane], focusedPaneId: oldPane.id });
   const oldComposer = conversationPaneLifetime(oldPane).composer;
   if (!oldComposer) throw new Error("outgoing session lifetime lacks its composer");
@@ -5708,9 +5712,10 @@ test("an ordinary session resume restores the selected recovery over an older pe
   if (!placed) throw new Error("route placement did not open the resumed session");
   expect(placed.id).not.toBe(oldPane.id);
   expect(readRecoverySelection(resumed, oldComposer.recoverySelectionOwnerId)).toBe(preserved.clientMutationId);
-  expect(readRecoverySelection(resumed, composerSelectionScope(placed.id))).toBe(preserved.clientMutationId);
+  const placedSeat = placed.composerSeatId ?? placed.id;
+  expect(readRecoverySelection(resumed, composerSelectionScope(placedSeat))).toBe(preserved.clientMutationId);
   const placedComposer = conversationPaneLifetime(placed).composer;
-  expect(placedComposer?.recoverySelectionOwnerId).toBe(composerSelectionScope(placed.id));
+  expect(placedComposer?.recoverySelectionOwnerId).toBe(composerSelectionScope(placedSeat));
   expect(readRecoverySelection(resumed, placedComposer?.recoverySelectionOwnerId ?? "")).toBe(
     preserved.clientMutationId,
   );
@@ -5722,77 +5727,109 @@ test("an ordinary session resume restores the selected recovery over an older pe
   );
   await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe(localText));
   expect(screen.getByRole("button", { name: "View preserved.png" })).toBeTruthy();
-});
+  expect(readRefComposerSeat(resumed)).toBe(placedSeat);
 
-test("a nested session resume in a secondary pane restores the selected recovery", async ({ onTestFinished }) => {
-  vi.mocked(ComposerModule.Composer).mockRestore();
-  onTestFinished(stubSessionSlots);
-  const ownerRef = "local:owner";
-  const oldChildRef = "local:child-old";
-  const resumed = "local:child-resumed";
-  const fake = connectFakeClient();
-  fake.on("thread/read", ({ ref: readRef }) => readResponse(readRef ?? resumed));
-
-  const peerInput = [{ type: "text" as const, text: "peer child work" }];
-  const peer = await mutationStorage.enqueueIntent({
-    targetRef: resumed,
-    method: "turn/start",
-    payload: { ref: resumed, input: peerInput },
-    attachments: [],
-    composerText: "peer child work",
-    optimisticDisplay: { method: "turn/start", input: peerInput },
-  });
-  await mutationStorage.transferToRecovery(peer.clientMutationId, "rejected");
-  const localText = "local child [image 1]";
-  const localInput = [
-    { type: "text" as const, text: localText },
-    { type: "image" as const, mediaType: "image/png", data: "AQID", name: "child.png" },
-  ];
-  const preserved = await mutationStorage.enqueueIntent({
-    targetRef: resumed,
-    method: "turn/start",
-    payload: { ref: resumed, input: localInput },
-    attachments: [
-      {
-        presentationId: "child-presentation",
-        marker: 1,
-        name: "child.png",
-        mediaType: "image/png",
-        blob: new Blob([Uint8Array.of(1, 2, 3)], { type: "image/png" }),
-      },
-    ],
-    composerText: localText,
-    optimisticDisplay: { method: "turn/start", input: localInput },
-  });
-  await mutationStorage.transferToRecovery(preserved.clientMutationId, "rejected");
-  await refreshPendingTurnsProjection(resumed);
-
-  const ownerPane: OpenPaneRecord = { id: "pane_owner", type: "session", params: { ref: ownerRef }, slot: "main" };
-  const oldChildPane: OpenPaneRecord = {
-    id: "pane_child_old",
-    type: "session",
-    params: { ref: oldChildRef },
-    slot: "secondary",
-  };
-  workspaceStore.setState({ panes: [ownerPane, oldChildPane], focusedPaneId: ownerPane.id });
-  const oldChildComposer = conversationPaneLifetime(oldChildPane).composer;
-  if (!oldChildComposer) throw new Error("outgoing child lifetime lacks its composer");
-  // The child seat carried its selection under the outgoing child's scope.
-  writeRecoverySelection(resumed, oldChildComposer.recoverySelectionOwnerId, preserved.clientMutationId);
-
-  openNestedSessionWithOwner(resumed, ownerRef);
-  const placedChild = workspaceStore
+  // Reload: the route reconstructs with a different pane id, but the persisted
+  // conversation seat still finds the selected recovery.
+  cleanup();
+  resetWorkspaceStoreForTests();
+  openTopLevelSession(resumed);
+  const reloadedPane = workspaceStore
     .getState()
     .panes.find((pane) => pane.type === "session" && (pane.params as { ref?: unknown }).ref === resumed);
-  if (!placedChild) throw new Error("route placement did not open the resumed child");
-  expect(placedChild.id).not.toBe(oldChildPane.id);
-  expect(readRecoverySelection(resumed, composerSelectionScope(placedChild.id))).toBe(preserved.clientMutationId);
-
+  if (!reloadedPane) throw new Error("reload placement did not open the resumed session");
+  expect(reloadedPane.id).not.toBe(placed.id);
+  expect(readRefComposerSeat(resumed)).toBe(placedSeat);
+  const reloadedSeat = reloadedPane.composerSeatId ?? reloadedPane.id;
+  expect(reloadedSeat).toBe(placedSeat);
+  expect(readRecoverySelection(resumed, composerSelectionScope(reloadedSeat))).toBe(preserved.clientMutationId);
   render(
     <ClientProvider client={fake}>
-      <Session params={{ ref: resumed }} paneId={placedChild.id} focused={true} />
+      <Session params={{ ref: resumed }} paneId={reloadedPane.id} focused={true} />
     </ClientProvider>,
   );
   await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe(localText));
-  expect(screen.getByRole("button", { name: "View child.png" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "View preserved.png" })).toBeTruthy();
 });
+
+for (const ownerSlot of ["main", "secondary"] as const) {
+  test(`a nested session resume with its owner in ${ownerSlot} restores the selected recovery`, async ({
+    onTestFinished,
+  }) => {
+    vi.mocked(ComposerModule.Composer).mockRestore();
+    onTestFinished(stubSessionSlots);
+    const ownerRef = "local:owner";
+    const oldChildRef = "local:child-old";
+    const resumed = "local:child-resumed";
+    const fake = connectFakeClient();
+    fake.on("thread/read", ({ ref: readRef }) => readResponse(readRef ?? resumed));
+
+    const peerInput = [{ type: "text" as const, text: "peer child work" }];
+    const peer = await mutationStorage.enqueueIntent({
+      targetRef: resumed,
+      method: "turn/start",
+      payload: { ref: resumed, input: peerInput },
+      attachments: [],
+      composerText: "peer child work",
+      optimisticDisplay: { method: "turn/start", input: peerInput },
+    });
+    await mutationStorage.transferToRecovery(peer.clientMutationId, "rejected");
+    const localText = "local child [image 1]";
+    const localInput = [
+      { type: "text" as const, text: localText },
+      { type: "image" as const, mediaType: "image/png", data: "AQID", name: "child.png" },
+    ];
+    const preserved = await mutationStorage.enqueueIntent({
+      targetRef: resumed,
+      method: "turn/start",
+      payload: { ref: resumed, input: localInput },
+      attachments: [
+        {
+          presentationId: "child-presentation",
+          marker: 1,
+          name: "child.png",
+          mediaType: "image/png",
+          blob: new Blob([Uint8Array.of(1, 2, 3)], { type: "image/png" }),
+        },
+      ],
+      composerText: localText,
+      optimisticDisplay: { method: "turn/start", input: localInput },
+    });
+    await mutationStorage.transferToRecovery(preserved.clientMutationId, "rejected");
+    await refreshPendingTurnsProjection(resumed);
+
+    const ownerPane: OpenPaneRecord = { id: "pane_owner", type: "session", params: { ref: ownerRef }, slot: ownerSlot };
+    const oldChildPane: OpenPaneRecord = {
+      id: "pane_child_old",
+      type: "session",
+      params: { ref: oldChildRef },
+      slot: ownerSlot === "main" ? "secondary" : "main",
+    };
+    workspaceStore.setState({
+      panes: ownerSlot === "main" ? [ownerPane, oldChildPane] : [oldChildPane, ownerPane],
+      focusedPaneId: ownerPane.id,
+    });
+    const oldChildComposer = conversationPaneLifetime(oldChildPane).composer;
+    if (!oldChildComposer) throw new Error("outgoing child lifetime lacks its composer");
+    // The child seat carried its selection under the outgoing child's scope.
+    writeRecoverySelection(resumed, oldChildComposer.recoverySelectionOwnerId, preserved.clientMutationId);
+
+    openNestedSessionWithOwner(resumed, ownerRef);
+    const placedChild = workspaceStore
+      .getState()
+      .panes.find((pane) => pane.type === "session" && (pane.params as { ref?: unknown }).ref === resumed);
+    if (!placedChild) throw new Error("route placement did not open the resumed child");
+    expect(placedChild.id).not.toBe(oldChildPane.id);
+    expect(readRecoverySelection(resumed, composerSelectionScope(placedChild.composerSeatId ?? placedChild.id))).toBe(
+      preserved.clientMutationId,
+    );
+
+    render(
+      <ClientProvider client={fake}>
+        <Session params={{ ref: resumed }} paneId={placedChild.id} focused={true} />
+      </ClientProvider>,
+    );
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe(localText));
+    expect(screen.getByRole("button", { name: "View child.png" })).toBeTruthy();
+  });
+}
