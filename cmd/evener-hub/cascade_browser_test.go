@@ -230,6 +230,9 @@ func TestAgentCascadeBrowser(t *testing.T) {
 					scriptErr <- err
 					return
 				}
+				// The loop owns the maps; register the held call here so a
+				// follow-up request that names it still resolves its role.
+				toolOwners[call.ToolCallID()] = role
 				ancestorHeld = true
 				// The other roles may already be complete if the serial loop
 				// reached them first; in that order this hold branch owns the

@@ -46,6 +46,7 @@ provider round.
    phases[role]++
    if role == 1 && phase == 1 {
        write provider-ancestor-held.json: {"role":1,"phase":1}
+       toolOwners[call.ToolCallID()] = role
        ancestorHeld = true
        go func(call *fakellm.Call) {
            select {
@@ -126,11 +127,13 @@ delegate row cannot remount the source reader during its reading checks.
    stale `active` metadata, and the re-acquired store reuses it, so the
    six-edge idle assertion would fail even though the live status is idle.
    This product defect is filed as #4878. The driver reloads the page after
-   Return, which makes every subscription re-read the hub's current status,
-   then re-opens the source and asserts the reload restored the saved source
-   pane identity and tab count (it does not silently accept replacements)
-   before recapturing them. The baseline source-reading setup and main journey
-   then run unchanged with refs[1] idle.
+   Return (waiting for the reload's own load event before re-opening, so
+   `openSession` cannot return against the outgoing document), which makes
+   every subscription re-read the hub's current status. It then re-opens the
+   source and asserts the reload restored the saved source pane identity and
+   tab count (it does not silently accept replacements) before recapturing
+   them. The baseline source-reading setup and main journey then run unchanged
+   with refs[1] idle.
 
 ## Exact accessibility assertions
 

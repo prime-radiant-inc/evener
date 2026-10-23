@@ -1578,6 +1578,26 @@ async function waitFrames(predicate, label) {
   });
 }
 
+// Page.reload resolves before the old document is replaced, so a following
+// openSession can see the outgoing document's rail row and composer and return
+// against it. Wait for the reload's own load event before re-opening.
+async function reloadDocument() {
+  const loaded = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => finish(new Error("reload did not fire its load event")), 15000);
+    const handler = (event) => {
+      if (JSON.parse(event.data).method === "Page.loadEventFired") finish();
+    };
+    const finish = (error) => {
+      clearTimeout(timer);
+      driver.page.ws.removeEventListener("message", handler);
+      error ? reject(error) : resolve();
+    };
+    driver.page.ws.addEventListener("message", handler);
+  });
+  await driver.send("Page.reload", { ignoreCache: true });
+  await loaded;
+}
+
 const sent = (after = 0) => frames.slice(after).filter(f => f.direction === "Network.webSocketFrameSent");
 const answered = (request) => frames.some(f => f.direction === "Network.webSocketFrameReceived" && f.id === request.id && Object.hasOwn(f, "result") && !f.error);
 
@@ -1753,7 +1773,7 @@ try {
   assert.ok(fixture.sourcePaneId, "source has a committed Dockview pane ID");
   fixture.sourceTabCount = await read("document.querySelectorAll('.dv-tab').length");
   await dottedAncestorJourney();
-  await driver.send("Page.reload", { ignoreCache: true });
+  await reloadDocument();
   await driver.openSession(fixture.rootRef);
   const restoredSourcePaneId = await read(`document.querySelector(${q(`${sourceFooter} [data-pane-id]`)})?.dataset.paneId`);
   assert.ok(restoredSourcePaneId, "reloaded source has a committed Dockview pane ID");
