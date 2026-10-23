@@ -233,7 +233,9 @@ func (s *SessionLogStrategy) sessionLogCheckpointWithMeta(history []schema.Turn,
 		b.WriteString("(no entries)")
 	}
 	carry, _ := partnerConversationMarkdown(data.conversation, meta.hasTranscript(), 0)
-	text := renderStrategyCheckpoint(sessionLogCheckpointStart, "## Session Log", b.String(), carry, data.earlierSummaries, meta)
+	modelText := b.String()
+	earlier := sessionLogEarlierContext(data.earlierSummaries, modelText)
+	text := renderStrategyCheckpoint(sessionLogCheckpointStart, "## Session Log", modelText, carry, earlier, meta)
 	checkpointTurn := schema.NewTurn(schema.TurnCheckpoint, llm.User(text))
 	result := make([]schema.Turn, 0, 1+preserveRecent)
 	result = append(result, checkpointTurn)

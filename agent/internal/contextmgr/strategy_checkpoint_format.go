@@ -24,6 +24,23 @@ func strategyCheckpointOpening(text string) (opening, heading string) {
 	}
 }
 
+// sessionLogEarlierContext keeps independent earlier context, but not a log
+// snapshot whose complete body is already present in the current cumulative
+// log. A shorter or different log cannot supersede the old snapshot.
+func sessionLogEarlierContext(earlier []string, current string) []string {
+	var kept []string
+	for _, summary := range earlier {
+		if strings.HasPrefix(summary, sessionLogCheckpointStart) {
+			previous, ok := parseStrategyCheckpoint(summary)
+			if ok && len(previous.conversation) == 0 && len(previous.earlier) == 0 && strings.Contains(current, previous.modelText) {
+				continue
+			}
+		}
+		kept = append(kept, summary)
+	}
+	return kept
+}
+
 func renderStrategyCheckpoint(opening, heading, modelText, carry string, earlier []string, meta *CompactionMeta) string {
 	// Earlier-summary extraction, like conversation extraction, trims only
 	// surrounding whitespace. Render that canonical form on the first fold too.
@@ -39,32 +56,47 @@ func renderStrategyCheckpoint(opening, heading, modelText, carry string, earlier
 // raw logs may quote checkpoint examples: their headings cannot establish who
 // said something. Fencing the entire free-text body protects the new format.
 func carriesStrategyPartnerMessages(text string) bool {
+	_, ok := parseStrategyCheckpoint(text)
+	return ok
+}
+
+type parsedStrategyCheckpoint struct {
+	modelText    string
+	earlier      []string
+	conversation []checkpointConversationEntry
+}
+
+func parseStrategyCheckpoint(text string) (parsedStrategyCheckpoint, bool) {
 	opening, heading := strategyCheckpointOpening(text)
 	if opening == "" {
-		return false
+		return parsedStrategyCheckpoint{}, false
 	}
 	start, body, end, ok := markdownSectionSpan(text, heading)
 	if !ok {
-		return false
+		return parsedStrategyCheckpoint{}, false
 	}
 	modelText, ok := soleFencedText(text[body:end])
 	if !ok {
-		return false
+		return parsedStrategyCheckpoint{}, false
 	}
 	prefix := strings.TrimPrefix(text[:start], opening)
 	if line, after, found := strings.Cut(prefix, "\n"); found && strings.HasPrefix(line, "Earlier history was compacted into this checkpoint ") {
 		prefix = after
 	}
-	if prefix != renderCheckpointEarlierSummaries(extractCheckpointEarlierSummaries(text)) {
-		return false
+	earlier := extractCheckpointEarlierSummaries(text)
+	if prefix != renderCheckpointEarlierSummaries(earlier) {
+		return parsedStrategyCheckpoint{}, false
 	}
 	entries := extractMarkdownConversation(text)
 	for _, entry := range entries {
 		if entry.Role != "user" {
-			return false
+			return parsedStrategyCheckpoint{}, false
 		}
 	}
-	return text[start:] == renderCompactionModelText(heading, modelText+"\n")+renderCheckpointConversation(entries)+"[END CHECKPOINT]"
+	if text[start:] != renderCompactionModelText(heading, modelText+"\n")+renderCheckpointConversation(entries)+"[END CHECKPOINT]" {
+		return parsedStrategyCheckpoint{}, false
+	}
+	return parsedStrategyCheckpoint{modelText: modelText, earlier: earlier, conversation: entries}, true
 }
 
 // strategyCheckpointSource keeps ambiguous older checkpoints as model context.
