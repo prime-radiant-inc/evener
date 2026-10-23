@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"primeradiant.com/evener/appwire"
@@ -368,6 +369,14 @@ type hubRelayFunctions struct {
 var observeHubRelayFunctions func(hubRelayFunctions)
 var observeHubRelayWait func()
 
+// Test-only observations for the bounded pending-delivery queue, its delivery
+// input, and authoritative route publication. Production never stores them;
+// each call site is one load and nil check.
+var observeHubRelayPending atomic.Pointer[func(int)]
+var observeHubRelayPendingBackpressure atomic.Pointer[func()]
+var observeHubRelayRoutePublication atomic.Pointer[func()]
+var observeHubRelayDeliveryRead atomic.Pointer[func(string)]
+
 // threadRelayTarget resolves the relay key (source.ID()+":"+threadID) and the
 // bare threadID for a read-shaped request. This is the delivery routing
 // identity, not the canonical session identity used to cancel pending reads.
@@ -669,6 +678,12 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				served map[string]bool
 			}
 			pendingDeliveries := make([]pendingRelayDelivery, 0, hubRelayPendingDeliveryLimit)
+			// Test-only: report the retained count after every mutation.
+			recordPending := func() {
+				if observe := observeHubRelayPending.Load(); observe != nil {
+					(*observe)(len(pendingDeliveries))
+				}
+			}
 			// routeChangeWait is the wake-up a parked frame waits on.
 			// signalRouteChangeLocked closes handle.routeChanged and installs a
 			// fresh one, so this must be taken before the routes are read that
@@ -890,6 +905,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					publishDelivery(pending.delivery, targets)
 				}
 				pendingDeliveries = kept
+				recordPending()
 			}
 			hasPendingTarget := func(routingKey string) bool {
 				for _, pending := range pendingDeliveries {
@@ -913,12 +929,19 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					acknowledge(delivery)
 					if stillPending {
 						pendingDeliveries = append(pendingDeliveries, pending)
+						recordPending()
 					}
 					return
 				}
 				routingKey, routing := relayNotificationRoutingKey(delivery.Notification, handle.canonical.SourceID)
+				// Test-only: observe each delivery the fan-out reads, before
+				// routing. Daemon-gone deliveries return above and are not seen.
+				if observe := observeHubRelayDeliveryRead.Load(); observe != nil {
+					(*observe)(routingKey)
+				}
 				if routing == relayNotificationTargeted && hasPendingTarget(routingKey) {
 					pendingDeliveries = append(pendingDeliveries, pendingRelayDelivery{delivery: delivery, routingKey: routingKey, routing: routing})
+					recordPending()
 					if delivery.Proceed != nil {
 						delivery.Proceed()
 					}
@@ -928,6 +951,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				targets, pending := lookupTargets(routingKey, routing)
 				if pending {
 					pendingDeliveries = append(pendingDeliveries, pendingRelayDelivery{delivery: delivery, routingKey: routingKey, routing: routing})
+					recordPending()
 					if observeHubRelayWait != nil {
 						observeHubRelayWait()
 					}
@@ -1013,6 +1037,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				var deliveryInput <-chan appsource.RelayDelivery
 				if len(pendingDeliveries) < hubRelayPendingDeliveryLimit {
 					deliveryInput = deliveries
+				} else if observe := observeHubRelayPendingBackpressure.Load(); observe != nil {
+					// Test-only: the bound has stopped the delivery input.
+					(*observe)()
 				}
 				var routeChanged <-chan struct{}
 				if len(pendingDeliveries) != 0 {
@@ -1166,6 +1193,11 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						panic(recovered)
 					}
 				}()
+				// Test-only: hold authoritative publication before any route
+				// binding or resolveRoutesLocked decrement of pendingRoutes.
+				if observe := observeHubRelayRoutePublication.Load(); observe != nil {
+					(*observe)()
+				}
 				for {
 					if err := publicationCtx.Err(); err != nil {
 						relayMu.Lock()

@@ -104,7 +104,6 @@ func (s *RemoteHubSource) HostCapabilities(ctx context.Context) (HostCapabilitie
 	if err != nil {
 		return HostCapabilities{}, s.mapCallError(err)
 	}
-
 	if caps, ok := s.cachedCapabilities(client); ok {
 		return caps, nil
 	}
@@ -116,7 +115,12 @@ func (s *RemoteHubSource) HostCapabilities(ctx context.Context) (HostCapabilitie
 	handshakeFn := s.handshake
 	s.probeMu.Unlock()
 
+	// The client captured the connection's initialize response, so its feature
+	// set is the handshake floor even when the optional facts/handshake seams are
+	// unwired (tests and embedders). The seams below override it with the same
+	// facts captured for this exact generation.
 	var caps HostCapabilities
+	caps.Features = client.Features()
 	// The global layer is a function of the hub's state root, not a working
 	// directory, but hubLaunchController.GetLayer canonicalizes params.CWD
 	// before it dispatches on the layer, and CanonicalizeDir rejects the empty
@@ -210,16 +214,42 @@ func (s *RemoteHubSource) HostCapabilities(ctx context.Context) (HostCapabilitie
 	return caps.clone(), nil
 }
 
-// cachedCapabilities returns the probe cached against client, if any. The
-// cache is keyed on the client pointer so a reconnect's new client forces a
-// fresh probe; a stale publish is therefore self-correcting on the next call.
-func (s *RemoteHubSource) cachedCapabilities(client *appwire.Client) (HostCapabilities, bool) {
+// cachedProbe returns the probe cached against client, if any. The cache is
+// keyed on the client pointer so a reconnect's new client forces a fresh probe;
+// a stale publish is therefore self-correcting on the next call.
+//
+// The returned snapshot is immutable after publish: HostCapabilities writes a
+// fresh value and never mutates a cached one, so a caller may read the fields it
+// needs outside the lock instead of cloning the whole snapshot.
+func (s *RemoteHubSource) cachedProbe(client *appwire.Client) (*remoteHubProbe, bool) {
 	s.probeMu.Lock()
 	defer s.probeMu.Unlock()
 	if s.probe != nil && s.probe.client == client {
-		return s.probe.caps.clone(), true
+		return s.probe, true
 	}
-	return HostCapabilities{}, false
+	return nil, false
+}
+
+// cachedCapabilities returns a deep copy of the probe cached against client.
+func (s *RemoteHubSource) cachedCapabilities(client *appwire.Client) (HostCapabilities, bool) {
+	probe, ok := s.cachedProbe(client)
+	if !ok {
+		return HostCapabilities{}, false
+	}
+	return probe.caps.clone(), true
+}
+
+// cachedCapabilityFeatures returns the handshake feature set from the probe
+// cached against client, without cloning the snapshot's unrelated surfaces.
+// The thread mask runs on every thread-bearing response and every status frame,
+// so it must not deep-copy models, plugins, auth, instances, or launch config
+// to read one value struct.
+func (s *RemoteHubSource) cachedCapabilityFeatures(client *appwire.Client) (appwire.FeatureSet, bool) {
+	probe, ok := s.cachedProbe(client)
+	if !ok {
+		return appwire.FeatureSet{}, false
+	}
+	return probe.caps.Features, true
 }
 
 // clone returns a deep copy of the snapshot: every slice, map, and pointer

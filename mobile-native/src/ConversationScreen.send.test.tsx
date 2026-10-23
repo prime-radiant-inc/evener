@@ -2498,15 +2498,31 @@ it.each(["idle", "active"] as const)(
 		await type(tree, "keep this");
 		const destination = { hubId: "hub-1", sessionRef: ref };
 		const document = drafts.open(destination);
+		const draftWrites = vi.spyOn(nativeDrafts(), "write");
 		act(() =>
 			document.addImage({ id: "draft-image", marker: 1, mediaType: "image/png", name: "draft.png", data: "AQID" }),
 		);
 		const before = document.getSnapshot().record;
 		const imagesBefore = nativeDrafts().imageInputs(destination, before.images ?? []);
+		const method = status === "idle" ? "turn/start" : "turn/queue";
+		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+		const request = client.request;
+		client.request = async (requested, params) => {
+			const answer = await request(requested, params);
+			if (requested === method) throw new Error("connection lost after admission");
+			return answer;
+		};
 		playedHaptics.length = 0;
 		await press(tree, "Retry");
-		const method = status === "idle" ? "turn/start" : "turn/queue";
 		expect(hub.mutations()).toEqual([method]);
+		const retryCapture = draftWrites.mock.calls.find(([, record]) => record.unconfirmed === "continue")?.[1];
+		expect(retryCapture?.unconfirmedCaptureToken).toBeTruthy();
+		const runtime = getNativeMutationRuntime();
+		const targetKey = nativeMutationTargetKey("hub-1", ref);
+		const admittedRetry = (await runtime.read(targetKey)).outbox.find(
+			(row) => row.method === method && row.composerText === "continue",
+		);
+		expect(admittedRetry).toMatchObject({ draftCaptureToken: retryCapture?.unconfirmedCaptureToken });
 		// Spec 16.6: a light impact on send, a retry's included.
 		expect(playedHaptics).toEqual(["impact:light"]);
 		const start = hub.requests.find((request) => request.method === method);
@@ -2763,6 +2779,80 @@ it("resumes a paused session from Send, not from its error row", async () => {
 	).toEqual(["ref-error-resume"]);
 });
 
+it("resumes with the edited recovery context, consuming its source once", async () => {
+	const ref = "ref-error-resume-recovery";
+	const served = thread(ref, "idle");
+	(served as unknown as { evener: Record<string, unknown> }).evener.resumeRequired = true;
+	const { tree, hub } = await mount(served);
+	const runtime = getNativeMutationRuntime();
+	const targetKey = nativeMutationTargetKey("hub-1", ref);
+	const text = "Run /review on [image 1]";
+	const mention = { kind: "skill" as const, name: "review", offset: 4 };
+	const source = await runtime.storage.enqueueIntent({
+		targetRef: targetKey,
+		threadId: served.id,
+		instanceId: "instance",
+		method: "turn/queue",
+		payload: {
+			ref,
+			input: [
+				{ type: "text", text, mentions: [mention] },
+				{ type: "skill", name: "review" },
+				{ type: "image", mediaType: "image/png", data: "AQID", name: "sample.png" },
+			],
+		},
+		attachments: [{ presentationId: "recovery-image", marker: 1, name: "sample.png", mediaType: "image/png" }],
+		composerText: text,
+		composerMentions: [mention],
+		optimisticDisplay: { method: "turn/queue" },
+	});
+	const recovery = await runtime.editQueuedMessage(source.clientMutationId, targetKey);
+	expect(recovery).toMatchObject({ recoveryKind: "editing", clientMutationId: source.clientMutationId });
+	await settle();
+
+	const input = field(tree);
+	if (!input) throw new Error("no Message field after queued recovery Edit");
+	expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: ref }).composer?.recoveryIds).toContain(
+		source.clientMutationId,
+	);
+	act(() => input.props.onChangeText(`${text} now`));
+	await settle();
+	const observedReceipts: Array<Awaited<ReturnType<typeof runtime.storage.readRecoveryResend>>> = [];
+	const readRecoveryResend = runtime.storage.readRecoveryResend.bind(runtime.storage);
+	vi.spyOn(runtime.storage, "readRecoveryResend").mockImplementation(async (...args) => {
+		const result = await readRecoveryResend(...args);
+		if (result) observedReceipts.push(result);
+		return result;
+	});
+	const submit = vi.spyOn(runtime, "submit");
+	await press(tree, "Send and resume");
+
+	expect(await runtime.storage.listRecovery(targetKey)).toEqual([]);
+	expect(hub.requests.filter((request) => request.method === "resumeThread")).toHaveLength(1);
+	const admitted = await runtime.read(targetKey);
+	expect(admitted.outbox).toHaveLength(1);
+	expect(admitted.outbox[0]?.payload).toMatchObject({
+		input: expect.arrayContaining([
+			expect.objectContaining({ type: "skill", name: "review" }),
+			expect.objectContaining({ type: "image", mediaType: "image/png", data: "AQID" }),
+		]),
+	});
+	expect(submit.mock.calls.at(-1)?.[0]).toMatchObject({
+		recoverySourceIds: [source.clientMutationId],
+		composer: {
+			text: `${text} now`,
+			mentions: [mention],
+			skillNames: ["review"],
+			attachments: [expect.objectContaining({ marker: 1, mediaType: "image/png", data: "AQID" })],
+		},
+	});
+	expect(observedReceipts).toHaveLength(1);
+	expect(observedReceipts[0]).toMatchObject({
+		targetRef: targetKey,
+		sourceIds: [source.clientMutationId],
+		clientMutationId: expect.any(String),
+	});
+});
 // A resume that fails leaves its message parked, which makes the next Send
 // route to queue instead of resuming again. The queued message must still
 // drive recovery: otherwise the session stays fenced, and every later message
@@ -5739,6 +5829,79 @@ describe("Send while offline (phase 6, spec 8.5)", () => {
 		expect(hub.requests.find((request) => request.method === "turn/queue")?.params.input).toEqual([
 			{ type: "text", text: '[answers]\n1. [Choice] \u2192 "Drop them"' },
 		]);
+	});
+
+	it("answer enqueue carries its draft capture through later Edit and Remove", async () => {
+		async function answerWithFailedConfirmation(ref: string) {
+			const { tree, route } = await mount(thread(ref, "awaiting", true));
+			vi.stubGlobal("requestAnimationFrame", (frame: (time: number) => void) => {
+				frame(0);
+				return 0;
+			});
+			await reach(tree, route, false);
+			await press(tree, "Drop them");
+			nativeDrafts();
+			const database = nativePlatform.sqlitePorts.get("evener-drafts.db") as {
+				runSync: (sql: string, ...args: unknown[]) => unknown;
+			};
+			const runSync = database.runSync;
+			let draftWrites = 0;
+			let confirmationFailed = false;
+			database.runSync = (sql, ...args) => {
+				if (sql.includes("INSERT INTO drafts")) draftWrites++;
+				if (sql.includes("DELETE FROM drafts") && draftWrites === 1) {
+					confirmationFailed = true;
+					throw new Error("draft confirmation failed");
+				}
+				return runSync(sql, ...args);
+			};
+			try {
+				await press(tree, "Send answer when you're back online");
+			} finally {
+				database.runSync = runSync;
+			}
+			expect(confirmationFailed).toBe(true);
+			const record = nativeDrafts().read({ hubId: "hub-1", sessionRef: ref });
+			expect(record.unconfirmed).toBe('[answers]\n1. [Choice] → "Drop them"');
+			expect(record.unconfirmedCaptureToken).toBeTruthy();
+			const outbox = await getNativeMutationRuntime().storage.listOutbox(nativeMutationTargetKey("hub-1", ref));
+			expect(outbox).toHaveLength(1);
+			expect(outbox[0]?.draftCaptureToken).toBe(record.unconfirmedCaptureToken);
+			return { tree, ref, outbox: outbox[0] };
+		}
+
+		const edited = await answerWithFailedConfirmation("ref-answer-capture-edit");
+		await press(edited.tree, "Retry saving");
+		const editHost = queueHosts.get(sheetKey("hub-1", edited.ref));
+		const editGhost = editHost?.ghosts.find(
+			(candidate) =>
+				candidate.origin.kind === "pending" && candidate.origin.clientMutationId === edited.outbox?.clientMutationId,
+		);
+		if (!editHost || !editGhost) throw new Error("missing queued answer ghost for Edit");
+		expect(editGhost.menu).toContain("edit");
+		let editResult: unknown;
+		await act(async () => {
+			editResult = await editHost.act(editGhost, "edit");
+		});
+		expect(editResult).toBeNull();
+		expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: edited.ref }).unconfirmed).toBeNull();
+		expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: edited.ref }).draft).toContain("[answers]");
+
+		const removed = await answerWithFailedConfirmation("ref-answer-capture-remove");
+		await press(removed.tree, "Retry saving");
+		const host = queueHosts.get(sheetKey("hub-1", removed.ref));
+		const ghost = host?.ghosts.find(
+			(candidate) =>
+				candidate.origin.kind === "pending" && candidate.origin.clientMutationId === removed.outbox?.clientMutationId,
+		);
+		if (!host || !ghost) throw new Error("missing queued answer ghost");
+		await act(async () => {
+			await host.act(ghost, "cancel");
+		});
+		expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: removed.ref }).unconfirmed).toBeNull();
+		expect(await getNativeMutationRuntime().storage.listOutbox(nativeMutationTargetKey("hub-1", removed.ref))).toEqual(
+			[],
+		);
 	});
 
 	it("offers no Send offline where the session can't take it when it arrives", async () => {
