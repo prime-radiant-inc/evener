@@ -433,6 +433,8 @@ func (b *builder) applyIdentity(ordinal uint64, offset int64, length uint32, ent
 			if err := b.appendItems(slot, entry, c, nil, nil); err != nil {
 				return err
 			}
+		} else if err := b.attachCommunicationEcho(summary, entry, c); err != nil {
+			return err
 		}
 	default:
 		if err := b.appendItems(slot, entry, c, nil, nil); err != nil {
@@ -718,7 +720,7 @@ func (b *builder) completeCommunications(slot uint64, entry *schema.Turn, c cont
 				if err != nil {
 					return err
 				}
-				if opener.Kind != schema.TurnCommunicate || opener.Communicate == nil || opener.Communicate.CallID != id {
+				if opener.Kind != schema.TurnAssistant && (opener.Kind != schema.TurnCommunicate || opener.Communicate == nil || opener.Communicate.CallID != id) {
 					continue
 				}
 				if err := b.addContributor(position-1, c, c.Ordinal+1); err != nil {
@@ -731,6 +733,29 @@ func (b *builder) completeCommunications(slot uint64, entry *schema.Turn, c cont
 				break
 			}
 			end = start
+		}
+	}
+	return nil
+}
+
+// attachCommunicationEcho keeps the visible assistant item and records the
+// suppressed message as its contributor, so acceptance can still find its call.
+func (b *builder) attachCommunicationEcho(summary turnRecord, entry *schema.Turn, c contributor) error {
+	awaiting, err := b.awaitingEntry(summary)
+	if err != nil {
+		return err
+	}
+	items, parts := apptranscript.ProjectEntryParts(entry.TurnID, int(summary.AwaitingOrdinal)+1, *awaiting, nil, nil, nil)
+	for i := len(items) - 1; i >= 0; i-- {
+		if items[i].Type != "agentMessage" {
+			continue
+		}
+		slot, found, err := b.x.findItem(appwire.ThreadItemPosition{Entry: summary.AwaitingOrdinal + 1, Item: uint32(parts[i])})
+		if err != nil {
+			return err
+		}
+		if found {
+			return b.addContributor(slot, c, c.Ordinal+1)
 		}
 	}
 	return nil
@@ -932,6 +957,17 @@ func (b *builder) addContributor(slot uint64, c contributor, version uint64) err
 	}
 	record.Completer = c
 	record.Version = version
+	if record.Call.Len == 0 {
+		entry, err := b.x.readEntry(c.Offset, c.Length)
+		if err != nil {
+			return err
+		}
+		if entry.Kind == schema.TurnCommunicate && entry.Communicate != nil {
+			if record.Call, err = b.x.strings.putString(entry.Communicate.CallID); err != nil {
+				return err
+			}
+		}
+	}
 	// Logged before the write, like stampTurn: an extension interrupted
 	// between the two must leave a leftover update-log row behind it, or a
 	// later CatchUpTo for a length short of this entry could truncate the

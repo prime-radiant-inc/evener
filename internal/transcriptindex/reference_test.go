@@ -239,6 +239,17 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 		}
 		if entry.Kind == schema.TurnCommunicate && entry.Communicate != nil && s.awaiting != nil &&
 			apptranscript.EchoesAssistantText(referenceLastTextRun(s.awaiting.Message.Content), entry.Communicate.Message) {
+			for at := len(s.items) - 1; at >= 0; at-- {
+				if s.items[at].Type == "agentMessage" {
+					s.items[at].CallID = entry.Communicate.CallID
+					s.items[at].Observation = &appwire.SessionObservationMetadata{
+						TurnID: s.id, EndTurn: entry.Communicate.EndTurn, EndReason: entry.Communicate.EndReason,
+						CausalKnown: entry.CausalKnown, Causal: entry.Causal,
+					}
+					s.items[at].Version = uint64(entryIndex)
+					break
+				}
+			}
 			continue
 		}
 		items, parts := apptranscript.ProjectEntryParts(s.id, entryIndex, entry, &apptranscript.ToolCallRegistry{Names: seed}, nil, apptranscript.ToolResultOutputImages)

@@ -4,12 +4,17 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/transcriptindex"
+	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
 	daemonserver "primeradiant.com/evener/server"
 )
@@ -71,18 +76,66 @@ func TestManagerObservationRecordedCompletionCut(t *testing.T) {
 		{"accepted-wait", &trueValue, "wait"},
 		{"accepted-done", &trueValue, "done"},
 	} {
+		item := managerEchoObservationItem(t, observation.id, observation.reason, *observation.accepted)
 		daemon.AppServer().Broadcast(ref, appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
-			Ref: ref, ThreadID: instance, Items: []appwire.ThreadItem{{ID: observation.id, Type: "agentMessage", Observation: &appwire.SessionObservationMetadata{EntryID: observation.id, EndTurn: true, EndReason: observation.reason, TerminalAccepted: observation.accepted, CausalKnown: true}}},
+			Ref: ref, ThreadID: instance, Items: []appwire.ThreadItem{item},
 		})
 		select {
 		case got, open := <-updates:
-			if !open || got.Event != "communicate" || got.Metadata.EntryID != observation.id || got.Metadata.TerminalAccepted == nil || *got.Metadata.TerminalAccepted != *observation.accepted || got.Metadata.EndReason != observation.reason || got.Metadata.GenerationID != initial.Metadata.GenerationID {
+			if !open || got.Event != "communicate" || got.Metadata.EntryID != item.TranscriptKey || got.Metadata.TerminalAccepted == nil || *got.Metadata.TerminalAccepted != *observation.accepted || got.Metadata.EndReason != observation.reason || got.Metadata.GenerationID != initial.Metadata.GenerationID {
 				t.Fatalf("recorded observation lost verdict %+v: %+v, open=%t", observation, got, open)
 			}
 		case <-ctx.Done():
 			t.Fatal("recorded observation not delivered across relay")
 		}
 	}
+}
+
+func managerEchoObservationItem(t *testing.T, callID, reason string, accepted bool) appwire.ThreadItem {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "echo.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "echo-session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	result := `{"accepted":false,"end_turn":true}`
+	if accepted {
+		result = `{"accepted":true,"end_turn":true}`
+	}
+	entries := []schema.Turn{
+		{Format: schema.TurnFormatIdentity, TurnID: "echo-turn", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnAssistant,
+			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Text: "echo-sentinel"},
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: callID, Name: "communicate", Arguments: []byte(`{"message":"echo-sentinel"}`)}},
+			}}},
+		{Format: schema.TurnFormatIdentity, TurnID: "echo-turn", Kind: schema.TurnCommunicate, CausalKnown: true,
+			Communicate: &schema.CommunicateInfo{CallID: callID, Message: "echo-sentinel", EndTurn: true, EndReason: reason}},
+		{Format: schema.TurnFormatIdentity, TurnID: "echo-turn", Kind: schema.TurnToolResults,
+			Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult,
+				ToolResult: &llm.ToolResultData{ToolCallID: callID, Name: "communicate", Content: result}}}}},
+	}
+	for _, entry := range entries {
+		if err := w.Append(entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	x, err := transcriptindex.Open(path, filepath.Join(t.TempDir(), "index"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer x.Close()
+	window, err := x.Latest(20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(window.Candidates) != 1 || window.Candidates[0].Item.Observation == nil {
+		t.Fatalf("echo projection lost evidence or duplicated display: %+v", window)
+	}
+	return window.Candidates[0].Item
 }
 
 func TestManagerWatchRebindCancellationAndHubRestart(t *testing.T) {
