@@ -787,9 +787,11 @@ Rules:
   the separate journal and restart rules below.
 - A structured terminal shell notification names `read_transcript(transcript_ref="job:<job_id>")`. Delegate attention names `delegate_id` and the child session transcript ref, never a job read. References do not widen list/status/stop/watch scope.
 - `SessionMeta.ObservedBy` is append-only, deduplicated UI metadata for hub auto-open. A worker is never recorded as observing itself; metadata failures never change or delay delivery.
-- The watch journal preserves registration configuration, pending/coalesced send
-  deliveries, acknowledgements, and end records. On job-manager restore, pending
-  sends are recovered, but active watch registrations end with `runtime_lost`;
+- The watch journal preserves registration configuration, pending/coalesced
+  callback frames and explicit sends, custody acknowledgements, and end records.
+  A rendered payload is persisted before its firing budget or one-shot end is
+  consumed. Failed production leaves the firing retryable. On job-manager restore,
+  pending frames are recovered, but active registrations end with `runtime_lost`;
   future observation and timer ticks require a new registration. This includes
   saved declarative repeating timers. Callback closures remain process-local.
   A send generation that has already spoken can omit an individual restart-end
@@ -798,7 +800,15 @@ Rules:
   recovery outcome exists but is not implemented: a restart does not yet
   re-establish an active watch, and the owner is told the watch ended rather
   than left to assume it still runs.
-- Already-fired parent-watch frames are durable until delivered, replaced by a newer frame for the same durable key, evicted by watch cleanup, or dropped with a caller-visible diagnostic on hard/non-resumable failure. The durable key includes the `watch_id`, visible session, configured watch source/target, receiver identity, resolved watched identity, and watch generation.
+- Already-produced frames survive clearing or replacing their registration.
+  Before receiver custody, a newer frame may replace a pending frame for the same
+  durable key. Each retained payload version has its own immutable delivery ID,
+  reused on retries. The key includes the `watch_id`, visible session, configured
+  source/target, receiver identity, resolved watched identity, and watch generation.
+  Dispatch uses the host/controller transport without executing the holder's model.
+  Missing or temporarily unavailable receivers remain retryable. Authoritative
+  permanent closure drops only frames not already in receiver custody, with a
+  durable diagnostic. Accepted frames still settle their source acknowledgement.
 - `job_watch(operation="clear", watch_id=...)` is the model-facing unwatch operation; there is no separate unwatch tool.
 
 #### Registration and timers
@@ -810,6 +820,9 @@ identity replaces the existing watch and reports `replaced_existing=true`.
 
 **Timers are additive:** every timer create adds an independent watch, even with
 identical arguments. To replace a timer, clear its `watch_id` and create another.
+Timers may use an explicit send. Pending timer frames retain the registration's
+existing slot identity across restart, so separate registrations remain distinct.
+The timer ranges and registration limits below are unchanged.
 
 #### Output matching
 
@@ -875,6 +888,12 @@ identical arguments. To replace a timer, clear its `watch_id` and create another
   delivery keeps its claim until it finishes. If replaced, it stands down without
   an error, unless the receiver already took the frame and only acknowledgement
   remains to retry.
+- Shell completions, watch frames, delegate packets, and actionable system notices
+  share durable canonical receiver custody. A source acknowledgement proves that
+  custody, not model observation. A successful persisted assistant response records
+  observation of exactly the canonical IDs presented to it. A terminal `communicate`
+  result cannot consume a newly arrived actionable notice as inbox text instead.
+  Passive startup/context snapshots do not independently wake the model.
 - Each watch configuration has a model-facing delivery budget of 50 condition fires:
   output matches and event frames. Periodic ticks, timer or job progress, count as
   deliveries but never trip the budget, so the `deliveries` count `job_list` reports can

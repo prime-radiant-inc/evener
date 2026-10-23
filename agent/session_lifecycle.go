@@ -3239,7 +3239,19 @@ func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]de
 			continue
 		}
 		if _, ok := alreadyInjected[rec.JobID]; !ok {
-			alreadyInjected[rec.JobID] = s.jobNotificationAlreadyInjected(rec.JobID)
+			accepted, err := s.notificationSourceAccepted(stableShellAttentionID(rec.JobID, rec.TerminalGen))
+			if err != nil {
+				return survivors, durableRaw, nil
+			}
+			if !accepted {
+				notice := jobNotificationFromRecord(rec)
+				content := s.formatJobNotificationReminder([]deliverableJobNotification{{notification: notice, terminalGen: rec.TerminalGen}})
+				if err := s.enqueueNotification(notification{ID: stableShellAttentionID(rec.JobID, rec.TerminalGen), Message: llm.UserMachinery(content), Provenance: notice.Provenance}); err != nil {
+					return survivors, durableRaw, nil
+				}
+				accepted = true
+			}
+			alreadyInjected[rec.JobID] = accepted
 		}
 	}
 	durableSurvivors, injected := classifyDurableNotifications(durableRaw, recs, alreadyInjected)
@@ -3299,43 +3311,21 @@ func classifyDurableNotifications(
 	return survivors, injected
 }
 
-func (s *Session) jobNotificationAlreadyInjected(jobID string) bool {
-	if jobID == "" {
-		return false
+func (s *Session) notificationSourceAccepted(sourceID string) (bool, error) {
+	if sourceID == "" {
+		return false, nil
 	}
-	needle := fmt.Sprintf("job_id=%q", jobID)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, turn := range s.history {
-		if durableJobNotificationAlreadyInjected(turn.Message.Text(), needle) {
-			return true
-		}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	if err := s.attachedTranscript().EstablishDurability(); err != nil {
+		return false, err
 	}
-	return false
-}
-
-func durableJobNotificationAlreadyInjected(text, needle string) bool {
-	for {
-		start := strings.Index(text, "<job-notification")
-		if start < 0 {
-			return false
-		}
-		text = text[start:]
-		end := strings.Index(text, "</job-notification>")
-		block := text
-		if end >= 0 {
-			block = text[:end]
-		}
-		if strings.Contains(block, needle) &&
-			!strings.Contains(block, `event="watch"`) &&
-			!strings.Contains(block, `status="watch"`) {
-			return true
-		}
-		if end < 0 {
-			return false
-		}
-		text = text[end+len("</job-notification>"):]
+	fold, err := s.delegateAttentionFoldLocked()
+	if err != nil {
+		return false, err
 	}
+	_, accepted := fold.content[sourceID]
+	return accepted, nil
 }
 
 func (s *Session) markJobNotificationsDelivered(notifs []deliverableJobNotification) []jobNotification {

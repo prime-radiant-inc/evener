@@ -2,9 +2,11 @@ package agent
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 
+	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
@@ -61,7 +63,9 @@ func requireSettlementRetryAcknowledges(t *testing.T, fixture *stableWatchRuntim
 // receipt fences the receiver's stop forever, and closing the root waits out
 // the close budget.
 func TestCoalescedStableWatchFrameReleasesSupersededReceipt(t *testing.T) {
-	fixture := newStableWatchRuntimeFixture(t, nil)
+	fs := &notificationFaultFS{Fs: afero.NewOsFs()}
+	fixture := newStableWatchRuntimeFixture(t, fs)
+	fs.writeErr = errors.New("receiver custody unavailable")
 	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "first"})
 	first := fixture.requireOnePending(t).state
 	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "second"})
@@ -70,6 +74,16 @@ func TestCoalescedStableWatchFrameReleasesSupersededReceipt(t *testing.T) {
 		t.Fatalf("coalesced frame kept delivery id %s", first.DeliveryID)
 	}
 	requireOnlyStableWatchReceipts(t, fixture, second.DeliveryID)
+	fs.writeErr = nil
+	fixture.sourceJM.dispatchProducedWatchSends()
+	entries := notificationRawEntries(t, fixture.rootTranscriptPath)
+	if len(entries) != 1 || entries[0].Turn.AttentionID != fmt.Sprintf("watch:%s:%d", second.DeliveryID, second.UpdateSeq) {
+		t.Fatalf("survivor custody entries=%#v", entries)
+	}
+	requireOnlyStableWatchReceipts(t, fixture)
+	if !fixture.sourceJM.watchSendDelivered(second.DeliveryID) {
+		t.Fatal("surviving frame was not acknowledged")
+	}
 }
 
 // A deliverer already handing off the first frame when the second coalesces

@@ -631,13 +631,10 @@ func TestDrainSettlesRootDurableOnlyPending(t *testing.T) {
 }
 
 // TestDrainSettlesAlreadyInjectedDurablePending is the adversarial-review
-// regression for kata h8mq: an owned NotifyPending managed job whose
-// <job-notification> block is ALREADY in history (a crash between
-// appendSteeringTurnDurably and markJobNotificationsDelivered left it injected but
-// unmarked) with an empty in-memory queue is still counted outstanding, so the
-// drain must re-materialize it. The already-injected record settles through the
-// injectedJobNotifs path, which marks it Delivered WITHOUT re-appending to
-// history — so the drain settles and the block is not duplicated.
+// regression for an owned NotifyPending shell whose canonical receiver record
+// survived a crash before source acknowledgement. Drain settles the source
+// without duplicate custody or presentation. Notification-like text and a watch
+// identity for the same job do not prove shell custody.
 func TestDrainSettlesAlreadyInjectedDurablePending(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -648,32 +645,50 @@ func TestDrainSettlesAlreadyInjectedDurablePending(t *testing.T) {
 		{name: "shell", jobID: "shell-injected", typ: jobstore.JobShell},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			steps := make([]func(llm.Request) llm.Response, 6)
-			for i := range steps {
-				steps[i] = func(llm.Request) llm.Response { return finalResponse("ack") }
-			}
-			sess := newSession(t, withSteps(steps...), withConfig(SessionConfig{}))
+			adapter := newMessagingAdapter()
+			sess := newMessagingRoot(t, adapter, nil)
 			jm := sess.jobManager
 			seedOwnedDurablePending(t, jm, tt.jobID, tt.typ)
 
 			injected := `<job-notification job_id="` + tt.jobID + `" status="completed"></job-notification>`
 			sess.appendTurn(schema.TurnSteering, llm.User(injected))
-			if !sess.jobNotificationAlreadyInjected(tt.jobID) {
-				t.Fatalf("precondition: %s must be detected as already injected in history", tt.jobID)
+			recs, err := jm.store.Load()
+			if err != nil {
+				t.Fatal(err)
 			}
-			blocksBefore := countHistoryNeedle(sess, `job_id="`+tt.jobID+`"`)
+			id := "shell:" + tt.jobID + ":" + recs[tt.jobID].TerminalGen
+			if accepted, err := sess.notificationSourceAccepted(id); err != nil || accepted {
+				t.Fatalf("notification-like text established custody: %t, %v", accepted, err)
+			}
+			if err := sess.enqueueNotification(notification{ID: "watch:" + tt.jobID, Message: llm.UserMachinery(injected)}); err != nil {
+				t.Fatal(err)
+			}
+			if accepted, err := sess.notificationSourceAccepted(id); err != nil || accepted {
+				t.Fatalf("watch identity established shell custody: %t, %v", accepted, err)
+			}
+			if err := sess.enqueueNotification(notification{ID: id, Message: llm.UserMachinery(injected)}); err != nil {
+				t.Fatal(err)
+			}
+			if accepted, err := sess.notificationSourceAccepted(id); err != nil || !accepted {
+				t.Fatalf("canonical source not accepted: %t, %v", accepted, err)
+			}
 
-			// TRIPWIRE: scripted in-process adapter steps plus fully in-memory
-			// job-manager fixtures, no real I/O; only fires on a genuine hang
-			// (a wedged drain, the regression this test guards against).
+			// TRIPWIRE: scripted in-process provider with temporary journals.
+			// This bounds a wedged drain, not a production delivery deadline.
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			if _, err := sess.DrainJobTree(ctx); err != nil {
 				t.Fatalf("DrainJobTree wedged on an already-injected durable pending: %v", err)
 			}
 			requireNotificationState(t, jm, tt.jobID, jobstore.NotifyDelivered)
-			if blocksAfter := countHistoryNeedle(sess, `job_id="`+tt.jobID+`"`); blocksAfter != blocksBefore {
-				t.Fatalf("already-injected block must not be re-appended: had %d, now %d", blocksBefore, blocksAfter)
+			count := 0
+			for _, entry := range notificationRawEntries(t, transcriptPath(sess.stateDir, sess.ID())) {
+				if entry.Turn.AttentionID == id {
+					count++
+				}
+			}
+			if count != 1 || len(adapter.requestsFor("root")) != 1 {
+				t.Fatalf("receiver records=%d provider requests=%d, want 1 each", count, len(adapter.requestsFor("root")))
 			}
 		})
 	}

@@ -374,16 +374,9 @@ func FuzzSessionLifecyclePureTailCoverage(f *testing.F) {
 			}
 		}
 
-		if durableJobNotificationAlreadyInjected(`<job-notification event="watch" job_id="x"></job-notification>`, `job_id="x"`) {
-			t.Fatal("watch notification was treated as durable injection")
-		}
-		if durableJobNotificationAlreadyInjected(`<job-notification status="watch" job_id="x">`, `job_id="x"`) {
-			t.Fatal("unterminated watch notification was treated as durable injection")
-		}
-
 		s := &Session{}
-		if s.jobNotificationAlreadyInjected("") {
-			t.Fatal("empty job id was treated as injected")
+		if accepted, err := s.notificationSourceAccepted(""); accepted || err != nil {
+			t.Fatalf("empty source id accepted=%t, err=%v", accepted, err)
 		}
 		survivors, retry, injected := s.filterDeliverableJobNotifications([]jobNotification{{JobID: "missing"}})
 		if len(survivors) != 0 || len(retry) != 1 || len(injected) != 0 {

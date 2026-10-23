@@ -4,7 +4,9 @@ import (
 	"errors"
 	"slices"
 
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -152,29 +154,16 @@ func (c *delegateTreeController) enqueueNotification(ownerSessionID string, n no
 		c.mu.Unlock()
 		return errDelegateDeliveryReceiverUnavailable
 	}
-	if c.hasColdDeliveryWorkForOwnerLocked(ownerID) || c.hasAttentionStartReservationLocked(ownerID) || c.stopCoversLocked(ownerID) {
-		c.mu.Unlock()
-		return errDelegateTargetBusy
-	}
-	for _, reservation := range c.reservations {
-		if reservation != nil && reservation.delegateID == ownerID {
-			c.mu.Unlock()
-			return errDelegateTargetBusy
-		}
-	}
 	_, sessionID, err := delegateTranscriptPathFromRef(cold.stateDir, cold.transcriptRef)
 	if err != nil || sessionID != ownerSessionID {
 		c.mu.Unlock()
 		return errors.Join(errDelegateDeliveryReceiverUnavailable, err)
 	}
-	// This is active I/O, not a discardable pre-admission claim. Stop joins
-	// active deliveries until the writer has closed and its wake is recorded.
-	c.nextToken++
-	key := "notification:" + ownerID + ":" + n.ID
-	token := delegateDeliveryToken{processID: c.nextToken, deliveryID: key}
-	c.deliveries[token.processID] = &delegateDeliveryAdmission{token: token, delegateID: ownerID, ownerID: ownerID, cold: true}
-	c.evidenceVersion++
+	token, err := c.beginColdNotificationIOLocked(ownerID, n.ID)
 	c.mu.Unlock()
+	if err != nil {
+		return err
+	}
 	_, err = cold.appendNotificationDurably(n)
 	if err == nil {
 		_, err = c.openDelegateAttention(ownerID, n.ID)
@@ -188,4 +177,111 @@ func (c *delegateTreeController) enqueueNotification(ownerSessionID string, n no
 	}
 	c.notifyStableDelegateAttention()
 	return nil
+}
+
+// beginColdNotificationIOLocked shares the cold writer exclusion between
+// acceptance and custody queries. Stop joins this active admission through Close.
+func (c *delegateTreeController) beginColdNotificationIOLocked(ownerID, notificationID string) (delegateDeliveryToken, error) {
+	if c.hasColdDeliveryWorkForOwnerLocked(ownerID) || c.hasAttentionStartReservationLocked(ownerID) || c.stopCoversLocked(ownerID) {
+		return delegateDeliveryToken{}, errDelegateTargetBusy
+	}
+	for _, reservation := range c.reservations {
+		if reservation != nil && reservation.delegateID == ownerID {
+			return delegateDeliveryToken{}, errDelegateTargetBusy
+		}
+	}
+	c.nextToken++
+	token := delegateDeliveryToken{processID: c.nextToken, deliveryID: "notification:" + ownerID + ":" + notificationID}
+	c.deliveries[token.processID] = &delegateDeliveryAdmission{token: token, delegateID: ownerID, ownerID: ownerID, cold: true}
+	c.evidenceVersion++
+	return token, nil
+}
+
+// notificationCustodyAndClosure neither appends nor arms a notification. Only
+// an authoritative closed delegate, with a successfully checked transcript,
+// proves permanent non-resumability. Missing membership or files is uncertainty.
+func (c *delegateTreeController) notificationCustodyAndClosure(ownerSessionID, notificationID string) (accepted, closed bool, err error) {
+	release, err := c.beginRetirementMutation()
+	if err != nil {
+		return false, false, err
+	}
+	defer release()
+	c.mu.Lock()
+	if c.closing {
+		c.mu.Unlock()
+		return false, false, errDelegateTargetBusy
+	}
+	if ownerSessionID == c.rootSessionID {
+		resident := c.rootRuntime
+		c.mu.Unlock()
+		if resident == nil {
+			return false, false, errDelegateDeliveryReceiverUnavailable
+		}
+		accepted, err = resident.notificationSourceAccepted(notificationID)
+		return accepted, false, err
+	}
+	events, err := c.store.Load()
+	if err != nil {
+		c.mu.Unlock()
+		return false, false, err
+	}
+	state, err := delegatestore.Fold(events)
+	if err != nil {
+		c.mu.Unlock()
+		return false, false, err
+	}
+	ownerID, ref := "", ""
+	for id, aggregate := range state {
+		if aggregate.Descriptor.ChildSessionID == ownerSessionID {
+			ownerID, ref = id, aggregate.Descriptor.TranscriptRef
+			closed = aggregate.Phase == delegatestore.PhaseClosed
+			break
+		}
+	}
+	if ownerID == "" || c.stopCoversLocked(ownerID) {
+		c.mu.Unlock()
+		return false, false, errDelegateDeliveryReceiverUnavailable
+	}
+	if live := c.live[ownerID]; live != nil && live.runtime != nil {
+		resident := live.runtime
+		c.mu.Unlock()
+		accepted, err = resident.notificationSourceAccepted(notificationID)
+		return accepted, closed, err
+	}
+	path, sessionID, err := delegateTranscriptPathFromRef(c.stateDir, ref)
+	if err != nil || sessionID != ownerSessionID {
+		c.mu.Unlock()
+		return false, false, errors.Join(errDelegateDeliveryReceiverUnavailable, err)
+	}
+	token, err := c.beginColdNotificationIOLocked(ownerID, notificationID)
+	open := c.attentionOpen
+	c.mu.Unlock()
+	if err != nil {
+		return false, false, err
+	}
+	defer func() {
+		_, completionErr := c.CompleteDelivery(token, false)
+		err = errors.Join(err, completionErr)
+	}()
+	// A read first prevents OpenWriterForSession from creating a missing file.
+	if _, err = readDelegateAttentionFold(path, sessionID); err != nil {
+		return false, false, err
+	}
+	if open == nil {
+		open = transcript.OpenWriterForSession
+	}
+	writer, entries, err := open(path, sessionID)
+	if err != nil {
+		return false, false, err
+	}
+	defer func() { err = errors.Join(err, writer.Close()) }()
+	fold, err := foldDelegateAttention(entries)
+	if err != nil {
+		return false, false, err
+	}
+	if err = writer.EstablishDurability(); err != nil {
+		return false, false, err
+	}
+	_, accepted = fold.content[notificationID]
+	return accepted, closed, nil
 }

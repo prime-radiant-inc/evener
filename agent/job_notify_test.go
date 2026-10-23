@@ -431,17 +431,13 @@ func TestJobNotificationTurnDeliversPendingDurableRecord(t *testing.T) {
 		},
 	}
 	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer sess.Close()
 
-	jm, err := newJobManager(dir, sess.ID(), sess.enqueueJobNotification)
-	if err != nil {
-		t.Fatalf("newJobManager: %v", err)
-	}
-	sess.jobManager = jm
+	jm := sess.jobManager
 	appendPendingJobNotificationRecord(t, jm, sess.ID())
 
 	sess.enqueueJobNotification(jobNotification{JobID: "job_X", JobType: "stale", Status: "failed", OutputBytes: 999})
@@ -518,17 +514,13 @@ func TestWatchNotificationHistoryDoesNotSuppressDurableTerminalNotification(t *t
 		},
 	}
 	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer sess.Close()
 
-	jm, err := newJobManager(dir, sess.ID(), sess.enqueueJobNotification)
-	if err != nil {
-		t.Fatalf("newJobManager: %v", err)
-	}
-	sess.jobManager = jm
+	jm := sess.jobManager
 	appendPendingJobNotificationRecord(t, jm, sess.ID())
 	sess.history = append(sess.history, schema.NewTurn(
 		schema.TurnSteering,
@@ -562,17 +554,13 @@ func TestJobNotificationTurnRequeuesWhenDeliveredMarkFails(t *testing.T) {
 		},
 	}
 	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer sess.Close()
 
-	jm, err := newJobManager(dir, sess.ID(), sess.enqueueJobNotification)
-	if err != nil {
-		t.Fatalf("newJobManager: %v", err)
-	}
-	sess.jobManager = jm
+	jm := sess.jobManager
 	appendPendingJobNotificationRecord(t, jm, sess.ID())
 	sess.enqueueJobNotification(jobNotification{JobID: "job_X"})
 

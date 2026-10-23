@@ -1,6 +1,7 @@
 package jobstore
 
 import (
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -8,6 +9,36 @@ import (
 
 	"primeradiant.com/evener/agent/provenance"
 )
+
+func TestCallbackFrameProductionSurvivesWatchEndUntilCustody(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	store := openStore(t, path)
+	state := WatchSendState{
+		Key:           WatchSendKey{VisibleSessionID: "holder", WatchID: "watch_callback", WatchTarget: "caller", ResolvedSendTo: "caller", WatchGeneration: "generation"},
+		CallbackFrame: true, TimerSlot: "timer-slot", DeliveryID: "payload-identity", UpdateSeq: 1,
+		ReceiverSessionID: "receiver", Frame: "immutable rendered payload",
+		Provenance: provenance.WithWatch(nil, "watch_callback", "generation", "payload-identity", "holder", "caller"),
+	}
+	appendEvent(t, store, Event{Kind: EventWatchSendPending, WatchSend: &state})
+	appendEvent(t, store, Event{Kind: EventWatchCleared, WatchID: state.Key.WatchID, Watch: &WatchEvent{Generation: state.Key.WatchGeneration}})
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened := openStore(t, path)
+	fold, err := reopened.LoadWatchSends()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(fold.Pending[state.Key], &state) {
+		t.Fatalf("reopened callback = %#v, want %#v", fold.Pending[state.Key], &state)
+	}
+	// Delivered is the source's receiver-custody receipt, not a model receipt.
+	appendEvent(t, reopened, Event{Kind: EventWatchSendDelivered, WatchSend: &state})
+	fold, err = reopened.LoadWatchSends()
+	if err != nil || len(fold.Pending) != 0 {
+		t.Fatalf("after custody pending=%v err=%v", fold.Pending, err)
+	}
+}
 
 func TestFoldWatchSendPendingLatestWinsAndTerminalRemoves(t *testing.T) {
 	key := WatchSendKey{

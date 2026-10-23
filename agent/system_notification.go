@@ -8,6 +8,10 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+func (s *Session) enqueueSystemNotificationFromSource(sourceID, message string) error {
+	return s.enqueueNotification(notification{ID: sourceID, Message: llm.UserMachinery(message)})
+}
+
 // systemNotification wraps msg in a <system-notification> faux-XML block.
 // These blocks are used for one-way notifications to the model that are not
 // steering messages (which use <SYSTEM-REMINDER>) — e.g. tool-output context

@@ -137,9 +137,12 @@ type WatchSendKey struct {
 // WatchSendState is the durable payload for a pending or terminal watch-send
 // delivery state.
 type WatchSendState struct {
-	Key                      WatchSendKey       `json:"key"`
-	DeliveryID               string             `json:"delivery_id"`
-	UpdateSeq                uint64             `json:"update_seq,omitempty"`
+	Key        WatchSendKey `json:"key"`
+	DeliveryID string       `json:"delivery_id"`
+	UpdateSeq  uint64       `json:"update_seq,omitempty"`
+	// CallbackFrame uses the same source obligation for a callback-only firing.
+	CallbackFrame            bool               `json:"callback_frame,omitempty"`
+	TimerSlot                string             `json:"timer_slot,omitempty"`
 	Message                  string             `json:"message,omitempty"`
 	Frame                    string             `json:"frame,omitempty"`
 	TriggerIdentity          string             `json:"trigger_identity,omitempty"`

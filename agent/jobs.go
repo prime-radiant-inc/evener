@@ -26,6 +26,7 @@ import (
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/llm"
 )
 
 var errJobManagerClosing = errors.New("job manager is closing")
@@ -69,6 +70,7 @@ type jobManager struct {
 	watchActivityMu        sync.Mutex
 	watchActivityReceivers map[string]struct{}
 	watchNotifyMu          sync.Mutex
+	watchCallbackMu        sync.Mutex
 	watchPersistMu         sync.Mutex
 	// watchPersistDone is non-nil while one watch-journal transition owns the
 	// process-local serialization token. Waiters observe it under watchPersistMu
@@ -615,6 +617,8 @@ type jobNotification struct {
 	receiverSessionID string
 	receiverNotify    func(jobNotification)
 	receiverHoldWake  func() func()
+	callbackConfig    *watchConfig
+	callbackTrigger   string
 	// watchSendFrame is the rendered frame, populated only between filter and
 	// format inside one accept pass (never persisted, never enqueued).
 	watchSendFrame string
@@ -2174,8 +2178,11 @@ func (jm *jobManager) persistStableShellAttention(jobID string) (string, *Sessio
 	jm.mu.Lock()
 	owner := jm.stableOwner
 	parentDelegateID := jm.parentDelegateID
+	if owner == nil {
+		owner = jm.retirementOwner
+	}
 	jm.mu.Unlock()
-	if owner == nil || parentDelegateID == "" {
+	if owner == nil {
 		return "", nil, nil
 	}
 	records, err := jm.store.Load()
@@ -2183,16 +2190,13 @@ func (jm *jobManager) persistStableShellAttention(jobID string) (string, *Sessio
 		return "", owner, err
 	}
 	record := records[jobID]
-	if record == nil || record.Type != jobstore.JobShell || record.ParentDelegateID != parentDelegateID || record.TerminalGen == "" || !record.Status.IsTerminal() {
+	if record == nil || record.Type != jobstore.JobShell || (parentDelegateID != "" && record.ParentDelegateID != parentDelegateID) || record.TerminalGen == "" || !record.Status.IsTerminal() {
 		return "", owner, errors.New("stable shell attention source is incomplete")
 	}
 	attentionID := stableShellAttentionID(record.JobID, record.TerminalGen)
-	notification := jobNotificationFromRecord(record)
-	content := owner.formatJobNotificationReminder([]deliverableJobNotification{{notification: notification, terminalGen: record.TerminalGen}})
-	if _, err := owner.appendDelegateNotificationDurably(attentionID, content); err != nil {
-		return "", owner, err
-	}
-	if err := owner.armDelegateAttention(attentionID); err != nil {
+	notice := jobNotificationFromRecord(record)
+	content := owner.formatJobNotificationReminder([]deliverableJobNotification{{notification: notice, terminalGen: record.TerminalGen}})
+	if err := owner.enqueueNotification(notification{ID: attentionID, Message: llm.UserMachinery(content), Provenance: notice.Provenance}); err != nil {
 		return "", owner, err
 	}
 	if record.NotifyState != jobstore.NotifyDelivered {
