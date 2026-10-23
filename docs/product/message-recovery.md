@@ -61,6 +61,15 @@ both in the write transaction. Another tab's Remove, Retry, dispatch admission
 or Stop can win, in which case the losing action refreshes without activating a
 stale edit. Matching thread/session identity is required even offline.
 
+When another pane consumes or advances the recovery a browser pane owns, the
+refused save preserves the complete local composition as a fresh recovery row
+before retiring the stale lease. The new row carries the local text, skill and
+command selections, payload input and attachment bytes, and the peer's row is
+left untouched. If the stale row still holds the identical composition, no
+duplicate row is created. The pane then owns the fresh row, so later edits
+update it, Send consumes it, and a reload restores the local composition
+including its images.
+
 Sending recovery consumes its durable source and creates one fresh outbox
 identity atomically. It never falls back to an ordinary enqueue when the source
 is missing. The Send press captures its Stop barrier before asynchronous draft
