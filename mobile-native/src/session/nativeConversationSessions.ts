@@ -490,7 +490,12 @@ class SessionEntry implements NativeConversationSession {
 				this.#scheduleRetry();
 			}
 		};
-		void this.store.getState().resumeProjected(service, this.activitySink, this.ref).then(settle, settle);
+		const state = this.store.getState();
+		// A failed refresh did not retire this open binding. Reopening it would
+		// fence ordinary mutations still awaiting admission or a direct reply.
+		const read =
+			state.status === "open" ? state.ensureLatest() : state.resumeProjected(service, this.activitySink, this.ref);
+		void read.then(settle, settle);
 	}
 
 	#clearRetry(): void {

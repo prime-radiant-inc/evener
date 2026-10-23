@@ -10,6 +10,8 @@ import { StrictMode, useLayoutEffect } from "react";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NativeMutationRuntime, nativeMutationTargetKey } from "../nativeMutationRuntime";
+import { DraftDocument } from "../draftDocument";
+import { DraftRepository } from "../draftRepository";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "../sqliteSync.testkit";
 import { render, settle, unmountMountedTrees } from "../renderNative.testkit";
 import { failureRowIdentity } from "../projectedRows";
@@ -837,6 +839,104 @@ describe("hub isolation", () => {
 });
 
 describe("entry read actor", () => {
+	it.each(["send", "queue"] as const)(
+		"preserves an ordinary %s awaiting admission while a failed refresh retries",
+		async (kind) => {
+			const retryStarted = deferred<void>();
+			const retryReply = deferred<ThreadReadResponse>();
+			const served = thread("ref-1");
+			if (kind === "queue") served.status = { type: "active" } as Thread["status"];
+			let attempts = 0;
+			const client = hub("ref-1", () => {
+				attempts += 1;
+				if (attempts === 1) return Promise.resolve({ thread: served });
+				if (attempts === 2) return Promise.reject(new Error("refresh failed"));
+				retryStarted.resolve();
+				return retryReply.promise;
+			});
+			// Admission, not a made-up wire receipt, is the ordinary send's success.
+			// Leave dispatch outstanding so only real durable admission can settle it.
+			const wireReply = deferred<never>();
+			client.on("turn/start", () => wireReply.promise);
+			client.on("turn/queue", () => wireReply.promise);
+			connected(client);
+			const attachment = sessions.attach("hub-1", "ref-1");
+			const entry = attachment.entry;
+			await entry.readSettled();
+			await entry.store.getState().refreshPendingMutations();
+			const service = entry.service!;
+			const host = entry.liveHost;
+			const generation = entry.store.getState().conversationGeneration;
+			const admissionStarted = deferred<void>();
+			const admissionRelease = deferred<void>();
+			const readStopEpoch = runtime.storage.readStopEpoch.bind(runtime.storage);
+			vi.spyOn(runtime.storage, "readStopEpoch").mockImplementationOnce(async (target) => {
+				admissionStarted.resolve();
+				await admissionRelease.promise;
+				return readStopEpoch(target);
+			});
+			const draftStorage = openSqliteSyncDouble();
+			try {
+				const repository = new DraftRepository(draftStorage.port);
+				const destination = { hubId: "hub-1", sessionRef: "ref-1" };
+				const document = new DraftDocument(
+					() => repository,
+					destination,
+					undefined,
+					() => "capture-1",
+				);
+				document.edit("ordinary message");
+				const submission = document.submit(async (text, _images, context) => {
+					// The screen's deliver callback uses this exact store-owned witness.
+					const previous = entry.store.getState().lastAcceptedMutation;
+					await entry.store.getState()[kind](service, [{ type: "text", text }], context);
+					const accepted = entry.store.getState().lastAcceptedMutation;
+					return accepted != null && accepted !== previous && accepted.kind === kind;
+				});
+				await admissionStarted.promise;
+				const pending = entry.store.getState().pendingMutation;
+				expect(pending).toMatchObject({ kind, status: "pending" });
+				expect(document.getSnapshot().submitting).toBe(true);
+				await entry.store.getState().ensureLatest();
+				await retryStarted.promise;
+				expect(reads(client)).toBe(3); // Open, failed refresh, one entry-owned retry.
+				expect.soft(entry.store.getState().conversationGeneration).toBe(generation);
+				expect.soft(entry.store.getState().pendingMutation).toBe(pending);
+				expect(entry.service).toBe(service);
+				expect(entry.liveHost).toBe(host);
+				const retryAccepted = new Promise<void>((resolve) => {
+					const unsubscribe = entry.store.subscribe(() => {
+						const state = entry.store.getState();
+						if (state.status !== "open" || state.latestReadState !== "ready") return;
+						unsubscribe();
+						resolve();
+					});
+				});
+				retryReply.resolve({ thread: served });
+				await retryAccepted;
+				expect(entry.readActor.failures).toBe(0);
+				admissionRelease.resolve();
+				expect.soft(await submission).toBe(true);
+				expect.soft(entry.store.getState().lastAcceptedMutation).toMatchObject({ kind });
+				expect.soft(entry.store.getState().conversationGeneration).toBe(generation);
+				expect(entry.store.getState().pendingMutation).toBeNull();
+				expect(entry.store.getState().error).toBeNull();
+				expect.soft(document.getSnapshot()).toMatchObject({
+					submitting: false,
+					error: null,
+					record: { draft: "", unconfirmed: null },
+				});
+				expect.soft(repository.read(destination).unconfirmed).toBeNull();
+				const durable = await runtime.storage.listOutbox(nativeMutationTargetKey("hub-1", "ref-1"));
+				expect(durable).toHaveLength(1);
+				expect(durable[0]?.method).toBe(kind === "send" ? "turn/start" : "turn/queue");
+				expect(reads(client)).toBe(3);
+			} finally {
+				draftStorage.database.close();
+			}
+		},
+	);
+
 	it("retries a rehydrate failure that leaves readable rows open, once for the entry, and clears on success", async () => {
 		const control = { fail: false };
 		const client = hub("ref-1", () => {
@@ -852,8 +952,8 @@ describe("entry read actor", () => {
 
 		// Capture the failure exactly as the store publishes it: the readable
 		// model still on screen, status still open, read validity at error. The
-		// entry's actor may begin its immediate retry (which moves status to
-		// opening) before ensureLatest's promise resolves, so the transition
+		// entry's actor may begin its immediate retry (which moves read validity
+		// to reading) before ensureLatest's promise resolves, so the transition
 		// itself is the evidence.
 		let whileReadable: { status: string; latestReadState: string; hasRows: boolean } | null = null;
 		const unsubscribe = a.entry.store.subscribe(() => {
