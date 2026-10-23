@@ -23,6 +23,9 @@ import (
 // Only the model is scripted. The SSH host, two hubs, daemons, human RPC,
 // Manager binding, observation lease, input, sandbox and histories are real.
 func TestE2E_ManagerAcceptance(t *testing.T) {
+	if os.Getenv("EVENER_SSH_E2E") != "1" || os.Getenv("EVENER_SSH_E2E_DEPLOY") != "1" {
+		t.Skip("requires EVENER_SSH_E2E=1 EVENER_SSH_E2E_DEPLOY=1, writes only to a test-owned localhost SSH directory")
+	}
 	e2ecap.RequireLoopbackBind(t)
 	e2ecap.RequireProcessInspect(t)
 	if testing.Short() {
