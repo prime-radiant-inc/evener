@@ -252,3 +252,110 @@ func waitForRootAttention(t *testing.T, root *Session, n int) []string {
 	})
 	return pending
 }
+
+// notificationReportWakesParent uses real delegate creation, delivery and
+// provider requests. Worker B cannot send any stimulus until A's report has
+// reached the coordinator and its successful request has consumed that report.
+func notificationReportWakesParent(t *testing.T, polling bool) {
+	t.Helper()
+	const payload = "c18f90d2-45ca-4c50-b17b-a67fb0e92783"
+	adapter := newMessagingAdapter("COORD-BRIEF", "WORKER-A", "WORKER-B")
+	reportGate, siblingGate := make(chan struct{}), make(chan struct{})
+	releaseReport := sync.OnceFunc(func() { close(reportGate) })
+	releaseSibling := sync.OnceFunc(func() { close(siblingGate) })
+	defer releaseReport()
+	defer releaseSibling()
+	workerIDs := make(chan string, 2)
+	presented := make(chan llm.Request, 1)
+	var siblingID string
+	waitResponse := func() llm.Response {
+		if polling {
+			return toolCallResponse(communicateCallArgs("wait", map[string]any{
+				"message": "waiting", "end_turn": true,
+				"end_reason": "waiting_on_work", "waiting_on": siblingID,
+			}))
+		}
+		// Keep the attempted terminal call: HEAD enters the ordinary drain
+		// before late completion validation, unlike waiting_on_work above.
+		return finalResponse("waiting")
+	}
+	adapter.script("root",
+		func(llm.Request) llm.Response {
+			return delegateToolResponse("coord", "COORD-BRIEF: coordinate two workers.")
+		},
+		func(llm.Request) llm.Response { return finalResponse("waiting") },
+	)
+	adapter.script("COORD-BRIEF",
+		func(llm.Request) llm.Response { return delegateToolResponse("a", "WORKER-A: report.") },
+		func(req llm.Request) llm.Response {
+			workerIDs <- deferredHeadDelegateID.FindString(lastToolResultText(req.Messages))
+			return delegateToolResponse("b", "WORKER-B: report.")
+		},
+		func(req llm.Request) llm.Response {
+			siblingID = deferredHeadDelegateID.FindString(lastToolResultText(req.Messages))
+			workerIDs <- siblingID
+			return waitResponse()
+		},
+		func(req llm.Request) llm.Response {
+			presented <- req
+			return waitResponse()
+		},
+	)
+	adapter.script("WORKER-A", func(llm.Request) llm.Response {
+		awaitSignal(t, reportGate, "the coordinator to wait")
+		return finalResponse(payload)
+	})
+	adapter.script("WORKER-B", func(llm.Request) llm.Response {
+		awaitSignal(t, siblingGate, "A's report to be observed")
+		return finalResponse("sibling finished")
+	})
+	root := newMessagingRoot(t, adapter, nil)
+	serveSupervisionRootWakes(t, root)
+	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := root.ProcessInput(ctx, "start", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	adapter.waitForRequests(t, "COORD-BRIEF", 3)
+	coordinator := waitForSoleChildIdle(t, root)
+	workerID, sibling := <-workerIDs, <-workerIDs
+	if workerID == "" || sibling == "" || workerID == sibling {
+		t.Fatalf("worker identities = %q, %q", workerID, sibling)
+	}
+	releaseReport()
+	var req llm.Request
+	select {
+	case req = <-presented:
+	case <-ctx.Done():
+		t.Fatalf("report did not wake coordinator before sibling release: coordinator requests=%d, error=%v", len(adapter.requestsFor("COORD-BRIEF")), ctx.Err())
+	}
+	if text := messagesText(req.Messages); strings.Count(text, payload) != 1 || !strings.Contains(text, `delegate_id="`+workerID+`"`) {
+		t.Fatalf("coordinator request did not carry worker A's payload exactly once: %s", text)
+	}
+	attentionID := "delegate:" + workerID + "/delivery/1"
+	// Await the successful response's resolution, not just provider entry.
+	waitForCondition(t, 30*time.Second, "the report's successful request to consume its delivery", func() bool {
+		fold := rootAttentionFold(t, coordinator)
+		return fold.resolutions[attentionID] == delegateAttentionConsumed
+	})
+	fold := rootAttentionFold(t, coordinator)
+	if !slices.Equal(fold.order, []string{attentionID}) || fold.resumeGenerations[attentionID] != 0 {
+		t.Fatalf("report delivery fold = order %v generations %v, want the presenting generation only", fold.order, fold.resumeGenerations)
+	}
+	if got := len(adapter.requestsFor("COORD-BRIEF")); got != 4 {
+		t.Fatalf("coordinator requests = %d, want 4 without a duplicate observation", got)
+	}
+	coordRows := stableDelegateRowsForSession(root, false)
+	if len(coordRows) != 1 || !coordRows[0].snapshot.currentRunOpen {
+		t.Fatalf("coordinator settled while B remained live: %#v", coordRows)
+	}
+	if row := delegateAggregateSnapshot(t, root.delegateController, sibling); !row.CurrentRunOpen {
+		t.Fatal("worker B stopped before it was released")
+	}
+	if got := rootAttentionFold(t, root).order; len(got) != 0 {
+		t.Fatalf("coordinator published a report while B remained live: %v", got)
+	}
+	releaseSibling()
+	awaitRootReport(t, root)
+}

@@ -673,12 +673,11 @@ func TestDelegateUpdateFromADrainTurnReachesTheRootBeforeTheReport(t *testing.T)
 	}
 }
 
-// A sibling's report to a coordinator draining its workers gets no turn of its
-// own: reports wait for the generation's end. Only a later update wakes the
-// coordinator, and that turn carries the report along with it.
-func TestDelegateReportToADrainingCoordinatorWaitsForAnUpdate(t *testing.T) {
+// A report wakes a coordinator in its ordinary drain without waiting for
+// another worker's update or completion.
+func TestNotificationReportWakesDrainingParent(t *testing.T) {
 	t.Parallel()
-	drainingCoordinatorWaitsForAnUpdate(t, 0)
+	notificationReportWakesParent(t, false)
 }
 
 // When the write that marks the update consumed fails once, the drain retries
@@ -686,7 +685,7 @@ func TestDelegateReportToADrainingCoordinatorWaitsForAnUpdate(t *testing.T) {
 // already saw.
 func TestDelegateUpdateConsumedMarkerFailureDoesNotRerunTheTurn(t *testing.T) {
 	t.Parallel()
-	drainingCoordinatorWaitsForAnUpdate(t, 1)
+	drainingCoordinatorWithObservedReport(t, 1)
 }
 
 // When the retry fails too, the update stays pending for the generation's end:
@@ -694,16 +693,19 @@ func TestDelegateUpdateConsumedMarkerFailureDoesNotRerunTheTurn(t *testing.T) {
 // workers, nor runs another model turn for an update the model already saw.
 func TestDelegateUpdateConsumedMarkerRetryFailureKeepsTheCoordinatorRunning(t *testing.T) {
 	t.Parallel()
-	drainingCoordinatorWaitsForAnUpdate(t, 2)
+	drainingCoordinatorWithObservedReport(t, 2)
 }
 
-// drainingCoordinatorWaitsForAnUpdate runs the draining-coordinator scenario;
-// failedMarkerWrites makes that many of the coordinator's first attention
-// resolution writes fail.
-func drainingCoordinatorWaitsForAnUpdate(t *testing.T, failedMarkerWrites int) {
+// drainingCoordinatorWithObservedReport presents A's report before entering the
+// drain, then wakes it with B's update. An already observed report must not add
+// a turn. failedMarkerWrites fails that many update resolution writes.
+func drainingCoordinatorWithObservedReport(t *testing.T, failedMarkerWrites int) {
 	t.Helper()
 	adapter := newMessagingAdapter("COORD-BRIEF", "WORKER-A", "WORKER-B")
-	coordinatorIdle, updateGate, reportGate := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	firstReportGate, reportDeferred := make(chan struct{}), make(chan struct{})
+	updateGate, reportGate := make(chan struct{}), make(chan struct{})
+	var deferredOnce sync.Once
+	var root *Session
 	releaseUpdate := sync.OnceFunc(func() { close(updateGate) })
 	defer releaseUpdate()
 	releaseReport := sync.OnceFunc(func() { close(reportGate) })
@@ -718,6 +720,8 @@ func drainingCoordinatorWaitsForAnUpdate(t *testing.T, failedMarkerWrites int) {
 	adapter.script("COORD-BRIEF",
 		func(llm.Request) llm.Response { return delegateToolResponse("a", "WORKER-A: report the cursor table.") },
 		func(llm.Request) llm.Response {
+			close(firstReportGate)
+			awaitSignal(t, reportDeferred, "A's report to arrive before the next model boundary")
 			return delegateToolResponse("b", "WORKER-B: ask your parent which table holds the drain cursor.")
 		},
 		func(llm.Request) llm.Response { return finalResponse("waiting on both workers") },
@@ -728,7 +732,7 @@ func drainingCoordinatorWaitsForAnUpdate(t *testing.T, failedMarkerWrites int) {
 	)
 	adapter.script("WORKER-A",
 		func(llm.Request) llm.Response {
-			awaitSignal(t, coordinatorIdle, "the coordinator to end its turn")
+			awaitSignal(t, firstReportGate, "the coordinator's second request")
 			return finalResponse("SIBLING_REPORT: drain_cursor")
 		},
 	)
@@ -742,7 +746,13 @@ func drainingCoordinatorWaitsForAnUpdate(t *testing.T, failedMarkerWrites int) {
 			return finalResponse("worker b done")
 		},
 	)
-	root := newMessagingRoot(t, adapter, nil)
+	root = newMessagingRoot(t, adapter, func(cfg *SessionConfig) {
+		cfg.testOnly.delegateDeliveryClassified = func(s *Session, isDeferred bool) {
+			if s != root && isDeferred {
+				deferredOnce.Do(func() { close(reportDeferred) })
+			}
+		}
+	})
 	serveSupervisionRootWakes(t, root)
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -752,20 +762,19 @@ func drainingCoordinatorWaitsForAnUpdate(t *testing.T, failedMarkerWrites int) {
 	}
 	adapter.waitForRequests(t, "COORD-BRIEF", 3)
 	coordinator := waitForSoleChildIdle(t, root)
-	close(coordinatorIdle)
 	coordinator.mu.Lock()
 	path, sessionID := transcriptPath(coordinator.stateDir, coordinator.id), coordinator.id
 	coordinator.mu.Unlock()
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	waitForCondition(t, 30*time.Second, "the sibling's report to reach the coordinator", func() bool {
+	waitForCondition(t, 30*time.Second, "the sibling's report to be consumed by the initial turn", func() bool {
 		fold, err := readDelegateAttentionFold(path, sessionID)
-		return err == nil && len(fold.pendingIDs()) == 1
+		return err == nil && len(fold.order) == 1 && fold.resolutions[fold.order[0]] == delegateAttentionConsumed
 	})
-	if coordinator.hasPendingDelegateUpdateAttention() {
-		t.Fatal("the coordinator's drain counts the sibling's report as an update")
+	if text := messagesText(adapter.requestsFor("COORD-BRIEF")[2].Messages); !strings.Contains(text, "SIBLING_REPORT") {
+		t.Fatalf("the initial turn's final request did not present the sibling report:\n%s", text)
 	}
 	// Three requests so far: two delegate calls and the end of the first turn.
-	// The sibling's report ran no turn of its own. Worker B's own report may
+	// The already observed report ran no extra turn. Worker B's own report may
 	// later run a successor turn or ride the drain's end, depending on when it
 	// lands, so the total after the update is not pinned.
 	if got := len(adapter.requestsFor("COORD-BRIEF")); got != 3 {
@@ -1138,7 +1147,7 @@ func TestDelegateUpdateAdmitsOnlyATurnThatConsumesIt(t *testing.T) {
 	if appended, err := sub.sess.appendDelegateNotificationDurably(updateID, "ADMISSION_UPDATE: which table?"); err != nil || !appended {
 		t.Fatalf("append update attention = appended:%t err:%v", appended, err)
 	}
-	if !sub.sess.hasPendingDelegateUpdateAttention() {
+	if !sub.sess.hasPendingOwnDelegateAttention() {
 		t.Fatal("the delegate does not hold the pending update")
 	}
 

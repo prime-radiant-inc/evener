@@ -9,6 +9,13 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 )
 
+// A valid waiting_on_work call follows the polling wait path, rather than the
+// ordinary finalization drain. A child's report must wake that path too.
+func TestNotificationReportWakesPollingParent(t *testing.T) {
+	t.Parallel()
+	notificationReportWakesParent(t, true)
+}
+
 func rootDispositionRegistry(t *testing.T, validate func(context.Context, string) error) (*tool.Registry, *[]events.CommunicateData) {
 	t.Helper()
 	delivered := []events.CommunicateData{}

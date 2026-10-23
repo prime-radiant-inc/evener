@@ -184,17 +184,12 @@ func (s *Session) hasPendingStableSteering() bool {
 	return s != nil && s.owningDelegateID != "" && s.delegateController != nil && s.delegateController.generationOwesSteering(s.owningDelegateID)
 }
 
-// pendingDelegateUpdateAttentionIDs lists the updates from this session's own
-// delegates that no turn has consumed. A delegate run parked in its
-// finalization drain reads this to run a turn for them: a parent waiting on
-// its delegates is idle, and an update wakes an idle parent, so a delegate's
-// mid-work question is not hidden until that delegate finishes. A child's
-// report waits for the generation's end, where the next attention generation
-// takes it with everything else pending. The root's attention has its own
-// rail, so this is always empty there. A failed transcript read reads as no
-// update: the drain keeps waiting, and the generation's end still delivers
-// the attention.
-func (s *Session) pendingDelegateUpdateAttentionIDs() []string {
+// pendingOwnDelegateAttentionIDs lists all unconsumed notifications for a
+// delegate session. Its finalization drain runs a turn for reports as well as
+// updates without waiting for the generation to end. The root's attention has
+// its own rail, so this is always empty there. On a failed transcript read the
+// drain keeps waiting and the generation's end still delivers the attention.
+func (s *Session) pendingOwnDelegateAttentionIDs() []string {
 	if s == nil || s.owningDelegateID == "" {
 		return nil
 	}
@@ -202,36 +197,28 @@ func (s *Session) pendingDelegateUpdateAttentionIDs() []string {
 	if err != nil {
 		return nil
 	}
-	var updates []string
-	for _, attentionID := range ids {
-		if isDelegateUpdateAttentionID(attentionID) {
-			updates = append(updates, attentionID)
-		}
-	}
-	return updates
+	return ids
 }
 
-// presentedDelegateUpdateAttentionIDs lists the updates the turn that just ran
-// showed the model: the ones its settled requests credited
-// (attentionCoveredIDs). An update that arrived after the turn's last request
-// is not among them. Coverage alone answers, with no transcript read to fail,
-// so an update already marked consumed may be listed too.
-func (s *Session) presentedDelegateUpdateAttentionIDs() []string {
+// presentedDelegateAttentionIDs lists the notifications the turn that just ran
+// showed the model: the ones its settled requests credited (attentionCoveredIDs).
+// A notification that arrived after the turn's last request is not among them.
+// Coverage alone answers, with no transcript read to fail, so notifications
+// already marked consumed may be listed too.
+func (s *Session) presentedDelegateAttentionIDs() []string {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
-	var updates []string
+	var ids []string
 	for id := range s.attentionCoveredIDs {
-		if isDelegateUpdateAttentionID(id) {
-			updates = append(updates, id)
-		}
+		ids = append(ids, id)
 	}
-	return updates
+	return ids
 }
 
-// hasPendingDelegateUpdateAttention reports whether any update from this
-// session's own delegates is unconsumed.
-func (s *Session) hasPendingDelegateUpdateAttention() bool {
-	return len(s.pendingDelegateUpdateAttentionIDs()) != 0
+// hasPendingOwnDelegateAttention reports whether a delegate session has any
+// unconsumed notification.
+func (s *Session) hasPendingOwnDelegateAttention() bool {
+	return len(s.pendingOwnDelegateAttentionIDs()) != 0
 }
 
 // autonomyInFlight reports whether autonomous work will move this session
