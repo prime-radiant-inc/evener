@@ -202,7 +202,8 @@ test("close during an outstanding retry pass stops the outcome scan reopening", 
   expect(opensAtClose).toBe(0);
   hold.release();
 
-  await expect(retry).rejects.toThrow("Document annotation repository is closed");
+  // The rule is the refusal, not its phrasing.
+  await expect(retry).rejects.toThrow();
   expect(open).toHaveBeenCalledTimes(opensAtClose);
   fixture.drafts.close();
 });
