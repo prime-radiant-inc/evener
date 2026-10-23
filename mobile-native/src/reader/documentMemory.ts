@@ -309,15 +309,12 @@ export class DocumentMemory {
 	private update(key: DocumentKey, change: (record: DocumentRecord) => DocumentRecord): void {
 		const id = recordKey(key);
 		this.documents[id] = { ...change(this.documents[id] ?? { touchedAt: 0 }), touchedAt: this.clock() };
-		const entries = Object.entries(this.documents);
-		if (entries.length > LIMIT) {
-			// Unsent comments are your work: past the limit, the least recently
-			// touched documents without comments go first.
-			entries.sort(
-				([, a], [, b]) =>
-					Number(Boolean(b.comments?.length)) - Number(Boolean(a.comments?.length)) || b.touchedAt - a.touchedAt,
-			);
-			this.documents = Object.fromEntries(entries.slice(0, LIMIT));
+		// Unsent comments are your work, not cache entries. Keep every record
+		// with comments, plus the 100 most recently touched comment-free records.
+		const disposable = Object.entries(this.documents).filter(([, record]) => !record.comments?.length);
+		if (disposable.length > LIMIT) {
+			disposable.sort(([, a], [, b]) => b.touchedAt - a.touchedAt);
+			for (const [discarded] of disposable.slice(LIMIT)) delete this.documents[discarded];
 		}
 		writeJson(this.storage, documentsKey(this.hubId), this.documents);
 		this.changed();

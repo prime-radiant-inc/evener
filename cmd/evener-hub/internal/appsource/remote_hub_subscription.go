@@ -1145,7 +1145,7 @@ func (s *RemoteHubSource) drainLoop(client *appwire.Client) {
 // controller relay treats that as subscription end and re-reads the thread, so
 // the notification is resynced rather than silently lost.
 func (s *RemoteHubSource) routeNotification(client *appwire.Client, notification appwire.Notification) {
-	translated, threadID, ok := s.translateNotification(notification)
+	translated, threadID, ok := s.translateNotification(notification, client)
 	if !ok || threadID == "" {
 		return
 	}
@@ -1206,7 +1206,7 @@ func (s *RemoteHubSource) routeNotification(client *appwire.Client, notification
 // the thread of thread/started, the turn of turn/started and turn/completed,
 // the item of item/started and item/completed, and the plural items array of
 // history/updated (see rewriteRemoteImageURL).
-func (s *RemoteHubSource) translateNotification(n appwire.Notification) (appwire.Notification, string, bool) {
+func (s *RemoteHubSource) translateNotification(n appwire.Notification, client *appwire.Client) (appwire.Notification, string, bool) {
 	if len(n.Params) == 0 {
 		return n, "", false
 	}
@@ -1247,8 +1247,13 @@ func (s *RemoteHubSource) translateNotification(n appwire.Notification) (appwire
 		}
 	}
 
+	// Resolve the forwarded set only when a field that carries capabilities is
+	// present: most notifications are turn/item deltas that never consult it.
+	forwarded := func() appwire.ThreadCapabilities {
+		return s.forwardedThreadCapabilitiesFor(client)
+	}
 	if raw, ok := fields["thread"]; ok {
-		translated, err := s.translateThreadRaw(raw)
+		translated, err := s.translateThreadRaw(raw, forwarded())
 		if err != nil {
 			return n, "", false
 		}
@@ -1272,7 +1277,7 @@ func (s *RemoteHubSource) translateNotification(n appwire.Notification) (appwire
 	}
 	if n.Method == appwire.NotifyThreadStatusChanged {
 		if rawCapabilities, ok := fields[capabilitiesField]; ok {
-			fields[capabilitiesField] = maskRemoteCapabilitiesRaw(rawCapabilities)
+			fields[capabilitiesField] = maskRemoteCapabilitiesRaw(rawCapabilities, forwarded())
 		}
 	}
 

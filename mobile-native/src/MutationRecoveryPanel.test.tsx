@@ -13,6 +13,8 @@ import type {
 	MutationPersistenceSnapshot,
 	MutationRecoveryRecord,
 } from "@evener/appwire-client/state/mutation";
+import { TABLES } from "./mutationOutboxStorage";
+import { NativeMutationRuntime } from "./nativeMutationRuntime";
 import {
 	discardRecoveredMutation,
 	nativeMutationRecoveryActions,
@@ -25,6 +27,8 @@ import {
 	useRecoveryPanel,
 } from "./MutationRecoveryPanel";
 import { render, renderedText, renderHook, settle } from "./renderNative.testkit";
+import type { SqliteSync } from "./sqliteSync";
+import { openSqliteSyncDouble } from "./sqliteSync.testkit";
 import type { NativeMutationRecoveryRuntime } from "./useNativeMutationRecovery";
 
 vi.mock("react-native", async () => (await import("./renderNative.testkit")).nativeModuleMock());
@@ -36,6 +40,32 @@ vi.mock("expo-crypto", () => ({
 	randomUUID: () => "test-uuid",
 	getRandomValues: (array: Uint8Array) => array,
 }));
+
+it("recovers an actual SQLite read failure through offline Retry", async () => {
+	const opened = openSqliteSyncDouble();
+	let failReads = true;
+	const port: SqliteSync = {
+		execSync: (sql) => opened.port.execSync(sql),
+		runSync: (sql, ...params) => opened.port.runSync(sql, ...params),
+		getFirstSync: (sql, ...params) => opened.port.getFirstSync(sql, ...params),
+		getAllSync: (sql, ...params) => {
+			if (failReads && sql.includes(`FROM ${TABLES.recovery}`)) throw new Error("read failed");
+			return opened.port.getAllSync(sql, ...params);
+		},
+	};
+	const runtime = new NativeMutationRuntime(port, { createMutationId: () => "sqlite-row" });
+	const { result } = renderHook(() => useRecoveryPanel({ hubId: "hub-a", targetRef: "ref-a", acquire: () => runtime }));
+	await settle();
+	expect(result.current.failed).toBe(true);
+	expect(result.current.snapshot).toBeNull();
+
+	failReads = false;
+	act(() => result.current.retry());
+	await settle();
+	expect(result.current.failed).toBe(false);
+	expect(result.current.snapshot?.recovery).toEqual([]);
+	opened.database?.close();
+});
 
 const TARGET_A = JSON.stringify(["hub-a", "ref-a"]);
 const TARGET_B = JSON.stringify(["hub-b", "ref-b"]);
@@ -203,7 +233,6 @@ it("counts no rows while the snapshot is empty and counts them when rows arrive"
 	});
 	const { result } = renderHook(() =>
 		useRecoveryPanel({
-			connected: true,
 			hubId: "hub-a",
 			targetRef: "ref-a",
 			acquire: () => runtime,
@@ -218,7 +247,7 @@ it("counts no rows while the snapshot is empty and counts them when rows arrive"
 	expect(recoveryRowCount(result.current)).toBe(1);
 });
 
-it("surfaces a failed runtime acquisition and clears it on retry", async () => {
+it("surfaces a failed offline runtime acquisition and clears it on retry", async () => {
 	let mode: "fail" | "ok" = "fail";
 	const acquire = () => {
 		if (mode === "fail") throw new Error("mutations db unavailable");
@@ -226,7 +255,6 @@ it("surfaces a failed runtime acquisition and clears it on retry", async () => {
 	};
 	const { result } = renderHook(() =>
 		useRecoveryPanel({
-			connected: true,
 			hubId: "hub-a",
 			targetRef: "ref-a",
 			acquire,
@@ -256,7 +284,6 @@ it("surfaces a rejected discard instead of leaving an unhandled rejection", asyn
 	});
 	const { result } = renderHook(() =>
 		useRecoveryPanel({
-			connected: true,
 			hubId: "hub-a",
 			targetRef: "ref-a",
 			acquire: () => runtime,
@@ -278,7 +305,6 @@ it("leaves no failure after a successful discard", async () => {
 	const runtime = fakeRuntime();
 	const { result } = renderHook(() =>
 		useRecoveryPanel({
-			connected: true,
 			hubId: "hub-a",
 			targetRef: "ref-a",
 			acquire: () => runtime,
@@ -317,7 +343,6 @@ it("refreshes a failed read on retry", async () => {
 	});
 	const { result } = renderHook(() =>
 		useRecoveryPanel({
-			connected: true,
 			hubId: "hub-a",
 			targetRef: "ref-a",
 			acquire: () => runtime,
@@ -385,7 +410,7 @@ it("withholds restore for a rejected record that carries an image, which the gho
 	expect(rows[0].actions).toEqual(["discard"]);
 });
 
-it("clears a stale acquisition failure when a later acquisition succeeds", async () => {
+it("clears an offline acquisition failure when Retry succeeds", async () => {
 	let calls = 0;
 	const runtime = fakeRuntime();
 	const acquire = () => {
@@ -393,10 +418,8 @@ it("clears a stale acquisition failure when a later acquisition succeeds", async
 		if (calls === 1) throw new Error("mutations db unavailable");
 		return runtime;
 	};
-	let connected = true;
-	const { result, rerender } = renderHook(() =>
+	const { result } = renderHook(() =>
 		useRecoveryPanel({
-			connected,
 			hubId: "hub-a",
 			targetRef: "ref-a",
 			acquire,
@@ -405,11 +428,7 @@ it("clears a stale acquisition failure when a later acquisition succeeds", async
 	await settle();
 	expect(result.current.error).toBeInstanceOf(Error);
 
-	connected = false;
-	rerender();
-	await settle();
-	connected = true;
-	rerender();
+	act(() => result.current.retry());
 	await settle();
 
 	expect(result.current.error).toBeNull();
@@ -426,7 +445,6 @@ it("clears an in-scope discard failure after a later successful discard", async 
 	});
 	const { result } = renderHook(() =>
 		useRecoveryPanel({
-			connected: true,
 			hubId: "hub-a",
 			targetRef: "ref-a",
 			acquire: () => runtime,
@@ -458,7 +476,6 @@ it("scopes a discard failure to its target, so switching targets shows the new t
 	let targetRef = "ref-a";
 	const { result, rerender } = renderHook(() =>
 		useRecoveryPanel({
-			connected: true,
 			hubId,
 			targetRef,
 			acquire: () => runtime,
@@ -507,7 +524,6 @@ it("does not resurface a stale acquisition failure after a target round-trip", a
 	};
 	const { result, rerender } = renderHook(() =>
 		useRecoveryPanel({
-			connected: true,
 			hubId: "hub-a",
 			targetRef,
 			acquire,
@@ -542,7 +558,6 @@ it("ignores a stale discard rejection that lands after a newer discard", async (
 	});
 	const { result } = renderHook(() =>
 		useRecoveryPanel({
-			connected: true,
 			hubId: "hub-a",
 			targetRef: "ref-a",
 			acquire: () => runtime,

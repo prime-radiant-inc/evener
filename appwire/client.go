@@ -258,6 +258,14 @@ func (c *Client) Features() FeatureSet {
 	return c.features
 }
 
+// Ready reports whether the client was constructed with NewClient and has a
+// transport it can send on. A zero-value Client carries handshake facts in
+// tests and embedders but cannot serve a request; callers that would issue one
+// must check Ready first instead of panicking on its nil pending map.
+func (c *Client) Ready() bool {
+	return c != nil && c.transport != nil && c.closed != nil
+}
+
 // SetPendingCoordinator installs an optimistic-rendering coordinator
 // that observes the four conversation-affecting Turn* methods. Pass
 // nil to disable. Safe to call before Start.

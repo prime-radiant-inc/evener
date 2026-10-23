@@ -7,8 +7,8 @@
 //
 // Detectors, armed at the module boundaries every production path crosses:
 // - the only production runtime construction is the getNativeMutationRuntime
-//   singleton, whose openDatabaseSync("evener-mutations.db") is the one db the
-//   screen must never open at any point of its lifecycle; the expo-sqlite mock
+//   singleton, whose openDatabaseSync("evener-mutations.db") is acquired by
+//   the offline recovery effect, never during render; the expo-sqlite mock
 //   records every open with the phase it happened in (the screen's memoized
 //   draft library legitimately opens evener-drafts.db during render).
 // - the probe's runtime is the REAL NativeMutationRuntime over the testkit
@@ -39,6 +39,7 @@ const navigationState = vi.hoisted(() => ({
 const recorder = vi.hoisted(() => ({
 	inRenderPass: true,
 	opens: [] as { database: string; phase: "render" | "effect" }[],
+	identityReads: [] as { key: string; phase: "render" | "effect" }[],
 }));
 const harness = vi.hoisted(() => ({
 	connection: {
@@ -132,7 +133,15 @@ vi.mock("expo-sqlite", async () => {
 	};
 });
 vi.mock("expo-sqlite/kv-store", () => ({
-	Storage: { getItemSync: () => null, setItemSync: () => {} },
+	Storage: {
+		getItemSync: (key: string) => {
+			if (!key.startsWith("queued-message-identity:v1:")) return null;
+			recorder.identityReads.push({ key, phase: recorder.inRenderPass ? "render" : "effect" });
+			return JSON.stringify({ threadId: "cached-thread", instanceId: "cached-instance" });
+		},
+		setItemSync: () => {},
+		removeItemSync: () => {},
+	},
 }));
 vi.mock("expo-file-system", () => ({
 	File: class File {
@@ -281,6 +290,20 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 	);
 	const firstKey = nativeMutationTargetKey("hub-1", "ref-1");
 	await seedRecoveryRow(runtime, firstKey);
+	const registrations: { phase: string; args: unknown[] }[] = [];
+	let released = 0;
+	const register = NativeMutationRuntime.prototype.registerTarget;
+	const registrationProbe = vi.spyOn(NativeMutationRuntime.prototype, "registerTarget").mockImplementation(function (
+		this: NativeMutationRuntime,
+		...args
+	) {
+		registrations.push({ phase: recorder.inRenderPass ? "render" : "effect", args });
+		const release = register.apply(this, args);
+		return () => {
+			released++;
+			release();
+		};
+	});
 
 	const hubId = "hub-1";
 	let targetRef = "ref-1";
@@ -297,8 +320,8 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 	const renderer = render(tree());
 
 	// THE RENDER-PASS FENCE: no runtime construction, no target registration,
-	// no subscribe and no read during the render pass - and the mutations
-	// database is never opened at any phase of the screen's lifecycle. The
+	// no subscribe and no read during the render pass - and mutations storage is
+	// acquired only by the recovery effect, including while disconnected. The
 	// drafts database the screen's render pass legitimately opens is
 	// classified "render" (the detector's own arming proof: it sees render
 	// passes), while the hook's subscribe/read land "effect" only.
@@ -309,8 +332,12 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 	});
 	expect(recordedCalls.find((call) => call.method === "subscribeStorage")?.phase).toBe("effect");
 	expect(recordedCalls.find((call) => call.method === "read")?.phase).toBe("effect");
-	expect(recorder.opens.map((open) => open.database)).not.toContain("evener-mutations.db");
-	expect(new Set(recorder.opens.map((open) => open.database))).toEqual(new Set(["evener-drafts.db"]));
+	expect(recorder.opens.filter((open) => open.database === "evener-mutations.db")).toEqual([
+		{ database: "evener-mutations.db", phase: "effect" },
+	]);
+	expect(recorder.opens.filter((open) => open.phase === "render").map((open) => open.database)).toEqual([
+		"evener-drafts.db",
+	]);
 
 	// EFFECT-OWNED: subscribe and read happen in the mount effects, with the
 	// read captured to the route's exact composite target key.
@@ -323,6 +350,10 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 	// The recovery surface really enumerated the seeded durable row through
 	// the real runtime's read pipeline, inside the real screen's tree.
 	await settle();
+	expect(registrations).toEqual([
+		{ phase: "effect", args: ["hub-1", "ref-1", null, { threadId: "cached-thread", instanceId: "cached-instance" }] },
+	]);
+	expect(recorder.identityReads).toEqual([{ key: `queued-message-identity:v1:${firstKey}`, phase: "effect" }]);
 	expect(latestProjection?.loading).toBe(false);
 	expect(latestProjection?.snapshot?.recovery.map((row) => row.clientMutationId)).toEqual(["render-1"]);
 	// The screen rendered its actual content, not a stub: the composer's
@@ -347,6 +378,11 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 	expect(readsAfter).toHaveLength(2);
 	expect(readsAfter[1].args).toEqual([nativeMutationTargetKey("hub-1", "ref-2")]);
 	expect(subscriptionLifetime.added - subscriptionLifetime.removed).toBe(1);
+	expect(released).toBe(1);
+	expect(registrations.at(-1)).toEqual({
+		phase: "effect",
+		args: ["hub-1", "ref-2", null, { threadId: "cached-thread", instanceId: "cached-instance" }],
+	});
 
 	// A storage change for the OLD route's key never re-reads the new
 	// generation, even though both generations shared this runtime.
@@ -373,7 +409,13 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 
 	// The render-pass fence held across the route-change render too.
 	expect(recordedCalls.filter((call) => call.phase === "render")).toEqual([]);
-	expect(recorder.opens.map((open) => open.database)).not.toContain("evener-mutations.db");
+	expect(recorder.opens.filter((open) => open.database === "evener-mutations.db")).toEqual([
+		{ database: "evener-mutations.db", phase: "effect" },
+	]);
+	expect(recorder.identityReads.every((call) => call.phase === "effect")).toBe(true);
+	act(() => renderer.unmount());
+	expect(released).toBe(2);
+	registrationProbe.mockRestore();
 });
 
 it("classifies a deliberate render-time runtime call as render-pass, proving the detector is armed", () => {

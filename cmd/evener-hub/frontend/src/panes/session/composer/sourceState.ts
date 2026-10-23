@@ -1,5 +1,7 @@
 import type { ComposerMention } from "@evener/appwire-client";
 import { createStore } from "zustand/vanilla";
+import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
+import { createSecureUUID } from "../../../stores/secureUUID";
 import type { InputAttachment } from "../../../stores/threads";
 import { pushToast } from "../../../widgets/toast/store";
 import {
@@ -12,9 +14,11 @@ import {
 } from "./attachments/useAttachments";
 import {
   clearDraft,
-  clearPersistedDraft,
+  clearPersistedDraftIfRevisionMatches,
   markDraftEdited,
   readComposerDraft,
+  readComposerDraftRevisionId,
+  readComposerDraftSnapshot,
   readDraftRevision,
   writeComposerDraft,
 } from "./draft";
@@ -24,9 +28,34 @@ import {
   subscribeComposerSubmissionCommitted,
   updateRecoveryPendingTurn,
 } from "./queue/pendingTurnsStore";
-import { parseSkillDocument, patchSelectionText, type SkillEditorValue, serializeSkillDocument } from "./skillDocument";
+import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
+import {
+  materializeSelectionReferences,
+  parseSkillDocument,
+  patchSelectionText,
+  type SkillEditorValue,
+  serializeSkillDocument,
+} from "./skillDocument";
 
 type RevisionRef<T> = { current: T };
+export type RecoveryOwnerLease = { clientMutationId: string; compositionRevision: number };
+type RecoveryComposition = {
+  text: string;
+  attachments: readonly InputAttachment[];
+  skillNames: readonly string[];
+  commandNames: readonly string[];
+  mentions: readonly ComposerMention[] | undefined;
+};
+/** What the durable owner already holds, so an echo write changes nothing. */
+function recoveryCompositionFingerprint(composition: RecoveryComposition): string {
+  return JSON.stringify({
+    text: composition.text,
+    attachments: composition.attachments.map((item) => [item.marker, item.name, item.mediaType, item.data]),
+    skillNames: composition.skillNames,
+    commandNames: composition.commandNames,
+    mentions: composition.mentions ?? [],
+  });
+}
 type SelectionMeta = { commandNames: string[]; mentions: ComposerMention[] | undefined };
 export interface ComposerSubmissionSnapshot {
   text: string;
@@ -44,6 +73,8 @@ export interface ComposerSourceSnapshot {
   commandNames: string[];
   mentions?: ComposerMention[];
   activeRecoveryId: string | null;
+  recoveryActivating: boolean;
+  recoveryOperationBusy: boolean;
   freshRecoveryRef: string | null;
   restoreEpoch: number;
 }
@@ -59,7 +90,7 @@ export interface ComposerSourceState {
     selectionMetaRef: RevisionRef<SelectionMeta>;
     draftEditRevisionRef: RevisionRef<number>;
     ownedDraftRevisionRef: RevisionRef<number>;
-    activeRecoveryIdRef: RevisionRef<string | null>;
+    recoveryOwnerLeaseRef: RevisionRef<RecoveryOwnerLease | null>;
     recoveryWriteVersionRef: RevisionRef<number>;
     recoveryReplacementEpochRef: RevisionRef<number>;
     recoveryOwnsLocalDraftRef: RevisionRef<boolean>;
@@ -73,11 +104,16 @@ export interface ComposerSourceState {
   updateSkillNames(names: string[]): void;
   editSkillNames(names: string[]): void;
   updateSelectionMeta(value: SkillEditorValue): void;
-  setActiveRecoveryId(id: string | null): void;
+  setActiveRecoveryId(record: MutationRecoveryRecord | null): void;
   markRestore(): void;
   persistDraft(text: string): void;
   writeDraft(text: string, mayPersist: boolean, source?: TextEditSource): void;
   refreshRecovery(): void;
+  readonly compositionOwnerId: string;
+  runRecoveryOperation<T>(operation: () => Promise<T>): Promise<T>;
+  flushRecoveryWrites(): Promise<void>;
+  tryAcquireRecoveryOperation(): (() => void) | null;
+  activateRecovery(record: MutationRecoveryRecord): Promise<boolean>;
   queueRecoveryPersistence(
     id: string,
     text: string,
@@ -85,7 +121,8 @@ export interface ComposerSourceState {
     names: readonly string[],
     commands?: readonly string[],
     mentions?: readonly ComposerMention[],
-  ): Promise<void>;
+    composerText?: string,
+  ): Promise<boolean>;
   clearIfUnchanged(
     text: string,
     revision: number,
@@ -105,15 +142,47 @@ export function restoredSkillNames(value: SkillEditorValue): string[] {
   return serializeSkillDocument(parseSkillDocument(value)).skillNames;
 }
 
+function recoveryCompositionRevision(record: MutationRecoveryRecord): number {
+  const revision = (record as MutationRecoveryRecord & { compositionRevision?: unknown }).compositionRevision;
+  return typeof revision === "number" && Number.isSafeInteger(revision) && revision >= 0 ? revision : 0;
+}
+
 /** Original conversation work belongs to its pane, not to an editor mount. */
-export function createComposerSourceState(ref: string): ComposerSourceState {
-  const initial = readComposerDraft(ref);
+const defaultCompositionOwners = new Map<string, string>();
+
+/** A recovery whose submission has started is no longer available to an Edit
+ * press from a remounted composer. The submission already owns the captured
+ * composition; restoring it through a fresh source would write a new revision
+ * and race the send. */
+const recoverySubmissionsInFlight = new Set<string>();
+
+export function beginRecoverySubmission(clientMutationId: string): () => void {
+  recoverySubmissionsInFlight.add(clientMutationId);
+  return () => {
+    recoverySubmissionsInFlight.delete(clientMutationId);
+  };
+}
+
+export function recoverySubmissionInFlight(clientMutationId: string): boolean {
+  return recoverySubmissionsInFlight.has(clientMutationId);
+}
+
+/** A pane passes its lifetime token; standalone mounts fall back to one token
+ * per ref so a remount outside the pane shell still reuses ownership. */
+export function createComposerSourceState(ref: string, ownerId?: string): ComposerSourceState {
+  const compositionOwnerId = ownerId ?? defaultCompositionOwners.get(ref) ?? createSecureUUID();
+  if (ownerId === undefined && !defaultCompositionOwners.has(ref))
+    defaultCompositionOwners.set(ref, compositionOwnerId);
+  const initial = readComposerDraftSnapshot(ref);
+  let currentDraftRevisionId = initial.revisionId;
   const state = createStore<ComposerSourceSnapshot>(() => ({
     text: initial.text,
     skillNames: restoredSkillNames(initial),
     commandNames: initial.commandNames ?? [],
     mentions: initial.mentions,
     activeRecoveryId: null,
+    recoveryActivating: false,
+    recoveryOperationBusy: false,
     freshRecoveryRef: null,
     restoreEpoch: 0,
   }));
@@ -123,7 +192,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
     selectionMetaRef: { current: { commandNames: initial.commandNames ?? [], mentions: initial.mentions } },
     draftEditRevisionRef: { current: 0 },
     ownedDraftRevisionRef: { current: readDraftRevision(ref) },
-    activeRecoveryIdRef: { current: null },
+    recoveryOwnerLeaseRef: { current: null },
     recoveryWriteVersionRef: { current: 0 },
     recoveryReplacementEpochRef: { current: 0 },
     recoveryOwnsLocalDraftRef: { current: false },
@@ -135,7 +204,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
     selectionMetaRef,
     draftEditRevisionRef,
     ownedDraftRevisionRef,
-    activeRecoveryIdRef,
+    recoveryOwnerLeaseRef,
     recoveryWriteVersionRef,
     recoveryReplacementEpochRef,
     recoveryOwnsLocalDraftRef,
@@ -144,8 +213,58 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
   let disposed = false;
   let boundEditor: TextEditor | null = null;
   let recoveryWrites: Promise<void> = Promise.resolve();
+  let recoveryOperations: Promise<void> = Promise.resolve();
+  let recoveryOperationHeld = false;
+  const currentRecoveryId = () => recoveryOwnerLeaseRef.current?.clientMutationId ?? null;
+  let committedRecoveryComposition: string | null = null;
   let refreshVersion = 0;
   let persistenceScheduled = false;
+  let cleanupRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let cleanupRetryAttempt = 0;
+  let cleanupRetryVersion = 0;
+
+  function cancelCleanupRetry(): void {
+    cleanupRetryVersion += 1;
+    if (cleanupRetryTimer !== null) clearTimeout(cleanupRetryTimer);
+    cleanupRetryTimer = null;
+    cleanupRetryAttempt = 0;
+  }
+
+  function hasEmptyComposition(): boolean {
+    return (
+      textRef.current.trim() === "" &&
+      operations.items.length === 0 &&
+      skillNamesRef.current.length === 0 &&
+      selectionMetaRef.current.commandNames.length === 0 &&
+      (selectionMetaRef.current.mentions?.length ?? 0) === 0
+    );
+  }
+
+  function scheduleCleanupRetry(clientMutationId: string, replacementEpoch: number): void {
+    if (
+      disposed ||
+      currentRecoveryId() !== clientMutationId ||
+      recoveryReplacementEpochRef.current !== replacementEpoch ||
+      !hasEmptyComposition()
+    )
+      return;
+    if (cleanupRetryTimer !== null) return;
+    cleanupRetryAttempt += 1;
+    const delay = Math.min(250 * 2 ** (cleanupRetryAttempt - 1), 5_000);
+    const retryVersion = cleanupRetryVersion;
+    cleanupRetryTimer = setTimeout(() => {
+      cleanupRetryTimer = null;
+      if (
+        retryVersion !== cleanupRetryVersion ||
+        disposed ||
+        currentRecoveryId() !== clientMutationId ||
+        recoveryReplacementEpochRef.current !== replacementEpoch ||
+        !hasEmptyComposition()
+      )
+        return;
+      void queueRecoveryPersistence(clientMutationId, "", [], []);
+    }, delay);
+  }
 
   const ownsDraft = () => ownedDraftRevisionRef.current === readDraftRevision(ref);
   function currentDraftText(): string {
@@ -153,45 +272,57 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
   }
   function updateText(text: string): void {
     if (disposed) return;
+    if (text.trim() !== "") cancelCleanupRetry();
     textRef.current = text;
     state.setState({ text });
   }
   function updateSkillNames(skillNames: string[]): void {
     if (disposed) return;
+    if (skillNames.length > 0) cancelCleanupRetry();
     skillNamesRef.current = skillNames;
     state.setState({ skillNames });
   }
   function updateSelectionMeta(value: SkillEditorValue): void {
     if (disposed) return;
     const next = { commandNames: value.commandNames ?? [], mentions: value.mentions };
+    if (next.commandNames.length > 0) cancelCleanupRetry();
     selectionMetaRef.current = next;
     state.setState(next);
   }
   function markEdited(): void {
     draftEditRevisionRef.current += 1;
-    if (activeRecoveryIdRef.current !== null) {
+    if (currentRecoveryId() !== null) {
       markDraftEdited(ref);
       ownedDraftRevisionRef.current = readDraftRevision(ref);
     }
   }
   function editText(text: string): void {
     if (disposed) return;
+    cancelCleanupRetry();
     markEdited();
     updateText(text);
   }
   function editSkillNames(names: string[]): void {
     if (disposed) return;
+    cancelCleanupRetry();
     markEdited();
     updateSkillNames(names);
   }
-  function setActiveRecoveryId(activeRecoveryId: string | null): void {
+  function setActiveRecoveryId(record: MutationRecoveryRecord | null): void {
     if (disposed) return;
-    activeRecoveryIdRef.current = activeRecoveryId;
+    const activeRecoveryId = record?.clientMutationId ?? null;
+    if (currentRecoveryId() !== activeRecoveryId) {
+      cancelCleanupRetry();
+      committedRecoveryComposition = null;
+    }
+    recoveryOwnerLeaseRef.current = record
+      ? { clientMutationId: record.clientMutationId, compositionRevision: recoveryCompositionRevision(record) }
+      : null;
     state.setState({ activeRecoveryId });
   }
   function persistDraft(text: string): void {
     if (disposed) return;
-    writeComposerDraft(ref, {
+    currentDraftRevisionId = writeComposerDraft(ref, {
       text,
       skillNames: skillNamesRef.current,
       ...(selectionMetaRef.current.commandNames.length ? { commandNames: selectionMetaRef.current.commandNames } : {}),
@@ -215,7 +346,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
       // React can batch exact marker removals, so restore their already mapped atoms.
       markRestore();
     } else editText(text);
-    if (mayPersist && activeRecoveryIdRef.current === null) persistDraft(text);
+    if (mayPersist && currentRecoveryId() === null) persistDraft(text);
   }
   function writeDetachedSourceDraft(text: string, _cursor: number, source?: TextEditSource): void {
     // A detached continuation cannot claim another pane's newer draft.
@@ -244,55 +375,70 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
     nextSkillNames: readonly string[],
     nextCommandNames: readonly string[] = selectionMetaRef.current.commandNames,
     nextMentions: readonly ComposerMention[] | undefined = selectionMetaRef.current.mentions,
-  ): Promise<void> {
-    if (disposed) return Promise.resolve();
+    nextComposerText?: string,
+  ): Promise<boolean> {
+    if (disposed) return Promise.resolve(false);
+    const isEmptyCleanup =
+      nextText.trim() === "" &&
+      nextAttachments.length === 0 &&
+      nextSkillNames.length === 0 &&
+      nextCommandNames.length === 0 &&
+      (nextMentions?.length ?? 0) === 0;
+    if (!isEmptyCleanup) cancelCleanupRetry();
     const version = ++recoveryWriteVersionRef.current;
     const replacementEpoch = recoveryReplacementEpochRef.current;
     const draftRevision = readDraftRevision(ref);
+    const localDraftRevisionId =
+      ownsDraft() && currentDraftRevisionId !== undefined && currentDraftRevisionId === readComposerDraftRevisionId(ref)
+        ? currentDraftRevisionId
+        : undefined;
     const operation = recoveryWrites
       .catch(() => undefined)
       .then(async () => {
-        if (disposed || activeRecoveryIdRef.current !== clientMutationId) return;
+        if (
+          disposed ||
+          currentRecoveryId() !== clientMutationId ||
+          recoveryReplacementEpochRef.current !== replacementEpoch
+        )
+          return true;
         if (
           nextText.trim() === "" &&
           nextAttachments.length === 0 &&
           nextSkillNames.length === 0 &&
-          nextCommandNames.length === 0
+          nextCommandNames.length === 0 &&
+          (nextMentions?.length ?? 0) === 0
         ) {
-          if (
-            textRef.current.trim() !== "" ||
-            operations.items.length > 0 ||
-            skillNamesRef.current.length > 0 ||
-            selectionMetaRef.current.commandNames.length > 0
-          )
-            return;
-          await discardRecoveryPendingTurn(
+          const lease = recoveryOwnerLeaseRef.current;
+          if (!lease || lease.clientMutationId !== clientMutationId) return false;
+          const discarded = await discardRecoveryPendingTurn(
             clientMutationId,
             ref,
             () =>
               !disposed &&
               recoveryReplacementEpochRef.current === replacementEpoch &&
-              activeRecoveryIdRef.current === clientMutationId &&
-              textRef.current.trim() === "" &&
-              operations.items.length === 0 &&
-              skillNamesRef.current.length === 0 &&
-              selectionMetaRef.current.commandNames.length === 0,
+              currentRecoveryId() === clientMutationId &&
+              hasEmptyComposition() &&
+              (localDraftRevisionId === undefined || readComposerDraftRevisionId(ref) === localDraftRevisionId),
+            lease.compositionRevision,
           );
+          if (!discarded) return false;
+          cancelCleanupRetry();
           if (
             !disposed &&
-            activeRecoveryIdRef.current === clientMutationId &&
+            recoveryReplacementEpochRef.current === replacementEpoch &&
+            currentRecoveryId() === clientMutationId &&
             readDraftRevision(ref) === draftRevision &&
-            textRef.current.trim() === "" &&
-            operations.items.length === 0 &&
-            skillNamesRef.current.length === 0 &&
-            selectionMetaRef.current.commandNames.length === 0
+            (localDraftRevisionId === undefined || readComposerDraftRevisionId(ref) === localDraftRevisionId) &&
+            hasEmptyComposition()
           ) {
             recoveryOwnsLocalDraftRef.current = false;
             setActiveRecoveryId(null);
-            clearPersistedDraft(ref);
+            if (localDraftRevisionId) clearPersistedDraftIfRevisionMatches(ref, localDraftRevisionId);
           }
-          return;
+          return true;
         }
+        const lease = recoveryOwnerLeaseRef.current;
+        if (!lease || lease.clientMutationId !== clientMutationId) return false;
         const updated = await updateRecoveryPendingTurn(
           clientMutationId,
           ref,
@@ -301,65 +447,270 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
           nextSkillNames,
           nextCommandNames,
           nextMentions,
+          [],
+          localDraftRevisionId,
+          lease.compositionRevision,
+          { [clientMutationId]: lease.compositionRevision },
+          compositionOwnerId,
+          nextComposerText,
         );
+        if (!updated) {
+          if (!disposed && currentRecoveryId() === clientMutationId) {
+            // The row was consumed or advanced by another pane. Keeping this
+            // stale lease would make every later save and send fail against an
+            // owner this tab can no longer write. Preserve the local
+            // composition as an ordinary draft before retiring it.
+            persistDraft(textRef.current);
+            setActiveRecoveryId(null);
+          }
+          if (!disposed) {
+            pushToast("info", "This message changed in another tab. Refresh and try again.");
+          }
+          return false;
+        }
+        // A goal replacement (or another owner) retires this lease while the
+        // write is in flight; do not resurrect it in the local mirror.
         if (
           !disposed &&
-          updated &&
+          currentRecoveryId() === clientMutationId &&
+          recoveryReplacementEpochRef.current === replacementEpoch
+        ) {
+          recoveryOwnerLeaseRef.current = {
+            clientMutationId,
+            compositionRevision: recoveryCompositionRevision(updated),
+          };
+          committedRecoveryComposition = recoveryCompositionFingerprint({
+            text: nextText,
+            attachments: nextAttachments,
+            skillNames: nextSkillNames,
+            commandNames: nextCommandNames,
+            mentions: nextMentions,
+          });
+        }
+        if (
+          !disposed &&
           recoveryOwnsLocalDraftRef.current &&
           recoveryWriteVersionRef.current === version &&
           readDraftRevision(ref) === draftRevision &&
-          activeRecoveryIdRef.current === clientMutationId
+          (localDraftRevisionId === undefined || readComposerDraftRevisionId(ref) === localDraftRevisionId) &&
+          currentRecoveryId() === clientMutationId
         ) {
           recoveryOwnsLocalDraftRef.current = false;
-          clearPersistedDraft(ref);
+          if (localDraftRevisionId) clearPersistedDraftIfRevisionMatches(ref, localDraftRevisionId);
         }
+        return true;
       });
-    recoveryWrites = operation;
+    recoveryWrites = operation.then(
+      () => undefined,
+      () => undefined,
+    );
     void operation.catch((error) => {
-      if (disposed || activeRecoveryIdRef.current !== clientMutationId) return;
+      if (disposed || currentRecoveryId() !== clientMutationId) return;
+      if (isEmptyCleanup) scheduleCleanupRetry(clientMutationId, replacementEpoch);
       pushToast("error", `Couldn't save recovered message: ${error instanceof Error ? error.message : String(error)}`);
     });
     return operation;
   }
 
+  function activateRecovery(record: MutationRecoveryRecord): Promise<boolean> {
+    if (disposed || state.getState().recoveryActivating || recoverySubmissionsInFlight.has(record.clientMutationId))
+      return Promise.resolve(false);
+    state.setState({ recoveryActivating: true });
+    const completed = runRecoveryOperation(() => {
+      const operation = recoveryWrites
+        .catch(() => undefined)
+        .then(async () => {
+          if (disposed || operations.hasPending || record.targetRef !== ref) return false;
+          if (currentRecoveryId() === record.clientMutationId) return false;
+          // Keep this object: the recovery wrapper carries older-record image
+          // reference provenance by identity, not in enumerable properties.
+          const recovered = recoveryComposerDraft(record);
+          if (record.recoveryKind === "editing") Object.assign(recovered, materializeSelectionReferences(recovered));
+          const incorporatedRevisionId = record.localDraftRevisionId;
+          const includedDraftRevisionId =
+            currentDraftRevisionId !== undefined && currentDraftRevisionId === readComposerDraftRevisionId(ref)
+              ? currentDraftRevisionId
+              : undefined;
+          let incorporatedSnapshotCleared = false;
+          // A different source's stored draft does not change this loaded snapshot.
+          // Only cleanup below needs to match the current persisted revision.
+          const incorporatedSnapshotIsCurrent = () =>
+            incorporatedRevisionId !== undefined &&
+            (incorporatedSnapshotCleared ||
+              (incorporatedRevisionId === currentDraftRevisionId && draftEditRevisionRef.current === 0));
+          const merge = () => {
+            const skipLocalDraft = incorporatedSnapshotIsCurrent();
+            return mergeRecoveryComposerDraft(
+              skipLocalDraft ? "" : textRef.current,
+              operations.items,
+              recovered,
+              skipLocalDraft ? [] : skillNamesRef.current,
+              skipLocalDraft ? [] : selectionMetaRef.current.commandNames,
+              skipLocalDraft ? undefined : selectionMetaRef.current.mentions,
+            );
+          };
+          const merged = merge();
+          const ownerId = currentRecoveryId() ?? record.clientMutationId;
+          const ownerLease = recoveryOwnerLeaseRef.current;
+          const ownerRecord = ownerId === record.clientMutationId ? record : undefined;
+          const expectedCompositionRevision = ownerRecord
+            ? recoveryCompositionRevision(ownerRecord)
+            : ownerLease?.compositionRevision;
+          if (expectedCompositionRevision === undefined) return false;
+          const replacementEpoch = recoveryReplacementEpochRef.current;
+          cancelCleanupRetry();
+          const updated = await updateRecoveryPendingTurn(
+            ownerId,
+            ref,
+            merged.text,
+            merged.attachments.flatMap((item) =>
+              item.data === undefined
+                ? []
+                : [{ marker: item.marker, name: item.name, mediaType: item.mediaType, data: item.data }],
+            ),
+            restoredSkillNames(merged),
+            merged.commandNames,
+            merged.mentions,
+            ownerId === record.clientMutationId ? [] : [record.clientMutationId],
+            incorporatedSnapshotIsCurrent() ? incorporatedRevisionId : includedDraftRevisionId,
+            expectedCompositionRevision,
+            {
+              [ownerId]: expectedCompositionRevision,
+              ...(ownerId === record.clientMutationId
+                ? {}
+                : { [record.clientMutationId]: recoveryCompositionRevision(record) }),
+            },
+            compositionOwnerId,
+          );
+          if (!updated || disposed || recoveryReplacementEpochRef.current !== replacementEpoch) return false;
+          recoveryOwnerLeaseRef.current = {
+            clientMutationId: ownerId,
+            compositionRevision: recoveryCompositionRevision(updated),
+          };
+          if (incorporatedSnapshotIsCurrent() && incorporatedRevisionId !== undefined) {
+            incorporatedSnapshotCleared = clearPersistedDraftIfRevisionMatches(ref, incorporatedRevisionId);
+          }
+          // A commit may finish after new typing or attachment work. Append to
+          // that newer draft rather than restoring the press-time snapshot.
+          const latest = merge();
+          recoveryReplacementEpochRef.current += 1;
+          recoveryOwnsLocalDraftRef.current = true;
+          // Adoption uses the transaction's committed record and revision.
+          setActiveRecoveryId(updated);
+          // Rehydrating an already-owned recovery draft is not a user edit.
+          // Counting it as one makes a submission that began before the
+          // remount look stale, so its commit observer cannot clear unchanged
+          // content or distinguish a later replacement from the restore.
+          updateText(latest.text);
+          updateSkillNames(restoredSkillNames(latest));
+          updateSelectionMeta(latest);
+          operations.replaceWithSettled(latest.attachments);
+          markRestore();
+          committedRecoveryComposition = recoveryCompositionFingerprint({
+            text: merged.text,
+            attachments: merged.attachments.flatMap((item) =>
+              item.data === undefined
+                ? []
+                : [{ marker: item.marker, name: item.name, mediaType: item.mediaType, data: item.data }],
+            ),
+            skillNames: restoredSkillNames(merged),
+            commandNames: merged.commandNames ?? [],
+            mentions: merged.mentions,
+          });
+          return true;
+        });
+      const activation = operation.finally(() => {
+        if (!disposed) state.setState({ recoveryActivating: false });
+      });
+      recoveryWrites = activation.then(
+        () => undefined,
+        () => undefined,
+      );
+      return activation;
+    });
+    return completed;
+  }
+
+  function runRecoveryOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const result = recoveryOperations.catch(() => undefined).then(operation);
+    recoveryOperations = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  function tryAcquireRecoveryOperation(): (() => void) | null {
+    if (disposed || recoveryOperationHeld) return null;
+    recoveryOperationHeld = true;
+    state.setState({ recoveryOperationBusy: true });
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      recoveryOperationHeld = false;
+      if (!disposed) state.setState({ recoveryOperationBusy: false });
+    };
+  }
+
+  function settleRecoverySubmission(
+    clientMutationId: string,
+    draftUnchanged: boolean,
+    submittedText: string,
+    submittedSkillNames: readonly string[],
+    submittedCommandNames: readonly string[],
+    submittedAttachments: PendingAttachment[],
+  ): void {
+    if (disposed || currentRecoveryId() !== clientMutationId) return;
+    if (draftUnchanged) ownedDraftRevisionRef.current = readDraftRevision(ref);
+    const owns = ownsDraft();
+    recoveryOwnsLocalDraftRef.current = false;
+    recoveryWriteVersionRef.current += 1;
+    cancelCleanupRetry();
+    recoveryReplacementEpochRef.current += 1;
+    setActiveRecoveryId(null);
+    if (
+      draftUnchanged &&
+      textRef.current === submittedText &&
+      sameSkillSelections(skillNamesRef.current, submittedSkillNames) &&
+      sameSkillSelections(selectionMetaRef.current.commandNames, submittedCommandNames)
+    ) {
+      updateText("");
+      updateSkillNames([]);
+      updateSelectionMeta({ text: "", skillNames: [] });
+    }
+    const markers = new Set(
+      operations.items
+        .filter((item) =>
+          submittedAttachments.some(
+            (submitted) =>
+              submitted.marker === item.marker &&
+              submitted.data === item.data &&
+              submitted.name === item.name &&
+              submitted.mediaType === item.mediaType,
+          ),
+        )
+        .map((item) => item.marker),
+    );
+    operations.clearSubmitted(markers);
+    if (owns) persistDraft(textRef.current);
+  }
+
   const unsubscribeCommitted = subscribeComposerSubmissionCommitted(
     (targetRef, submittedText, submittedSkillNames, recovery, submittedCommandNames) => {
       if (disposed || targetRef !== ref) return;
-      if (recovery && activeRecoveryIdRef.current === recovery.clientMutationId) {
-        if (recovery.draftUnchanged) ownedDraftRevisionRef.current = readDraftRevision(ref);
-        const owns = ownsDraft();
-        recoveryOwnsLocalDraftRef.current = false;
-        recoveryWriteVersionRef.current += 1;
-        recoveryReplacementEpochRef.current += 1;
-        setActiveRecoveryId(null);
-        if (
-          recovery.draftUnchanged &&
-          textRef.current === submittedText &&
-          sameSkillSelections(skillNamesRef.current, submittedSkillNames) &&
-          sameSkillSelections(selectionMetaRef.current.commandNames, submittedCommandNames ?? [])
-        ) {
-          updateText("");
-          updateSkillNames([]);
-          updateSelectionMeta({ text: "", skillNames: [] });
-        }
-        const markers = new Set(
-          operations.items
-            .filter((item) =>
-              recovery.attachments.some(
-                (submitted) =>
-                  submitted.marker === item.marker &&
-                  submitted.data === item.data &&
-                  submitted.name === item.name &&
-                  submitted.mediaType === item.mediaType,
-              ),
-            )
-            .map((item) => item.marker),
+      if (recovery && currentRecoveryId() === recovery.clientMutationId) {
+        settleRecoverySubmission(
+          recovery.clientMutationId,
+          recovery.draftUnchanged,
+          submittedText,
+          submittedSkillNames,
+          submittedCommandNames ?? [],
+          recovery.attachments as PendingAttachment[],
         );
-        operations.clearSubmitted(markers);
-        if (owns) persistDraft(textRef.current);
       } else if (
         !recovery &&
-        activeRecoveryIdRef.current === null &&
+        currentRecoveryId() === null &&
         textRef.current === submittedText &&
         sameSkillSelections(skillNamesRef.current, submittedSkillNames) &&
         sameSkillSelections(selectionMetaRef.current.commandNames, submittedCommandNames ?? [])
@@ -373,16 +724,33 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
   );
 
   function persistDetachedRecovery(): void {
-    if (disposed || boundEditor || persistenceScheduled || activeRecoveryIdRef.current === null) return;
+    if (disposed || boundEditor || persistenceScheduled || currentRecoveryId() === null) return;
     persistenceScheduled = true;
     queueMicrotask(() => {
       persistenceScheduled = false;
-      const id = activeRecoveryIdRef.current;
-      if (!disposed && !boundEditor && id !== null && !operations.hasPending)
+      const id = currentRecoveryId();
+      const current = recoveryCompositionFingerprint({
+        text: textRef.current,
+        attachments: operations.toInputAttachments(),
+        skillNames: skillNamesRef.current,
+        commandNames: selectionMetaRef.current.commandNames,
+        mentions: selectionMetaRef.current.mentions,
+      });
+      if (
+        !disposed &&
+        !boundEditor &&
+        id !== null &&
+        !recoverySubmissionsInFlight.has(id) &&
+        !operations.hasPending &&
+        current !== committedRecoveryComposition
+      )
         void queueRecoveryPersistence(id, textRef.current, operations.toInputAttachments(), skillNamesRef.current);
     });
   }
-  const unsubscribeAttachments = attachments.subscribe(persistDetachedRecovery);
+  const unsubscribeAttachments = attachments.subscribe(() => {
+    if (operations.items.length > 0) cancelCleanupRetry();
+    persistDetachedRecovery();
+  });
   const unsubscribeDraft = state.subscribe(persistDetachedRecovery);
 
   return {
@@ -404,14 +772,20 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
     markRestore,
     persistDraft,
     writeDraft,
+    compositionOwnerId,
+    runRecoveryOperation,
+    flushRecoveryWrites: () => recoveryWrites.catch(() => undefined),
+    tryAcquireRecoveryOperation,
     queueRecoveryPersistence,
+    activateRecovery,
     bindEditor(nextEditor) {
       if (disposed) return () => {};
-      if (!ownsDraft() && activeRecoveryIdRef.current === null) {
-        const draft = readComposerDraft(ref);
+      if (!ownsDraft() && currentRecoveryId() === null) {
+        const draft = readComposerDraftSnapshot(ref);
         updateText(draft.text);
         updateSkillNames(restoredSkillNames(draft));
         updateSelectionMeta(draft);
+        currentDraftRevisionId = draft.revisionId;
         ownedDraftRevisionRef.current = readDraftRevision(ref);
       }
       markRestore();
@@ -453,6 +827,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
     dispose() {
       if (disposed) return;
       disposed = true;
+      cancelCleanupRetry();
       boundEditor = null;
       recoveryWriteVersionRef.current += 1;
       recoveryReplacementEpochRef.current += 1;
