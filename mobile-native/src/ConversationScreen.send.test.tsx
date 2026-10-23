@@ -3161,6 +3161,7 @@ describe("Retry's one owner on the shared session binding", () => {
 		);
 		const before = document.getSnapshot().record;
 		const runtime = getNativeMutationRuntime();
+		const targetKey = nativeMutationTargetKey("hub-1", ref);
 		const start = runtime.start.bind(runtime);
 		const held = deferred();
 		let hold = true;
@@ -3184,7 +3185,7 @@ describe("Retry's one owner on the shared session binding", () => {
 			runtime.start = start;
 		}
 		expect(hub.mutations()).toEqual([]);
-		expect(await runtime.storage.listOutbox("")).toEqual([]);
+		expect(await runtime.storage.listOutbox(targetKey)).toEqual([]);
 		expect(document.getSnapshot().record).toEqual(before);
 	});
 

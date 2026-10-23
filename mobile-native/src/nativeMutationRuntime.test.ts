@@ -1595,7 +1595,7 @@ test.each([
 			params: { ref: "ref-1", expectedInstanceId: "instance-1", ...extra },
 		});
 		expect((client.calls[0]?.params as { clientMutationId?: string }).clientMutationId).toEqual(expect.any(String));
-		expect(await runtime.storage.listOutbox("")).toEqual([]);
+		expect(await runtime.storage.listOutbox(nativeMutationTargetKey("hub-1", "ref-1"))).toEqual([]);
 		await runtime.stop();
 	},
 );
@@ -1620,7 +1620,7 @@ test("a false precondition refuses before the durable enqueue", async () => {
 	await expect(runtime.submit({ ...request("send"), precondition })).rejects.toBeInstanceOf(MutationNotSentError);
 
 	expect(precondition).toHaveBeenCalledTimes(1);
-	expect(await runtime.storage.listOutbox("")).toEqual([]);
+	expect(await runtime.storage.listOutbox(nativeMutationTargetKey("hub-1", "ref-1"))).toEqual([]);
 	expect(client.calls).toHaveLength(0);
 	await runtime.stop();
 });

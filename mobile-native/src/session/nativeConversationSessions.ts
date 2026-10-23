@@ -129,7 +129,11 @@ class SessionEntry implements NativeConversationSession {
 	#readFailures = 0;
 	#retryTimer: ReturnType<typeof setTimeout> | null = null;
 	#retryToken: symbol | null = null;
-	#retrying = false;
+	// Which client binding owns the in-flight retry. A replacement binding must
+	// not inherit either the "one attempt out" guard or the old attempt's
+	// failure accounting.
+	#bindingGeneration = 0;
+	#retryAttemptBinding: number | null = null;
 	#readListeners = new Set<() => void>();
 
 	constructor(options: {
@@ -305,6 +309,10 @@ class SessionEntry implements NativeConversationSession {
 	#dropBinding(): void {
 		const host = this.#liveHost;
 		const service = this.#service;
+		// Retire the binding before releasing anything: an older retry's
+		// settlement compares against this generation and can no longer touch
+		// the replacement's failure count.
+		this.#bindingGeneration += 1;
 		this.#bindingClient = null;
 		this.#liveHost = null;
 		this.#service = null;
@@ -409,7 +417,10 @@ class SessionEntry implements NativeConversationSession {
 	}
 
 	#scheduleRetry(): void {
-		if (this.#retired || this.#retryToken !== null || this.#retrying) return;
+		if (this.#retired || this.#retryToken !== null) return;
+		// Only an attempt belonging to the CURRENT binding blocks a new one. A
+		// retired binding's held retry must not starve the replacement client.
+		if (this.#retryAttemptBinding === this.#bindingGeneration) return;
 		if (this.#service === null) return;
 		const delay = reconnectDelay(this.#readFailures - 1);
 		const token = Symbol("native-conversation-read-retry");
@@ -435,10 +446,12 @@ class SessionEntry implements NativeConversationSession {
 		if (this.#retired || service === null) return;
 		if (!this.#readFailed()) return;
 		const attempt = this.#readFailures;
-		this.#retrying = true;
+		const binding = this.#bindingGeneration;
+		this.#retryAttemptBinding = binding;
 		const settle = () => {
-			this.#retrying = false;
-			if (this.#retired) return;
+			if (this.#retryAttemptBinding === binding) this.#retryAttemptBinding = null;
+			// A replaced binding's late reply changes nothing here.
+			if (this.#retired || binding !== this.#bindingGeneration) return;
 			// Only a retry that left the store failed counts. A newer read that
 			// took over ("reading") does not; if it fails, the next observation
 			// re-arms at the same step.

@@ -717,6 +717,56 @@ describe("entry read actor", () => {
 			vi.useRealTimers();
 		}
 	});
+
+	it("does not let a retired binding's held retry block the replacement client", async () => {
+		vi.useFakeTimers();
+		try {
+			const heldRetry = deferred<ThreadReadResponse>();
+			let aReads = 0;
+			const clientA = hub("ref-1", () => {
+				aReads += 1;
+				// Open succeeds, the next read fails, and the actor's retry is held.
+				if (aReads === 1) return Promise.resolve({ thread: thread("ref-1") });
+				if (aReads === 2) return Promise.reject(new Error("A read failed"));
+				return heldRetry.promise;
+			});
+			connected(clientA);
+			const a = sessions.attach("hub-1", "ref-1");
+			await vi.advanceTimersByTimeAsync(0);
+			expect(a.entry.store.getState().status).toBe("open");
+
+			await a.entry.store.getState().ensureLatest();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(aReads).toBe(3);
+			expect(a.entry.readActor.failures).toBeGreaterThanOrEqual(1);
+
+			// The replacement client's first read fails, its next would succeed.
+			let bReads = 0;
+			const clientB = hub("ref-1", () => {
+				bReads += 1;
+				if (bReads === 1) return Promise.reject(new Error("B read failed"));
+				return Promise.resolve({ thread: thread("ref-1") });
+			});
+			sessions.setConnection("hub-1", clientB);
+
+			// B must recover on its own while A's retry is still held.
+			await vi.advanceTimersByTimeAsync(30_000);
+			expect(bReads).toBe(2);
+			expect(a.entry.store.getState().status).toBe("open");
+			expect(a.entry.store.getState().latestReadState).toBe("ready");
+
+			// Control: A's late reply cannot change B's state or failure count.
+			const failuresBefore = a.entry.readActor.failures;
+			heldRetry.resolve({ thread: thread("ref-1") });
+			await vi.advanceTimersByTimeAsync(0);
+			expect(a.entry.store.getState().status).toBe("open");
+			expect(a.entry.store.getState().latestReadState).toBe("ready");
+			expect(a.entry.readActor.failures).toBe(failuresBefore);
+			expect(bReads).toBe(2);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });
 
 // The provider: exactly one registry, connection and matching hub preferences
