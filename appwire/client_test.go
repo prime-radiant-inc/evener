@@ -776,3 +776,16 @@ func TestClientRequestFailsAfterReadLoopExit(t *testing.T) {
 		t.Fatal("request hung after the read loop exited (missed-failure race)")
 	}
 }
+
+func TestClientReady(t *testing.T) {
+	if (&Client{}).Ready() {
+		t.Fatal("zero-value client reported ready")
+	}
+	var nilClient *Client
+	if nilClient.Ready() {
+		t.Fatal("nil client reported ready")
+	}
+	if !NewClient(newMemoryTransport()).Ready() {
+		t.Fatal("client constructed with a transport reported not ready")
+	}
+}

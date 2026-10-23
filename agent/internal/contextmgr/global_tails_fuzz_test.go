@@ -54,10 +54,10 @@ func gctPureTails(t *testing.T, token string) {
 	if !end || msg != "fallback" {
 		t.Fatalf("output fallback = %v, %q", end, msg)
 	}
-	_ = summarizeToolResult("unknown", token, []byte(`{}`))
-	_ = summarizeToolResult("read_file", token, []byte(`{}`))
-	_ = summarizeToolResult("shell", token, []byte(`{"command":"`+strings.Repeat("x", 61)+`"}`))
-	_ = summarizeToolResult("delegate", token, []byte(`{}`))
+	_ = summarizeToolResult("unknown", token, false, []byte(`{}`))
+	_ = summarizeToolResult("read_file", token, false, []byte(`{}`))
+	_ = summarizeToolResult("shell", token, false, []byte(`{"command":"`+strings.Repeat("x", 61)+`"}`))
+	_ = summarizeToolResult("delegate", token, false, []byte(`{}`))
 	clearThinking(nil, 0)
 	clearThinking([]schema.Turn{schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 		{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "[thinking: 1 chars]"}},

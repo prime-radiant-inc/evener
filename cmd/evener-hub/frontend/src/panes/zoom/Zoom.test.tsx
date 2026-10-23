@@ -10,6 +10,7 @@ import { accessibleName } from "../../accessibleNameTestUtils";
 import { chromeStore } from "../../shell/chromeStore";
 import { ClientProvider } from "../../shell/clientContext";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
+import { installFocusedScope, summaryOf } from "../../shell/statusbar/scopeTestUtils";
 import {
   consumePaneFocus,
   type OpenPaneRecord,
@@ -19,6 +20,7 @@ import {
 } from "../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
+import { resetNavigationStoreForTests } from "../../stores/navigation/store";
 import {
   activityContext,
   activityDelegate,
@@ -46,6 +48,7 @@ beforeEach(() => {
   installLocalStorage(new MemoryStorage());
   connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
   resetThreadsStoreForTests();
+  resetNavigationStoreForTests();
   resetTranscriptPagingForTests();
   resetWorkspaceStoreForTests();
   resetTranscriptViewRegistryForTests();
@@ -57,6 +60,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   resetWorkspaceStoreForTests();
   connectionStore.setState({ state: "idle", client: null });
+  resetNavigationStoreForTests();
   if (height) Object.defineProperty(HTMLElement.prototype, "offsetHeight", height);
   else Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");
 });
@@ -298,6 +302,108 @@ test("root and child render through real conversation readers inside one scaffol
   expect(screen.getAllByRole("textbox")).toHaveLength(2);
   expect(screen.getByRole("button", { name: "Return to previous view" })).toBeTruthy();
   expect(fake.calls.filter((call) => /send|resume|steer|interrupt/.test(call.method))).toHaveLength(0);
+});
+
+test("an unloaded scope uses its navigation title through column, spine and pop", async () => {
+  const navigationTitle = "nav-4212-root";
+  const liveTitle = "model-4212-root";
+  installFocusedScope("child", summaryOf({ ref: "root", title: navigationTitle }));
+  const { fake, response } = fixture();
+  const held = deferred<ThreadReadResponse>();
+  const rootRead = response("root");
+  const namedRoot = { ...rootRead, thread: { ...rootRead.thread, name: liveTitle } };
+  fake.on("thread/read", async ({ ref, requestGeneration, includeTurns }) => {
+    if (!ref) throw new Error("thread/read requires ref");
+    const read = ref === "root" ? await held.promise : response(ref);
+    return { ...read, requestGeneration, thread: includeTurns === false ? { ...read.thread, turns: [] } : read.thread };
+  });
+  mount(fake);
+  try {
+    await screen.findByText("child content child-id");
+    expect(threadsStore.getState().threads.has("root")).toBe(false);
+    const rootColumn = cascadeScope("root", "cascade-column");
+    const crumb = screen
+      .getByRole("navigation", { name: "Scope" })
+      .querySelector('[data-session-navigation-ref="root"]');
+    expect(crumb?.textContent).toBe(navigationTitle);
+    expect.soft(within(rootColumn).getByRole("heading", { level: 3 }).textContent).toBe(navigationTitle);
+    expect.soft(rootColumn.getAttribute("aria-label")).toBe(navigationTitle);
+
+    act(() =>
+      enterAgentCascade(activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "d2" }), "cascade"),
+    );
+    await screen.findByText("grandchild content grandchild-id");
+    expect(threadsStore.getState().threads.has("root")).toBe(false);
+    const spine = cascadeScope("root", "cascade-spine");
+    const pop = spine.querySelector<HTMLButtonElement>("button[aria-label]");
+    if (!pop) throw new Error("Missing spine pop control");
+    expect.soft(pop.textContent).toBe(navigationTitle);
+    expect.soft(accessibleName(pop)).toContain(navigationTitle);
+    expect.soft(spine.getAttribute("aria-label")).toBe(navigationTitle);
+    act(() => fireEvent.click(pop));
+    expect(currentParams().ref).toBe("root");
+    expect(currentParams().edges).toEqual([]);
+    expect(columnRefs()).toEqual(["root"]);
+    expect
+      .soft(within(cascadeScope("root", "cascade-column")).getByRole("heading", { level: 3 }).textContent)
+      .toBe(navigationTitle);
+  } finally {
+    await act(async () => held.resolve(namedRoot));
+  }
+  await screen.findByText("root content old-root");
+  expect(within(cascadeScope("root", "cascade-column")).getByRole("heading", { level: 3 }).textContent).toBe(liveTitle);
+  expect(currentParams().ref).toBe("root");
+});
+
+test("a rebound scope rejects its stale model name and transcript until a matching image recovers", async () => {
+  const navigationTitle = "nav-4212-rebound";
+  const staleTitle = "model-4212-stale";
+  const liveTitle = "model-4212-recovered";
+  installFocusedScope("child", summaryOf({ ref: "root", title: navigationTitle }));
+  const { fake, response, identities } = fixture();
+  const held = deferred<ThreadReadResponse>();
+  let holdRoot = false;
+  fake.on("thread/read", async ({ ref, requestGeneration, includeTurns }) => {
+    if (!ref) throw new Error("thread/read requires ref");
+    const read = ref === "root" && holdRoot ? await held.promise : response(ref);
+    return {
+      ...read,
+      requestGeneration,
+      thread: {
+        ...read.thread,
+        name: ref === "root" && !holdRoot ? staleTitle : read.thread.name,
+        turns: includeTurns === false ? [] : read.thread.turns,
+      },
+    };
+  });
+  mount(fake);
+  await screen.findByText("root content old-root");
+  await screen.findByText("child content child-id");
+  const childView = retainedTranscriptReadView(conversationPaneLifetime(currentPane()), "child", "cascade");
+  holdRoot = true;
+  identities.set("root", "new-root");
+  try {
+    act(() =>
+      fake.emitNotification(
+        activityChangedNotification({ ref: "root", threadId: "wire-old-root", sessionId: "old-root" }, ["summary"]),
+      ),
+    );
+    await waitFor(() => expect(currentParams().ref).toBe("root"));
+    expect(threadsStore.getState().threads.get("root")).toMatchObject({ name: staleTitle, imageSessionId: "old-root" });
+    const rootColumn = cascadeScope("root", "cascade-column");
+    expect.soft(within(rootColumn).getByRole("heading", { level: 3 }).textContent).toBe(navigationTitle);
+    expect.soft(rootColumn.getAttribute("aria-label")).toBe(navigationTitle);
+    expect(screen.queryByText("root content old-root")).toBeNull();
+    expect(screen.queryByText("child content child-id")).toBeNull();
+    expect(childView.alive).toBe(false);
+    expect(retainedTranscriptReadView(conversationPaneLifetime(currentPane()), "root", "session").readable).toBe(false);
+  } finally {
+    const read = response("root");
+    await act(async () => held.resolve({ ...read, thread: { ...read.thread, name: liveTitle } }));
+  }
+  await screen.findByText("root content new-root");
+  expect(within(cascadeScope("root", "cascade-column")).getByRole("heading", { level: 3 }).textContent).toBe(liveTitle);
+  expect(currentParams().ref).toBe("root");
 });
 
 test("separated Zoom Return closes inspection and focuses its surviving source", async () => {

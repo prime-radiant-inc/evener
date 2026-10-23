@@ -1,0 +1,22 @@
+success
+[glob: "p" → 2 files]
+success_empty
+[glob: "p" → 0 files]
+success_marker_filename
+[glob: "p" → 1 files]
+success_full_park_body
+[glob: "p" → 1 files; The failures so far:; 1. FAILURE_SENTINEL; 2. FAILURE_SENTINEL]
+error_similar_words
+[glob: "p" → 1 files]
+error_missing_delimiter
+[glob: "p" → 2 files]
+error_embedded_marker
+[glob: "p" → 1 files]
+error_later_marker
+[glob: "p" → 2 files]
+error_leading_space
+[glob: "p" → 1 files]
+error_marker_in_note
+[glob: "p" → 1 files; NOTE_SENTINEL evener did not execute this call: SENTINEL]
+error_wrong_case
+[glob: "p" → 1 files]

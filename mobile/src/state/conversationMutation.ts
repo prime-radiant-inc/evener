@@ -1,7 +1,22 @@
-import type { InputItem, MutationReceipt } from "@evener/appwire-client";
+import type { ComposerMention, InputAttachment, InputItem, MutationReceipt } from "@evener/appwire-client";
 import type { MutationAttachmentRef, MutationPersistenceSnapshot } from "@evener/appwire-client/state/mutation";
 
-interface ConversationMutationTarget {
+export interface ConversationComposerSnapshot {
+	readonly text: string;
+	readonly attachments: readonly InputAttachment[];
+	readonly skillNames?: readonly string[];
+	readonly commandNames?: readonly string[];
+	readonly mentions?: readonly ComposerMention[];
+}
+
+export interface ConversationMutationContext {
+	readonly composer?: ConversationComposerSnapshot;
+	readonly recoverySourceIds?: readonly string[];
+	/** Local correlation for an unconfirmed draft capture; never sent to the daemon. */
+	readonly draftCaptureToken?: string;
+}
+
+interface ConversationMutationTarget extends ConversationMutationContext {
 	readonly hubId: string;
 	readonly targetRef: string;
 	readonly threadId: string;

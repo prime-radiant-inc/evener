@@ -1272,6 +1272,34 @@ describe("ConversationStore", () => {
 			});
 		}
 
+		it.each(["send", "queue"] as const)(
+			"forwards %s composition context without changing encoded input",
+			async (kind) => {
+				const service = serviceFor(kind);
+				const requests: ConversationMutationRequest[] = [];
+				const input = textInput("encoded marker payload");
+				const context = {
+					composer: { text: "original composer text", attachments: [], mentions: [] },
+					recoverySourceIds: ["source-1"],
+				};
+				const store = createConversationStore({
+					mutationHubId: "hub-1",
+					mutationSubmitter: {
+						submit: async (request) => {
+							requests.push(request);
+							return undefined;
+						},
+					},
+				});
+				await store.getState().open(service, "ref-1");
+				await store.getState()[kind](service, input, context);
+				expect(requests[0]?.input).toBe(input);
+				expect(requests[0]?.composer).toBe(context.composer);
+				expect(requests[0]?.recoverySourceIds).toBe(context.recoverySourceIds);
+				expect(requests[0]).not.toHaveProperty("context");
+			},
+		);
+
 		it("refuses a submitter without a mutation hub id", () => {
 			expect(() =>
 				createConversationStore({
