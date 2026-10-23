@@ -22,6 +22,7 @@ import {
   readComposerDraftRevisionId,
   readComposerDraftSnapshot,
   readDraftRevision,
+  readRecoverySelection,
   writeComposerDraft,
   writeRecoverySelection,
 } from "./draft";
@@ -343,6 +344,7 @@ export function createComposerSourceState(
           return;
         }
         const preserved = await preserveStaleRecovery(clientMutationId);
+        if (preserved) rememberPreservedSelection(preserved, clientMutationId);
         if (
           disposed ||
           currentRecoveryId() !== clientMutationId ||
@@ -418,6 +420,16 @@ export function createComposerSourceState(
     recoveryBaseRecord = record;
     writeRecoverySelection(ref, recoverySelectionOwnerId, activeRecoveryId);
     state.setState({ activeRecoveryId });
+  }
+
+  // Preservation can commit after this pane is disposed. Persist the fresh
+  // owner so reopening selects the local work, but never overwrite a choice a
+  // replacement composer already made.
+  function rememberPreservedSelection(preserved: MutationRecoveryRecord, staleId: string): void {
+    if (preserved.clientMutationId === staleId) return;
+    const current = readRecoverySelection(ref, recoverySelectionOwnerId);
+    if (current !== undefined && current !== staleId) return;
+    writeRecoverySelection(ref, recoverySelectionOwnerId, preserved.clientMutationId);
   }
   function persistDraft(text: string): void {
     if (disposed) return;
@@ -563,6 +575,7 @@ export function createComposerSourceState(
             const preserved = hasEmptyComposition()
               ? null
               : await preserveStaleRecovery(clientMutationId, localDraftRevisionId);
+            if (preserved) rememberPreservedSelection(preserved, clientMutationId);
             if (
               !disposed &&
               currentRecoveryId() === clientMutationId &&

@@ -74,6 +74,7 @@ import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/fl
 import { retainedConversationComposer } from "./composer/retainedComposer";
 import { settleActivityDiscovery } from "./testing/activityDiscovery";
 import { CommittedSession as Session } from "./testing/CommittedSession";
+import { createTestComposerSource } from "./testing/composerSource";
 import { installControlledImageEncoding } from "./testing/imageEncoding";
 import { seedHeld } from "./transcript/messages/testing/heldSteerTestUtils";
 import { resetTranscriptPagingForTests } from "./transcript/useTranscript";
@@ -5984,6 +5985,94 @@ test("a tab reload keeps its own seat when another tab updates the ref mapping",
   render(
     <ClientProvider client={fake}>
       <Session params={{ ref }} paneId={placed.id} focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe(localText));
+});
+
+test("a disposed pane keeps the preserved selection for reopening", async ({ onTestFinished }) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(stubSessionSlots);
+  class HeldPreservationStorage extends MutationOutboxIndexedDB {
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+
+    override async preserveRecoveryComposition(
+      ...args: Parameters<MutationOutboxIndexedDB["preserveRecoveryComposition"]>
+    ): ReturnType<MutationOutboxIndexedDB["preserveRecoveryComposition"]> {
+      this.reached.resolve();
+      await this.release.promise;
+      return super.preserveRecoveryComposition(...args);
+    }
+  }
+  const storage = new HeldPreservationStorage();
+  setMutationStorageForTests(storage);
+  onTestFinished(() => storage.close());
+  const ref = "local:disposed-ref";
+  const original = await storage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+
+  const source = createTestComposerSource(ref, undefined, "pane-a");
+  onTestFinished(() => source.dispose());
+  await source.activateRecovery(recovery);
+  const peer = new MutationOutboxIndexedDB();
+  onTestFinished(() => peer.close());
+  const peerRecovery = await peer.getRecovery(original.clientMutationId);
+  if (!peerRecovery) throw new Error("missing peer recovery fixture");
+  const peerText = "older peer work";
+  await peer.updateRecoveryInput(
+    original.clientMutationId,
+    [{ type: "text", text: peerText }],
+    [],
+    peerText,
+    [],
+    [],
+    undefined,
+    undefined,
+    {
+      [original.clientMutationId]:
+        (peerRecovery as MutationRecoveryRecord & { compositionRevision?: number }).compositionRevision ?? 0,
+    },
+  );
+
+  const localText = "local carried work";
+  source.editText(localText);
+  const saving = source.queueRecoveryPersistence(original.clientMutationId, localText, [], []);
+  await storage.reached.promise;
+  source.dispose();
+  storage.release.resolve();
+  await saving;
+
+  const preserved = (await storage.listRecovery(ref)).find(
+    (record) => record.clientMutationId !== original.clientMutationId,
+  );
+  expect(preserved).toBeDefined();
+  expect(readRecoverySelection(ref, source.recoverySelectionOwnerId)).toBe(preserved?.clientMutationId);
+
+  // Reopening the conversation selects the preserved local work, not the peer.
+  await refreshPendingTurnsProjection(ref);
+  const pane: OpenPaneRecord = {
+    id: "pane_reopen",
+    type: "session",
+    params: { ref },
+    slot: "main",
+    composerSeatId: "pane-a",
+  };
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  const fake = connectFakeClient();
+  fake.on("thread/read", ({ ref: readRef }) => readResponse(readRef ?? ref));
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId={pane.id} focused={true} />
     </ClientProvider>,
   );
   await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" }).textContent).toBe(localText));
