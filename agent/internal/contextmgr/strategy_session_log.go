@@ -223,19 +223,10 @@ func (s *SessionLogStrategy) sessionLogCheckpointWithMeta(history []schema.Turn,
 	if s.session != nil {
 		fmt.Fprintf(&b, "This session's id is %s.%s\n", s.session.ID(), s.transcriptRecoverySentence(meta))
 	}
-	b.WriteString("\n")
-
-	b.WriteString("Session log:\n")
 	logStr := s.log.String()
-	if logStr != "" {
-		b.WriteString(logStr)
-	} else {
-		b.WriteString("(no entries)")
-	}
 	carry, _ := partnerConversationMarkdown(data.conversation, meta.hasTranscript(), 0)
-	modelText := b.String()
-	earlier := sessionLogEarlierContext(data.earlierSummaries, modelText)
-	text := renderStrategyCheckpoint(sessionLogCheckpointStart, "## Session Log", modelText, carry, earlier, meta)
+	earlier := sessionLogEarlierContext(data.earlierSummaries, logStr)
+	text := renderSessionLogCheckpoint(b.String(), logStr, carry, earlier, meta)
 	checkpointTurn := schema.NewTurn(schema.TurnCheckpoint, llm.User(text))
 	result := make([]schema.Turn, 0, 1+preserveRecent)
 	result = append(result, checkpointTurn)

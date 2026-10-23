@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	predictiveCheckpointStart = "[CONTEXT CHECKPOINT - PREDICTIVE]\n"
-	sessionLogCheckpointStart = "[CONTEXT CHECKPOINT - SESSION LOG]\n"
+	predictiveCheckpointStart   = "[CONTEXT CHECKPOINT - PREDICTIVE]\n"
+	sessionLogCheckpointStart   = "[CONTEXT CHECKPOINT - SESSION LOG]\n"
+	sessionLogNavigationHeading = "## Session Log Navigation"
 )
 
 func strategyCheckpointOpening(text string) (opening, heading string) {
@@ -24,15 +25,29 @@ func strategyCheckpointOpening(text string) (opening, heading string) {
 	}
 }
 
-// sessionLogEarlierContext keeps independent earlier context, but not a log
-// snapshot whose complete body is already present in the current cumulative
-// log. A shorter or different log cannot supersede the old snapshot.
+// sessionLogEarlierContext omits only a snapshot's fully covered log payload.
+// Its navigation is independent source text, not proven redundant metadata.
+// Legacy bodies mix navigation and payload, so keep them whole.
 func sessionLogEarlierContext(earlier []string, current string) []string {
+	// Avoid adding an identical generated navigation record already carried,
+	// without collapsing or reordering any of the original source entries.
+	var present map[string]bool
 	var kept []string
 	for _, summary := range earlier {
 		if strings.HasPrefix(summary, sessionLogCheckpointStart) {
 			previous, ok := parseStrategyCheckpoint(summary)
-			if ok && len(previous.conversation) == 0 && len(previous.earlier) == 0 && strings.Contains(current, previous.modelText) {
+			if ok && previous.isLogSnapshot && len(previous.conversation) == 0 && len(previous.earlier) == 0 && strings.Contains(current, previous.modelText) {
+				if present == nil {
+					present = make(map[string]bool, len(earlier))
+					for _, source := range earlier {
+						present[source] = true
+					}
+				}
+				navigation := strings.TrimSpace(renderCompactionModelText("## Historical Session Log Navigation", previous.navigation+"\n"))
+				if !present[navigation] {
+					kept = append(kept, navigation)
+					present[navigation] = true
+				}
 				continue
 			}
 		}
@@ -42,6 +57,18 @@ func sessionLogEarlierContext(earlier []string, current string) []string {
 }
 
 func renderStrategyCheckpoint(opening, heading, modelText, carry string, earlier []string, meta *CompactionMeta) string {
+	return renderStrategyCheckpointSections(opening, renderCompactionModelText(heading, modelText), carry, earlier, meta)
+}
+
+func renderSessionLogCheckpoint(navigation, payload, carry string, earlier []string, meta *CompactionMeta) string {
+	// Always add a framing newline, even when a field already ends with one.
+	// soleFencedText removes that newline, preserving the exact field bytes.
+	sections := renderCompactionModelText(sessionLogNavigationHeading, navigation+"\n") +
+		renderCompactionModelText("## Session Log", payload+"\n")
+	return renderStrategyCheckpointSections(sessionLogCheckpointStart, sections, carry, earlier, meta)
+}
+
+func renderStrategyCheckpointSections(opening, sections, carry string, earlier []string, meta *CompactionMeta) string {
 	// Earlier-summary extraction, like conversation extraction, trims only
 	// surrounding whitespace. Render that canonical form on the first fold too.
 	canonicalEarlier := make([]string, 0, len(earlier))
@@ -49,7 +76,7 @@ func renderStrategyCheckpoint(opening, heading, modelText, carry string, earlier
 		canonicalEarlier = append(canonicalEarlier, strings.TrimSpace(summary))
 	}
 	return opening + meta.compactionPointer("checkpoint") + renderCheckpointEarlierSummaries(canonicalEarlier) +
-		renderCompactionModelText(heading, modelText) + carry + "[END CHECKPOINT]"
+		sections + carry + "[END CHECKPOINT]"
 }
 
 // carriesStrategyPartnerMessages recognizes only the layout we render. Legacy
@@ -61,9 +88,11 @@ func carriesStrategyPartnerMessages(text string) bool {
 }
 
 type parsedStrategyCheckpoint struct {
-	modelText    string
-	earlier      []string
-	conversation []checkpointConversationEntry
+	modelText     string
+	navigation    string
+	earlier       []string
+	conversation  []checkpointConversationEntry
+	isLogSnapshot bool
 }
 
 func parseStrategyCheckpoint(text string) (parsedStrategyCheckpoint, bool) {
@@ -80,11 +109,22 @@ func parseStrategyCheckpoint(text string) (parsedStrategyCheckpoint, bool) {
 		return parsedStrategyCheckpoint{}, false
 	}
 	prefix := strings.TrimPrefix(text[:start], opening)
-	if line, after, found := strings.Cut(prefix, "\n"); found && strings.HasPrefix(line, "Earlier history was compacted into this checkpoint ") {
+	if line, after, found := strings.Cut(prefix, "\n"); found && isCheckpointPointer(line) {
 		prefix = after
 	}
+	var navigation, navigationSection string
+	if opening == sessionLogCheckpointStart {
+		if _, navBody, navEnd, found := markdownSectionSpan(text, sessionLogNavigationHeading); found {
+			field, ok := soleFencedText(text[navBody:navEnd])
+			if !ok {
+				return parsedStrategyCheckpoint{}, false
+			}
+			navigation = field
+			navigationSection = renderCompactionModelText(sessionLogNavigationHeading, navigation+"\n")
+		}
+	}
 	earlier := extractCheckpointEarlierSummaries(text)
-	if prefix != renderCheckpointEarlierSummaries(earlier) {
+	if prefix != renderCheckpointEarlierSummaries(earlier)+navigationSection {
 		return parsedStrategyCheckpoint{}, false
 	}
 	entries := extractMarkdownConversation(text)
@@ -96,7 +136,7 @@ func parseStrategyCheckpoint(text string) (parsedStrategyCheckpoint, bool) {
 	if text[start:] != renderCompactionModelText(heading, modelText+"\n")+renderCheckpointConversation(entries)+"[END CHECKPOINT]" {
 		return parsedStrategyCheckpoint{}, false
 	}
-	return parsedStrategyCheckpoint{modelText: modelText, earlier: earlier, conversation: entries}, true
+	return parsedStrategyCheckpoint{modelText: modelText, navigation: navigation, earlier: earlier, conversation: entries, isLogSnapshot: navigationSection != ""}, true
 }
 
 // strategyCheckpointSource keeps ambiguous older checkpoints as model context.

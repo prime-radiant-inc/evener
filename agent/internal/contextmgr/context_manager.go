@@ -1301,12 +1301,13 @@ func (d *checkpointData) collectCompaction(text string, summary bool) {
 		return
 	}
 	if opening, _ := strategyCheckpointOpening(text); opening != "" {
-		if !carriesStrategyPartnerMessages(text) {
+		parsed, ok := parseStrategyCheckpoint(text)
+		if !ok {
 			d.earlierSummaries = append(d.earlierSummaries, text)
 			return
 		}
-		d.conversation = append(d.conversation, extractMarkdownConversation(text)...)
-		d.earlierSummaries = append(d.earlierSummaries, extractCheckpointEarlierSummaries(text)...)
+		d.conversation = append(d.conversation, parsed.conversation...)
+		d.earlierSummaries = append(d.earlierSummaries, parsed.earlier...)
 		// Unpack the previous model context separately, without re-nesting its
 		// carried conversation or earlier summaries on every checkpoint.
 		model := withoutMarkdownSection(withoutMarkdownSection(text, checkpointConversationHeading), "## Earlier Summaries")
