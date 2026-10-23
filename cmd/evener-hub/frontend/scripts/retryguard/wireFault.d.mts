@@ -2,6 +2,7 @@ export interface RetryWireState {
   mode: string;
   armed: boolean;
   requests: { method: string; params: { input: unknown; clientMutationId: string } }[];
+  reads: { ref: string; subscribed: boolean; connection: number }[];
   dropped: number;
   connections: number;
   heldResponses: { method: string }[];
@@ -17,5 +18,6 @@ export interface RetryWireState {
   clearHolds(): void;
   releaseResponses(...methods: string[]): void;
   releaseNotifications(...methods: string[]): void;
+  disconnect(): void;
 }
 export function installRetryWireFault(): RetryWireState;

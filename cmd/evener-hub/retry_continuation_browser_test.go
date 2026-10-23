@@ -88,6 +88,7 @@ func TestRetryContinuationJourney(t *testing.T) {
 				fixture := map[string]any{
 					"url":    hubedge.AuthURLFor("http://"+stack.addr, stack.token),
 					"origin": "http://" + stack.addr, "token": stack.token,
+					"storageDir":  dir,
 					"artifactDir": dir, "milestonePath": filepath.Join(dir, "milestones.jsonl"),
 					"scenarios": []map[string]string{{"ref": ref, "mode": mode}},
 				}
@@ -103,7 +104,7 @@ func TestRetryContinuationJourney(t *testing.T) {
 					}
 					driver = retryContinuationDriverCommand(ctx, "node_modules/vitest/vitest.mjs", "run", "--maxWorkers=1", "src/ConversationScreen.retryJourney.test.tsx")
 					driver.Dir = "../../mobile-native"
-					driver.Env = append(os.Environ(), "EVENER_RETRY_JOURNEY="+fixturePath)
+					driver.Env = append(os.Environ(), "EVENER_RETRY_JOURNEY="+fixturePath, "EVENER_RETRY_SQLITE_DIR="+dir)
 				} else {
 					driver.Stdin = bytes.NewReader(data)
 				}
@@ -198,6 +199,7 @@ func retryNativeJourneyDriver(ctx context.Context, stack hubStack, dir, mileston
 		"url":           hubedge.AuthURLFor("http://"+stack.addr, stack.token),
 		"origin":        "http://" + stack.addr,
 		"token":         stack.token,
+		"storageDir":    dir,
 		"artifactDir":   dir,
 		"milestonePath": milestonePath,
 		"scenarios":     []map[string]string{{"ref": ref, "mode": mode}},
@@ -212,7 +214,7 @@ func retryNativeJourneyDriver(ctx context.Context, stack hubStack, dir, mileston
 	}
 	driver := retryContinuationDriverCommand(ctx, "node_modules/vitest/vitest.mjs", "run", "--maxWorkers=1", "src/ConversationScreen.retryJourney.test.tsx")
 	driver.Dir = "../../mobile-native"
-	driver.Env = append(os.Environ(), "EVENER_RETRY_JOURNEY="+fixturePath)
+	driver.Env = append(os.Environ(), "EVENER_RETRY_JOURNEY="+fixturePath, "EVENER_RETRY_SQLITE_DIR="+dir)
 	output, err := driver.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("native driver: %w\n%s", err, output)

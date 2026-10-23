@@ -4,10 +4,12 @@
 // response (or an independent notification) is withheld from the page.
 export function installRetryWireFault() {
   const Original = globalThis.WebSocket;
+  const sockets = new Set();
   const state = {
     mode: "normal",
     armed: false,
     requests: [],
+    reads: [],
     dropped: 0,
     connections: 0,
     // Per-method RPC responses and independent notifications the driver has
@@ -20,6 +22,9 @@ export function installRetryWireFault() {
     failNext: {},
     failed: 0,
     methodCounts: {},
+    disconnect() {
+      for (const socket of sockets) socket.close();
+    },
   };
   // A reload installs a fresh fault instance before the app boots. Config the
   // driver wrote to localStorage survives the navigation; it is consumed once
@@ -72,8 +77,11 @@ export function installRetryWireFault() {
       // The method of every in-flight request, so a response is attributable
       // without inspecting its result.
       this.requestMethods = new Map();
+      this.retryReads = new Map();
+      sockets.add(this);
+      this.addEventListener("close", () => sockets.delete(this));
       this.addEventListener("open", () => {
-        state.connections++;
+        this.retryConnection = ++state.connections;
       });
     }
     set onmessage(listener) {
@@ -116,6 +124,13 @@ export function installRetryWireFault() {
                 return;
               }
               listener(event);
+              const read = this.retryReads.get(message.id);
+              if (read) {
+                this.retryReads.delete(message.id);
+                if (message.result?.thread?.evener?.ref === read.ref) {
+                  state.reads.push({ ...read, connection: this.retryConnection });
+                }
+              }
             };
     }
     get onmessage() {
@@ -126,6 +141,9 @@ export function installRetryWireFault() {
       if (message.id != null && message.method) {
         this.requestMethods.set(message.id, message.method);
         state.methodCounts[message.method] = (state.methodCounts[message.method] ?? 0) + 1;
+      }
+      if (message.method === "thread/read") {
+        this.retryReads.set(message.id, { ref: message.params.ref, subscribed: message.params.subscribe === true });
       }
       if (message.method === "turn/start" || message.method === "turn/queue") {
         state.requests.push({ method: message.method, params: message.params });
