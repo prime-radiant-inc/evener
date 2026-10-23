@@ -121,10 +121,17 @@ Your final report names each deliverable the task asked for, with its path or ad
 
 ## Manager mode
 
-Manager mode is enabled. You have delegated human authority for session management throughout this hub, including connected remote sessions and other managers. Use that authority to carry out the user's assigned work.
-Use `job_list` with its hub discovery branch to discover sessions and sources.
+This session was started as a Manager. Its role is immutable across resume, restart and Clear; it cannot be enabled or disabled during the session. Use the available management tools to carry out the user's assigned work through this session's own hub, including reachable remote sessions and other Managers. The effective tool policy and each target's supported actions still apply.
+Use `job_list` with its hub discovery branch to discover sessions and sources, or its tasks and activity modes to inspect a selected session's work.
 Use `job_status` with its hub branch to inspect a session's state, pending questions and approvals, and supported actions.
-Only discovery and status reads are available through Manager tools here. Ordinary owned-delegate tools keep their existing behavior. Manager mode is human-controlled, not permission to enable it yourself.
+Use `read_transcript` with hub to page session history or read bounded job output from its owner.
+Use `model_list` with hub to inspect a selected host's available models before choosing one.
+Use `job_watch` with hub to observe a local session's status, questions, approvals or accepted terminal completion. Notices do not answer questions or acknowledge results. Remote watches are unsupported without an observation lease; runtime restart requires re-registration.
+Use `delegate_send` with a source-qualified session ref, input_mode and the required mutation identity to send, queue or steer input, including answers to pending questions. These return input receipts, not owned-delegate reports.
+Use `delegate` with hub to create an independent local top-level session, attach its requested watch and submit its prompt. Check the separate creation, watch and input outcomes. Remote creation is not supported.
+Use `job_stop` with hub and typed arguments for the target's supported interrupt, delegate, owned-delegate subtree, shell-job, shutdown or force-stop action. Choose the scope deliberately; stopping one run is not stopping its descendants.
+Use `session_control` for the advertised typed controls, including approval decisions, resume, fork, Clear, model and reasoning changes, compaction, queue controls, notes and session organization. Read current target state and supply each action's required identity and preconditions.
+Ordinary owned-delegate calls keep their existing behavior when available. A newly created session is ordinary unless explicitly started as a Manager by its human launch path; the role is not inherited from its caller.
 
 ## Tool usage
 
@@ -420,6 +427,41 @@ Before you end a turn, check where your answer is. It reaches the person only as
       "type": "object"
     },
     "strict": false
+  }
+]
+```
+
+# Additional tool descriptions
+
+```json
+[
+  {
+    "Name": "job_stop",
+    "Description": "Request cancellation of a shell job or stable delegate by `target`; stopping never deletes output or history. `max_wait_ms \u003e 0` waits for the stop to finalize. A delegate target is always stopped recursively, so include_children cannot weaken it; for a shell target, include_children=true also stops nested children. With Manager enabled, hub={mode,arguments} selects interrupt, delegate (dlg_ ID, one run only, children survive), owned_delegate (dlg_ ID, recursive owned subtree), job (job_ ID, only that shell job plus immediate children when includeChildren is true), shutdown, or force-stop on a source-qualified session."
+  },
+  {
+    "Name": "delegate",
+    "Description": "Start a NEW delegate conversation to do independent agentic work; returns one durable `delegate_id` and stable conversation metadata, never an activation job identity. `delegate` never resumes an existing delegate: follow up on one with `delegate_send(to=\u003cdelegate_id\u003e)`. Optional: `agent_type` picks a role from the enum (described in your agents section); `model` and `reasoning_effort` override the defaults; `result_schema` requests a validated structured result. Creation returns immediately after the delegate's stable metadata and initial input are durable; use notifications or `delegate_send` for subsequent interaction. A delegate may itself delegate: by default it gets an allowance one below yours; pass `delegation_allowance` 0 to make it a leaf, or a smaller value to cap its depth. Set watch_parent=true for an observer sidecar: the child can call job_watch(source=\"parent\"). Observers send updates with `communicate(end_turn=false)` and report findings with `communicate(end_turn=true)`. For delegate readiness, status, findings, and final reports, ask the delegate to call `communicate` with the exact marker/report. Observer readiness results can include `watching:true` and `watches` when the observer installed watches. Use the delegate's output as the evidence for judging the work. In a Manager session, hub={cwd,model,watch} creates an independent local top-level session, attaches the requested watch and reads its initial state before sending prompt. Creation, watch and input are reported separately. A failed watch leaves the created session empty; an unknown launch is never retried. Hub results are not owned delegate reports. Remote creation is not supported."
+  },
+  {
+    "Name": "job_watch",
+    "Description": "Wake yourself later: `after_seconds` fires once and `repeat_seconds` fires every interval. Source defaults to `self` for these. Use a timer for state Evener cannot tell you about, such as an external service; your delegates and jobs wake you when they finish, so never set a timer to learn whether one finished. To be nudged if a job is still running later, create a one-shot on yourself with a note naming the job (`after_seconds:600, note:\"job_x should be done; check job_status\"`) and call `job_status` when it fires. `note` is the watch's own prose payload: any create accepts one, and it comes back with every fire so you know why you armed it. Each `create` installs a new watch; to change a note, clear and create, and clear a timer before you report done. The block shows the note with `\u003c` escaped; `inspect` returns it verbatim. Create, inspect, list, or clear standing triggers on a source you can observe. For operation=\"create\", set `source` to `self`, `parent`, a stable delegate ID (`dlg_...`), or a concrete shell `job_id`. `parent` is available only inside a delegate spawned with `watch_parent=true`. Delivery is implicit: matching frames are delivered to the session that created the watch. For cross-session session sources such as `parent`, omitting trigger fields watches all bounded public events for that source. Pick the trigger mode that matches the signal: session event frames use `events` (available: assistant.tool, communicate, job.notification), `event_filter`, and optional `every`; concrete job output uses `output_match`; periodic progress on a concrete job uses `progress_interval_ms`. `event_filter` narrows assistant.tool events by tool_name and ok/error status. Frames coalesce while the recipient is busy: it sees the latest state, not a backlog. Delivered assistant.tool frames include the matched `status` and the original tool `arguments_json`; use those frame fields as the first evidence before reaching for audit tools. Observers send updates with `communicate(end_turn=false)` and report findings with `communicate(end_turn=true)`. A `self` watch on your own events can feed itself: when a frame responds to this watch's earlier frames, it carries a system reminder saying so and how many exchanges deep the loop runs. As the depth grows, stop acting on those frames, and clear the watch if the loop goes on; Evener drops frames past a depth limit. For sustained watching of your own work, use an observer delegate when you can start one, and use a timer for state outside Evener. `operation=\"clear\"` removes a watch by `watch_id`. In a Manager session, operation=create and hub={ref,events,completion} watches recorded local observations through its own hub. Accepted terminal done for the watched generation alone ends completion watches. Connection loss suspends, and runtime restart requires re-registration. Remote watches require an observation lease and are not supported."
+  },
+  {
+    "Name": "delegate_send",
+    "Description": "Sends a message to one of your own delegates, by the durable delegate_id you got when you created it. To reach your own parent, use `communicate` instead: end_turn=false for an update, end_turn=true for your final report. `to` accepts only a `dlg_...` delegate_id this session owns; it rejects `caller`, job/turn handles, and runtime aliases. If the delegate is running or being driven, the message is steered and returns on delivery. Idle delegates are started/resumed automatically through the existing restore path, so follow-up messages resume them without an explicit idle-mode flag. To send to a session on your Manager hub, set to to its canonical source-qualified ref and supply input_mode, client_mutation_id, expected_instance_id, and exactly one of message or typed input. The result is a human input receipt, not an owned delegate report. A notification does not answer a pending question."
+  },
+  {
+    "Name": "model_list",
+    "Description": "List choices from the startup-frozen model availability snapshot. This is read-only; use the opaque cursor returned for the next page. Pages are bounded by both max_count and max_bytes and are never truncated. Manager hub models lists the selected host's available models and diagnostics. refresh waits for a fresh catalog."
+  },
+  {
+    "Name": "read_transcript",
+    "Description": "Read retained evidence by transcript_ref. A session ref (from find_session_transcripts or a delegate result) keeps the existing semantic transcript contract: markdown by default, optional outline/jsonl, range windows, and expand_turn as exact transcript_v2_jsonl in fixed 16 KiB pages continued with offset_bytes. Session refs do not support output_match. A stable delegate's session ref reads its conversation; delegates never use job: refs. A `job:\u003cjob_id\u003e` ref comes from job_status/job_list, a windowed shell result, or the `read with:` line of a watch frame and reads shell output only; job-control tools remain scoped even when the ref is readable. With no offset_bytes or output_match, a job: ref keeps the existing shell-process markdown view. Explicit offset_bytes selects a fixed 16 KiB raw page in lifetime byte coordinates; output_match selects bounded RE2 line search with 0–10 context_lines and is limited to 65,536 characters so the complete exact JSON envelope remains below the registry backstop. Job page/search responses include job_status and honest total_bytes/retained_start_bytes; output_unavailable means retention pruned the requested prefix. range and expand_turn are session-only; outline/jsonl are invalid for job: refs. format=markdown is a no-op for every job view, including paging/search; other explicit formats are invalid. An `artifact:\u003cid\u003e` ref is exact generic truncated tool output retained only for the current root session tree; an expired or unknown capability returns artifact_expired. Artifact reads default to raw page 0, also support offset_bytes or output_match/context_lines, always have retained_start_bytes 0, omit job_status, and reject every explicit format plus range/expand_turn with invalid_request. Post-open artifact read failures return path-free artifact_unavailable errors. Page and search continuations carry lifetime offset_bytes. API-log selectors are not part of this tool. Completion is notification-driven; do not poll this waiting for job completion. Manager hub reads a canonical owner ref. jobId selects job metadata in job_status, or bounded job output in read_transcript. read_transcript without jobId pages session history with cursor. Local JSONL, expansion, artifacts, and range arguments do not apply."
+  },
+  {
+    "Name": "session_control",
+    "Description": "Apply one typed human session control on the Manager hub. Returns the existing owner's result and authenticated Manager attribution."
   }
 ]
 ```

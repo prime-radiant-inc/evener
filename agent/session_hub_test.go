@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -325,14 +326,19 @@ func managerRequestGolden(request llm.Request) []byte {
 	// Runtime facts and installed skill paths vary by machine, not by Manager mode.
 	text := regexp.MustCompile(`(?s)<environment>.*?</environment>`).ReplaceAllString(out.String(), "<environment>\n[runtime facts]\n</environment>")
 	text = regexp.MustCompile(`\[/[^\]\n]+/doctoring-evener\]`).ReplaceAllString(text, "[skill-path/doctoring-evener]")
+	text = regexp.MustCompile(`\[/[^\]\n]+/doctoring-evener/SKILL\.md\]`).ReplaceAllString(text, "[skill-path/doctoring-evener/SKILL.md]")
 	var defs []llm.ToolDefinition
+	var descriptions []struct{ Name, Description string }
 	for _, definition := range request.Tools {
 		if definition.Name == "job_list" || definition.Name == "job_status" {
 			defs = append(defs, definition)
+		} else if slices.Contains([]string{"read_transcript", "model_list", "job_watch", "delegate_send", "delegate", "job_stop", "session_control"}, definition.Name) {
+			descriptions = append(descriptions, struct{ Name, Description string }{definition.Name, definition.Description})
 		}
 	}
 	schemas, _ := json.MarshalIndent(defs, "", "  ")
-	return []byte(text + "\n# Implemented Manager tool schemas\n\n```json\n" + string(schemas) + "\n```\n")
+	prose, _ := json.MarshalIndent(descriptions, "", "  ")
+	return []byte(text + "\n# Implemented Manager tool schemas\n\n```json\n" + string(schemas) + "\n```\n\n# Additional tool descriptions\n\n```json\n" + string(prose) + "\n```\n")
 }
 
 // These are composition/execution unit tests. The hub package separately

@@ -72,8 +72,8 @@ func managerReadDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDefini
 	return def
 }
 
-// composeHubRegistry runs under s.mu. The original registrations are restored
-// on disable, so synthetic Manager tools never grant an ordinary branch.
+// composeHubRegistry runs under s.mu. Rebuild from the original registrations
+// so repeated composition never grants an ordinary branch to a synthetic tool.
 func (s *Session) composeHubRegistry() {
 	if s.hubRegistry != s.reg {
 		s.hubOrdinary = nil
@@ -174,7 +174,7 @@ func managerDelegateDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDe
 	} else {
 		params["required"] = []string{"prompt", "hub"}
 	}
-	def.Description += " With Manager enabled, hub={cwd,model,watch} creates an independent top-level session, attaches the requested watch and reads its initial state before sending prompt. Creation, watch and input are reported separately. A failed watch leaves the created session empty; an unknown launch is never retried. Hub results are not owned delegate reports."
+	def.Description += " In a Manager session, hub={cwd,model,watch} creates an independent local top-level session, attaches the requested watch and reads its initial state before sending prompt. Creation, watch and input are reported separately. A failed watch leaves the created session empty; an unknown launch is never retried. Hub results are not owned delegate reports. Remote creation is not supported."
 	def.Parameters = params
 	return def
 }
@@ -347,7 +347,7 @@ func managerWatchDefinition(def llm.ToolDefinition) llm.ToolDefinition {
 			"completion": map[string]any{"type": "boolean"},
 		}, "required": []string{"ref"},
 	}
-	def.Description += " With Manager enabled, operation=create and hub={ref,events,completion} watches recorded observations on the selected hub. Accepted terminal done for the watched generation alone ends completion watches. Connection loss suspends, disable ends, and runtime restart requires re-registration."
+	def.Description += " In a Manager session, operation=create and hub={ref,events,completion} watches recorded local observations through its own hub. Accepted terminal done for the watched generation alone ends completion watches. Connection loss suspends, and runtime restart requires re-registration. Remote watches require an observation lease and are not supported."
 	def.Parameters = params
 	return def
 }

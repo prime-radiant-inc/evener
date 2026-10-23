@@ -1574,10 +1574,13 @@ func (s *Session) rebuildToolDefsCache() {
 	included := make(map[string]bool)
 	for _, td := range s.profile.ToolDefinitions() {
 		if registered[td.Name] {
+			// Manager composition already owns both the ordinary and hub branches.
+			// Keep its parameters as well as its description on provider requests.
+			if _, composed := s.hubOrdinary[td.Name]; s.hubEnabled && composed {
+				td = s.reg.Get(td.Name).Definition
+			}
 			if td.Name == "delegate" {
-				if s.hubEnabled {
-					td = s.reg.Get("delegate").Definition
-				} else {
+				if !s.hubEnabled {
 					td = s.delegateToolDefinition()
 				}
 				// When this session can only grant allowance 0 (own allowance 1),
@@ -1591,9 +1594,6 @@ func (s *Session) rebuildToolDefsCache() {
 			}
 			// Registration builds descriptions that name the session's result
 			// tool; the profile's copy names the default.
-			if s.hubEnabled && (td.Name == "job_list" || td.Name == "job_status") {
-				td = managerReadDefinition(td, s.hubOrdinaryAvailable(td.Name))
-			}
 			td.Description = s.reg.Get(td.Name).Definition.Description
 			wire := td
 			if mapped, ok := nameMap[td.Name]; ok {
