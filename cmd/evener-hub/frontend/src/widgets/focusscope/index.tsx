@@ -31,6 +31,7 @@ export interface FocusScopeProps {
 export function FocusScope({ trap = false, autoFocus = true, children }: FocusScopeProps) {
   const ref = useRef<HTMLDivElement>(null);
   const restoreTargetRef = useRef<Element | null>(null);
+  const ownerDocumentRef = useRef<Document | null>(null);
 
   // Mount: capture the restore target, then move focus in. Unmount:
   // restore, if the target is still focusable and still in the document.
@@ -38,15 +39,21 @@ export function FocusScope({ trap = false, autoFocus = true, children }: FocusSc
   // anchoring input must keep focus for continued typing.
   useEffect(() => {
     if (!autoFocus) return;
-    restoreTargetRef.current = document.activeElement;
     const scope = ref.current;
+    // The scope's own document: in a Dockview popout the active element and the
+    // focus target both belong to that window, and the opener's document knows
+    // neither.
+    const doc = scope?.ownerDocument ?? document;
+    ownerDocumentRef.current = doc;
+    restoreTargetRef.current = doc.activeElement;
     if (scope) {
       const first = tabbable(scope)[0];
       (first ?? scope).focus();
     }
     return () => {
       const target = restoreTargetRef.current;
-      if (target instanceof HTMLElement && document.contains(target)) {
+      const ElementCtor = doc.defaultView?.HTMLElement ?? HTMLElement;
+      if (target instanceof ElementCtor && doc.contains(target)) {
         target.focus();
       }
     };
@@ -68,7 +75,7 @@ export function FocusScope({ trap = false, autoFocus = true, children }: FocusSc
       const first = list[0];
       const last = list[list.length - 1];
       if (!first || !last) return; // list.length >= 1 was just checked above
-      const active = document.activeElement;
+      const active = (ownerDocumentRef.current ?? scope.ownerDocument ?? document).activeElement;
       if (event.shiftKey && active === first) {
         event.preventDefault();
         last.focus();

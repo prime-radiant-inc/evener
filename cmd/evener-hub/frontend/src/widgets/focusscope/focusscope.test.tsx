@@ -1,5 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { createRoot } from "react-dom/client";
 import { expect, test } from "vitest";
 import { FocusScope } from "./index";
 
@@ -164,4 +165,38 @@ test("trap=true: Tab with zero tabbable descendants keeps focus on the scope its
   expect(document.activeElement).toBe(container.querySelector("[tabindex='-1']"));
   await user.tab();
   expect(document.activeElement).toBe(container.querySelector("[tabindex='-1']"));
+});
+
+// A Dockview popout is its own document. The scope has to read the active
+// element and restore focus within that document; the opener's document knows
+// neither the focused element nor the element it should return to.
+test("a scope in a popout focuses and restores within its own document", ({ onTestFinished }) => {
+  const frame = document.createElement("iframe");
+  document.body.appendChild(frame);
+  const popout = frame.contentDocument;
+  if (!popout) throw new Error("missing popout document");
+  const host = popout.createElement("div");
+  popout.body.appendChild(host);
+  const opener = popout.createElement("button");
+  opener.textContent = "before the scope";
+  popout.body.appendChild(opener);
+  opener.focus();
+  const root = createRoot(host);
+  onTestFinished(() => {
+    act(() => root.unmount());
+    frame.remove();
+  });
+
+  act(() =>
+    root.render(
+      <FocusScope>
+        <button type="button">First</button>
+      </FocusScope>,
+    ),
+  );
+  expect(popout.activeElement?.textContent).toBe("First");
+  expect(document.activeElement).not.toBe(popout.activeElement);
+
+  act(() => root.unmount());
+  expect(popout.activeElement).toBe(opener);
 });

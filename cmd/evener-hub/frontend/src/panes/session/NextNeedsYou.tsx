@@ -346,9 +346,16 @@ function OwnedNextNeedsYou({
     const onResize = () => closeList(false);
     view.addEventListener("scroll", onScroll, true);
     view.addEventListener("resize", onResize);
+    // An iOS keyboard resizes the visual viewport without a window resize, and
+    // the panel's fixed coordinates would sit stale behind it.
+    const visualViewport = view.visualViewport;
+    visualViewport?.addEventListener("resize", onResize);
+    visualViewport?.addEventListener("scroll", onScroll);
     return () => {
       view.removeEventListener("scroll", onScroll, true);
       view.removeEventListener("resize", onResize);
+      visualViewport?.removeEventListener("resize", onResize);
+      visualViewport?.removeEventListener("scroll", onScroll);
     };
   }, [listOpen, closeList]);
 
