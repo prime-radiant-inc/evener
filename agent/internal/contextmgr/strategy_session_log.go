@@ -145,7 +145,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	if p >= s.cm.SummarizeThreshold && s.cm.client != nil {
 		turnsBefore := len(*history)
 		before := s.cm.estimateTokensFor(prof, *history)
-		result, err := s.cm.summarizeWithLLM(ctx, *history, s.cm.PreserveRecentTurns)
+		result, err := s.cm.summarizeStrategyFold(ctx, *history, s.cm.PreserveRecentTurns, nil)
 		if err != nil {
 			emitFn(events.EventWarning, summarizerFailureWarning(err))
 		} else {
@@ -198,14 +198,27 @@ func (s *SessionLogStrategy) sessionLogCheckpointWithMeta(history []schema.Turn,
 		return history
 	}
 
-	// Extract original prompt from old history (same logic as checkpoint()).
+	resultToolName := "communicate"
+	if s.cm != nil {
+		resultToolName = s.cm.resultToolName()
+	}
+	data := collectStrategyCheckpointData(history, cutoff, resultToolName)
+	// The short original-prompt label is only a navigation hint. Its complete
+	// source message rides separately in the attributed conversation carry.
 	originalPrompt := extractOriginalPrompt(history[:cutoff])
+	if originalPrompt == "" {
+		for _, entry := range data.conversation {
+			if entry.Role == "user" {
+				originalPrompt = entry.Text
+				break
+			}
+		}
+	}
 	if len(originalPrompt) > 500 {
 		originalPrompt = originalPrompt[:500] + "..."
 	}
 
 	var b strings.Builder
-	b.WriteString("[CONTEXT CHECKPOINT - SESSION LOG]\n")
 	fmt.Fprintf(&b, "Original prompt: %s\n", originalPrompt)
 	if s.session != nil {
 		fmt.Fprintf(&b, "This session's id is %s.%s\n", s.session.ID(), s.transcriptRecoverySentence(meta))
@@ -219,9 +232,9 @@ func (s *SessionLogStrategy) sessionLogCheckpointWithMeta(history []schema.Turn,
 	} else {
 		b.WriteString("(no entries)")
 	}
-	b.WriteString("\n[END CHECKPOINT]\n")
-
-	checkpointTurn := schema.NewTurn(schema.TurnCheckpoint, llm.User(b.String()))
+	carry, _ := partnerConversationMarkdown(data.conversation, meta.hasTranscript(), 0)
+	text := renderStrategyCheckpoint(sessionLogCheckpointStart, "## Session Log", b.String(), carry, data.earlierSummaries, meta)
+	checkpointTurn := schema.NewTurn(schema.TurnCheckpoint, llm.User(text))
 	result := make([]schema.Turn, 0, 1+preserveRecent)
 	result = append(result, checkpointTurn)
 	result = append(result, history[cutoff:]...)

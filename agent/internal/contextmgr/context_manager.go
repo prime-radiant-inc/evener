@@ -1288,9 +1288,8 @@ type checkpointData struct {
 // the summary whole as an earlier summary; the model's own text is not mined
 // for conversation or working notes.
 //
-// This is the deterministic checkpoint's carry, which the default compaction
-// paths use. Opt-in strategies that write their own checkpoints (session-log,
-// OODA) do not carry earlier summaries yet; that gap is tracked in #4181.
+// Opt-in model-written checkpoints have their own canonical fenced layout.
+// Older raw session logs remain earlier context, never inferred conversation.
 func (d *checkpointData) collectCompaction(text string, summary bool) {
 	if summary {
 		if !carriesPartnerMessages(text) {
@@ -1299,6 +1298,19 @@ func (d *checkpointData) collectCompaction(text string, summary bool) {
 		}
 		d.conversation = append(d.conversation, extractMarkdownConversation(text)...)
 		d.earlierSummaries = append(d.earlierSummaries, withoutMarkdownSection(text, checkpointConversationHeading))
+		return
+	}
+	if opening, _ := strategyCheckpointOpening(text); opening != "" {
+		if !carriesStrategyPartnerMessages(text) {
+			d.earlierSummaries = append(d.earlierSummaries, text)
+			return
+		}
+		d.conversation = append(d.conversation, extractMarkdownConversation(text)...)
+		d.earlierSummaries = append(d.earlierSummaries, extractCheckpointEarlierSummaries(text)...)
+		// Unpack the previous model context separately, without re-nesting its
+		// carried conversation or earlier summaries on every checkpoint.
+		model := withoutMarkdownSection(withoutMarkdownSection(text, checkpointConversationHeading), "## Earlier Summaries")
+		d.earlierSummaries = append(d.earlierSummaries, model)
 		return
 	}
 	d.conversation = append(d.conversation, extractCheckpointConversation(text)...)
@@ -1362,7 +1374,7 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 			}
 			// Old-format checkpoint/summary stored as TurnUserInput — carry it
 			// just like a typed compaction turn.
-			if strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") || strings.HasPrefix(text, summaryMarkerStart) {
+			if isStrategyCompactionText(text) {
 				data.collectCompaction(text, strings.HasPrefix(text, summaryMarkerStart))
 				continue
 			}
@@ -1702,9 +1714,8 @@ func middleTrim(text string, edge int) string {
 // Only the partner's messages are carried. An earlier summary a folded
 // checkpoint holds is input to the new summary, which supersedes it; carrying
 // every earlier summary forward as well would grow each summary turn with
-// every compaction. Checkpoints written by the opt-in session-log strategy
-// keep no conversation section, so nothing is recovered from them here
-// (#4181).
+// every compaction. Opt-in checkpoints recover their explicitly carried
+// conversation through the same collector.
 //
 // Past ceiling characters (partnerCarryCeiling; 0 means none) the oldest
 // messages are left out, newest kept, and returned as summarized: the
@@ -1719,8 +1730,12 @@ func middleTrim(text string, edge int) string {
 // every one (condensePartnerMessages), as the #4309 ruling chose. Without a
 // transcript the reminder only says they were summarized.
 func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName string, recoverable bool, ceiling int) (markdown string, summarized []checkpointConversationEntry) {
+	return partnerConversationMarkdown(collectCheckpointData(history, cutoff, resultToolName).conversation, recoverable, ceiling)
+}
+
+func partnerConversationMarkdown(conversation []checkpointConversationEntry, recoverable bool, ceiling int) (markdown string, summarized []checkpointConversationEntry) {
 	var partner []checkpointConversationEntry
-	for _, entry := range cleanCheckpointConversation(collectCheckpointData(history, cutoff, resultToolName).conversation) {
+	for _, entry := range cleanCheckpointConversation(conversation) {
 		if entry.Role == "user" {
 			partner = append(partner, entry)
 		}
@@ -2534,6 +2549,16 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 // summary folds, under the carry's own cap. With checkpointed nil they are
 // read from the turns the summary folds.
 func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, preserveRecent int, instructions string, checkpointed []schema.Turn) ([]schema.Turn, error) {
+	return cm.summarizeFoldWithDigest(ctx, history, preserveRecent, instructions, checkpointed, nil)
+}
+
+// summarizeStrategyFold keeps the existing summary prompt, carry and response
+// handling, but never prefix-truncates an opt-in strategy's source records.
+func (cm *Manager) summarizeStrategyFold(ctx context.Context, history []schema.Turn, preserveRecent int, checkpointed []schema.Turn) ([]schema.Turn, error) {
+	return cm.summarizeFoldWithDigest(ctx, history, preserveRecent, "", checkpointed, buildStrategyHistoryDigest)
+}
+
+func (cm *Manager) summarizeFoldWithDigest(ctx context.Context, history []schema.Turn, preserveRecent int, instructions string, checkpointed []schema.Turn, digest func([]schema.Turn, string) string) ([]schema.Turn, error) {
 	if attentionTransparentTurnCount(history) <= preserveRecent {
 		return history, nil
 	}
@@ -2570,6 +2595,9 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	if checkpointed != nil {
 		partnerSource = append(slices.Clip(checkpointed), history[1:cutoff]...)
 	}
+	if digest != nil {
+		partnerSource = strategyCheckpointSource(partnerSource)
+	}
 	reminder, carry, summarized := cm.partnerCarry(ctx, partnerSource, len(partnerSource), partnerCarryCeiling(sumProfile))
 
 	var b strings.Builder
@@ -2600,86 +2628,90 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 		b.WriteString(condensed)
 		b.WriteString("\nThe conversation:\n")
 	}
-	for i := range cutoff {
-		t := history[i]
-		switch t.Kind {
-		case schema.TurnUserInput:
-			// Preserve user messages verbatim. Cap at 5k to protect the cheap
-			// model's context — normal messages are well under this. On the
-			// MaybeCompact and ForceCompact paths the checkpoint layer has
-			// already folded these turns, so their user messages arrive inside
-			// the checkpoint (a previous compaction) instead of here.
-			text := t.Message.Text()
-			if len(text) > 5000 {
-				text = text[:5000] + "..."
-			}
-			b.WriteString("User: ")
-			b.WriteString(text)
-			b.WriteString("\n")
-		case schema.TurnCheckpoint, schema.TurnSummary:
-			// A previous compaction is the only record of the conversation it
-			// folded. It gets up to a checkpoint's size, so a deterministic
-			// checkpoint (earlier summaries first, then the newest folded
-			// conversation) always arrives whole; the rest of the budget stays
-			// for the turns it precedes. A longer one keeps its head, where
-			// both summary prompts put the permissions and holds it quotes.
-			// Left-out partner messages written first take their share of
-			// the budget from it.
-			b.WriteString("Previous compaction: ")
-			b.WriteString(truncText(t.Message.Text(), min(maxCheckpointChars, max(maxHistoryChars-b.Len(), 0))))
-			b.WriteString("\n")
-		case schema.TurnAssistant:
-			// Extract communicate calls so the summarizer sees how the agent
-			// talked to the user, while still distinguishing questions from
-			// non-await replies.
-			text := t.Message.Text()
-			if text != "" {
-				b.WriteString("Assistant: ")
-				b.WriteString(truncText(text, 500))
+	if digest != nil {
+		b.WriteString(digest(history[:cutoff], cm.resultToolName()))
+	} else {
+		for i := range cutoff {
+			t := history[i]
+			switch t.Kind {
+			case schema.TurnUserInput:
+				// Preserve user messages verbatim. Cap at 5k to protect the cheap
+				// model's context — normal messages are well under this. On the
+				// MaybeCompact and ForceCompact paths the checkpoint layer has
+				// already folded these turns, so their user messages arrive inside
+				// the checkpoint (a previous compaction) instead of here.
+				text := t.Message.Text()
+				if len(text) > 5000 {
+					text = text[:5000] + "..."
+				}
+				b.WriteString("User: ")
+				b.WriteString(text)
+				b.WriteString("\n")
+			case schema.TurnCheckpoint, schema.TurnSummary:
+				// A previous compaction is the only record of the conversation it
+				// folded. It gets up to a checkpoint's size, so a deterministic
+				// checkpoint (earlier summaries first, then the newest folded
+				// conversation) always arrives whole; the rest of the budget stays
+				// for the turns it precedes. A longer one keeps its head, where
+				// both summary prompts put the permissions and holds it quotes.
+				// Left-out partner messages written first take their share of
+				// the budget from it.
+				b.WriteString("Previous compaction: ")
+				b.WriteString(truncText(t.Message.Text(), min(maxCheckpointChars, max(maxHistoryChars-b.Len(), 0))))
+				b.WriteString("\n")
+			case schema.TurnAssistant:
+				// Extract communicate calls so the summarizer sees how the agent
+				// talked to the user, while still distinguishing questions from
+				// non-await replies.
+				text := t.Message.Text()
+				if text != "" {
+					b.WriteString("Assistant: ")
+					b.WriteString(truncText(text, 500))
+					b.WriteString("\n")
+				}
+				for _, p := range t.Message.Content {
+					if p.Kind == llm.ContentToolCall && p.ToolCall != nil && p.ToolCall.Name == cm.resultToolName() {
+						endTurn, msg := parseCommunicateArgs(p.ToolCall.Arguments)
+						if msg == "" {
+							continue
+						}
+						switch {
+						case endTurn:
+							fmt.Fprintf(&b, "Agent Message: %s\n", msg)
+						default:
+							fmt.Fprintf(&b, "Agent Status: %s\n", msg)
+						}
+					}
+				}
+			case schema.TurnTool, schema.TurnToolResults:
+				for _, p := range t.Message.Content {
+					if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
+						content := fmt.Sprint(p.ToolResult.Content)
+						if len(content) > 200 {
+							content = content[:200] + "..."
+						}
+						fmt.Fprintf(&b, "Tool(%s): %s\n", p.ToolResult.Name, content)
+					}
+				}
+			case schema.TurnSteering:
+				// Labeled for the summary prompt's quoting rule.
+				if isPartnerSteering(t) {
+					b.WriteString("User: ")
+				} else {
+					b.WriteString("System: ")
+				}
+				b.WriteString(t.Message.Text())
 				b.WriteString("\n")
 			}
-			for _, p := range t.Message.Content {
-				if p.Kind == llm.ContentToolCall && p.ToolCall != nil && p.ToolCall.Name == cm.resultToolName() {
-					endTurn, msg := parseCommunicateArgs(p.ToolCall.Arguments)
-					if msg == "" {
-						continue
-					}
-					switch {
-					case endTurn:
-						fmt.Fprintf(&b, "Agent Message: %s\n", msg)
-					default:
-						fmt.Fprintf(&b, "Agent Status: %s\n", msg)
-					}
-				}
+			// The cap is checked after each turn, so the history can run past it
+			// by the last turn written. Every turn kind but steering has its own
+			// cap (a previous compaction's is maxCheckpointChars), which
+			// bounds that overrun; it is a soft limit protecting the summarizer's
+			// context, not a hard one.
+			if b.Len() > maxHistoryChars {
+				b.WriteString("\n[... truncated ...]\n")
+				break
 			}
-		case schema.TurnTool, schema.TurnToolResults:
-			for _, p := range t.Message.Content {
-				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
-					content := fmt.Sprint(p.ToolResult.Content)
-					if len(content) > 200 {
-						content = content[:200] + "..."
-					}
-					fmt.Fprintf(&b, "Tool(%s): %s\n", p.ToolResult.Name, content)
-				}
-			}
-		case schema.TurnSteering:
-			// Labeled for the summary prompt's quoting rule.
-			if isPartnerSteering(t) {
-				b.WriteString("User: ")
-			} else {
-				b.WriteString("System: ")
-			}
-			b.WriteString(t.Message.Text())
-			b.WriteString("\n")
-		}
-		// The cap is checked after each turn, so the history can run past it
-		// by the last turn written. Every turn kind but steering has its own
-		// cap (a previous compaction's is maxCheckpointChars), which
-		// bounds that overrun; it is a soft limit protecting the summarizer's
-		// context, not a hard one.
-		if b.Len() > maxHistoryChars {
-			b.WriteString("\n[... truncated ...]\n")
-			break
 		}
 	}
 
