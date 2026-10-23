@@ -1,4 +1,5 @@
 import { isValidTranscriptRef } from "@evener/appwire-client";
+import { reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
 import type { CellRendererProps } from "@react-native/virtualized-lists";
 import { bindFilePath, type FileReference } from "@evener/appwire-client/docContent";
 import { useHeaderHeight } from "@react-navigation/elements";
@@ -51,6 +52,7 @@ import { createActivityStore } from "../../mobile/src/state/activity";
 import { type ConversationState, createConversationStore, olderPageKey } from "../../mobile/src/state/conversation";
 import {
 	createConversationMutationPendingPort,
+	type ConversationMutationContext,
 	type ConversationMutationSubmitter,
 } from "../../mobile/src/state/conversationMutation";
 import { useAlertedRecently, useNextUsed } from "./alerts/alertsContext";
@@ -94,6 +96,11 @@ import { documentFreshness, type SessionDocument, sessionDocuments } from "./rea
 import { locateSession, type SessionLocation } from "./navigationReveal";
 import { queueHosts, type QueueHost } from "./QueueSheet";
 import {
+	editQueuedMessageIntoDraft,
+	reconcileEditedResends,
+	removeQueuedMessageWithDraftCapture,
+} from "./queuedMessageControls";
+import {
 	composeQuestionAnswers,
 	pendingQuestions,
 	type QuestionSelections,
@@ -134,6 +141,7 @@ import {
 	type GhostAction,
 	ghostActionTarget,
 	ghosts,
+	isQueuedGhost,
 	type QueueEntryRef,
 	queuedMessageText,
 	steeringWithQueue,
@@ -692,15 +700,73 @@ export function ConversationScreen({
 	}
 	// The recovery surface: this exact hub/conversation target's durable
 	// recovery rows, shown as ghosts at the transcript's end. useRecoveryPanel
-	// acquires the runtime only once the conversation is connected (the
-	// singleton opens the mutations database), so a screen that never reaches a
-	// live conversation never constructs one - what the landed render fence
-	// (useNativeMutationRecovery.render.test.tsx) requires of this screen.
+	// acquires the local runtime in an effect even while offline; the render fence
+	// (useNativeMutationRecovery.render.test.tsx) keeps construction and reads out
+	// of render while allowing durable recovery after recreation.
 	const recovery = useRecoveryPanel({
-		connected,
 		hubId: route.params.hubId,
 		targetRef: route.params.ref,
 	});
+	const recoveryAvailable = recovery.snapshot !== null;
+	const identityKey = `queued-message-identity:v1:${recovery.targetKey}`;
+	const [identityAttempt, retryIdentity] = useState(0);
+	const [savedIdentity, setSavedIdentity] = useState<{
+		key: string;
+		identity: { threadId: string; instanceId: string } | null;
+		error: unknown;
+	} | null>(null);
+	const observedTarget = mutationTarget(snapshot);
+	const observedThread = observedTarget?.threadId;
+	const observedInstance = observedTarget?.instanceId;
+	const authoritativeIdentity = connected && snapshot.status === "open";
+	useEffect(() => {
+		try {
+			let identity: { threadId: string; instanceId: string } | null = null;
+			if (authoritativeIdentity && observedThread && observedInstance) {
+				identity = { threadId: observedThread, instanceId: observedInstance };
+				try {
+					Storage.setItemSync(identityKey, JSON.stringify(identity));
+				} catch (error) {
+					// Never keep an older identity as fallback after observing a replacement.
+					Storage.removeItemSync(identityKey);
+					throw error;
+				}
+			} else {
+				const raw = Storage.getItemSync(identityKey);
+				if (raw !== null) {
+					const value: unknown = JSON.parse(raw);
+					if (
+						typeof value !== "object" ||
+						value === null ||
+						!("threadId" in value) ||
+						typeof value.threadId !== "string" ||
+						!value.threadId ||
+						!("instanceId" in value) ||
+						typeof value.instanceId !== "string" ||
+						!value.instanceId
+					)
+						throw new Error(
+							"Your saved messages are still available. Retry to check this session identity; Evener will check it again when this session opens.",
+						);
+					identity = { threadId: value.threadId, instanceId: value.instanceId };
+				}
+			}
+			setSavedIdentity({ key: identityKey, identity, error: null });
+		} catch (error) {
+			setSavedIdentity({ key: identityKey, identity: null, error });
+		}
+	}, [identityKey, identityAttempt, authoritativeIdentity, observedThread, observedInstance]);
+	const localIdentity = observedTarget ?? (savedIdentity?.key === identityKey ? savedIdentity.identity : null);
+	const localThread = localIdentity?.threadId;
+	const localInstance = localIdentity?.instanceId;
+	const identityFailure = savedIdentity?.key === identityKey ? savedIdentity.error : null;
+	useEffect(() => {
+		if (!recoveryAvailable || !localThread || !localInstance) return;
+		return getNativeMutationRuntime().registerTarget(route.params.hubId, route.params.ref, null, {
+			threadId: localThread,
+			instanceId: localInstance,
+		});
+	}, [recoveryAvailable, route.params.hubId, route.params.ref, localThread, localInstance, connected]);
 	// Bind this screen's client and target to the runtime for the connected
 	// lifetime: the service's read fence calls through mutationHostRef, and the
 	// runtime's dispatch gate opens on this screen's own authoritative read and
@@ -1911,12 +1977,14 @@ export function ConversationScreen({
 		(!conversation || conversation.status.type !== "restartRequired") &&
 		(!conversation || canComposeFor(conversation) || conversation.resumeRequired === true);
 	const goalCommand = goalObjective(draft.record.draft, draft.record.images?.length);
-	const command = composerCommand(draft.record.draft, draft.record.images?.length);
+	const command = composerCommand(draft.record.draft, draft.record.images?.length, draft.record.composer);
 	// The draft's whole shape, said once: how many images it holds. The composer
 	// can't see the attachments, so the screen answers both "may it rest" and
 	// "does Stop take the slot" from this.
 	const imageCount = draft.record.images?.length ?? 0;
-	const draftMayRest = composerRests({ text: draft.record.draft, images: imageCount, editable: draft.loaded });
+	const hasSelections = !!(draft.record.composer?.skillNames?.length || draft.record.composer?.commandNames?.length);
+	const draftMayRest =
+		!hasSelections && composerRests({ text: draft.record.draft, images: imageCount, editable: draft.loaded });
 	async function applyCommand(clear = false) {
 		const action = clear ? "goal" : command?.command.id;
 		if (
@@ -1950,7 +2018,7 @@ export function ConversationScreen({
 						isCurrent: currentBinding,
 						reasoning: () => store.getState().conversation,
 						turn: () => store.getState().conversation,
-						submit: async (kind, input) => {
+						submit: async (kind, input, context) => {
 							const target = mutationTarget(store.getState());
 							if (!target) throw new CommandNotSentError("Open the session again and try once more.");
 							try {
@@ -1961,6 +2029,7 @@ export function ConversationScreen({
 									threadId: target.threadId,
 									instanceId: target.instanceId,
 									input,
+									...context,
 								});
 							} catch (error) {
 								// Admission only writes on the phone: nothing left it, so this
@@ -2120,15 +2189,15 @@ export function ConversationScreen({
 		setAnswerError(null);
 		let acceptedAnswers = false;
 		try {
-			await document.submitText(text, async (input) => {
+			await document.submitText(text, async (input, _images, context) => {
 				if (!questionBatches.begin(batch)) return false;
 				if (target !== null && offlineAction !== "none") {
 					await getNativeMutationRuntime().submit(
-						offlineRequest(target, offlineAction, [{ type: "text", text: input }]),
+						offlineRequest(target, offlineAction, [{ type: "text", text: input }], context),
 					);
 				} else if (online) {
 					const previous = store.getState().lastAcceptedMutation;
-					await store.getState().send(online, [{ type: "text", text: input }]);
+					await store.getState().send(online, [{ type: "text", text: input }], context);
 					const accepted = store.getState().lastAcceptedMutation;
 					if (!accepted || accepted === previous || accepted.kind !== "send") return false;
 				} else return false;
@@ -2445,7 +2514,9 @@ export function ConversationScreen({
 				!(command.command.id === "goal" && !goalCommand && !conversation?.goal) &&
 				!!conversation &&
 				composerCommandAvailable(command.command, conversation)
-			: composerReady && (!!draft.record.draft.trim() || !!draft.record.images?.length) && action !== "none";
+			: composerReady &&
+				(!!draft.record.draft.trim() || !!draft.record.images?.length || hasSelections) &&
+				action !== "none";
 	const composerSendLabel =
 		answering || command === null
 			? sendLabel(action, answering, connected)
@@ -2474,9 +2545,9 @@ export function ConversationScreen({
 		if (!service || kind === null) return;
 		setActionError(null);
 		try {
-			await document.submit(async (text, images) => {
+			await document.submit(async (text, images, context) => {
 				store.getState().setDraft(text);
-				return deliver(service, kind, text, images);
+				return deliver(service, kind, text, images, context);
 			});
 		} catch {
 			// A refused Send adds no text of its own: the draft stays, and the
@@ -2510,8 +2581,21 @@ export function ConversationScreen({
 		if (target === null || kind === "none") return;
 		setActionError(null);
 		try {
-			await document.submit(async (text, images) => {
-				await getNativeMutationRuntime().submit(offlineRequest(target, kind, buildComposerInput(text, images)));
+			await document.submit(async (text, images, context) => {
+				await getNativeMutationRuntime().submit(
+					offlineRequest(
+						target,
+						kind,
+						buildComposerInput(
+							text,
+							images,
+							context.composer?.skillNames,
+							context.composer?.commandNames,
+							context.composer?.mentions,
+						),
+						context,
+					),
+				);
 				haptic("light");
 				return true;
 			});
@@ -2610,6 +2694,7 @@ export function ConversationScreen({
 			kind: "send" | "queue" | "resume",
 			text: string,
 			images: Parameters<typeof buildComposerInput>[1],
+			context?: ConversationMutationContext,
 		) => {
 			// A fenced session takes the message durably first, with the same
 			// request an offline send writes, and only then resumes: the resume's
@@ -2620,7 +2705,20 @@ export function ConversationScreen({
 				const live = store.getState();
 				const target = mutationTarget(live);
 				if (target === null || client === null) return false;
-				await getNativeMutationRuntime().submit(offlineRequest(target, "resume", buildComposerInput(text, images)));
+				await getNativeMutationRuntime().submit(
+					offlineRequest(
+						target,
+						"resume",
+						buildComposerInput(
+							text,
+							images,
+							context?.composer?.skillNames,
+							context?.composer?.commandNames,
+							context?.composer?.mentions,
+						),
+						context,
+					),
+				);
 				haptic("light");
 				// The message is durably admitted, so it is sent: the resume is the
 				// recovery it needs, not part of the send's success. Reporting a
@@ -2639,7 +2737,19 @@ export function ConversationScreen({
 				return true;
 			}
 			const previous = store.getState().lastAcceptedMutation;
-			await store.getState()[kind](through, buildComposerInput(text, images));
+			await store
+				.getState()
+				[kind](
+					through,
+					buildComposerInput(
+						text,
+						images,
+						context?.composer?.skillNames,
+						context?.composer?.commandNames,
+						context?.composer?.mentions,
+					),
+					context,
+				);
 			const accepted = store.getState().lastAcceptedMutation;
 			const admitted = accepted != null && accepted !== previous && accepted.kind === kind;
 			// Spec 16.6: a light impact on send, Send's and an error row's Retry's.
@@ -2667,7 +2777,9 @@ export function ConversationScreen({
 		if (!service || kind === null) return;
 		setActionError(null);
 		try {
-			await document.submitText(TURN_CONTINUATION_TEXT, async (text, images) => deliver(service, kind, text, images));
+			await document.submitText(TURN_CONTINUATION_TEXT, async (text, images, context) =>
+				deliver(service, kind, text, images, context),
+			);
 		} catch {
 			// As with Send, a refusal leaves the unconfirmed ghost to say so.
 		}
@@ -2710,11 +2822,86 @@ export function ConversationScreen({
 	// (spec 8.5 and 14). A refused row keeps Edit whenever its record can come
 	// back; whether the composer can take it right now is the bubble's
 	// canEdit, so an occupied composer shows Edit disabled with the reason.
-	const recoveryRows = projectNativeMutationRecovery(recovery.targetKey, recovery.snapshot);
+	// Saved ownership remains authoritative when a later edit save fails: the
+	// existing durable draft still references these sources, so Discard must not
+	// expose them. An initial append failure leaves the prior record unchanged
+	// and therefore keeps its unrepresented source visible for recovery.
+	const representedRecoveryIds = [
+		...(draft.record.composer?.recoveryIds ?? []),
+		...(draft.record.unconfirmedComposer?.recoveryIds ?? []),
+		...(draft.record.completedCommandRecoveryIds ?? []),
+	];
+	const recoveryRows = projectNativeMutationRecovery(recovery.targetKey, recovery.snapshot).filter(
+		(row) => row.status !== "editing" || !representedRecoveryIds.includes(row.clientMutationId),
+	);
+	// Primitive draft dependencies leave ordinary typing alone. Storage changes,
+	// readiness and explicit Retry re-enter the serialized coordinator, which
+	// uses fresh exact-source proof, never absence from an outbox projection.
+	const [editedRecoveryFailure, setEditedRecoveryFailure] = useState<unknown>(null);
+	const [editedRecoveryAttempt, retryEditedRecovery] = useState(0);
+	const recoveryWork = JSON.stringify({
+		sources: recovery.snapshot?.recovery
+			.filter((row) => row.recoveryKind === "editing")
+			.map((row) => row.clientMutationId),
+		captured: draft.record.unconfirmedComposer?.recoveryIds,
+		owned: draft.record.composer?.recoveryIds,
+		released: draft.record.releasedRecoveryIds,
+		completed: draft.record.completedCommandRecoveryIds,
+		acks: draft.record.recoveryResendAcks,
+	});
+	useEffect(() => {
+		if (!recoveryAvailable || !draft.loaded || draft.submitting || draft.error || imageState.busy) return;
+		let current = true;
+		const targetKey = recovery.targetKey;
+		void (async () => {
+			const runtime = getNativeMutationRuntime();
+			await reconcileEditedResends(runtime, targetKey, document);
+			const retained = await runtime.read(targetKey);
+			const deliberatelyReleased = new Set(draft.record.releasedRecoveryIds ?? []);
+			for (const row of retained.recovery) {
+				if (!current || imageSelection.getSnapshot().busy) return;
+				if (row.recoveryKind === "editing" && !deliberatelyReleased.has(row.clientMutationId))
+					await editQueuedMessageIntoDraft(runtime, targetKey, row.clientMutationId, document);
+			}
+			if (current) setEditedRecoveryFailure(null);
+		})().catch((error) => {
+			if (current) setEditedRecoveryFailure(error);
+		});
+		return () => {
+			current = false;
+		};
+	}, [
+		document,
+		recovery.targetKey,
+		recovery.snapshot,
+		recoveryAvailable,
+		recoveryWork,
+		editedRecoveryAttempt,
+		imageCount,
+		draft.loaded,
+		draft.submitting,
+		draft.error,
+		imageState.busy,
+		imageSelection,
+		localThread,
+		localInstance,
+	]);
+	// A recreated offline screen has no live conversation store binding. Its
+	// scoped durable records still use the shared native client-owned projection.
+	const localPending =
+		!observedTarget && recovery.snapshot
+			? reconcilePendingEntries(
+					recovery.targetKey,
+					[...recovery.snapshot.outbox, ...recovery.snapshot.optimistic],
+					undefined,
+					new Map(),
+					() => true,
+				)
+			: snapshot.pendingMutations;
 	const allGhosts = whatCanActNow(
 		ghosts(
 			conversation,
-			snapshot.pendingMutations,
+			localPending,
 			unconfirmedSend === null
 				? null
 				: {
@@ -2723,6 +2910,15 @@ export function ConversationScreen({
 					},
 			recoveryRows,
 			connected,
+			localIdentity
+				? {
+						targetRef: recovery.targetKey,
+						threadId: localIdentity.threadId,
+						instanceId: localIdentity.instanceId,
+						records: recovery.snapshot?.outbox ?? [],
+						readiness: { document: draft, encodingAttachments: imageState.busy },
+					}
+				: undefined,
 		),
 		{ connected, composerLoaded: draft.loaded },
 	);
@@ -2761,6 +2957,67 @@ export function ConversationScreen({
 			return null;
 		}
 		if (origin.kind === "pending") {
+			if (ghost.localQueued && (action === "edit" || action === "cancel")) {
+				try {
+					const runtime = getNativeMutationRuntime();
+					const targetKey = nativeMutationTargetKey(route.params.hubId, route.params.ref);
+					const stored = await runtime.read(targetKey);
+					const live = store.getState();
+					const target = mutationTarget(live) ?? localIdentity;
+					const pending = mutationTarget(live)
+						? live.pendingMutations
+						: reconcilePendingEntries(
+								targetKey,
+								[...stored.outbox, ...stored.optimistic],
+								undefined,
+								new Map(),
+								() => true,
+							);
+					const projected = target
+						? ghosts(live.conversation, pending, null, [], connectionReady.current, {
+								targetRef: targetKey,
+								threadId: target.threadId,
+								instanceId: target.instanceId,
+								records: stored.outbox,
+								readiness: { document: document.getSnapshot(), encodingAttachments: imageSelection.getSnapshot().busy },
+							}).find((row) => row.origin.kind === "pending" && row.origin.clientMutationId === origin.clientMutationId)
+						: undefined;
+					if (!projected?.localQueued || !projected.menu.includes(action)) {
+						recovery.retry();
+						return {
+							text: "This message changed. Check its current state before trying again.",
+							kind: "queue:changed",
+						};
+					}
+					if (action === "cancel") {
+						const removed = await removeQueuedMessageWithDraftCapture(
+							runtime,
+							targetKey,
+							origin.clientMutationId,
+							document,
+						);
+						return removed ? null : { text: "This message changed before it could be removed.", kind: "queue:changed" };
+					}
+					const result = await editQueuedMessageIntoDraft(runtime, targetKey, origin.clientMutationId, document);
+					if (result === "restored" || result === "already-restored") {
+						focusComposerAt(document.getSnapshot().record.draft.length);
+						if (
+							stored.outbox.find((row) => row.clientMutationId === origin.clientMutationId)?.composerText === undefined
+						)
+							return {
+								text: "This older message keeps its saved text and images. Check its image references before sending.",
+								kind: "queue:legacy-images",
+							};
+						return null;
+					}
+					return {
+						text: "The message could not be moved into your draft. Its current owner is retained.",
+						kind: "queue:not-restored",
+					};
+				} catch (error) {
+					return { text: errorText(error), kind: "queue:storage-failed" };
+				}
+			}
 			// The phone's own message: Discard or Cancel drops it from the
 			// outbox, Send now releases one a Stop held. A press that finds the
 			// row already changed does nothing; the ghosts re-render from storage.
@@ -2908,7 +3165,7 @@ export function ConversationScreen({
 	};
 	const ghostActions = useRef(liveGhostActions);
 	ghostActions.current = liveGhostActions;
-	const queuedGhosts = allGhosts.filter((ghost) => ghost.origin.kind === "queue");
+	const queuedGhosts = allGhosts.filter(isQueuedGhost);
 	const queuedKey = JSON.stringify(queuedGhosts);
 	// Like the per-message actions, it goes to the hub, so it isn't offered
 	// while the hub is away, nor while this phone is already steering with
@@ -2970,6 +3227,12 @@ export function ConversationScreen({
 				</View>
 			) : null}
 			{recovery.failed ? <RecoveryFailure error={recovery.error} onRetry={recovery.retry} /> : null}
+			{editedRecoveryFailure ? (
+				<RecoveryFailure error={editedRecoveryFailure} onRetry={() => retryEditedRecovery((value) => value + 1)} />
+			) : null}
+			{identityFailure ? (
+				<RecoveryFailure error={identityFailure} onRetry={() => retryIdentity((value) => value + 1)} />
+			) : null}
 		</>
 	);
 	const ghostRowHost: GhostRowHost = {
@@ -3542,6 +3805,7 @@ export function ConversationScreen({
 										canStop,
 										text: draft.record.draft,
 										images: imageCount,
+										hasSelections,
 									})
 										? {
 												onStop: () => {

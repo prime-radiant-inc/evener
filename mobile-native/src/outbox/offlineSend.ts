@@ -6,7 +6,10 @@
 // send carries, so a session that restarted meanwhile refuses it and its
 // ghost says so. This module adds no fallback of its own.
 import type { InputItem } from "@evener/appwire-client";
-import type { ConversationMutationRequest } from "../../../mobile/src/state/conversationMutation";
+import type {
+	ConversationMutationContext,
+	ConversationMutationRequest,
+} from "../../../mobile/src/state/conversationMutation";
 
 export interface OfflineTarget {
 	hubId: string;
@@ -20,6 +23,7 @@ export function offlineRequest(
 	target: OfflineTarget,
 	action: "send" | "queue" | "resume",
 	input: InputItem[],
+	context?: ConversationMutationContext,
 ): ConversationMutationRequest {
 	return {
 		kind: action === "queue" ? "queue" : "send",
@@ -28,5 +32,6 @@ export function offlineRequest(
 		threadId: target.threadId,
 		instanceId: target.instanceId,
 		input,
+		...context,
 	};
 }

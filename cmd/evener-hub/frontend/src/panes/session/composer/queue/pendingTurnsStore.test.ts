@@ -571,15 +571,40 @@ test("recovery update and resend carry skill selections in their durable input",
   fake.on("turn/start", () => new Promise<never>(() => undefined));
   await refreshPendingTurnsProjection("ref_a");
 
-  expect(await updateRecoveryPendingTurn(original.clientMutationId, "ref_a", "edited", [], ["pkg:probe"])).toBe(true);
+  expect(
+    await updateRecoveryPendingTurn(
+      original.clientMutationId,
+      "ref_a",
+      "edited",
+      [],
+      ["pkg:probe"],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      0,
+      { [original.clientMutationId]: 0 },
+    ),
+  ).toBeDefined();
   expect((await storage.getRecovery(original.clientMutationId))?.payload.input).toEqual([
     { type: "text", text: "edited" },
     { type: "skill", name: "pkg:probe" },
   ]);
 
-  expect(await resendRecoveryPendingTurn(original.clientMutationId, "ref_a", "send", "edited", [], ["pkg:probe"])).toBe(
-    true,
-  );
+  expect(
+    await resendRecoveryPendingTurn(
+      original.clientMutationId,
+      "ref_a",
+      "send",
+      "edited",
+      [],
+      ["pkg:probe"],
+      undefined,
+      undefined,
+      undefined,
+      { [original.clientMutationId]: 1 },
+    ),
+  ).toMatchObject({ status: "sent" });
   const outbox = await storage.listOutbox("ref_a");
   expect(outbox).toHaveLength(1);
   expect(outbox[0]?.payload.input).toEqual([
@@ -842,9 +867,36 @@ test("recovery action wrappers refresh the durable projection", async () => {
   fake.on("turn/start", () => new Promise<never>(() => undefined));
   await refreshPendingTurnsProjection("ref_a");
 
-  expect(await updateRecoveryPendingTurn(records[0]!.clientMutationId, "ref_a", "edited", [])).toBe(true);
-  expect(await discardRecoveryPendingTurn(records[1]!.clientMutationId, "ref_a")).toBe(true);
-  expect(await resendRecoveryPendingTurn(records[2]!.clientMutationId, "ref_a", "send", "resent", [])).toBe(true);
+  const edited = await updateRecoveryPendingTurn(
+    records[0]!.clientMutationId,
+    "ref_a",
+    "edited",
+    [],
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    0,
+    { [records[0]!.clientMutationId]: 0 },
+  );
+  expect(edited).toBeDefined();
+  expect(await discardRecoveryPendingTurn(records[1]!.clientMutationId, "ref_a", undefined, 0)).toBe(true);
+  const resend = await resendRecoveryPendingTurn(
+    records[2]!.clientMutationId,
+    "ref_a",
+    "send",
+    "resent",
+    [],
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    {
+      [records[2]!.clientMutationId]: 0,
+    },
+  );
+  expect(resend).toMatchObject({ status: "sent" });
 
   expect((await storage.getRecovery(records[0]!.clientMutationId))?.payload.input).toEqual([
     { type: "text", text: "edited" },
@@ -919,6 +971,10 @@ test("the outbox's interval scan publishes a recovery edit another tab made", as
       [{ type: "text", text: "second draft" }],
       undefined,
       "second draft",
+      undefined,
+      undefined,
+      undefined,
+      0,
     );
     vi.advanceTimersByTime(2_000);
     await flushPendingTurnsProjectionForTests();
@@ -963,11 +1019,20 @@ test("a recovery resend publishes its handoff without waiting for recovery proje
     return request;
   });
   let accepted = false;
-  const resend = resendRecoveryPendingTurn(original.clientMutationId, "ref_a", "send", "retry this", []).then(
-    (result) => {
-      accepted = result;
-    },
-  );
+  const resend = resendRecoveryPendingTurn(
+    original.clientMutationId,
+    "ref_a",
+    "send",
+    "retry this",
+    [],
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { [original.clientMutationId]: 0 },
+  ).then((result) => {
+    accepted = result.status === "sent";
+  });
   try {
     await act(async () => {
       await readHeld;
