@@ -1,4 +1,5 @@
 import { act, render, screen } from "@testing-library/react";
+import { createRoot } from "react-dom/client";
 import { expect, test, vi } from "vitest";
 import { Popover } from "./index";
 
@@ -194,3 +195,45 @@ function restoreOwnProperty(target: object, key: string, descriptor: PropertyDes
   if (descriptor) Object.defineProperty(target, key, descriptor);
   else delete (target as Record<string, unknown>)[key];
 }
+
+// A conversation in a Dockview popout lives in its own window. The panel has to
+// land in that window and hear that window's dismissal events; the opener's
+// document would show the list in the wrong window and never close it.
+function popoutHost(): { host: HTMLElement; document: Document; cleanup: () => void } {
+  const frame = document.createElement("iframe");
+  document.body.appendChild(frame);
+  const popout = frame.contentDocument;
+  const host = popout?.createElement("div");
+  if (!popout || !host) throw new Error("missing popout window");
+  popout.body.appendChild(host);
+  return { host, document: popout, cleanup: () => frame.remove() };
+}
+
+test("in a popout the panel portals into the trigger's document and dismisses there", ({ onTestFinished }) => {
+  const { host, document: popout, cleanup } = popoutHost();
+  // RTL's own cleanup removes its container from the opener's body, which a
+  // popout container is not; this case mounts its own root instead.
+  const root = createRoot(host);
+  onTestFinished(() => {
+    act(() => root.unmount());
+    cleanup();
+  });
+  const onClose = vi.fn();
+  act(() =>
+    root.render(
+      <Popover open onClose={onClose} trigger={<button type="button">open</button>} data-testid="panel">
+        <div>panel body</div>
+      </Popover>,
+    ),
+  );
+
+  expect(popout.querySelector('[data-testid="panel"]')).toBeTruthy();
+  expect(document.querySelector('[data-testid="panel"]')).toBeNull();
+
+  // An outside click in the opener must not dismiss a panel that lives in the
+  // popout, and the same click in the popout must.
+  document.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+  expect(onClose).not.toHaveBeenCalled();
+  popout.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+  expect(onClose).toHaveBeenCalled();
+});
