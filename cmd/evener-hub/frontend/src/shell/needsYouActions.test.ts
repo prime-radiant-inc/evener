@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 
+import type { ThreadModel } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { afterEach, expect, test, vi } from "vitest";
 import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
+import { threadsStore } from "../stores/threads";
 import "../panes/session";
 import "../panes/transcript";
 import "../panes/zoom";
@@ -1633,6 +1635,61 @@ test("a held next response does not act after the focused cascade rebinds its le
   releasePage();
   await pending;
 
+  expect(window.location.pathname).toBe(before.path);
+  expect(window.history.length).toBe(before.history);
+  controller.dispose();
+});
+
+// Clear replaces the focused thread's identity in place: same pane, ref, route
+// and navigation generation. A pending Next captured before that must not take
+// focus when its page finally arrives.
+test("a held next response does not act after the focused session is cleared in place", async () => {
+  const client = new FakeClient("ready");
+  let releasePage!: () => void;
+  let entered!: () => void;
+  const pageEntered = new Promise<void>((resolve) => (entered = resolve));
+  client.on("evener/navigation/read", (params) => {
+    if (params.resource === "manifest") {
+      return wireSnapshot(
+        params,
+        manifest({
+          generation_id: "cleared-source",
+          sections: { live: { count: 0 }, needs_you: { count: 1 }, pin_sections: { count: 0 } },
+        }),
+        '"manifest"',
+        1,
+        "cleared-source",
+      );
+    }
+    if (params.resource === "section") {
+      entered();
+      return new Promise((resolve) => {
+        releasePage = () =>
+          resolve(
+            wireSnapshot(params, { sessions: [{ ref: "local:target" }], remaining: 0 }, '"page"', 1, "cleared-source"),
+          );
+      });
+    }
+    throw new Error(`unexpected resource ${params.resource}`);
+  });
+  navigationStore.init(client, capability("cleared-source"));
+  const a = workspaceStore.getState().openPane("session", { ref: "local:a" });
+  workspaceStore.getState().focusPane(a);
+  const model = { threadId: "thread-a", instanceId: "instance-before-clear" } as unknown as ThreadModel;
+  threadsStore.setState({ threads: new Map([["local:a", model]]) });
+  const before = { path: window.location.pathname, history: window.history.length };
+  const controller = createNeedsYouController();
+  const pending = controller.next();
+  await pageEntered;
+
+  // What a clear publishes: the same thread with a different fused identity.
+  threadsStore.setState({
+    threads: new Map([["local:a", { ...model, instanceId: "instance-after-clear" }]]),
+  });
+
+  releasePage();
+  await pending;
+  expect(workspaceStore.getState().focusedPaneId).toBe(a);
   expect(window.location.pathname).toBe(before.path);
   expect(window.history.length).toBe(before.history);
   controller.dispose();

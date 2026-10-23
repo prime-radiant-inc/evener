@@ -8,6 +8,7 @@ import {
   selectSectionRemaining,
 } from "../stores/navigation/selectors";
 import { navigationStore } from "../stores/navigation/store";
+import { threadsStore } from "../stores/threads";
 import { openAttentionSession } from "./attentionHistory";
 import { focusedSessionPaneId, focusedSessionRef } from "./focusedSession";
 import { paletteStore } from "./palette/paletteController";
@@ -71,7 +72,17 @@ function sourceIdentity(): string {
   const lifetime = pane && conversation ? existingConversationPaneLifetime(pane) : null;
   const readerRef = focusedReaderRef(pane);
   const boundSession = readerRef && lifetime ? (lifetime.resolvedSessions.get(readerRef) ?? null) : null;
-  return JSON.stringify({ pane, ref: focusedSessionRef(), paneId: focusedSessionPaneId(), boundSession });
+  // Clear replaces a thread's fused identity in place - same pane, ref, route and
+  // navigation generation - so a pending Next has to see that too.
+  const model = readerRef ? threadsStore.getState().threads.get(readerRef) : undefined;
+  const threadInstance = model?.instanceId ?? model?.threadId ?? null;
+  return JSON.stringify({
+    pane,
+    ref: focusedSessionRef(),
+    paneId: focusedSessionPaneId(),
+    boundSession,
+    threadInstance,
+  });
 }
 
 export type NeedsYouControllerOptions = {
