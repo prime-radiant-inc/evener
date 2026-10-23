@@ -31,6 +31,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -143,9 +144,9 @@ func (c skillGuardLLMCall) allText() string {
 // skill-context carriers appended by skill.Render. History replays earlier
 // inputs verbatim, so searching the whole request would count later turns too.
 func (c skillGuardLLMCall) lastUserText() string {
-	for i := len(c.Messages) - 1; i >= 0; i-- {
-		if c.Messages[i].Role == "user" && !c.Messages[i].skillContextOnly() {
-			return c.Messages[i].text()
+	for _, message := range slices.Backward(c.Messages) {
+		if message.Role == "user" && !message.skillContextOnly() {
+			return message.text()
 		}
 	}
 	return ""
@@ -252,13 +253,13 @@ type skillGuardDurableInputItem struct {
 }
 
 type skillGuardDurableRecord struct {
-	ClientMutationID string                       `json:"clientMutationId"`
+	ClientMutationID string                       `json:"clientMutationId"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field clientMutationId.
 	Method           string                       `json:"method"`
 	State            string                       `json:"state"`
-	RecoveryKind     string                       `json:"recoveryKind"`
-	RecoveryReason   string                       `json:"recoveryReason"`
-	ComposerText     string                       `json:"composerText"`
-	TargetRef        string                       `json:"targetRef"`
+	RecoveryKind     string                       `json:"recoveryKind"`   //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field recoveryKind.
+	RecoveryReason   string                       `json:"recoveryReason"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field recoveryReason.
+	ComposerText     string                       `json:"composerText"`   //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field composerText.
+	TargetRef        string                       `json:"targetRef"`      //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field targetRef.
 	Input            []skillGuardDurableInputItem `json:"input"`
 }
 
@@ -274,8 +275,8 @@ type skillGuardComposerSnapshot struct {
 	Text         string                 `json:"text"`
 	Placeholder  string                 `json:"placeholder"`
 	Chips        []string               `json:"chips"`
-	RemoveLabels []string               `json:"removeLabels"`
-	ChipDetails  []skillGuardChipDetail `json:"chipDetails"`
+	RemoveLabels []string               `json:"removeLabels"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field removeLabels.
+	ChipDetails  []skillGuardChipDetail `json:"chipDetails"`  //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field chipDetails.
 	Tiles        int                    `json:"tiles"`
 }
 
@@ -527,12 +528,12 @@ func skillGuardSetup(t *testing.T) *skillGuardFixture {
 	}
 	fixture.runDir = filepath.Join(root, "run")
 	fixture.stateRoot = filepath.Join(root, "state")
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		name := "alpha"
 		if i == 1 {
 			name = "beta"
 		}
-		fixture.workDir[i] = filepath.Join(root, fmt.Sprintf("helper-%s", name), "work")
+		fixture.workDir[i] = filepath.Join(root, "helper-"+name, "work")
 		// Valid project ids keep the past index honest (testing.md's
 		// "Seeding Hub Fixtures"): a hand-written dir name is silently skipped.
 		fixture.stateDir[i] = hubtest.ProjectDir(t, filepath.Join(fixture.stateRoot, "projects"), name)
@@ -875,8 +876,7 @@ func (c *skillGuardChoreography) run(milestones string) error {
 // handleMilestone reacts to one driver milestone with the real-world fixture
 // event only the Go owner can produce.
 func (c *skillGuardChoreography) handleMilestone(m skillGuardMilestone) {
-	switch m.Milestone {
-	case "fail-queued":
+	if m.Milestone == "fail-queued" {
 		if c.failSeen {
 			return
 		}
@@ -1048,7 +1048,7 @@ func skillGuardReadRequests(t *testing.T, path string) []skillGuardRequestRecord
 		t.Fatalf("read request log %s: %v", path, err)
 	}
 	var out []skillGuardRequestRecord
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -1080,7 +1080,7 @@ func skillGuardReadMilestones(t *testing.T, path string) []skillGuardMilestone {
 		t.Fatalf("read milestones %s: %v", path, err)
 	}
 	var out []skillGuardMilestone
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -1153,8 +1153,7 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 				continue
 			}
 			deliveries++
-			for j := len(rec.Request.Messages) - 1; j >= 0; j-- {
-				message := rec.Request.Messages[j]
+			for _, message := range slices.Backward(rec.Request.Messages) {
 				if message.Role != "user" {
 					continue
 				}
@@ -1251,9 +1250,9 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 
 	// Accessible chip labels.
 	var labels struct {
-		ChipText     []string               `json:"chipText"`
-		RemoveLabels []string               `json:"removeLabels"`
-		ChipDetails  []skillGuardChipDetail `json:"chipDetails"`
+		ChipText     []string               `json:"chipText"`     //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field chipText.
+		RemoveLabels []string               `json:"removeLabels"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field removeLabels.
+		ChipDetails  []skillGuardChipDetail `json:"chipDetails"`  //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field chipDetails.
 		Prose        string                 `json:"prose"`
 	}
 	if !skillGuardMilestoneDetail(t, milestones, "chip-labels", &labels) {
@@ -1351,7 +1350,7 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 		for _, entry := range remountDetail.Storage {
 			var record struct {
 				Text       string   `json:"text"`
-				SkillNames []string `json:"skillNames"`
+				SkillNames []string `json:"skillNames"` //nolint:tagliatelle // Matches the persisted browser composer draft field skillNames.
 			}
 			if err := json.Unmarshal([]byte(entry.Value), &record); err != nil {
 				continue
@@ -1616,7 +1615,7 @@ func skillGuardRequireTranscriptInput(t *testing.T, stateDir, prose string, name
 		if err != nil {
 			continue
 		}
-		for _, line := range strings.Split(string(data), "\n") {
+		for line := range strings.SplitSeq(string(data), "\n") {
 			if !strings.Contains(line, prose) || !strings.Contains(line, "skill_state") {
 				continue
 			}
@@ -1680,7 +1679,7 @@ func skillGuardCountTranscriptInputs(t *testing.T, stateDir, prose string) (int,
 		if err != nil {
 			continue
 		}
-		for _, line := range strings.Split(string(data), "\n") {
+		for line := range strings.SplitSeq(string(data), "\n") {
 			// The transcript's durable line shape is {"kind":"entry",
 			// "turn":{"kind":"USER_INPUT","message":{"content":[{"text":…}]}}}
 			// (agent/session transcript records); only USER_INPUT turns are

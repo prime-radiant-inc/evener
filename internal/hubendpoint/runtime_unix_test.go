@@ -71,6 +71,12 @@ func TestOpenEndpointRecordNonblocking(t *testing.T) {
 func testFIFORecordOpen(t *testing.T, replace bool) {
 	t.Helper()
 	const rootEnv = "EVENER_TEST_ENDPOINT_FIFO_ROOT"
+	const childEnv = "EVENER_TEST_ENDPOINT_FIFO_CHILD"
+	// A CI-provided root must not make the parent take the child branch. The
+	// subprocess marker keeps the parent's clear from erasing the child's root.
+	if os.Getenv(childEnv) == "" {
+		t.Setenv(rootEnv, "")
+	}
 	root := os.Getenv(rootEnv)
 	if root == "" {
 		// A subprocess bounds even a blocking syscall.Open and is reaped on
@@ -82,7 +88,7 @@ func testFIFORecordOpen(t *testing.T, replace bool) {
 		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, binary, "-test.run=^"+regexp.QuoteMeta(t.Name())+"$")
-		cmd.Env = append(os.Environ(), rootEnv+"="+t.TempDir())
+		cmd.Env = append(os.Environ(), rootEnv+"="+t.TempDir(), childEnv+"=1")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("FIFO open failed: deadline=%v error=%v output=%s", ctx.Err(), err, out)
 		}

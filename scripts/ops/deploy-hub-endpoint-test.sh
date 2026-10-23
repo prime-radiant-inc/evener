@@ -83,18 +83,19 @@ def config_selector():
     if f.get('config_newline_link'): return str(p/'newline-config-alias.toml')
     if f.get('config_newline_parent'): return str(p/'newline-parent-alias/selected.toml')
     if f.get('config_space'): return str(p/'space-config-alias.toml')
+    if f.get('config_arg_space'): return str(p/'selected.toml ')
     return {'alias':str(p/'alias.toml'),'hardlink':str(p/'hardlink.toml'),'relative':'../alias.toml','dotdot':'../link/../../selected.toml','different':'../link/../selected.toml'}.get(f.get('config_selector'),str(p/'selected.toml'))
 def program(): return str(p/'alias-bin/evener' if f.get('program_alias') else (p/'other/evener' if f.get('different_program') else p/'repo/evener'))
 def argv():
     flags=[] if f.get('default_config') else ['--config='+config_selector()]
-    if not f.get('env_listener') and not f.get('toml_listener'): flags+=['--addr='+f.get('listener','[::]:0')]
+    if not f.get('env_listener') and not f.get('env_listener_normalized') and not f.get('toml_listener'): flags+=['--addr='+f.get('listener','[::]:0')]
     if f.get('separate_flags'):
         flags=[x for word in flags for x in [word.split('=',1)[0],word.split('=',1)[1]]]
     if f.get('subcommand'): flags=['endpoint','--json']
     return [program(),'hub']+flags
 def endpoint_args():
     flags=[] if f.get('default_config') else ['--config',config_selector()]
-    if not f.get('env_listener') and not f.get('toml_listener'): flags+=['--addr',f.get('listener','[::]:0')]
+    if not f.get('env_listener') and not f.get('env_listener_normalized') and not f.get('toml_listener'): flags+=['--addr',f.get('listener','[::]:0')]
     return ['hub','endpoint','--json']+flags
 def live_argv():
     words=argv()
@@ -122,6 +123,7 @@ if cmd == 'launchctl':
         print('\t}\n\tinherited environment = {\n\t\tHOME => '+str(p/'home')+'\n\t\tXDG_CONFIG_HOME => '+str(p/'config')+'\n\t\tXDG_STATE_HOME => '+str(p/'state')+'\n\t}')
         print('\tenvironment = {\n\t\tPRIVATE_SENTINEL => SECRET_DO_NOT_PRINT')
         if f.get('env_listener') or f.get('flag_and_env'): print('\t\tEVENER_HUB_LISTEN_ADDR => 0.0.0.0:0')
+        if f.get('env_listener_normalized'): print('\t\tEVENER_HUB_LISTEN_ADDR => LOCALHOST:0')
         if f.get('empty_listener'): print('\t\tEVENER_HUB_LISTEN_ADDR => ')
         if f.get('retired_service_env'): print('\t\tEVENER_HUB_ADDR => SECRET_DO_NOT_PRINT')
         if s['built'] and f.get('definition_change'): print('\t\tXDG_STATE_HOME => '+str(p/'other-state'))
@@ -158,7 +160,7 @@ elif cmd == 'ps':
     pid=str(s['pid'])
     if f.get('generation_change') and s['built'] and s['pid']==101: birth='Fri Oct 16 08:01:00 2026'
     else: birth='Fri Oct 16 08:00:00 2026'
-    if args==['-p',pid,'-o','uid=']: print(os.getuid()+1 if f.get('wrong_user') else os.getuid())
+    if args==['-p',pid,'-o','uid=']: print(('  ' if f.get('padded_uid') else '')+str(os.getuid()+1 if f.get('wrong_user') else os.getuid()))
     elif args==['-p',pid,'-o','lstart=']: print(birth)
     elif args==['-p',pid,'-ww','-o','command=']: print(' '.join(live_argv())+(' unexpected' if f.get('wrong_argv') else ''))
     else: refuse()
@@ -193,11 +195,12 @@ elif cmd == 'evener':
         if new:
             s['successor_queries']=s.get('successor_queries',0)+1; save()
         config=p/'config/evener/hub.toml' if f.get('default_config') else p/'selected.toml'
+        if f.get('config_arg_space'): config=p/'selected.toml '
         if f.get('config_newline_parent'): config=p/'config-parent/selected.toml'
         if f.get('config_space') and not f.get('config_space_collision'): config=p/'selected.toml '
         root=p/'other-state/evener' if (s['built'] and f.get('root_change')) or f.get('unavailable_wrong_root') else p/'state/evener'
         if f.get('custom_root'): root=p/'custom-root'
-        source='env' if f.get('env_listener') else ('config' if f.get('toml_listener') else 'flag')
+        source='env' if f.get('env_listener') or f.get('env_listener_normalized') else ('config' if f.get('toml_listener') else 'flag')
         report={'schema_version':2 if f.get('schema') else 1,'state':'running','config_path':str(config),'config_exists':True,'hub_state_root':str(root),'configured_listen_addr':f.get('listener','[::]:0'),'listen_source':source,'public_url':'https://publication.invalid'}
         unavailable=f.get('unavailable') or f.get('damaged') or f.get('unsupported') or f.get('old_image_mismatch') or f.get('capability_invalid') or f.get('unavailable_wrong_root') or f.get('missing_root_evidence')
         if not s['pid']: report.update(state='stopped')
@@ -252,10 +255,12 @@ else: refuse()
 # Last column: (build calls, selected kickstart calls).
 cases=[
  ('selected_endpoint',{},[],True,(1,1)),
+ ('padded_uid',{'padded_uid':True},[],True,(1,1)),
  ('inplace_flag',{'inplace':True},[],True,(1,1)),
  ('inplace_space_flag',{'inplace':True,'separate_flags':True},[],True,(1,1)),
  ('inplace_config',{'inplace':True,'toml_listener':True},[],True,(1,1)),
  ('inplace_environment',{'inplace':True,'env_listener':True,'listener':'0.0.0.0:0'},[],True,(1,1)),
+ ('inplace_environment_normalized',{'inplace':True,'env_listener_normalized':True,'listener':'localhost:0'},[],True,(1,1)),
  ('inplace_fixed_change',{'inplace':True,'listener':'127.0.0.1:9180'},[],False,(0,0)),
  ('inplace_no_ephemeral_evidence',{'inplace':True,'toml_listener':True,'listener':'127.0.0.1:9180'},[],False,(0,0)),
  ('inplace_non_listener',{'inplace':True,'inplace_extra':True},[],False,(0,0)),
@@ -275,6 +280,7 @@ cases=[
  ('live_cwd_space_collision',{'cwd_space_alias':True,'cwd_space_collision':True},[],False,(0,0)),
  ('stopped_cwd_space_collision',{'cwd_space_alias':True,'cwd_space_collision':True,'stopped':True},[],False,(1,1)),
  ('config_path_space',{'config_space':True},[],True,(1,1)),
+ ('config_arg_space',{'config_arg_space':True,'toml_listener':True},[],True,(1,1)),
  ('config_path_space_collision',{'config_space':True,'config_space_collision':True},[],False,(0,0)),
  ('config_newline_link_collision',{'config_newline_link':True},[],False,(0,0)),
  ('config_newline_parent_collision',{'config_newline_parent':True},[],False,(0,0)),
@@ -477,7 +483,7 @@ with tempfile.TemporaryDirectory(prefix='task7c-', dir=os.environ.get('EVENER_SC
                     assert report['running']['requested_listen_addr']==report['running']['bound_addr']=='[::]:19471'
                     assert report['running']['listen_source']=='flag'
                 for report in new:
-                    assert report['running']['requested_listen_addr']==('0.0.0.0:0' if name=='inplace_environment' else '[::]:0')
+                    assert report['running']['requested_listen_addr']==('0.0.0.0:0' if name=='inplace_environment' else ('localhost:0' if name=='inplace_environment_normalized' else '[::]:0'))
                 for call in endpoints:
                     if name in ['inplace_flag','inplace_space_flag']:
                         assert call['args'][-2:]==['--addr','[::]:0'], 'live bound argv replaced original launch intent'
@@ -519,6 +525,7 @@ with tempfile.TemporaryDirectory(prefix='task7c-', dir=os.environ.get('EVENER_SC
             for call in endpoints:
                 expected_env={'HOME':str(p/'home'),'XDG_CONFIG_HOME':str(p/'config'),'XDG_STATE_HOME':str(p/'state')}
                 if facts.get('env_listener') or facts.get('flag_and_env'): expected_env['EVENER_HUB_LISTEN_ADDR']='0.0.0.0:0'
+                if facts.get('env_listener_normalized'): expected_env['EVENER_HUB_LISTEN_ADDR']='LOCALHOST:0'
                 if facts.get('empty_listener'): expected_env['EVENER_HUB_LISTEN_ADDR']=''
                 if facts.get('definition_change') and call['env'].get('XDG_STATE_HOME')==str(p/'other-state'): expected_env['XDG_STATE_HOME']=str(p/'other-state')
                 assert call['env']==expected_env, 'ambient/environment contamination: '+str(call['env'])

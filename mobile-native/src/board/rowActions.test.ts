@@ -4,6 +4,7 @@ import type { ConversationClientLike } from "../../../mobile/src/services/conver
 import { nativeNavigationActions } from "../navigationActionRepository";
 import { NavigationActions } from "../navigationActions";
 import type { BoardState } from "./attention";
+import { pinnedItems } from "./boardItems";
 import { organizationHub, SESSION_ID } from "./organizationTestUtils";
 import {
 	archiveTarget,
@@ -69,6 +70,24 @@ describe("the long-press menu per state (spec 7.3)", () => {
 		],
 	] as const)("%s", (_name, summary, state, context, expected) => {
 		expect(rowMenuActions({ row: summary, state: state as BoardState }, context)).toEqual(expected);
+	});
+
+	it("offers unarchive for a pinned archived session that is still running (issue #4476)", () => {
+		const items = pinnedItems(
+			[{ id: "pins-1", name: "Mine", count: 1 }],
+			{ "pins-1": { loaded: true, rows: [row({ archived: true })] } },
+			() => false,
+			(summary) => ({ row: summary, state: "working" }),
+		);
+		const pinned = items.find((item) => item.kind === "row");
+		expect(pinned).toBeDefined();
+		if (!pinned) throw new Error("Missing pinned row");
+		expect(rowMenuActions(pinned.item, { archived: pinned.archived })).toEqual([
+			"pin",
+			"stop",
+			"shutDown",
+			"unarchive",
+		]);
 	});
 });
 

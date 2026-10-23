@@ -42,7 +42,7 @@ jobs:
       - name: Validate retained tutorial candidate
         run: node docs-site/scripts/tours/refresh.mjs validate --surfaces cli,web --out "$RUNNER_TEMP/tutorial-candidate"
       - name: Retain sanitized tutorial candidate for review
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tutorial-candidate-cli-web
           path: ${{ runner.temp }}/tutorial-candidate
