@@ -16,7 +16,8 @@ import { Toast, type ToastMessage, useToast } from "./Toast";
 import { Button } from "./sheet/Grouped";
 
 export interface QueueHost {
-	/** The session's queued messages, every one of them. */
+	/** ghosts(..., local).filter(isQueuedGhost), with current durable records
+	 * and merge readiness, including every local waiting/held message. */
 	ghosts: readonly Ghost[];
 	disabled: boolean;
 	/** Runs one ghost's action on the live queue, and says what to tell you. */
@@ -64,8 +65,8 @@ export function QueueSheet({ route }: NativeStackScreenProps<Routes, "QueueSheet
 			accessory={<Toast toast={toast.toast} dismiss={toast.dismiss} />}
 		>
 			<ScrollView contentContainerStyle={{ padding: 16, gap: 12 }}>
-				{/* Every ghost here is queued, and a queued message's Edit merges
-				into whatever is typed, so the composer never blocks it. */}
+				{/* Daemon queue editing keeps its existing text-only policy. Local
+				Edit readiness is projected once, shared with the transcript. */}
 				{host?.ghosts.map((ghost) => (
 					<GhostBubble
 						key={ghost.key}

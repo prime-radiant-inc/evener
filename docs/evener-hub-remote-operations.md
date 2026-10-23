@@ -43,6 +43,8 @@ curl -fsS http://127.0.0.1:9180/api/health
 
 Then open New session, select the remote working directory, and [connect a provider](connecting-a-provider.md) on that host. Confirm the host, directory, and model before starting. A healthy HTTP endpoint is not proof of provider access.
 
+Existing sessions on that host appear beside local ones. Their Send, Steer, Queue, Stop and other controls follow what the session's daemon advertises and the controller can forward; a session with no running daemon resumes on Send. See [Remote session actions](product/remote-sessions.md).
+
 ## Trust boundary
 
 The hub uses a long-lived capability token stored at `<hub_state_root>/auth-token`. New token files are mode `0600`; an existing file's mode is not automatically repaired. `/auth/<token>`, `/api/health`, `/api/device-pairing`, and PWA icons are public exceptions; other routes require authorization. [Device pairing](device-pairing.md) uses an invitation and requires approval before releasing credentials, rather than requiring the hub token or cookie. The cookie is HTTP-only and SameSite=Lax. This is full hub access, not per-user roles.

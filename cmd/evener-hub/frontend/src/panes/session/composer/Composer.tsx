@@ -68,6 +68,7 @@ import {
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
 import {
+  captureRecoveryStopBarrier,
   hasBlockedUnknown,
   hasQueuedNonSend,
   type InputAttachment,
@@ -93,17 +94,16 @@ import { AttachmentTile } from "./AttachmentTile";
 import { useAskDockPending } from "./askDockPending";
 import { AttachIcon } from "./attachments/AttachIcon";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
-import { type PendingAttachment, type TextEditor, useAttachments } from "./attachments/useAttachments";
+import { type TextEditor, useAttachments } from "./attachments/useAttachments";
 import { runBuiltinCommand } from "./builtinCommand";
 import { CurrentWork } from "./CurrentWork";
 import styles from "./composer.module.css";
 import { consumeComposerFocus, requestComposerFocus, useComposerFocusRequest } from "./composerFocus";
 import { STEER_RECOVERY_FENCED_REASON, steerTooltipLabel, submitTooltipLabel } from "./controlTooltips";
-import { clearPersistedDraft, readDraftRevision } from "./draft";
+import { clearDraft, clearPersistedDraft, readDraftRevision } from "./draft";
 import { useNarrowComposer } from "./narrowComposer";
 import { pendingTurnEntries, QueueStrip, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
 import {
-  discardRecoveryPendingTurn,
   resendRecoveryPendingTurn,
   useBlockedMutationEntries,
   useComposerSubmitting,
@@ -122,7 +122,13 @@ import {
   serializeSkillDocument,
   skillAtomMentions,
 } from "./skillDocument";
-import { type ComposerSourceState, restoredSkillNames } from "./sourceState";
+import {
+  beginRecoverySubmission,
+  type ComposerSourceState,
+  recoverySubmissionInFlight,
+  restoredSkillNames,
+  sameSkillSelections,
+} from "./sourceState";
 import { recordStoplessComposer } from "./stoplessComposer";
 import { useInlineStopReady } from "./useInlineStopReady";
 
@@ -153,14 +159,6 @@ const CLASS = {
 const MemoizedSessionChrome = memo(function MemoizedSessionChrome(props: SessionChromeProps) {
   return <SessionChrome {...props} />;
 });
-
-function settledInputAttachments(items: PendingAttachment[]): InputAttachment[] {
-  return items.flatMap((item) =>
-    item.data === undefined
-      ? []
-      : [{ marker: item.marker, name: item.name, mediaType: item.mediaType, data: item.data }],
-  );
-}
 
 // "drain" is set/cleared only by QueueStrip's own onDrainBusyChange (its
 // "Steer queue now" button) - never by this component's own submitAction, which
@@ -221,8 +219,17 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     cursorToRestoreRef.current = cursor;
     setCursorRestoreSeq((seq) => seq + 1);
   }, []);
-  const { text, skillNames, commandNames, mentions, restoreEpoch, activeRecoveryId, freshRecoveryRef } =
-    useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
+  const {
+    text,
+    skillNames,
+    commandNames,
+    mentions,
+    restoreEpoch,
+    activeRecoveryId,
+    recoveryActivating,
+    recoveryOperationBusy,
+    freshRecoveryRef,
+  } = useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
   const selectionMeta = useMemo(() => ({ commandNames, mentions }), [commandNames, mentions]);
   const {
     lastDrainSnapshotRef,
@@ -231,7 +238,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     textRef,
     skillNamesRef,
     selectionMetaRef,
-    activeRecoveryIdRef,
+    recoveryOwnerLeaseRef,
     recoveryWriteVersionRef,
     recoveryReplacementEpochRef,
     recoveryOwnsLocalDraftRef,
@@ -251,7 +258,8 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     clearSubmittedAttachments,
   } = source;
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
-  const actionPending = busyAction !== null || submitting || mutationWriteStalled;
+  const actionPending =
+    busyAction !== null || submitting || mutationWriteStalled || recoveryActivating || recoveryOperationBusy;
   const mountedRef = useRef(false);
   const [pendingGoalReplacement, setPendingGoalReplacement] = useState<string | null>(null);
   // Track live focus too, so stopping does not collapse a focused editor.
@@ -418,7 +426,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     if (
       textRef.current !== "" ||
       attachmentItemsRef.current.length > 0 ||
-      activeRecoveryIdRef.current !== null ||
+      recoveryOwnerLeaseRef.current !== null ||
       skillNamesRef.current.length > 0 ||
       selectionMetaRef.current.commandNames.length > 0
     ) {
@@ -470,7 +478,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   }, [resumeFailure, toasts]);
 
   useEffect(() => {
-    if (activeRecoveryId === null || attachments.hasPending) return;
+    if (activeRecoveryId === null || attachments.hasPending || recoverySubmissionInFlight(activeRecoveryId)) return;
     void queueRecoveryPersistence(
       activeRecoveryId,
       text,
@@ -512,7 +520,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
     Object.assign(recovered, visible);
     recoveryOwnsLocalDraftRef.current = false;
-    setActiveRecoveryId(record.clientMutationId);
+    setActiveRecoveryId(record);
     // Restoration replaces this mount's local owner without editing the
     // shared recovery draft that an earlier mount may still be submitting.
     draftEditRevisionRef.current += 1;
@@ -810,7 +818,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     editSkillNames(value.skillNames);
     updateSelectionMeta(value);
     editText(value.text);
-    if (activeRecoveryIdRef.current === null) persistDraft(value.text);
+    if (recoveryOwnerLeaseRef.current === null) persistDraft(value.text);
     // Every keystroke re-evaluates the trailing-token match fresh - a token
     // Escape just closed (slashToken's own doc comment above) reopens on the
     // very next text change rather than staying closed indefinitely.
@@ -870,6 +878,12 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
       snapshot.commandNames,
     );
     clearSubmittedAttachments(snapshot.attachments);
+  }
+
+  async function getRecoveryRevisionForDrain(): Promise<number | undefined> {
+    await source.flushRecoveryWrites();
+    if (!source.alive || source.getSnapshot().activeRecoveryId !== activeRecoveryId) return undefined;
+    return recoveryOwnerLeaseRef.current?.compositionRevision;
   }
 
   // A chip's details: the skill's own description, or - when the live catalog
@@ -946,53 +960,22 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     editorRef.current?.focus();
   }
 
-  function activateRecovery(record: MutationRecoveryRecord): void {
+  async function activateRecovery(record: MutationRecoveryRecord): Promise<void> {
+    if (!source.alive) return;
     if (attachments.hasPending) {
       toasts.push("error", "Image attachment is still processing");
       return;
     }
-    const merged = mergeRecoveryComposerDraft(
-      textRef.current,
-      attachments.items,
-      recoveryComposerDraft(record),
-      skillNamesRef.current,
-      selectionMetaRef.current.commandNames,
-      selectionMetaRef.current.mentions,
-    );
-    const currentRecoveryId = activeRecoveryIdRef.current;
-    if (currentRecoveryId === null) {
-      recoveryOwnsLocalDraftRef.current = true;
-      setActiveRecoveryId(record.clientMutationId);
-    }
-    const nextSkillNames = restoredSkillNames(merged);
-    markRestore();
-    editText(merged.text);
-    editSkillNames(nextSkillNames);
-    updateSelectionMeta(merged);
-    attachments.replaceWithSettled(merged.attachments);
-    scheduleCursorRestore(merged.text.length);
-    editorRef.current?.focus();
-
-    const ownerId = currentRecoveryId ?? record.clientMutationId;
-    const replacementEpoch = recoveryReplacementEpochRef.current;
-    const persistence = queueRecoveryPersistence(
-      ownerId,
-      merged.text,
-      settledInputAttachments(merged.attachments),
-      nextSkillNames,
-      merged.commandNames,
-      merged.mentions,
-    );
-    if (currentRecoveryId !== null && currentRecoveryId !== record.clientMutationId) {
-      void persistence
-        .then(async () => {
-          await discardRecoveryPendingTurn(
-            record.clientMutationId,
-            ref,
-            () => recoveryReplacementEpochRef.current === replacementEpoch,
-          );
-        })
-        .catch(() => undefined);
+    try {
+      if (!(await source.activateRecovery(record))) {
+        if (source.alive) toasts.push("info", "This message changed in another tab. Refresh and try again.");
+        return;
+      }
+      if (!source.alive) return;
+      scheduleCursorRestore(source.getSnapshot().text.length);
+      editorRef.current?.focus();
+    } catch (error) {
+      if (source.alive) toasts.push("error", sessionActionError("Edit failed", error));
     }
   }
 
@@ -1050,8 +1033,18 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   // toast) - so a failure surfaces exactly once regardless of which branch
   // it takes. Before this reconciliation, both sides pushed a toast for the
   // SAME failure; this is the fix, not a pre-existing split.
-  async function submitAction(kind: "send" | "queue" | "steer" | "drain"): Promise<void> {
-    const submittedText = textRef.current;
+  async function submitAction(
+    kind: "send" | "queue" | "steer" | "drain",
+    options: { text?: string; clearDraftText?: string } = {},
+  ): Promise<void> {
+    const releaseRecoveryOperation = source.tryAcquireRecoveryOperation();
+    if (!releaseRecoveryOperation) return;
+    if (source.getSnapshot().recoveryActivating) {
+      releaseRecoveryOperation();
+      return;
+    }
+    const submittedText = options.text ?? textRef.current;
+    const clearDraftText = options.clearDraftText ?? submittedText;
     const submittedAttachments = attachments.items;
     const submittedSkillNames = [...skillNamesRef.current];
     const submittedCommandNames = [...selectionMetaRef.current.commandNames];
@@ -1059,21 +1052,35 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     const submittedRevision = draftEditRevisionRef.current;
     const submittedDraftRevision = readDraftRevision(ref);
     const payload = attachments.toInputAttachments();
-    const submittedRecoveryId = activeRecoveryIdRef.current;
-    let wonRecoveryResend = true;
+    const submittedLease = recoveryOwnerLeaseRef.current;
+    const submittedRecoveryId = submittedLease?.clientMutationId ?? null;
+    let releaseRecoveryInFlight: (() => void) | null = null;
+    const releaseInFlightRecovery = () => {
+      releaseRecoveryInFlight?.();
+      releaseRecoveryInFlight = null;
+    };
+    const recoveryBarrier = submittedRecoveryId === null ? undefined : captureRecoveryStopBarrier(ref);
+    let recoveryResendRefused = false;
+    let recoveryAlreadySent = false;
+    const recoveryWriteRefusal = new Error("Recovery persistence was refused");
+    const recoveryAlreadySentRefusal = new Error("Recovery source was already consumed");
     // The UI-side half of the skillInput gate (threads.ts's composerMutationIntent
     // is the store-side half, and Task 12 gates the hub's forwarding too): a
     // target that never advertised the capability keeps the draft and hears
     // why, instead of minting durable intent the wire would refuse.
     if (submittedSkillNames.length > 0 && !skillInputSupported) {
       toasts.push("error", "Skill selections aren't supported on this session yet; your draft is kept");
+      releaseRecoveryOperation();
       return;
     }
     if (submittedCommandNames.length > 0 && model?.capabilities.commandInput !== true) {
       toasts.push("error", "Command selections are not supported on this session; your draft is kept");
+      releaseRecoveryOperation();
       return;
     }
     setBusyAction(kind === "send" || kind === "queue" ? "submit" : "steer");
+    if (submittedRecoveryId !== null) releaseRecoveryInFlight = beginRecoverySubmission(submittedRecoveryId);
+    let submissionFailed = false;
     try {
       await submitWithPendingTracking(
         {
@@ -1084,30 +1091,53 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
           commandNames: submittedCommandNames,
           recoveryId: submittedRecoveryId ?? undefined,
           onFailure: (err) => {
+            if (err === recoveryWriteRefusal || err === recoveryAlreadySentRefusal) return;
             const label = kind === "send" ? "Send" : kind === "queue" ? "Queue" : kind === "steer" ? "Steer" : "Drain";
             toasts.push("error", sessionActionError(`${label} failed`, err));
           },
         },
         async () => {
           if (submittedRecoveryId !== null) {
-            await queueRecoveryPersistence(
-              submittedRecoveryId,
-              submittedText,
-              payload,
-              submittedSkillNames,
-              submittedCommandNames,
-              submittedMentions,
-            );
-            wonRecoveryResend = await resendRecoveryPendingTurn(
-              submittedRecoveryId,
-              ref,
-              kind,
-              submittedText,
-              payload,
-              submittedSkillNames,
-              submittedCommandNames,
-              submittedMentions,
-            );
+            await source.runRecoveryOperation(async () => {
+              const persisted = await queueRecoveryPersistence(
+                submittedRecoveryId,
+                submittedText,
+                payload,
+                submittedSkillNames,
+                submittedCommandNames,
+                submittedMentions,
+                clearDraftText,
+              );
+              if (!persisted) {
+                throw recoveryWriteRefusal;
+              }
+              const committedRevision = recoveryOwnerLeaseRef.current?.compositionRevision;
+              if (committedRevision === undefined) {
+                throw recoveryWriteRefusal;
+              }
+              const outcome = await resendRecoveryPendingTurn(
+                submittedRecoveryId,
+                ref,
+                kind,
+                submittedText,
+                payload,
+                submittedSkillNames,
+                submittedCommandNames,
+                submittedMentions,
+                recoveryBarrier,
+                { [submittedRecoveryId]: committedRevision },
+                source.compositionOwnerId,
+              );
+              if (outcome.status !== "sent") {
+                recoveryResendRefused = outcome.status === "refused";
+                recoveryAlreadySent = outcome.status === "consumed";
+                throw recoveryResendRefused ? recoveryWriteRefusal : recoveryAlreadySentRefusal;
+              }
+              // The resend transaction consumed the recovery row, so a remount
+              // can no longer restore it. Keep the guard until here rather than
+              // until the network settles.
+              releaseInFlightRecovery();
+            });
             return;
           }
           if (kind === "send")
@@ -1128,20 +1158,71 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
         },
       );
       if (!source.alive) return;
-      if (!wonRecoveryResend) toasts.push("info", "This message was already sent in another tab.");
-      clearIfUnchanged(
-        submittedText,
+      const submittedEditorMatches =
+        textRef.current === clearDraftText &&
+        sameSkillSelections(skillNamesRef.current, submittedSkillNames) &&
+        sameSkillSelections(selectionMetaRef.current.commandNames, submittedCommandNames);
+      const cleared = clearIfUnchanged(
+        clearDraftText,
         submittedRevision,
         submittedDraftRevision,
         submittedSkillNames,
         submittedCommandNames,
       );
+      // A typed message-producing built-in submits its body while the editor
+      // still holds the invocation. Settlement preserves that literal command,
+      // which changes the edit revision, so the revision-guarded clear above
+      // can decline. Clear the persisted invocation by content instead when the
+      // editor still holds exactly what was submitted.
+      if (
+        options.clearDraftText !== undefined &&
+        options.text !== undefined &&
+        options.text !== options.clearDraftText &&
+        submittedEditorMatches
+      ) {
+        if (!cleared) {
+          updateText("");
+          updateSkillNames([]);
+          updateSelectionMeta({ text: "", skillNames: [] });
+        }
+        if (ownedDraftRevisionRef.current === readDraftRevision(ref)) {
+          clearDraft(ref);
+          ownedDraftRevisionRef.current = readDraftRevision(ref);
+        }
+      }
       clearSubmittedAttachments(submittedAttachments);
-    } catch {
+    } catch (error) {
+      submissionFailed = true;
       // The local durable write failed. The submitted composer payload stays
       // untouched and no network request was eligible to start.
+      if (source.alive && recoveryResendRefused)
+        toasts.push("info", "This message changed in another tab. Refresh and try again.");
+      else if (source.alive && recoveryAlreadySent)
+        toasts.push("info", "This message was already sent in another tab.");
+      else if (error !== recoveryWriteRefusal && error !== recoveryAlreadySentRefusal) return;
     } finally {
       if (mountedRef.current) setBusyAction(null);
+      releaseInFlightRecovery();
+      if (submissionFailed && source.alive && draftEditRevisionRef.current !== submittedRevision) {
+        // The recovery autosave effect is suppressed while the guard is held.
+        // Persist edits typed during the failed send through the recovery
+        // chain so reloading does not merge them with the older record as two
+        // separate copies.
+        const activeRecoveryId = source.getSnapshot().activeRecoveryId;
+        if (activeRecoveryId === null) {
+          source.persistDraft(textRef.current);
+        } else {
+          void source.queueRecoveryPersistence(
+            activeRecoveryId,
+            textRef.current,
+            attachments.toInputAttachments(),
+            skillNamesRef.current,
+            selectionMetaRef.current.commandNames,
+            selectionMetaRef.current.mentions,
+          );
+        }
+      }
+      releaseRecoveryOperation();
     }
   }
 
@@ -1170,6 +1251,29 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     // refusal never reports busy state.
     if (match.command.recoveryFenced && pressLocalRecoveryFenced(ref)) {
       toasts.push("error", `/${match.command.id} isn't available until this session is resumed`);
+      return;
+    }
+    // A message-producing built-in typed over an active recovery is the same
+    // submit the user could have made with Send/Queue/Steer: route its parsed
+    // body through the one recovery transaction instead of enqueueing a second
+    // mutation beside the recovery. The literal command text is what gets
+    // cleared from the editor when the resend succeeds.
+    if (
+      (match.command.id === "queue" || match.command.id === "steer") &&
+      activeRecoveryId !== null &&
+      match.argsText.trim()
+    ) {
+      if (match.command.unavailableReason) {
+        toasts.push("error", `/${match.command.id} is ${match.command.unavailableReason}`);
+        return;
+      }
+      const unavailable = match.command.available?.(liveThreadModel(ref) ?? renderedModel);
+      if (unavailable !== undefined) {
+        toasts.push("error", unavailable);
+        return;
+      }
+      const literal = textRef.current;
+      await submitAction(match.command.id, { text: match.argsText, clearDraftText: literal });
       return;
     }
     const submittedText = textRef.current;
@@ -1488,7 +1592,10 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
         getComposerText={getComposerText}
         onRestoreToComposer={restoreTextToComposer}
         activeRecoveryId={activeRecoveryId ?? undefined}
+        activeRecoveryRevision={recoveryOwnerLeaseRef.current?.compositionRevision}
+        getRecoveryRevision={getRecoveryRevisionForDrain}
         onEditRecovery={activateRecovery}
+        tryAcquireRecoveryOperation={source.tryAcquireRecoveryOperation}
         onDrainSuccess={handleDrainSuccess}
         busy={actionPending}
         onDrainBusyChange={(draining) => {

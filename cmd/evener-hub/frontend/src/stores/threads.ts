@@ -60,7 +60,12 @@ import {
   threadModelFromCache,
   WireError,
 } from "@evener/appwire-client";
-import { notificationMutationIdentities } from "@evener/appwire-client/state/mutation";
+import {
+  canEditQueuedMessage,
+  canRemoveQueuedMessage,
+  notificationMutationIdentities,
+} from "@evener/appwire-client/state/mutation";
+import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
@@ -83,6 +88,7 @@ import {
 } from "./mutationOutbox";
 import {
   MutationOutboxIndexedDB,
+  type MutationRecoveryResendResult,
   MutationStorageError,
   MutationStorageTimeoutError,
   type RetargetedMutations,
@@ -3330,6 +3336,83 @@ export async function retryBlockedMutation(
   return current?.state !== "blockedUnknown" && current?.state !== "canceled";
 }
 
+function localMutationIdentityMatches(record: MutationOutboxRecord, targetRef: string): boolean {
+  const state = threadsStore.getState();
+  const model = state.threads.get(targetRef) ?? state.watchedThreads.get(targetRef);
+  return (
+    record.targetRef === targetRef &&
+    !state.deletedRefs.has(targetRef) &&
+    model !== undefined &&
+    (record.instanceId ?? record.threadId) === threadInstanceID(model)
+  );
+}
+
+export async function editQueuedMutation(
+  clientMutationId: string,
+  targetRef: string,
+): Promise<MutationRecoveryRecord | undefined> {
+  const runtime = requireMutationRuntime();
+  const capture = runtime.storage.getOutboxWithStopEpoch(clientMutationId);
+  await runtime.start;
+  const { record, stopEpoch } = await capture;
+  if (!record || !canEditQueuedMessage(record) || !localMutationIdentityMatches(record, targetRef)) return undefined;
+  const recovery = await runtime.storage.editQueuedMessage(record, { stopEpoch });
+  if (recovery) noteHandledMutation(clientMutationId);
+  noteMutationStateChange(targetRef);
+  notifyMutationPersistence([targetRef]);
+  return recovery;
+}
+
+export async function removeQueuedMutation(clientMutationId: string, targetRef: string): Promise<boolean> {
+  const runtime = requireMutationRuntime();
+  const capture = runtime.storage.getOutboxWithStopEpoch(clientMutationId);
+  await runtime.start;
+  const { record, stopEpoch } = await capture;
+  if (!record || !canRemoveQueuedMessage(record) || !localMutationIdentityMatches(record, targetRef)) return false;
+  const removed = await runtime.storage.removeQueuedMessage(record, { stopEpoch });
+  if (removed) noteHandledMutation(clientMutationId);
+  noteMutationStateChange(targetRef);
+  notifyMutationPersistence([targetRef]);
+  return removed;
+}
+
+interface QueuedMutationProjection {
+  subscribe(listener: () => void): () => void;
+  getOutbox(): ReadonlyMap<string, MutationOutboxRecord>;
+  refresh(ref: string): Promise<boolean>;
+}
+let queuedMutationProjection: QueuedMutationProjection | undefined;
+
+// The browser projection owns the snapshot. Register its read port rather
+// than creating a second asynchronously refreshed copy in this selector.
+export function installQueuedMutationProjection(projection: QueuedMutationProjection): void {
+  queuedMutationProjection = projection;
+}
+
+export function useEditableQueuedMutationEntries(ref: string): MutationOutboxRecord[] {
+  const projection = queuedMutationProjection;
+  if (!projection) throw new Error("Queued mutation projection is not installed");
+  const outbox = useSyncExternalStore(projection.subscribe, projection.getOutbox, projection.getOutbox);
+  useEffect(() => {
+    void projection.refresh(ref);
+  }, [ref]);
+  // Include removable controls so the strip can offer Remove without Edit.
+  return useMemo(
+    () => [...outbox.values()].filter((record) => record.targetRef === ref && canRemoveQueuedMessage(record)),
+    [outbox, ref],
+  );
+}
+
+export function captureRecoveryStopBarrier(targetRef: string): Promise<MutationStopBarrier> {
+  const barrier = requireMutationRuntime()
+    .storage.readStopEpoch(targetRef)
+    .then((stopEpoch) => ({ stopEpoch }));
+  // The capture can fail while Composer is still awaiting its recovery write.
+  // Keep that rejection for the sender without an unhandled interim promise.
+  void barrier.catch(() => undefined);
+  return barrier;
+}
+
 export async function updateRecoveryMutation(
   clientMutationId: string,
   targetRef: string,
@@ -3338,29 +3421,41 @@ export async function updateRecoveryMutation(
   skillNames?: readonly string[],
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
-): Promise<boolean> {
+  consumeRecoveryIds?: readonly string[],
+  localDraftRevisionId?: string,
+  expectedCompositionRevision?: number,
+  expectedRecoveryRevisions?: Readonly<Record<string, number>>,
+  compositionOwnerId?: string,
+  composerText?: string,
+): Promise<MutationRecoveryRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
   const record = await runtime.storage.updateRecoveryInput(
     clientMutationId,
     buildInput(text, attachments, skillNames, commandNames, mentions),
     durableAttachments(attachments),
-    text,
+    composerText ?? text,
     mentions,
+    consumeRecoveryIds,
+    localDraftRevisionId,
+    expectedCompositionRevision,
+    expectedRecoveryRevisions,
+    compositionOwnerId,
   );
-  if (!record) return false;
+  if (!record) return undefined;
   notifyMutationPersistence([targetRef]);
-  return true;
+  return record;
 }
 
 export async function discardRecoveryMutation(
   clientMutationId: string,
   targetRef: string,
   shouldDiscard?: () => boolean,
+  expectedCompositionRevision?: number,
 ): Promise<boolean> {
   const runtime = requireMutationRuntime();
   await runtime.start;
-  const discarded = await runtime.storage.discardRecovery(clientMutationId, shouldDiscard);
+  const discarded = await runtime.storage.discardRecovery(clientMutationId, shouldDiscard, expectedCompositionRevision);
   if (discarded) {
     // A row left the outbox: in-flight reads for the ref are stale.
     noteMutationStateChange(targetRef);
@@ -3381,22 +3476,36 @@ export async function resendRecoveryMutation(
   skillNames?: readonly string[],
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
-): Promise<MutationOutboxRecord | undefined> {
+  barrierRead = captureRecoveryStopBarrier(targetRef),
+  expectedRecoveryRevisions?: Readonly<Record<string, number>>,
+  compositionOwnerId?: string,
+): Promise<MutationRecoveryResendResult> {
   const runtime = requireMutationRuntime();
   await runtime.start;
   const intent = composerMutationIntent(targetRef, route, text, attachments, skillNames, commandNames, mentions);
+  const barrier = await barrierRead;
   // Registered around the write: the resent row is undelivered work, and a
   // fallback send must see it before the async refresh can.
-  const record = await trackOutboxWrite(
+  const result = await trackOutboxWrite(
     targetRef,
-    () => runtime.storage.resendRecovery(clientMutationId, intent),
-    // A resend mints its own row, so the id comes from the record it returns.
-    (resent) =>
-      resent === undefined
+    () =>
+      runtime.storage.resendRecoveryResult(
+        clientMutationId,
+        intent,
+        barrier,
+        expectedRecoveryRevisions,
+        compositionOwnerId,
+      ),
+    (outcome) =>
+      outcome.status !== "sent"
         ? undefined
-        : { clientMutationId: resent.clientMutationId, undelivered: resent.state !== "canceled" },
+        : {
+            clientMutationId: outcome.record.clientMutationId,
+            undelivered: outcome.record.state !== "canceled",
+          },
   );
-  if (!record) return undefined;
+  if (result.status !== "sent") return result;
+  const { record } = result;
   // The resend mints a new row and removes the recovery row it came from, so
   // the old id is resolved: keep the new one (trackOutboxWrite registered it)
   // and drop the old, so a later settle of the new row or unreadable storage
@@ -3408,7 +3517,7 @@ export async function resendRecoveryMutation(
   // A resent row on the Send-resumes face parks like an ordinary send: drive the
   // resume it needs. Read after the write, which cannot have changed the face.
   if (sendResumesModel(targetRef)) void resumeFencedForSend(targetRef);
-  return record;
+  return result;
 }
 
 export function setMutationStorageForTests(storage: MutationOutboxIndexedDB): void {
