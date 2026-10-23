@@ -65,9 +65,20 @@ test("puts the attention overlay below the new-content pill in one stack", () =>
   expect(strip.compareDocumentPosition(attention) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
-test("reports the measured stack height and clears it when the stack goes away", () => {
+test("reports the reader's bottom-to-stack-top clearance, inset included, and clears it when the stack goes away", () => {
   const onOverlayHeightChange = vi.fn();
-  const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ height: 96 } as DOMRect);
+  // The real composition floats the 96 px stack 12 px above the reader's own
+  // bottom edge (`.stack { bottom: var(--space-3) }`), so the reader needs
+  // 108 px of trailing clearance: everything from its bottom up to the
+  // stack's top.
+  const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    if (this.dataset.testid === "flow-overlay-stack") {
+      return { top: 392, bottom: 488, height: 96 } as DOMRect;
+    }
+    return { top: 0, bottom: 500, height: 500 } as DOMRect;
+  });
   try {
     const view = render(
       <FlowOverlay
@@ -77,7 +88,7 @@ test("reports the measured stack height and clears it when the stack goes away",
         <div />
       </FlowOverlay>,
     );
-    expect(onOverlayHeightChange).toHaveBeenLastCalledWith(96);
+    expect(onOverlayHeightChange).toHaveBeenLastCalledWith(108);
     expect(screen.getByTestId("flow-overlay-attention")).toBeTruthy();
 
     view.rerender(

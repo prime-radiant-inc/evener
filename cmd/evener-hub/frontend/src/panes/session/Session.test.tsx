@@ -6776,10 +6776,12 @@ test("the measured attention stack becomes transcript end clearance", async ({ o
   fake.on("thread/read", () => attentionRead("ref_a"));
   installNeedsYouRows(["ref_a", "ref_b"]);
   // Give the floating stack a measured height without disturbing the
-  // transcript's own rect-based geometry.
+  // transcript's own rect-based geometry. It sits flush against the reader's
+  // own bottom edge (jsdom reports that edge at 0), so the clearance it needs
+  // is exactly its own 96 px.
   const originalRect = HTMLElement.prototype.getBoundingClientRect;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-    if (this.dataset.testid === "flow-overlay-stack") return { height: 96 } as DOMRect;
+    if (this.dataset.testid === "flow-overlay-stack") return { top: -96, bottom: 0, height: 96 } as DOMRect;
     return originalRect.call(this);
   });
   const pane = attentionSession("clearance-pane");
@@ -6818,7 +6820,9 @@ test("the measured clearance does not toggle New Content or move an end-followin
   let stackHeight = 0;
   const originalRect = HTMLElement.prototype.getBoundingClientRect;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-    if (this.dataset.testid === "flow-overlay-stack") return { height: stackHeight } as DOMRect;
+    if (this.dataset.testid === "flow-overlay-stack") {
+      return { top: -stackHeight, bottom: 0, height: stackHeight } as DOMRect;
+    }
     return originalRect.call(this);
   });
   // Real scroll geometry: one 600 px turn in a 400 px port, with the trailing

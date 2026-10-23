@@ -52,10 +52,12 @@ Browser layout and keyboard behavior require separate browser verification.
 ## Floating attention control end clearance
 
 - The floating Next-needs-you control and the New Content affordance are one
-  measured stack above the composer, with New Content above Next. The stack's
-  committed height is rendered as end clearance inside the virtual list, as a
-  synthetic trailing row that the list's row count includes, so the final
-  transcript row scrolls clear of both controls.
+  measured stack above the composer, with New Content above Next. The distance
+  from the reader's own bottom edge to the stack's top edge (the stack's height
+  plus the inset it floats above that edge) is rendered as end clearance inside
+  the virtual list, as a synthetic trailing row that the list's row count
+  includes, so the final transcript row scrolls clear of both controls rather
+  than under the inset.
 - A reader following the end stays at the end as the control appears and
   disappears; a reader scrolled away keeps the same away-reading position. The
   clearance is scrollable content inside the scroll port, not chrome floating
