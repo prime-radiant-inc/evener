@@ -2801,19 +2801,17 @@ function ConversationScreenView({
 			const live = store.getState();
 			const canonical = live.canonicalSession();
 			const now = document.getSnapshot();
+			// The action may have been captured before a reconnect replaced the
+			// entry's service. Resolve the live one here and submit through it;
+			// requiring equality with the render-captured service turned an enabled
+			// Retry into a silent no-op after the same failure remained current.
+			const currentService = entry.service;
 			if (
 				!attachment.live ||
-				// The captured service and binding must still be the live ones. A
-				// reconnect resumes the same failed turn behind a new service and
-				// generation; submitting through the old service would return before
-				// dispatch and leave an uncertainty marker for a message never sent.
-				service === null ||
-				service !== entry.service ||
+				currentService === null ||
 				live.ref !== route.params.ref ||
 				live.status !== "open" ||
-				live.conversationGeneration !== bindingGeneration ||
-				!bindingInstance ||
-				live.conversation?.instanceId !== bindingInstance ||
+				!live.conversation ||
 				!focused ||
 				!screenInFront(navigation, route.key) ||
 				!retryCanSend() ||
@@ -2824,7 +2822,7 @@ function ConversationScreenView({
 			)
 				return;
 			const kind = liveSendKind();
-			if (kind === null || service === null) return;
+			if (kind === null) return;
 			const action = canonicalFailureAction(
 				canonical,
 				failedTurnId,
@@ -2838,20 +2836,17 @@ function ConversationScreenView({
 			// moment, not this render: a retired view, a moved binding, a newer
 			// canonical outcome or an unresolved own row refuses with not-sent.
 			// It excludes only this operation's own in-flight document marker.
+			const activationGeneration = live.conversationGeneration;
+			const activationInstance = live.conversation.instanceId ?? live.conversation.threadId;
 			const precondition = () => {
-				if (
-					!attachment.live ||
-					service === null ||
-					service !== entry.service ||
-					!focused ||
-					!screenInFront(navigation, route.key) ||
-					!connectionReady.current
-				)
+				if (!attachment.live || !focused || !screenInFront(navigation, route.key) || !connectionReady.current)
 					return false;
+				const bound = entry.service;
+				if (bound === null || bound !== currentService) return false;
 				const current = store.getState();
 				if (current.ref !== route.params.ref || current.status !== "open") return false;
-				if (current.conversationGeneration !== bindingGeneration) return false;
-				if (!bindingInstance || current.conversation?.instanceId !== bindingInstance) return false;
+				if (!current.conversation || current.conversationGeneration !== activationGeneration) return false;
+				if ((current.conversation.instanceId ?? current.conversation.threadId) !== activationInstance) return false;
 				const currentAction = canonicalFailureAction(
 					current.canonicalSession(),
 					failedTurnId,
@@ -2864,7 +2859,7 @@ function ConversationScreenView({
 			setActionError(null);
 			try {
 				await document.submitText(TURN_CONTINUATION_TEXT, async (text, images, context) =>
-					deliver(service, kind, text, images, context, precondition),
+					deliver(currentService, kind, text, images, context, precondition),
 				);
 			} catch {
 				// As with Send, a refusal leaves the unconfirmed ghost to say so.
@@ -2876,14 +2871,12 @@ function ConversationScreenView({
 			navigation,
 			route.key,
 			route.params.ref,
-			bindingGeneration,
-			bindingInstance,
 			retryCanSend,
 			store,
 			document,
 			liveSendKind,
 			deliver,
-			service,
+			entry,
 		],
 	);
 

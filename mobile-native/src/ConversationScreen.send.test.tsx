@@ -3425,17 +3425,27 @@ describe("Retry's one owner on the shared session binding", () => {
 		expect(hub.mutations()).toEqual([]);
 	});
 
-	it("submits nothing from a Retry callback captured before a reconnect, and a fresh callback still submits", async () => {
+	it("submits a retained Retry through the live service after a reconnect, with no ghost", async () => {
 		const ref = "ref-retry-reconnect";
 		const served = failedTurn(ref, "go test exited 1");
 		const { tree, hub, entry, route, seen } = await mountTracked(served);
 		const document = drafts.open({ hubId: "hub-1", sessionRef: ref });
 		const oldService = entry.service;
-		const oldGeneration = entry.store.getState().conversationGeneration;
-		const stale = pressable(tree, "Retry")!.props.onPress;
+		const retained = pressable(tree, "Retry")!.props.onPress;
 
 		// A rebuilt client resumes the same failed turn behind a fresh service.
+		// Hold the new service's acceptance reply so the durable row is observable.
 		const reconnected = hubClient(served);
+		const held = deferred();
+		let sent = false;
+		const request = reconnected.client.request;
+		reconnected.client.request = async (method, params) => {
+			if (method === "turn/start") {
+				sent = true;
+				await held.gate;
+			}
+			return request(method, params);
+		};
 		harness.connection = { ...harness.connection, client: reconnected.client };
 		act(() =>
 			tree.update(
@@ -3447,22 +3457,37 @@ describe("Retry's one owner on the shared session binding", () => {
 		);
 		await settle();
 		expect(entry.service).not.toBe(oldService);
-		expect(entry.store.getState().conversationGeneration).toBeGreaterThan(oldGeneration);
 		await until(() => expect(entry.store.getState().canonicalSession()).not.toBeNull());
 		await until(() => expect(pressable(tree, "Retry")?.props.disabled).toBe(false));
 
-		// The captured callback still names the same failed turn, but its service
-		// and generation are retired: it must submit nothing and leave no marker.
-		act(() => stale());
+		// The retained callback still names the same current failure. Activation
+		// resolves the live service from the attachment instead of requiring the
+		// render-captured one, so the enabled button is not a silent no-op.
+		act(() => retained());
+		await until(() => expect(sent).toBe(true));
+		const runtime = getNativeMutationRuntime();
+		const key = nativeMutationTargetKey("hub-1", ref);
+		await act(async () => {
+			await vi.waitFor(async () => expect(await runtime.storage.listOutbox(key)).toHaveLength(1));
+		});
+		const [row] = await runtime.storage.listOutbox(key);
+		expect(row?.payload.input).toEqual([{ type: "text", text: "continue" }]);
+		expect(hub.mutations()).toEqual([]);
+		expect(document.getSnapshot().record.unconfirmed).toBeNull();
+		await act(async () => held.release());
+		await until(() => expect(reconnected.mutations()).toEqual(["turn/start"]));
+	});
+
+	it("submits nothing from a Retry callback after its attachment retires", async () => {
+		const ref = "ref-retry-retired-callback";
+		const { tree, hub, entry } = await mountTracked(failedTurn(ref, "go test exited 1"));
+		const retained = pressable(tree, "Retry")!.props.onPress;
+		act(() => tree.unmount());
+		expect(entry.retired).toBe(true);
+		act(() => retained());
 		await settle();
 		expect(hub.mutations()).toEqual([]);
-		expect(reconnected.mutations()).toEqual([]);
 		expect(await getNativeMutationRuntime().storage.listOutbox(nativeMutationTargetKey("hub-1", ref))).toEqual([]);
-		expect(document.getSnapshot().record.unconfirmed).toBeNull();
-
-		// A fresh action from the current attachment still submits exactly once.
-		await press(tree, "Retry");
-		await until(() => expect(reconnected.mutations()).toEqual(["turn/start"]));
 	});
 
 	it("refuses a retained Retry callback after the same turn's error changes to Sign in", async () => {
