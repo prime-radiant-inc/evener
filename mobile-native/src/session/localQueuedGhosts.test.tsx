@@ -119,7 +119,15 @@ function mount(surface: "rows" | "sheet", list: Ghost[], disabled = false) {
 	});
 	const rows = (next: Ghost[], busy: boolean) => (
 		<GhostRowContext.Provider
-			value={{ disabled: busy, canEdit: false, editHint: null, onAction: action, onMore: vi.fn() }}
+			value={{
+				disabled: busy,
+				canEdit: false,
+				editHint: null,
+				canEditParked: false,
+				parkedEditHint: null,
+				onAction: action,
+				onMore: vi.fn(),
+			}}
 		>
 			{withGhostRows([], next)
 				.filter(isGhostRow)
@@ -348,6 +356,8 @@ test("a matched local send retains the draft attachment presentation", async () 
 				disabled: false,
 				canEdit: false,
 				editHint: null,
+				canEditParked: false,
+				parkedEditHint: null,
 				onAction: vi.fn(),
 				onMore: vi.fn(),
 				draftAttachments: <View testID="draft-image-preview" />,
