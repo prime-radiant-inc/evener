@@ -837,6 +837,13 @@ func cloneDelegateControllerState(t *testing.T, state delegatestore.State) deleg
 	if err := json.Unmarshal(raw, &clone); err != nil {
 		t.Fatalf("unmarshal controller state clone: %v", err)
 	}
+	// PendingDeliveries is omitempty, but the fold retains non-nil empty
+	// slices. Preserve that shape so DeepEqual detects mutations, not JSON loss.
+	for id, aggregate := range state {
+		if aggregate != nil && aggregate.PendingDeliveries != nil && len(aggregate.PendingDeliveries) == 0 {
+			clone[id].PendingDeliveries = []delegatestore.PendingDelivery{}
+		}
+	}
 	return clone
 }
 
