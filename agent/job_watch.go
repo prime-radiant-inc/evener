@@ -4291,21 +4291,9 @@ func (jm *jobManager) watchNotificationFromWatch(cfg *watchConfig, jobID, reason
 	if cfg == nil {
 		return n
 	}
-	// The note rides the notification body through withNotificationNote
-	// (agent/job_notify.go), whose escapeNotificationBody escapes only "<"
-	// (kata 72kp): body text is not inside a quoted attribute, so "&" is not
-	// a structural hazard there and passes through verbatim. The frontend
-	// card (NotificationCard.tsx) decodes the full entity set (& < > " ')
-	// on every prose/excerpt, so a note that literally contains "&lt;",
-	// "&amp;", "&quot;" or "&#39;" would decode and display wrong.
-	// Pre-escaping "&" here composes with the body's "<"-only escaping into
-	// the same "&"-first order escapeNotificationText uses for attribute
-	// values, which the card's single decode inverts exactly — a literal
-	// "&lt;" in the note renders "&lt;", not "<". The pre-escape runs here
-	// (not in escapeNotificationBody, which job output and other body text
-	// also share) so only the watch-note lane changes encoding; cfg.note
-	// itself stays raw for list/inspect/frame readers.
-	n.Note = strings.ReplaceAll(cfg.note, "&", "&amp;")
+	// Keep the note raw until withNotificationNote applies the shared body
+	// encoder, so notes and excerpts escape ampersands exactly once.
+	n.Note = cfg.note
 	// The originating watch rides a display-only field, never WatchID: the
 	// session drops a non-terminal WatchID-bearing entry whose timer key no
 	// longer resolves, and a condition watch's key slot is not its id — so a

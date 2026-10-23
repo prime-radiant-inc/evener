@@ -146,7 +146,16 @@ describe("delegate and job notifications", () => {
 			const text = renderedText(
 				render(<TimelineItem item={row} hubId="hub" sessionRef={`markup-${level}`} delegates={delegates} />),
 			);
-			expect(text).not.toMatch(/<\/?(delegate|job)-notification|&lt;|"kind"|excerpt:/);
+			expect(text).not.toMatch(/<\/?(delegate|job)-notification|"kind"|excerpt:/);
+			// Literal entities the sender typed are content, not leaked framing.
+			const sender = `& < &lt; &amp; &amp;lt; " > ' &quot; &gt; &#39;`;
+			if (row.id === notificationWireItem("delegate-update-literal-entities").id) {
+				expect(text).toBe(`${sender} sent an update ${sender}`);
+			} else if (row.id === notificationWireItem("watch-note-literal-entities").id) {
+				expect(text).toContain(sender);
+			} else {
+				expect(text).not.toContain("&lt;");
+			}
 		}
 	});
 
