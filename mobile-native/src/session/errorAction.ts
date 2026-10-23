@@ -12,9 +12,9 @@
 // or the shared store cannot certify its pending projection. Sign in is
 // independent and is never disabled by Retry's pending rule.
 import type { ThreadModel } from "@evener/appwire-client";
-import { isLatestRetryTurn } from "@evener/appwire-client";
+import { isLatestRetryTurn, latestTurnId } from "@evener/appwire-client";
 import { ownPendingTurnInput, type PendingTurnEntry } from "@evener/appwire-client/state/mutation";
-import { failureRowIdentity } from "../projectedRows";
+import { failureRowIdentity, type MobileConversation } from "../projectedRows";
 
 export type ErrorAction = { kind: "signIn" } | { kind: "retry"; failedTurnId: string; disabled: boolean };
 
@@ -61,4 +61,33 @@ export function errorAction(
 	if (!isLatestRetryTurn(state.canonical, failedTurnId)) return null;
 	const disabled = !state.pendingMutationsReady || ownPendingTurnInput(state.pendingMutations);
 	return { kind: "retry", failedTurnId, disabled };
+}
+
+/** The action the clicked turn's own failure row currently offers, resolved
+ * from the canonical projection. Activation and the runtime precondition use
+ * this rather than a fabricated row or the captured descriptor: a refresh that
+ * removes the error, changes it to Sign in, or moves its precedence must
+ * submit nothing. No canonical model means no authority, so no action. */
+export function canonicalFailureAction(
+	canonical: MobileConversation | null,
+	failedTurnId: string,
+	pendingMutations: readonly PendingTurnEntry[] | null | undefined,
+	pendingMutationsReady: boolean,
+	canSend: boolean,
+): ErrorAction | null {
+	if (canonical === null) return null;
+	const row = canonical.items.find(
+		(item) => item.kind === "failure" && item.id === failureRowIdentity(failedTurnId) && item.turnId === failedTurnId,
+	);
+	if (row === undefined || row.kind !== "failure") return null;
+	return errorAction(
+		row,
+		{
+			canonical,
+			displayedLatestTurnId: latestTurnId(canonical),
+			pendingMutations,
+			pendingMutationsReady,
+		},
+		canSend,
+	);
 }

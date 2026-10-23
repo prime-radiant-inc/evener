@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { errorAction } from "./errorAction";
+import { canonicalFailureAction, errorAction } from "./errorAction";
 
 const turns = [{ id: "turn_1" }, { id: "turn_2" }] as never;
 const failure = (detail: string, turnId = "turn_2", title = "The turn failed") => ({
@@ -127,5 +127,38 @@ describe("an error's one action (spec 8.2, ruling 26)", () => {
 		expect(errorAction(row, state({ canonical: null, pendingMutationsReady: false }), false)).toEqual({
 			kind: "signIn",
 		});
+	});
+});
+
+describe("activation resolves the current failure row", () => {
+	const failureRow = (title = "The turn failed", detail = "go test exited 1") => ({
+		kind: "failure",
+		id: "failure:turn_2",
+		title,
+		detail,
+		turnId: "turn_2",
+	});
+	const canonical = (items: unknown[]) => ({ turns, status: { type: "idle" }, items }) as never;
+
+	it("offers Retry for the current canonical own failure", () => {
+		expect(canonicalFailureAction(canonical([failureRow()]), "turn_2", [], true, true)).toEqual({
+			kind: "retry",
+			failedTurnId: "turn_2",
+			disabled: false,
+		});
+	});
+
+	it("returns Sign in when the same turn's error now requires it", () => {
+		expect(canonicalFailureAction(canonical([failureRow("Sign-in expired", "")]), "turn_2", [], true, true)).toEqual({
+			kind: "signIn",
+		});
+	});
+
+	it("returns nothing when the turn no longer has a failure row", () => {
+		expect(canonicalFailureAction(canonical([]), "turn_2", [], true, true)).toBeNull();
+	});
+
+	it("returns nothing without canonical authority", () => {
+		expect(canonicalFailureAction(null, "turn_2", [], true, true)).toBeNull();
 	});
 });

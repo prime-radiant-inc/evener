@@ -3425,6 +3425,97 @@ describe("Retry's one owner on the shared session binding", () => {
 		expect(hub.mutations()).toEqual([]);
 	});
 
+	it("refuses a retained Retry callback after the same turn's error changes to Sign in", async () => {
+		const ref = "ref-retry-error-signin";
+		const served = failedTurn(ref, "go test exited 1");
+		const { tree, entry, hub } = await mountTracked(served);
+		const stale = pressable(tree, "Retry")!.props.onPress;
+
+		// The authoritative refresh keeps the same turn but changes its error to
+		// one that requires Sign in. The captured Retry callback must not submit.
+		(served as unknown as { turns: { error?: unknown }[] }).turns[0]!.error = {
+			message: "Sign-in expired",
+		};
+		await act(async () => {
+			await entry.store.getState().ensureLatest();
+		});
+		await settle();
+		expect(pressable(tree, "Retry")).toBeUndefined();
+		act(() => stale());
+		await settle();
+		expect(hub.mutations()).toEqual([]);
+		expect(hub.requests.filter((request) => request.method === "turn/start")).toEqual([]);
+	});
+
+	it("refuses a retained Retry callback after the same turn's error is removed", async () => {
+		const ref = "ref-retry-error-removed";
+		const served = failedTurn(ref, "go test exited 1");
+		const { tree, entry, hub } = await mountTracked(served);
+		const stale = pressable(tree, "Retry")!.props.onPress;
+
+		const turn = (served as unknown as { turns: { status: string; error?: unknown }[] }).turns[0]!;
+		turn.status = "completed";
+		delete turn.error;
+		await act(async () => {
+			await entry.store.getState().ensureLatest();
+		});
+		await settle();
+		expect(pressable(tree, "Retry")).toBeUndefined();
+		act(() => stale());
+		await settle();
+		expect(hub.mutations()).toEqual([]);
+	});
+
+	it.each([
+		["Sign in", { message: "Sign-in expired" }],
+		["no error", undefined],
+	] as const)(
+		"refuses Retry at the runtime boundary when the same turn's error becomes %s while startup is held",
+		async (name, nextError) => {
+			const ref = `ref-retry-boundary-${name === "Sign in" ? "signin" : "removed"}`;
+			const served = failedTurn(ref, "go test exited 1");
+			const { tree, hub, entry } = await mountTracked(served);
+			const document = drafts.open({ hubId: "hub-1", sessionRef: ref });
+			const runtime = getNativeMutationRuntime();
+			const targetKey = nativeMutationTargetKey("hub-1", ref);
+			const start = runtime.start.bind(runtime);
+			const held = deferred();
+			let hold = true;
+			runtime.start = async () => {
+				if (hold) {
+					hold = false;
+					await held.gate;
+				}
+				return start();
+			};
+			try {
+				act(() => pressable(tree, "Retry")!.props.onPress());
+				await until(() => expect(document.getSnapshot().submitting).toBe(true));
+				const turn = (served as unknown as { turns: { status: string; error?: unknown }[] }).turns[0]!;
+				if (nextError === undefined) {
+					turn.status = "completed";
+					delete turn.error;
+				} else {
+					turn.error = nextError;
+				}
+				await act(async () => {
+					await entry.store.getState().ensureLatest();
+				});
+				await act(async () => {
+					held.release();
+					await vi.waitFor(() => expect(document.getSnapshot().submitting).toBe(false));
+				});
+			} finally {
+				runtime.start = start;
+			}
+			expect(hub.mutations()).toEqual([]);
+			expect(hub.requests.filter((request) => request.method === "turn/start")).toEqual([]);
+			expect(await runtime.storage.listOutbox(targetKey)).toEqual([]);
+			// The proven not-sent refusal cleared only its uncertainty marker.
+			expect(document.getSnapshot().record.unconfirmed).toBeNull();
+		},
+	);
+
 	it("refuses Retry before commit when its view retires while startup is held, preserving the draft", async () => {
 		const ref = "ref-retry-retire-before";
 		const { tree, hub } = await mountTracked(failedTurn(ref, "go test exited 1"));

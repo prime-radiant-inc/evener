@@ -124,8 +124,7 @@ import {
 	exactRestoreDue,
 } from "./readerPosition";
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
-import { type ErrorAction, errorAction } from "./session/errorAction";
-import { failureRowIdentity } from "./projectedRows";
+import { canonicalFailureAction, type ErrorAction, errorAction } from "./session/errorAction";
 import { TURN_CONTINUATION_TEXT } from "@evener/appwire-client";
 import {
 	type Ghost,
@@ -2801,14 +2800,11 @@ function ConversationScreenView({
 				return;
 			const kind = liveSendKind();
 			if (kind === null || service === null) return;
-			const action = errorAction(
-				{ id: failureRowIdentity(failedTurnId), title: "", detail: "", turnId: failedTurnId },
-				{
-					canonical,
-					displayedLatestTurnId: latestTurnId(live.conversation ?? undefined),
-					pendingMutations: live.pendingMutations,
-					pendingMutationsReady: live.pendingMutationsReady,
-				},
+			const action = canonicalFailureAction(
+				canonical,
+				failedTurnId,
+				live.pendingMutations,
+				live.pendingMutationsReady,
 				true,
 			);
 			if (action === null || action.kind !== "retry" || action.disabled) return;
@@ -2824,14 +2820,11 @@ function ConversationScreenView({
 				if (current.ref !== route.params.ref || current.status !== "open") return false;
 				if (current.conversationGeneration !== bindingGeneration) return false;
 				if (!bindingInstance || current.conversation?.instanceId !== bindingInstance) return false;
-				const currentAction = errorAction(
-					{ id: failureRowIdentity(failedTurnId), title: "", detail: "", turnId: failedTurnId },
-					{
-						canonical: current.canonicalSession(),
-						displayedLatestTurnId: latestTurnId(current.conversation ?? undefined),
-						pendingMutations: current.pendingMutations,
-						pendingMutationsReady: current.pendingMutationsReady,
-					},
+				const currentAction = canonicalFailureAction(
+					current.canonicalSession(),
+					failedTurnId,
+					current.pendingMutations,
+					current.pendingMutationsReady,
 					true,
 				);
 				return currentAction !== null && currentAction.kind === "retry" && !currentAction.disabled;
