@@ -185,6 +185,32 @@ test("a hold longer than the click window still consumes its release click", () 
   expect(screen.getByTestId("next-needs-you-list")).toBeTruthy();
 });
 
+test("a completed hold keeps its suppression through a drift and a slow release", () => {
+  vi.useFakeTimers();
+  installRows();
+  const origin = seedSource();
+  render(controlTree());
+  const next = nextTrigger();
+
+  fireEvent.pointerDown(next, { button: 0, clientX: 10, clientY: 10, pointerId: 7 });
+  act(() => vi.advanceTimersByTime(600));
+  expect(screen.getByTestId("next-needs-you-list")).toBeTruthy();
+
+  // The hold already completed. The pointer then drifts off the button and its
+  // capture goes away while the press is still down - the sequence that used to
+  // arm the click window early, so a release inside Next more than 350ms later
+  // navigated the reader away instead of belonging to the hold.
+  fireEvent.pointerMove(next, { clientX: 80, clientY: 10, pointerId: 7 });
+  fireEvent.lostPointerCapture(next, { pointerId: 7 });
+  act(() => vi.advanceTimersByTime(600));
+  fireEvent.pointerUp(next, { clientX: 20, clientY: 10, pointerId: 7 });
+  fireEvent.click(next);
+
+  expect(window.location.pathname).toBe("/s/local%3Aa");
+  expect(workspaceStore.getState().focusedPaneId).toBe(origin);
+  expect(screen.getByTestId("next-needs-you-list")).toBeTruthy();
+});
+
 test("cancellation does not poison the next click", () => {
   vi.useFakeTimers();
   installRows();

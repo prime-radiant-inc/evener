@@ -86,6 +86,7 @@ function OwnedNextNeedsYou({
   const suppressBackstopRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const pressRef = useRef<{ x: number; y: number; pointerId: number } | null>(null);
   const captureRef = useRef<{ element: Element; pointerId: number } | null>(null);
+  const pointerDownRef = useRef(false);
   const holdCompletedRef = useRef(false);
   const suppressClickRef = useRef(false);
   const restoreFocusRef = useRef(false);
@@ -167,15 +168,21 @@ function OwnedNextNeedsYou({
       if (!owns(event)) return;
       const press = pressRef.current;
       if (!press) return;
+      // A hold that already completed opened the list; the press stays alive
+      // until it is released so the one click it emits is still consumed. A
+      // drift must not end that gesture.
+      if (holdCompletedRef.current) return;
       if (Math.hypot(event.clientX - press.x, event.clientY - press.y) > HOLD_SLOP_PX) cancelHold();
     };
     const onUp = (event: PointerEvent) => {
       if (!owns(event)) return;
+      pointerDownRef.current = false;
       cancelHold();
       if (suppressClickRef.current) armSuppressBackstop();
     };
     const onCancel = (event: PointerEvent) => {
       if (!owns(event)) return;
+      pointerDownRef.current = false;
       holdCompletedRef.current = false;
       cancelHold();
     };
@@ -206,6 +213,7 @@ function OwnedNextNeedsYou({
     holdCompletedRef.current = false;
     suppressClickRef.current = false;
     clearSuppressBackstop();
+    pointerDownRef.current = true;
     pressRef.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
     armGesture();
     try {
@@ -250,8 +258,10 @@ function OwnedNextNeedsYou({
   function handleLostPointerCapture() {
     if (holdTimerRef.current === undefined) {
       // A completed hold whose pointer never releases still needs its click
-      // window to end.
-      if (suppressClickRef.current) armSuppressBackstop();
+      // window to end - but only once the press itself is over. While the
+      // pointer is still down the release that ends the hold has not arrived,
+      // and starting the window here would let a slow release navigate.
+      if (suppressClickRef.current && !pointerDownRef.current) armSuppressBackstop();
       return;
     }
     holdCompletedRef.current = false;
