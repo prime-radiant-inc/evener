@@ -5,6 +5,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { buildComposerInput, type InputAttachment } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { DraftDocument } from "./draftDocument";
+import { DraftLibrary } from "./draftLibrary";
 import { DraftRepository } from "./draftRepository";
 import { NativeMutationRuntime, nativeMutationTargetKey, type NativeMutationRequest } from "./nativeMutationRuntime";
 import {
@@ -174,6 +175,76 @@ test("interrupted Edit recovery restores exact composition after retarget to a d
 			recoveryIds: [captured],
 		},
 	});
+});
+
+test("a resume carries the edited recovered composition to the new ref and retires the old draft", async () => {
+	const f = fixture();
+	const captured = await f.enqueue();
+	f.document.edit("current");
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, captured, f.document)).toBe("restored");
+	f.document.edit("edited recovered text");
+	// Another waiting message is what drives the resume.
+	await f.enqueue();
+
+	const resumedRef = "session-resumed";
+	const resumedKey = nativeMutationTargetKey(destination.hubId, resumedRef);
+	const resumedDestination = { hubId: destination.hubId, sessionRef: resumedRef };
+	expect(
+		f.runtime.storage.retarget(key, {
+			ref: resumedKey,
+			wireRef: resumedRef,
+			threadId: "thread-2",
+			instanceId: "instance-2",
+		}),
+	).toHaveLength(1);
+
+	const library = new DraftLibrary(() => f.repository);
+	expect(library.handoff(destination, resumedDestination)).toBe(true);
+	const resumed = library.open(resumedDestination);
+	expect(resumed.getSnapshot().record).toMatchObject({
+		draft: "edited recovered text",
+		composer: { recoveryIds: [captured] },
+	});
+	expect((await f.runtime.read(resumedKey)).recovery).toMatchObject([
+		{ clientMutationId: captured, targetRef: resumedKey },
+	]);
+	expect((await f.runtime.read(key)).recovery).toEqual([]);
+	expect(f.repository.read(destination)).toEqual({ draft: "", unconfirmed: null });
+});
+
+test("a migrated resend receipt reconciles under the resumed ref and clears its capture", async () => {
+	const f = fixture();
+	const captured = await f.enqueue();
+	f.document.edit("current");
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, captured, f.document)).toBe("restored");
+	f.document.edit("edited recovered text");
+	// The Send already admitted its resend receipt under the old ref.
+	await explicitSend(f);
+
+	const resumedRef = "session-resumed";
+	const resumedKey = nativeMutationTargetKey(destination.hubId, resumedRef);
+	const resumedDestination = { hubId: destination.hubId, sessionRef: resumedRef };
+	expect(
+		f.runtime.storage.retarget(key, {
+			ref: resumedKey,
+			wireRef: resumedRef,
+			threadId: "thread-2",
+			instanceId: "instance-2",
+		}),
+	).toHaveLength(1);
+
+	const library = new DraftLibrary(() => f.repository);
+	expect(library.handoff(destination, resumedDestination)).toBe(true);
+	const resumed = library.open(resumedDestination);
+	expect(await f.runtime.readRecoveryResend(resumedKey, [captured])).toMatchObject({
+		targetRef: resumedKey,
+		sourceIds: [captured],
+	});
+
+	await reconcileEditedResends(f.runtime, resumedKey, resumed);
+	expect(resumed.getSnapshot().record).toMatchObject({ unconfirmed: null });
+	expect(await f.runtime.readRecoveryResend(resumedKey, [captured])).toBeUndefined();
+	expect(f.repository.read(resumedDestination)).toEqual({ draft: "", unconfirmed: null });
 });
 
 test("successful built-in completion durably cleans only captured sources without replay", async () => {

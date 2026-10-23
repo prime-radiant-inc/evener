@@ -589,6 +589,13 @@ export function ConversationScreen({
 		[route.params.hubId, route.params.ref],
 	);
 	const draft = useSyncExternalStore(document.subscribe, document.getSnapshot);
+	// A handoff can fail its storage write while the resume itself already moved
+	// the rows. Retry it as the replacement screen mounts and whenever the draft
+	// becomes writable again; the source composition stays under the old ref
+	// until the destination write commits.
+	useEffect(() => {
+		if (draft.loaded && !draft.error) drafts.retryPendingHandoffs();
+	}, [draft.loaded, draft.error, draft.record]);
 	const imageSelection = useMemo(() => new ImageSelection(document, nativeImagePicker), [document]);
 	const imageState = useSyncExternalStore(imageSelection.subscribe, imageSelection.getSnapshot);
 	// Follows the screen in front rather than focus, so a photo being attached
@@ -2662,6 +2669,13 @@ export function ConversationScreen({
 					// The rows followed the resume; the pane has to as well, or the
 					// message and the work it starts land on a ref nobody is showing.
 					onResolvedIdentity: (resolved) => {
+						// The draft and its recovery ownership follow the same identity:
+						// a replacement screen that loaded the resumed ref must show the
+						// edited composition, not the retired ref's stranded copy.
+						drafts.handoff(
+							{ hubId: route.params.hubId, sessionRef: ref },
+							{ hubId: route.params.hubId, sessionRef: resolved },
+						);
 						navigation.replace("Conversation", {
 							hubId: route.params.hubId,
 							ref: resolved,
