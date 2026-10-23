@@ -1,5 +1,6 @@
-import "./conversationPlatform.testkit";
-import { readFileSync } from "node:fs";
+import { nativePlatform } from "./conversationPlatform.testkit";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ComponentProps } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
@@ -9,7 +10,10 @@ import { ConnectionProvider, useConnection } from "./ConnectionProvider";
 import { NativePreferencesProvider } from "./NativePreferencesProvider";
 import { ConversationScreen } from "./screens";
 import { drafts } from "./nativeDrafts";
-import { pressable, render, unmountMountedTrees, untilRendered } from "./renderNative.testkit";
+import { MutationOutboxSQLite } from "./mutationOutboxStorage";
+import { getNativeMutationRuntime } from "./nativeMutationRuntime";
+import { pressable, render, unmountMountedTrees, until, untilRendered } from "./renderNative.testkit";
+import { openSqliteSyncDouble } from "./sqliteSync.testkit";
 
 const nav = vi.hoisted(() => ({ state: { index: 0, routes: [{ key: "retry", name: "Conversation" }] } }));
 vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 64 }));
@@ -30,6 +34,7 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 		const fixture = JSON.parse(readFileSync(process.env.EVENER_RETRY_JOURNEY ?? "", "utf8")) as {
 			origin: string;
 			token: string;
+			storageDir: string;
 			scenarios: { ref: string; mode: string }[];
 		};
 		const scenario = fixture.scenarios[0];
@@ -141,11 +146,55 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 			}
 			if (scenario.mode === "lost-reply") {
 				expect(new Set(wire.requests.map((request) => request.params.clientMutationId)).size).toBe(1);
+				const clientMutationId = wire.requests[0]?.params.clientMutationId;
+				if (!clientMutationId) throw new Error("missing Retry mutation identity");
+				console.log("retry journey: continued output observed before durable settlement check", { clientMutationId });
+				const attempts = wire.requests.length;
+				const connections = wire.connections;
+				await act(async () => wire.disconnect());
+				await untilRendered(() => {
+					expect(wire.connections).toBeGreaterThan(connections);
+					expect(connection?.state).toBe("ready");
+					expect(
+						wire.reads.some((read) => read.ref === scenario.ref && read.subscribed && read.connection > connections),
+					).toBe(true);
+				});
+				// This is a separate connection to the file the real runtime wrote,
+				// not the runtime's cached pending/recovery projection.
+				const path = join(fixture.storageDir, "evener-mutations.db");
+				expect(existsSync(path)).toBe(true);
+				const reopened = openSqliteSyncDouble(path);
+				try {
+					const storage = new MutationOutboxSQLite(reopened.port);
+					await until(async () => {
+						const records = {
+							outbox: await storage.getOutbox(clientMutationId),
+							optimistic: await storage.getOptimistic(clientMutationId),
+							recovery: await storage.getRecovery(clientMutationId),
+						};
+						expect(records, `unsettled durable Retry ${clientMutationId}`).toEqual({
+							outbox: undefined,
+							optimistic: undefined,
+							recovery: undefined,
+						});
+					});
+				} finally {
+					reopened.database.close();
+				}
+				expect(wire.requests).toHaveLength(attempts);
+				expect(composer().props.value).toBe("RETRY_UNSENT_DRAFT");
+				expect(draft.getSnapshot().record.draft).toBe("RETRY_UNSENT_DRAFT");
+				expect(tree.root.findAllByType("EnrichedMarkdownText" as never).map((node) => node.props.markdown)).toContain(
+					`RETRY_DONE_${scenario.mode}`,
+				);
+				console.log("retry journey: durable Retry settled after reconnect", { clientMutationId });
 			} else {
 				expect(wire.requests).toHaveLength(scenario.mode === "refused" ? 2 : 1);
 			}
 		} finally {
 			await unmountMountedTrees();
+			await getNativeMutationRuntime().stop();
+			for (const database of nativePlatform.sqliteDatabases) database.close();
 			vi.unstubAllGlobals();
 		}
 	},
