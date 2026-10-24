@@ -859,12 +859,18 @@ export function isEntryTranscriptLocalOpening(ref: string): boolean {
   return threadsStore.getState().localOpenings.has(ref);
 }
 
+// The newest opening that ever began for a ref, kept after it settles: a
+// late restore result must not act once any newer opening exists, even after
+// that newer opening finished.
+const entryTranscriptLatestOpening = new Map<string, number>();
+
 // Mark the opening pending BEFORE its first (pruned) publication, and publish
 // the change through the store so subscribed consumers re-render. Returns the
 // token the matching settle must present.
 function beginEntryTranscriptLocalOpening(ref: string): number {
   entryTranscriptOpeningSequence += 1;
   const token = entryTranscriptOpeningSequence;
+  entryTranscriptLatestOpening.set(ref, token);
   threadsStore.setState((state) => {
     const localOpenings = new Map(state.localOpenings);
     localOpenings.set(ref, token);
@@ -1004,18 +1010,29 @@ async function openEntryTranscript(ref: string): Promise<boolean> {
           }),
         ]);
     if (!result) {
-      if (stalled && restore) {
+      // A stalled restore keeps the established view standing only while that
+      // view still holds its required bodies: a foreground release already
+      // disposed the reader and reclaimed them, so an empty display must not
+      // wait on storage that may never answer. The repository's own snapshot
+      // is the truth here, not the possibly-pruned display.
+      if (stalled && restore && holdsCompleteForegroundWindow(repository.getSnapshot())) {
         // A stalled restore leaves the established view standing: the opening
         // settles so paging and placement resume, and the still-running
         // restore publishes through the repository subscription whenever
-        // storage answers. Its late result still records the truth under the
-        // ownership guards: a usable restore re-establishes the view, and an
-        // incomplete one falls back to source recovery exactly as a raced
-        // opening's failed verdict does.
+        // storage answers. Its late result still records the truth, but only
+        // while this opening remains its owner: the route's current reader,
+        // the newest opening generation and a live foreground pane all fence
+        // a result that outlived a newer open, a release or a replacement.
+        const stillOwnsLateResult = () =>
+          entryTranscriptRoute(ref) === fixture &&
+          fixture.repository === repository &&
+          fixture.reader === reader &&
+          entryTranscriptLatestOpening.get(ref) === openingToken &&
+          (refCounts.get(ref) ?? 0) > 0 &&
+          !threadsStore.getState().localOpenings.has(ref);
         void restore
           .then(async (settled) => {
-            if (entryTranscriptRoute(ref) !== fixture || fixture.repository !== repository) return;
-            if (threadsStore.getState().localOpenings.has(ref)) return;
+            if (!stillOwnsLateResult()) return;
             fixture.lastLocalOpenStatus = settled.status;
             const usable =
               settled.retainedRangeComplete !== false &&
@@ -1029,13 +1046,12 @@ async function openEntryTranscript(ref: string): Promise<boolean> {
             publishEntryTranscriptModel(ref);
             const client = await requireReadyClient();
             const epoch = readyEpoch;
-            if (entryTranscriptRoute(ref) !== fixture || fixture.repository !== repository) return;
-            if (threadsStore.getState().localOpenings.has(ref)) return;
+            if (!stillOwnsLateResult()) return;
             await refreshTrackedThread(client, epoch, ref, false, false, undefined, undefined, "foreground");
             // Mirror the raced recovery's full sequence: the read that
             // replaced the view is followed by the local re-open that
             // promotes its restored bodies into the display.
-            if (entryTranscriptRoute(ref) !== fixture || fixture.repository !== repository) return;
+            if (!stillOwnsLateResult()) return;
             await openEntryTranscript(ref);
           })
           .catch(() => {

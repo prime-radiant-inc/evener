@@ -211,9 +211,14 @@ reconstructed from retained history, failed writes and opening deadline expiry
 fall back to source recovery. An established view, whose last accepted local
 open still holds with no invalidation since, restores on remount without that
 deadline: the local restore keeps waiting, and only a genuinely stalled
-storage read settles the opening early, leaving the loaded range for the late
-restore to republish; a late restore that cannot recover the required range
-falls back to source recovery. The accepted baseline supplies the display and
+storage read settles the opening early. A settled stall keeps the loaded
+range only while its required bodies stay resident; a view whose release
+reclaimed them hands the open to source recovery, so the display recovers
+even though storage never answered. The late result of a settled stall acts
+only while its opening still owns the route, a live pane and the newest
+opening: it republishes the range when usable and falls back to source
+recovery when it cannot restore the required range. The accepted baseline
+supplies the display and
 cursor for subsequent older paging and live updates. Reconnect and source changes
 still reconcile, retiring obsolete cursors. Clear, deletion, final release and
 superseded openings fence late publication, and the opening hold settles on
