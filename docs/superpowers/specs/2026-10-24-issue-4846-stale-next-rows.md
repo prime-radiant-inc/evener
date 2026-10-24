@@ -8,9 +8,10 @@ needs-you controller's actual admission decision.
 The lane is based on `origin/main` at
 `c43ac9a99776673b14b0e7054d82d4ad4dda79cb`, the merge of PR #4854 that put the
 floating control on main. Issue #4846 is a follow-up to that delivery and does
-not change delivery. Main later moved to `37233004ca996ba52978e4f2fc3f47e732f028c8`
-(native Board only); that base merge lands before the final push, and the
-focused tests are rerun against it.
+not change delivery. Main later moved through
+`37233004ca996ba52978e4f2fc3f47e732f028c8` (native Board only); the final lane
+merged `origin/main` at `44167f48cb7c22b6e2e2f4b0e6a21488f10320e6` before the
+final push, and the focused tests were rerun against it.
 
 Intended deliverables:
 
