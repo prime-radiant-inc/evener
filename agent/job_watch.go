@@ -2571,9 +2571,10 @@ func (m watchInspectMatch) result() jobWatchInspectToolResult {
 
 // findWatchInspectSnapshot locates the first watch matching watchID and the
 // supplied predicates, copies it under jm.mu, and reports which kind it was so
-// the caller can format it after the lock is released. Precedence is the inspect
-// path's long-standing order -- live watches, then the detached terminalFlush
-// set, then the history ring (latest first).
+// the caller can format it after the lock is released. Live watches take
+// precedence, then ended history (latest first). Drain-only terminalFlush
+// residue must not hide the watch's recorded end reason or time, but remains
+// inspectable when no history entry is retained.
 func (jm *jobManager) findWatchInspectSnapshot(watchID string, visible func(*watchConfig) bool, visibleHistory func(watchHistoryEntry) bool) (watchInspectMatch, bool) {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
@@ -2582,14 +2583,14 @@ func (jm *jobManager) findWatchInspectSnapshot(watchID string, visible func(*wat
 			return watchInspectMatch{cfg: snapshotWatchConfigForProjection(cfg)}, true
 		}
 	}
-	for cfg := range jm.terminalFlush {
-		if cfg != nil && cfg.watchID == watchID && visible(cfg) {
-			return watchInspectMatch{cfg: snapshotWatchConfigForProjection(cfg), detached: true}, true
-		}
-	}
 	for i := range slices.Backward(jm.watchHistory) {
 		if jm.watchHistory[i].id == watchID && visibleHistory(jm.watchHistory[i]) {
 			return watchInspectMatch{history: jm.watchHistory[i], fromHistory: true}, true
+		}
+	}
+	for cfg := range jm.terminalFlush {
+		if cfg != nil && cfg.watchID == watchID && visible(cfg) {
+			return watchInspectMatch{cfg: snapshotWatchConfigForProjection(cfg), detached: true}, true
 		}
 	}
 	return watchInspectMatch{}, false
