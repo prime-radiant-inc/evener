@@ -4,13 +4,19 @@ import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { afterEach, beforeAll, expect, test } from "vitest";
 import { openDocBeside } from "../panes/doc/openDoc";
+import { enterAgentCascade, returnFromAgentCascade } from "../panes/zoom/actions";
 import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
+import { activityDelegate } from "../stores/sessionActivityTestUtils";
+import { captureAttentionPlacement, presentAttentionTarget, restoreAttentionPlacement } from "./attentionPlacement";
 import { DockHost } from "./DockHost";
+import { StackHost } from "./mobile/StackHost";
+import { conversationPaneLifetime } from "./paneLifetime";
 import { type PaneProps, registerPaneForTests } from "./paneRegistry";
 import {
   documentPaneState,
   getDockviewApi,
+  presentedPanes,
   recordDocumentPaneState,
   resetWorkspaceStoreForTests,
   workspaceStore,
@@ -26,7 +32,7 @@ function Body({ paneId }: PaneProps) {
 beforeAll(() => {
   globalThis.ResizeObserver = StubResizeObserver;
   installLocalStorage(new MemoryStorage());
-  for (const id of ["settings", "session", "doc"] as const) {
+  for (const id of ["settings", "session", "sessionZoom", "doc"] as const) {
     registerPaneForTests({
       id,
       singleton: id === "settings",
@@ -111,6 +117,225 @@ function expectMain(api: DockviewApi, id: string) {
     expect(group.model.header.hidden).toBe(false);
   }
 }
+
+test.each(["main", "secondary", "sole secondary"] as const)(
+  "parking preserves independent groups and tab order: %s",
+  async (seat) => {
+    const a = store.getState().openPane("session", { ref: "local:a" });
+    const { api } = await mount();
+    const x = await act(async () => store.getState().openPane("doc", { path: "x.md" }));
+    const y = await act(async () => store.getState().openPane("doc", { path: "y.md" }));
+    const secondary = await act(async () => store.getState().openPane("session", { ref: "local:secondary" }));
+    await act(async () => {
+      panel(api, y).api.moveTo({ group: panel(api, x).group, position: "right", skipSetActive: true });
+      if (seat === "sole secondary")
+        panel(api, secondary).api.moveTo({ group: panel(api, y).group, position: "right", skipSetActive: true });
+      api.layout(1200, 700);
+      store.getState().focusPane(seat === "main" ? a : secondary);
+    });
+    const origin = captureAttentionPlacement();
+    if (!origin) throw new Error("missing geometry origin");
+    const lifetime = conversationPaneLifetime(origin.pane);
+    const groups = api.groups.map((group) => ({
+      id: group.id,
+      tabs: group.panels.map((item) => item.id),
+      width: group.width,
+      height: group.height,
+    }));
+    const sourceGroup = panel(api, origin.pane.id).group.id;
+    const destination = await act(async () => presentAttentionTarget("local:b"));
+    if (!destination) throw new Error("missing geometry destination");
+    expect(origin.pane.slot).toBe("parked");
+    expect(lifetime.alive).toBe(true);
+    expect(api.groups).toHaveLength(groups.length);
+    expect(api.getPanel(origin.pane.id)).toBeUndefined();
+    expect(panel(api, destination.pane.id).group.id).toBe(sourceGroup);
+    for (const before of groups) {
+      const group = api.groups.find((item) => item.id === before.id);
+      expect(group?.panels.map((item) => item.id)).toEqual(
+        before.tabs.map((id) => (id === origin.pane.id ? "pane_session_5" : id)),
+      );
+      expect([group?.width, group?.height]).toEqual([before.width, before.height]);
+    }
+    expect(presentedPanes(store.getState().panes).map((pane) => pane.id)).toEqual(
+      seat === "main"
+        ? ["pane_doc_2", "pane_doc_3", "pane_session_4", "pane_session_5"]
+        : ["pane_session_1", "pane_doc_2", "pane_doc_3", "pane_session_5"],
+    );
+    expectMain(api, seat === "main" ? destination.pane.id : a);
+    const saved = store.getState().layoutJSON() as ReturnType<DockviewApi["toJSON"]>;
+    expect(Object.keys(saved.panels).sort()).toEqual(
+      seat === "main"
+        ? ["pane_doc_2", "pane_doc_3", "pane_session_4", "pane_session_5"]
+        : ["pane_doc_2", "pane_doc_3", "pane_session_1", "pane_session_5"],
+    );
+    await act(async () => {
+      expect(restoreAttentionPlacement(origin)).toBe(true);
+    });
+    for (const before of groups)
+      expect(api.groups.find((group) => group.id === before.id)?.panels.map((item) => item.id)).toEqual(before.tabs);
+    expect(conversationPaneLifetime(origin.pane)).toBe(lifetime);
+    // A real native removal, unlike substitution, is explicit Close.
+    await act(async () => api.removePanel(panel(api, secondary)));
+    expect(store.getState().panes.some((pane) => pane.id === secondary)).toBe(false);
+  },
+);
+
+test("attention records survive desktop phone desktop reconstruction", async () => {
+  store.getState().openPane("session", { ref: "local:a" });
+  const { host, api } = await mount();
+  const x = await act(async () => store.getState().openPane("doc", { path: "x.md" }));
+  await act(async () => store.getState().focusPane("pane_session_1"));
+  const origin = captureAttentionPlacement();
+  if (!origin) throw new Error("missing swap origin");
+  const lifetime = conversationPaneLifetime(origin.pane);
+  const destination = await act(async () => presentAttentionTarget("local:b"));
+  if (!destination) throw new Error("missing swap target");
+  const xGroup = panel(api, x).group.id;
+  localStorage.setItem(layoutKey, JSON.stringify(store.getState().layoutJSON()));
+  await act(async () => host.unmount());
+  const phone = await act(async () => render(<StackHost routeDeferred />));
+  expect(store.getState().panes).toContain(origin.pane);
+  await act(async () => {
+    expect(restoreAttentionPlacement(origin)).toBe(true);
+  });
+  await act(async () => phone.unmount());
+  const restored = await mount();
+  expect(conversationPaneLifetime(origin.pane)).toBe(lifetime);
+  expect(destination.pane.slot).toBe("parked");
+  expect(restored.api.getPanel(destination.pane.id)).toBeUndefined();
+  expect(restored.api.groups).toHaveLength(2);
+  expect(panel(restored.api, x).group.id).toBe(xGroup);
+  expectMain(restored.api, origin.pane.id);
+});
+
+test("layout serialization excludes parked panels before host reconciliation", async () => {
+  store.getState().openPane("session", { ref: "local:a" });
+  const { api } = await mount();
+  await act(async () => store.getState().openPane("doc", { path: "x.md" }));
+  await act(async () => store.getState().focusPane("pane_session_1"));
+  await act(async () => {
+    presentAttentionTarget("local:b");
+    // This synchronous read precedes DockHost's effect, so the old panel is
+    // still in the actual grid. It must not leak into a cold saved layout.
+    expect(api.getPanel("pane_session_1")).toBeDefined();
+    const saved = store.getState().layoutJSON() as ReturnType<DockviewApi["toJSON"]>;
+    expect(Object.keys(saved.panels)).toEqual(["pane_doc_2"]);
+    const views: string[] = [];
+    function visit(node: typeof saved.grid.root) {
+      if (Array.isArray(node.data)) node.data.forEach(visit);
+      else views.push(...node.data.views);
+    }
+    visit(saved.grid.root);
+    expect(views).toEqual(["pane_doc_2"]);
+  });
+});
+
+test("attention restoration follows a surviving seat without undoing user layout changes", async () => {
+  const { api, main, a, b } = await splitWorkspace();
+  const source = await act(async () => store.getState().openPane("session", { ref: "local:a" }));
+  const origin = captureAttentionPlacement();
+  if (!origin) throw new Error("missing source");
+  const destination = await act(async () => presentAttentionTarget("local:b"));
+  if (!destination) throw new Error("missing target");
+  await act(async () => panel(api, destination.pane.id).api.moveTo({ group: panel(api, b).group, position: "center" }));
+  const userGroup = panel(api, b).group.id;
+  const independentGroup = panel(api, a).group.id;
+  await act(async () => {
+    expect(restoreAttentionPlacement(origin)).toBe(true);
+  });
+  expect(panel(api, source).group.id).toBe(userGroup);
+  expect(panel(api, a).group.id).toBe(independentGroup);
+  await act(async () => panel(api, source).api.moveTo({ group: panel(api, a).group, position: "center" }));
+  const grid = api.toJSON().grid;
+  await act(async () => {
+    expect(restoreAttentionPlacement(origin)).toBe(true);
+  });
+  expect(api.toJSON().grid).toEqual(grid);
+  expectMain(api, main);
+});
+
+test("inspection Return lets Dockview choose its normal fallback for a parked origin", async () => {
+  const sourceId = store.getState().openPane("session", { ref: "local:a" });
+  const source = record(sourceId);
+  const { api } = await mount();
+  const independentId = await act(async () => store.getState().openPane("doc", { path: "independent.md" }));
+  const inspectorId = await act(async () =>
+    enterAgentCascade(
+      activityDelegate({ ownerRef: "local:a", childRef: "local:child", delegateId: "delegate-1" }),
+      sourceId,
+    ),
+  );
+  await act(async () => store.getState().focusPane(sourceId));
+  const origin = captureAttentionPlacement();
+  if (!origin) throw new Error("missing parked inspector origin");
+  const destination = await act(async () => presentAttentionTarget("local:b"));
+  if (!destination) throw new Error("missing attention destination");
+  expect(source.slot).toBe("parked");
+  expect(api.getPanel(inspectorId)).toBeDefined();
+
+  await act(async () => returnFromAgentCascade(inspectorId));
+
+  expect(api.getPanel(inspectorId)).toBeUndefined();
+  expect(api.activePanel?.id).not.toBe(inspectorId);
+  expect(api.activePanel?.id).toBe(destination.pane.id);
+  expect(api.getPanel(independentId)).toBeDefined();
+  expect(store.getState().panes).toContain(source);
+  expect(source.slot).toBe("parked");
+  expect(conversationPaneLifetime(source).alive).toBe(true);
+  await act(async () => expect(restoreAttentionPlacement(origin)).toBe(true));
+});
+
+test("restoring a parked source does not resurrect a deliberately removed group", async () => {
+  const { api, main, a, b } = await splitWorkspace();
+  const source = await act(async () => store.getState().openPane("session", { ref: "local:a" }));
+  await act(async () => panel(api, source).api.moveTo({ group: panel(api, b).group, position: "right" }));
+  const origin = captureAttentionPlacement();
+  if (!origin) throw new Error("missing source");
+  const destination = await act(async () => presentAttentionTarget("local:b"));
+  if (!destination) throw new Error("missing target");
+  const retiredGroup = panel(api, destination.pane.id).group.id;
+  await act(async () => api.removePanel(panel(api, destination.pane.id)));
+  expect(api.groups).toHaveLength(3);
+  const independent = placements(api);
+  await act(async () => {
+    expect(restoreAttentionPlacement(origin)).toBe(true);
+  });
+  expect(api.groups.some((group) => group.id === retiredGroup)).toBe(false);
+  expect(api.groups).toHaveLength(3);
+  for (const id of [main, a, b]) expect(panel(api, id).group.id).toBe(independent.get(id));
+});
+
+test("batched attention hops keep the original sole-panel group", async () => {
+  store.getState().openPane("session", { ref: "local:a" });
+  const { api } = await mount();
+  const group = panel(api, "pane_session_1").group.id;
+  await act(async () => {
+    presentAttentionTarget("local:b");
+    presentAttentionTarget("local:c");
+  });
+  expect(api.panels.map((pane) => pane.id)).toEqual(["pane_session_3"]);
+  expect(panel(api, "pane_session_3").group.id).toBe(group);
+  expect(api.groups).toHaveLength(1);
+});
+
+test("attention before the first desktop host is already a living workspace", async () => {
+  store.getState().openPane("settings");
+  const seed = await mount();
+  const saved = store.getState().layoutJSON();
+  await act(async () => seed.host.unmount());
+  resetWorkspaceStoreForTests();
+  localStorage.setItem(layoutKey, JSON.stringify(saved));
+  store.getState().openPane("session", { ref: "local:a" });
+  const origin = captureAttentionPlacement();
+  if (!origin) throw new Error("missing source");
+  const lifetime = conversationPaneLifetime(origin.pane);
+  presentAttentionTarget("local:b");
+  const { api } = await mount();
+  expect(store.getState().panes).toContain(origin.pane);
+  expect(lifetime.alive).toBe(true);
+  expect(api.panels.map((pane) => pane.id)).toEqual(["pane_session_2"]);
+});
 
 test.each(["singleton params", "document binding", "add", "remove", "record replacement"] as const)(
   "unchanged-slot user splits survive %s publication",

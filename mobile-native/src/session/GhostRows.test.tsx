@@ -93,6 +93,8 @@ function mount(
 		disabled = false,
 		canEdit = true,
 		editHint = null as string | null,
+		canEditParked = true,
+		parkedEditHint = null as string | null,
 		draftAttachments = undefined as ReactNode,
 	} = {},
 ) {
@@ -100,7 +102,18 @@ function mount(
 	const onMore = vi.fn();
 	const rows = withGhostRows([], ghosts).filter(isGhostRow);
 	const tree = render(
-		<GhostRowContext.Provider value={{ disabled, canEdit, editHint, draftAttachments, onAction, onMore }}>
+		<GhostRowContext.Provider
+			value={{
+				disabled,
+				canEdit,
+				editHint,
+				canEditParked,
+				parkedEditHint,
+				draftAttachments,
+				onAction,
+				onMore,
+			}}
+		>
 			{rows.map((row) => (
 				<GhostRowView key={row.id} row={row} />
 			))}

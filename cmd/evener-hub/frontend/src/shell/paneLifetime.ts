@@ -88,6 +88,12 @@ export function conversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime {
   return lifetime;
 }
 
+/** The lifetime this pane already owns, without creating one: callers that only
+ * read identity (a pending navigation's fence) must not mint lifetimes. */
+export function existingConversationPaneLifetime(pane: OpenPaneRecord): PaneLifetime | null {
+  return lifetimes.get(pane) ?? null;
+}
+
 export function disposeConversationPaneLifetime(pane: OpenPaneRecord): void {
   lifetimes.get(pane)?.dispose();
 }

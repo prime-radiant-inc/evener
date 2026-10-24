@@ -6,6 +6,7 @@ import * as paneActions from "../../shell/paneActions";
 import {
   documentPaneState,
   type OpenPaneRecord,
+  presentedPanes,
   recordDocumentPaneState,
   sourcePaneSessionRef,
   workspaceStore,
@@ -87,12 +88,13 @@ export function openDocBeside(request: DocumentOpenRequest): void {
     kind: isImagePath(reference.path) ? "image" : "file",
   };
   const workspace = workspaceStore.getState();
-  const requestedOrigin = workspace.panes.find((pane) => pane.id === request.sourcePaneId);
+  const presented = presentedPanes(workspace.panes);
+  const requestedOrigin = presented.find((pane) => pane.id === request.sourcePaneId);
   const origin =
     (requestedOrigin && paneOwnsSession(requestedOrigin, request.session) ? requestedOrigin : undefined) ??
-    workspace.panes.find((pane) => pane.type === "session" && paneOwnsSession(pane, request.session)) ??
-    workspace.panes.find((pane) => pane.type === "transcript" && paneOwnsSession(pane, request.session));
-  const existingDocument = workspace.panes.find((pane) => isRequestedDocument(pane, params));
+    presented.find((pane) => pane.type === "session" && paneOwnsSession(pane, request.session)) ??
+    presented.find((pane) => pane.type === "transcript" && paneOwnsSession(pane, request.session));
+  const existingDocument = presented.find((pane) => isRequestedDocument(pane, params));
   if (existingDocument) {
     const previous = documentPaneState(existingDocument);
     // Publish a changed binding before openBeside focuses the reused pane, so
@@ -111,7 +113,7 @@ export function openDocBeside(request: DocumentOpenRequest): void {
   if (origin && origin.type !== "sessionZoom") workspace.promotePane(origin.id);
   paneActions.openBeside({ type: "doc", params });
   if (existingDocument) return;
-  const document = workspaceStore.getState().panes.find((pane) => isRequestedDocument(pane, params));
+  const document = presentedPanes(workspaceStore.getState().panes).find((pane) => isRequestedDocument(pane, params));
   if (!document) return;
   recordDocumentPaneState(document, {
     reference,

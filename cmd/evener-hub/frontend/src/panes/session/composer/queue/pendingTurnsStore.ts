@@ -8,6 +8,7 @@ import {
   type MutationPersistenceSnapshot,
   type MutationProjectionRefresh,
   outboxEntriesByState,
+  ownPendingTurnInput,
   type PendingTurnsDraftPort,
   type PendingTurnsThreadsPort,
   recoveryEntries,
@@ -32,10 +33,12 @@ import {
   installQueuedMutationProjection,
   installResumeOnlyProjection,
   notifyReadyForMutationDispatch,
+  preserveRecoveryMutation,
   readMutationPersistence,
   removeQueuedMutation,
   resendRecoveryMutation,
   retryBlockedMutation,
+  setPendingProjectionLoaded,
   subscribeMutationPersistence,
   threadsStore,
   transientRefusalRetryPending,
@@ -77,6 +80,14 @@ const pendingTurnsStore = createPendingTurnsStore<MutationAttachment>({
   draft: draftPort,
   identity: { isOwnMutationRecord },
 });
+
+// Retry's activation-time read of the outbox owner: the same projected entries
+// a render holds, read from the stores as they are now. continueTurn rechecks
+// this synchronously before submitting (through the projection seam below), so
+// a row that appeared after the render still blocks the press.
+export function ownPendingTurnInputFor(ref: string): boolean {
+  return ownPendingTurnInput(pendingTurnsStore.pendingTurnEntries(ref));
+}
 
 installQueuedMutationProjection({
   subscribe: pendingTurnsStore.subscribe,
@@ -122,6 +133,9 @@ installResumeOnlyProjection({
     outboxEntriesByState(pendingTurnsStore.getState().outbox, ref, "submitting").some(
       (record) => record.method !== "turn/start",
     ),
+  ownPendingTurnInput: ownPendingTurnInputFor,
+  beginSubmission: (ref) => pendingTurnsStore.beginSubmission(ref),
+  endSubmission: (ref) => pendingTurnsStore.endSubmission(ref),
 });
 
 // The durable-read fence a refresh's targets are decided through, and the
@@ -151,9 +165,13 @@ export function refreshPendingTurnsProjection(ref?: string): Promise<boolean> {
 function invalidateProjectionLoaded(ref?: string): void {
   if (ref !== undefined) {
     loadedRefs.delete(ref);
+    setPendingProjectionLoaded(ref, false);
     return;
   }
-  for (const target of threadsStore.getState().threads.keys()) loadedRefs.delete(target);
+  for (const target of threadsStore.getState().threads.keys()) {
+    loadedRefs.delete(target);
+    setPendingProjectionLoaded(target, false);
+  }
 }
 
 async function readProjectionIntoStore(ref?: string): Promise<boolean> {
@@ -220,6 +238,7 @@ function markProjectionLoaded(
   const mark = (target: string): void => {
     if (!refresh.stillOwns(target) || loadedRefs.has(target)) return;
     loadedRefs.add(target);
+    setPendingProjectionLoaded(target, true);
     loaded.push(target);
   };
   if (ref !== undefined) {
@@ -353,6 +372,10 @@ type ThreadsPortModel = ReturnType<typeof threadsPort.getThreadModel>;
 // unrelated writes.
 export function usePendingTurnEntries(ref: string, method?: PendingMethod): PendingTurnEntry[] {
   useEffect(() => {
+    // The end-cap passes "" when its caller has no session ref. There is no
+    // durable outbox for an empty ref, and refreshing it would send
+    // listOutbox("")/listOptimistic("")/listRecovery("") to storage for nothing.
+    if (ref === "") return;
     void refreshPendingTurnsProjection(ref);
   }, [ref]);
 
@@ -401,6 +424,17 @@ export function usePendingTurnEntries(ref: string, method?: PendingMethod): Pend
   }, [ref, method]);
 
   return useSyncExternalStore(subscribe, getSnapshot);
+}
+
+// Retry's reactive view of the outbox owner. `loaded` is published by the
+// projection when the ref's durable read resolves (and drops when a newer read
+// invalidates it), so the action re-renders across the transition. `unresolved`
+// is the live own-send/queue predicate over the projected entries. Retry is
+// disabled until loaded, because an unloaded read is unknown, not empty.
+export function useRetryPendingState(ref: string): { loaded: boolean; unresolved: boolean } {
+  const entries = usePendingTurnEntries(ref);
+  const loaded = useThreadsStore((state) => state.pendingProjectionLoadedRefs.has(ref));
+  return { loaded, unresolved: ownPendingTurnInput(entries) };
 }
 
 // The same projection read from the stores as they are now, not as a component
@@ -523,6 +557,36 @@ export function updateRecoveryPendingTurn(
   );
 }
 
+export function preserveRecoveryPendingTurn(
+  base: MutationRecoveryRecord,
+  ref: string,
+  text: string,
+  attachments: InputAttachment[],
+  skillNames?: readonly string[],
+  commandNames?: readonly string[],
+  mentions?: readonly ComposerMention[],
+  compositionOwnerId?: string,
+  localDraftRevisionId?: string,
+): ReturnType<typeof preserveRecoveryMutation> {
+  return trackProjectionWork(
+    (async () => {
+      const preserved = await preserveRecoveryMutation(
+        base,
+        ref,
+        text,
+        attachments,
+        skillNames,
+        commandNames,
+        mentions,
+        compositionOwnerId,
+        localDraftRevisionId,
+      );
+      void refreshPendingTurnsProjection(ref);
+      return preserved;
+    })(),
+  );
+}
+
 export function discardRecoveryPendingTurn(
   clientMutationId: string,
   ref: string,
@@ -586,6 +650,7 @@ export function resetPendingTurnsStoreForTests(): void {
   // The epoch bump already voids anything still running against the previous
   // test's storage, so it is not this test's projection work to wait for.
   clearProjectionWorkForTests();
+  for (const ref of loadedRefs) setPendingProjectionLoaded(ref, false);
   loadedRefs.clear();
   pendingTurnsStore.setState({
     outbox: new Map(),

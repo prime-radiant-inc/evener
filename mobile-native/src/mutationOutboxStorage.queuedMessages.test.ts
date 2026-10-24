@@ -151,6 +151,73 @@ test("resendReceiptSurvivesSettlement", async () => {
 	expect(await (await f.reopen()).readRecoveryResend("local:queued", ids)).toBeUndefined();
 });
 
+test("retarget migrates recovery resend receipts and their embedded target ref", async () => {
+	const f = fixture();
+	const source = await f.storage.enqueueIntent(queuedIntent());
+	await f.storage.transferToRecovery(source.clientMutationId, "rejected");
+	const resend = await f.storage.resendRecovery(source.clientMutationId, queuedIntent());
+	if (!resend) throw new Error("missing resend");
+	// A receipt already waiting at the destination must survive the merge.
+	const destinationSource = await f.storage.enqueueIntent(queuedIntent("local:resumed"));
+	await f.storage.transferToRecovery(destinationSource.clientMutationId, "rejected");
+	const destinationResend = await f.storage.resendRecovery(
+		destinationSource.clientMutationId,
+		queuedIntent("local:resumed"),
+	);
+	if (!destinationResend) throw new Error("missing destination resend");
+	// Waiting work on the old ref is what a resume is answering.
+	const waiting = await f.storage.enqueueIntent(queuedIntent());
+
+	expect(
+		f.storage.retarget("local:queued", {
+			ref: "local:resumed",
+			wireRef: "resumed",
+			threadId: "thread-2",
+			instanceId: "instance-2",
+		}),
+	).toEqual(expect.arrayContaining([resend.clientMutationId, waiting.clientMutationId]));
+
+	const migrated = {
+		targetRef: "local:resumed",
+		sourceIds: [source.clientMutationId],
+		clientMutationId: resend.clientMutationId,
+	};
+	expect(await f.storage.readRecoveryResend("local:resumed", [source.clientMutationId])).toEqual(migrated);
+	expect(await f.storage.readRecoveryResend("local:queued", [source.clientMutationId])).toBeUndefined();
+	expect(await f.storage.readRecoveryResend("local:resumed", [destinationSource.clientMutationId])).toEqual({
+		targetRef: "local:resumed",
+		sourceIds: [destinationSource.clientMutationId],
+		clientMutationId: destinationResend.clientMutationId,
+	});
+	const reopened = await f.reopen();
+	expect(await reopened.readRecoveryResend("local:resumed", [source.clientMutationId])).toEqual(migrated);
+});
+
+test("a failed receipt migration rolls the whole retarget back", async () => {
+	const f = fixture();
+	const source = await f.storage.enqueueIntent(queuedIntent());
+	await f.storage.transferToRecovery(source.clientMutationId, "rejected");
+	const resend = await f.storage.resendRecovery(source.clientMutationId, queuedIntent());
+	if (!resend) throw new Error("missing resend");
+	const receipt = {
+		targetRef: "local:queued",
+		sourceIds: [source.clientMutationId],
+		clientMutationId: resend.clientMutationId,
+	};
+	f.fail(/UPDATE mutation_sequence SET recovery_resends/);
+	expect(() =>
+		f.storage.retarget("local:queued", {
+			ref: "local:resumed",
+			wireRef: "resumed",
+			threadId: "thread-2",
+			instanceId: "instance-2",
+		}),
+	).toThrow();
+	f.fail();
+	expect(await f.storage.readRecoveryResend("local:queued", [source.clientMutationId])).toEqual(receipt);
+	expect(await f.storage.readRecoveryResend("local:resumed", [source.clientMutationId])).toBeUndefined();
+});
+
 test("acknowledgment retires only its receipt and a failed write can be retried", async () => {
 	const f = fixture();
 	const first = await f.storage.enqueueIntent(queuedIntent());
