@@ -295,15 +295,11 @@ func (s *Session) ackNotifications(ids []string) (err error) {
 		s.mu.Unlock()
 	}()
 	toResolve := slices.Clone(ids)
-	var settled []string
 	for _, id := range fold.order {
 		_, observed := fold.observed[id]
 		_, resolved := fold.resolutions[id]
 		if observed && !resolved {
 			toResolve = appendUniqueStrings(toResolve, id)
-		}
-		if observed || resolved {
-			settled = append(settled, id)
 		}
 	}
 	// Historical consumed resolutions may carry a nonzero resume generation.
@@ -311,9 +307,6 @@ func (s *Session) ackNotifications(ids []string) (err error) {
 	toResolve = slices.DeleteFunc(toResolve, func(id string) bool {
 		return fold.resolutions[id] == delegateAttentionConsumed
 	})
-	if len(toResolve) == 0 && len(settled) == 0 {
-		return nil
-	}
 	if len(toResolve) != 0 {
 		if err := s.resolveAttentionDurably(toResolve, delegateAttentionConsumed); err != nil {
 			return err

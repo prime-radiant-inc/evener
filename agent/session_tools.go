@@ -1347,6 +1347,7 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 	// A clipped result becomes status-only, with ordinary canonical delivery
 	// still responsible for every packet in that result.
 	presentedCalls := make(map[string]bool)
+	liveContentCloned := false
 	for i, part := range liveTurn.Message.Content {
 		if part.ToolResult == nil {
 			continue
@@ -1358,12 +1359,16 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 			if delegateInlineBodyPresented(part.ToolResult) {
 				presentedCalls[binding.toolCallID] = true
 			} else {
-				liveTurn.Message.Content = append([]llm.ContentPart(nil), liveTurn.Message.Content...)
+				if !liveContentCloned {
+					liveTurn.Message.Content = slices.Clone(liveTurn.Message.Content)
+					liveContentCloned = true
+				}
 				liveTurn.Message.Content[i].ToolResult = delegateInlineStatusResult(part.ToolResult)
 			}
 			break
 		}
 	}
+	persistedContentCloned := false
 	for i, part := range persistedTurn.Message.Content {
 		if part.ToolResult == nil {
 			continue
@@ -1374,7 +1379,10 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 			}
 			if !presentedCalls[binding.toolCallID] || !delegateInlineBodyPresented(part.ToolResult) {
 				delete(presentedCalls, binding.toolCallID)
-				persistedTurn.Message.Content = append([]llm.ContentPart(nil), persistedTurn.Message.Content...)
+				if !persistedContentCloned {
+					persistedTurn.Message.Content = slices.Clone(persistedTurn.Message.Content)
+					persistedContentCloned = true
+				}
 				persistedTurn.Message.Content[i].ToolResult = delegateInlineStatusResult(part.ToolResult)
 			}
 			break

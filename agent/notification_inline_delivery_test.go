@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -303,13 +304,7 @@ func TestNotificationInlineDelivery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			found := false
-			for _, candidate := range pending {
-				if candidate == id {
-					found = true
-				}
-			}
-			if !found {
+			if !slices.Contains(pending, id) {
 				t.Errorf("inline ID missing before successful response, pending=%v", pending)
 			}
 			if duplicate {
@@ -449,13 +444,7 @@ func notificationInlineDifferentTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
-	for _, id := range ids {
-		if id == bID {
-			found = true
-		}
-	}
-	if !found {
+	if !slices.Contains(ids, bID) {
 		t.Fatalf("unrelated canonical ID not pending=%v", ids)
 	}
 	unblockA()
@@ -593,13 +582,7 @@ func notificationInlineFallback(t *testing.T, mode string) {
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	found := false
-	for _, candidate := range ids {
-		if candidate == id {
-			found = true
-		}
-	}
-	if !found {
+	if !slices.Contains(ids, id) {
 		t.Fatalf("failed waiter swallowed ordinary notification: %v", ids)
 	}
 	if pending := delegateAggregateSnapshot(t, s.delegateController, delegateID).PendingDeliveries; len(pending) != 0 {
@@ -628,6 +611,86 @@ func notificationInlineFallback(t *testing.T, mode string) {
 func TestNotificationInlineDeliverySameBatchSubscribers(t *testing.T) {
 	for _, mode := range []string{"persisted", "canceled", "write_failure"} {
 		t.Run(mode, func(t *testing.T) { notificationSameBatchSubscribers(t, mode) })
+	}
+}
+
+func TestNotificationInlineDeliveryContentOwnership(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name                           string
+		alias, liveClip, persistedClip bool
+		wantLiveStatus, wantDiskStatus bool
+	}{
+		{name: "aliased clipped", alias: true, liveClip: true, persistedClip: true, wantLiveStatus: true, wantDiskStatus: true},
+		{name: "distinct clipped", liveClip: true, persistedClip: true, wantLiveStatus: true, wantDiskStatus: true},
+		{name: "live clipped", liveClip: true, wantLiveStatus: true, wantDiskStatus: true},
+		{name: "persisted clipped", persistedClip: true, wantDiskStatus: true},
+		{name: "aliased unchanged", alias: true},
+		{name: "distinct unchanged"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := observationSession(t, &skillContinuationAdapter{}, false)
+			makeMessage := func(clipped bool) llm.Message {
+				message := llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "control-21ac"}}}
+				for _, id := range []string{"send-a", "send-b", "unbound"} {
+					output := "payload-" + id
+					state := delegateSendResult{DelegateID: "dlg_fixture", Action: "completed", Output: &output}
+					encoded, err := json.Marshal(state)
+					if err != nil {
+						t.Fatal(err)
+					}
+					body := formatDelegateSend(state)
+					if clipped {
+						body = "x"
+					}
+					message.Content = append(message.Content, llm.ContentPart{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: id, Name: "delegate_send", Content: body, ToolState: encoded}})
+				}
+				return message
+			}
+			live, persisted := makeMessage(tc.liveClip), makeMessage(tc.persistedClip)
+			if tc.alias {
+				persisted = live
+			}
+			beforeLive, _ := json.Marshal(live)
+			beforePersisted, _ := json.Marshal(persisted)
+			bindings := []delegateToolCallDeliveryCommit{{toolCallID: "send-a"}, {toolCallID: "send-b"}}
+			if err := s.appendToolResultsWithDeliveryCommitsDurably(live, persisted, bindings, nil); err != nil {
+				t.Fatal(err)
+			}
+			afterLive, _ := json.Marshal(live)
+			afterPersisted, _ := json.Marshal(persisted)
+			if string(afterLive) != string(beforeLive) || string(afterPersisted) != string(beforePersisted) {
+				t.Fatal("normalization mutated caller-owned content or result objects")
+			}
+			stored := notificationRawEntries(t, s.TranscriptPath())
+			gotLive := s.history[len(s.history)-1].Message
+			gotDisk := stored[len(stored)-1].Turn.Message
+			for _, side := range []struct {
+				name       string
+				got, input llm.Message
+				status     bool
+			}{{"live", gotLive, live, tc.wantLiveStatus}, {"persisted", gotDisk, persisted, tc.wantDiskStatus}} {
+				want := side.input
+				want.Content = slices.Clone(want.Content)
+				if side.status {
+					for _, i := range []int{1, 2} {
+						result := *want.Content[i].ToolResult
+						body, ok := side.got.Content[i].ToolResult.Content.(string)
+						if !ok || len(body) >= len(result.Content.(string)) {
+							t.Errorf("%s result %d did not shrink to status-only content", side.name, i)
+						}
+						result.Content = body
+						want.Content[i].ToolResult = &result
+					}
+				}
+				if !reflect.DeepEqual(side.got, want) {
+					t.Errorf("%s normalized content = %+v, want %+v", side.name, side.got, want)
+				}
+			}
+			if !tc.wantLiveStatus && &gotLive.Content[0] != &live.Content[0] {
+				t.Error("unchanged live content was copied")
+			}
+		})
 	}
 }
 

@@ -703,11 +703,7 @@ func TestWatchProductionSurvivesRestart(t *testing.T) {
 			if cfg.conditionFires != 0 || cfg.deliveries != 0 {
 				t.Fatalf("failed production spent budget: fires=%d deliveries=%d", cfg.conditionFires, cfg.deliveries)
 			}
-			reopened, err := jobstore.Open(filepath.Join(jm.dir, "jobs.jsonl"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			jm.store, jm.appendEvent, jm.appendEvents = reopened, reopened.Append, reopened.AppendBatch
+			reopenProducerSource(t, jm)
 			jm.dispatchProducedWatchSends()
 			if producerRecordCount(t, s) != 1 || cfg.conditionFires != 1 || cfg.deliveries != 1 {
 				t.Fatalf("recovered callback receiver=%d fires=%d deliveries=%d", producerRecordCount(t, s), cfg.conditionFires, cfg.deliveries)
@@ -802,11 +798,7 @@ func TestWatchProductionSurvivesRestart(t *testing.T) {
 			if got := producerRecordCount(t, s); got != 0 {
 				t.Fatalf("receiver accepted unproduced frame: %d", got)
 			}
-			reopened, err := jobstore.Open(filepath.Join(jm.dir, "jobs.jsonl"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			jm.store, jm.appendEvent, jm.appendEvents = reopened, reopened.Append, reopened.AppendBatch
+			reopenProducerSource(t, jm)
 			jm.fireProgressTick(key, cfg)
 			if producerRecordCount(t, s) != 1 || len(producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)) != 1 {
 				t.Fatal("reopened source did not retry exactly one firing")

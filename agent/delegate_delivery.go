@@ -633,6 +633,10 @@ func (s *Session) earlierInlineResults(plan delegateDeliveryPlan) ([]delegateInl
 	if err != nil {
 		return nil, err
 	}
+	pending := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		pending[id] = struct{}{}
+	}
 	var earlier []delegateInlineEarlier
 	prepared := make(map[uint64]delegatestore.TerminalPacket)
 	for _, event := range events {
@@ -643,16 +647,26 @@ func (s *Session) earlierInlineResults(plan delegateDeliveryPlan) ([]delegateInl
 			prepared[terminal.Generation] = terminal.Packet
 		}
 		var id string
+		if finished := event.RunFinished; finished != nil {
+			id = finished.DeliveryID
+		} else if event.UpdatePosted != nil {
+			id = delegatestore.UpdateDeliveryID(event.DelegateID, event.Seq)
+		}
+		if id == plan.deliveryID {
+			break
+		}
+		if _, ok := pending[delegateAttentionID(id)]; !ok {
+			continue
+		}
 		var packet *delegatestore.TerminalPacket
 		if finished := event.RunFinished; finished != nil {
-			id, packet = finished.DeliveryID, finished.Packet
+			packet = finished.Packet
 			if packet == nil {
 				if terminal, ok := prepared[finished.Generation]; ok {
 					packet = &terminal
 				}
 			}
 		} else if update := event.UpdatePosted; update != nil {
-			id = delegatestore.UpdateDeliveryID(event.DelegateID, event.Seq)
 			if update.Packet != nil {
 				captured := cloneDelegateTerminalPacket(*update.Packet)
 				packet = &captured
@@ -663,10 +677,7 @@ func (s *Session) earlierInlineResults(plan delegateDeliveryPlan) ([]delegateInl
 			projected := delegatestore.ProjectUpdatePacket(*packet, update.Readiness)
 			packet = &projected
 		}
-		if id == plan.deliveryID {
-			break
-		}
-		if packet != nil && slices.Contains(ids, delegateAttentionID(id)) {
+		if packet != nil {
 			earlier = append(earlier, delegateInlineEarlier{
 				packet: cloneDelegateTerminalPacket(*packet),
 				commit: &delegateToolResultCommit{controller: plan.controller, token: delegateDeliveryToken{deliveryID: id}, deliveryID: id},

@@ -2963,10 +2963,8 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	hasRootAttention := s.hasPendingNotifications()
 	// A delegate parked in its finalization drain is woken for its own
 	// notifications, including child reports. The content is already in its
-	// transcript, so the turn's model request carries it. Only
-	// a turn that consumes what it presents is admitted for it: a parent's
-	// unleased drive of an idle delegate would present the content and leave it
-	// pending.
+	// transcript, so the turn's model request carries it. Its generation lease
+	// must authorize coverage of the attention that request presents.
 	hasDelegateAttention := s.coversPresentedAttention(ctx) && s.hasPendingOwnDelegateAttention()
 	s.requeueJobNotifications(retryJobNotifs)
 	injectedFailures := s.markJobNotificationsDelivered(injectedJobNotifs)

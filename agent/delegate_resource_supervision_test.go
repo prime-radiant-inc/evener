@@ -152,21 +152,10 @@ func TestDelegateResourceSupervision_AttentionFollowUpRequiresReport(t *testing.
 }
 
 // TestDelegateResourceSupervision_CommittedAttentionStartRefusesASecondTurn
-// pins the attention start hand-off. Between the committed start and the run
-// goroutine that takes the generation over, sub.running is still false, the
-// reservation is consumed, and the attention id is no longer pending -- so a
-// wake-edge drive arriving in that gap declines the attention drive (nothing
-// left to dispatch) and falls through to driveSubagentNotificationTurn, which
-// reads the child as idle and launches a second, UNLEASED EntryNotification
-// turn on the very session the generation is about to run.
-//
-// The two turns then share one session: whichever reaches its drain ladder
-// first pops the follow-up the attention turn queued, and when that is the
-// unleased turn the run never admits report-requiring work. The generation
-// settles attention-only/no-action instead of report-required, which is the
-// load-sensitive failure this pins:
-//
-//	attention follow-up evidence = {requirement:0x0 outcome:0x1 terminalSeen:false}
+// pins the attention start hand-off. Common notification readiness must not
+// admit another executor between the committed start and the run goroutine
+// taking ownership. The generation must retain its follow-up and settle with
+// report-required evidence, rather than attention-only/no-action evidence.
 func TestDelegateResourceSupervision_CommittedAttentionStartRefusesASecondTurn(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	bare := func(llm.Request) llm.Response {
@@ -229,14 +218,9 @@ func TestDelegateResourceSupervision_CommittedAttentionStartRefusesASecondTurn(t
 // closed for attention starts also exists on the delegate send path. CommitStart
 // consumes the reservation, but sub.running stays false through the restored
 // side effects and the start-input mutation plans (BeginStartInput, preseedInput,
-// CompleteStartInput), so a wake-edge drive arriving in that gap reads an idle
-// child and driveChildIfNotStopGated falls through to
-// driveSubagentNotificationTurn, which launches a second, UNLEASED
-// EntryNotification turn on the session the generation is about to run. The two
-// turns then share one drain ladder and popFollowUp (a destructive pop with no
-// owner check) lets the unleased turn steal the run's follow-up. The send path
-// must take the drive claim atomically with its drivability check and hold it
-// across the whole window, so the child refuses the drive-down.
+// CompleteStartInput). The send path must hold its drive claim across that
+// window so common notification readiness cannot admit another executor on
+// the session the generation is about to run.
 func TestDelegateResourceSupervision_CommittedSendStartRefusesASecondTurn(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{

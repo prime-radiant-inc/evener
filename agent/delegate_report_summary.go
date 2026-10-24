@@ -216,13 +216,8 @@ func terminalPacketForDelivery(packet delegatestore.TerminalPacket) delegatestor
 	if json.Unmarshal(packet.Metadata, &original) != nil {
 		return packet
 	}
-	rendered := make(map[string]json.RawMessage, len(original))
-	for key, value := range original {
-		if key != "report" {
-			rendered[key] = value
-		}
-	}
-	rendered["report_notice"], _ = json.Marshal(renderReportNotice(*metadata.Report))
-	packet.Metadata, _ = json.Marshal(rendered)
+	delete(original, "report")
+	original["report_notice"], _ = json.Marshal(renderReportNotice(*metadata.Report))
+	packet.Metadata, _ = json.Marshal(original)
 	return packet
 }
