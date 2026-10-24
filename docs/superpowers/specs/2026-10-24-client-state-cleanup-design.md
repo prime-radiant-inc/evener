@@ -40,9 +40,14 @@ which of several projections is authoritative.
 
 ## Principles
 
-1. **One durable record per submission.** The outbox row is the only authority
-   for pending; the recovery row is the only authority for not-sent. Views
-   derive from them.
+1. **One durable record per submission, one reconciled pending view.** The
+   outbox row is the authority for unresolved delivery; the recovery row is the
+   authority for not-sent; accepted optimistic records are the authority for
+   accepted-but-not-yet-canonical work; canonical `pendingMutations` are the
+   authority for daemon-owned pending turns. The pending view reconciles all
+   four by `clientMutationId` and never double-counts. The outbox alone cannot
+   be the sole authority: accepted submissions leave it before the transcript
+   incorporates them.
 2. **Every non-derived marker has one named owner.** The click-to-commit
    marker, provenance, and unread state are real facts; they belong to one
    projection contract, not to a second in-flight record.
@@ -69,15 +74,18 @@ which of several projections is authoritative.
 
 - Keep `turnContinuation` predicates (latest failed turn, one pending
   continuation, continuation input) in `appwire-client/typescript`.
-- Export the projection shape the gate consumes: canonical latest turn, pending
-  rows, readiness, the in-flight markers, and the live target identity.
+- Export the projection shape the gate consumes: canonical latest turn, the
+  reconciled pending view (outbox, optimistic, and canonical
+  `pendingMutations`), readiness, the in-flight markers, and the live target
+  identity.
 - Keep the mutation record and recovery shapes here so both clients read the
   same fields.
 
 ### Browser
 
-- `pendingTurnsStore` stays the derived projection. It is not replaced. The
-  work is to make its marker contract explicit:
+- `pendingTurnsStore` stays the reconciled projection. It is not replaced. It
+  already merges outbox, optimistic, and recovery records with the canonical
+  thread model; keep that reconciliation and make its marker contract explicit:
   - `submittingRefs` owns the click-to-commit window;
   - `submittedHere` owns provenance after settlement;
   - `loadedRefs` owns "unread" versus "read and empty";
@@ -158,7 +166,9 @@ which of several projections is authoritative.
 - Real-hub journeys: lost reply, remount before settlement, two views, scoped
   cancellation, peer consumes a stale recovery, refcounted attach/release.
 - Browser and native projection tests: pending count, readiness transitions,
-  recovery ownership, draft preservation.
+  recovery ownership, draft preservation. Include the accepted-work case: an
+  accepted optimistic record plus a canonical pending turn with no outbox row
+  counts once and keeps Retry disabled.
 - Test isolation: stop and recreate the native mutation runtime between cases,
   or inject one without a live discovery interval. Add a lost-reply case that
   advances the discovery interval and asserts one `clientMutationId`, not one
