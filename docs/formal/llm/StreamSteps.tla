@@ -58,9 +58,9 @@ StopWhen ==
 Continue == /\ s.phase = "boundary"
             /\ s' = [s EXCEPT !.phase = "call", !.settled = FALSE]
 
-(* Top-of-loop cancellation, lines 173-180, or terminal stepErr, 311-318:
+(* Top-of-loop cancellation, lines 176-183, or terminal stepErr, 314-321:
    pre-fix writes res.err only. Fixed mode publishes completed local steps and
-   usage before done closes, stream_generate.go:164-171, but never a final response. *)
+   usage before done closes, stream_generate.go:164-174, but never a final response. *)
 Fail(kind) == /\ s.phase = "call"
               /\ s' = [s EXCEPT !.phase = "done", !.terminal = kind,
                                   !.publicResults = IF PublicationRule = "fixed"

@@ -148,12 +148,12 @@ established the observable second attempt.
 
 | Action / field | Source correspondence (baseline unless marked fixed) |
 |---|---|
-| `Start`, `Delta`, `Control` | baseline `llm/stream_generate.go:223-262`; fixed `:231-277`, accumulator processes before forwarding. `Delta` abstracts only nonempty content, including tool arguments on start/end |
+| `Start`, `Delta`, `Control` | baseline `llm/stream_generate.go:223-262`; fixed `:234-280`, accumulator processes before forwarding. `Delta` abstracts only nonempty content, including tool arguments on start/end |
 | historical `partial` | baseline `llm/stream_generate.go:259-261`: **every** `TEXT_DELTA`, even empty, set `hasPartialOutput`; the pre-fix model omits empty text events rather than treating them as `Control` |
-| fixed `partial` | fixed `llm/stream_generate.go:265-276`: nonempty typed text, reasoning, tool arguments at start/delta/end, or nonnil object payload set `hasPartialOutput`; empty text is `Control` only in this mode |
-| `Finish` | baseline `llm/stream_generate.go:241-244,305-308`; fixed `:249-252,320-330`, FINISH buffered, then settled |
-| `Truncate` | baseline `llm/stream_generate.go:266-271`; fixed `:279-286`, no FINISH becomes retryable `StreamError` |
-| `Retry`, `Stop` | baseline `llm/stream_generate.go:284-292`; fixed `:299-317`; `llm/stream_retry.go:129-170` |
+| fixed `partial` | fixed `llm/stream_generate.go:268-279`: nonempty typed text, reasoning, tool arguments at start/delta/end, or nonnil object payload set `hasPartialOutput`; empty text is `Control` only in this mode |
+| `Finish` | baseline `llm/stream_generate.go:241-244,305-308`; fixed `:252-255,323-333`, FINISH buffered, then settled |
+| `Truncate` | baseline `llm/stream_generate.go:266-271`; fixed `:282-289`, no FINISH becomes retryable `StreamError` |
+| `Retry`, `Stop` | baseline `llm/stream_generate.go:284-292`; fixed `:302-320`; `llm/stream_retry.go:129-170` |
 | `published`, `replayRisk` | observer history of delivered nonempty deltas and subsequent attempt entry, not implementation state |
 
 ### SC-1 shortest traces
@@ -183,7 +183,7 @@ streams (`llm/client.go:384-402`); its pump forwards these fields unchanged
 A protocol stream may additionally emit STREAM_START; the trace abstracts that
 prefix away. The two-event bound counts the modeled start and delta, not the
 closing channel or retry decision. A provider's terminal ERROR instead of raw
-closure follows baseline `stream_generate.go:245-254` (fixed `:253-262`) to the
+closure follows baseline `stream_generate.go:245-254` (fixed `:256-265`) to the
 same retry gate.
 
 **Contract strength:** the approved design treats published normalized content
@@ -241,7 +241,7 @@ Raw content events, a successful `"settled"` response, and no error**. The
 complete diagnostic source and reproduction command are in
 [issue #4941](https://github.com/prime-radiant-inc/evener/issues/4941).
 
-`llm/stream_generate.go:265-277` forwards provider passthrough but sets
+`llm/stream_generate.go:268-280` forwards provider passthrough but sets
 `hasPartialOutput` only for nonempty normalized text/reasoning, nonempty tool
 arguments on start/delta/end, or a nonnil object delta. `RetryStream` uses the
 caller's `PartialOutput` report to gate another attempt
@@ -339,7 +339,7 @@ by the invariant; it concerns already completed steps.
 | `Final` | `:336-363`, append final completion, copy usage and steps |
 | `StopWhen`, `Continue` | `:405-419`, custom stop copy or next iteration |
 | `Fail("error")`, `Fail("cancelled")` | `:296-302`, terminal step error; `:165-172`, top-of-loop cancellation |
-| fixed terminal publication | `llm/stream_generate.go:164-171`, goroutine exit copies completed steps and usage under `res.mu` before closing `done`; leaves `res.final` unset |
+| fixed terminal publication | `llm/stream_generate.go:164-174`, unsuccessful goroutine exit copies completed steps and usage under `res.mu` before closing `done`; successful paths already publish them, and failures leave `res.final` unset |
 | `public*` observation | `:85-99,116-129`, Response waits for done, then read TotalUsage and Steps |
 
 `StreamStepsSafety.cfg` checks `RoundLimit`, `OnlySettledExecution`,

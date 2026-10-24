@@ -164,6 +164,9 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 		// Completed rounds survive a later error or cancellation. Publish the
 		// locals before done closes; only a successful final step sets res.final.
 		defer func() {
+			if res.final != nil {
+				return
+			}
 			res.mu.Lock()
 			res.steps = steps
 			res.totalUsage = totalUsage

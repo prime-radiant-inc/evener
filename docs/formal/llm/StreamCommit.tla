@@ -9,7 +9,7 @@ vars == <<s>>
    a tool start with arguments is represented by Delta.
    Tool delta payload is ToolCall.Arguments, NEVER StreamEvent.Delta.
    RetryAfterPartial=false, OnReset=nil, one ordinary retryable failure class.
-   Mapping: baseline stream_generate.go:214-292, fixed :222-307;
+   Mapping: baseline stream_generate.go:214-292, fixed :225-310;
    stream_retry.go:129-170. *)
 Init == s = [attempt |-> 1, phase |-> "consume", events |-> <<>>,
              started |-> {}, published |-> {}, partial |-> FALSE,
@@ -28,7 +28,7 @@ Start(kind) ==
    PartialOutput for every TEXT_DELTA,
    including empty ones; the pre-fix model omits empty text events and models
    only nonempty text. Fixed source gates nonempty text, reasoning, tool
-   arguments, and object payloads at stream_generate.go:265-276.
+   arguments, and object payloads at stream_generate.go:268-279.
    Forwarding and classification are atomic with respect to retry admission. *)
 Delta(kind) ==
     /\ s.phase = "consume" /\ Len(s.events) < MaxEvents
@@ -47,7 +47,7 @@ Control ==
 
 (* A stream may close early at any event count, or finish successfully.
    FINISH is buffered, not exposed as partial content (baseline :241-244,
-   :266-271; fixed :249-252, :281-286). *)
+   :266-271; fixed :252-255, :284-289). *)
 Finish == /\ s.phase = "consume"
           /\ s' = [s EXCEPT !.phase = "done"]
 Truncate == /\ s.phase = "consume"
