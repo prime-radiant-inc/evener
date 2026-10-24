@@ -1275,6 +1275,22 @@ export class TranscriptRepository {
   }
 
   /**
+   * The oldest position still missing a real body below a restored window.
+   * Bodies the published model already holds are not debt: pages that loaded
+   * while a restore was in flight provided theirs, so the continuation must
+   * not re-advertise them.
+   */
+  #missingBodyFloor(model: ThreadModel | undefined, windowStart: ThreadItemPosition): ThreadItemPosition | undefined {
+    let floor: ThreadItemPosition | undefined;
+    for (const item of (model?.history?.turns ?? []).flatMap((turn) => turn.items)) {
+      if (!item.position || comparePosition(item.position, windowStart) >= 0) continue;
+      if (!encodeTranscriptItem(item).identityOnly) continue;
+      if (!floor || comparePosition(item.position, floor) < 0) floor = item.position;
+    }
+    return floor;
+  }
+
+  /**
    * True when every item the retained foreground interval requires is
    * resident with a real body. The interval runs from the oldest bodied
    * position this revision published — the floor only ever moves deeper, so
@@ -1522,14 +1538,17 @@ export class TranscriptRepository {
               ? oldestReturned
               : undefined;
           // Keep the unrestored identities: raw paging uses them to detect
-          // eviction rather than mistaking a short page for exhaustion.
+          // eviction rather than mistaking a short page for exhaustion. The
+          // continuation must describe bodies still missing in the published
+          // model, not the opening's captured cut: local pages that loaded
+          // while this restore was in flight already provided theirs, and
+          // re-advertising loaded history only risks a redundant lookup that
+          // can reconcile the retained range away.
           this.#model = latest;
-          const heldStart = this.#oldestPosition(current);
-          const heldBefore =
-            oldestReturned && heldStart && comparePosition(heldStart, oldestReturned) < 0 ? oldestReturned : undefined;
+          const missingFloor = oldestReturned ? this.#missingBodyFloor(latest, oldestReturned) : undefined;
           this.#localOlder =
-            heldBefore && heldStart
-              ? { before: heldBefore, floor: heldStart, sourceRevision: sourceRevisionAtOpen }
+            missingFloor && oldestReturned
+              ? { before: oldestReturned, floor: missingFloor, sourceRevision: sourceRevisionAtOpen }
               : undefined;
           this.#publish();
           const certifiedSnapshot = window.coverage.at(-1)?.representedSnapshot;
@@ -1570,7 +1589,7 @@ export class TranscriptRepository {
                 ? "stale"
                 : "recovery-needed";
           if (localBefore) this.#localReadContinuation = this.#coverageReadId;
-          const before = heldBefore ?? localBefore;
+          const before = (missingFloor ? oldestReturned : undefined) ?? localBefore;
           return {
             model: latest ?? current,
             status: retainedRangeComplete === false ? "recovery-needed" : status,

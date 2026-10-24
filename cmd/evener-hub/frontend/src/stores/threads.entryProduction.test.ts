@@ -1912,6 +1912,8 @@ it("a stalled restore merges a local older page instead of discarding it", async
     // from disk while the stalled restore is still in flight.
     await threadsStore.getState().loadOlderTurns("local:a");
     expect(bodies()).toEqual(Array.from({ length: 265 }, (_, index) => `row-${index + 1}`));
+    const continuation = () => productionEntryTranscriptForTests("local:a").repository?.localOlderPosition();
+    expect(continuation()).toBeUndefined();
     // The stalled restore answers late: it must merge into the paged model,
     // never replace it with the opening's captured snapshot. Wait for the
     // restore's own publication before judging what it published.
@@ -1923,6 +1925,9 @@ it("a stalled restore merges a local older page instead of discarding it", async
       released.resolve();
       await latePublished.promise;
       expect(bodies()).toEqual(Array.from({ length: 265 }, (_, index) => `row-${index + 1}`));
+      // The exhausted continuation stays exhausted: the late restore must
+      // not re-advertise already-loaded history as local demand.
+      expect(continuation()).toBeUndefined();
       expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBefore);
       expect(client.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(listCallsBefore);
       expect(productionEntryTranscriptForTests("local:a").lastLocalOpenUsable).toBe(true);

@@ -219,7 +219,9 @@ only while its opening still owns the route, a live pane and the newest
 opening: it republishes the range when usable and falls back to source
 recovery when it cannot restore the required range, merging into whatever
 the repository published in the meantime — local older pages and accepted
-updates — instead of replacing it with the opening's captured snapshot. The
+updates — instead of replacing it with the opening's captured snapshot, and
+the local continuation derives from bodies still missing after the merge,
+so paging that already exhausted stays exhausted. The
 accepted baseline
 supplies the display and
 cursor for subsequent older paging and live updates. Reconnect and source changes
