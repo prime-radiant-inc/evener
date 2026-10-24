@@ -15,7 +15,7 @@ import { activityDelegate } from "../stores/sessionActivityTestUtils";
 import { chromeStore, resetChromeStoreForTests } from "./chromeStore";
 import { focusedSessionRef } from "./focusedSession";
 import { createNeedsYouController, type NeedsYouController } from "./needsYouActions";
-import { installNeedsYouPage, needsYouRow } from "./needsYouTestUtils";
+import { installNeedsYouPage, needsYouRow, updateNeedsYouPage } from "./needsYouTestUtils";
 import { closePalette, openPalette, paletteStore } from "./palette/paletteController";
 import { conversationPaneLifetime } from "./paneLifetime";
 import * as routing from "./routing";
@@ -669,7 +669,7 @@ test("a refresh-state change alone reaches the controller's subscribers", () => 
   let calls = 0;
   controller.subscribe(() => calls++);
 
-  seedSectionPage(150, ["local:flip"], { stale: true, loading: false, error: new Error("refresh failed") });
+  updateNeedsYouPage(150, { stale: true, loading: false, error: new Error("refresh failed") });
 
   expect(calls).toBe(1);
   expect(controller.getSnapshot().choices.find((choice) => choice.summary.ref === "local:flip")?.refreshState).toBe(
