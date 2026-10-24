@@ -518,6 +518,7 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 				wire.mode = "lost-reply";
 				wire.armed = true;
 				wire.holdResponses("thread/read");
+				wire.holdNotifications("history/updated", "overlay/upserted", "overlay/delta", "overlay/reset", "overlay/end");
 				await waitRetryReady(failed);
 				await pressButton(retryButtonForTurn(tree, failed)!);
 				await untilRendered(() => expect(wire.dropped).toBe(1));
@@ -540,6 +541,13 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 				milestone(fixture.milestonePath, "remounted-unresolved", { clientMutationId: row?.clientMutationId });
 				wire.releaseResponses("turn/start");
 				wire.releaseResponses("thread/read");
+				wire.releaseNotifications(
+					"history/updated",
+					"overlay/upserted",
+					"overlay/delta",
+					"overlay/reset",
+					"overlay/end",
+				);
 				await untilRendered(() =>
 					expect(tree.root.findAllByType("EnrichedMarkdownText" as never).map((node) => node.props.markdown)).toContain(
 						"RETRY_RECOVERED_REMOUNT",
