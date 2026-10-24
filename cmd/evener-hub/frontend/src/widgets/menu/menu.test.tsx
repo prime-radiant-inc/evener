@@ -533,3 +533,45 @@ test("a scroll in an unrelated popout container leaves the menu open", () => {
     frame.remove();
   }
 });
+
+// Menu placement has always flipped and clamped against a viewport. In a
+// popout that has to be the popout's own viewport: a 600x150 window places a
+// menu near its bottom-right corner very differently from the opener's.
+test("places a popout menu from the popout window's own viewport", () => {
+  const { frame, doc, win } = appendPopout();
+  Object.defineProperty(win, "innerWidth", { configurable: true, value: 600 });
+  Object.defineProperty(win, "innerHeight", { configurable: true, value: 150 });
+  const rect = (left: number, top: number, width: number, height: number): DOMRect =>
+    ({
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  vi.spyOn(win.HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return rect(450, 20, 140, 125);
+    if (this.tagName === "UL") return rect(0, 0, 200, 120);
+    return rect(0, 0, 0, 0);
+  });
+  const view = render(createPortal(<Menu trigger="Actions" items={items()} />, doc.body));
+  try {
+    const trigger = doc.querySelector("button");
+    if (!trigger) throw new Error("popout trigger missing");
+    fireEvent.click(trigger);
+    const panel = doc.querySelector<HTMLElement>('[role="menu"]');
+    if (!panel) throw new Error("popout menu missing");
+    // 450 + 200 overflows 600, so it right-aligns to 590 - 200 = 390; opening
+    // below (149 + 120) overflows 150 and above does not fit either, so the
+    // clamp pins it to 150 - 120 - 8 = 22.
+    expect(panel.style.left).toBe("390px");
+    expect(panel.style.top).toBe("22px");
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
+});

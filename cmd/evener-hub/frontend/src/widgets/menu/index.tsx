@@ -223,7 +223,15 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     const triggerEl = triggerRef.current;
     const popupEl = popupRef.current;
     if (!triggerEl || !popupEl) return;
-    setPosition(computeMenuPosition(triggerEl.getBoundingClientRect(), popupEl.getBoundingClientRect()));
+    // The trigger's own viewport: a menu in a Dockview popout must flip and
+    // clamp against that window's edges, not the opener's.
+    const ownerWindow = ownerWindowOf(triggerEl);
+    setPosition(
+      computeMenuPosition(triggerEl.getBoundingClientRect(), popupEl.getBoundingClientRect(), {
+        width: ownerWindow.innerWidth,
+        height: ownerWindow.innerHeight,
+      }),
+    );
   }, [isOpen]);
 
   function focusIndex(index: number) {
