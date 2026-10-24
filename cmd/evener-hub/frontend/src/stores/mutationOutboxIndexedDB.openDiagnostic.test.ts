@@ -13,16 +13,14 @@ import { afterEach, expect, test, vi } from "vitest";
 import type { MutationIntent } from "./mutationOutbox";
 import type { MutationOutboxOpenDiagnostic } from "./mutationOutboxIndexedDB";
 import {
+  MUTATION_OUTBOX_DATABASE_NAME as DATABASE_NAME,
   MutationOutboxIndexedDB,
   MutationStorageError,
   MutationStorageTimeoutError,
+  MUTATION_OUTBOX_DATABASE_VERSION as VERSION,
   warnOpenDiagnostic,
 } from "./mutationOutboxIndexedDB";
 import { neverSettlingRequest, settleRealTasks } from "./testing/stalledIndexedDB";
-
-const DATABASE_NAME = "evener-mutation-outbox";
-// The adapter's own schema fence: DATABASE_VERSION in mutationOutboxIndexedDB.ts.
-const VERSION = 4;
 
 const intent: MutationIntent = {
   targetRef: "local:thread-1",

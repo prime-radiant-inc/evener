@@ -3454,7 +3454,9 @@ export async function updateRecoveryMutation(
     compositionOwnerId,
   );
   if (!record) return undefined;
-  notifyMutationPersistence([targetRef]);
+  // A row retargeted while this write was in flight now belongs to the resumed
+  // ref; listeners for that ref must see the update too.
+  notifyMutationPersistence(record.targetRef === targetRef ? [targetRef] : [targetRef, record.targetRef]);
   return record;
 }
 
@@ -3484,7 +3486,9 @@ export async function preserveRecoveryMutation(
     localDraftRevisionId,
   );
   if (!record) return undefined;
-  notifyMutationPersistence([targetRef]);
+  // retargetOutbox may have moved the source row, in which case the fresh
+  // owner belongs to the resumed ref rather than the caller's captured one.
+  notifyMutationPersistence(record.targetRef === targetRef ? [targetRef] : [targetRef, record.targetRef]);
   return record;
 }
 
