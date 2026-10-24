@@ -34,6 +34,10 @@ export interface ChromeStoreState {
    * window, so a shell-level observer needs the focused reader's own document. */
   paneDocuments: ReadonlyMap<string, Document>;
   setPaneDocumentFor(paneId: string, document: Document | null): void;
+  /** Publish one document for several panes at once - a popout move carries a
+   * whole group, and one store write keeps observers from seeing a half-moved
+   * set. */
+  setPaneDocumentsFor(paneIds: readonly string[], document: Document | null): void;
   setPaneTitle(title: string | null): void;
   paneTitles: ReadonlyMap<string, string>;
   setPaneTitleFor(paneId: string, title: string | null): void;
@@ -52,6 +56,18 @@ export const chromeStore = createStore<ChromeStoreState>()((set) => ({
       if (document === null) paneDocuments.delete(paneId);
       else paneDocuments.set(paneId, document);
       return { paneDocuments };
+    }),
+  setPaneDocumentsFor: (paneIds, document) =>
+    set((state) => {
+      let changed = false;
+      const paneDocuments = new Map(state.paneDocuments);
+      for (const paneId of paneIds) {
+        if ((paneDocuments.get(paneId) ?? null) === document) continue;
+        changed = true;
+        if (document === null) paneDocuments.delete(paneId);
+        else paneDocuments.set(paneId, document);
+      }
+      return changed ? { paneDocuments } : state;
     }),
   paneTitles: new Map(),
   setPaneTitleFor: (paneId, title) =>

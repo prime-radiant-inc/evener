@@ -323,6 +323,36 @@ test("a rebound current reader cannot own or restore its stale exact read view",
   expect(workspaceStore.getState().panes).toContain(reboundB);
 });
 
+// The address bar of an attention entry names its departure URL, so activating
+// the reader that URL names is a same-URL navigation. It has to leave the
+// attention binding behind; otherwise navigate() no-ops, no ordinary
+// reconciliation runs, and the press does nothing.
+test("an ordinary activation at an attention-owned URL leaves the binding", async () => {
+  history.replaceState({}, "", "/s/local%3Aa");
+  const a = workspaceStore.getState().openPane("session", { ref: "local:a" });
+  const x = workspaceStore.getState().openPane("session", { ref: "local:x" }, { slot: "secondary" });
+  workspaceStore.getState().focusPane(x);
+  openAttentionSession("local:target");
+  const popped = expectPop();
+  history.back();
+  await popped;
+  // Back lands on the departure entry, which the hop also bound: its header
+  // names A while its placement restores X.
+  expect(currentAttentionEntryToken()).not.toBeNull();
+  expect(restoreCurrentAttentionEntry()).toBe(true);
+  expect(location.pathname).toBe("/s/local%3Aa");
+  expect(workspaceStore.getState().focusedPaneId).toBe(x);
+
+  const routeEvents = vi.fn();
+  window.addEventListener("popstate", routeEvents, { once: true });
+  openSessionRoute("local:a");
+
+  expect(currentAttentionEntryToken()).toBeNull();
+  expect(routeEvents).toHaveBeenCalledTimes(1);
+  expect(location.pathname).toBe("/s/local%3Aa");
+  expect(a).toBeDefined();
+});
+
 test("ordinary app navigation from Back prunes the Forward target but preserves presented panes", async () => {
   history.replaceState({ unrelated: "kept" }, "", "/s/local%3Aa");
   const aId = workspaceStore.getState().openPane("session", { ref: "local:a" });

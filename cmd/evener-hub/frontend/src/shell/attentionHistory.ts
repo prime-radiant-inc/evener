@@ -9,10 +9,15 @@ import {
   releaseUnreferencedAttentionPanes,
   restoreAttentionPlacement,
 } from "./attentionPlacement";
-import { navigate, observeRouteHistory, paneToURL, routeHistoryEntryId } from "./routing";
+import {
+  navigate,
+  observeRouteHistory,
+  paneToURL,
+  routeHistoryEntryId,
+  ATTENTION_ENTRY_STATE_KEY as STATE_KEY,
+} from "./routing";
 import { workspaceStore } from "./workspace";
 
-const STATE_KEY = "__evenerAttention";
 // Not crypto.randomUUID(): an ordinary HTTP origin outside localhost is not a
 // secure context, so that call does not exist there - and this one runs at
 // module load, before any route renders.

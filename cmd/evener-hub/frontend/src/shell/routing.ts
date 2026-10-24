@@ -12,6 +12,14 @@ import { createSecureUUID } from "../stores/secureUUID";
 import type { PaneTypeId } from "./paneRegistry";
 
 const ROUTE_ENTRY_KEY = "__evenerRouteEntry";
+// A history entry can also be owned by an attention hop (see attentionHistory):
+// its own reader/placement pair outranks ordinary route placement while the
+// entry is current.
+export const ATTENTION_ENTRY_STATE_KEY = "__evenerAttention";
+
+function attentionBound(state: unknown): boolean {
+  return !!state && typeof state === "object" && !!(state as Record<string, unknown>)[ATTENTION_ENTRY_STATE_KEY];
+}
 
 /** The per-entry identity for an app-built history entry, if this state has one. */
 export function routeHistoryEntryId(state: unknown): string | null {
@@ -250,11 +258,22 @@ function withSettingsHost(target: string): string {
 // deliberately choosing a URL without it.
 export function navigate(
   pathname: string,
-  options: { replace?: boolean; carrySettingsHost?: boolean; attentionEntry?: { generation: string; id: string } } = {},
+  options: {
+    replace?: boolean;
+    carrySettingsHost?: boolean;
+    attentionEntry?: { generation: string; id: string };
+    ordinary?: boolean;
+  } = {},
 ): void {
   const target = options.carrySettingsHost === false ? pathname : withSettingsHost(pathname);
   const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-  if (current === target && !options.attentionEntry) return;
+  const sameURL = current === target;
+  // An explicit ordinary activation (a rail press, say) at an attention-owned
+  // URL has to leave that binding behind: the target names the same URL, so a
+  // silent return would leave the attention placement in charge and the press
+  // would do nothing. Replace rather than push - the URL is already right.
+  const leavesAttention = sameURL && options.ordinary === true && attentionBound(window.history.state);
+  if (sameURL && !options.attentionEntry && !leavesAttention) return;
   const priorState = window.history.state && typeof window.history.state === "object" ? window.history.state : {};
   const state = {
     ...(options.attentionEntry ? { ...priorState, __evenerAttention: options.attentionEntry } : {}),
@@ -262,10 +281,11 @@ export function navigate(
     // context, and crypto.randomUUID() does not exist there.
     [ROUTE_ENTRY_KEY]: createSecureUUID(),
   };
-  if (options.replace) window.history.replaceState(state, "", target);
+  const replace = options.replace === true || leavesAttention;
+  if (replace) window.history.replaceState(state, "", target);
   else window.history.pushState(state, "", target);
   for (const observer of routeHistoryObservers) {
-    observer(priorState, state, current, target, options.replace ? "replace" : "push");
+    observer(priorState, state, current, target, replace ? "replace" : "push");
   }
   // Mirror the settings selection onto the route the app just chose, before any
   // listener runs: an app-built navigation drops a remote selection it leaves
@@ -284,5 +304,5 @@ export function navigate(
 /** Ordinary live navigation stays on the normal route/history path. */
 export function openSessionRoute(ref: string): void {
   const url = paneToURL("session", { ref });
-  if (url) navigate(url);
+  if (url) navigate(url, { ordinary: true });
 }

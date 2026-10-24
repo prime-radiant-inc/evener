@@ -303,6 +303,23 @@ export function DockHost() {
     const removeSub = api.onDidRemovePanel((panel) => {
       if (!syncingSlots.current) workspaceStore.getState().closePane(panel.id);
     });
+    // Dockview moves a group's existing DOM into the popout window without
+    // re-rendering its panes, so a scaffold's per-render publication would
+    // leave the stored document on the opener until something else rendered.
+    // Publish the ownership at the move itself, and again when the group is
+    // docked back.
+    const popoutAddSub = api.onDidAddPopoutGroup((popout) => {
+      chromeStore.getState().setPaneDocumentsFor(
+        popout.group.panels.map((panel) => panel.id),
+        popout.window.document,
+      );
+    });
+    const popoutRemoveSub = api.onDidRemovePopoutGroup((popout) => {
+      chromeStore.getState().setPaneDocumentsFor(
+        popout.group.panels.map((panel) => panel.id),
+        document,
+      );
+    });
     // origin distinguishes a user clicking a tab from a change THIS
     // component itself just drove via panel.api.setActive() (the focus-
     // reconciliation effect below) - mirroring 'api'-origin events back in
@@ -348,6 +365,8 @@ export function DockHost() {
         saveLayout();
       }
       removeSub.dispose();
+      popoutAddSub.dispose();
+      popoutRemoveSub.dispose();
       activeSub.dispose();
       layoutSub.dispose();
       registerDockviewApi(null);
