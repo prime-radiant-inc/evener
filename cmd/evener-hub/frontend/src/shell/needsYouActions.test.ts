@@ -1757,6 +1757,20 @@ test("a populated page's retry keeps demand available while it is in flight", as
   controller.dispose();
 });
 
+// Mod+J works before the first connection arrives. Navigation has no client
+// then, so the demand that activation asks for cannot run; the activation is
+// void-ed by its callers, so a rejection here would be unhandled.
+test("an activation before navigation initializes neither rejects nor navigates", async () => {
+  const controller = createNeedsYouController();
+  const before = window.location.pathname;
+  try {
+    await expect(controller.next()).resolves.toBeUndefined();
+    expect(window.location.pathname).toBe(before);
+  } finally {
+    controller.dispose();
+  }
+});
+
 // A Dockview popout is a separate document. A modal opened there while Next is
 // waiting for a page has to block (and cancel) that action; watching only the
 // opener's document let the late page navigate away and dismiss the dialog.

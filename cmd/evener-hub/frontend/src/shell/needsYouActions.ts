@@ -332,6 +332,10 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
 
   const demand = async (serial: number): Promise<void> => {
     const state = navigationStore.getState();
+    // Navigation reads only exist once the store has a client. An activation
+    // before the first connection (an eager Mod+J, a restored shortcut) has
+    // nothing to demand and no page to fail on.
+    if (state.mode === "unknown") return;
     // A failed page keeps the rows it already had, so an offset computed from
     // them would skip past the failure and leave its choices unusable. Retry
     // the earliest failed visible page at its own offset and limit first; only
@@ -348,7 +352,12 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
     const failedPage = failed?.key.kind === "section" ? failed.key : null;
     const offset = failedPage ? failedPage.offset : selectNextSectionOffset("needs_you", state);
     const limit = failedPage ? failedPage.limit : NAVIGATION_SECTION_LIMIT;
-    await state.loadSection("needs_you", offset, limit);
+    try {
+      await state.loadSection("needs_you", offset, limit);
+    } catch {
+      // loadSection records the failure on the resource itself. Nothing here
+      // may reject: activations are void-ed by their callers.
+    }
     if (disposed || serial !== actionSerial) return;
   };
   const runNext = async (): Promise<void> => {
