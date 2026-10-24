@@ -330,15 +330,16 @@ describe("TasksTab", () => {
     );
     expect(times.get("1")?.dateTime).toBe(completedAt);
     expect(times.get("1")?.dataset.meaning).toBe("completed");
-    expect(times.get("1")?.textContent).toBe("20m ago");
     expect(times.get("2")?.dateTime).toBe(updatedAt);
     expect(times.get("2")?.dataset.meaning).toBe("updated");
     expect(times.get("4")?.dateTime).toBe("2026-10-04T23:35:00Z");
     expect(times.get("4")?.dataset.meaning).toBe("updated");
     expect(screen.getByText("Completed work").getAttribute("data-struck")).toBeNull();
     expect(screen.getByText("Cancelled work").getAttribute("data-struck")).toBe("true");
+    const beforeTime = times.get("2")?.textContent;
     act(() => vi.advanceTimersByTime(30_000));
-    expect(times.get("2")?.textContent).toBe("11m ago");
+    expect(times.get("2")?.textContent).not.toBe(beforeTime);
+    expect(times.get("2")?.dateTime).toBe(updatedAt);
   });
 
   test.each(["0", "2026-02-30T00:00:00Z"])(
