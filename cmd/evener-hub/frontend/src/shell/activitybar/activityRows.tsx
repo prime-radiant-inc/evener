@@ -37,7 +37,6 @@ const CLASS = {
   rowName: requireClass(styles.rowName, "activitybar.module.css", "rowName"),
   rowMeta: requireClass(styles.rowMeta, "activitybar.module.css", "rowMeta"),
   rowTitle: requireClass(styles.rowTitle, "activitybar.module.css", "rowTitle"),
-  rowFailed: requireClass(styles.rowFailed, "activitybar.module.css", "rowFailed"),
   rowMono: requireClass(styles.rowMono, "activitybar.module.css", "rowMono"),
   watchGlyph: requireClass(styles.watchGlyph, "activitybar.module.css", "watchGlyph"),
 };
@@ -137,7 +136,7 @@ export function AgentRow({ sub, onDrill, now }: { sub: SessionDelegate; onDrill?
       // word reachable, JobRow's pattern for a value the meta line hides.
       meta={
         successful ? undefined : (
-          <span data-activity-meta data-failed={failed || undefined} className={failed ? CLASS.rowFailed : undefined}>
+          <span data-activity-meta data-failed={failed || undefined}>
             {delegateWorkText(sub, status)}
           </span>
         )
@@ -171,7 +170,7 @@ export function JobRow({ job, onOpen, now }: { job: JobActivityJob; onOpen?: () 
       chips={<ActivityTime value={jobActivityTime(job)} now={now} />}
       meta={
         successful ? undefined : (
-          <span data-activity-meta data-failed={failed || undefined} className={failed ? CLASS.rowFailed : undefined}>
+          <span data-activity-meta data-failed={failed || undefined}>
             {status}
           </span>
         )

@@ -137,10 +137,6 @@
   flex: 1;
 }
 
-.rowFailed {
-  color: var(--danger-ink);
-}
-
 .rowName {
   flex: 1;
   min-width: 0;
