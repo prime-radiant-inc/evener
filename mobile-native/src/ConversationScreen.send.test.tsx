@@ -9,7 +9,7 @@ import { activityChangedNotification } from "@evener/appwire-client/testing/noti
 // ConversationScreen.recovery.test.tsx.
 import type { ComponentProps } from "react";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type AnyNotification,
 	makeTranscriptDisplayConfig,
@@ -300,8 +300,13 @@ beforeEach(({ onTestFinished }) => {
 		}
 	});
 });
-afterEach(() => {
+afterEach(async () => {
 	unmountMountedTrees();
+	// The runtime is memoized for the whole file and arms a 2000ms MutationOutbox
+	// discovery interval. Left running, a later case's mount re-registers a
+	// target and the interval re-sends an earlier case's lost row through it
+	// (#4901). Stop it with the trees that started it.
+	await getNativeMutationRuntime().stop();
 	displayPrefs.hubId = null;
 	displayPrefs.config = null;
 	catalogHub.fails = false;
@@ -318,6 +323,9 @@ afterEach(() => {
 	fleet.sources = undefined;
 	fleet.revision = undefined;
 	vi.unstubAllGlobals();
+});
+afterAll(() => {
+	for (const database of nativePlatform.sqliteDatabases) database.close();
 });
 
 function hubClient(
