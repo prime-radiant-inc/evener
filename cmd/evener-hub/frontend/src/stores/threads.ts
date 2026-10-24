@@ -687,6 +687,7 @@ export function productionEntryTranscriptForTests(ref: string) {
     repository: route?.repository,
     reader: route?.reader,
     lastLocalOpenStatus: route?.lastLocalOpenStatus,
+    lastLocalOpenUsable: route?.lastLocalOpenUsable,
   };
 }
 
@@ -747,6 +748,11 @@ interface EntryTranscriptRoute extends EntryTranscriptFixtureOptionsForTests {
   // route. Read-only test evidence for why a pane open did or did not need a
   // source read; never consulted by product logic.
   lastLocalOpenStatus?: string;
+  // True while the view the last accepted local open (`openEntryTranscript`)
+  // established is still the one to serve: cleared when that open is torn
+  // down. A remount of the same route may serve this view without racing a
+  // disk recertification against the lookup deadline.
+  lastLocalOpenUsable?: boolean;
 }
 
 let entryTranscriptFixtureForTests: EntryTranscriptRoute | undefined;
@@ -909,6 +915,30 @@ function publishEntryTranscriptModel(ref: string): void {
   putThreadModel(ref, isEntryTranscriptBackgroundOnly(ref) ? pruneBackgroundHistoryBodies(displayed) : displayed);
 }
 
+// The complete-requested-window standard a local open tolerates without a
+// cache certificate: every foreground item the model expects is present with
+// at least its version and a real body. A completed opening result and a
+// remount over a still-held view apply the same test.
+function holdsCompleteForegroundWindow(model: ThreadModel | undefined): boolean {
+  const displayed = new Map(
+    model?.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
+  );
+  // Legacy reads keep their recorded bodies in turns, without versioned
+  // history. Do not mistake that nonempty accepted window for an empty one.
+  const requested = (model?.history?.turns ?? model?.turns)?.flatMap((turn) => turn.items).slice(-200) ?? [];
+  return (
+    requested.length > 0 &&
+    requested.every((item) => {
+      const restored = displayed.get(item.transcriptKey ?? item.id);
+      return (
+        restored !== undefined &&
+        (restored.version ?? 0) >= (item.version ?? 0) &&
+        !encodeTranscriptItem(restored).identityOnly
+      );
+    })
+  );
+}
+
 async function openEntryTranscript(ref: string): Promise<boolean> {
   const fixture = entryTranscriptRoute(ref);
   if (!fixture || fixture.ref !== ref || !fixture.repository) return true;
@@ -924,18 +954,31 @@ async function openEntryTranscript(ref: string): Promise<boolean> {
     fixture.unsubscribeRepository ??= fixture.repository.subscribe(() => publishEntryTranscriptModel(ref));
     publishEntryTranscriptModel(ref);
     const reader = fixture.reader;
-    const result = await Promise.race([
-      reader.openLocal(200),
-      new Promise<undefined>((resolve) => {
-        timer = setTimeout(() => {
-          reader.dispose();
-          if (fixture.reader === reader) fixture.reader = undefined;
-          resolve(undefined);
-        }, SESSION_CACHE_LOOKUP_DEADLINE_MS);
-      }),
-    ]);
+    // A remount over a route whose last accepted open still holds an
+    // un-invalidated view trusts the local restore instead of racing it
+    // against the lookup deadline: the repository kept that view's identities
+    // and the restore republishes its bodies from the durable rows. Under
+    // load the race can only lose — the expiry disposes this reader, the
+    // background reclaim then drops the resident bodies, and the source
+    // recovery replaces the loaded range with a latest window (#4939). The
+    // unraced restore keeps the ordinary opening hold and result handling; an
+    // unestablished route still pays the raced opening.
+    const result =
+      fixture.lastLocalOpenUsable === true && repository.holdsEstablishedView()
+        ? await reader.openLocal(200)
+        : await Promise.race([
+            reader.openLocal(200),
+            new Promise<undefined>((resolve) => {
+              timer = setTimeout(() => {
+                reader.dispose();
+                if (fixture.reader === reader) fixture.reader = undefined;
+                resolve(undefined);
+              }, SESSION_CACHE_LOOKUP_DEADLINE_MS);
+            }),
+          ]);
     if (!result) {
       fixture.lastLocalOpenStatus = "recovery-needed";
+      fixture.lastLocalOpenUsable = false;
       return false;
     }
     fixture.lastLocalOpenStatus = result.status;
@@ -952,29 +995,19 @@ async function openEntryTranscript(ref: string): Promise<boolean> {
     }
     // A previously loaded range can exceed the initial 200-body promotion.
     // Keep its usable partial display, but do not certify it via a smaller tail.
-    if (result.retainedRangeComplete === false) return false;
-    if (result.status !== "recovery-needed") return true;
+    if (result.retainedRangeComplete === false) {
+      fixture.lastLocalOpenUsable = false;
+      return false;
+    }
+    if (result.status !== "recovery-needed") {
+      fixture.lastLocalOpenUsable = true;
+      return true;
+    }
     // Cache proof can be unavailable while the live model already carries the
     // complete requested window. Recover missing bodies, not merely a missing
     // certificate, which would replace usable paged history with a latest read.
-    const displayed = new Map(
-      result.model?.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
-    );
-    // Legacy reads keep their recorded bodies in turns, without versioned
-    // history. Do not mistake that nonempty accepted window for an empty one.
-    const requested =
-      (result.model?.history?.turns ?? result.model?.turns)?.flatMap((turn) => turn.items).slice(-200) ?? [];
-    return (
-      requested.length > 0 &&
-      requested.every((item) => {
-        const restored = displayed.get(item.transcriptKey ?? item.id);
-        return (
-          restored !== undefined &&
-          (restored.version ?? 0) >= (item.version ?? 0) &&
-          !encodeTranscriptItem(restored).identityOnly
-        );
-      })
-    );
+    fixture.lastLocalOpenUsable = holdsCompleteForegroundWindow(result.model);
+    return fixture.lastLocalOpenUsable;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     settleEntryTranscriptLocalOpening(ref, openingToken);
@@ -1406,6 +1439,7 @@ function retireEntryTranscriptRoute(fixture: EntryTranscriptRoute): void {
   fixture.reader?.dispose();
   fixture.reader = undefined;
   fixture.localBefore = undefined;
+  fixture.lastLocalOpenUsable = undefined;
   fixture.unsubscribeRepository?.();
   fixture.unsubscribeRepository = undefined;
   fixture.repository?.dispose();

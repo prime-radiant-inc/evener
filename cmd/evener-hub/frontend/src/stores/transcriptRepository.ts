@@ -595,6 +595,24 @@ export class TranscriptRepository {
   }
 
   /**
+   * True while the held view is still the one a completed local open
+   * established: no invalidation (recovery need, seed authority, cache
+   * continuity, invalidation marker, disposal) has overturned it since. A
+   * remount over a still-held view can serve it without a disk
+   * recertification, whose lookup-deadline expiry would discard the loaded
+   * range and fall back to a source read.
+   */
+  holdsEstablishedView(): boolean {
+    return (
+      !this.#recoveryNeeded &&
+      !this.#seedAuthorityInvalid &&
+      !this.#cacheContinuityLost &&
+      !this.#invalidated &&
+      !this.#disposed
+    );
+  }
+
+  /**
    * @internal The aggregate admission scalars this repository sees in the shared
    * queue, paired with `retainedInventoryForTesting` so a test can observe the
    * bound against real retained references, not only a counter.

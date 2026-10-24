@@ -1511,6 +1511,55 @@ it("ordinary disk-only lookup deadline starts the source opening and a late look
   }
 });
 
+it("a pane remount keeps its loaded range without a source read while local certification is slow", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const client = connect(response("local:a", [turn("older-item", 1), turn("recorded", 2)]));
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  const loaded = () => {
+    const model = threadsStore.getState().threads.get("local:a");
+    const items = [...(model?.history?.turns ?? []), ...(model?.turns ?? [])].flatMap((turn) => turn.items ?? []);
+    return [...new Set(items.map((item) => item.text))];
+  };
+  expect(loaded()).toEqual(["older-item", "recorded"]);
+  // The sidebar-style background hold keeps the route and repository alive
+  // across the pane swap, as a responsive remount of the active session does.
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  threadsStore.getState().releaseThread("local:a");
+  // A later authoritative read serves only the latest window, like the real
+  // source: it must not be needed at all, and must not drop the loaded range.
+  client.on("thread/read", () => response("local:a", [turn("recorded", 2)]));
+  const readsBefore = client.calls.filter((call) => call.method === "thread/read").length;
+  const released = deferred<void>();
+  const entered = deferred<void>();
+  const original = storage.getLatestWindow.bind(storage);
+  const lookup = vi.spyOn(storage, "getLatestWindow").mockImplementation(async (...args) => {
+    entered.resolve();
+    await released.promise;
+    return original(...args);
+  });
+  try {
+    // The slow certification the gate holds back is exactly the load CI put
+    // behind the 250ms deadline: hold it past that deadline and require the
+    // remount to wait for its own local restore rather than abandoning the
+    // loaded range to a source read.
+    const reopened = threadsStore.getState().ensureThread("local:a");
+    await entered.promise;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    released.resolve();
+    await reopened;
+    expect(loaded()).toEqual(["older-item", "recorded"]);
+    expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBefore);
+  } finally {
+    released.resolve();
+    await Promise.all(lookup.mock.results.map((result) => result.value));
+    threadsStore.getState().releaseThread("local:a");
+    await background.release();
+  }
+});
+
 it("ordinary headerless v3 entries display from cached identity without inventing a source instance", async () => {
   const storage = cache();
   const key = entryHistoryKey({ ...identity, clientId: location.origin });
