@@ -51,9 +51,9 @@ function attentionReasonLabel(reason: string | undefined): string | undefined {
 
 function rowMeta(choice: NeedsYouChoice): string | undefined {
   if (choice.selectable) return attentionReasonLabel(attentionReason(choice.summary));
-  if (choice.refreshState === "refreshing") return "Refreshing";
   if (choice.refreshState === "failed") return "Couldn't refresh";
-  return "No longer available";
+  if (choice.refreshState === "refreshing") return "Refreshing";
+  return undefined;
 }
 
 export function NextNeedsYou(props: NextNeedsYouProps): ReactElement | null {

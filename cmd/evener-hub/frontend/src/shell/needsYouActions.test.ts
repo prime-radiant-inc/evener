@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import type { ThreadModel } from "@evener/appwire-client";
-import { keyID } from "@evener/appwire-client/state/navigation";
+import { keyID, type ResourceState } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { afterEach, expect, test, vi } from "vitest";
@@ -30,6 +30,43 @@ function whenNavigation(predicate: (state: ReturnType<typeof navigationStore.get
       resolve();
     });
   });
+}
+
+function seedSectionPage(offset: number, refs: string[], patch: Partial<ResourceState<unknown>> = {}): void {
+  const key = { kind: "section", section: "needs_you", offset, limit: 50 } as const;
+  const resources = new Map(navigationStore.getState().resources);
+  resources.set(keyID(key), {
+    key,
+    data: {
+      generation_id: "g",
+      revision: 1,
+      sessions: refs.map((ref) => ({
+        ref,
+        host_id: "local",
+        session_id: ref,
+        title: ref,
+        project: "Proj",
+        state: "awaiting",
+        kind: "session",
+        live: true,
+        children: [],
+      })),
+      remaining: 0,
+      truncated: false,
+    },
+    loadedRevision: 1,
+    targetRevision: null,
+    forceToken: 0,
+    etag: `"${offset}"`,
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: "g",
+    ...patch,
+  });
+  const visibleResourceKeys = new Set(navigationStore.getState().visibleResourceKeys);
+  visibleResourceKeys.add(keyID(key));
+  navigationStore.setState({ resources, visibleResourceKeys, mode: "v3" });
 }
 
 function deferred<T>() {
@@ -649,6 +686,29 @@ test("a stale resource blocks selection until its actual refreshed response rest
     .panes.find((pane) => (pane.params as { ref?: string } | undefined)?.ref === "local:b");
   expect(workspaceStore.getState().focusedPaneId).toBe(b?.id);
   expect(window.history.length).toBe(before + 1);
+  controller.dispose();
+});
+
+test("a refresh-state change alone reaches the controller's subscribers", () => {
+  seedSectionPage(0, ["local:a"]);
+  seedSectionPage(50, ["local:failed"], { stale: true, error: new Error("held failure") });
+  seedSectionPage(100, ["local:loading"], { stale: true, loading: true });
+  seedSectionPage(150, ["local:flip"], { stale: true, loading: true });
+  const controller = createNeedsYouController();
+  let calls = 0;
+  controller.subscribe(() => calls++);
+
+  const flipKey = keyID({ kind: "section", section: "needs_you", offset: 150, limit: 50 });
+  const flipPage = navigationStore.getState().resources.get(flipKey);
+  if (!flipPage) throw new Error("seeded flip page missing");
+  const resources = new Map(navigationStore.getState().resources);
+  resources.set(flipKey, { ...flipPage, loading: false, error: new Error("refresh failed") });
+  navigationStore.setState({ resources });
+
+  expect(calls).toBe(1);
+  expect(controller.getSnapshot().choices.find((choice) => choice.summary.ref === "local:flip")?.refreshState).toBe(
+    "failed",
+  );
   controller.dispose();
 });
 

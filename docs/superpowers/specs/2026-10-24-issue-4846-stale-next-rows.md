@@ -94,7 +94,8 @@ sequenceDiagram
    - `selectable` → the existing attention reason;
    - `refreshState === "refreshing"` → `Refreshing`;
    - `refreshState === "failed"` → `Couldn't refresh`;
-   - no page → `No longer available`.
+   - no page → no meta (unreachable for a listed row; the controller only
+     publishes rows from loaded pages).
 
    `refreshState: "refreshing" | "failed" | null` is published per choice by the
    controller's `read()` from the row's page (`page.error` → failed,
@@ -158,23 +159,37 @@ retained rows, or `stale:true, error` with retained rows.
 
 1. `NextNeedsYou.test.tsx`: a row on a page that turns stale after render
    becomes refused (`aria-disabled="true"`, `data-refresh-state="refreshing"`)
-   and cannot navigate. Replaces the vacuous case at
+   and cannot navigate; a failed refresh on the same page
+   (`stale:true, error, loading:false`) changes the state to `failed` before the
+   click. Replaces the vacuous case at
    `NextNeedsYou.test.tsx:372-391`. Fails before the fix at the attribute
    assertion.
 2. `NextNeedsYou.test.tsx`: opening a list whose page failed focuses the first
    remaining control (Load more), not a refused row, and the refused rows carry
-   `data-refresh-state="failed"`. Fails before the fix because the first refused
-   row receives focus.
-3. `NextNeedsYou.test.tsx`: a selectable row still closes the list and
+   `data-refresh-state="failed"`. A second case with a stale, loading page
+   (Load more disabled) focuses the list section itself. Both fail before the
+   fix because the first refused row receives focus.
+3. `NextNeedsYou.test.tsx`: a failed page does not refuse rows from another
+   current page. The failed page's row is refused with
+   `data-refresh-state="failed"`, the current page's row is enabled without a
+   refresh state, takes first focus, and selects. Fails before the fix because
+   the failed page's row is enabled.
+4. `NextNeedsYou.test.tsx`: a selectable row still closes the list and
    navigates. Passes before and after; this is the control.
-4. `NextNeedsYou.test.tsx`: after the page's retained data is restored through
-   a notifying `navigationStore.setState` (`stale:false`), the row is enabled
-   and selecting it navigates. Passes on base and after.
-5. `needsYouActions.test.ts`: the existing stale-refresh case reads
+5. `NextNeedsYou.test.tsx`: a refused row's page is restored through a
+   notifying `navigationStore.setState` (`stale:false`); the row is enabled and
+   selecting it navigates. The refused state is asserted before restoration, so
+   the case now fails on base.
+6. `needsYouActions.test.ts`: the existing stale-refresh case reads
    `refreshState === "refreshing"` while the page is stale and `refreshState ===
    null` after the real refreshed response; its existing refused-then-navigated
    assertions stay. Fails before the fix only if `refreshState` is absent, so
    it proves the new field.
+7. `needsYouActions.test.ts`: a transition that changes only a choice's
+   `refreshState` (refreshing to failed, while another page keeps the snapshot
+   loading and another keeps it failed) reaches subscribers because the field
+   is in `samePublicState`. Fails before the fix because the field and its
+   comparison do not exist.
 
 Commands, from the worktree:
 

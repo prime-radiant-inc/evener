@@ -93,6 +93,31 @@ function setPage(patch: Partial<ResourceState<unknown>>): void {
   navigationStore.setState({ resources });
 }
 
+function installPage(
+  rows: NavigationSessionSummary[],
+  offset: number,
+  patch: Partial<ResourceState<unknown>> = {},
+): void {
+  const key = { kind: "section", section: "needs_you", offset, limit: 50 } as const;
+  const resources = new Map(navigationStore.getState().resources);
+  resources.set(keyID(key), {
+    key,
+    data: { generation_id: "g", revision: 1, sessions: rows, remaining: 0, truncated: false },
+    loadedRevision: 1,
+    targetRevision: null,
+    forceToken: 0,
+    etag: `"test-${offset}"`,
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: "g",
+    ...patch,
+  });
+  const visibleResourceKeys = new Set(navigationStore.getState().visibleResourceKeys);
+  visibleResourceKeys.add(keyID(key));
+  navigationStore.setState({ resources, visibleResourceKeys });
+}
+
 function seedSource(): string {
   window.history.replaceState({}, "", "/s/local%3Aa");
   const id = workspaceStore.getState().openPane("session", { ref: "local:a" });
@@ -396,6 +421,10 @@ test("a row whose page turns stale after render is refused and never navigates",
 
   expect(rowButton.getAttribute("aria-disabled")).toBe("true");
   expect(rowButton.getAttribute("data-refresh-state")).toBe("refreshing");
+
+  act(() => setPage({ stale: true, loading: false, error: new Error("refresh failed") }));
+  expect(rowButton.getAttribute("aria-disabled")).toBe("true");
+  expect(rowButton.getAttribute("data-refresh-state")).toBe("failed");
   fireEvent.click(rowButton);
 
   expect(window.location.pathname).toBe("/s/local%3Aa");
@@ -415,6 +444,39 @@ test("opening a list with refused rows focuses the first available control", () 
   for (const refused of screen.getAllByTestId("next-needs-you-row")) {
     expect(refused.getAttribute("data-refresh-state")).toBe("failed");
   }
+});
+
+test("opening a list with no available control focuses the list", () => {
+  installRows([row("local:a"), row("local:b")]);
+  seedSource();
+  act(() => setPage({ stale: true, loading: true }));
+
+  render(controlTree());
+  fireEvent.click(screen.getByTestId("next-needs-you-more"));
+
+  expect(document.activeElement).toBe(screen.getByLabelText("Needs you sessions"));
+});
+
+test("a refused page does not refuse rows from another current page", () => {
+  installRows([row("local:a"), row("local:b")]);
+  installPage([row("local:c")], 50);
+  setPage({ stale: true, error: new Error("refresh failed") });
+  seedSource();
+  render(controlTree());
+  fireEvent.click(screen.getByTestId("next-needs-you-more"));
+
+  const rows = screen.getAllByTestId("next-needs-you-row");
+  const refused = rows.find((item) => item.getAttribute("data-ref") === "local:b");
+  const current = rows.find((item) => item.getAttribute("data-ref") === "local:c");
+  if (!refused || !current) throw new Error("expected the refused and current rows");
+  expect(refused.getAttribute("aria-disabled")).toBe("true");
+  expect(refused.getAttribute("data-refresh-state")).toBe("failed");
+  expect(current.getAttribute("aria-disabled")).toBeNull();
+  expect(current.getAttribute("data-refresh-state")).toBeNull();
+  expect(document.activeElement).toBe(current);
+
+  fireEvent.click(current);
+  expect(window.location.pathname).toBe("/s/local%3Ac");
 });
 
 test("a selectable row closes the list and navigates", () => {
@@ -437,9 +499,14 @@ test("a refused row recovers when its page becomes current again", () => {
   fireEvent.click(screen.getByTestId("next-needs-you-more"));
 
   act(() => setPage({ stale: true, loading: true }));
+  const refused = screen.getByTestId("next-needs-you-row");
+  expect(refused.getAttribute("aria-disabled")).toBe("true");
+  expect(refused.getAttribute("data-refresh-state")).toBe("refreshing");
   act(() => setPage({ stale: false, loading: false }));
 
-  fireEvent.click(screen.getByTestId("next-needs-you-row"));
+  const rowButton = screen.getByTestId("next-needs-you-row");
+  expect(rowButton.getAttribute("aria-disabled")).toBeNull();
+  fireEvent.click(rowButton);
 
   expect(window.location.pathname).toBe("/s/local%3Ab");
   expect(workspaceStore.getState().focusedPaneId).not.toBe(origin);
