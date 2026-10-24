@@ -750,6 +750,248 @@ func TestSkillDelivery_FailedReloadNotifiesNextDispatch(t *testing.T) {
 	}
 }
 
+// TestSkillDelivery_RestoreRechecksAvailability proves a resume rechecks the
+// session's current skill availability before accepting a retained
+// gardening-memory activation. A session that lost the save tools records the
+// typed policy_denied failure instead of a successful activation, while a
+// capable session still finalizes the retained body without re-emitting it.
+func TestSkillDelivery_RestoreRechecksAvailability(t *testing.T) {
+	t.Parallel()
+
+	t.Run("disabled-denies", func(t *testing.T) {
+		t.Parallel()
+		memoryRoot, history := t.TempDir(), t.TempDir()
+		calls := 0
+		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+			calls++
+			if calls == 1 {
+				return toolCallResponse(useSkillCall("garden-1", "gardening-memory"))
+			}
+			return finalResponse("resumed")
+		}}
+		s := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
+			MaxSubagentDepth:      1,
+			StateDir:              history,
+			MemoryStateRoot:       memoryRoot,
+			MemoryProjectID:       "fixture-project",
+			MaxToolRoundsPerInput: 1,
+		}), withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		_, err := s.ProcessInput(context.Background(), "stage gardening activation", nil)
+		requireBudgetExhaustion(t, err, exhaustedBudgetToolRounds, 1, true)
+		obligations := lifecycleObligations(s)
+		if len(obligations) != 1 {
+			t.Fatalf("staged obligations=%+v, want one", obligations)
+		}
+		staged := obligations[0]
+		if got := lifecycleInventory(s); len(got) != 0 {
+			t.Fatalf("staging recorded inventory: %+v", got)
+		}
+		_, retained := recordedSkillCarriers(t, s)
+		if len(retained) != 1 {
+			t.Fatalf("retained envelopes=%d, want one", len(retained))
+		}
+		saved, err := schema.LoadSessionMeta(history, s.ID())
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.Close()
+
+		restored, err := RestoreSessionFromMetaWithConfig(s.Client(), s.Profile(), execenv.NewLocalExecutionEnvironment(t.TempDir()), saved, RestoreSessionConfig{
+			StateDir: history, MemoryStateRoot: memoryRoot, DisableMemory: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		evs, stop := captureEvents(restored)
+		before := len(adapter.Requests())
+		if _, err := restored.ProcessInput(context.Background(), "resume without save tools", nil); err != nil {
+			stop()
+			t.Fatal(err)
+		}
+		stop()
+		if got := len(adapter.Requests()); got != before+1 {
+			t.Fatalf("resumed dispatches=%d, want one", got-before)
+		}
+		if entry, ok := lifecycleInventory(restored)["gardening-memory"]; ok {
+			t.Fatalf("memory-disabled resume recorded activation: %+v", entry.Ordinary)
+		}
+		if names := skillActivatedEventNames(*evs); len(names) != 0 {
+			t.Fatalf("memory-disabled resume emitted activation events: %v", names)
+		}
+		if got := lifecycleObligations(restored); len(got) != 0 {
+			t.Fatalf("resume left obligations: %+v", got)
+		}
+		denied := false
+		for _, state := range skillTurnStates(restored) {
+			for _, outcome := range state.Outcomes {
+				if outcome.InvocationID == staged.InvocationID && outcome.Status == "failed" &&
+					outcome.ErrorCode == "policy_denied" && outcome.Identity == staged.Identity {
+					denied = true
+				}
+			}
+		}
+		if !denied {
+			t.Fatalf("no typed policy_denied outcome for %s", staged.InvocationID)
+		}
+		last := adapter.Requests()[len(adapter.Requests())-1]
+		requireSingleEnvelope(t, last, "gardening-memory", retained[0].Doc.Instructions, retained[0].Doc.Source)
+		if !requestCarriesRecordedDenial(t, last, restored, staged.InvocationID) {
+			t.Fatal("the dispatch that finalized the denial did not carry its recorded notification")
+		}
+	})
+
+	t.Run("capable-already-present", func(t *testing.T) {
+		t.Parallel()
+		memoryRoot, history := t.TempDir(), t.TempDir()
+		calls := 0
+		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+			calls++
+			switch calls {
+			case 1:
+				return toolCallResponse(useSkillCall("garden-1", "gardening-memory"))
+			case 2:
+				return finalResponse("first activation delivered")
+			case 3:
+				return toolCallResponse(useSkillCall("garden-2", "gardening-memory"))
+			default:
+				return finalResponse("resumed")
+			}
+		}}
+		s := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
+			MaxSubagentDepth: 1,
+			StateDir:         history,
+			MemoryStateRoot:  memoryRoot,
+			MemoryProjectID:  "fixture-project",
+		}), withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+		if _, err := s.ProcessInput(context.Background(), "first activation", nil); err != nil {
+			t.Fatal(err)
+		}
+		first := lifecycleInventory(s)["gardening-memory"].Ordinary
+		if first == nil || first.InvocationID == "" {
+			t.Fatalf("first activation not committed: %+v", first)
+		}
+		// Stop the duplicate activation before its next dispatch, the staged
+		// state a restart restores.
+		s.cfg.MaxToolRoundsPerInput = 1
+		_, err := s.ProcessInput(context.Background(), "stage duplicate activation", nil)
+		requireBudgetExhaustion(t, err, exhaustedBudgetToolRounds, 1, true)
+		obligations := lifecycleObligations(s)
+		if len(obligations) != 1 {
+			t.Fatalf("staged obligations=%+v, want one", obligations)
+		}
+		staged := obligations[0]
+		_, retained := recordedSkillCarriers(t, s)
+		if len(retained) != 1 {
+			t.Fatalf("retained envelopes=%d, want one", len(retained))
+		}
+		saved, err := schema.LoadSessionMeta(history, s.ID())
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.Close()
+
+		restored, err := RestoreSessionFromMetaWithConfig(s.Client(), s.Profile(), execenv.NewLocalExecutionEnvironment(t.TempDir()), saved, RestoreSessionConfig{
+			StateDir: history, MemoryStateRoot: memoryRoot,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		planReq, carriers := recordedSkillCarriers(t, restored)
+		if len(carriers) != 1 {
+			restored.Close()
+			t.Fatalf("restored carrier envelopes=%d, want one", len(carriers))
+		}
+		commit, err := restored.planSkillDeliveryCommit(planReq)
+		if err != nil {
+			restored.Close()
+			t.Fatalf("plan retained delivery: %v", err)
+		}
+		status := ""
+		for _, outcome := range commit.Outcomes {
+			if outcome.InvocationID == staged.InvocationID {
+				status = outcome.Status
+			}
+		}
+		if status != "already_present" {
+			restored.Close()
+			t.Fatalf("capable resume plan status=%q, want already_present", status)
+		}
+		evs, stop := captureEvents(restored)
+		before := len(adapter.Requests())
+		if _, err := restored.ProcessInput(context.Background(), "resume capable", nil); err != nil {
+			stop()
+			t.Fatal(err)
+		}
+		stop()
+		if got := len(adapter.Requests()); got != before+1 {
+			t.Fatalf("resumed dispatches=%d, want one", got-before)
+		}
+		if got := lifecycleObligations(restored); len(got) != 0 {
+			t.Fatalf("resume left obligations: %+v", got)
+		}
+		got := lifecycleInventory(restored)["gardening-memory"].Ordinary
+		if got == nil || got.InvocationID != first.InvocationID {
+			t.Fatalf("capable resume rewrote inventory: %+v, want %s", got, first.InvocationID)
+		}
+		if names := skillActivatedEventNames(*evs); len(names) != 0 {
+			t.Fatalf("capable resume re-emitted activation events: %v", names)
+		}
+		last := adapter.Requests()[len(adapter.Requests())-1]
+		requireSingleEnvelope(t, last, "gardening-memory", retained[0].Doc.Instructions, retained[0].Doc.Source)
+	})
+}
+
+// recordedSkillCarriers builds a request from the recorded history messages
+// that carry complete skill envelopes, and returns the envelopes they contain.
+func recordedSkillCarriers(t *testing.T, s *Session) (llm.Request, []skillEnvelope) {
+	t.Helper()
+	s.mu.Lock()
+	turns := append([]schema.Turn(nil), s.history...)
+	s.mu.Unlock()
+	var req llm.Request
+	var envelopes []skillEnvelope
+	for _, turn := range turns {
+		one := llm.Request{Messages: []llm.Message{turn.Message}}
+		found := requestSkillEnvelopes(t, one)
+		if len(found) == 0 {
+			continue
+		}
+		req.Messages = append(req.Messages, turn.Message)
+		envelopes = append(envelopes, found...)
+	}
+	return req, envelopes
+}
+
+// requestCarriesRecordedDenial reports whether req carries the failed
+// policy_denied notification turn recorded in the session's live history.
+func requestCarriesRecordedDenial(t *testing.T, req llm.Request, s *Session, invocationID string) bool {
+	t.Helper()
+	s.mu.Lock()
+	var want *llm.Message
+	for i := range s.history {
+		state := s.history[i].SkillState
+		if state == nil {
+			continue
+		}
+		for _, outcome := range state.Outcomes {
+			if outcome.InvocationID == invocationID && outcome.Status == "failed" && outcome.ErrorCode == "policy_denied" {
+				message := s.history[i].Message
+				want = &message
+			}
+		}
+	}
+	s.mu.Unlock()
+	if want == nil {
+		t.Fatalf("no recorded policy_denied notification for %s", invocationID)
+	}
+	for _, got := range req.Messages {
+		if got.Role == want.Role && got.Text() == want.Text() {
+			return true
+		}
+	}
+	return false
+}
+
 // TestSkillDelivery_TransportRetry proves a transport retry after the final
 // admission does not double-commit: the retried dispatch carries the same
 // complete body and no duplicate success event fires.
