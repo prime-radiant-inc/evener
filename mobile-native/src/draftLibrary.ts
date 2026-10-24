@@ -4,7 +4,8 @@ import type { DraftDestination, DraftRepository } from "./draftRepository";
 export type DraftStorage = Pick<
 	DraftRepository,
 	"read" | "write" | "transfer" | "removeHub" | "imageInputs" | "refsWithDrafts"
->;
+> &
+	Partial<Pick<DraftRepository, "readPendingHandoffs" | "writePendingHandoff" | "removePendingHandoff">>;
 
 /** One document per destination keeps pending work coherent across navigation. */
 export class DraftLibrary {
@@ -12,6 +13,10 @@ export class DraftLibrary {
 	/** A handoff whose destination write has not committed yet. Retrying after
 	 * storage recovers keeps the moved recovery rows and their draft together. */
 	private pending = new Map<string, { from: DraftDestination; to: DraftDestination }>();
+	/** Pending mappings are durable, so they are read once from the drafts
+	 * database on first use. A restart finds the handoff a failed transfer left
+	 * behind before the resumed screen restores the source's recovery text. */
+	private pendingLoaded = false;
 	/** Documents retired by a handoff, kept per hub so hub removal still
 	 * invalidates a source the live document map no longer holds. */
 	private retired = new Map<string, Set<DraftDocument>>();
@@ -22,6 +27,7 @@ export class DraftLibrary {
 	) {}
 
 	open(destination: DraftDestination): DraftDocument {
+		this.loadPendingHandoffs();
 		let sessions = this.hubs.get(destination.hubId);
 		if (!sessions) {
 			sessions = new Map();
@@ -82,8 +88,8 @@ export class DraftLibrary {
 			existing.releasedRecoveryIds?.length
 		) {
 			// Existing destination work is a permanent refusal, never a retry.
-			this.releaseRefusedSources(source, destination);
-			this.pending.delete(this.handoffKey(to));
+			if (this.releaseRefusedSources(source, destination)) this.clearPending(to);
+			else this.deferHandoff(from, to);
 			return false;
 		}
 		const images = [
@@ -103,7 +109,7 @@ export class DraftLibrary {
 			this.deferHandoff(from, to);
 			return false;
 		}
-		this.pending.delete(this.handoffKey(to));
+		this.clearPending(to);
 		destination.adopt(snapshot.record);
 		if (destination !== source) {
 			source.retireInto(destination);
@@ -117,25 +123,66 @@ export class DraftLibrary {
 	/** Retry a handoff whose storage write failed. A destination that gained
 	 * work in the meantime owns it, so its pending retry is dropped. */
 	retryPendingHandoffs(): void {
+		this.loadPendingHandoffs();
 		for (const { from, to } of [...this.pending.values()]) this.handoff(from, to);
 	}
 
 	hasPendingHandoff(to: DraftDestination): boolean {
+		this.loadPendingHandoffs();
 		return this.pending.has(this.handoffKey(to));
 	}
 
 	private deferHandoff(from: DraftDestination, to: DraftDestination): void {
 		this.pending.set(this.handoffKey(to), { from, to });
+		try {
+			this.repository().writePendingHandoff?.(from, to);
+		} catch {
+			// Memory still holds it for this launch; a restart cannot retry a
+			// mapping the storage refused to write.
+		}
 	}
 
-	private releaseRefusedSources(source: DraftDocument, destination: DraftDocument): void {
+	private clearPending(to: DraftDestination): void {
+		this.pending.delete(this.handoffKey(to));
+		try {
+			this.repository().removePendingHandoff?.(to);
+		} catch {
+			// A stale mapping retries on the next launch and refuses again.
+		}
+	}
+
+	private loadPendingHandoffs(): void {
+		if (this.pendingLoaded) return;
+		try {
+			const storage = this.repository();
+			if (storage.readPendingHandoffs === undefined || storage.writePendingHandoff === undefined) {
+				this.pendingLoaded = true;
+				return;
+			}
+			for (const { from, to } of storage.readPendingHandoffs()) {
+				const key = this.handoffKey(to);
+				if (!this.pending.has(key)) this.pending.set(key, { from, to });
+			}
+			this.pendingLoaded = true;
+		} catch {
+			// Storage is failing; the next open or retry looks again.
+		}
+	}
+
+	private releaseRefusedSources(source: DraftDocument, destination: DraftDocument): boolean {
 		const record = source.getSnapshot().record;
+		// The rows moved even though the composition did not. A completed
+		// built-in command's marker must move too, or the occupied destination
+		// re-appends and re-runs the command on a later Send.
+		const completed = record.completedCommandRecoveryIds ?? [];
+		const markersMoved = !completed.length || destination.adoptCompletedCommandRecovery(completed);
 		const ids = [
 			...(record.composer?.recoveryIds ?? []),
 			...(record.unconfirmedComposer?.recoveryIds ?? []),
 			...(record.parkedCompositions ?? []).flatMap((parked) => parked.composer?.recoveryIds ?? []),
 		];
-		if (ids.length) destination.releaseRecoverySources(ids);
+		const sourcesReleased = !ids.length || destination.releaseRecoverySources(ids);
+		return markersMoved && sourcesReleased;
 	}
 
 	private rememberRetired(hubId: string, document: DraftDocument): void {

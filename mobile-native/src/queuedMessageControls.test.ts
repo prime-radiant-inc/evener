@@ -272,6 +272,48 @@ test("successful built-in completion durably cleans only captured sources withou
 	expect(f.client.calls).toEqual([]);
 });
 
+test("an occupied resumed destination discards a completed built-in command instead of re-appending it", async () => {
+	const f = fixture();
+	const captured = await f.enqueue();
+	f.document.edit("current");
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, captured, f.document)).toBe("restored");
+	await f.document.submitBuiltinCommand(async () => true);
+	expect(f.repository.read(destination).completedCommandRecoveryIds).toEqual([captured]);
+	// retarget moves recovery rows alongside the waiting outbox rows a resume
+	// carries; this message is only the resume's reason to run.
+	await f.enqueue();
+
+	const resumedRef = "session-resumed";
+	const resumedKey = nativeMutationTargetKey(destination.hubId, resumedRef);
+	const resumedDestination = { hubId: destination.hubId, sessionRef: resumedRef };
+	expect(
+		f.runtime.storage.retarget(key, {
+			ref: resumedKey,
+			wireRef: resumedRef,
+			threadId: "thread-2",
+			instanceId: "instance-2",
+		}),
+	).toHaveLength(1);
+
+	// The resumed destination already holds work, so it refuses the handoff.
+	f.repository.write(resumedDestination, { draft: "occupied destination", unconfirmed: null });
+	const library = new DraftLibrary(() => f.repository);
+	const resumed = library.open(resumedDestination);
+	expect(library.handoff(destination, resumedDestination)).toBe(false);
+	expect(resumed.getSnapshot().record.draft).toBe("occupied destination");
+
+	// The screen's recovery step discards the completed row before restoring
+	// anything, so a later Send cannot append the command again.
+	await reconcileEditedResends(f.runtime, resumedKey, resumed);
+	for (const row of (await f.runtime.read(resumedKey)).recovery) {
+		if (row.recoveryKind === "editing")
+			await editQueuedMessageIntoDraft(f.runtime, resumedKey, row.clientMutationId, resumed);
+	}
+	expect(resumed.getSnapshot().record.draft).toBe("occupied destination");
+	expect((await f.runtime.read(resumedKey)).recovery).toEqual([]);
+	expect(resumed.getSnapshot().record.completedCommandRecoveryIds).toBeUndefined();
+});
+
 test("multiple-source completion preserves newer draft, image, and older cleanup markers", async () => {
 	const f = fixture();
 	const first = await richSource(f);

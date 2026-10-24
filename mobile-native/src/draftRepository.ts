@@ -64,6 +64,13 @@ export class DraftRepository {
       unconfirmed TEXT,
       PRIMARY KEY (hub_id, session_ref)
     )`);
+		db.execSync(`CREATE TABLE IF NOT EXISTS pending_draft_handoffs (
+      from_hub_id TEXT NOT NULL,
+      from_session_ref TEXT NOT NULL,
+      to_hub_id TEXT NOT NULL,
+      to_session_ref TEXT NOT NULL,
+      PRIMARY KEY (to_hub_id, to_session_ref)
+    )`);
 		const draftColumns = new Set(
 			db.getAllSync<{ name: string }>("PRAGMA table_info(drafts)").map((column) => column.name),
 		);
@@ -305,6 +312,42 @@ export class DraftRepository {
 		});
 	}
 
+	/** A handoff whose destination write has not committed yet. The mapping is
+	 * durable so a restart can retry the transfer before the resumed screen
+	 * restores the source's original recovery text. */
+	readPendingHandoffs(): { from: DraftDestination; to: DraftDestination }[] {
+		const rows = this.db.getAllSync<{
+			from_hub_id: string;
+			from_session_ref: string;
+			to_hub_id: string;
+			to_session_ref: string;
+		}>("SELECT from_hub_id, from_session_ref, to_hub_id, to_session_ref FROM pending_draft_handoffs");
+		return rows.map((row) => ({
+			from: { hubId: row.from_hub_id, sessionRef: row.from_session_ref },
+			to: { hubId: row.to_hub_id, sessionRef: row.to_session_ref },
+		}));
+	}
+
+	writePendingHandoff(from: DraftDestination, to: DraftDestination): void {
+		this.db.runSync(
+			`INSERT INTO pending_draft_handoffs (from_hub_id, from_session_ref, to_hub_id, to_session_ref)
+       VALUES (?, ?, ?, ?) ON CONFLICT (to_hub_id, to_session_ref) DO UPDATE SET
+       from_hub_id = excluded.from_hub_id, from_session_ref = excluded.from_session_ref`,
+			from.hubId,
+			from.sessionRef,
+			to.hubId,
+			to.sessionRef,
+		);
+	}
+
+	removePendingHandoff(to: DraftDestination): void {
+		this.db.runSync(
+			"DELETE FROM pending_draft_handoffs WHERE to_hub_id = ? AND to_session_ref = ?",
+			to.hubId,
+			to.sessionRef,
+		);
+	}
+
 	remove(destination: DraftDestination): void {
 		withSavepoint(this.db, "draft_remove", () => {
 			this.db.runSync(
@@ -391,6 +434,7 @@ export class DraftRepository {
 
 	removeHub(hubId: string): void {
 		this.creation.clear(hubId);
+		this.db.runSync("DELETE FROM pending_draft_handoffs WHERE from_hub_id = ? OR to_hub_id = ?", hubId, hubId);
 		this.db.runSync("DELETE FROM draft_image_sets WHERE hub_id = ?", hubId);
 		this.db.runSync("DELETE FROM draft_images WHERE hub_id = ?", hubId);
 		this.db.runSync("DELETE FROM drafts WHERE hub_id = ?", hubId);
