@@ -257,14 +257,22 @@ func (s *Session) recordSkillCarrierDurably(live, persisted schema.Turn) error {
 // recordSkillDeliveryNotification appends one typed activation notification to
 // the real history: the model-facing carrier content plus the causal outcome
 // and obligation, linked to the original invocation. Continuation
-// re-expansion sees it because it is an ordinary recorded turn.
+// re-expansion sees it because it is an ordinary recorded turn. A failed
+// outcome finalizes its obligation here, so no caller can leave a durably
+// explained denial pending for a duplicate retry.
 func (s *Session) recordSkillDeliveryNotification(message llm.Message, outcome schema.SkillActivationOutcome, obligation schema.SkillDeliveryObligation) error {
 	turn := schema.NewTurn(schema.TurnSystem, message)
 	turn.SkillState = &schema.SkillTurnState{
 		Outcomes:    []schema.SkillActivationOutcome{outcome},
 		Obligations: []schema.SkillDeliveryObligation{obligation},
 	}
-	return s.recordSkillCarrierDurably(turn, turn)
+	if err := s.recordSkillCarrierDurably(turn, turn); err != nil {
+		return err
+	}
+	if outcome.Status == "failed" {
+		s.finalizeSkillDeliveryFailure(obligation.InvocationID)
+	}
+	return nil
 }
 
 // skillDeliveryFailureOutcome shapes the typed failed outcome for a pending
@@ -353,6 +361,10 @@ func (s *Session) prepareSkillDelivery(ctx context.Context, profile *provider.Pr
 		if err := ctx.Err(); err != nil {
 			return req, commit, err
 		}
+		available := s.skillAvailableToSession(obligation.Identity.Name)
+		if available && completeSkillContentPresent(req, obligation.Identity) {
+			continue
+		}
 		source := obligation.Identity
 		invocation := skillInvocation{
 			Name:             obligation.Identity.Name,
@@ -363,7 +375,7 @@ func (s *Session) prepareSkillDelivery(ctx context.Context, profile *provider.Pr
 			AtomicGroupID:    obligation.AtomicGroupID,
 			Source:           &source,
 		}
-		if !s.skillAvailableToSession(obligation.Identity.Name) {
+		if !available {
 			// Retained content does not prove the session can still follow the
 			// skill. Deny before the dispatch plan can accept the body as a
 			// success, and let the same notification door carry the typed
@@ -374,15 +386,7 @@ func (s *Session) prepareSkillDelivery(ctx context.Context, profile *provider.Pr
 				skillDeliveryFailureOutcome(s.id, obligation, cause), obligation); err != nil {
 				return req, commit, err
 			}
-			// Finalize now, not after the loop: a later obligation's failed
-			// notification write returns early, and this denial is already
-			// durable. Leaving it pending would append the same denial again on
-			// the next attempt.
-			s.finalizeSkillDeliveryFailure(obligation.InvocationID)
 			commit.appendedNotifications = true
-			continue
-		}
-		if completeSkillContentPresent(req, obligation.Identity) {
 			continue
 		}
 		batch, err := s.prepareSkillActivations(ctx, []skillInvocation{invocation})
@@ -392,7 +396,6 @@ func (s *Session) prepareSkillDelivery(ctx context.Context, profile *provider.Pr
 				skillDeliveryFailureOutcome(s.id, obligation, err), obligation); err != nil {
 				return req, commit, err
 			}
-			s.finalizeSkillDeliveryFailure(obligation.InvocationID)
 			commit.appendedNotifications = true
 			continue
 		}

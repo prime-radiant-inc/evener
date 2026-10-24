@@ -794,7 +794,7 @@ func TestSkillDelivery_RestoreRechecksAvailability(t *testing.T) {
 			if got := lifecycleInventory(s); len(got) != 0 {
 				t.Fatalf("staging recorded inventory: %+v", got)
 			}
-			_, retained := recordedSkillCarriers(t, s)
+			retained := recordedSkillEnvelopes(t, s)
 			if len(retained) != 1 {
 				t.Fatalf("retained envelopes=%d, want one", len(retained))
 			}
@@ -894,7 +894,7 @@ func TestSkillDelivery_RestoreRechecksAvailability(t *testing.T) {
 			t.Fatalf("staged obligations=%+v, want one", obligations)
 		}
 		staged := obligations[0]
-		_, retained := recordedSkillCarriers(t, s)
+		retained := recordedSkillEnvelopes(t, s)
 		if len(retained) != 1 {
 			t.Fatalf("retained envelopes=%d, want one", len(retained))
 		}
@@ -910,10 +910,15 @@ func TestSkillDelivery_RestoreRechecksAvailability(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		planReq, carriers := recordedSkillCarriers(t, restored)
+		carriers := recordedSkillEnvelopes(t, restored)
 		if len(carriers) != 1 {
 			restored.Close()
 			t.Fatalf("restored carrier envelopes=%d, want one", len(carriers))
+		}
+		_, _, _, planReq, _, _, err := restored.prepareModelRequestWithError(context.Background(), 0, &events.RoundTimings{})
+		if err != nil {
+			restored.Close()
+			t.Fatalf("prepare a capable dispatch: %v", err)
 		}
 		commit, err := restored.planSkillDeliveryCommit(planReq)
 		if err != nil {
@@ -1010,7 +1015,7 @@ func TestSkillDelivery_DenialFinalizedBeforeLoopContinues(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("persist obligations: %v", err)
 	}
-	ctx := &cancelAfterFirstCheck{Context: context.Background()}
+	ctx := &cancelAtCheck{Context: context.Background(), remaining: 1}
 	if _, _, err := s.prepareSkillDelivery(ctx, nil, nil, llm.Request{}); err != context.Canceled {
 		t.Fatalf("prepare error = %v, want context.Canceled", err)
 	}
@@ -1036,41 +1041,18 @@ func TestSkillDelivery_DenialFinalizedBeforeLoopContinues(t *testing.T) {
 	}
 }
 
-// cancelAfterFirstCheck reports cancellation from its second Err call, so one
-// delivery-loop iteration runs before the next iteration's admission check
-// aborts.
-type cancelAfterFirstCheck struct {
-	context.Context
-	checks int
-}
-
-func (c *cancelAfterFirstCheck) Err() error {
-	c.checks++
-	if c.checks > 1 {
-		return context.Canceled
-	}
-	return nil
-}
-
-// recordedSkillCarriers builds a request from the recorded history messages
-// that carry complete skill envelopes, and returns the envelopes they contain.
-func recordedSkillCarriers(t *testing.T, s *Session) (llm.Request, []skillEnvelope) {
+// recordedSkillEnvelopes returns the complete skill envelopes carried by the
+// session's recorded history.
+func recordedSkillEnvelopes(t *testing.T, s *Session) []skillEnvelope {
 	t.Helper()
 	s.mu.Lock()
 	turns := append([]schema.Turn(nil), s.history...)
 	s.mu.Unlock()
-	var req llm.Request
 	var envelopes []skillEnvelope
 	for _, turn := range turns {
-		one := llm.Request{Messages: []llm.Message{turn.Message}}
-		found := requestSkillEnvelopes(t, one)
-		if len(found) == 0 {
-			continue
-		}
-		req.Messages = append(req.Messages, turn.Message)
-		envelopes = append(envelopes, found...)
+		envelopes = append(envelopes, messageSkillEnvelopes(t, turn.Message)...)
 	}
-	return req, envelopes
+	return envelopes
 }
 
 // recordedDenialMessage returns the failed policy_denied notification message
@@ -1104,12 +1086,7 @@ func requestCarriesRecordedDenial(t *testing.T, req llm.Request, s *Session, inv
 	if want == nil {
 		t.Fatalf("no recorded policy_denied notification for %s", invocationID)
 	}
-	for _, got := range req.Messages {
-		if got.Role == want.Role && got.Text() == want.Text() {
-			return true
-		}
-	}
-	return false
+	return requestHasExactUserMessage(req, want.Text())
 }
 
 // TestSkillDelivery_TransportRetry proves a transport retry after the final
