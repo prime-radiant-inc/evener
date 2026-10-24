@@ -1,6 +1,6 @@
 # Compact activity sidebar
 
-Status: proposed, awaiting Jesse's approval.
+Status: approved by Jesse on 2026-10-23. The clarifications below preserve the selected visual direction and record the independent design review's implementation constraints.
 
 ## Intent and size
 
@@ -42,31 +42,31 @@ The first line is a single horizontal unit: the existing status glyph or task ch
 
 Agents and Jobs keep their current drill-in/open actions. Watches and Tasks keep their disclosures. The mockup's generic “select to expand” behavior does not replace those real actions. Existing full titles, details, transcript output, and report content remain available through their current paths.
 
-Compose the title and time through the existing `ListRow` and `Disclosure` content slots, sharing a small activity-row presentation helper between the sidebar and task body. Do not style widget internals, add raw controls, or extend the widget API. If implementation proves the existing slots cannot preserve this geometry, stop and ask Jesse before changing a widget.
+Compose the title and time through the existing `ListRow` and `Disclosure` content slots, sharing a small activity-row presentation helper between the sidebar and task body. A real-browser probe confirmed that a long title and timestamp share the first line with the current flex layout. Do not style widget internals, add raw controls, or extend the widget API. If implementation proves the existing slots cannot preserve this geometry, stop and ask Jesse before changing a widget.
 
 ## Timestamp rules
 
-Use the shared `relativeTime` and `absoluteTime` formatters. The visible stamp is relative; its `<time>` retains the source ISO value and its accessible tooltip names the meaning and absolute time. An unfinished task's stamp means last updated, not last run. Omit the stamp when no authoritative source time exists; never substitute the current time.
+Use the shared `relativeTime` and `absoluteTime` formatters. The visible stamp is relative; its `<time>` retains the source ISO value and its accessible tooltip names the meaning and absolute time. An unfinished task's stamp means last updated, not last run. Omit the stamp when no authoritative source time exists; never substitute the current time. When choosing between two real timestamps, compare their parsed instants but render the original source string. Missing or invalid optional timestamps are absent, not zero dates or raw prose pretending to be relative time.
 
 | View and state | Source timestamp | Meaning exposed with the time |
 | --- | --- | --- |
-| Running Agent | `latestActivityAt`, falling back to `runStartedAt` | Latest activity, or run started |
+| Running Agent | The newer of `latestActivityAt` and `runStartedAt`, matching the existing delegate quiet anchor | Latest activity, or run started when there is no activity yet |
 | Settled Agent | `runEndedAt` | Run ended |
 | Running Job | `lastOutputAt`, falling back to `startedAt` | Latest output, or started |
 | Settled Job | `endedAt` | Ended |
 | Open or running Task | `updatedAt` | Last updated |
 | Done or cancelled Task | `completedAt`, falling back to `updatedAt` for legacy rows | Completed, cancelled, or last updated as applicable |
-| Watch with deliveries | Last entry in `deliveryTimes` | Last delivered |
+| Watch with deliveries | Last entry in `deliveryTimes`; when delivery evidence is absent, fall back to `createdAt` | Last delivered, or armed/created as applicable |
 | Watch without deliveries | `createdAt` | Armed when currently armed, otherwise created |
 
-Missing optional fields use only the stated fallback. A missing `completedAt` on an old settled task must not hide the row. Existing expanded details keep their fuller timestamps.
+Missing optional fields use only the stated fallback. A missing `completedAt` on an old settled task must not hide the row. A retained armed Watch can have a historical delivery count without retained delivery instants; in that case its creation time must keep its armed meaning, never imply a fresh delivery. Existing expanded details keep their fuller timestamps.
 
-One clock owned by the visible sidebar refreshes relative labels every 30 seconds, matching the existing watch-tab cadence. Rows do not create independent interval timers. The clock changes display only: it adds no activity reads, subscriptions, collection demand, or lifecycle work, and it is cleaned up when the sidebar unmounts. Existing watch countdown behavior remains intact.
+One clock owned by the visible sidebar refreshes relative labels every 30 seconds, matching the existing watch-tab cadence. It supplies the same `now` to first-line timestamps, Watch conditions, and expanded Watch details. Remove the Watch tab's separate interval; retain each running Agent's existing quiet-threshold timeout because that is a state transition, not a display clock. The clock changes display only: it adds no activity reads, subscriptions, collection demand, or lifecycle work, and it is cleaned up when the sidebar closes or unmounts. Existing watch countdown behavior remains intact.
 
 ## Constraints and preserved behavior
 
 - Reuse the design tokens, `ListRow`, `Disclosure`, `SubagentDot`, `ToolIcon`, `TaskCheck`, and existing status/formatting helpers.
-- Keep status words accessible after visual meta is shortened. Do not make color or a glyph the only indication of failure.
+- Keep status words accessible after visual meta is shortened. Every successful, failed, cancelled, and live Agent or Job exposes its resolved status through the interactive row's accessible name or description; a nested `title` alone is insufficient. Successful settled rows keep their one-line appearance and no-dot success treatment. Do not make color or a glyph the only indication of failure.
 - Keep keyboard operation, focus, touch target sizing, disclosures, retention, scroll boundaries, loading, empty, stale, and failure states.
 - Keep current group membership and ordering even where the illustrative mockup differs.
 - Do not infer ownership or state from navigation rows. The existing typed activity reads remain authoritative.
@@ -77,10 +77,11 @@ One clock owned by the visible sidebar refreshes relative labels every 30 second
 Write behavior tests before changing the row implementation. Tests must not use visible copy as their oracle.
 
 - Drive Agent, Job, Watch, and Task rows with fixed source timestamps and assert the selected `<time dateTime>` and meaning for live, settled, missing, legacy, and never-delivered cases.
-- Prove successful settled Agents and Jobs have no secondary status line, failures retain an accessible outcome, live Agent intent remains, and Watch condition/delivery context remains.
+- Prove successful settled Agents and Jobs have no secondary status line, every settled outcome remains accessible, live Agent intent remains, and Watch condition/delivery context remains.
 - Prove titles and times coexist without overlap at desktop and narrow web widths, including long titles, and touch sizing does not regress.
+- With a fixed clock, prove first-line timestamps and expanded Watch details advance together every 30 seconds, only one interval exists across tab switches, it stops on close/unmount, and ticks cause no additional transport calls.
 - Exercise existing row actions, disclosures, keyboard navigation, paging, refresh, and retained-view behavior.
 - Confirm the standalone Tasks Sheet keeps its existing presentation and the Activity tree and native sources are untouched.
-- Run targeted frontend tests, `npm run typecheck`, Biome on touched files, and `make test-web`; use the real browser geometry gate on this Chrome-capable host. Check both themes visually. Let CI own the full suite.
+- Run targeted frontend tests, `npm run typecheck`, Biome on touched files, and targeted real-browser geometry checks. Check both themes visually. CI owns `make test-web`, `make test-web-browser`, and the full suite on this shared workstation.
 
 Update the browser activity ownership description in the product guide and subsystem map in the implementation change if the durable presentation contract changes.
