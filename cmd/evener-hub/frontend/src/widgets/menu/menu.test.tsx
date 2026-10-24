@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { createPortal } from "react-dom";
 import { expect, test, vi } from "vitest";
 import { Dialog } from "../dialog";
 import { Menu, type MenuItem } from "./index";
@@ -424,4 +425,118 @@ test("End/Home skip separators at the edges", async () => {
   // A is the ONLY actionable item: Home, End, and ArrowDown all land on it.
   await user.keyboard("{End}");
   expect(screen.getByRole("menuitem", { name: "A" }).tabIndex).toBe(0);
+});
+
+// --- popout realm (Dockview) ---------------------------------------------
+// A Dockview popout is a separate Window with its own Document and its own
+// constructors, so a widget mounted there must resolve THAT document/window,
+// never the opener's module-scope globals. jsdom's only real second realm is
+// an iframe: createHTMLDocument() shares the opener's constructors, so it
+// cannot catch a realm defect. Rendering through a portal into the iframe's
+// body makes every element's ownerDocument the popout document.
+
+function appendPopout() {
+  const frame = document.createElement("iframe");
+  document.body.append(frame);
+  const doc = frame.contentDocument;
+  if (doc === null) throw new Error("iframe has no contentDocument");
+  return { frame, doc, win: doc.defaultView ?? window };
+}
+
+test("a menu mounted in a popout document portals its panel into that document's body, not the opener's", () => {
+  const { frame, doc } = appendPopout();
+  const view = render(createPortal(<Menu trigger="Actions" items={items()} />, doc.body));
+  try {
+    fireEvent.click(doc.querySelector("button")!);
+    const panel = doc.querySelector('[role="menu"]');
+    expect(panel).not.toBeNull();
+    // FocusScope renders the panel's own wrapper div directly into the body.
+    expect(panel?.parentElement?.parentElement).toBe(doc.body);
+    expect(doc.body.contains(panel)).toBe(true);
+    expect(document.body.contains(panel)).toBe(false);
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
+});
+
+test("a mousedown in the popout document closes a menu opened there", () => {
+  const { frame, doc } = appendPopout();
+  const view = render(createPortal(<Menu trigger="Actions" items={items()} />, doc.body));
+  try {
+    fireEvent.click(doc.querySelector("button")!);
+    expect(doc.querySelector('[role="menu"]')).not.toBeNull();
+
+    fireEvent.mouseDown(doc);
+
+    expect(doc.querySelector('[role="menu"]')).toBeNull();
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
+});
+
+test("a scroll on the popout window closes a menu opened there", () => {
+  const { frame, doc, win } = appendPopout();
+  const view = render(createPortal(<Menu trigger="Actions" items={items()} />, doc.body));
+  try {
+    fireEvent.click(doc.querySelector("button")!);
+    expect(doc.querySelector('[role="menu"]')).not.toBeNull();
+
+    fireEvent.scroll(win);
+
+    expect(doc.querySelector('[role="menu"]')).toBeNull();
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
+});
+
+// The realm-safe element test: this scroll's target is an iframe-realm
+// element, which the opener's `instanceof Element` rejects.
+test("a scroll inside the trigger's own popout container closes the menu", () => {
+  const { frame, doc } = appendPopout();
+  const view = render(
+    createPortal(
+      <div data-testid="popout-scroller">
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+      doc.body,
+    ),
+  );
+  try {
+    fireEvent.click(doc.querySelector("button")!);
+    expect(doc.querySelector('[role="menu"]')).not.toBeNull();
+
+    fireEvent.scroll(doc.querySelector('[data-testid="popout-scroller"]')!);
+
+    expect(doc.querySelector('[role="menu"]')).toBeNull();
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
+});
+
+test("a scroll in an unrelated popout container leaves the menu open", () => {
+  const { frame, doc } = appendPopout();
+  const view = render(
+    createPortal(
+      <div>
+        <Menu trigger="Actions" items={items()} />
+        <div data-testid="popout-unrelated-scroller" />
+      </div>,
+      doc.body,
+    ),
+  );
+  try {
+    fireEvent.click(doc.querySelector("button")!);
+    expect(doc.querySelector('[role="menu"]')).not.toBeNull();
+
+    fireEvent.scroll(doc.querySelector('[data-testid="popout-unrelated-scroller"]')!);
+
+    expect(doc.querySelector('[role="menu"]')).not.toBeNull();
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
 });

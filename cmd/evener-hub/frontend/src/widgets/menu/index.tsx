@@ -10,6 +10,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { FocusScope } from "../focusscope";
+import { ownerDocumentOf, ownerWindowOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
 // Flip-then-clamp overlay placement, shared verbatim with the Popover
 // primitive (§3.4). computeMenuPosition/resolveAxis/EDGE_MARGIN/TRIGGER_GAP
@@ -318,13 +319,16 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // see now that the popup renders through a portal elsewhere in the DOM.
   useEffect(() => {
     if (!isOpen) return;
+    // The widget's own document: in a Dockview popout the opener's document
+    // never sees this menu's mousedowns.
+    const ownerDocument = ownerDocumentOf(rootRef.current);
     function onDocumentMouseDown(event: MouseEvent) {
       const target = event.target as Node;
       if (rootRef.current?.contains(target) || popupRef.current?.contains(target)) return;
       closeMenu();
     }
-    document.addEventListener("mousedown", onDocumentMouseDown);
-    return () => document.removeEventListener("mousedown", onDocumentMouseDown);
+    ownerDocument.addEventListener("mousedown", onDocumentMouseDown);
+    return () => ownerDocument.removeEventListener("mousedown", onDocumentMouseDown);
   }, [isOpen, closeMenu]);
 
   // A scroll that can move the trigger out from under the fixed popup
@@ -335,25 +339,32 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // scrolled, so one window listener sees every scroller.
   useEffect(() => {
     if (!isOpen) return;
+    // The widget's own window, for the same reason as the mousedown effect
+    // above: a popout's scrolls and resizes never reach the opener's window.
+    const ownerWindow = ownerWindowOf(rootRef.current);
     function onScrollCapture(event: Event) {
       const target = event.target;
+      if (target === null) return;
+      // nodeType, not instanceof: an element in another realm keeps that
+      // realm's prototype, so the opener's Element/Document reject it.
+      const nodeType = (target as Node).nodeType;
       // The whole document/window scrolling moves every trigger; a
       // container scrolling moves the trigger only when the trigger lives
       // inside it. Anything else (e.g. the session transcript beside this
       // menu's chrome) can't move the popup's anchor, so the menu stays.
       if (
-        target instanceof Document ||
-        target === window ||
-        (target instanceof Element && rootRef.current !== null && target.contains(rootRef.current))
+        nodeType === 9 ||
+        target === ownerWindow ||
+        (nodeType === 1 && rootRef.current !== null && (target as Element).contains(rootRef.current))
       ) {
         closeMenu();
       }
     }
-    window.addEventListener("scroll", onScrollCapture, true);
-    window.addEventListener("resize", closeMenu);
+    ownerWindow.addEventListener("scroll", onScrollCapture, true);
+    ownerWindow.addEventListener("resize", closeMenu);
     return () => {
-      window.removeEventListener("scroll", onScrollCapture, true);
-      window.removeEventListener("resize", closeMenu);
+      ownerWindow.removeEventListener("scroll", onScrollCapture, true);
+      ownerWindow.removeEventListener("resize", closeMenu);
     };
   }, [isOpen, closeMenu]);
 
@@ -440,7 +451,8 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
               )}
             </ul>
           </FocusScope>,
-          document.body,
+          // The owning document's body: a popout is a separate document.
+          ownerDocumentOf(rootRef.current).body,
         )}
     </div>
   );
