@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { createPortal } from "react-dom";
 import { expect, test, vi } from "vitest";
 import { Dialog } from "../dialog";
+import { appendPopout } from "../internal/popoutTestUtils";
 import { Menu, type MenuItem } from "./index";
 
 function items(overrides?: Partial<Record<string, Partial<MenuItem>>>): MenuItem[] {
@@ -434,14 +435,6 @@ test("End/Home skip separators at the edges", async () => {
 // an iframe: createHTMLDocument() shares the opener's constructors, so it
 // cannot catch a realm defect. Rendering through a portal into the iframe's
 // body makes every element's ownerDocument the popout document.
-
-function appendPopout() {
-  const frame = document.createElement("iframe");
-  document.body.append(frame);
-  const doc = frame.contentDocument;
-  if (doc === null) throw new Error("iframe has no contentDocument");
-  return { frame, doc, win: doc.defaultView ?? window };
-}
 
 test("a menu mounted in a popout document portals its panel into that document's body, not the opener's", () => {
   const { frame, doc } = appendPopout();

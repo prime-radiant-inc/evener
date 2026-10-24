@@ -12,10 +12,11 @@
  * from a global captured at import: a widget rendered through a portal into a
  * popout's body belongs to the popout from its first commit.
  */
-/** The document that owns `node`; the module document when there is no node.
- * Pass an element, not a Document: a Document's own `ownerDocument` is null,
- * so a Document argument falls back to the module document. */
+/** The document that owns `node`; the module document when there is no node. */
 export function ownerDocumentOf(node: Node | null | undefined): Document {
+  // A Document's own `ownerDocument` is null, so a Document argument (a scroll
+  // event's target can be one) has to answer with itself.
+  if (node?.nodeType === 9) return node as Document;
   return node?.ownerDocument ?? document;
 }
 

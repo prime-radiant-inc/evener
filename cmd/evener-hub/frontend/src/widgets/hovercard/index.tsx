@@ -1,6 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useRef } from "react";
-import { ownerDocumentOf, ownerWindowOf } from "../internal/documentRealm";
+import { ownerDocumentOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
+import { watchViewport } from "../internal/viewportWatch";
 import type { SideAnchor } from "./computePosition";
 import { describeChild, FloatingBubblePortal, useFloatingBubble } from "./floatingBubble";
 import styles from "./hovercard.module.css";
@@ -120,13 +121,7 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, side
     if (gestureListenersRef.current !== null) return;
     // The trigger's own window: a Dockview popout resizes and scrolls its own
     // window, and the opener's never sees either.
-    const ownerWindow = ownerWindowOf(wrapperRef.current);
-    ownerWindow.addEventListener("scroll", abortPress, true);
-    ownerWindow.addEventListener("resize", abortPress);
-    gestureListenersRef.current = () => {
-      ownerWindow.removeEventListener("scroll", abortPress, true);
-      ownerWindow.removeEventListener("resize", abortPress);
-    };
+    gestureListenersRef.current = watchViewport(wrapperRef.current, abortPress);
   }, [abortPress]);
 
   // Turning long-press mode off mid-gesture clears the press and its listeners.

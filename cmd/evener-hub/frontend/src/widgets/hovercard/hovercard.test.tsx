@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { createPortal } from "react-dom";
 import { afterEach, expect, test, vi } from "vitest";
 import { HoverCard as FromBarrel } from "..";
+import { appendPopout } from "../internal/popoutTestUtils";
 import { HoverCard, LONG_PRESS_MS } from ".";
 import { installHoverlessMatchMedia } from "./hovercardTestUtils";
 import { POINTER_CLICK_WINDOW_MS } from "./useFloatingLabel";
@@ -1076,14 +1077,6 @@ test("unmounting during the press disposes the pending gesture listeners", () =>
 // createHTMLDocument shares the opener's constructors and cannot catch a realm
 // defect), so these cases render the card through a portal into the iframe's
 // body: every element's ownerDocument is the popout document.
-
-function appendPopout() {
-  const frame = document.createElement("iframe");
-  document.body.append(frame);
-  const doc = frame.contentDocument;
-  if (doc === null) throw new Error("iframe has no contentDocument");
-  return { frame, doc, win: doc.defaultView ?? window };
-}
 
 test("a long-press card in a popout document portals its bubble there and dismisses on a pointerdown in that document", () => {
   vi.useFakeTimers();

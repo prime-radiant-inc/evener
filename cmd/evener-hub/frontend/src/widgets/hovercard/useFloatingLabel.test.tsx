@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { StrictMode, useRef } from "react";
 import { createPortal } from "react-dom";
 import { afterEach, expect, test, vi } from "vitest";
+import { appendPopout } from "../internal/popoutTestUtils";
 import { POINTER_CLICK_WINDOW_MS, SHOW_DELAY_MS, useFloatingLabel } from "./useFloatingLabel";
 
 afterEach(() => {
@@ -169,11 +170,7 @@ test("viewport resize dismisses a visible label", () => {
 // resizes when that popout does.
 test("a label mounted in a popout document dismisses on that window's scroll", () => {
   vi.useFakeTimers();
-  const frame = document.createElement("iframe");
-  document.body.append(frame);
-  const doc = frame.contentDocument;
-  const win = doc?.defaultView;
-  if (!doc || !win) throw new Error("iframe has no window");
+  const { frame, doc, win } = appendPopout();
   const view = render(createPortal(<Harness />, doc.body));
   try {
     const trigger = doc.querySelector("button");

@@ -12,6 +12,7 @@ import { createPortal } from "react-dom";
 import { FocusScope } from "../focusscope";
 import { ownerDocumentOf, ownerWindowOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
+import { watchViewport } from "../internal/viewportWatch";
 // Flip-then-clamp overlay placement, shared verbatim with the Popover
 // primitive (§3.4). computeMenuPosition/resolveAxis/EDGE_MARGIN/TRIGGER_GAP
 // were extracted from here into widgets/popover/computePosition.ts so Menu
@@ -340,8 +341,8 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // scrolled, so one window listener sees every scroller.
   useEffect(() => {
     if (!isOpen) return;
-    // The widget's own window, for the same reason as the mousedown effect
-    // above: a popout's scrolls and resizes never reach the opener's window.
+    // The widget's own window: a popout's scrolls and resizes never reach the
+    // opener's window.
     const ownerWindow = ownerWindowOf(rootRef.current);
     function onScrollCapture(event: Event) {
       const target = event.target;
@@ -361,12 +362,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         closeMenu();
       }
     }
-    ownerWindow.addEventListener("scroll", onScrollCapture, true);
-    ownerWindow.addEventListener("resize", closeMenu);
-    return () => {
-      ownerWindow.removeEventListener("scroll", onScrollCapture, true);
-      ownerWindow.removeEventListener("resize", closeMenu);
-    };
+    return watchViewport(rootRef.current, onScrollCapture, closeMenu);
   }, [isOpen, closeMenu]);
 
   const iconOnly = label !== undefined;
