@@ -66,9 +66,11 @@ export function useFloatingLabel({
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const wrapperRef = useRef<HTMLSpanElement>(null);
   const activeRef = useRef({ hovered: false, wrapperFocused: false, externalFocused: false });
-  // Follows Dockview moving this label's DOM between windows without a render,
-  // so its dismissal pair rebinds to the window it is in now.
-  const ownerDocument = useOwnedDocument(wrapperRef, visible || pending);
+  // Follows Dockview moving this label's DOM between windows without a render.
+  // Always on, not only while visible: the pointer tracker has to belong to the
+  // destination document before the first tap there, or that tap reads as
+  // keyboard focus and pops a hoverless card the person did not ask for.
+  const ownerDocument = useOwnedDocument(wrapperRef);
 
   // A focus that arrives while a pointer is pressed, or just after it lifts
   // (touch browsers send the compatibility mousedown/focus/click only after
@@ -82,16 +84,16 @@ export function useFloatingLabel({
     [],
   );
   useEffect(() => {
-    // The wrapper's own Document, so a label mounted inside an iframe tracks
-    // that document's pointers rather than the top-level one's.
-    const owner = wrapperRef.current?.ownerDocument ?? document;
-    const handle = acquirePointerActivity(owner);
+    // The tracked document, so a card that Dockview moves between windows
+    // tracks the pointers of the window it is in now (a hoverless tap there
+    // must not read as keyboard focus).
+    const handle = acquirePointerActivity(ownerDocument);
     pointerActivityRef.current = handle;
     return () => {
       pointerActivityRef.current = null;
       handle.release();
     };
-  }, []);
+  }, [ownerDocument]);
 
   useEffect(() => () => clearTimeout(timerRef.current), []);
 
@@ -102,6 +104,7 @@ export function useFloatingLabel({
   // without the caller having to enumerate them. Feature-detected: jsdom
   // implements no ResizeObserver, and the caller's show-time measure is the
   // whole behavior without it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: ownerDocument is the deliberate trigger - a document move replaces the observed bubble node
   useEffect(() => {
     if (!visible) return;
     const observedEl = observe.current;
@@ -111,7 +114,7 @@ export function useFloatingLabel({
     const anchor = observeAnchor?.();
     if (anchor) observer.observe(anchor);
     return () => observer.disconnect();
-  }, [measure, observe, observeAnchor, visible]);
+  }, [measure, observe, observeAnchor, ownerDocument, visible]);
 
   // A scroll anywhere (capture-phase, so a scrollable ancestor's own scroll
   // counts) or a viewport resize hides the floating element rather than

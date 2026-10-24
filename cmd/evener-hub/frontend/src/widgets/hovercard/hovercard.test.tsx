@@ -7,7 +7,7 @@ import { HoverCard as FromBarrel } from "..";
 import { appendPopout } from "../internal/popoutTestUtils";
 import { HoverCard, LONG_PRESS_MS } from ".";
 import { installHoverlessMatchMedia } from "./hovercardTestUtils";
-import { POINTER_CLICK_WINDOW_MS } from "./useFloatingLabel";
+import { POINTER_CLICK_WINDOW_MS, SHOW_DELAY_MS } from "./useFloatingLabel";
 
 afterEach(() => {
   cleanup();
@@ -1210,6 +1210,44 @@ test("a visible card follows a move into another document", async () => {
     expect(bubble).not.toBeNull();
     expect(bubble?.parentElement).toBe(doc.body);
     expect(document.querySelector('[role="tooltip"]')).toBeNull();
+  } finally {
+    act(() => root.unmount());
+    frame.remove();
+    host.remove();
+  }
+});
+
+// The shared pointer tracker is acquired per document. After a move, a tap in
+// the destination document must still read as a tap: otherwise the focus it
+// takes is treated as keyboard focus and a hoverless card pops up unasked.
+test("a hoverless tap after adoption is still a tap, not keyboard focus", async () => {
+  vi.useFakeTimers();
+  installHoverlessMatchMedia();
+  const { frame, doc } = appendPopout();
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    act(() =>
+      root.render(
+        <HoverCard label={<div>Project prime-radiant</div>} longPressEnabled>
+          <button type="button">Fix flaky test</button>
+        </HoverCard>,
+      ),
+    );
+    act(() => {
+      doc.body.appendChild(host);
+    });
+    await act(async () => {});
+
+    const trigger = doc.querySelector("button");
+    if (!trigger) throw new Error("popout trigger missing");
+    fireEvent.pointerDown(trigger, { pointerId: 7, pointerType: "touch", button: 0 });
+    fireEvent.pointerUp(trigger, { pointerId: 7, pointerType: "touch", button: 0 });
+    fireEvent.focus(trigger);
+    act(() => vi.advanceTimersByTime(SHOW_DELAY_MS));
+
+    expect(doc.querySelector('[role="tooltip"]')).toBeNull();
   } finally {
     act(() => root.unmount());
     frame.remove();

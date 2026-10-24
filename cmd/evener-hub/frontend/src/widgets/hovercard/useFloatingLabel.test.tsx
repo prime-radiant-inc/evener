@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { StrictMode, useRef } from "react";
 import { createPortal } from "react-dom";
+import { createRoot } from "react-dom/client";
 import { afterEach, expect, test, vi } from "vitest";
 import { appendPopout } from "../internal/popoutTestUtils";
 import { POINTER_CLICK_WINDOW_MS, SHOW_DELAY_MS, useFloatingLabel } from "./useFloatingLabel";
