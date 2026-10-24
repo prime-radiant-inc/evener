@@ -2228,10 +2228,12 @@ describe("following the live end (spec 8.2)", () => {
 		const root = stack.findAll((node) => String(node.type) === "View")[0];
 		act(() => root?.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 148 } } }));
 		expect(bottom()).toBe(158);
-		// The toast's four seconds pass: the room stays where it was, so the
-		// list never moves back under a reader.
+		// The toast's four seconds pass, leaving a shorter two-control stack:
+		// the room stays where it was, so the list never moves back under a
+		// reader.
 		act(() => tree.root.findByType(Toast).props.dismiss());
 		expect(tree.root.findAllByType(Toast)).toHaveLength(0);
+		act(() => root?.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 98 } } }));
 		expect(bottom()).toBe(158);
 	});
 });
@@ -5849,7 +5851,10 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		expect(tree.root.findAllByType(Toast)).toHaveLength(1);
 	});
 
-	it("keeps a fixed 60pt of room at the transcript's end, whatever floats over it", async () => {
+	it("keeps at least the 60pt floor at the transcript's end while controls come and go", async () => {
+		// FloatingStack reports its laid-out height, and a taller stack raises
+		// the room above this floor (the following-live-end test drives that).
+		// Until it reports, the floor stands whatever shows.
 		const served = thread("ref-inset", "active");
 		const { tree, hub } = await mount(served);
 		const list = () =>
@@ -6269,18 +6274,37 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 
 	it("times a still-working subagent by its turn once its row has ended", async () => {
 		// The row reads done a moment before the session itself stops: the row's
-		// time since it ended is no Working time.
+		// time since it ended is no Working time, and the opener's old run start
+		// is no Working time either.
 		vi.mocked(navigation.setOptions).mockClear();
 		const served = subagent(true);
 		(served as unknown as { evener: Record<string, unknown> }).evener.activeTurnStartedAt = Date.now() - 2 * 60_000;
 		await mountSubagent(served, {
 			jobs: subagentTree({ terminal: true, outcome: "completed", runEndedAt: new Date().toISOString() }),
+			runStartedAt: RUNNING_SINCE,
 		});
 		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
 		const options = calls.map(([options]) => options).findLast((options) => options.headerTitle);
 		if (typeof options?.headerTitle !== "function") throw new Error("no headerTitle");
 		const title = render(<>{options.headerTitle({ children: "Fix race in tree settle" })}</>);
 		expect(renderedText(title)).toContain("Working · 2m");
+	});
+
+	it("lets the panel's running row time the run over the opener's start (#2988)", async () => {
+		// The tree's row is the live fact; the route's start only bridges until
+		// it lands, so a changed run start in the tree wins.
+		vi.mocked(navigation.setOptions).mockClear();
+		const served = subagent(true);
+		(served as unknown as { evener: Record<string, unknown> }).evener.activeTurnStartedAt = new Date(
+			Date.now() - 2 * 60_000,
+		).toISOString();
+		await mountSubagent(served, { runStartedAt: new Date(Date.now() - 6 * 60_000).toISOString() });
+		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
+		const options = calls.map(([options]) => options).findLast((options) => options.headerTitle);
+		if (typeof options?.headerTitle !== "function") throw new Error("no headerTitle");
+		const title = render(<>{options.headerTitle({ children: "Fix race in tree settle" })}</>);
+		expect(renderedText(title)).toContain("Working · 4m");
+		expect(renderedText(title)).not.toContain("Working · 6m");
 	});
 
 	it("takes back the row it reported when its panel goes away", async () => {
@@ -6709,7 +6733,10 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 	});
 
 	it("opens a subagent row in a coordinator's transcript as that subagent's own session, under this one", async () => {
-		const served = thread(COORDINATOR.ref, "active");
+		// Its own session ref: the store keeps the previous test's conversation
+		// under COORDINATOR.ref, including its finished delegate.
+		const coordinatorRef = "local:coord-open";
+		const served = thread(coordinatorRef, "active");
 		(served as unknown as { turns: unknown[] }).turns = [
 			{
 				id: "t1",
@@ -6737,10 +6764,11 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 					transcriptRef: "local:fix",
 					originItemId: "call-d",
 					description: "Fix race in tree settle",
-					type: "subagent",
+					type: "delegate",
 					lifecycle: "running",
 					phase: "running",
 					status: "running",
+					runStartedAt: RUNNING_SINCE,
 					resumable: false,
 					needsAttention: false,
 					projectionRevision: 1,
@@ -6748,18 +6776,21 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			],
 		};
 		const { tree } = await mount(served);
+		await settle();
 		const row = tree.root.findAll(
 			(node) =>
 				String(node.type) === "Pressable" &&
 				String(node.props.accessibilityLabel).startsWith("Fix race in tree settle, "),
 		)[0];
 		if (!row) throw new Error("no subagent row");
+		expect(row.props.accessibilityLabel).toContain("running");
 		act(() => row.props.onPress());
 		expect(navigation.push).toHaveBeenCalledWith("Subagent", {
 			hubId: "hub-1",
 			ref: "local:fix",
 			title: "Fix race in tree settle",
-			coordinator: { ref: COORDINATOR.ref, threadId: COORDINATOR.threadId, title: "Session" },
+			coordinator: { ref: coordinatorRef, threadId: `thread-${coordinatorRef}`, title: "Session" },
+			runStartedAt: RUNNING_SINCE,
 		});
 	});
 

@@ -80,7 +80,10 @@ export function subagentLine(
 		state,
 		stateText,
 		ref: delegate.transcriptRef,
-		...(delegate.runStartedAt === undefined ? {} : { runStartedAt: delegate.runStartedAt }),
+		// Only a running row needs its run's start: a finished row's screen is
+		// no Working time, and carrying an old start could time a winding-down
+		// session by a run that already ended (#2988).
+		...(state === "running" && delegate.runStartedAt !== undefined ? { runStartedAt: delegate.runStartedAt } : {}),
 		delegateId: delegate.delegateId,
 		runGeneration: delegate.runGeneration,
 	};

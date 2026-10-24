@@ -85,7 +85,11 @@ export function notificationLine(
 				line.subagent = {
 					ref,
 					title: subject,
-					...(subagent?.runStartedAt === undefined ? {} : { runStartedAt: subagent.runStartedAt }),
+					// A finished run's start is no Working time; only a still-open
+					// delegate's card carries it to the screen it opens (#2988).
+					...(subagent !== undefined && subagent.terminal !== true && subagent.runStartedAt !== undefined
+						? { runStartedAt: subagent.runStartedAt }
+						: {}),
 				};
 			return line;
 		}
