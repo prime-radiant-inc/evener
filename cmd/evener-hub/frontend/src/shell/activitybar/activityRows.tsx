@@ -13,6 +13,8 @@ import {
   DELEGATE_QUIET_AFTER_MS,
   delegateTiming,
   delegateWorkText,
+  isFailedDelegateOutcome,
+  jobIsFailed,
   jobStatusDisplay,
   watchMeta,
   watchName,
@@ -20,11 +22,13 @@ import {
 import { useEffect, useState } from "react";
 import { ActivityWatchDetail } from "../../panes/session/chrome/ActivityRowDetail";
 import { jobStatusDotState } from "../../panes/session/chrome/activityFormat";
+import { ActivityTime } from "../../panes/session/chrome/activityTime";
 import { Disclosure, ListRow, SubagentDot, ToolIcon, type ToolIconTone } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { WatchGlyph } from "../rail/RailRow";
 
 import styles from "./activitybar.module.css";
+import { agentActivityTime, jobActivityTime, watchActivityTime } from "./activityTime";
 
 const CLASS = {
   rowContent: requireClass(styles.rowContent, "activitybar.module.css", "rowContent"),
@@ -32,6 +36,7 @@ const CLASS = {
   rowBody: requireClass(styles.rowBody, "activitybar.module.css", "rowBody"),
   rowName: requireClass(styles.rowName, "activitybar.module.css", "rowName"),
   rowMeta: requireClass(styles.rowMeta, "activitybar.module.css", "rowMeta"),
+  rowTitle: requireClass(styles.rowTitle, "activitybar.module.css", "rowTitle"),
   rowMono: requireClass(styles.rowMono, "activitybar.module.css", "rowMono"),
   watchGlyph: requireClass(styles.watchGlyph, "activitybar.module.css", "watchGlyph"),
 };
@@ -52,6 +57,17 @@ function jobTone(job: JobActivityJob): ToolIconTone | undefined {
 
 function agentStateText(sub: SessionDelegate): string {
   return activityDelegateState({ ...sub, branch: {} }).status;
+}
+
+function agentIsSuccessful(sub: SessionDelegate): boolean {
+  if (!sub.terminal) return false;
+  const outcome = sub.outcome?.trim().toLowerCase();
+  if (outcome) return ["completed", "done", "success"].includes(outcome);
+  return agentStateText(sub) === "completed";
+}
+
+function RowStatus({ wireStatus }: { wireStatus: string }) {
+  return <span aria-hidden="true" data-activity-status data-status={wireStatus} hidden />;
 }
 
 // The dot must flip at the quiet threshold, not only when the next publish
@@ -94,33 +110,52 @@ function useDotFlip(sub: SessionDelegate): number {
   return Date.now();
 }
 
-export function AgentRow({ sub, onDrill }: { sub: SessionDelegate; onDrill?: () => void }) {
-  const now = useDotFlip(sub);
+export function AgentRow({ sub, onDrill, now }: { sub: SessionDelegate; onDrill?: () => void; now: number }) {
+  const dotNow = useDotFlip(sub);
+  const successful = agentIsSuccessful(sub);
+  const failed = sub.terminal ? isFailedDelegateOutcome(sub.outcome) : false;
+  const status = agentStateText(sub);
+  const name = sub.name?.trim() || sub.description || sub.task || sub.delegateId;
   return (
     <ListRow
       variant="plain"
+      aria-description={status}
       leading={
         <span className={CLASS.rowGlyph}>
-          <SubagentDot delegate={sub} now={now} labeled />
+          <SubagentDot delegate={sub} now={dotNow} labeled />
         </span>
       }
       label={
-        <span title={agentStateText(sub)}>{sub.name?.trim() || sub.description || sub.task || sub.delegateId}</span>
+        <span title={`${name} · ${status}`}>
+          <RowStatus wireStatus={sub.status} />
+          {name}
+        </span>
       }
+      chips={<ActivityTime value={agentActivityTime(sub)} now={now} />}
       // The intent replaces the status word here; the label's title keeps the
       // word reachable, JobRow's pattern for a value the meta line hides.
-      meta={delegateWorkText(sub, agentStateText(sub))}
+      meta={
+        successful ? undefined : (
+          <span data-activity-meta data-failed={failed || undefined}>
+            {delegateWorkText(sub, status)}
+          </span>
+        )
+      }
       onSelect={onDrill}
       data-activity-anchor={activityNodeID({ ...sub, kind: "delegate" })}
     />
   );
 }
 
-export function JobRow({ job, onOpen }: { job: JobActivityJob; onOpen?: () => void }) {
+export function JobRow({ job, onOpen, now }: { job: JobActivityJob; onOpen?: () => void; now: number }) {
   const description = job.description?.trim();
+  const status = jobStatusDisplay(job.status, job.reason);
+  const successful = job.terminal && job.status === "completed" && !jobIsFailed(job);
+  const failed = jobIsFailed(job);
   return (
     <ListRow
       variant="plain"
+      aria-description={status}
       leading={
         <span className={CLASS.rowGlyph}>
           <ToolIcon kind="job" tone={jobTone(job)} />
@@ -128,10 +163,18 @@ export function JobRow({ job, onOpen }: { job: JobActivityJob; onOpen?: () => vo
       }
       label={
         <span className={description ? undefined : CLASS.rowMono} title={job.command}>
+          <RowStatus wireStatus={job.status} />
           {description || job.command?.trim() || job.jobId}
         </span>
       }
-      meta={jobStatusDisplay(job.status, job.reason)}
+      chips={<ActivityTime value={jobActivityTime(job)} now={now} />}
+      meta={
+        successful ? undefined : (
+          <span data-activity-meta data-failed={failed || undefined}>
+            {status}
+          </span>
+        )
+      }
       onSelect={onOpen}
       data-activity-anchor={activityNodeID({ ...job, kind: "shell" })}
     />
@@ -150,7 +193,12 @@ export function WatchRow({ row, now }: { row: ActivityWatchRow; now: number }) {
               <WatchGlyph className={CLASS.watchGlyph} testId={`sidebar-watch-${watch.watch.id}`} />
             </span>
             <span className={CLASS.rowBody}>
-              <span className={CLASS.rowName}>{watchName(watch)}</span>
+              <span className={CLASS.rowTitle}>
+                <span className={CLASS.rowName} title={watchName(watch)}>
+                  {watchName(watch)}
+                </span>
+                <ActivityTime value={watchActivityTime(watch)} now={now} />
+              </span>
               <span className={CLASS.rowMeta}>{watchMeta(watch, now)}</span>
             </span>
           </span>
