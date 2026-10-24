@@ -475,6 +475,53 @@ test("Retry pressed while an ordinary send's enqueue is in flight admits no cont
   expect(stored.some((record) => JSON.stringify(record.payload).includes('"continue"'))).toBe(false);
 });
 
+test("Retry pressed while a direct threadsStore.send enqueue is in flight admits no continuation", async () => {
+  const { fake, storage } = await connectedThread();
+  act(() => seedModel([failedTurn()]));
+  render(<TurnFailureEndCap error={{ message: "boom" }} turnId="turn_1" sessionRef="ref_a" />);
+  await flushPendingTurnsProjectionForTests();
+  expect(threadsStore.getState().pendingProjectionLoadedRefs.has("ref_a")).toBe(true);
+  expect(retryButton()?.disabled).toBe(false);
+
+  // The command palette / ask dock path calls the store's send directly, with
+  // no composer submitWithPendingTracking wrapper. Its durable enqueue is
+  // held, so the projection is still empty and the old failure still looks
+  // latest.
+  const hold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+  let send!: Promise<void>;
+  await act(async () => {
+    send = threadsStore.getState().send("ref_a", "hello");
+    await hold.reached;
+  });
+  expect(pendingTurnEntries("ref_a")).toEqual([]);
+  expect(retryButton()?.disabled).toBe(false);
+
+  const continueTurn = threadsStore.getState().continueTurn;
+  let retry!: Promise<void>;
+  const spy = vi.spyOn(threadsStore.getState(), "continueTurn").mockImplementation((ref, turnId) => {
+    retry = continueTurn(ref, turnId);
+    return retry;
+  });
+  fireEvent.click(retryButton() as HTMLButtonElement);
+  await act(async () => {
+    await retry;
+  });
+  spy.mockRestore();
+
+  await act(async () => {
+    hold.release();
+    await send;
+  });
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
+  const starts = fake.calls.filter((call) => call.method === "turn/start");
+  const startParams = starts[0]?.params as MethodTypes["turn/start"]["params"] | undefined;
+  expect(startParams?.input).toEqual([{ type: "text", text: "hello" }]);
+  const stored = [...(await storage.listOutbox("ref_a")), ...(await storage.listOptimistic("ref_a"))];
+  expect(stored.some((record) => record.composerText === "continue")).toBe(false);
+  expect(stored.some((record) => JSON.stringify(record.payload).includes('"continue"'))).toBe(false);
+});
+
 test("a provider failure shows a provider-status badge and a Retry action", async () => {
   seedModel([failedTurn()]);
   render(

@@ -4020,8 +4020,27 @@ async function sendMutationIntent(intent: MutationIntent): Promise<void> {
   // is read AFTER the write: a hydration that landed while the write was in
   // flight is the snapshot the admission saw, and re-reading here keeps the
   // drive from being skipped (or spuriously started) across that window.
-  await enqueueMutationIntent(intent);
-  if (sendResumesModel(intent.targetRef)) void resumeFencedForSend(intent.targetRef);
+  // Mark the composer's shared per-session submission guard for every ordinary
+  // send path, not only the ones wrapped by submitWithPendingTracking: the
+  // command palette's slash fallthrough and the ask dock call send() directly.
+  // The marker must exist before the durable enqueue, because Retry can look
+  // at an empty projection while that write is still in flight. A submission
+  // the composer already marked owns the marker, so this call does not end it.
+  const release = markInputSubmission(intent.targetRef);
+  try {
+    await enqueueMutationIntent(intent);
+    if (sendResumesModel(intent.targetRef)) void resumeFencedForSend(intent.targetRef);
+  } finally {
+    release();
+  }
+}
+
+// Returns the release for a submission marker this call owns, or a no-op when
+// an enclosing submission (submitWithPendingTracking, or Retry's own begin)
+// already holds the ref's shared guard.
+function markInputSubmission(ref: string): () => void {
+  if (!beginSharedSubmission(ref)) return () => {};
+  return () => endSharedSubmission(ref);
 }
 
 // A repeated press in the same task can reach continueTurn before the durable
@@ -7724,9 +7743,17 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async queue(ref, text, attachments, skillNames, commandNames, mentions) {
-    await enqueueMutationIntent(
-      composerMutationIntent(ref, "queue", text, attachments, skillNames, commandNames, mentions),
-    );
+    // A queue is composer input too: mark the shared guard for the enqueue's
+    // window so Retry cannot enqueue a continuation ahead of the queued row
+    // becoming visible in the projection.
+    const release = markInputSubmission(ref);
+    try {
+      await enqueueMutationIntent(
+        composerMutationIntent(ref, "queue", text, attachments, skillNames, commandNames, mentions),
+      );
+    } finally {
+      release();
+    }
   },
 
   async interrupt(ref) {
