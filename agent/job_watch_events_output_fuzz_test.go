@@ -233,11 +233,11 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			close(stop)
 		case 20:
 			// The send twin of case 5. The attach scan's send rail counts its
-			// fire at the match and its delivery only when the frame settles,
-			// which nothing here drains, so the breaker has to latch at the
-			// match or the watch matches without bound.
-			key := watchKey{Target: "job_x", SendTo: "dlg_x"}
-			cfg, err := newWatchConfig(watchArgs{Target: "job_x", OutputMatch: "hit", Send: &watchSendArgs{To: "dlg_x"}}, jm.now(), "")
+			// fire after source persistence, independently of receiver custody.
+			// This manager has no receiver, so settlement cannot spend the match.
+			// Register the same owner-scoped key watchSendSnapshot produces.
+			key := watchKey{VisibleSessionID: jm.sessionID, Target: "job_x", SendTo: runtimeMessageAliasCaller}
+			cfg, err := newWatchConfig(watchArgs{Target: "job_x", OutputMatch: "hit", Send: &watchSendArgs{To: runtimeMessageAliasCaller}}, jm.now(), "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -262,6 +262,18 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			}
 			if !cfg.budgetTripped {
 				t.Fatal("attach-scan send at the budget did not latch the breaker")
+			}
+			produced := producerSourceEvents(t, jm, jobstore.EventWatchSendPending)
+			settled := producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)
+			if cfg.conditionFires != watchDeliveryBudget || len(produced) != 2 || len(settled) != 0 {
+				t.Fatalf("attach-scan source matches=%d produced=%d settled=%d, want %d/2/0", cfg.conditionFires, len(produced), len(settled), watchDeliveryBudget)
+			}
+			match, notice := produced[0].WatchSend, produced[1].WatchSend
+			if match.CallbackFrame || match.UpdateSeq != 1 || match.TriggerReason != "output_match: hit" || !notice.CallbackFrame || notice.UpdateSeq != 2 || notice.CoalescedCount != 1 || notice.TriggerReason != watchBudgetClearedMessage("job_x") {
+				t.Fatalf("budget teardown must produce one match then one coalesced final notice: match=%+v notice=%+v", match, notice)
+			}
+			if !jm.terminalFlush[cfg] || len(cfg.pending) != 1 || cfg.pending[notice.Key] == nil || cfg.pending[notice.Key].DeliveryID != notice.DeliveryID {
+				t.Fatal("budget teardown lost its coalesced unaccepted source debt")
 			}
 			if cleared != 1 {
 				t.Fatalf("budget-cleared notifications = %d, want exactly 1", cleared)

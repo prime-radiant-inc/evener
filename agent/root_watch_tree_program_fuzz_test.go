@@ -302,24 +302,29 @@ func rwlpRunStableDeliveryProgram(t *testing.T, r *rwlpReader) {
 	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{
 		Message: fmt.Sprintf("rwlp stable delivery %d", r.intn(8)),
 	})
-	pending := fixture.requireOnePending(t)
-	if !pending.state.StableReceiver || pending.state.SourceDelegateID != "dlg_source" {
-		t.Fatalf("stable watch route = %+v", pending.state)
+	produced := producerSourceEvents(t, fixture.sourceJM, jobstore.EventWatchSendPending)
+	if len(produced) != 1 {
+		t.Fatalf("stable produced frames = %d, want 1", len(produced))
 	}
+	state := *produced[0].WatchSend
+	if !state.StableReceiver || state.SourceDelegateID != "dlg_source" {
+		t.Fatalf("stable watch route = %+v", state)
+	}
+	assertNotificationPending(t, fixture.root, []string{stableWatchAttentionID(state)})
 	if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM); err != nil {
 		t.Fatalf("drain stable watch delivery: %v", err)
 	}
 	if got := fixture.sourceJM.pendingWatchSendDeliveries(nil); len(got) != 0 {
 		t.Fatalf("drained stable watch remained pending: %+v", got)
 	}
-	if got := countAttentionEntries(t, fixture.rootTranscriptPath, stableWatchAttentionID(pending.state)); got != 1 {
+	if got := countAttentionEntries(t, fixture.rootTranscriptPath, stableWatchAttentionID(state)); got != 1 {
 		t.Fatalf("stable watch receiver attention count = %d, want 1", got)
 	}
 }
 
 // rwlpRunRestoreRetryProgram exercises the restore-time delivery split against
-// a real persisted Session. The caller frame must be retokened and settled by
-// the notification loop, while an already-durable unroutable frame must be
+// a real persisted Session. The caller frame must reach canonical custody
+// before model observation, while an already-durable unroutable frame must be
 // dropped exactly once during the restore retry pass. Terminalizing the watched
 // job before the restart puts both records in terminalFlush, so the final
 // assertions also cover detached-config cleanup rather than only live watches.
@@ -382,43 +387,40 @@ func rwlpRunRestoreRetryProgram(t *testing.T, r *rwlpReader) {
 	if _, err := jm.appendJobOutput(rec.JobID, run.output, []byte("rwlp ready before restore\n")); err != nil {
 		t.Fatalf("append restore source output: %v", err)
 	}
-	pending, err := jm.store.LoadWatchSends()
-	if err != nil || len(pending.Pending) != 1 {
-		t.Fatalf("caller pending before terminal = (%+v, %v), want one", pending, err)
+	produced := producerSourceEvents(t, jm, jobstore.EventWatchSendPending)
+	if len(produced) != 1 || len(producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)) != 1 {
+		t.Fatalf("caller source production/custody = %d/%d, want 1/1", len(produced), len(producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)))
 	}
-	var callerState jobstore.WatchSendState
-	for _, state := range pending.Pending {
-		if state != nil {
-			callerState = *state
-		}
-	}
+	callerState := *produced[0].WatchSend
 	if callerState.DeliveryID == "" {
 		t.Fatal("caller pending lost delivery id")
 	}
 
-	// An independently durable invalid target makes the restore retry take its
-	// hard-failure branch while the real caller watch follows the token rail.
-	// It is appended through the actual manager store, then reconstructed with
-	// the caller record on the next Session's restore path.
+	// Model a crash after the next source append, before runtime publication.
+	// The old accepted body is immutable, so the replay gets a new identity.
+	callerState.DeliveryID += "_replay"
+	callerState.UpdateSeq++
+	// An independently durable invalid target also exercises permanent failure.
 	droppedState := callerState
 	droppedState.Key.ResolvedSendTo = runtimeMessageAliasCaller + "_missing"
 	droppedState.Key.WatchID += "_missing"
 	droppedState.DeliveryID += "_missing"
 	droppedState.UpdateSeq++
 	droppedState.Frame += "\ndelivery_id: " + droppedState.DeliveryID
-	if err := jm.appendWatchSendEvents([]jobstore.Event{{
-		Kind:      jobstore.EventWatchSendPending,
-		TS:        clk.Now(),
-		WatchSend: &droppedState,
-	}}); err != nil {
-		t.Fatalf("append restore hard-failure pending: %v", err)
-	}
-
 	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "rwlp restore terminal", nil); err != nil {
 		t.Fatalf("finalize restore source: %v", err)
 	}
 	if rwlpLiveWatchExists(jm, watch.WatchID) {
 		t.Fatalf("terminal source retained live watch %q", watch.WatchID)
+	}
+	if err := jm.appendWatchSendEvents([]jobstore.Event{
+		{Kind: jobstore.EventWatchSendPending, TS: clk.Now(), WatchSend: &callerState},
+		{Kind: jobstore.EventWatchSendPending, TS: clk.Now(), WatchSend: &droppedState},
+	}); err != nil {
+		t.Fatalf("append crash-cut source frames: %v", err)
+	}
+	if countAttentionEntries(t, transcriptPath(stateDir, sess.ID()), stableWatchAttentionID(callerState)) != 0 {
+		t.Fatal("crash-cut frame reached receiver before replay")
 	}
 	meta := sess.Meta()
 	// This is an abrupt process-loss simulation, deliberately distinct from
@@ -460,6 +462,10 @@ func rwlpRunRestoreRetryProgram(t *testing.T, r *rwlpReader) {
 	defer restored.Close()
 
 	rwlpAssertRestoreRetryLedger(t, restored.jobManager, callerState.DeliveryID, droppedState.DeliveryID, false)
+	callerAttentionID := stableWatchAttentionID(callerState)
+	if countAttentionEntries(t, transcriptPath(stateDir, restored.ID()), callerAttentionID) != 1 {
+		t.Fatal("restore must transfer the exact replayed frame to receiver custody once")
+	}
 	ctx := context.Background()
 	for i := 0; i < 2; i++ {
 		if _, err := restored.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
@@ -467,11 +473,12 @@ func rwlpRunRestoreRetryProgram(t *testing.T, r *rwlpReader) {
 		}
 	}
 	rwlpAssertRestoreRetryLedger(t, restored.jobManager, callerState.DeliveryID, droppedState.DeliveryID, true)
+	assertNotificationObservedOnce(t, transcriptPath(stateDir, restored.ID()), callerAttentionID)
 }
 
 // rwlpAssertRestoreRetryLedger asserts the durable semantics shared by both
 // restore outcomes: each delivery id reaches at most one terminal event, the
-// caller state is the sole retryable record before its notification accept, and
+// accepted caller frame stays unobserved until a successful model response, and
 // settling everything releases every detached terminal-flush configuration.
 func rwlpAssertRestoreRetryLedger(t *testing.T, jm *jobManager, callerID, droppedID string, settled bool) {
 	t.Helper()
@@ -479,12 +486,8 @@ func rwlpAssertRestoreRetryLedger(t *testing.T, jm *jobManager, callerID, droppe
 	if err != nil {
 		t.Fatalf("load restored watch sends: %v", err)
 	}
-	if settled {
-		if len(pending.Pending) != 0 {
-			t.Fatalf("restored terminal pendings = %+v, want none after accept", pending.Pending)
-		}
-	} else if len(pending.Pending) != 1 {
-		t.Fatalf("restored retryable pendings = %+v, want caller only", pending.Pending)
+	if len(pending.Pending) != 0 {
+		t.Fatalf("restored terminal pendings = %+v, want none after canonical custody", pending.Pending)
 	}
 
 	events, err := jm.store.LoadEvents()
@@ -508,12 +511,18 @@ func rwlpAssertRestoreRetryLedger(t *testing.T, jm *jobManager, callerID, droppe
 	if terminal[droppedID] != jobstore.EventWatchSendDropped {
 		t.Fatalf("restore hard-failure delivery %q terminal event = %q, want dropped", droppedID, terminal[droppedID])
 	}
-	if settled {
-		if terminal[callerID] != jobstore.EventWatchSendDelivered {
-			t.Fatalf("restored caller delivery %q terminal event = %q, want delivered", callerID, terminal[callerID])
+	if terminal[callerID] != jobstore.EventWatchSendDelivered {
+		t.Fatalf("restored caller delivery %q terminal event = %q, want delivered", callerID, terminal[callerID])
+	}
+	owner := jm.retirementOwner
+	fold := rootAttentionFold(t, owner)
+	for id := range fold.content {
+		if settled && fold.resolutions[id] != delegateAttentionConsumed {
+			t.Fatalf("restored accepted notification %q was not observed", id)
 		}
-	} else if _, delivered := terminal[callerID]; delivered {
-		t.Fatalf("caller delivery %q settled before notification accept as %q", callerID, terminal[callerID])
+		if !settled && fold.resolutions[id] == delegateAttentionConsumed {
+			t.Fatalf("transport replay falsely observed notification %q", id)
+		}
 	}
 
 	jm.mu.Lock()
@@ -721,22 +730,25 @@ func FuzzRootParentObserverLifecycleProgram(f *testing.F) {
 			t.Fatalf("child parent-watch create state = %#v", created.State)
 		}
 
-		// First emit a non-match, then a matching event. The durable pending
-		// record is the oracle that observation and delivery remain separate.
+		// First emit a non-match, then a matching event. Source settlement and
+		// receiver observation are separate even with immediate custody.
 		onSessionEventKD(parentJM, events.EventToolCallEnd, events.ToolCallEndData{
 			ToolName: "shell", CallID: "rwlp-parent-miss", Error: "not watched",
 		})
+		if len(producerSourceEvents(t, parentJM, jobstore.EventWatchSendPending)) != 0 {
+			t.Fatal("parent observer produced a nonmatching tool event")
+		}
 		onSessionEventKD(parentJM, events.EventToolCallEnd, events.ToolCallEndData{
 			ToolName:      "read_file",
 			CallID:        "rwlp-parent-read",
 			ArgumentsJSON: `{"file_path":"observer.txt"}`,
 			Output:        rwlpTexts[r.intn(len(rwlpTexts))],
 		})
-		pending := parentJM.pendingWatchSendDeliveries(nil)
-		if len(pending) != 1 {
-			t.Fatalf("parent observer pending sends = %d, want one matching delivery", len(pending))
+		produced := producerSourceEvents(t, parentJM, jobstore.EventWatchSendPending)
+		if len(produced) != 1 {
+			t.Fatalf("parent observer produced sends = %d, want one matching delivery", len(produced))
 		}
-		pendingState := pending[0].state
+		pendingState := *produced[0].WatchSend
 		if !pendingState.StableReceiver || pendingState.ReceiverSessionID != childID || pendingState.ReceiverDelegateID != lease.delegateID || pendingState.Key.WatchID != state.WatchID {
 			t.Fatalf("parent observer pending route = %+v, want stable child %q/%q watch %q", pendingState, childID, lease.delegateID, state.WatchID)
 		}
@@ -762,6 +774,7 @@ func FuzzRootParentObserverLifecycleProgram(f *testing.F) {
 		if got := countAttentionEntries(t, childTranscriptPath, attentionID); got != 1 {
 			t.Fatalf("parent observer attention count = %d, want 1", got)
 		}
+		assertNotificationPending(t, child, []string{attentionID})
 
 		clearedValue, err := jobWatchToolWithContext(leaseContext, child, map[string]any{"operation": "clear", "watch_id": state.WatchID}, jobToolResultDefaultMaxChar)
 		if err != nil {

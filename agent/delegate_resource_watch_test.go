@@ -178,19 +178,26 @@ func TestStableDelegateWatch_ParentGrantIsNonTransitive(t *testing.T) {
 }
 
 func TestStableDelegateWatch_PreservesFiltersEveryCoalescingAndBudget(t *testing.T) {
-	_ = requireStableDelegateWatchArgs(t)
-	jm := newStableWatchTestJobManager(t)
-	installWatchBelowValidation(t, jm, watchArgs{
-		Source: "dlg_source",
-		Target: runtimeMessageAliasCaller,
-		Events: []string{"assistant.tool"},
-		Every:  2,
-		EventFilter: &watchEventFilter{
-			ToolName: "read_file",
-			Status:   "ok",
-		},
-		Send: &watchSendArgs{To: "dlg_receiver"},
-	})
+	t.Parallel()
+	fs := &notificationFaultFS{Fs: afero.NewOsFs()}
+	fixture := newStableWatchRuntimeBase(t, fs)
+	jm := fixture.sourceJM
+	if _, err := jobWatchToolWithContext(context.Background(), fixture.root, map[string]any{
+		"operation": "create", "source": "dlg_source", "events": []any{"assistant.tool"}, "every": 2,
+		"event_filter": map[string]any{"tool_name": "read_file", "status": "ok"},
+	}, 4096); err != nil {
+		t.Fatal(err)
+	}
+	fs.writeErr = errors.New("controlled pre-custody write failure")
+	for _, event := range []events.ToolCallEndData{
+		{ToolName: "shell", Output: "miss"},
+		{ToolName: "read_file", Error: "miss"},
+	} {
+		onSessionEventKD(jm, events.EventToolCallEnd, event)
+	}
+	if len(producerSourceEvents(t, jm, jobstore.EventWatchSendPending)) != 0 {
+		t.Fatal("nonmatching tool or status produced a frame")
+	}
 	for range 4 {
 		onSessionEventKD(jm, events.EventToolCallEnd, events.ToolCallEndData{ToolName: "read_file", Output: "ok"})
 	}
@@ -203,12 +210,25 @@ func TestStableDelegateWatch_PreservesFiltersEveryCoalescingAndBudget(t *testing
 		t.Fatalf("stable watch coalescing = seq %d count %d, want 2/1", state.UpdateSeq, state.CoalescedCount)
 	}
 	cfg := deliveries[0].cfg
+	if len(producerSourceEvents(t, jm, jobstore.EventWatchSendPending)) != 2 || producerRecordCount(t, fixture.root) != 0 {
+		t.Fatal("every=2 must produce two source frames before receiver custody")
+	}
+	fs.writeErr = nil
+	if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), jm); err != nil {
+		t.Fatal(err)
+	}
+	if producerRecordCount(t, fixture.root) != 1 || len(jm.pendingWatchSendDeliveries(nil)) != 0 {
+		t.Fatal("only the latest coalesced frame must transfer custody")
+	}
+	assertNotificationPending(t, fixture.root, []string{stableWatchAttentionID(state)})
 	jm.mu.Lock()
-	cfg.conditionFires = watchDeliveryBudget
-	crossed := jm.recordWatchDeliveryLocked(cfg)
+	cfg.conditionFires = watchDeliveryBudget - 1
 	jm.mu.Unlock()
-	if !crossed {
-		t.Fatal("stable watch did not preserve the delivery budget")
+	for range 2 {
+		onSessionEventKD(jm, events.EventToolCallEnd, events.ToolCallEndData{ToolName: "read_file", Output: "budget-sentinel"})
+	}
+	if !cfg.budgetTripped || jm.inspectWatchByID(cfg.watchID).Watching {
+		t.Fatal("the next persisted condition fire must trip the budget and end the watch")
 	}
 }
 

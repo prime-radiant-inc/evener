@@ -4649,10 +4649,16 @@ func (jm *jobManager) acceptWatchFrame(state jobstore.WatchSendState) error {
 // dispatchProducedWatchSends pumps transport through the existing delivery
 // claims. A failed destination leaves the journal pending for the host's drain.
 func (jm *jobManager) dispatchProducedWatchSends() {
-	jm.dispatchProducedWatchSendsFrom(jm.store.LoadWatchSends)
+	// The pump itself retains every failure in the paced source retry below.
+	_ = jm.dispatchProducedWatchSendsFrom(jm.store.LoadWatchSends)
 }
 
-func (jm *jobManager) dispatchProducedWatchSendsFrom(load watchSendLoader) error {
+func (jm *jobManager) dispatchProducedWatchSendsFrom(load watchSendLoader) (err error) {
+	defer func() {
+		if err != nil {
+			jm.scheduleWatchTransportRetry()
+		}
+	}()
 	var errs []error
 	retrySettled, err := jm.retryStableWatchSettlements()
 	if err != nil {
@@ -4673,9 +4679,57 @@ func (jm *jobManager) dispatchProducedWatchSendsFrom(load watchSendLoader) error
 		ensurePending := pending == nil || pending.DeliveryID != d.state.DeliveryID || pending.UpdateSeq != d.state.UpdateSeq
 		if _, err := jm.deliverPendingWatchSend(d.cfg, d.state, ensurePending); err != nil {
 			jm.kick()
+			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// The existing source journal is the retry inventory. A one-shot may have no
+// future source event or model boundary, so an immediate kick is not recovery.
+func (jm *jobManager) scheduleWatchTransportRetry() {
+	owner := jm.retirementOwner
+	if owner == nil {
+		return // Restore-only managers have no live session lifetime to schedule.
+	}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	if jm.closing || jm.watchTransportRetryClosed || jm.watchTransportRetry.active {
+		return
+	}
+	r := &jm.watchTransportRetry
+	delay := r.delay
+	if delay <= 0 {
+		delay = jobNotificationRetryInitialDelay
+	}
+	r.active = true
+	r.generation++
+	generation := r.generation
+	jm.watchTransportRetryTimer = jm.clock.AfterFunc(delay, func() {
+		release, admissionErr := owner.beginAttentionCallback()
+		if release != nil {
+			defer release()
+		}
+		jm.mu.Lock()
+		current := !jm.closing && !jm.watchTransportRetryClosed && jm.watchTransportRetry.generation == generation
+		if current {
+			jm.watchTransportRetry.active = false
+			jm.watchTransportRetry.delay = min(delay*2, jobNotificationRetryMaxDelay)
+		}
+		jm.mu.Unlock()
+		if !current {
+			return
+		}
+		if admissionErr != nil {
+			jm.scheduleWatchTransportRetry()
+			return
+		}
+		if err := jm.dispatchProducedWatchSendsFrom(jm.store.LoadWatchSends); err == nil {
+			jm.mu.Lock()
+			jm.watchTransportRetry.delay = jobNotificationRetryInitialDelay
+			jm.mu.Unlock()
+		}
+	})
 }
 
 // A replacement pending head cannot settle an accepted predecessor. The source
@@ -4715,8 +4769,27 @@ func (jm *jobManager) settleSupersededWatchSend(state jobstore.WatchSendState) e
 	} else {
 		return errDelegateDeliveryReceiverUnavailable
 	}
-	if err != nil || !accepted {
+	if err != nil {
 		return err
+	}
+	if !accepted {
+		// The exact delivery claim excludes an in-flight handoff. Re-read the
+		// source too: another pump may have settled a previously loaded candidate
+		// before this claim, and must not get a second terminal event.
+		fold, err := jm.store.LoadWatchSends()
+		if err != nil {
+			return err
+		}
+		candidate := fold.Superseded[state.DeliveryID]
+		if candidate == nil || candidate.UpdateSeq != state.UpdateSeq {
+			return nil
+		}
+		state.DiagnosticReason = "superseded before receiver custody"
+		if err := jm.appendWatchSendEvents([]jobstore.Event{{Kind: jobstore.EventWatchSendDropped, TS: jm.now(), WatchSend: &state}}); err != nil {
+			return err
+		}
+		jm.releaseStableWatchReceipt(state.DeliveryID)
+		return nil
 	}
 	jm.mu.Lock()
 	retry, retrying := jm.stableWatchSettlementRetries[state.DeliveryID]
@@ -6065,8 +6138,12 @@ func delegateRowStopGated(row delegateSnapshot) bool {
 
 // drainJobManagerWatchSends drains jm through the session that owns jm. The
 // receiver is the control surface for delegate-targeted sends.
-func (s *Session) drainJobManagerWatchSends(ctx context.Context, jm *jobManager) (watchSendDrainResult, error) {
-	var result watchSendDrainResult
+func (s *Session) drainJobManagerWatchSends(ctx context.Context, jm *jobManager) (result watchSendDrainResult, err error) {
+	defer func() {
+		if err != nil {
+			jm.scheduleWatchTransportRetry()
+		}
+	}()
 	var errs []error
 	retrySettled, err := jm.retryStableWatchSettlements()
 	if err != nil {
