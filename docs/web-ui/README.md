@@ -256,6 +256,33 @@ An explicit display change restores focus to the same entry or its visible proxy
 even when the viewport also changes. If that entry disappears, focus moves to the
 Transcript region.
 
+## Floating Next-needs-you control
+
+The focused conversation carries one
+[floating attention control](../../cmd/evener-hub/frontend/src/panes/session/NextNeedsYou.tsx)
+above the composer at every width. **Next** moves to the next session that needs a
+person. The horizontal-ellipsis **More** button opens the same queue's list, where
+each row selects that session and **Load more** asks for another page. A press held
+for 500 ms opens the list. Movement beyond 10 CSS pixels, release, cancellation,
+lost pointer capture or unmount ends a pending hold without
+opening anything. A completed hold consumes the single click its release emits;
+the next intentional click still runs Next.
+
+The control and the New Content affordance share one measured stack at the
+transcript's trailing bottom edge, with New Content above Next. The stack's
+committed height becomes end clearance inside the virtual list, so the last
+transcript row can scroll clear of both controls and stays readable. A dormant or
+empty transcript floats the same control above the composer in its own dock.
+
+The control hides while an IME composition is in progress, while a question or
+approval is pending in the focused conversation, or while the command palette or
+another blocking modal owns interaction. It returns when that state ends. Editor
+focus and a saved draft never hide it.
+
+Keyboard Next, the palette's needs-you rows and the palette's next-needs-you
+command share the shell's one needs-you controller. The floating control changes
+none of their ordering, validity or navigation decisions.
+
 ## Session Overview
 
 Both session action menus offer **Overview** for inspection. It opens the shared

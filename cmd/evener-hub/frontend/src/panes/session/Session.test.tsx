@@ -8,13 +8,17 @@ import { keyID } from "@evener/appwire-client/state/navigation";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
+import { capability, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
-import { StrictMode, useSyncExternalStore } from "react";
+import { StrictMode, useEffect, useSyncExternalStore } from "react";
 import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../../shell/activitybar/activitySidebarStore";
+import { openAttentionSession, restoreCurrentAttentionEntry } from "../../shell/attentionHistory";
 import { ClientProvider } from "../../shell/clientContext";
+import { StackHost } from "../../shell/mobile/StackHost";
+import { NeedsYouProvider } from "../../shell/NeedsYouProvider";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { urlToPane } from "../../shell/routing";
 import * as StatusBarModule from "../../shell/statusbar/StatusBar";
@@ -51,19 +55,31 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css";
 import ReadOnlyTranscript from "../transcript/testing/CommittedTranscript";
-import { resumeCascadeScope } from "../zoom/actions";
+import { enterAgentCascade, resumeCascadeScope } from "../zoom/actions";
+import { cascadeContext } from "../zoom/cascadeTestUtils";
+import type { SessionZoomParams } from "../zoom/intent";
+import Zoom from "../zoom/Zoom";
 import { ConversationBody, type ConversationSeat } from "./ConversationBody";
 import * as SessionChromeModule from "./chrome/SessionChrome";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
-import { askPendingStatusChanged } from "./composer/askDock/askDockTestUtils";
+import { ackAskUserCall, askPendingStatusChanged } from "./composer/askDock/askDockTestUtils";
+import * as PngEncoding from "./composer/attachments/encodePng";
 import * as ComposerModule from "./composer/Composer";
-import { readDraft, writeDraft } from "./composer/draft";
+import { requestComposerFocus } from "./composer/composerFocus";
+import { readDraft, writeComposerDraft, writeDraft } from "./composer/draft";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
+import { retainedConversationComposer } from "./composer/retainedComposer";
+import type { SessionPaneParams } from "./Session";
+import "./index";
 import { settleActivityDiscovery } from "./testing/activityDiscovery";
 import { CommittedSession as Session } from "./testing/CommittedSession";
 import { installControlledImageEncoding } from "./testing/imageEncoding";
+import { installMobileViewport } from "./testing/mobileViewport";
+import { captureTranscriptView } from "./transcript/flow/transcriptViewRegistry";
 import { seedHeld } from "./transcript/messages/testing/heldSteerTestUtils";
+import { installTranscriptGeometry } from "./transcript/transcriptReadingGeometryTestUtils";
+import { retainedTranscriptReadView } from "./transcript/transcriptReadView";
 import { resetTranscriptPagingForTests } from "./transcript/useTranscript";
 import "./testing/editorGeometry";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
@@ -212,6 +228,127 @@ function connectFakeClient(): FakeClient {
   return fake;
 }
 
+const NEEDS_YOU_PAGE_KEY = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
+
+function installNeedsYouRows(refs: string[]): void {
+  const rows = refs.map((ref) => ({
+    ref,
+    host_id: "local",
+    session_id: ref,
+    title: ref,
+    project: "Proj",
+    state: "awaiting",
+    kind: "session",
+    live: true,
+    children: [],
+  }));
+  const resources = new Map(navigationStore.getState().resources);
+  resources.set(keyID(NEEDS_YOU_PAGE_KEY), {
+    key: NEEDS_YOU_PAGE_KEY,
+    data: { generation_id: "g", revision: 1, sessions: rows, remaining: 0, truncated: false },
+    loadedRevision: 1,
+    targetRevision: null,
+    forceToken: 0,
+    etag: '"test"',
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: "g",
+  });
+  const visibleResourceKeys = new Set(navigationStore.getState().visibleResourceKeys);
+  visibleResourceKeys.add(keyID(NEEDS_YOU_PAGE_KEY));
+  navigationStore.setState({
+    mode: "v3",
+    resources,
+    visibleResourceKeys,
+    manifest: {
+      key: { kind: "manifest" },
+      data: {
+        generation_id: "g",
+        revision: 1,
+        sources: [],
+        attentionSummary: { needsYou: refs.length, error: 0, working: 0 },
+        sections: { live: { count: 0 }, needs_you: { count: refs.length }, pin_sections: { count: 0 } },
+        catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+      },
+      loadedRevision: 1,
+      targetRevision: null,
+      forceToken: 0,
+      etag: null,
+      loading: false,
+      stale: false,
+      error: null,
+      generationID: "g",
+    },
+  });
+}
+
+function attentionSession(paneId = "attention-pane", ref = "ref_a"): OpenPaneRecord {
+  return { id: paneId, type: "session", params: { ref }, slot: "main" };
+}
+
+// A live (non-dormant) transcript: the floating stack's flow overlay only
+// exists once the transcript subtree mounts.
+function attentionRead(ref: string): ThreadReadResponse {
+  return versionedReadResponse(ref, {
+    turns: [
+      {
+        id: "turn_attention",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_attention",
+            turnId: "turn_attention",
+            type: "agentMessage",
+            text: "attention content",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+}
+
+function startAskTurn(fake: FakeClient, ref: string): void {
+  fake.emitNotification({
+    method: "history/updated",
+    params: {
+      threadId: `thr_${ref}`,
+      ref,
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      turns: [{ id: "turn_ask", status: "inProgress", itemsView: "" }],
+    },
+  } as never);
+  ackAskUserCall(fake, ref, "turn_ask", "item_ask", "call_ask");
+}
+
+function approvalRead(ref: string): ThreadReadResponse {
+  const read = attentionRead(ref);
+  return {
+    ...read,
+    thread: {
+      ...read.thread,
+      evener: {
+        ...read.thread.evener,
+        pendingEscalations: [
+          {
+            ref,
+            threadId: `thr_${ref}`,
+            escalationId: "esc_1",
+            mode: "workspace-write",
+            tool: "shell",
+            kind: "shell",
+            deniedPath: "/etc/hosts",
+          },
+        ],
+      },
+    },
+  };
+}
+
 // flushUntil drains microtask turns until `done()` reports true - same
 // contract/name as stores/threads.test.ts's own helper (duplicated here:
 // the two test files share no test-utils module).
@@ -294,7 +431,10 @@ afterEach(() => {
 
 test("the real Session binds its committed pane source across a view remount", async ({ onTestFinished }) => {
   vi.mocked(ComposerModule.Composer).mockRestore();
-  onTestFinished(stubSessionSlots);
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+    stubSessionSlots();
+  });
   const encoding = installControlledImageEncoding();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("root"));
@@ -327,6 +467,931 @@ test("the real Session binds its committed pane source across a view remount", a
   expect(conversationPaneLifetime(pane).composer).toBe(source);
   expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/steer")).toEqual([]);
 });
+
+test("the real Session consumer retains its structured editor and pending images through attention history", async ({
+  onTestFinished,
+}) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+    stubSessionSlots();
+  });
+  const encoding = installControlledImageEncoding();
+  const fake = connectFakeClient();
+  fake.on("thread/read", ({ ref }) => {
+    const threadRef = ref ?? "origin";
+    return readResponse(threadRef, {
+      evener: {
+        ref: threadRef,
+        capabilities: { ...CAPABILITIES, skillInput: true, commandInput: true },
+        queue: { revision: 0 },
+      },
+    });
+  });
+  const origin = { id: "editor-origin", type: "session" as const, params: { ref: "origin" }, slot: "main" as const };
+  const secondary = {
+    id: "editor-secondary",
+    type: "session" as const,
+    params: { ref: "secondary" },
+    slot: "secondary" as const,
+  };
+  window.history.replaceState({}, "", "/s/origin");
+  workspaceStore.setState({ panes: [origin, secondary], focusedPaneId: origin.id });
+  const text = "Keep /review and /deploy";
+  const mentions = [
+    { kind: "skill" as const, name: "review", offset: 5 },
+    { kind: "command" as const, name: "deploy", offset: 17 },
+  ];
+  writeComposerDraft("origin", { text, skillNames: ["review"], commandNames: ["deploy"], mentions });
+  const secondaryText = "Only /review and /deploy in X";
+  const secondaryMentions = [
+    { kind: "skill" as const, name: "review", offset: 5 },
+    { kind: "command" as const, name: "deploy", offset: 17 },
+  ];
+  writeComposerDraft("secondary", {
+    text: secondaryText,
+    skillNames: ["review"],
+    commandNames: ["deploy"],
+    mentions: secondaryMentions,
+  });
+  const secondarySource = conversationPaneLifetime(secondary).composer;
+  if (!secondarySource) throw new Error("secondary pane has no retained composer source");
+  expect(secondarySource.getSnapshot()).toMatchObject({
+    text: secondaryText,
+    skillNames: ["review"],
+    commandNames: ["deploy"],
+    mentions: secondaryMentions,
+  });
+  const focusedPaneMounts: string[] = [];
+  const focusedPaneUnmounts: string[] = [];
+  const focusedPaneSources: Array<{
+    paneId: string;
+    source: ReturnType<typeof conversationPaneLifetime>["composer"];
+    snapshot: ReturnType<NonNullable<ReturnType<typeof conversationPaneLifetime>["composer"]>["getSnapshot"]>;
+  }> = [];
+
+  function FocusedSessionView({ pane }: { pane: typeof origin | typeof secondary }) {
+    const committedPane = workspaceStore.getState().panes.find((candidate) => candidate.id === pane.id);
+    if (!committedPane) throw new Error(`focused Session pane ${pane.id} is absent from workspace`);
+    const source = conversationPaneLifetime(committedPane).composer;
+    if (!source) throw new Error(`focused Session pane ${pane.id} has no composer source`);
+    focusedPaneSources.push({ paneId: pane.id, source, snapshot: source.getSnapshot() });
+    useEffect(() => {
+      focusedPaneMounts.push(pane.id);
+      return () => {
+        focusedPaneUnmounts.push(pane.id);
+      };
+    }, [pane.id]);
+    return <Session params={pane.params} paneId={pane.id} focused />;
+  }
+
+  function FocusedSessionHost() {
+    const workspace = useSyncExternalStore(workspaceStore.subscribe, workspaceStore.getState);
+    useEffect(() => {
+      const restore = () => restoreCurrentAttentionEntry();
+      window.addEventListener("popstate", restore);
+      return () => window.removeEventListener("popstate", restore);
+    }, []);
+    const pane = workspace.panes.find((candidate) => candidate.id === workspace.focusedPaneId);
+    return pane?.type === "session" ? (
+      <FocusedSessionView key={pane.id} pane={pane as typeof origin | typeof secondary} />
+    ) : null;
+  }
+
+  const view = render(
+    <ClientProvider client={fake}>
+      <NeedsYouProvider>
+        <FocusedSessionHost />
+      </NeedsYouProvider>
+    </ClientProvider>,
+  );
+  const editor = await screen.findByRole("textbox", { name: "Message" });
+  await settleActivityDiscovery("origin");
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(document.activeElement).toBe(editor));
+  const picker = view.container.querySelector('input[type="file"]');
+  if (!picker) throw new Error("Session has no image picker");
+  fireEvent.change(picker, {
+    target: { files: [new File([new Uint8Array([9, 8, 7])], "success.png", { type: "image/png" })] },
+  });
+  fireEvent.change(picker, {
+    target: { files: [new File([new Uint8Array([6, 5, 4])], "failure.png", { type: "image/png" })] },
+  });
+  const source = conversationPaneLifetime(origin).composer;
+  if (!source) throw new Error("Session has no retained composer source");
+  const originLifetime = conversationPaneLifetime(origin);
+  const stagedText = `[image 1][image 2]${text}`;
+  const stagedMentions = mentions.map((mention) => ({ ...mention, offset: mention.offset + 18 }));
+  expect(source.getSnapshot()).toMatchObject({
+    text: stagedText,
+    skillNames: ["review"],
+    commandNames: ["deploy"],
+    mentions: stagedMentions,
+  });
+  expect(source.attachments.getState().items.map(({ name, pending }) => ({ name, pending }))).toEqual([
+    { name: "success.png", pending: true },
+    { name: "failure.png", pending: true },
+  ]);
+  const routeSelection = document.createRange();
+  routeSelection.setStart(editor.firstChild ?? editor, 5);
+  routeSelection.collapse(true);
+  window.getSelection()?.removeAllRanges();
+  window.getSelection()?.addRange(routeSelection);
+
+  act(() => openAttentionSession("destination"));
+  await screen.findByRole("textbox", { name: "Message" });
+  const destination = workspaceStore
+    .getState()
+    .panes.find((pane) => pane.id === workspaceStore.getState().focusedPaneId);
+  if (!destination) throw new Error("attention opener did not present a destination reader");
+  const destinationLifetime = conversationPaneLifetime(destination);
+  const destinationSource = destinationLifetime.composer;
+  const destinationSnapshot = destinationSource?.getSnapshot();
+  expect(workspaceStore.getState().panes).toContain(origin);
+  expect(focusedPaneUnmounts).toContain(origin.id);
+  expect(focusedPaneMounts).toContain(destination.id);
+  expect(document.activeElement).not.toBe(screen.getByRole("textbox", { name: "Message" }));
+  await act(async () => encoding.resolve(0));
+  await act(async () => encoding.reject(1));
+  expect(getToasts().map(({ kind }) => kind)).toEqual(["error"]);
+  expect(source.attachments.getState().items).toEqual([
+    expect.objectContaining({ marker: 1, name: "success.png", data: "AQID", pending: false }),
+  ]);
+  expect(vi.mocked(PngEncoding.reencodeToPng)).toHaveBeenCalledTimes(2);
+
+  const back = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+  await act(async () => {
+    window.history.back();
+    await back;
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(origin.id));
+  const returnedEditor = await screen.findByRole("textbox", { name: "Message" });
+  expect(workspaceStore.getState().panes).toContain(origin);
+  expect(conversationPaneLifetime(origin)).toBe(originLifetime);
+  expect(conversationPaneLifetime(origin).composer).toBe(source);
+  const retainedText = `[image 1]${text}`;
+  const retainedMentions = mentions.map((mention) => ({ ...mention, offset: mention.offset + 9 }));
+  expect(source.getSnapshot()).toMatchObject({
+    text: retainedText,
+    skillNames: ["review"],
+    commandNames: ["deploy"],
+    mentions: retainedMentions,
+  });
+  expect(returnedEditor.textContent).toBe(retainedText);
+  expect(source.attachments.getState().items).toEqual([
+    expect.objectContaining({ marker: 1, name: "success.png", mediaType: "image/png", data: "AQID", pending: false }),
+  ]);
+  expect(vi.mocked(PngEncoding.reencodeToPng)).toHaveBeenCalledTimes(2);
+  expect(document.activeElement).not.toBe(returnedEditor);
+  await userEvent.click(returnedEditor);
+  expect(document.activeElement).toBe(returnedEditor);
+  act(() => returnedEditor.blur());
+  act(() => requestComposerFocus("origin"));
+  await waitFor(() => expect(document.activeElement).toBe(returnedEditor));
+  expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/steer")).toEqual([]);
+  const forward = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+  await act(async () => {
+    window.history.forward();
+    await forward;
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(destination.id));
+  expect(workspaceStore.getState().panes).toContain(destination);
+  expect(conversationPaneLifetime(destination)).toBe(destinationLifetime);
+  expect(focusedPaneUnmounts.filter((id) => id === origin.id)).toHaveLength(2);
+  expect(focusedPaneMounts.filter((id) => id === destination.id)).toHaveLength(2);
+  expect(destinationSource?.getSnapshot()).toMatchObject({
+    text: destinationSnapshot?.text,
+    skillNames: destinationSnapshot?.skillNames,
+    commandNames: destinationSnapshot?.commandNames,
+    mentions: destinationSnapshot?.mentions,
+  });
+
+  act(() => workspaceStore.getState().focusPane(secondary.id));
+  const secondaryEditor = await screen.findByRole("textbox", { name: "Message" });
+  expect(window.location.pathname).toBe("/s/destination");
+  expect(focusedPaneMounts).toContain(secondary.id);
+  expect(focusedPaneUnmounts).toContain(origin.id);
+  expect(focusedPaneSources.at(-1)).toMatchObject({ paneId: secondary.id, source: secondarySource });
+  expect(focusedPaneSources.at(-1)?.snapshot).toMatchObject({ mentions: secondaryMentions });
+  expect(secondaryEditor.textContent).toBe(secondaryText);
+  expect(secondarySource.getSnapshot()).toMatchObject({
+    text: secondaryText,
+    skillNames: ["review"],
+    commandNames: ["deploy"],
+    mentions: secondaryMentions,
+  });
+  const secondaryPane = workspaceStore.getState().panes.find((pane) => pane.id === secondary.id);
+  if (!secondaryPane) throw new Error("focus-only departure lost the existing secondary reader");
+  const secondaryLifetime = conversationPaneLifetime(secondaryPane);
+  const originSnapshot = source.getSnapshot();
+  expect(source.getSnapshot()).toEqual(originSnapshot);
+  expect(destinationSource?.getSnapshot()).toMatchObject({
+    text: destinationSnapshot?.text,
+    skillNames: destinationSnapshot?.skillNames,
+    commandNames: destinationSnapshot?.commandNames,
+    mentions: destinationSnapshot?.mentions,
+  });
+  const secondaryPicker = view.container.querySelector('input[type="file"]');
+  if (!secondaryPicker) throw new Error("secondary Session has no image picker");
+  fireEvent.change(secondaryPicker, {
+    target: { files: [new File([new Uint8Array([4, 3, 2, 1])], "secondary.png", { type: "image/png" })] },
+  });
+  expect(secondarySource.attachments.getState().items[0]).toMatchObject({ name: "secondary.png", pending: true });
+  expect(vi.mocked(PngEncoding.reencodeToPng)).toHaveBeenCalledTimes(3);
+  const secondarySnapshot = secondarySource.getSnapshot();
+  act(() => openAttentionSession("third"));
+  const third = workspaceStore.getState().panes.find((pane) => pane.id === workspaceStore.getState().focusedPaneId);
+  if (!third) throw new Error("attention opener did not present the third reader");
+  await screen.findByRole("textbox", { name: "Message" });
+  expect(focusedPaneUnmounts).toContain(secondary.id);
+  await act(async () => encoding.resolve(2));
+  const secondaryBack = new Promise<void>((resolve) =>
+    window.addEventListener("popstate", () => resolve(), { once: true }),
+  );
+  await act(async () => {
+    window.history.back();
+    await secondaryBack;
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(secondary.id));
+  const restoredSecondaryEditor = await screen.findByRole("textbox", { name: "Message" });
+  expect(workspaceStore.getState().panes).toContain(secondaryPane);
+  expect(conversationPaneLifetime(secondaryPane)).toBe(secondaryLifetime);
+  expect(secondaryLifetime.composer).toBe(secondarySource);
+  expect(secondarySource.getSnapshot()).toMatchObject({
+    text: `[image 1]${secondaryText}`,
+    skillNames: ["review"],
+    commandNames: ["deploy"],
+    mentions: secondaryMentions.map((mention) => ({ ...mention, offset: mention.offset + 9 })),
+  });
+  expect(restoredSecondaryEditor.textContent).toBe(`[image 1]${secondaryText}`);
+  expect(secondarySource.attachments.getState().items).toEqual([
+    expect.objectContaining({
+      marker: 1,
+      name: "secondary.png",
+      mediaType: "image/png",
+      data: "AQID",
+      pending: false,
+    }),
+  ]);
+  expect(focusedPaneMounts.filter((id) => id === secondary.id)).toHaveLength(2);
+  expect(vi.mocked(PngEncoding.reencodeToPng)).toHaveBeenCalledTimes(3);
+  const thirdForward = new Promise<void>((resolve) =>
+    window.addEventListener("popstate", () => resolve(), { once: true }),
+  );
+  await act(async () => {
+    window.history.forward();
+    await thirdForward;
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(third.id));
+  expect(secondarySource.getSnapshot()).toMatchObject({
+    text: secondarySnapshot.text,
+    skillNames: secondarySnapshot.skillNames,
+    commandNames: secondarySnapshot.commandNames,
+    mentions: secondarySnapshot.mentions,
+  });
+  expect(source.getSnapshot()).toMatchObject({
+    text: originSnapshot.text,
+    skillNames: originSnapshot.skillNames,
+    commandNames: originSnapshot.commandNames,
+    mentions: originSnapshot.mentions,
+  });
+  expect(destinationSource?.getSnapshot()).toMatchObject({
+    text: destinationSnapshot?.text,
+    skillNames: destinationSnapshot?.skillNames,
+    commandNames: destinationSnapshot?.commandNames,
+    mentions: destinationSnapshot?.mentions,
+  });
+});
+
+test("real same-URL readers preserve the exact owning reader through attention Back and Forward", async ({
+  onTestFinished,
+}) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+    stubSessionSlots();
+  });
+  const encoding = installControlledImageEncoding();
+  const fake = connectFakeClient();
+  fake.on("thread/read", ({ ref }) => {
+    if (!ref) throw new Error("thread/read requires a ref");
+    return readResponse(ref, { id: `thr_${ref}`, sessionId: `session-${ref}` });
+  });
+  fake.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    context: cascadeContext(ref, ref === "local:same" ? ["local:owner"] : []),
+  }));
+  const session = {
+    id: "same-url-session",
+    type: "session" as const,
+    params: { ref: "local:same" },
+    slot: "main" as const,
+  };
+  const owner = {
+    id: "same-url-owner",
+    type: "session" as const,
+    params: { ref: "local:owner" },
+    slot: "secondary" as const,
+  };
+  window.history.replaceState({}, "", "/s/local%3Asame");
+  workspaceStore.setState({ panes: [session, owner], focusedPaneId: session.id });
+  const mounts: string[] = [];
+  const unmounts: string[] = [];
+  function FocusedCommittedReader({ pane }: { pane: OpenPaneRecord }) {
+    useEffect(() => {
+      mounts.push(pane.id);
+      return () => {
+        unmounts.push(pane.id);
+      };
+    }, [pane.id]);
+    if (pane.type === "session") return <Session params={pane.params as SessionPaneParams} paneId={pane.id} focused />;
+    if (pane.type === "sessionZoom") return <Zoom paneId={pane.id} params={pane.params as SessionZoomParams} focused />;
+    return null;
+  }
+  function FocusedCommittedHost() {
+    const workspace = useSyncExternalStore(workspaceStore.subscribe, workspaceStore.getState);
+    useEffect(() => {
+      const restore = () => restoreCurrentAttentionEntry();
+      window.addEventListener("popstate", restore);
+      return () => window.removeEventListener("popstate", restore);
+    }, []);
+    const pane = workspace.panes.find((candidate) => candidate.id === workspace.focusedPaneId);
+    if (!pane) return null;
+    return <FocusedCommittedReader key={pane.id} pane={pane} />;
+  }
+  const view = render(
+    <ClientProvider client={fake}>
+      <FocusedCommittedHost />
+    </ClientProvider>,
+  );
+  const sessionEditorAtStart = await screen.findByRole("textbox", { name: "Message" });
+  expect(mounts.filter((id) => id === session.id)).toHaveLength(1);
+  const sessionDraft = { text: "Session reader draft" };
+  const cascadeDraft = { text: "Cascade reader draft" };
+  await userEvent.type(sessionEditorAtStart, sessionDraft.text);
+  await settleActivityDiscovery("local:same");
+  const originLifetime = conversationPaneLifetime(session);
+  const initialLength = window.history.length;
+  let cascadeId = "";
+  act(() => {
+    cascadeId = enterAgentCascade(
+      activityDelegate({ ownerRef: "local:owner", childRef: "local:same", delegateId: "same-url-editor-edge" }),
+      owner.id,
+    );
+    workspaceStore.getState().focusPane(cascadeId);
+  });
+  expect(workspaceStore.getState().panes.find((pane) => pane.id === cascadeId)?.type).toBe("sessionZoom");
+  await screen.findByTestId("cascade-column");
+  await settleActivityDiscovery("local:same");
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toBeTruthy());
+  const cascade = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
+  if (!cascade) throw new Error("cascade record was not committed");
+  const cascadeLifetime = conversationPaneLifetime(cascade);
+  const sessionReadView = retainedTranscriptReadView(originLifetime, "local:same", "session");
+  const cascadeReadView = retainedTranscriptReadView(cascadeLifetime, "local:same", "cascade");
+  expect(cascadeReadView).not.toBe(sessionReadView);
+  expect(cascadeReadView.id).not.toBe(sessionReadView.id);
+  const sessionSource = originLifetime.composer;
+  const cascadeSource = retainedConversationComposer(cascadeLifetime, "local:same");
+  if (!sessionSource || !cascadeSource || sessionSource === cascadeSource)
+    throw new Error("same-URL readers lack distinct composer sources");
+  const cascadeEditorAtStart = screen.getByRole("textbox", { name: "Message" });
+  await userEvent.clear(cascadeEditorAtStart);
+  await userEvent.type(cascadeEditorAtStart, cascadeDraft.text);
+  const picker = view.container.querySelector('input[type="file"]');
+  if (!picker) throw new Error("cascade composer has no image picker");
+  fireEvent.change(picker, {
+    target: { files: [new File([new Uint8Array([11, 12, 13])], "cascade.png", { type: "image/png" })] },
+  });
+  expect(cascadeSource.attachments.getState().items).toMatchObject([{ name: "cascade.png", pending: true }]);
+  await act(async () => encoding.resolve(0));
+  await waitFor(() =>
+    expect(cascadeSource.attachments.getState().items[0]).toMatchObject({ data: "AQID", pending: false }),
+  );
+  act(() => openAttentionSession("local:same"));
+  const sessionEditorAtArrival = await screen.findByRole("textbox", { name: "Message" });
+  const sessionSourceTextAtArrival = sessionSource.getSnapshot().text;
+  const sessionEditorTextAtArrival = sessionEditorAtArrival.textContent ?? "";
+  expect(sessionSourceTextAtArrival).not.toBe("");
+  expect(sessionEditorTextAtArrival).not.toBe("");
+  const presented = workspaceStore.getState().panes.find((pane) => pane.id === workspaceStore.getState().focusedPaneId);
+  if (!presented || presented.id !== session.id)
+    throw new Error("same-URL attention opener did not present the session reader");
+  const presentedLifetime = conversationPaneLifetime(presented);
+  expect(window.location.pathname).toBe("/s/local%3Asame");
+  expect(window.history.length).toBe(initialLength + 1);
+  expect(presentedLifetime).toBe(originLifetime);
+  expect(unmounts).toContain(cascade.id);
+  expect(mounts).toContain(session.id);
+  expect(mounts.filter((id) => id === session.id)).toHaveLength(2);
+  expect(document.activeElement).not.toBe(screen.getByRole("textbox", { name: "Message" }));
+  const back = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+  await act(async () => {
+    window.history.back();
+    await back;
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(cascade.id));
+  const cascadeEditor = await screen.findByRole("textbox", { name: "Message" });
+  expect(window.location.pathname).toBe("/s/local%3Asame");
+  expect(conversationPaneLifetime(cascade)).toBe(cascadeLifetime);
+  expect(cascadeLifetime.composers.get("local:same")).toBe(cascadeSource);
+  const stagedCascadeText = `${cascadeDraft.text}[image 1]`;
+  expect(cascadeSource.getSnapshot().text).toBe(stagedCascadeText);
+  expect(cascadeEditor.textContent).toBe(stagedCascadeText);
+  expect(cascadeSource.attachments.getState().items).toMatchObject([
+    { name: "cascade.png", data: "AQID", pending: false },
+  ]);
+  expect(document.activeElement).not.toBe(cascadeEditor);
+  expect(mounts.filter((id) => id === cascade.id)).toHaveLength(2);
+  const forward = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+  await act(async () => {
+    window.history.forward();
+    await forward;
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(session.id));
+  const sessionEditor = await screen.findByRole("textbox", { name: "Message" });
+  expect(conversationPaneLifetime(session)).toBe(originLifetime);
+  expect(originLifetime.composer).toBe(sessionSource);
+  expect(sessionSource.getSnapshot().text).toBe(sessionSourceTextAtArrival);
+  expect(sessionEditor.textContent).toBe(sessionEditorTextAtArrival);
+  expect(cascadeSource.getSnapshot().text).toBe(stagedCascadeText);
+  expect(cascadeSource.attachments.getState().items).toMatchObject([
+    { name: "cascade.png", data: "AQID", pending: false },
+  ]);
+  expect(mounts.filter((id) => id === session.id)).toHaveLength(3);
+  expect(vi.mocked(PngEncoding.reencodeToPng)).toHaveBeenCalledTimes(1);
+  expect(document.activeElement).not.toBe(sessionEditor);
+  const returnBack = new Promise<void>((resolve) =>
+    window.addEventListener("popstate", () => resolve(), { once: true }),
+  );
+  await act(async () => {
+    window.history.back();
+    await returnBack;
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(cascade.id));
+  const returnedCascadeEditor = await screen.findByRole("textbox", { name: "Message" });
+  expect(conversationPaneLifetime(cascade)).toBe(cascadeLifetime);
+  expect(cascadeLifetime.composers.get("local:same")).toBe(cascadeSource);
+  expect(cascadeSource.getSnapshot().text).toBe(stagedCascadeText);
+  expect(returnedCascadeEditor.textContent).toBe(stagedCascadeText);
+  expect(cascadeSource.attachments.getState().items).toMatchObject([
+    { name: "cascade.png", data: "AQID", pending: false },
+  ]);
+  expect(document.activeElement).not.toBe(returnedCascadeEditor);
+  expect(mounts.filter((id) => id === cascade.id)).toHaveLength(3);
+  await userEvent.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(fake.calls.find((call) => call.method === "turn/start")).toBeDefined());
+  const submitted = fake.calls.find((call) => call.method === "turn/start");
+  expect(submitted?.params).toMatchObject({
+    ref: "local:same",
+    input: [
+      { type: "text", text: expect.stringContaining("Cascade reader draft") },
+      { type: "image", mediaType: "image/png", data: "AQID", name: "cascade.png" },
+    ],
+  });
+});
+
+test.each(["primary", "secondary", "cascade leaf", "focus-only departure"] as const)(
+  "real Session preserves the %s reader's away position through attention history",
+  async (journey) => {
+    vi.mocked(ComposerModule.Composer).mockRestore();
+    onTestFinished(() => {
+      vi.restoreAllMocks();
+      stubSessionSlots();
+    });
+    const fake = connectFakeClient();
+    fake.on("thread/read", ({ ref }) => {
+      if (!ref) throw new Error("thread/read requires a ref");
+      return readResponse(ref, {
+        id: `thr_${ref}`,
+        sessionId: `session-${ref}`,
+        evener: {
+          ref,
+          capabilities: { ...CAPABILITIES, skillInput: true, commandInput: true },
+          queue: { revision: 0 },
+        },
+        turns: Array.from({ length: 5 }, (_, index) => ({
+          id: `${ref}-turn-${index}`,
+          status: "completed" as const,
+          itemsView: "full" as const,
+          items: [
+            {
+              id: `${ref}-entry-${index}`,
+              turnId: `${ref}-turn-${index}`,
+              type: "userMessage" as const,
+              text: `${ref} reading row ${index}`,
+              status: "completed" as const,
+            },
+          ],
+        })),
+      });
+    });
+    fake.on("evener/thread/activity/read", ({ ref, scope }) => ({
+      ...activitySummary(ref, scope),
+      context: cascadeContext(ref, ref === "local:leaf" ? ["local:owner"] : []),
+    }));
+
+    const primary = {
+      id: "reading-primary",
+      type: "session" as const,
+      params: { ref: "local:origin" },
+      slot: "main" as const,
+    };
+    const secondary = {
+      id: "reading-secondary",
+      type: "session" as const,
+      params: { ref: "local:origin" },
+      slot: "secondary" as const,
+    };
+    const peer = { id: "reading-peer", type: "session" as const, params: { ref: "local:peer" }, slot: "main" as const };
+    const x = { id: "reading-X", type: "session" as const, params: { ref: "local:X" }, slot: "secondary" as const };
+    const owner = {
+      id: "reading-owner",
+      type: "session" as const,
+      params: { ref: "local:owner" },
+      slot: "main" as const,
+    };
+    window.history.replaceState({}, "", journey === "cascade leaf" ? "/s/local%3Aowner" : "/s/local%3Aorigin");
+    if (journey === "secondary") workspaceStore.setState({ panes: [peer, secondary], focusedPaneId: secondary.id });
+    else if (journey === "focus-only departure")
+      workspaceStore.setState({ panes: [primary, x], focusedPaneId: primary.id });
+    else if (journey === "cascade leaf") workspaceStore.setState({ panes: [owner], focusedPaneId: owner.id });
+    else workspaceStore.setState({ panes: [primary], focusedPaneId: primary.id });
+    const originRef = journey === "cascade leaf" ? "local:leaf" : "local:origin";
+    const draftText = `Read at ${journey} /review /inspect`;
+    const structuredDraft = {
+      text: draftText,
+      skillNames: ["review"],
+      commandNames: ["inspect"],
+      mentions: [
+        { kind: "skill" as const, name: "review", offset: `Read at ${journey} `.length },
+        { kind: "command" as const, name: "inspect", offset: `Read at ${journey} /review `.length },
+      ],
+    };
+    writeComposerDraft(originRef, structuredDraft);
+
+    const geometry = { width: 760, viewportHeight: 400, rowHeights: Array.from({ length: 5 }, () => 600) };
+    const external = installTranscriptGeometry((element) => {
+      const id = element.closest<HTMLElement>("[data-reading-reader]")?.dataset.readingReader;
+      return id ? (geometryByReader.get(id) ?? geometry) : geometry;
+    });
+    const geometryByReader = new Map<string, typeof geometry>();
+    let cascadeId = "";
+
+    const mounts: string[] = [];
+    const unmounts: string[] = [];
+    function FocusedReader({ pane }: { pane: OpenPaneRecord }) {
+      useEffect(() => {
+        mounts.push(pane.id);
+        return () => {
+          unmounts.push(pane.id);
+        };
+      }, [pane.id]);
+      if (pane.type === "session")
+        return <Session params={pane.params as SessionPaneParams} paneId={pane.id} focused />;
+      if (pane.type === "sessionZoom")
+        return <Zoom paneId={pane.id} params={pane.params as SessionZoomParams} focused />;
+      return null;
+    }
+    function FocusedReaderHost() {
+      const workspace = useSyncExternalStore(workspaceStore.subscribe, workspaceStore.getState);
+      useEffect(() => {
+        const restore = () => restoreCurrentAttentionEntry();
+        window.addEventListener("popstate", restore);
+        return () => window.removeEventListener("popstate", restore);
+      }, []);
+      const pane = workspace.panes.find((candidate) => candidate.id === workspace.focusedPaneId);
+      if (!pane) return null;
+      return (
+        <div key={pane.id} data-reading-reader={pane.id}>
+          <FocusedReader pane={pane} />
+        </div>
+      );
+    }
+
+    const view = render(
+      <ClientProvider client={fake}>
+        <FocusedReaderHost />
+      </ClientProvider>,
+    );
+    try {
+      if (journey === "cascade leaf") {
+        await screen.findByRole("textbox", { name: "Message" });
+        await settleActivityDiscovery("local:owner");
+        act(() => {
+          cascadeId = enterAgentCascade(
+            activityDelegate({ ownerRef: "local:owner", childRef: "local:leaf", delegateId: "reading-leaf-edge" }),
+            owner.id,
+          );
+          workspaceStore.getState().focusPane(cascadeId);
+        });
+        await screen.findByTestId("cascade-column");
+        await settleActivityDiscovery("local:leaf");
+        const leafPane = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
+        if (!leafPane) throw new Error("cascade leaf pane was not committed");
+        const leafView = retainedTranscriptReadView(conversationPaneLifetime(leafPane), "local:leaf", "cascade");
+        await waitFor(() => expect(leafView.readable).toBe(true));
+        await screen.findByRole("textbox", { name: "Message" });
+      }
+      const originPaneId = journey === "secondary" ? secondary.id : journey === "cascade leaf" ? cascadeId : primary.id;
+      const originPane = workspaceStore.getState().panes.find((pane) => pane.id === originPaneId);
+      if (!originPane) throw new Error(`missing ${journey} origin pane`);
+      const originLifetime = conversationPaneLifetime(originPane);
+      const originReadView = retainedTranscriptReadView(
+        originLifetime,
+        originRef,
+        originPane.type === "sessionZoom" ? "cascade" : "session",
+      );
+      const initialComposer = originLifetime.composer;
+      await screen.findByRole("textbox", { name: "Message" });
+      await settleActivityDiscovery(originRef);
+      await waitFor(() => expect(originReadView.readable).toBe(true));
+      if (!initialComposer) throw new Error("real Session has no retained Composer source");
+      act(() => {
+        initialComposer.updateText(structuredDraft.text);
+        initialComposer.updateSkillNames(structuredDraft.skillNames);
+        initialComposer.updateSelectionMeta(structuredDraft);
+        initialComposer.persistDraft(structuredDraft.text);
+      });
+      expect(initialComposer.getSnapshot()).toMatchObject(structuredDraft);
+      const portFor = async (paneId: string) => {
+        let portFound!: HTMLElement;
+        await waitFor(() => {
+          const port = view.container.querySelector<HTMLElement>(
+            `[data-reading-reader="${paneId}"] [data-testid="transcript-virtual-list"] > div`,
+          );
+          expect(port).not.toBeNull();
+          if (port) portFound = port;
+        });
+        return portFound;
+      };
+      const mountedCapture = async (viewId: string) => {
+        let captured!: NonNullable<ReturnType<typeof captureTranscriptView>>;
+        await waitFor(() => {
+          const current = captureTranscriptView(viewId);
+          expect(current).toBeDefined();
+          if (current) captured = current;
+        });
+        return captured;
+      };
+      const expectUnregistered = async (viewId: string) => {
+        await waitFor(() => expect(captureTranscriptView(viewId)).toBeUndefined());
+      };
+      const scrollReaderToAnchor = async (
+        paneId: string,
+        ref: string,
+        rowIndex: number,
+        scrollTop: number,
+        expectedOffset: number,
+      ) => {
+        geometryByReader.set(paneId, {
+          width: 760,
+          viewportHeight: 400,
+          rowHeights: Array.from({ length: 5 }, () => 600),
+        });
+        await act(async () => external.notify());
+        const readerPort = await portFor(paneId);
+        await waitFor(() => expect(readerPort.clientHeight).toBe(400));
+        await act(async () => {
+          fireEvent.wheel(readerPort, { deltaY: 700 });
+          readerPort.scrollTop = scrollTop;
+          fireEvent.scroll(readerPort);
+        });
+        const id = `${ref}-entry-${rowIndex}`;
+        const visibleAnchor = readerPort.querySelector<HTMLElement>(`[data-view-anchor-id="${id}"]`);
+        if (!visibleAnchor) throw new Error(`reader ${paneId} has no visible anchor ${id}`);
+        expect(visibleAnchor.getBoundingClientRect().top - readerPort.getBoundingClientRect().top).toBe(expectedOffset);
+        return { port: readerPort, anchorId: id, anchorOffset: expectedOffset, scrollTop };
+      };
+      const originGeometry = { width: 760, viewportHeight: 400, rowHeights: Array.from({ length: 5 }, () => 600) };
+      geometryByReader.set(originPaneId, originGeometry);
+      await act(async () => external.notify());
+      const port = await portFor(originPaneId);
+      await waitFor(() => expect(port.clientHeight).toBe(400));
+      await act(async () => {
+        fireEvent.wheel(port, { deltaY: 700 });
+        port.scrollTop = 750;
+        fireEvent.scroll(port);
+      });
+      const anchorId = `${originRef}-entry-1`;
+      const anchor = port.querySelector<HTMLElement>(`[data-view-anchor-id="${anchorId}"]`);
+      if (!anchor) throw new Error(`reading anchor ${anchorId} is not rendered`);
+      const initialAnchorOffset = anchor.getBoundingClientRect().top - port.getBoundingClientRect().top;
+      expect(initialAnchorOffset).toBe(-150);
+      const initialReadViewId = originReadView.id;
+      const initialRegistryCapture = await mountedCapture(initialReadViewId);
+      expect(initialRegistryCapture).toMatchObject({ anchorId, anchorOffset: -150 });
+      expect(initialComposer?.getSnapshot()).toMatchObject(structuredDraft);
+
+      const openAttention = (ref: string) => act(() => openAttentionSession(ref));
+      const awaitPopstate = async (direction: "back" | "forward") => {
+        const popped = new Promise<void>((resolve) =>
+          window.addEventListener("popstate", () => resolve(), { once: true }),
+        );
+        await act(async () => {
+          window.history[direction]();
+          await popped;
+        });
+      };
+      if (journey === "focus-only departure") {
+        openAttention("local:B");
+        await screen.findByRole("textbox", { name: "Message" });
+        expect(unmounts).toContain(originPaneId);
+        await expectUnregistered(initialReadViewId);
+        await waitFor(() => expect(originReadView.getCapture()).toMatchObject({ anchorId, anchorOffset: -150 }));
+        const bPaneId = workspaceStore.getState().focusedPaneId;
+        if (!bPaneId) throw new Error("attention B has no focused pane ID");
+        const bPane = workspaceStore.getState().panes.find((pane) => pane.id === bPaneId);
+        if (!bPane) throw new Error("attention B pane is missing");
+        const bLifetime = conversationPaneLifetime(bPane);
+        const bReadView = retainedTranscriptReadView(bLifetime, "local:B", "session");
+        const bAnchor = await scrollReaderToAnchor(bPaneId, "local:B", 2, 1300, -100);
+        const bRegistryCapture = await mountedCapture(bReadView.id);
+        expect(bRegistryCapture).toMatchObject({ anchorId: bAnchor.anchorId, anchorOffset: -100 });
+        act(() => workspaceStore.getState().focusPane(x.id));
+        await waitFor(() => expect(unmounts).toContain(bPaneId));
+        await expectUnregistered(bReadView.id);
+        expect(window.location.pathname).toBe("/s/local%3AB");
+        const xPane = workspaceStore.getState().panes.find((pane) => pane.id === x.id);
+        if (!xPane) throw new Error("focus-only departure removed existing secondary X");
+        writeComposerDraft("local:X", structuredDraft);
+        const xLifetime = conversationPaneLifetime(xPane);
+        const xReadView = retainedTranscriptReadView(xLifetime, "local:X", "session");
+        await settleActivityDiscovery("local:X");
+        await waitFor(() => expect(xReadView.readable).toBe(true));
+        const focusedXEditor = await screen.findByRole("textbox", { name: "Message" });
+        const xComposer = xLifetime.composer;
+        if (!xComposer) throw new Error("focused secondary X has no real Composer source");
+        act(() => {
+          xComposer.updateText(structuredDraft.text);
+          xComposer.updateSkillNames(structuredDraft.skillNames);
+          xComposer.updateSelectionMeta(structuredDraft);
+          xComposer.persistDraft(structuredDraft.text);
+        });
+        expect(xComposer.getSnapshot()).toMatchObject(structuredDraft);
+        geometryByReader.set(x.id, originGeometry);
+        await act(async () => external.notify());
+        const xPort = await portFor(x.id);
+        await act(async () => {
+          fireEvent.wheel(xPort, { deltaY: 700 });
+          xPort.scrollTop = 750;
+          fireEvent.scroll(xPort);
+        });
+        const xAnchor = xPort.querySelector<HTMLElement>('[data-view-anchor-id="local:X-entry-1"]');
+        if (!xAnchor) throw new Error("focused secondary X has no real transcript anchor");
+        expect(xAnchor.getBoundingClientRect().top - xPort.getBoundingClientRect().top).toBe(-150);
+        const xViewId = xReadView.id;
+        const xInitialCapture = await mountedCapture(xViewId);
+        const xSnapshot = xLifetime.composer?.getSnapshot();
+        openAttention("local:C");
+        await screen.findByRole("textbox", { name: "Message" });
+        const attentionCPaneId = workspaceStore.getState().focusedPaneId;
+        if (!attentionCPaneId) throw new Error("attention C has no focused pane ID");
+        expect(unmounts).toContain(x.id);
+        await expectUnregistered(xViewId);
+        const xCapture = xReadView.getCapture();
+        if (!xCapture) throw new Error("focus-only reader X did not capture its actual scroll position on departure");
+        await waitFor(() => expect(xReadView.getCapture()).toMatchObject(xCapture));
+        const cPane = workspaceStore.getState().panes.find((pane) => pane.id === attentionCPaneId);
+        if (!cPane) throw new Error("attention C pane is missing");
+        const cLifetime = conversationPaneLifetime(cPane);
+        const cReadView = retainedTranscriptReadView(cLifetime, "local:C", "session");
+        const cEditor = screen.getByRole("textbox", { name: "Message" });
+        const cDisplayedDraft = cEditor.textContent;
+        const cAnchor = await scrollReaderToAnchor(attentionCPaneId, "local:C", 3, 2000, -200);
+        const cRegistryCapture = await mountedCapture(cReadView.id);
+        expect(cRegistryCapture).toMatchObject({ anchorId: cAnchor.anchorId, anchorOffset: -200 });
+        await awaitPopstate("back");
+        await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(x.id));
+        await waitFor(() => expect(unmounts).toContain(attentionCPaneId));
+        const xRemountedCapture = await mountedCapture(xViewId);
+        expect(xRemountedCapture).toMatchObject(xInitialCapture);
+        const returnedXEditor = await screen.findByRole("textbox", { name: "Message" });
+        expect(document.activeElement).not.toBe(returnedXEditor);
+        const returnedXPort = await portFor(x.id);
+        const returnedXAnchor = returnedXPort.querySelector<HTMLElement>('[data-view-anchor-id="local:X-entry-1"]');
+        if (!returnedXAnchor) throw new Error("back did not render secondary X's captured anchor");
+        await waitFor(() =>
+          expect(returnedXAnchor.getBoundingClientRect().top - returnedXPort.getBoundingClientRect().top).toBe(-150),
+        );
+        expect(xReadView.id).toBe(xViewId);
+        expect(xReadView.getCapture()).toMatchObject(xCapture);
+        expect(xLifetime.composer?.getSnapshot()).toMatchObject({
+          text: xSnapshot?.text,
+          skillNames: xSnapshot?.skillNames,
+          commandNames: xSnapshot?.commandNames,
+          mentions: xSnapshot?.mentions,
+        });
+        expect(returnedXEditor.textContent).toBe(xSnapshot?.text);
+        expect(conversationPaneLifetime(xPane)).toBe(xLifetime);
+        expect(xSnapshot && xLifetime.composer?.getSnapshot()).toMatchObject({
+          text: xSnapshot?.text,
+          skillNames: xSnapshot?.skillNames,
+          commandNames: xSnapshot?.commandNames,
+          mentions: xSnapshot?.mentions,
+        });
+        expect(document.activeElement).not.toBe(returnedXEditor);
+        expect(unmounts).toContain(attentionCPaneId);
+        await awaitPopstate("forward");
+        await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(attentionCPaneId));
+        await waitFor(() => expect(mounts.filter((id) => id === attentionCPaneId).length).toBeGreaterThanOrEqual(2));
+        const returnedCEditor = await screen.findByRole("textbox", { name: "Message" });
+        expect(document.activeElement).not.toBe(returnedCEditor);
+        const returnedCPort = await portFor(attentionCPaneId);
+        const returnedCAnchor = returnedCPort.querySelector<HTMLElement>(`[data-view-anchor-id="${cAnchor.anchorId}"]`);
+        if (!returnedCAnchor) throw new Error("Forward did not remount C's captured transcript anchor");
+        await waitFor(() =>
+          expect(returnedCAnchor.getBoundingClientRect().top - returnedCPort.getBoundingClientRect().top).toBe(-200),
+        );
+        expect(returnedCPort.scrollTop).toBe(2000);
+        expect(await mountedCapture(cReadView.id)).toMatchObject(cRegistryCapture);
+        expect(conversationPaneLifetime(cPane)).toBe(cLifetime);
+        expect(returnedCEditor.textContent).toBe(cDisplayedDraft);
+        expect(cLifetime.composer?.getSnapshot()).toMatchObject({ text: cDisplayedDraft });
+        expect(conversationPaneLifetime(bPane)).toBe(bLifetime);
+        await expectUnregistered(xViewId);
+        expect(focusedXEditor).not.toBe(document.activeElement);
+        return;
+      }
+
+      openAttention("local:destination");
+      await screen.findByRole("textbox", { name: "Message" });
+      expect(unmounts).toContain(originPaneId);
+      await expectUnregistered(initialReadViewId);
+      await waitFor(() => expect(originReadView.getCapture()).toMatchObject({ anchorId, anchorOffset: -150 }));
+      const initialCapture = originReadView.getCapture();
+      if (!initialCapture) throw new Error("hiding the real reader did not capture its read view");
+      const destinationPaneId = workspaceStore.getState().focusedPaneId;
+      if (!destinationPaneId) throw new Error("attention destination has no focused pane ID");
+      const destinationPane = workspaceStore.getState().panes.find((pane) => pane.id === destinationPaneId);
+      if (!destinationPane) throw new Error("attention destination pane is missing");
+      const destinationLifetime = conversationPaneLifetime(destinationPane);
+      const destinationReadView = retainedTranscriptReadView(destinationLifetime, "local:destination", "session");
+      const destinationEditor = screen.getByRole("textbox", { name: "Message" });
+      const destinationDisplayedDraft = destinationEditor.textContent;
+      const destinationAnchor = await scrollReaderToAnchor(destinationPaneId, "local:destination", 3, 1900, -100);
+      const destinationRegistryCapture = await mountedCapture(destinationReadView.id);
+      expect(destinationRegistryCapture).toMatchObject({ anchorId: destinationAnchor.anchorId, anchorOffset: -100 });
+      await awaitPopstate("back");
+      await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(originPaneId));
+      await waitFor(() => expect(unmounts).toContain(destinationPaneId));
+      const remountedOriginCapture = await mountedCapture(initialReadViewId);
+      expect(remountedOriginCapture).toMatchObject(initialRegistryCapture);
+      const returnedEditor = await screen.findByRole("textbox", { name: "Message" });
+      expect(document.activeElement).not.toBe(returnedEditor);
+      const returnedPort = await portFor(originPaneId);
+      const returnedAnchor = returnedPort.querySelector<HTMLElement>(`[data-view-anchor-id="${anchorId}"]`);
+      if (!returnedAnchor) throw new Error("Back did not render the captured transcript anchor");
+      await waitFor(() =>
+        expect(returnedAnchor.getBoundingClientRect().top - returnedPort.getBoundingClientRect().top).toBe(-150),
+      );
+      expect(returnedPort.scrollTop).toBe(750);
+      expect(originReadView.id).toBe(initialReadViewId);
+      expect(originReadView.getCapture()).toMatchObject(initialCapture);
+      expect(conversationPaneLifetime(originPane)).toBe(originLifetime);
+      expect(originLifetime.composer).toBe(initialComposer);
+      expect(initialComposer?.getSnapshot()).toMatchObject(structuredDraft);
+      expect(document.activeElement).not.toBe(returnedEditor);
+      expect(mounts.filter((id) => id === originPaneId).length).toBeGreaterThanOrEqual(2);
+      if (journey === "secondary") {
+        expect(workspaceStore.getState().panes).toContain(peer);
+        expect(workspaceStore.getState().panes).toContain(secondary);
+        expect(secondary.slot).toBe("secondary");
+        expect(conversationPaneLifetime(peer).alive).toBe(true);
+      }
+      if (journey === "cascade leaf") {
+        expect(originPane.type).toBe("sessionZoom");
+        expect(originReadView.role).toBe("cascade");
+        expect(originReadView.paneId).toBe(cascadeId);
+        expect(originReadView.requestedRef).toBe("local:leaf");
+      }
+      await awaitPopstate("forward");
+      await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(destinationPaneId));
+      await waitFor(() => expect(mounts.filter((id) => id === destinationPaneId).length).toBeGreaterThanOrEqual(2));
+      const returnedDestinationEditor = await screen.findByRole("textbox", { name: "Message" });
+      expect(document.activeElement).not.toBe(returnedDestinationEditor);
+      const returnedDestinationPort = await portFor(destinationPaneId);
+      const returnedDestinationAnchor = returnedDestinationPort.querySelector<HTMLElement>(
+        `[data-view-anchor-id="${destinationAnchor.anchorId}"]`,
+      );
+      if (!returnedDestinationAnchor) throw new Error("Forward did not remount the destination transcript anchor");
+      await waitFor(() =>
+        expect(
+          returnedDestinationAnchor.getBoundingClientRect().top - returnedDestinationPort.getBoundingClientRect().top,
+        ).toBe(-100),
+      );
+      expect(returnedDestinationPort.scrollTop).toBe(1900);
+      expect(await mountedCapture(destinationReadView.id)).toMatchObject(destinationRegistryCapture);
+      expect(conversationPaneLifetime(destinationPane)).toBe(destinationLifetime);
+      expect(returnedDestinationEditor.textContent).toBe(destinationDisplayedDraft);
+      expect(destinationLifetime.composer?.getSnapshot()).toMatchObject({ text: destinationDisplayedDraft });
+      await expectUnregistered(initialReadViewId);
+    } finally {
+      view.unmount();
+      external.restore();
+    }
+  },
+);
 
 test("desktop session panes own separate location and activity footers", async ({ onTestFinished }) => {
   vi.mocked(StatusBarModule.StatusBar).mockRestore();
@@ -5575,4 +6640,472 @@ test("a resume survives a collapsed column in another cascade until that cascade
   );
   await act(async () => {});
   expect(threadsStore.getState().resumedIdentities.has(ref)).toBe(false);
+});
+
+function renderAttentionSession(fake: FakeClient, pane: OpenPaneRecord) {
+  return render(
+    <ClientProvider client={fake}>
+      <NeedsYouProvider>
+        <Session params={pane.params as SessionPaneParams} paneId={pane.id} focused={false} />
+      </NeedsYouProvider>
+    </ClientProvider>,
+  );
+}
+
+test("a cold focused conversation can demand its first needs-you page before the manifest arrives", async ({
+  onTestFinished,
+}) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+    stubSessionSlots();
+  });
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => attentionRead("ref_a"));
+  const manifestGate = deferred<void>();
+  const pageRequests: Array<{ offset?: number; limit?: number }> = [];
+  fake.on("evener/navigation/read", (params) => {
+    if (params.resource === "manifest") {
+      return manifestGate.promise.then(() =>
+        wireSnapshot(
+          params,
+          manifest({
+            generation_id: "cold-needs-you",
+            sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+          }),
+          '"manifest"',
+          1,
+          "cold-needs-you",
+        ),
+      );
+    }
+    if (params.resource === "section" && params.section === "needs_you") {
+      pageRequests.push({ offset: params.offset, limit: params.limit });
+      return wireSnapshot(params, { sessions: [], remaining: 0 }, '"page"', 1, "cold-needs-you");
+    }
+    throw new Error(`unexpected navigation resource ${params.resource}`);
+  });
+  const releaseNavigation = navigationStore.init(fake, capability("cold-needs-you"));
+  const manifestRead = navigationStore.getState().loadManifest();
+  const pane = attentionSession();
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  window.history.replaceState({}, "", "/s/ref_a");
+  let view: ReturnType<typeof render> | undefined;
+
+  try {
+    await waitFor(() => expect(navigationStore.getState().manifest?.loading).toBe(true));
+    view = renderAttentionSession(fake, pane);
+    await screen.findByRole("textbox", { name: "Message" });
+    await flushPendingTurnsProjectionForTests();
+
+    const next = await screen.findByTestId("next-needs-you-next");
+    expect(pageRequests).toEqual([]);
+    fireEvent.click(next);
+    await waitFor(() => expect(pageRequests).toEqual([{ offset: 0, limit: 50 }]));
+  } finally {
+    view?.unmount();
+    releaseNavigation();
+    manifestGate.resolve();
+    await manifestRead;
+  }
+});
+
+test("a focused conversation can retry needs-you after its manifest read fails", async ({ onTestFinished }) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+    stubSessionSlots();
+  });
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => attentionRead("ref_a"));
+  let manifestReads = 0;
+  const pageRequests: Array<{ offset?: number; limit?: number }> = [];
+  fake.on("evener/navigation/read", (params) => {
+    if (params.resource === "manifest") {
+      manifestReads += 1;
+      throw new Error("manifest unavailable");
+    }
+    if (params.resource === "section" && params.section === "needs_you") {
+      pageRequests.push({ offset: params.offset, limit: params.limit });
+      return wireSnapshot(params, { sessions: [], remaining: 0 }, '"page"', 1, "failed-needs-you");
+    }
+    throw new Error(`unexpected navigation resource ${params.resource}`);
+  });
+  const releaseNavigation = navigationStore.init(fake, capability("failed-needs-you"));
+  const pane = attentionSession("failed-needs-you-pane");
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  window.history.replaceState({}, "", "/s/ref_a");
+  let view: ReturnType<typeof render> | undefined;
+
+  try {
+    await waitFor(() => expect(manifestReads).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(navigationStore.getState().manifest?.error).toBeTruthy());
+    view = renderAttentionSession(fake, pane);
+    await screen.findByRole("textbox", { name: "Message" });
+    await flushPendingTurnsProjectionForTests();
+
+    const next = await screen.findByTestId("next-needs-you-next");
+    expect(pageRequests).toEqual([]);
+    fireEvent.click(next);
+    await waitFor(() => expect(pageRequests).toEqual([{ offset: 0, limit: 50 }]));
+  } finally {
+    view?.unmount();
+    releaseNavigation();
+  }
+});
+
+test("a reconnect does not flash an empty needs-you control while its manifest reloads", async ({ onTestFinished }) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+    stubSessionSlots();
+  });
+  const firstClient = connectFakeClient();
+  firstClient.on("thread/read", () => attentionRead("ref_a"));
+  firstClient.on("evener/navigation/read", (params) => {
+    if (params.resource !== "manifest") throw new Error(`unexpected navigation resource ${params.resource}`);
+    return wireSnapshot(
+      params,
+      manifest({
+        generation_id: "reconnect-old-empty",
+        sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+      }),
+      '"manifest"',
+      1,
+      "reconnect-old-empty",
+    );
+  });
+  const releaseFirst = navigationStore.init(firstClient, capability("reconnect-old-empty"));
+  const pane = attentionSession("reconnect-empty-pane");
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  window.history.replaceState({}, "", "/s/ref_a");
+  const replacementClient = new FakeClient("ready");
+  const replacementManifestGate = deferred<void>();
+  replacementClient.on("evener/navigation/read", (params) => {
+    if (params.resource !== "manifest") throw new Error(`unexpected navigation resource ${params.resource}`);
+    return replacementManifestGate.promise.then(() =>
+      wireSnapshot(
+        params,
+        manifest({
+          generation_id: "reconnect-new-empty",
+          sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+        }),
+        '"manifest"',
+        1,
+        "reconnect-new-empty",
+      ),
+    );
+  });
+  let releaseReplacement: (() => void) | undefined;
+  let replacementManifestRead: Promise<unknown> | undefined;
+  let view: ReturnType<typeof render> | undefined;
+
+  try {
+    await waitFor(() => expect(navigationStore.getState().manifest?.data?.generation_id).toBe("reconnect-old-empty"));
+    view = renderAttentionSession(firstClient, pane);
+    await screen.findByRole("textbox", { name: "Message" });
+    await flushPendingTurnsProjectionForTests();
+    expect(screen.queryByTestId("next-needs-you-next")).toBeNull();
+
+    act(() => {
+      releaseReplacement = navigationStore.init(replacementClient, capability("reconnect-new-empty"));
+      replacementManifestRead = navigationStore.getState().loadManifest();
+    });
+    await waitFor(() => expect(navigationStore.getState().manifest?.loading).toBe(true));
+    expect(screen.queryByTestId("next-needs-you-next")).toBeNull();
+    await act(async () => {
+      replacementManifestGate.resolve();
+      await replacementManifestRead;
+    });
+    expect(navigationStore.getState().manifest?.data?.generation_id).toBe("reconnect-new-empty");
+    expect(screen.queryByTestId("next-needs-you-next")).toBeNull();
+  } finally {
+    view?.unmount();
+    releaseReplacement?.();
+    releaseFirst();
+    replacementManifestGate.resolve();
+    await replacementManifestRead?.catch(() => undefined);
+  }
+});
+
+test("a focused draft stays visible and composition suppression clears without losing the draft", async ({
+  onTestFinished,
+}) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+    stubSessionSlots();
+  });
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => attentionRead("ref_a"));
+  installNeedsYouRows(["ref_a", "ref_b"]);
+  const pane = attentionSession();
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  window.history.replaceState({}, "", "/s/ref_a");
+  writeComposerDraft("ref_a", { text: "keep this draft", skillNames: [] });
+
+  renderAttentionSession(fake, pane);
+  const editor = await screen.findByRole("textbox", { name: "Message" });
+  await flushPendingTurnsProjectionForTests();
+
+  // A saved draft does not hide the control, focused or not.
+  await waitFor(() => expect(screen.getByTestId("next-needs-you")).toBeTruthy());
+  expect(editor.textContent).toContain("keep this draft");
+  const overlay = screen.getByTestId("flow-overlay-attention");
+  expect(overlay.contains(screen.getByTestId("next-needs-you"))).toBe(true);
+  const composerForm = screen.getByTestId("composer-form");
+  expect(
+    screen.getByTestId("next-needs-you").compareDocumentPosition(composerForm) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+
+  // Editor focus alone does not suppress it: a session open autofocuses this
+  // editor, and the control must stay available.
+  fireEvent.focus(editor);
+  await waitFor(() => expect(screen.getByTestId("next-needs-you")).toBeTruthy());
+
+  // An in-progress IME composition suppresses it, and composition end returns
+  // it automatically.
+  fireEvent.compositionStart(editor);
+  await waitFor(() => expect(screen.queryByTestId("next-needs-you")).toBeNull());
+  fireEvent.compositionEnd(editor);
+  await waitFor(() => expect(screen.getByTestId("next-needs-you")).toBeTruthy());
+  expect(readDraft("ref_a")).toBe("keep this draft");
+});
+
+test("the measured attention stack becomes transcript end clearance", async ({ onTestFinished }) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+    stubSessionSlots();
+  });
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => attentionRead("ref_a"));
+  installNeedsYouRows(["ref_a", "ref_b"]);
+  // Give the floating stack a measured height without disturbing the
+  // transcript's own rect-based geometry. It sits flush against the reader's
+  // own bottom edge (jsdom reports that edge at 0), so the clearance it needs
+  // is exactly its own 96 px.
+  const originalRect = HTMLElement.prototype.getBoundingClientRect;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.dataset.testid === "flow-overlay-stack") return { top: -96, bottom: 0, height: 96 } as DOMRect;
+    return originalRect.call(this);
+  });
+  const pane = attentionSession("clearance-pane");
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  window.history.replaceState({}, "", "/s/ref_a");
+
+  renderAttentionSession(fake, pane);
+  await screen.findByRole("textbox", { name: "Message" });
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(screen.getByTestId("transcript-end-clearance")).toBeTruthy());
+
+  // The stack's committed measurement reaches the synthetic trailing row
+  // unchanged.
+  const clearance = screen.getByTestId("transcript-end-clearance");
+  expect(clearance.style.height).toBe("96px");
+  expect(clearance.closest('[data-row-id="live-edge"]')).toBeTruthy();
+  const pill = screen.getByTestId("flow-overlay-pill");
+  const attention = screen.getByTestId("flow-overlay-attention");
+  expect(pill.compareDocumentPosition(attention) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+test("the measured clearance does not toggle New Content or move an end-following reader", async ({
+  onTestFinished,
+}) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+    stubSessionSlots();
+  });
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => attentionRead("ref_a"));
+  installNeedsYouRows(["ref_a", "ref_b"]);
+  // The floating stack's own measured height is what FlowOverlay reports and
+  // ConversationBody turns into the synthetic trailing row. It starts
+  // unmeasured (no clearance row), then appears at 96 px and disappears.
+  let stackHeight = 0;
+  const originalRect = HTMLElement.prototype.getBoundingClientRect;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.dataset.testid === "flow-overlay-stack") {
+      return { top: -stackHeight, bottom: 0, height: stackHeight } as DOMRect;
+    }
+    return originalRect.call(this);
+  });
+  // Real scroll geometry: one 600 px turn in a 400 px port, with the trailing
+  // clearance row measured at the stack's height. installTranscriptGeometry's
+  // notify() is the browser's resize delivery, including the new row's own
+  // measurement on the frame after it mounts.
+  const geometry = installTranscriptGeometry(() => ({
+    width: 760,
+    viewportHeight: 400,
+    rowHeights: [600, stackHeight],
+  }));
+  try {
+    const pane = attentionSession("clearance-pill-pane");
+    workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+    window.history.replaceState({}, "", "/s/ref_a");
+    renderAttentionSession(fake, pane);
+    await screen.findByRole("textbox", { name: "Message" });
+    await flushPendingTurnsProjectionForTests();
+    const section = screen.getByTestId("transcript-virtual-list");
+    const port = section.firstElementChild as HTMLElement;
+    await act(async () => geometry.notify());
+
+    // The pill is the only surface for the unseen count, and NewContentPill
+    // renders itself whenever the count is above zero even while `visible` is
+    // false. A missing pill therefore asserts both halves: still hidden, and
+    // the count still zero.
+    const expectEndUnchanged = () => {
+      expect(screen.queryByTestId("new-content-pill")).toBeNull();
+      // Still at the true end, not merely at an unchanged offset: this is the
+      // position the re-pin has to move as the clearance grows and shrinks.
+      expect(port.scrollTop).toBe(port.scrollHeight - port.clientHeight);
+    };
+
+    // One turn, already at the end (600 - 400), no clearance yet.
+    expect(screen.getAllByTestId("turn-block")).toHaveLength(1);
+    expect(screen.queryByTestId("transcript-end-clearance")).toBeNull();
+    expect(port.scrollTop).toBe(200);
+    expectEndUnchanged();
+
+    stackHeight = 96;
+    await act(async () => geometry.notify());
+    await act(async () => geometry.notify());
+    // The clearance really arrived as the synthetic trailing row, and the
+    // reader was carried to the new end rather than left short of it.
+    const clearance = screen.getByTestId("transcript-end-clearance");
+    expect(clearance.style.height).toBe("96px");
+    expect(clearance.closest('[data-row-id="live-edge"]')).toBeTruthy();
+    expect(port.scrollTop).toBe(296);
+    // No transcript item or turn left the projection for the clearance.
+    expect(screen.getAllByTestId("turn-block")).toHaveLength(1);
+    expectEndUnchanged();
+
+    stackHeight = 0;
+    await act(async () => geometry.notify());
+    await act(async () => geometry.notify());
+    expect(screen.queryByTestId("transcript-end-clearance")).toBeNull();
+    expect(port.scrollTop).toBe(200);
+    expectEndUnchanged();
+  } finally {
+    geometry.restore();
+  }
+});
+
+test("a pending question suppresses the control and returns automatically", async ({ onTestFinished }) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+    stubSessionSlots();
+  });
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => attentionRead("ref_a"));
+  installNeedsYouRows(["ref_a", "ref_b"]);
+  const pane = attentionSession("question-pane");
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  window.history.replaceState({}, "", "/s/ref_a");
+
+  renderAttentionSession(fake, pane);
+  await screen.findByRole("textbox", { name: "Message" });
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(screen.getByTestId("next-needs-you")).toBeTruthy());
+
+  act(() => startAskTurn(fake, "ref_a"));
+  await waitFor(() => expect(screen.queryByTestId("next-needs-you")).toBeNull());
+  act(() =>
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "idle" }, askPending: false },
+    } as never),
+  );
+  await waitFor(() => expect(screen.getByTestId("next-needs-you")).toBeTruthy());
+});
+
+test("a pending approval suppresses the control and returns when it resolves", async ({ onTestFinished }) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+    stubSessionSlots();
+  });
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => approvalRead("ref_a"));
+  fake.on("evener/sandbox/escalation/resolve", () => ({}));
+  installNeedsYouRows(["ref_a", "ref_b"]);
+  const pane = attentionSession("approval-pane");
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  window.history.replaceState({}, "", "/s/ref_a");
+
+  renderAttentionSession(fake, pane);
+  await screen.findByRole("textbox", { name: "Message" });
+  await flushPendingTurnsProjectionForTests();
+  // The approval has to be in the hydrated model before the control's absence
+  // counts as suppression, or this case can pass while the model is still
+  // loading and then resolve an approval the read installs afterwards.
+  await screen.findByRole("group", { name: "Sandbox approval" });
+  await waitFor(() => expect(screen.queryByTestId("next-needs-you")).toBeNull());
+
+  await act(async () => {
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+  });
+  await waitFor(() => expect(screen.queryByRole("group", { name: "Sandbox approval" })).toBeNull());
+  await waitFor(() => expect(screen.getByTestId("next-needs-you")).toBeTruthy());
+});
+
+test("a dormant transcript gets the same attention affordance without a fake transcript", async ({
+  onTestFinished,
+}) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+    stubSessionSlots();
+  });
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", { turns: [] }));
+  installNeedsYouRows(["ref_a", "ref_b"]);
+  const pane = attentionSession("dormant-pane");
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  window.history.replaceState({}, "", "/s/ref_a");
+
+  renderAttentionSession(fake, pane);
+  await screen.findByRole("textbox", { name: "Message" });
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(screen.getByTestId("next-needs-you")).toBeTruthy());
+
+  expect(screen.queryByTestId("transcript-virtual-list")).toBeNull();
+  const dock = screen.getByTestId("attention-dock");
+  expect(dock.contains(screen.getByTestId("next-needs-you"))).toBe(true);
+});
+
+// The real browser guard measured the floating control's absence at every
+// width below 900px (320, 390, 700, 899) while a session was focused and the
+// needs-you tier was populated. The desktop cascade grants the control through
+// the focused leaf's keyboard-scroll pane id; the phone host renders exactly
+// one pane, its focused session, through the same pane registry. This mounts
+// that host shape over a focused session and asks the same question the
+// browser did: is Next there?
+test("the mobile stack host offers attention navigation over its focused session", async ({ onTestFinished }) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+    stubSessionSlots();
+  });
+  onTestFinished(installMobileViewport());
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => attentionRead("ref_a"));
+  installNeedsYouRows(["ref_a", "ref_b"]);
+  const pane = attentionSession("mobile-attention-pane");
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  window.history.replaceState({}, "", "/s/ref_a");
+
+  render(
+    <ClientProvider client={fake}>
+      <NeedsYouProvider>
+        <StackHost />
+      </NeedsYouProvider>
+    </ClientProvider>,
+  );
+  await act(async () => await vi.dynamicImportSettled());
+  await screen.findByRole("textbox", { name: "Message" });
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(screen.getByTestId("next-needs-you-next")).toBeTruthy());
 });

@@ -5,6 +5,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Driver } from "../skillguard/run.mjs";
 import { evaluate, navigateTo, queryAccessibilityTree, REFUSED_BUTTON_SELECTOR } from "../browserGuardCdp.mjs";
+import { attentionJourney } from "./attention.mjs";
 
 const fixture = JSON.parse(readFileSync(0, "utf8"));
 const driver = new Driver(fixture);
@@ -1615,17 +1616,28 @@ async function reloadDocument() {
 const sent = (after = 0) => frames.slice(after).filter(f => f.direction === "Network.webSocketFrameSent");
 const answered = (request) => frames.some(f => f.direction === "Network.webSocketFrameReceived" && f.id === request.id && Object.hasOwn(f, "result") && !f.error);
 
-async function reconnect() {
+// expectRefs is the scene's own set of conversation owners. The cascade calls
+// omit it and keep the strict seven-ref cascade requirement; a later journey
+// whose panes have been replaced or closed passes the owners actually mounted,
+// because a closed or parked reader has no subscription to recover.
+async function reconnect({ expectRefs } = {}) {
   const after = frames.length;
+  const expected = expectRefs ?? fixture.refs;
   const sockets = await read(`(() => {
     const sockets = window.__cascadeSockets.filter(s => s.readyState === WebSocket.OPEN && new URL(s.url).pathname === '/rpc');
     for (const socket of sockets) socket.close(4000, 'cascade guard transport boundary');
     return sockets.length;
   })()`);
   assert.equal(sockets, 1, "one actual shared hub socket is closed");
-  await waitFrames(() => fixture.refs.every(ref => sent(after).some(f => f.method === "thread/read" && f.params.ref === ref && f.params.subscribe && answered(f))), "all seven real subscription owners recover");
+  await waitFrames(() => expected.every(ref => sent(after).some(f => f.method === "thread/read" && f.params.ref === ref && f.params.subscribe && answered(f))), expectRefs ? `${expected.length} mounted subscription owners recover` : "all seven real subscription owners recover")
+    .catch((error) => {
+      const subscriptions = sent(after).filter((f) => f.method === "thread/read" && f.params.subscribe);
+      const observed = [...new Set(subscriptions.map((f) => f.params.ref))];
+      const missing = expected.filter((ref) => !subscriptions.some((f) => f.params.ref === ref && answered(f)));
+      throw new Error(`${error.message}; missing owners ${JSON.stringify(missing)}; observed ${observed.length} subscriptions ${JSON.stringify(observed)}`);
+    });
   const subscriptions = sent(after).filter(f => f.method === "thread/read" && f.params.subscribe);
-  assert.ok(subscriptions.length >= 7);
+  assert.ok(subscriptions.length >= expected.length);
   assert.ok(subscriptions.every(f => f.params.replaceSubscription === false), "every admitted thread membership is additive");
   return after;
 }
@@ -2025,6 +2037,14 @@ try {
   await nativePositioningInterruption("wheel");
   await nativePositioningInterruption("pill");
   await reloadAndMobileJourney();
+  // The attention tier stays empty until this driver releases it, so every
+  // assertion above runs against exactly the baseline it ran against before
+  // the control existed. From here the real needs_you queue, the floating
+  // control and its hops own the browser.
+  await attentionJourney({
+    driver, fixture, read, wait, capture, key, frames, sent, answered, reconnect,
+    drill, upload, holdCanvasCompletion, sourcePortExpr, settledReadingPoint, assertReadingContinuity,
+  });
   assert.deepEqual(errors, [], "unexpected browser errors or warnings");
 } catch (error) {
   failed = true;
