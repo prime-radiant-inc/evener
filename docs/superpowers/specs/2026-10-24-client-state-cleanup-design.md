@@ -1,22 +1,33 @@
 # Client state cleanup design
 
 Status: draft for review. Written after the one-owner Retry work in #4871 and the
-outbox consolidation it depended on.
+outbox consolidation it depended on. Corrected after the phase-1 inventory.
 
 Related open work: #4816 (queued-message projection reads) and #4901 (native
-lost-acceptance duplicate queue requests). #4788 (durable lost-reply settlement)
-closed with the Retry work.
+test counts raw queue attempts from a leaked discovery interval; the durable
+record identity is unchanged). #4788 (durable lost-reply settlement) closed with
+the Retry work.
 
 ## Problem
 
-Both clients now have one Retry owner, but the state around a submission still
-has several overlapping owners:
+Both clients now have one Retry owner, and `pendingTurnsStore` is already a
+derived projection over the durable outbox, not a second queue. What still has
+several owners is the in-flight and read bookkeeping around a submission:
 
 - the composer owns the draft and its submission attempt;
-- the pending-turns view owns a second copy of what is in flight;
-- the session store owns canonical turns and a readiness flag;
+- the pending-turns projection owns the durable rows plus three facts that are
+  not derivable from them: the click-to-commit marker, provenance that outlives
+  settlement, and "unread" versus "read and empty";
+- the session store owns canonical turns, a readiness flag, and several more
+  in-flight markers (`retryActivationsInFlight`, `inflightDurableEnqueues`,
+  `undeliveredMutationIds`);
+- native keeps a second in-flight record in `ConversationMutationState` and in
+  the draft's `unconfirmed` field;
 - the mutation outbox owns the durable pending row and its recovery record;
-- each screen's service/registry owns the live client used to send.
+- one native screen (`ForkScreen`) creates its own conversation service instead
+  of borrowing the registry entry;
+- transcript, pending-projection, activity, and list reads each coalesce
+  separately for the same binding.
 
 Each layer re-derives "is this submission allowed" and "is this session ready".
 That is why the Retry work needed activation-time rechecks, a live-service
@@ -31,19 +42,24 @@ which of several projections is authoritative.
 
 1. **One durable record per submission.** The outbox row is the only authority
    for pending; the recovery row is the only authority for not-sent. Views
-   derive from them and never keep a parallel queue.
-2. **One projection per hub/session binding.** Canonical turns, pending rows,
-   readiness, and the live client come from one registry entry. A screen
-   borrows that entry; it does not create a second service.
-3. **One submission gate.** Eligibility is a pure predicate over the projection
+   derive from them.
+2. **Every non-derived marker has one named owner.** The click-to-commit
+   marker, provenance, and unread state are real facts; they belong to one
+   projection contract, not to a second in-flight record.
+3. **One projection per hub/session binding.** Canonical turns, pending rows,
+   readiness, markers, and the live client come from one registry entry. A
+   screen borrows that entry; it does not create a second service.
+4. **One submission gate.** Eligibility is a pure predicate over the projection
    and the clicked turn, returning allowed plus a reason. Components render the
    answer and do not repeat the checks at activation.
-4. **One continuation intent.** Latest-failure selection and the `continue`
-   input live in the shared client package, used by browser and native.
-5. **Reads are demand-driven and coalesced.** One read actor per binding serves
-   transcript, activity, and pending demand. A new demand joins the in-flight
-   read or schedules one follow-up; it does not start a second reader.
-6. **Drafts do not own submission state.** A draft survives acceptance,
+5. **One continuation intent.** Latest-failure selection and the `continue`
+   input live in the shared client package, used by browser and native. This is
+   already true; keep it.
+6. **Reads are demand-driven and coalesced.** One read actor per binding serves
+   transcript, pending, and activity demand unless a measured case proves a
+   separate subscription is cheaper. A new demand joins the in-flight read or
+   schedules one follow-up; it does not start a second reader.
+7. **Drafts do not own submission state.** A draft survives acceptance,
    refusal, remount, and reconnect without becoming a second record of what is
    in flight.
 
@@ -54,20 +70,24 @@ which of several projections is authoritative.
 - Keep `turnContinuation` predicates (latest failed turn, one pending
   continuation, continuation input) in `appwire-client/typescript`.
 - Export the projection shape the gate consumes: canonical latest turn, pending
-  rows, readiness, and the live target identity.
+  rows, readiness, the in-flight markers, and the live target identity.
 - Keep the mutation record and recovery shapes here so both clients read the
   same fields.
 
 ### Browser
 
-- `threads.ts` exposes one `SessionProjection` per hub/session. It combines the
+- `pendingTurnsStore` stays the derived projection. It is not replaced. The
+  work is to make its marker contract explicit:
+  - `submittingRefs` owns the click-to-commit window;
+  - `submittedHere` owns provenance after settlement;
+  - `loadedRefs` owns "unread" versus "read and empty";
+  - `retryActivationsInFlight` folds into `submittingRefs`;
+  - `inflightDurableEnqueues` and `undeliveredMutationIds` become gate fields,
+    not a second local condition list.
+- `threads.ts` exposes one `SessionProjection` per hub/session combining the
   canonical store, the outbox projection, and the read state.
-- `pendingTurnsStore` becomes a derived view over the outbox projection. Its
-  separate in-memory queue and submission refs are removed once the projection
-  covers every caller.
 - `Composer` and the Retry action call the shared gate. The activation path
-  still re-reads the live projection, but it no longer has a second local list
-  of conditions.
+  still re-reads the live projection, but it no longer repeats the checks.
 
 ### Native
 
@@ -75,6 +95,11 @@ which of several projections is authoritative.
   store, mutation host, service, activity sink, read actor, refcounted attach.
 - `NativeMutationRuntime.read` is the only projection source for pending and
   recovery; screens do not query storage directly.
+- `ConversationMutationState.pendingMutation` is removed after the durable
+  projection and gate replace it. The draft's `unconfirmed` field shrinks to
+  the acceptance-window fact it actually owns.
+- `ForkScreen` borrows the registry entry's service instead of
+  `createConversationService` at the screen.
 - The screen renders `gate(projection, clickedTurn)` and submits through the
   entry's current service. A retired entry refuses without losing the draft.
 
@@ -82,23 +107,34 @@ which of several projections is authoritative.
 
 ### Phase 1: inventory and delete dead paths
 
-- Remove `useReadRetry` if no caller remains after #4816.
-- List every place that constructs a pending queue or service, and mark its
-  owner. Exit when the list has one owner per concern.
+- The inventory is done. The only dead production path is
+  `mobile-native/src/session/useReadRetry.ts`; its only importer is its own
+  test. Delete both.
+- Some existing comments claim native has no durable outbox; correct them when
+  touching those files.
+- Exit with no behavior change and a clean affected suite.
 
-### Phase 2: derived pending views
+### Phase 2: consolidate in-flight markers
 
-- Replace the browser's separate pending list with a selector over the outbox
-  projection.
-- Replace native screen-local pending reads with the registry projection.
-- Exit when both clients' pending counts come from the same record shape and
-  the existing recovery tests pass unchanged.
+- Fold browser `retryActivationsInFlight` into `submittingRefs`.
+- Remove native `ConversationMutationState.pendingMutation` after the durable
+  projection and gate cover its readers; reduce draft `unconfirmed` to the
+  acceptance window.
+- Route `ForkScreen` through `NativeConversationSessions`.
+- Keep `submittingRefs`, `submittedHere`, and `loadedRefs`; they are not
+  derivable from the outbox. Give them one documented home in the projection.
+- Exit when each concern has one writer and one reader contract, and the
+  existing recovery and draft tests pass unchanged.
 
 ### Phase 3: one gate and one read actor
 
-- Move the remaining eligibility checks into the shared gate.
-- Make transcript, activity, and pending demand share one read actor per
-  binding, with explicit cancellation and a single follow-up.
+- Move the remaining eligibility checks into the shared gate: browser
+  `availabilityFor` and `continueTurn`, native `sendAction`, `errorAction`, and
+  the Retry precondition.
+- Make transcript, pending, and activity demand share one read actor per
+  binding, with explicit cancellation and a single follow-up. If activity
+  measurement shows a separate subscription is cheaper, keep it and document
+  the exception.
 - Exit when a reconnect or remount produces one read and one pending row, and
   the scoped-cancellation tests show no orphaned read.
 
@@ -123,6 +159,10 @@ which of several projections is authoritative.
   cancellation, peer consumes a stale recovery, refcounted attach/release.
 - Browser and native projection tests: pending count, readiness transitions,
   recovery ownership, draft preservation.
+- Test isolation: stop and recreate the native mutation runtime between cases,
+  or inject one without a live discovery interval. Add a lost-reply case that
+  advances the discovery interval and asserts one `clientMutationId`, not one
+  raw method call.
 - Race tests: storage notification during a read, reconnect during a send,
   settlement during a remount.
 - Exit criterion for every phase: the full affected journeys pass twice in a
