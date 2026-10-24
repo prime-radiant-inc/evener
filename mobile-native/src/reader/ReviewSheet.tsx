@@ -70,6 +70,7 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 		if (!verdict || !client || !canSend) return;
 		setSending(true);
 		setFailure(null);
+		let resolvedRef = sessionRef;
 		try {
 			// The session may have started or stopped working since the sheet
 			// read it, so Send asks again: queue while it works, never steer.
@@ -80,7 +81,7 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 				setSending(false);
 				return;
 			}
-			await submitSessionMessage(
+			resolvedRef = await submitSessionMessage(
 				runtime,
 				client,
 				now.target,
@@ -95,7 +96,9 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 			return;
 		}
 		memory.clearComments(key);
-		sheet.finish(() => returnToSession(navigation, { hubId, ref: sessionRef, title: sessionTitle }));
+		// The resume may have moved the session; return to the identity it
+		// resolved to, not the retired ref whose draft and rows no longer exist.
+		sheet.finish(() => returnToSession(navigation, { hubId, ref: resolvedRef, title: sessionTitle }));
 	};
 
 	const why = !online

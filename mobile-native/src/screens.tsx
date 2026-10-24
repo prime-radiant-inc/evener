@@ -570,6 +570,15 @@ function ConversationScreenView({
 		focused,
 		abortOnLeave: projectLookup,
 	});
+	// An identity-changing resume can retire this document from outside the
+	// screen (the background flush) as well as from the screen's own Send. A
+	// mounted screen follows the resolved identity; otherwise its memoized
+	// document is retired and every edit and send silently refuses work.
+	const resolvedRef = document.resolvedRef;
+	useEffect(() => {
+		if (resolvedRef === undefined || resolvedRef === route.params.ref) return;
+		navigation.setParams({ ref: resolvedRef });
+	}, [navigation, resolvedRef, route.params.ref]);
 	const unconfirmedSend = draft.submitting ? null : draft.record.unconfirmed;
 	// A draft operation in flight, or one still uncertain, keeps Retry visible
 	// but disabled: the document itself refuses a second submitText.
