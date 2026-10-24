@@ -56,3 +56,14 @@ may not.
 
 Routing keys on the instance name, never on a model-string prefix or a
 base-URL guess — a gateway in front of the vendor makes URL sniffing wrong.
+
+## High-level streaming retries
+
+`StreamGenerate` retries a transient stream failure only if no nonempty content
+has been forwarded to its `StreamResult.Events()` consumer. Text, reasoning,
+object deltas, and tool-call arguments (whether delivered on start, delta, or
+end) commit the attempt: a later truncation produces a terminal stream error
+instead of replaying content into the same event channel. Empty deltas and
+control/start events without content do not prevent retry. This is the
+high-level library path; callers using `RetryStream` directly can explicitly
+opt into retry-after-partial with a reset callback.

@@ -1,6 +1,6 @@
 ---------------------------- MODULE StreamCommit ----------------------------
 EXTENDS Naturals, Sequences, FiniteSets
-CONSTANTS MaxAttempts, MaxEvents, Families
+CONSTANTS MaxAttempts, MaxEvents, Families, CommitRule
 VARIABLE s
 vars == <<s>>
 
@@ -19,14 +19,18 @@ Start(kind) ==
     /\ s' = [s EXCEPT !.events = Append(@, <<kind, "start">>),
                       !.started = @ \cup {kind}]
 
-(* Forwarding precedes setting the text-only partial flag, lines 257-261.
-   Model the pair atomically: no other retry action can intervene there. *)
+(* A Delta represents one forwarded nonempty payload. For tools it may be
+   carried by TOOL_CALL_START, TOOL_CALL_DELTA, or TOOL_CALL_END; an empty
+   start belongs to Start. Empty text and provider controls belong to Control.
+   In pre-fix source only text set PartialOutput. Fixed source gates text,
+   reasoning, tool arguments, and object payloads at stream_generate.go:257-271.
+   Forwarding and classification are atomic with respect to retry admission. *)
 Delta(kind) ==
     /\ s.phase = "consume" /\ Len(s.events) < MaxEvents
     /\ kind \in s.started
     /\ s' = [s EXCEPT !.events = Append(@, <<kind, "delta">>),
                       !.published = @ \cup {kind},
-                      !.partial = @ \/ kind = "text"]
+                      !.partial = @ \/ CommitRule = "fixed" \/ kind = "text"]
 
 (* STREAM_START and opaque provider controls are deliberately not content.
    The model makes no claim that duplicate control events are a bug. *)
@@ -55,6 +59,7 @@ Next == (\E kind \in Families : Start(kind) \/ Delta(kind))
 Spec == Init /\ [][Next]_vars
 
 TypeOK == /\ s.attempt \in 1..MaxAttempts
+          /\ CommitRule \in {"pre-fix", "fixed"}
           /\ s.phase \in {"consume", "failed", "done"}
           /\ Len(s.events) <= MaxEvents
           /\ s.started \subseteq Families /\ s.published \subseteq Families

@@ -209,7 +209,7 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 
 			// openAndConsumeStream opens one stream attempt and drains it.
 			// Returns (finishEv, acc, hasPartialOutput, streamErr).
-			// hasPartialOutput is true once any text delta has been forwarded
+			// hasPartialOutput is true once content has been forwarded
 			// to outStream; that flag gates whether the caller may retry.
 			openAndConsumeStream := func() (finishEv *StreamEvent, acc *StreamAccumulator, hasPartialOutput bool, streamErr error) {
 				var st Stream
@@ -256,8 +256,15 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 						outStream.Send(ev)
 					default:
 						outStream.Send(ev)
-						if ev.Type == StreamEventTextDelta {
-							hasPartialOutput = true
+						switch ev.Type {
+						case StreamEventTextDelta:
+							hasPartialOutput = hasPartialOutput || ev.Delta != ""
+						case StreamEventReasoningDelta:
+							hasPartialOutput = hasPartialOutput || ev.ReasoningDelta != ""
+						case StreamEventToolCallStart, StreamEventToolCallDelta, StreamEventToolCallEnd:
+							hasPartialOutput = hasPartialOutput || (ev.ToolCall != nil && len(ev.ToolCall.Arguments) > 0)
+						case StreamEventObjectDelta:
+							hasPartialOutput = hasPartialOutput || ev.ObjectDelta != nil
 						}
 					}
 				}

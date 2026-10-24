@@ -1,16 +1,18 @@
 # Bounded LLM-core audit
 
-TLC found two **candidate families**, not confirmed Go bugs:
+TLC found two families; SC-1 is now a **confirmed Go bug and fixed**:
 
-- **SC-1:** `StreamGenerate` may retry after publishing reasoning or tool-argument
-  deltas without resetting the consumer.
+- **SC-1:** `StreamGenerate` retried after publishing reasoning or tool-argument
+  payloads without resetting the consumer. A public-boundary regression failed
+  before the change and passed afterward.
 - **SS-1:** a later terminal error may leave completed tool results and usage out
   of `StreamResult.Steps()` and `TotalUsage()`.
 
-Ten configurations completed without violations. Four configurations found those
+The initial audit's ten configurations completed without violations. Four found those
 candidates. A fifth counterexample concerns a deliberately stronger cancellation
-hypothesis, not the approved observed-cancellation contract. No Go reproduction,
-production fix, live provider request, or broad test suite is part of this task.
+hypothesis, not the approved observed-cancellation contract. SC-1 was subsequently
+reproduced and fixed; SS-1 remains a candidate. No live provider request or broad
+test suite was used for SC-1.
 
 Source baseline: `0e8e648c19de07b6a72830032d991631a3d4e8b0`.
 Contract: [approved design](../../superpowers/specs/2026-10-24-llm-tlc-audit-design.md).
@@ -88,6 +90,7 @@ complete graph. Depth is TLC's reported depth, including the initial state.
 | `StreamCommitTool` | same bounds, tool only | 12 | 33 / 27 | 5 | SC-1, tool arguments |
 | `StreamCommitText` | same bounds, text only plus controls | 0 | 70 / 42 | 6 | No unreset-content retry |
 | `StreamCommitSafety` | all families, type/bounds only | 0 | 420 / 252 | 8 | Full bounded state space well-formed |
+| `StreamCommitFixed` | fixed gate, 2 attempts, 2 events, text/reasoning/tool/object | 0 | 313 / 186 | 6 | No unreset-content retry in the bounded fixed model |
 | `StreamSteps` | 2 tool rounds, usage 0..2 per response | 12 | 270 / 199 | 5 | SS-1, results/step count |
 | `StreamStepsUsage` | same bounds | 12 | 348 / 239 | 5 | SS-1, usage |
 | `StreamStepsSafety` | same bounds | 0 | 1810 / 822 | 9 | Round limit, settled execution, success accounting, termination |
@@ -111,7 +114,8 @@ each according to TLC's rounded duration output.
 Self-review corrected one initial overapproximation: active-tool availability
 must stay fixed across rounds (`llm/generate.go:205-227`), not be selected anew by
 each response. All configurations were rerun after that correction. The same
-candidate traces remain; the table contains the corrected model's counts.
+candidate traces remain; the historical rows retain those corrected counts.
+The `StreamCommitFixed` row is the later SC-1 source-fix check.
 
 ## StreamCommit: publication versus retry commitment
 
@@ -127,13 +131,14 @@ flowchart LR
 The model records published content independently of the implementation's
 `PartialOutput` flag. `NoRetryAfterUnresetContent` asks whether the next attempt
 starts while old content remains visible. It does not require a second identical
-payload to detect the dangerous retry. The counterexample is a replay *risk*;
-a later Go test must establish the observable behavior.
+payload to detect the dangerous retry. The historical model's counterexample
+was a replay *risk*; the later Go test established the observable second attempt.
 
-| Action / field | Source correspondence at baseline |
+| Action / field | Source correspondence (baseline unless marked fixed) |
 |---|---|
 | `Start`, `Delta`, `Control` | `llm/stream_generate.go:223-262`, accumulator processes then events are forwarded |
-| `partial` | `llm/stream_generate.go:259-261`, only `TEXT_DELTA` sets `hasPartialOutput` |
+| historical `partial` | source baseline `llm/stream_generate.go:259-261`, only `TEXT_DELTA` set `hasPartialOutput` |
+| fixed `partial` | `llm/stream_generate.go:257-272`, nonempty typed text, reasoning, tool arguments at start/delta/end, or object payload set `hasPartialOutput` |
 | `Finish` | `llm/stream_generate.go:241-244,305-308`, FINISH buffered, then settled |
 | `Truncate` | `llm/stream_generate.go:266-271`, no FINISH becomes retryable `StreamError` |
 | `Retry`, `Stop` | `llm/stream_generate.go:284-292`, `llm/stream_retry.go:129-170` |
@@ -170,12 +175,40 @@ closure follows `stream_generate.go:245-254` to the same retry gate.
 
 **Contract strength:** the approved design treats published content as committed;
 `stream_retry.go:56-64` documents that default retry cannot re-stream already
-shown content. `stream_generate.go:275-281` repeats that intent. Its narrower
-comment at `:212-213` describes the text-only implementation, not a proof that
-reasoning/tool content is safe to replay. The externally visible effect still
-needs a real-library test. Start/control duplication alone is not classified as
-a bug. No reset action is invented: this caller sets neither `RetryAfterPartial`
-nor `OnReset`.
+shown content. The baseline `stream_generate.go:275-281` repeats that intent.
+Its baseline comment at `:212-213` described the text-only implementation, not
+a proof that reasoning/tool content is safe to replay. Start/control duplication
+is not classified as a bug. The public-boundary regression below establishes the effect.
+No reset action is invented: this caller sets neither `RetryAfterPartial` nor
+`OnReset`.
+
+### SC-1 Go reproduction and fixed-mode check, 2026-10-24
+
+`go test ./llm -run '^TestStreamGenerate_RetryAfterPublishedContent$' -count=1 -v`
+failed before the source edit: the text case passed, but reasoning, tool
+arguments in a delta, complete arguments in a start or end event, and object
+deltas each produced **2** provider requests and a successful response after a
+truncation instead of one request and a terminal `StreamError`. An empty text
+delta also wrongly prevented the control-only stream from retrying. The same
+command passed all seven subcases after the source edit. The test uses the real
+`Client`, `StreamGenerate`, and `ChanStream`, with only the provider scripted.
+Its oracle checks request count, structured event fields, error type/identity,
+and successful recovery when no content was published.
+
+`StreamCommit.tla` now has a `CommitRule` setting: the original four configurations
+explicitly select `"pre-fix"` and retain their historical state counts and
+counterexamples, while `StreamCommitFixed.cfg` selects `"fixed"`. The fixed
+model also includes object payloads. One worker and 512 MiB yield exit **12**
+for `StreamCommit` (91/71 states) and `StreamCommitTool` (33/27 states), and exit
+**0** for `StreamCommitText` (70/42), `StreamCommitSafety` (420/252), and
+`StreamCommitFixed` (313/186). The fixed setting represents only the content
+classification passed to `RetryStream`, not an independent proof of Go behavior.
+`Start` and `Control` represent no-payload start and empty/control events;
+`Delta` represents nonempty payload on the content-bearing event, including
+tool arguments in START or END. It does not model their exact field bytes or
+the accumulator. The Go regression, not this bounded model, confirms the fix.
+No production agent-session `StreamGenerate` caller was found; the demonstrated
+impact is limited to public `llm` library consumers.
 
 ## RetryBudget: admission and bounded liveness
 
