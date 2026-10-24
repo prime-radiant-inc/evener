@@ -122,14 +122,17 @@ func crossTarget() (string, string) {
 	return runtime.GOOS, "arm64"
 }
 
-// installRunner records every remote command and fails the installer invocation,
-// so a test can prove the installer fallback was the path taken — and which ref
-// it was pinned to — without scripting a whole install. Commands other than the
-// installer fail as unexpected.
+// installRunner answers the pre-write protocol check with a compatible contract
+// and fails the installer invocation, so a test can prove the installer fallback
+// was the path taken — and which ref it was pinned to — without scripting a
+// whole install. Any other command fails as unexpected.
 func installRunner(t *testing.T) *fakeRunner {
 	t.Helper()
 	return &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
+		if strings.Contains(joined, "launch-check") {
+			return []byte(fmt.Sprintf(`{"hub_endpoint_schema":1,"protocol":%q,"version":"dev","launch_flags":["api-log"]}`, appwire.ProtocolVersion)), nil
+		}
 		if strings.Contains(joined, "EVENER_INSTALL_VERSION=") {
 			return nil, errors.New("installer refused by the test's runner")
 		}
@@ -324,7 +327,7 @@ func TestDefaultSourceSameTargetStillPushes(t *testing.T) {
 		},
 	})
 
-	target, err := m.deploy(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH}, nil)
+	target, err := m.deploy(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH, LaunchCheckKnown: true, HubEndpointSchema: 1}, nil)
 	if err != nil {
 		t.Fatalf("same-target deploy of the own executable: %v", err)
 	}
@@ -394,7 +397,7 @@ func TestDirtyControllerDeploysItsOwnExecutable(t *testing.T) {
 		},
 	})
 
-	target, err := m.deploy(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH}, nil)
+	target, err := m.deploy(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH, LaunchCheckKnown: true, HubEndpointSchema: 1}, nil)
 	if err != nil {
 		t.Fatalf("deploy of the controller's own executable from a dirty controller: %v", err)
 	}
@@ -436,13 +439,14 @@ func TestDirtyControllerOwnExecutableDeployConvergesThroughTheOperation(t *testi
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}}
+	modelSelectedProcess(t, fr, host.EvenerPath, "oldsha", dirtyControllerVersion)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: dirtyControllerVersion,
 		OwnExecutable:             true,
 		BuildBinary:               writeStageBinary,
 	})
 
-	target, after, err := m.DeployForOperation(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH}, true, nil)
+	target, after, err := m.DeployForOperation(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH, LaunchCheckKnown: true, HubEndpointSchema: 1}, true, nil)
 	if err != nil {
 		t.Fatalf("DeployForOperation: %v", err)
 	}
@@ -572,5 +576,5 @@ func TestDirtyControllerOwnExecutableMismatchRefusesUnstamped(t *testing.T) {
 // protocol incompatible" (what a hardcoded "evener-appwire-v5" did when the
 // protocol moved to v6 on main).
 func launchCheckJSON(version string) string {
-	return fmt.Sprintf(`{"protocol":%q,"version":%q,"launch_flags":["api-log"]}`, appwire.ProtocolVersion, version)
+	return fmt.Sprintf(`{"hub_endpoint_schema":1,"protocol":%q,"version":%q,"launch_flags":["api-log"]}`, appwire.ProtocolVersion, version)
 }

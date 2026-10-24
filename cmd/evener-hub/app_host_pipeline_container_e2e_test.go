@@ -16,10 +16,9 @@ package hub
 // terminal write before the next was created; the typed host-busy refusals a
 // genuinely concurrent attempt would meet are covered by the handler and gate
 // unit suites, which can drive them deterministically — this check does not
-// race for them), and the restart that follows its own operation. It also pins
-// the simplification: the container carries no fencing helper, no claim
-// primitive, and no fencing state, and the happy path emits no
-// fencing-flavoured refusal or prose.
+// race for them), and the restart that follows its own operation. Each endpoint
+// case also checks the selected process, remote marker traffic and survival of
+// an unrelated default-port hub. No assertion pins human-readable progress.
 //
 // Gates: like the sibling deploy check this is an explicitly opted-in WRITE, so
 // it needs EVENER_SSH_E2E=1 and EVENER_SSH_E2E_DEPLOY=1 plus a host source.
@@ -59,7 +58,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -129,6 +127,21 @@ func TestHostDeployPipelineContainerE2E(t *testing.T) {
 	e2ecap.RequireLoopbackBind(t)
 	e2ecap.RequireProcessInspect(t)
 
+	if os.Getenv("EVENER_SSH_E2E_HOST") != "" {
+		// Preserve the explicit disposable-host path without assuming Linux or
+		// creating a default config/service outside a test-owned container.
+		runHostPipelineEndpointCase(t, hostPipelineEndpointCases[0])
+		return
+	}
+	for _, endpointCase := range hostPipelineEndpointCases {
+		t.Run(endpointCase.name, func(t *testing.T) {
+			runHostPipelineEndpointCase(t, endpointCase)
+		})
+	}
+}
+
+func runHostPipelineEndpointCase(t *testing.T, endpointCase hostPipelineEndpointCase) {
+	t.Helper()
 	repoRoot, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatalf("abs repo root: %v", err)
@@ -138,12 +151,14 @@ func TestHostDeployPipelineContainerE2E(t *testing.T) {
 	// is how a real disposable host is targeted instead of the container.
 	dest := os.Getenv("EVENER_SSH_E2E_HOST")
 	user := os.Getenv("EVENER_SSH_E2E_USER")
+	disposableContainer := dest == ""
 	if dest == "" {
 		container := startHostPipelineContainer(t)
 		installHostPipelineSSHShim(t, filepath.Join(container.dir, "shim"), container.sshConfigPath, container.alias)
 		dest = container.alias
 		user = "" // the per-run ssh_config names the container's root user
 		t.Logf("container host: name=%s id=%s alias=%s loopback port=%d", container.name, container.id, container.alias, container.port)
+		installHostPipelineLockTrace(t)
 	}
 
 	host := newHostSSH(t, dest, user)
@@ -173,6 +188,25 @@ func TestHostDeployPipelineContainerE2E(t *testing.T) {
 	// private hub.toml and the entry carry it, so a stale or concurrent host
 	// hub can never be addressed by this run.
 	addr := hostPipelineHostAddr(t, host)
+	if endpointCase.wildcard {
+		_, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		addr = net.JoinHostPort("0.0.0.0", port)
+	}
+	if endpointCase.portZero {
+		addr = "127.0.0.1:0"
+	}
+	configPath := hostDir + "/" + hostDeployToml
+	if endpointCase.defaultPath {
+		configPath = home + "/.config/evener/hub.toml"
+	}
+	root := hostDir + "/state"
+	want := hostPipelineEndpointWant{binary: runTarget, config: configPath, root: root, listen: addr, source: "config", version: version}
+	if endpointCase.bootstrap {
+		want.source = "flag"
+	}
 
 	// The same precondition discipline as the sibling deploy check: the test
 	// creates the host directory itself and refuses an existing path before
@@ -186,9 +220,12 @@ func TestHostDeployPipelineContainerE2E(t *testing.T) {
 	installPath := home + "/.local/bin/evener"
 	installHash := host.sha256IfFile(installPath)
 	t.Cleanup(func() {
-		stopHostListener(t, host, addr, hostDir+"/"+hostDeployToml)
-		if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
-			t.Errorf("remove the test-owned directory %s on host %s: %v", hostDir, host.target, err)
+		// Container removal owns all processes, including wildcard/ephemeral
+		// listeners and the retired-port holder. Never kill by a port number.
+		if !disposableContainer && stopHostListener(t, host, addr, configPath) {
+			if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
+				t.Errorf("remove the test-owned directory %s on host %s: %v", hostDir, host.target, err)
+			}
 		}
 		if installHash == "" {
 			if got := host.sha256IfFile(installPath); got != "" {
@@ -205,7 +242,26 @@ func TestHostDeployPipelineContainerE2E(t *testing.T) {
 	if _, err := host.run("test -e " + shellquote.RemoteWord(runTarget)); err == nil {
 		t.Fatalf("host %s already has %s at the start of the case; the pipeline case needs a run target with no evener", host.target, runTarget)
 	}
-	host.writeFile(hostDir+"/"+hostDeployToml, []byte(fmt.Sprintf("addr = %q\nhub_state_root = %q\nplugin_auto_upgrade = false\n", addr, hostDir+"/state")))
+	host.mustRun("mkdir -p " + shellquote.RemoteWord(filepath.Dir(configPath)))
+	configContents := fmt.Sprintf("addr = %q\nhub_state_root = %q\nplugin_auto_upgrade = false\n", addr, root)
+	host.writeFile(configPath, []byte(configContents))
+	assertConfigPreserved := func() {
+		t.Helper()
+		got, err := host.runStdout("cat " + shellquote.RemoteWord(configPath))
+		if err != nil || string(got) != configContents {
+			t.Fatalf("selected config changed: got %q, want %q (%v)", got, configContents, err)
+		}
+	}
+	marker, markerContents := root+"/pipeline-marker", "selected-"+runID
+	var unrelatedWant hostPipelineEndpointWant
+	var unrelatedBefore hostPipelineEndpointSnapshot
+	if disposableContainer {
+		host.writeFile(marker, []byte(markerContents))
+		unrelatedWant, unrelatedBefore = startHostPipelineUnrelated(t, host, staged, hostDir, version)
+		// A healthy default-port hub cannot stand in for the absent selected
+		// generation. Only Ensure may install and start the selected binary.
+		host.mustRun("test ! -e " + shellquote.RemoteWord(root+"/hub-endpoint.json"))
+	}
 
 	stack := startDeployStack(t, provider, hubBin, "-deploy-binary", staged)
 	ctx, cancel := context.WithTimeout(context.Background(), hostDeployAttachTimeout+2*hostPipelineOperationTimeout)
@@ -214,16 +270,14 @@ func TestHostDeployPipelineContainerE2E(t *testing.T) {
 
 	// evener/host/add answers the mutation-result union; a clean keyless add is
 	// the committed arm carrying the registered row.
-	addResult, err := clientRequest[appwire.HostMutationResult](ctx, client, appwire.MethodEvenerHostAdd, appwire.HostAddParams{
-		Entry: appwire.HostEntry{
-			Name:       hostName,
-			Address:    dest,
-			User:       user,
-			EvenerPath: runTarget,
-			ConfigPath: hostDir + "/" + hostDeployToml,
-			Addr:       addr,
-		},
-	})
+	entry := appwire.HostEntry{Name: hostName, Address: dest, User: user, EvenerPath: runTarget}
+	if !endpointCase.defaultPath {
+		entry.ConfigPath = configPath
+	}
+	if endpointCase.bootstrap {
+		entry.Addr = addr
+	}
+	addResult, err := clientRequest[appwire.HostMutationResult](ctx, client, appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: entry})
 	if err != nil {
 		t.Fatalf("step evener/host/add (ssh destination %q, run target %q): %v", dest, runTarget, err)
 	}
@@ -253,7 +307,23 @@ func TestHostDeployPipelineContainerE2E(t *testing.T) {
 	// A host-side proof read before the pipeline runs: the container's own
 	// loopback serves the host hub's health with the stamped build and a process
 	// start time, which the restart below must replace.
-	beforeHealth := hostPipelineHostHealth(t, host, addr)
+	var beforeSelected hostPipelineEndpointSnapshot
+	var beforeHealth hubapi.HealthResponse
+	if disposableContainer {
+		beforeSelected = hostPipelineEndpointRead(t, host, want, "selected-after-Ensure")
+		beforeHealth = beforeSelected.health
+		if beforeSelected.record.PID == unrelatedBefore.record.PID || beforeSelected.record.BootID == unrelatedBefore.record.BootID {
+			t.Fatal("unrelated default-port hub satisfied selected readiness")
+		}
+		assertHostPipelineRemoteMarker(ctx, t, client, host, hostName, marker, markerContents)
+		t.Cleanup(func() {
+			if t.Failed() {
+				hostPipelineLockDiagnostic(t, host, beforeSelected, "failed-case")
+			}
+		})
+	} else {
+		beforeHealth = hostPipelineHostHealth(t, host, addr)
+	}
 	if beforeHealth.Version != version {
 		t.Fatalf("the host hub at %s reports health version %q, want the stamped %q", addr, beforeHealth.Version, version)
 	}
@@ -283,17 +353,26 @@ func TestHostDeployPipelineContainerE2E(t *testing.T) {
 	deployRecord, deployStates := awaitHostPipelineTerminal(ctx, t, client, hostName, deploy.ID)
 	assertHostPipelineLifecycle(t, deployRecord, deployStates)
 	assertHostPipelineRecord(t, deployRecord, "deploy", hostName, deployClientID, attached.Generation, attached.IncarnationID)
-	assertHostPipelineProgress(t, deployRecord, "operation for host", "started", "pushing the controller's build", "the controller's build is installed and verified")
 	t.Logf("deploy operation %s: states %v, terminal %s result=%+v", deployRecord.ID, deployStates, deployRecord.State, deployRecord.Result)
+	if disposableContainer {
+		assertHostPipelineSameEndpoint(t, beforeSelected, hostPipelineEndpointRead(t, host, want, "selected-after-deploy-disk-replacement"))
+		assertHostPipelineUnrelated(t, host, unrelatedWant, unrelatedBefore, "unrelated-after-deploy")
+		assertHostPipelineRemoteMarker(ctx, t, client, host, hostName, marker, markerContents)
+		assertConfigPreserved()
+	}
 
 	// Step 4: the confirmation token is single-use. Presenting the consumed
 	// token again with a fresh client operation ID (so dedup cannot answer it)
 	// must refuse the typed token-missing arm.
-	tokenRefusal := assertHostPipelineTokenConsumed(ctx, t, client, hostName, planned.Token, "e2e-replay-"+runID)
+	assertHostPipelineTokenConsumed(ctx, t, client, hostName, planned.Token, "e2e-replay-"+runID)
 
 	// Step 5: evener/host/restart replaces the host's process on the identity
 	// pair the deploy record carries.
 	restartClientID := "e2e-restart-" + runID
+	var retiredPortReady string
+	if disposableContainer && endpointCase.portZero {
+		retiredPortReady = startHostPipelineRetiredPortHolder(t, host, hostDir, goos, goarch, beforeSelected.record.Bound)
+	}
 	restart, err := clientRequest[appwire.HostRestartResponse](ctx, client, appwire.MethodEvenerHostRestart, appwire.HostRestartParams{
 		Name:          hostName,
 		OperationID:   restartClientID,
@@ -312,12 +391,26 @@ func TestHostDeployPipelineContainerE2E(t *testing.T) {
 	restartRecord, restartStates := awaitHostPipelineTerminal(ctx, t, client, hostName, restart.ID)
 	assertHostPipelineLifecycle(t, restartRecord, restartStates)
 	assertHostPipelineRecord(t, restartRecord, "restart", hostName, restartClientID, attached.Generation, attached.IncarnationID)
-	assertHostPipelineProgress(t, restartRecord, "operation for host", "started", "restarting the host", "restart verified healthy", "reattaching the host under the held host gate", "post-operation refresh verified")
 	t.Logf("restart operation %s: states %v, terminal %s result=%+v", restartRecord.ID, restartStates, restartRecord.State, restartRecord.Result)
 
 	// The host-side proof that the restart took: the same endpoint serves the
 	// same stamped build from a provably different process.
-	afterHealth := hostPipelineHostHealth(t, host, addr)
+	var afterHealth hubapi.HealthResponse
+	if disposableContainer {
+		after := hostPipelineEndpointRead(t, host, want, "selected-after-restart")
+		afterHealth = after.health
+		if after.record.PID == beforeSelected.record.PID || after.record.BootID == beforeSelected.record.BootID || after.birth == beforeSelected.birth {
+			t.Fatalf("selected restart did not replace process identity: before=%+v after=%+v", beforeSelected.record, after.record)
+		}
+		if endpointCase.portZero {
+			assertHostPipelineRetiredPort(t, host, hostDir, retiredPortReady, beforeSelected.record.Bound, after.record.Bound)
+		}
+		assertHostPipelineUnrelated(t, host, unrelatedWant, unrelatedBefore, "unrelated-after-restart")
+		assertHostPipelineRemoteMarker(ctx, t, client, host, hostName, marker, markerContents)
+		assertConfigPreserved()
+	} else {
+		afterHealth = hostPipelineHostHealth(t, host, addr)
+	}
 	if afterHealth.Version != version {
 		t.Fatalf("after the restart the host hub at %s reports version %q, want the stamped %q", addr, afterHealth.Version, version)
 	}
@@ -335,6 +428,9 @@ func TestHostDeployPipelineContainerE2E(t *testing.T) {
 	}
 	if !rowBack.Host.Attached || rowBack.Host.HubVersion != version {
 		t.Fatalf("after the restart the row reports attached=%t hubVersion=%q, want attached with %q", rowBack.Host.Attached, rowBack.Host.HubVersion, version)
+	}
+	if rowBack.Host.Generation != attached.Generation || rowBack.Host.IncarnationID != attached.IncarnationID {
+		t.Fatalf("reconnect changed durable host identity: before=%+v after=%+v", attached, rowBack.Host)
 	}
 	t.Logf("restart verified from the host side: health version=%s startedAt=%s -> %s", version,
 		beforeHealth.StartedAt.Format(time.RFC3339Nano), afterHealth.StartedAt.Format(time.RFC3339Nano))
@@ -354,7 +450,6 @@ func TestHostDeployPipelineContainerE2E(t *testing.T) {
 	if len(page.Operations) == 0 {
 		t.Fatalf("the operations page listed no records; at least the deploy and restart records were expected")
 	}
-	var prose []string
 	listed := map[string]appwire.OperationRecord{}
 	for i, record := range page.Operations {
 		if !hostPipelineStateTerminal(record.State) {
@@ -367,7 +462,6 @@ func TestHostDeployPipelineContainerE2E(t *testing.T) {
 			t.Fatalf("records are not ascending by controller id: %s then %s", page.Operations[i-1].ID, record.ID)
 		}
 		listed[record.ID] = record
-		prose = append(prose, hostPipelineRecordProse(record))
 		t.Logf("operations page: id=%s kind=%s clientOperationId=%s state=%s result=%+v", record.ID, record.Kind, record.ClientOperationID, record.State, record.Result)
 	}
 	for _, want := range []struct {
@@ -435,7 +529,6 @@ func TestHostDeployPipelineContainerE2E(t *testing.T) {
 	// on the happy path refused for a fencing reason or carries the withdrawn
 	// crash-fencing vocabulary.
 	assertHostPipelineNoFencingHelpers(t, host, hostDir)
-	assertHostPipelineNoFencingProse(t, append(prose, tokenRefusal)...)
 }
 
 // hostPipelinePlan drives evener/host/plan and pins the planned arm's shape: the
@@ -481,7 +574,7 @@ func hostPipelinePlan(ctx context.Context, t *testing.T, client *appwire.Client,
 	if plan.RestartFollows {
 		t.Fatalf("plan restartFollows = true for a host already serving this controller's healthy build %q; a restart must not follow this push", version)
 	}
-	t.Logf("plan: host=%s generation=%d target=%s controllerRevision=%s restartFollows=%t runningVersion=%s healthy=%t factsAgeSec=%d token=%s", plan.Host, plan.Generation, plan.TargetPath, plan.ControllerRevision, plan.RestartFollows, plan.RunningVersion, plan.RunningHealthy, plan.FactsAgeSec, planned.Token)
+	t.Logf("plan: host=%s generation=%d target=%s controllerRevision=%s restartFollows=%t runningVersion=%s healthy=%t factsAgeSec=%d", plan.Host, plan.Generation, plan.TargetPath, plan.ControllerRevision, plan.RestartFollows, plan.RunningVersion, plan.RunningHealthy, plan.FactsAgeSec)
 	return planned
 }
 
@@ -523,8 +616,8 @@ func awaitHostPipelineTerminal(ctx context.Context, t *testing.T, client *appwir
 // observed: the fresh create answered pending (asserted by the caller), every
 // observed step advances pending → running → terminal, and the last is the
 // terminal state the caller's record assertions then hold to complete. A poll
-// can legitimately miss running, so the running transition is pinned separately
-// by the "started" progress line every worker writes on its transition.
+// can legitimately miss running. Durable timestamped progress and a successful
+// terminal result corroborate worker execution without depending on wording.
 func assertHostPipelineLifecycle(t *testing.T, record appwire.OperationRecord, observed []appwire.OperationState) {
 	t.Helper()
 	states := make([]appwire.OperationState, 0, len(observed)+1)
@@ -540,6 +633,14 @@ func assertHostPipelineLifecycle(t *testing.T, record appwire.OperationRecord, o
 	}
 	if last := states[len(states)-1]; last != record.State {
 		t.Fatalf("record %s was last observed %s but read terminal as %s", record.ID, last, record.State)
+	}
+	if len(record.Progress) == 0 {
+		t.Fatalf("record %s carries no durable worker progress", record.ID)
+	}
+	for _, entry := range record.Progress {
+		if _, err := time.Parse(time.RFC3339, entry.TS); err != nil {
+			t.Fatalf("record %s invalid progress timestamp %q: %v", record.ID, entry.TS, err)
+		}
 	}
 }
 
@@ -596,23 +697,11 @@ func assertHostPipelineRecord(t *testing.T, record appwire.OperationRecord, kind
 	}
 }
 
-// assertHostPipelineProgress fails unless every wanted line appears in the
-// record's progress log.
-func assertHostPipelineProgress(t *testing.T, record appwire.OperationRecord, want ...string) {
-	t.Helper()
-	text := hostPipelineProgressText(record)
-	for _, line := range want {
-		if !strings.Contains(text, line) {
-			t.Fatalf("record %s progress does not carry %q:\n%s", record.ID, line, text)
-		}
-	}
-}
-
 // assertHostPipelineTokenConsumed pins the confirmation token's single use: a
 // deploy presenting the token this run's plan already consumed — with a fresh
 // client operation ID, so dedup cannot answer it — must refuse the typed
-// token-missing arm. It returns the refusal's message for the absence scan.
-func assertHostPipelineTokenConsumed(ctx context.Context, t *testing.T, client *appwire.Client, hostName, token, replayOpID string) string {
+// token-missing arm.
+func assertHostPipelineTokenConsumed(ctx context.Context, t *testing.T, client *appwire.Client, hostName, token, replayOpID string) {
 	t.Helper()
 	_, err := clientRequest[appwire.HostDeployResponse](ctx, client, appwire.MethodEvenerHostDeploy, appwire.HostDeployParams{Name: hostName, Token: token, OperationID: replayOpID})
 	if err == nil {
@@ -626,18 +715,7 @@ func assertHostPipelineTokenConsumed(ctx context.Context, t *testing.T, client *
 	if !ok || data["evenerErrorInfo"] != string(appwire.ErrorTokenMissing) {
 		t.Fatalf("the consumed token refused with data %v, want evenerErrorInfo %q (refusal: %v)", wire.Data, appwire.ErrorTokenMissing, err)
 	}
-	t.Logf("single-use token: the replay refused with the typed %s arm: %s", appwire.ErrorTokenMissing, wire.Message)
-	return wire.Message
-}
-
-// hostPipelineRecordProse collects every human-readable line a record carries,
-// for the fencing-absence scan.
-func hostPipelineRecordProse(record appwire.OperationRecord) string {
-	prose := hostPipelineProgressText(record)
-	if record.Result != nil {
-		prose += record.Result.Message + "\n"
-	}
-	return prose
+	t.Logf("single-use token: replay refused with typed %s arm", appwire.ErrorTokenMissing)
 }
 
 // hostPipelineProgressText renders a record's progress lines as one string.
@@ -685,24 +763,6 @@ func assertHostPipelineNoFencingHelpers(t *testing.T, host *hostSSH, hostDir str
 		t.Fatalf("host %s carries fencing-shaped helpers or state, but the crash-fencing stack was removed from main: %s", host.target, found)
 	}
 	t.Log("fencing absence: the container host has no evener-fence command, no fence/claim helper binary, and no fence/claim/orphan state under the run directory")
-}
-
-// hostPipelineFencingProsePattern matches the withdrawn crash-fencing
-// vocabulary as whole words: a bare substring scan for "claim" also matched
-// benign words like "reclaim" and "disclaim" (roborev's Low finding on the
-// first revision), while the stem alternations keep the teeth for the
-// inflections a fencing refusal would actually carry.
-var hostPipelineFencingProsePattern = regexp.MustCompile(`(?i)\b(?:fenc(?:e|es|ed|ing)|orphan(?:s|ed|ing)?|claim(?:s|ed|ing|ant)?)\b`)
-
-// assertHostPipelineNoFencingProse fails when the happy path carries the
-// withdrawn crash-fencing vocabulary in any record prose or refusal message.
-func assertHostPipelineNoFencingProse(t *testing.T, texts ...string) {
-	t.Helper()
-	for _, text := range texts {
-		if match := hostPipelineFencingProsePattern.FindString(text); match != "" {
-			t.Fatalf("the happy path carries the withdrawn crash-fencing vocabulary %q: %s", match, text)
-		}
-	}
 }
 
 // hostPipelineHostHealth reads the deployed host hub's /api/health from the
@@ -1427,23 +1487,6 @@ func TestHostPipelineDockerHostIsRemote(t *testing.T) {
 	} {
 		if got := hostPipelineDockerHostIsRemote(tc.host); got != tc.want {
 			t.Fatalf("hostPipelineDockerHostIsRemote(%q) = %t, want %t", tc.host, got, tc.want)
-		}
-	}
-}
-
-// TestHostPipelineFencingProsePatternMatchesWholeWords pins roborev's Low
-// finding: the scan must catch the fencing stems as words (and the inflections
-// a fencing refusal would carry) while leaving benign words that merely contain
-// them alone.
-func TestHostPipelineFencingProsePatternMatchesWholeWords(t *testing.T) {
-	for _, text := range []string{"a fencing-helper refusal", "the orphaned record", "a claim primitive"} {
-		if !hostPipelineFencingProsePattern.MatchString(text) {
-			t.Fatalf("the pattern does not match %q, so the fencing-absence scan lost its teeth", text)
-		}
-	}
-	for _, text := range []string{"the lock was reclaimed", "it disclaimed the writes", "it reclaims the port"} {
-		if match := hostPipelineFencingProsePattern.FindString(text); match != "" {
-			t.Fatalf("the pattern matched %q in %q; a benign word containing a fencing stem is not fencing prose", match, text)
 		}
 	}
 }

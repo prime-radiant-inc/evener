@@ -146,7 +146,7 @@ initial-read retry loop. The server can repair a projection on a later read.
 **Evidence.** Browser
 [hydrateAndSubscribe](../../cmd/evener-hub/frontend/src/stores/threads.ts#L1818),
 native [rehydrate](../../mobile/src/state/conversation.ts#L2017) and
-[useReadRetry](../../mobile-native/src/session/useReadRetry.ts#L46), and server
+[entry read actor](../../mobile-native/src/session/nativeConversationSessions.ts#L417), and server
 [recoverForRead](../../server/thread_history.go#L355) expose the ownership gap.
 Shared `reducer.history.test.ts` specifies that a later success clears history failure.
 
@@ -1047,7 +1047,7 @@ then loses the original explanation before the health check reports failure.
 
 **Evidence.** [bootstrapHub](../../cmd/evener-hub/internal/sshconn/manager.go#L2182)
 passes an empty log path to
-[relaunchCommand](../../cmd/evener-hub/internal/sshconn/version.go#L1862).
+[relaunchCommand](../../cmd/evener-hub/internal/sshconn/version.go#L1689).
 Manual host access or a separate supervisor/log setup is the remaining diagnosis
 path; an existing configured log path does not have this issue.
 

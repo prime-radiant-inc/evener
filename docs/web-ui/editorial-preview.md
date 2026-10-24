@@ -71,7 +71,7 @@ network requests, task outcomes and process identities to ignored
 Override its destination with `EDITORIAL_EVIDENCE=/absolute/path`.
 It exits nonzero on any collected geometry failure; collecting the other cases
 never turns a failed assertion green. Run repository `make test-web`,
-`EVENER_HUB_ADDR=http://127.0.0.1:1 make test-web-browser` (all five unchanged guards),
+`EVENER_HUB_URL=http://127.0.0.1:1 make test-web-browser` (all five unchanged guards),
 and frontend `npm run build` after integration.
 
 The original matrix is 16 configurations (360×800, 390×844, 1280×1000 narrow

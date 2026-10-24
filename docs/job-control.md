@@ -379,7 +379,7 @@ Defaults and timeout semantics:
 - A foreground shell command that completes within that wait returns inline output and is ephemeral by default: no durable `job_id` is required and it does not appear in `job_list`.
 - A foreground shell command still running at the session command timeout is promoted to a durable background job: Evener returns the current bounded output/status with a `job_id`, and the normal terminal notification remains armed for the eventual terminal state.
 - `mode="background"`: Evener starts the command and returns a `job_id` immediately without waiting. The terminal notification fires when it finishes.
-- `mode="detached"`: Evener starts a disowned process and returns only its PID immediately. It is not a job, so Evener neither retains output nor sends notifications nor offers job control for it. It also gets no session scratch: the child's environment drops `EVENER_SCRATCH_DIR`, because the scratch is deleted when the root session is archived and the disowned process may outlive that, and `TMPDIR` names the world-usable session temp container instead, or nothing when that container could not be provisioned. Give a detached command absolute paths for its output and for any file it reads.
+- `mode="detached"`: Evener starts a disowned process and returns only its PID immediately. It is not a job, so Evener neither retains output nor sends notifications nor offers job control for it. It also gets no session scratch: the child's environment drops `EVENER_SCRATCH_DIR`, because the scratch is deleted when the root session is archived and the disowned process may outlive that. `TMPDIR` names the world-usable session temp container when provisioned. Otherwise, an unconfined environment keeps its inherited or caller-supplied `TMPDIR` (or leaves it absent); a scratch-naming environment drops `TMPDIR` rather than pointing the detached child at session scratch. Give a detached command absolute paths for its output and for any file it reads.
 - `max_runtime_ms` is an optional process runtime limit for shell jobs. If the process is still running after `max_runtime_ms`, Evener stops it and finalizes the job as `stopped` with reason `run_timeout`. It bounds how long the process may *run*, distinct from the foreground wait.
 - Omitted or zero `max_runtime_ms` sets no process-runtime deadline for streaming shell jobs, whether foreground, promoted, or background. Session shutdown and explicit cancellation can still stop session-owned jobs. The model-facing shell schema no longer exposes `max_runtime_ms`; the parser still accepts it for compatibility.
 - A shell command that completes before the tool returns does not inject a terminal notification; the terminal result is already in the tool result. Return field `timed_out`, when present, means the foreground wait expired; it never means the process hit `max_runtime_ms`.
@@ -1515,10 +1515,12 @@ terminal packet:
 `kind="report"` marks the generation's terminal packet, whatever its outcome.
 A mid-work update (`communicate(end_turn=false)`) is
 `<delegate-notification delegate_id="dlg_..." name="..." kind="update">` with
-the delegate's message as the body, `<` escaped so it can neither close the
-frame nor open another. Clients decode the body's entities once, so a
-literal entity the delegate types, such as `&amp;`, reads as the character it
-names; job output excerpts share this remainder. The `name` attribute appears
+the delegate's message as the body, escaping `&` first, then `<`. Clients
+decode exactly `&lt;` and `&amp;` once, preserving literal sender text such as
+`&lt;`; job output excerpts use the same body contract. Accepted breakage:
+pre-`6adc500868` frames render `&quot;`/`&gt;` literally and their entity-escaped
+JSON-envelope extraction fails. No migration or legacy fallback is applied.
+The `name` attribute appears
 only for a named delegate. The quiet watchdog's frame carries neither `name` nor `kind`. A
 delegate frame never carries `job_id` or `job_type="delegate"`. The full
 conversation stays available through the delegate's `transcript_ref`. A

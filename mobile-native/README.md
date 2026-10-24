@@ -99,6 +99,21 @@ npx tsx scripts/check-hub.mts http://127.0.0.1:9180 /path/to/auth-token
 
 No script in the default tests calls a real hub or LLM provider.
 
+## Queued-message recovery
+
+Transcript ghosts and the Queue sheet offer local Edit and Remove for safely
+unattempted messages, including offline and Stop-held work. Edit preserves the
+current composition and its images and selections. Reopened screens recover
+interrupted edits without sending them automatically. Draft and mutation SQLite
+stores coordinate exact source IDs and durable resend receipts; ordinary
+delivery uncertainty and accepted daemon queues keep separate controls.
+
+The screen's small existing-Storage identity cache enables local controls after
+offline recreation, not Send or transport ownership. Older native image records
+preserve prose and bytes but cannot recover unstored image-reference associations.
+See [message recovery and ownership](../docs/product/message-recovery.md) for the
+cache boundary, failure recovery, checks and deferred C05/C06 work.
+
 ## Memory-refresh transcript updates
 
 Automatic index observations appear as standalone **Refreshed my memory** rows.

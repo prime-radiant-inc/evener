@@ -1,6 +1,8 @@
 import { isValidTranscriptRef } from "@evener/appwire-client";
+import { reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
 import type { CellRendererProps } from "@react-native/virtualized-lists";
 import { bindFilePath, type FileReference } from "@evener/appwire-client/docContent";
+import { ownPendingTurnInput } from "@evener/appwire-client/state/mutation";
 import { useHeaderHeight } from "@react-navigation/elements";
 import type { NavigatorScreenParams } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -40,19 +42,14 @@ import {
 	buildComposerInput,
 	errorText,
 	formatQuoteBlock,
+	latestTurnId,
 	mergeDraftText,
 	type ModelListResponse,
 	type NavigationSessionSummary,
-	type TranscriptDisplayConfigV1,
 	translateAttachmentMarkers,
 } from "@evener/appwire-client";
-import { createConversationService } from "../../mobile/src/services/conversation";
-import { createActivityStore } from "../../mobile/src/state/activity";
-import { type ConversationState, createConversationStore, olderPageKey } from "../../mobile/src/state/conversation";
-import {
-	createConversationMutationPendingPort,
-	type ConversationMutationSubmitter,
-} from "../../mobile/src/state/conversationMutation";
+import { type ConversationState, olderPageKey } from "../../mobile/src/state/conversation";
+import type { ConversationMutationContext } from "../../mobile/src/state/conversationMutation";
 import { useAlertedRecently, useNextUsed } from "./alerts/alertsContext";
 import type { SharedPayload } from "./share/sharePayload";
 import { ApprovalControls } from "./approvalControls";
@@ -78,12 +75,7 @@ import { projectNativeMutationRecovery, RecoveryFailure, useRecoveryPanel } from
 import { useNativePreferences } from "./NativePreferencesProvider";
 import { drafts } from "./nativeDrafts";
 import { nativeImagePicker } from "./nativeImagePicker";
-import {
-	createNativeMutationHost,
-	createDurableSubmitter,
-	NATIVE_MUTATION_HOST_UNAVAILABLE,
-	type NativeMutationHost,
-} from "./nativeMutationHost";
+import { NATIVE_MUTATION_HOST_UNAVAILABLE } from "./nativeMutationHost";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import { readerPositions } from "./nativeReaderPosition";
 import { MessageDocuments } from "./reader/DocumentChip";
@@ -93,6 +85,11 @@ import { documentMemory } from "./reader/nativeDocumentMemory";
 import { documentFreshness, type SessionDocument, sessionDocuments } from "./reader/sessionDocuments";
 import { locateSession, type SessionLocation } from "./navigationReveal";
 import { queueHosts, type QueueHost } from "./QueueSheet";
+import {
+	editQueuedMessageIntoDraft,
+	reconcileEditedResends,
+	removeQueuedMessageWithDraftCapture,
+} from "./queuedMessageControls";
 import {
 	composeQuestionAnswers,
 	pendingQuestions,
@@ -127,13 +124,14 @@ import {
 	exactRestoreDue,
 } from "./readerPosition";
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
-import { type ErrorAction, errorAction } from "./session/errorAction";
+import { canonicalFailureAction, type ErrorAction, errorAction } from "./session/errorAction";
 import { TURN_CONTINUATION_TEXT } from "@evener/appwire-client";
 import {
 	type Ghost,
 	type GhostAction,
 	ghostActionTarget,
 	ghosts,
+	isQueuedGhost,
 	type QueueEntryRef,
 	queuedMessageText,
 	steeringWithQueue,
@@ -150,7 +148,9 @@ import { NextCapsule } from "./session/NextCapsule";
 import { useFleet } from "./session/useFleet";
 import { GhostRowContext, type GhostRowHost, GhostRowView } from "./session/GhostRows";
 import { TranscriptSkeleton } from "./session/TranscriptSkeleton";
-import { useReadRetry } from "./session/useReadRetry";
+import type { ConversationMutationSubmitter } from "../../mobile/src/state/conversationMutation";
+import type { NativeConversationAttachment } from "./session/nativeConversationSessions";
+import { useNativeConversationAttachment } from "./session/NativeConversationSessionsProvider";
 import {
 	answerTo,
 	hideAnswerMessages,
@@ -177,7 +177,6 @@ import { useOlderHistory } from "./session/useOlderHistory";
 import { type FindState, newFind, findMatches, matchLabel, matchPosition, stepMatch } from "./session/findInSession";
 import { currentLevel, displayForLevel, levelToast } from "./session/detailLevels";
 import { detailLevels } from "./session/nativeDetailLevels";
-import { outboxFlush } from "./outbox/nativeOutboxFlush";
 import { type OfflineTarget, offlineRequest } from "./outbox/offlineSend";
 import { composerPlaceholder, sendAction, sendLabel } from "./session/sendAction";
 import { NotesBar } from "./session/NotesBar";
@@ -383,14 +382,39 @@ const SESSION_DESTINATIONS = {
 	delete: "delete",
 } as const satisfies Record<string, SessionDestination>;
 
-export function ConversationScreen({
+export function ConversationScreen(
+	props: NativeStackScreenProps<Routes, "Conversation"> & { subagentOf?: Coordinator },
+) {
+	const { hubId, ref } = props.route.params;
+	// The session binding is borrowed from the one app-owned registry entry per
+	// (hub, ref): the store, service, activity sink and durable host are shared
+	// by every mounted view of this session. A view that never commits creates
+	// none of them.
+	const attachment = useNativeConversationAttachment(hubId, ref);
+	// Disclosure memory is session-scoped, so it is dropped only when the last
+	// view of the entry goes away, not when one sibling closes.
+	useLayoutEffect(() => {
+		if (attachment === null) return;
+		const scope = sessionDisclosureScope(hubId, ref);
+		return () => {
+			if (attachment.entry.retired) nativeDisclosureStore.clearScope(scope);
+		};
+	}, [attachment, hubId, ref]);
+	if (attachment === null) return null;
+	return <ConversationScreenView {...props} attachment={attachment} />;
+}
+
+function ConversationScreenView({
 	route,
 	navigation,
 	subagentOf,
+	attachment,
 }: NativeStackScreenProps<Routes, "Conversation"> & {
 	/** This session is a subagent's, opened from its coordinator (the
 	 * "Subagent" route): the coordinator whose tree it sits in. */
 	subagentOf?: Coordinator;
+	/** The shared session binding this view borrows. */
+	attachment: NativeConversationAttachment;
 }) {
 	const { activeProfile, profiles, client, state: connectionState } = useConnection();
 	const focused = useScreenInFront(route.key);
@@ -415,27 +439,11 @@ export function ConversationScreen({
 	useLayoutEffect(() => {
 		navigation.setOptions(navBarGlassOptions(navGlass, colors.background));
 	}, [navigation, navGlass, colors.background]);
-	// The durable-mutation wiring: the store admits every mutation through a
-	// lazily-acquired process runtime (a screen that never sends never opens the
-	// mutations database), and a connected host effect binds this screen's
-	// client and target to that same runtime. The host owns the registration and
-	// the read fence; the runtime owns dispatch and the recovery row a
-	// rejection produces.
-	const mutationHostRef = useRef<NativeMutationHost | null>(null);
-	// The submitter refuses while no host is live, so a mutation is never
-	// durably accepted (and its draft cleared) while this screen has no
-	// registered client to dispatch it.
-	const mutationSubmitter = useMemo<ConversationMutationSubmitter>(
-		() => createDurableSubmitter(() => mutationHostRef.current),
-		[],
-	);
 	// The transcript display config the conversation projects at (the hub's
 	// evener/settings/transcriptDisplay settings; the shipped mobile default
-	// — intent — when the hub stores none). The store owns the level it
-	// projects at and re-projects through its display boundary when it
-	// changes; the service reads the CURRENT value at each read it projects,
-	// so the ref (not the render value) is what it closes over — the store is
-	// not recreated per config change.
+	// — intent — when the hub stores none). The shared entry subscribes to the
+	// same level and feeds it to the store and service; this view resolves it
+	// only to project its own rows at that shared level.
 	const preferences = useNativePreferences();
 	const hubDisplayConfig = preferences.hubId === route.params.hubId ? preferences.config : null;
 	// The detail level chosen for this session on this device replaces the
@@ -445,40 +453,14 @@ export function ConversationScreen({
 	const chosenLevel = levels.get(route.params.ref);
 	const display = useMemo(() => displayForLevel(chosenLevel, hubDisplayConfig), [chosenLevel, hubDisplayConfig]);
 	const displayConfig = display.config;
-	const displayConfigRef = useRef<TranscriptDisplayConfigV1 | null>(displayConfig);
-	displayConfigRef.current = displayConfig;
-	const resolveDisplayConfig = useCallback(() => displayConfigRef.current, []);
-	// biome-ignore lint/correctness/useExhaustiveDependencies: Each route destination owns an independent conversation binding.
-	const store = useMemo(
-		() =>
-			createConversationStore({
-				mutationHubId: route.params.hubId,
-				mutationSubmitter,
-				displayConfig,
-			}),
-		[mutationSubmitter, route.params.hubId, route.params.ref],
-	);
-	// A config change reaches the live store as a level change, not a
-	// rebinding: setDisplayConfig re-projects the conversation at the new
-	// level through the same display boundary (an equal value is a no-op).
-	useEffect(() => {
-		store.getState().setDisplayConfig(displayConfig);
-	}, [store, displayConfig]);
-	// biome-ignore lint/correctness/useExhaustiveDependencies: Activity lifetime follows its conversation binding.
-	const activity = useMemo(() => createActivityStore(), [store]);
-	// The conversation store validates the exact bound sink object on refresh.
-	const activitySink = useMemo(() => activity.getState(), [activity]);
-	const service = useMemo(
-		() =>
-			client
-				? createConversationService(client, {
-						resolveDisplayConfig,
-						onReadStart: (ref, expectedThreadId) => mutationHostRef.current?.beginRead(ref, expectedThreadId),
-						onReadComplete: (lease, response) => mutationHostRef.current?.reconcileRead(lease, response),
-					})
-				: null,
-		[client, resolveDisplayConfig],
-	);
+	// The shared binding: one store, service, activity sink and durable host for
+	// every mounted view of this hub/ref. This view borrows them and never
+	// closes, suspends or resets them.
+	const { entry } = attachment;
+	const store = entry.store;
+	const activitySink = entry.activitySink;
+	const service = entry.service;
+	const mutationSubmitter: ConversationMutationSubmitter = entry.mutationSubmitter;
 	const currentDestination = useRef({ store, client });
 	currentDestination.current = { store, client };
 	const snapshot = store();
@@ -525,20 +507,16 @@ export function ConversationScreen({
 	const returningToEnd = useRef(false);
 	const follow = useLiveEndFollow((following) => {
 		returningToEnd.current = following;
-		if (!following) store.getState().setFollowingLiveEnd(false);
+		// Leaving the end is known at once; returning to it is only true once
+		// the list is there (settleAtEnd), so the cap never trims under a list
+		// still travelling.
+		if (!following) attachment.setFollowingLiveEnd(false);
 	});
 	function settleAtEnd(end: boolean) {
 		if (!end || !returningToEnd.current) return;
 		returningToEnd.current = false;
-		store.getState().setFollowingLiveEnd(true);
+		attachment.setFollowingLiveEnd(true);
 	}
-	// Rows keep their open state in one app-wide store, scoped by session, so a
-	// row the list remounts keeps it. Leaving the session drops its scope, which
-	// keeps the store bounded.
-	useEffect(() => {
-		const scope = sessionDisclosureScope(route.params.hubId, route.params.ref);
-		return () => nativeDisclosureStore.clearScope(scope);
-	}, [route.params.hubId, route.params.ref]);
 	const captureSuppressed = useRef(false);
 	const restoreFrame = useRef<number | null>(null);
 	const composerInput = useRef<TextInput>(null);
@@ -581,6 +559,13 @@ export function ConversationScreen({
 		[route.params.hubId, route.params.ref],
 	);
 	const draft = useSyncExternalStore(document.subscribe, document.getSnapshot);
+	// A handoff can fail its storage write while the resume itself already moved
+	// the rows. Retry it as the replacement screen mounts and whenever the draft
+	// becomes writable again; the source composition stays under the old ref
+	// until the destination write commits.
+	useEffect(() => {
+		if (draft.loaded && !draft.error) drafts.retryPendingHandoffs();
+	}, [draft.loaded, draft.error, draft.record]);
 	const imageSelection = useMemo(() => new ImageSelection(document, nativeImagePicker), [document]);
 	const imageState = useSyncExternalStore(imageSelection.subscribe, imageSelection.getSnapshot);
 	// Follows the screen in front rather than focus, so a photo being attached
@@ -593,6 +578,9 @@ export function ConversationScreen({
 		};
 	}, [focused, imageSelection]);
 	const unconfirmedSend = draft.submitting ? null : draft.record.unconfirmed;
+	// A draft operation in flight, or one still uncertain, keeps Retry visible
+	// but disabled: the document itself refuses a second submitText.
+	const documentBusy = draft.submitting || !draft.loaded || draft.error !== null || draft.record.unconfirmed !== null;
 	const connected = connectionState === "ready" && activeProfile?.id === route.params.hubId;
 	const connectionText = useConnectionStatusText();
 	// The same debounced signal the connection bar itself waits on (spec 14:
@@ -692,104 +680,92 @@ export function ConversationScreen({
 	}
 	// The recovery surface: this exact hub/conversation target's durable
 	// recovery rows, shown as ghosts at the transcript's end. useRecoveryPanel
-	// acquires the runtime only once the conversation is connected (the
-	// singleton opens the mutations database), so a screen that never reaches a
-	// live conversation never constructs one - what the landed render fence
-	// (useNativeMutationRecovery.render.test.tsx) requires of this screen.
+	// acquires the local runtime in an effect even while offline; the render fence
+	// (useNativeMutationRecovery.render.test.tsx) keeps construction and reads out
+	// of render while allowing durable recovery after recreation.
 	const recovery = useRecoveryPanel({
-		connected,
 		hubId: route.params.hubId,
 		targetRef: route.params.ref,
 	});
-	// Bind this screen's client and target to the runtime for the connected
-	// lifetime: the service's read fence calls through mutationHostRef, and the
-	// runtime's dispatch gate opens on this screen's own authoritative read and
-	// retires with the mount. A failed startup keeps the registration: the
-	// runtime retries its own start on the next submission, and a durable
-	// admission must always have this screen's client bound.
+	const recoveryAvailable = recovery.snapshot !== null;
+	const identityKey = `queued-message-identity:v1:${recovery.targetKey}`;
+	const [identityAttempt, retryIdentity] = useState(0);
+	const [savedIdentity, setSavedIdentity] = useState<{
+		key: string;
+		identity: { threadId: string; instanceId: string } | null;
+		error: unknown;
+	} | null>(null);
+	const observedTarget = mutationTarget(snapshot);
+	const observedThread = observedTarget?.threadId;
+	const observedInstance = observedTarget?.instanceId;
+	const authoritativeIdentity = connected && snapshot.status === "open";
 	useEffect(() => {
-		if (!client || !connected) return;
-		let host: NativeMutationHost;
 		try {
-			host = createNativeMutationHost(getNativeMutationRuntime(), route.params.hubId, route.params.ref, client);
-		} catch {
-			// The mutations database or the client binding could not be created.
-			// Leave the screen mounted with no host rather than crashing the
-			// conversation; a later reconnect or remount retries, and a mutation
-			// submitted meanwhile surfaces its own failure through the store.
-			mutationHostRef.current = null;
-			return;
-		}
-		mutationHostRef.current = host;
-		void host.start().catch(() => undefined);
-		return () => {
-			if (mutationHostRef.current === host) mutationHostRef.current = null;
-			host.dispose();
-			// Letting go writes nothing to storage, so ask the flush to look: a
-			// message still waiting here would otherwise wait for the next
-			// connection.
-			void outboxFlush.flush();
-		};
-	}, [client, connected, route.params.hubId, route.params.ref]);
-	useEffect(() => () => store.getState().close(), [store]);
-	// Thread reads replace the connection's subscription. Returning from a
-	// child or editor must reacquire this screen's stream and current snapshot.
-	useEffect(() => {
-		if (!service || !connected || !focused) return;
-		void store
-			.getState()
-			.resumeProjected(service, activitySink, route.params.ref)
-			.catch((error) => {
-				// The store surfaces a failed resume in its own state; this only
-				// keeps the rejection from going unobserved.
-				console.error("ConversationScreen: resume failed", error);
-			});
-		return () => {
-			store.getState().suspendProjected();
-			service.close();
-		};
-	}, [service, store, activitySink, connected, focused, route.params.ref]);
-	// A read that failed while connected tries again on its own (spec 14);
-	// from the third failure in a row the transcript says so.
-	const readStatus = useCallback(() => store.getState().status, [store]);
-	const retryRead = useCallback(
-		() => (service ? store.getState().resumeProjected(service, activitySink, route.params.ref) : Promise.resolve()),
-		[service, store, activitySink, route.params.ref],
-	);
-	const readFailures = useReadRetry({
-		status: snapshot.status,
-		active: Boolean(service) && connected && focused,
-		resetKey: `${route.params.hubId}\u0000${route.params.ref}`,
-		readStatus,
-		resume: retryRead,
-	});
-	// The durable pending-row seam. The store retires it on EVERY thread open,
-	// and `openProjected` runs from more than the resume effect: the /clear
-	// command's cleared callback, the refresh paths, and resumeProjected's own
-	// fall-through all reopen the thread. Key the rebind on the conversation
-	// generation so any host-initiated (re)open re-establishes the seam once the
-	// store has retired it, while a suspend/rehydrate generation bump that did
-	// not retire it leaves the live subscription untouched (the store's
-	// bindPendingMutationsIfUnbound is idempotent). The store's own close/reset
-	// retires the seam on unmount, so this effect needs no cleanup.
-	useEffect(() => {
-		if (!client || !connected || !focused) return;
-		try {
-			store
-				.getState()
-				.bindPendingMutationsIfUnbound(
-					createConversationMutationPendingPort(
-						getNativeMutationRuntime(),
-						nativeMutationTargetKey(route.params.hubId, route.params.ref),
-					),
-				);
+			let identity: { threadId: string; instanceId: string } | null = null;
+			if (authoritativeIdentity && observedThread && observedInstance) {
+				identity = { threadId: observedThread, instanceId: observedInstance };
+				try {
+					Storage.setItemSync(identityKey, JSON.stringify(identity));
+				} catch (error) {
+					// Never keep an older identity as fallback after observing a replacement.
+					Storage.removeItemSync(identityKey);
+					throw error;
+				}
+			} else {
+				const raw = Storage.getItemSync(identityKey);
+				if (raw !== null) {
+					const value: unknown = JSON.parse(raw);
+					if (
+						typeof value !== "object" ||
+						value === null ||
+						!("threadId" in value) ||
+						typeof value.threadId !== "string" ||
+						!value.threadId ||
+						!("instanceId" in value) ||
+						typeof value.instanceId !== "string" ||
+						!value.instanceId
+					)
+						throw new Error(
+							"Your saved messages are still available. Retry to check this session identity; Evener will check it again when this session opens.",
+						);
+					identity = { threadId: value.threadId, instanceId: value.instanceId };
+				}
+			}
+			setSavedIdentity({ key: identityKey, identity, error: null });
 		} catch (error) {
-			// The mutations database could not be opened. The conversation stays
-			// usable; a later reconnect or remount retries, and the failure is
-			// logged so it is not silent.
-			console.error("ConversationScreen: durable pending seam bind failed", error);
+			setSavedIdentity({ key: identityKey, identity: null, error });
 		}
-	}, [store, client, connected, focused, route.params.hubId, route.params.ref, snapshot.conversationGeneration]);
+	}, [identityKey, identityAttempt, authoritativeIdentity, observedThread, observedInstance]);
+	const localIdentity = observedTarget ?? (savedIdentity?.key === identityKey ? savedIdentity.identity : null);
+	const localThread = localIdentity?.threadId;
+	const localInstance = localIdentity?.instanceId;
+	const identityFailure = savedIdentity?.key === identityKey ? savedIdentity.error : null;
+	useEffect(() => {
+		if (!recoveryAvailable || !localThread || !localInstance) return;
+		return getNativeMutationRuntime().registerTarget(route.params.hubId, route.params.ref, null, {
+			threadId: localThread,
+			instanceId: localInstance,
+		});
+	}, [recoveryAvailable, route.params.hubId, route.params.ref, localThread, localInstance, connected]);
+	// Focus is permission for this view's actions, not ownership of the
+	// canonical data. A mounted view that comes back in front observes the
+	// shared store and asks for a read only when canonical authority is
+	// unavailable or invalidated; the entry owns the read lifetime.
+	useEffect(() => {
+		if (!focused || !service || !connected) return;
+		const current = store.getState();
+		// "unknown" is a suspended or never-read binding; an in-flight read
+		// ("reading") must not be duplicated, and an error belongs to the
+		// entry's read actor.
+		if (current.ref !== route.params.ref || current.latestReadState === "unknown") void current.ensureLatest();
+		// A pending projection whose read failed is disabled for Retry until a
+		// fresh read certifies it; focus is an explicit recovery event for that
+		// storage read (which never blocks dispatch), not a second canonical read.
+		else if (!current.pendingMutationsReady) void current.refreshPendingMutations();
+	}, [focused, service, connected, store, route.params.ref]);
+	// One entry-owned read actor: the transcript's quiet retry line follows its
+	// failure count. Views only subscribe; they never start a timer.
+	const readFailures: number = useSyncExternalStore(entry.readActor.subscribe, entry.readActor.getFailures);
 	const connectionReady = useRef(connected);
 	connectionReady.current = connected;
 	const bindingGeneration = snapshot.conversationGeneration;
@@ -1477,7 +1453,11 @@ export function ConversationScreen({
 		captureSuppressed.current = false;
 		readerMeasurements.current.clear();
 		readerAnchor.current = readerPositions.read(route.params.hubId, route.params.ref);
-		follow.dispatch({ type: "reset", following: readerAnchor.current === null });
+		const openingFollows = readerAnchor.current === null;
+		follow.dispatch({ type: "reset", following: openingFollows });
+		// A new reader starts conservatively as not following, so its opening
+		// position is what re-establishes the live-end demand.
+		attachment.setFollowingLiveEnd(openingFollows);
 		turnsSeen.current = readerAnchor.current?.turnsSeen;
 		openedFor.current = null;
 		openingLandedNow.current = false;
@@ -1485,7 +1465,7 @@ export function ConversationScreen({
 		// Each session's opening gets its own caps: a round a previous session
 		// consumed must not shorten the next one's.
 		setOpeningCapRound(0);
-	}, [route.params.hubId, route.params.ref, follow.dispatch]);
+	}, [route.params.hubId, route.params.ref, follow.dispatch, attachment]);
 	// A layout effect, so a cell's layout or the cap can never read the rows of
 	// the render before (a passive effect leaves a window after the commit),
 	// and it runs before the opening effect below.
@@ -1911,12 +1891,14 @@ export function ConversationScreen({
 		(!conversation || conversation.status.type !== "restartRequired") &&
 		(!conversation || canComposeFor(conversation) || conversation.resumeRequired === true);
 	const goalCommand = goalObjective(draft.record.draft, draft.record.images?.length);
-	const command = composerCommand(draft.record.draft, draft.record.images?.length);
+	const command = composerCommand(draft.record.draft, draft.record.images?.length, draft.record.composer);
 	// The draft's whole shape, said once: how many images it holds. The composer
 	// can't see the attachments, so the screen answers both "may it rest" and
 	// "does Stop take the slot" from this.
 	const imageCount = draft.record.images?.length ?? 0;
-	const draftMayRest = composerRests({ text: draft.record.draft, images: imageCount, editable: draft.loaded });
+	const hasSelections = !!(draft.record.composer?.skillNames?.length || draft.record.composer?.commandNames?.length);
+	const draftMayRest =
+		!hasSelections && composerRests({ text: draft.record.draft, images: imageCount, editable: draft.loaded });
 	async function applyCommand(clear = false) {
 		const action = clear ? "goal" : command?.command.id;
 		if (
@@ -1950,7 +1932,7 @@ export function ConversationScreen({
 						isCurrent: currentBinding,
 						reasoning: () => store.getState().conversation,
 						turn: () => store.getState().conversation,
-						submit: async (kind, input) => {
+						submit: async (kind, input, context) => {
 							const target = mutationTarget(store.getState());
 							if (!target) throw new CommandNotSentError("Open the session again and try once more.");
 							try {
@@ -1961,6 +1943,7 @@ export function ConversationScreen({
 									threadId: target.threadId,
 									instanceId: target.instanceId,
 									input,
+									...context,
 								});
 							} catch (error) {
 								// Admission only writes on the phone: nothing left it, so this
@@ -2120,15 +2103,15 @@ export function ConversationScreen({
 		setAnswerError(null);
 		let acceptedAnswers = false;
 		try {
-			await document.submitText(text, async (input) => {
+			await document.submitText(text, async (input, _images, context) => {
 				if (!questionBatches.begin(batch)) return false;
 				if (target !== null && offlineAction !== "none") {
 					await getNativeMutationRuntime().submit(
-						offlineRequest(target, offlineAction, [{ type: "text", text: input }]),
+						offlineRequest(target, offlineAction, [{ type: "text", text: input }], context),
 					);
 				} else if (online) {
 					const previous = store.getState().lastAcceptedMutation;
-					await store.getState().send(online, [{ type: "text", text: input }]);
+					await store.getState().send(online, [{ type: "text", text: input }], context);
 					const accepted = store.getState().lastAcceptedMutation;
 					if (!accepted || accepted === previous || accepted.kind !== "send") return false;
 				} else return false;
@@ -2445,7 +2428,9 @@ export function ConversationScreen({
 				!(command.command.id === "goal" && !goalCommand && !conversation?.goal) &&
 				!!conversation &&
 				composerCommandAvailable(command.command, conversation)
-			: composerReady && (!!draft.record.draft.trim() || !!draft.record.images?.length) && action !== "none";
+			: composerReady &&
+				(!!draft.record.draft.trim() || !!draft.record.images?.length || hasSelections) &&
+				action !== "none";
 	const composerSendLabel =
 		answering || command === null
 			? sendLabel(action, answering, connected)
@@ -2474,9 +2459,9 @@ export function ConversationScreen({
 		if (!service || kind === null) return;
 		setActionError(null);
 		try {
-			await document.submit(async (text, images) => {
+			await document.submit(async (text, images, context) => {
 				store.getState().setDraft(text);
-				return deliver(service, kind, text, images);
+				return deliver(service, kind, text, images, context);
 			});
 		} catch {
 			// A refused Send adds no text of its own: the draft stays, and the
@@ -2510,8 +2495,21 @@ export function ConversationScreen({
 		if (target === null || kind === "none") return;
 		setActionError(null);
 		try {
-			await document.submit(async (text, images) => {
-				await getNativeMutationRuntime().submit(offlineRequest(target, kind, buildComposerInput(text, images)));
+			await document.submit(async (text, images, context) => {
+				await getNativeMutationRuntime().submit(
+					offlineRequest(
+						target,
+						kind,
+						buildComposerInput(
+							text,
+							images,
+							context.composer?.skillNames,
+							context.composer?.commandNames,
+							context.composer?.mentions,
+						),
+						context,
+					),
+				);
 				haptic("light");
 				return true;
 			});
@@ -2578,6 +2576,13 @@ export function ConversationScreen({
 					// The rows followed the resume; the pane has to as well, or the
 					// message and the work it starts land on a ref nobody is showing.
 					onResolvedIdentity: (resolved) => {
+						// The draft and its recovery ownership follow the same identity:
+						// a replacement screen that loaded the resumed ref must show the
+						// edited composition, not the retired ref's stranded copy.
+						drafts.handoff(
+							{ hubId: route.params.hubId, sessionRef: ref },
+							{ hubId: route.params.hubId, sessionRef: resolved },
+						);
 						navigation.replace("Conversation", {
 							hubId: route.params.hubId,
 							ref: resolved,
@@ -2610,6 +2615,8 @@ export function ConversationScreen({
 			kind: "send" | "queue" | "resume",
 			text: string,
 			images: Parameters<typeof buildComposerInput>[1],
+			context?: ConversationMutationContext,
+			precondition?: () => boolean,
 		) => {
 			// A fenced session takes the message durably first, with the same
 			// request an offline send writes, and only then resumes: the resume's
@@ -2620,7 +2627,21 @@ export function ConversationScreen({
 				const live = store.getState();
 				const target = mutationTarget(live);
 				if (target === null || client === null) return false;
-				await getNativeMutationRuntime().submit(offlineRequest(target, "resume", buildComposerInput(text, images)));
+				await getNativeMutationRuntime().submit({
+					...offlineRequest(
+						target,
+						"resume",
+						buildComposerInput(
+							text,
+							images,
+							context?.composer?.skillNames,
+							context?.composer?.commandNames,
+							context?.composer?.mentions,
+						),
+						context,
+					),
+					...(precondition === undefined ? {} : { precondition }),
+				});
 				haptic("light");
 				// The message is durably admitted, so it is sent: the resume is the
 				// recovery it needs, not part of the send's success. Reporting a
@@ -2639,7 +2660,20 @@ export function ConversationScreen({
 				return true;
 			}
 			const previous = store.getState().lastAcceptedMutation;
-			await store.getState()[kind](through, buildComposerInput(text, images));
+			await store
+				.getState()
+				[kind](
+					through,
+					buildComposerInput(
+						text,
+						images,
+						context?.composer?.skillNames,
+						context?.composer?.commandNames,
+						context?.composer?.mentions,
+					),
+					context,
+					precondition,
+				);
 			const accepted = store.getState().lastAcceptedMutation;
 			const admitted = accepted != null && accepted !== previous && accepted.kind === kind;
 			// Spec 16.6: a light impact on send, Send's and an error row's Retry's.
@@ -2661,24 +2695,197 @@ export function ConversationScreen({
 		// could not finish.
 		[store, controls, showToast, recoverFenced],
 	);
-	// Continuation uses Send's routing without consuming the current draft.
-	const retryFailedTurn = useCallback(async () => {
-		const kind = liveSendKind();
-		if (!service || kind === null) return;
-		setActionError(null);
-		try {
-			await document.submitText(TURN_CONTINUATION_TEXT, async (text, images) => deliver(service, kind, text, images));
-		} catch {
-			// As with Send, a refusal leaves the unconfirmed ghost to say so.
+	// Whether Retry may offer itself at all: Send's routing prerequisites,
+	// without the transient local mutation state that makes a press a no-op
+	// instead of hiding the row (that is the descriptor's `disabled`).
+	const retryCanSend = useCallback((): boolean => {
+		const live = store.getState();
+		if (!connected || !focused || live.status !== "open") return false;
+		if (controls?.getSnapshot().pending != null || commandPending) return false;
+		if (!live.conversation || pendingQuestions(live.conversation).length > 0) return false;
+		return sendAction(live.conversation, live.pendingMutations, connectionReady.current) !== "none";
+	}, [connected, focused, store, controls, commandPending]);
+	// The failure-recovery consumer's read demand. A target storage transition
+	// only fail-closes canonical authority and schedules no authoritative read of
+	// its own: on native that read takes the runtime's read lease and blocks the
+	// target's ordinary dispatch. A mounted failure that could offer Retry is the
+	// one consumer that may afford that block, and only once no own submission is
+	// unresolved (otherwise the read would race the very dispatch it is waiting
+	// on). Keyed on the readiness state and the displayed model, so it re-runs
+	// when the storage notification drops authority or when the failure arrives
+	// while authority is already unavailable.
+	const retryAuthorityDemand = useRef<{ generation: number; failureTurnId: string } | null>(null);
+	// Reset the demand on the store's ready PUBLICATION, not when a passive
+	// effect happens to observe it: a storage notification can invalidate a
+	// freshly published ready in the same batch, before effects flush, and a
+	// missed transition would leave the consumed token refusing the next read.
+	// The subscription runs synchronously inside the store's set.
+	useEffect(
+		() =>
+			store.subscribe((state) => {
+				if (state.latestReadState === "ready") retryAuthorityDemand.current = null;
+			}),
+		[store],
+	);
+	useEffect(() => {
+		if (!focused || !connected || !service) return;
+		const current = store.getState();
+		if (current.ref !== route.params.ref || current.status !== "open") return;
+		// An uncertified projection or an unresolved own row already disables
+		// Retry; a read now could only block the dispatcher's target.
+		if (!current.pendingMutationsReady || ownPendingTurnInput(current.pendingMutations)) return;
+		const displayedTurnId = latestTurnId(current.conversation ?? undefined);
+		if (displayedTurnId === undefined) {
+			retryAuthorityDemand.current = null;
+			return;
 		}
-	}, [liveSendKind, service, document, deliver]);
+		// The same owner predicate the row uses, with authority removed: true only
+		// for a turn's own failure row on the displayed latest turn, so a warning,
+		// another item's error, a historical failure or a sign-in failure asks for
+		// nothing.
+		const offersRetry = (current.conversation?.items ?? []).some((row) => {
+			if (row.kind !== "failure") return false;
+			return (
+				errorAction(
+					row,
+					{
+						canonical: null,
+						displayedLatestTurnId: displayedTurnId,
+						pendingMutations: current.pendingMutations,
+						pendingMutationsReady: current.pendingMutationsReady,
+					},
+					retryCanSend(),
+				)?.kind === "retry"
+			);
+		});
+		if (!offersRetry) {
+			retryAuthorityDemand.current = null;
+			return;
+		}
+		// One demand per binding generation and displayed failure. A demanded
+		// read that is discarded returns to "unknown" with this token consumed:
+		// recovery waits for a ready publication or the next explicit event
+		// (focus, reopen, reconnect), never an immediate read-after-read loop.
+		if (current.latestReadState !== "unknown") return;
+		const demanded = retryAuthorityDemand.current;
+		if (
+			demanded !== null &&
+			demanded.generation === current.conversationGeneration &&
+			demanded.failureTurnId === displayedTurnId
+		)
+			return;
+		retryAuthorityDemand.current = {
+			generation: current.conversationGeneration,
+			failureTurnId: displayedTurnId,
+		};
+		void current.ensureLatest();
+	}, [
+		snapshot.latestReadState,
+		snapshot.pendingMutationsReady,
+		snapshot.pendingMutations,
+		snapshot.conversation,
+		snapshot.ref,
+		snapshot.status,
+		focused,
+		connected,
+		service,
+		store,
+		route.params.ref,
+		retryCanSend,
+	]);
+	// Continuation uses Send's routing without consuming the current draft. The
+	// clicked turn and the shared store are re-read here, not trusted from the
+	// render that offered the action: a stale callback submits nothing.
+	const retryFailedTurn = useCallback(
+		async (failedTurnId: string) => {
+			const live = store.getState();
+			const canonical = live.canonicalSession();
+			const now = document.getSnapshot();
+			// The action may have been captured before a reconnect replaced the
+			// entry's service. Resolve the live one here and submit through it;
+			// requiring equality with the render-captured service turned an enabled
+			// Retry into a silent no-op after the same failure remained current.
+			const currentService = entry.service;
+			if (
+				!attachment.live ||
+				currentService === null ||
+				live.ref !== route.params.ref ||
+				live.status !== "open" ||
+				!live.conversation ||
+				!focused ||
+				!screenInFront(navigation, route.key) ||
+				!retryCanSend() ||
+				now.submitting ||
+				!now.loaded ||
+				now.error !== null ||
+				now.record.unconfirmed !== null
+			)
+				return;
+			const kind = liveSendKind();
+			if (kind === null) return;
+			const action = canonicalFailureAction(
+				canonical,
+				failedTurnId,
+				live.pendingMutations,
+				live.pendingMutationsReady,
+				true,
+			);
+			if (action === null || action.kind !== "retry" || action.disabled) return;
+			// The runtime runs this once immediately before the durable enqueue and
+			// again before a direct fallback. It reads the shared owners at that
+			// moment, not this render: a retired view, a moved binding, a newer
+			// canonical outcome or an unresolved own row refuses with not-sent.
+			// It excludes only this operation's own in-flight document marker.
+			const activationGeneration = live.conversationGeneration;
+			const activationInstance = live.conversation.instanceId ?? live.conversation.threadId;
+			const precondition = () => {
+				if (!attachment.live || !focused || !screenInFront(navigation, route.key) || !connectionReady.current)
+					return false;
+				const bound = entry.service;
+				if (bound === null || bound !== currentService) return false;
+				const current = store.getState();
+				if (current.ref !== route.params.ref || current.status !== "open") return false;
+				if (!current.conversation || current.conversationGeneration !== activationGeneration) return false;
+				if ((current.conversation.instanceId ?? current.conversation.threadId) !== activationInstance) return false;
+				const currentAction = canonicalFailureAction(
+					current.canonicalSession(),
+					failedTurnId,
+					current.pendingMutations,
+					current.pendingMutationsReady,
+					true,
+				);
+				return currentAction !== null && currentAction.kind === "retry" && !currentAction.disabled;
+			};
+			setActionError(null);
+			try {
+				await document.submitText(TURN_CONTINUATION_TEXT, async (text, images, context) =>
+					deliver(currentService, kind, text, images, context, precondition),
+				);
+			} catch {
+				// As with Send, a refusal leaves the unconfirmed ghost to say so.
+			}
+		},
+		[
+			attachment,
+			focused,
+			navigation,
+			route.key,
+			route.params.ref,
+			retryCanSend,
+			store,
+			document,
+			liveSendKind,
+			deliver,
+			entry,
+		],
+	);
 
 	const runErrorAction = useCallback(
 		(errorAction: ErrorAction) => {
-			if (errorAction === "signIn")
+			if (errorAction.kind === "signIn")
 				// The error doesn't name the provider, so the Hub opens at Providers.
 				openProviders(navigation, route.params.hubId);
-			else void retryFailedTurn();
+			else void retryFailedTurn(errorAction.failedTurnId);
 		},
 		[navigation, route.params.hubId, retryFailedTurn],
 	);
@@ -2710,11 +2917,91 @@ export function ConversationScreen({
 	// (spec 8.5 and 14). A refused row keeps Edit whenever its record can come
 	// back; whether the composer can take it right now is the bubble's
 	// canEdit, so an occupied composer shows Edit disabled with the reason.
-	const recoveryRows = projectNativeMutationRecovery(recovery.targetKey, recovery.snapshot);
+	// Saved ownership remains authoritative when a later edit save fails: the
+	// existing durable draft still references these sources, so Discard must not
+	// expose them. An initial append failure leaves the prior record unchanged
+	// and therefore keeps its unrepresented source visible for recovery.
+	const parkedRecoveryIds = (draft.record.parkedCompositions ?? []).flatMap(
+		(parked) => parked.composer?.recoveryIds ?? [],
+	);
+	const representedRecoveryIds = [
+		...(draft.record.composer?.recoveryIds ?? []),
+		...(draft.record.unconfirmedComposer?.recoveryIds ?? []),
+		...parkedRecoveryIds,
+		...(draft.record.completedCommandRecoveryIds ?? []),
+	];
+	const recoveryRows = projectNativeMutationRecovery(recovery.targetKey, recovery.snapshot).filter(
+		(row) => row.status !== "editing" || !representedRecoveryIds.includes(row.clientMutationId),
+	);
+	// Primitive draft dependencies leave ordinary typing alone. Storage changes,
+	// readiness and explicit Retry re-enter the serialized coordinator, which
+	// uses fresh exact-source proof, never absence from an outbox projection.
+	const [editedRecoveryFailure, setEditedRecoveryFailure] = useState<unknown>(null);
+	const [editedRecoveryAttempt, retryEditedRecovery] = useState(0);
+	const recoveryWork = JSON.stringify({
+		sources: recovery.snapshot?.recovery
+			.filter((row) => row.recoveryKind === "editing")
+			.map((row) => row.clientMutationId),
+		captured: draft.record.unconfirmedComposer?.recoveryIds,
+		owned: draft.record.composer?.recoveryIds,
+		parked: parkedRecoveryIds,
+		released: draft.record.releasedRecoveryIds,
+		completed: draft.record.completedCommandRecoveryIds,
+		acks: draft.record.recoveryResendAcks,
+	});
+	useEffect(() => {
+		if (!recoveryAvailable || !draft.loaded || draft.submitting || draft.error || imageState.busy) return;
+		let current = true;
+		const targetKey = recovery.targetKey;
+		void (async () => {
+			const runtime = getNativeMutationRuntime();
+			await reconcileEditedResends(runtime, targetKey, document);
+			const retained = await runtime.read(targetKey);
+			const deliberatelyReleased = new Set(draft.record.releasedRecoveryIds ?? []);
+			for (const row of retained.recovery) {
+				if (!current || imageSelection.getSnapshot().busy) return;
+				if (row.recoveryKind === "editing" && !deliberatelyReleased.has(row.clientMutationId))
+					await editQueuedMessageIntoDraft(runtime, targetKey, row.clientMutationId, document);
+			}
+			if (current) setEditedRecoveryFailure(null);
+		})().catch((error) => {
+			if (current) setEditedRecoveryFailure(error);
+		});
+		return () => {
+			current = false;
+		};
+	}, [
+		document,
+		recovery.targetKey,
+		recovery.snapshot,
+		recoveryAvailable,
+		recoveryWork,
+		editedRecoveryAttempt,
+		imageCount,
+		draft.loaded,
+		draft.submitting,
+		draft.error,
+		imageState.busy,
+		imageSelection,
+		localThread,
+		localInstance,
+	]);
+	// A recreated offline screen has no live conversation store binding. Its
+	// scoped durable records still use the shared native client-owned projection.
+	const localPending =
+		!observedTarget && recovery.snapshot
+			? reconcilePendingEntries(
+					recovery.targetKey,
+					[...recovery.snapshot.outbox, ...recovery.snapshot.optimistic],
+					undefined,
+					new Map(),
+					() => true,
+				)
+			: snapshot.pendingMutations;
 	const allGhosts = whatCanActNow(
 		ghosts(
 			conversation,
-			snapshot.pendingMutations,
+			localPending,
 			unconfirmedSend === null
 				? null
 				: {
@@ -2723,11 +3010,27 @@ export function ConversationScreen({
 					},
 			recoveryRows,
 			connected,
+			localIdentity
+				? {
+						targetRef: recovery.targetKey,
+						threadId: localIdentity.threadId,
+						instanceId: localIdentity.instanceId,
+						records: recovery.snapshot?.outbox ?? [],
+						readiness: { document: draft, encodingAttachments: imageState.busy },
+					}
+				: undefined,
+			draft.record.parkedCompositions?.map((parked) => ({
+				id: parked.id,
+				text: parked.text,
+				sentText: translateAttachmentMarkers(parked.text, parked.images),
+			})) ?? [],
 		),
 		{ connected, composerLoaded: draft.loaded },
 	);
 	const canEditGhost = document.canRestoreRecoveredDraft();
 	const ghostEditHint = document.recoveredRestoreHint();
+	const canEditParked = canEditGhost && !imageState.busy;
+	const parkedEditHint = imageState.busy ? "Wait for the image to finish preparing." : ghostEditHint;
 	// The transcript list's rows: the conversation's, its usage lines when they
 	// have anything to show, then the ghosts.
 	const ghostsKey = JSON.stringify(allGhosts);
@@ -2761,6 +3064,67 @@ export function ConversationScreen({
 			return null;
 		}
 		if (origin.kind === "pending") {
+			if (ghost.localQueued && (action === "edit" || action === "cancel")) {
+				try {
+					const runtime = getNativeMutationRuntime();
+					const targetKey = nativeMutationTargetKey(route.params.hubId, route.params.ref);
+					const stored = await runtime.read(targetKey);
+					const live = store.getState();
+					const target = mutationTarget(live) ?? localIdentity;
+					const pending = mutationTarget(live)
+						? live.pendingMutations
+						: reconcilePendingEntries(
+								targetKey,
+								[...stored.outbox, ...stored.optimistic],
+								undefined,
+								new Map(),
+								() => true,
+							);
+					const projected = target
+						? ghosts(live.conversation, pending, null, [], connectionReady.current, {
+								targetRef: targetKey,
+								threadId: target.threadId,
+								instanceId: target.instanceId,
+								records: stored.outbox,
+								readiness: { document: document.getSnapshot(), encodingAttachments: imageSelection.getSnapshot().busy },
+							}).find((row) => row.origin.kind === "pending" && row.origin.clientMutationId === origin.clientMutationId)
+						: undefined;
+					if (!projected?.localQueued || !projected.menu.includes(action)) {
+						recovery.retry();
+						return {
+							text: "This message changed. Check its current state before trying again.",
+							kind: "queue:changed",
+						};
+					}
+					if (action === "cancel") {
+						const removed = await removeQueuedMessageWithDraftCapture(
+							runtime,
+							targetKey,
+							origin.clientMutationId,
+							document,
+						);
+						return removed ? null : { text: "This message changed before it could be removed.", kind: "queue:changed" };
+					}
+					const result = await editQueuedMessageIntoDraft(runtime, targetKey, origin.clientMutationId, document);
+					if (result === "restored" || result === "already-restored") {
+						focusComposerAt(document.getSnapshot().record.draft.length);
+						if (
+							stored.outbox.find((row) => row.clientMutationId === origin.clientMutationId)?.composerText === undefined
+						)
+							return {
+								text: "This older message keeps its saved text and images. Check its image references before sending.",
+								kind: "queue:legacy-images",
+							};
+						return null;
+					}
+					return {
+						text: "The message could not be moved into your draft. Its current owner is retained.",
+						kind: "queue:not-restored",
+					};
+				} catch (error) {
+					return { text: errorText(error), kind: "queue:storage-failed" };
+				}
+			}
 			// The phone's own message: Discard or Cancel drops it from the
 			// outbox, Send now releases one a Stop held. A press that finds the
 			// row already changed does nothing; the ghosts re-render from storage.
@@ -2783,6 +3147,11 @@ export function ConversationScreen({
 						nativeMutationTargetKey(route.params.hubId, route.params.ref),
 					);
 			} else if (action === "edit") document.restore();
+			return null;
+		}
+		if (origin.kind === "parked") {
+			if (action === "discard") document.dismissParked(origin.parkId);
+			else if (action === "edit" && !imageSelection.getSnapshot().busy) document.restoreParked(origin.parkId);
 			return null;
 		}
 		if (origin.kind === "recovery") {
@@ -2908,7 +3277,7 @@ export function ConversationScreen({
 	};
 	const ghostActions = useRef(liveGhostActions);
 	ghostActions.current = liveGhostActions;
-	const queuedGhosts = allGhosts.filter((ghost) => ghost.origin.kind === "queue");
+	const queuedGhosts = allGhosts.filter(isQueuedGhost);
 	const queuedKey = JSON.stringify(queuedGhosts);
 	// Like the per-message actions, it goes to the hub, so it isn't offered
 	// while the hub is away, nor while this phone is already steering with
@@ -2970,13 +3339,29 @@ export function ConversationScreen({
 				</View>
 			) : null}
 			{recovery.failed ? <RecoveryFailure error={recovery.error} onRetry={recovery.retry} /> : null}
+			{editedRecoveryFailure ? (
+				<RecoveryFailure error={editedRecoveryFailure} onRetry={() => retryEditedRecovery((value) => value + 1)} />
+			) : null}
+			{identityFailure ? (
+				<RecoveryFailure error={identityFailure} onRetry={() => retryIdentity((value) => value + 1)} />
+			) : null}
 		</>
 	);
 	const ghostRowHost: GhostRowHost = {
 		disabled: ghostBusy,
 		canEdit: canEditGhost,
 		editHint: ghostEditHint,
+		canEditParked,
+		parkedEditHint,
 		draftAttachments: <ImageAttachments document={document} selection={imageSelection} uncertain />,
+		parkedAttachments: (parkId) => (
+			<ImageAttachments
+				document={document}
+				selection={imageSelection}
+				uncertain
+				images={draft.record.parkedCompositions?.find((parked) => parked.id === parkId)?.images ?? []}
+			/>
+		),
 		onAction: (ghost, action) => {
 			void runGhostAction(ghost, action).then((message) => {
 				if (message) toaster.show(message);
@@ -3070,12 +3455,29 @@ export function ConversationScreen({
 							subagentTree={subagentTree}
 							openSubagent={openSubagent}
 							answerFor={answerFor}
-							errorActionFor={(row) =>
-								conversation
-									? // Retry shows only when a press would send.
-										errorAction(row, conversation, liveSendKind() !== null)
-									: null
-							}
+							errorActionFor={(row) => {
+								if (!conversation) return null;
+								// Retry's two facts come from the shared store: the canonical
+								// latest own failure, and no unresolved own submission. A local
+								// draft operation in flight disables the row without hiding it.
+								const live = store.getState();
+								const action = errorAction(
+									row,
+									{
+										canonical: live.canonicalSession(),
+										displayedLatestTurnId: latestTurnId(live.conversation ?? undefined),
+										pendingMutations: live.pendingMutations,
+										pendingMutationsReady: live.pendingMutationsReady,
+									},
+									retryCanSend(),
+								);
+								if (action === null || action.kind !== "retry") return action;
+								// Eligibility includes a current live service binding. Without
+								// one, fail closed: keep the action visible but disabled rather
+								// than enabled and silently refused at activation.
+								const disabled = documentBusy || entry.service === null;
+								return disabled && !action.disabled ? { ...action, disabled: true } : action;
+							}}
 							onErrorAction={runErrorAction}
 							documentChips={documentChips}
 							fileContext={fileContext}
@@ -3098,10 +3500,11 @@ export function ConversationScreen({
 			quote,
 			liveRun,
 			conversation,
+			documentBusy,
 			subagentTree,
 			openSubagent,
 			answerFor,
-			liveSendKind,
+			retryCanSend,
 			runErrorAction,
 			documentChips,
 			fileContext,
@@ -3542,6 +3945,7 @@ export function ConversationScreen({
 										canStop,
 										text: draft.record.draft,
 										images: imageCount,
+										hasSelections,
 									})
 										? {
 												onStop: () => {

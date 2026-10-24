@@ -13,7 +13,7 @@
 // top of history) but was wrong for the liveness line, which used to live
 // here and collided with real transcript text (kata x47h) - it now renders
 // in the pane's reserved footer instead (see Session.tsx).
-import type { ReactNode } from "react";
+import { type ReactNode, useLayoutEffect, useRef } from "react";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./flowoverlay.module.css";
 
@@ -21,26 +21,71 @@ export interface FlowOverlayProps {
   children: ReactNode;
   top?: ReactNode;
   pill?: ReactNode;
+  attentionOverlay?: ReactNode;
+  onOverlayHeightChange?: (height: number) => void;
 }
 
 const CLASS = {
   wrap: requireClass(styles.wrap, "flowoverlay.module.css", "wrap"),
   top: requireClass(styles.top, "flowoverlay.module.css", "top"),
+  stack: requireClass(styles.stack, "flowoverlay.module.css", "stack"),
   pillSlot: requireClass(styles.pillSlot, "flowoverlay.module.css", "pillSlot"),
+  attentionSlot: requireClass(styles.attentionSlot, "flowoverlay.module.css", "attentionSlot"),
 };
 
-export function FlowOverlay({ children, top, pill }: FlowOverlayProps) {
+export function FlowOverlay({ children, top, pill, attentionOverlay, onOverlayHeightChange }: FlowOverlayProps) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const stackRef = useRef<HTMLDivElement>(null);
+  const reportRef = useRef(onOverlayHeightChange);
+  reportRef.current = onOverlayHeightChange;
+  const hasStack = pill !== undefined || attentionOverlay !== undefined;
+
+  // One measured stack owns both floating controls. Next sits at the trailing
+  // bottom edge and New Content above it. What this reports is the end
+  // clearance ConversationBody reserves in its synthetic trailing row: the
+  // distance from the reader's own bottom edge up to the stack's top. That is
+  // the stack's height plus the inset the stylesheet floats it above the
+  // bottom (`bottom: var(--space-3)`); reserving only the height would leave
+  // the last content row under the stack by that inset.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: hasStack is the deliberate trigger: the body reads the ref the stack mount writes, and the effect must re-report when the stack appears or goes away
+  useLayoutEffect(() => {
+    const wrap = wrapRef.current;
+    const stack = stackRef.current;
+    if (!wrap || !stack) {
+      reportRef.current?.(0);
+      return;
+    }
+    // A rect, not offsetHeight: the stack has no scale animation, and rects
+    // stay honest in jsdom where the shared offsetHeight test stub is 500 for
+    // every element and an empty stack must report no clearance at all.
+    const report = () => reportRef.current?.(wrap.getBoundingClientRect().bottom - stack.getBoundingClientRect().top);
+    report();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(report);
+    observer.observe(stack);
+    return () => observer.disconnect();
+  }, [hasStack]);
+
   return (
-    <div className={CLASS.wrap}>
+    <div ref={wrapRef} className={CLASS.wrap}>
       {children}
       {top !== undefined && (
         <div data-testid="flow-overlay-top" className={CLASS.top}>
           {top}
         </div>
       )}
-      {pill !== undefined && (
-        <div data-testid="flow-overlay-pill" className={CLASS.pillSlot}>
-          {pill}
+      {hasStack && (
+        <div ref={stackRef} data-testid="flow-overlay-stack" className={CLASS.stack}>
+          {pill !== undefined && (
+            <div data-testid="flow-overlay-pill" className={CLASS.pillSlot}>
+              {pill}
+            </div>
+          )}
+          {attentionOverlay !== undefined && (
+            <div data-testid="flow-overlay-attention" className={CLASS.attentionSlot}>
+              {attentionOverlay}
+            </div>
+          )}
         </div>
       )}
     </div>

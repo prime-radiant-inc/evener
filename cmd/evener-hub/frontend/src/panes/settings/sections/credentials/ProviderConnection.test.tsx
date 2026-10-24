@@ -204,6 +204,34 @@ test("the popular providers are what the picker shows first", async () => {
   expect(screen.queryByLabelText("Search providers")).toBeNull();
 });
 
+// An endpoint outside the catalogue is added through openai-compatible, whose
+// setup row carries no usable base URL. It has to be reachable from the short
+// list, under the name that says what it is for, rather than only after the
+// reader opens the whole catalogue.
+test("the custom endpoint is in the popular set and opens the connection card", async () => {
+  const { user } = setup({
+    instances: [],
+    availableProviders: [provider("openai-compatible", "OpenAI-compatible endpoint")],
+  });
+  const choice = await screen.findByRole("button", { name: "Custom endpoint" });
+  expect(screen.queryByLabelText("Search providers")).toBeNull();
+  await user.click(choice);
+  expect(screen.getByRole("dialog", { name: "Custom endpoint" })).toBeTruthy();
+  expect(screen.getByLabelText("API key")).toBeTruthy();
+});
+
+// The card's rows and its full editor are the components the settings sheet
+// renders too, so the two surfaces cannot drift into different connection UIs.
+test("the connection card renders its facts and settings through the shared components", async () => {
+  const { user } = setup();
+  await choose(user);
+  expect(screen.getByTestId("connection-facts")).toBeTruthy();
+  await act(async () => {
+    fireEvent.click(screen.getByText("All connection settings"));
+  });
+  expect(screen.getByTestId("connection-settings")).toBeTruthy();
+});
+
 // The reveal swaps the popular set for the whole catalogue (the popular rows
 // are in it too), and closing it puts the short list back - one control, both
 // directions, no second label to keep in sync.
@@ -839,6 +867,25 @@ function movedList(): InstanceListResponse {
   return savedList("anthropic", { baseUrl: "https://moved.example/v1", endpointFingerprint: "fp-moved" });
 }
 const saved = { provider: "anthropic", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
+/** The azure-team row the create-flow tests author; a fresh object per call so
+ * a listing read cannot mutate another read's baseline. */
+function azureTeamRow(): InstanceEntry {
+  return {
+    name: "azure-team",
+    providerId: "azure",
+    base: "azure",
+    baseUrl: "https://team.azure.example/v1",
+    endpointFingerprint: "fp-azure-team",
+    protocol: "openai-chat",
+    auth: "api-key",
+    authModes: ["apiKey"],
+    implicit: false,
+    isDefault: false,
+    activeSource: "none",
+    hasStoredOAuth: false,
+    credentialRequired: true,
+  };
+}
 async function choose(user: ReturnType<typeof userEvent.setup>, name = "Anthropic") {
   // Choosing from the revealed catalogue covers both kinds of provider this
   // helper is used for (popular and not), and keeps one path through the
@@ -2131,21 +2178,7 @@ test.each([false, true])("Codex preserves the existing OAuth route (redirect=%s)
 test("settings saved then key failed repairs the actual named connection without duplicate create", async () => {
   const { user, client, connected } = setup();
   await choose(user, "Azure");
-  const row: InstanceEntry = {
-    name: "azure-team",
-    providerId: "azure",
-    base: "azure",
-    baseUrl: "https://team.azure.example/v1",
-    endpointFingerprint: "fp-azure-team",
-    protocol: "openai-chat",
-    auth: "api-key",
-    authModes: ["apiKey"],
-    implicit: false,
-    isDefault: false,
-    activeSource: "none",
-    hasStoredOAuth: false,
-    credentialRequired: true,
-  };
+  const row = azureTeamRow();
   const created = { instances: [row], availableProviders: catalogue };
   client.on("evener/instance/create", () => {
     client.on("evener/instance/list", () => structuredClone(created));
@@ -3464,6 +3497,20 @@ test("a query-only endpoint change still requires review before the check", asyn
   ]);
 });
 
+test("the access review shows its facts as eyebrow-labeled PropertyList rows", async () => {
+  const { user, client } = setup(fingerprintList("fp-2024"));
+  await choose(user, "Anthropic");
+  await enterText(user, screen.getByLabelText("API key"), "sk-ant-draft");
+  scriptSave(client, fingerprintList("fp-2025", "store"));
+
+  await user.click(screen.getByRole("button", { name: "Save and test" }));
+
+  const review = await screen.findByTestId("access-review");
+  const terms = review.querySelectorAll("dt");
+  expect(terms).toHaveLength(2);
+  expect([...terms].every((term) => term.className.includes("eyebrowLabel"))).toBe(true);
+});
+
 test("a credential draft is not saved to a destination that changed since it was typed", async () => {
   const { user, client } = setup(fingerprintList("fp-2024"));
   await choose(user, "Anthropic");
@@ -3825,21 +3872,7 @@ test("saving settings clears a typed draft when the destination moved under it",
 test("the add card creates with the typed name and base URL, then writes the key and tests", async () => {
   const { user, client, connected } = setup();
   await choose(user, "Azure");
-  const row: InstanceEntry = {
-    name: "azure-team",
-    providerId: "azure",
-    base: "azure",
-    baseUrl: "https://team.azure.example/v1",
-    endpointFingerprint: "fp-azure-team",
-    protocol: "openai-chat",
-    auth: "api-key",
-    authModes: ["apiKey"],
-    implicit: false,
-    isDefault: false,
-    activeSource: "none",
-    hasStoredOAuth: false,
-    credentialRequired: true,
-  };
+  const row = azureTeamRow();
   client.on("evener/instance/create", () => {
     client.on("evener/instance/list", () => ({
       instances: [row],
@@ -3883,6 +3916,44 @@ test("the add card creates with the typed name and base URL, then writes the key
     provider: "azure-team",
     expectedEndpointFingerprint: "fp-azure-team",
   });
+});
+
+test("manual retry after creating a connection keeps the stored source and does not review unchanged access", async () => {
+  const { user, client, connected } = setup();
+  await choose(user, "Azure");
+  const created = azureTeamRow();
+  let stored = false;
+  // A fresh row per read keeps the pre-write baseline a "none" row even though
+  // the key write is what turns the listing's copy into a stored one.
+  client.on("evener/instance/list", () => ({
+    instances: stored ? [{ ...created, activeSource: "store", hasStoredFile: true }] : [],
+    availableProviders: structuredClone(catalogue),
+  }));
+  client.on("evener/instance/create", () => ({
+    instances: [structuredClone(created)],
+    availableProviders: structuredClone(catalogue),
+  }));
+  client.on("evener/auth/apiKey/set", () => {
+    stored = true;
+    return { ...saved, provider: "azure-team" };
+  });
+  let probes = 0;
+  client.on("evener/auth/test", ({ provider }) => {
+    probes += 1;
+    return { provider, status: probes === 1 ? "auth_rejected" : "success", message: "" };
+  });
+
+  await enterName(user, "azure-team");
+  await enterText(user, screen.getByLabelText("Endpoint URL"), "https://team.azure.example/v1");
+  await enterText(user, screen.getByLabelText("API key"), "azure-secret");
+  await user.click(screen.getByRole("button", { name: "Save and test" }));
+  expect(await alertReason()).toBe("check-failed");
+  // The create's own key write landed, so the failed verification is retried
+  // against that stored source rather than reviewed as a changed destination.
+  await user.click(screen.getByRole("button", { name: "Test again" }));
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("azure-team"));
+  expect(screen.queryByTestId("access-review")).toBeNull();
+  expect(client.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(2);
 });
 
 test("an add card provider with template variables carries them on the created instance", async () => {

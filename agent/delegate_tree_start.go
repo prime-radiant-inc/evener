@@ -133,6 +133,9 @@ func (c *delegateTreeController) ReserveCreate(actor delegateActor, descriptor d
 		}
 		parentID = actor.lease.delegateID
 	}
+	if c.laneHandoffCoversLocked(parentID) {
+		return nil, errDelegateTargetBusy
+	}
 	if strings.TrimSpace(descriptor.Task) == "" || strings.TrimSpace(descriptor.AgentType) == "" || !descriptor.Resumable {
 		return nil, errDelegateTargetBusy
 	}
@@ -230,6 +233,9 @@ func (c *delegateTreeController) ReserveAttention(runtime *Session, attentionID 
 	if blocked, _ := c.ancestorFenceLocked(aggregate.Descriptor.ParentDelegateID); blocked {
 		return nil, errDelegateTargetBusy
 	}
+	if c.laneHandoffCoversLocked(delegateID) {
+		return nil, errDelegateTargetBusy
+	}
 	return c.reserveAttentionStartLocked(aggregate, attentionID, aggregate.Generation+1, runtime, nil, false)
 }
 
@@ -325,6 +331,9 @@ func (c *delegateTreeController) reserveOwedAttentionStart(delegateID, attention
 	if blocked, _ := c.ancestorFenceLocked(aggregate.Descriptor.ParentDelegateID); blocked {
 		return nil, errDelegateTargetBusy
 	}
+	if c.laneHandoffCoversLocked(delegateID) {
+		return nil, errDelegateTargetBusy
+	}
 	for _, record := range c.reservations {
 		if record.delegateID == delegateID {
 			return nil, errDelegateTargetBusy
@@ -383,6 +392,9 @@ func (c *delegateTreeController) AttachRuntime(lease delegateLease, runtime *Ses
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closing {
+		return errDelegateTargetBusy
+	}
+	if c.laneHandoffCoversLocked(lease.delegateID) {
 		return errDelegateTargetBusy
 	}
 	aggregate, live, err := c.exactLeaseLocked(lease)
@@ -626,6 +638,9 @@ func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID st
 	if aggregate.Phase != delegatestore.PhaseIdle || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || c.reclamationCoversLocked(delegateID) {
 		return nil, errDelegateTargetBusy
 	}
+	if c.laneHandoffCoversLocked(delegateID) {
+		return nil, errDelegateTargetBusy
+	}
 	// Idle but still finalizing: the finished generation's runtime has not
 	// reported quiescence, so it can't take another generation yet. Refusing
 	// here, under the lock the start commits under, leaves nothing written.
@@ -767,6 +782,11 @@ func (c *delegateTreeController) commitStart(reservation *delegateStartReservati
 	} else if blocked, _ := c.ancestorFenceLocked(aggregate.Descriptor.ParentDelegateID); blocked {
 		// Re-check the ancestor chain: an ancestor that closed between reserve
 		// and commit would make every model request of this generation fail.
+		cancel = c.releaseReservationLocked(record)
+		return delegateStartCommit{}, errDelegateTargetBusy
+	}
+	if c.laneHandoffCoversLocked(record.delegateID) ||
+		(record.create && c.laneHandoffCoversLocked(record.descriptor.ParentDelegateID)) {
 		cancel = c.releaseReservationLocked(record)
 		return delegateStartCommit{}, errDelegateTargetBusy
 	}

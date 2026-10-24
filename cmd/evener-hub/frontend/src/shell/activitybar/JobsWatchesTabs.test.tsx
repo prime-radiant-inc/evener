@@ -1,3 +1,4 @@
+import { jobStatusDisplay } from "@evener/appwire-client";
 import { createNavigationStore } from "@evener/appwire-client/state/navigation";
 import { memoryNavigationPersistence } from "@evener/appwire-client/testing/navigationPersistence";
 import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
@@ -13,6 +14,8 @@ import { ActivityViewport } from "./ActivityViewport";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitySidebarStore";
 import { JobsTab } from "./JobsTab";
 import { WatchesTab } from "./WatchesTab";
+
+const NOW = Date.parse("2026-10-05T00:00:00Z");
 
 const scope = () =>
   deriveScope(
@@ -41,16 +44,19 @@ test("jobs show supplied terminal status and have no invented transcript action"
         command: "real status",
         status: "command_exited_nonzero",
         terminal: true,
+        outcome: "failure",
         reason: "exit 2",
       }),
     ],
     page: { complete: true, issues: [] },
   }));
   connectionStore.getState().connect(client);
-  render(<JobsTab scope={scope()} />);
+  render(<JobsTab now={NOW} scope={scope()} />);
   fireEvent.click(await screen.findByText("1 completed job"));
   expect(screen.getByText("real status")).toBeTruthy();
-  expect(screen.getByText(/Command failed/)).toBeTruthy();
+  const row = screen.getByText("real status").closest("[aria-description]");
+  expect(row?.getAttribute("aria-description")).toBe("Command failed");
+  expect(row?.querySelector("[data-activity-meta]")?.getAttribute("data-failed")).toBe("true");
   expect(screen.queryByRole("button", { name: /real status/ })).toBeNull();
 });
 test("watch tab reads typed receiver state and preserves cadence/delivery vocabulary", async () => {
@@ -71,7 +77,7 @@ test("watch tab reads typed receiver state and preserves cadence/delivery vocabu
     page: { complete: true, issues: [] },
   }));
   connectionStore.getState().connect(client);
-  render(<WatchesTab scope={scope()} />);
+  render(<WatchesTab now={NOW} scope={scope()} />);
   expect(await screen.findByText("heartbeat")).toBeTruthy();
   expect(screen.getByText("every 5m · armed")).toBeTruthy();
   expect(screen.getByText("after 10m · 1 delivery · not armed")).toBeTruthy();
@@ -88,7 +94,7 @@ test("watch disclosure reveals its complete condition and keeps equal IDs in dif
     page: { complete: true, issues: [] },
   }));
   connectionStore.getState().connect(client);
-  const view = render(<WatchesTab scope={scope()} />);
+  const view = render(<WatchesTab now={NOW} scope={scope()} />);
   const summary = await screen.findByText(note);
   expect(screen.queryByTestId("watch-facts")).toBeNull();
   fireEvent.click(summary);
@@ -98,6 +104,7 @@ test("watch disclosure reveals its complete condition and keeps equal IDs in dif
   expect(client.calls.filter((call) => call.method === "evener/thread/watches/list")).toHaveLength(1);
   view.rerender(
     <WatchesTab
+      now={NOW}
       scope={deriveScope(
         createNavigationStore({ persistence: memoryNavigationPersistence() }).getState(),
         "other:receiver",
@@ -150,7 +157,7 @@ test("all terminal jobs fold, and revealed output opens its authoritative owner 
   }));
   connectionStore.getState().connect(client);
   resetWorkspaceStoreForTests();
-  render(<JobsTab scope={scope()} />);
+  render(<JobsTab now={NOW} scope={scope()} />);
   await screen.findByText("command running");
   expect(screen.queryByText("successful command")).toBeNull();
   for (const status of ["command_exited_nonzero", "killed", "cancelled", "stopped", "unknown"])
@@ -158,8 +165,11 @@ test("all terminal jobs fold, and revealed output opens its authoritative owner 
   fireEvent.click(screen.getByText("7 completed jobs"));
   for (const status of ["command_exited_nonzero", "killed", "cancelled", "stopped", "unknown"])
     expect(screen.getByText(`command ${status}`)).toBeTruthy();
-  for (const text of ["completed", "Command failed", "killed", "cancelled", "stopped", "unknown"])
-    expect(screen.getAllByText(text).length).toBeGreaterThan(0);
+  for (const status of ["command_exited_nonzero", "killed", "cancelled", "stopped", "unknown"]) {
+    const row = screen.getByText(`command ${status}`).closest("[aria-description]");
+    expect(row?.getAttribute("aria-description")).toBe(jobStatusDisplay(status));
+    expect(row?.querySelector("[data-activity-status]")?.getAttribute("data-status")).toBe(status);
+  }
   fireEvent.click(screen.getByRole("button", { name: /successful command/ }));
   const opened = workspaceStore.getState().panes.find((pane) => pane.type === "transcript");
   expect(opened).toMatchObject({
@@ -190,14 +200,15 @@ test("job history disclosure survives remount only for its selected session", as
     page: { complete: true, issues: [] },
   }));
   connectionStore.getState().connect(client);
-  const view = render(<JobsTab scope={scope()} />);
+  const view = render(<JobsTab now={NOW} scope={scope()} />);
   fireEvent.click(await screen.findByText("1 completed job"));
   expect(screen.getByText("remote:owner")).toBeTruthy();
   view.unmount();
-  const again = render(<JobsTab scope={scope()} />);
+  const again = render(<JobsTab now={NOW} scope={scope()} />);
   expect(await screen.findByText("remote:owner")).toBeTruthy();
   again.rerender(
     <JobsTab
+      now={NOW}
       scope={deriveScope(
         createNavigationStore({ persistence: memoryNavigationPersistence() }).getState(),
         "other:owner",
@@ -272,7 +283,7 @@ test("closed terminal history discovers page-three live work and keeps its settl
     await act(async () => {
       render(
         <ActivityViewport sessionRef="remote:owner" tab="jobs" className="activity-viewport">
-          <JobsTab scope={scope()} />
+          <JobsTab now={NOW} scope={scope()} />
         </ActivityViewport>,
       );
     });

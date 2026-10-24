@@ -131,7 +131,24 @@ export type {
 } from "./commandCatalog";
 export { createCommandCatalog, createSessionCommandCatalog, sessionPluginNames } from "./commandCatalog";
 export type { ComposerMention, InputAttachment } from "./composerInput";
-export { buildComposerInput, buildInput, canonicalSkillNames, formatQuoteBlock, mergeDraftText } from "./composerInput";
+export {
+  buildComposerInput,
+  buildInput,
+  canonicalSkillNames,
+  completeSkillReferenceAt,
+  formatQuoteBlock,
+  isSkillTokenCharacter,
+  mergeDraftText,
+  reconcileComposerMentions,
+  sharedPrefixLength,
+  sharedSuffixLength,
+} from "./composerInput";
+export type { ComposerComposition, RecoveredComposition } from "./composerRecovery";
+export {
+  mergeComposerCompositions,
+  nextComposerImageMarker,
+  recoverMutationComposition,
+} from "./composerRecovery";
 export type { CredentialLayerView, InstanceProviderGroup } from "./credentialLabels";
 export {
   activeSourceLabel,
@@ -551,7 +568,7 @@ export type {
   SessionActivityReadState,
   SessionActivitySnapshot,
 } from "./sessionActivityStore";
-export { SessionActivityStore } from "./sessionActivityStore";
+export { isValidActivityTimestamp, SessionActivityStore } from "./sessionActivityStore";
 export { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 export type { SettingsHubGeneration } from "./settingsHubGeneration";
 export { createSettingsHubGeneration } from "./settingsHubGeneration";
@@ -816,7 +833,7 @@ export {
 } from "./transcriptSteps";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
-export { TURN_CONTINUATION_TEXT } from "./turnContinuation";
+export { isLatestRetryTurn, latestTurnId, TURN_CONTINUATION_TEXT } from "./turnContinuation";
 export type * from "./types.gen";
 export {
   HOST_REQUEST_METHODS,

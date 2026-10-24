@@ -34,6 +34,7 @@ type renderOpts struct {
 	// rendered evidence as a head/tail preview. Exact bytes remain available via
 	// expand_turn pagination.
 	headTailEvidenceFor *int
+	evidence            *transcriptEvidence
 }
 
 // effectiveResultToolName returns the result tool name to use.
@@ -119,13 +120,20 @@ func writeEntriesBody(b *strings.Builder, entries []transcript.Entry, startSeq i
 
 	for i, e := range entries {
 		seq := startSeq + i
+		first := b.Len()
+		complete := true
 		if opt.headTailEvidenceFor != nil && *opt.headTailEvidenceFor == seq {
 			var evidence strings.Builder
 			writeEntry(&evidence, seq, e, resultTool, &idx, opt)
-			b.WriteString(boundOversizedTurnEvidence(evidence.String()))
-			continue
+			body := boundOversizedTurnEvidence(evidence.String())
+			complete = body == evidence.String()
+			b.WriteString(body)
+		} else {
+			writeEntry(b, seq, e, resultTool, &idx, opt)
 		}
-		writeEntry(b, seq, e, resultTool, &idx, opt)
+		if opt.evidence != nil && e.Turn.Kind == schema.TurnUserInput {
+			opt.evidence.spans = append(opt.evidence.spans, transcriptEvidenceSpan{seq, first, b.Len(), complete})
+		}
 	}
 
 	writeUnpairedResults(b, &idx, opt)
@@ -136,9 +144,8 @@ func writeEntriesBody(b *strings.Builder, entries []transcript.Entry, startSeq i
 const defaultRangeTurns = 40
 
 const (
-	// convBudgetChars bounds the default markdown conversation render. When the
-	// requested range renders larger than this, the oldest turns are dropped from
-	// the front until it fits (or one turn remains). Spec §"Size Budgets" (~24k).
+	// convBudgetChars bounds markdown conversation selection in bytes. Anchor
+	// trimming falls back to user-priority selection when it would hide a user.
 	convBudgetChars = 24000
 	// hardCapChars is the larger last-resort cap on total content, used when the
 	// escape hatches (full_result_for / transcript_jsonl) legitimately exceed the
@@ -159,9 +166,16 @@ func boundOversizedTurnEvidenceTo(content string, maxChars int) string {
 }
 
 func boundOversizedTurnEvidenceWithHint(content string, maxChars int, exactReadHint string) string {
+	bounded, _, _ := boundTurnEvidenceIntervals(content, maxChars, exactReadHint)
+	return bounded
+}
+
+// boundTurnEvidenceIntervals also identifies the original byte intervals that
+// survive, so quotes in another turn cannot masquerade as retained evidence.
+func boundTurnEvidenceIntervals(content string, maxChars int, exactReadHint string) (string, int, int) {
 	runes := []rune(content)
 	if len(runes) <= maxChars {
-		return content
+		return content, len(content), len(content)
 	}
 	removed := len(runes) - maxChars
 	var marker string
@@ -176,20 +190,66 @@ func boundOversizedTurnEvidenceWithHint(content string, maxChars int, exactReadH
 		removed = exactRemoved
 	}
 	if available < 2 {
-		return marker
+		return marker, 0, len(content)
 	}
 	head := available / 2
 	tail := available - head
-	return string(runes[:head]) + marker + string(runes[len(runes)-tail:])
+	headText, tailText := string(runes[:head]), string(runes[len(runes)-tail:])
+	return headText + marker + tailText, len(headText), len(content) - len(tailText)
+}
+
+type transcriptEvidenceSpan struct {
+	seq, start, end int
+	complete        bool
+}
+
+// transcriptEvidence follows actual rendered intervals, never their text. A
+// complete user turn or omission notice must survive every later clipping step.
+type transcriptEvidence struct {
+	spans []transcriptEvidenceSpan
+}
+
+func (e *transcriptEvidence) insert(offset, size int) {
+	for i := range e.spans {
+		if e.spans[i].start >= offset {
+			e.spans[i].start += size
+			e.spans[i].end += size
+		}
+	}
+}
+
+func (e *transcriptEvidence) hasCompleteUser(seq int) bool {
+	for _, span := range e.spans {
+		if span.seq == seq && span.complete {
+			return true
+		}
+	}
+	return false
+}
+
+// retain validates a head/tail cut before shifting retained tail intervals.
+// Failed probes leave the evidence unchanged for a subsequent budget attempt.
+func (e *transcriptEvidence) retain(headEnd, tailStart, originalSize, boundedSize int) bool {
+	for _, span := range e.spans {
+		if !span.complete || (span.end > headEnd && span.start < tailStart) {
+			return false
+		}
+	}
+	for i := range e.spans {
+		if e.spans[i].start >= tailStart {
+			e.spans[i].start += boundedSize - originalSize
+			e.spans[i].end += boundedSize - originalSize
+		}
+	}
+	return true
 }
 
 // readMeta carries the honest, exact provenance counts for a budgeted render.
 // The invariant TurnsRendered + ElidedTurns == TurnsTotal always holds.
 //
-// FirstRendered and LastRendered are the ACTUAL turn-number span on screen after
-// range selection AND budget trimming — the single source of truth for any
-// "showing turns A–B" announcement, so it can never drift from what was rendered.
-// They are 0 and -1 (an empty span) when nothing was rendered.
+// FirstRendered and LastRendered bound the selected entries. SelectedTurns names
+// the actual addresses when that selection may be sparse. The bounds are 0 and
+// -1 (an empty span) when nothing was rendered.
 type readMeta struct {
 	TurnsTotal    int
 	TurnsRendered int
@@ -198,6 +258,10 @@ type readMeta struct {
 	ElidedTurns   int
 	FirstRendered int
 	LastRendered  int
+	// SelectedTurns is non-nil for a user-prioritized, potentially sparse range.
+	SelectedTurns []int
+	Evidence      transcriptEvidence
+	RangeError    string
 }
 
 var encodeTranscriptJSON = func(v any) (string, error) {
@@ -405,7 +469,9 @@ func rawLinesForRange(path, root string, startSeq, endSeq int) (content string, 
 // layer owns only range selection and the budget. Spec §"Size Budgets" + the
 // Default Response Shape meta block.
 //
-// Budget algorithm: the drop direction follows the range anchor.
+// The legacy budget algorithm follows the range anchor when it retains complete
+// requested user evidence. Otherwise user-priority selection marks every gap and
+// explicitly names any user bodies that cannot fit.
 //   - Tail-anchored (default, last:N): drop the oldest turns from the front
 //     until the content fits the budget or one turn remains. A top marker notes
 //     the dropped span. The pinned turn (opt.fullResultFor) is never dropped.
@@ -424,6 +490,7 @@ func rawLinesForRange(path, root string, startSeq, endSeq int) (content string, 
 func renderTranscript(header transcript.Header, entries []transcript.Entry, rangeSpec string, opt renderOpts) (string, readMeta) {
 	total := len(entries)
 	start, end := parseRange(rangeSpec, total)
+	opt.evidence = nil // Budget probes do not contribute retained evidence.
 
 	renderedStart, renderedEnd := start, end
 	frontAnchored := isFrontAnchored(rangeSpec)
@@ -433,6 +500,8 @@ func renderTranscript(header transcript.Header, entries []transcript.Entry, rang
 		renderedStart = budgetedStart(header, entries, start, end, opt)
 	}
 
+	var evidence transcriptEvidence
+	opt.evidence = &evidence
 	var content string
 	switch {
 	case renderedEnd < renderedStart:
@@ -444,7 +513,12 @@ func renderTranscript(header transcript.Header, entries []transcript.Entry, rang
 	}
 
 	content += renderOutOfRangePin(entries, renderedStart, renderedEnd, opt)
+	originalSize := len(content)
 	truncated, content := applyHardCap(content)
+	completeEvidence := true
+	if truncated {
+		completeEvidence = evidence.retain(len(content)-len(hardCapNote), originalSize, originalSize, len(content))
+	}
 
 	rendered := 0
 	firstShown, lastShown := 0, -1
@@ -461,8 +535,172 @@ func renderTranscript(header transcript.Header, entries []transcript.Entry, rang
 		Truncated:     truncated || rendered < total,
 		FirstRendered: firstShown,
 		LastRendered:  lastShown,
+		Evidence:      evidence,
+	}
+	var document strings.Builder
+	writeDocumentHeader(&document, header, opt)
+	userBytes := document.Len()
+	for seq := start; seq <= end; seq++ {
+		if entries[seq].Turn.Kind != schema.TurnUserInput {
+			continue
+		}
+		if !completeEvidence || !meta.Evidence.hasCompleteUser(seq) {
+			return renderUserPrioritizedRange(header, entries, start, end, rangeSpec, opt)
+		}
+		var evidence strings.Builder
+		writeEntry(&evidence, seq, entries[seq], "", nil, renderOpts{})
+		userBytes += evidence.Len()
+		if userBytes > convBudgetChars {
+			return renderUserPrioritizedRange(header, entries, start, end, rangeSpec, opt)
+		}
 	}
 	return content, meta
+}
+
+const userRangeTooLarge = "requested range could not be delivered with complete user evidence and exact omission addresses within the output limit, use a narrower range"
+
+// renderUserPrioritizedRange reserves complete user turns before considering
+// non-user entries. Unlike anchor-only trimming, an oversized candidate does not
+// stop selection of smaller turns farther into the requested range.
+func renderUserPrioritizedRange(header transcript.Header, entries []transcript.Entry, start, end int, rangeSpec string, opt renderOpts) (string, readMeta) {
+	selected := make([]bool, len(entries))
+	content, evidence := renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
+	priority := rangePriority(start, end, rangeSpec)
+	meta := readMeta{TurnsTotal: len(entries), Range: normalizeRange(rangeSpec), LastRendered: -1, SelectedTurns: []int{}}
+	if len(content) > convBudgetChars {
+		meta.ElidedTurns = len(entries)
+		meta.Truncated = true
+		meta.RangeError = userRangeTooLarge
+		return "", meta
+	}
+	// Replace an omission with a complete user only when the full response fits.
+	// Each user is considered once, without searching for a preferred subset.
+	for _, users := range []bool{true, false} {
+		for _, seq := range priority {
+			if selected[seq] || (entries[seq].Turn.Kind == schema.TurnUserInput) != users {
+				continue
+			}
+			selected[seq] = true
+			candidate, candidateEvidence := renderSelectedRange(header, entries, start, end, selected, rangeSpec, opt)
+			if len(candidate) <= convBudgetChars {
+				content, evidence = candidate, candidateEvidence
+			} else {
+				selected[seq] = false
+			}
+		}
+	}
+	meta.Evidence = evidence
+	// Preserve useful head/tail context for individually oversized users without
+	// claiming that a partial preview is a rendered turn. Exact addresses above
+	// remain authoritative, and complete users always get the budget first.
+	for _, seq := range priority {
+		if selected[seq] || entries[seq].Turn.Kind != schema.TurnUserInput {
+			continue
+		}
+		var body strings.Builder
+		writeTextContent(&body, entries[seq].Turn)
+		if body.Len() <= convBudgetChars {
+			continue
+		}
+		label := fmt.Sprintf("\n_Incomplete user turn %d preview, recover the complete turn at the address above._\n", seq)
+		remaining := convBudgetChars - len(content) - len(label)
+		if remaining <= 0 {
+			continue
+		}
+		preview := boundOversizedTurnEvidenceTo(body.String(), remaining/utf8.UTFMax)
+		if len(preview) <= remaining {
+			content += label + preview
+		}
+	}
+	for seq := start; seq <= end; seq++ {
+		if selected[seq] {
+			meta.SelectedTurns = append(meta.SelectedTurns, seq)
+		}
+	}
+	meta.TurnsRendered = len(meta.SelectedTurns)
+	meta.ElidedTurns = meta.TurnsTotal - meta.TurnsRendered
+	if meta.TurnsRendered > 0 {
+		meta.FirstRendered = meta.SelectedTurns[0]
+		meta.LastRendered = meta.SelectedTurns[len(meta.SelectedTurns)-1]
+	}
+	// The exact expansion span remains supplemental when it does not fit the
+	// primary selection. Its bytes must not crowd requested user evidence out.
+	if opt.fullResultFor != nil {
+		first, last, ok := resolvePinnedSpan(entries, *opt.fullResultFor)
+		if ok {
+			complete := true
+			for seq := first; seq <= last; seq++ {
+				complete = complete && selected[seq]
+			}
+			if !complete {
+				content += renderOutOfRangePin(entries, 0, -1, opt)
+			}
+		}
+	}
+	truncated, content := applyHardCap(content)
+	meta.Truncated = truncated || meta.ElidedTurns > 0
+	return content, meta
+}
+
+func rangePriority(start, end int, rangeSpec string) []int {
+	seqs := make([]int, 0, max(0, end-start+1))
+	for seq := start; seq <= end; seq++ {
+		seqs = append(seqs, seq)
+	}
+	if !isFrontAnchored(rangeSpec) {
+		slices.Reverse(seqs)
+	}
+	return seqs
+}
+
+// renderSelectedRange pairs results only within the selected entries and marks
+// each omitted span at its actual address. Notices precede bulky evidence.
+func renderSelectedRange(header transcript.Header, entries []transcript.Entry, start, end int, selected []bool, rangeSpec string, opt renderOpts) (string, transcriptEvidence) {
+	var b, omissions strings.Builder
+	writeDocumentHeader(&b, header, opt)
+	count := 0
+	for seq := start; seq <= end; seq++ {
+		if selected[seq] {
+			count++
+		} else if entries[seq].Turn.Kind == schema.TurnUserInput {
+			fmt.Fprintf(&omissions, "- read_transcript(transcript_ref, expand_turn=%d)\n", seq)
+		}
+	}
+	fmt.Fprintf(&b, "\n_Showing %d selected turns from requested range %s of %d, gaps are marked below._\n", count, normalizeRange(rangeSpec), len(entries))
+	var protected transcriptEvidence
+	if omissions.Len() > 0 {
+		notice := "\n_User turns omitted for size, recover each complete turn with:_\n" + omissions.String()
+		first := b.Len()
+		b.WriteString(notice)
+		protected.spans = append(protected.spans, transcriptEvidenceSpan{-1, first, b.Len(), true})
+	}
+	idx := buildResultIndex(entries[start:end+1], start)
+	for id, paired := range idx.byCallID {
+		if !selected[paired.ownerSeq] {
+			delete(idx.byCallID, id)
+		}
+	}
+	for seq := start; seq <= end; seq++ {
+		if !selected[seq] {
+			first := seq
+			for seq < end && !selected[seq+1] {
+				seq++
+			}
+			fmt.Fprintf(&b, "\n_… turns %d–%d omitted, read_transcript(transcript_ref, range=\"%d-%d\") …_\n", first, seq, first, seq)
+			continue
+		}
+		var evidence strings.Builder
+		writeEntry(&evidence, seq, entries[seq], effectiveResultToolName(opt), &idx, opt)
+		body := evidence.String()
+		if entries[seq].Turn.Kind == schema.TurnUserInput {
+			protected.spans = append(protected.spans, transcriptEvidenceSpan{seq, b.Len(), b.Len() + len(body), true})
+		} else if opt.headTailEvidenceFor != nil && *opt.headTailEvidenceFor == seq {
+			body = boundOversizedTurnEvidence(body)
+		}
+		b.WriteString(body)
+	}
+	writeUnpairedResults(&b, &idx, opt)
+	return b.String(), protected
 }
 
 // renderOutOfRangePin returns the supplemental pinned-turn section, or "" when no
@@ -487,6 +725,7 @@ func renderOutOfRangePin(entries []transcript.Entry, renderedStart, renderedEnd 
 	// pinned for exact output.
 	pinOpt := opt
 	pinOpt.fullResultFor = &firstSeq
+	pinOpt.evidence = nil // Supplemental turns do not replace primary evidence.
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n_… pinned turn %d (full result, outside range) …_\n", firstSeq)
@@ -672,7 +911,7 @@ func renderRangeWithMarker(header transcript.Header, entries []transcript.Entry,
 		return body
 	}
 	marker := fmt.Sprintf("\n_… %d earlier turns elided. Use read_transcript(transcript_ref, format=\"outline\") for a turn map, then range=\"A-B\" for the parts you need. …_\n", firstRendered)
-	return spliceAfterHeader(body, marker)
+	return spliceAfterHeader(body, marker, opt.evidence)
 }
 
 // spliceAfterHeader inserts marker immediately after the document header block.
@@ -680,9 +919,14 @@ func renderRangeWithMarker(header transcript.Header, entries []transcript.Entry,
 // writeDocumentHeader; the first turn begins at the first "\n## Turn " sequence.
 // When no turn heading is present (e.g. only omitted-kind notes), the marker is
 // appended after the header lines.
-func spliceAfterHeader(body, marker string) string {
+func spliceAfterHeader(body, marker string, evidence ...*transcriptEvidence) string {
 	const turnSep = "\n## Turn "
 	if idx := strings.Index(body, turnSep); idx >= 0 {
+		for _, e := range evidence {
+			if e != nil {
+				e.insert(idx, len(marker))
+			}
+		}
 		return body[:idx] + marker + body[idx:]
 	}
 	return body + marker
@@ -693,6 +937,8 @@ func spliceAfterHeader(body, marker string) string {
 // is measured in runes (characters); byte length is an upper bound on rune count,
 // so a body within hardCapChars bytes is trivially within the rune cap and skips
 // the rune scan.
+const hardCapNote = "\n\n_… content truncated at the 200,000-character hard cap; use range or expand_turn to narrow …_\n"
+
 func applyHardCap(content string) (bool, string) {
 	if len(content) <= hardCapChars {
 		return false, content
@@ -701,9 +947,8 @@ func applyHardCap(content string) (bool, string) {
 	if len(runes) <= hardCapChars {
 		return false, content
 	}
-	note := "\n\n_… content truncated at the 200,000-character hard cap; use range or expand_turn to narrow …_\n"
-	keep := hardCapChars - len([]rune(note))
-	return true, string(runes[:keep]) + note
+	keep := hardCapChars - len([]rune(hardCapNote))
+	return true, string(runes[:keep]) + hardCapNote
 }
 
 // normalizeRange echoes the requested range, normalizing the smart default

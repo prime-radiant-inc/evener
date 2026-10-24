@@ -1166,6 +1166,9 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			providersConfigPath: cfg.ProvidersConfigPath,
 			auth:                authController,
 		}
+		if observeInstancesController != nil {
+			observeInstancesController(instancesController)
+		}
 	}
 	// cfg.PluginManager, when the caller (newWebServer) already set it, is the
 	// one Manager every plugin surface below shares: this controller,

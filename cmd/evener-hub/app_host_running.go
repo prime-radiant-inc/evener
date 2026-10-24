@@ -330,7 +330,7 @@ func pruneHostRunningProbeStrays(dir string) int {
 // each once, skipping unset roots.
 func runningStateRoots(hubStateRoot, stateDir string) []string {
 	var roots []string
-	for _, root := range []string{strings.TrimSpace(hubStateRoot), strings.TrimSpace(stateDir)} {
+	for _, root := range []string{hubStateRoot, strings.TrimSpace(stateDir)} {
 		if root == "" {
 			continue
 		}

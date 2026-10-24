@@ -80,7 +80,7 @@ func coverClient(t *testing.T) {
 	if _, err := NewClient("/relative", nil); err == nil {
 		t.Fatal("relative URL accepted")
 	}
-	client, err := NewClient("seed.invalid/base/", &http.Client{Transport: fuzzRoundTripper(func(*http.Request) (*http.Response, error) {
+	client, err := NewClient("http://seed.invalid", &http.Client{Transport: fuzzRoundTripper(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`)), Header: make(http.Header)}, nil
 	})})
 	if err != nil {
@@ -90,7 +90,7 @@ func coverClient(t *testing.T) {
 	_ = client.URL("query?a=b")
 	_, _ = client.Health(ctx)
 
-	defaultClient, err := NewClient("seed.invalid", nil)
+	defaultClient, err := NewClient("http://seed.invalid", nil)
 	if err != nil || defaultClient.httpClient != http.DefaultClient {
 		t.Fatal("nil HTTP client did not select default")
 	}

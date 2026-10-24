@@ -123,24 +123,40 @@ func TestLoadConfig_Hosts(t *testing.T) {
 			wantErr: hostreg.ErrEmptyRoot,
 		},
 		{
-			name:    "config_path without addr",
-			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\nconfig_path = \"/etc/evener/hub.toml\"\n",
-			wantErr: ErrHostAddrPair,
+			name: "config_path without addr",
+			toml: "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\nconfig_path = \"/etc/evener/hub.toml\"\n",
+			check: func(t *testing.T, cfg Config) {
+				if len(cfg.Hosts) != 1 || cfg.Hosts[0].ConfigPath != "/etc/evener/hub.toml" || cfg.Hosts[0].Addr != "" {
+					t.Fatalf("config-only host=%+v", cfg.Hosts)
+				}
+			},
 		},
 		{
-			name:    "addr without config_path",
-			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\naddr = \"127.0.0.1:9180\"\n",
-			wantErr: ErrHostAddrPair,
+			name: "addr without config_path",
+			toml: "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\naddr = \"127.0.0.1:9180\"\n",
+			check: func(t *testing.T, cfg Config) {
+				if len(cfg.Hosts) != 1 || cfg.Hosts[0].Addr != "127.0.0.1:9180" || cfg.Hosts[0].ConfigPath != "" {
+					t.Fatalf("bootstrap-only host=%+v", cfg.Hosts)
+				}
+			},
 		},
 		{
-			name:    "non-loopback addr",
-			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"10.0.0.5:9180\"\n",
-			wantErr: ErrHostAddr,
+			name: "specific-interface bootstrap addr",
+			toml: "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"10.0.0.5:9180\"\n",
+			check: func(t *testing.T, cfg Config) {
+				if len(cfg.Hosts) != 1 || cfg.Hosts[0].Addr != "10.0.0.5:9180" {
+					t.Fatalf("specific-interface listener=%+v", cfg.Hosts)
+				}
+			},
 		},
 		{
-			name:    "non-loopback named addr",
-			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"hub.example:9180\"\n",
-			wantErr: ErrHostAddr,
+			name: "DNS bootstrap addr",
+			toml: "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"hub.example:9180\"\n",
+			check: func(t *testing.T, cfg Config) {
+				if len(cfg.Hosts) != 1 || cfg.Hosts[0].Addr != "hub.example:9180" {
+					t.Fatalf("DNS listener=%+v", cfg.Hosts)
+				}
+			},
 		},
 		{
 			name:    "addr without a port",
@@ -153,11 +169,8 @@ func TestLoadConfig_Hosts(t *testing.T) {
 			wantErr: ErrHostAddr,
 		},
 		{
-			// addr reaches an SSH-side curl probe and the restart identity
-			// check, so it must be loopback or a wildcard that normalizes to
-			// loopback: every spelling the shipped probe accepts
-			// (sshconn.validateHubAddr) must load, including other loopback
-			// literals such as 127.0.0.2 and the empty host of ":port".
+			// Listener spellings remain unchanged in config. They are not remote
+			// probe targets or attachment destinations.
 			name: "loopback and wildcard addrs load",
 			toml: "[[hosts]]\nname = \"a\"\nssh = \"a.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"127.0.0.1:9180\"\n\n" +
 				"[[hosts]]\nname = \"b\"\nssh = \"b.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"127.0.0.2:9180\"\n\n" +
@@ -364,7 +377,7 @@ func TestLoadConfig_PreservesExplicitHubStateRoot(t *testing.T) {
 	}
 }
 
-func TestMobileBaseURLConfig(t *testing.T) {
+func TestPublicURLConfig(t *testing.T) {
 	tests := []struct {
 		name string
 		url  string
@@ -388,7 +401,7 @@ func TestMobileBaseURLConfig(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "hub.toml")
-			if err := os.WriteFile(path, []byte(`mobile_base_url = "`+tt.url+`"`), 0o644); err != nil {
+			if err := os.WriteFile(path, []byte(`public_url = "`+tt.url+`"`), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			cfg, err := LoadConfig(path)
@@ -396,13 +409,13 @@ func TestMobileBaseURLConfig(t *testing.T) {
 				if err != nil {
 					t.Fatalf("LoadConfig: %v", err)
 				}
-				if cfg.MobileBaseURL != tt.url {
-					t.Fatalf("MobileBaseURL = %q, want %q", cfg.MobileBaseURL, tt.url)
+				if cfg.PublicURL != tt.url {
+					t.Fatalf("PublicURL = %q, want %q", cfg.PublicURL, tt.url)
 				}
 				return
 			}
 			if err == nil {
-				t.Fatalf("LoadConfig accepted invalid mobile_base_url %q", tt.url)
+				t.Fatalf("LoadConfig accepted invalid public_url %q", tt.url)
 			}
 		})
 	}

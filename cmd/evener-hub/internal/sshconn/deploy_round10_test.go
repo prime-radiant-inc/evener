@@ -108,12 +108,12 @@ func TestRound10PreflightDiscoversInstallerDefault(t *testing.T) {
 			return []byte("Linux\n"), nil
 		case strings.HasSuffix(joined, "uname -m"):
 			return []byte("x86_64\n"), nil
-		case strings.Contains(joined, "XDG_STATE_HOME"):
+		case argv[len(argv)-1] == envProbeScript:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case strings.HasSuffix(joined, "id -u"):
 			return []byte("1000\n"), nil
 		case strings.Contains(joined, resolved+" launch-check"):
-			return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, " evener launch-check"):
 			// No evener on the non-interactive PATH.
 			return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
@@ -153,21 +153,31 @@ func TestRound10ResolvedTargetAvoidsRedeploy(t *testing.T) {
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
 		switch {
+		case strings.HasPrefix(argv[len(argv)-1], `if [ -n "${HOME-}" ]`):
+			return nil, nil // no installer-default binary
 		case strings.HasSuffix(joined, "uname -s"):
 			return []byte("Linux\n"), nil
 		case strings.HasSuffix(joined, "uname -m"):
 			return []byte("x86_64\n"), nil
-		case strings.Contains(joined, "XDG_STATE_HOME"):
+		case argv[len(argv)-1] == envProbeScript:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case strings.HasSuffix(joined, "id -u"):
 			return []byte("1000\n"), nil
 		case strings.Contains(joined, resolved+" launch-check"):
-			return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			if !installed {
+				return nil, exitStatus(t, 127)
+			}
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, " evener launch-check"):
 			return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
 		case strings.Contains(joined, executableProbeRemote("evener")):
 			// The dedicated executable probe: absent.
 			return nil, exitStatus(t, 1)
+		case strings.Contains(joined, executableProbeRemote(resolved)):
+			if !installed {
+				return nil, exitStatus(t, 1)
+			}
+			return nil, nil
 		case strings.Contains(joined, "[ -f ") && strings.Contains(joined, resolved):
 			if installed {
 				return []byte(resolved + "\n"), nil
@@ -203,6 +213,8 @@ func TestRound10ResolvedTargetAvoidsRedeploy(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}, startFn: goodStartFn(t)}
+	selected := modelSelectedProcess(t, fr, "/home/dev/.local/bin/evener", "newsha", "newsha")
+	selected.stopped, selected.adhoc = true, true
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },

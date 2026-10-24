@@ -13,10 +13,12 @@ export interface SlotState {
 	text: string;
 	/** How many images the draft holds. */
 	images: number;
+	/** Whether the composition carries selected skills or commands. */
+	hasSelections: boolean;
 }
 
-export function composerShowsStop({ connected, canStop, text, images }: SlotState): boolean {
-	return connected && canStop && text.trim() === "" && images === 0;
+export function composerShowsStop({ connected, canStop, text, images, hasSelections }: SlotState): boolean {
+	return connected && canStop && text.trim() === "" && images === 0 && !hasSelections;
 }
 
 /** What the composer needs to know to rest one line tall: the whole draft (text

@@ -1,4 +1,4 @@
-import { type ComposerMention, TURN_CONTINUATION_TEXT } from "@evener/appwire-client";
+import { type ComposerMention, isLatestRetryTurn, isTurnError, TURN_CONTINUATION_TEXT } from "@evener/appwire-client";
 // threads.ts tracks the ThreadModel for every ref currently open in a pane,
 // refcounted across panes sharing the same ref, and routes live wire
 // notifications into the reducer for whichever tracked model(s) they target.
@@ -60,7 +60,12 @@ import {
   threadModelFromCache,
   WireError,
 } from "@evener/appwire-client";
-import { notificationMutationIdentities } from "@evener/appwire-client/state/mutation";
+import {
+  canEditQueuedMessage,
+  canRemoveQueuedMessage,
+  notificationMutationIdentities,
+} from "@evener/appwire-client/state/mutation";
+import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
@@ -83,6 +88,7 @@ import {
 } from "./mutationOutbox";
 import {
   MutationOutboxIndexedDB,
+  type MutationRecoveryResendResult,
   MutationStorageError,
   MutationStorageTimeoutError,
   type RetargetedMutations,
@@ -231,6 +237,12 @@ export interface ThreadsStoreState {
   // notification) lingers invisibly until the ref's next refusal replaces
   // it.
   transientRefusalPaces: ReadonlyMap<string, { clientMutationId: string; attempt: number }>;
+  // Refs whose durable pending/outbox projection has published a read. The
+  // pending-turns projection owns the answer; it is published here so a
+  // consumer React-renders on the loaded/unloaded transition instead of
+  // reading a plain Set it does not subscribe to. Retry fails closed for a ref
+  // outside this set.
+  pendingProjectionLoadedRefs: ReadonlySet<string>;
   // The resumed identity when a store-driven resume (resumeFencedForSend)
   // returned a different ref than it started with, keyed by the ref the pane
   // was showing. The pane reads this and follows the new identity (Session.tsx)
@@ -355,7 +367,11 @@ export interface ThreadsStoreState {
     commandNames?: readonly string[],
     mentions?: readonly ComposerMention[],
   ): Promise<void>;
-  continueTurn(ref: string): Promise<void>;
+  // Re-issues the failed turn's continuation. `expectedTurnId` is the failure
+  // the rendered action belonged to: activation rechecks the canonical latest
+  // turn and the live outbox projection before submitting, so a callback
+  // captured before the model advanced submits nothing.
+  continueTurn(ref: string, expectedTurnId: string): Promise<void>;
   steer(
     ref: string,
     text: string,
@@ -3330,6 +3346,83 @@ export async function retryBlockedMutation(
   return current?.state !== "blockedUnknown" && current?.state !== "canceled";
 }
 
+function localMutationIdentityMatches(record: MutationOutboxRecord, targetRef: string): boolean {
+  const state = threadsStore.getState();
+  const model = state.threads.get(targetRef) ?? state.watchedThreads.get(targetRef);
+  return (
+    record.targetRef === targetRef &&
+    !state.deletedRefs.has(targetRef) &&
+    model !== undefined &&
+    (record.instanceId ?? record.threadId) === threadInstanceID(model)
+  );
+}
+
+export async function editQueuedMutation(
+  clientMutationId: string,
+  targetRef: string,
+): Promise<MutationRecoveryRecord | undefined> {
+  const runtime = requireMutationRuntime();
+  const capture = runtime.storage.getOutboxWithStopEpoch(clientMutationId);
+  await runtime.start;
+  const { record, stopEpoch } = await capture;
+  if (!record || !canEditQueuedMessage(record) || !localMutationIdentityMatches(record, targetRef)) return undefined;
+  const recovery = await runtime.storage.editQueuedMessage(record, { stopEpoch });
+  if (recovery) noteHandledMutation(clientMutationId);
+  noteMutationStateChange(targetRef);
+  notifyMutationPersistence([targetRef]);
+  return recovery;
+}
+
+export async function removeQueuedMutation(clientMutationId: string, targetRef: string): Promise<boolean> {
+  const runtime = requireMutationRuntime();
+  const capture = runtime.storage.getOutboxWithStopEpoch(clientMutationId);
+  await runtime.start;
+  const { record, stopEpoch } = await capture;
+  if (!record || !canRemoveQueuedMessage(record) || !localMutationIdentityMatches(record, targetRef)) return false;
+  const removed = await runtime.storage.removeQueuedMessage(record, { stopEpoch });
+  if (removed) noteHandledMutation(clientMutationId);
+  noteMutationStateChange(targetRef);
+  notifyMutationPersistence([targetRef]);
+  return removed;
+}
+
+interface QueuedMutationProjection {
+  subscribe(listener: () => void): () => void;
+  getOutbox(): ReadonlyMap<string, MutationOutboxRecord>;
+  refresh(ref: string): Promise<boolean>;
+}
+let queuedMutationProjection: QueuedMutationProjection | undefined;
+
+// The browser projection owns the snapshot. Register its read port rather
+// than creating a second asynchronously refreshed copy in this selector.
+export function installQueuedMutationProjection(projection: QueuedMutationProjection): void {
+  queuedMutationProjection = projection;
+}
+
+export function useEditableQueuedMutationEntries(ref: string): MutationOutboxRecord[] {
+  const projection = queuedMutationProjection;
+  if (!projection) throw new Error("Queued mutation projection is not installed");
+  const outbox = useSyncExternalStore(projection.subscribe, projection.getOutbox, projection.getOutbox);
+  useEffect(() => {
+    void projection.refresh(ref);
+  }, [ref]);
+  // Include removable controls so the strip can offer Remove without Edit.
+  return useMemo(
+    () => [...outbox.values()].filter((record) => record.targetRef === ref && canRemoveQueuedMessage(record)),
+    [outbox, ref],
+  );
+}
+
+export function captureRecoveryStopBarrier(targetRef: string): Promise<MutationStopBarrier> {
+  const barrier = requireMutationRuntime()
+    .storage.readStopEpoch(targetRef)
+    .then((stopEpoch) => ({ stopEpoch }));
+  // The capture can fail while Composer is still awaiting its recovery write.
+  // Keep that rejection for the sender without an unhandled interim promise.
+  void barrier.catch(() => undefined);
+  return barrier;
+}
+
 export async function updateRecoveryMutation(
   clientMutationId: string,
   targetRef: string,
@@ -3338,29 +3431,71 @@ export async function updateRecoveryMutation(
   skillNames?: readonly string[],
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
-): Promise<boolean> {
+  consumeRecoveryIds?: readonly string[],
+  localDraftRevisionId?: string,
+  expectedCompositionRevision?: number,
+  expectedRecoveryRevisions?: Readonly<Record<string, number>>,
+  compositionOwnerId?: string,
+  composerText?: string,
+): Promise<MutationRecoveryRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
   const record = await runtime.storage.updateRecoveryInput(
     clientMutationId,
     buildInput(text, attachments, skillNames, commandNames, mentions),
     durableAttachments(attachments),
+    composerText ?? text,
+    mentions,
+    consumeRecoveryIds,
+    localDraftRevisionId,
+    expectedCompositionRevision,
+    expectedRecoveryRevisions,
+    compositionOwnerId,
+  );
+  if (!record) return undefined;
+  notifyMutationPersistence([targetRef]);
+  return record;
+}
+
+// Preserve a stale pane's complete composition under a fresh recovery owner.
+// The staled row is never written: the fresh owner reuses its method and
+// target, and carries the local text, selections and attachment bytes.
+export async function preserveRecoveryMutation(
+  base: MutationRecoveryRecord,
+  targetRef: string,
+  text: string,
+  attachments: InputAttachment[],
+  skillNames?: readonly string[],
+  commandNames?: readonly string[],
+  mentions?: readonly ComposerMention[],
+  compositionOwnerId?: string,
+  localDraftRevisionId?: string,
+): Promise<MutationRecoveryRecord | undefined> {
+  const runtime = requireMutationRuntime();
+  await runtime.start;
+  const record = await runtime.storage.preserveRecoveryComposition(
+    base,
+    buildInput(text, attachments, skillNames, commandNames, mentions),
+    durableAttachments(attachments),
     text,
     mentions,
+    compositionOwnerId,
+    localDraftRevisionId,
   );
-  if (!record) return false;
+  if (!record) return undefined;
   notifyMutationPersistence([targetRef]);
-  return true;
+  return record;
 }
 
 export async function discardRecoveryMutation(
   clientMutationId: string,
   targetRef: string,
   shouldDiscard?: () => boolean,
+  expectedCompositionRevision?: number,
 ): Promise<boolean> {
   const runtime = requireMutationRuntime();
   await runtime.start;
-  const discarded = await runtime.storage.discardRecovery(clientMutationId, shouldDiscard);
+  const discarded = await runtime.storage.discardRecovery(clientMutationId, shouldDiscard, expectedCompositionRevision);
   if (discarded) {
     // A row left the outbox: in-flight reads for the ref are stale.
     noteMutationStateChange(targetRef);
@@ -3381,22 +3516,36 @@ export async function resendRecoveryMutation(
   skillNames?: readonly string[],
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
-): Promise<MutationOutboxRecord | undefined> {
+  barrierRead = captureRecoveryStopBarrier(targetRef),
+  expectedRecoveryRevisions?: Readonly<Record<string, number>>,
+  compositionOwnerId?: string,
+): Promise<MutationRecoveryResendResult> {
   const runtime = requireMutationRuntime();
   await runtime.start;
   const intent = composerMutationIntent(targetRef, route, text, attachments, skillNames, commandNames, mentions);
+  const barrier = await barrierRead;
   // Registered around the write: the resent row is undelivered work, and a
   // fallback send must see it before the async refresh can.
-  const record = await trackOutboxWrite(
+  const result = await trackOutboxWrite(
     targetRef,
-    () => runtime.storage.resendRecovery(clientMutationId, intent),
-    // A resend mints its own row, so the id comes from the record it returns.
-    (resent) =>
-      resent === undefined
+    () =>
+      runtime.storage.resendRecoveryResult(
+        clientMutationId,
+        intent,
+        barrier,
+        expectedRecoveryRevisions,
+        compositionOwnerId,
+      ),
+    (outcome) =>
+      outcome.status !== "sent"
         ? undefined
-        : { clientMutationId: resent.clientMutationId, undelivered: resent.state !== "canceled" },
+        : {
+            clientMutationId: outcome.record.clientMutationId,
+            undelivered: outcome.record.state !== "canceled",
+          },
   );
-  if (!record) return undefined;
+  if (result.status !== "sent") return result;
+  const { record } = result;
   // The resend mints a new row and removes the recovery row it came from, so
   // the old id is resolved: keep the new one (trackOutboxWrite registered it)
   // and drop the old, so a later settle of the new row or unreadable storage
@@ -3408,7 +3557,7 @@ export async function resendRecoveryMutation(
   // A resent row on the Send-resumes face parks like an ordinary send: drive the
   // resume it needs. Read after the write, which cannot have changed the face.
   if (sendResumesModel(targetRef)) void resumeFencedForSend(targetRef);
-  return record;
+  return result;
 }
 
 export function setMutationStorageForTests(storage: MutationOutboxIndexedDB): void {
@@ -3901,8 +4050,27 @@ async function sendMutationIntent(intent: MutationIntent): Promise<void> {
   // is read AFTER the write: a hydration that landed while the write was in
   // flight is the snapshot the admission saw, and re-reading here keeps the
   // drive from being skipped (or spuriously started) across that window.
-  await enqueueMutationIntent(intent);
-  if (sendResumesModel(intent.targetRef)) void resumeFencedForSend(intent.targetRef);
+  // Mark the composer's shared per-session submission guard for every ordinary
+  // send path, not only the ones wrapped by submitWithPendingTracking: the
+  // command palette's slash fallthrough and the ask dock call send() directly.
+  // The marker must exist before the durable enqueue, because Retry can look
+  // at an empty projection while that write is still in flight. A submission
+  // the composer already marked owns the marker, so this call does not end it.
+  const release = markInputSubmission(intent.targetRef);
+  try {
+    await enqueueMutationIntent(intent);
+    if (sendResumesModel(intent.targetRef)) void resumeFencedForSend(intent.targetRef);
+  } finally {
+    release();
+  }
+}
+
+// Returns the release for a submission marker this call owns, or a no-op when
+// an enclosing submission (submitWithPendingTracking, or Retry's own begin)
+// already holds the ref's shared guard.
+function markInputSubmission(ref: string): () => void {
+  if (!beginSharedSubmission(ref)) return () => {};
+  return () => endSharedSubmission(ref);
 }
 
 function composerMutationIntent(
@@ -4093,11 +4261,37 @@ interface ResumeOnlyProjection {
   // turn/start queued behind one starves at the target's FIFO, so a ref holding
   // one is not foldable.
   hasQueuedNonSend(ref: string): boolean;
+  // Retry's second owner, read at activation: whether this client has any
+  // unresolved send or queue entry for `ref`. The pending-turns projection
+  // already holds that answer, and threads.ts cannot import it back without a
+  // cycle, so it registers the read here beside the fence's own.
+  ownPendingTurnInput(ref: string): boolean;
+  // The same per-session submission guard ordinary Send/press uses
+  // (submittingRefs through pendingTurnsStore). Retry begins and ends one
+  // submission through it, so an ordinary send whose durable enqueue is still
+  // in flight blocks Retry, and Retry's own window blocks a second send.
+  beginSubmission(ref: string): boolean;
+  endSubmission(ref: string): void;
 }
 let resumeOnlyProjection: ResumeOnlyProjection | null = null;
 
 export function installResumeOnlyProjection(projection: ResumeOnlyProjection): void {
   resumeOnlyProjection = projection;
+}
+
+// The pending-turns projection publishes a ref's durable-read readiness here
+// at the same moment it records it for the fence's own predicate: one
+// authority, a reactive copy for consumers. A transition notifies subscribers,
+// so a mounted Retry action re-renders unloaded -> loaded (or back) rather than
+// reading a stale plain Set.
+export function setPendingProjectionLoaded(ref: string, loaded: boolean): void {
+  threadsStore.setState((state) => {
+    if (state.pendingProjectionLoadedRefs.has(ref) === loaded) return {};
+    const pendingProjectionLoadedRefs = new Set(state.pendingProjectionLoadedRefs);
+    if (loaded) pendingProjectionLoadedRefs.add(ref);
+    else pendingProjectionLoadedRefs.delete(ref);
+    return { pendingProjectionLoadedRefs };
+  });
 }
 
 // Whether ref's durable outbox holds delivery-uncertain (blockedUnknown) rows,
@@ -4122,6 +4316,27 @@ export function hasQueuedNonSend(ref: string): boolean {
   return (
     resumeOnlyProjection === null || !resumeOnlyProjection.isLoaded(ref) || resumeOnlyProjection.hasQueuedNonSend(ref)
   );
+}
+
+// The live outbox owner's answer for Retry, read at activation rather than
+// trusted from the render that disabled (or enabled) the button. A ref whose
+// durable pending read has not resolved is UNKNOWN, not empty: activation
+// fails closed, exactly as the rendered action stays disabled. No installed
+// projection is likewise unknown.
+function ownPendingTurnInputNow(ref: string): boolean {
+  if (!threadsStore.getState().pendingProjectionLoadedRefs.has(ref)) return true;
+  return resumeOnlyProjection?.ownPendingTurnInput(ref) ?? true;
+}
+
+// Retry's share of the composer's per-session submission guard. The pending
+// store owns `submittingRefs`; no projection installed means no shared owner
+// can certify the window, so Retry fails closed.
+function beginSharedSubmission(ref: string): boolean {
+  return resumeOnlyProjection?.beginSubmission(ref) ?? false;
+}
+
+function endSharedSubmission(ref: string): void {
+  resumeOnlyProjection?.endSubmission(ref);
 }
 
 // isResumeOnly over the store's current model for ref: the ADMISSION
@@ -6864,6 +7079,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   restartBlockingObligations: new Map(),
   mutationAuthorityRefs: new Set(),
   transientRefusalPaces: new Map(),
+  pendingProjectionLoadedRefs: new Set(),
   resumedIdentities: new Map(),
   resumeFailures: new Map(),
   stoppingRefs: new Set(),
@@ -7511,11 +7727,36 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     );
   },
 
-  async continueTurn(ref) {
-    await sendMutationIntent({
-      ...composerMutationIntent(ref, "send", TURN_CONTINUATION_TEXT),
-      preserveComposer: true,
-    });
+  async continueTurn(ref, expectedTurnId) {
+    // Both owners are rechecked here, synchronously, at activation: the
+    // render's captured button state is not authority. A failure that is no
+    // longer the canonical latest turn submits nothing, and neither does one
+    // whose client already has unresolved send/queue input.
+    const model = threadsStore.getState().threads.get(ref);
+    if (!model || !isLatestRetryTurn(model, expectedTurnId)) return;
+    // Identity alone is not a failure. An authoritative refresh can keep the
+    // same latest turn id and drop its error (or replace the turn), so the
+    // activation resolves the current turn by that id and requires it to still
+    // carry the failure the captured action belonged to. The shared wire
+    // predicate is the same one the end-cap uses to show the action; a missing
+    // turn or missing error submits nothing.
+    const currentTurn = model.turns.find((turn) => turn.id === expectedTurnId);
+    if (currentTurn === undefined || !isTurnError(currentTurn.error)) return;
+    if (ownPendingTurnInputNow(ref)) return;
+    // An ordinary Send/press marks the composer's shared submission guard
+    // before its durable row is visible in the projection. Retry must join that
+    // guard, not only its own read, or a press in that window would admit a
+    // continuation that dispatches after the new message. The same guard
+    // refuses a second Retry press while this one's enqueue is in flight.
+    if (!beginSharedSubmission(ref)) return;
+    try {
+      await sendMutationIntent({
+        ...composerMutationIntent(ref, "send", TURN_CONTINUATION_TEXT),
+        preserveComposer: true,
+      });
+    } finally {
+      endSharedSubmission(ref);
+    }
   },
 
   async steer(ref, text, attachments, skillNames, commandNames, mentions) {
@@ -7525,9 +7766,17 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async queue(ref, text, attachments, skillNames, commandNames, mentions) {
-    await enqueueMutationIntent(
-      composerMutationIntent(ref, "queue", text, attachments, skillNames, commandNames, mentions),
-    );
+    // A queue is composer input too: mark the shared guard for the enqueue's
+    // window so Retry cannot enqueue a continuation ahead of the queued row
+    // becoming visible in the projection.
+    const release = markInputSubmission(ref);
+    try {
+      await enqueueMutationIntent(
+        composerMutationIntent(ref, "queue", text, attachments, skillNames, commandNames, mentions),
+      );
+    } finally {
+      release();
+    }
   },
 
   async interrupt(ref) {

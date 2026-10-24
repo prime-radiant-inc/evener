@@ -6,10 +6,17 @@
 // - your messages not yet reflected;
 // - anything the phone couldn't confirm, or the hub refused.
 import { isQueueParked, sessionControls, type ThreadModel } from "@evener/appwire-client";
-import { normalizeText, type PendingTurnEntry, pendingEntryPreview } from "@evener/appwire-client/state/mutation";
+import {
+	canEditQueuedMessage,
+	canRemoveQueuedMessage,
+	type MutationOutboxRecord,
+	normalizeText,
+	type PendingTurnEntry,
+	pendingEntryPreview,
+} from "@evener/appwire-client/state/mutation";
 import type { NativeMutationRecoveryRow } from "../MutationRecoveryPanel";
 
-export type GhostState = "steering" | "queued" | "held" | "sending" | "unconfirmed" | "refused";
+export type GhostState = "steering" | "queued" | "held" | "sending" | "unconfirmed" | "parked" | "refused";
 
 export type GhostAction = "steerNow" | "sendNow" | "edit" | "cancel" | "check" | "discard";
 
@@ -30,6 +37,7 @@ export type GhostOrigin =
 	// A draft that stands in for a matched outbox row carries that row's id, so
 	// its Discard can clear both (the draft's uncertainty and the row).
 	| { kind: "draft"; clientMutationId?: string }
+	| { kind: "parked"; parkId: string }
 	| { kind: "recovery"; row: RecoveryGhostRow };
 
 export interface Ghost {
@@ -44,9 +52,37 @@ export interface Ghost {
 	/** Why an action you'd expect isn't offered. */
 	note?: string;
 	origin: GhostOrigin;
+	/** Durable proof of a locally waiting message, not a daemon queue entry. */
+	localQueued?: boolean;
+	/** A local pending identity replacing the matched unconfirmed draft ghost
+	 * keeps that draft's existing attachment presentation. */
+	showDraftAttachments?: boolean;
 }
 
 export type GhostSource = Pick<ThreadModel, "status" | "capabilities" | "queue">;
+
+export interface LocalQueuedEditReadiness {
+	/** The current DraftDocument snapshot, or null when unavailable. */
+	document: { loaded: boolean; submitting: boolean; error: string | null } | null;
+	/** imageSelection.getSnapshot().busy, including pending encoding. */
+	encodingAttachments: boolean;
+}
+
+/** Supplied from the current screen's identity and scoped durable snapshot.
+ * Pending entries alone never prove that a message has not been attempted. */
+export interface LocalQueuedMessages {
+	targetRef: string;
+	threadId: string;
+	instanceId: string;
+	records: readonly MutationOutboxRecord[];
+	readiness: LocalQueuedEditReadiness;
+}
+
+/** Local Edit appends beside current work. It never uses the empty-composer
+ * guard for rejected recovery. Both renderers consume this projected policy. */
+function localQueuedEditReady({ document, encodingAttachments }: LocalQueuedEditReadiness): boolean {
+	return !!document && document.loaded && !document.submitting && document.error === null && !encodingAttachments;
+}
 
 /** A send the draft holds as uncertain: its text as you wrote it, and as it
  * went out, with image markers translated the way the outbox records it. */
@@ -55,12 +91,18 @@ export interface UnconfirmedSend {
 	sentText: string;
 }
 
+/** One composition a deliberate replacement set aside. */
+export interface ParkedDraft extends UnconfirmedSend {
+	id: string;
+}
+
 const CAPTIONS: Record<GhostState, string> = {
 	steering: "Steering · arrives at the next step",
 	queued: "Queued · sends when this turn ends",
 	held: "Held · you stopped this turn",
 	sending: "Sending…",
 	unconfirmed: "Couldn't confirm this was sent",
+	parked: "Replaced by your new draft",
 	refused: "Couldn't send this",
 };
 
@@ -84,9 +126,20 @@ export function ghosts(
 	unconfirmedDraft: UnconfirmedSend | null,
 	recovery: readonly RecoveryGhostRow[],
 	connected: boolean,
+	local?: LocalQueuedMessages,
+	parkedDrafts?: readonly ParkedDraft[],
 ): Ghost[] {
 	// Another client's rows aren't yours to watch.
 	const own = (pending ?? []).filter((entry) => entry.fromThisClient);
+	const localRecord = (entry: PendingTurnEntry) =>
+		local?.records.find(
+			(record) =>
+				record.clientMutationId === entry.id &&
+				record.state === entry.state &&
+				record.targetRef === local.targetRef &&
+				record.threadId === local.threadId &&
+				(record.instanceId ?? record.threadId) === local.instanceId,
+		);
 	const confirmButtons: GhostAction[] = connected ? ["check", "discard"] : ["discard"];
 	const steering = (entry: PendingTurnEntry) =>
 		STEERS.has(entry.method) && (entry.state === "accepted" || entry.state === "claimed");
@@ -120,8 +173,15 @@ export function ghosts(
 						entry.state !== "canceled" &&
 						normalizeText(entry.text) === normalizeText(unconfirmedDraft.sentText),
 				);
+	const sameRecord = sameSend && localRecord(sameSend);
+	const locallyWaitingDraft = sameRecord !== undefined && canRemoveQueuedMessage(sameRecord);
 	for (const entry of own) {
-		if (steering(entry) || entry === sameSend) continue;
+		if (steering(entry) || (entry === sameSend && !locallyWaitingDraft)) continue;
+		const record = localRecord(entry);
+		const removable = record !== undefined && canRemoveQueuedMessage(record);
+		const editable =
+			record !== undefined && canEditQueuedMessage(record) && !!local && localQueuedEditReady(local.readiness);
+		const first = out.length;
 		// A message a Stop held before it left the phone comes back as held,
 		// with Send now and Cancel, like a queue a Stop parks (spec 8.5).
 		if (entry.state === "canceled") {
@@ -138,8 +198,14 @@ export function ghosts(
 			const ghost = pendingGhost(entry, "sending", []);
 			out.push(connected ? ghost : { ...ghost, caption: WAITING_TO_SEND });
 		}
+		if (removable) {
+			const ghost = out[first];
+			ghost.localQueued = true;
+			ghost.menu = editable ? ["edit", "cancel"] : ["cancel"];
+			if (entry === sameSend) ghost.showDraftAttachments = true;
+		}
 	}
-	if (unconfirmedDraft !== null) {
+	if (unconfirmedDraft !== null && !locallyWaitingDraft) {
 		// While the outbox still carries the send, nothing is yours to do yet,
 		// as with any send in flight.
 		const sending = sameSend !== undefined && sameSend.state !== "blockedUnknown";
@@ -154,6 +220,17 @@ export function ghosts(
 			// The outbox row this ghost stands in for, when there is one: Discard
 			// must clear both, or the row returns as its own ghost.
 			origin: sameSend === undefined ? { kind: "draft" } : { kind: "draft", clientMutationId: sameSend.id },
+		});
+	}
+	for (const parked of parkedDrafts ?? []) {
+		out.push({
+			key: `draft:parked:${parked.id}`,
+			state: "parked",
+			text: parked.text,
+			caption: CAPTIONS.parked,
+			buttons: ["discard"],
+			menu: ["edit"],
+			origin: { kind: "parked", parkId: parked.id },
 		});
 	}
 	for (const row of recovery) out.push(recoveryGhost(row, confirmButtons));
@@ -281,11 +358,17 @@ export function ghostActionTarget(queue: ThreadModel["queue"], entry: QueueEntry
  * rest are counted, and open the Queue sheet. Every other ghost shows. */
 export const SHOWN_QUEUED = 3;
 
+/** The QueueSheet host and transcript overflow must use the same membership,
+ * including local waiting/held rows, never uncertain or refused recovery. */
+export function isQueuedGhost(ghost: Ghost): boolean {
+	return ghost.origin.kind === "queue" || ghost.localQueued === true;
+}
+
 export function shownGhosts(all: readonly Ghost[]): { shown: Ghost[]; moreQueued: number } {
 	let queued = 0;
 	const shown: Ghost[] = [];
 	for (const ghost of all) {
-		if (ghost.origin.kind === "queue") {
+		if (isQueuedGhost(ghost)) {
 			queued += 1;
 			if (queued > SHOWN_QUEUED) continue;
 		}
