@@ -589,6 +589,161 @@ test("a redirect rejected by one store still reaches the final destination after
 	expect(resolved).toBe(false);
 });
 
+test("restart settles B before A so B's composition and markers win at C", async () => {
+	const f = fixture();
+	const completedA = await f.enqueue();
+	f.document.edit("current");
+	await editQueuedMessageIntoDraft(f.runtime, key, completedA, f.document);
+	await f.document.submitBuiltinCommand(async () => true);
+	const capturedA = await f.enqueue();
+	await editQueuedMessageIntoDraft(f.runtime, key, capturedA, f.document);
+	f.document.edit("A draft");
+	await f.enqueue();
+
+	const bRef = "session-b";
+	const cRef = "session-c";
+	const bDestination = { hubId: destination.hubId, sessionRef: bRef };
+	const cDestination = { hubId: destination.hubId, sessionRef: cRef };
+	const bKey = nativeMutationTargetKey(destination.hubId, bRef);
+	const cKey = nativeMutationTargetKey(destination.hubId, cRef);
+	expect(
+		f.runtime.storage.retarget(key, {
+			ref: bKey,
+			wireRef: bRef,
+			threadId: "thread-b",
+			instanceId: "instance-b",
+		}),
+	).toHaveLength(1);
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	f.drafts.exec(
+		"CREATE TRIGGER reject_b_draft BEFORE INSERT ON drafts WHEN NEW.session_ref = 'session-b' BEGIN SELECT RAISE(ABORT, 'write rejected'); END",
+	);
+	expect(library.handoff(destination, bDestination)).toBe(false);
+	f.drafts.exec("DROP TRIGGER reject_b_draft");
+
+	// B has its own composition and completion markers before the app stops.
+	f.repository.write(bDestination, {
+		draft: "B draft",
+		unconfirmed: null,
+		composer: { recoveryIds: ["captured-b"] },
+		completedCommandRecoveryIds: ["completed-b"],
+	});
+	expect(
+		f.runtime.storage.retarget(bKey, {
+			ref: cKey,
+			wireRef: cRef,
+			threadId: "thread-c",
+			instanceId: "instance-c",
+		}),
+	).toHaveLength(1);
+
+	await f.reopen();
+	const restarted = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	restarted.retryPendingHandoffs();
+	expect(f.repository.read(cDestination)).toMatchObject({
+		draft: "B draft",
+		composer: { recoveryIds: ["captured-b"] },
+		completedCommandRecoveryIds: expect.arrayContaining(["completed-b"]),
+	});
+	expect(f.repository.read(bDestination)).toEqual({ draft: "", unconfirmed: null });
+	expect(f.repository.read(destination)).toMatchObject({ draft: "A draft" });
+	expect(restarted.hasPendingHandoff(cDestination)).toBe(false);
+});
+
+test("a loading redirect failure keeps the intermediate edge across two restarts", async () => {
+	const f = fixture();
+	const completedA = await f.enqueue();
+	f.document.edit("current");
+	await editQueuedMessageIntoDraft(f.runtime, key, completedA, f.document);
+	await f.document.submitBuiltinCommand(async () => true);
+	const capturedA = await f.enqueue();
+	await editQueuedMessageIntoDraft(f.runtime, key, capturedA, f.document);
+	f.document.edit("A draft");
+	await f.enqueue();
+
+	const bRef = "session-b";
+	const cRef = "session-c";
+	const bDestination = { hubId: destination.hubId, sessionRef: bRef };
+	const cDestination = { hubId: destination.hubId, sessionRef: cRef };
+	const bKey = nativeMutationTargetKey(destination.hubId, bRef);
+	const cKey = nativeMutationTargetKey(destination.hubId, cRef);
+	expect(
+		f.runtime.storage.retarget(key, {
+			ref: bKey,
+			wireRef: bRef,
+			threadId: "thread-b",
+			instanceId: "instance-b",
+		}),
+	).toHaveLength(1);
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	f.drafts.exec(
+		"CREATE TRIGGER reject_b_draft BEFORE INSERT ON drafts WHEN NEW.session_ref = 'session-b' BEGIN SELECT RAISE(ABORT, 'write rejected'); END",
+	);
+	expect(library.handoff(destination, bDestination)).toBe(false);
+	f.drafts.exec("DROP TRIGGER reject_b_draft");
+
+	// C already holds work, and the drafts store keeps rejecting the redirect
+	// from A through B while the mutations store accepts it.
+	f.repository.write(cDestination, { draft: "C occupied", unconfirmed: null });
+	expect(
+		f.runtime.storage.retarget(bKey, {
+			ref: cKey,
+			wireRef: cRef,
+			threadId: "thread-c",
+			instanceId: "instance-c",
+		}),
+	).toHaveLength(1);
+	f.drafts.exec(
+		"CREATE TRIGGER reject_pending_c BEFORE INSERT ON pending_draft_handoffs WHEN NEW.to_session_ref = 'session-c' BEGIN SELECT RAISE(ABORT, 'redirect rejected'); END",
+	);
+	expect(library.handoff(bDestination, cDestination)).toBe(false);
+
+	// First restart: the drafts redirect still fails. The intermediate edge must
+	// stay pending and A must not be allowed to settle.
+	await f.reopen();
+	const first = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	expect(first.hasPendingHandoff(bDestination)).toBe(true);
+	expect(first.hasPendingHandoff(cDestination)).toBe(true);
+	first.retryPendingHandoffs();
+	expect(first.hasPendingHandoff(bDestination)).toBe(true);
+	expect(first.hasPendingHandoff(cDestination)).toBe(true);
+	expect(f.repository.read(destination).draft).toBe("A draft");
+	expect(f.repository.read(cDestination).draft).toBe("C occupied");
+	expect(f.runtime.storage.readResumeIdentities().length).toBeGreaterThan(0);
+
+	// Second restart after the drafts store recovers: the redirect completes,
+	// the intermediate refuses the occupied destination, and A stays at A.
+	f.drafts.exec("DROP TRIGGER reject_pending_c");
+	await f.reopen();
+	const second = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	second.retryPendingHandoffs();
+	expect(f.repository.read(destination).draft).toBe("A draft");
+	expect(f.repository.read(bDestination)).toEqual({ draft: "", unconfirmed: null });
+	expect(f.repository.read(cDestination)).toMatchObject({ draft: "C occupied" });
+	expect(second.hasPendingHandoff(cDestination)).toBe(false);
+	expect(f.runtime.storage.readResumeIdentities()).toEqual([]);
+});
+
 test("multiple-source completion preserves newer draft, image, and older cleanup markers", async () => {
 	const f = fixture();
 	const first = await richSource(f);

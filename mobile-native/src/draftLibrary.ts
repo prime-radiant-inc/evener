@@ -13,12 +13,20 @@ export type DraftStorage = Pick<
 		>
 	>;
 
+interface PendingHandoff {
+	from: DraftDestination;
+	to: DraftDestination;
+	/** Loaded edges between the source and the destination. A predecessor has
+	 * a higher rank and settles after its downstream edge. */
+	rank: number;
+}
+
 /** One document per destination keeps pending work coherent across navigation. */
 export class DraftLibrary {
 	private hubs = new Map<string, Map<string, DraftDocument>>();
 	/** A handoff whose destination write has not committed yet. Retrying after
 	 * storage recovers keeps the moved recovery rows and their draft together. */
-	private pending = new Map<string, { from: DraftDestination; to: DraftDestination }>();
+	private pending = new Map<string, PendingHandoff>();
 	/** Pending mappings are durable, so they are read once from the drafts
 	 * database on first use. A restart finds the handoff a failed transfer left
 	 * behind before the resumed screen restores the source's recovery text. */
@@ -146,16 +154,22 @@ export class DraftLibrary {
 	 * work in the meantime owns it, so its pending retry is dropped. */
 	retryPendingHandoffs(): void {
 		this.loadPendingHandoffs();
-		// A handoff can redirect a predecessor while this pass runs, creating a
-		// new pending edge. Walk keys until every edge present has had one
-		// attempt; a deferred edge stays for the next storage or screen event.
+		// Downstream first: a chain's intermediate must settle before its
+		// predecessor, or the predecessor's older draft occupies the destination
+		// and the intermediate's composition is refused. A deferred downstream
+		// edge also blocks its predecessors until it settles or redirects them.
 		const attempted = new Set<string>();
+		const blocked = new Set<string>();
 		for (;;) {
-			const key = [...this.pending.keys()].find((candidate) => !attempted.has(candidate));
-			if (key === undefined) return;
+			const next = [...this.pending.entries()]
+				.filter(([candidate]) => !attempted.has(candidate))
+				.filter(([, edge]) => !blocked.has(destinationKey(edge.to)))
+				.sort((a, b) => a[1].rank - b[1].rank)[0];
+			if (next === undefined) return;
+			const [key, edge] = next;
 			attempted.add(key);
-			const edge = this.pending.get(key);
-			if (edge) this.handoff(edge.from, edge.to);
+			const settled = this.handoff(edge.from, edge.to);
+			if (!settled && this.pending.has(key) && this.pendingTo(edge.from)) blocked.add(destinationKey(edge.from));
 		}
 	}
 
@@ -165,7 +179,9 @@ export class DraftLibrary {
 	}
 
 	private deferHandoff(from: DraftDestination, to: DraftDestination): void {
-		this.pending.set(this.handoffKey(from, to), { from, to });
+		const key = this.handoffKey(from, to);
+		const existing = this.pending.get(key);
+		this.pending.set(key, { from, to, rank: existing?.rank ?? 0 });
 		try {
 			this.repository().writePendingHandoff?.(from, to);
 		} catch {
@@ -210,27 +226,55 @@ export class DraftLibrary {
 			loaded = false;
 		}
 		// A redirect accepted by only one store leaves both the old and new
-		// mappings on disk. Canonicalize the loaded graph through any
-		// intermediate edges before transfers, so A->B and A->C collapse onto
-		// the final C instead of retrying A->B first.
-		for (const edge of canonicalHandoffs(raw)) {
-			const key = this.handoffKey(edge.from, edge.to);
-			if (!this.pending.has(key)) this.pending.set(key, edge);
-		}
+		// mappings on disk. Attempt the redirects first: a failure keeps the raw
+		// intermediate edge and suppresses the redirected mapping from that
+		// source, so the intermediate cannot settle until both stores accept it.
+		const failedSources = new Set<string>();
 		for (const edge of raw) {
-			const finalTo = followHandoffs(edge.to, raw);
-			if (sameDestination(finalTo, edge.to)) continue;
+			const followed = followHandoffs(edge.to, raw);
+			if (sameDestination(followed.to, edge.to)) continue;
+			let draftsDurable = true;
 			try {
 				const storage = this.repository();
-				storage.redirectPendingHandoff?.(edge.from, edge.to, finalTo);
+				if (storage.redirectPendingHandoff) storage.redirectPendingHandoff(edge.from, edge.to, followed.to);
+				else if (storage.writePendingHandoff) storage.writePendingHandoff(edge.from, followed.to);
 			} catch {
-				// The canonical in-memory graph still prevents the bad retry.
+				draftsDurable = false;
 			}
+			let identitiesDurable = true;
 			try {
-				this.resumeIdentities?.()?.redirectResumeIdentity(edge.from, edge.to, finalTo);
+				this.resumeIdentities?.()?.redirectResumeIdentity(edge.from, edge.to, followed.to);
 			} catch {
-				// The canonical in-memory graph still prevents the bad retry.
+				identitiesDurable = false;
 			}
+			if (!draftsDurable || !identitiesDurable) failedSources.add(destinationKey(edge.from));
+		}
+		const reconciled = new Map<string, PendingHandoff>();
+		for (const edge of raw) {
+			const followed = followHandoffs(edge.to, raw);
+			if (failedSources.has(destinationKey(edge.from))) {
+				// Keep only the predecessor that still needs its redirect; an
+				// already-redirected mapping from the same source must not settle
+				// ahead of the intermediate.
+				if (sameDestination(followed.to, edge.to)) continue;
+				const key = this.handoffKey(edge.from, edge.to);
+				const rank = followed.depth + 1;
+				const existing = reconciled.get(key);
+				if (!existing || existing.rank < rank) reconciled.set(key, { from: edge.from, to: edge.to, rank });
+				continue;
+			}
+			if (sameDestination(edge.from, followed.to)) continue;
+			const key = this.handoffKey(edge.from, followed.to);
+			const rank = followed.depth + 1;
+			const existing = reconciled.get(key);
+			if (!existing || existing.rank < rank) reconciled.set(key, { from: edge.from, to: followed.to, rank });
+		}
+		// Downstream first, so an intermediate's composition wins the shared
+		// destination and the predecessor falls under the occupied-destination
+		// rule instead of the other way round.
+		for (const edge of [...reconciled.values()].sort((a, b) => a.rank - b.rank)) {
+			const key = this.handoffKey(edge.from, edge.to);
+			if (!this.pending.has(key)) this.pending.set(key, edge);
 		}
 		if (loaded) this.pendingLoaded = true;
 	}
@@ -278,7 +322,14 @@ export class DraftLibrary {
 				continue;
 			}
 			this.pending.delete(key);
-			this.pending.set(this.handoffKey(edge.from, settlingTo), { from: edge.from, to: settlingTo });
+			const redirected: PendingHandoff = {
+				from: edge.from,
+				to: settlingTo,
+				rank: edge.rank + 1,
+			};
+			const existing = this.pending.get(this.handoffKey(edge.from, settlingTo));
+			if (existing && existing.rank > redirected.rank) redirected.rank = existing.rank;
+			this.pending.set(this.handoffKey(edge.from, settlingTo), redirected);
 		}
 		return durable;
 	}
@@ -332,31 +383,17 @@ function destinationKey(destination: DraftDestination): string {
 function followHandoffs(
 	destination: DraftDestination,
 	edges: readonly { from: DraftDestination; to: DraftDestination }[],
-): DraftDestination {
+): { to: DraftDestination; depth: number } {
 	const seen = new Set<string>();
 	let current = destination;
+	let depth = 0;
 	for (;;) {
 		const key = destinationKey(current);
-		if (seen.has(key)) return current;
+		if (seen.has(key)) return { to: current, depth };
 		seen.add(key);
 		const next = edges.find((edge) => sameDestination(edge.from, current));
-		if (next === undefined) return current;
+		if (next === undefined) return { to: current, depth };
 		current = next.to;
+		depth += 1;
 	}
-}
-
-/** Collapse the loaded mappings onto their final destinations. A redirect one
- * store rejected can leave A->B beside A->C; a retained B->C edge makes both
- * resolve to A->C, so no retry can replay the retired intermediate. */
-function canonicalHandoffs(
-	edges: readonly { from: DraftDestination; to: DraftDestination }[],
-): { from: DraftDestination; to: DraftDestination }[] {
-	const byDestination = new Map<string, { from: DraftDestination; to: DraftDestination }>();
-	for (const edge of edges) {
-		const to = followHandoffs(edge.to, edges);
-		if (sameDestination(edge.from, to)) continue;
-		const key = `${destinationKey(edge.from)}->${destinationKey(to)}`;
-		if (!byDestination.has(key)) byDestination.set(key, { from: edge.from, to });
-	}
-	return [...byDestination.values()];
 }
