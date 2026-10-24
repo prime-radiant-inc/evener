@@ -84,7 +84,9 @@ that once belonged to another conversation cannot lend its seat; a desktop
 layout restore uses the pane mapping, which is stable for saved ids. Route
 placement writes only the conversation mapping; pane-id mappings are written
 when a layout is saved or restored, so startup cannot overwrite a saved pane's
-seat before that layout returns.
+seat before that layout returns. A retarget that keeps a pane's seat (resume,
+then return to the resumed session) rewrites the destination ref's mapping so
+a mobile reconstruction still finds that seat and its selection.
 
 Restoring a composer prefers the recovery row its seat last selected, falling
 back to the oldest restorable rejected row. This keeps a pane's preserved local
@@ -104,7 +106,11 @@ so an already-mounted resumed view learns about the preserved row. A mounted
 replacement composer that still owns the stale lease and has no newer edits
 adopts the preserved composition immediately, so it shows and submits the
 local work without a reload. A destination that already holds a newer
-selection keeps it, and newer replacement edits are never overwritten.
+selection keeps it, and newer replacement edits are never overwritten: while
+that composer still owns the stale row, preservation leaves its selection and
+autosaved work in place, so a reload restores the newer composition. Adoption
+clears only the exact draft revision the preserved composition incorporated;
+a newer ordinary draft written by another pane or tab survives.
 
 Sending recovery consumes its durable source and creates one fresh outbox
 identity atomically. It never falls back to an ordinary enqueue when the source

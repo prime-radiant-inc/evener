@@ -796,8 +796,15 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       delete replacement.composerSeatId;
     } else {
       const ref = refParam(params);
-      if (ref !== null && replacement.composerSeatId === undefined) {
-        replacement.composerSeatId = placeComposerSeat(ref, state.panes);
+      if (ref !== null) {
+        if (replacement.composerSeatId === undefined) {
+          replacement.composerSeatId = placeComposerSeat(ref, state.panes);
+        } else {
+          // A retarget (resume, then return to the resumed session) keeps the
+          // pane's seat. Persist it under the destination ref so a mobile
+          // route reconstruction can find that seat after reload.
+          writeRefComposerSeat(ref, replacement.composerSeatId);
+        }
       }
     }
     for (const listener of paneRetypeListeners) listener(expected, replacement);

@@ -1536,3 +1536,35 @@ test("a reconstructed route keeps its own seat over a colliding stale pane id", 
   expect(readRecoverySelection("local:route-b", composerSelectionScope(reloaded.composerSeatId))).toBe("b-row");
   expect(readRecoverySelection("local:route-a", composerSelectionScope(reloaded.composerSeatId))).toBeUndefined();
 });
+
+// A retarget that retains its seat (resume, then return to the resumed
+// session) must also persist the destination ref's mapping. Otherwise a mobile
+// reload reconstructs the resumed ref with a fresh seat and loses the
+// selection the retained seat still holds.
+test("a retained seat on a retargeted conversation survives mobile reload", () => {
+  installLocalStorage(new MemoryStorage());
+  const workspace = workspaceStore.getState();
+  workspace.openPane("session", { ref: "local:owner" });
+  const cascadeId = workspace.openPane(
+    "sessionZoom",
+    { ref: "local:child", source: { type: "session", params: { ref: "local:owner" } }, edges: [] },
+    { slot: "secondary" },
+  );
+  const cascade = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
+  if (!cascade?.composerSeatId) throw new Error("cascade lacks its seat");
+  const seat = cascade.composerSeatId;
+  writeRecoverySelection("local:resumed", composerSelectionScope(seat), "resumed-row");
+
+  // Resume and return retain the cascade's seat while the ref changes.
+  expect(workspace.retypePane(cascade, "session", { ref: "local:resumed" })).toBe(true);
+  const returned = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
+  expect(returned?.composerSeatId).toBe(seat);
+
+  // Mobile reload reconstructs the resumed ref under a fresh pane id.
+  resetWorkspaceStoreForTests();
+  const reloadedId = workspaceStore.getState().openPane("session", { ref: "local:resumed" });
+  const reloaded = workspaceStore.getState().panes.find((pane) => pane.id === reloadedId);
+  if (!reloaded?.composerSeatId) throw new Error("reloaded conversation lacks its seat");
+  expect(reloaded.composerSeatId).toBe(seat);
+  expect(readRecoverySelection("local:resumed", composerSelectionScope(reloaded.composerSeatId))).toBe("resumed-row");
+});

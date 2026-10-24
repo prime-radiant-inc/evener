@@ -75,7 +75,9 @@ except where a line says so itself.
   part of shared layout geometry, so another tab cannot adopt or overwrite it.
   A route placement does not write a pane-id mapping; those are written only
   when a layout is saved or restored, so startup ordering cannot overwrite a
-  saved pane's seat before its layout returns.
+  saved pane's seat before its layout returns. A retarget that retains a seat
+  rewrites the destination ref's mapping, so a mobile reconstruction recovers
+  that seat and its selection.
 - Independent panes on one conversation hold distinct seats and therefore
   independent recovery selections. A `sessionZoom` cascade uses one tab-scoped
   seat for its columns, with a separate selection entry per column ref.
@@ -92,7 +94,9 @@ except where a line says so itself.
 - A mounted replacement composer that still owns the stale lease and has no
   newer edits adopts the preserved composition when preservation finishes, so
   it shows and submits the local work without a reload. Newer replacement
-  edits are not overwritten.
+  edits are not overwritten: its selection and autosaved work stay in place
+  for reload. Adoption clears only the exact incorporated draft revision, so a
+  newer ordinary draft from another pane or tab survives.
 - A pane disposed while a refused recovery write awaits storage preserves the
   newest complete composition captured at disposal: text, selections, payload
   input and settled attachment bytes. The fresh row becomes the seat's

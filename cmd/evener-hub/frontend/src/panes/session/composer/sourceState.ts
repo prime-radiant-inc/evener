@@ -15,7 +15,6 @@ import {
 } from "./attachments/useAttachments";
 import {
   clearDraft,
-  clearPersistedDraft,
   clearPersistedDraftIfRevisionMatches,
   composerSelectionScope,
   markDraftEdited,
@@ -122,10 +121,16 @@ export interface ComposerSourceState {
   updateSkillNames(names: string[]): void;
   editSkillNames(names: string[]): void;
   updateSelectionMeta(value: SkillEditorValue): void;
-  setActiveRecoveryId(record: MutationRecoveryRecord | null, options?: { replaceSelection?: string }): void;
+  setActiveRecoveryId(
+    record: MutationRecoveryRecord | null,
+    options?: { replaceSelection?: string; keepSelection?: boolean },
+  ): void;
   /** Adopt a row preserved under this source's ref when it still owns the
    * stale lease and the user has not edited since. */
   adoptPreservedSelection(targetRef: string, staleId: string, preserved: MutationRecoveryRecord): void;
+  /** Whether this source still owns the stale lease and has newer work than
+   * the composition that lease was activated with. */
+  ownsStaleRecoveryWithNewerEdits(targetRef: string, staleId: string): boolean;
   markRestore(): void;
   persistDraft(text: string): void;
   writeDraft(text: string, mayPersist: boolean, source?: TextEditSource): void;
@@ -175,6 +180,13 @@ const defaultCompositionOwners = new Map<string, string>();
 // that finishes after a replacement composer mounted under the resumed ref
 // must update that composer's active recovery, not only localStorage.
 const liveComposerSources = new Map<string, Set<ComposerSourceState>>();
+
+function destinationHasNewerEdits(scope: string, targetRef: string, staleId: string): boolean {
+  for (const source of liveComposerSources.get(scope) ?? []) {
+    if (source.ownsStaleRecoveryWithNewerEdits(targetRef, staleId)) return true;
+  }
+  return false;
+}
 
 /** A recovery whose submission has started is no longer available to an Edit
  * press from a remounted composer. The submission already owns the captured
@@ -361,7 +373,10 @@ export function createComposerSourceState(
     markEdited();
     updateSkillNames(names);
   }
-  function setActiveRecoveryId(record: MutationRecoveryRecord | null, options?: { replaceSelection?: string }): void {
+  function setActiveRecoveryId(
+    record: MutationRecoveryRecord | null,
+    options?: { replaceSelection?: string; keepSelection?: boolean },
+  ): void {
     if (disposed) return;
     const activeRecoveryId = record?.clientMutationId ?? null;
     if (currentRecoveryId() !== activeRecoveryId) {
@@ -379,11 +394,12 @@ export function createComposerSourceState(
     // stale choice, never that newer selection.
     const currentSelection = record === null ? undefined : readRecoverySelection(targetRef, recoverySelectionOwnerId);
     const mayWriteSelection =
-      record === null ||
-      options?.replaceSelection === undefined ||
-      currentSelection === undefined ||
-      currentSelection === options.replaceSelection ||
-      currentSelection === activeRecoveryId;
+      options?.keepSelection !== true &&
+      (record === null ||
+        options?.replaceSelection === undefined ||
+        currentSelection === undefined ||
+        currentSelection === options.replaceSelection ||
+        currentSelection === activeRecoveryId);
     if (mayWriteSelection) writeRecoverySelection(targetRef, recoverySelectionOwnerId, activeRecoveryId);
     state.setState({ activeRecoveryId });
   }
@@ -397,6 +413,9 @@ export function createComposerSourceState(
     const targetRef = preserved.targetRef;
     const current = readRecoverySelection(targetRef, recoverySelectionOwnerId);
     if (current !== undefined && current !== staleId) return false;
+    // A destination composer editing the same recovery row owns newer work.
+    // Keep its selection so a reload restores that work, not this older row.
+    if (destinationHasNewerEdits(recoverySelectionOwnerId, targetRef, staleId)) return false;
     writeRecoverySelection(targetRef, recoverySelectionOwnerId, preserved.clientMutationId);
     // The stale row's ref no longer holds this composition; a composer that
     // restores there would look for a row that moved.
@@ -426,12 +445,22 @@ export function createComposerSourceState(
     updateSkillNames(restoredSkillNames(recovered));
     updateSelectionMeta(recovered);
     operations.replaceWithSettled(recovered.attachments);
-    clearPersistedDraft(ref);
+    // Draft storage is shared across panes and tabs. Clear only the exact
+    // revision the preserved composition incorporated; a newer ordinary draft
+    // written while preservation waited belongs to someone else.
+    if (preserved.localDraftRevisionId !== undefined) {
+      clearPersistedDraftIfRevisionMatches(ref, preserved.localDraftRevisionId);
+    }
   }
 
   function notifyPreservedSelection(targetRef: string, staleId: string, preserved: MutationRecoveryRecord): void {
     for (const peer of liveComposerSources.get(recoverySelectionOwnerId) ?? [])
       peer.adoptPreservedSelection(targetRef, staleId, preserved);
+  }
+
+  function ownsStaleRecoveryWithNewerEdits(targetRef: string, staleId: string): boolean {
+    if (disposed || ref !== targetRef || currentRecoveryId() !== staleId) return false;
+    return userEditEpoch !== selectionUserEditEpoch || operations.hasPending;
   }
   function persistDraft(text: string): void {
     if (disposed) return;
@@ -583,6 +612,9 @@ export function createComposerSourceState(
               emptyAtRefusal || refusalComposition === null
                 ? undefined
                 : await preserveStaleRecovery(clientMutationId, localDraftRevisionId, refusalComposition);
+            const destinationOwnsNewer =
+              preserved !== undefined &&
+              destinationHasNewerEdits(recoverySelectionOwnerId, preserved.targetRef, clientMutationId);
             if (preserved && rememberPreservedSelection(preserved, clientMutationId)) {
               notifyPreservedSelection(preserved.targetRef, clientMutationId, preserved);
             }
@@ -596,7 +628,10 @@ export function createComposerSourceState(
                 // fast path and its current revision: later edits update it,
                 // Send consumes it, and a reload restores its attachment
                 // bytes.
-                setActiveRecoveryId(preserved, { replaceSelection: clientMutationId });
+                setActiveRecoveryId(preserved, {
+                  replaceSelection: clientMutationId,
+                  keepSelection: destinationOwnsNewer,
+                });
               } else if (emptyAtRefusal) {
                 setActiveRecoveryId(null);
               } else {
@@ -946,6 +981,7 @@ export function createComposerSourceState(
     updateSelectionMeta,
     setActiveRecoveryId,
     adoptPreservedSelection,
+    ownsStaleRecoveryWithNewerEdits,
     markRestore,
     persistDraft,
     writeDraft,
