@@ -56,6 +56,7 @@ import { BoardScreen } from "./BoardScreen";
 import { composeButtonRoom } from "./ComposeButton";
 import { ContinueReadingRow } from "./ContinueReadingRow";
 import { SearchResults } from "./SearchResults";
+import { SwipeRow } from "./SwipeRow";
 import { boardHoldKey, type HeldRecord } from "./boardHold";
 import { requestBoardJump } from "./boardJump";
 import { PulseMeter } from "./PulseMeter";
@@ -3310,6 +3311,43 @@ it("reads an unfolded project's pages once, reads nothing to fold it, and rememb
 	act(() => again.unmount());
 });
 
+it("shifts a depth-1 project row's swipe band by its indent, keeping only the screen's 24 points back", async () => {
+	const flatId = hubId();
+	adoptedAnHourAgo(flatId);
+	connect(
+		flatId,
+		hub({ ...fleet, catalogs: { projects: [evenerProject()] }, projectPages: { "evener:current": [localWork] } })
+			.client,
+		"ready",
+	);
+	const flatTree = await mount(navigation());
+	pressLabel(flatTree, "evener");
+	await settleMicrotasks();
+	expectSwipeBand(flatTree, "Local work", { marginLeft: 16, hitSlop: { left: -8 }, edgeInset: 16 });
+	act(() => flatTree.unmount());
+});
+
+it("leaves a depth-2 project row's swipeable past the screen's 24-point band", async () => {
+	// Host, then project, then the session: 32pt in, already past the band.
+	const deepId = hubId();
+	adoptedAnHourAgo(deepId);
+	harness.kv.set(`evener.native.board-organize.${deepId}`, JSON.stringify("host-project"));
+	const shared = evenerProject({ sources: ["local", "paradise-park"], default_expanded: true });
+	connect(
+		deepId,
+		hub({
+			...fleet,
+			manifest: twoHosts(),
+			catalogs: { projects: [shared] },
+			projectPages: { "evener:current": [localWork, parkWork] },
+		}).client,
+		"ready",
+	);
+	const deepTree = await mount(navigation());
+	expectSwipeBand(deepTree, "Local work", { marginLeft: 32, hitSlop: undefined, edgeInset: 32 });
+	act(() => deepTree.unmount());
+});
+
 it("dots a project's session rows by the hub's seen marker too (S4)", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
@@ -4219,6 +4257,33 @@ function swipeableOf(tree: ReactTestRenderer, title: string) {
 	return tree.root
 		.findAll((node) => node.type === ("ReanimatedSwipeable" as never))
 		.filter((node) => node.findAll(isRowTitled(title)).length > 0)[0];
+}
+/** The SwipeRow around the Board row with this title. */
+function swipeRowOf(tree: ReactTestRenderer, title: string) {
+	const row = tree.root.findAllByType(SwipeRow).find((node) => node.findAll(isRowTitled(title)).length > 0);
+	if (!row) throw new Error(`no swipe row for ${title}`);
+	return row;
+}
+/** A Board row's swipe geometry: both hit frames, its wrapper's indent and
+ * the inset the Board passed down. */
+function expectSwipeBand(
+	tree: ReactTestRenderer,
+	title: string,
+	expected: { marginLeft: number; hitSlop: { left: number } | undefined; edgeInset: number },
+) {
+	const swipeable = swipeableOf(tree, title);
+	const tracker = swipeable.props.simultaneousWithExternalGesture as { config: { hitSlop?: unknown } };
+	expect(swipeable.props.hitSlop).toEqual(expected.hitSlop);
+	expect(tracker.config.hitSlop).toEqual(expected.hitSlop);
+	expect(rowWrapper(swipeable).props.style).toMatchObject({ marginLeft: expected.marginLeft });
+	expect(swipeRowOf(tree, title).props.edgeInset).toBe(expected.edgeInset);
+}
+/** The indented View around a Board row's swipeable, for its marginLeft. */
+function rowWrapper(swipeable: ReactTestInstance) {
+	let wrapper = swipeable.parent;
+	while (wrapper && wrapper.props.style?.marginLeft === undefined) wrapper = wrapper.parent;
+	if (!wrapper) throw new Error("no indented row wrapper");
+	return wrapper;
 }
 /** The buttons a swipe reveals on one side, rendered as the swipeable would. */
 function revealed(swipeable: ReactTestInstance, side: "left" | "right"): ReactTestInstance[] {
