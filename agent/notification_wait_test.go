@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -593,6 +594,11 @@ func TestMissingWaitProducerNotifiesOnce(t *testing.T) {
 	owner := root.subagents.sessions()[0]
 	sub := root.getSub(owner.ID())
 	waitForCondition(t, 3*time.Second, "cold fixture yield", func() bool { sub.mu.Lock(); defer sub.mu.Unlock(); return !sub.running })
+	cp, err := readWaitCheckpoint(transcriptPath(root.stateDir, owner.ID()), owner.ID())
+	if err != nil || cp == nil || cp.WaitingOn == "" {
+		t.Fatalf("missing original wait identity: %+v %v", cp, err)
+	}
+	interruptionID := "wait-interrupted:" + owner.ID() + ":" + cp.ExecutionTurnID + ":" + cp.CommunicateCallID
 	copyDir := copyWaitingState(t, root.stateDir)
 	jobPath := filepath.Join(jobsDir(copyDir, owner.ID()), "jobs.jsonl")
 	if err := os.Remove(jobPath); err != nil {
@@ -609,8 +615,14 @@ func TestMissingWaitProducerNotifiesOnce(t *testing.T) {
 	restored := restoreWaitingCopy(t, root, copyDir)
 	select {
 	case req := <-entered:
-		if req.SessionID != owner.ID() || !incidentRequestHas(req, "was interrupted by restart, its producer is absent or cannot be restored") {
-			t.Fatal("cold receiver request omitted its interruption or used another session")
+		if req.SessionID != owner.ID() {
+			t.Fatal("cold interruption used another receiver")
+		}
+		// The private interruption ID binds this notification to the original
+		// wait checkpoint. Its actual injected payload must reach this request.
+		ids := incidentPresentedIDs(t, copyDir, owner.ID(), req, interruptionID)
+		if !slices.Equal(ids, []string{interruptionID}) {
+			t.Fatalf("cold interruption payloads=%v", ids)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("cold wait did not resume")
@@ -653,6 +665,7 @@ func TestMissingWaitProducerNotifiesOnce(t *testing.T) {
 	if interruptions != 1 {
 		t.Fatalf("interruption records=%d want1", interruptions)
 	}
+	incidentCoverage(t, copyDir, owner.ID(), map[string][]string{"cold-result-37": {interruptionID}})
 }
 
 func TestNotificationBatchCapacityRelease(t *testing.T) {
@@ -669,8 +682,8 @@ func TestNotificationBatchCapacityRelease(t *testing.T) {
 		jobID = regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages))
 		return waitResponseFor("real-cap-wait-11", jobID)
 	}, func(req llm.Request) llm.Response {
-		if !incidentRequestHas(req, jobID) {
-			t.Error("capacity successor omitted the completed source")
+		if err := incidentJobPayload(req, jobID, "completed", "exit_zero"); err != nil {
+			t.Error(err)
 		}
 		resumed <- struct{}{}
 		return finalResponse("real-cap-observed-11")
@@ -707,6 +720,7 @@ func TestNotificationBatchCapacityRelease(t *testing.T) {
 	awaitSignal(t, resumed, "real capacity release notification")
 	incidentYielded(t, root, owner.ID())
 	incidentNotificationFacts(t, root.stateDir, owner.ID(), id)
+	incidentCoverage(t, root.stateDir, owner.ID(), map[string][]string{"real-cap-observed-11": {id}})
 	if len(a.requestsFor("REAL-CAP-WAIT-11")) != 3 {
 		t.Fatal("capacity release ran more than one successor")
 	}

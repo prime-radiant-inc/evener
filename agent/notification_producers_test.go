@@ -856,8 +856,14 @@ func testNotificationWatchRestartCut(t *testing.T, cut string) {
 	truncateRestartTranscript(t, transcriptPath(copied, root.ID()), func(turn schema.Turn) bool { return turn.AttentionID == id })
 	root.Close()
 	a.script("root", func(req llm.Request) llm.Response {
-		if !incidentRequestHas(req, "timer-c03a71b9") || !incidentRequestHas(req, state.Key.WatchID) {
-			t.Error("designated restored request omitted timer source/body")
+		found := false
+		for _, frame := range incidentFrames(req) {
+			if frame.tag == "job-notification" && frame.attrs["watch_id"] == state.Key.WatchID && frame.attrs["event"] == "watch" && frame.attrs["status"] == "watch" && frame.attrs["reason"] == "after" && frame.attrs["job_type"] == "watch" && strings.TrimSpace(frame.body) != "" {
+				found = true
+			}
+		}
+		if !found {
+			t.Error("designated restored request omitted actual one-shot timer firing")
 		}
 		return finalResponse("timer-observed-11")
 	})
@@ -895,6 +901,11 @@ func testNotificationWatchRestartCut(t *testing.T, cut string) {
 		}
 		incidentNotificationFacts(t, copied, root.ID(), fmt.Sprintf("watch:%s:%d", p.WatchSend.DeliveryID, p.WatchSend.UpdateSeq))
 	}
+	var expected []string
+	for _, source := range producedAfter {
+		expected = append(expected, fmt.Sprintf("watch:%s:%d", source.WatchSend.DeliveryID, source.WatchSend.UpdateSeq))
+	}
+	incidentCoverage(t, copied, root.ID(), map[string][]string{"timer-observed-11": expected})
 	if ended := producerSourceEvents(t, restored.jobManager, jobstore.EventWatchCleared); len(ended) != 1 {
 		t.Fatalf("durable watch ends=%d", len(ended))
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"regexp"
 	"slices"
 	"strings"
@@ -12,6 +13,8 @@ import (
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -29,12 +32,105 @@ func incidentShellResponse(id, fifo string) llm.Response {
 }
 
 func incidentRequestHas(req llm.Request, payload string) bool {
-	for _, msg := range req.Messages {
-		if strings.Contains(msg.Text(), payload) {
+	for _, frame := range incidentFrames(req) {
+		if strings.Contains(frame.body, payload) {
 			return true
 		}
 	}
 	return false
+}
+
+type incidentFrame struct {
+	tag, body string
+	attrs     map[string]string
+}
+
+var incidentFramePattern = regexp.MustCompile(`(?s)<(job-notification|delegate-notification)\s+([^>]*)>(.*?)</(?:job-notification|delegate-notification)>`)
+var incidentAttrPattern = regexp.MustCompile(`([a-z_]+)="([^"]*)"`)
+
+// Notification frames are user-role text, not tool results or assistant
+// tool arguments. Delegate delivery does not set the Machinery flag.
+func incidentFrames(req llm.Request) []incidentFrame {
+	var frames []incidentFrame
+	for _, msg := range req.Messages {
+		if msg.Role != llm.RoleUser {
+			continue
+		}
+		for _, part := range msg.Content {
+			if part.Kind != llm.ContentText {
+				continue
+			}
+			for _, match := range incidentFramePattern.FindAllStringSubmatch(part.Text, -1) {
+				frame := incidentFrame{tag: match[1], body: html.UnescapeString(match[3]), attrs: map[string]string{}}
+				for _, attr := range incidentAttrPattern.FindAllStringSubmatch(match[2], -1) {
+					frame.attrs[attr[1]] = html.UnescapeString(attr[2])
+				}
+				frames = append(frames, frame)
+			}
+		}
+	}
+	return frames
+}
+
+func incidentJobPayload(req llm.Request, jobID, status, reason string) error {
+	for _, frame := range incidentFrames(req) {
+		if frame.tag == "job-notification" && frame.attrs["job_id"] == jobID && frame.attrs["job_type"] == "shell" && frame.attrs["status"] == status && frame.attrs["event"] == status && frame.attrs["reason"] == reason && strings.TrimSpace(frame.body) != "" {
+			return nil
+		}
+	}
+	return fmt.Errorf("notification body missing shell=%s status=%s reason=%s, frames=%+v", jobID, status, reason, incidentFrames(req))
+}
+
+func incidentDelegatePayload(req llm.Request, delegateID, payload string) bool {
+	for _, frame := range incidentFrames(req) {
+		if frame.tag == "delegate-notification" && frame.attrs["delegate_id"] == delegateID && frame.attrs["kind"] == "report" {
+			var packet struct {
+				Message string `json:"message"`
+			}
+			if json.Unmarshal([]byte(frame.body), &packet) == nil && (payload == "" || packet.Message == payload) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func incidentWatchFields(req llm.Request, watchID string) map[string]string {
+	for _, msg := range req.Messages {
+		if msg.Role != llm.RoleUser {
+			continue
+		}
+		for _, part := range msg.Content {
+			if part.Kind != llm.ContentText || !part.Machinery {
+				continue
+			}
+			_, frame, ok := strings.Cut(part.Text, "Watch frame\n")
+			if !ok {
+				continue
+			}
+			fields := map[string]string{}
+			inEvent := false
+			for _, line := range strings.Split(frame, "\n") {
+				if line == "event:" {
+					inEvent = true
+					continue
+				}
+				key, value, ok := strings.Cut(line, ": ")
+				if !ok {
+					continue
+				}
+				if inEvent && strings.HasPrefix(key, "  ") {
+					fields["event."+strings.TrimSpace(key)] = value
+				} else if !strings.HasPrefix(key, " ") {
+					fields[key] = value
+				}
+			}
+			if fields["watch_id"] == watchID {
+				return fields
+			}
+		}
+	}
+	return nil
 }
 
 // This counts physical records, not the production attention fold. Historical
@@ -46,22 +142,227 @@ func incidentNotificationFacts(t *testing.T, stateDir, sessionID, id string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	accepted, observed, consumed := 0, 0, 0
-	for _, e := range data.Entries {
+	if err := incidentCustodyError(data.Entries, id); err != nil {
+		t.Fatalf("receiver=%s: %v", sessionID, err)
+	}
+}
+
+func incidentCustodyError(entries []transcript.Entry, id string) error {
+	accepted, consumed, other := 0, 0, 0
+	for _, e := range entries {
 		if e.Turn.AttentionID == id {
 			accepted++
 		}
-		if slices.Contains(e.Turn.ObservedNotificationIDs, id) {
-			observed++
-		}
 		if r := e.Turn.AttentionResolution; r != nil && r.AttentionID == id {
-			consumed++
+			if r.Disposition == "consumed" {
+				consumed++
+			} else {
+				other++
+			}
 		}
 	}
-	if accepted != 1 || observed < 1 || consumed != 1 {
-		t.Fatalf("receiver=%s id=%s accepted=%d successful coverage=%d consumed=%d", sessionID, id, accepted, observed, consumed)
+	if accepted != 1 || consumed != 1 || other != 0 {
+		return fmt.Errorf("source=%s accepted=%d consumed=%d non-consumed=%d", id, accepted, consumed, other)
 	}
-	t.Logf("receiver=%s source=%s accepted=%d successful coverage=%d consumed=%d", sessionID, id, accepted, observed, consumed)
+	return nil
+}
+
+// Keys name the communicate response returned for a designated captured request.
+// Check its entire receipt set, and forbid tracked IDs on any other response.
+// By default all expected IDs are tracked. Callers with older historical updates
+// track the new terminal ID, without forbidding earlier coverage of old updates.
+func incidentCoverageError(entries []transcript.Entry, expected map[string][]string, tracked ...string) error {
+	seen := map[string]int{}
+	if len(tracked) == 0 {
+		for _, ids := range expected {
+			tracked = append(tracked, ids...)
+		}
+	}
+	for _, entry := range entries {
+		turn := entry.Turn
+		if turn.Kind != schema.TurnAssistant {
+			continue
+		}
+		marker := ""
+		for _, part := range turn.Message.Content {
+			if call := part.ToolCall; call != nil && call.Name == "communicate" {
+				var args struct {
+					Message string `json:"message"`
+				}
+				if err := json.Unmarshal(call.Arguments, &args); err != nil {
+					return err
+				}
+				marker = args.Message
+			}
+		}
+		want, designated := expected[marker]
+		if designated {
+			seen[marker]++
+			got := slices.Clone(turn.ObservedNotificationIDs)
+			want = slices.Clone(want)
+			slices.Sort(got)
+			slices.Sort(want)
+			if !slices.Equal(got, want) {
+				return fmt.Errorf("response=%s observed=%v want=%v", marker, got, want)
+			}
+		} else {
+			for _, id := range turn.ObservedNotificationIDs {
+				if slices.Contains(tracked, id) {
+					return fmt.Errorf("source=%s covered by unexpected response=%q", id, marker)
+				}
+			}
+		}
+	}
+	for marker := range expected {
+		if seen[marker] != 1 {
+			return fmt.Errorf("response=%s physical records=%d want1", marker, seen[marker])
+		}
+	}
+	return nil
+}
+
+func incidentCopy[T any](t *testing.T, value T) T {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var copy T
+	if err := json.Unmarshal(raw, &copy); err != nil {
+		t.Fatal(err)
+	}
+	return copy
+}
+
+// These are mutations of captured evidence, not runtime failures. The source
+// journals, receiver files and provider requests themselves stay untouched.
+func incidentFalsifyOracles(t *testing.T, req llm.Request, entries []transcript.Entry, jobID, id, response string) {
+	t.Helper()
+	expected := map[string][]string{response: {id}}
+	t.Run("oracle rejects missing payload with setup retained", func(t *testing.T) {
+		copy := incidentCopy(t, req)
+		setupRetained, removed := false, false
+		for i := range copy.Messages {
+			msg := &copy.Messages[i]
+			if msg.Role != llm.RoleUser {
+				raw, err := json.Marshal(msg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				setupRetained = setupRetained || strings.Contains(string(raw), jobID)
+				continue
+			}
+			for j := range msg.Content {
+				part := &msg.Content[j]
+				if part.Kind == llm.ContentText && strings.Contains(part.Text, "<job-notification ") && strings.Contains(part.Text, jobID) {
+					part.Text = incidentFramePattern.ReplaceAllString(part.Text, "")
+					removed = true
+				}
+			}
+		}
+		if !removed || !setupRetained {
+			t.Fatal("mutation did not preserve actual shell setup history")
+		}
+		if incidentJobPayload(copy, jobID, "stopped", "runtime_lost") == nil {
+			t.Fatal("missing payload survived strengthened oracle")
+		}
+		if err := incidentCoverageError(entries, expected); err != nil {
+			t.Fatal("unmodified receipts must still pass", err)
+		}
+		t.Log("removed delivered shell payload, retained setup job ID and valid receipts, payload oracle rejected copy")
+	})
+	t.Run("oracle rejects discarded disposition", func(t *testing.T) {
+		copy := incidentCopy(t, entries)
+		changed := 0
+		for i := range copy {
+			if r := copy[i].Turn.AttentionResolution; r != nil && r.AttentionID == id {
+				r.Disposition = "discarded"
+				changed++
+			}
+		}
+		if changed != 1 {
+			t.Fatalf("changed resolutions=%d", changed)
+		}
+		if incidentCustodyError(copy, id) == nil {
+			t.Fatal("discarded notification counted as consumed")
+		}
+		t.Log("changed consumed to discarded with acceptance and coverage retained, custody oracle rejected copy")
+	})
+	for _, mutation := range []string{"extra coverage ID", "coverage on wrong response"} {
+		t.Run("oracle rejects "+mutation, func(t *testing.T) {
+			copy := incidentCopy(t, entries)
+			covered, earlier := -1, -1
+			for i, entry := range copy {
+				if earlier == -1 && entry.Turn.Kind == schema.TurnAssistant {
+					earlier = i
+				}
+				if slices.Contains(entry.Turn.ObservedNotificationIDs, id) {
+					if covered != -1 {
+						t.Fatal("fixture has multiple source responses")
+					}
+					covered = i
+				}
+			}
+			if covered < 0 || earlier < 0 || covered == earlier {
+				t.Fatal("missing distinct actual response records")
+			}
+			if mutation == "extra coverage ID" {
+				copy[covered].Turn.ObservedNotificationIDs = append(copy[covered].Turn.ObservedNotificationIDs, "foreign-notification-11")
+			} else {
+				copy[covered].Turn.ObservedNotificationIDs = nil
+				copy[earlier].Turn.ObservedNotificationIDs = []string{id}
+			}
+			if err := incidentCustodyError(copy, id); err != nil {
+				t.Fatal("acceptance and consumption changed", err)
+			}
+			if incidentCoverageError(copy, expected) == nil {
+				t.Fatal("corrupt response coverage survived exact oracle")
+			}
+			t.Logf("%s with acceptance and consumption retained, exact response oracle rejected copy", mutation)
+		})
+	}
+}
+
+func incidentCoverage(t *testing.T, stateDir, sessionID string, expected map[string][]string, tracked ...string) {
+	t.Helper()
+	entries := notificationRawEntries(t, transcriptPath(stateDir, sessionID))
+	if err := incidentCoverageError(entries, expected, tracked...); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Historical updates can legitimately recur. Map physical accepted payloads
+// to this explicit request, without consulting receipt IDs or the runtime fold.
+func incidentPresentedIDs(t *testing.T, stateDir, sessionID string, req llm.Request, required ...string) []string {
+	t.Helper()
+	var ids []string
+	for _, entry := range notificationRawEntries(t, transcriptPath(stateDir, sessionID)) {
+		if entry.Turn.AttentionID == "" {
+			continue
+		}
+		body := entry.Turn.Message.Text()
+		for _, msg := range req.Messages {
+			if msg.Role != llm.RoleUser {
+				continue
+			}
+			found := false
+			for _, part := range msg.Content {
+				if part.Kind == llm.ContentText && body != "" && strings.Contains(part.Text, body) {
+					found = true
+				}
+			}
+			if found {
+				ids = append(ids, entry.Turn.AttentionID)
+				break
+			}
+		}
+	}
+	for _, id := range required {
+		if !slices.Contains(ids, id) {
+			t.Fatalf("designated request omitted accepted payload %s", id)
+		}
+	}
+	return ids
 }
 
 func incidentYielded(t *testing.T, owner *Session, childID string) {
@@ -182,10 +483,15 @@ func testNotificationIncidentReopen(t *testing.T) {
 		t.Fatalf("recovered real source completions=%+v", terminal)
 	}
 	id := stableShellAttentionID(jobID, terminal[0].TerminalGen)
-	if !incidentRequestHas(wr, jobID) {
-		t.Fatal("designated worker request omitted its shell identity")
+	if terminal[0].Status != jobstore.StatusStopped || terminal[0].Reason != "runtime_lost" {
+		t.Fatalf("recovered interruption=%+v", terminal[0])
+	}
+	if err := incidentJobPayload(wr, jobID, "stopped", "runtime_lost"); err != nil {
+		t.Fatal(err)
 	}
 	incidentNotificationFacts(t, copied, worker.ID(), id)
+	incidentCoverage(t, copied, worker.ID(), map[string][]string{report: {id}})
+	incidentFalsifyOracles(t, wr, notificationRawEntries(t, transcriptPath(copied, worker.ID())), jobID, id, report)
 	requireNotificationState(t, restoredWorker.sess.jobManager, jobID, jobstore.NotifyDelivered)
 	for _, child := range []*Session{worker, coord} {
 		starts, finishes := 0, 0
@@ -212,10 +518,18 @@ func testNotificationIncidentReopen(t *testing.T) {
 			t.Fatalf("delegate=%s starts=%d finishes=%d delivery=%s", child.owningDelegateID, starts, finishes, delivery)
 		}
 		owner := root.ID()
+		req, response, payload := rr, "observed-root-11", result
 		if child == worker {
 			owner = coord.ID()
+			req, response, payload = cr, result, report
 		}
-		incidentNotificationFacts(t, copied, owner, "delegate:"+delivery)
+		if !incidentDelegatePayload(req, child.owningDelegateID, payload) {
+			t.Fatal("designated report request omitted exact source and packet message")
+		}
+		notificationID := "delegate:" + delivery
+		incidentNotificationFacts(t, copied, owner, notificationID)
+		expected := incidentPresentedIDs(t, copied, owner, req, notificationID)
+		incidentCoverage(t, copied, owner, map[string][]string{response: expected}, notificationID)
 		cp, err := readWaitCheckpoint(transcriptPath(copied, child.ID()), child.ID())
 		if err != nil || cp == nil || cp.ResumedByTurnID == "" {
 			t.Fatalf("missing original-generation resume claim: %+v %v", cp, err)

@@ -74,9 +74,6 @@ func TestNotificationOwnerHeldObserverEligible(t *testing.T) {
 		}
 		return waitResponseFor("observer-wait-11", "watch:"+watchID)
 	}, func(req llm.Request) llm.Response {
-		if !incidentRequestHas(req, "observer-7a32bd90") {
-			t.Errorf("observer request omitted independent watch delivery, last result=%s", lastToolResultText(req.Messages))
-		}
 		return finalResponse("observer-report-9a087bc1")
 	})
 	root := newMessagingRoot(t, a, nil)
@@ -124,7 +121,14 @@ func TestNotificationOwnerHeldObserverEligible(t *testing.T) {
 		t.Fatalf("parent watch source=%+v", produced)
 	}
 	state := produced[0].WatchSend
+	req := a.requestsFor("HELD-OBSERVER-11")[2]
+	fields := incidentWatchFields(req, state.Key.WatchID)
+	args, _ := json.Marshal(askUserArgsValid())
+	if fields["event.kind"] != "assistant.tool" || fields["event.tool_name"] != "ask_user" || fields["event.call_id"] != "held-question-11" || fields["event.status"] != "ok" || fields["event.arguments_json"] != string(args) {
+		t.Fatalf("observer omitted actual parent ask_user event: fields=%v request=%+v", fields, req.Messages)
+	}
 	incidentNotificationFacts(t, root.stateDir, observer.ID(), stableWatchAttentionID(*state))
+	incidentCoverage(t, root.stateDir, observer.ID(), map[string][]string{"observer-report-9a087bc1": {stableWatchAttentionID(*state)}})
 	incidentPendingFacts(t, root.stateDir, root.ID(), reportID)
 }
 
@@ -158,7 +162,7 @@ func TestNotificationUnobservedReportAcrossCompaction(t *testing.T) {
 	compactAfterAttention(t, root)
 	incidentPendingFacts(t, root.stateDir, root.ID(), id)
 	a.script("root", func(req llm.Request) llm.Response {
-		if !incidentRequestHas(req, "unobserved-report-629da8c3") || !incidentRequestHas(req, worker.owningDelegateID) {
+		if !incidentDelegatePayload(req, worker.owningDelegateID, "unobserved-report-629da8c3") {
 			t.Error("designated post-compaction request omitted source or report")
 		}
 		return finalResponse("compact-report-consumed-11")
@@ -174,6 +178,7 @@ func TestNotificationUnobservedReportAcrossCompaction(t *testing.T) {
 		t.Fatal("compacted pending report did not cause exactly one useful request")
 	}
 	incidentNotificationFacts(t, root.stateDir, root.ID(), id)
+	incidentCoverage(t, root.stateDir, root.ID(), map[string][]string{"compact-report-consumed-11": {id}})
 }
 
 // truncateRestartTranscript retains complete real records before the selected
@@ -361,13 +366,14 @@ func testNotificationDelegateRestartCut(t *testing.T, cut string) {
 		if stops != 1 || completed != 1 {
 			t.Fatalf("Stop requested=%d completed=%d", stops, completed)
 		}
-	} else if prepared != 1 || !incidentRequestHas(received, payload) {
+	} else if prepared != 1 || !incidentDelegatePayload(received, child.owningDelegateID, payload) {
 		t.Fatal("immutable prepared packet not delivered")
 	}
-	if !incidentRequestHas(received, child.owningDelegateID) {
+	if !incidentDelegatePayload(received, child.owningDelegateID, "") {
 		t.Fatal("designated receiver request omitted exact repaired delegate identity")
 	}
 	incidentNotificationFacts(t, copied, root.ID(), "delegate:"+delivery)
+	incidentCoverage(t, copied, root.ID(), map[string][]string{"terminal-observed-11": incidentPresentedIDs(t, copied, root.ID(), received, "delegate:"+delivery)}, "delegate:"+delivery)
 }
 
 func testNotificationShellRestartCut(t *testing.T, cut string) {
@@ -430,8 +436,8 @@ func testNotificationShellRestartCut(t *testing.T, cut string) {
 			case <-time.After(3 * time.Second):
 				t.Fatal("request snapshot missing")
 			}
-			if !incidentRequestHas(attempt, jobID) {
-				t.Fatal("attempted request omitted exact source")
+			if err := incidentJobPayload(attempt, jobID, string(source[0].Status), source[0].Reason); err != nil {
+				t.Fatal(err)
 			}
 			copied = copyWaitingState(t, root.stateDir)
 			for _, entry := range notificationRawEntries(t, transcriptPath(copied, root.ID())) {
@@ -454,8 +460,8 @@ func testNotificationShellRestartCut(t *testing.T, cut string) {
 			if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 				t.Fatal(err)
 			}
-			if !incidentRequestHas(attempt, jobID) {
-				t.Fatal("successful request omitted exact source")
+			if err := incidentJobPayload(attempt, jobID, string(source[0].Status), source[0].Reason); err != nil {
+				t.Fatal(err)
 			}
 			copied = copyWaitingState(t, root.stateDir)
 			if cut == "after response sync before receipt index" {
@@ -493,10 +499,11 @@ func testNotificationShellRestartCut(t *testing.T, cut string) {
 	if got := len(a.requestsFor("root")) - before; got != want {
 		t.Fatalf("new requests=%d want%d, historical attempted request is not successful coverage", got, want)
 	}
+	var recovered llm.Request
 	if want == 1 {
-		req := <-observed
-		if req.SessionID != root.ID() || !incidentRequestHas(req, jobID) {
-			t.Fatal("recovered request omitted exact source/receiver")
+		recovered = <-observed
+		if recovered.SessionID != root.ID() {
+			t.Fatal("wrong recovered receiver")
 		}
 	}
 	events := producerSourceEvents(t, restored.jobManager, jobstore.EventJobFinished)
@@ -504,7 +511,15 @@ func testNotificationShellRestartCut(t *testing.T, cut string) {
 		t.Fatalf("reopened source terminal facts=%+v", events)
 	}
 	id := "shell:" + jobID + ":" + events[0].TerminalGen
+	response := "response-synced-11"
+	if want == 1 {
+		response = "recovered-11"
+		if err := incidentJobPayload(recovered, jobID, string(events[0].Status), events[0].Reason); err != nil {
+			t.Fatal(err)
+		}
+	}
 	incidentNotificationFacts(t, copied, root.ID(), id)
+	incidentCoverage(t, copied, root.ID(), map[string][]string{response: {id}})
 	acks := producerSourceEvents(t, restored.jobManager, jobstore.EventJobNotificationDelivered)
 	if len(acks) != 1 || acks[0].JobID != jobID {
 		t.Fatalf("source custody acks=%+v", acks)

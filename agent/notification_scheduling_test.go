@@ -507,8 +507,13 @@ func TestNotificationReleaseStorageRecovery(t *testing.T) {
 	}
 	defer repair()
 	a.script("root", func(req llm.Request) llm.Response {
-		if !incidentRequestHas(req, started[0].JobID) {
-			t.Error("first designated request source mismatch")
+		if err := incidentJobPayload(req, started[0].JobID, "completed", "exit_zero"); err != nil {
+			t.Error(err)
+		}
+		for _, frame := range incidentFrames(req) {
+			if frame.attrs["job_id"] == started[1].JobID {
+				t.Error("first snapshot contains not-yet-produced B")
+			}
 		}
 		releaseB()
 		waitForCondition(t, 3*time.Second, "late shell custody", func() bool { return producerRecordCount(t, root) == 2 })
@@ -523,8 +528,10 @@ func TestNotificationReleaseStorageRecovery(t *testing.T) {
 		blocked = true
 		return finalResponse("release-first-observed-11")
 	}, func(req llm.Request) llm.Response {
-		if !incidentRequestHas(req, started[1].JobID) {
-			t.Error("recovery request omitted late shell")
+		for _, source := range started {
+			if err := incidentJobPayload(req, source.JobID, "completed", "exit_zero"); err != nil {
+				t.Error(err)
+			}
 		}
 		return finalResponse("release-second-observed-11")
 	})
@@ -565,9 +572,18 @@ func TestNotificationReleaseStorageRecovery(t *testing.T) {
 	if len(a.requestsFor("root")) != 5 || root.clientMutations.snapshot().ActiveTurnID != "" {
 		t.Fatalf("repaired storage requests=%d active=%q retained=%q", len(a.requestsFor("root")), root.clientMutations.snapshot().ActiveTurnID, retained)
 	}
-	for _, source := range producerSourceEvents(t, root.jobManager, jobstore.EventJobFinished) {
-		incidentNotificationFacts(t, root.stateDir, root.ID(), "shell:"+source.JobID+":"+source.TerminalGen)
+	finished := producerSourceEvents(t, root.jobManager, jobstore.EventJobFinished)
+	if len(finished) != 2 {
+		t.Fatalf("terminal sources=%+v", finished)
 	}
+	ids := map[string]string{}
+	for _, source := range finished {
+		id := "shell:" + source.JobID + ":" + source.TerminalGen
+		ids[source.JobID] = id
+		incidentNotificationFacts(t, root.stateDir, root.ID(), id)
+	}
+	idA, idB := ids[started[0].JobID], ids[started[1].JobID]
+	incidentCoverage(t, root.stateDir, root.ID(), map[string][]string{"release-first-observed-11": {idA}, "release-second-observed-11": {idA, idB}})
 }
 
 func TestNotificationExecutionReleaseOnUnwind(t *testing.T) {
