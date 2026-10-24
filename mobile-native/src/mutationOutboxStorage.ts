@@ -790,15 +790,25 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		}));
 	}
 
-	removeResumeIdentity(from: ResumeIdentityEndpoint, to: ResumeIdentityEndpoint): void {
-		this.db.runSync(
-			`DELETE FROM resume_identity_edges
-			 WHERE from_hub_id = ? AND from_ref = ? AND to_hub_id = ? AND to_ref = ?`,
-			from.hubId,
-			from.sessionRef,
-			to.hubId,
-			to.sessionRef,
-		);
+	settleResumeIdentity(from: ResumeIdentityEndpoint, to: ResumeIdentityEndpoint): void {
+		this.transaction("resume_identity_settle", () => {
+			// The settled edge and every provenance edge that pointed at its
+			// source disappear together. A crash between two transactions would
+			// leave the provenance orphaned and replayable into a retired ref.
+			this.db.runSync(
+				"DELETE FROM resume_identity_edges WHERE to_hub_id = ? AND to_ref = ?",
+				from.hubId,
+				from.sessionRef,
+			);
+			this.db.runSync(
+				`DELETE FROM resume_identity_edges
+				 WHERE from_hub_id = ? AND from_ref = ? AND to_hub_id = ? AND to_ref = ?`,
+				from.hubId,
+				from.sessionRef,
+				to.hubId,
+				to.sessionRef,
+			);
+		});
 	}
 
 	redirectResumeIdentity(
@@ -821,10 +831,6 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 				this.#now(),
 			);
 		});
-	}
-
-	removeResumeIdentitiesTo(to: ResumeIdentityEndpoint): void {
-		this.db.runSync("DELETE FROM resume_identity_edges WHERE to_hub_id = ? AND to_ref = ?", to.hubId, to.sessionRef);
 	}
 
 	async listTargetRefs(): Promise<string[]> {

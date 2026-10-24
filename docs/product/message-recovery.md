@@ -138,13 +138,17 @@ mapping. Downstream edges settle before their predecessors: an intermediate
 identity's composition wins the shared destination, and its predecessor falls
 under the occupied-destination rule. The predecessor edge stays in the
 mutations database as chain provenance until the intermediate settles, so both
-the order and the dependency survive a restart. The destination stays pending
-until the whole chain settles. A restarted app retries that handoff before
-reconciling the resumed screen and does not restore the source's original
-recovery text while the transfer is still owed. A refused handoff still moves a
-completed built-in command's completion markers to the destination, so
-reconciliation discards those moved rows instead of appending and re-running
-the command on a later Send.
+the order and the dependency survive a restart. Settlement deletes the settled
+edge and the provenance pointing at it in one savepoint, so an exit cannot
+orphan a predecessor. Ordering comes from the longest path over all provenance
+edges, not the first matching one, so a shortcut cannot hide a longer chain
+that must settle first. The destination stays pending until the whole chain
+settles. A restarted app retries that handoff before reconciling the resumed
+screen and does not restore the source's original recovery text while the
+transfer is still owed. A refused handoff still moves a completed built-in
+command's completion markers to the destination, so reconciliation discards
+those moved rows instead of appending and re-running the command on a later
+Send.
 
 Browser and native outboxes share one receipt-settlement rule from the AppWire
 package (`retainsAcceptedCopy`, `settlementRetiresRecovery`): a `pending` receipt

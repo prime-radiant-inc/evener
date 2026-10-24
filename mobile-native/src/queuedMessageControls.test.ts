@@ -6,7 +6,7 @@ import { buildComposerInput, type InputAttachment } from "@evener/appwire-client
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { DraftDocument } from "./draftDocument";
 import { DraftLibrary } from "./draftLibrary";
-import { DraftRepository } from "./draftRepository";
+import { type DraftDestination, DraftRepository } from "./draftRepository";
 import { NativeMutationRuntime, nativeMutationTargetKey, type NativeMutationRequest } from "./nativeMutationRuntime";
 import {
 	editQueuedMessageIntoDraft,
@@ -813,6 +813,150 @@ test("two restarts before settlement keep B before A", async () => {
 	});
 	expect(f.repository.read(bDestination)).toEqual({ draft: "", unconfirmed: null });
 	expect(f.repository.read(destination)).toMatchObject({ draft: "A draft" });
+});
+
+test("an interrupted settlement cannot orphan A->B from its chain", async () => {
+	const f = fixture();
+	const completedA = await f.enqueue();
+	f.document.edit("current");
+	await editQueuedMessageIntoDraft(f.runtime, key, completedA, f.document);
+	await f.document.submitBuiltinCommand(async () => true);
+	const capturedA = await f.enqueue();
+	await editQueuedMessageIntoDraft(f.runtime, key, capturedA, f.document);
+	f.document.edit("A draft");
+	await f.enqueue();
+
+	const bRef = "session-b";
+	const cRef = "session-c";
+	const bDestination = { hubId: destination.hubId, sessionRef: bRef };
+	const cDestination = { hubId: destination.hubId, sessionRef: cRef };
+	const bKey = nativeMutationTargetKey(destination.hubId, bRef);
+	const cKey = nativeMutationTargetKey(destination.hubId, cRef);
+	expect(
+		f.runtime.storage.retarget(key, {
+			ref: bKey,
+			wireRef: bRef,
+			threadId: "thread-b",
+			instanceId: "instance-b",
+		}),
+	).toHaveLength(1);
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	f.drafts.exec(
+		"CREATE TRIGGER reject_b_draft BEFORE INSERT ON drafts WHEN NEW.session_ref = 'session-b' BEGIN SELECT RAISE(ABORT, 'write rejected'); END",
+	);
+	expect(library.handoff(destination, bDestination)).toBe(false);
+	f.drafts.exec("DROP TRIGGER reject_b_draft");
+	f.repository.write(bDestination, {
+		draft: "B draft",
+		unconfirmed: null,
+		composer: { recoveryIds: ["captured-b"] },
+		completedCommandRecoveryIds: ["completed-b"],
+	});
+	expect(
+		f.runtime.storage.retarget(bKey, {
+			ref: cKey,
+			wireRef: cRef,
+			threadId: "thread-c",
+			instanceId: "instance-c",
+		}),
+	).toHaveLength(1);
+
+	await f.reopen();
+	const restarted = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	expect(restarted.hasPendingHandoff(cDestination)).toBe(true);
+
+	// The exit lands between deleting B->C and deleting its incoming A->B.
+	f.mutations.exec(
+		"CREATE TRIGGER interrupt_provenance_delete BEFORE DELETE ON resume_identity_edges WHEN OLD.to_ref = 'session-b' BEGIN SELECT RAISE(ABORT, 'settle interrupted'); END",
+	);
+	restarted.retryPendingHandoffs();
+	f.mutations.exec("DROP TRIGGER interrupt_provenance_delete");
+
+	// B's composition has reached C; a restart must not replay A->B into B.
+	await f.reopen();
+	const recovered = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	recovered.retryPendingHandoffs();
+	expect(f.repository.read(cDestination)).toMatchObject({
+		draft: "B draft",
+		composer: { recoveryIds: ["captured-b"] },
+		completedCommandRecoveryIds: expect.arrayContaining(["completed-b"]),
+	});
+	expect(f.repository.read(bDestination)).toEqual({ draft: "", unconfirmed: null });
+	expect(f.repository.read(destination)).toMatchObject({ draft: "A draft" });
+	expect(recovered.hasPendingHandoff(cDestination)).toBe(false);
+	expect(f.runtime.storage.readResumeIdentities()).toEqual([]);
+});
+
+test("a longer chain with a shortcut settles C before A at the occupied terminal", async () => {
+	const f = fixture();
+	const hub = destination.hubId;
+	const ref = (suffix: string) => ({ hubId: hub, sessionRef: `session-${suffix}` });
+	const a = ref("a");
+	const b = ref("b");
+	const c = ref("c");
+	const d = ref("d");
+	const e = ref("e");
+	f.repository.write(a, {
+		draft: "A draft",
+		unconfirmed: null,
+		composer: { recoveryIds: ["captured-a"] },
+		completedCommandRecoveryIds: ["completed-a"],
+	});
+	f.repository.write(c, {
+		draft: "C draft",
+		unconfirmed: null,
+		composer: { recoveryIds: ["captured-c"] },
+		completedCommandRecoveryIds: ["completed-c"],
+	});
+	const seedEdge = (from: DraftDestination, to: DraftDestination) =>
+		f.mutations
+			.prepare(
+				"INSERT INTO resume_identity_edges (from_hub_id, from_ref, to_hub_id, to_ref, created_at) VALUES (?, ?, ?, ?, ?)",
+			)
+			.run(hub, from.sessionRef, hub, to.sessionRef, Date.now());
+	// Insertion order matches a partial-redirect state: the shortcut comes
+	// before the long path, so first-match would rank A above C.
+	seedEdge(a, b);
+	seedEdge(b, e);
+	seedEdge(b, c);
+	seedEdge(c, d);
+	seedEdge(d, e);
+	seedEdge(a, e);
+	seedEdge(c, e);
+	f.drafts
+		.prepare(
+			"INSERT INTO pending_draft_handoffs (from_hub_id, from_session_ref, to_hub_id, to_session_ref) VALUES (?, ?, ?, ?)",
+		)
+		.run(hub, b.sessionRef, hub, e.sessionRef);
+
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	library.retryPendingHandoffs();
+	expect(f.repository.read(e)).toMatchObject({
+		draft: "C draft",
+		composer: { recoveryIds: ["captured-c"] },
+		completedCommandRecoveryIds: expect.arrayContaining(["completed-c"]),
+	});
+	expect(f.repository.read(a)).toMatchObject({ draft: "A draft" });
+	expect(f.repository.read(b)).toEqual({ draft: "", unconfirmed: null });
+	expect(f.repository.read(d)).toEqual({ draft: "", unconfirmed: null });
+	expect(library.hasPendingHandoff(e)).toBe(false);
+	expect(f.runtime.storage.readResumeIdentities()).toEqual([]);
 });
 
 test("a loading redirect failure keeps the intermediate edge across two restarts", async () => {

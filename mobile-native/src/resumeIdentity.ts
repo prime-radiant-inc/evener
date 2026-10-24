@@ -15,7 +15,9 @@ export interface ResumeIdentityEdge {
  * mutations database when the drafts database refused the mapping. */
 export interface ResumeIdentityLedger {
 	readResumeIdentities(): readonly ResumeIdentityEdge[];
-	removeResumeIdentity(from: ResumeIdentityEndpoint, to: ResumeIdentityEndpoint): void;
+	/** Delete the settled edge and the provenance that pointed at its source in
+	 * one savepoint, so a crash cannot leave either one alone. */
+	settleResumeIdentity(from: ResumeIdentityEndpoint, to: ResumeIdentityEndpoint): void;
 	/** Record a still-pending source's redirected destination. The previous
 	 * edge stays as chain provenance until the intermediate settles. */
 	redirectResumeIdentity(
@@ -23,6 +25,4 @@ export interface ResumeIdentityLedger {
 		previousTo: ResumeIdentityEndpoint,
 		to: ResumeIdentityEndpoint,
 	): void;
-	/** Retire every provenance edge that pointed at a settled intermediate. */
-	removeResumeIdentitiesTo(to: ResumeIdentityEndpoint): void;
 }
