@@ -22,7 +22,7 @@ import { neverSettlingRequest, settleRealTasks } from "./testing/stalledIndexedD
 
 const DATABASE_NAME = "evener-mutation-outbox";
 // The adapter's own schema fence: DATABASE_VERSION in mutationOutboxIndexedDB.ts.
-const VERSION = 4;
+const VERSION = 5;
 
 const intent: MutationIntent = {
   targetRef: "local:thread-1",

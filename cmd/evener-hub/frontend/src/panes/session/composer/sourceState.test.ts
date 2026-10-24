@@ -813,3 +813,76 @@ test("preservation after a consumed retargeted row lands under the resumed ref",
     storage.close();
   }
 });
+
+// The retargeting adapter is not the one holding the preservation. Its
+// in-memory history cannot help: the destination must live in shared storage
+// beside the rows the retarget moved.
+test("preservation resolves a retarget performed by another storage instance", async () => {
+  class HeldPreservationStorage extends MutationOutboxIndexedDB {
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+
+    override async preserveRecoveryComposition(
+      ...args: Parameters<MutationOutboxIndexedDB["preserveRecoveryComposition"]>
+    ): ReturnType<MutationOutboxIndexedDB["preserveRecoveryComposition"]> {
+      this.reached.resolve();
+      await this.release.promise;
+      return super.preserveRecoveryComposition(...args);
+    }
+  }
+  const storage = new HeldPreservationStorage();
+  setMutationStorageForTests(storage);
+  const oldRef = "local:peer-retarget-old";
+  const resumed = "local:peer-retarget-new";
+  const original = await storage.enqueueIntent({
+    targetRef: oldRef,
+    method: "turn/start",
+    payload: { ref: oldRef, input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  const source = createTestComposerSource(oldRef, undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    await source.activateRecovery(recovery);
+    const localText = "local work across a peer retarget";
+    source.editText(localText);
+    const peerRecovery = await peer.getRecovery(original.clientMutationId);
+    if (!peerRecovery) throw new Error("missing peer recovery fixture");
+    await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: "peer composition" }],
+      [],
+      "peer composition",
+      [],
+      [],
+      undefined,
+      undefined,
+      { [original.clientMutationId]: recoveryCompositionRevision(peerRecovery) },
+    );
+
+    const saving = source.queueRecoveryPersistence(original.clientMutationId, localText, [], []);
+    await storage.reached.promise;
+    // The other tab retargets and consumes the moved row while this tab's
+    // preservation is held. This adapter never saw the retarget.
+    await peer.retargetOutbox(oldRef, resumed, { threadId: "thread-new", instanceId: "instance-new" });
+    expect(await peer.discardRecovery(original.clientMutationId)).toBe(true);
+    storage.release.resolve();
+    await saving;
+
+    const preserved = (await storage.listRecovery(resumed)).find(
+      (record) => record.clientMutationId !== original.clientMutationId,
+    );
+    expect(preserved).toMatchObject({ targetRef: resumed, composerText: localText });
+    expect(await storage.listRecovery(oldRef)).toEqual([]);
+    expect(readRecoverySelection(resumed, source.recoverySelectionOwnerId)).toBe(preserved?.clientMutationId);
+  } finally {
+    source.dispose();
+    peer.close();
+    storage.close();
+  }
+});
