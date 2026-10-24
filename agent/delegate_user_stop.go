@@ -48,7 +48,7 @@ func (s *Session) StopDelegateRun(delegateID string) (appwire.DelegateStopOutcom
 			return appwire.DelegateStopNotRunning, nil
 		}
 		var err error
-		sub, finishRestore, err = s.restoreWaitingDelegateForUserStop(delegateID)
+		sub, finishRestore, err = s.restoreWaitingDelegateGuarded(delegateID)
 		if err != nil {
 			return "", errors.Join(err, finishRestore())
 		}

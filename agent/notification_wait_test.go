@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -165,6 +166,135 @@ func TestNotificationResumesYieldedWait(t *testing.T) {
 			if err != nil || claimed == nil || claimed.ResumedByTurnID == "" || claimed.ResumedByTurnID == checkpoint.ExecutionTurnID {
 				t.Fatalf("resume claim=%+v err=%v", claimed, err)
 			}
+		})
+	}
+}
+
+func TestParentSteeringResumesYieldedWait(t *testing.T) {
+	for _, cold := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cold_%v", cold), func(t *testing.T) {
+			adapter := newMessagingAdapter("STEER-WAIT-93")
+			fifo, releaseShell := waitProducerFIFO(t)
+			defer releaseShell()
+			resumed, modelGate := make(chan llm.Request, 1), make(chan struct{})
+			releaseModel := sync.OnceFunc(func() { close(modelGate) })
+			defer releaseModel()
+			adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("steer-owner-93", "STEER-WAIT-93") }, func(llm.Request) llm.Response { return finalResponse("root-93") })
+			adapter.script("STEER-WAIT-93", func(llm.Request) llm.Response {
+				args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
+				return toolCallResponse(llm.ToolCallData{ID: "steer-shell-93", Name: "shell", Type: "function", Arguments: args})
+			}, func(req llm.Request) llm.Response {
+				return waitResponseFor("steer-wait-93", regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages)))
+			}, func(req llm.Request) llm.Response {
+				resumed <- req
+				<-modelGate
+				return finalResponse("steering-answered-93")
+			})
+			root := newMessagingRoot(t, adapter, nil)
+			if _, err := root.ProcessInput(context.Background(), "start-93", nil); err != nil {
+				t.Fatal(err)
+			}
+			owner := root.subagents.sessions()[0]
+			sub := root.getSub(owner.ID())
+			adapter.waitForRequests(t, "STEER-WAIT-93", 2)
+			waitForCondition(t, 3*time.Second, "steering fixture yielded", func() bool { sub.mu.Lock(); defer sub.mu.Unlock(); return !sub.running })
+			assertNotificationPending(t, owner, []string{})
+			receiver := root
+			var deny atomic.Bool
+			if cold {
+				copyDir := copyWaitingState(t, root.stateDir)
+				meta, err := schema.LoadSessionMeta(copyDir, root.ID())
+				if err != nil {
+					t.Fatal(err)
+				}
+				deny.Store(true)
+				receiver, err = RestoreSessionFromMetaWithConfig(root.client, root.profile, execenv.NewLocalExecutionEnvironment(meta.EnvInfo.WorkingDir), meta, RestoreSessionConfig{
+					StateDir: copyDir, ForceRealIO: true, clock: agenttest.NewFakeClock(),
+					AcquireSessionOwnership: func(id string) error {
+						if deny.Load() && id == owner.ID() {
+							return fmt.Errorf("fixture ownership unavailable")
+						}
+						return nil
+					},
+					testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, disableDelegateIdleRelease: true},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(receiver.Close)
+				if receiver.subagentForChild(owner.ID()) != nil {
+					t.Fatal("input fixture is not cold")
+				}
+				deny.Store(false)
+			}
+			adapter.script("root", func(llm.Request) llm.Response {
+				return delegateSendResponse("parent-steer-93", owner.owningDelegateID, "actual-parent-steering-93", 0)
+			}, func(req llm.Request) llm.Response {
+				var result delegateSendResult
+				for _, msg := range req.Messages {
+					for _, part := range msg.Content {
+						if tr := part.ToolResult; tr != nil && tr.ToolCallID == "parent-steer-93" {
+							if err := json.Unmarshal(tr.ToolState, &result); err != nil {
+								t.Error(err)
+							}
+						}
+					}
+				}
+				if result.Action != "steered" || result.DelegateID != owner.owningDelegateID {
+					t.Errorf("real delegate_send result=%+v, want steered", result)
+				}
+				return finalResponse("sent-93")
+			})
+			if _, err := receiver.ProcessInput(context.Background(), "steer-93", nil); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case req := <-resumed:
+				seen := 0
+				for _, msg := range req.Messages {
+					seen += strings.Count(msg.Text(), "actual-parent-steering-93")
+				}
+				if seen != 1 {
+					t.Fatalf("actual steering in resumed request=%d, want1", seen)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("accepted parent steering did not resume before FIFO release")
+			}
+			c := receiver.delegateController
+			run := delegateAggregateSnapshot(t, c, owner.owningDelegateID)
+			if run.Generation != 1 || !run.CurrentRunOpen || run.LatestOutcome != nil || c.generationOwesSteering(owner.owningDelegateID) {
+				t.Fatalf("steering not consumed in original open generation: %+v", run)
+			}
+			data, err := readTranscriptFull(transcriptPath(receiver.stateDir, owner.ID()), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			steers, claims, notifications := 0, 0, 0
+			var recoveryIDs []string
+			for _, entry := range data.Entries {
+				if entry.Turn.Kind == schema.TurnSteering && entry.Turn.SteeringSource == events.SteeringSourceParent && strings.Count(entry.Turn.Message.Text(), "actual-parent-steering-93") == 1 && entry.Turn.StableTurnID != "" {
+					steers++
+				}
+				if cp := entry.Turn.WaitCheckpoint; cp != nil && cp.ResumedByTurnID != "" {
+					claims++
+				}
+				if entry.Turn.AttentionID != "" {
+					notifications++
+					recoveryIDs = append(recoveryIDs, entry.Turn.AttentionID)
+				}
+			}
+			if steers != 1 || claims != 1 || !cold && notifications != 0 {
+				t.Fatalf("durable steers=%d claims=%d notifications=%d", steers, claims, notifications)
+			}
+			if got := len(adapter.requestsFor("STEER-WAIT-93")); got != 3 {
+				t.Fatalf("steering executions before FIFO release=%d want3 total", got)
+			}
+			if cold {
+				t.Logf("cold missing-shell recovery IDs=%v, this is not a steering-only cold wake proof", recoveryIDs)
+			}
+			releaseShell()
+			releaseModel()
+			waitForCondition(t, 3*time.Second, "steered generation settled", func() bool { return !delegateAggregateSnapshot(t, c, owner.owningDelegateID).CurrentRunOpen })
 		})
 	}
 }
@@ -677,6 +807,157 @@ func TestAttentionWaitPreservesSiblingDriveCapacity(t *testing.T) {
 	})
 }
 
+func TestDirectUserStopResumeHandoff(t *testing.T) {
+	for _, order := range []string{"stop_selected", "stop_tail", "resume_admitted"} {
+		t.Run(order, func(t *testing.T) {
+			stopFirst := order != "resume_admitted"
+			adapter := newMessagingAdapter("HANDOFF-WAIT-94")
+			fifo, releaseShell := waitProducerFIFO(t)
+			defer releaseShell()
+			adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("handoff-owner", "HANDOFF-WAIT-94") }, func(llm.Request) llm.Response { return finalResponse("root-94") })
+			adapter.script("HANDOFF-WAIT-94", func(llm.Request) llm.Response {
+				args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
+				return toolCallResponse(llm.ToolCallData{ID: "handoff-shell-94", Name: "shell", Type: "function", Arguments: args})
+			}, func(req llm.Request) llm.Response {
+				return waitResponseFor("handoff-wait-94", regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages)))
+			})
+			root := newMessagingRoot(t, adapter, func(cfg *SessionConfig) { cfg.clock = agenttest.NewFakeClock() })
+			if _, err := root.ProcessInput(context.Background(), "start-94", nil); err != nil {
+				t.Fatal(err)
+			}
+			owner := root.subagents.sessions()[0]
+			sub := root.getSub(owner.ID())
+			waitForCondition(t, 3*time.Second, "handoff fixture yielded", func() bool { sub.mu.Lock(); defer sub.mu.Unlock(); return !sub.running })
+			// This is the same guard the attention driver owns when it calls
+			// resumeYieldedDelegate. Drive that handoff directly so Stop ordering
+			// does not depend on a scheduler or a fabricated incoming notification.
+			if !root.takeSendDriveGuard(sub) {
+				t.Fatal("could not acquire existing drive guard")
+			}
+			defer releaseDriveGuard(sub)
+			sub.mu.Lock()
+			originalDone := sub.done
+			sub.mu.Unlock()
+			executorEntered, executorGate := make(chan struct{}, 1), make(chan struct{})
+			releaseExecutor := sync.OnceFunc(func() { close(executorGate) })
+			defer releaseExecutor()
+			updateSessionTestConfig(owner, func(cfg *testConfig) {
+				cfg.subagentRunIteration = func(*subagent, int) {
+					executorEntered <- struct{}{}
+					<-executorGate
+				}
+			})
+			cancelSelected, cancelGate := make(chan struct{}), make(chan struct{})
+			selected := sync.OnceFunc(func() { close(cancelSelected) })
+			releaseCancel := sync.OnceFunc(func() { close(cancelGate) })
+			defer releaseCancel()
+			c := root.delegateController
+			c.mu.Lock()
+			binding := c.live[owner.owningDelegateID].binding
+			lease, baseCancel := binding.lease, binding.cancel
+			binding.cancel = func() {
+				selected()
+				<-cancelGate
+				baseCancel()
+			}
+			c.mu.Unlock()
+			type stopResult struct {
+				done chan struct{}
+				err  error
+			}
+			stopped := make(chan stopResult, 1)
+			stop := func() { done, err := sub.requestRunCancel(true); stopped <- stopResult{done, err} }
+			if stopFirst {
+				go stop()
+				awaitSignal(t, cancelSelected, "direct Stop selected yielded cancellation after guard")
+			}
+			if order == "stop_tail" {
+				releaseCancel()
+				awaitSignal(t, executorEntered, "canceled tail already owns execution")
+			}
+			handled, resumed := root.resumeYieldedDelegate(sub)
+			if !handled || resumed == stopFirst {
+				t.Errorf("same-generation handoff handled=%v resumed=%v, stopFirst=%v", handled, resumed, stopFirst)
+			}
+			if !stopFirst {
+				awaitSignal(t, executorEntered, "resumed executor before direct Stop")
+				go stop()
+				// A running executor's exact cancellation is installed by handoff.
+			} else if resumed {
+				awaitSignal(t, executorEntered, "unexpected resumed executor held before input")
+			}
+			sub.mu.Lock()
+			currentDone := sub.done
+			sub.mu.Unlock()
+			if currentDone != originalDone {
+				t.Error("same-generation resumption replaced admitted done channel")
+			}
+			releaseCancel()
+			if stopFirst && !resumed && order != "stop_tail" {
+				awaitSignal(t, executorEntered, "canceled tail owns only execution")
+			}
+			// Both orderings have admitted user Stop before either executor can
+			// read input. Inspect the flags actually consumed by finalization.
+			if !stopFirst {
+				waitForCondition(t, 3*time.Second, "running Stop accepted", func() bool { sub.mu.Lock(); defer sub.mu.Unlock(); return sub.cancelRequested })
+			}
+			sub.mu.Lock()
+			cancelled, user := sub.cancelRequested, sub.userStopRequested
+			sub.mu.Unlock()
+			if !cancelled || !user {
+				t.Errorf("handoff lost cancellation ownership: requested=%v user=%v", cancelled, user)
+			}
+			releaseExecutor()
+			var admitted stopResult
+			select {
+			case admitted = <-stopped:
+			case <-time.After(3 * time.Second):
+				t.Fatal("direct Stop did not finish cancellation admission")
+			}
+			if admitted.err != nil || admitted.done != originalDone {
+				t.Errorf("Stop admitted done=%p original=%p err=%v", admitted.done, originalDone, admitted.err)
+			}
+			select {
+			case <-admitted.done:
+			case <-time.After(3 * time.Second):
+				t.Error("admitted direct Stop done channel never closed")
+			}
+			waitForCondition(t, 3*time.Second, "direct Stop handoff settled", func() bool { return !delegateAggregateSnapshot(t, c, owner.owningDelegateID).CurrentRunOpen })
+			checkpoint, err := readWaitCheckpoint(transcriptPath(root.stateDir, owner.ID()), owner.ID())
+			if err != nil || checkpoint == nil || checkpoint.ResumedByTurnID != "" {
+				t.Errorf("Stop before executor input wrote resumption claim=%+v err=%v", checkpoint, err)
+			}
+			sub.mu.Lock()
+			status, attributed := sub.status, sub.userStopRequested
+			sub.mu.Unlock()
+			if status != SubagentCancelled || !attributed {
+				t.Errorf("actual final state status=%s userStopRequested=%v", status, attributed)
+			}
+			starts, finishes := 0, 0
+			for _, event := range publicationEvents(t, root) {
+				if event.DelegateID != lease.delegateID {
+					continue
+				}
+				if event.RunStarted != nil {
+					starts++
+				}
+				if event.RunFinished != nil {
+					finishes++
+					if event.RunFinished.Generation != lease.generation || event.RunFinished.Outcome.Status != delegatestore.OutcomeCancelled {
+						t.Errorf("direct Stop handoff outcome=%+v", event.RunFinished)
+					}
+				}
+			}
+			c.mu.Lock()
+			turns, drives := c.turnsInUse, c.drivesInUse
+			c.mu.Unlock()
+			if starts != 1 || finishes != 1 || turns != 0 || drives != 0 || len(adapter.requestsFor("HANDOFF-WAIT-94")) != 2 {
+				t.Errorf("handoff starts=%d finishes=%d capacity=%d,%d modelRequests=%d", starts, finishes, turns, drives, len(adapter.requestsFor("HANDOFF-WAIT-94")))
+			}
+		})
+	}
+}
+
 func TestDirectUserStopYieldedWait(t *testing.T) {
 	adapter := newMessagingAdapter("USER-WAIT-63", "USER-CHILD-63")
 	gate := make(chan struct{})
@@ -694,6 +975,9 @@ func TestDirectUserStopYieldedWait(t *testing.T) {
 	owner := root.subagents.sessions()[0]
 	sub := root.getSub(owner.ID())
 	waitForCondition(t, 3*time.Second, "direct Stop fixture yield", func() bool { sub.mu.Lock(); defer sub.mu.Unlock(); return !sub.running })
+	sub.mu.Lock()
+	originalDone := sub.done
+	sub.mu.Unlock()
 	outcome, err := root.StopDelegateRun(owner.owningDelegateID)
 	if err != nil || outcome != appwire.DelegateStopStopping {
 		t.Fatalf("direct Stop=%s err=%v", outcome, err)
@@ -737,6 +1021,12 @@ func TestDirectUserStopYieldedWait(t *testing.T) {
 	})
 	if requests := len(adapter.requestsFor("USER-WAIT-63")); requests != 3 {
 		t.Fatalf("retained child result model requests=%d want3", requests)
+	}
+	sub.mu.Lock()
+	newDone, cancelled, user := sub.done, sub.cancelRequested, sub.userStopRequested
+	sub.mu.Unlock()
+	if newDone == originalDone || cancelled || user {
+		t.Fatalf("successor did not reset generation-owned state: oldDone=%p newDone=%p cancelled=%v user=%v", originalDone, newDone, cancelled, user)
 	}
 }
 
@@ -865,11 +1155,24 @@ func TestColdDirectUserStopYieldedWait(t *testing.T) {
 				t.Fatalf("cold pending evidence=%v err=%v", fold.pendingIDs(), err)
 			}
 			c := restored.delegateController
+			var userStopStates atomic.Int32
+			captureAttribution := func(a *subagent) {
+				a.mu.Lock()
+				attributed := a.status == SubagentCancelled && a.userStopRequested && a.cancelRequested
+				a.mu.Unlock()
+				if attributed {
+					userStopStates.Add(1)
+				}
+			}
+			if test.resident {
+				updateSessionTestConfig(owner, func(cfg *testConfig) { cfg.subagentAfterFinalStatePublish = captureAttribution })
+			}
 			if !test.resident {
 				restored.delegateRestoreBeforeSideEffects = func(target *Session) {
 					if target.ID() != owner.ID() {
 						return
 					}
+					updateSessionTestConfig(target, func(cfg *testConfig) { cfg.subagentAfterFinalStatePublish = captureAttribution })
 					// The normal callback exists and the lease is already attached,
 					// but gate.add has not installed its wrapper yet.
 					if err := target.requestNotificationWake(); err != nil {
@@ -1011,13 +1314,13 @@ func TestColdDirectUserStopYieldedWait(t *testing.T) {
 			if !childRun.CurrentRunOpen || childRun.Generation != 1 || childRun.LatestOutcome != nil {
 				t.Fatalf("cold direct Stop changed descendant=%+v", childRun)
 			}
-			starts, finishes, attributed := 0, 0, 0
+			starts, finishes, preparedCount := 0, 0, 0
 			for _, event := range publicationEvents(t, restored) {
 				if event.DelegateID != owner.owningDelegateID {
 					continue
 				}
-				if prepared := event.TerminalPrepared; prepared != nil && prepared.Generation == 1 && bytes.Contains(prepared.Packet.Message, []byte(delegateUserStopMessage)) {
-					attributed++
+				if prepared := event.TerminalPrepared; prepared != nil && prepared.Generation == 1 {
+					preparedCount++
 				}
 				if event.RunStarted != nil {
 					starts++
@@ -1029,8 +1332,8 @@ func TestColdDirectUserStopYieldedWait(t *testing.T) {
 					}
 				}
 			}
-			if starts != wantStarts || finishes != 1 || attributed != 1 {
-				t.Fatalf("cold direct Stop starts=%d finishes=%d attributed=%d, want%d,1,1", starts, finishes, attributed, wantStarts)
+			if starts != wantStarts || finishes != 1 || preparedCount != 1 || userStopStates.Load() != 1 {
+				t.Fatalf("cold direct Stop starts=%d finishes=%d prepared=%d userStopStates=%d, want%d,1,1,1", starts, finishes, preparedCount, userStopStates.Load(), wantStarts)
 			}
 			wantTurns := 0
 			if test.activeSibling {

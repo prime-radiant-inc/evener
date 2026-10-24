@@ -748,7 +748,7 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 			return true
 		}
 	}
-	if len(ids) == 0 {
+	if len(ids) == 0 && !s.delegateController.generationOwesSteering(sub.sess.owningDelegateID) {
 		// The transcript holds no unresolved attention, but the controller may
 		// still owe a wake whose resolution outran its run (a durable accept
 		// followed by a declined commit). Reconcile the projection so the last
@@ -818,7 +818,7 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 			s.emit(events.EventWarning, warningDataFromError("inspect delegate attention", err))
 			return true
 		}
-		if len(pending) == 0 {
+		if len(pending) == 0 && !s.delegateController.generationOwesSteering(sub.sess.owningDelegateID) {
 			if err := s.delegateController.clearResolvedDelegateAttention(sub.sess.owningDelegateID); err != nil {
 				s.emit(events.EventWarning, warningDataFromError("clear resolved delegate attention", err))
 			}
@@ -829,6 +829,9 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	if handled, resumed := s.resumeYieldedDelegate(sub); handled {
 		launched = resumed
 		return true
+	}
+	if len(ids) == 0 {
+		return false // Steering belongs to its open generation, not a successor.
 	}
 	reservation, err := s.delegateController.ReserveAttention(sub.sess, ids[0])
 	if err != nil {
@@ -941,7 +944,7 @@ const (
 type owedBootstrapRestore struct {
 	mu         sync.Mutex
 	held       bool
-	holdDrives bool // direct Stop owns restored drive guards until cancellation admission
+	holdDrives bool // the caller owns restored drive guards until Stop/input admission
 	pending    map[*Session]func()
 	done       map[*subagent]bool
 	restored   []owedBootstrapRuntime
@@ -1007,7 +1010,7 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 	}
 	// Before attachment the not-ready lease excludes callbacks installed by
 	// restoreIdleForSend. Carry that exclusion across attachment with the same
-	// drive guard used by send/attention, until direct Stop admits cancellation.
+	// drive guard used by send/attention, until the caller admits Stop or input.
 	guarded, gateOwnsGuard := restored && len(gates) != 0 && gates[0].holdDrives, false
 	guardedSub := sub
 	if guarded {
@@ -1598,8 +1601,33 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		}
 	}
 	if maxWaitMS == 0 {
+		// Actual parent input may restore an open wait without a notification ID.
+		// Keep the existing restore gate/drive guard until steering is admitted.
+		c := s.delegateController
+		c.mu.Lock()
+		authorizeErr := c.authorizeMutationLocked(actor, delegateID)
+		run, live := c.durable[delegateID], c.live[delegateID]
+		coldWait := authorizeErr == nil && run != nil && run.CurrentRunOpen && run.Phase == delegatestore.PhaseRunning && (live == nil || live.runtime == nil && live.binding == nil)
+		c.mu.Unlock()
+		if authorizeErr != nil {
+			return failed(authorizeErr)
+		}
+		if coldWait {
+			_, finish, restoreErr := s.restoreWaitingDelegateGuarded(delegateID)
+			defer func() {
+				if err := finish(); err != nil {
+					s.emit(events.EventWarning, warningDataFromError("restored delegate side effects incomplete", err))
+				}
+			}()
+			if restoreErr != nil {
+				return failed(restoreErr)
+			}
+		}
 		if plans, steerErr := s.delegateController.Steer(ctx, actor, delegateID, message); steerErr == nil {
 			_ = s.executeDelegateMutationPlans(plans)
+			if childID, ok := c.childSessionIDFor(delegateID); ok {
+				c.requestSessionWake(childID)
+			}
 			name := ""
 			for _, update := range plans.updates {
 				for _, row := range update.rows {

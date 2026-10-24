@@ -483,16 +483,33 @@ func (a *subagent) cancelYieldedActivation(lease delegateLease) {
 // It borrows the same capacity counter as the generation's original executor.
 func (s *Session) resumeYieldedDelegate(sub *subagent) (bool, bool) {
 	c := s.delegateController
+	// Join the owner's existing executor lifetime before taking sub.mu or c.mu.
+	// Close must not race a WaitGroup Add after its admission fence.
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return true, false
+	}
+	s.sendersWG.Add(1)
+	s.mu.Unlock()
+	launched := false
+	defer func() {
+		if !launched {
+			s.sendersWG.Done()
+		}
+	}()
+	sub.mu.Lock()
 	c.mu.Lock()
 	run := c.durable[sub.sess.owningDelegateID]
 	live := c.live[sub.sess.owningDelegateID]
 	if live == nil || live.binding == nil || !live.binding.yielded {
 		c.mu.Unlock()
+		sub.mu.Unlock()
 		return false, false
 	}
 	lease := live.binding.lease
 	_, _, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
-	if err == nil && (live.runtime != sub.sess || c.hasSettlementClaimLocked(lease) || live.binding.evidence.batch != nil) {
+	if err == nil && (sub.running || sub.finalizing || sub.closed || sub.cancelRequested || sub.settlementClaimed || !sub.driving || live.runtime != sub.sess || c.hasSettlementClaimLocked(lease) || live.binding.evidence.batch != nil) {
 		err = errDelegateTargetBusy
 	}
 	if err == nil && !c.reserveCapacityLocked(waitCapacityKind(run)) {
@@ -500,30 +517,34 @@ func (s *Session) resumeYieldedDelegate(sub *subagent) (bool, bool) {
 	}
 	if err != nil {
 		c.mu.Unlock()
+		sub.mu.Unlock()
 		sub.sess.deferNotificationAdmission()
 		return true, false
 	}
-	runCtx, runCancel := context.WithCancel(sub.sess.sessionContext())
+	runCtx, runCancel := context.WithTimeout(sub.sess.sessionContext(), driveTurnTimeout)
+	runCtx = context.WithValue(runCtx, delegateRunLeaseContextKey{}, lease)
+	runCtx = context.WithValue(runCtx, delegateAttentionRunContextKey{}, struct{}{})
 	live.binding.executionCancel = runCancel
 	live.binding.yielded = false
+	// This is another executor of the SAME generation. Install its exact cancel
+	// while Stop is excluded, without replacing done or resetting Stop flags.
+	sub.running, sub.finalizing = true, false
+	sub.status = SubagentRunning
+	sub.cancel = runCancel
+	sub.driving, sub.attentionDriveRefused = false, false
+	sub.endedAt = nil
 	c.attentionDriveSeq++
 	c.attentionStateLocked(sub.sess.owningDelegateID).driveTurn = c.attentionDriveSeq
 	c.evidenceVersion++
-	started := delegateStartCommit{lease: lease, ctx: runCtx, descriptor: cloneDelegateStartDescriptor(run.Descriptor), startedAt: run.RunStartedAt}
+	descriptor := cloneDelegateStartDescriptor(run.Descriptor)
 	c.mu.Unlock()
-	// launchAcceptedDelegateAttention uses the existing executor handoff, not a
-	// start reservation or RunStarted event. Only its input is autonomous.
-	if err := s.launchAcceptedDelegateAttention(sub, started); err != nil {
-		runCancel()
-		c.mu.Lock()
-		if current := c.live[lease.delegateID]; current == live && current.binding != nil && current.binding.lease == lease {
-			current.binding.yielded = true
-			c.releaseCapacityLocked(waitCapacityKind(run))
-		}
-		c.mu.Unlock()
-		sub.sess.deferNotificationAdmission()
-		return true, false
-	}
+	sub.mu.Unlock()
+	// No fallible admission remains after the atomic handoff. Direct Stop now
+	// either prevented it or cancels this exact executor before it reads input.
+	bindStableDelegateActivity(sub.sess, c, lease)
+	launched = true
+	s.launchSubagentRun(runCtx, sub, runCancel, "", descriptorProvenance(descriptor))
+	s.startDelegateQuietWatchdog(runCtx, lease)
 	return true, true
 }
 
@@ -593,6 +614,10 @@ func (c *delegateTreeController) attachWaitingRuntime(lease delegateLease, sub *
 		return errDelegateTargetBusy
 	}
 	sub.bindYieldCancellationLocked(live.binding)
+	if sub.done == nil {
+		sub.done = make(chan struct{})
+	}
+	sub.startedAt, sub.endedAt = run.RunStartedAt, nil
 	c.setResidentRuntimeLocked(live, runtime)
 	live.binding.runtime = runtime
 	live.binding.ready = true
@@ -601,9 +626,9 @@ func (c *delegateTreeController) attachWaitingRuntime(lease delegateLease, sub *
 }
 
 // Reuse restore installation and its callback gate, but keep every new runtime's
-// drive guard until the caller has admitted direct cancellation. Finishing is
+// drive guard until the caller has admitted cancellation or parent input. Finishing is
 // mandatory even on failure: deferred source repair and callbacks remain owed.
-func (s *Session) restoreWaitingDelegateForUserStop(id string) (*subagent, func() error, error) {
+func (s *Session) restoreWaitingDelegateGuarded(id string) (*subagent, func() error, error) {
 	c := s.delegateController
 	c.mu.Lock()
 	expected := delegateLease{delegateID: id, generation: c.durable[id].Generation}

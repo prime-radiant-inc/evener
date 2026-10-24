@@ -49,6 +49,7 @@ func (s *Session) notificationExecutionState() notificationExecutionState {
 func (s *Session) notificationWorkState() (bool, error) {
 	state := s.notificationExecutionState()
 	pending, err := s.hasUnackedNotifications()
+	pending = pending || s.delegateController.generationOwesSteering(s.owningDelegateID)
 	return state.recovering || (!state.held && pending), err
 }
 
@@ -106,7 +107,9 @@ func (s *Session) dispatchNotificationWake() error {
 			return err
 		}
 		ids, err := s.pendingNotificationIDs()
-		pending := len(ids) != 0
+		// Existing admitted parent steering is input readiness, not a synthetic
+		// notification. Its controller admission stays with the open generation.
+		pending := len(ids) != 0 || s.delegateController.generationOwesSteering(s.owningDelegateID)
 		if err == nil && s.delegateController != nil && s.owningDelegateID != "" {
 			for _, id := range ids {
 				if _, openErr := s.delegateController.openDelegateAttention(s.owningDelegateID, id); openErr != nil {
