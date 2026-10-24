@@ -294,6 +294,9 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
         source = next;
         cancel();
       }
+      // Focus can move to a popout whose document was already published, which
+      // writes nothing new to chromeStore: follow the focused pane here too.
+      syncModalDocuments();
       emit();
     });
     unsubscribePalette = paletteStore.subscribe((state, previous) => {

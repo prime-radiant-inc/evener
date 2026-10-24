@@ -1812,3 +1812,65 @@ test("a modal in the focused reader's own document blocks a pending next", async
   expect(window.history.length).toBe(before.history);
   controller.dispose();
 });
+
+// A popout can publish its document while another pane is focused, and focusing
+// it later writes nothing new to chromeStore. The modal watch has to follow the
+// focus itself, or a dialog opened there cannot cancel a pending Next.
+test("focusing an already-published popout watches its modals", async () => {
+  const client = new FakeClient("ready");
+  let releasePage!: () => void;
+  let entered!: () => void;
+  const pageEntered = new Promise<void>((resolve) => (entered = resolve));
+  client.on("evener/navigation/read", (params) => {
+    if (params.resource === "manifest") {
+      return wireSnapshot(
+        params,
+        manifest({
+          generation_id: "focus-popout",
+          sections: { live: { count: 0 }, needs_you: { count: 1 }, pin_sections: { count: 0 } },
+        }),
+        '"manifest"',
+        1,
+        "focus-popout",
+      );
+    }
+    if (params.resource === "section") {
+      entered();
+      return new Promise((resolve) => {
+        releasePage = () =>
+          resolve(
+            wireSnapshot(params, { sessions: [{ ref: "local:target" }], remaining: 0 }, '"page"', 1, "focus-popout"),
+          );
+      });
+    }
+    throw new Error(`unexpected resource ${params.resource}`);
+  });
+  navigationStore.init(client, capability("focus-popout"));
+  const a = workspaceStore.getState().openPane("session", { ref: "ref_a" });
+  const b = workspaceStore.getState().openPane("session", { ref: "ref_b" }, { slot: "secondary" });
+  workspaceStore.getState().focusPane(a);
+
+  const popout = document.implementation.createHTMLDocument("popout");
+  // Published while another pane is focused: nothing new is written later.
+  chromeStore.getState().setPaneDocumentFor(b, popout);
+  await Promise.resolve();
+
+  const controller = createNeedsYouController();
+  const before = { path: window.location.pathname, history: window.history.length };
+  const pending = controller.next();
+  await pageEntered;
+
+  workspaceStore.getState().focusPane(b);
+  await Promise.resolve();
+  const dialog = popout.createElement("div");
+  dialog.setAttribute("aria-modal", "true");
+  popout.body.appendChild(dialog);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(controller.getSnapshot().blocked).toBe(true);
+
+  releasePage();
+  await pending;
+  expect(window.location.pathname).toBe(before.path);
+  expect(window.history.length).toBe(before.history);
+  controller.dispose();
+});
