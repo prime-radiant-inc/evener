@@ -425,12 +425,46 @@ it("returns to the identity a resume resolved to, not the retired session", asyn
 	await send(tree);
 
 	expect(handoffs.calls).toEqual([["studio", "local:fix", "local:resumed"]]);
+	expect(sheetNavigation.goBack).toHaveBeenCalledOnce();
+	expect(sheetNavigation.goBack.mock.invocationCallOrder[0]).toBeLessThan(
+		sheetNavigation.navigate.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+	);
 	expect(sheetNavigation.navigate).toHaveBeenCalledWith("Conversation", {
 		hubId: "studio",
 		ref: "local:resumed",
 		title: "Get PR 2138 Test Clean",
 	});
 	expect(sheetNavigation.pop).not.toHaveBeenCalled();
+});
+
+it("pops to a resolved session already under the sheet instead of dismissing it", async () => {
+	status = "idle";
+	resumeRequired = true;
+	client.on("thread/read", (params) => readFor(String((params as { ref: string }).ref)));
+	client.resumeThread = async () => {
+		resumeRequired = false;
+		return readFor("local:resumed");
+	};
+	sheetNavigation.getState = () => ({
+		index: 3,
+		routes: [
+			{ key: "board", name: "Sessions" },
+			{
+				key: "resumed",
+				name: "Conversation",
+				params: { hubId: "studio", ref: "local:resumed", title: "Get PR 2138 Test Clean" },
+			},
+			{ key: "reader", name: "Reader" },
+			{ key: "review", name: "ReviewSheet" },
+		],
+	});
+	const tree = await mount();
+	choose(tree, "Approve");
+	await send(tree);
+
+	expect(sheetNavigation.pop).toHaveBeenCalledWith(2);
+	expect(sheetNavigation.goBack).not.toHaveBeenCalled();
+	expect(sheetNavigation.navigate).not.toHaveBeenCalled();
 });
 
 it("waits for the connection, and reads again when it returns", async () => {

@@ -54,6 +54,10 @@ export class DraftLibrary {
 	handoff(from: DraftDestination, to: DraftDestination): boolean {
 		if (from.hubId === to.hubId && from.sessionRef === to.sessionRef) return true;
 		const source = this.open(from);
+		// The session identity changed whether or not the composition can move:
+		// a mounted screen must follow the resumed ref even while the handoff is
+		// deferred or refused, or its sends keep addressing the retired one.
+		source.resolveIdentity(to);
 		let snapshot = source.getSnapshot();
 		if (!snapshot.loaded) {
 			source.retry();
@@ -93,8 +97,10 @@ export class DraftLibrary {
 			existing.releasedRecoveryIds?.length
 		) {
 			// Existing destination work is a permanent refusal, never a retry.
-			if (this.releaseRefusedSources(source, destination)) this.clearPending(from, to);
-			else this.deferHandoff(from, to);
+			if (this.releaseRefusedSources(source, destination)) {
+				this.redirectPredecessors(from, to);
+				this.clearPending(from, to);
+			} else this.deferHandoff(from, to);
 			return false;
 		}
 		const images = [
@@ -114,6 +120,7 @@ export class DraftLibrary {
 			this.deferHandoff(from, to);
 			return false;
 		}
+		this.redirectPredecessors(from, to);
 		this.clearPending(from, to);
 		destination.adopt(snapshot.record);
 		if (destination !== source) {
@@ -129,16 +136,26 @@ export class DraftLibrary {
 	 * work in the meantime owns it, so its pending retry is dropped. */
 	retryPendingHandoffs(): void {
 		this.loadPendingHandoffs();
-		for (const { from, to } of [...this.pending.values()]) this.handoff(from, to);
+		// A handoff can redirect a predecessor while this pass runs, creating a
+		// new pending edge. Walk keys until every edge present has had one
+		// attempt; a deferred edge stays for the next storage or screen event.
+		const attempted = new Set<string>();
+		for (;;) {
+			const key = [...this.pending.keys()].find((candidate) => !attempted.has(candidate));
+			if (key === undefined) return;
+			attempted.add(key);
+			const edge = this.pending.get(key);
+			if (edge) this.handoff(edge.from, edge.to);
+		}
 	}
 
 	hasPendingHandoff(to: DraftDestination): boolean {
 		this.loadPendingHandoffs();
-		return this.pending.has(this.handoffKey(to));
+		return this.pendingTo(to);
 	}
 
 	private deferHandoff(from: DraftDestination, to: DraftDestination): void {
-		this.pending.set(this.handoffKey(to), { from, to });
+		this.pending.set(this.handoffKey(from, to), { from, to });
 		try {
 			this.repository().writePendingHandoff?.(from, to);
 		} catch {
@@ -148,11 +165,13 @@ export class DraftLibrary {
 	}
 
 	private clearPending(from: DraftDestination, to: DraftDestination): void {
-		this.pending.delete(this.handoffKey(to));
-		try {
-			this.repository().removePendingHandoff?.(to);
-		} catch {
-			// A stale mapping retries on the next launch and refuses again.
+		this.pending.delete(this.handoffKey(from, to));
+		if (!this.pendingTo(to)) {
+			try {
+				this.repository().removePendingHandoff?.(to);
+			} catch {
+				// A stale mapping retries on the next launch and refuses again.
+			}
 		}
 		try {
 			this.resumeIdentities?.()?.removeResumeIdentity(from, to);
@@ -168,7 +187,7 @@ export class DraftLibrary {
 			const storage = this.repository();
 			if (storage.readPendingHandoffs !== undefined && storage.writePendingHandoff !== undefined) {
 				for (const { from, to } of storage.readPendingHandoffs()) {
-					const key = this.handoffKey(to);
+					const key = this.handoffKey(from, to);
 					if (!this.pending.has(key)) this.pending.set(key, { from, to });
 				}
 			}
@@ -178,7 +197,7 @@ export class DraftLibrary {
 		}
 		try {
 			for (const { from, to } of this.resumeIdentities?.()?.readResumeIdentities() ?? []) {
-				const key = this.handoffKey(to);
+				const key = this.handoffKey(from, to);
 				if (!this.pending.has(key)) this.pending.set(key, { from, to });
 			}
 		} catch {
@@ -204,6 +223,34 @@ export class DraftLibrary {
 		return markersMoved && sourcesReleased;
 	}
 
+	/** An intermediate identity can resolve again before its predecessor's
+	 * handoff retries. Point every pending predecessor at the newest ref before
+	 * the intermediate edge is cleared, so the composition and its completion
+	 * markers continue toward the ref the rows actually moved to. */
+	private redirectPredecessors(settlingFrom: DraftDestination, settlingTo: DraftDestination): void {
+		for (const [key, edge] of [...this.pending]) {
+			if (!sameDestination(edge.to, settlingFrom)) continue;
+			this.pending.delete(key);
+			const redirected = { from: edge.from, to: settlingTo };
+			this.pending.set(this.handoffKey(edge.from, settlingTo), redirected);
+			try {
+				this.repository().writePendingHandoff?.(edge.from, settlingTo);
+			} catch {
+				// The in-memory chain still retries this launch.
+			}
+			try {
+				this.resumeIdentities?.()?.redirectResumeIdentity(edge.from, settlingFrom, settlingTo);
+			} catch {
+				// A later retry still has the predecessor's in-memory edge.
+			}
+		}
+	}
+
+	private pendingTo(to: DraftDestination): boolean {
+		for (const edge of this.pending.values()) if (sameDestination(edge.to, to)) return true;
+		return false;
+	}
+
 	private rememberRetired(hubId: string, document: DraftDocument): void {
 		let documents = this.retired.get(hubId);
 		if (!documents) {
@@ -213,8 +260,8 @@ export class DraftLibrary {
 		documents.add(document);
 	}
 
-	private handoffKey(destination: DraftDestination): string {
-		return JSON.stringify([destination.hubId, destination.sessionRef]);
+	private handoffKey(from: DraftDestination, to: DraftDestination): string {
+		return JSON.stringify([from.hubId, from.sessionRef, to.hubId, to.sessionRef]);
 	}
 
 	refsWithDrafts(hubId: string): Set<string> {
@@ -233,4 +280,8 @@ export class DraftLibrary {
 			this.hubs.delete(hubId);
 		}
 	}
+}
+
+function sameDestination(a: DraftDestination, b: DraftDestination): boolean {
+	return a.hubId === b.hubId && a.sessionRef === b.sessionRef;
 }

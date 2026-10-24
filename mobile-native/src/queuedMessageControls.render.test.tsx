@@ -2174,3 +2174,55 @@ it("actual screen follows a background handoff to the resolved identity and can 
 	expect(sent?.params.ref).toBe(resolvedRef);
 	expect(sent?.params.input).toEqual([{ type: "text", text: "edited recovery more" }]);
 });
+
+it("actual screen follows a refused background handoff and keeps both drafts", async () => {
+	const f = await mount();
+	vi.mocked(navigation.setParams).mockClear();
+	act(() => f.document.edit("source draft"));
+	const resolvedRef = `${f.ref}-resumed`;
+	const resolvedDestination = { hubId: "hub-1", sessionRef: resolvedRef };
+	nativeDrafts().write(resolvedDestination, { draft: "occupied destination", unconfirmed: null });
+	const baseRequest = f.client.request;
+	f.client.request = async (method, raw) => {
+		const params = raw as { ref?: string };
+		if (method === "thread/read" && params.ref === resolvedRef) {
+			const resolvedThread = {
+				...f.thread,
+				id: `thread-${resolvedRef}`,
+				evener: { ...f.thread.evener, ref: resolvedRef, instanceId: "instance-resolved" },
+			} as unknown as Thread;
+			return { thread: resolvedThread } as never;
+		}
+		return baseRequest(method, raw);
+	};
+
+	act(() => {
+		expect(drafts.handoff({ hubId: "hub-1", sessionRef: f.ref }, resolvedDestination)).toBe(false);
+	});
+	await vi.waitFor(() => expect(navigation.setParams).toHaveBeenCalledWith({ ref: resolvedRef }));
+	// The refusal leaves the source composition where it was and the occupied
+	// destination's own work alone, while the mounted screen follows the ref.
+	expect(nativeDrafts().read({ hubId: "hub-1", sessionRef: f.ref }).draft).toBe("source draft");
+	expect(nativeDrafts().read(resolvedDestination).draft).toBe("occupied destination");
+
+	const resolvedRoute = {
+		...f.route,
+		key: `conversation-${resolvedRef}`,
+		params: { hubId: "hub-1", ref: resolvedRef, title: "Session" },
+	} as Props["route"];
+	navigationState.state = { index: 0, routes: [resolvedRoute] };
+	await act(async () => {
+		f.tree.update(<SessionScreen route={resolvedRoute} navigation={navigation} />);
+	});
+	await settle();
+	const composer = () =>
+		f.tree.root.findAll((node) => String(node.type) === "TextInput" && node.props.value === "occupied destination")[0];
+	await vi.waitFor(() => expect(composer()).toBeDefined());
+	await act(async () => composer()?.props.onChangeText("occupied destination more"));
+	await act(async () => pressable(f.tree, "Send")?.props.onPress());
+	await settle();
+	await vi.waitFor(() => expect(f.requests.filter((request) => request.method.startsWith("turn/"))).toHaveLength(1));
+	const sent = f.requests.filter((request) => request.method.startsWith("turn/")).at(-1);
+	expect(sent?.params.ref).toBe(resolvedRef);
+	expect(sent?.params.input).toEqual([{ type: "text", text: "occupied destination more" }]);
+});
