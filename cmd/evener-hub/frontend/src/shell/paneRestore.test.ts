@@ -30,6 +30,14 @@ import { bindFilePath } from "@evener/appwire-client/docContent";
 import type { DockviewApi } from "dockview-core";
 import { beforeEach, describe, expect, test } from "vitest";
 import { openDocBeside } from "../panes/doc/openDoc";
+import {
+  composerSelectionScope,
+  readRecoverySelection,
+  writeComposerSeat,
+  writeRecoverySelection,
+} from "../panes/session/composer/draft";
+import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
+import { setMutationClientIdentityForTests } from "../stores/mutationClientIdentity";
 import { paneFor } from "./paneRegistry";
 import {
   conversationOpenParentRef,
@@ -181,7 +189,7 @@ describe("boot-time registration lets a persisted layout with lazy panes restore
     expect(workspaceStore.getState().panes).toEqual([
       // slot is re-derived from the restored grid order (workspace.ts's
       // restoreLayout): the first panel is the top-left/main one.
-      { id: "p1", type: "session", params: { ref: "ref_a" }, slot: "main" },
+      { id: "p1", type: "session", params: { ref: "ref_a" }, slot: "main", composerSeatId: expect.any(String) },
       { id: "p2", type: "sessionTasks", params: { ref: "ref_a" }, slot: "secondary" },
       { id: "p4", type: "sessionDetails", params: { ref: "ref_a" }, slot: "secondary" },
       { id: "p5", type: "doc", params: { session: "ref_a", path: "notes.md", kind: "file" }, slot: "secondary" },
@@ -235,8 +243,8 @@ test("a saved session-ref transcript pane restores as the live conversation pane
 
   expect(ok).toBe(true);
   expect(workspaceStore.getState().panes).toEqual([
-    { id: "p1", type: "session", params: { ref: "ref_a" }, slot: "main" },
-    { id: "p6", type: "session", params: { ref: "ref_b" }, slot: "secondary" },
+    { id: "p1", type: "session", params: { ref: "ref_a" }, slot: "main", composerSeatId: expect.any(String) },
+    { id: "p6", type: "session", params: { ref: "ref_b" }, slot: "secondary", composerSeatId: expect.any(String) },
     { id: "p7", type: "transcript", params: { ref: "job:job-2", parentRef: "ref_a" }, slot: "secondary" },
   ]);
 });
@@ -341,4 +349,81 @@ test("a removed legacy duplicate keeps the saved conversation focused", () => {
   // Focus follows the conversation that pane became, not whatever unrelated
   // panel the removal left selected.
   expect(workspaceStore.getState().focusedPaneId).toBe("p2");
+});
+
+function restorePanels(panels: Record<string, unknown>): void {
+  const fake = new FakeDockviewApi();
+  fake.fromJSONBehavior = (data) => {
+    const layout = data as { panels?: Record<string, { params?: unknown }> };
+    fake.panels = Object.entries(layout.panels ?? {}).map(([id, panel]) => ({ id, params: panel.params }));
+    const first = Object.keys(layout.panels ?? {})[0];
+    fake.activePanel = first === undefined ? undefined : { id: first };
+  };
+  registerDockviewApi(asDockviewApi(fake));
+  expect(workspaceStore.getState().restoreLayout({ panels })).toBe(true);
+}
+
+// A sessionZoom has no own routed ref on the shared layout seat path. Restoring
+// it must use this tab's persisted cascade seat, not one another tab saved.
+test("a sessionZoom restore keeps this tab's seat when another tab saved another", () => {
+  installLocalStorage(new MemoryStorage());
+  try {
+    setMutationClientIdentityForTests("tab-a");
+    writeComposerSeat("p1", "ref_leaf", "tab-a-seat");
+    writeRecoverySelection("ref_leaf", composerSelectionScope("tab-a-seat"), "preserved-local");
+    // Another tab saves a different seat for the same conversation under its
+    // own identity. It is invisible to this tab.
+    setMutationClientIdentityForTests("tab-b");
+    writeComposerSeat("p1", "ref_leaf", "tab-b-seat");
+    writeRecoverySelection("ref_leaf", composerSelectionScope("tab-b-seat"), "other-tab-row");
+    setMutationClientIdentityForTests("tab-a");
+
+    restorePanels({
+      p1: {
+        id: "p1",
+        contentComponent: "default",
+        params: {
+          paneType: "sessionZoom",
+          paneParams: {
+            ref: "ref_leaf",
+            source: { type: "session", params: { ref: "local:root" } },
+            edges: [],
+          },
+        },
+      },
+    });
+
+    const pane = workspaceStore.getState().panes.find((record) => record.id === "p1");
+    expect(pane?.composerSeatId).toBe("tab-a-seat");
+    expect(readRecoverySelection("ref_leaf", composerSelectionScope("tab-a-seat"))).toBe("preserved-local");
+  } finally {
+    setMutationClientIdentityForTests(undefined);
+  }
+});
+
+test("restoring two panes for one conversation allocates distinct seats", () => {
+  installLocalStorage(new MemoryStorage());
+  restorePanels({
+    p1: {
+      id: "p1",
+      contentComponent: "default",
+      params: { paneType: "session", paneParams: { ref: "ref_a" } },
+    },
+    p2: {
+      id: "p2",
+      contentComponent: "default",
+      // A cascade for the same conversation is a distinct pane: the legacy
+      // duplicate reconciliation only collapses two plain session panes.
+      params: {
+        paneType: "sessionZoom",
+        paneParams: { ref: "ref_a", source: { type: "session", params: { ref: "local:root" } }, edges: [] },
+      },
+    },
+  });
+  const seats = workspaceStore
+    .getState()
+    .panes.filter((pane) => pane.type === "session" || pane.type === "sessionZoom")
+    .map((pane) => pane.composerSeatId);
+  expect(seats.every((seat) => typeof seat === "string" && seat !== "")).toBe(true);
+  expect(new Set(seats).size).toBe(2);
 });

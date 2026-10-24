@@ -1,5 +1,6 @@
 import type { ComposerMention } from "@evener/appwire-client";
 import { createStore } from "zustand/vanilla";
+import { ownClientId } from "../../../stores/mutationClientIdentity";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { createSecureUUID } from "../../../stores/secureUUID";
 import type { InputAttachment } from "../../../stores/threads";
@@ -15,12 +16,15 @@ import {
 import {
   clearDraft,
   clearPersistedDraftIfRevisionMatches,
+  composerSelectionScope,
   markDraftEdited,
   readComposerDraft,
   readComposerDraftRevisionId,
   readComposerDraftSnapshot,
   readDraftRevision,
+  readRecoverySelection,
   writeComposerDraft,
+  writeRecoverySelection,
 } from "./draft";
 import {
   discardRecoveryPendingTurn,
@@ -59,6 +63,15 @@ function recoveryCompositionFingerprint(composition: RecoveryComposition): strin
   });
 }
 type SelectionMeta = { commandNames: string[]; mentions: ComposerMention[] | undefined };
+function compositionIsEmpty(composition: RecoveryComposition): boolean {
+  return (
+    composition.text.trim() === "" &&
+    composition.attachments.length === 0 &&
+    composition.skillNames.length === 0 &&
+    composition.commandNames.length === 0 &&
+    (composition.mentions?.length ?? 0) === 0
+  );
+}
 export interface ComposerSubmissionSnapshot {
   text: string;
   attachments: PendingAttachment[];
@@ -84,6 +97,8 @@ export interface ComposerSourceSnapshot {
 export interface ComposerSourceState {
   readonly ref: string;
   readonly alive: boolean;
+  /** Reload-stable tab/pane scope for the selected recovery owner. */
+  readonly recoverySelectionOwnerId: string;
   readonly attachments: AttachmentStore;
   readonly editor: TextEditor;
   readonly continuity: {
@@ -171,8 +186,14 @@ export function recoverySubmissionInFlight(clientMutationId: string): boolean {
 
 /** A pane passes its lifetime token; standalone mounts fall back to one token
  * per ref so a remount outside the pane shell still reuses ownership. */
-export function createComposerSourceState(ref: string, ownerId?: string): ComposerSourceState {
+export function createComposerSourceState(
+  ref: string,
+  ownerId?: string,
+  selectionOwnerId?: string,
+): ComposerSourceState {
   const compositionOwnerId = ownerId ?? defaultCompositionOwners.get(ref) ?? createSecureUUID();
+  const recoverySelectionOwnerId =
+    selectionOwnerId === undefined ? ownClientId() : composerSelectionScope(selectionOwnerId);
   if (ownerId === undefined && !defaultCompositionOwners.has(ref))
     defaultCompositionOwners.set(ref, compositionOwnerId);
   const initial = readComposerDraftSnapshot(ref);
@@ -217,6 +238,10 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   let recoveryWrites: Promise<void> = Promise.resolve();
   let recoveryOperations: Promise<void> = Promise.resolve();
   let recoveryOperationHeld = false;
+  // The newest complete composition, captured when this pane is disposed.
+  // Disposal clears the attachment store, so a refusal that returns afterwards
+  // must preserve these bytes rather than the emptied live state.
+  let disposalComposition: RecoveryComposition | null = null;
   const currentRecoveryId = () => recoveryOwnerLeaseRef.current?.clientMutationId ?? null;
   // The last durable shape this pane owned, so a refused write can preserve
   // the local composition under a fresh owner with the same method and target.
@@ -272,6 +297,15 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   }
 
   const ownsDraft = () => ownedDraftRevisionRef.current === readDraftRevision(ref);
+  function liveComposition(): RecoveryComposition {
+    return {
+      text: textRef.current,
+      attachments: operations.toInputAttachments(),
+      skillNames: [...skillNamesRef.current],
+      commandNames: [...selectionMetaRef.current.commandNames],
+      mentions: selectionMetaRef.current.mentions,
+    };
+  }
   function currentDraftText(): string {
     return ownsDraft() ? textRef.current : readComposerDraft(ref).text;
   }
@@ -324,7 +358,25 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       ? { clientMutationId: record.clientMutationId, compositionRevision: recoveryCompositionRevision(record) }
       : null;
     recoveryBaseRecord = record;
+    writeRecoverySelection(record?.targetRef ?? ref, recoverySelectionOwnerId, activeRecoveryId);
     state.setState({ activeRecoveryId });
+  }
+
+  // Preservation can commit after this pane is disposed. Persist the fresh
+  // owner so reopening selects the local work, but never overwrite a choice a
+  // replacement composer already made. Preservation may have committed under a
+  // resumed ref; the destination composer reads the selection there.
+  function rememberPreservedSelection(preserved: MutationRecoveryRecord, staleId: string): void {
+    if (preserved.clientMutationId === staleId) return;
+    const targetRef = preserved.targetRef;
+    const current = readRecoverySelection(targetRef, recoverySelectionOwnerId);
+    if (current !== undefined && current !== staleId) return;
+    writeRecoverySelection(targetRef, recoverySelectionOwnerId, preserved.clientMutationId);
+    // The stale row's ref no longer holds this composition; a composer that
+    // restores there would look for a row that moved.
+    if (targetRef !== ref && readRecoverySelection(ref, recoverySelectionOwnerId) === staleId) {
+      writeRecoverySelection(ref, recoverySelectionOwnerId, null);
+    }
   }
   function persistDraft(text: string): void {
     if (disposed) return;
@@ -461,13 +513,22 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           nextComposerText,
         );
         if (!updated) {
-          if (!disposed && currentRecoveryId() === clientMutationId) {
+          if (currentRecoveryId() === clientMutationId) {
             // The row was consumed or advanced by another pane. Keeping this
             // stale lease would make every later save and send fail against an
             // owner this tab can no longer write. A draft carries no image
             // bytes, so preserve the complete local composition under a fresh
             // recovery owner before retiring the lease.
-            const preserved = await preserveStaleRecovery(clientMutationId, localDraftRevisionId);
+            // A live pane reads its current work; a disposed pane uses the
+            // composition captured at disposal, which includes typing and
+            // settled attachments added during this wait.
+            const refusalComposition = disposed ? disposalComposition : liveComposition();
+            const emptyAtRefusal = refusalComposition === null || compositionIsEmpty(refusalComposition);
+            const preserved =
+              emptyAtRefusal || refusalComposition === null
+                ? undefined
+                : await preserveStaleRecovery(clientMutationId, localDraftRevisionId, refusalComposition);
+            if (preserved) rememberPreservedSelection(preserved, clientMutationId);
             if (
               !disposed &&
               currentRecoveryId() === clientMutationId &&
@@ -479,6 +540,8 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
                 // Send consumes it, and a reload restores its attachment
                 // bytes.
                 setActiveRecoveryId(preserved);
+              } else if (emptyAtRefusal) {
+                setActiveRecoveryId(null);
               } else {
                 // Preservation failed, so nothing durable carries the images.
                 // Fall back to the ordinary draft and retire the lease.
@@ -540,18 +603,20 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   async function preserveStaleRecovery(
     clientMutationId: string,
     localDraftRevisionId?: string,
+    composition?: RecoveryComposition,
   ): Promise<MutationRecoveryRecord | undefined> {
     const base = recoveryBaseRecord;
     if (!base || base.clientMutationId !== clientMutationId) return undefined;
+    const current = composition ?? liveComposition();
     try {
       return await preserveRecoveryPendingTurn(
         base,
         ref,
-        textRef.current,
-        operations.toInputAttachments(),
-        skillNamesRef.current,
-        selectionMetaRef.current.commandNames,
-        selectionMetaRef.current.mentions,
+        current.text,
+        [...current.attachments],
+        current.skillNames,
+        current.commandNames,
+        current.mentions,
         compositionOwnerId,
         localDraftRevisionId,
       );
@@ -811,6 +876,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     get alive() {
       return !disposed;
     },
+    recoverySelectionOwnerId,
     attachments,
     editor,
     continuity,
@@ -879,6 +945,9 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     },
     dispose() {
       if (disposed) return;
+      // Capture before the attachment store and editor bindings are cleared:
+      // a refusal already awaiting storage must preserve this newest work.
+      if (currentRecoveryId() !== null) disposalComposition = liveComposition();
       disposed = true;
       cancelCleanupRetry();
       boundEditor = null;

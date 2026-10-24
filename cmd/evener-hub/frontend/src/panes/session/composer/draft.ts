@@ -19,11 +19,14 @@
 // canonical skill selections survive a reload next to its text. The v1 key
 // held plain text only; see readComposerDraft for the approved transition.
 import { canonicalSkillNames } from "@evener/appwire-client";
+import { ownClientId } from "../../../stores/mutationClientIdentity";
 import { createSecureUUID } from "../../../stores/secureUUID";
 import { patchSelectionText, type SkillEditorValue } from "./skillDocument";
 
 const STORAGE_PREFIX = "evener.composer.draft.v1.";
 const STRUCTURED_STORAGE_PREFIX = "evener.composer.draft.v2.";
+const RECOVERY_SELECTION_PREFIX = "evener.composer.recovery.v1.";
+const COMPOSER_SEAT_PREFIX = "evener.composer.seat.v1.";
 const draftRevisions = new Map<string, number>();
 
 // A composer draft: the textarea's text plus the canonical names of the
@@ -57,6 +60,102 @@ export function draftStorageKey(ref: string): string {
 
 export function composerDraftStorageKey(ref: string): string {
   return `${STRUCTURED_STORAGE_PREFIX}${ref}`;
+}
+
+// A conversation seat's recovery-selection scope. The tab identity makes the
+// scope unique across tabs that share localStorage; the seat makes it unique
+// across independent panes on one conversation in this tab.
+export function composerSelectionScope(seat: string): string {
+  return `${ownClientId()}:${seat}`;
+}
+
+// The recovery row a composer last selected, remembered across reload. The
+// recovery transaction owns the composition; this names only its owner, so
+// restoring can prefer the pane's local work over an older rejected peer row.
+function recoverySelectionKey(ref: string, selectionOwnerId: string): string {
+  return `${RECOVERY_SELECTION_PREFIX}${encodeURIComponent(selectionOwnerId)}.${encodeURIComponent(ref)}`;
+}
+
+export function readRecoverySelection(ref: string, selectionOwnerId: string): string | undefined {
+  try {
+    const value = localStorage.getItem(recoverySelectionKey(ref, selectionOwnerId));
+    return value === null || value === "" ? undefined : value;
+  } catch {
+    return undefined;
+  }
+}
+
+export function writeRecoverySelection(ref: string, selectionOwnerId: string, clientMutationId: string | null): void {
+  try {
+    const key = recoverySelectionKey(ref, selectionOwnerId);
+    if (clientMutationId === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, clientMutationId);
+  } catch {
+    // Best-effort, like every other composer persistence.
+  }
+}
+
+// A successful resume changes the ref and the recovery rows move with it.
+// Carry this seat's selected owner so the replacement composer reads it under
+// the new ref. A choice already established for the destination is newer and
+// wins.
+export function carryRecoverySelection(fromRef: string, toRef: string, selectionOwnerId: string): void {
+  if (fromRef === toRef) return;
+  const selected = readRecoverySelection(fromRef, selectionOwnerId);
+  if (selected === undefined) return;
+  if (readRecoverySelection(toRef, selectionOwnerId) !== undefined) return;
+  writeRecoverySelection(toRef, selectionOwnerId, selected);
+}
+
+// A route placement opens a new pane id, so the destination composer reads a
+// different scope. Move the selection with the pane, leaving an established
+// destination choice alone. Both arguments are RAW seats; this is the one
+// place that scopes them.
+export function transferRecoverySelection(ref: string, fromSeat: string, toSeat: string): void {
+  if (fromSeat === toSeat) return;
+  const fromScope = composerSelectionScope(fromSeat);
+  const toScope = composerSelectionScope(toSeat);
+  const selected = readRecoverySelection(ref, fromScope);
+  if (selected === undefined) return;
+  if (readRecoverySelection(ref, toScope) !== undefined) return;
+  writeRecoverySelection(ref, toScope, selected);
+}
+
+// A conversation seat outlives the pane id a mobile reload reallocates. It is
+// stored per tab under both the pane (desktop restore) and the routed ref
+// (mobile route reconstruction); neither belongs to the shared layout.
+function paneSeatKey(paneId: string): string {
+  return `${COMPOSER_SEAT_PREFIX}${encodeURIComponent(ownClientId())}.pane.${encodeURIComponent(paneId)}`;
+}
+
+function refSeatKey(ref: string): string {
+  return `${COMPOSER_SEAT_PREFIX}${encodeURIComponent(ownClientId())}.ref.${encodeURIComponent(ref)}`;
+}
+
+function storedSeat(key: string): string | undefined {
+  try {
+    const value = localStorage.getItem(key);
+    return value === null || value === "" ? undefined : value;
+  } catch {
+    return undefined;
+  }
+}
+
+export function readPaneComposerSeat(paneId: string): string | undefined {
+  return storedSeat(paneSeatKey(paneId));
+}
+
+export function readRefComposerSeat(ref: string): string | undefined {
+  return storedSeat(refSeatKey(ref));
+}
+
+export function writeComposerSeat(paneId: string, ref: string | null, seat: string): void {
+  try {
+    localStorage.setItem(paneSeatKey(paneId), seat);
+    if (ref !== null) localStorage.setItem(refSeatKey(ref), seat);
+  } catch {
+    // Best-effort, like every other composer persistence.
+  }
 }
 
 function isStoredComposerDraft(value: unknown): value is ComposerDraft {

@@ -228,6 +228,11 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
   #supersededDiscardListener: ((targetRef: string) => void) | undefined;
   #settledListener: ((targetRef: string) => void) | undefined;
   #stalledWrites = 0;
+  // The destination each recovery row moved to under retargetOutbox, kept
+  // beside the rows it moved: a preservation that was waiting across the
+  // retarget can still resolve its resumed identity after another pane
+  // consumed the row.
+  readonly #retargetedRecovery = new Map<string, { targetRef: string; threadId?: string; instanceId?: string }>();
 
   constructor(options: MutationOutboxIndexedDBOptions = {}) {
     const factory = options.indexedDB ?? globalThis.indexedDB;
@@ -612,6 +617,13 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
           optimistic.push((await move(optimisticStore, record)) as MutationOptimisticRecord);
         for (const record of eligibleRecovery)
           recovery.push((await move(recoveryStore, record)) as MutationRecoveryRecord);
+        for (const record of recovery) {
+          this.#retargetedRecovery.set(record.clientMutationId, {
+            targetRef: toRef,
+            threadId: identity.threadId,
+            instanceId: identity.instanceId,
+          });
+        }
         if (lastSequence !== (sequence?.lastSequence ?? 0)) {
           await requestResult(sequenceStore.put({ ...sequence, targetRef: toRef, lastSequence }));
         }
@@ -1057,7 +1069,21 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         recoveryStore.get(base.clientMutationId),
       );
       if (stale && sameRecoveryComposition(stale, input, composerText, composerMentions, attachments)) return stale;
-      const intentSequence = await this.#allocateSequence(transaction, base.targetRef);
+      // retargetOutbox may have moved this recovery to a resumed identity while
+      // the composition was pending. The surviving row owns the current target;
+      // when another pane consumed it first, the retarget record still does.
+      const retargeted = this.#retargetedRecovery.get(base.clientMutationId);
+      const shape: MutationRecoveryRecord =
+        stale ??
+        (retargeted === undefined
+          ? base
+          : {
+              ...base,
+              targetRef: retargeted.targetRef,
+              threadId: retargeted.threadId,
+              instanceId: retargeted.instanceId,
+            });
+      const intentSequence = await this.#allocateSequence(transaction, shape.targetRef);
       const clientMutationId = this.#createMutationId();
       await this.#assertMutationIdAvailable(transaction, clientMutationId);
       const record: VersionedMutationRecoveryRecord = {
@@ -1066,24 +1092,24 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         originClientId: ownClientId(),
         intentSequence,
         createdAt: this.#now(),
-        targetRef: base.targetRef,
-        threadId: base.threadId,
-        instanceId: base.instanceId,
-        method: base.method,
-        payload: { ...base.payload, ref: base.targetRef, input },
+        targetRef: shape.targetRef,
+        threadId: shape.threadId,
+        instanceId: shape.instanceId,
+        method: shape.method,
+        payload: { ...shape.payload, ref: shape.targetRef, input },
         attachments,
-        optimisticDisplay: { method: base.method, input },
+        optimisticDisplay: { method: shape.method, input },
         composerText,
         composerMentions,
         recoveryKind: "rejected",
-        recoveryReason: base.recoveryReason,
+        recoveryReason: shape.recoveryReason,
         compositionRevision: 0,
         compositionOwnerId,
         localDraftRevisionId,
         state: "submitting",
         attempted: false,
         unresolvedAttempts: 0,
-        stopEpochAtEnqueue: await this.#stopEpochOf(transaction, base.targetRef),
+        stopEpochAtEnqueue: await this.#stopEpochOf(transaction, shape.targetRef),
       };
       await requestResult(recoveryStore.put(record));
       return record;
