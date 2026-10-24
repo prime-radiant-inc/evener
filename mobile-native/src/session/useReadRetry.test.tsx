@@ -100,3 +100,32 @@ it("doesn't count a retry that finished while a newer read was still opening", a
 	expect(resume).toHaveBeenCalledTimes(2);
 	hook.unmount();
 });
+
+it("retries a failed read that leaves readable rows open, then clears on a later success", async () => {
+	const state = { status: "open" as ConversationStatus, failed: true };
+	const resume = vi.fn(async () => {});
+	const hook = renderHook(() =>
+		useReadRetry({
+			status: state.status,
+			active: true,
+			resetKey: "ref-1",
+			readStatus: () => state.status,
+			readFailed: state.failed,
+			readFailedNow: () => state.failed,
+			resume,
+		}),
+	);
+	// A rehydrate failure keeps status "open"; the read-failure fact still arms
+	// the one retry, and its own failed outcome advances the count.
+	await advance(0);
+	expect(resume).toHaveBeenCalledTimes(1);
+	expect(hook.result.current).toBe(2);
+
+	// An accepted later publication clears the demand and its pending backoff.
+	state.failed = false;
+	hook.rerender();
+	expect(hook.result.current).toBe(0);
+	await advance(30_000);
+	expect(resume).toHaveBeenCalledTimes(1);
+	hook.unmount();
+});

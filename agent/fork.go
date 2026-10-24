@@ -342,21 +342,27 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 	if config != nil {
 		childConfig = config.Clone()
 	}
+	// A fork child is written as a root, so it keeps a restricted root parent's
+	// memory-save verdict but never inherits a delegate parent's save-tool
+	// removal: the child registers the save tools when it launches. An aside
+	// config that disables memory keeps the skill hidden immediately.
+	memorySaveUnavailable := childConfig.DisableMemory || (parentMeta.MemorySaveUnavailable && !parentMeta.IsSubagent)
 	childMeta := schema.SessionMeta{
-		ID:                 childID,
-		ProfileID:          parentMeta.ProfileID,
-		Model:              parentMeta.Model,
-		CheapModel:         parentMeta.CheapModel,
-		Config:             childConfig,
-		EnvInfo:            parentMeta.EnvInfo,
-		CreatedAt:          now,
-		UpdatedAt:          now,
-		TurnCount:          modelResponses,
-		AcceptedInputTurns: acceptedInputTurns,
-		OriginalPrompt:     parentMeta.OriginalPrompt,
-		ParentSessionID:    parentID,
-		DivergenceTurn:     divergenceTurn,
-		ForkLabel:          "", // child carries no fork label; parent gets it
+		ID:                    childID,
+		ProfileID:             parentMeta.ProfileID,
+		Model:                 parentMeta.Model,
+		CheapModel:            parentMeta.CheapModel,
+		Config:                childConfig,
+		EnvInfo:               parentMeta.EnvInfo,
+		CreatedAt:             now,
+		UpdatedAt:             now,
+		TurnCount:             modelResponses,
+		AcceptedInputTurns:    acceptedInputTurns,
+		OriginalPrompt:        parentMeta.OriginalPrompt,
+		ParentSessionID:       parentID,
+		DivergenceTurn:        divergenceTurn,
+		ForkLabel:             "", // child carries no fork label; parent gets it
+		MemorySaveUnavailable: memorySaveUnavailable,
 	}
 
 	if err := deps.saveMeta(fs, stateDir, childMeta); err != nil {
