@@ -81,14 +81,6 @@ const pendingTurnsStore = createPendingTurnsStore<MutationAttachment>({
   identity: { isOwnMutationRecord },
 });
 
-// Retry's activation-time read of the outbox owner: the same projected entries
-// a render holds, read from the stores as they are now. continueTurn rechecks
-// this synchronously before submitting (through the projection seam below), so
-// a row that appeared after the render still blocks the press.
-export function ownPendingTurnInputFor(ref: string): boolean {
-  return ownPendingTurnInput(pendingTurnsStore.pendingTurnEntries(ref));
-}
-
 installQueuedMutationProjection({
   subscribe: pendingTurnsStore.subscribe,
   getOutbox: () => pendingTurnsStore.getState().outbox,
@@ -133,7 +125,9 @@ installResumeOnlyProjection({
     outboxEntriesByState(pendingTurnsStore.getState().outbox, ref, "submitting").some(
       (record) => record.method !== "turn/start",
     ),
-  ownPendingTurnInput: ownPendingTurnInputFor,
+  // Retry's shared eligibility decision applies ownPendingTurnInput itself;
+  // the seam hands it the same projected entries a render reads.
+  pendingTurnEntries: (ref) => pendingTurnsStore.pendingTurnEntries(ref),
   beginSubmission: (ref) => pendingTurnsStore.beginSubmission(ref),
   endSubmission: (ref) => pendingTurnsStore.endSubmission(ref),
 });
@@ -426,14 +420,24 @@ export function usePendingTurnEntries(ref: string, method?: PendingMethod): Pend
   return useSyncExternalStore(subscribe, getSnapshot);
 }
 
-// Retry's reactive view of the outbox owner. `loaded` is published by the
-// projection when the ref's durable read resolves (and drops when a newer read
-// invalidates it), so the action re-renders across the transition. `unresolved`
-// is the live own-send/queue predicate over the projected entries. Retry is
-// disabled until loaded, because an unloaded read is unknown, not empty.
-export function useRetryPendingState(ref: string): { loaded: boolean; unresolved: boolean } {
+// Retry's reactive pending inputs for the shared decision: the projected
+// entries and whether the ref's durable read has answered. One subscription
+// serves both questions. `loaded` is published by the projection when the
+// ref's durable read resolves (and drops when a newer read invalidates it), so
+// the action re-renders across the transition; an unloaded read is unknown,
+// not empty, so the decision stays closed.
+export function useRetryPendingProjection(ref: string): { loaded: boolean; entries: PendingTurnEntry[] } {
   const entries = usePendingTurnEntries(ref);
   const loaded = useThreadsStore((state) => state.pendingProjectionLoadedRefs.has(ref));
+  return { loaded, entries };
+}
+
+// Retry's reactive outbox answer as a boolean. The shared decision reads the
+// entries through useRetryPendingProjection; this keeps the narrower
+// loaded/unresolved answer for callers that only ask whether this client has
+// unresolved input.
+export function useRetryPendingState(ref: string): { loaded: boolean; unresolved: boolean } {
+  const { loaded, entries } = useRetryPendingProjection(ref);
   return { loaded, unresolved: ownPendingTurnInput(entries) };
 }
 

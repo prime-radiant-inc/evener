@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import type { ThreadModel } from "@evener/appwire-client";
-import { keyID } from "@evener/appwire-client/state/navigation";
+import { keyID, type ResourceState } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { afterEach, expect, test, vi } from "vitest";
@@ -15,6 +15,7 @@ import { activityDelegate } from "../stores/sessionActivityTestUtils";
 import { chromeStore, resetChromeStoreForTests } from "./chromeStore";
 import { focusedSessionRef } from "./focusedSession";
 import { createNeedsYouController, type NeedsYouController } from "./needsYouActions";
+import { installNeedsYouPage, needsYouRow, updateNeedsYouPage } from "./needsYouTestUtils";
 import { closePalette, openPalette, paletteStore } from "./palette/paletteController";
 import { conversationPaneLifetime } from "./paneLifetime";
 import * as routing from "./routing";
@@ -31,6 +32,13 @@ function whenNavigation(predicate: (state: ReturnType<typeof navigationStore.get
     });
   });
 }
+
+const seedSectionPage = (offset: number, refs: string[], patch: Partial<ResourceState<unknown>> = {}) =>
+  installNeedsYouPage(
+    offset,
+    refs.map((ref) => needsYouRow(ref)),
+    patch,
+  );
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -622,6 +630,9 @@ test("a stale resource blocks selection until its actual refreshed response rest
   await refreshStarted;
   expect(key).toBeDefined();
   expect(controller.getSnapshot().choices.find((choice) => choice.summary.ref === "local:b")?.selectable).toBe(false);
+  expect(controller.getSnapshot().choices.find((choice) => choice.summary.ref === "local:b")?.refreshState).toBe(
+    "refreshing",
+  );
   controller.select("local:b");
   expect(window.location.pathname).toBe(initialURL);
   expect(
@@ -637,6 +648,7 @@ test("a stale resource blocks selection until its actual refreshed response rest
       ),
   );
   expect(controller.getSnapshot().choices.find((choice) => choice.summary.ref === "local:b")?.selectable).toBe(true);
+  expect(controller.getSnapshot().choices.find((choice) => choice.summary.ref === "local:b")?.refreshState).toBeNull();
   const before = window.history.length;
   controller.select("local:b");
   expect(window.location.pathname).toBe("/s/local%3Ab");
@@ -645,6 +657,24 @@ test("a stale resource blocks selection until its actual refreshed response rest
     .panes.find((pane) => (pane.params as { ref?: string } | undefined)?.ref === "local:b");
   expect(workspaceStore.getState().focusedPaneId).toBe(b?.id);
   expect(window.history.length).toBe(before + 1);
+  controller.dispose();
+});
+
+test("a refresh-state change alone reaches the controller's subscribers", () => {
+  seedSectionPage(0, ["local:a"]);
+  seedSectionPage(50, ["local:failed"], { stale: true, error: new Error("held failure") });
+  seedSectionPage(100, ["local:loading"], { stale: true, loading: true });
+  seedSectionPage(150, ["local:flip"], { stale: true, loading: true });
+  const controller = createNeedsYouController();
+  let calls = 0;
+  controller.subscribe(() => calls++);
+
+  updateNeedsYouPage(150, { stale: true, loading: false, error: new Error("refresh failed") });
+
+  expect(calls).toBe(1);
+  expect(controller.getSnapshot().choices.find((choice) => choice.summary.ref === "local:flip")?.refreshState).toBe(
+    "failed",
+  );
   controller.dispose();
 });
 

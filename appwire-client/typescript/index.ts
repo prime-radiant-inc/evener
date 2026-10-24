@@ -553,6 +553,13 @@ export {
   threadModelFromCache,
   threadModelFromCurrentState,
 } from "./reducer";
+export {
+  type RetryEligibility,
+  type RetryEligibilityDenialReason,
+  type RetryEligibilityInput,
+  type RetryEligibilityReason,
+  retryEligibility,
+} from "./retryEligibility";
 export type { GroupedSearch, GroupedSearchRow } from "./searchGrouping";
 export { countSearchMatches, groupSearchResults } from "./searchGrouping";
 export type { SendQueueAvailability, SendQueueAvailabilityInput } from "./sendQueueAvailability";
@@ -833,7 +840,12 @@ export {
 } from "./transcriptSteps";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
-export { isLatestRetryTurn, latestTurnId, TURN_CONTINUATION_TEXT } from "./turnContinuation";
+export {
+  isLatestRetryTurn,
+  latestTurnId,
+  type RetryTurnThread,
+  TURN_CONTINUATION_TEXT,
+} from "./turnContinuation";
 export type * from "./types.gen";
 export {
   HOST_REQUEST_METHODS,
