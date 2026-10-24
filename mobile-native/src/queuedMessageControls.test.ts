@@ -563,7 +563,7 @@ test("a redirect rejected by one store still reaches the final destination after
 	f.drafts.exec(
 		"CREATE TRIGGER reject_pending_c BEFORE INSERT ON pending_draft_handoffs WHEN NEW.to_session_ref = 'session-c' BEGIN SELECT RAISE(ABORT, 'redirect rejected'); END",
 	);
-	expect(library.handoff(bDestination, cDestination)).toBe(false);
+	const resolved = library.handoff(bDestination, cDestination);
 	f.drafts.exec("DROP TRIGGER reject_pending_c");
 
 	// Restart: the loaded graph must canonicalize A->B through the retained
@@ -586,6 +586,7 @@ test("a redirect rejected by one store still reaches the final destination after
 	expect(f.repository.read(destination)).toEqual({ draft: "", unconfirmed: null });
 	expect(restarted.hasPendingHandoff(cDestination)).toBe(false);
 	expect(f.runtime.storage.readResumeIdentities()).toEqual([]);
+	expect(resolved).toBe(false);
 });
 
 test("multiple-source completion preserves newer draft, image, and older cleanup markers", async () => {
