@@ -1,9 +1,9 @@
-# Issue #4846: a stale Next-needs-you row is refused, and a stale click refreshes instead of vanishing
+# Issue #4846: a stale Next-needs-you row is refused, not silently rejected
 
 ## Intent and scope
 
-Make the floating Next-needs-you list's row affordance and its selection
-feedback agree with the shared needs-you controller's actual decision.
+Make the floating Next-needs-you list's row affordance agree with the shared
+needs-you controller's actual admission decision.
 
 The lane is based on `origin/main` at
 `c43ac9a99776673b14b0e7054d82d4ad4dda79cb`, the merge of PR #4854 that put the
@@ -15,44 +15,49 @@ focused tests are rerun against it.
 Intended deliverables:
 
 - `cmd/evener-hub/frontend/src/panes/session/NextNeedsYou.tsx` (row
-  affordance, focus rule, unavailable handling);
-- `cmd/evener-hub/frontend/src/shell/needsYouActions.ts` (selection outcome and
-  the refused page's refresh seam);
+  affordance and the open-focus rule);
+- `cmd/evener-hub/frontend/src/shell/needsYouActions.ts` (one per-choice
+  refresh-state field in the published snapshot);
 - `cmd/evener-hub/frontend/src/panes/session/NextNeedsYou.test.tsx` and
-  `cmd/evener-hub/frontend/src/shell/needsYouActions.test.ts` (red-first cases
-  and controls);
+  `cmd/evener-hub/frontend/src/shell/needsYouActions.test.ts` (red-first cases,
+  controls, and the existing stale-refresh case's new state assertions);
 - the S02 row of `docs/product/subsystems.md` and the "Floating Next-needs-you
-  control" section of `docs/web-ui/README.md` for the changed behavior;
+  control" section of `docs/web-ui/README.md`;
 - this specification.
 
 No other tracked file is intended. In particular, no widget, navigation store,
-revalidator, selector, palette, delivery or routing change.
+revalidator, selector, palette, selection, delivery or routing change.
 
 ## Exact stale-row race
 
-The list at `NextNeedsYou.tsx:430-447` maps every `snapshot.choices` entry to an
+The list at `NextNeedsYou.tsx:438-456` maps every `snapshot.choices` entry to an
 interactive `ListRow` and ignores `choice.selectable`. The snapshot computes
-`selectable` from the row's authoritative page (`needsYouActions.ts:110-118`):
+`selectable` from the row's authoritative page (`needsYouActions.ts:116-125`):
 the page must exist, have no error, and not be stale. `nextRef` gates the Next
 trigger on it, and the command palette gates its own selection on it
 (`CommandPalette.tsx:305-309`), but the list row does not. A row whose page
-turned stale therefore renders as an enabled button.
+turned stale or failed therefore renders as an enabled button.
 
-`NeedsYouController.select(ref)` at `needsYouActions.ts:428-445` re-reads
+`NeedsYouController.select(ref)` at `needsYouActions.ts:432-450` re-reads
 `navigationStore.getState()` and applies the real admission rule: the page must
 exist, have no error, not be stale, still contain the ref, and the ref must not
 be the focused session. A rejected selection returns without navigating and
-without changing anything. The row's click handler
-(`NextNeedsYou.tsx:441-444`) closes the list before that call, so a stale
-selection closes the popover and leaves the reader where they were with no
-explanation.
+without changing anything. The row's click handler closes the list before that
+call, so the stale selection closes the popover and leaves the reader where they
+were with no explanation. That is the reported defect.
 
-The control's snapshot is recomputed on navigation-store events
-(`needsYouActions.ts:157-182`). A page can become stale after the list rendered;
-the store update reaches React through `useSyncExternalStore`
-(`NeedsYouProvider.tsx:43`). A click that lands in the window before that commit
-still runs the old row's handler. That late click is the reported silent
-rejection.
+The snapshot is recomputed on navigation-store events
+(`needsYouActions.ts:159-190`). When a page goes stale or fails, the refreshed
+snapshot is what the list should render; the fix is to consume the flag the
+snapshot already publishes rather than adding a second admission path.
+
+Two existing owners already cover recovery, so this change does not add one:
+
+- the revalidator marks a loaded page stale on invalidation and starts its
+  refresh (`revalidator.ts:286-305`); a failed refresh retains the page's rows
+  with `stale: true, error` (`revalidator.ts:373-376`);
+- `demand()` retries a failed boundary page at its own offset on the next Next
+  or Load more activation (`needsYouActions.ts:343-356`).
 
 The list's visibility predicate matters to any test of this behavior
 (`NextNeedsYou.tsx:76-81`): when the only populated page goes stale with
@@ -63,61 +68,53 @@ revalidating (`stale:true, loading:true`, a retried populated page) or errored
 keeps demand visible through `retryingPopulatedPage` / `failed`. Test fixtures
 must include that demand, or they assert against a detached node. The existing
 case at `NextNeedsYou.test.tsx:372-391` uses the detached fixture, so its click
-never reaches the handler and its "does not navigate" assertion is vacuous.
+never reaches the handler and its "does not navigate" assertion is vacuous; the
+new first case replaces it.
 
 ```mermaid
 sequenceDiagram
-  participant R as Rendered list
   participant N as Navigation store
   participant C as NeedsYou controller
-  R->>N: Row was selectable at render
-  N-->>N: Page turns stale or fails
-  R->>C: select(ref) from the still-enabled row
-  C->>N: Read live page and rows
-  N-->>C: Page no longer qualifies
-  C-->>C: Refresh that page at its own offset and limit
-  C-->>R: Publish the refused choice, no navigation
+  participant R as Rendered list
+  N-->>C: Page invalidated, then stale and refreshing
+  C-->>R: Publish choice with selectable false and refreshState refreshing
+  R-->>R: Row renders aria-disabled, states why
+  R->>C: Activation is refused by the row widget
+  N-->>C: Refresh settles, choice becomes selectable
+  C-->>R: Row renders enabled and selection navigates
 ```
 
 ## Chosen affordance and feedback
 
 1. **A row that is not selectable is visibly refused.** `ListRow` gets
    `aria-disabled="true"` (the widget's documented refusal path, which keeps the
-   row focusable and swallows activation) and its meta line becomes `No longer
-   available` instead of the attention reason. The row stays in place with the
+   row focusable and swallows activation). Its meta line states why the row
+   cannot be selected:
+
+   - `selectable` → the existing attention reason;
+   - `refreshState === "refreshing"` → `Refreshing`;
+   - `refreshState === "failed"` → `Couldn't refresh`;
+   - no page → `No longer available`.
+
+   `refreshState: "refreshing" | "failed" | null` is published per choice by the
+   controller's `read()` from the row's page (`page.error` → failed,
+   `page.stale` → refreshing, otherwise null) and is included in the
+   controller's `samePublicState` comparison. The component reads structured
+   state, not inferred copy, and exposes it on the row as
+   `data-refresh-state` for behavior tests. The row stays in place with the
    same label, order and list actions; the list is not redesigned or filtered.
-   The open-focus selector changes from `button:not([disabled])` to also skip
-   `[aria-disabled="true"]`, so opening the list with refused rows focuses the
-   first remaining control (Load more, when enabled) or the section, never a
-   refused row. A refused row remains reachable by Tab and announces its state
-   through `aria-disabled`.
 
-2. **A selection refusal is reported structurally.** `select` returns
-   `"navigated" | "unavailable" | "ignored"`:
-   - `"navigated"`: the admission rule passed and `openAttentionSession(ref)`
-     ran. The list closes and navigates exactly as today.
-   - `"unavailable"`: the row was in the rendered list but the live navigation
-     state no longer qualifies, or the ref left the live rows. The controller
-     publishes the current snapshot so the row renders refused immediately, then
-     refreshes the page that held the row. The component keeps the list open so
-     the now-refused row, with its availability statement, is the explanation.
-     No navigation occurs.
-   - `"ignored"`: disposed, blocked, or a focused-session ref. No feedback is
-     needed: a disposed controller has no mounted control, blocked hides it, and
-     the focused session is not listed. The component closes the list, which is
-     the old close-on-click behavior.
+2. **The open-focus rule skips refused rows.** The first-focus selector changes
+   from `button:not([disabled])` to also skip `[aria-disabled="true"]`, so
+   opening the list with refused rows focuses the first remaining control
+   (Load more, when enabled) or the section, never a refused row. A refused row
+   remains reachable by Tab and announces its state through `aria-disabled`.
 
-3. **The refused page refreshes without advancing the list.** On
-   `"unavailable"`, the controller re-reads only the page that held the refused
-   ref, at that page's own offset and limit, through
-   `navigationStore.loadSection("needs_you", offset, limit)`. It never computes
-   a new offset, advances to an unloaded page, or reorders anything. A page that
-   is stale and already revalidating joins the in-flight read; an errored page
-   that retained its rows starts a real retry at its own offset. Failures stay
-   on the resource as they do for any other reader, and the controller swallows
-   the rejection (an uninitialized store rejects without recording a resource),
-   so selection itself never rejects. No notice or toast is added; the refused
-   row is the feedback.
+3. **No click-time behavior is added.** The controller's `select` keeps its
+   existing signature, guard, silent refusal and revalidator-owned refresh. A
+   refused row cannot invoke it, and the row's own state plus the next snapshot
+   are the feedback. There is no notice, toast, retry button or second refresh
+   path.
 
 No widget is added or changed. `ListRow` already supports `aria-disabled`, and
 the meta line already carries row state.
@@ -133,21 +130,23 @@ the meta line already carries row state.
   labelled, and refused until the queue or a refresh changes them.
 - The existing controller case "a stale resource blocks selection until its
   actual refreshed response restores it" keeps both halves: refused while
-  stale, then navigates after the real refreshed response.
-- The command palette's guarded selection and all other navigation callers are
-  unchanged; they ignore the new return value.
+  stale, then navigates after the real refreshed response. Its new assertions
+  read the published `refreshState`, not copy.
+- The command palette's guarded selection and every other navigation caller are
+  unchanged.
 
 ## Non-goals
 
 - No change to Next-needs-you delivery, the `next()` action, or any
   notification/delivery path.
+- No change to `select`, selection admission, or the controller's refresh
+  ownership.
 - No list redesign: no reordering, filtering, grouping, new actions, or new
   widget props.
 - No changes to the navigation store, revalidator, selectors, or AppWire
   package.
 - No command-palette, keybinding, rail, or general routing changes.
-- No inline notice, toast, retry button, or new copy surface beyond the row's
-  availability meta.
+- No inline notice, toast, retry button, or new interaction surface.
 - No labels and no unrelated fixes; an unrelated finding becomes its own issue.
 - No full local suite, browser guard, live-provider, or deployment claim.
 
@@ -158,29 +157,24 @@ The stale fixtures keep the control mounted: `stale:true, loading:true` with
 retained rows, or `stale:true, error` with retained rows.
 
 1. `NextNeedsYou.test.tsx`: a row on a page that turns stale after render
-   becomes refused (`aria-disabled="true"`) and cannot navigate. Fails before
-   the fix at the attribute assertion.
-2. `NextNeedsYou.test.tsx`: a row that turns stale between render and selection
-   keeps the list open and publishes the refused row; no navigation. The live
-   page is made stale in the store without a React notification, so the click
-   reaches the rendered handler. Fails before the fix because the list closes.
-3. `NextNeedsYou.test.tsx`: opening a list whose rows are refused focuses the
-   first remaining control (Load more) or the section, not a refused row. Fails
-   before the fix because the first refused row receives focus.
-4. `NextNeedsYou.test.tsx`: a selectable row still closes the list and
+   becomes refused (`aria-disabled="true"`, `data-refresh-state="refreshing"`)
+   and cannot navigate. Replaces the vacuous case at
+   `NextNeedsYou.test.tsx:372-391`. Fails before the fix at the attribute
+   assertion.
+2. `NextNeedsYou.test.tsx`: opening a list whose page failed focuses the first
+   remaining control (Load more), not a refused row, and the refused rows carry
+   `data-refresh-state="failed"`. Fails before the fix because the first refused
+   row receives focus.
+3. `NextNeedsYou.test.tsx`: a selectable row still closes the list and
    navigates. Passes before and after; this is the control.
-5. `NextNeedsYou.test.tsx`: after the page's retained data is restored
-   (`stale:false`), the row is enabled and selecting it navigates. Passes on
-   base and after.
-6. `needsYouActions.test.ts`: selecting a row on a stale page returns
-   `"unavailable"` and does not navigate; after the real refreshed response,
-   selection returns `"navigated"` and navigates. The result assertion fails
-   before the fix.
-7. `needsYouActions.test.ts`: a failed populated page (a real FakeClient read
-   failure) makes selection return `"unavailable"`, issues the retry read at
-   that page's offset and limit, and does not navigate; after the retry settles,
-   selection returns `"navigated"` and navigates. Fails before the fix at the
-   result and the missing retry read.
+4. `NextNeedsYou.test.tsx`: after the page's retained data is restored through
+   a notifying `navigationStore.setState` (`stale:false`), the row is enabled
+   and selecting it navigates. Passes on base and after.
+5. `needsYouActions.test.ts`: the existing stale-refresh case reads
+   `refreshState === "refreshing"` while the page is stale and `refreshState ===
+   null` after the real refreshed response; its existing refused-then-navigated
+   assertions stay. Fails before the fix only if `refreshState` is absent, so
+   it proves the new field.
 
 Commands, from the worktree:
 
