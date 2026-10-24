@@ -6,7 +6,12 @@ export type DraftStorage = Pick<
 	DraftRepository,
 	"read" | "write" | "transfer" | "removeHub" | "imageInputs" | "refsWithDrafts"
 > &
-	Partial<Pick<DraftRepository, "readPendingHandoffs" | "writePendingHandoff" | "removePendingHandoff">>;
+	Partial<
+		Pick<
+			DraftRepository,
+			"readPendingHandoffs" | "writePendingHandoff" | "removePendingHandoff" | "redirectPendingHandoff"
+		>
+	>;
 
 /** One document per destination keeps pending work coherent across navigation. */
 export class DraftLibrary {
@@ -234,7 +239,9 @@ export class DraftLibrary {
 			const redirected = { from: edge.from, to: settlingTo };
 			this.pending.set(this.handoffKey(edge.from, settlingTo), redirected);
 			try {
-				this.repository().writePendingHandoff?.(edge.from, settlingTo);
+				const storage = this.repository();
+				if (storage.redirectPendingHandoff) storage.redirectPendingHandoff(edge.from, settlingFrom, settlingTo);
+				else storage.writePendingHandoff?.(edge.from, settlingTo);
 			} catch {
 				// The in-memory chain still retries this launch.
 			}

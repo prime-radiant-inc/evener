@@ -340,6 +340,24 @@ export class DraftRepository {
 		);
 	}
 
+	/** Replace one pending handoff's destination atomically. A redirected
+	 * chain must not leave the predecessor's old mapping for a restart to
+	 * replay into the retired ref. */
+	redirectPendingHandoff(from: DraftDestination, previousTo: DraftDestination, to: DraftDestination): void {
+		if (previousTo.hubId === to.hubId && previousTo.sessionRef === to.sessionRef) return;
+		withSavepoint(this.db, "draft_handoff_redirect", () => {
+			this.writePendingHandoff(from, to);
+			this.db.runSync(
+				`DELETE FROM pending_draft_handoffs
+				 WHERE from_hub_id = ? AND from_session_ref = ? AND to_hub_id = ? AND to_session_ref = ?`,
+				from.hubId,
+				from.sessionRef,
+				previousTo.hubId,
+				previousTo.sessionRef,
+			);
+		});
+	}
+
 	removePendingHandoff(to: DraftDestination): void {
 		this.db.runSync(
 			"DELETE FROM pending_draft_handoffs WHERE to_hub_id = ? AND to_session_ref = ?",
