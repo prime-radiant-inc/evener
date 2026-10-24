@@ -31,6 +31,7 @@ const harness = vi.hoisted(() => ({
 	runtime: null as unknown,
 	uuid: 0,
 }));
+const handoffs = vi.hoisted(() => ({ calls: [] as [string, string, string][] }));
 const sheetNavigation = vi.hoisted(() => ({
 	goBack: vi.fn(),
 	dispatch: vi.fn(),
@@ -63,6 +64,10 @@ vi.mock("expo-crypto", () => ({
 }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 vi.mock("./nativeDocumentMemory", () => ({ documentMemory: () => harness.memory }));
+vi.mock("../nativeDrafts", () => ({
+	handoffNativeResumeDraft: (hubId: string, fromRef: string, toRef: string) =>
+		handoffs.calls.push([hubId, fromRef, toRef]),
+}));
 // The app's one runtime is a module singleton; each test gets its own.
 vi.mock("../nativeMutationRuntime", async (original) => ({
 	...(await original<typeof import("../nativeMutationRuntime")>()),
@@ -118,13 +123,13 @@ function storage(): SyncStringStorage {
 	};
 }
 
-const read = (): ThreadReadResponse => ({
-	thread: wireThread("local:fix", {
+const readFor = (ref: string): ThreadReadResponse => ({
+	thread: wireThread(ref, {
 		id: "thread-fix",
 		status: { type: status },
 		turns: [],
 		evener: {
-			ref: "local:fix",
+			ref,
 			instanceId: "instance-fix",
 			capabilities: capabilities(),
 			queue: { revision: 1 },
@@ -133,6 +138,7 @@ const read = (): ThreadReadResponse => ({
 		},
 	}),
 });
+const read = (): ThreadReadResponse => readFor("local:fix");
 
 const applied = (params: unknown): never =>
 	({
@@ -171,6 +177,7 @@ beforeEach(async () => {
 	});
 	sheetNavigation.prevented = [];
 	sheetNavigation.onPrevent = null;
+	handoffs.calls = [];
 	status = "idle";
 	resumeRequired = false;
 	client = new FakeClient("ready");
@@ -403,6 +410,61 @@ it("sends a review to a paused session by resuming it", async () => {
 	expect(sendDisabled(tree)).toBe(false);
 	await send(tree);
 	expect(mutations()).toEqual(["turn/start"]);
+});
+
+it("returns to the identity a resume resolved to, not the retired session", async () => {
+	status = "idle";
+	resumeRequired = true;
+	client.on("thread/read", (params) => readFor(String((params as { ref: string }).ref)));
+	client.resumeThread = async () => {
+		resumeRequired = false;
+		return readFor("local:resumed");
+	};
+	const tree = await mount();
+	choose(tree, "Approve");
+	await send(tree);
+
+	expect(handoffs.calls).toEqual([["studio", "local:fix", "local:resumed"]]);
+	expect(sheetNavigation.goBack).toHaveBeenCalledOnce();
+	expect(sheetNavigation.goBack.mock.invocationCallOrder[0]).toBeLessThan(
+		sheetNavigation.navigate.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+	);
+	expect(sheetNavigation.navigate).toHaveBeenCalledWith("Conversation", {
+		hubId: "studio",
+		ref: "local:resumed",
+		title: "Get PR 2138 Test Clean",
+	});
+	expect(sheetNavigation.pop).not.toHaveBeenCalled();
+});
+
+it("pops to a resolved session already under the sheet instead of dismissing it", async () => {
+	status = "idle";
+	resumeRequired = true;
+	client.on("thread/read", (params) => readFor(String((params as { ref: string }).ref)));
+	client.resumeThread = async () => {
+		resumeRequired = false;
+		return readFor("local:resumed");
+	};
+	sheetNavigation.getState = () => ({
+		index: 3,
+		routes: [
+			{ key: "board", name: "Sessions" },
+			{
+				key: "resumed",
+				name: "Conversation",
+				params: { hubId: "studio", ref: "local:resumed", title: "Get PR 2138 Test Clean" },
+			},
+			{ key: "reader", name: "Reader" },
+			{ key: "review", name: "ReviewSheet" },
+		],
+	});
+	const tree = await mount();
+	choose(tree, "Approve");
+	await send(tree);
+
+	expect(sheetNavigation.pop).toHaveBeenCalledWith(2);
+	expect(sheetNavigation.goBack).not.toHaveBeenCalled();
+	expect(sheetNavigation.navigate).not.toHaveBeenCalled();
 });
 
 it("waits for the connection, and reads again when it returns", async () => {

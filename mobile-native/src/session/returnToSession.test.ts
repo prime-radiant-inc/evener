@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import { popsToSession, returnToSession } from "./returnToSession";
+import { popsToSession, returnToSession, returnToSessionFromSheet } from "./returnToSession";
 
 const stack = {
 	index: 3,
@@ -48,4 +48,29 @@ it("goes back to the session when it's under this screen, and opens it otherwise
 		ref: "local:other",
 		title: "Other",
 	});
+});
+
+it("dismisses a sheet before opening a session that isn't under it", () => {
+	const sheet = { finish: vi.fn((then?: () => void) => then?.()) };
+	const navigation = { getState: () => stack, pop: vi.fn(), goBack: vi.fn(), navigate: vi.fn() };
+	returnToSessionFromSheet(sheet, navigation, { hubId: "hub-1", ref: "local:other", title: "Other" });
+	expect(sheet.finish).toHaveBeenCalledOnce();
+	expect(navigation.navigate).toHaveBeenCalledWith("Conversation", {
+		hubId: "hub-1",
+		ref: "local:other",
+		title: "Other",
+	});
+	expect(navigation.goBack.mock.invocationCallOrder[0]).toBeLessThan(
+		navigation.navigate.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+	);
+	expect(navigation.pop).not.toHaveBeenCalled();
+});
+
+it("pops to a session under the sheet without dismissing it first", () => {
+	const sheet = { finish: vi.fn((then?: () => void) => then?.()) };
+	const navigation = { getState: () => stack, pop: vi.fn(), goBack: vi.fn(), navigate: vi.fn() };
+	returnToSessionFromSheet(sheet, navigation, { hubId: "hub-1", ref: "local:coord", title: "Coordinator" });
+	expect(navigation.pop).toHaveBeenCalledWith(2);
+	expect(navigation.goBack).not.toHaveBeenCalled();
+	expect(navigation.navigate).not.toHaveBeenCalled();
 });
