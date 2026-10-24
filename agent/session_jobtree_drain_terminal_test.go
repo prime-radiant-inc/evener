@@ -8,10 +8,11 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -59,43 +60,17 @@ func seedWatchSendResidue(t *testing.T, sess *Session) {
 	}
 }
 
-// TestTerminalDrainExitsDespiteWatchSendResidue is the #329 dead-hang
-// regression (train-fasttext, count-dataset-tokens, filter-js-from-html): the
-// model ended the process-ending turn, no live work remains anywhere, but
-// watch-send residue keeps the drain outstanding AND keeps the stall watchdog
-// suppressed — a livelock that previously held the process open until the
-// harness killed it. Once the terminal communicate is accepted, residue with
-// no live work behind it must be abandoned so the process can exit.
-func TestTerminalDrainExitsDespiteWatchSendResidue(t *testing.T) {
-	t.Parallel()
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return finalResponse("all done") },
-	}}
-	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-		TurnEndsProcess: true,
-	}))
-
-	// TRIPWIRE: scripted adapter, in-memory residue, no real I/O. The fixed
-	// drain returns on its first pass; 10s only fires on the #329 livelock.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "do the task", nil); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
+// Terminal communication cannot turn unobserved custody into quiescence.
+func TestTerminalDrainPreservesWatchSendResidue(t *testing.T) {
+	sess := newSession(t, withConfig(SessionConfig{TurnEndsProcess: true}))
+	sess.acceptTerminalCommunicate()
 	seedWatchSendResidue(t, sess)
-
-	drained, err := sess.DrainJobTree(ctx)
-	if err != nil {
-		t.Fatalf("DrainJobTree must exit cleanly past terminal residue, got: %v", err)
-	}
-	if drained != "" {
-		t.Fatalf("drain result = %q, want empty (no drain turn ran)", drained)
-	}
-	if ctx.Err() != nil {
-		t.Fatal("drain only returned because the context expired: this is the #329 hang")
-	}
-	if got := len(adapter.Requests()); got != 1 {
-		t.Fatalf("provider calls = %d, want 1", got)
+	ctx, cancel := context.WithCancel(context.Background())
+	wake, hint := newDrainWake()
+	sess.SetNotifyFunc(hint)
+	_, err := sess.drainJobTreeWith(ctx, wake, nil, func(context.Context) error { cancel(); return nil }, sess.ProcessInputKind)
+	if !errors.Is(err, context.Canceled) || !sess.jobManager.hasPendingWatchSends() {
+		t.Fatalf("custody lost: %v", err)
 	}
 }
 
@@ -114,9 +89,9 @@ func TestTerminalDrainKeepsFinalizingDelegateLive(t *testing.T) {
 	held := holdDelegateTail(t, holdBeforeAnnouncement)
 	held.s.acceptTerminalCommunicate()
 
-	live, err := held.s.subtreeHasLiveTerminalDrainWork()
+	live, err := held.s.treeHasOutstandingWork()
 	if err != nil {
-		t.Fatalf("subtreeHasLiveTerminalDrainWork: %v", err)
+		t.Fatalf("treeHasOutstandingWork: %v", err)
 	}
 	if !live {
 		t.Fatal("a delegate whose run ended but whose generation is still finalizing must keep the terminal drain live: its result has not been announced yet, so reading it as residue abandons the completion and exits before it is drained (issue #3531)")
@@ -142,6 +117,7 @@ func TestPostTerminalNotificationTurnEmptyResponseFinishesIdle(t *testing.T) {
 		},
 	}}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
+		StateDir:        t.TempDir(),
 		TurnEndsProcess: true,
 	}))
 
@@ -168,6 +144,7 @@ func TestPostTerminalNotificationTurnEmptyResponseFinishesIdle(t *testing.T) {
 	if got := len(adapter.Requests()); got != 2 {
 		t.Fatalf("provider calls = %d, want 2: an empty post-terminal response must finish idle, not retry", got)
 	}
+	requireOwnedDrainAttentionObservedOnce(t, sess, stableShellAttentionID("job-late", "gen-job-late"))
 }
 
 // TestNormalDrainStillWaitsOnWatchSendResidue pins the #329 design boundary:
@@ -204,7 +181,7 @@ func TestNormalDrainStillWaitsOnWatchSendResidue(t *testing.T) {
 	}
 	done := make(chan drainResult, 1)
 	go func() {
-		out, err := sess.drainJobTreeWith(ctx, recheck, kick, sess.ProcessInputKind)
+		out, err := sess.drainJobTreeWith(ctx, drainWakeForTest(sess), recheck, kick, sess.ProcessInputKind)
 		done <- drainResult{out: out, err: err}
 	}()
 
@@ -212,7 +189,7 @@ func TestNormalDrainStillWaitsOnWatchSendResidue(t *testing.T) {
 	// An unbuffered recheck send completes only when waitDrainWake is actually
 	// parked on the drain's production select. The second kick proves the drain
 	// woke and began another pass without returning.
-	recheck <- frozenTestTime
+	sess.notify()
 	<-secondKick
 	select {
 	case got := <-done:
@@ -284,6 +261,26 @@ func lastMessageText(req llm.Request) string {
 	return req.Messages[len(req.Messages)-1].Text()
 }
 
+func requireTerminalShellCompletionInRequest(t *testing.T, req llm.Request, jobID, status, reason, exitCode string) {
+	t.Helper()
+	blocks := regexp.MustCompile(`(?s)<job-notification\b[^>]*>.*?</job-notification>`)
+	for _, message := range req.Messages {
+		for _, block := range blocks.FindAllString(message.Text(), -1) {
+			if !strings.Contains(block, `job_id="`+jobID+`"`) {
+				continue
+			}
+			header := strings.SplitN(block, ">", 2)[0]
+			for _, fact := range []string{`event="` + status + `"`, `job_type="shell"`, `status="` + status + `"`, `reason="` + reason + `"`, `exit_code="` + exitCode + `"`} {
+				if !strings.Contains(header, fact) {
+					t.Fatalf("completion %s lacks %s: %s", jobID, fact, block)
+				}
+			}
+			return
+		}
+	}
+	t.Fatalf("designated provider request lacks completion %s", jobID)
+}
+
 // TestOneShotDrainDeliversCompletionThatLandsDuringTheFinalAnswer is the #865
 // regression. The model's final-answer request is built while a background
 // job is still running; the job finalizes before the reply arrives, so the
@@ -307,6 +304,7 @@ func TestOneShotDrainDeliversCompletionThatLandsDuringTheFinalAnswer(t *testing.
 		func(llm.Request) llm.Response { return finalResponse(finalAnswer) },
 	}}
 	sess = newSession(t, withAdapter(adapter), withConfig(SessionConfig{
+		StateDir:        t.TempDir(),
 		TurnEndsProcess: true,
 	}))
 	jobID, releaseShell = startControlledBackgroundShell(t, sess, "controlled build")
@@ -322,7 +320,7 @@ func TestOneShotDrainDeliversCompletionThatLandsDuringTheFinalAnswer(t *testing.
 	if res != firstAnswer {
 		t.Fatalf("ProcessInput result = %q, want %q", res, firstAnswer)
 	}
-	drained, err := sess.DrainJobTree(ctx)
+	drained, err := sess.DrainJobTree(ctx, drainWakeForTest(sess))
 	if err != nil {
 		t.Fatalf("DrainJobTree: %v", err)
 	}
@@ -336,11 +334,10 @@ func TestOneShotDrainDeliversCompletionThatLandsDuringTheFinalAnswer(t *testing.
 	if requestsContain(reqs[:1], "<job-notification") {
 		t.Fatal("the final-answer request already carried the completion; the window was not opened")
 	}
-	if last := lastMessageText(reqs[1]); !strings.Contains(last, "<job-notification") || !strings.Contains(last, jobID) {
-		t.Fatalf("the notification turn did not carry the completion: %q", last)
-	}
+	requireTerminalShellCompletionInRequest(t, reqs[1], jobID, "command_exited_nonzero", "exit_nonzero", "143")
 	requireNotificationState(t, sess.jobManager, jobID, jobstore.NotifyDelivered)
 	requireNeverConsumed(t, sess.jobManager, jobID)
+	requireOwnedDrainAttentionObservedOnce(t, sess, stableShellAttentionID(jobID, loadShellRecord(t, sess.jobManager, jobID).TerminalGen))
 	if warnings := collectStallWarnings(sess); len(warnings) != 0 {
 		t.Fatalf("want no warnings, got %+v", warnings)
 	}
@@ -373,6 +370,7 @@ func TestOneShotDrainKeepsDrainingWhenTheDeliveredCompletionStartsMoreWork(t *te
 		func(llm.Request) llm.Response { return finalResponse(finalAnswer) },
 	}}
 	sess = newSession(t, withAdapter(adapter), withConfig(SessionConfig{
+		StateDir:        t.TempDir(),
 		TurnEndsProcess: true,
 	}))
 	firstJobID, releaseShell = startControlledBackgroundShell(t, sess, "controlled build")
@@ -392,7 +390,7 @@ func TestOneShotDrainKeepsDrainingWhenTheDeliveredCompletionStartsMoreWork(t *te
 	// job can never meet the undisposed-background-job announcement while it
 	// is still finalizing; its wake delivers it.
 	recheck := make(chan time.Time)
-	drained, err := sess.drainJobTreeWith(ctx, recheck, sess.kickDriveTree, sess.ProcessInputKind)
+	drained, err := sess.drainJobTreeWith(ctx, drainWakeForTest(sess), recheck, sess.kickDriveTree, sess.ProcessInputKind)
 	if err != nil {
 		t.Fatalf("drain: %v", err)
 	}
@@ -403,22 +401,34 @@ func TestOneShotDrainKeepsDrainingWhenTheDeliveredCompletionStartsMoreWork(t *te
 	if len(reqs) != 4 {
 		t.Fatalf("model calls = %d, want 4: answer, first completion, tool result, second completion", len(reqs))
 	}
-	if last := lastMessageText(reqs[1]); !strings.Contains(last, "<job-notification") || !strings.Contains(last, firstJobID) {
-		t.Fatalf("request 2 did not carry the first completion: %q", last)
+	if requestsContain(reqs[:1], "<job-notification") {
+		t.Fatal("the initial request already carried a completion")
 	}
-	last := lastMessageText(reqs[3])
-	match := notificationJobIDPattern.FindStringSubmatch(last)
-	if !strings.Contains(last, "<job-notification") || match == nil {
-		t.Fatalf("request 4 did not carry the follow-up job's completion: %q", last)
+	requireTerminalShellCompletionInRequest(t, reqs[1], firstJobID, "command_exited_nonzero", "exit_nonzero", "143")
+	records, err := sess.jobManager.store.Load()
+	if err != nil {
+		t.Fatalf("load follow-up shell source: %v", err)
 	}
-	secondJobID := match[1]
-	if secondJobID == firstJobID {
-		t.Fatalf("request 4 re-delivered the first job %s instead of the follow-up job", firstJobID)
+	var followUpIDs []string
+	for id, record := range records {
+		if id != firstJobID && record.Type == jobstore.JobShell && record.OwnerSessionID == sess.ID() {
+			followUpIDs = append(followUpIDs, id)
+		}
 	}
+	if len(followUpIDs) != 1 {
+		t.Fatalf("follow-up owned shell source IDs = %v, want exactly one", followUpIDs)
+	}
+	secondJobID := followUpIDs[0]
+	requireTerminalShellCompletionInRequest(t, reqs[3], secondJobID, "completed", "exit_zero", "0")
 	for _, id := range []string{firstJobID, secondJobID} {
 		requireNotificationState(t, sess.jobManager, id, jobstore.NotifyDelivered)
 		requireNeverConsumed(t, sess.jobManager, id)
 	}
+	// The first accepted turn remains in history through all three later
+	// requests. Each successful request truthfully covers it, without another
+	// acceptance or consumption. The follow-up source is new only in request 4.
+	requireTerminalAttentionRequestCoverage(t, sess, stableShellAttentionID(firstJobID, loadShellRecord(t, sess.jobManager, firstJobID).TerminalGen), []bool{false, true, true, true})
+	requireTerminalAttentionRequestCoverage(t, sess, stableShellAttentionID(secondJobID, loadShellRecord(t, sess.jobManager, secondJobID).TerminalGen), []bool{false, false, false, true})
 	if warnings := collectStallWarnings(sess); len(warnings) != 0 {
 		t.Fatalf("want no warnings, got %+v", warnings)
 	}
@@ -435,6 +445,7 @@ func TestOneShotDrainReturnsAfterAFinalAnswerThatSawEveryCompletion(t *testing.T
 		func(llm.Request) llm.Response { return finalResponse(answer) },
 	}}
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
+		StateDir:        t.TempDir(),
 		TurnEndsProcess: true,
 	}))
 	jobID, releaseShell := startControlledBackgroundShell(t, sess, "controlled build")
@@ -453,7 +464,7 @@ func TestOneShotDrainReturnsAfterAFinalAnswerThatSawEveryCompletion(t *testing.T
 	if res != answer {
 		t.Fatalf("notification turn result = %q, want %q", res, answer)
 	}
-	drained, err := sess.DrainJobTree(ctx)
+	drained, err := sess.DrainJobTree(ctx, drainWakeForTest(sess))
 	if err != nil {
 		t.Fatalf("DrainJobTree: %v", err)
 	}
@@ -469,18 +480,249 @@ func TestOneShotDrainReturnsAfterAFinalAnswerThatSawEveryCompletion(t *testing.T
 	}
 	requireNotificationState(t, sess.jobManager, jobID, jobstore.NotifyDelivered)
 	requireNeverConsumed(t, sess.jobManager, jobID)
+	requireOwnedDrainAttentionObservedOnce(t, sess, stableShellAttentionID(jobID, loadShellRecord(t, sess.jobManager, jobID).TerminalGen))
 	if warnings := collectStallWarnings(sess); len(warnings) != 0 {
 		t.Fatalf("want no warnings, got %+v", warnings)
 	}
 }
 
-// TestOneShotDrainDiscardsWatchFramesQueuedBeforeTheFinalAnswer: a watch frame
+func TestEphemeralNotificationDrainShell(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response { return finalResponse("ephemeral-initial-731a") },
+			func(llm.Request) llm.Response { return finalResponse("ephemeral-observed-731a") },
+		}}
+		// Intentionally no StateDir. This supported mode must not create one.
+		s := newSession(t, withAdapter(adapter), withConfig(SessionConfig{TurnEndsProcess: true}), withoutGitSnapshot())
+		wake, hint := newDrainWake()
+		s.SetNotifyFunc(hint)
+		if _, err := s.ProcessInput(context.Background(), "start ephemeral run", nil); err != nil {
+			t.Fatal(err)
+		}
+		jobID, release := startControlledBackgroundShell(t, s, "ephemeral controlled shell")
+		done, _ := shellDoneChannel(s.jobManager, jobID)
+		// On RED, the production finalizer retries a missing-custody error.
+		// Release only failed-test cleanup waiters, never the successful path.
+		t.Cleanup(func() {
+			if t.Failed() {
+				_ = s.jobManager.store.Close()
+				s.jobManager.mu.Lock()
+				if run := s.jobManager.running[jobID]; run != nil {
+					run.closeDone()
+				}
+				delete(s.jobManager.running, jobID)
+				s.jobManager.mu.Unlock()
+				// Teardown only: let an already sleeping failed finalizer
+				// observe the closed source before the bubble exits.
+				time.Sleep(shellFinalizeMaxRetryDelay)
+			}
+		})
+		before := time.Now()
+		release()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			code := 143
+			err := s.jobManager.finalize(jobID, jobstore.StatusCommandExitedNonzero, "exit_nonzero", &code)
+			t.Fatalf("ephemeral shell did not finalize before clock advancement: %v", err)
+		}
+		result, err := s.DrainJobTree(context.Background(), wake)
+		if err != nil || result != "ephemeral-observed-731a" {
+			t.Fatalf("ephemeral drain = %q, %v", result, err)
+		}
+		requests := adapter.Requests()
+		if len(requests) != 2 {
+			t.Fatalf("provider requests = %d, want initial and one observation", len(requests))
+		}
+		requireTerminalShellCompletionInRequest(t, requests[1], jobID, "command_exited_nonzero", "exit_nonzero", "143")
+		record := loadShellRecord(t, s.jobManager, jobID)
+		id := stableShellAttentionID(jobID, record.TerminalGen)
+		s.attentionMu.Lock()
+		fold, foldErr := s.delegateAttentionFoldLocked()
+		s.attentionMu.Unlock()
+		if foldErr != nil || len(fold.order) != 1 || fold.order[0] != id || len(fold.observed) != 1 || fold.resolutions[id] != delegateAttentionConsumed {
+			t.Fatalf("ephemeral custody/observation = %#v, %v", fold, foldErr)
+		}
+		s.mu.Lock()
+		acceptances, receipts := 0, 0
+		for _, turn := range s.history {
+			if turn.AttentionID == id {
+				acceptances++
+			}
+			for _, observed := range turn.ObservedNotificationIDs {
+				if observed == id {
+					receipts++
+				}
+			}
+		}
+		s.mu.Unlock()
+		if acceptances != 1 || receipts != 1 {
+			t.Fatalf("raw lifetime acceptance/receipt counts = %d/%d, want 1/1", acceptances, receipts)
+		}
+		requireNotificationState(t, s.jobManager, jobID, jobstore.NotifyDelivered)
+		requireNeverConsumed(t, s.jobManager, jobID)
+		hint()
+		if _, err := s.DrainJobTree(context.Background(), wake); err != nil {
+			t.Fatal(err)
+		}
+		if len(adapter.Requests()) != 2 || !time.Now().Equal(before) || s.stateDir != "" || s.attachedTranscript() != nil {
+			t.Fatal("phantom request, clock pumping or invented persistence")
+		}
+	})
+}
+
+func TestEphemeralNotificationFailureCompactionAndDuplicate(t *testing.T) {
+	base := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return finalResponse("initial") },
+		func(req llm.Request) llm.Response {
+			if !requestContainsText(req, "ephemeral-pending-731a") {
+				t.Error("successful retry lost pending content during compaction")
+			}
+			return finalResponse("observed")
+		},
+	}}
+	adapter := &failingRequestAdapter{fakeAdapter: base, failAt: 1, err: llm.ErrorFromHTTPStatus("openai", 401, "fixture failure", nil, nil)}
+	s := newSession(t, withAdapter(adapter), withoutGitSnapshot())
+	wake, hint := newDrainWake()
+	s.SetNotifyFunc(hint)
+	if _, err := s.ProcessInput(context.Background(), "initialize", nil); err != nil {
+		t.Fatal(err)
+	}
+	n := notification{ID: "ephemeral-id-731a", Message: llm.User("ephemeral-pending-731a")}
+	for range 2 {
+		if err := s.enqueueNotification(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err == nil {
+		t.Fatal("provider failure unexpectedly succeeded")
+	}
+	s.attentionMu.Lock()
+	fold, err := s.delegateAttentionFoldLocked()
+	s.attentionMu.Unlock()
+	if err != nil || len(fold.order) != 1 || len(fold.pendingIDs()) != 1 || len(fold.observed) != 0 || len(fold.resolutions) != 0 {
+		t.Fatalf("failed response credited or duplicated custody: %#v, %v", fold, err)
+	}
+	// Use the real compaction publication transaction with a summary that omits
+	// the accepted turn. Its pending-attention restoration must consult the
+	// canonical lifetime fold, not reconstruct from this replacement history.
+	s.mu.Lock()
+	snapLen, revision := len(s.history), s.historyRevision
+	appends := s.persistedAppendLogBase + len(s.persistedAppendLog)
+	s.mu.Unlock()
+	folded := []schema.Turn{{Kind: schema.TurnSteering, Message: llm.User("compacted summary")}}
+	_, _, commit, _ := s.stageCompactionEffects(context.Background(), &folded)
+	published, ok, refusal := s.publishFoldTransaction(snapLen, revision, appends, folded, commit, nil)
+	if !ok || refusal != nil {
+		t.Fatalf("compaction publish = %v, %v", ok, refusal)
+	}
+	retained := 0
+	for _, turn := range published {
+		if turn.AttentionID == n.ID && requestContainsText(llm.Request{Messages: []llm.Message{turn.Message}}, "ephemeral-pending-731a") {
+			retained++
+		}
+	}
+	if retained != 1 {
+		t.Fatalf("pending turns retained across compaction = %d, want 1", retained)
+	}
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.enqueueNotification(n); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DrainJobTree(context.Background(), wake); err != nil {
+		t.Fatal(err)
+	}
+	adapter.callsMu.Lock()
+	calls := adapter.calls
+	adapter.callsMu.Unlock()
+	s.attentionMu.Lock()
+	fold, err = s.delegateAttentionFoldLocked()
+	s.attentionMu.Unlock()
+	if calls != 3 || len(base.Requests()) != 2 || err != nil || len(fold.order) != 1 || len(fold.observed) != 1 || fold.resolutions[n.ID] != delegateAttentionConsumed || len(fold.pendingIDs()) != 0 {
+		t.Fatalf("retry/duplicate observation: calls=%d successful=%d fold=%#v err=%v", calls, len(base.Requests()), fold, err)
+	}
+}
+
+func TestConfiguredNotificationWriterMissingRemainsRetryable(t *testing.T) {
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withoutGitSnapshot(), withSteps(
+		func(llm.Request) llm.Response { return finalResponse("initial") },
+		func(llm.Request) llm.Response { return finalResponse("observed after writer repair") },
+	))
+	if _, err := s.ProcessInput(context.Background(), "initialize", nil); err != nil {
+		t.Fatal(err)
+	}
+	writer := s.attachedTranscript()
+	s.attentionMu.Lock()
+	s.mu.Lock()
+	s.setTranscriptLocked(nil)
+	s.mu.Unlock()
+	s.attentionMu.Unlock()
+	n := notification{ID: "configured-writer-missing-731a", Message: llm.User("must not fall back")}
+	err := s.enqueueNotification(n)
+	s.attentionMu.Lock()
+	credited := len(s.attentionFoldCursor.fold.order)
+	s.mu.Lock()
+	s.setTranscriptLocked(writer)
+	s.mu.Unlock()
+	s.attentionMu.Unlock()
+	if err == nil || credited != 0 {
+		t.Fatalf("configured missing writer fell back: credited=%d err=%v", credited, err)
+	}
+	if err := s.enqueueNotification(n); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	requireOwnedDrainAttentionObservedOnce(t, s, n.ID)
+}
+
+func requireTerminalAttentionRequestCoverage(t *testing.T, s *Session, id string, want []bool) {
+	t.Helper()
+	accepted, consumed := 0, 0
+	var coverage []bool
+	for _, entry := range notificationRawEntries(t, s.TranscriptPath()) {
+		turn := entry.Turn
+		if turn.AttentionID == id {
+			accepted++
+		}
+		if turn.Kind == schema.TurnAssistant && turn.Message.Role == llm.RoleAssistant {
+			count := 0
+			for _, observed := range turn.ObservedNotificationIDs {
+				if observed == id {
+					count++
+				}
+			}
+			if count > 1 {
+				t.Fatalf("duplicate ID within one successful receipt: %s", id)
+			}
+			coverage = append(coverage, count == 1)
+		}
+		if resolution := turn.AttentionResolution; resolution != nil && resolution.AttentionID == id {
+			if resolution.Disposition != string(delegateAttentionConsumed) {
+				t.Fatalf("attention %s was discarded", id)
+			}
+			consumed++
+		}
+	}
+	if accepted != 1 || consumed != 1 || len(coverage) != len(want) {
+		t.Fatalf("attention %s acceptance=%d consumption=%d coverage=%v, want 1/1/%v", id, accepted, consumed, coverage, want)
+	}
+	for i := range want {
+		if coverage[i] != want[i] {
+			t.Fatalf("attention %s exact successful request coverage=%v, want %v", id, coverage, want)
+		}
+	}
+}
+
+// TestOneShotDrainPreservesWatchFramesQueuedBeforeTheFinalAnswer: a watch frame
 // (an output match the model asked for) and the job's completion both land
-// during the final answer's generation. The completion is news the model never
-// heard and is delivered on one extra turn; the watch frame is work the model
-// already declined to wait for, so the drain discards it on entry and records
-// it in a warning, never delivering it.
-func TestOneShotDrainDiscardsWatchFramesQueuedBeforeTheFinalAnswer(t *testing.T) {
+// during the final answer's generation. Neither was presented in that answer's
+// request, so the drain preserves and delivers both on one extra turn.
+func TestOneShotDrainPreservesWatchFramesQueuedBeforeTheFinalAnswer(t *testing.T) {
 	t.Parallel()
 	const firstAnswer = "first answer, written before the build finished"
 	const finalAnswer = "FINAL-ANSWER: the build passed"
@@ -494,14 +736,18 @@ func TestOneShotDrainDiscardsWatchFramesQueuedBeforeTheFinalAnswer(t *testing.T)
 			// the reply.
 			feedJob(sess.jobManager, jobID, []byte("READY\n"))
 			finalizeShell(t, sess.jobManager, jobID, releaseShell)
-			if n := sess.peekNotifications(); n < 2 {
-				t.Errorf("queued notifications before the reply = %d, want the watch frame and the completion", n)
+			if n := sess.peekNotifications(); n < 1 {
+				t.Errorf("queued shell completions before the reply = %d, want 1", n)
+			}
+			if ids, err := sess.pendingNotificationIDs(); err != nil || len(ids) == 0 {
+				t.Errorf("produced watch lacks canonical custody: ids=%v err=%v", ids, err)
 			}
 			return finalResponse(firstAnswer)
 		},
 		func(llm.Request) llm.Response { return finalResponse(finalAnswer) },
 	}}
 	sess = newSession(t, withAdapter(adapter), withConfig(SessionConfig{
+		StateDir:        t.TempDir(),
 		TurnEndsProcess: true,
 	}))
 	jobID, releaseShell = startControlledBackgroundShell(t, sess, "controlled build")
@@ -528,30 +774,26 @@ func TestOneShotDrainDiscardsWatchFramesQueuedBeforeTheFinalAnswer(t *testing.T)
 		t.Fatalf("want no warnings before the drain, got %+v", early)
 	}
 
-	drained, err := sess.DrainJobTree(ctx)
+	drained, err := sess.DrainJobTree(ctx, drainWakeForTest(sess))
 	if err != nil {
 		t.Fatalf("DrainJobTree: %v", err)
 	}
 	if drained != finalAnswer {
 		t.Fatalf("drain result = %q, want %q", drained, finalAnswer)
 	}
-	warnings := collectStallWarnings(sess)
-	if len(warnings) != 1 {
-		t.Fatalf("warnings after the drain = %d, want exactly one recording the discarded watch frame: %+v", len(warnings), warnings)
-	}
-	if msg := warnings[0].Data.(events.WarningData).Message; !strings.Contains(msg, jobID) || !strings.Contains(msg, "watch notification") {
-		t.Fatalf("discard warning must name the job and say what was dropped, got: %q", msg)
+	if warnings := collectStallWarnings(sess); len(warnings) != 0 {
+		t.Fatalf("unexpected discard warnings: %+v", warnings)
 	}
 	reqs := adapter.Requests()
 	if len(reqs) != 2 {
-		t.Fatalf("model calls = %d, want exactly 2: the answer, then one turn carrying only the completion", len(reqs))
+		t.Fatalf("model calls = %d, want exactly 2: the answer, then one turn carrying the completion and watch frame", len(reqs))
 	}
 	last := lastMessageText(reqs[1])
 	if !strings.Contains(last, "<job-notification") || !strings.Contains(last, jobID) {
 		t.Fatalf("the notification turn did not carry the completion: %q", last)
 	}
-	if strings.Contains(last, `event="watch"`) {
-		t.Fatalf("the notification turn delivered a watch frame queued before the final answer: %q", last)
+	if !strings.Contains(last, `event="watch"`) {
+		t.Fatalf("the notification turn lost the produced watch frame: %q", last)
 	}
 	if p := sess.peekNotifications(); p != 0 {
 		t.Fatalf("queued notifications after the drain = %d, want 0", p)

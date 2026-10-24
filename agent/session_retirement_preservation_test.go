@@ -480,7 +480,7 @@ func awaitTreeQuiesced(t *testing.T, root *Session) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // TRIPWIRE: DrainJobTree returns on its real completion signal (no job notification, delegate attention, delivery or running child left); this ceiling sits orders of magnitude above the scripted in-process drain and only fires on a genuinely wedged tree.
 	defer cancel()
-	if _, err := root.DrainJobTree(ctx); err != nil {
+	if _, err := root.DrainJobTree(ctx, drainWakeForTest(root)); err != nil {
 		t.Fatalf("settle delegate tree before retirement: %v", err)
 	}
 }

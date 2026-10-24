@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/agent"
@@ -19,6 +20,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // requestFullText concatenates every request message's text, tool-call
@@ -146,12 +148,12 @@ func (e *shellExecutorEnvironment) StreamCommand(ctx context.Context, command, w
 func releaseOnDrainStart(t *testing.T, release func(), waitForCompletion func(*agent.Session)) {
 	t.Helper()
 	oldDrainJobTree := runDrainJobTree
-	runDrainJobTree = func(sess *agent.Session, ctx context.Context) (string, error) {
+	runDrainJobTree = func(sess *agent.Session, ctx context.Context, wake <-chan struct{}) (string, error) {
 		release()
 		if waitForCompletion != nil {
 			waitForCompletion(sess)
 		}
-		return oldDrainJobTree(sess, ctx)
+		return oldDrainJobTree(sess, ctx, wake)
 	}
 	t.Cleanup(func() {
 		release()
@@ -321,6 +323,83 @@ func delegateDrainScenario(t *testing.T, tweak func(*runConfig)) *scriptedProvid
 		t.Fatalf("child was SIGKILLed by Close() (stopped_by_parent) instead of draining to completion; stderr=%s", stderr.String())
 	}
 	return adapter
+}
+
+func TestRunDrainCompletionBeforeFallbackClock(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		executor := newHeldShellExecutor("completion-before-clock-731a", "shell-observed-731a", 0)
+		oldNew := runNewSession
+		runNewSession = func(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+			return oldNew(client, profile, &shellExecutorEnvironment{ExecutionEnvironment: env, executor: executor}, cfg)
+		}
+		t.Cleanup(func() { executor.releaseShell(); runNewSession = oldNew })
+		var observedAt time.Time
+		adapter := &scriptedProvider{name: "openai", steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				return scriptedToolCalls(scriptedShellCall("no-clock-shell", executor.command, "background"))
+			},
+			func(llm.Request) llm.Response {
+				return scriptedCommunicate("initial-no-clock-731a")
+			},
+			func(req llm.Request) llm.Response {
+				observedAt = time.Now()
+				if text := requestDeliveredText(req); !strings.Contains(text, "shell-observed-731a") || !strings.Contains(text, `status="completed"`) {
+					t.Errorf("completion missing from provider request: %s", text)
+				}
+				return scriptedCommunicate("final-no-clock-731a")
+			},
+		}}
+		// Startup captures every configured provider's model availability. Keep
+		// implicit local transports out of this clock-controlled fixture, rather
+		// than letting their HTTP keep-alive goroutines hold synctest open.
+		r, err := registry.Load(
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithSnapshot([]byte(`{"openai":{"id":"openai","npm":"@ai-sdk/openai","api":"https://api.openai.com/v1","models":{}}}`)),
+			registry.WithOverlay([]byte("[providers.openai]\nprotocol = \"openai-chat\"\n")),
+			registry.WithInstances(map[string]registry.Provider{"openai": scriptedInstance("openai")}),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		client := llm.NewClient(llm.WithRegistry(r))
+		client.Register(adapter)
+		client.SetDefaultProvider("openai")
+		if names := client.ProviderNames(); len(names) != 1 || names[0] != "openai" {
+			t.Fatalf("fixture providers = %v, want only openai", names)
+		}
+		oldLoad := runLoadClient
+		runLoadClient = func(string) (*llm.Client, error) { return client, nil }
+		t.Cleanup(func() { runLoadClient = oldLoad })
+		var stdout, stderr bytes.Buffer
+		done := make(chan error, 1)
+		workDir := t.TempDir()
+		go func() {
+			done <- run(context.Background(), runConfig{prompt: "start shell then observe its result", noDefaultMarketplaces: true, model: "openai/gpt-test", workDir: workDir, stdout: &stdout, stderr: &stderr})
+		}()
+		synctest.Wait()
+		if got := len(adapter.Requests()); got != 2 {
+			t.Fatalf("requests before release = %d, want 2", got)
+		}
+		before := time.Now()
+		executor.releaseShell()
+		synctest.Wait()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("run: %v, stderr: %s", err, stderr.String())
+			}
+		default:
+			t.Fatal("one-shot did not finish on the source wake")
+		}
+		if !observedAt.Equal(before) {
+			t.Fatalf("provider observed completion at %s, fallback clock was %s", observedAt, before)
+		}
+		if len(adapter.Requests()) != 3 || !strings.Contains(stdout.String(), "final-no-clock-731a") {
+			t.Fatalf("requests=%d stdout=%s", len(adapter.Requests()), stdout.String())
+		}
+	})
 }
 
 func TestRunDrainsManagedShellBeforeExit(t *testing.T) {

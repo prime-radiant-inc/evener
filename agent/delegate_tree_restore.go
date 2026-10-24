@@ -291,7 +291,8 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 			continue
 		}
 		covered := c.stopCoversLocked(id)
-		if len(shell.runningJobIDs) == 0 && (!covered || len(shell.pendingNotification) == 0) {
+		suppress := covered && !(c.stop.preserveNotifications && c.durable[id].Resumable)
+		if len(shell.runningJobIDs) == 0 && (!suppress || len(shell.pendingNotification) == 0) {
 			continue
 		}
 		plans.shellRepairs = append(plans.shellRepairs, delegateShellRepairPlan{
@@ -299,7 +300,7 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 			storePath:           filepath.Join(jobsDir(c.stateDir, c.durable[id].Descriptor.ChildSessionID), "jobs.jsonl"),
 			runningJobIDs:       append([]string(nil), shell.runningJobIDs...),
 			pendingNotification: append([]shellNotificationIdentity(nil), shell.pendingNotification...),
-			suppressOwnerNotify: covered,
+			suppressOwnerNotify: suppress,
 		})
 	}
 	if c.stop == nil {
@@ -315,6 +316,9 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
+		if stop.preserveNotifications && c.durable[id].Resumable {
+			continue
+		}
 		attention := append([]string(nil), evidence.attention[id]...)
 		// A wake noted after the evidence snapshot was taken is bound to this
 		// stop member exactly the same way: its transcript open is already
@@ -968,23 +972,24 @@ func (c *delegateTreeController) restorePendingStop(events []delegatestore.Event
 	}
 	previousLifecycle, outcome := classifyDelegateStopAdmission(stateAtAdmission, targetID, members)
 	c.stop = &delegateStopState{
-		requestSeq:        requestSeq,
-		targetID:          targetID,
-		previousLifecycle: previousLifecycle,
-		outcome:           outcome,
-		members:           members,
-		active:            make(map[delegateLease]struct{}),
-		starts:            make(map[uint64]struct{}),
-		work:              make(map[delegateWorkToken]string),
-		deliveries:        make(map[delegateDeliveryToken]struct{}),
-		quietClaims:       make(map[uint64]struct{}),
-		steeringClaims:    make(map[uint64]struct{}),
-		modelClaims:       make(map[uint64]struct{}),
-		settlementClaims:  make(map[uint64]struct{}),
-		watchEnqueues:     make(map[uint64]struct{}),
-		watchDeliveries:   make(map[uint64]struct{}),
-		done:              make(chan struct{}),
-		progress:          make(chan struct{}, 1),
+		requestSeq:            requestSeq,
+		targetID:              targetID,
+		preserveNotifications: c.durable[targetID].PendingStopPreservesNotifications,
+		previousLifecycle:     previousLifecycle,
+		outcome:               outcome,
+		members:               members,
+		active:                make(map[delegateLease]struct{}),
+		starts:                make(map[uint64]struct{}),
+		work:                  make(map[delegateWorkToken]string),
+		deliveries:            make(map[delegateDeliveryToken]struct{}),
+		quietClaims:           make(map[uint64]struct{}),
+		steeringClaims:        make(map[uint64]struct{}),
+		modelClaims:           make(map[uint64]struct{}),
+		settlementClaims:      make(map[uint64]struct{}),
+		watchEnqueues:         make(map[uint64]struct{}),
+		watchDeliveries:       make(map[uint64]struct{}),
+		done:                  make(chan struct{}),
+		progress:              make(chan struct{}, 1),
 	}
 	return nil
 }

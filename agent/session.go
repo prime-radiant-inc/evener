@@ -1032,14 +1032,15 @@ type Session struct {
 
 	// transcript writer (nil when StateDir is empty, or when opening it failed)
 	transcript *transcript.Writer
-	// attentionMu serializes transcript-backed attention resolution for this
-	// resident Session. The transcript remains the only stored attention state.
+	// attentionMu serializes attention acceptance, observation and resolution
+	// before s.mu. Persisted sessions derive attention from their transcript.
 	attentionMu             sync.Mutex
 	attentionCallbacks      int // guarded by attentionMu; includes pre-retirement-attachment callbacks
 	delegateDeliveryMu      sync.Mutex
 	delegateDeliveryCommits map[string][]*delegateToolResultCommit
-	// attentionFoldCursor is the incremental fold of this Session's own
-	// transcript behind its attention reads. Guarded by attentionMu.
+	// attentionFoldCursor caches this Session's transcript fold. Only when
+	// StateDir is intentionally empty, after transcript initialization, its
+	// fold is canonical for this lifetime, not for restart. Guarded by attentionMu.
 	attentionFoldCursor delegateAttentionFoldCursor
 	// notificationSchedule shares the input lifetime's s.mu. It holds only
 	// dispatch/recovery state, never message IDs or bodies.
@@ -2502,6 +2503,20 @@ func (s *Session) recordTranscriptLocked(t schema.Turn, door transcript.Door, pl
 	if err != nil && writer.Poisoned() {
 		// The writer refuses everything from here: a served session stops.
 		_ = s.failClosed(errTranscriptRefusesRecords())
+	}
+	// A nil writer is intentional only with empty StateDir. Keep successful
+	// response receipts in the same canonical lifetime fold, without claiming
+	// a disk record. Configured persistence failures never take this branch.
+	s.mu.Lock()
+	ephemeral := s.transcriptReady && s.stateDir == "" && s.id != ""
+	s.mu.Unlock()
+	if err == nil && ephemeral && (t.AttentionID != "" || len(t.ObservedNotificationIDs) != 0 || t.AttentionResolution != nil || len(t.DelegateDeliveryCommits) != 0) {
+		fold, _ := s.delegateAttentionFoldLocked()
+		var next delegateAttentionFold
+		next, err = extendDelegateAttention(fold, []transcript.Entry{{Turn: t}})
+		if err == nil {
+			s.attentionFoldCursor.fold = next
+		}
 	}
 	s.mu.Lock()
 	s.noteRecordedLocked(rec)

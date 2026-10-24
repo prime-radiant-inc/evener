@@ -71,6 +71,8 @@ type jobManager struct {
 	watchActivityReceivers map[string]struct{}
 	watchNotifyMu          sync.Mutex
 	watchCallbackMu        sync.Mutex
+	watchProductionFenced  bool
+	watchCallbacksDone     chan struct{}
 	watchPersistMu         sync.Mutex
 	// watchPersistDone is non-nil while one watch-journal transition owns the
 	// process-local serialization token. Waiters observe it under watchPersistMu
@@ -82,9 +84,8 @@ type jobManager struct {
 	store            *jobstore.Store
 	running          map[string]*runningJob
 	watches          map[watchKey]*watchConfig
-	// watchCallbacks counts fired one-shot callbacks between removing their
-	// registration and enqueueing the notification. Admission treats a
-	// positive count as outstanding watch work. Guarded by jm.mu.
+	// watchCallbacks counts entered source callbacks through persistence and
+	// routing. Guarded by jm.mu, with entry/exit serialized by watchCallbackMu.
 	watchCallbacks int
 	terminalFlush  map[*watchConfig]bool
 	// watchHistory is a bounded, latest-trimmed ring of watches that have left
@@ -1770,6 +1771,7 @@ func (jm *jobManager) finalizeKeptSync(run *runningJob, status jobstore.Status, 
 	_ = run.output.Close()
 	run.delegateShell.finish()
 	run.closeDoneDurable()
+	jm.kick()
 	return nil
 }
 

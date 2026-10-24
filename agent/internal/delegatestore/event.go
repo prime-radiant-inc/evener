@@ -80,7 +80,8 @@ type ResumabilityClosed struct {
 }
 
 type SubtreeStopRequested struct {
-	TargetDelegateID string `json:"target_delegate_id"`
+	TargetDelegateID      string `json:"target_delegate_id"`
+	PreserveNotifications bool   `json:"preserve_notifications,omitempty"`
 }
 
 type SubtreeStopCompleted struct {

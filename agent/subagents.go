@@ -82,9 +82,11 @@ var rootOnlyJobPresenceTools = []string{"delegate"}
 var rootOnlyWorktreeTools = []string{"manage_worktree"}
 
 type subagent struct {
-	id   string
-	sess *Session
-	emit func(events.EventKind, events.EventData)
+	id                 string
+	sess               *Session
+	emit               func(events.EventKind, events.EventData)
+	drainWake          <-chan struct{}
+	parentResourceWake func()
 
 	mu                    sync.Mutex
 	running               bool
@@ -1288,7 +1290,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	// parent-side analog of serve.go's SetNotifyFunc on the root — the child's
 	// The exact child's common readiness callback enters the existing leased
 	// delegate admission adapter. No parent provider request selects it.
-	subSess.SetNotifyFunc(func() { s.driveStableDelegateAttention(sub) })
+	s.installDelegateNotify(sub)
 
 	// Subagent execution must outlive the parent tool-call context.
 	// The parent may stop waiting, finish its input, or time out while the
@@ -1635,7 +1637,6 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	hookAvailable := true
 	var res string
 	var err error
-	var restoreParentDriveNotify func()
 	var finalization activationFinalization
 	var finish delegateFinish
 	var noActionClaim *delegateSettlementClaim
@@ -1691,14 +1692,10 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			hookAvailable = false
 			res, err = a.runSubagentStopHook(ctx, res, err, a.followUpProvenance(inputProvenance))
 		}
-		restoreParentDriveNotify = nil
 		if err == nil {
-			finalization, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
+			finalization, err = a.drainForFinalization(ctx, res)
 			res = finalization.Text
 			if err == nil && finalization.Disposition == activationYielded {
-				if restoreParentDriveNotify != nil {
-					a.sess.SetNotifyFunc(restoreParentDriveNotify)
-				}
 				if yieldErr := a.yieldActivation(ctx, finalization.Checkpoint); yieldErr == nil {
 					return
 				} else {
@@ -1713,10 +1710,6 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				err = errors.Join(err, decisionErr)
 			} else if decision == delegateCompletionNeedsNudge {
 				nudgeAvailable = false
-				if restoreParentDriveNotify != nil {
-					a.sess.SetNotifyFunc(restoreParentDriveNotify)
-					restoreParentDriveNotify = nil
-				}
 				a.mu.Lock()
 				a.finalizing = false
 				a.mu.Unlock()
@@ -1737,12 +1730,9 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 				case delegateSupervisionSuppress:
 				}
 				if err == nil {
-					finalization, restoreParentDriveNotify, err = a.drainForFinalization(ctx, res)
+					finalization, err = a.drainForFinalization(ctx, res)
 					res = finalization.Text
 					if err == nil && finalization.Disposition == activationYielded {
-						if restoreParentDriveNotify != nil {
-							a.sess.SetNotifyFunc(restoreParentDriveNotify)
-						}
 						if yieldErr := a.yieldActivation(ctx, finalization.Checkpoint); yieldErr == nil {
 							return
 						} else {
@@ -1788,9 +1778,6 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			break
 		}
 		if continueRun {
-			if restoreParentDriveNotify != nil {
-				a.sess.SetNotifyFunc(restoreParentDriveNotify)
-			}
 			a.mu.Lock()
 			a.finalizing = false
 			a.settlementClaimed = false
@@ -1908,13 +1895,10 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 			a.sess.emit(events.EventWarning, warningDataFromError("delegate generation settlement incomplete", finishErr))
 		}
 	}
-	if restoreParentDriveNotify != nil {
-		a.sess.SetNotifyFunc(restoreParentDriveNotify)
-	}
 	a.mu.Lock()
 	a.finalizing = false
 	a.mu.Unlock()
-	if restoreParentDriveNotify != nil && a.sess.peekNotifications() > 0 {
+	if a.sess.peekNotifications() > 0 {
 		a.sess.notify()
 	}
 	if stableRun && a.sess.delegateController != nil {
@@ -1943,6 +1927,9 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	}
 	if done != nil {
 		close(done)
+	}
+	if a.parentResourceWake != nil {
+		a.parentResourceWake()
 	}
 	if stableRun && a.sess.delegateController != nil {
 		// The schedule is armed whether or not the quiescence report
@@ -1978,10 +1965,7 @@ func (a *subagent) announceFinishedGeneration(lease delegateLease, announcements
 	a.sess.releaseFinishedGeneration(lease, a.sess)
 }
 
-func (a *subagent) drainForFinalization(ctx context.Context, result string) (activationFinalization, func(), error) {
-	a.sess.mu.Lock()
-	parentDriveNotify := a.sess.notifyFunc
-	a.sess.mu.Unlock()
+func (a *subagent) drainForFinalization(ctx context.Context, result string) (activationFinalization, error) {
 	drained := false
 	for {
 		a.sess.mu.Lock()
@@ -1990,13 +1974,13 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (act
 		if a.sess.delegateController != nil && report.called {
 			switch report.endReason {
 			case tool.CommunicateEndReasonBlocked:
-				return activationFinalization{Text: report.reply}, parentDriveNotify, nil
+				return activationFinalization{Text: report.reply}, nil
 			case tool.CommunicateEndReasonWaitingOnWork:
 				checkpoint, err := readWaitCheckpoint(transcriptPath(a.sess.stateDir, a.sess.id), a.sess.id)
 				if err == nil && (checkpoint == nil || checkpoint.ResumedByTurnID != "") {
 					err = errors.New("wait checkpoint is unavailable")
 				}
-				return activationFinalization{Text: result, Disposition: activationYielded, Checkpoint: checkpoint}, parentDriveNotify, err
+				return activationFinalization{Text: result, Disposition: activationYielded, Checkpoint: checkpoint}, err
 			}
 		}
 		if drained {
@@ -2005,9 +1989,9 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (act
 		a.mu.Lock()
 		a.finalizing = true
 		a.mu.Unlock()
-		text, err := a.sess.DrainJobTreeKeepingReport(ctx)
+		text, err := a.sess.DrainJobTreeKeepingReport(ctx, a.drainWake)
 		if err != nil {
-			return activationFinalization{Text: result}, parentDriveNotify, err
+			return activationFinalization{Text: result}, err
 		}
 		if text != "" {
 			result = text
@@ -2018,7 +2002,25 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (act
 	if reply, reported := a.sess.communicatedReply(); reported {
 		result = reply
 	}
-	return activationFinalization{Text: result}, parentDriveNotify, nil
+	return activationFinalization{Text: result}, nil
+}
+
+// installDelegateNotify publishes one callback for the runtime's whole life.
+// A running finalizer consumes the hint, idle and yielded runtimes still enter
+// the common admission adapter. The channel is never closed or reset by a run.
+func (s *Session) installDelegateNotify(sub *subagent) {
+	wake, hint := newDrainWake()
+	sub.drainWake = wake
+	sub.parentResourceWake = s.notify
+	sub.sess.SetNotifyFunc(func() {
+		hint()
+		sub.mu.Lock()
+		owned := sub.running || sub.finalizing
+		sub.mu.Unlock()
+		if !owned {
+			s.driveStableDelegateAttention(sub)
+		}
+	})
 }
 
 // runEndClass is the shared classification of a delegate run's terminal error.

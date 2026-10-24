@@ -2896,7 +2896,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		endedAt:          &now,
 		stableDescriptor: &stableDescriptor,
 	}
-	child.SetNotifyFunc(func() { s.driveStableDelegateAttention(sub) })
+	s.installDelegateNotify(sub)
 	return sub, true, nil
 }
 

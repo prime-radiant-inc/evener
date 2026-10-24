@@ -341,9 +341,7 @@ func TestDrainAbandonsStopRequestedDelegateGoneUnresponsive(t *testing.T) {
 
 	// Completing the first window only arms the second continuous-stall
 	// window. It is not yet permission to abandon.
-	f.clk.Advance(DrainStallTimeout)
-	d.recheck <- time.Time{}
-	d.releaseKick(t)
+	d.advanceClock(t, f.root, f.clk, DrainStallTimeout)
 	d.assertParked(t, "first-window completion must arm, not abandon")
 	if f.root.childDrainAbandoned(f.child.ID()) {
 		t.Fatal("delegate was abandoned at first-window completion")
@@ -351,23 +349,17 @@ func TestDrainAbandonsStopRequestedDelegateGoneUnresponsive(t *testing.T) {
 
 	// Just before the second boundary the complete second window has still
 	// not elapsed.
-	f.clk.Advance(DrainStallTimeout - time.Nanosecond)
-	d.recheck <- time.Time{}
-	d.releaseKick(t)
+	d.advanceClock(t, f.root, f.clk, DrainStallTimeout-time.Nanosecond)
 	d.assertParked(t, "the drain returned before the second full window elapsed")
 
 	// At the exact second boundary the full interval has completed but the
 	// policy abandons only after the boundary, never by an inclusive shortcut.
-	f.clk.Advance(time.Nanosecond)
-	d.recheck <- time.Time{}
-	d.releaseKick(t)
+	d.advanceClock(t, f.root, f.clk, time.Nanosecond)
 	d.assertParked(t, "the exact second boundary is not after the grace period")
 
 	// Cross the second boundary on the fake clock. No elapsed wall time is a
 	// behavior oracle: the drain's own completion signal is the positive edge.
-	f.clk.Advance(time.Nanosecond)
-	d.recheck <- time.Time{}
-	d.releaseKick(t)
+	d.advanceClock(t, f.root, f.clk, time.Nanosecond)
 
 	select {
 	case <-d.done:
@@ -418,32 +410,22 @@ func TestDrainNeverStoppedDelegateNeedsTwoContinuousWindows(t *testing.T) {
 	d.releaseKick(t)
 	d.assertParked(t, "a fresh one-shot drain must wait for its first grace window")
 
-	f.clk.Advance(DrainStallTimeout - time.Nanosecond)
-	d.recheck <- time.Time{}
-	d.releaseKick(t)
+	d.advanceClock(t, f.root, f.clk, DrainStallTimeout-time.Nanosecond)
 	d.assertParked(t, "a never-stopped delegate was abandoned just before window one completed")
 
-	f.clk.Advance(time.Nanosecond)
-	d.recheck <- time.Time{}
-	d.releaseKick(t)
+	d.advanceClock(t, f.root, f.clk, time.Nanosecond)
 	d.assertParked(t, "window-one completion must not abandon a never-stopped delegate")
 	if f.root.childDrainAbandoned(f.child.ID()) {
 		t.Fatal("never-stopped delegate was abandoned at the first boundary")
 	}
 
-	f.clk.Advance(DrainStallTimeout - time.Nanosecond)
-	d.recheck <- time.Time{}
-	d.releaseKick(t)
+	d.advanceClock(t, f.root, f.clk, DrainStallTimeout-time.Nanosecond)
 	d.assertParked(t, "a never-stopped delegate was abandoned before window two completed")
 
-	f.clk.Advance(time.Nanosecond)
-	d.recheck <- time.Time{}
-	d.releaseKick(t)
+	d.advanceClock(t, f.root, f.clk, time.Nanosecond)
 	d.assertParked(t, "the exact second boundary must not bypass structured abandonment")
 
-	f.clk.Advance(time.Nanosecond)
-	d.recheck <- time.Time{}
-	d.releaseKick(t)
+	d.advanceClock(t, f.root, f.clk, time.Nanosecond)
 	<-d.done
 	if d.err != nil {
 		t.Fatalf("drain after two windows: %v", d.err)
@@ -470,13 +452,9 @@ func TestDrainOldStopRequestStillGetsAFullSecondWindow(t *testing.T) {
 		t.Fatal("the first drain pass must arm, not abandon, an old stop request")
 	}
 
-	f.clk.Advance(DrainStallTimeout)
-	d.recheck <- time.Time{}
-	d.releaseKick(t)
+	d.advanceClock(t, f.root, f.clk, DrainStallTimeout)
 	d.assertParked(t, "the exact end of the post-drain window abandoned early")
-	f.clk.Advance(time.Nanosecond)
-	d.recheck <- time.Time{}
-	d.releaseKick(t)
+	d.advanceClock(t, f.root, f.clk, time.Nanosecond)
 	<-d.done
 	if !f.root.childDrainAbandoned(f.child.ID()) {
 		t.Fatal("old stop request was not abandoned after its full post-drain window")
@@ -526,9 +504,7 @@ func TestDrainProgressRestartsSecondContinuousWindow(t *testing.T) {
 	d.releaseKick(t)
 	d.assertParked(t, "fresh drain did not park")
 
-	f.clk.Advance(DrainStallTimeout)
-	d.recheck <- time.Time{}
-	d.releaseKick(t)
+	d.advanceClock(t, f.root, f.clk, DrainStallTimeout)
 	d.assertParked(t, "first window did not park in the second phase")
 	if !f.root.childDrainGracePending(f.child.ID()) {
 		t.Fatal("precondition: first window did not arm the second")
@@ -538,21 +514,18 @@ func TestDrainProgressRestartsSecondContinuousWindow(t *testing.T) {
 	f.root.enqueueJobNotificationAndNotify(jobNotification{JobID: "job_progress", Status: "completed"})
 	d.releaseKick(t)
 	<-progressed
-	// The successful notification turn continues directly into the next pass;
-	// release that pass and confirm it parks on the restarted second window.
+	// Confirm the restarted second window through a producer hint. A completed
+	// notification turn no longer causes unconditional fan-out on its next pass.
+	f.root.notify()
 	d.releaseKick(t)
 	d.assertParked(t, "drain progress did not leave the second phase waiting")
 
-	f.clk.Advance(DrainStallTimeout)
-	d.recheck <- time.Time{}
-	d.releaseKick(t)
+	d.advanceClock(t, f.root, f.clk, DrainStallTimeout)
 	d.assertParked(t, "exact restarted boundary abandoned early")
 	if f.root.childDrainAbandoned(f.child.ID()) {
 		t.Fatal("drain progress did not restart the second continuous window")
 	}
-	f.clk.Advance(time.Nanosecond)
-	d.recheck <- time.Time{}
-	d.releaseKick(t)
+	d.advanceClock(t, f.root, f.clk, time.Nanosecond)
 	<-d.done
 	if !f.root.childDrainAbandoned(f.child.ID()) {
 		t.Fatal("delegate was not abandoned after the restarted second window")
@@ -629,9 +602,7 @@ func TestDrainKeepsWaitingOnADelegateWhoseStopCompletes(t *testing.T) {
 
 	// Well past the bound in absolute time; the stop is settled, so there is
 	// nothing left to abandon.
-	f.clk.Advance(DrainStallTimeout * 4)
-	d.recheck <- time.Time{}
-	d.releaseKick(t)
+	d.advanceClock(t, f.root, f.clk, DrainStallTimeout*4)
 
 	if f.root.childDrainAbandoned(f.child.ID()) {
 		t.Fatal("a delegate that honoured its stop inside the bound was abandoned anyway")

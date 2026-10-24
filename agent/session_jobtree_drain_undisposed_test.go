@@ -89,7 +89,7 @@ func TestOneShotDrainEscalatesAndExitsOnAnUndisposedBackgroundJob(t *testing.T) 
 	defer cancel()
 	done := make(chan drainResult, 1)
 	go func() {
-		res, err := sess.drainJobTreeWith(ctx, feedRechecks(ctx), sess.kickDriveTree, sess.ProcessInputKind)
+		res, err := sess.drainJobTreeWith(ctx, drainWakeForTest(sess), feedRechecks(ctx), sess.kickDriveTree, sess.ProcessInputKind)
 		done <- drainResult{res, err}
 	}()
 	var result drainResult
@@ -190,7 +190,7 @@ func TestOneShotDrainAnnouncementStopResolves(t *testing.T) {
 	})
 	go func() {
 		defer close(finished)
-		res, err := sess.drainJobTreeWith(ctx, feedRechecks(ctx), sess.kickDriveTree, sess.ProcessInputKind)
+		res, err := sess.drainJobTreeWith(ctx, drainWakeForTest(sess), feedRechecks(ctx), sess.kickDriveTree, sess.ProcessInputKind)
 		done <- drainResult{res, err}
 	}()
 	// The fed rechecks advance the first-sighting arm and start the real
@@ -293,7 +293,7 @@ func TestOneShotDrainWaitsForForegroundShell(t *testing.T) {
 		<-shellFinished
 	})
 	go func() {
-		_, _ = sess.drainJobTreeWith(ctx, feedRechecks(ctx), kick, sess.ProcessInputKind)
+		_, _ = sess.drainJobTreeWith(ctx, drainWakeForTest(sess), feedRechecks(ctx), kick, sess.ProcessInputKind)
 		close(done)
 	}()
 	<-drainStarted
@@ -468,7 +468,7 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 			}
 			return sess.kickDriveTree(kickCtx)
 		}
-		res, err := sess.drainJobTreeWith(ctx, feedRechecks(ctx), kick, sess.ProcessInputKind)
+		res, err := sess.drainJobTreeWith(ctx, drainWakeForTest(sess), feedRechecks(ctx), kick, sess.ProcessInputKind)
 		done <- drainResult{res, err}
 	}()
 	// Registered after the join above so it runs before it: a t.Fatal between
@@ -628,7 +628,7 @@ func TestOneShotDrainKeepsAnswerWhenCompletionRidesAnnouncement(t *testing.T) {
 	}
 	done := make(chan drainResult, 1)
 	go func() {
-		res, err := sess.drainJobTreeWith(ctx, feedRechecks(ctx), sess.kickDriveTree, process)
+		res, err := sess.drainJobTreeWith(ctx, drainWakeForTest(sess), feedRechecks(ctx), sess.kickDriveTree, process)
 		done <- drainResult{res, err}
 	}()
 	var d drainResult
@@ -688,7 +688,7 @@ func TestOneShotDrainDeliversInsteadOfAnnouncingAFinalizingJob(t *testing.T) {
 	}
 	done := make(chan drainResult, 1)
 	go func() {
-		res, err := sess.drainJobTreeWith(ctx, recheck, sess.kickDriveTree, sess.ProcessInputKind)
+		res, err := sess.drainJobTreeWith(ctx, drainWakeForTest(sess), recheck, sess.kickDriveTree, sess.ProcessInputKind)
 		done <- drainResult{res, err}
 	}()
 	// The drain's first pass arms on the running job and parks; the release

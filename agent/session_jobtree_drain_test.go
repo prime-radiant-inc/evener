@@ -102,7 +102,7 @@ func TestDrainJobTreeNoJobsReturnsImmediately(t *testing.T) {
 	var res string
 	var err error
 	go func() {
-		res, err = sess.DrainJobTree(context.Background())
+		res, err = sess.DrainJobTree(context.Background(), drainWakeForTest(sess))
 		close(done)
 	}()
 
@@ -161,7 +161,7 @@ func TestDrainJobTreeRescansWhenAWakeLandsMidPass(t *testing.T) {
 
 	// recheck never fires: only the mid-pass wake may cause the second pass, so a
 	// lost wake cannot be masked by the periodic re-check.
-	res, err := sess.drainJobTreeWith(context.Background(), make(chan time.Time), kick, process)
+	res, err := sess.drainJobTreeWith(context.Background(), drainWakeForTest(sess), make(chan time.Time), kick, process)
 	if err != nil {
 		t.Fatalf("drainJobTreeWith: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestDrainJobTreeWaitsWhileSourceDeliveryPending(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := sess.drainJobTreeWith(ctx, make(chan time.Time), kick, process)
+		_, err := sess.drainJobTreeWith(ctx, drainWakeForTest(sess), make(chan time.Time), kick, process)
 		done <- err
 	}()
 	cancel()
@@ -348,7 +348,7 @@ func TestDrainJobTreeReturnsOnContextCancel(t *testing.T) {
 			defer cancel()
 			done := make(chan error, 1)
 			go func() {
-				_, err := sess.DrainJobTree(ctx)
+				_, err := sess.DrainJobTree(ctx, drainWakeForTest(sess))
 				done <- err
 			}()
 			cancel()
@@ -398,7 +398,7 @@ func TestCancelledManagedShellDrainStopsOnSessionClose(t *testing.T) {
 	kickCount := 0
 	drainDone := make(chan error, 1)
 	go func() {
-		_, err := sess.drainJobTreeWith(ctx, recheck, func(ctx context.Context) error {
+		_, err := sess.drainJobTreeWith(ctx, drainWakeForTest(sess), recheck, func(ctx context.Context) error {
 			kickCount++
 			select {
 			case kickEntered <- kickCount:
@@ -619,7 +619,7 @@ func TestDrainSettlesRootDurableOnlyPending(t *testing.T) {
 			// (a wedged drain, the regression this test guards against).
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			if _, err := sess.DrainJobTree(ctx); err != nil {
+			if _, err := sess.DrainJobTree(ctx, drainWakeForTest(sess)); err != nil {
 				t.Fatalf("DrainJobTree wedged on a durable-only pending: %v", err)
 			}
 			requireNotificationState(t, jm, tt.jobID, jobstore.NotifyDelivered)
@@ -677,7 +677,7 @@ func TestDrainSettlesAlreadyInjectedDurablePending(t *testing.T) {
 			// This bounds a wedged drain, not a production delivery deadline.
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			if _, err := sess.DrainJobTree(ctx); err != nil {
+			if _, err := sess.DrainJobTree(ctx, drainWakeForTest(sess)); err != nil {
 				t.Fatalf("DrainJobTree wedged on an already-injected durable pending: %v", err)
 			}
 			requireNotificationState(t, jm, tt.jobID, jobstore.NotifyDelivered)
@@ -768,7 +768,7 @@ func TestDrainSettlesChildDurableOnlyPending(t *testing.T) {
 			// regression this test guards against).
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			if _, err := root.DrainJobTree(ctx); err != nil {
+			if _, err := root.DrainJobTree(ctx, drainWakeForTest(root)); err != nil {
 				t.Fatalf("DrainJobTree wedged on a child's durable-only pending: %v", err)
 			}
 			requireNotificationState(t, child.jobManager, tt.jobID, jobstore.NotifyDelivered)
@@ -793,7 +793,7 @@ func TestDrainJobTreeBatchesQueuedShellNotifications(t *testing.T) {
 	// genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	result, err := sess.DrainJobTree(ctx)
+	result, err := sess.DrainJobTree(ctx, drainWakeForTest(sess))
 	if err != nil {
 		t.Fatalf("DrainJobTree: %v", err)
 	}
@@ -834,7 +834,7 @@ func TestDrainJobTreeConsumesRootDelegateAttentionBeforeCompletion(t *testing.T)
 		t.Fatalf("arm root attention after source settlement: %v", err)
 	}
 
-	result, err := root.drainJobTreeWith(context.Background(), make(chan time.Time), root.kickDriveTree, root.ProcessInputKind)
+	result, err := root.drainJobTreeWith(context.Background(), drainWakeForTest(root), make(chan time.Time), root.kickDriveTree, root.ProcessInputKind)
 	if err != nil {
 		t.Fatalf("DrainJobTree: %v", err)
 	}
@@ -890,7 +890,7 @@ func TestDrainJobTreeWaitsForRunningDelegate(t *testing.T) {
 	// delegate child, no real I/O; only fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if _, err := sess.DrainJobTree(ctx); err != nil {
+	if _, err := sess.DrainJobTree(ctx, drainWakeForTest(sess)); err != nil {
 		t.Fatalf("DrainJobTree: %v", err)
 	}
 
@@ -970,7 +970,7 @@ func TestDrainJobTreeWaitsForForegroundPromotedShell(t *testing.T) {
 	// genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	result, err := sess.DrainJobTree(ctx)
+	result, err := sess.DrainJobTree(ctx, drainWakeForTest(sess))
 	if err != nil {
 		t.Fatalf("DrainJobTree: %v", err)
 	}

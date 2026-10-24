@@ -80,7 +80,7 @@ func TestDelegateUpdatePendingAcrossCompactionIsPresentedAndConsumedOnce(t *test
 		return sess.ProcessInputKind(ctx, text, images, kind)
 	}
 	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, delegateLease{delegateID: "dlg_coordinator", generation: 1})
-	if _, err := sess.drainJobTreeWith(ctx, make(chan time.Time), func(context.Context) error { return nil }, process); err != nil {
+	if _, err := sess.drainJobTreeWith(ctx, drainWakeForTest(sess), make(chan time.Time), func(context.Context) error { return nil }, process); err != nil {
 		t.Fatalf("drainJobTreeWith: %v", err)
 	}
 	if len(main.requests) != 1 || !requestMessagesContainText(main.requests[0].Messages, "COMPACTED_UPDATE") {

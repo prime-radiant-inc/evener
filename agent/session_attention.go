@@ -558,6 +558,32 @@ func (s *Session) appendDelegateAttentionMessageDurably(attentionID string, mess
 	sessionID := s.id
 	stateDir := s.stateDir
 	s.mu.Unlock()
+	if ready && sessionID != "" && stateDir == "" {
+		fold, _ := s.delegateAttentionFoldLocked()
+		deliveryID := strings.TrimPrefix(attentionID, "delegate:")
+		if deliveryID != attentionID && fold.deliveryCommits[deliveryID] != "" {
+			return false, nil
+		}
+		if previous, exists := fold.content[attentionID]; exists {
+			if !reflect.DeepEqual(previous, message) {
+				return false, fmt.Errorf("attention %q has conflicting content", attentionID)
+			}
+			return false, s.retainDelegateAttentionTurn(fold.turns[attentionID])
+		}
+		turn := s.withEntryModel(delegateAttentionTurn(attentionID, message, s.sclock().Now()))
+		if len(causal) != 0 {
+			turn.NotificationProvenance = provenance.Clone(causal[0])
+		}
+		next, err := extendDelegateAttention(fold, []transcript.Entry{{Turn: turn}})
+		if err != nil {
+			return false, err
+		}
+		if err := s.retainDelegateAttentionTurn(turn); err != nil {
+			return false, err
+		}
+		s.attentionFoldCursor.fold = next
+		return true, nil
+	}
 	if !ready || writer == nil || sessionID == "" || stateDir == "" {
 		return false, errors.New("delegate attention requires an attached transcript writer")
 	}
@@ -642,8 +668,11 @@ func (s *Session) pendingDelegateAttentionIDsLocked() ([]string, error) {
 	return fold.pendingIDs(), nil
 }
 
-// delegateAttentionFoldLocked folds the session's own transcript; the zero fold
-// stands in until a transcript is attached. The caller holds attentionMu.
+// delegateAttentionFoldLocked folds the session's own transcript. When StateDir
+// is intentionally empty, the same fold is canonical for this session's lifetime
+// after transcript initialization, independent of compacted history. It makes no
+// restart promise. The zero fold stands in before initialization. The caller
+// holds attentionMu, before taking s.mu.
 func (s *Session) delegateAttentionFoldLocked() (delegateAttentionFold, error) {
 	if s == nil {
 		return delegateAttentionFold{}, nil
@@ -654,8 +683,14 @@ func (s *Session) delegateAttentionFoldLocked() (delegateAttentionFold, error) {
 	sessionID := s.id
 	stateDir := s.stateDir
 	s.mu.Unlock()
-	if !ready || sessionID == "" || stateDir == "" {
+	if !ready || sessionID == "" {
 		return delegateAttentionFold{}, nil
+	}
+	if stateDir == "" {
+		if s.attentionFoldCursor.fold.content == nil {
+			s.attentionFoldCursor.fold = newDelegateAttentionFold()
+		}
+		return s.attentionFoldCursor.fold, nil
 	}
 	fold, err := s.readDelegateAttentionFold(transcriptPath(stateDir, sessionID), sessionID)
 	if err != nil {
@@ -1261,6 +1296,12 @@ const delegateAttentionFoldTailBytes = 4096
 // times per delegate report). The zero value is an empty cursor, and the
 // Session's attentionMu guards it.
 //
+// For intentional empty-StateDir sessions, only fold is used: it is the same
+// lifetime's canonical attention state, extended at acceptance and successful
+// response recording rather than reconstructed from compacted history. No file
+// read, durable-record claim or restart survival is implied in that mode.
+// The remaining cursor rules below apply to persisted sessions.
+//
 // Every read still reads the file: a resumed read decodes the bytes past the
 // offset, so the verify after an append sees the appended record on disk
 // exactly as a full read would. What a resumed read trusts is the prefix, and
@@ -1371,6 +1412,24 @@ func (s *Session) resolveAttentionDurablyForGeneration(ids []string, disposition
 	sessionID := s.id
 	stateDir := s.stateDir
 	s.mu.Unlock()
+	if ready && sessionID != "" && stateDir == "" {
+		fold, _ := s.delegateAttentionFoldLocked()
+		if err := validateDelegateAttentionResolutions(fold, ids, disposition, resumeGeneration); err != nil {
+			return err
+		}
+		var entries []transcript.Entry
+		for _, id := range ids {
+			if fold.resolutions[id] != disposition || fold.resumeGenerations[id] != resumeGeneration {
+				entries = append(entries, transcript.Entry{Turn: delegateAttentionResolutionTurnForGeneration(id, disposition, resumeGeneration)})
+			}
+		}
+		next, err := extendDelegateAttention(fold, entries)
+		if err != nil {
+			return err
+		}
+		s.attentionFoldCursor.fold = next
+		return nil
+	}
 	if !ready || writer == nil || sessionID == "" || stateDir == "" {
 		return errors.New("attention resolution requires an attached transcript writer")
 	}

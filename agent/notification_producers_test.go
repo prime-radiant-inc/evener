@@ -117,6 +117,10 @@ func TestNotificationProducers(t *testing.T) {
 	t.Parallel()
 	for _, boundary := range []string{"absent then recovery", "closed before custody", "closed before custody sync failure", "closed before custody close failure", "closed before custody missing file", "custody then closed"} {
 		t.Run(boundary, func(t *testing.T) {
+			if boundary == "custody then closed" {
+				testProducerCustodyThenClosed(t)
+				return
+			}
 			s, _ := notificationReceiverForTest(t, nil)
 			c := s.delegateController
 			const delegateID = "dlg_late"
@@ -156,14 +160,10 @@ func TestNotificationProducers(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if boundary == "custody then closed" {
-				s.SetNotifyFunc(func() { _ = jm.store.Close() })
-			}
 			if _, err := jm.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"communicate"}, ReceiverSessionID: receiverID, ReceiverDelegateID: delegateID}); err != nil {
 				t.Fatal(err)
 			}
 			jm.onSessionEvent(events.SessionEvent{SessionID: s.ID(), Kind: events.EventCommunicate, Data: events.CommunicateData{Message: "closure-boundary"}})
-			s.SetNotifyFunc(nil)
 			if strings.HasPrefix(boundary, "closed before custody") {
 				if boundary != "closed before custody" {
 					if len(producerSourceEvents(t, jm, jobstore.EventWatchSendDropped)) != 0 {
@@ -190,18 +190,6 @@ func TestNotificationProducers(t *testing.T) {
 					t.Fatal("missing member accepted custody")
 				}
 				seedDelegateControllerIdle(t, c, delegateID, "")
-			} else {
-				if len(notificationRawEntries(t, path)) != 1 {
-					t.Fatal("receiver did not accept before source ack failure")
-				}
-				closeDelegateControllerResumability(t, c, delegateID, "closed after custody")
-				restored, err := newJobManager(s.stateDir, s.ID(), s.enqueueJobNotificationAndNotify)
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { restored.close() })
-				jm = restored
-				s.jobManager, jm.retirementOwner, jm.delegateController = jm, s, c
 			}
 			jm.dispatchProducedWatchSends()
 			jm.dispatchProducedWatchSends()
@@ -519,6 +507,94 @@ func TestNotificationProducers(t *testing.T) {
 			}
 			t.Logf("canonical records=1, provider requests=1, observed pending=0")
 		})
+	}
+}
+
+func testProducerCustodyThenClosed(t *testing.T) {
+	adapter := newMessagingAdapter("CUSTODY-CLOSE-731a")
+	root := newMessagingRoot(t, adapter, nil)
+	observed := make(chan struct{})
+	adapter.script("root", func(llm.Request) llm.Response {
+		return delegateToolResponse("custody-child", "CUSTODY-CLOSE-731a")
+	}, func(llm.Request) llm.Response { return finalResponse("root launched child") })
+	adapter.script("CUSTODY-CLOSE-731a", func(llm.Request) llm.Response {
+		return finalResponse("initial child report")
+	}, func(req llm.Request) llm.Response {
+		observationRequest(t, req, []string{"closure-boundary-731a"}, nil)
+		close(observed)
+		return finalResponse("child observed closure frame")
+	})
+	if _, err := root.ProcessInput(context.Background(), "create a real custody receiver", nil); err != nil {
+		t.Fatal(err)
+	}
+	child := waitForSoleChildIdle(t, root)
+	waitForStableSupervisionRun(t, root, child.ID())
+	// Isolate this source's store from the real session's shell/watch manager.
+	// Its delivery still uses the controller and exact retained child callback.
+	sourceDir := t.TempDir()
+	jm, err := newJobManager(sourceDir, root.ID(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { jm.close() })
+	jm.retirementOwner, jm.delegateController = root, root.delegateController
+	ackError := make(chan error, 1)
+	appendEvent := jm.appendEvent
+	jm.appendEvent = func(event jobstore.Event) error {
+		if event.Kind == jobstore.EventWatchSendDelivered {
+			accepted := 0
+			for _, entry := range notificationRawEntries(t, child.TranscriptPath()) {
+				if entry.Turn.AttentionID == stableWatchAttentionID(*event.WatchSend) {
+					accepted++
+				}
+			}
+			if accepted != 1 {
+				t.Errorf("source acknowledgement preceded exact receiver custody: accepted=%d", accepted)
+			}
+			if err := jm.store.Close(); err != nil {
+				t.Errorf("close source store: %v", err)
+			}
+			err := appendEvent(event)
+			select {
+			case ackError <- err:
+			default:
+			}
+			return err
+		}
+		return appendEvent(event)
+	}
+	if _, err := jm.configureWatch(watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"communicate"}, Note: "closure-boundary-731a", ReceiverSessionID: child.ID(), ReceiverDelegateID: child.owningDelegateID}); err != nil {
+		t.Fatal(err)
+	}
+	jm.onSessionEvent(events.SessionEvent{SessionID: root.ID(), Kind: events.EventCommunicate, Data: events.CommunicateData{Message: "closure-boundary-731a"}})
+	if err := <-ackError; err == nil {
+		t.Fatal("closed source store unexpectedly acknowledged custody")
+	}
+	awaitSignal(t, observed, "real child successful request")
+	waitForStableSupervisionRun(t, root, child.ID())
+	pending := producerSourceEvents(t, jm, jobstore.EventWatchSendPending)
+	if len(pending) != 1 || len(producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)) != 0 || len(producerSourceEvents(t, jm, jobstore.EventWatchSendDropped)) != 0 {
+		t.Fatal("failed acknowledgement did not retain its exact source obligation")
+	}
+	id := stableWatchAttentionID(*pending[0].WatchSend)
+	requireOwnedDrainAttentionObservedOnce(t, child, id)
+	before := len(adapter.requestsFor("CUSTODY-CLOSE-731a"))
+	closeDelegateControllerResumability(t, root.delegateController, child.owningDelegateID, "closed after custody")
+	restored, err := newJobManager(sourceDir, root.ID(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { restored.close() })
+	restored.retirementOwner, restored.delegateController = root, root.delegateController
+	restored.dispatchProducedWatchSends()
+	restored.dispatchProducedWatchSends()
+	delivered := producerSourceEvents(t, restored, jobstore.EventWatchSendDelivered)
+	if len(delivered) != 1 || stableWatchAttentionID(*delivered[0].WatchSend) != id || len(producerSourceEvents(t, restored, jobstore.EventWatchSendDropped)) != 0 {
+		t.Fatal("closed accepted receiver did not settle its exact source once without drops")
+	}
+	requireOwnedDrainAttentionObservedOnce(t, child, id)
+	if len(adapter.requestsFor("CUSTODY-CLOSE-731a")) != before || before != 2 {
+		t.Fatal("source replay caused a second provider observation")
 	}
 }
 

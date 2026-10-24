@@ -12,7 +12,6 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
-	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/llm"
@@ -56,47 +55,13 @@ func (e *ownedJobDrainEnvironment) StreamCommand(_ context.Context, _, _ string,
 }
 
 type ownedJobDrainClock struct {
-	clock.Clock
 	drainEntered chan struct{}
 	drainOnce    sync.Once
 	onDrainStop  func()
 }
 
-type ownedJobDrainTicker struct {
-	clock.Ticker
-	onStop func()
-}
-
-func (t *ownedJobDrainTicker) Stop() {
-	if t.onStop != nil {
-		t.onStop()
-	}
-	t.Ticker.Stop()
-}
-
-func (t *ownedJobDrainTicker) Reset(d time.Duration) { t.Ticker.Reset(d) }
-
 func newOwnedJobDrainClock() *ownedJobDrainClock {
-	return &ownedJobDrainClock{
-		Clock:        clock.Real(),
-		drainEntered: make(chan struct{}),
-	}
-}
-
-func (c *ownedJobDrainClock) NewTicker(d time.Duration) clock.Ticker {
-	ticker := c.Clock.NewTicker(d)
-	if d == drainRecheckInterval {
-		c.drainOnce.Do(func() { close(c.drainEntered) })
-		return &ownedJobDrainTicker{
-			Ticker: ticker,
-			onStop: func() {
-				if c.onDrainStop != nil {
-					c.onDrainStop()
-				}
-			},
-		}
-	}
-	return ticker
+	return &ownedJobDrainClock{drainEntered: make(chan struct{})}
 }
 
 type ownedJobDrainFixture struct {
@@ -150,8 +115,13 @@ func newOwnedJobDrainFixture(t *testing.T) *ownedJobDrainFixture {
 	parent, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
-		clock:            drainClock,
 		testOnly: testConfig{
+			jobTreeDrainEntered: func() { drainClock.drainOnce.Do(func() { close(drainClock.drainEntered) }) },
+			jobTreeDrainReturned: func() {
+				if drainClock.onDrainStop != nil {
+					drainClock.onDrainStop()
+				}
+			},
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
 			noSyncJobStore:      true,
@@ -287,18 +257,22 @@ func TestSubagentAttentionArmedAtDrainReturnIsConsumedByTheContinuation(t *testi
 	var armOnce sync.Once
 	fixture.drainClock.onDrainStop = func() {
 		armOnce.Do(func() {
+			if got := len(fixture.adapter.Requests()); got != 3 {
+				t.Errorf("pre-injection requests = %d, want initial tool, report and observed shell", got)
+			}
 			if err := armOwnedJobDrainAttention(fixture.child.sess, "delegate:restore-order-job", "restore-order-job"); err != nil {
 				t.Errorf("arm drain-return attention: %v", err)
 			}
 		})
 	}
 	fixture.env.releaseJob()
-	waitForOwnedJobDrainGeneration(t, fixture.child, fixture.shellHandled, "drain-return continuation")
+	waitForOwnedJobDrainGeneration(t, fixture.child, fixture.freshHandled, "drain-return attention")
 	requests := fixture.adapter.Requests()
-	if len(requests) < 3 || !requestsContain(requests[2:3], "restore-order-job") {
-		t.Fatalf("drain-return continuation requests = %d, want request 3 to present the attention armed at drain return", len(requests))
+	if len(requests) != 4 || requestsContain(requests[:3], "restore-order-job") || !requestsContain(requests[3:4], "restore-order-job") {
+		t.Fatalf("drain-return requests = %d, want only request 4 to first present the post-shell attention", len(requests))
 	}
-	requireChildAttentionSettled(t, fixture.child, fixture.adapter.Requests, 3)
+	requireChildAttentionSettled(t, fixture.child, fixture.adapter.Requests, 4)
+	requireOwnedDrainAttentionObservedOnce(t, fixture.child.sess, "delegate:restore-order-job")
 }
 
 func TestSubagentOwnedJobDrainAcceptsStableSteeringWithoutBlockingNotifications(t *testing.T) {
@@ -400,6 +374,10 @@ func TestSubagentDrainReturnHandoffNoPhantomTurnInFinalizationWindow(t *testing.
 	}
 	fixture.child.sess.jobManager.mu.Unlock()
 	go func() {
+		<-windowHeld
+		// A real producer hint, not a clock edge, requests source repair while
+		// the running-map entry still owns this transient NotifyPending record.
+		fixture.child.sess.notify()
 		select {
 		case <-recheckSawWindow:
 			releaseOnce.Do(func() { close(releaseWindow) })
@@ -412,6 +390,7 @@ func TestSubagentDrainReturnHandoffNoPhantomTurnInFinalizationWindow(t *testing.
 func requireDrainReturnHandoffMergesSteering(t *testing.T, fixture *ownedJobDrainFixture) {
 	t.Helper()
 	type handoffResult struct {
+		requests   int
 		finalizing bool
 		running    bool
 		resume     sendMessageResult
@@ -424,6 +403,7 @@ func requireDrainReturnHandoffMergesSteering(t *testing.T, fixture *ownedJobDrai
 	var handoffOnce sync.Once
 	fixture.drainClock.onDrainStop = func() {
 		handoffOnce.Do(func() {
+			before := len(fixture.adapter.Requests())
 			fixture.child.mu.Lock()
 			finalizing := fixture.child.finalizing
 			running := fixture.child.running
@@ -433,6 +413,7 @@ func requireDrainReturnHandoffMergesSteering(t *testing.T, fixture *ownedJobDrai
 			plain := runtime.send(context.Background(), fixture.result.DelegateID, "plain send during drain return", 0).result
 			second := runtime.send(context.Background(), fixture.result.DelegateID, "second send during drain return", 0).result
 			handoffDone <- handoffResult{
+				requests:   before,
 				finalizing: finalizing,
 				running:    running,
 				resume:     resume,
@@ -453,6 +434,9 @@ func requireDrainReturnHandoffMergesSteering(t *testing.T, fixture *ownedJobDrai
 	}
 	if !got.running || !got.finalizing {
 		t.Fatalf("drain-return state = running %v finalizing %v, want running finalization gate", got.running, got.finalizing)
+	}
+	if got.requests != 3 {
+		t.Fatalf("pre-injection requests = %d, want shell completion already observed exactly once", got.requests)
 	}
 	if got.resume.Err != nil || got.resume.Action != "steered" {
 		t.Fatalf("first stable send during drain return = %+v, want durable steer", got.resume)
@@ -477,16 +461,34 @@ func requireDrainReturnHandoffMergesSteering(t *testing.T, fixture *ownedJobDrai
 	}
 	waitForOwnedJobDrainGeneration(t, fixture.child, fixture.shellHandled, "drain-return continuation")
 	requests := fixture.adapter.Requests()
-	resumeSeen := len(requests) >= 3 && requestsContain(requests[2:3], "resume during drain return")
-	plainSeen := len(requests) >= 3 && requestsContain(requests[2:3], "plain send during drain return")
-	secondSeen := len(requests) >= 3 && requestsContain(requests[2:3], "second send during drain return")
-	if len(requests) != 3 || !resumeSeen || !plainSeen || !secondSeen {
+	resumeSeen := len(requests) == got.requests+1 && requestsContain(requests[got.requests:], "resume during drain return")
+	plainSeen := len(requests) == got.requests+1 && requestsContain(requests[got.requests:], "plain send during drain return")
+	secondSeen := len(requests) == got.requests+1 && requestsContain(requests[got.requests:], "second send during drain return")
+	if len(requests) != got.requests+1 || !resumeSeen || !plainSeen || !secondSeen {
 		t.Fatalf("drain-return stable steering requests = count %d resume %t plain %t second %t, want one continuation containing all accepted sends", len(requests), resumeSeen, plainSeen, secondSeen)
 	}
 	// The continuation consumed the owned shell's completion attention its
 	// requests carried, so no attention generation follows to show the
 	// model that completion again (#3725).
-	requireChildAttentionSettled(t, fixture.child, fixture.adapter.Requests, 3)
+	requireChildAttentionSettled(t, fixture.child, fixture.adapter.Requests, got.requests+1)
+	aggregate := delegateAggregateSnapshot(t, fixture.parent.delegateController, fixture.result.DelegateID)
+	if aggregate.Generation != 1 {
+		t.Fatalf("late steering escaped original generation: %d", aggregate.Generation)
+	}
+	for _, body := range []string{"resume during drain return", "plain send during drain return", "second send during drain return"} {
+		if requestsContain(requests[:got.requests], body) {
+			t.Fatalf("pre-injection request already contained %q", body)
+		}
+		accepted := 0
+		for _, entry := range notificationRawEntries(t, fixture.child.sess.TranscriptPath()) {
+			if entry.Turn.StableTurnID != "" && entry.Turn.Message.Text() == parentMessageAttribution+body {
+				accepted++
+			}
+		}
+		if accepted != 1 {
+			t.Fatalf("durable steering admissions for %q = %d, want 1", body, accepted)
+		}
+	}
 }
 
 func TestSubagentRunPreservesStructuredResultAcrossLateNotification(t *testing.T) {
@@ -494,6 +496,8 @@ func TestSubagentRunPreservesStructuredResultAcrossLateNotification(t *testing.T
 	releaseInitial := make(chan struct{})
 	var releaseOnce sync.Once
 	t.Cleanup(func() { releaseOnce.Do(func() { close(releaseInitial) }) })
+	lateHandled := make(chan struct{})
+	var lateNoticeOnce sync.Once
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
@@ -504,7 +508,9 @@ func TestSubagentRunPreservesStructuredResultAcrossLateNotification(t *testing.T
 					"summary": "original structured result",
 				})
 			},
-			func(llm.Request) llm.Response {
+			func(req llm.Request) llm.Response {
+				observationRequest(t, req, []string{"late-structured-job"}, nil)
+				close(lateHandled)
 				return communicateWithStructured("late notification handled", map[string]any{
 					"message": "late notification handled",
 					"summary": "late structured overwrite",
@@ -526,7 +532,11 @@ func TestSubagentRunPreservesStructuredResultAcrossLateNotification(t *testing.T
 				if got != child {
 					t.Errorf("finalization hook child = %p, want %p", got, child)
 				}
-				enqueueCompletedJobNotification(t, got.sess, "late-structured-job")
+				lateNoticeOnce.Do(func() {
+					if err := armOwnedJobDrainAttention(got.sess, "delegate:late-structured-job", "late-structured-job"); err != nil {
+						t.Errorf("arm canonical late structured input: %v", err)
+					}
+				})
 			},
 		},
 	})
@@ -558,11 +568,6 @@ func TestSubagentRunPreservesStructuredResultAcrossLateNotification(t *testing.T
 		t.Fatalf("subagent %s not found", childID)
 	}
 
-	lateDriveDone := make(chan error, 1)
-	child.sess.SetNotifyFunc(func() {
-		_, driveErr := child.sess.ProcessInputKind(context.Background(), "", nil, EntryNotification)
-		lateDriveDone <- driveErr
-	})
 	child.mu.Lock()
 	runDone := child.done
 	child.mu.Unlock()
@@ -573,19 +578,34 @@ func TestSubagentRunPreservesStructuredResultAcrossLateNotification(t *testing.T
 	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
 		t.Fatal("stable delegate did not publish its original structured result")
 	}
-	select {
-	case driveErr := <-lateDriveDone:
-		if driveErr != nil {
-			t.Fatalf("late notification drive: %v", driveErr)
-		}
-	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
-		t.Fatal("late notification drive did not finish")
-	}
+	waitForOwnedJobDrainGeneration(t, child, lateHandled, "canonical late structured successor")
+	requireChildAttentionSettled(t, child, adapter.Requests, 2)
+	requireOwnedDrainAttentionObservedOnce(t, child.sess, "delegate:late-structured-job")
 	liveStructured, ok := child.sess.CommunicateStructured().(map[string]any)
 	if !ok || liveStructured["summary"] != "late structured overwrite" {
 		t.Fatalf("live child structured result = %#v, want the late notification overwrite", child.sess.CommunicateStructured())
 	}
-	packet := loadStableDelegateTerminalPacket(t, parent, result.DelegateID)
+	events, err := parent.delegateController.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var packet delegatestore.TerminalPacket
+	originalPackets, runs := 0, 0
+	for _, event := range events {
+		if event.DelegateID != result.DelegateID {
+			continue
+		}
+		if event.RunStarted != nil {
+			runs++
+		}
+		if event.TerminalPrepared != nil && event.TerminalPrepared.Generation == 1 {
+			packet = event.TerminalPrepared.Packet
+			originalPackets++
+		}
+	}
+	if originalPackets != 1 || runs != 2 {
+		t.Fatalf("original packets=%d started generations=%d, want one immutable original and one successor", originalPackets, runs)
+	}
 	var structured map[string]any
 	err = json.Unmarshal(packet.StructuredResult, &structured)
 	if err != nil || structured["summary"] != "original structured result" {
@@ -638,8 +658,20 @@ func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testi
 	if running {
 		t.Fatal("finalization hook ran before running=false was published")
 	}
-	if fixture.parent.driveStableDelegateAttention(fixture.child) {
-		t.Fatal("automatic notification drive launched during callback restoration")
+	preInjectionRequests := len(fixture.adapter.Requests())
+	if preInjectionRequests != 3 {
+		t.Fatalf("provider requests at final publication = %d, want shell already observed", preInjectionRequests)
+	}
+	before := delegateAggregateSnapshot(t, fixture.parent.delegateController, fixture.result.DelegateID)
+	// A true result means handled, including refused admission at lines 785–787
+	// of driveStableDelegateAttention. Only actual executor/run admission matters.
+	fixture.parent.driveStableDelegateAttention(fixture.child)
+	fixture.child.mu.Lock()
+	running, driving, finalizing := fixture.child.running, fixture.child.driving, fixture.child.finalizing
+	fixture.child.mu.Unlock()
+	after := delegateAggregateSnapshot(t, fixture.parent.delegateController, fixture.result.DelegateID)
+	if running || driving || !finalizing || before.Generation != after.Generation || len(fixture.adapter.Requests()) != preInjectionRequests {
+		t.Fatal("finalization boundary admitted an executor or new generation")
 	}
 
 	// The shared send path (used by explicit resume, delegate_send, and
@@ -652,7 +684,7 @@ func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testi
 	if queue := fixture.child.sess.SteeringQueueSnapshot(); len(queue) != 0 {
 		t.Fatalf("child steering queue during finalization = %+v, want no delivery", queue)
 	}
-	if requests := fixture.adapter.Requests(); len(requests) != 2 {
+	if requests := fixture.adapter.Requests(); len(requests) != preInjectionRequests {
 		t.Fatalf("provider requests during finalization = %d, want no resumed or automatic turn", len(requests))
 	}
 
@@ -660,7 +692,7 @@ func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testi
 	// One attention generation presents both the owned shell's completion and
 	// the finalization-window attention, and consumes both: no further
 	// generation shows the model either again (#3725).
-	waitForOwnedJobDrainGeneration(t, fixture.child, fixture.shellHandled, "post-finalization attention generation")
+	waitForOwnedJobDrainGeneration(t, fixture.child, fixture.freshHandled, "post-finalization attention generation")
 	select {
 	case <-fixture.runDone:
 	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
@@ -678,7 +710,8 @@ func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testi
 		defer fixture.child.mu.Unlock()
 		return !fixture.child.startBlockedLocked()
 	})
-	requireChildAttentionSettled(t, fixture.child, fixture.adapter.Requests, 3)
+	requireChildAttentionSettled(t, fixture.child, fixture.adapter.Requests, preInjectionRequests+1)
+	requireOwnedDrainAttentionObservedOnce(t, fixture.child.sess, "delegate:finalization-window-job")
 	updateSessionTestConfig(fixture.child.sess, func(cfg *testConfig) {
 		cfg.subagentAfterFinalStatePublish = nil
 	})
@@ -812,12 +845,6 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 		t.Fatalf("stable terminal message = %q (error %v), want original fatal error", message, err)
 	}
 
-	if parent.driveStableDelegateAttention(child) {
-		t.Fatal("fatal-gated child admitted an automatic notification drive")
-	}
-	if requests := adapter.Requests(); len(requests) != 2 {
-		t.Fatalf("provider requests after refused automatic drive = %d, want 2", len(requests))
-	}
 	// The tail's post-done machinery can still hold the child when done has
 	// fired; the resume this asserts is the one that machinery has let go.
 	// TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
@@ -826,6 +853,24 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 		defer child.mu.Unlock()
 		return !child.startBlockedLocked()
 	})
+	before := delegateAggregateSnapshot(t, parent.delegateController, result.DelegateID)
+	child.mu.Lock()
+	beforeDone, beforeStart := child.done, child.startedAt
+	child.mu.Unlock()
+	// The adapter returns handled=true for refused admission too. Check the
+	// real executor, generation and run identity instead of that routing bool.
+	parent.driveStableDelegateAttention(child)
+	child.mu.Lock()
+	unchanged := !child.running && !child.driving && !child.finalizing && child.fatalRunGated &&
+		child.done == beforeDone && child.startedAt.Equal(beforeStart) && child.status == SubagentFailed
+	child.mu.Unlock()
+	after := delegateAggregateSnapshot(t, parent.delegateController, result.DelegateID)
+	if !unchanged || before.Generation != after.Generation || before.CurrentRunOpen != after.CurrentRunOpen || !before.RunStartedAt.Equal(after.RunStartedAt) {
+		t.Fatal("fatal-gated child admitted an executor or changed its generation/run")
+	}
+	if requests := adapter.Requests(); len(requests) != 2 {
+		t.Fatalf("provider requests after refused automatic drive = %d, want 2", len(requests))
+	}
 	explicitResume := (delegateRuntime{owner: parent}).send(context.Background(), result.DelegateID, "resume after fatal run", 0).result
 	if explicitResume.Err != nil || explicitResume.Action != "started" {
 		t.Fatalf("explicit child resume = %+v, want started", explicitResume)
@@ -941,7 +986,7 @@ func TestIdleFatalGatedWatchSendDropsAndDoesNotPinDrain(t *testing.T) {
 	}
 	drainDone := make(chan drainResult, 1)
 	go func() {
-		output, err := parent.drainJobTree(drainCtx, recheck)
+		output, err := parent.drainJobTree(drainCtx, drainWakeForTest(parent), recheck)
 		drainDone <- drainResult{output: output, err: err}
 	}()
 	select {
@@ -1218,6 +1263,30 @@ func requireChildAttentionSettled(t *testing.T, child *subagent, requests func()
 	}
 }
 
+func requireOwnedDrainAttentionObservedOnce(t *testing.T, s *Session, id string) {
+	t.Helper()
+	accepted, observed, consumed := 0, 0, 0
+	for _, entry := range notificationRawEntries(t, s.TranscriptPath()) {
+		if entry.Turn.AttentionID == id {
+			accepted++
+		}
+		for _, covered := range entry.Turn.ObservedNotificationIDs {
+			if covered == id {
+				observed++
+			}
+		}
+		if resolution := entry.Turn.AttentionResolution; resolution != nil && resolution.AttentionID == id {
+			if resolution.Disposition != string(delegateAttentionConsumed) {
+				t.Fatalf("attention %s resolved as %s, not successful consumption", id, resolution.Disposition)
+			}
+			consumed++
+		}
+	}
+	if accepted != 1 || observed != 1 || consumed != 1 {
+		t.Fatalf("attention %s accepted=%d observed=%d consumed=%d, want exactly one each", id, accepted, observed, consumed)
+	}
+}
+
 func (f *ownedJobDrainFixture) requireHandledResult(t *testing.T, wantRequests int, wantResult string, wantGenerations ...int) {
 	t.Helper()
 	wantGeneration := 1
@@ -1357,7 +1426,7 @@ func TestRetentionDoesNotReclaimSubagentDrainingOwnedWork(t *testing.T) {
 // deterministically. The root cause is the non-atomic NotifyPending→NotifyDelivered
 // transition in armFinalizedJob: between appending the NotifyPending event and
 // persistStableShellAttention marking the record NotifyDelivered, the drain loop's
-// rematerializeDurablePendings (run on every 250ms recheck kick) observes the still-
+// rematerializeDurablePendings (run on entry and producer wakes) observes the still-
 // NotifyPending record and re-enqueues it onto the child's notification queue. The
 // drain then sees peekNotifications > 0 and runs a provider turn during finalization
 // where none is expected.

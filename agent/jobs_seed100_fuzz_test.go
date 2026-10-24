@@ -201,7 +201,7 @@ func seed100Drain(t *testing.T) {
 	cancel()
 	s := newSession(t)
 	s.jobManager.running["shell"] = &runningJob{rec: &jobstore.JobRecord{JobID: "shell", Type: jobstore.JobShell}}
-	_, _ = s.drainJobTree(ctx, make(chan time.Time))
+	_, _ = s.drainJobTree(ctx, drainWakeForTest(s), make(chan time.Time))
 	delete(s.jobManager.running, "shell")
 	_ = s.kickDriveTree(context.Background())
 }

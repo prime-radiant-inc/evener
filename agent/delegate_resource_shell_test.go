@@ -342,13 +342,21 @@ func TestStableDelegateShell_ColdRestartRearmsExactCompletionAttention(t *testin
 		t.Fatalf("close cold child job manager: %v", err)
 	}
 
-	attentionSeen := false
+	attentionSeen := make(chan struct{})
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(request llm.Request) llm.Response {
-			attentionSeen = requestContainsText(request, `<job-notification job_id="`+rec.JobID+`"`)
+			if !requestContainsText(request, `<job-notification job_id="`+rec.JobID+`"`) {
+				t.Error("cold child request omitted the exact durable terminal block")
+			}
+			close(attentionSeen)
 			return communicateResponse(true, "cold shell completion handled")
 		},
 		func(llm.Request) llm.Response {
+			select {
+			case <-attentionSeen:
+			default:
+				t.Error("root completion request preceded child shell observation")
+			}
 			return communicateResponse(true, "root drained cold shell delegate completion")
 		},
 	}
@@ -356,18 +364,17 @@ func TestStableDelegateShell_ColdRestartRearmsExactCompletionAttention(t *testin
 	if got := len(fixture.adapter.Requests()); got != 0 {
 		t.Fatalf("provider requests during cold shell repair = %d, want 0", got)
 	}
-	if !root.sessionWorkPending() {
-		t.Fatal("cold stable shell completion did not rearm root work-pending")
-	}
-	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
-		t.Fatalf("drive cold shell attention: %v", err)
+	// The child owns this notification. Root readiness is not permission for
+	// selecting its executor, and the parent's model need not run first.
+	wake := drainWakeForTest(root)
+	if _, err := root.DrainJobTree(context.Background(), wake); err != nil {
+		t.Fatalf("drain cold shell attention: %v", err)
 	}
 	waitForStableSupervisionRun(t, root, fixture.childID)
-	if !attentionSeen {
+	select {
+	case <-attentionSeen:
+	default:
 		t.Fatal("cold shell attention generation omitted the exact durable terminal block")
-	}
-	if _, err := root.DrainJobTree(context.Background()); err != nil {
-		t.Fatalf("drain cold shell attention: %v", err)
 	}
 	restoredJM, err := newJobManagerNoSync(fixture.stateDir, fixture.childID, nil)
 	if err != nil {

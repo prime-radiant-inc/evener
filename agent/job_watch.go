@@ -3236,7 +3236,72 @@ func watchEventFilterSummary(filter *watchEventFilter) string {
 	return strings.Join(parts, ", ")
 }
 
+func (jm *jobManager) enterWatchCallback() bool {
+	jm.watchCallbackMu.Lock()
+	defer jm.watchCallbackMu.Unlock()
+	if jm.watchProductionFenced {
+		return false
+	}
+	jm.mu.Lock()
+	if jm.watchCallbacks == 0 {
+		jm.watchCallbacksDone = make(chan struct{})
+	}
+	jm.watchCallbacks++
+	jm.mu.Unlock()
+	return true
+}
+
+func (jm *jobManager) leaveWatchCallback() {
+	jm.watchCallbackMu.Lock()
+	jm.mu.Lock()
+	jm.watchCallbacks--
+	if jm.watchCallbacks == 0 {
+		close(jm.watchCallbacksDone)
+	}
+	jm.mu.Unlock()
+	jm.watchCallbackMu.Unlock()
+}
+
+// fenceTerminalWatchProduction belongs only to terminal one-shot quiescence.
+// It gates new callback entry, joins entered persistence without holding locks,
+// then retires registrations through ordinary clear (which retains produced
+// frames). The gate reopens on every exit, so later input can install watches.
+func (jm *jobManager) fenceTerminalWatchProduction(ctx context.Context) error {
+	jm.watchCallbackMu.Lock()
+	jm.watchProductionFenced = true
+	done := jm.watchCallbacksDone
+	jm.watchCallbackMu.Unlock()
+	defer func() {
+		jm.watchCallbackMu.Lock()
+		jm.watchProductionFenced = false
+		jm.watchCallbackMu.Unlock()
+	}()
+	if done != nil {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	jm.mu.Lock()
+	ids := make([]string, 0, len(jm.watches))
+	for _, cfg := range jm.watches {
+		ids = append(ids, cfg.watchID)
+	}
+	jm.mu.Unlock()
+	for _, id := range ids {
+		if _, err := jm.clearWatchByID(id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
+	if !jm.enterWatchCallback() {
+		return
+	}
+	defer jm.leaveWatchCallback()
 	defer jm.publishWatchActivity()
 	kind := ev.Kind
 	var notifications []jobNotification
@@ -3513,6 +3578,10 @@ func (jm *jobManager) feedJobOutput(jobID string, chunk []byte, endOffset int64)
 }
 
 func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, endOffset int64, p *provenance.Causal) {
+	if !jm.enterWatchCallback() {
+		return
+	}
+	defer jm.leaveWatchCallback()
 	defer jm.publishWatchActivity()
 	if len(chunk) == 0 {
 		return
@@ -3626,6 +3695,10 @@ func (jm *jobManager) completeAttachScan(cfg *watchConfig, jobID string, data []
 // runs after jm.mu is released.
 // Returns whether the scan fired.
 func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte) bool {
+	if !jm.enterWatchCallback() {
+		return false
+	}
+	defer jm.leaveWatchCallback()
 	defer jm.publishWatchActivity()
 	last, matched := cfg.outputMatcher.ScanRetained(data)
 	if !matched {
@@ -4142,6 +4215,10 @@ func decideProgressTick(snap progressTickSnapshot) progressTickDecision {
 }
 
 func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
+	if !jm.enterWatchCallback() {
+		return false
+	}
+	defer jm.leaveWatchCallback()
 	defer jm.publishWatchActivity()
 	release, err := jm.beginRetirementMutation("watch")
 	if err != nil {
@@ -4216,14 +4293,6 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 	// end that did not persist. An end that lands stops the ticker with the
 	// watch; one that fails keeps it armed for the next retry.
 	if dec.endOneShot {
-		jm.mu.Lock()
-		jm.watchCallbacks++
-		jm.mu.Unlock()
-		defer func() {
-			jm.mu.Lock()
-			jm.watchCallbacks--
-			jm.mu.Unlock()
-		}()
 		dec.keepAlive = !jm.endFiredOneShot(cfg)
 		if dec.keepAlive {
 			jm.markOneShotFiredPendingEnd(cfg)

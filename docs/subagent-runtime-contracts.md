@@ -46,6 +46,17 @@ and serve loop. Delegate callbacks use the existing restore and leased start
 admission, not a parallel executor. Cold writers, restore and execution retain
 their existing exclusion and lifecycle fences.
 
+With nonempty `StateDir`, the transcript is canonical and its attention cursor
+is only a derived cache. Configured persistence with a missing, closed or failed
+writer cannot fall back to memory. With intentionally empty `StateDir`, after
+transcript initialization, the same fold is canonical for that Session's
+lifetime: acceptance, successful-response observation and resolution use the
+same admission path without claiming a disk record. Pending notifications
+survive in-process compaction, not restart. Custody still differs from model
+observation, and a failed provider response leaves the notification pending.
+
+The durable path is:
+
 ```mermaid
 flowchart LR
   S[Producer outbox] --> C[Synced receiver custody]
@@ -62,6 +73,33 @@ provider failures defer that receiver, not healthy siblings. Exhausted fast
 `ActiveTurnID` release retries retain the exact release obligation in common
 paced recovery, so repaired storage can resume admission without user input or
 a daemon restart. These callbacks do not reopen a Stop or bypass an executor.
+
+### Terminal drain and Stop custody
+
+The one-shot host and each retained delegate install one lifetime notification
+callback before execution. `DrainJobTree` and `DrainJobTreeKeepingReport` receive
+that owner's coalesced wake channel, never replace the callback, and recheck the
+edge before declaring quiescence. The channel is only a hint. Canonical receiver
+custody and common execution admission still decide whether a model turn is owed.
+Resource-only completion wakes rescan ownership without inventing model input.
+
+On completed one-shot quiescence, the job manager fences new watch callbacks,
+joins entered callbacks through source persistence, then retires registrations.
+Already-produced messages remain durable and run when eligible. The callback
+gate reopens on every exit so later input can create useful watches. Daemon
+drains retain their watches. Yielded waits bypass terminal cleanup and retain
+their producers. Detached processes remain outside managed cleanup.
+Notification delivery has no drain polling ticker or idle backoff. Resource
+deadlines, stall bounds and scoped recovery retain their own timers.
+
+New subtree Stop requests persist `preserve_notifications=true`. Cancellation
+still ends covered work, but reconciliation, Stop completion and shell repair
+retain resumable receivers' source obligations and accepted notifications.
+Only successful-response coverage records observation. The recorded request's
+policy survives restart, and completion clears the pending policy after applying
+it. Historical requests with a missing or false field retain their historical
+discard fold. No inbox append releases a user Stop, question, approval or subtree
+fence, and permanently closed destinations retain canonical closure handling.
 
 Child reports and updates wake a parent delegate waiting on work. The parent's
 next model request presents the pending notification without waiting for another

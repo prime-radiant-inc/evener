@@ -386,6 +386,7 @@ func applySubtreeStopRequested(state State, event Event) error {
 		}
 		aggregate.PendingStopSeq = event.Seq
 		aggregate.PendingStopAt = event.TS
+		aggregate.PendingStopPreservesNotifications = payload.PreserveNotifications
 		aggregate.NeedsAttention = false
 		if aggregate.Phase != PhaseClosed {
 			aggregate.Phase = PhaseStopping
@@ -423,7 +424,8 @@ func applySubtreeStopCompleted(state State, event Event) error {
 	for _, aggregate := range state {
 		kept := aggregate.PendingDeliveries[:0]
 		for _, delivery := range aggregate.PendingDeliveries {
-			if covered[delivery.OwnerDelegateID] {
+			owner := state[delivery.OwnerDelegateID]
+			if covered[delivery.OwnerDelegateID] && !(owner.Resumable && owner.PendingStopPreservesNotifications) {
 				continue
 			}
 			kept = append(kept, delivery)
@@ -434,6 +436,7 @@ func applySubtreeStopCompleted(state State, event Event) error {
 		aggregate := state[id]
 		aggregate.PendingStopSeq = 0
 		aggregate.PendingStopAt = time.Time{}
+		aggregate.PendingStopPreservesNotifications = false
 		aggregate.PreparedTerminal = nil
 		aggregate.NeedsAttention = false
 		if aggregate.Resumable {

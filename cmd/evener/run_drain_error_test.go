@@ -23,7 +23,7 @@ func TestRunSkipsDrainAfterFatalModelError(t *testing.T) {
 	runProcessInput = func(*agent.Session, context.Context, string) (string, error) {
 		return "", processErr
 	}
-	runDrainJobTree = func(*agent.Session, context.Context) (string, error) {
+	runDrainJobTree = func(*agent.Session, context.Context, <-chan struct{}) (string, error) {
 		drainCalls++
 		return "", errors.New("unexpected drain error")
 	}
@@ -62,7 +62,7 @@ func TestRunFatalModelErrorShutsDownHeldShellWithoutDrainOrNotificationTurn(t *t
 		return oldNewSession(client, profile, &shellExecutorEnvironment{ExecutionEnvironment: env, executor: executor}, cfg)
 	}
 	drainCalls := 0
-	runDrainJobTree = func(*agent.Session, context.Context) (string, error) {
+	runDrainJobTree = func(*agent.Session, context.Context, <-chan struct{}) (string, error) {
 		drainCalls++
 		return "", errors.New("unexpected drain")
 	}
