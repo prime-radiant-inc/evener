@@ -6119,19 +6119,17 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 	/** The coordinator's tree with no delegate row in it, as a read that has
 	 * not landed or a tree that doesn't list this ref yet. */
 	function emptyTree() {
-		return {
-			revision: 1,
-			root: {
-				kind: "session",
-				sessionId: COORDINATOR.threadId,
-				ref: COORDINATOR.ref,
-				label: COORDINATOR.title,
-				aggregate: "working",
-				counts: { active: 1, failed: 0, completed: 0, complete: true },
-				branch: {},
-				entries: [],
-			},
-		};
+		const tree = subagentTree();
+		return { ...tree, root: { ...tree.root, entries: [] } };
+	}
+
+	/** The subagent title the screen set last, rendered as the header renders
+	 * it. */
+	function headerTitleText(): string {
+		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
+		const options = calls.map(([options]) => options).findLast((options) => options.headerTitle);
+		if (typeof options?.headerTitle !== "function") throw new Error("no headerTitle");
+		return renderedText(render(<>{options.headerTitle({ children: "Fix race in tree settle" })}</>));
 	}
 
 	/** The coordinator's thread, as the phone reads it without following it.
@@ -6226,12 +6224,9 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		const served = subagent(true);
 		(served as unknown as { evener: Record<string, unknown> }).evener.activeTurnStartedAt = Date.now() - 2 * 60_000;
 		await mountSubagent(served);
-		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
-		const options = calls.map(([options]) => options).findLast((options) => options.headerTitle);
-		if (typeof options?.headerTitle !== "function") throw new Error("no headerTitle");
-		const title = render(<>{options.headerTitle({ children: "Fix race in tree settle" })}</>);
-		expect(renderedText(title)).toContain("Working · 4m");
-		expect(renderedText(title)).not.toContain("Working · 2m");
+		const shown = headerTitleText();
+		expect(shown).toContain("Working · 4m");
+		expect(shown).not.toContain("Working · 2m");
 		// Session info times it the same way.
 		const runMs = sessionInfoHosts.get(sheetKey("hub-1", "local:fix"))?.runMs(Date.now()) ?? null;
 		expect(runMs === null ? "" : compactDuration(runMs)).toBe("4m");
@@ -6247,12 +6242,9 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			Date.now() - 2 * 60_000,
 		).toISOString();
 		await mountSubagent(served, { jobs: emptyTree(), runStartedAt: RUNNING_SINCE });
-		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
-		const options = calls.map(([options]) => options).findLast((options) => options.headerTitle);
-		if (typeof options?.headerTitle !== "function") throw new Error("no headerTitle");
-		const title = render(<>{options.headerTitle({ children: "Fix race in tree settle" })}</>);
-		expect(renderedText(title)).toContain("Working · 4m");
-		expect(renderedText(title)).not.toContain("Working · 2m");
+		const shown = headerTitleText();
+		expect(shown).toContain("Working · 4m");
+		expect(shown).not.toContain("Working · 2m");
 	});
 
 	it("keeps the opener's run start when the tree's running row has no timing (#2988)", async () => {
@@ -6264,12 +6256,9 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			Date.now() - 2 * 60_000,
 		).toISOString();
 		await mountSubagent(served, { jobs: subagentTree({ runStartedAt: undefined }), runStartedAt: RUNNING_SINCE });
-		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
-		const options = calls.map(([options]) => options).findLast((options) => options.headerTitle);
-		if (typeof options?.headerTitle !== "function") throw new Error("no headerTitle");
-		const title = render(<>{options.headerTitle({ children: "Fix race in tree settle" })}</>);
-		expect(renderedText(title)).toContain("Working · 4m");
-		expect(renderedText(title)).not.toContain("Working · 2m");
+		const shown = headerTitleText();
+		expect(shown).toContain("Working · 4m");
+		expect(shown).not.toContain("Working · 2m");
 	});
 
 	it("times a still-working subagent by its turn once its row has ended", async () => {
@@ -6283,11 +6272,8 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			jobs: subagentTree({ terminal: true, outcome: "completed", runEndedAt: new Date().toISOString() }),
 			runStartedAt: RUNNING_SINCE,
 		});
-		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
-		const options = calls.map(([options]) => options).findLast((options) => options.headerTitle);
-		if (typeof options?.headerTitle !== "function") throw new Error("no headerTitle");
-		const title = render(<>{options.headerTitle({ children: "Fix race in tree settle" })}</>);
-		expect(renderedText(title)).toContain("Working · 2m");
+		const shown = headerTitleText();
+		expect(shown).toContain("Working · 2m");
 	});
 
 	it("lets the panel's running row time the run over the opener's start (#2988)", async () => {
@@ -6299,12 +6285,9 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			Date.now() - 2 * 60_000,
 		).toISOString();
 		await mountSubagent(served, { runStartedAt: new Date(Date.now() - 6 * 60_000).toISOString() });
-		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
-		const options = calls.map(([options]) => options).findLast((options) => options.headerTitle);
-		if (typeof options?.headerTitle !== "function") throw new Error("no headerTitle");
-		const title = render(<>{options.headerTitle({ children: "Fix race in tree settle" })}</>);
-		expect(renderedText(title)).toContain("Working · 4m");
-		expect(renderedText(title)).not.toContain("Working · 6m");
+		const shown = headerTitleText();
+		expect(shown).toContain("Working · 4m");
+		expect(shown).not.toContain("Working · 6m");
 	});
 
 	it("takes back the row it reported when its panel goes away", async () => {

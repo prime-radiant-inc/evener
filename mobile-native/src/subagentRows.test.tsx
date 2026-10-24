@@ -206,7 +206,7 @@ describe("a subagent row", () => {
 		// winding-down session by a run that already ended.
 		const { tree, openSubagent } = subagentRow(level, FAILED);
 		act(() => tree.root.findAll((node) => node.props.accessibilityRole === "button")[0]?.props.onPress());
-		expect(openSubagent).toHaveBeenCalledWith(RECEIPT.transcript_ref, "Fix race in tree settle");
+		expect(openSubagent).toHaveBeenCalledWith(RECEIPT.transcript_ref, "Fix race in tree settle", undefined);
 	});
 
 	it.each(LEVELS)("reads a failed subagent as failed at %s, though its call succeeded", (level) => {

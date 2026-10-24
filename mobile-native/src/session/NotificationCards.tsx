@@ -75,12 +75,7 @@ function NotificationCard({
 	const expanded = useDisclosureOpen(disclosureId, false);
 	const { subagent, output } = line;
 	const open =
-		subagent && openSubagent
-			? () =>
-					subagent.runStartedAt === undefined
-						? openSubagent(subagent.ref, subagent.title)
-						: openSubagent(subagent.ref, subagent.title, subagent.runStartedAt)
-			: undefined;
+		subagent && openSubagent ? () => openSubagent(subagent.ref, subagent.title, subagent.runStartedAt) : undefined;
 	const onPress = open ?? (output ? () => toggleDisclosure(disclosureId, false) : undefined);
 	const label = line.detail ? `${line.headline}, ${line.detail}` : line.headline;
 	const body = (

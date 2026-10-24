@@ -9,6 +9,7 @@ import {
 	type ThreadModel,
 } from "@evener/appwire-client";
 import type { MobileTimelineItem } from "../projectedRows";
+import { sameModel } from "../subagents/subagentModel";
 import { localSessionId } from "../sessionDeletionResult";
 import { compactDuration } from "./format";
 
@@ -160,7 +161,7 @@ function modelName(modelProvider: string, catalog: readonly ModelDescriptor[] | 
 	// belongs to the model, so the bare id still finds it (#2988).
 	const match =
 		catalog?.find((entry) => `${entry.provider}/${entry.model}` === modelProvider) ??
-		(model === "" ? undefined : catalog?.find((entry) => entry.model === model));
+		catalog?.find((entry) => sameModel(entry.model, modelProvider));
 	return match?.displayName || rowName || model || "Model";
 }
 

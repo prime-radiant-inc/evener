@@ -2,10 +2,11 @@
 // composer or the dock: a toast, then Next at the trailing edge, then
 // "↓ 3 new". They share one column so none can cover another, and each is
 // left out while it has nothing to show, so what does show keeps its 10pt.
-// The stack reports the height it stands so the transcript can keep its
-// newest message clear of all of it (#2988). The screen lets that room only
-// grow while it is mounted, so controls coming and going never move the list
-// back; the first, taller stack lifts a follower's end once.
+// The stack reports the room it occludes, its own height plus its 10pt lift,
+// so the transcript can keep its newest message clear of all of it (#2988).
+// The screen lets that room only grow while it is mounted, so controls coming
+// and going never move the list back; the first, taller stack lifts a
+// follower's end once.
 import type { ReactNode } from "react";
 import { View } from "react-native";
 import type { Palette } from "../design/tokens";
@@ -31,11 +32,10 @@ export function floatingCapsule(palette: Palette) {
 	} as const;
 }
 
-/** The room the transcript keeps at its end (spec 8.3: 60pt), grown with
- * the text size and never less, so Next (54pt with its 10pt lift) never sits
- * on the last line. It is reserved whether or not anything floats, so their
- * coming and going never moves the list; the trade-off is that a toast (about
- * 3s) may briefly sit over the last line. */
+/** The floor of the room the transcript keeps at its end (spec 8.3: 60pt),
+ * grown with the text size and never less, so one Next (44pt with its 10pt
+ * lift) never sits on the last line. A taller stack raises the room through
+ * `onRoom`; the screen keeps the tallest it has seen while mounted. */
 export function transcriptEndRoomAt(scale: number): number {
 	return Math.max(60, Math.round(60 * scale));
 }
@@ -46,7 +46,7 @@ export function FloatingStack({
 	pill,
 	barHeight = 0,
 	composerFocus,
-	onHeight,
+	onRoom,
 }: {
 	toast: ReactNode;
 	next: ReactNode;
@@ -57,16 +57,16 @@ export function FloatingStack({
 	/** How tall the bar under the transcript's end stands; the stack floats
 	 * FLOAT_GAP above it. */
 	barHeight?: number;
-	/** How tall the stack stands: the transcript keeps its end that far clear
-	 * plus its 10pt lift. */
-	onHeight?(height: number): void;
+	/** The room the stack occludes above the bar: its height plus its 10pt
+	 * lift. The transcript keeps its end that far clear. */
+	onRoom?(room: number): void;
 }) {
 	const typing = useComposerTyping(composerFocus);
 	return (
 		<View
 			pointerEvents="box-none"
 			style={{ position: "absolute", left: 0, right: 0, bottom: barHeight + FLOAT_GAP, gap: 8 }}
-			onLayout={(event) => onHeight?.(event.nativeEvent.layout.height)}
+			onLayout={(event) => onRoom?.(event.nativeEvent.layout.height + FLOAT_GAP)}
 		>
 			{toast ? (
 				<View pointerEvents="box-none" style={{ alignItems: "center" }}>

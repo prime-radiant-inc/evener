@@ -99,7 +99,7 @@ import {
 } from "./questionAnswers";
 import { BarFrame } from "./design/BarFrame";
 import { navBarGlassOptions, reservedUnderGlass, useSystemGlass } from "./design/systemGlass";
-import { FLOAT_GAP, listContentMinHeight, underBar, useBarHeight } from "./design/underBar";
+import { listContentMinHeight, underBar, useBarHeight } from "./design/underBar";
 import { ApprovalDock } from "./session/ApprovalDock";
 import { shrinkingScroller } from "./session/dockCard";
 import { answerWithText } from "./session/askDockCopy";
@@ -987,31 +987,26 @@ function ConversationScreenView({
 	const routeRunStartedAt = subagentOf === undefined ? undefined : route.params.runStartedAt;
 	const runMs = useCallback(
 		(now: number) => {
-			if (subagentRow !== null) {
-				if (subagentRow.state !== "running") return null;
-				const ms = timeInState(subagentRow, now);
-				if (ms !== null) return ms;
-				// A running row with neither run start nor snapshot duration
-				// cannot time itself; keep the opener's fact rather than the
-				// turn's.
-			}
+			const live = subagentRow?.state === "running" ? timeInState(subagentRow, now) : null;
+			if (live !== null) return live;
+			// The tree's running row could not time itself (an older wire), or
+			// has not reported yet; keep the opener's fact rather than the
+			// turn's. A row that has ended times no Working.
+			if (subagentRow !== null && subagentRow.state !== "running") return null;
 			if (routeRunStartedAt === undefined) return null;
 			return delegateTiming({ runStartedAt: routeRunStartedAt, terminal: false }, now).durationMs ?? null;
 		},
 		[subagentRow, routeRunStartedAt],
 	);
 	// The room the transcript keeps at its end for what floats over it: the
-	// fixed floor, or the tallest stack this screen has stood (with its 10pt
-	// lift) if that is more. It only grows while the screen is mounted, so
-	// controls coming and going never move the list back (#2988).
-	const [floatingHeight, setFloatingHeight] = useState(0);
-	const noteFloatingHeight = useCallback((height: number) => {
-		setFloatingHeight((current) => Math.max(current, height));
+	// fixed floor, or the room the tallest stack this screen has stood occludes
+	// if that is more. It only grows while the screen is mounted, so controls
+	// coming and going never move the list back (#2988).
+	const [floatingRoom, setFloatingRoom] = useState(0);
+	const noteFloatingRoom = useCallback((room: number) => {
+		setFloatingRoom((current) => Math.max(current, room));
 	}, []);
-	const transcriptEnd = Math.max(
-		transcriptEndRoomAt(useTextScale()),
-		floatingHeight > 0 ? floatingHeight + FLOAT_GAP : 0,
-	);
+	const transcriptEnd = Math.max(transcriptEndRoomAt(useTextScale()), floatingRoom);
 	// How tall the bottom bar stands over the transcript's end, null until it
 	// lays out: the transcript runs under its glass (design/underBar).
 	const bottomBar = useBarHeight();
@@ -3850,7 +3845,7 @@ function ConversationScreenView({
 							pill={newCount > 0 ? <NewContentPill count={newCount} onPress={jumpToLive} /> : null}
 							barHeight={barHeight}
 							composerFocus={composerFocus}
-							onHeight={noteFloatingHeight}
+							onRoom={noteFloatingRoom}
 						/>
 					</View>
 					{/* The bottom bar (spec 8.1): the tray or a dock and the composer,

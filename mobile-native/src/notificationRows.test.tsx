@@ -56,6 +56,9 @@ const DELEGATES = [
 		delegateId: "dlg_1",
 		description: "Fix race in tree settle",
 		transcriptRef: "local:child1",
+		// A finished delegate can still carry its last run's start; the card
+		// must not pass it on.
+		runStartedAt: new Date(T0).toISOString(),
 	}),
 	delegate({ delegateId: "dlg_2", description: "Split the retry loop", transcriptRef: "local:child2" }),
 	delegate({ delegateId: "dlg_3", description: "Check drain ordering", transcriptRef: "local:child3" }),
@@ -198,7 +201,7 @@ describe("delegate and job notifications", () => {
 		press(tree);
 		// A finished delegate's card opens its subagent without a run start: an
 		// old start is no Working time (#2988).
-		expect(openSubagent).toHaveBeenCalledWith("local:child1", "Fix race in tree settle");
+		expect(openSubagent).toHaveBeenCalledWith("local:child1", "Fix race in tree settle", undefined);
 	});
 
 	it("carries a running delegate's run start from its report card to the screen it opens (#2988)", () => {

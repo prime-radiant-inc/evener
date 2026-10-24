@@ -64,11 +64,7 @@ export function SubagentRow({
 			accessibilityRole="button"
 			accessibilityLabel={`${line.title}, ${line.stateText}${line.activity ? `, ${line.activity}` : ""}`}
 			accessibilityHint="Opens the subagent"
-			onPress={() =>
-				line.state === "running" && line.runStartedAt !== undefined
-					? onOpen(ref, line.title, line.runStartedAt)
-					: onOpen(ref, line.title)
-			}
+			onPress={() => onOpen(ref, line.title, line.runStartedAt)}
 			style={{ minHeight: 44, justifyContent: "center" }}
 		>
 			{body}
