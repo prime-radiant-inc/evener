@@ -37,12 +37,16 @@ test.each(reports)("renders real $case publication through the shared adapter", 
     if (summary) fireEvent.click(summary);
   }
   if (recorded.case !== "interruption") {
-    expect(screen.getByTestId("notification-message").textContent?.trim()).toBe(`payload-${recorded.case}-9c2f`);
-    if (recorded.case === "waiting-empty") {
+    const message = recorded.case.endsWith("-json")
+      ? '{"message":"JSON example, not a captured result","data":{"unproven":"must remain prose"},"artifacts":[]}'
+      : `payload-${recorded.case}-9c2f`;
+    expect.soft(screen.getByTestId("notification-message").textContent?.trim()).toBe(message);
+    if (recorded.case.startsWith("waiting-empty")) {
       expect(screen.queryByTestId("notification-structured-result")).toBeNull();
       expect(notifications[0]?.update).toBe(true);
     } else {
       expect(screen.getByTestId("notification-structured-result").textContent).toContain("result-9c2f");
+      expect(screen.getByTestId("notification-structured-result").textContent).not.toContain("unproven");
     }
   }
   if (recorded.case === "done") {

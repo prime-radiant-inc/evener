@@ -53,9 +53,14 @@ const notificationWireFixturePath = "testdata/notificationwire/steering.json"
 func TestNotificationReportProjection(t *testing.T) {
 	t.Parallel()
 	var fixtures []notificationWireFixture
-	for _, kind := range []string{"update", "readiness", "waiting", "waiting-empty", "done", "blocked", "interruption"} {
+	const jsonProse = `{"message":"JSON example, not a captured result","data":{"unproven":"must remain prose"},"artifacts":[]}`
+	for _, kind := range []string{"update", "readiness", "waiting", "waiting-empty", "done", "blocked", "interruption", "waiting-empty-json", "waiting-json", "update-json"} {
 		t.Run(kind, func(t *testing.T) {
-			if kind == "waiting" || kind == "waiting-empty" {
+			message := "payload-" + kind + "-9c2f"
+			if strings.HasSuffix(kind, "-json") {
+				message = jsonProse
+			}
+			if strings.HasPrefix(kind, "waiting") {
 				adapter := newMessagingAdapter("WAIT-WORKER", "WAIT-TARGET")
 				adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("spawn", "WAIT-WORKER") }, func(llm.Request) llm.Response { return finalResponse("root-finished") })
 				gate := make(chan struct{})
@@ -65,10 +70,10 @@ func TestNotificationReportProjection(t *testing.T) {
 				adapter.script("WAIT-WORKER", func(llm.Request) llm.Response { return delegateToolResponse("target", "WAIT-TARGET") }, func(req llm.Request) llm.Response {
 					id := deferredHeadDelegateID.FindString(lastToolResultText(req.Messages))
 					output := publicationOutput("result-9c2f")
-					if kind == "waiting-empty" {
+					if strings.HasPrefix(kind, "waiting-empty") {
 						output = map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}}
 					}
-					return toolCallResponse(publicationCall("projection-"+kind, map[string]any{"message": "payload-" + kind + "-9c2f", "end_turn": true, "end_reason": "waiting_on_work", "waiting_on": id, "output": output}))
+					return toolCallResponse(publicationCall("projection-"+kind, map[string]any{"message": message, "end_turn": true, "end_reason": "waiting_on_work", "waiting_on": id, "output": output}))
 				})
 				root := newMessagingRoot(t, adapter, nil)
 				if _, err := root.ProcessInput(t.Context(), "start", nil); err != nil {
@@ -90,11 +95,15 @@ func TestNotificationReportProjection(t *testing.T) {
 						if u.Generation != 1 || u.Communicate == nil || u.Communicate.CallID != "projection-"+kind || !u.Communicate.EndTurn || u.Communicate.EndReason != "waiting_on_work" || u.Communicate.WaitingOn == "" || u.Packet == nil {
 							t.Fatalf("wait publication=%+v", u)
 						}
-						if kind == "waiting-empty" {
+						var capturedMessage string
+						if err := json.Unmarshal(u.Packet.Message, &capturedMessage); err != nil || capturedMessage != message {
+							t.Fatalf("wait message=%s, want %q: %v", u.Packet.Message, message, err)
+						}
+						if strings.HasPrefix(kind, "waiting-empty") {
 							if len(u.Packet.StructuredResult) != 0 || u.Packet.StructuredResultSource != "" || u.Packet.StructuredResultValid != nil {
 								t.Fatalf("empty output captured as a result: %+v", u.Packet)
 							}
-						} else if u.Packet.StructuredResultSource != delegatestore.StructuredResultSourceDefaultEnvelope {
+						} else if u.Packet.StructuredResultSource != delegatestore.StructuredResultSourceDefaultEnvelope || !strings.Contains(string(u.Packet.StructuredResult), "result-9c2f") {
 							t.Fatalf("wait provenance=%+v", u.Packet)
 						}
 						frame := rootAttentionFold(t, root).content[before[0]].Text()
@@ -118,7 +127,7 @@ func TestNotificationReportProjection(t *testing.T) {
 				{ID: 3, Description: "task-c", Status: task.TaskOpen},
 			})
 			ctx := context.WithValue(t.Context(), delegateRunLeaseContextKey{}, lease)
-			args := map[string]any{"message": "payload-" + kind + "-9c2f", "end_turn": kind == "done" || kind == "blocked", "output": publicationOutput("result-9c2f")}
+			args := map[string]any{"message": message, "end_turn": kind == "done" || kind == "blocked", "output": publicationOutput("result-9c2f")}
 			restore := func() {}
 			if kind == "readiness" {
 				args["readiness"] = "ready"
@@ -177,6 +186,12 @@ func TestNotificationReportProjection(t *testing.T) {
 			}
 			if packet == nil {
 				t.Fatal("no captured producer packet")
+			}
+			if kind == "update-json" {
+				var capturedMessage string
+				if err := json.Unmarshal(packet.Message, &capturedMessage); err != nil || capturedMessage != message {
+					t.Fatalf("update message=%s, want %q: %v", packet.Message, message, err)
+				}
 			}
 			if kind != "interruption" && (packet.StructuredResultSource != delegatestore.StructuredResultSourceDefaultEnvelope || !strings.Contains(string(packet.StructuredResult), "result-9c2f")) {
 				t.Fatalf("provenance=%+v", packet)
@@ -275,8 +290,8 @@ func TestNotificationReportProjection(t *testing.T) {
 			fixtures = append(fixtures, fixture)
 		})
 	}
-	if len(fixtures) != 7 {
-		t.Fatalf("captured %d report fixtures, want seven producer cases", len(fixtures))
+	if len(fixtures) != 10 {
+		t.Fatalf("captured %d report fixtures, want ten producer cases", len(fixtures))
 	}
 	checkWireFixture(t, "testdata/notificationwire/reports.json", fixtures, "shared adapter, web and native report projection tests")
 }

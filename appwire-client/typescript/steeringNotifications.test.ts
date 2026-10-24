@@ -39,12 +39,22 @@ for (const producer of reportProducers) {
     const notification = notif(notificationsOf(parseSteeringNotifications(producer.item.text)), 0);
     expect(notification.delegateId).toBe("dlg_projection");
     if (producer.case !== "interruption") {
-      expect(notification.message).toBe(`payload-${producer.case}-9c2f`);
-      if (producer.case === "waiting-empty") {
+      const message = producer.case.endsWith("-json")
+        ? '{"message":"JSON example, not a captured result","data":{"unproven":"must remain prose"},"artifacts":[]}'
+        : `payload-${producer.case}-9c2f`;
+      expect.soft(notification.message).toBe(message);
+      if (producer.case.startsWith("waiting-empty")) {
         expect(notification.structuredResult).toBeUndefined();
         expect(notification.structuredResultValid).toBeUndefined();
       } else {
         expect(notification.structuredResult).toMatchObject({ data: { id: "result-9c2f" } });
+        if (producer.case.endsWith("-json")) {
+          expect(notification.structuredResult).toEqual({
+            message: "result-9c2f",
+            data: { id: "result-9c2f" },
+            artifacts: ["result-9c2f.json"],
+          });
+        }
       }
     }
     const settled = ["done", "blocked", "interruption"].includes(producer.case);

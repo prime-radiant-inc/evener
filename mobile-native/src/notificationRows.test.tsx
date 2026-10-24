@@ -15,6 +15,7 @@ import { hasTestID, markers, withTestID } from "./markerTestUtils";
 import { projectConversation } from "./projectedRows";
 import { render, renderedText, textOf } from "./renderNative.testkit";
 import { displayForLevel } from "./session/detailLevels";
+import { EvidenceView } from "./session/StepEvidence";
 import { hideAnswerMessages, sessionRows } from "./session/transcriptRows";
 import { TimelineItem } from "./TimelineItem";
 import { groupTimeline, type TimelineRow } from "./timeline";
@@ -143,13 +144,22 @@ describe("delegate and job notifications", () => {
 		const { tree } = showItem(recorded.item as ThreadItem);
 		const content = renderedText(tree);
 		if (recorded.case !== "interruption") {
-			expect(content).toContain(`payload-${recorded.case}-9c2f`);
-			if (recorded.case === "waiting-empty") {
-				expect(detail(tree)).toBe("payload-waiting-empty-9c2f");
+			const message = recorded.case.endsWith("-json")
+				? '{"message":"JSON example, not a captured result","data":{"unproven":"must remain prose"},"artifacts":[]}'
+				: `payload-${recorded.case}-9c2f`;
+			expect.soft(content).toContain(message);
+			if (recorded.case.endsWith("-json") || recorded.case.startsWith("waiting-empty")) {
+				expect.soft(detail(tree)).toBe(message);
+			}
+			if (recorded.case.startsWith("waiting-empty")) {
 				expect(content).not.toContain("structured_result");
 				expect(content).not.toContain("Result");
+				expect(tree.root.findAllByType(EvidenceView)).toHaveLength(0);
 			} else {
 				expect(content).toContain("result-9c2f");
+				const results = tree.root.findAllByType(EvidenceView).filter((node) => node.props.title === "Result");
+				expect(results).toHaveLength(1);
+				expect(results[0]?.props.evidence.text).not.toContain("unproven");
 			}
 		}
 		const settled = ["done", "blocked", "interruption"].includes(recorded.case);

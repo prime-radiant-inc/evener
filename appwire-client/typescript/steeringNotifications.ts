@@ -539,7 +539,10 @@ function delegatePacketNotification(
   const label = name || packet.description || delegateId;
   const outcome = DELEGATE_OUTCOMES.get(packet.outcome);
   const ending = delegateEndingText(packet);
-  const envelope = parsePacketEnvelope(packet.message);
+  // Current updates capture the human message separately from structured_result.
+  // Only terminal packets use the historical message-envelope reader and its
+  // data fallback, never JSON-looking update prose, with or without a capture.
+  const envelope = packet.kind === "update" ? null : parsePacketEnvelope(packet.message);
   const message = packetBodyMessage(envelope?.message ?? packet.message, ending, outcome);
   // A captured publication can precede a blocked/error settlement. Its
   // explicit provenance and affirmative verdict, not the ending's kind, prove
