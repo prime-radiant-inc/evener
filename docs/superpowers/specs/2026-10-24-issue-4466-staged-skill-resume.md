@@ -1,6 +1,6 @@
 # Issue #4466: a staged skill activation rechecks availability on resume
 
-Status: frozen for PAR review, 2026-10-24. The issue's explicit acceptance criteria authorize this bounded behavior correction.
+Status: revised after two independent PAR reviews, 2026-10-24. The issue's explicit acceptance criteria authorize this bounded behavior correction.
 
 ## Defect: retained content bypasses the activation gate
 
@@ -29,14 +29,16 @@ flowchart TD
 
 The retained body is the normal state after a session stages an activation and stops before dispatch, for example `use_skill("gardening-memory")` just before compaction or a process stop. The obligation and its complete carrier survive in the transcript and metadata. If that session is resumed with `--disable-memory`, or as a delegate, or with a profile that removes a save tool, the retained body is accepted and a successful activation is recorded even though the session can no longer save memory. That is #4466.
 
+This change corrects finalization, not history. The retained body is not deleted, rewritten, folded, or hidden: it remains in the projected request as recorded evidence, and the denial is an additional typed notification. A fresh activation that is refused never records a body, so a resumed session has the old body plus the new denial, while a fresh refusal has only the refusal. That asymmetry is accepted: history is authoritative, and this issue is about not recording a success and about surfacing the typed denial.
+
 ## Contract
 
-`prepareSkillDelivery` rechecks the current session's skill availability for every pending delivery obligation before it accepts retained content. When `skillAvailableToSession(obligation.Identity.Name)` is false, the obligation is treated exactly as an unavailable fresh activation:
+`prepareSkillDelivery` rechecks the current session's skill availability for every pending delivery obligation before it accepts retained content. When `skillAvailableToSession(obligation.Identity.Name)` is false, the obligation is treated as an unavailable activation on the delivery path:
 
-- The session records the same typed denial a fresh activation produces: a `skillActivationError` with code `policy_denied`, shaped into a `failed` `schema.SkillActivationOutcome` with `ErrorCode: "policy_denied"`, linked to the obligation's invocation, tool call, client mutation, and retained identity.
-- The denial is recorded through the existing `recordSkillDeliveryNotification` door, which durably writes a typed notification turn and marks the commit as appended. The caller rebuilds the request, so the denial explanation reaches the model in the same dispatch that finalizes the obligation.
+- The session records the typed denial a fresh activation produces: a `skillActivationError` with code `policy_denied`, shaped into a `failed` `schema.SkillActivationOutcome` with `ErrorCode: "policy_denied"`, linked to the obligation's invocation, tool call, client mutation, and full retained identity. The model-facing explanation is the typed activation error's own text, which is the same text a fresh activation returns; it does not use the reload-failure wording about a source being "no longer available", because the source is available and the session's capability is what changed.
+- The denial is recorded through the existing `recordSkillDeliveryNotification` door, which durably writes a typed notification turn and marks the commit as appended. The caller rebuilds the request, so the denial joins the same dispatch that finalizes the obligation, exactly as a lost-source delivery failure already does.
 - The obligation is finalized through the existing `finalizeSkillDeliveryFailure` path. No inventory entry is written, no `EventSkillActivated` fires, and no successful status is recorded.
-- The retained body already in history is not deleted or rewritten. It remains ordinary recorded evidence, exactly as it would after a fresh refusal.
+- The retained body remains in history and in the projected request as described above.
 
 A session where the skill is still available keeps the existing behavior: `completeSkillContentPresent` accepts the retained body, `prepareSkillDelivery` skips it, and `planSkillDeliveryCommit` finalizes it against the prior inventory (`delivered` for a first admission, `already_present` for an identical prior record). No body is re-emitted, no notification turn is appended, and no new-body event fires for `already_present`.
 
@@ -51,37 +53,39 @@ if !s.skillAvailableToSession(obligation.Identity.Name) {
 }
 ```
 
-The invocation value the loop already builds for the reload path is built before the check so the typed error carries the obligation's recorded identity. The error constructor is shared with `prepareSkillActivations`, so the denial's code and shape cannot drift between a fresh activation and a resumed one.
+The invocation value the loop already builds for the reload path is built before the check so the typed error carries the obligation's recorded identity. The implementation extracts the typed-denial constructor both paths use — `prepareSkillActivations` currently builds `&skillActivationError{Code: "policy_denied", ...}` inline at lines 408-409 — so the code and shape cannot drift between a fresh activation and a resumed one. The reload-failure notification keeps its existing text unchanged.
 
 `prepareSkillDelivery` is the right seam, not `planSkillDeliveryCommit`:
 
 - `prepareSkillDelivery` already owns the failure transaction: it appends the typed explanation to real history, sets `appendedNotifications`, finalizes the failed obligation, persists the lifecycle snapshot, and lets the caller rebuild the request. `planSkillDeliveryCommit` has no notification or finalization path; refusing there would fail the dispatch without recording the denial the model and user are owed.
 - A denial recorded in `prepareSkillDelivery` removes the obligation before the dispatch plan runs, so `planSkillDeliveryCommit` cannot finalize it as a success later in the same dispatch.
-- Every dispatch preparation calls `prepareSkillDelivery` against the actual projected request, including the restored first request after resume. A retry reuses the already-finalized state and does not re-append the denial.
+- Every production dispatch preparation calls `prepareSkillDelivery` against the actual projected request before `finalizeSkillDelivery` runs, including the restored first request after resume. A retry reuses the already-finalized state and does not re-append the denial.
+- Denial granularity follows the delivery seam's existing per-obligation failure semantics: a reload failure today finalizes only the obligation that failed and lets the rest deliver. A staged multi-skill group that loses one skill's capability on resume therefore denies that skill and delivers the others; a fresh selection is all-or-nothing before any obligation exists. This change deliberately keeps the delivery path's per-obligation behavior rather than redesigning group admission.
 
-The check reuses `skillAvailableToSession`; it does not change that predicate, duplicate its memory-tool logic, or add a second availability rule.
+The check reuses `skillAvailableToSession`; it does not change that predicate, duplicate its memory-tool logic, or add a second availability rule. The `prepareSkillDelivery` doc comment (`agent/session_skill_delivery.go:308-318`), which currently says every obligation whose complete content is present is left for the commit, is updated to state the availability recheck.
 
 ## Cases and preservation
 
 - First staged `gardening-memory` activation, resumed with `--disable-memory`: typed `policy_denied` failure, no inventory record, no activation event, no pending obligation. Before this change the same state records `delivered` and fires a success event.
 - Staged activation resumed as a delegate or with a save tool removed from the registry: same denial, because the recheck reads the live session capability those shapes already change.
-- Staged second activation with an identical prior inventory record, resumed capable: finalizes as `already_present`, keeps the prior inventory record, emits no new-body event, and re-emits no body. This is the control that proves the fix does not disturb the retained-content path.
+- Staged second model-tool activation with an identical prior inventory record, resumed capable: finalizes as `already_present`, keeps the prior inventory record unchanged, emits no new-body event, and re-emits no body. This is the control that proves the fix does not disturb the retained-content path. A `user_slash`/`user_selection` duplicate whose prior record is not yet user-authorized keeps its existing behavior of rewriting the inventory with the new invocation's authorization; that route-specific exception is unchanged.
 - Staged second activation with an identical prior record, resumed without the save tools: denied; the prior record was earned while the session could save memory and is preserved, but the pending activation is not finalized as a success.
 - Pending obligation for any other skill: `skillAvailableToSession` is true, so behavior is exactly as before.
 - An obligation whose body is no longer present and whose skill is unavailable: denied by the new check with the same `policy_denied` code instead of reaching the source loader. No new failure shape.
 - No activation-policy change, no `skillAvailableToSession` change, no source-discovery change, no memory tool change, no persisted-field change, no client change, no skill-catalog change, no label change.
-- Existing retained bodies remain visible in history after a denial; removing or folding them is outside this issue.
+- Existing retained bodies remain visible in history and in the projected request after a denial; removing or folding them is outside this issue.
 
 ## Verification
 
-Red first, in `agent/session_skill_delivery_test.go`, using the real activation and restore paths rather than a hand-built lifecycle snapshot:
+Red first, in `agent/session_skill_delivery_test.go`, using the real activation and restore paths rather than a hand-built lifecycle snapshot. Every restore passes `RestoreSessionConfig{StateDir: history, MemoryStateRoot: memoryRoot}`; `MemoryStateRoot` is never persisted (`agent/session_config.go:68`, `agent/session_init.go:906`), so both subtests must supply it explicitly. The disabled subtest adds `DisableMemory: true`; that is the only difference between the two restores.
 
-1. `TestSkillDelivery_RestoreRechecksAvailability` subtest `disabled-denies`: create a memory-capable session with `MaxToolRoundsPerInput: 1`, script one `use_skill` call for the bundled `gardening-memory`, and run `ProcessInput`. The tool round records the complete carrier and the obligation; the round cap stops the turn before the next dispatch. Assert one pending obligation and no inventory record. Close, load the metadata, and restore with `RestoreSessionConfig.DisableMemory: true`. Run one dispatch.
+1. `TestSkillDelivery_RestoreRechecksAvailability` subtest `disabled-denies`: create a memory-capable session with `MaxToolRoundsPerInput: 1`, script one `use_skill` call for the bundled `gardening-memory`, and run `ProcessInput`. The tool round records the complete carrier and the obligation; the round cap stops the turn before the next dispatch. Assert one pending obligation and no inventory record. Close, load the metadata, and restore with `MemoryStateRoot: memoryRoot, DisableMemory: true`. Run one dispatch.
    - Assert no `EventSkillActivated`, no `gardening-memory` inventory entry, and no pending obligation.
    - Assert a recorded `failed` outcome for the staged invocation with `ErrorCode == "policy_denied"`.
    - Assert the resumed dispatch happened once and its projected request still carries exactly the one retained carrier envelope. The denial adds an explanation turn, not a second body.
+   - Assert the dispatched request carries the recorded denial notification turn. Compare the request's messages with the notification turn already recorded in the restored history (kind, role, and content equality), not with a hardcoded phrase. This fails if the denial is recorded but the request is not rebuilt, which is the `commit.appendedNotifications` contract.
    - Before the fix this subtest fails on the first assertion: the retained body is finalized as `delivered`, the inventory gains `gardening-memory`, and the event fires.
-2. `TestSkillDelivery_RestoreRechecksAvailability` subtest `capable-already-present`: first let the same session complete an identical `gardening-memory` activation (inventory record, no pending obligation), then lower `s.cfg.MaxToolRoundsPerInput` to 1 and stage a second identical `use_skill` call so its provisional `already_present` obligation stops before dispatch. Restore with memory enabled.
+2. `TestSkillDelivery_RestoreRechecksAvailability` subtest `capable-already-present`: first let the same session complete an identical `gardening-memory` activation (inventory record, no pending obligation), then lower `s.cfg.MaxToolRoundsPerInput` to 1 and stage a second identical `use_skill` call so its provisional `already_present` obligation stops before dispatch. Restore with `MemoryStateRoot: memoryRoot` and memory enabled.
    - Assert the plan for the retained carrier reports `already_present` for the staged invocation.
    - Run one dispatch and assert the obligation clears, the prior inventory record (its invocation id) is unchanged, no `EventSkillActivated` fires, and the projected request carries exactly one carrier envelope.
    - This subtest passes before the fix as well; it pins that the capable path does not regress or re-emit the body.
