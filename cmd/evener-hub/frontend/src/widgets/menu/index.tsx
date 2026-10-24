@@ -10,8 +10,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { FocusScope } from "../focusscope";
-import { ownerDocumentOf, ownerWindowOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
+import { useOwnedDocument } from "../internal/useOwnedDocument";
 import { watchViewport } from "../internal/viewportWatch";
 // Flip-then-clamp overlay placement, shared verbatim with the Popover
 // primitive (§3.4). computeMenuPosition/resolveAxis/EDGE_MARGIN/TRIGGER_GAP
@@ -174,6 +174,9 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   const [activeIndex, setActiveIndex] = useState(() => firstEnabledIndex(items));
   const [position, setPosition] = useState<MenuPosition | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  // Follows Dockview moving this menu's DOM between windows without a render,
+  // so the portal, listeners and placement rebind to the window it is in now.
+  const ownerDocument = useOwnedDocument(rootRef, isOpen);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popupRef = useRef<HTMLUListElement>(null);
   const itemRefs = useRef<(HTMLLIElement | null)[]>([]);
@@ -225,14 +228,14 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     if (!triggerEl || !popupEl) return;
     // The trigger's own viewport: a menu in a Dockview popout must flip and
     // clamp against that window's edges, not the opener's.
-    const ownerWindow = ownerWindowOf(triggerEl);
+    const ownerWindow = ownerDocument.defaultView ?? window;
     setPosition(
       computeMenuPosition(triggerEl.getBoundingClientRect(), popupEl.getBoundingClientRect(), {
         width: ownerWindow.innerWidth,
         height: ownerWindow.innerHeight,
       }),
     );
-  }, [isOpen]);
+  }, [isOpen, ownerDocument]);
 
   function focusIndex(index: number) {
     if (index === -1) return;
@@ -329,9 +332,6 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // see now that the popup renders through a portal elsewhere in the DOM.
   useEffect(() => {
     if (!isOpen) return;
-    // The widget's own document: in a Dockview popout the opener's document
-    // never sees this menu's mousedowns.
-    const ownerDocument = ownerDocumentOf(rootRef.current);
     function onDocumentMouseDown(event: MouseEvent) {
       const target = event.target as Node;
       if (rootRef.current?.contains(target) || popupRef.current?.contains(target)) return;
@@ -339,7 +339,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     }
     ownerDocument.addEventListener("mousedown", onDocumentMouseDown);
     return () => ownerDocument.removeEventListener("mousedown", onDocumentMouseDown);
-  }, [isOpen, closeMenu]);
+  }, [isOpen, closeMenu, ownerDocument]);
 
   // A scroll that can move the trigger out from under the fixed popup
   // closes the menu; a scroll anywhere else leaves it open (see this
@@ -351,7 +351,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     if (!isOpen) return;
     // The widget's own window: a popout's scrolls and resizes never reach the
     // opener's window.
-    const ownerWindow = ownerWindowOf(rootRef.current);
+    const ownerWindow = ownerDocument.defaultView ?? window;
     function onScrollCapture(event: Event) {
       const target = event.target;
       if (target === null) return;
@@ -371,7 +371,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
       }
     }
     return watchViewport(rootRef.current, onScrollCapture, closeMenu);
-  }, [isOpen, closeMenu]);
+  }, [isOpen, closeMenu, ownerDocument]);
 
   const iconOnly = label !== undefined;
   const triggerClassName = [
@@ -457,7 +457,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
             </ul>
           </FocusScope>,
           // The owning document's body: a popout is a separate document.
-          ownerDocumentOf(rootRef.current).body,
+          ownerDocument.body,
         )}
     </div>
   );
