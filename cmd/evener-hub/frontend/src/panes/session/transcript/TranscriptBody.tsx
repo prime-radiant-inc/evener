@@ -314,6 +314,8 @@ export interface TranscriptBodyProps {
   showSeenDividerTurnId?: string;
   loadOlderRow?: ReactNode;
   liveOverlay?: ReactNode;
+  attentionOverlay?: ReactNode;
+  onOverlayHeightChange?: (height: number) => void;
   listRef?: RefObject<VirtualListHandle | null>;
   onMeasurementsChange?: (layout?: CommittedVirtualListLayout) => void;
   trailingContent?: ReactNode;
@@ -351,6 +353,8 @@ export function TranscriptBody({
   showSeenDividerTurnId,
   loadOlderRow,
   liveOverlay,
+  attentionOverlay,
+  onOverlayHeightChange,
   listRef,
   onMeasurementsChange,
   trailingContent,
@@ -532,7 +536,12 @@ export function TranscriptBody({
     let transcriptContent: ReactNode;
     if (surface === "live") {
       transcriptContent = (
-        <FlowOverlay top={loadOlderRow} pill={liveOverlay}>
+        <FlowOverlay
+          top={loadOlderRow}
+          pill={liveOverlay}
+          attentionOverlay={attentionOverlay}
+          onOverlayHeightChange={onOverlayHeightChange}
+        >
           <div className={styles.transcriptContent}>
             {list}
             {trailingContent}

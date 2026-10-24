@@ -368,6 +368,44 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+test("onEditingChange follows IME composition, not editor focus or draft content", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+  writeComposerDraft("ref_a", { text: "saved draft", skillNames: [] });
+  const onEditingChange = vi.fn();
+  render(
+    <ClientProvider client={fake}>
+      <Composer
+        ref="ref_a"
+        source={createTestComposerSource("ref_a")}
+        focused={false}
+        onEditingChange={onEditingChange}
+      />
+    </ClientProvider>,
+  );
+  await screen.findByRole("textbox", { name: "Message" });
+  await flushPendingTurnsProjectionForTests();
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  // Draft content alone is not editing.
+  expect(editor.textContent).toContain("saved draft");
+  expect(onEditingChange).not.toHaveBeenCalled();
+
+  // Focus alone is not editing: a session open autofocuses this editor, and
+  // the floating control must stay available.
+  fireEvent.focus(editor);
+  expect(onEditingChange).not.toHaveBeenCalled();
+
+  fireEvent.compositionStart(editor);
+  expect(onEditingChange).toHaveBeenLastCalledWith(true);
+  // An IME composition keeps the editing state even across a transient blur.
+  fireEvent.blur(editor);
+  expect(onEditingChange).toHaveBeenLastCalledWith(true);
+  fireEvent.compositionEnd(editor);
+  expect(onEditingChange).toHaveBeenLastCalledWith(false);
+  expect(readDraft("ref_a")).toBe("saved draft");
+});
+
 function notAcceptedError(clientMutationId: string): WireError {
   return new WireError("validation failed", -32602, {
     clientMutationId,

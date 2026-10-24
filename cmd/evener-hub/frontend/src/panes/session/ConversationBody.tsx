@@ -1,6 +1,7 @@
 import { configFingerprint, formatQuoteBlock, projectThread, resolveEffectiveConfig } from "@evener/appwire-client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
+import { focusedSessionRef } from "../../shell/focusedSession";
 import { paneToURL, refParam } from "../../shell/routing";
 import { workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
@@ -24,6 +25,7 @@ import { requestQuoteInsert } from "./composer/quoteInsert";
 import type { ComposerSourceState } from "./composer/sourceState";
 import { cadenceStateForStatus, NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
 import { useMarkSessionSeenOnOpen } from "./markSeen";
+import { NextNeedsYou } from "./NextNeedsYou";
 import { PendingChips } from "./pending/PendingChips";
 import styles from "./session.module.css";
 import { LivenessLine } from "./transcript/flow/LivenessLine";
@@ -66,6 +68,8 @@ export interface ConversationSeat {
   viewFallbackId: string;
   // Whether the seat's frame is focused: pane focus, or a readable column.
   focused: boolean;
+  // Seat-level policy for mount autofocus, independent of the shared editor.
+  mountAutofocus?: boolean;
   // A resumed conversation continues under a new ref. A pane replaces its
   // route; a cascade column lets its own reconciliation replace the scope in
   // place. The draft always carries to the resumed identity first. The
@@ -182,6 +186,36 @@ export function ConversationBody({
   // transcript's trailing row below (scrollable content, not the footer).
   const askPending = useAskDockPending(ref);
   const askEpoch = useAskDockActivationEpoch(ref);
+  const approvalPending = (model?.pendingEscalations.length ?? 0) > 0;
+  // Editing is an in-progress IME composition, reported by the composer.
+  // Editor focus never hides the floating control: a session open autofocuses
+  // the composer. Draft content alone never hides it either.
+  const [editingState, setEditingState] = useState<{ ref: string; value: boolean }>({ ref, value: false });
+  const editing = editingState.ref === ref && editingState.value;
+  const handleEditingChange = useCallback((value: boolean) => setEditingState({ ref, value }), [ref]);
+  const [overlayHeight, setOverlayHeight] = useState(0);
+  const handleOverlayHeightChange = useCallback(
+    (height: number) => setOverlayHeight((current) => (current === height ? current : Math.max(0, height))),
+    [],
+  );
+  // Only the actual focused conversation participates: a session pane, or a
+  // cascade's active leaf (its keyboard-scroll pane id plus the exact focused
+  // ref). A parent column's broad seat.focused value never grants it.
+  const attentionOwner = useStore(workspaceStore, (state) => {
+    const focusedPane = state.panes.find((item) => item.id === state.focusedPaneId);
+    if (!focusedPane || focusedPane.id !== seat.keyboardScrollPaneId) return false;
+    if (focusedPane.type === "session") return refParam(focusedPane.params) === ref;
+    return focusedSessionRef() === ref;
+  });
+  useEffect(() => {
+    if (!attentionOwner) setOverlayHeight(0);
+  }, [attentionOwner]);
+  const attentionHidden = editing || askPending || approvalPending;
+  // Production panes borrow the shell's shared owner; a bare conversation
+  // fixture outside AppShell has no floating control.
+  const attentionOverlay = attentionOwner ? (
+    <NextNeedsYou sessionRef={ref} viewId={seat.readView?.id ?? seat.viewFallbackId} hidden={attentionHidden} />
+  ) : undefined;
   const pendingEntries = usePendingTurnEntries(ref);
   const queueStripIds = useQueueStripMutationIds(ref);
   const heldSteers = useMemo(() => heldSteerEntries(pendingEntries, queueStripIds), [pendingEntries, queueStripIds]);
@@ -196,13 +230,16 @@ export function ConversationBody({
   const heldEpoch = useHeldSteerEpoch(ref, heldSteers, heldSurfaceLive);
   const heldVisible = heldSurfaceLive && heldSteers.length > 0;
   const trailingRow =
-    askPending || heldVisible
+    askPending || heldVisible || overlayHeight > 0
       ? {
           id: "live-edge",
           content: (
             <>
               {askPending && <AskDock ref={ref} paneId={seat.viewFallbackId} />}
               {heldVisible && <HeldSteerStack ref={ref} />}
+              {overlayHeight > 0 && (
+                <div data-testid="transcript-end-clearance" aria-hidden="true" style={{ height: overlayHeight }} />
+              )}
             </>
           ),
         }
@@ -350,6 +387,8 @@ export function ConversationBody({
             onClick={flow.jumpToBottom}
           />
         }
+        attentionOverlay={attentionOverlay}
+        onOverlayHeightChange={handleOverlayHeightChange}
         listRef={virtualListRef}
         onMeasurementsChange={flow.restoreViewAnchorAfterMeasurement}
         trailingContent={showColdStartSkeleton && <ColdStartSkeleton />}
@@ -366,6 +405,13 @@ export function ConversationBody({
   );
   const transcript = <SessionNowContext.Provider value={now}>{transcriptContent}</SessionNowContext.Provider>;
 
+  const attentionDock =
+    showDormantSurface && attentionOverlay !== undefined ? (
+      <div className={styles.attentionDock} data-testid="attention-dock">
+        {attentionOverlay}
+      </div>
+    ) : null;
+
   const content = (
     <div className={styles.contentColumn}>
       <TopNotesPanel sessionRef={ref} model={model} sourcePaneId={seat.viewFallbackId} />
@@ -373,7 +419,14 @@ export function ConversationBody({
       {/* The held-steer ghosts' ONE live region, same rule as the ask
           dock's: outside the virtual list, live-gated per spec §1. */}
       {heldSurfaceLive && <HeldSteerAnnouncements ref={ref} />}
-      {showDormantSurface ? dormantSurface : transcript}
+      {showDormantSurface ? (
+        <>
+          {dormantSurface}
+          {attentionDock}
+        </>
+      ) : (
+        transcript
+      )}
     </div>
   );
 
@@ -411,7 +464,14 @@ export function ConversationBody({
         )}
         <PendingChips sessionRef={ref} />
         {seat.composerSource && (
-          <Composer ref={ref} paneId={seat.viewFallbackId} source={seat.composerSource} focused={seat.focused} />
+          <Composer
+            ref={ref}
+            paneId={seat.viewFallbackId}
+            source={seat.composerSource}
+            focused={seat.focused}
+            mountAutofocus={seat.mountAutofocus}
+            onEditingChange={handleEditingChange}
+          />
         )}
       </div>
     </div>
