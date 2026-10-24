@@ -622,6 +622,9 @@ test("a stale resource blocks selection until its actual refreshed response rest
   await refreshStarted;
   expect(key).toBeDefined();
   expect(controller.getSnapshot().choices.find((choice) => choice.summary.ref === "local:b")?.selectable).toBe(false);
+  expect(controller.getSnapshot().choices.find((choice) => choice.summary.ref === "local:b")?.refreshState).toBe(
+    "refreshing",
+  );
   controller.select("local:b");
   expect(window.location.pathname).toBe(initialURL);
   expect(
@@ -637,6 +640,7 @@ test("a stale resource blocks selection until its actual refreshed response rest
       ),
   );
   expect(controller.getSnapshot().choices.find((choice) => choice.summary.ref === "local:b")?.selectable).toBe(true);
+  expect(controller.getSnapshot().choices.find((choice) => choice.summary.ref === "local:b")?.refreshState).toBeNull();
   const before = window.history.length;
   controller.select("local:b");
   expect(window.location.pathname).toBe("/s/local%3Ab");

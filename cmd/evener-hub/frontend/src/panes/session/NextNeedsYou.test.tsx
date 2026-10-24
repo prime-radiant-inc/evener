@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import type { NavigationSessionSummary } from "@evener/appwire-client";
-import { keyID } from "@evener/appwire-client/state/navigation";
+import { keyID, type ResourceState } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -77,6 +77,20 @@ function installRows(rows: NavigationSessionSummary[] = [row("local:a"), row("lo
       generationID: "g",
     },
   });
+}
+
+function pageRecord(): { key: string; page: ResourceState<unknown> } {
+  const key = keyID(PAGE_KEY);
+  const page = navigationStore.getState().resources.get(key);
+  if (!page) throw new Error("seeded needs-you page missing");
+  return { key, page };
+}
+
+function setPage(patch: Partial<ResourceState<unknown>>): void {
+  const { key, page } = pageRecord();
+  const resources = new Map(navigationStore.getState().resources);
+  resources.set(key, { ...page, ...patch });
+  navigationStore.setState({ resources });
 }
 
 function seedSource(): string {
@@ -369,25 +383,66 @@ test("outer scroll dismisses the list while its own scrolling does not", () => {
   expect(screen.queryByTestId("next-needs-you-list")).toBeNull();
 });
 
-test("a stale list selection does not navigate", () => {
+test("a row whose page turns stale after render is refused and never navigates", () => {
   installRows([row("local:a"), row("local:b")]);
   const origin = seedSource();
   render(controlTree());
   fireEvent.click(screen.getByTestId("next-needs-you-more"));
   const rowButton = screen.getByTestId("next-needs-you-row");
   expect(rowButton.getAttribute("data-ref")).toBe("local:b");
+  expect(rowButton.getAttribute("aria-disabled")).toBeNull();
 
-  act(() => {
-    const resources = new Map(navigationStore.getState().resources);
-    const page = resources.get(keyID(PAGE_KEY));
-    if (!page) throw new Error("seeded needs-you page missing");
-    resources.set(keyID(PAGE_KEY), { ...page, stale: true });
-    navigationStore.setState({ resources });
-  });
+  act(() => setPage({ stale: true, loading: true }));
+
+  expect(rowButton.getAttribute("aria-disabled")).toBe("true");
+  expect(rowButton.getAttribute("data-refresh-state")).toBe("refreshing");
   fireEvent.click(rowButton);
 
   expect(window.location.pathname).toBe("/s/local%3Aa");
   expect(workspaceStore.getState().focusedPaneId).toBe(origin);
+  expect(screen.getByTestId("next-needs-you-list")).toBeTruthy();
+});
+
+test("opening a list with refused rows focuses the first available control", () => {
+  installRows([row("local:a"), row("local:b"), row("local:c")]);
+  seedSource();
+  setPage({ stale: true, error: new Error("refresh failed") });
+
+  render(controlTree());
+  fireEvent.click(screen.getByTestId("next-needs-you-more"));
+
+  expect(document.activeElement).toBe(screen.getByTestId("next-needs-you-load-more"));
+  for (const refused of screen.getAllByTestId("next-needs-you-row")) {
+    expect(refused.getAttribute("data-refresh-state")).toBe("failed");
+  }
+});
+
+test("a selectable row closes the list and navigates", () => {
+  installRows([row("local:a"), row("local:b")]);
+  const origin = seedSource();
+  render(controlTree());
+  fireEvent.click(screen.getByTestId("next-needs-you-more"));
+
+  fireEvent.click(screen.getByTestId("next-needs-you-row"));
+
+  expect(window.location.pathname).toBe("/s/local%3Ab");
+  expect(workspaceStore.getState().focusedPaneId).not.toBe(origin);
+  expect(screen.queryByTestId("next-needs-you-list")).toBeNull();
+});
+
+test("a refused row recovers when its page becomes current again", () => {
+  installRows([row("local:a"), row("local:b")]);
+  const origin = seedSource();
+  render(controlTree());
+  fireEvent.click(screen.getByTestId("next-needs-you-more"));
+
+  act(() => setPage({ stale: true, loading: true }));
+  act(() => setPage({ stale: false, loading: false }));
+
+  fireEvent.click(screen.getByTestId("next-needs-you-row"));
+
+  expect(window.location.pathname).toBe("/s/local%3Ab");
+  expect(workspaceStore.getState().focusedPaneId).not.toBe(origin);
 });
 
 test("hidden and shared blocking suppression hide the control and clear automatically", async () => {

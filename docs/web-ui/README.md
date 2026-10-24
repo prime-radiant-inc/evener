@@ -262,7 +262,9 @@ The focused conversation carries one
 [floating attention control](../../cmd/evener-hub/frontend/src/panes/session/NextNeedsYou.tsx)
 above the composer at every width. **Next** moves to the next session that needs a
 person. The horizontal-ellipsis **More** button opens the same queue's list, where
-each row selects that session and **Load more** asks for another page. A press held
+each row selects that session and **Load more** asks for another page. A row whose
+page is refreshing or failed is refused and says why; a refused row cannot
+navigate. A press held
 for 500 ms opens the list. Movement beyond 10 CSS pixels, release, cancellation,
 lost pointer capture or unmount ends a pending hold without
 opening anything. A completed hold consumes the single click its release emits;
