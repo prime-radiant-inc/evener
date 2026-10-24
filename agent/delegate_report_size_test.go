@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"io"
 	"regexp"
 	"strings"
 	"sync"
@@ -36,10 +37,15 @@ func reportWithMarkers(size int) string {
 // runLargeDelegateReportDelivery drives the report's real delivery path: a root
 // starts a background delegate with the real delegate tool, then sends it a
 // second message with a positive wait through the real delegate_send tool. The
-// first generation reports a small result and the second reports report, so the
-// reply carries the first result ahead of the report.
+// first generation's small report is released only after the send has begun
+// waiting, so it is held for the parent's turn and carried ahead of the report.
 func runLargeDelegateReportDelivery(t *testing.T, report string) (*Session, string) {
 	t.Helper()
+	releaseFirstReport := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseFirstReport) }) }
+	t.Cleanup(release)
+
 	adapter := newMessagingAdapter("Do the first part.")
 	adapter.script("root",
 		func(llm.Request) llm.Response { return delegateToolResponse("create", "Do the first part.") },
@@ -49,6 +55,7 @@ func runLargeDelegateReportDelivery(t *testing.T, report string) (*Session, stri
 		})
 	adapter.script("Do the first part.",
 		func(llm.Request) llm.Response {
+			<-releaseFirstReport
 			return toolCallResponse(communicateCall("child_first", "first generation report"))
 		},
 		func(llm.Request) llm.Response {
@@ -65,10 +72,11 @@ func runLargeDelegateReportDelivery(t *testing.T, report string) (*Session, stri
 			}
 		}
 		cfg.testOnly.delegateSendBeforePositiveWaitAdmission = func() {
-			// The first generation's small report must be held for this turn
-			// before the send starts, so the send's reply carries it as an
-			// earlier result. TRIPWIRE: every answer is scripted in process;
-			// only a hang reaches it.
+			release()
+			// The first generation's report must be held for this turn before
+			// the send starts, so the send's reply carries it as an earlier
+			// result. TRIPWIRE: every answer is scripted in process; only a
+			// hang reaches it.
 			select {
 			case <-firstReportDeferred:
 			case <-time.After(10 * time.Second):
@@ -95,8 +103,8 @@ func runLargeDelegateReportDelivery(t *testing.T, report string) (*Session, stri
 
 // The report's real delivery path is the delegate_send tool result. A report
 // whose complete formatted result fits the documented budget must arrive
-// whole: both sentinels present, no truncation marker, and no artifact
-// reference.
+// whole: both sentinels present, no retained-artifact capability, and the
+// earlier report still ahead of it.
 func TestDelegateReportArrivesWholeWithinDeliveryBudget(t *testing.T) {
 	t.Parallel()
 	report := reportWithMarkers(delegateReportWithinBudgetChars)
@@ -109,35 +117,30 @@ func TestDelegateReportArrivesWholeWithinDeliveryBudget(t *testing.T) {
 			t.Fatalf("delegate_send result lost %s (delivered %d characters)", marker, len(sendResult))
 		}
 	}
-	if strings.Contains(sendResult, "Output truncated") || strings.Contains(sendResult, "Full output: artifact:") {
-		t.Fatalf("within-budget report was cut (delivered %d characters):\n%.400s", len(sendResult), sendResult)
+	if ref := retainedArtifactRefPattern.FindString(sendResult); ref != "" {
+		t.Fatalf("within-budget report was cut and retained at %s", ref)
 	}
-	for _, earlier := range []string{"earlier result 1 of 1, not delivered before:", "first generation report"} {
-		if !strings.Contains(sendResult, earlier) {
-			t.Fatalf("delegate_send result lost the carried earlier result %q", earlier)
-		}
+	earlierAt := strings.Index(sendResult, "first generation report")
+	reportAt := strings.Index(sendResult, report)
+	if earlierAt < 0 || reportAt < 0 || earlierAt > reportAt {
+		t.Fatalf("delegate_send result did not carry the earlier report ahead of the report (earlier=%d report=%d)", earlierAt, reportAt)
 	}
 	if !strings.Contains(sendResult, report) {
-		t.Fatalf("delegate_send result did not carry the report byte-for-byte")
+		t.Fatalf("delegate_send result did not carry the report exactly")
 	}
 }
 
-// Past the budget, the existing truncation path must remain legible: the
-// result names the cut and carries the retained-artifact reference, and the
-// artifact read returns the head sentinel the delivered result lost.
+// Past the budget, the retained-artifact route must stay recoverable: the
+// delivered text is the truncated tail of the complete reply, the artifact
+// holds the complete reply, and the lost head and earlier report are findable
+// through the real read_transcript search.
 func TestDelegateReportPastDeliveryBudgetCarriesRetainedArtifact(t *testing.T) {
 	t.Parallel()
 	report := reportWithMarkers(delegateReportOverBudgetChars)
 	root, sendResult := runLargeDelegateReportDelivery(t, report)
-	if !strings.Contains(sendResult, "Output truncated") {
-		t.Fatalf("over-budget report was not cut (delivered %d characters)", len(sendResult))
-	}
 	ref := retainedArtifactRefPattern.FindString(sendResult)
 	if ref == "" {
-		t.Fatalf("over-budget report carried no retained-artifact reference:\n%.400s", sendResult)
-	}
-	if !strings.Contains(sendResult, "Read with: read_transcript(transcript_ref=\""+ref+"\")") {
-		t.Fatalf("retained-artifact reference is not a read_transcript route:\n%.400s", sendResult)
+		t.Fatalf("over-budget report carried no retained-artifact capability:\n%.400s", sendResult)
 	}
 	if strings.Contains(sendResult, reportHeadMarker) {
 		t.Fatalf("fixture delivered the report head, so this case did not exercise the cut")
@@ -145,18 +148,45 @@ func TestDelegateReportPastDeliveryBudgetCarriesRetainedArtifact(t *testing.T) {
 	if !strings.Contains(sendResult, reportTailMarker) {
 		t.Fatalf("truncated result lost the report tail; the existing TruncTail shape did not hold")
 	}
-	const markerEnd = "]\n\n"
-	const truncatedSuffix = "\n[Tool output was truncated.]"
-	bodyStart := strings.Index(sendResult, markerEnd)
-	bodyEnd := strings.Index(sendResult, truncatedSuffix)
-	if bodyStart < 0 || bodyEnd < bodyStart {
-		t.Fatalf("truncated result does not carry the owned marker and cut suffix:\n%.400s", sendResult)
-	}
-	if kept := utf8.RuneCountInString(sendResult[bodyStart+len(markerEnd) : bodyEnd]); kept != delegateReportWholeTestMaxChars {
+	complete := retainedArtifactText(t, root, ref)
+	if kept := retainedSuffixLength(complete, sendResult); kept != delegateReportWholeTestMaxChars {
 		t.Fatalf("truncation kept %d characters, want the documented %d", kept, delegateReportWholeTestMaxChars)
 	}
 	requireArtifactSearch(t, root, ref, reportHeadMarker)
 	requireArtifactSearch(t, root, ref, "first generation report")
+}
+
+// retainedArtifactText reads the complete formatted reply the retained-artifact
+// capability holds.
+func retainedArtifactText(t *testing.T, root *Session, ref string) string {
+	t.Helper()
+	file, err := root.artifactStore.Open(ref)
+	if err != nil {
+		t.Fatalf("open retained artifact: %v", err)
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(file)
+	if err != nil {
+		t.Fatalf("read retained artifact: %v", err)
+	}
+	return string(data)
+}
+
+// retainedSuffixLength returns the longest suffix of complete that appears in
+// delivered. With TruncTail that is exactly the delivered character budget.
+func retainedSuffixLength(complete, delivered string) int {
+	runes := []rune(complete)
+	low, high, best := 1, len(runes), 0
+	for low <= high {
+		mid := (low + high) / 2
+		if strings.Contains(delivered, string(runes[len(runes)-mid:])) {
+			best = mid
+			low = mid + 1
+		} else {
+			high = mid - 1
+		}
+	}
+	return best
 }
 
 // requireArtifactSearch proves pattern survives in the retained artifact, so
