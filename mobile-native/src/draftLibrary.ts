@@ -19,6 +19,8 @@ interface PendingHandoff {
 	/** Loaded edges between the source and the destination. A predecessor has
 	 * a higher rank and settles after its downstream edge. */
 	rank: number;
+	/** The intermediate destination whose handoff must settle first. */
+	dependsOn?: DraftDestination;
 }
 
 /** One document per destination keeps pending work coherent across navigation. */
@@ -157,19 +159,36 @@ export class DraftLibrary {
 		// Downstream first: a chain's intermediate must settle before its
 		// predecessor, or the predecessor's older draft occupies the destination
 		// and the intermediate's composition is refused. A deferred downstream
-		// edge also blocks its predecessors until it settles or redirects them.
+		// edge also blocks its predecessors, including when a transfer fails
+		// transiently and the intermediate remains pending.
 		const attempted = new Set<string>();
 		const blocked = new Set<string>();
 		for (;;) {
+			// A predecessor of a blocked node is blocked too, so a deferred B->C
+			// holds O->C behind A->C.
+			let changed = true;
+			while (changed) {
+				changed = false;
+				for (const candidate of this.pending.values()) {
+					const fromKey = destinationKey(candidate.from);
+					if (blocked.has(fromKey)) continue;
+					const blockedDependency =
+						candidate.dependsOn !== undefined && blocked.has(destinationKey(candidate.dependsOn));
+					if (!blockedDependency && !blocked.has(destinationKey(candidate.to))) continue;
+					blocked.add(fromKey);
+					changed = true;
+				}
+			}
 			const next = [...this.pending.entries()]
 				.filter(([candidate]) => !attempted.has(candidate))
 				.filter(([, edge]) => !blocked.has(destinationKey(edge.to)))
+				.filter(([, edge]) => edge.dependsOn === undefined || !blocked.has(destinationKey(edge.dependsOn)))
 				.sort((a, b) => a[1].rank - b[1].rank)[0];
 			if (next === undefined) return;
 			const [key, edge] = next;
 			attempted.add(key);
 			const settled = this.handoff(edge.from, edge.to);
-			if (!settled && this.pending.has(key) && this.pendingTo(edge.from)) blocked.add(destinationKey(edge.from));
+			if (!settled && this.pending.has(key)) blocked.add(destinationKey(edge.from));
 		}
 	}
 
@@ -181,7 +200,12 @@ export class DraftLibrary {
 	private deferHandoff(from: DraftDestination, to: DraftDestination): void {
 		const key = this.handoffKey(from, to);
 		const existing = this.pending.get(key);
-		this.pending.set(key, { from, to, rank: existing?.rank ?? 0 });
+		this.pending.set(key, {
+			from,
+			to,
+			rank: existing?.rank ?? 0,
+			...(existing?.dependsOn === undefined ? {} : { dependsOn: existing.dependsOn }),
+		});
 		try {
 			this.repository().writePendingHandoff?.(from, to);
 		} catch {
@@ -203,6 +227,12 @@ export class DraftLibrary {
 			this.resumeIdentities?.()?.removeResumeIdentity(from, to);
 		} catch {
 			// A stale edge retries on the next launch; the transfer is durable.
+		}
+		try {
+			this.resumeIdentities?.()?.removeResumeIdentitiesTo(from);
+		} catch {
+			// Provenance edges are retired with their intermediate on a later
+			// settlement; leaving one only adds a dependency that is already met.
 		}
 	}
 
@@ -266,8 +296,17 @@ export class DraftLibrary {
 			if (sameDestination(edge.from, followed.to)) continue;
 			const key = this.handoffKey(edge.from, followed.to);
 			const rank = followed.depth + 1;
+			const dependsOn = followed.depth > 0 ? edge.to : undefined;
 			const existing = reconciled.get(key);
-			if (!existing || existing.rank < rank) reconciled.set(key, { from: edge.from, to: followed.to, rank });
+			if (!existing || existing.rank < rank)
+				reconciled.set(key, {
+					from: edge.from,
+					to: followed.to,
+					rank,
+					...(dependsOn === undefined ? {} : { dependsOn }),
+				});
+			else if (existing.rank === rank && existing.dependsOn === undefined && dependsOn !== undefined)
+				existing.dependsOn = dependsOn;
 		}
 		// Downstream first, so an intermediate's composition wins the shared
 		// destination and the predecessor falls under the occupied-destination
@@ -326,6 +365,7 @@ export class DraftLibrary {
 				from: edge.from,
 				to: settlingTo,
 				rank: edge.rank + 1,
+				dependsOn: settlingFrom,
 			};
 			const existing = this.pending.get(this.handoffKey(edge.from, settlingTo));
 			if (existing && existing.rank > redirected.rank) redirected.rank = existing.rank;

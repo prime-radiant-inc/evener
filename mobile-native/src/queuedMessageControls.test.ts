@@ -658,6 +658,163 @@ test("restart settles B before A so B's composition and markers win at C", async
 	expect(restarted.hasPendingHandoff(cDestination)).toBe(false);
 });
 
+test("a transient B transfer failure keeps A blocked until B recovers", async () => {
+	const f = fixture();
+	const completedA = await f.enqueue();
+	f.document.edit("current");
+	await editQueuedMessageIntoDraft(f.runtime, key, completedA, f.document);
+	await f.document.submitBuiltinCommand(async () => true);
+	const capturedA = await f.enqueue();
+	await editQueuedMessageIntoDraft(f.runtime, key, capturedA, f.document);
+	f.document.edit("A draft");
+	await f.enqueue();
+
+	const bRef = "session-b";
+	const cRef = "session-c";
+	const bDestination = { hubId: destination.hubId, sessionRef: bRef };
+	const cDestination = { hubId: destination.hubId, sessionRef: cRef };
+	const bKey = nativeMutationTargetKey(destination.hubId, bRef);
+	const cKey = nativeMutationTargetKey(destination.hubId, cRef);
+	expect(
+		f.runtime.storage.retarget(key, {
+			ref: bKey,
+			wireRef: bRef,
+			threadId: "thread-b",
+			instanceId: "instance-b",
+		}),
+	).toHaveLength(1);
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	f.drafts.exec(
+		"CREATE TRIGGER reject_b_draft BEFORE INSERT ON drafts WHEN NEW.session_ref = 'session-b' BEGIN SELECT RAISE(ABORT, 'write rejected'); END",
+	);
+	expect(library.handoff(destination, bDestination)).toBe(false);
+	f.drafts.exec("DROP TRIGGER reject_b_draft");
+
+	f.repository.write(bDestination, {
+		draft: "B draft",
+		unconfirmed: null,
+		composer: { recoveryIds: ["captured-b"] },
+		completedCommandRecoveryIds: ["completed-b"],
+	});
+	expect(
+		f.runtime.storage.retarget(bKey, {
+			ref: cKey,
+			wireRef: cRef,
+			threadId: "thread-c",
+			instanceId: "instance-c",
+		}),
+	).toHaveLength(1);
+
+	await f.reopen();
+	const restarted = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	expect(restarted.hasPendingHandoff(cDestination)).toBe(true);
+
+	// B's transfer fails once and B stays pending. A must not take C meanwhile.
+	f.drafts.exec(
+		"CREATE TRIGGER reject_b_delete BEFORE DELETE ON drafts WHEN OLD.session_ref = 'session-b' BEGIN SELECT RAISE(ABORT, 'transfer failed'); END",
+	);
+	restarted.retryPendingHandoffs();
+	expect(f.repository.read(cDestination).draft).toBe("");
+	expect(f.repository.read(destination).draft).toBe("A draft");
+	expect(f.repository.read(bDestination).draft).toBe("B draft");
+	expect(restarted.hasPendingHandoff(cDestination)).toBe(true);
+
+	f.drafts.exec("DROP TRIGGER reject_b_delete");
+	restarted.retryPendingHandoffs();
+	expect(f.repository.read(cDestination)).toMatchObject({
+		draft: "B draft",
+		composer: { recoveryIds: ["captured-b"] },
+		completedCommandRecoveryIds: expect.arrayContaining(["completed-b"]),
+	});
+	expect(f.repository.read(bDestination)).toEqual({ draft: "", unconfirmed: null });
+	expect(f.repository.read(destination)).toMatchObject({ draft: "A draft" });
+});
+
+test("two restarts before settlement keep B before A", async () => {
+	const f = fixture();
+	const completedA = await f.enqueue();
+	f.document.edit("current");
+	await editQueuedMessageIntoDraft(f.runtime, key, completedA, f.document);
+	await f.document.submitBuiltinCommand(async () => true);
+	const capturedA = await f.enqueue();
+	await editQueuedMessageIntoDraft(f.runtime, key, capturedA, f.document);
+	f.document.edit("A draft");
+	await f.enqueue();
+
+	const bRef = "session-b";
+	const cRef = "session-c";
+	const bDestination = { hubId: destination.hubId, sessionRef: bRef };
+	const cDestination = { hubId: destination.hubId, sessionRef: cRef };
+	const bKey = nativeMutationTargetKey(destination.hubId, bRef);
+	const cKey = nativeMutationTargetKey(destination.hubId, cRef);
+	expect(
+		f.runtime.storage.retarget(key, {
+			ref: bKey,
+			wireRef: bRef,
+			threadId: "thread-b",
+			instanceId: "instance-b",
+		}),
+	).toHaveLength(1);
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	f.drafts.exec(
+		"CREATE TRIGGER reject_b_draft BEFORE INSERT ON drafts WHEN NEW.session_ref = 'session-b' BEGIN SELECT RAISE(ABORT, 'write rejected'); END",
+	);
+	expect(library.handoff(destination, bDestination)).toBe(false);
+	f.drafts.exec("DROP TRIGGER reject_b_draft");
+
+	f.repository.write(bDestination, {
+		draft: "B draft",
+		unconfirmed: null,
+		composer: { recoveryIds: ["captured-b"] },
+		completedCommandRecoveryIds: ["completed-b"],
+	});
+	expect(
+		f.runtime.storage.retarget(bKey, {
+			ref: cKey,
+			wireRef: cRef,
+			threadId: "thread-c",
+			instanceId: "instance-c",
+		}),
+	).toHaveLength(1);
+
+	// First restart loads and redirects A->B to A->C, but nothing settles.
+	await f.reopen();
+	const first = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	expect(first.hasPendingHandoff(cDestination)).toBe(true);
+
+	// Second restart must reconstruct B->C before A->C from the durable chain.
+	await f.reopen();
+	const second = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	second.retryPendingHandoffs();
+	expect(f.repository.read(cDestination)).toMatchObject({
+		draft: "B draft",
+		composer: { recoveryIds: ["captured-b"] },
+		completedCommandRecoveryIds: expect.arrayContaining(["completed-b"]),
+	});
+	expect(f.repository.read(bDestination)).toEqual({ draft: "", unconfirmed: null });
+	expect(f.repository.read(destination)).toMatchObject({ draft: "A draft" });
+});
+
 test("a loading redirect failure keeps the intermediate edge across two restarts", async () => {
 	const f = fixture();
 	const completedA = await f.enqueue();

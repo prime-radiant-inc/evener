@@ -16,11 +16,13 @@ export interface ResumeIdentityEdge {
 export interface ResumeIdentityLedger {
 	readResumeIdentities(): readonly ResumeIdentityEdge[];
 	removeResumeIdentity(from: ResumeIdentityEndpoint, to: ResumeIdentityEndpoint): void;
-	/** Redirect a still-pending source from an intermediate ref to the ref the
-	 * intermediate resume resolved to. */
+	/** Record a still-pending source's redirected destination. The previous
+	 * edge stays as chain provenance until the intermediate settles. */
 	redirectResumeIdentity(
 		from: ResumeIdentityEndpoint,
 		previousTo: ResumeIdentityEndpoint,
 		to: ResumeIdentityEndpoint,
 	): void;
+	/** Retire every provenance edge that pointed at a settled intermediate. */
+	removeResumeIdentitiesTo(to: ResumeIdentityEndpoint): void;
 }
