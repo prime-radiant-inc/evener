@@ -131,8 +131,8 @@ func TestDelegateAttentionWake_CommitStartRechecksAncestorFence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read accepted attention marker: %v", err)
 	}
-	if fold.resumeGenerations[attentionID] != started.lease.generation {
-		t.Fatalf("accepted marker generation = %d, want %d", fold.resumeGenerations[attentionID], started.lease.generation)
+	if pending := fold.pendingIDs(); len(pending) != 1 || pending[0] != attentionID || len(fold.observed) != 0 {
+		t.Fatalf("launch granted observation without a provider response: pending:%v observed:%v", pending, fold.observed)
 	}
 }
 

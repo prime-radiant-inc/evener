@@ -291,7 +291,7 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 			continue
 		}
 		covered := c.stopCoversLocked(id)
-		suppress := covered && !(c.stop.preserveNotifications && c.durable[id].Resumable)
+		suppress := covered && (!c.stop.preserveNotifications || !c.durable[id].Resumable)
 		if len(shell.runningJobIDs) == 0 && (!suppress || len(shell.pendingNotification) == 0) {
 			continue
 		}
@@ -901,7 +901,7 @@ func (c *delegateTreeController) readSafeDelegateWaitLocked(run *delegatestore.A
 	if err != nil {
 		return false, err
 	}
-	if !safeWaitBoundary(*checkpoint, data.Entries) {
+	if !safeWaitBoundary(*checkpoint, data.Entries, run.Descriptor.Config.ResultToolName) {
 		return false, nil
 	}
 	open := c.attentionOpen

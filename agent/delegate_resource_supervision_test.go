@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -67,11 +68,12 @@ func TestDelegateTerminalCommunicateMarksGenerationEvidence(t *testing.T) {
 	reg := toolpkg.NewRegistry()
 	_ = registerCommunicateTool(reg, newToolDeps(runtime))
 	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
-	if _, err := reg.Get("communicate").Exec(ctx, nil, map[string]any{
-		"message":  "reported result",
-		"end_turn": true,
-	}); err != nil {
-		t.Fatalf("communicate: %v", err)
+	ctx = context.WithValue(ctx, ctxToolCallID, "terminal-evidence-54")
+	result := reg.ExecuteCall(ctx, nil, llm.ToolCallData{ID: "terminal-evidence-54", Name: "communicate", Arguments: mustMarshalJSON(t, map[string]any{
+		"message": "reported result", "end_turn": true, "output": communicateDefaultEnvelope("", nil),
+	})})
+	if result.IsError {
+		t.Fatalf("communicate: %s", result.Output)
 	}
 	if !runtime.Communicated() || !strings.Contains(runtime.CommunicateOutput(), "reported result") {
 		t.Fatalf("reported path changed: called=%t output=%q", runtime.Communicated(), runtime.CommunicateOutput())
@@ -180,29 +182,37 @@ func TestDelegateResourceSupervision_CommittedAttentionStartRefusesASecondTurn(t
 		cfg.subagentBeforeSettlement = captureStableCompletionSnapshot(snapshots)
 	})
 	var handoffMu sync.Mutex
-	var handoffSeen, secondTurnLaunched bool
+	var handoffSeen, guardHeld bool
 	updateSessionTestConfig(root, func(cfg *testConfig) {
 		cfg.delegateAttentionStartCommitted = func(committed *subagent) {
-			launched := root.driveStableDelegateAttention(committed)
+			// The return value means handled, including refusal. Inspect the
+			// drive ownership and durable generation instead of treating it as launch.
+			root.driveStableDelegateAttention(committed)
+			committed.mu.Lock()
+			held := committed.driving && !committed.running
+			committed.mu.Unlock()
 			handoffMu.Lock()
 			defer handoffMu.Unlock()
 			if handoffSeen {
 				return
 			}
-			handoffSeen, secondTurnLaunched = true, launched
+			handoffSeen, guardHeld = true, held
 		}
 	})
 	armStableSupervisionAttention(t, sub, "attention:committed-start", "inspect before follow-up")
 	waitForStableSupervisionRun(t, root, fixture.childID)
 
 	handoffMu.Lock()
-	seen, launched := handoffSeen, secondTurnLaunched
+	seen, held := handoffSeen, guardHeld
 	handoffMu.Unlock()
 	if !seen {
 		t.Fatal("the committed attention start hand-off was never observed")
 	}
-	if launched {
-		t.Fatal("a committed attention start left the child drivable as a plain notification turn")
+	if !held {
+		t.Fatal("a committed attention start lost its exclusive drive ownership")
+	}
+	if got := attentionRunStarts(t, fixture); got != 1 {
+		t.Fatalf("committed attention generations = %d, want exactly one", got)
 	}
 	snapshot := <-snapshots
 	if snapshot.requirement != delegateCompletionReportRequired || !snapshot.terminalSeen {
@@ -349,7 +359,12 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedWa
 	fixture := newColdStableDelegateFixture(t, "")
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("warm result") },
-		func(llm.Request) llm.Response { return finalResponse("drained notification") },
+		func(req llm.Request) llm.Response {
+			if !requestContainsText(req, "rollback-payload-55") {
+				t.Error("rollback re-drive omitted the accepted notification")
+			}
+			return finalResponse("drained notification")
+		},
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
@@ -366,16 +381,17 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedWa
 			// A child notification arrives with the claim held: enqueue it and
 			// fire the child's notify exactly as a real arrival would. The wake
 			// edge reads the claim and refuses, leaving the queue undelivered.
-			candidate.sess.enqueueJobNotification(jobNotification{
-				Kind:   jobNotificationKindWatch,
-				JobID:  "redrive-dropped-wake",
-				Status: jobNotificationEventWatch,
-			})
-			candidate.sess.notify()
+			if err := candidate.sess.enqueueNotification(notification{ID: "rollback-notification-55", Message: llm.User("rollback-payload-55")}); err != nil {
+				t.Fatal(err)
+			}
+			pending, err := candidate.sess.pendingNotificationIDs()
+			if err != nil {
+				t.Fatal(err)
+			}
 			mu.Lock()
 			claimSeen = true
 			wakeDropped = root.childCommittedSendStart(childSessionID) &&
-				root.subagents.get(childSessionID).sess.peekNotifications() > 0
+				len(pending) == 1 && pending[0] == "rollback-notification-55"
 			mu.Unlock()
 			// Fail the send after the claim: abort the in-flight reservation so
 			// the commit below cannot hand a run over.
@@ -407,9 +423,10 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedWa
 		return supervisionRequestCount(fixture.adapter) > warmRequests
 	})
 	waitForStableSupervisionRun(t, root, fixture.childID)
-	if pending := sub.sess.peekNotifications(); pending != 0 {
-		t.Fatalf("child notifications pending after rollback re-drive = %d, want 0", pending)
+	if pending, err := sub.sess.pendingNotificationIDs(); err != nil || len(pending) != 0 {
+		t.Fatalf("child notifications pending after rollback re-drive = %v, err:%v, want none", pending, err)
 	}
+	assertAttentionResponseReceipts(t, sub.sess, "rollback-notification-55", 1)
 	if got := supervisionRequestCount(fixture.adapter); got != warmRequests+1 {
 		t.Fatalf("provider requests = %d, want warm plus one notification-drive turn", got)
 	}
@@ -825,6 +842,11 @@ func TestDelegateResourceSupervision_BareShellAttentionCompletesNoActionWithoutS
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
 	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	parentBefore, err := root.pendingNotificationIDs()
+	if err != nil || len(parentBefore) != 1 {
+		t.Fatalf("warm report canonical custody = %v, %v, want one unobserved report", parentBefore, err)
+	}
 
 	shell := createStableDelegateShell(t, sub.sess.jobManager, "bare attention incident")
 	finishStableDelegateShell(t, sub.sess.jobManager, shell.JobID)
@@ -854,9 +876,10 @@ func TestDelegateResourceSupervision_BareShellAttentionCompletesNoActionWithoutS
 	if err != nil {
 		t.Fatalf("read parent attention: %v", err)
 	}
-	if len(parentPending) != 0 {
-		t.Fatalf("parent pending attention = %#v, want no second result notification", parentPending)
+	if !slices.Equal(parentPending, parentBefore) {
+		t.Fatalf("parent pending attention = %#v, want only the original warm report %v", parentPending, parentBefore)
 	}
+	assertAttentionResponseReceipts(t, sub.sess, attentionID, 1)
 }
 
 func TestDelegateResourceSupervision_ExplicitAttentionCommunicateRemainsReported(t *testing.T) {
@@ -914,7 +937,7 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 		assertSingleRecoveryNudge(t, fixture.adapter)
 	})
 
-	t.Run("tool-bearing observer handoff cannot return cleanly without one bounded recovery nudge", func(t *testing.T) {
+	t.Run("tool-bearing observer update does not substitute for a terminal report", func(t *testing.T) {
 		fixture := newColdStableDelegateFixture(t, "")
 		var root *Session
 		fixture.adapter.steps = []func(llm.Request) llm.Response{
@@ -948,8 +971,15 @@ func TestDelegateResourceSupervision_CompletionGateRecoversEveryCleanExit(t *tes
 				jm.recordWatchSendPending(state, watchSendDelivery{cfg: cfg, key: key, generation: cfg.generation, send: cfg.send})
 				return communicateResponse(false, "handoff")
 			},
-			func(llm.Request) llm.Response { return finalResponse("recovered") },
 		}
+		// Updates no longer force an early exit. Exhaust the actual bare-response
+		// allowance before testing the one bounded missing-terminal recovery.
+		for range maxBareTextRetries + 1 {
+			fixture.adapter.steps = append(fixture.adapter.steps, func(llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("unreported-result-58")}
+			})
+		}
+		fixture.adapter.steps = append(fixture.adapter.steps, func(llm.Request) llm.Response { return finalResponse("recovered") })
 		root = restoreSupervisionRoot(t, fixture, nil)
 		outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "inspect", 60_000)
 		abortUnpersistedStableDelegateOutcome(t, outcome)
@@ -3883,11 +3913,10 @@ func TestDelegateResourceSupervision_AttentionRefusedOnAHeldGuardIsRedriven(t *t
 	})
 	armStableSupervisionAttention(t, sub, "attention:held-guard", "inspect after the held guard")
 
-	// The re-drive runs on the holder's exit, so it has started the
-	// attention generation by the time the arm's drive returns.
-	if got := starts.Load(); got != 1 {
-		t.Fatalf("attention generations started after the guard holder let go = %d, want 1", got)
-	}
+	// Admission may be paced after a refusal. No parent input is supplied.
+	waitForCondition(t, 10*time.Second, "accepted attention admitted after drive guard release", func() bool {
+		return starts.Load() == 1
+	})
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	finished := latestDelegateControllerRunFinished(t, root.delegateController, fixture.delegateID)
 	if finished.Generation != 3 || finished.Disposition != delegatestore.DispositionCompletedNoAction || finished.DeliveryID != "" {
@@ -3896,6 +3925,7 @@ func TestDelegateResourceSupervision_AttentionRefusedOnAHeldGuardIsRedriven(t *t
 	if got := starts.Load(); got != 1 {
 		t.Fatalf("attention generations started = %d, want exactly 1", got)
 	}
+	assertAttentionResponseReceipts(t, sub.sess, "attention:held-guard", 1)
 }
 
 // TestDelegateResourceSupervision_AttentionRedriveThatLosesStops pins that
@@ -3962,6 +3992,8 @@ func TestDelegateResourceSupervision_AttentionRedriveThatLosesStops(t *testing.T
 func TestDelegateResourceSupervision_AttentionRefusedOnANotificationTurnIsRedriven(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "")
 	inTurn, endTurn := make(chan struct{}), make(chan struct{})
+	var endOnce sync.Once
+	defer endOnce.Do(func() { close(endTurn) })
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("warm result") },
 		func(llm.Request) llm.Response {
@@ -3969,7 +4001,10 @@ func TestDelegateResourceSupervision_AttentionRefusedOnANotificationTurnIsRedriv
 			<-endTurn
 			return llm.Response{Message: llm.Assistant("noted the finished job")}
 		},
-		func(llm.Request) llm.Response {
+		func(req llm.Request) llm.Response {
+			if !requestContainsText(req, "inspect after the notification turn") {
+				t.Error("later request omitted the message accepted during the first request")
+			}
 			return llm.Response{Message: llm.Assistant("attention requires no action")}
 		},
 	}
@@ -3981,25 +4016,24 @@ func TestDelegateResourceSupervision_AttentionRefusedOnANotificationTurnIsRedriv
 	updateSessionTestConfig(root, func(cfg *testConfig) {
 		cfg.delegateAttentionStartCommitted = func(*subagent) { starts.Add(1) }
 	})
-	enqueueCompletedJobNotification(t, sub.sess, "job:finished")
-	if !root.driveStableDelegateAttention(sub) {
-		t.Fatal("the child's notification turn did not launch")
-	}
+	shell := createStableDelegateShell(t, sub.sess.jobManager, "notification-turn-60")
+	finishStableDelegateShell(t, sub.sess.jobManager, shell.JobID)
 	select {
 	case <-inTurn:
 	case <-time.After(30 * time.Second): // TRIPWIRE: the turn reaches the scripted provider in milliseconds.
 		t.Fatal("the child's notification turn never reached the provider")
 	}
+	root.driveStableDelegateAttention(sub)
 	armStableSupervisionAttention(t, sub, "attention:notification-turn", "inspect after the notification turn")
-	if got := starts.Load(); got != 0 {
-		t.Fatalf("attention generations started during the notification turn = %d, want 0", got)
+	if got := starts.Load(); got != 1 {
+		t.Fatalf("attention generations during the first request = %d, want only the canonical job notification's generation", got)
 	}
-	close(endTurn)
+	assertAttentionResponseReceipts(t, sub.sess, "attention:notification-turn", 0)
+	endOnce.Do(func() { close(endTurn) })
 
-	// TRIPWIRE: the re-drive starts the generation as the turn ends; without
-	// it nothing does.
-	waitForCondition(t, 10*time.Second, "the attention refused on the notification turn's guard to start", func() bool {
-		return starts.Load() == 1
+	// The open generation drains the later message at its next safe boundary.
+	waitForCondition(t, 10*time.Second, "the message refused during the first request to reach the provider", func() bool {
+		return supervisionRequestCount(fixture.adapter) == 3
 	})
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	finished := latestDelegateControllerRunFinished(t, root.delegateController, fixture.delegateID)
@@ -4009,6 +4043,7 @@ func TestDelegateResourceSupervision_AttentionRefusedOnANotificationTurnIsRedriv
 	if got := starts.Load(); got != 1 {
 		t.Fatalf("attention generations started = %d, want exactly 1", got)
 	}
+	assertAttentionResponseReceipts(t, sub.sess, "attention:notification-turn", 1)
 }
 
 // TestStableDelegateAttentionDriveClearsResolvedProjection pins that a

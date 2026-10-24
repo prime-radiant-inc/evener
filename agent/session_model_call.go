@@ -174,7 +174,10 @@ func effectiveReasoningEffort(cfg, override string, escalated bool) string {
 // rejected anchor rebuilds from it, and nothing on the wire ever carries it.
 func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request, fullHistory []llm.Message, reasoningEffort string, err error) {
 	if err := s.replayDelegateDeliveries(); err != nil {
-		return nil, "", nil, llm.Request{}, nil, "", err
+		// Replay spans every receiver sharing the controller. Its source-owned
+		// retry must not fail this executor because a sibling is unavailable.
+		// This receiver's own history and writer checks remain authoritative.
+		s.emit(events.EventWarning, warningDataFromError("replay delegate deliveries", err))
 	}
 	// A skill-bearing steering message whose admission never reached durable
 	// obligations is retained in memory (admitPreparedSkillSelection). Retry it

@@ -207,9 +207,12 @@ func waitCheckpointRecordTurn(checkpoint schema.WaitCheckpointInfo) string {
 // safeWaitBoundary checks execution evidence, not just checkpoint shape. The
 // caller still owns the durability barrier and the journal generation check.
 // A resumption claim never covers a later interrupted activation.
-func safeWaitBoundary(checkpoint schema.WaitCheckpointInfo, entries []transcript.Entry) bool {
+func safeWaitBoundary(checkpoint schema.WaitCheckpointInfo, entries []transcript.Entry, resultToolName string) bool {
 	if checkpoint.ResumedByTurnID != "" {
 		return false
+	}
+	if resultToolName == "" {
+		resultToolName = "communicate"
 	}
 	started, completed, communicated, accepted, sealed := false, false, false, false, false
 	pending := make(map[string]bool)
@@ -295,7 +298,7 @@ func safeWaitBoundary(checkpoint schema.WaitCheckpointInfo, entries []transcript
 						EndReason string `json:"end_reason"`
 						WaitingOn string `json:"waiting_on"`
 					}
-					if call.Name != "communicate" || json.Unmarshal(call.Arguments, &args) != nil || !args.EndTurn || args.EndReason != "waiting_on_work" || args.WaitingOn != checkpoint.WaitingOn {
+					if call.Name != resultToolName || json.Unmarshal(call.Arguments, &args) != nil || !args.EndTurn || args.EndReason != "waiting_on_work" || args.WaitingOn != checkpoint.WaitingOn {
 						return false
 					}
 				}
@@ -307,7 +310,7 @@ func safeWaitBoundary(checkpoint schema.WaitCheckpointInfo, entries []transcript
 				delete(pending, result.ToolCallID)
 				if result.ToolCallID == checkpoint.CommunicateCallID {
 					var state communicateEndState
-					if result.Name != "communicate" || result.IsError || json.Unmarshal(result.ToolState, &state) != nil || state.EndReason != "waiting_on_work" {
+					if result.Name != resultToolName || result.IsError || json.Unmarshal(result.ToolState, &state) != nil || state.EndReason != "waiting_on_work" {
 						return false
 					}
 					accepted = true
@@ -391,7 +394,7 @@ func (s *Session) claimWaitResumption(turnID string) error {
 	if err != nil {
 		return err
 	}
-	if !safeWaitBoundary(*checkpoint, data.Entries) {
+	if !safeWaitBoundary(*checkpoint, data.Entries, s.resultToolName()) {
 		return errors.New("wait resumption lacks a safe boundary")
 	}
 	checkpoint.ResumedByTurnID = turnID

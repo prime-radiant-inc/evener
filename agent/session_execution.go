@@ -330,7 +330,7 @@ func (s *Session) closeCrashedExecutions(entries []transcript.Entry) bool {
 	recorded := false
 	for _, turnID := range closeCrashedExecutionTargets(executions, pending) {
 		status := schema.TurnInterrupted
-		if checkpointErr == nil && checkpoint != nil && checkpoint.ExecutionTurnID == turnID && safeWaitBoundary(*checkpoint, entries) {
+		if checkpointErr == nil && checkpoint != nil && checkpoint.ExecutionTurnID == turnID && safeWaitBoundary(*checkpoint, entries, s.resultToolName()) {
 			status = schema.TurnCompleted
 		}
 		rec, err := s.completeTurn(turnID, status)
