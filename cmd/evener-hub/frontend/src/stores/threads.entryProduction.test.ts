@@ -1655,6 +1655,66 @@ it("a superseded opening cannot overwrite the established marker of a newer open
   await background.release();
 }, 15000);
 
+it("a stalled restore whose late result is incomplete falls back to source recovery", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const client = connect(response("local:a", [turn("older-item", 1), turn("recorded", 2)]));
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  const loaded = () => {
+    const model = threadsStore.getState().threads.get("local:a");
+    const items = [...(model?.history?.turns ?? []), ...(model?.turns ?? [])].flatMap((turn) => turn.items ?? []);
+    return [...new Set(items.map((item) => item.text))];
+  };
+  expect(loaded()).toEqual(["older-item", "recorded"]);
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  threadsStore.getState().releaseThread("local:a");
+  const readsBefore = client.calls.filter((call) => call.method === "thread/read").length;
+  // The stalled restore answers late with a durable window that no longer
+  // carries the older row, so the retained range cannot be restored locally.
+  const released = deferred<void>();
+  const withoutOlder = <T extends { transcriptKey?: string }>(rows: readonly T[]) =>
+    rows.filter((row) => row.transcriptKey !== "older-item");
+  const windowOriginal = storage.getLatestWindow.bind(storage);
+  let windowReads = 0;
+  const windowLookup = vi.spyOn(storage, "getLatestWindow").mockImplementation(async (...args) => {
+    windowReads += 1;
+    // Only the stalled restore sees the incomplete window; later reads, like
+    // the re-open after source recovery, observe the durable rows as written.
+    if (windowReads > 1) return windowOriginal(...args);
+    await released.promise;
+    const window = await windowOriginal(...args);
+    return { ...window, rows: withoutOlder(window.rows) };
+  });
+  const latestOriginal = storage.getLatest.bind(storage);
+  vi.spyOn(storage, "getLatest").mockImplementation(async (...args) => withoutOlder(await latestOriginal(...args)));
+  const olderOriginal = storage.getOlderWindow.bind(storage);
+  vi.spyOn(storage, "getOlderWindow").mockImplementation(async (...args) => {
+    const older = await olderOriginal(...args);
+    return { ...older, rows: withoutOlder(older.rows) };
+  });
+  setSessionCacheStalledOpenForTests(250);
+  try {
+    const reopened = threadsStore.getState().ensureThread("local:a");
+    await reopened;
+    expect(threadsStore.getState().localOpenings.has("local:a")).toBe(false);
+    released.resolve();
+    // The late restore finds no durable older row: its verdict must fall back
+    // to the source, which still serves the whole range.
+    await vi.waitFor(() => expect(loaded()).toEqual(["older-item", "recorded"]));
+    expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBefore + 1);
+    // The recovery re-established the view, so the marker records it again.
+    expect(productionEntryTranscriptForTests("local:a").lastLocalOpenUsable).toBe(true);
+  } finally {
+    setSessionCacheStalledOpenForTests(5000);
+    released.resolve();
+    await Promise.all(windowLookup.mock.results.map((result) => result.value));
+    threadsStore.getState().releaseThread("local:a");
+    await background.release();
+  }
+}, 15000);
+
 it("ordinary headerless v3 entries display from cached identity without inventing a source instance", async () => {
   const storage = cache();
   const key = entryHistoryKey({ ...identity, clientId: location.origin });

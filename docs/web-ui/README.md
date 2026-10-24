@@ -212,7 +212,8 @@ fall back to source recovery. An established view, whose last accepted local
 open still holds with no invalidation since, restores on remount without that
 deadline: the local restore keeps waiting, and only a genuinely stalled
 storage read settles the opening early, leaving the loaded range for the late
-restore to republish. The accepted baseline supplies the display and
+restore to republish; a late restore that cannot recover the required range
+falls back to source recovery. The accepted baseline supplies the display and
 cursor for subsequent older paging and live updates. Reconnect and source changes
 still reconcile, retiring obsolete cursors. Clear, deletion, final release and
 superseded openings fence late publication, and the opening hold settles on

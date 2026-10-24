@@ -979,34 +979,69 @@ async function openEntryTranscript(ref: string): Promise<boolean> {
       entryTranscriptRoute(ref) === fixture &&
       fixture.repository === repository &&
       threadsStore.getState().localOpenings.get(ref) === openingToken;
+    const established = fixture.lastLocalOpenUsable && repository.holdsEstablishedView();
     let stalled = false;
-    const result =
-      fixture.lastLocalOpenUsable && repository.holdsEstablishedView()
-        ? await Promise.race([
-            reader.openLocal(200),
-            new Promise<undefined>((resolve) => {
-              timer = setTimeout(() => {
-                stalled = true;
-                resolve(undefined);
-              }, sessionCacheStalledOpenMs);
-            }),
-          ])
-        : await Promise.race([
-            reader.openLocal(200),
-            new Promise<undefined>((resolve) => {
-              timer = setTimeout(() => {
-                reader.dispose();
-                if (fixture.reader === reader) fixture.reader = undefined;
-                resolve(undefined);
-              }, SESSION_CACHE_LOOKUP_DEADLINE_MS);
-            }),
-          ]);
+    const restore = established ? reader.openLocal(200) : undefined;
+    const result = established
+      ? await Promise.race([
+          restore,
+          new Promise<undefined>((resolve) => {
+            timer = setTimeout(() => {
+              stalled = true;
+              resolve(undefined);
+            }, sessionCacheStalledOpenMs);
+          }),
+        ])
+      : await Promise.race([
+          reader.openLocal(200),
+          new Promise<undefined>((resolve) => {
+            timer = setTimeout(() => {
+              reader.dispose();
+              if (fixture.reader === reader) fixture.reader = undefined;
+              resolve(undefined);
+            }, SESSION_CACHE_LOOKUP_DEADLINE_MS);
+          }),
+        ]);
     if (!result) {
-      // A stalled restore leaves the established view standing: the opening
-      // settles so paging and placement resume, and the still-running restore
-      // publishes the range through the repository subscription whenever
-      // storage answers.
-      if (stalled) return true;
+      if (stalled && restore) {
+        // A stalled restore leaves the established view standing: the opening
+        // settles so paging and placement resume, and the still-running
+        // restore publishes through the repository subscription whenever
+        // storage answers. Its late result still records the truth under the
+        // ownership guards: a usable restore re-establishes the view, and an
+        // incomplete one falls back to source recovery exactly as a raced
+        // opening's failed verdict does.
+        void restore
+          .then(async (settled) => {
+            if (entryTranscriptRoute(ref) !== fixture || fixture.repository !== repository) return;
+            if (threadsStore.getState().localOpenings.has(ref)) return;
+            fixture.lastLocalOpenStatus = settled.status;
+            const usable =
+              settled.retainedRangeComplete !== false &&
+              (settled.status !== "recovery-needed" || holdsCompleteForegroundWindow(settled.model));
+            if (usable) {
+              fixture.lastLocalOpenUsable = true;
+              return;
+            }
+            fixture.lastLocalOpenUsable = false;
+            repository.beginFreshBaseline();
+            publishEntryTranscriptModel(ref);
+            const client = await requireReadyClient();
+            const epoch = readyEpoch;
+            if (entryTranscriptRoute(ref) !== fixture || fixture.repository !== repository) return;
+            if (threadsStore.getState().localOpenings.has(ref)) return;
+            await refreshTrackedThread(client, epoch, ref, false, false, undefined, undefined, "foreground");
+            // Mirror the raced recovery's full sequence: the read that
+            // replaced the view is followed by the local re-open that
+            // promotes its restored bodies into the display.
+            if (entryTranscriptRoute(ref) !== fixture || fixture.repository !== repository) return;
+            await openEntryTranscript(ref);
+          })
+          .catch(() => {
+            // A failed recovery read keeps the ordinary owner-scoped retry.
+          });
+        return true;
+      }
       fixture.lastLocalOpenStatus = "recovery-needed";
       if (openingOwned()) fixture.lastLocalOpenUsable = false;
       return false;
