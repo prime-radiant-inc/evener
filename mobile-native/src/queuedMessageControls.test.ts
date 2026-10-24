@@ -512,6 +512,82 @@ test("a redirected handoff replaces the persisted predecessor before restart", a
 	expect(f.runtime.storage.readResumeIdentities()).toEqual([]);
 });
 
+test("a redirect rejected by one store still reaches the final destination after restart", async () => {
+	const f = fixture();
+	const completed = await f.enqueue();
+	f.document.edit("current");
+	await editQueuedMessageIntoDraft(f.runtime, key, completed, f.document);
+	await f.document.submitBuiltinCommand(async () => true);
+	const captured = await f.enqueue();
+	await editQueuedMessageIntoDraft(f.runtime, key, captured, f.document);
+	f.document.edit("edited recovered");
+	await f.enqueue();
+
+	const bRef = "session-b";
+	const cRef = "session-c";
+	const bDestination = { hubId: destination.hubId, sessionRef: bRef };
+	const cDestination = { hubId: destination.hubId, sessionRef: cRef };
+	const bKey = nativeMutationTargetKey(destination.hubId, bRef);
+	const cKey = nativeMutationTargetKey(destination.hubId, cRef);
+	expect(
+		f.runtime.storage.retarget(key, {
+			ref: bKey,
+			wireRef: bRef,
+			threadId: "thread-b",
+			instanceId: "instance-b",
+		}),
+	).toHaveLength(1);
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+
+	// Persist A->B by failing only B's draft INSERT.
+	f.drafts.exec(
+		"CREATE TRIGGER reject_b_draft BEFORE INSERT ON drafts WHEN NEW.session_ref = 'session-b' BEGIN SELECT RAISE(ABORT, 'write rejected'); END",
+	);
+	expect(library.handoff(destination, bDestination)).toBe(false);
+	f.drafts.exec("DROP TRIGGER reject_b_draft");
+
+	// B->C resolves, but the drafts database rejects the redirect while the
+	// mutations database accepts it. B->C must stay pending.
+	expect(
+		f.runtime.storage.retarget(bKey, {
+			ref: cKey,
+			wireRef: cRef,
+			threadId: "thread-c",
+			instanceId: "instance-c",
+		}),
+	).toHaveLength(1);
+	f.drafts.exec(
+		"CREATE TRIGGER reject_pending_c BEFORE INSERT ON pending_draft_handoffs WHEN NEW.to_session_ref = 'session-c' BEGIN SELECT RAISE(ABORT, 'redirect rejected'); END",
+	);
+	expect(library.handoff(bDestination, cDestination)).toBe(false);
+	f.drafts.exec("DROP TRIGGER reject_pending_c");
+
+	// Restart: the loaded graph must canonicalize A->B through the retained
+	// B->C edge before any transfer, so nothing retries into retired B.
+	await f.reopen();
+	const restarted = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	expect(restarted.hasPendingHandoff(cDestination)).toBe(true);
+	expect(restarted.hasPendingHandoff(bDestination)).toBe(false);
+	restarted.retryPendingHandoffs();
+	expect(f.repository.read(cDestination)).toMatchObject({
+		draft: "edited recovered",
+		composer: { recoveryIds: [captured] },
+		completedCommandRecoveryIds: [completed],
+	});
+	expect(f.repository.read(bDestination)).toEqual({ draft: "", unconfirmed: null });
+	expect(f.repository.read(destination)).toEqual({ draft: "", unconfirmed: null });
+	expect(restarted.hasPendingHandoff(cDestination)).toBe(false);
+	expect(f.runtime.storage.readResumeIdentities()).toEqual([]);
+});
+
 test("multiple-source completion preserves newer draft, image, and older cleanup markers", async () => {
 	const f = fixture();
 	const first = await richSource(f);
