@@ -301,6 +301,41 @@ describe("useRailSummary refresh", () => {
     expect(view.result.current.summary?.jobs[0]?.jobId).toBe("job_new");
   });
 
+  test("a signal change during a stale request leaves the new cycle its own retry", async () => {
+    const pendingStale = deferred<RailSummary>();
+    const pendingCycleThree = deferred<RailSummary>();
+    const unversioned = () =>
+      summary({ jobs: [job({ jobId: "job_old" })], jobHistory: { status: "complete", revision: null } });
+    const load = vi
+      .fn(async () => summary({ jobHistory: { status: "complete", revision: 5 } }))
+      .mockImplementationOnce(async () => summary({ jobHistory: { status: "complete", revision: 5 } }))
+      .mockReturnValueOnce(pendingStale.promise)
+      .mockReturnValueOnce(pendingCycleThree.promise)
+      .mockResolvedValueOnce(
+        summary({
+          jobs: [job({ jobId: "job_new", startedAt: 8_000 })],
+          jobHistory: { status: "complete", revision: 6 },
+        }),
+      );
+    const view = renderHook(renderSummary(load), { initialProps: settled });
+    await waitFor(() => expect(view.result.current.jobHistory?.revision).toBe(5));
+
+    view.rerender({ ...settled, jobsUpdatedAt: 2 });
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+    view.rerender({ ...settled, jobsUpdatedAt: 3 });
+    expect(load).toHaveBeenCalledTimes(2);
+
+    await act(async () => pendingStale.resolve(unversioned()));
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(3));
+    // The older cycle's stale answer did not spend cycle three's retry.
+    expect(load).toHaveBeenCalledTimes(3);
+
+    await act(async () => pendingCycleThree.resolve(unversioned()));
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(view.result.current.jobHistory?.revision).toBe(6));
+    expect(load).toHaveBeenCalledTimes(4);
+  });
+
   test("a cold mount reports no lane status until the first projection arrives", async () => {
     const pending = deferred<RailSummary>();
     const load = vi.fn().mockReturnValueOnce(pending.promise);
@@ -476,5 +511,40 @@ describe("useRailSummary lifecycle", () => {
     await waitFor(() => expect(view.result.current.loading).toBe(false));
     // The pre-reconnect retry was fenced; the terminal cache still stands.
     expect(view.result.current.summary?.jobs[0]?.jobId).toBe("job_a");
+  });
+
+  test("a terminal refresh queued behind an in-flight live request survives a later job signal", async () => {
+    const liveResponse = deferred<RailSummary>();
+    const load = vi
+      .fn(async () => summary({ jobHistory: { status: "complete", revision: 4 } }))
+      .mockImplementationOnce(async () => summary({ jobHistory: { status: "complete", revision: 4 } }))
+      .mockReturnValueOnce(liveResponse.promise)
+      .mockResolvedValueOnce(
+        summary({
+          jobs: [job({ finishedAt: 9_000, exitCode: 0, status: "finished" })],
+          jobHistory: { status: "complete", revision: 5 },
+        }),
+      );
+    const cache = new RailSummaryCache();
+    const render = renderSummary(load, cache);
+    const view = renderHook(render, { initialProps: { ...settled, terminal: true } });
+    await waitFor(() => expect(view.result.current.summary).not.toBeNull());
+
+    view.rerender({ ...settled, terminal: false });
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+    view.rerender({ ...settled, terminal: true });
+    view.rerender({ ...settled, jobsUpdatedAt: 2, terminal: true });
+    expect(load).toHaveBeenCalledTimes(2);
+
+    await act(async () =>
+      liveResponse.resolve(
+        summary({ jobs: [job({ jobId: "job_live" })], jobHistory: { status: "complete", revision: 4 } }),
+      ),
+    );
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(view.result.current.summary?.jobs[0]?.finishedAt).toBe(9_000));
+
+    view.rerender({ ...settled, jobsUpdatedAt: 3, terminal: true });
+    expect(load).toHaveBeenCalledTimes(3);
   });
 });

@@ -93,8 +93,12 @@ export function useRailSummary(options: UseRailSummaryOptions): RailSummaryState
   // ref change can never have an older response replace the newer data.
   const generation = useRef(0);
   const inFlight = useRef<AbortController | null>(null);
+  const inFlightTerminal = useRef<boolean | null>(null);
   const trailing = useRef(false);
-  const fenceRetried = useRef(false);
+  // One revision-retry budget per invalidation cycle: an older request's stale
+  // answer must not consume the budget of a newer signal.
+  const cycle = useRef(0);
+  const retriedCycle = useRef<number | null>(null);
   const previousTerminal = useRef(terminal);
   const previousRef = useRef(ref);
   const previousHydration = useRef(hydration);
@@ -107,16 +111,19 @@ export function useRailSummary(options: UseRailSummaryOptions): RailSummaryState
     const controller = new AbortController();
     inFlight.current = controller;
     const gen = generation.current;
+    const requestCycle = cycle.current;
     const target = refRef.current;
     const requestedSignal = signalRef.current;
     const requestedHydration = hydrationRef.current;
     const requestedTerminal = terminalRef.current;
+    inFlightTerminal.current = requestedTerminal;
 
     const settle = () => {
       // A superseded request (ref change) must not clear or settle the request
       // that replaced it.
       if (inFlight.current !== controller) return;
       inFlight.current = null;
+      inFlightTerminal.current = null;
       if (trailing.current) {
         trailing.current = false;
         request();
@@ -166,8 +173,11 @@ export function useRailSummary(options: UseRailSummaryOptions): RailSummaryState
             // one. Ask once more so a quiet live ref cannot stay pinned to the
             // stale copy; if the retry repeats the regression, stop asking and
             // leave the cached data with an honest not-loading state.
-            if (!fenceRetried.current) {
-              fenceRetried.current = true;
+            if (requestCycle !== cycle.current) {
+              // An older cycle's stale answer. The newer cycle's own queued
+              // request owns its recovery budget.
+            } else if (retriedCycle.current !== requestCycle) {
+              retriedCycle.current = requestCycle;
               trailing.current = true;
             } else {
               // Recovery is exhausted: keep the rows but say the lane is no
@@ -179,7 +189,6 @@ export function useRailSummary(options: UseRailSummaryOptions): RailSummaryState
             settle();
             return;
           }
-          fenceRetried.current = false;
           cacheRef.current.set(target, {
             summary,
             signal: requestedSignal,
@@ -198,7 +207,6 @@ export function useRailSummary(options: UseRailSummaryOptions): RailSummaryState
             abandon();
             return;
           }
-          fenceRetried.current = false;
           const cached = cacheRef.current.get(target);
           if (cached) {
             // The attempt covered this signal, so a remount shows the degraded
@@ -242,8 +250,8 @@ export function useRailSummary(options: UseRailSummaryOptions): RailSummaryState
       generation.current += 1;
       inFlight.current?.abort();
       inFlight.current = null;
+      inFlightTerminal.current = null;
       trailing.current = false;
-      fenceRetried.current = false;
     }
     if (hydrationChanged) {
       // Wait for the open request to settle (an abort rejects a real fetch)
@@ -259,13 +267,17 @@ export function useRailSummary(options: UseRailSummaryOptions): RailSummaryState
     else if (becameTerminal || entry.terminal !== terminal) shouldRequest = true;
     else if (terminal) {
       // A terminal entry captured at its terminal revision stays cached.
-      trailing.current = false;
+      // Exception: an open request captured while the session was live must
+      // still be followed by the terminal refresh, or its response would write
+      // a live-captured entry and skip the final job state.
+      if (inFlightTerminal.current !== false) trailing.current = false;
       return;
     } else if (entry.signal !== signal || entry.hydration !== hydration) shouldRequest = true;
     if (!shouldRequest) return;
     // An independent invalidation starts a new revision-retry budget; only the
     // cycle's own trailing retry keeps the old one.
-    fenceRetried.current = false;
+    cycle.current += 1;
+    retriedCycle.current = null;
     request();
   }, [cache, hydration, ref, request, signal, terminal]);
 
@@ -285,7 +297,9 @@ export function useRailSummary(options: UseRailSummaryOptions): RailSummaryState
     // is abandoned rather than awaited: a loader that ignores its abort signal
     // must not leave the retry dead.
     generation.current += 1;
-    fenceRetried.current = false;
+    cycle.current += 1;
+    retriedCycle.current = null;
+    inFlightTerminal.current = null;
     trailing.current = false;
     inFlight.current?.abort();
     inFlight.current = null;

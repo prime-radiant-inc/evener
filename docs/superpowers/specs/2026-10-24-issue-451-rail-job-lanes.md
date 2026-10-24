@@ -148,7 +148,9 @@ returns `{ summary, jobHistory, loading, failure, refresh }`.
    refreshes an entry captured live, and then holds the terminal entry across
    job signals and hydrations. A live session that inherits a
    terminal-captured entry refreshes it. A live-to-terminal transition while
-   mounted refreshes once, so the last job's finish is captured.
+  mounted refreshes once, so the last job's finish is captured. A terminal
+  refresh queued behind an in-flight live request survives later job signals,
+  so that final refresh is not discarded.
 6. **Stale revisions never replace newer data.** A response whose
    `jobHistory.revision` is lower than the cached entry's, or null while the
    cached entry is revisioned, is dropped and asks once more (bounded). A
@@ -157,7 +159,8 @@ returns `{ summary, jobHistory, loading, failure, refresh }`.
    reconcile the newer job signal and offers Retry. An equal or higher
    revision replaces the snapshot wholesale; snapshots are never merged page
    by page. The retry budget belongs to one invalidation cycle: a later job
-   signal, hydration, or ref change starts a fresh budget.
+   signal, hydration, or ref change starts a fresh budget, and a stale answer
+   from an older cycle cannot spend the newer cycle's budget.
 7. **Job-only failure preserves turns.** A failed refresh with a cached summary
    keeps it and records `degraded` in the cache entry, so a remount does not
    claim complete history; a failure with no cached summary reports `fatal`
