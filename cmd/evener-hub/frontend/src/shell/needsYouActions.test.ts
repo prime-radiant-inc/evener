@@ -1828,6 +1828,63 @@ test("a settled needs-you page completes the queue despite a larger manifest cou
   }
 });
 
+// Next has its own demand path. A settled one-row queue with focus on that row
+// leaves Next no target, and the lagging manifest count must not send it
+// looking past the section's own end.
+test("next at the end of a settled one-row queue spends no page read", async () => {
+  const client = new FakeClient("ready");
+  const sectionOffsets: number[] = [];
+  client.on("evener/navigation/read", (params) => {
+    if (params.resource === "manifest") {
+      return wireSnapshot(
+        params,
+        manifest({
+          generation_id: "settled-one-row",
+          sections: { live: { count: 0 }, needs_you: { count: 3 }, pin_sections: { count: 0 } },
+        }),
+        '"manifest"',
+        1,
+        "settled-one-row",
+      );
+    }
+    if (params.resource === "section") {
+      sectionOffsets.push(params.offset ?? -1);
+      return wireSnapshot(
+        params,
+        {
+          sessions: [{ ref: "local:only" }],
+          remaining: 0,
+        },
+        '"settled-one-row-page"',
+        1,
+        "settled-one-row",
+      );
+    }
+    throw new Error(`unexpected resource ${params.resource}`);
+  });
+  navigationStore.init(client, capability("settled-one-row"));
+  await whenNavigation(
+    (state) =>
+      !!state.manifest?.data &&
+      [...state.resources.values()].some(
+        (resource) => resource.key.kind === "section" && !resource.loading && !!resource.data,
+      ),
+  );
+  const only = workspaceStore.getState().openPane("session", { ref: "local:only" });
+  workspaceStore.getState().focusPane(only);
+
+  const controller = createNeedsYouController();
+  try {
+    expect(controller.getSnapshot().nextRef).toBeNull();
+    const readsBefore = sectionOffsets.length;
+    await controller.next();
+    expect(sectionOffsets).toHaveLength(readsBefore);
+    expect(window.location.pathname).not.toContain("local%3Aonly");
+  } finally {
+    controller.dispose();
+  }
+});
+
 // Mod+J works before the first connection arrives. Navigation has no client
 // then, so the demand that activation asks for cannot run; the activation is
 // void-ed by its callers, so a rejection here would be unhandled.

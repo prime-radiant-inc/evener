@@ -97,6 +97,37 @@ export type NeedsYouControllerOptions = {
   observeOnSubscribe?: boolean;
 };
 
+/**
+ * Whether the needs-you section may ask for another page.
+ *
+ * A settled page owns completion: its `remaining` is the section's own word on
+ * whether anything is left. The manifest count refreshes on its own schedule
+ * and can lag a queue that has drained (shrinkage, overlapping pages), so it
+ * may only justify demand before any page has settled. A populated retry and a
+ * failed boundary keep demand of their own.
+ *
+ * Both the snapshot's `canLoadMore` and `runNext`'s one demand ask this, so a
+ * settled queue cannot keep offering an action that spends a read.
+ */
+function needsYouCanDemand(state: ReturnType<typeof navigationStore.getState>): boolean {
+  const pages = [...state.resources.values()].filter(
+    (resource) => resource.key.kind === "section" && resource.key.section === "needs_you",
+  );
+  const failed = pages.some((page) => !!page.error);
+  const retryingPopulatedPage = pages.some(
+    (page) => page.loading && ((page.data as { sessions?: unknown[] } | null)?.sessions?.length ?? 0) > 0,
+  );
+  const settled = pages.some((page) => !page.loading && !page.error && !page.stale);
+  const remaining = selectSectionRemaining("needs_you", state);
+  const uniqueRows = new Set(selectNeedsYouRows(state).map((row) => row.ref));
+  return (
+    retryingPopulatedPage ||
+    failed ||
+    remaining > 0 ||
+    (!settled && (!state.manifest?.data || selectNeedsYouCount(state) > uniqueRows.size))
+  );
+}
+
 export function createNeedsYouController(options: NeedsYouControllerOptions = {}): NeedsYouController {
   let actionSerial = 0;
   let disposed = false;
@@ -117,8 +148,6 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
       return { summary, selectable: !!page && !page.error && !page.stale };
     });
     const remaining = selectSectionRemaining("needs_you", state);
-    const hasManifest = !!state.manifest?.data;
-    const count = selectNeedsYouCount(state);
     const refs = needsYouRefs(uniqueRows);
     let nextRef = nextNeedsYouRef(refs, focusedSessionRef());
     if (remaining > 0 && focusedSessionRef() === refs.at(-1)) nextRef = null;
@@ -128,32 +157,7 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
     const loading = [...state.resources.values()].some(
       (resource) => resource.key.kind === "section" && resource.key.section === "needs_you" && resource.loading,
     );
-    // A retry of a populated page keeps its rows while it is in flight and has
-    // cleared the error. If demand vanished then, the control would unmount and
-    // its visibility effect would cancel the very navigation that started the
-    // retry.
-    const retryingPopulatedPage = [...state.resources.values()].some(
-      (resource) =>
-        resource.key.kind === "section" &&
-        resource.key.section === "needs_you" &&
-        resource.loading &&
-        ((resource.data as { sessions?: unknown[] } | null)?.sessions?.length ?? 0) > 0,
-    );
-    // A settled page owns completion: its `remaining` is the section's own word
-    // on whether anything is left. The manifest count refreshes on its own
-    // schedule and can lag a queue that has drained (shrinkage, overlapping
-    // pages), so it may only justify demand before any page has settled. A
-    // populated retry and a failed boundary keep demand of their own.
-    const settledPage = [...state.resources.values()].some(
-      (resource) =>
-        resource.key.kind === "section" &&
-        resource.key.section === "needs_you" &&
-        !resource.loading &&
-        !resource.error &&
-        !resource.stale,
-    );
-    const canLoadMore =
-      retryingPopulatedPage || failed || remaining > 0 || (!settledPage && (!hasManifest || count > uniqueRows.length));
+    const canLoadMore = needsYouCanDemand(state);
     const canLoadInitialPage = !hasReadManifest && state.mode === "v3" && state.manifest?.loading === true;
     return Object.freeze({
       choices: Object.freeze(choices.map((choice) => Object.freeze(choice))),
@@ -395,14 +399,7 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
         return !!page && !page.error && !page.stale;
       })
     ) {
-      if (
-        state.mode === "unknown" ||
-        state.mode === "error" ||
-        remaining > 0 ||
-        selectNeedsYouCount(state) > rows.length ||
-        !state.manifest?.data ||
-        [...state.resources.values()].some((r) => r.key.kind === "section" && r.key.section === "needs_you" && r.error)
-      ) {
+      if (state.mode === "unknown" || state.mode === "error" || needsYouCanDemand(state)) {
         await demand(serial);
         state = navigationStore.getState();
         if (disposed || serial !== actionSerial) return;
