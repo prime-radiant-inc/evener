@@ -66,6 +66,21 @@ describe("railModelFromSummaryAndTurns", () => {
     expect(model.events).toHaveLength(1);
   });
 
+  test("reconciles a summary-captured turn with its live completion", () => {
+    const live: TurnModel = {
+      id: "turn_1",
+      status: "completed",
+      items: [],
+      startedAt: new Date(1_000).toISOString(),
+      usage: { inputTokens: 100, outputTokens: 50 },
+      error: { message: "failed" },
+    };
+    const model = railModelFromSummaryAndTurns(summary(), [live], { status: "complete", revision: 3 });
+
+    expect(model.events).toHaveLength(1);
+    expect(model.events[0]).toMatchObject({ inTok: 100, outTok: 50, error: true, resultBytes: 0 });
+  });
+
   test("uses the refreshed summary's jobs, so a finished job stops reading as running", () => {
     const refreshed = summary({
       jobs: [job({ finishedAt: 4_000, exitCode: 0, status: "finished" }), job({ jobId: "job_b", startedAt: 5_000 })],

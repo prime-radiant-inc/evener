@@ -8,6 +8,7 @@ import {
   type RailJobHistory,
   type RailSummary,
   type RailSummaryCache,
+  type RailSummaryCacheEntry,
   type RailSummaryLoader,
   railSummaryCache,
 } from "./railSummary";
@@ -122,6 +123,30 @@ export function useRailSummary(options: UseRailSummaryOptions): RailSummaryState
       }
     };
 
+    // A fenced response (reconnect or ref change) must not leave a spinner
+    // behind when nothing replaces it: the terminal freeze can drop the
+    // trailing request an abort would otherwise start.
+    const abandon = () => {
+      settle();
+      if (inFlight.current === null) {
+        setSnapshot((current) => (current.ref === target ? { ...current, loading: false } : current));
+      }
+    };
+
+    const recordDegradedCached = (entry: RailSummaryCacheEntry) => {
+      const jobHistory: RailJobHistory = {
+        // A failure may only downgrade: a cached fatal lane stays fatal.
+        status: (entry.jobHistory?.status ?? entry.summary.jobHistory.status) === "fatal" ? "fatal" : "degraded",
+        revision: entry.summary.jobHistory.revision,
+      };
+      cacheRef.current.set(target, { ...entry, jobHistory });
+      setSnapshot((current) =>
+        current.ref === target
+          ? { ...current, summary: entry.summary, jobHistory, failure: "job-only", loading: false }
+          : current,
+      );
+    };
+
     setSnapshot((current) => (current.ref === target ? { ...current, loading: true } : current));
 
     // Promise.resolve().then keeps a loader that throws synchronously on the
@@ -131,7 +156,7 @@ export function useRailSummary(options: UseRailSummaryOptions): RailSummaryState
       .then(
         (summary) => {
           if (gen !== generation.current) {
-            settle();
+            abandon();
             return;
           }
           const previousRevision = cacheRef.current.get(target)?.summary.jobHistory.revision ?? null;
@@ -145,7 +170,11 @@ export function useRailSummary(options: UseRailSummaryOptions): RailSummaryState
               fenceRetried.current = true;
               trailing.current = true;
             } else {
-              setSnapshot((current) => (current.ref === target ? { ...current, loading: false } : current));
+              // Recovery is exhausted: keep the rows but say the lane is no
+              // longer trustworthy, so the rail shows degraded and offers Retry.
+              const cached = cacheRef.current.get(target);
+              if (cached) recordDegradedCached(cached);
+              else setSnapshot((current) => (current.ref === target ? { ...current, loading: false } : current));
             }
             settle();
             return;
@@ -166,32 +195,20 @@ export function useRailSummary(options: UseRailSummaryOptions): RailSummaryState
         },
         () => {
           if (gen !== generation.current) {
-            settle();
+            abandon();
             return;
           }
           fenceRetried.current = false;
           const cached = cacheRef.current.get(target);
           if (cached) {
-            const previousStatus = cached.jobHistory?.status ?? cached.summary.jobHistory.status;
-            const jobHistory: RailJobHistory = {
-              // A failure may only downgrade: a cached fatal lane stays fatal.
-              status: previousStatus === "fatal" ? "fatal" : "degraded",
-              revision: cached.summary.jobHistory.revision,
-            };
             // The attempt covered this signal, so a remount shows the degraded
             // lane instead of re-asking until the next signal or Retry.
-            cacheRef.current.set(target, {
+            recordDegradedCached({
               ...cached,
               signal: requestedSignal,
               hydration: requestedHydration,
               terminal: requestedTerminal,
-              jobHistory,
             });
-            setSnapshot((current) =>
-              current.ref === target
-                ? { ...current, summary: cached.summary, jobHistory, failure: "job-only", loading: false }
-                : current,
-            );
           } else {
             setSnapshot((current) =>
               current.ref === target

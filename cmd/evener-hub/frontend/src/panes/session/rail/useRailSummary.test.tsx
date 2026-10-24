@@ -270,6 +270,7 @@ describe("useRailSummary refresh", () => {
     await waitFor(() => expect(view.result.current.loading).toBe(false));
     expect(view.result.current.summary?.jobs[0]?.jobId).toBe("job_a");
     expect(view.result.current.jobHistory?.revision).toBe(5);
+    expect(view.result.current.jobHistory?.status).toBe("degraded");
   });
 
   test("a cold mount reports no lane status until the first projection arrives", async () => {
@@ -426,5 +427,26 @@ describe("useRailSummary lifecycle", () => {
 
     view.unmount();
     expect(signal?.aborted).toBe(true);
+  });
+
+  test("a reconnect during a terminal retry clears the spinner instead of freezing it", async () => {
+    const retry = deferred<RailSummary>();
+    const load = vi
+      .fn(async () => summary())
+      .mockResolvedValueOnce(summary())
+      .mockReturnValueOnce(retry.promise);
+    const cache = new RailSummaryCache();
+    const render = renderSummary(load, cache);
+    const view = renderHook(render, { initialProps: { ...settled, terminal: true } });
+    await waitFor(() => expect(view.result.current.summary).not.toBeNull());
+
+    await act(async () => view.result.current.refresh());
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+    view.rerender({ ...settled, hydration: 1, terminal: true });
+
+    await act(async () => retry.resolve(summary({ jobs: [job({ jobId: "job_retry" })] })));
+    await waitFor(() => expect(view.result.current.loading).toBe(false));
+    // The pre-reconnect retry was fenced; the terminal cache still stands.
+    expect(view.result.current.summary?.jobs[0]?.jobId).toBe("job_a");
   });
 });

@@ -41,36 +41,52 @@ export function railModelFromSummaryAndTurns(
   jobHistory: RailJobHistory,
 ): RailModel {
   const events: RailEvent[] = [];
-  const summaryIds = new Set<string>();
-  const summaryStarts = new Set<number>();
+  const summaryIndexById = new Map<string, number>();
+  const summaryIndexByStart = new Map<number, number>();
   for (const turn of summary?.turns ?? []) {
-    events.push({
-      startedAt: turn.startedAt,
-      userInput: turn.userInput,
-      steering: turn.steering,
-      error: turn.error,
-      inTok: turn.in,
-      outTok: turn.out,
-      resultBytes: turn.resultBytes,
-    });
+    const index =
+      events.push({
+        startedAt: turn.startedAt,
+        userInput: turn.userInput,
+        steering: turn.steering,
+        error: turn.error,
+        inTok: turn.in,
+        outTok: turn.out,
+        resultBytes: turn.resultBytes,
+      }) - 1;
     // A summary may carry the turn id; when it does not, the start timestamp is
     // the only identity left, and that turn can still be matched.
-    if (turn.turnId) summaryIds.add(turn.turnId);
-    else summaryStarts.add(turn.startedAt);
+    if (turn.turnId) summaryIndexById.set(turn.turnId, index);
+    else summaryIndexByStart.set(turn.startedAt, index);
   }
 
   for (const turn of turns) {
-    if (summaryIds.has(turn.id)) continue;
     const startedAt = turn.startedAt ? Date.parse(turn.startedAt) : Number.NaN;
     if (!Number.isFinite(startedAt)) continue;
-    if (summaryStarts.has(startedAt)) continue;
     const usage = turnUsageTokens(turn);
+    const error = turn.error != null;
     const first = turn.items[0];
+    const matched = summaryIndexById.get(turn.id) ?? summaryIndexByStart.get(startedAt);
+    if (matched !== undefined) {
+      // The summary captured this turn earlier. Reconcile it with what the live
+      // model knows now (usage, failure), keeping summary-only facts.
+      const event = events[matched];
+      if (event) {
+        if (usage) {
+          event.inTok = usage.inputTokens;
+          event.outTok = usage.outputTokens;
+        }
+        event.error = error;
+        if (first?.type === "userMessage") event.userInput = true;
+        if (first?.type === "steering") event.steering = true;
+      }
+      continue;
+    }
     events.push({
       startedAt,
       userInput: first?.type === "userMessage",
       steering: first?.type === "steering",
-      error: turn.error != null,
+      error,
       inTok: usage?.inputTokens ?? 0,
       outTok: usage?.outputTokens ?? 0,
       resultBytes: 0,

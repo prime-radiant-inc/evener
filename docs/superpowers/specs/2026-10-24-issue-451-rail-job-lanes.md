@@ -152,9 +152,11 @@ returns `{ summary, jobHistory, loading, failure, refresh }`.
 6. **Stale revisions never replace newer data.** A response whose
    `jobHistory.revision` is lower than the cached entry's, or null while the
    cached entry is revisioned, is dropped and asks once more (bounded). A
-   repeated stale answer stops asking, clears `loading`, and leaves the cached
-   lane usable; an equal or higher revision replaces the snapshot wholesale.
-   Snapshots are never merged page by page.
+   repeated stale answer stops asking and records the cached rows as
+   `degraded`, so the lane is usable but the rail shows that it could not
+   reconcile the newer job signal and offers Retry. An equal or higher
+   revision replaces the snapshot wholesale; snapshots are never merged page
+   by page.
 7. **Job-only failure preserves turns.** A failed refresh with a cached summary
    keeps it and records `degraded` in the cache entry, so a remount does not
    claim complete history; a failure with no cached summary reports `fatal`
@@ -162,7 +164,10 @@ returns `{ summary, jobHistory, loading, failure, refresh }`.
    synchronously takes the same path.
 8. **Lifecycle is defined.** A ref change fences the old ref's response,
    aborts its request, and starts the new ref's load. Unmount aborts the open
-   request. Nothing refreshes on a timer, and nothing polls.
+   request. A fenced or abandoned response clears `loading` when no request
+   replaces it, so a reconnect during a terminal Retry leaves an honest state
+   rather than a stuck spinner. Nothing refreshes on a timer, and nothing
+   polls.
 
 `refresh()` is the explicit user retry: it bypasses the terminal freeze,
 abandons any response open from the previous attempt rather than waiting on a
@@ -204,6 +209,11 @@ a retry that could not advance the page. The notice is located by role and the
   millisecond therefore stay distinct when their ids differ. Events are
   ordered by start time; the slice exposes no turn indices, so nothing is
   renumbered.
+- reconciles a matched live turn with its summary event: the live turn's token
+  usage and failure replace the summary's, while summary-only facts such as
+  `resultBytes` and the prompt/steering flags stay. A turn the summary captured
+  while it was still running therefore completes or fails on the rail without
+  waiting for a job signal.
 - reuses the summary's jobs, mapped to `RailJob` (`finishedAt: null` while
   running) and stable-sorted by `startedAt`, then `jobId`. A null summary
   yields no jobs, never fabricated lanes.
