@@ -60,7 +60,6 @@ import { holdQuote, takeQuote } from "./session/pendingQuote";
 import { modelHosts } from "./session/ModelSheet";
 import { SessionInfoSheet, sessionInfoHosts } from "./session/SessionInfoSheet";
 import { commandHosts } from "./session/CommandsSheet";
-import { compactDuration } from "./session/format";
 import { SubagentPanel } from "./subagents/SubagentPanel";
 import { AccessibilityInfo, ActionSheetIOS, Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -72,6 +71,8 @@ import type {
 import { paletteFor } from "./design/tokens";
 import { answerFleetRead, type FleetShape, fleetSession } from "./session/fleetTestUtils";
 import { FloatingStack } from "./session/FloatingStack";
+import { SessionTitle } from "./session/SessionTitle";
+import type { SessionStateLine } from "./session/sessionState";
 import { Toast } from "./Toast";
 import { forgetStopRequestsForHub, stopRequests } from "./subagents/nativeStopRequests";
 import { forgetSubagentTrees } from "./subagents/subagentTree";
@@ -6123,13 +6124,26 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		return { ...tree, root: { ...tree.root, entries: [] } };
 	}
 
-	/** The subagent title the screen set last, rendered as the header renders
-	 * it. */
-	function headerTitleText(): string {
+	/** The state line the screen's header set last, as SessionTitle receives
+	 * it: structure, not its rendered words. */
+	function headerLine(): SessionStateLine {
 		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
 		const options = calls.map(([options]) => options).findLast((options) => options.headerTitle);
 		if (typeof options?.headerTitle !== "function") throw new Error("no headerTitle");
-		return renderedText(render(<>{options.headerTitle({ children: "Fix race in tree settle" })}</>));
+		const tree = render(<>{options.headerTitle({ children: "Fix race in tree settle" })}</>);
+		return tree.root.findByType(SessionTitle).props.line as SessionStateLine;
+	}
+
+	/** The screen's own run time for this subagent, the number behind its
+	 * line. */
+	function subagentRunMs(now: number): number | null {
+		return sessionInfoHosts.get(sheetKey("hub-1", "local:fix"))?.runMs(now) ?? null;
+	}
+
+	/** The opener's run start is RUNNING_SINCE (four minutes before the test
+	 * file loaded), so the screen's number is that age within a second. */
+	function expectRunMsFromOpener(now: number): void {
+		expect(Math.abs((subagentRunMs(now) ?? 0) - (now - Date.parse(RUNNING_SINCE)))).toBeLessThan(5_000);
 	}
 
 	/** The coordinator's thread, as the phone reads it without following it.
@@ -6224,12 +6238,9 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		const served = subagent(true);
 		(served as unknown as { evener: Record<string, unknown> }).evener.activeTurnStartedAt = Date.now() - 2 * 60_000;
 		await mountSubagent(served);
-		const shown = headerTitleText();
-		expect(shown).toContain("Working · 4m");
-		expect(shown).not.toContain("Working · 2m");
+		expect(headerLine().state).toBe("working");
 		// Session info times it the same way.
-		const runMs = sessionInfoHosts.get(sheetKey("hub-1", "local:fix"))?.runMs(Date.now()) ?? null;
-		expect(runMs === null ? "" : compactDuration(runMs)).toBe("4m");
+		expectRunMsFromOpener(Date.now());
 	});
 
 	it("times its run from the row that opened it until the coordinator's tree reports one (#2988)", async () => {
@@ -6242,9 +6253,8 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			Date.now() - 2 * 60_000,
 		).toISOString();
 		await mountSubagent(served, { jobs: emptyTree(), runStartedAt: RUNNING_SINCE });
-		const shown = headerTitleText();
-		expect(shown).toContain("Working · 4m");
-		expect(shown).not.toContain("Working · 2m");
+		expect(headerLine().state).toBe("working");
+		expectRunMsFromOpener(Date.now());
 	});
 
 	it("keeps the opener's run start when the tree's running row has no timing (#2988)", async () => {
@@ -6256,9 +6266,8 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			Date.now() - 2 * 60_000,
 		).toISOString();
 		await mountSubagent(served, { jobs: subagentTree({ runStartedAt: undefined }), runStartedAt: RUNNING_SINCE });
-		const shown = headerTitleText();
-		expect(shown).toContain("Working · 4m");
-		expect(shown).not.toContain("Working · 2m");
+		expect(headerLine().state).toBe("working");
+		expectRunMsFromOpener(Date.now());
 	});
 
 	it("times a still-working subagent by its turn once its row has ended", async () => {
@@ -6272,8 +6281,10 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			jobs: subagentTree({ terminal: true, outcome: "completed", runEndedAt: new Date().toISOString() }),
 			runStartedAt: RUNNING_SINCE,
 		});
-		const shown = headerTitleText();
-		expect(shown).toContain("Working · 2m");
+		expect(headerLine().state).toBe("working");
+		// The screen does not time the ended run, so its runMs is null and the
+		// state line falls back to the turn's own elapsed time.
+		expect(subagentRunMs(Date.now())).toBeNull();
 	});
 
 	it("lets the panel's running row time the run over the opener's start (#2988)", async () => {
@@ -6285,9 +6296,9 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			Date.now() - 2 * 60_000,
 		).toISOString();
 		await mountSubagent(served, { runStartedAt: new Date(Date.now() - 6 * 60_000).toISOString() });
-		const shown = headerTitleText();
-		expect(shown).toContain("Working · 4m");
-		expect(shown).not.toContain("Working · 6m");
+		expect(headerLine().state).toBe("working");
+		// The panel's RUNNING_SINCE beats the route's six-minute start.
+		expectRunMsFromOpener(Date.now());
 	});
 
 	it("takes back the row it reported when its panel goes away", async () => {
