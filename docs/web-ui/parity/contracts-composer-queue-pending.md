@@ -69,8 +69,10 @@ except where a line says so itself.
 
 - A conversation composer's recovery selection belongs to a seat: a per-tab,
   per-conversation identity stored with the composer drafts. The seat survives
-  a mobile route reconstruction and a desktop layout restore. It is never part
-  of shared layout geometry, so another tab cannot adopt or overwrite it.
+  a mobile route reconstruction and a desktop layout restore. A reconstructed
+  mobile route uses the conversation mapping first, never a pane-id mapping
+  left by another conversation under the same restarted id. The seat is never
+  part of shared layout geometry, so another tab cannot adopt or overwrite it.
 - Independent panes on one conversation hold distinct seats and therefore
   independent recovery selections. A `sessionZoom` cascade uses one tab-scoped
   seat for its columns, with a separate selection entry per column ref.
@@ -80,7 +82,8 @@ except where a line says so itself.
 - A resumed or retargeted conversation carries the seat's selection to the
   resumed ref. A row preserved after the retarget lands under that ref, and an
   already-mounted resumed view is refreshed for it even when the row that moved
-  was consumed.
+  was consumed by another tab, because the retarget destination is persisted
+  atomically with the move.
 - A pane disposed while a refused recovery write awaits storage preserves the
   newest complete composition captured at disposal: text, selections, payload
   input and settled attachment bytes. The fresh row becomes the seat's

@@ -104,11 +104,16 @@ const DATABASE_NAME = "evener-mutation-outbox";
 // errors) instead of silently erasing attempt evidence: the safe
 // mixed-version state is a reload, never a silent share
 // (docs/design/stop-cancellation-outbox.md §8).
-const DATABASE_VERSION = 4;
+//
+// Version 5 adds the retarget-destination store: a recovery row moved by a
+// resume must keep naming its destination after another tab consumes the row,
+// and that fact has to be shared rather than held in one tab's memory.
+const DATABASE_VERSION = 5;
 const OUTBOX_STORE = "outbox";
 const OPTIMISTIC_STORE = "optimistic";
 const RECOVERY_STORE = "recovery";
 const SEQUENCE_STORE = "sequences";
+const RETARGET_STORE = "retargets";
 const TARGET_SEQUENCE_INDEX = "byTargetSequence";
 const STORAGE_WAIT_MS = 10_000;
 
@@ -130,6 +135,20 @@ function priorUnresolvedAttempts(record: { unresolvedAttempts?: number; attempte
 // cross-store clientMutationId uniqueness check (#assertMutationIdAvailable)
 // reads and writes under one transaction.
 const ENQUEUE_STORES = [OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE, SEQUENCE_STORE];
+
+// Preservation reads the recovery row and its retarget destination in the same
+// transaction, so the outcome cannot straddle another tab's retarget.
+const PRESERVE_STORES = [...ENQUEUE_STORES, RETARGET_STORE];
+
+// Where retargetOutbox moved a recovery row. Written atomically with the move
+// so a preservation waiting in another tab's adapter can resolve the resumed
+// identity even after the moved row is consumed.
+export interface RecoveryRetargetDestination {
+  clientMutationId: string;
+  targetRef: string;
+  threadId?: string;
+  instanceId?: string;
+}
 
 // The outbox's own storage failures: an open the database refused or that
 // another tab's older schema blocked, or a connection superseded mid-open.
@@ -228,11 +247,6 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
   #supersededDiscardListener: ((targetRef: string) => void) | undefined;
   #settledListener: ((targetRef: string) => void) | undefined;
   #stalledWrites = 0;
-  // The destination each recovery row moved to under retargetOutbox, kept
-  // beside the rows it moved: a preservation that was waiting across the
-  // retarget can still resolve its resumed identity after another pane
-  // consumed the row.
-  readonly #retargetedRecovery = new Map<string, { targetRef: string; threadId?: string; instanceId?: string }>();
 
   constructor(options: MutationOutboxIndexedDBOptions = {}) {
     const factory = options.indexedDB ?? globalThis.indexedDB;
@@ -545,13 +559,14 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
   ): Promise<RetargetedMutations> {
     if (fromRef === toRef) return { outbox: [], optimistic: [], recovery: [] };
     return this.#write(
-      [OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE, SEQUENCE_STORE],
+      [OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE, SEQUENCE_STORE, RETARGET_STORE],
       "retargetOutbox",
       async (transaction) => {
         const outboxStore = transaction.objectStore(OUTBOX_STORE);
         const optimisticStore = transaction.objectStore(OPTIMISTIC_STORE);
         const recoveryStore = transaction.objectStore(RECOVERY_STORE);
         const sequenceStore = transaction.objectStore(SEQUENCE_STORE);
+        const retargetStore = transaction.objectStore(RETARGET_STORE);
         // One read of the new ref's sequence row, then consecutive numbering for
         // the whole batch, then one put - the lists are sorted, so order is kept.
         const sequence = await requestResult<TargetSequence | undefined>(sequenceStore.get(toRef));
@@ -618,11 +633,15 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         for (const record of eligibleRecovery)
           recovery.push((await move(recoveryStore, record)) as MutationRecoveryRecord);
         for (const record of recovery) {
-          this.#retargetedRecovery.set(record.clientMutationId, {
+          const destination: RecoveryRetargetDestination = {
+            clientMutationId: record.clientMutationId,
             targetRef: toRef,
             threadId: identity.threadId,
             instanceId: identity.instanceId,
-          });
+          };
+          // Same transaction as the move: no adapter can observe the moved row
+          // without its destination, and none needs local history to resolve it.
+          await requestResult(retargetStore.put(destination));
         }
         if (lastSequence !== (sequence?.lastSequence ?? 0)) {
           await requestResult(sequenceStore.put({ ...sequence, targetRef: toRef, lastSequence }));
@@ -1063,7 +1082,7 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     compositionOwnerId?: string,
     localDraftRevisionId?: string,
   ): Promise<MutationRecoveryRecord | undefined> {
-    return this.#write(ENQUEUE_STORES, "preserveRecoveryComposition", async (transaction) => {
+    return this.#write(PRESERVE_STORES, "preserveRecoveryComposition", async (transaction) => {
       const recoveryStore = transaction.objectStore(RECOVERY_STORE);
       const stale = await requestResult<VersionedMutationRecoveryRecord | undefined>(
         recoveryStore.get(base.clientMutationId),
@@ -1071,8 +1090,11 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       if (stale && sameRecoveryComposition(stale, input, composerText, composerMentions, attachments)) return stale;
       // retargetOutbox may have moved this recovery to a resumed identity while
       // the composition was pending. The surviving row owns the current target;
-      // when another pane consumed it first, the retarget record still does.
-      const retargeted = this.#retargetedRecovery.get(base.clientMutationId);
+      // when another adapter retargeted and another pane consumed the row
+      // first, the shared retarget record still does.
+      const retargeted = await requestResult<RecoveryRetargetDestination | undefined>(
+        transaction.objectStore(RETARGET_STORE).get(base.clientMutationId),
+      );
       const shape: MutationRecoveryRecord =
         stale ??
         (retargeted === undefined
@@ -1255,6 +1277,9 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
     }
     if (!database.objectStoreNames.contains(SEQUENCE_STORE)) {
       database.createObjectStore(SEQUENCE_STORE, { keyPath: "targetRef" });
+    }
+    if (!database.objectStoreNames.contains(RETARGET_STORE)) {
+      database.createObjectStore(RETARGET_STORE, { keyPath: "clientMutationId" });
     }
   }
 

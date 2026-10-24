@@ -1510,3 +1510,29 @@ test("a child opened beside a retained cascade gets its own recovery seat", () =
     .map((pane) => pane.composerSeatId ?? pane.id);
   expect(new Set(liveSeats).size).toBe(liveSeats.length);
 });
+
+// Pane ids restart after a mobile reload. A route reconstructed as B can land
+// on the id A used before, whose stored pane mapping still names A's seat.
+// The conversation mapping must win for a reconstructed route.
+test("a reconstructed route keeps its own seat over a colliding stale pane id", () => {
+  installLocalStorage(new MemoryStorage());
+  const workspace = workspaceStore.getState();
+  const aId = workspace.openPane("session", { ref: "local:route-a" });
+  const a = workspaceStore.getState().panes.find((pane) => pane.id === aId);
+  if (!a?.composerSeatId) throw new Error("route A lacks its seat");
+  writeRecoverySelection("local:route-a", composerSelectionScope(a.composerSeatId), "a-row");
+  const bId = workspace.openPane("session", { ref: "local:route-b" });
+  const b = workspaceStore.getState().panes.find((pane) => pane.id === bId);
+  if (!b?.composerSeatId) throw new Error("route B lacks its seat");
+  writeRecoverySelection("local:route-b", composerSelectionScope(b.composerSeatId), "b-row");
+
+  // Reload: pane ids restart, and route B is reconstructed on A's former id.
+  resetWorkspaceStoreForTests();
+  const reloadedId = workspaceStore.getState().openPane("session", { ref: "local:route-b" });
+  expect(reloadedId).toBe(aId);
+  const reloaded = workspaceStore.getState().panes.find((pane) => pane.id === reloadedId);
+  if (!reloaded?.composerSeatId) throw new Error("reloaded route lacks its seat");
+  expect(reloaded.composerSeatId).toBe(b.composerSeatId);
+  expect(readRecoverySelection("local:route-b", composerSelectionScope(reloaded.composerSeatId))).toBe("b-row");
+  expect(readRecoverySelection("local:route-a", composerSelectionScope(reloaded.composerSeatId))).toBeUndefined();
+});

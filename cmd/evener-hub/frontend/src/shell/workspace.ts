@@ -324,6 +324,11 @@ function liveComposerSeats(panes: readonly OpenPaneRecord[]): Set<string> {
 // outgoing seat is reusable only once its own pane is leaving; a retained pane
 // keeps its scope and the new pane receives a copy of the selection. A choice
 // already established for the destination seat always wins.
+//
+// This is the route/open path, not layout restoration. Pane ids restart on a
+// reload, so a reconstructed route's id may equal a different conversation's
+// former id; its pane-id mapping is stale and must not win. Restoration reads
+// the pane mapping itself (see restoreLayout).
 function placeComposerSeat(
   paneId: string,
   ref: string,
@@ -333,7 +338,7 @@ function placeComposerSeat(
   const live = liveComposerSeats(panes);
   let seat = outgoingSeat !== undefined && !live.has(outgoingSeat) ? outgoingSeat : undefined;
   if (seat === undefined) {
-    const stored = readPaneComposerSeat(paneId) ?? readRefComposerSeat(ref);
+    const stored = readRefComposerSeat(ref);
     if (stored !== undefined && !live.has(stored)) seat = stored;
   }
   if (seat === undefined) seat = createSecureUUID();
