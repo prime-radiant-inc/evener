@@ -59,14 +59,17 @@ base-URL guess — a gateway in front of the vendor makes URL sniffing wrong.
 
 ## High-level streaming retries
 
-`StreamGenerate` retries a transient stream failure only if no nonempty content
-has been forwarded to its `StreamResult.Events()` consumer. Text, reasoning,
-object deltas, and tool-call arguments (whether delivered on start, delta, or
-end) commit the attempt: a later truncation produces a terminal stream error
-instead of replaying content into the same event channel. Empty deltas and
-control/start events without content do not prevent retry. This is the
-high-level library path; callers using `RetryStream` directly can explicitly
-opt into retry-after-partial with a reset callback.
+`StreamGenerate` commits a stream attempt after forwarding nonempty normalized
+text or reasoning deltas, nonempty tool-call arguments (on start, delta, or
+end), or a nonnil object delta. A later transient failure then produces a
+terminal stream error rather than retrying into the same event channel. Empty
+text, reasoning, and tool-argument deltas, and control/start events without
+those payloads, do not prevent retry. Provider-specific `PROVIDER_EVENT`/`Raw`
+passthrough is **not** classified as committed content, even when `Raw` contains
+content; such events can repeat on retry without a reset. See the
+[unresolved Raw replay diagnostic](../docs/formal/llm/README.md#raw-provider-passthrough-replay-unresolved).
+This is the high-level library path; callers using `RetryStream` directly can
+explicitly opt into retry-after-partial with a reset callback.
 
 ## Completed streaming tool rounds
 

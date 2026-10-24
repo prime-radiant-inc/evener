@@ -1,4 +1,4 @@
-# Bounded LLM-core audit
+# Bounded LLM-core audit: two fixes, Raw replay unresolved
 
 TLC found two families; both are now **confirmed Go bugs and fixed**:
 
@@ -8,6 +8,13 @@ TLC found two families; both are now **confirmed Go bugs and fixed**:
 - **SS-1:** a later terminal error left completed tool results and usage out
   of `StreamResult.Steps()` and `TotalUsage()`. A public-boundary regression
   failed before completed-round publication and passed afterward.
+
+**Unresolved:** provider-specific `PROVIDER_EVENT`/`Raw` passthrough can
+repeat after a transient stream failure, including a nonempty content payload.
+The two fixes and passing bounded models cover the enumerated normalized
+events and completed-round accounting, **not** a universal no-replay guarantee
+for provider events. See [Raw provider passthrough replay](#raw-provider-passthrough-replay-unresolved)
+and [issue #4941](https://github.com/prime-radiant-inc/evener/issues/4941).
 
 Of the 17 documented configurations, 12 finish without violations. Four retain
 historical counterexamples for SC-1/SS-1; a fifth concerns a deliberately
@@ -132,11 +139,12 @@ flowchart LR
   Gate -->|Reasoning or tool, false| Retry[Begin next attempt, no reset]
 ```
 
-The model records published content independently of the implementation's
-`PartialOutput` flag. `NoRetryAfterUnresetContent` asks whether the next attempt
-starts while old content remains visible. It does not require a second identical
-payload to detect the dangerous retry. The historical model's counterexample
-was a replay *risk*; the later Go test established the observable second attempt.
+The model records published normalized content independently of the
+implementation's `PartialOutput` flag. `NoRetryAfterUnresetContent` asks
+whether the next attempt starts while old content remains visible. It does not
+require an identical second payload to detect the dangerous retry. The
+historical model's counterexample was a replay *risk*; the later Go test
+established the observable second attempt.
 
 | Action / field | Source correspondence (baseline unless marked fixed) |
 |---|---|
@@ -178,9 +186,10 @@ closing channel or retry decision. A provider's terminal ERROR instead of raw
 closure follows baseline `stream_generate.go:245-254` (fixed `:253-262`) to the
 same retry gate.
 
-**Contract strength:** the approved design treats published content as committed;
-`stream_retry.go:56-64` documents that default retry cannot re-stream already
-shown content. The baseline `stream_generate.go:275-281` repeats that intent.
+**Contract strength:** the approved design treats published normalized content
+as committed; `stream_retry.go:56-64` documents that default retry cannot
+re-stream already shown content. The baseline `stream_generate.go:275-281`
+repeats that intent.
 Its baseline comment at `:212-213` described the text-only implementation, not
 a proof that reasoning/tool content is safe to replay. Start/control duplication
 is not classified as a bug. The public-boundary regression below establishes the effect.
@@ -219,6 +228,36 @@ field bytes or the accumulator. The Go regression, not the bounded model,
 confirms the fixed empty-text retry and the tool-start/end and object cases.
 No production agent-session `StreamGenerate` caller was found; the demonstrated
 impact is limited to public `llm` library consumers.
+
+### Raw provider passthrough replay, unresolved
+
+A separate public-library diagnostic against the fixed source used a scripted
+adapter with the real `Client` and `StreamGenerate`. On attempt 1 it emitted a
+`PROVIDER_EVENT` with `Raw: {"type":"response.refusal.delta",
+"delta":"I cannot help with that."}` and then closed without `FINISH`. On
+attempt 2 it emitted the same event followed by `FINISH` with response text
+`settled`. With `MaxRetries: 1`, the observed result was **2 requests, 2
+Raw content events, a successful `"settled"` response, and no error**. The
+complete diagnostic source and reproduction command are in
+[issue #4941](https://github.com/prime-radiant-inc/evener/issues/4941).
+
+`llm/stream_generate.go:265-277` forwards provider passthrough but sets
+`hasPartialOutput` only for nonempty normalized text/reasoning, nonempty tool
+arguments on start/delta/end, or a nonnil object delta. `RetryStream` uses the
+caller's `PartialOutput` report to gate another attempt
+(`llm/stream_retry.go:129-130`). Source inspection shows that the Responses
+adapter's default branch can forward unrecognized frames as `PROVIDER_EVENT`
+with `Raw` (`llm/providers/responses/stream.go:537-555`); the diagnostic
+scripted the adapter and **did not** exercise that decoder or a live provider.
+
+Whether each adapter's opaque payload is content or control remains
+undecided. Marking **every** `Raw` event as partial output would also prevent
+recovery after control-only failures; special-casing refusal deltas would not
+settle other adapters' content semantics. This is a deferred contract and
+adapter decision, **not** a new fixed regression or a claim of live-provider
+or agent-session impact. Neither the fixed StreamCommit model nor its Go
+regression checks opaque `Raw` replay; the bounded normalized-event result
+does not prove a universal no-replay property.
 
 ## RetryBudget: admission and bounded liveness
 
@@ -384,7 +423,9 @@ this finite abstraction cannot prove the Go implementation or live provider path
   checks object deltas, arguments specifically on START and END, and empty
   text/control-only recovery. The historical model excludes empty text, which
   old Go incorrectly marked partial. Model checks do not inspect exact payload
-  bytes, empty-text behavior, or the event position of tool arguments.
+  bytes, empty-text behavior, or the event position of tool arguments. Opaque
+  provider `PROVIDER_EVENT`/`Raw` passthrough is outside both StreamCommit modes
+  and can replay as documented above.
 - More than two modeled events per attempt, explicit reset-enabled RetryStream
   callers, fail-fast streak/cap rules, backoff numeric overflow, time moving
   backwards, real clock/deadline epoch interactions, and concurrent
