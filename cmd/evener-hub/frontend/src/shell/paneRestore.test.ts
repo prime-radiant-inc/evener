@@ -427,3 +427,38 @@ test("restoring two panes for one conversation allocates distinct seats", () => 
   expect(seats.every((seat) => typeof seat === "string" && seat !== "")).toBe(true);
   expect(new Set(seats).size).toBe(2);
 });
+
+// AppShell can reconstruct a routed conversation before restoring a saved
+// desktop layout whose pane id belongs to a different conversation. The route
+// placement must not overwrite that saved pane-seat mapping.
+test("a route placement before restore keeps the saved pane seat", () => {
+  installLocalStorage(new MemoryStorage());
+  try {
+    setMutationClientIdentityForTests("tab-a");
+    // The previous page saved conversation A on pane_session_1, with its seat
+    // and selected recovery row.
+    writeComposerSeat("pane_session_1", "local:a", "saved-a-seat");
+    writeRecoverySelection("local:a", composerSelectionScope("saved-a-seat"), "a-row");
+
+    // Cold startup reconstructs route B first; pane ids restarted, so B lands
+    // on A's saved id.
+    const routedId = workspaceStore.getState().openPane("session", { ref: "local:b" });
+    expect(routedId).toBe("pane_session_1");
+
+    restorePanels({
+      pane_session_1: {
+        id: "pane_session_1",
+        contentComponent: "default",
+        params: { paneType: "session", paneParams: { ref: "local:a" } },
+      },
+    });
+
+    const restored = workspaceStore.getState().panes.find((pane) => pane.id === "pane_session_1");
+    expect(restored?.composerSeatId).toBe("saved-a-seat");
+    expect(readRecoverySelection("local:a", composerSelectionScope("saved-a-seat"))).toBe("a-row");
+    // B's route placement never claimed A's saved seat.
+    expect(readRecoverySelection("local:b", composerSelectionScope("saved-a-seat"))).toBeUndefined();
+  } finally {
+    setMutationClientIdentityForTests(undefined);
+  }
+});

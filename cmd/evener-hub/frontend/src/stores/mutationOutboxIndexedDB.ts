@@ -147,6 +147,9 @@ export interface RecoveryRetargetDestination {
   targetRef: string;
   threadId?: string;
   instanceId?: string;
+  // A ref-forwarding record is keyed by its source ref rather than a recovery
+  // row id, because the row may be consumed before the retarget happens.
+  kind?: "ref";
 }
 
 // The outbox's own storage failures: an open the database refused or that
@@ -566,6 +569,18 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         const recoveryStore = transaction.objectStore(RECOVERY_STORE);
         const sequenceStore = transaction.objectStore(SEQUENCE_STORE);
         const retargetStore = transaction.objectStore(RETARGET_STORE);
+        // Forward the ref itself, independently of any surviving recovery row:
+        // another tab may consume the row before this retarget runs, and a
+        // later resume must still be able to follow the chain.
+        await requestResult(
+          retargetStore.put({
+            clientMutationId: fromRef,
+            kind: "ref",
+            targetRef: toRef,
+            threadId: identity.threadId,
+            instanceId: identity.instanceId,
+          } satisfies RecoveryRetargetDestination),
+        );
         // One read of the new ref's sequence row, then consecutive numbering for
         // the whole batch, then one put - the lists are sorted, so order is kept.
         const sequence = await requestResult<TargetSequence | undefined>(sequenceStore.get(toRef));
@@ -1090,10 +1105,25 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
       // retargetOutbox may have moved this recovery to a resumed identity while
       // the composition was pending. The surviving row owns the current target;
       // when another adapter retargeted and another pane consumed the row
-      // first, the shared retarget record still does.
-      const retargeted = await requestResult<RecoveryRetargetDestination | undefined>(
-        transaction.objectStore(RETARGET_STORE).get(base.clientMutationId),
+      // first, the row-recorded or ref-forwarded destination still does.
+      const retargetStore = transaction.objectStore(RETARGET_STORE);
+      const rowDestination = await requestResult<RecoveryRetargetDestination | undefined>(
+        retargetStore.get(base.clientMutationId),
       );
+      let retargeted = rowDestination?.kind === "ref" ? undefined : rowDestination;
+      if (retargeted === undefined) {
+        // Follow the ref chain so repeated resumes resolve to the latest
+        // identity even when no recovery row survived any hop.
+        const seen = new Set<string>();
+        let currentRef = base.targetRef;
+        while (!seen.has(currentRef)) {
+          seen.add(currentRef);
+          const hop = await requestResult<RecoveryRetargetDestination | undefined>(retargetStore.get(currentRef));
+          if (hop?.kind !== "ref") break;
+          retargeted = hop;
+          currentRef = hop.targetRef;
+        }
+      }
       const shape: MutationRecoveryRecord =
         stale ??
         (retargeted === undefined

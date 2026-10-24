@@ -21,6 +21,8 @@ import {
   readRefComposerSeat,
   transferRecoverySelection,
   writeComposerSeat,
+  writePaneComposerSeat,
+  writeRefComposerSeat,
 } from "../panes/session/composer/draft";
 import { createSecureUUID } from "../stores/secureUUID";
 import { type PaneTypeId, paneFor } from "./paneRegistry";
@@ -329,12 +331,7 @@ function liveComposerSeats(panes: readonly OpenPaneRecord[]): Set<string> {
 // reload, so a reconstructed route's id may equal a different conversation's
 // former id; its pane-id mapping is stale and must not win. Restoration reads
 // the pane mapping itself (see restoreLayout).
-function placeComposerSeat(
-  paneId: string,
-  ref: string,
-  panes: readonly OpenPaneRecord[],
-  outgoingSeat?: string,
-): string {
+function placeComposerSeat(ref: string, panes: readonly OpenPaneRecord[], outgoingSeat?: string): string {
   const live = liveComposerSeats(panes);
   let seat = outgoingSeat !== undefined && !live.has(outgoingSeat) ? outgoingSeat : undefined;
   if (seat === undefined) {
@@ -342,7 +339,11 @@ function placeComposerSeat(
     if (stored !== undefined && !live.has(stored)) seat = stored;
   }
   if (seat === undefined) seat = createSecureUUID();
-  writeComposerSeat(paneId, ref, seat);
+  // Route/open placement writes only the conversation mapping. A pane-id
+  // mapping belongs to saved desktop geometry and is written when that layout
+  // is saved or restored, so a restarted id cannot clobber another
+  // conversation's saved seat before restoration.
+  writeRefComposerSeat(ref, seat);
   if (outgoingSeat !== undefined && outgoingSeat !== seat) transferRecoverySelection(ref, outgoingSeat, seat);
   return seat;
 }
@@ -653,7 +654,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
         const seatAdded = ref !== null && existing.composerSeatId === undefined;
         if (seatAdded) {
           // Attach in place: object-keyed edges bind to this record.
-          existing.composerSeatId = placeComposerSeat(existing.id, ref, state.panes, opts?.recoverySelectionFrom);
+          existing.composerSeatId = placeComposerSeat(ref, state.panes, opts?.recoverySelectionFrom);
         }
         if (paramsChanged || focusChanged || seatAdded) {
           set({
@@ -675,7 +676,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
         if (ref !== null) {
           if (existing.composerSeatId === undefined) {
             // Attach in place: object-keyed edges bind to this record.
-            existing.composerSeatId = placeComposerSeat(existing.id, ref, state.panes, opts?.recoverySelectionFrom);
+            existing.composerSeatId = placeComposerSeat(ref, state.panes, opts?.recoverySelectionFrom);
             panes = [...state.panes];
           } else if (
             opts?.recoverySelectionFrom !== undefined &&
@@ -711,8 +712,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     // nothing: it never wanted the slot welcome is holding.
     const id = nextPaneId(type);
     const ref = isConversationPaneType(type) ? refParam(params) : null;
-    const composerSeatId =
-      ref === null ? undefined : placeComposerSeat(id, ref, state.panes, opts?.recoverySelectionFrom);
+    const composerSeatId = ref === null ? undefined : placeComposerSeat(ref, state.panes, opts?.recoverySelectionFrom);
     const main = state.panes.find((p) => p.slot === "main");
     const refusesMain = opts?.slot === "secondary";
     const displaced = !refusesMain && type !== "welcome" && main?.type === "welcome" ? main : undefined;
@@ -749,9 +749,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       const duplicatesRemoved = panes.length !== state.panes.length;
       const ref = isConversationPaneType(type) ? refParam(params) : null;
       const seat =
-        ref !== null && main.composerSeatId === undefined
-          ? placeComposerSeat(main.id, ref, state.panes)
-          : main.composerSeatId;
+        ref !== null && main.composerSeatId === undefined ? placeComposerSeat(ref, state.panes) : main.composerSeatId;
       const seatChanged = seat !== main.composerSeatId;
       // Attach in place so object-keyed edges keep their pane identity.
       if (seatChanged && seat !== undefined) main.composerSeatId = seat;
@@ -768,7 +766,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     // This arm removes every existing pane, so a promoted secondary's seat is
     // free to move to the replacement.
     const outgoingSeat = ref === null ? undefined : selectionSeatForRef(ref, state.panes, main);
-    const composerSeatId = ref === null ? undefined : placeComposerSeat(id, ref, [], outgoingSeat);
+    const composerSeatId = ref === null ? undefined : placeComposerSeat(ref, [], outgoingSeat);
     set({
       panes: [{ id, type, params, slot: "main", ...(composerSeatId === undefined ? {} : { composerSeatId }) }],
       focusedPaneId: id,
@@ -799,7 +797,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     } else {
       const ref = refParam(params);
       if (ref !== null && replacement.composerSeatId === undefined) {
-        replacement.composerSeatId = placeComposerSeat(expected.id, ref, state.panes);
+        replacement.composerSeatId = placeComposerSeat(ref, state.panes);
       }
     }
     for (const listener of paneRetypeListeners) listener(expected, replacement);
@@ -860,6 +858,12 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     for (const pane of get().panes) {
       const panel = layout.panels?.[pane.id];
       if (panel) panel.params = { ...panel.params, paneType: pane.type, paneParams: pane.params };
+      // A saved layout is the one moment a pane id and a conversation are
+      // known to belong together. Persist the pane mapping here, not at route
+      // placement: before restoration, a restarted id may still name another
+      // conversation's saved pane.
+      if (isConversationPaneType(pane.type) && pane.composerSeatId !== undefined)
+        writePaneComposerSeat(pane.id, pane.composerSeatId);
     }
     // The conversation parent-context record is object-keyed beside this
     // store, so a layout must carry its edges separately or a reload
@@ -1047,7 +1051,7 @@ export function substituteAttentionPane(
   pane.slot = slot === "main" && main !== null && main !== pane && !displacesWelcome ? "secondary" : slot;
   const paneRef = isConversationPaneType(pane.type) ? refParam(pane.params) : null;
   if (paneRef !== null && pane.composerSeatId === undefined) {
-    pane.composerSeatId = placeComposerSeat(pane.id, paneRef, state.panes);
+    pane.composerSeatId = placeComposerSeat(paneRef, state.panes);
   }
   // Like retype ownership transfer, install runtime bindings before observers
   // can capture the newly committed presentation.

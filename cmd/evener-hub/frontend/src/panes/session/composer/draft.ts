@@ -149,13 +149,28 @@ export function readRefComposerSeat(ref: string): string | undefined {
   return storedSeat(refSeatKey(ref));
 }
 
-export function writeComposerSeat(paneId: string, ref: string | null, seat: string): void {
+// Route placement owns the conversation mapping immediately, but a pane-id
+// mapping belongs to saved desktop geometry. Writing it before restoration
+// could overwrite another conversation's saved seat under a restarted id.
+export function writeRefComposerSeat(ref: string, seat: string): void {
   try {
-    localStorage.setItem(paneSeatKey(paneId), seat);
-    if (ref !== null) localStorage.setItem(refSeatKey(ref), seat);
+    localStorage.setItem(refSeatKey(ref), seat);
   } catch {
     // Best-effort, like every other composer persistence.
   }
+}
+
+export function writePaneComposerSeat(paneId: string, seat: string): void {
+  try {
+    localStorage.setItem(paneSeatKey(paneId), seat);
+  } catch {
+    // Best-effort, like every other composer persistence.
+  }
+}
+
+export function writeComposerSeat(paneId: string, ref: string | null, seat: string): void {
+  writePaneComposerSeat(paneId, seat);
+  if (ref !== null) writeRefComposerSeat(ref, seat);
 }
 
 function isStoredComposerDraft(value: unknown): value is ComposerDraft {

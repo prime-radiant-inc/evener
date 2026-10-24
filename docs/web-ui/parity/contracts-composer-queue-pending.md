@@ -73,6 +73,9 @@ except where a line says so itself.
   mobile route uses the conversation mapping first, never a pane-id mapping
   left by another conversation under the same restarted id. The seat is never
   part of shared layout geometry, so another tab cannot adopt or overwrite it.
+  A route placement does not write a pane-id mapping; those are written only
+  when a layout is saved or restored, so startup ordering cannot overwrite a
+  saved pane's seat before its layout returns.
 - Independent panes on one conversation hold distinct seats and therefore
   independent recovery selections. A `sessionZoom` cascade uses one tab-scoped
   seat for its columns, with a separate selection entry per column ref.
@@ -83,11 +86,13 @@ except where a line says so itself.
   resumed ref. A row preserved after the retarget lands under that ref, and an
   already-mounted resumed view is refreshed for it even when the row that moved
   was consumed by another tab, because the retarget destination is persisted
-  atomically with the move.
+  atomically with the move. Ref forwarding persists even when no recovery row
+  survives, and follows repeated resumes to the latest identity.
 - A pane disposed while a refused recovery write awaits storage preserves the
   newest complete composition captured at disposal: text, selections, payload
   input and settled attachment bytes. The fresh row becomes the seat's
-  selected recovery. A destination with a newer selection keeps it.
+  selected recovery. A destination with a newer selection keeps it, including
+  when preservation adopts its fresh row after a replacement composer chose.
 
 ### Atomic skill and command selections
 

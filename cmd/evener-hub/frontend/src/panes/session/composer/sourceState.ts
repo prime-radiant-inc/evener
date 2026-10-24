@@ -121,7 +121,7 @@ export interface ComposerSourceState {
   updateSkillNames(names: string[]): void;
   editSkillNames(names: string[]): void;
   updateSelectionMeta(value: SkillEditorValue): void;
-  setActiveRecoveryId(record: MutationRecoveryRecord | null): void;
+  setActiveRecoveryId(record: MutationRecoveryRecord | null, options?: { replaceSelection?: string }): void;
   markRestore(): void;
   persistDraft(text: string): void;
   writeDraft(text: string, mayPersist: boolean, source?: TextEditSource): void;
@@ -347,7 +347,7 @@ export function createComposerSourceState(
     markEdited();
     updateSkillNames(names);
   }
-  function setActiveRecoveryId(record: MutationRecoveryRecord | null): void {
+  function setActiveRecoveryId(record: MutationRecoveryRecord | null, options?: { replaceSelection?: string }): void {
     if (disposed) return;
     const activeRecoveryId = record?.clientMutationId ?? null;
     if (currentRecoveryId() !== activeRecoveryId) {
@@ -358,7 +358,18 @@ export function createComposerSourceState(
       ? { clientMutationId: record.clientMutationId, compositionRevision: recoveryCompositionRevision(record) }
       : null;
     recoveryBaseRecord = record;
-    writeRecoverySelection(record?.targetRef ?? ref, recoverySelectionOwnerId, activeRecoveryId);
+    const targetRef = record?.targetRef ?? ref;
+    // Adopting a preserved row may happen after a replacement composer has
+    // selected a newer row under the destination. Only replace the lease's own
+    // stale choice, never that newer selection.
+    const currentSelection = record === null ? undefined : readRecoverySelection(targetRef, recoverySelectionOwnerId);
+    const mayWriteSelection =
+      record === null ||
+      options?.replaceSelection === undefined ||
+      currentSelection === undefined ||
+      currentSelection === options.replaceSelection ||
+      currentSelection === activeRecoveryId;
+    if (mayWriteSelection) writeRecoverySelection(targetRef, recoverySelectionOwnerId, activeRecoveryId);
     state.setState({ activeRecoveryId });
   }
 
@@ -539,7 +550,7 @@ export function createComposerSourceState(
                 // fast path and its current revision: later edits update it,
                 // Send consumes it, and a reload restores its attachment
                 // bytes.
-                setActiveRecoveryId(preserved);
+                setActiveRecoveryId(preserved, { replaceSelection: clientMutationId });
               } else if (emptyAtRefusal) {
                 setActiveRecoveryId(null);
               } else {

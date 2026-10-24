@@ -81,7 +81,10 @@ independent selections; a `sessionZoom` cascade pane uses the same tab-scoped
 seat for its columns, with one selection entry per column ref. A mobile route
 reconstruction resolves the conversation mapping first, so a restarted pane id
 that once belonged to another conversation cannot lend its seat; a desktop
-layout restore uses the pane mapping, which is stable for saved ids.
+layout restore uses the pane mapping, which is stable for saved ids. Route
+placement writes only the conversation mapping; pane-id mappings are written
+when a layout is saved or restored, so startup cannot overwrite a saved pane's
+seat before that layout returns.
 
 Restoring a composer prefers the recovery row its seat last selected, falling
 back to the oldest restorable rejected row. This keeps a pane's preserved local
@@ -93,10 +96,12 @@ composition under a fresh recovery owner and records the fresh owner as the
 seat's selection. A resume or retarget carries the selection to the resumed
 ref; when the recovery row moved and another pane consumed it, the outbox's
 shared retarget record still names the destination, including when the
-retargeting adapter is another tab. Preservation refreshes both the captured
-ref and the row's actual target ref, so an already-mounted resumed view learns
-about the preserved row. A destination that already holds a newer selection
-keeps it.
+retargeting adapter is another tab. Ref forwarding is recorded even when no
+recovery row survives the move, and follows repeated resumes to the latest
+identity. Preservation refreshes both the captured ref and the row's actual
+target ref, so an already-mounted resumed view learns about the preserved row.
+A destination that already holds a newer selection keeps it, including when
+preservation adopts its fresh row after a replacement composer has chosen.
 
 Sending recovery consumes its durable source and creates one fresh outbox
 identity atomically. It never falls back to an ordinary enqueue when the source
