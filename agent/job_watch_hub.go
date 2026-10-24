@@ -60,18 +60,54 @@ func (jm *jobManager) configureHubWatch(ref, instance, generation, caller string
 	cfg.configHash = fmt.Sprintf("%s:%s:%s:%s:%s:%v:%v", cfg.configHash, ref, instance, generation, caller, selectors, completion)
 	key := watchKey{VisibleSessionID: jm.sessionID, Target: ref, SendTo: runtimeMessageAliasCaller}
 	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	if len(jm.watches) >= maxLiveWatches {
+	existing := jm.watches[key]
+	if existing == nil && len(jm.watches) >= maxLiveWatches {
+		jm.mu.Unlock()
 		return watchResult{}, errors.New("invalid_request: too many live watches")
 	}
-	if existing := jm.watches[key]; existing != nil {
-		return watchResultFromConfig(existing, false), nil
+	detachedCfgs, detached := jm.detachedWatchSendTerminalSnapshotsLocked(key, jobstore.EventWatchSendDropped, "watch replaced", jm.now())
+	equal := existing != nil && existing.configHash == cfg.configHash
+	if equal && len(detachedCfgs) == 0 {
+		result := watchResultFromConfig(existing, false)
+		jm.mu.Unlock()
+		return result, nil
 	}
-	if err := jm.appendWatchRegisteredEvent(cfg); err != nil {
+	var targets []watchConfigTerminalSnapshot
+	if existing != nil && !equal {
+		targets = append(targets, watchConfigTerminalSnapshot{
+			key: key, cfg: existing,
+			terminal:  watchSendTerminalSnapshotsLocked(existing, jobstore.EventWatchSendDropped, "watch replaced", jm.now()),
+			endReason: "replaced",
+		})
+	}
+	markWatchConfigSnapshotsRejectingLocked(targets)
+	markWatchConfigsRejectingLocked(detachedCfgs)
+	dropped := append(terminalSnapshots(targets), detached...)
+	if equal {
+		err = jm.appendWatchTeardownBatch(detached, nil)
+	} else {
+		err = jm.appendWatchReplacementBatch(cfg, targets, dropped)
+	}
+	if err != nil {
+		rollbackWatchConfigSnapshotsRejectingLocked(jm, targets)
+		rollbackWatchConfigsRejectingLocked(jm, detachedCfgs)
+		jm.mu.Unlock()
 		return watchResult{}, err
 	}
-	jm.watches[key] = cfg
-	return watchResultFromConfig(cfg, false), nil
+	if equal {
+		cfg = existing
+	} else {
+		if existing != nil {
+			jm.recordWatchEndedLocked(key, existing, "replaced")
+			closeWatchConfig(existing)
+		}
+		jm.watches[key] = cfg
+	}
+	result := watchResultFromConfig(cfg, existing != nil && !equal)
+	jm.mu.Unlock()
+	jm.removeWatchSendTerminalSnapshots(dropped)
+	jm.forgetDetachedWatchSendConfigsIfEmpty(detachedCfgs)
+	return result, nil
 }
 
 func hubObservationIdentity(m appwire.SessionObservationMetadata) string {
@@ -402,19 +438,37 @@ func (s *Session) configureHubWatchRuntime(ctx context.Context, args map[string]
 		cancel()
 		return nil, err
 	}
+	if s.installHubWatchSubscription(jm, result.WatchID, cancel) {
+		go s.consumeHubWatch(watchCtx, result.WatchID, request, state.Ref, state.InstanceID, updates, first)
+	}
+	return marshalWatchResult(result, jobToolResultDefaultMaxChar)
+}
+
+func (s *Session) installHubWatchSubscription(jm *jobManager, id string, cancel context.CancelFunc) bool {
 	s.mu.Lock()
 	if s.hubWatchCancels == nil {
 		s.hubWatchCancels = map[string]context.CancelFunc{}
 	}
-	if s.hubWatchCancels[result.WatchID] != nil {
+	// A concurrent create can replace this registration before its transport
+	// is installed. Never resurrect that transport or cancel the winner's.
+	if !managerHubWatchPresent(jm, id) || s.hubWatchCancels[id] != nil {
 		s.mu.Unlock()
 		cancel()
-		return marshalWatchResult(result, jobToolResultDefaultMaxChar)
+		return false
 	}
-	s.hubWatchCancels[result.WatchID] = cancel
+	var retired []context.CancelFunc
+	for id, stop := range s.hubWatchCancels {
+		if !managerHubWatchPresent(jm, id) {
+			delete(s.hubWatchCancels, id)
+			retired = append(retired, stop)
+		}
+	}
+	s.hubWatchCancels[id] = cancel
 	s.mu.Unlock()
-	go s.consumeHubWatch(watchCtx, result.WatchID, request, state.Ref, state.InstanceID, updates, first)
-	return marshalWatchResult(result, jobToolResultDefaultMaxChar)
+	for _, stop := range retired {
+		stop()
+	}
+	return true
 }
 
 func (s *Session) cancelHubWatch(id string) {
