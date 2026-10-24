@@ -294,6 +294,10 @@ test("an occupied resumed destination discards a completed built-in command inst
 			instanceId: "instance-2",
 		}),
 	).toHaveLength(1);
+	f.runtime.registerTarget(destination.hubId, resumedRef, f.client, {
+		threadId: "thread-2",
+		instanceId: "instance-2",
+	});
 
 	// The resumed destination already holds work, so it refuses the handoff.
 	f.repository.write(resumedDestination, { draft: "occupied destination", unconfirmed: null });
