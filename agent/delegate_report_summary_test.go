@@ -116,9 +116,16 @@ func TestDelegateNotificationRendersSummaryOnce(t *testing.T) {
 		Inventory: InventorySummary{Categories: []InventoryCategory{{Category: "job", IDs: []string{"job-1"}}}},
 	}
 	metadata, _ := json.Marshal(delegateTerminalPacketMetadata{Report: &summary})
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(metadata, &fields); err != nil {
+		t.Fatal(err)
+	}
+	fields["extra"] = json.RawMessage(`{"opaque":42}`)
+	metadata, _ = json.Marshal(fields)
+	packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketReported, Message: []byte(`"finished"`), Metadata: metadata}
 	content, err := delegateNotificationContent(delegateDeliveryPlan{
 		delegateID: "dlg_target",
-		packet:     delegatestore.TerminalPacket{Kind: delegatestore.PacketReported, Message: []byte(`"finished"`), Metadata: metadata},
+		packet:     packet,
 	})
 	if err != nil {
 		t.Fatalf("delegateNotificationContent: %v", err)
@@ -131,6 +138,11 @@ func TestDelegateNotificationRendersSummaryOnce(t *testing.T) {
 	}
 	if !strings.Contains(content, "job:job-1") {
 		t.Fatalf("notification does not carry the inventory: %s", content)
+	}
+	original := string(packet.Metadata)
+	projected := terminalPacketForDelivery(packet)
+	if err := json.Unmarshal(projected.Metadata, &fields); err != nil || string(fields["extra"]) != `{"opaque":42}` || string(packet.Metadata) != original {
+		t.Fatalf("wire projection lost metadata or mutated capture: %s, %v", projected.Metadata, err)
 	}
 }
 
@@ -146,16 +158,19 @@ func TestInlineAndEarlierResultsCarrySummary(t *testing.T) {
 
 	current := sendMessageResult{DelegateID: "dlg_target", Type: "delegate"}
 	populateStableDelegateSendResult(&current, packet)
-	if current.ReportSummary == "" {
-		t.Fatal("current result has no rendered report summary")
+	if current.ReportSummary == nil {
+		t.Fatal("current result has no typed report summary")
 	}
-	if !strings.Contains(current.ReportSummary, "repository access") {
-		t.Fatalf("current summary = %q, want the blocker", current.ReportSummary)
+	if current.ReportSummary.Blocker != "repository access" {
+		t.Fatalf("current summary = %+v, want the blocker", current.ReportSummary)
 	}
 	withEarlier := sendMessageResult{DelegateID: "dlg_target", Type: "delegate", Earlier: []delegatestore.TerminalPacket{packet}}
 	out := delegateSendResultFrom(withEarlier)
 	if len(out.EarlierResults) != 1 || out.EarlierResults[0].ReportSummary == "" {
 		t.Fatalf("earlier result = %+v, want a rendered report summary", out.EarlierResults)
+	}
+	if currentOut := delegateSendResultFrom(current); currentOut.ReportSummary != out.EarlierResults[0].ReportSummary {
+		t.Fatalf("current and earlier public summaries differ: %+v / %+v", currentOut, out)
 	}
 }
 

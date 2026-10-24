@@ -842,9 +842,9 @@ func ObserverReporting(resultTool string) string {
 // started with result_schema gets that schema as its output parameter
 // (provider.WithCommunicateOutputSchema), so only the schema can say the shape.
 const communicateDelegateDescription = "Send a message to your parent agent; it is the only way your parent hears from you. Put the text your parent should read in `message`. " +
-	"With `end_turn=false` the message is an update: your parent receives it, and it wakes a parent that is waiting on you, so send one only when your parent needs to know something or act on it, never to narrate progress, and keep working in the following round. " +
-	"The result's `delivery` says whether your parent has the update (`delivered`), will get it at its next step (`queued`), or cannot get it (`not_delivered`, with a `reason`); the call succeeds either way. " +
-	"With `end_turn=true` the message is your final report and ends your turn: put the complete result in it. An observer readiness marker uses `end_turn=false` with `readiness=\"ready\"`, so an inline waiter can proceed without consuming your terminal delivery. " +
+	"With `end_turn=false` send an update only when your parent needs to know something or act on it, never to narrate progress, and keep working in the following round. Every notification is a message into its addressed session; update, readiness and report are payload labels, not different wake policies. " +
+	"The result's `delivery` describes receiver custody (`delivered`), pending transport (`queued`), or failed delivery (`not_delivered`, with a `reason`); the call succeeds either way. Acceptance is not model observation or generation settlement. Only a successful response records observation of the notification it presented. " +
+	"With `end_turn=true` put the complete result in your message and name its disposition. `waiting_on_work` publishes the message and yields execution, not the generation or its children, jobs and watches; name a live `waiting_on` producer and do not poll. `done` is refused while a child remains live, not because task rows remain unfinished. An observer readiness marker uses `end_turn=false` with `readiness=\"ready\"`, so an inline waiter can proceed without consuming your terminal delivery. " +
 	"Always include `output` in the shape its schema gives; when you hand back completed work or machine-readable results, fill it with the evidence and structured data your parent needs."
 
 // WithCommunicateDelegateUpdates returns a copy of a communicate definition
@@ -858,7 +858,7 @@ func WithCommunicateDelegateUpdates(def llm.ToolDefinition) llm.ToolDefinition {
 		message["description"] = "The text your parent agent receives. When the task asks for concrete findings, put them here."
 	}
 	if endTurn, ok := props["end_turn"].(map[string]any); ok {
-		endTurn["description"] = "false: send an update and keep working; your parent receives it, and it wakes a parent that is waiting on you. true: send your final report and end your turn."
+		endTurn["description"] = "false: send an update and keep working. true: end this activation with the named disposition; waiting_on_work keeps the generation open. Both publish a message to your parent."
 	}
 	def.Description = communicateDelegateDescription
 	def.Parameters = params

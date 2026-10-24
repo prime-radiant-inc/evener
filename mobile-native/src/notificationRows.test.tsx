@@ -2,6 +2,7 @@
 // the frames the daemon actually writes (agent/testdata/notificationwire)
 // through the same pipeline ConversationScreen runs: hydrate, project, group,
 // fold into session rows, then TimelineItem for each row.
+import reportProducers from "../../agent/testdata/notificationwire/reports.json";
 import { type EvenerDelegateInfo, hydrateThread, type Thread, type ThreadItem } from "@evener/appwire-client";
 import {
 	type NotificationWireCase,
@@ -138,6 +139,20 @@ function press(tree: ReactTestRenderer) {
 }
 
 describe("delegate and job notifications", () => {
+	it.each(reportProducers)("renders real $case publication through the shared adapter", (recorded) => {
+		const { tree } = showItem(recorded.item as ThreadItem);
+		const content = renderedText(tree);
+		if (recorded.case !== "interruption") {
+			expect(content).toContain(`payload-${recorded.case}-9c2f`);
+			expect(content).toContain("result-9c2f");
+		}
+		const settled = ["done", "blocked", "interruption"].includes(recorded.case);
+		expect(detail(tree)?.includes("task-b") ?? false).toBe(settled);
+		if (recorded.case === "done") expect(outcomes(tree)).toEqual(["completed"]);
+		if (recorded.case === "interruption") expect(outcomes(tree)).toEqual(["stopped"]);
+		if (!settled) expect(outcomes(tree)).not.toContain("completed");
+	});
+
 	it.each(LEVELS.filter((level) => level !== "chat"))("never show notification markup at %s", (level) => {
 		const { rows, delegates } = rowsAt(level);
 		const notificationRows = rows.filter((row: TimelineRow) => row.id.startsWith("item_steering_"));

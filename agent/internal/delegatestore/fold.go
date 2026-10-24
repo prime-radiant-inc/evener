@@ -523,15 +523,7 @@ func applyUpdatePosted(state State, event Event) error {
 			aggregate.PublicationIDs[info.CallID] = UpdateDeliveryID(event.DelegateID, event.Seq)
 		}
 	}
-	if payload.Readiness != "" {
-		fields := map[string]json.RawMessage{}
-		_ = json.Unmarshal(packet.Metadata, &fields)
-		if fields == nil {
-			fields = map[string]json.RawMessage{}
-		}
-		fields["readiness"], _ = json.Marshal(payload.Readiness)
-		packet.Metadata, _ = json.Marshal(fields)
-	}
+	packet = ProjectUpdatePacket(packet, payload.Readiness)
 	return queueDelivery(aggregate, UpdateDeliveryID(event.DelegateID, event.Seq), payload.Generation, &packet)
 }
 

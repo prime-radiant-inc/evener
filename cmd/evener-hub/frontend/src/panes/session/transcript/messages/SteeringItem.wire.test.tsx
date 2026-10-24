@@ -2,10 +2,16 @@
 // (agent/testdata/systemeventwire): each folds to the label both clients
 // share (@evener/appwire-client steeringLabel), and the current task and the
 // task list render nothing.
-import { type ItemModel, stripSystemReminder, type TurnModel } from "@evener/appwire-client";
+import {
+  type ItemModel,
+  parseSteeringNotifications,
+  stripSystemReminder,
+  type TurnModel,
+} from "@evener/appwire-client";
 import { type SystemEventWireCase, systemEventWireItem } from "@evener/appwire-client/testing/systemEventWireFixtures";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
+import reports from "../../../../../../../../agent/testdata/notificationwire/reports.json";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { SteeringItem } from "./SteeringItem";
 
@@ -15,6 +21,34 @@ afterEach(() => {
 });
 
 const turn: TurnModel = { id: "turn_1", status: "completed", items: [] };
+
+test.each(reports)("renders real $case publication through the shared adapter", (recorded) => {
+  const notifications = parseSteeringNotifications(recorded.item.text).flatMap((fragment) =>
+    fragment.kind === "notification" ? [fragment.notification] : [],
+  );
+  expect(notifications).toHaveLength(1);
+  expect(notifications[0]?.delegateId).toBe("dlg_projection");
+  const settled = ["done", "blocked", "interruption"].includes(recorded.case);
+  expect(Boolean(notifications[0]?.reportNotice)).toBe(settled);
+  if (!settled) expect(notifications[0]?.outcome).toBeUndefined();
+  render(<SteeringItem item={recorded.item as ItemModel} turn={turn} live={false} />);
+  if (!screen.queryByTestId("notification-message")) {
+    const summary = document.querySelector("details > summary");
+    if (summary) fireEvent.click(summary);
+  }
+  if (recorded.case !== "interruption") {
+    expect(screen.getByTestId("notification-message").textContent).toContain(`payload-${recorded.case}-9c2f`);
+    expect(screen.getByTestId("notification-structured-result").textContent).toContain("result-9c2f");
+  }
+  if (recorded.case === "done") {
+    expect(recorded.generation).toBe(1);
+    expect(recorded.activity?.runGeneration).toBe(1);
+    expect(recorded.nextActivity).toMatchObject({ runGeneration: 2, status: "running", terminal: false });
+    expect(recorded.nextActivity).not.toHaveProperty("outcome");
+    expect(recorded.nextActivity).not.toHaveProperty("reportPreview");
+    expect(notifications[0]?.outcome).toBe("completed");
+  }
+});
 
 function steer(name: SystemEventWireCase): ItemModel {
   return systemEventWireItem(name) as ItemModel;

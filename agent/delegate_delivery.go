@@ -660,15 +660,8 @@ func (s *Session) earlierInlineResults(plan delegateDeliveryPlan) ([]delegateInl
 				message, _ := json.Marshal(update.Message)
 				packet = &delegatestore.TerminalPacket{Kind: delegatestore.PacketUpdate, Message: message}
 			}
-			if update.Readiness != "" {
-				fields := map[string]json.RawMessage{}
-				_ = json.Unmarshal(packet.Metadata, &fields)
-				if fields == nil {
-					fields = map[string]json.RawMessage{}
-				}
-				fields["readiness"], _ = json.Marshal(update.Readiness)
-				packet.Metadata, _ = json.Marshal(fields)
-			}
+			projected := delegatestore.ProjectUpdatePacket(*packet, update.Readiness)
+			packet = &projected
 		}
 		if id == plan.deliveryID {
 			break
@@ -1215,9 +1208,7 @@ func delegateUpdateReadiness(packet delegatestore.TerminalPacket) string {
 	if len(packet.Metadata) == 0 {
 		return ""
 	}
-	var metadata struct {
-		Readiness string `json:"readiness"`
-	}
+	var metadata delegatestore.UpdateMetadata
 	if err := json.Unmarshal(packet.Metadata, &metadata); err != nil {
 		return ""
 	}

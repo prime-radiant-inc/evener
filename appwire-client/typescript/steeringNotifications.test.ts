@@ -3,6 +3,7 @@
 import { expect, test } from "vitest";
 import delegateUserStopGo from "../../agent/delegate_user_stop.go?raw";
 import foldGo from "../../agent/internal/delegatestore/fold.go?raw";
+import reportProducers from "../../agent/testdata/notificationwire/reports.json";
 import {
   type ParsedNotification,
   parseSteeringNotifications,
@@ -31,6 +32,25 @@ function notif(notifications: ParsedNotification[], i: number): ParsedNotificati
   const n = notifications[i];
   if (!n) throw new Error(`expected a notification at index ${i}`);
   return n;
+}
+
+for (const producer of reportProducers) {
+  test(`real report producer ${producer.case} preserves data and report availability`, () => {
+    const notification = notif(notificationsOf(parseSteeringNotifications(producer.item.text)), 0);
+    expect(notification.delegateId).toBe("dlg_projection");
+    if (producer.case !== "interruption") {
+      expect(notification.message).toBe(`payload-${producer.case}-9c2f`);
+      expect(notification.structuredResult).toMatchObject({ data: { id: "result-9c2f" } });
+    }
+    const settled = ["done", "blocked", "interruption"].includes(producer.case);
+    expect(Boolean(notification.reportNotice)).toBe(settled);
+    if (!settled) {
+      expect(notification.update).toBe(true);
+      expect(notification.outcome).toBeUndefined();
+    }
+    if (producer.case === "blocked") expect(notification.structuredResultValid).toBe(true);
+    if (producer.case === "interruption") expect(notification.outcome).toBe("stopped");
+  });
 }
 
 // steeringNotifications.ts now parses only STRUCTURED notification payloads -

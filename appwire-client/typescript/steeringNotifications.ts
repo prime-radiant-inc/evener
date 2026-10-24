@@ -250,8 +250,8 @@ function parseDelegateNotification(block: string): ParsedNotification | null {
   const body = (match[2] ?? "").trim();
   const delegateId = attrs.delegate_id?.trim() || undefined;
   const name = decodeNotificationEntities(attrs.name ?? "").trim();
-  // An update names its kind; its body is the delegate's text whatever its
-  // shape, so it routes before the packet and watchdog shapes are tried.
+  // Updates retain the historical plain-text shape and also carry current
+  // captured publication packets. Both routes stay nonterminal.
   if (attrs.kind === "update") return delegateUpdateNotification(block, name, delegateId, body);
   // No update packet without a kind attribute ever existed (PacketUpdate first
   // appeared with it), so a packet-shaped body whose packet kind is "update"
@@ -319,6 +319,22 @@ function delegateUpdateNotification(
   delegateId: string | undefined,
   body: string,
 ): ParsedNotification {
+  const packet = parseTerminalPacket(body);
+  if (
+    packet?.kind === "update" &&
+    (packet.structuredResultSource === "schema" || packet.structuredResultSource === "default_envelope") &&
+    packet.structuredResult !== undefined
+  ) {
+    return {
+      ...delegatePacketNotification(block, name, delegateId, packet),
+      title: "Delegate update",
+      tone: "neutral",
+      update: true,
+      outcome: undefined,
+      status: undefined,
+      reason: undefined,
+    };
+  }
   const message = decodeNotificationEntities(body);
   return {
     type: "delegate",
@@ -352,9 +368,7 @@ const PACKET_KIND_OUTCOMES = new Map([
 ]);
 
 interface TerminalPacket {
-  // The daemon's PacketKind (reported | terminal_error): the reported kind is
-  // the only path that captures a validated structured result, so both
-  // structured-result sources and their verdict fields key on it.
+  // Existing packet kinds, including captured nonterminal updates.
   kind: string;
   // The settled outcome: metadata's delegatestore.OutcomeStatus, or the one
   // the packet kind implies when metadata carries none (the fold's own bare
@@ -517,25 +531,14 @@ function delegatePacketNotification(
   const ending = delegateEndingText(packet);
   const envelope = parsePacketEnvelope(packet.message);
   const message = packetBodyMessage(envelope?.message ?? packet.message, ending, outcome);
-  // Both structured-result sources and their verdict fields are gated on the
-  // reported kind: the daemon captures and validates a structured result on
-  // the reported path only (captureDelegateStructuredResult runs inside the
-  // reported branch, agent/subagents.go), so a terminal_error body carries no
-  // validation verdict behind whatever structured-result fields or
-  // envelope-shaped data it happens to hold (a provider error, a report the
-  // run managed before failing). Its message field still reads as content;
-  // nothing else becomes rows. Within the reported kind, a capture failure, an
-  // oversized result, or a missing one leaves the packet's structured_result
-  // field unset - but a result that fails SCHEMA validation still rides the
-  // field, marked valid=false (agent/subagents.go stores the marshaled result
-  // before validating it). The structuredResultValid !== false check below,
-  // not field absence, is what suppresses both the raw invalid result and its
-  // envelope copy: only a valid verdict's data renders, from whichever copy
-  // the frame carries, and a no-schema delegate's default-envelope capture
-  // unwraps to its data (isDefaultEnvelopeCopy).
-  // A result with no record shape (a top-level array or scalar schema, or an
-  // explicit null) passes through as-is for the card's value grammar.
-  const reported = packet.kind === "reported";
+  // A captured publication can precede a blocked/error settlement. Its
+  // explicit provenance and affirmative verdict, not the ending's kind, prove
+  // the captured field. Envelope-shaped error prose alone proves nothing.
+  const provenResult =
+    (packet.structuredResultSource === "schema" || packet.structuredResultSource === "default_envelope") &&
+    packet.structuredResultValid === true &&
+    packet.structuredResult !== undefined;
+  const carriesResult = packet.kind === "reported" || packet.kind === "update" || provenResult;
   const captured = packet.structuredResult !== undefined ? packet.structuredResult : envelope?.data;
   // #3548: the packet names its capture source, so a result schema whose output
   // wears the default envelope's exact shape is never mistaken for a no-schema
@@ -549,7 +552,7 @@ function delegatePacketNotification(
   const unwraps =
     packet.structuredResultSource !== "schema" && isPlainObject(captured) && isDefaultEnvelopeCopy(captured, envelope);
   const structuredResult =
-    reported && packet.structuredResultValid !== false ? (unwraps ? captured.data : captured) : undefined;
+    carriesResult && packet.structuredResultValid !== false ? (unwraps ? captured.data : captured) : undefined;
   return {
     type: "delegate",
     // In the outcome's own words; an ending this client doesn't know still reported.
@@ -567,8 +570,8 @@ function delegatePacketNotification(
     structuredResult,
     ending,
     reportNotice: packet.reportNotice,
-    structuredResultValid: reported ? packet.structuredResultValid : undefined,
-    structuredResultReason: reported ? packet.structuredResultReason : undefined,
+    structuredResultValid: carriesResult ? packet.structuredResultValid : undefined,
+    structuredResultReason: carriesResult ? packet.structuredResultReason : undefined,
     concerns: [],
     rawText: block,
   };

@@ -127,7 +127,7 @@ type sendMessageResult struct {
 	// Earlier holds results of the same delegate the caller had not yet
 	// received, oldest first, that an inline reply carries ahead of its own.
 	Earlier       []delegatestore.TerminalPacket
-	ReportSummary string
+	ReportSummary *ReportSummary
 	Err           error
 }
 

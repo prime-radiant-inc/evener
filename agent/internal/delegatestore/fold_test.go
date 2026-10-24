@@ -2,6 +2,7 @@ package delegatestore
 
 import (
 	"encoding/json"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -996,6 +997,38 @@ func updatePostedEvent(id string, generation uint64, message string) Event {
 		Kind:         EventDelegateUpdatePosted,
 		DelegateID:   id,
 		UpdatePosted: &UpdatePosted{Generation: generation, Message: message},
+	}
+}
+
+func TestApplyUpdatePostedReadinessProjection(t *testing.T) {
+	for _, captured := range []bool{false, true} {
+		for _, readiness := range []string{"", "ready"} {
+			t.Run(fmt.Sprintf("captured=%t/readiness=%s", captured, readiness), func(t *testing.T) {
+				e := updatePostedEvent("dlg_alpha", 1, "payload-2a41")
+				e.UpdatePosted.Readiness = readiness
+				if captured {
+					e.UpdatePosted.Communicate = &schema.CommunicateInfo{CallID: "call-1", Message: "payload-2a41"}
+					e.UpdatePosted.Packet = &TerminalPacket{Kind: PacketUpdate, Message: json.RawMessage(`"payload-2a41"`), StructuredResult: json.RawMessage(`{"id":"data-3f21"}`), StructuredResultSource: StructuredResultSourceSchema, Metadata: json.RawMessage(`{"call_id":"call-1","extra":{"opaque":42}}`)}
+				}
+				state := applyEvents(t, createdEvent("dlg_alpha", ""), startedEvent("dlg_alpha", 1, TriggerOwnerInput), e)
+				packet := state["dlg_alpha"].PendingDeliveries[0].Packet
+				var metadata UpdateMetadata
+				if len(packet.Metadata) != 0 {
+					if err := json.Unmarshal(packet.Metadata, &metadata); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if metadata.Readiness != readiness {
+					t.Fatalf("metadata=%+v", metadata)
+				}
+				if captured && (metadata.CallID != "call-1" || !strings.Contains(string(packet.Metadata), `"opaque":42`) || packet.StructuredResultSource != StructuredResultSourceSchema || string(packet.StructuredResult) != `{"id":"data-3f21"}`) {
+					t.Fatalf("lost captured payload: %+v", packet)
+				}
+				if !captured && readiness == "" && len(packet.Metadata) != 0 {
+					t.Fatalf("old optional metadata=%s", packet.Metadata)
+				}
+			})
+		}
 	}
 }
 

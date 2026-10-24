@@ -130,14 +130,22 @@ This reference contract is not itself the runtime system prompt, but the followi
 - A delegate's terminal `communicate` carries an explicit disposition:
   `done` (the assignment is complete and nothing will wake it), `blocked`
   (it names a `blocker` and may carry live work), or `waiting_on_work` (it
-  names a live `waiting_on` job, watch, child delegate, or queued input and
-  publishes no packet). A `done` report is admitted only from an empty
-  outstanding-work inventory; the parent sees a versioned task and inventory
-  summary on the durable notification and on inline and earlier
-  `delegate_send` results. A bare-text parent acknowledgement of a delegate
-  report gets one steering round, then settles without creating a Needs You
-  entry.
-- When an observer readiness delegate result includes `watching:true` and `watches`, the observer is watching. Continue with the planned watched action and use the later observer `communicate(end_turn=true)` as the callback.
+  names a live `waiting_on` job, watch, child delegate, or queued input).
+  A valid wait publishes its message and yields execution after a synced
+  checkpoint, keeping the same generation and its resources open. Any addressed
+  notification or admitted input may resume it, not just the named producer.
+  `done` is refused while a child remains live, including a reserved start;
+  unfinished tasks, shell jobs, watches and unread attention are not completion
+  gates. The parent sees the captured versioned task and inventory summary on
+  the durable notification and inline and earlier `delegate_send` results.
+- Every notification is a message into its addressed session. Update, readiness
+  and report are payload labels, not wake policies. Acceptance establishes
+  receiver custody; only a successful response records observation of the
+  exact notifications its request presented, synced when persistence is enabled.
+  Neither custody nor observation means the sender's generation settled.
+- Send observer readiness with `communicate(end_turn=false, readiness="ready")`.
+  It is not completion. Continue with the watched action and use the observer's
+  later final report as the callback.
 - After starting a background job, continue useful work or respond to the user. Do not immediately wait, poll `job_list`, or loop on `job_status`.
 - Evener injects typed terminal attention: `<job-notification>` for owner shell
   jobs and `<delegate-notification delegate_id="dlg_..." kind="report">` for direct delegates.
@@ -524,8 +532,9 @@ Defaults:
   not guaranteed. A generation whose `last_outcome.status="completed"` ended
   normally; that does not by itself assert task success. Inspect its canonical
   terminal packet or conversation for the task-specific result.
-- An observer that installs watches reports readiness through its terminal packet;
-  the stable watch remains active and later frames resume the same `dlg_...`.
+- An observer that installs watches sends readiness as a nonterminal update.
+  A valid `waiting_on_work` yields on its live producer while retaining that
+  generation and its watches; the later report describes actual settlement.
 
 Create return shape:
 
@@ -766,9 +775,9 @@ Practical observer guidance for agents:
 
 - Start the observer with `watch_parent:true` when it needs to observe the parent.
 - Inside the observer, call `job_watch(source:"parent")`; omit trigger fields for the default bounded parent frame stream, or add `events`/`event_filter` for precision.
-- When the readiness delegate result carries `watching:true` and `watches`, treat the observer as watching and perform the planned watched action.
+- Send readiness with `communicate(end_turn=false, readiness="ready")` after installing watches. The parent can perform the planned watched action without treating the observer as complete.
 - Send an update with `communicate(end_turn=false)` only when the parent needs to know something or act: it reaches the parent and may wake it.
-- Report the observer result with `communicate(end_turn=true)`. That terminal communicate is the callback to the parent. The parent receives it as that observer delegate's ordinary terminal frame — a `<delegate-notification delegate_id="dlg_..." kind="report">` block carrying the result packet — which arms delegate attention and wakes the parent.
+- Report the observer result with `communicate(end_turn=true)`. After settlement the parent receives the ordinary `<delegate-notification delegate_id="dlg_..." kind="report">` frame. It schedules through the same addressed readiness as updates and readiness markers, not a separate report-only wake path.
 - Keep observer instructions narrow and frame-driven. Tell the observer what frame fields to read (`watch_id`, `delivery_id`, typed source identity, event kind/status/arguments, and optional excerpt), what action to take, and when to stop.
 - A watch-origin observer delegate's terminal `communicate(end_turn=true)` is delivered to the parent as that generation's owner notification; there is no separate observer-callback frame and no suppression of the owner notification. Other typed terminal notifications remain lifecycle confirmations, not additional watch frames. Clear long-lived session watches before continuing a free-form conversation when later acknowledgements should not themselves be observed.
 

@@ -1,3 +1,4 @@
+import reportProducers from "../../agent/testdata/notificationwire/reports.json";
 import { installActivityFixture } from "./subagents/sessionActivityTestUtils";
 // Subagent rows in the transcript (spec 8.2 "Subagent", 9), driven from the
 // coordinator's tool calls as history carries them (agent/testdata/
@@ -537,6 +538,30 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		expect(renderedText(screen)).toContain("Fixed the race: settle now waits for the drain.");
 		expect(renderedText(screen)).not.toContain("The new test covers both orders.");
 		expect(jobsLists(client)).toHaveLength(1);
+	});
+
+	it("keeps a real prior report off a newer running generation", async () => {
+		const recorded = reportProducers.find((row) => row.case === "done");
+		if (!recorded?.activity || !recorded.nextActivity) throw new Error("missing actual generation records");
+		const prior = recorded.activity;
+		const next = recorded.nextActivity;
+		const client = hub();
+		const response = subagentOutcomesDelegatesResponse();
+		client.on("evener/thread/delegates/list", () => ({ ...response, delegates: [prior] }));
+		const screen = transcript({ delegates: [finished(prior.delegateId, { runGeneration: prior.runGeneration })] });
+		await act(async () => {});
+		expect(renderedText(screen)).toContain("payload-done-9c2f");
+		const running = subagent({
+			delegateId: next.delegateId,
+			runGeneration: next.runGeneration,
+			status: next.status,
+			terminal: next.terminal,
+		});
+		act(() => screen.update(<Transcript delegates={[running]} />));
+		expect(subagentStates(screen)).toEqual(["running"]);
+		expect(renderedText(screen)).not.toContain("payload-done-9c2f");
+		expect(next).not.toHaveProperty("outcome");
+		expect(next).not.toHaveProperty("reportPreview");
 	});
 
 	it("does not borrow the prior generation report while a resumed completion awaits its activity read", async () => {

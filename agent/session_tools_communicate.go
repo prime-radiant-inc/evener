@@ -200,13 +200,10 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 				}
 				packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketUpdate}
 				packet.Message, _ = json.Marshal(message)
-				packet.Metadata, _ = json.Marshal(struct {
-					CallID      string `json:"call_id,omitempty"`
-					EndTurn     bool   `json:"end_turn,omitempty"`
-					Disposition string `json:"disposition,omitempty"`
-					Blocker     string `json:"blocker,omitempty"`
-					WaitingOn   string `json:"waiting_on,omitempty"`
-				}{info.CallID, info.EndTurn, info.EndReason, info.Blocker, info.WaitingOn})
+				packet.Metadata, _ = json.Marshal(delegatestore.UpdateMetadata{
+					CallID: info.CallID, EndTurn: info.EndTurn, Disposition: info.EndReason,
+					Blocker: info.Blocker, WaitingOn: info.WaitingOn,
+				})
 				if capturedOutput != nil {
 					packet.StructuredResult, _ = json.Marshal(capturedOutput)
 					packet.StructuredResultSource = delegatestore.StructuredResultSourceDefaultEnvelope

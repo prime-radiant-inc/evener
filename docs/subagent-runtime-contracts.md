@@ -211,6 +211,14 @@ output. Retrying its call ID in the same generation reuses its delivery identity
 including after source acknowledgment. Unknown inventory remains unknown, but
 does not erase a valid message.
 
+Every notification is a message into its addressed session. Update, readiness
+and report are payload labels, not wake policies. Acceptance establishes receiver
+custody; successful-response observation and generation settlement are separate
+facts. Status, list, activity and doctor reads project metadata without consuming
+delivery. The real producer corpus in `TestNotificationReportProjection` checks
+update, readiness, wait, done, blocked and interruption through the receiver and
+AppWire projection, including reads that leave pending notifications unchanged.
+
 ```mermaid
 flowchart LR
   C[Accepted communicate] --> U[Update, readiness or wait]
@@ -249,6 +257,21 @@ identity (`delegateTreeController.Reconcile`, `agent/delegate_tree_restore.go`,
 and `deliverDelegatePacket`, `agent/delegate_delivery.go`). Existing receipts,
 storage limits, and preview bounds still apply. Recovery does not reconstruct
 detailed reports absent from historical packets.
+
+The terminal packet holds one immutable, generation-scoped typed report summary.
+Notification rendering and inline or earlier `delegate_send` results render that
+same capture, including completed, current and incomplete tasks and unknown
+inventory. Current and incomplete may name the same task. Readiness uses one
+typed internal update projection while preserving unrelated packet metadata and
+structured-result provenance. Public `report_summary` and wire `report_notice`
+remain presentation fields, not new delivery identities.
+
+Activity reads never assign an earlier generation's outcome, reason, error or
+end time to a newer open generation. The earlier immutable packet remains in
+its own history. Cumulative usage and worktree metadata are not run outcomes.
+Both clients parse the recorded producers through the shared adapter; captured
+structured output stays distinct from message prose, including on terminal
+errors with explicit valid provenance. Plain JSON-looking updates stay prose.
 
 ## Effective capability policy
 

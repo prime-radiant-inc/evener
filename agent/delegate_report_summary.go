@@ -126,7 +126,7 @@ func taskSummaryFrom(tasks []task.Task) TaskSummary {
 			Description: runetrim.Cut(item.Description, reportSummaryDescriptionLimit),
 		})
 	}
-	if listed.Current != nil && (len(summary.Incomplete) == 0 || summary.Incomplete[0].ID != listed.Current.ID) {
+	if listed.Current != nil {
 		summary.Current = &TaskSummaryItem{
 			ID:          listed.Current.ID,
 			Status:      string(listed.Current.Status),
@@ -161,8 +161,8 @@ func inventorySummary(s *Session) InventorySummary {
 }
 
 // renderReportNotice is the one human-readable rendering of a summary. It is
-// generation-scoped: this generation is final, and a later supervision
-// attention may start a new one.
+// generation-scoped: this generation is settled, and a later message may start
+// a new one. The summary is never refreshed from live task or inventory state.
 func renderReportNotice(summary ReportSummary) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Generation final (%s).", summary.ReportKind)
@@ -196,31 +196,33 @@ func renderReportNotice(summary ReportSummary) string {
 		}
 		fmt.Fprintf(&b, " Outstanding: %s.", strings.Join(parts, ", "))
 	}
-	b.WriteString(" Resume this delegate if the work is unfinished; a later supervision attention may start a new generation.")
+	b.WriteString(" Resume this delegate if the work is unfinished; a later message may start a new generation.")
 	return b.String()
 }
 
-// terminalPacketForDelivery removes the raw report summary from the metadata
-// JSON a notification body carries, so the rendered notice is the only copy.
+// terminalPacketForDelivery projects the captured typed summary at the wire
+// boundary. The durable packet stays untouched, and no live state is reread.
 func terminalPacketForDelivery(packet delegatestore.TerminalPacket) delegatestore.TerminalPacket {
 	if len(packet.Metadata) == 0 {
 		return packet
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(packet.Metadata, &fields); err != nil {
+	var metadata delegateTerminalPacketMetadata
+	if err := json.Unmarshal(packet.Metadata, &metadata); err != nil || metadata.Report == nil {
 		return packet
 	}
-	if _, ok := fields["report"]; !ok {
+	// Keep every unrelated field and its presence, including fields written by
+	// newer producers. Only report's representation changes at this boundary.
+	var original map[string]json.RawMessage
+	if json.Unmarshal(packet.Metadata, &original) != nil {
 		return packet
 	}
-	var report ReportSummary
-	if raw := fields["report"]; json.Unmarshal(raw, &report) == nil {
-		notice, _ := json.Marshal(renderReportNotice(report))
-		fields["report_notice"] = notice
+	rendered := make(map[string]json.RawMessage, len(original))
+	for key, value := range original {
+		if key != "report" {
+			rendered[key] = value
+		}
 	}
-	delete(fields, "report")
-	if raw, err := json.Marshal(fields); err == nil {
-		packet.Metadata = raw
-	}
+	rendered["report_notice"], _ = json.Marshal(renderReportNotice(*metadata.Report))
+	packet.Metadata, _ = json.Marshal(rendered)
 	return packet
 }

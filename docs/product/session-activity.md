@@ -213,6 +213,14 @@ preview as a compact message from the delegate's name, with the name resolving
 through the standard delegate entity card and its open-conversation control.
 Opening the row loads the child's conversation pane directly.
 
+A newer open `runGeneration` carries no previous outcome, reason, error, end
+time or report preview. The earlier immutable report remains available under
+its own generation in the transcript, never as the running row's outcome.
+Cumulative usage and worktree identity remain cumulative metadata. Refresh and
+reconnect retain demanded later-page rows with stable identities and the same
+session/subtree scope, using the shared activity subscription until its final
+consumer releases it. These reads do not acknowledge notification delivery.
+
 A delegate that reports and then runs more turns in its finalization drain
 settles on its latest report, so `reportPreview` shows the newer one while the
 earlier report stays in the delegate's transcript. A drain turn that ends

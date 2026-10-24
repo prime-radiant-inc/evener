@@ -1957,7 +1957,7 @@ func populateStableDelegateSendResult(result *sendMessageResult, packet delegate
 			}
 		}
 		if metadata.Report != nil {
-			result.ReportSummary = renderReportNotice(*metadata.Report)
+			result.ReportSummary = metadata.Report
 		}
 	}
 }

@@ -1,0 +1,115 @@
+[
+  {
+    "case": "update",
+    "note": "Real tool publication or user stop, journal, receiver custody and AppWire projection. Identities, scratch path and clocks normalized.",
+    "item": {
+      "type": "steering",
+      "id": "item_steering_0",
+      "turnId": "turn_1",
+      "text": "\u003cdelegate-notification delegate_id=\"dlg_projection\" kind=\"update\"\u003e{\"kind\":\"update\",\"message\":\"payload-update-9c2f\",\"structured_result\":{\"artifacts\":[\"result-9c2f.json\"],\"data\":{\"id\":\"result-9c2f\"},\"message\":\"result-9c2f\"},\"structured_result_source\":\"default_envelope\",\"metadata\":{\"call_id\":\"projection-update\"}}\u003c/delegate-notification\u003e",
+      "status": "completed"
+    },
+    "generation": 1
+  },
+  {
+    "case": "readiness",
+    "note": "Real tool publication or user stop, journal, receiver custody and AppWire projection. Identities, scratch path and clocks normalized.",
+    "item": {
+      "type": "steering",
+      "id": "item_steering_0",
+      "turnId": "turn_1",
+      "text": "\u003cdelegate-notification delegate_id=\"dlg_projection\" readiness=\"ready\" kind=\"update\"\u003e{\"kind\":\"update\",\"message\":\"payload-readiness-9c2f\",\"structured_result\":{\"artifacts\":[\"result-9c2f.json\"],\"data\":{\"id\":\"result-9c2f\"},\"message\":\"result-9c2f\"},\"structured_result_source\":\"default_envelope\",\"metadata\":{\"call_id\":\"projection-readiness\",\"readiness\":\"ready\"}}\u003c/delegate-notification\u003e",
+      "status": "completed"
+    },
+    "generation": 1
+  },
+  {
+    "case": "waiting",
+    "note": "Real delegate target and yielded communicate publication before target settlement, receiver and AppWire projection. Identities normalized.",
+    "item": {
+      "type": "steering",
+      "id": "item_steering_0",
+      "turnId": "turn_1",
+      "text": "\u003cdelegate-notification delegate_id=\"dlg_projection\" kind=\"update\"\u003e{\"kind\":\"update\",\"message\":\"payload-waiting-9c2f\",\"structured_result\":{\"artifacts\":[\"result-9c2f.json\"],\"data\":{\"id\":\"result-9c2f\"},\"message\":\"result-9c2f\"},\"structured_result_source\":\"default_envelope\",\"metadata\":{\"call_id\":\"projection-waiting\",\"end_turn\":true,\"disposition\":\"waiting_on_work\",\"waiting_on\":\"dlg_target\"}}\u003c/delegate-notification\u003e",
+      "status": "completed"
+    },
+    "generation": 1
+  },
+  {
+    "case": "done",
+    "note": "Real tool publication or user stop, journal, receiver custody and AppWire projection. Identities, scratch path and clocks normalized.",
+    "item": {
+      "type": "steering",
+      "id": "item_steering_0",
+      "turnId": "turn_1",
+      "text": "\u003cdelegate-notification delegate_id=\"dlg_projection\" kind=\"report\"\u003e{\"kind\":\"reported\",\"message\":\"payload-done-9c2f\",\"structured_result\":{\"artifacts\":[\"result-9c2f.json\"],\"data\":{\"id\":\"result-9c2f\"},\"message\":\"result-9c2f\"},\"structured_result_valid\":true,\"structured_result_source\":\"default_envelope\",\"metadata\":{\"agent_type\":\"default\",\"description\":\"BATCH-WORKER\",\"disposition\":\"done\",\"latest_activity_at\":\"2026-09-28T20:00:00Z\",\"outcome\":\"completed\",\"report_notice\":\"Generation final (done). Tasks: 1 done, 0 cancelled, 2 remaining of 3. Current: task 2 task-b. Incomplete: task 2 task-b (in_progress); task 3 task-c (open). Resume this delegate if the work is unfinished; a later message may start a new generation.\",\"resolved_model\":\"gpt-5.2\",\"resolved_profile_id\":\"openai\",\"run_ended_at\":\"2026-09-28T20:00:00Z\",\"run_started_at\":\"2026-09-28T20:00:00Z\",\"scratch_path\":\"/fixture/scratch\",\"task\":\"BATCH-WORKER\",\"tools\":[\"apply_patch\",\"communicate\",\"compact_context\",\"delegate\",\"delegate_send\",\"doctor_evener\",\"edit_file\",\"find_session_transcripts\",\"glob\",\"grep\",\"job_list\",\"job_status\",\"job_stop\",\"job_watch\",\"list_dir\",\"manage_worktree\",\"model_list\",\"notes_agent_set\",\"notes_read\",\"read_file\",\"read_transcript\",\"shell\",\"task_list\",\"update_goal\",\"urls_add\",\"urls_remove\",\"use_skill\",\"web_fetch\",\"write_file\"]}}\u003c/delegate-notification\u003e",
+      "status": "completed"
+    },
+    "generation": 1,
+    "activity": {
+      "runGeneration": 1,
+      "projectionRevision": 4,
+      "reportPreview": "payload-done-9c2f",
+      "delegateId": "dlg_projection",
+      "ownerRef": "local:root",
+      "rootRef": "local:root",
+      "childRef": "local:worker",
+      "description": "BATCH-WORKER",
+      "task": "BATCH-WORKER",
+      "type": "delegate",
+      "lifecycle": "idle",
+      "phase": "idle",
+      "status": "idle",
+      "outcome": "completed",
+      "terminal": true,
+      "resumable": true,
+      "model": "gpt-5.2",
+      "runStartedAt": "2026-09-28T20:00:00Z",
+      "runEndedAt": "2026-09-28T20:00:00Z",
+      "latestActivityAt": "2026-09-28T20:00:00Z"
+    },
+    "nextActivity": {
+      "runGeneration": 2,
+      "projectionRevision": 5,
+      "delegateId": "dlg_projection",
+      "ownerRef": "local:root",
+      "rootRef": "local:root",
+      "childRef": "local:worker",
+      "description": "BATCH-WORKER",
+      "task": "BATCH-WORKER",
+      "type": "delegate",
+      "lifecycle": "running",
+      "phase": "running",
+      "status": "running",
+      "terminal": false,
+      "resumable": true,
+      "model": "gpt-5.2",
+      "runStartedAt": "2026-09-28T20:00:00Z",
+      "latestActivityAt": "2026-09-28T20:00:00Z"
+    }
+  },
+  {
+    "case": "blocked",
+    "note": "Real tool publication or user stop, journal, receiver custody and AppWire projection. Identities, scratch path and clocks normalized.",
+    "item": {
+      "type": "steering",
+      "id": "item_steering_0",
+      "turnId": "turn_1",
+      "text": "\u003cdelegate-notification delegate_id=\"dlg_projection\" kind=\"report\"\u003e{\"kind\":\"terminal_error\",\"message\":\"payload-blocked-9c2f\",\"structured_result\":{\"artifacts\":[\"result-9c2f.json\"],\"data\":{\"id\":\"result-9c2f\"},\"message\":\"result-9c2f\"},\"structured_result_valid\":true,\"structured_result_source\":\"default_envelope\",\"metadata\":{\"agent_type\":\"default\",\"blocker\":\"blocker-4d2a\",\"description\":\"BATCH-WORKER\",\"disposition\":\"blocked\",\"error\":\"jobstore: parse event line 1: invalid character 'i' looking for beginning of value\",\"latest_activity_at\":\"2026-09-28T20:00:00Z\",\"outcome\":\"failed\",\"reason\":\"run_error\",\"report_notice\":\"Generation final (failed). Tasks: 1 done, 0 cancelled, 2 remaining of 3. Current: task 2 task-b. Incomplete: task 2 task-b (in_progress); task 3 task-c (open). Blocker: blocker-4d2a. Outstanding: unknown:job-journal. Resume this delegate if the work is unfinished; a later message may start a new generation.\",\"resolved_model\":\"gpt-5.2\",\"resolved_profile_id\":\"openai\",\"run_ended_at\":\"2026-09-28T20:00:00Z\",\"run_started_at\":\"2026-09-28T20:00:00Z\",\"scratch_path\":\"/fixture/scratch\",\"task\":\"BATCH-WORKER\",\"tools\":[\"apply_patch\",\"communicate\",\"compact_context\",\"delegate\",\"delegate_send\",\"doctor_evener\",\"edit_file\",\"find_session_transcripts\",\"glob\",\"grep\",\"job_list\",\"job_status\",\"job_stop\",\"job_watch\",\"list_dir\",\"manage_worktree\",\"model_list\",\"notes_agent_set\",\"notes_read\",\"read_file\",\"read_transcript\",\"shell\",\"task_list\",\"update_goal\",\"urls_add\",\"urls_remove\",\"use_skill\",\"web_fetch\",\"write_file\"]}}\u003c/delegate-notification\u003e",
+      "status": "completed"
+    },
+    "generation": 1
+  },
+  {
+    "case": "interruption",
+    "note": "Real tool publication or user stop, journal, receiver custody and AppWire projection. Identities, scratch path and clocks normalized.",
+    "item": {
+      "type": "steering",
+      "id": "item_steering_0",
+      "turnId": "turn_1",
+      "text": "\u003cdelegate-notification delegate_id=\"dlg_projection\" kind=\"report\"\u003e{\"kind\":\"terminal_error\",\"message\":\"Stopped by the user.\",\"metadata\":{\"agent_type\":\"default\",\"description\":\"BATCH-WORKER\",\"latest_activity_at\":\"2026-09-28T20:00:00Z\",\"outcome\":\"cancelled\",\"reason\":\"cancelled\",\"report_notice\":\"Generation final (cancelled). Tasks: 1 done, 0 cancelled, 2 remaining of 3. Current: task 2 task-b. Incomplete: task 2 task-b (in_progress); task 3 task-c (open). Resume this delegate if the work is unfinished; a later message may start a new generation.\",\"resolved_model\":\"gpt-5.2\",\"resolved_profile_id\":\"openai\",\"run_ended_at\":\"2026-09-28T20:00:00Z\",\"run_started_at\":\"2026-09-28T20:00:00Z\",\"scratch_path\":\"/fixture/scratch\",\"task\":\"BATCH-WORKER\",\"tools\":[\"apply_patch\",\"communicate\",\"compact_context\",\"delegate\",\"delegate_send\",\"doctor_evener\",\"edit_file\",\"find_session_transcripts\",\"glob\",\"grep\",\"job_list\",\"job_status\",\"job_stop\",\"job_watch\",\"list_dir\",\"manage_worktree\",\"model_list\",\"notes_agent_set\",\"notes_read\",\"read_file\",\"read_transcript\",\"shell\",\"task_list\",\"update_goal\",\"urls_add\",\"urls_remove\",\"use_skill\",\"web_fetch\",\"write_file\"]}}\u003c/delegate-notification\u003e",
+      "status": "completed"
+    },
+    "generation": 1
+  }
+]

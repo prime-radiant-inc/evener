@@ -1849,7 +1849,9 @@ func delegateSendResultFrom(res sendMessageResult) delegateSendResult {
 		CumulativeUsage:     res.CumulativeUsage,
 		Worktree:            delegateWorktreeToolResultFrom(res.Worktree),
 		WaitIgnoredReason:   res.WaitIgnoredReason,
-		ReportSummary:       res.ReportSummary,
+	}
+	if res.ReportSummary != nil {
+		out.ReportSummary = renderReportNotice(*res.ReportSummary)
 	}
 	if !res.RunningInBackground || res.TimedOut {
 		out.Output = &res.Output
