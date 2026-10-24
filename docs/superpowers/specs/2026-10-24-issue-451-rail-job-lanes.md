@@ -156,7 +156,8 @@ returns `{ summary, jobHistory, loading, failure, refresh }`.
    `degraded`, so the lane is usable but the rail shows that it could not
    reconcile the newer job signal and offers Retry. An equal or higher
    revision replaces the snapshot wholesale; snapshots are never merged page
-   by page.
+   by page. The retry budget belongs to one invalidation cycle: a later job
+   signal, hydration, or ref change starts a fresh budget.
 7. **Job-only failure preserves turns.** A failed refresh with a cached summary
    keeps it and records `degraded` in the cache entry, so a remount does not
    claim complete history; a failure with no cached summary reports `fatal`
@@ -207,11 +208,12 @@ a retry that could not advance the page. The notice is located by role and the
   carries one, otherwise that turn's start timestamp. Live turns are matched by
   `TurnModel.id` first, which needs no live timestamp because the summary
   supplies the placement. The timestamp fallback is one-to-one: a matched
-  summary turn is consumed, so a second live turn at the same instant is a
-  distinct turn and is appended. Two distinct turns that started in the same
-  millisecond therefore stay distinct when their ids differ. Events are
-  ordered by start time; the slice exposes no turn indices, so nothing is
-  renumbered.
+  summary turn is consumed, and id-less summary turns are queued per
+  timestamp so two of them each match one live turn. A live turn beyond the
+  queue is a distinct turn and is appended. Two distinct turns that started
+  in the same millisecond therefore stay distinct when their ids differ.
+  Events are ordered by start time; the slice exposes no turn indices, so
+  nothing is renumbered.
 - reconciles a matched live turn with its summary event: the live turn's token
   usage and failure replace the summary's, while summary-only facts such as
   `resultBytes` and the prompt/steering flags stay. A turn the summary captured

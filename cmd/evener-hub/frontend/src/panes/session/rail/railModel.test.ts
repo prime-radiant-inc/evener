@@ -78,6 +78,17 @@ describe("railModelFromSummaryAndTurns", () => {
     expect(model.events).toHaveLength(2);
   });
 
+  test("matches two id-less summary turns at one instant to two live turns one-to-one", () => {
+    const tuple = { startedAt: 1_000, userInput: false, steering: false, error: false, in: 10, out: 5, resultBytes: 0 };
+    const withoutIds = summary({ turns: [tuple, { ...tuple }] });
+    const model = railModelFromSummaryAndTurns(withoutIds, [turn("turn_a", 1_000), turn("turn_b", 1_000)], {
+      status: "complete",
+      revision: 3,
+    });
+
+    expect(model.events).toHaveLength(2);
+  });
+
   test("reconciles a matching live turn that has no timestamp of its own", () => {
     const live: TurnModel = {
       id: "turn_1",

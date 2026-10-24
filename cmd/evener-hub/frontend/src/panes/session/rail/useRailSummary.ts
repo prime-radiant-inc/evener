@@ -243,6 +243,7 @@ export function useRailSummary(options: UseRailSummaryOptions): RailSummaryState
       inFlight.current?.abort();
       inFlight.current = null;
       trailing.current = false;
+      fenceRetried.current = false;
     }
     if (hydrationChanged) {
       // Wait for the open request to settle (an abort rejects a real fetch)
@@ -253,20 +254,19 @@ export function useRailSummary(options: UseRailSummaryOptions): RailSummaryState
         inFlight.current.abort();
       }
     }
-    if (!entry) {
-      request();
-      return;
-    }
-    if (becameTerminal || entry.terminal !== terminal) {
-      request();
-      return;
-    }
-    if (terminal) {
+    let shouldRequest = false;
+    if (!entry) shouldRequest = true;
+    else if (becameTerminal || entry.terminal !== terminal) shouldRequest = true;
+    else if (terminal) {
       // A terminal entry captured at its terminal revision stays cached.
       trailing.current = false;
       return;
-    }
-    if (entry.signal !== signal || entry.hydration !== hydration) request();
+    } else if (entry.signal !== signal || entry.hydration !== hydration) shouldRequest = true;
+    if (!shouldRequest) return;
+    // An independent invalidation starts a new revision-retry budget; only the
+    // cycle's own trailing retry keeps the old one.
+    fenceRetried.current = false;
+    request();
   }, [cache, hydration, ref, request, signal, terminal]);
 
   // One mount-scoped abort: an unmounted rail leaves no request running. It is

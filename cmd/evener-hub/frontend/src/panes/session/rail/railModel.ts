@@ -42,7 +42,7 @@ export function railModelFromSummaryAndTurns(
 ): RailModel {
   const events: RailEvent[] = [];
   const summaryIndexById = new Map<string, number>();
-  const summaryIndexByStart = new Map<number, number>();
+  const summaryIndicesByStart = new Map<number, number[]>();
   for (const turn of summary?.turns ?? []) {
     const index =
       events.push({
@@ -57,7 +57,11 @@ export function railModelFromSummaryAndTurns(
     // A summary may carry the turn id; when it does not, the start timestamp is
     // the only identity left, and that turn can still be matched.
     if (turn.turnId) summaryIndexById.set(turn.turnId, index);
-    else summaryIndexByStart.set(turn.startedAt, index);
+    else {
+      const indices = summaryIndicesByStart.get(turn.startedAt);
+      if (indices) indices.push(index);
+      else summaryIndicesByStart.set(turn.startedAt, [index]);
+    }
   }
 
   for (const turn of turns) {
@@ -71,8 +75,7 @@ export function railModelFromSummaryAndTurns(
       if (!Number.isFinite(startedAt)) continue;
       // The timestamp fallback is one-to-one: a second live turn at the same
       // instant is a distinct turn and must not overwrite the matched event.
-      matched = summaryIndexByStart.get(startedAt);
-      if (matched !== undefined) summaryIndexByStart.delete(startedAt);
+      matched = summaryIndicesByStart.get(startedAt)?.shift();
     }
     if (matched !== undefined) {
       // The summary captured this turn earlier. Reconcile it with what the live

@@ -273,6 +273,34 @@ describe("useRailSummary refresh", () => {
     expect(view.result.current.jobHistory?.status).toBe("degraded");
   });
 
+  test("a later job signal gets a fresh revision-retry budget after recovery is exhausted", async () => {
+    const unversioned = () =>
+      summary({ jobs: [job({ jobId: "job_old" })], jobHistory: { status: "complete", revision: null } });
+    const load = vi
+      .fn(async () => summary({ jobHistory: { status: "complete", revision: 5 } }))
+      .mockResolvedValueOnce(summary({ jobHistory: { status: "complete", revision: 5 } }))
+      .mockImplementationOnce(async () => unversioned())
+      .mockImplementationOnce(async () => unversioned())
+      .mockImplementationOnce(async () => unversioned())
+      .mockResolvedValueOnce(
+        summary({
+          jobs: [job({ jobId: "job_new", startedAt: 8_000 })],
+          jobHistory: { status: "complete", revision: 6 },
+        }),
+      );
+    const view = renderHook(renderSummary(load), { initialProps: settled });
+    await waitFor(() => expect(view.result.current.jobHistory?.revision).toBe(5));
+
+    view.rerender({ ...settled, jobsUpdatedAt: 2 });
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(view.result.current.jobHistory?.status).toBe("degraded"));
+
+    view.rerender({ ...settled, jobsUpdatedAt: 3 });
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(5));
+    await waitFor(() => expect(view.result.current.jobHistory?.revision).toBe(6));
+    expect(view.result.current.summary?.jobs[0]?.jobId).toBe("job_new");
+  });
+
   test("a cold mount reports no lane status until the first projection arrives", async () => {
     const pending = deferred<RailSummary>();
     const load = vi.fn().mockReturnValueOnce(pending.promise);
