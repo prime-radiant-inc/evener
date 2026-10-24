@@ -64,6 +64,7 @@ type NativeStorage = MutationOutboxStorage<MutationAttachmentRef> &
 			previousTo: ResumeIdentityEndpoint,
 			to: ResumeIdentityEndpoint,
 		): void;
+		removeResumeIdentitiesTo(to: ResumeIdentityEndpoint): void;
 		pruneUnlistedAccepted(
 			targetRef: string,
 			acceptedBefore: number,
