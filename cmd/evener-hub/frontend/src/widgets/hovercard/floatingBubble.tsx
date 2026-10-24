@@ -13,7 +13,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { ownerDocumentOf, ownerWindowOf } from "../internal/documentRealm";
+import { ownerWindowOf } from "../internal/documentRealm";
 import { computeTooltipPosition, type TooltipPosition, TRIGGER_GAP } from "../tooltip/computePosition";
 import { computeSideAnchorPosition, type SideAnchor } from "./computePosition";
 import { useFloatingLabel } from "./useFloatingLabel";
@@ -95,7 +95,7 @@ export function useFloatingBubble(
     );
   }, [sideAnchor]);
 
-  const { visible, wrapperRef, triggerProps, showImmediately, dismiss } = useFloatingLabel({
+  const { visible, ownerDocument, wrapperRef, triggerProps, showImmediately, dismiss } = useFloatingLabel({
     measure,
     observe: bubbleRef,
     focusTarget,
@@ -123,13 +123,14 @@ export function useFloatingBubble(
   // so the measure and the re-render its setPosition causes both complete
   // before the browser's next paint, in the same commit that mounts the portal:
   // the bubble is never visibly painted at the pre-measure placeholder.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: ownerDocument is the deliberate trigger - a document move has to re-measure against the new window
   useLayoutEffect(() => {
     if (!visible) {
       setPosition(null);
       return;
     }
     measure();
-  }, [measure, visible]);
+  }, [measure, visible, ownerDocument]);
 
   const setBubbleRef = useCallback((element: HTMLElement | null) => {
     bubbleRef.current = element;
@@ -140,7 +141,7 @@ export function useFloatingBubble(
     wrapperRef,
     triggerProps,
     setBubbleRef,
-    bubbleContainer: ownerDocumentOf(wrapperRef.current).body,
+    bubbleContainer: ownerDocument.body,
     // Before the measure lands, the bubble sits at the top-left corner one gap
     // in - off the trigger, but on-screen and laid out at its natural size,
     // which is what gives the layout effect above a real box to read. It is

@@ -1,5 +1,4 @@
 import { type ReactNode, useCallback, useEffect, useRef } from "react";
-import { ownerDocumentOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
 import { watchViewport } from "../internal/viewportWatch";
 import type { SideAnchor } from "./computePosition";
@@ -131,7 +130,8 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, side
 
   useEffect(() => {
     if (!longPressEnabled || !visible || !isHoverless()) return;
-    const ownerDocument = ownerDocumentOf(wrapperRef.current);
+    // The bubble's document: the card follows a panel moved between windows.
+    const ownerDocument = bubbleContainer.ownerDocument;
     const handleOutsidePointer = (event: PointerEvent) => {
       if (wrapperRef.current?.contains(event.target as Node | null)) return;
       swallowClickRef.current = false;
@@ -139,7 +139,7 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, side
     };
     ownerDocument.addEventListener("pointerdown", handleOutsidePointer, true);
     return () => ownerDocument.removeEventListener("pointerdown", handleOutsidePointer, true);
-  }, [dismiss, longPressEnabled, visible, wrapperRef]);
+  }, [bubbleContainer, dismiss, longPressEnabled, visible, wrapperRef]);
 
   useEffect(() => {
     if (!visible) swallowClickRef.current = false;

@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createPortal } from "react-dom";
+import { createRoot } from "react-dom/client";
 import { afterEach, expect, test, vi } from "vitest";
 import { HoverCard as FromBarrel } from "..";
 import { appendPopout } from "../internal/popoutTestUtils";
@@ -1172,5 +1173,46 @@ test("places a popout card from the popout window's own viewport, not the opener
     restoreOwnProperty(htmlProto, "offsetHeight", originalOffsetHeight);
     view.unmount();
     frame.remove();
+  }
+});
+
+// Dockview can move a mounted card between windows without a render. A visible
+// bubble has to follow: it belongs to the document its trigger is in now.
+test("a visible card follows a move into another document", async () => {
+  vi.useFakeTimers();
+  installHoverlessMatchMedia();
+  const { frame, doc, win } = appendPopout();
+  Object.defineProperty(win, "innerWidth", { configurable: true, value: 600 });
+  Object.defineProperty(win, "innerHeight", { configurable: true, value: 150 });
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    act(() =>
+      root.render(
+        <HoverCard label={<div>Project prime-radiant</div>} longPressEnabled>
+          <button type="button">Fix flaky test</button>
+        </HoverCard>,
+      ),
+    );
+    const trigger = host.querySelector("button");
+    if (!trigger) throw new Error("hovercard trigger missing");
+    fireEvent.pointerDown(trigger, { pointerId: 4, pointerType: "touch", button: 0, clientX: 10, clientY: 10 });
+    act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+    expect(document.querySelector('[role="tooltip"]')).not.toBeNull();
+
+    act(() => {
+      doc.body.appendChild(host);
+    });
+    await act(async () => {});
+
+    const bubble = doc.querySelector('[role="tooltip"]');
+    expect(bubble).not.toBeNull();
+    expect(bubble?.parentElement).toBe(doc.body);
+    expect(document.querySelector('[role="tooltip"]')).toBeNull();
+  } finally {
+    act(() => root.unmount());
+    frame.remove();
+    host.remove();
   }
 });

@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import { ownerDocumentOf } from "../internal/documentRealm";
+import { useOwnedDocument } from "../internal/useOwnedDocument";
 import { watchViewport } from "../internal/viewportWatch";
 import { acquirePointerActivity, type PointerActivityHandle } from "./pointerActivity";
 
@@ -46,6 +47,8 @@ interface FloatingLabelTriggerProps {
 
 interface UseFloatingLabelResult {
   visible: boolean;
+  /** The document the label's own DOM lives in, current across a move. */
+  ownerDocument: Document;
   wrapperRef: RefObject<HTMLSpanElement | null>;
   triggerProps: FloatingLabelTriggerProps;
   showImmediately: () => void;
@@ -63,6 +66,9 @@ export function useFloatingLabel({
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const wrapperRef = useRef<HTMLSpanElement>(null);
   const activeRef = useRef({ hovered: false, wrapperFocused: false, externalFocused: false });
+  // Follows Dockview moving this label's DOM between windows without a render,
+  // so its dismissal pair rebinds to the window it is in now.
+  const ownerDocument = useOwnedDocument(wrapperRef, visible || pending);
 
   // A focus that arrives while a pointer is pressed, or just after it lifts
   // (touch browsers send the compatibility mousedown/focus/click only after
@@ -126,8 +132,8 @@ export function useFloatingLabel({
     }
     // The wrapper's own window: a Dockview popout scrolls and resizes its own
     // window, and the opener's never sees either.
-    return watchViewport(wrapperRef.current, dismiss);
-  }, [pending, visible]);
+    return watchViewport(ownerDocument, dismiss);
+  }, [ownerDocument, pending, visible]);
 
   const show = useCallback(() => {
     clearTimeout(timerRef.current);
@@ -185,6 +191,7 @@ export function useFloatingLabel({
 
   return {
     visible,
+    ownerDocument,
     wrapperRef,
     showImmediately,
     dismiss: hide,
