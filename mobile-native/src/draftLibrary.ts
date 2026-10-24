@@ -84,6 +84,14 @@ export class DraftLibrary {
 			this.deferHandoff(from, to);
 			return false;
 		}
+		// An intermediate identity can resolve again before its predecessor's
+		// handoff retries. Keep this edge pending until every predecessor's
+		// redirect is durable in both stores, or a restart can replay the old
+		// mapping into the retired ref.
+		if (!this.redirectPredecessors(from, to)) {
+			this.deferHandoff(from, to);
+			return false;
+		}
 		const existing = current.record;
 		if (
 			existing.draft !== "" ||
@@ -102,10 +110,8 @@ export class DraftLibrary {
 			existing.releasedRecoveryIds?.length
 		) {
 			// Existing destination work is a permanent refusal, never a retry.
-			if (this.releaseRefusedSources(source, destination)) {
-				this.redirectPredecessors(from, to);
-				this.clearPending(from, to);
-			} else this.deferHandoff(from, to);
+			if (this.releaseRefusedSources(source, destination)) this.clearPending(from, to);
+			else this.deferHandoff(from, to);
 			return false;
 		}
 		const images = [
@@ -125,7 +131,6 @@ export class DraftLibrary {
 			this.deferHandoff(from, to);
 			return false;
 		}
-		this.redirectPredecessors(from, to);
 		this.clearPending(from, to);
 		destination.adopt(snapshot.record);
 		if (destination !== source) {
@@ -188,26 +193,44 @@ export class DraftLibrary {
 	private loadPendingHandoffs(): void {
 		if (this.pendingLoaded) return;
 		let loaded = true;
+		const raw: { from: DraftDestination; to: DraftDestination }[] = [];
 		try {
 			const storage = this.repository();
 			if (storage.readPendingHandoffs !== undefined && storage.writePendingHandoff !== undefined) {
-				for (const { from, to } of storage.readPendingHandoffs()) {
-					const key = this.handoffKey(from, to);
-					if (!this.pending.has(key)) this.pending.set(key, { from, to });
-				}
+				raw.push(...storage.readPendingHandoffs());
 			}
 		} catch {
 			// Storage is failing; the next open or retry looks again.
 			loaded = false;
 		}
 		try {
-			for (const { from, to } of this.resumeIdentities?.()?.readResumeIdentities() ?? []) {
-				const key = this.handoffKey(from, to);
-				if (!this.pending.has(key)) this.pending.set(key, { from, to });
-			}
+			raw.push(...(this.resumeIdentities?.()?.readResumeIdentities() ?? []));
 		} catch {
 			// The mutations database is failing too; a later open looks again.
 			loaded = false;
+		}
+		// A redirect accepted by only one store leaves both the old and new
+		// mappings on disk. Canonicalize the loaded graph through any
+		// intermediate edges before transfers, so A->B and A->C collapse onto
+		// the final C instead of retrying A->B first.
+		for (const edge of canonicalHandoffs(raw)) {
+			const key = this.handoffKey(edge.from, edge.to);
+			if (!this.pending.has(key)) this.pending.set(key, edge);
+		}
+		for (const edge of raw) {
+			const finalTo = followHandoffs(edge.to, raw);
+			if (sameDestination(finalTo, edge.to)) continue;
+			try {
+				const storage = this.repository();
+				storage.redirectPendingHandoff?.(edge.from, edge.to, finalTo);
+			} catch {
+				// The canonical in-memory graph still prevents the bad retry.
+			}
+			try {
+				this.resumeIdentities?.()?.redirectResumeIdentity(edge.from, edge.to, finalTo);
+			} catch {
+				// The canonical in-memory graph still prevents the bad retry.
+			}
 		}
 		if (loaded) this.pendingLoaded = true;
 	}
@@ -232,25 +255,32 @@ export class DraftLibrary {
 	 * handoff retries. Point every pending predecessor at the newest ref before
 	 * the intermediate edge is cleared, so the composition and its completion
 	 * markers continue toward the ref the rows actually moved to. */
-	private redirectPredecessors(settlingFrom: DraftDestination, settlingTo: DraftDestination): void {
+	private redirectPredecessors(settlingFrom: DraftDestination, settlingTo: DraftDestination): boolean {
+		let durable = true;
 		for (const [key, edge] of [...this.pending]) {
 			if (!sameDestination(edge.to, settlingFrom)) continue;
-			this.pending.delete(key);
-			const redirected = { from: edge.from, to: settlingTo };
-			this.pending.set(this.handoffKey(edge.from, settlingTo), redirected);
+			let draftsDurable = true;
 			try {
 				const storage = this.repository();
 				if (storage.redirectPendingHandoff) storage.redirectPendingHandoff(edge.from, settlingFrom, settlingTo);
 				else storage.writePendingHandoff?.(edge.from, settlingTo);
 			} catch {
-				// The in-memory chain still retries this launch.
+				draftsDurable = false;
 			}
+			let identitiesDurable = true;
 			try {
 				this.resumeIdentities?.()?.redirectResumeIdentity(edge.from, settlingFrom, settlingTo);
 			} catch {
-				// A later retry still has the predecessor's in-memory edge.
+				identitiesDurable = false;
 			}
+			if (!draftsDurable || !identitiesDurable) {
+				durable = false;
+				continue;
+			}
+			this.pending.delete(key);
+			this.pending.set(this.handoffKey(edge.from, settlingTo), { from: edge.from, to: settlingTo });
 		}
+		return durable;
 	}
 
 	private pendingTo(to: DraftDestination): boolean {
@@ -291,4 +321,42 @@ export class DraftLibrary {
 
 function sameDestination(a: DraftDestination, b: DraftDestination): boolean {
 	return a.hubId === b.hubId && a.sessionRef === b.sessionRef;
+}
+
+function destinationKey(destination: DraftDestination): string {
+	return JSON.stringify([destination.hubId, destination.sessionRef]);
+}
+
+/** Follow the loaded handoff graph from one destination to its terminal ref.
+ * A visited set stops a malformed cycle from spinning. */
+function followHandoffs(
+	destination: DraftDestination,
+	edges: readonly { from: DraftDestination; to: DraftDestination }[],
+): DraftDestination {
+	const seen = new Set<string>();
+	let current = destination;
+	for (;;) {
+		const key = destinationKey(current);
+		if (seen.has(key)) return current;
+		seen.add(key);
+		const next = edges.find((edge) => sameDestination(edge.from, current));
+		if (next === undefined) return current;
+		current = next.to;
+	}
+}
+
+/** Collapse the loaded mappings onto their final destinations. A redirect one
+ * store rejected can leave A->B beside A->C; a retained B->C edge makes both
+ * resolve to A->C, so no retry can replay the retired intermediate. */
+function canonicalHandoffs(
+	edges: readonly { from: DraftDestination; to: DraftDestination }[],
+): { from: DraftDestination; to: DraftDestination }[] {
+	const byDestination = new Map<string, { from: DraftDestination; to: DraftDestination }>();
+	for (const edge of edges) {
+		const to = followHandoffs(edge.to, edges);
+		if (sameDestination(edge.from, to)) continue;
+		const key = `${destinationKey(edge.from)}->${destinationKey(to)}`;
+		if (!byDestination.has(key)) byDestination.set(key, { from: edge.from, to });
+	}
+	return [...byDestination.values()];
 }
