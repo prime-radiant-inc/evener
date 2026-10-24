@@ -139,7 +139,21 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
         resource.loading &&
         ((resource.data as { sessions?: unknown[] } | null)?.sessions?.length ?? 0) > 0,
     );
-    const canLoadMore = retryingPopulatedPage || !hasManifest || failed || remaining > 0 || count > uniqueRows.length;
+    // A settled page owns completion: its `remaining` is the section's own word
+    // on whether anything is left. The manifest count refreshes on its own
+    // schedule and can lag a queue that has drained (shrinkage, overlapping
+    // pages), so it may only justify demand before any page has settled. A
+    // populated retry and a failed boundary keep demand of their own.
+    const settledPage = [...state.resources.values()].some(
+      (resource) =>
+        resource.key.kind === "section" &&
+        resource.key.section === "needs_you" &&
+        !resource.loading &&
+        !resource.error &&
+        !resource.stale,
+    );
+    const canLoadMore =
+      retryingPopulatedPage || failed || remaining > 0 || (!settledPage && (!hasManifest || count > uniqueRows.length));
     const canLoadInitialPage = !hasReadManifest && state.mode === "v3" && state.manifest?.loading === true;
     return Object.freeze({
       choices: Object.freeze(choices.map((choice) => Object.freeze(choice))),
@@ -409,7 +423,9 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
     openAttentionSession(nextRef);
   };
   const loadMore = async () => {
-    if (disposed || snapshot.blocked) return;
+    // The action's own availability decides: a complete queue must not spend a
+    // page read just because a stale control was pressed.
+    if (disposed || snapshot.blocked || !snapshot.canLoadMore) return;
     cancel();
     const serial = actionSerial;
     await demand(serial);

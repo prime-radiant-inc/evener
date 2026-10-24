@@ -283,6 +283,13 @@ Keyboard Next, the palette's needs-you rows and the palette's next-needs-you
 command share the shell's one needs-you controller. The floating control changes
 none of their ordering, validity or navigation decisions.
 
+A settled `needs_you` page owns completion: when it reports no remaining rows,
+the queue is finished and neither Next nor **Load more** asks for another page,
+whatever the navigation manifest's own count still says. The manifest total
+justifies demand only before any page has settled. A failed boundary page keeps
+its retry, and a populated page whose retry is in flight keeps the control
+available until that read lands.
+
 ## Session Overview
 
 Both session action menus offer **Overview** for inspection. It opens the shared
