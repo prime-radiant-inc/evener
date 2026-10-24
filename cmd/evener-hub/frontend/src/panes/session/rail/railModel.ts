@@ -61,12 +61,19 @@ export function railModelFromSummaryAndTurns(
   }
 
   for (const turn of turns) {
-    const startedAt = turn.startedAt ? Date.parse(turn.startedAt) : Number.NaN;
-    if (!Number.isFinite(startedAt)) continue;
     const usage = turnUsageTokens(turn);
     const error = turn.error != null;
     const first = turn.items[0];
-    const matched = summaryIndexById.get(turn.id) ?? summaryIndexByStart.get(startedAt);
+    // An id match needs no timestamp: the summary supplies the placement.
+    let matched = summaryIndexById.get(turn.id);
+    if (matched === undefined) {
+      const startedAt = turn.startedAt ? Date.parse(turn.startedAt) : Number.NaN;
+      if (!Number.isFinite(startedAt)) continue;
+      // The timestamp fallback is one-to-one: a second live turn at the same
+      // instant is a distinct turn and must not overwrite the matched event.
+      matched = summaryIndexByStart.get(startedAt);
+      if (matched !== undefined) summaryIndexByStart.delete(startedAt);
+    }
     if (matched !== undefined) {
       // The summary captured this turn earlier. Reconcile it with what the live
       // model knows now (usage, failure), keeping summary-only facts.
@@ -82,6 +89,8 @@ export function railModelFromSummaryAndTurns(
       }
       continue;
     }
+    const startedAt = turn.startedAt ? Date.parse(turn.startedAt) : Number.NaN;
+    if (!Number.isFinite(startedAt)) continue;
     events.push({
       startedAt,
       userInput: first?.type === "userMessage",

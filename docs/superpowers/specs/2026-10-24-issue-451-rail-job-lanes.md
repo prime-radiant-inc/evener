@@ -204,8 +204,11 @@ a retry that could not advance the page. The notice is located by role and the
 
 - derives events from the summary's turn tuples, then appends live turns the
   summary does not already hold. Identity is the summary's `turnId` when it
-  carries one, otherwise that turn's start timestamp; live turns are matched by
-  `TurnModel.id` first. Two distinct turns that started in the same
+  carries one, otherwise that turn's start timestamp. Live turns are matched by
+  `TurnModel.id` first, which needs no live timestamp because the summary
+  supplies the placement. The timestamp fallback is one-to-one: a matched
+  summary turn is consumed, so a second live turn at the same instant is a
+  distinct turn and is appended. Two distinct turns that started in the same
   millisecond therefore stay distinct when their ids differ. Events are
   ordered by start time; the slice exposes no turn indices, so nothing is
   renumbered.
