@@ -53,9 +53,9 @@ const notificationWireFixturePath = "testdata/notificationwire/steering.json"
 func TestNotificationReportProjection(t *testing.T) {
 	t.Parallel()
 	var fixtures []notificationWireFixture
-	for _, kind := range []string{"update", "readiness", "waiting", "done", "blocked", "interruption"} {
+	for _, kind := range []string{"update", "readiness", "waiting", "waiting-empty", "done", "blocked", "interruption"} {
 		t.Run(kind, func(t *testing.T) {
-			if kind == "waiting" {
+			if kind == "waiting" || kind == "waiting-empty" {
 				adapter := newMessagingAdapter("WAIT-WORKER", "WAIT-TARGET")
 				adapter.script("root", func(llm.Request) llm.Response { return delegateToolResponse("spawn", "WAIT-WORKER") }, func(llm.Request) llm.Response { return finalResponse("root-finished") })
 				gate := make(chan struct{})
@@ -64,7 +64,11 @@ func TestNotificationReportProjection(t *testing.T) {
 				adapter.script("WAIT-TARGET", func(llm.Request) llm.Response { <-gate; return finalResponse("target-finished") })
 				adapter.script("WAIT-WORKER", func(llm.Request) llm.Response { return delegateToolResponse("target", "WAIT-TARGET") }, func(req llm.Request) llm.Response {
 					id := deferredHeadDelegateID.FindString(lastToolResultText(req.Messages))
-					return toolCallResponse(publicationCall("projection-waiting", map[string]any{"message": "payload-waiting-9c2f", "end_turn": true, "end_reason": "waiting_on_work", "waiting_on": id, "output": publicationOutput("result-9c2f")}))
+					output := publicationOutput("result-9c2f")
+					if kind == "waiting-empty" {
+						output = map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}}
+					}
+					return toolCallResponse(publicationCall("projection-"+kind, map[string]any{"message": "payload-" + kind + "-9c2f", "end_turn": true, "end_reason": "waiting_on_work", "waiting_on": id, "output": output}))
 				})
 				root := newMessagingRoot(t, adapter, nil)
 				if _, err := root.ProcessInput(t.Context(), "start", nil); err != nil {
@@ -83,12 +87,19 @@ func TestNotificationReportProjection(t *testing.T) {
 						t.Fatal("wait settled generation")
 					}
 					if u := e.UpdatePosted; u != nil && e.DelegateID == child.owningDelegateID {
-						if u.Generation != 1 || u.Communicate == nil || u.Communicate.CallID != "projection-waiting" || u.Communicate.EndReason != "waiting_on_work" || u.Communicate.WaitingOn == "" || u.Packet.StructuredResultSource != delegatestore.StructuredResultSourceDefaultEnvelope {
+						if u.Generation != 1 || u.Communicate == nil || u.Communicate.CallID != "projection-"+kind || !u.Communicate.EndTurn || u.Communicate.EndReason != "waiting_on_work" || u.Communicate.WaitingOn == "" || u.Packet == nil {
 							t.Fatalf("wait publication=%+v", u)
+						}
+						if kind == "waiting-empty" {
+							if len(u.Packet.StructuredResult) != 0 || u.Packet.StructuredResultSource != "" || u.Packet.StructuredResultValid != nil {
+								t.Fatalf("empty output captured as a result: %+v", u.Packet)
+							}
+						} else if u.Packet.StructuredResultSource != delegatestore.StructuredResultSourceDefaultEnvelope {
+							t.Fatalf("wait provenance=%+v", u.Packet)
 						}
 						frame := rootAttentionFold(t, root).content[before[0]].Text()
 						frame = strings.NewReplacer(root.ID(), "root", child.ID(), "worker", child.owningDelegateID, "dlg_projection", u.Communicate.WaitingOn, "dlg_target").Replace(frame)
-						items := apptranscript.ProjectTurn("turn_1", 0, notificationWireAttention("projection-waiting", frame), nil, nil, nil)
+						items := apptranscript.ProjectTurn("turn_1", 0, notificationWireAttention("projection-"+kind, frame), nil, nil, nil)
 						fixtures = append(fixtures, notificationWireFixture{Case: kind, Generation: u.Generation, Note: "Real delegate target and yielded communicate publication before target settlement, receiver and AppWire projection. Identities normalized.", Item: items[0]})
 					}
 				}
@@ -263,6 +274,9 @@ func TestNotificationReportProjection(t *testing.T) {
 			}
 			fixtures = append(fixtures, fixture)
 		})
+	}
+	if len(fixtures) != 7 {
+		t.Fatalf("captured %d report fixtures, want seven producer cases", len(fixtures))
 	}
 	checkWireFixture(t, "testdata/notificationwire/reports.json", fixtures, "shared adapter, web and native report projection tests")
 }

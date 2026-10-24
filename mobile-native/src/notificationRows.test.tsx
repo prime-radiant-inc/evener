@@ -144,7 +144,13 @@ describe("delegate and job notifications", () => {
 		const content = renderedText(tree);
 		if (recorded.case !== "interruption") {
 			expect(content).toContain(`payload-${recorded.case}-9c2f`);
-			expect(content).toContain("result-9c2f");
+			if (recorded.case === "waiting-empty") {
+				expect(detail(tree)).toBe("payload-waiting-empty-9c2f");
+				expect(content).not.toContain("structured_result");
+				expect(content).not.toContain("Result");
+			} else {
+				expect(content).toContain("result-9c2f");
+			}
 		}
 		const settled = ["done", "blocked", "interruption"].includes(recorded.case);
 		expect(detail(tree)?.includes("task-b") ?? false).toBe(settled);

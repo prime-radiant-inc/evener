@@ -36,6 +36,18 @@
     "generation": 1
   },
   {
+    "case": "waiting-empty",
+    "note": "Real delegate target and yielded communicate publication before target settlement, receiver and AppWire projection. Identities normalized.",
+    "item": {
+      "type": "steering",
+      "id": "item_steering_0",
+      "turnId": "turn_1",
+      "text": "\u003cdelegate-notification delegate_id=\"dlg_projection\" kind=\"update\"\u003e{\"kind\":\"update\",\"message\":\"payload-waiting-empty-9c2f\",\"metadata\":{\"call_id\":\"projection-waiting-empty\",\"end_turn\":true,\"disposition\":\"waiting_on_work\",\"waiting_on\":\"dlg_target\"}}\u003c/delegate-notification\u003e",
+      "status": "completed"
+    },
+    "generation": 1
+  },
+  {
     "case": "done",
     "note": "Real tool publication or user stop, journal, receiver custody and AppWire projection. Identities, scratch path and clocks normalized.",
     "item": {

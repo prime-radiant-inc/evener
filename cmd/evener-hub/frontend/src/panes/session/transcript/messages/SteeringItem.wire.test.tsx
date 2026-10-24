@@ -37,8 +37,13 @@ test.each(reports)("renders real $case publication through the shared adapter", 
     if (summary) fireEvent.click(summary);
   }
   if (recorded.case !== "interruption") {
-    expect(screen.getByTestId("notification-message").textContent).toContain(`payload-${recorded.case}-9c2f`);
-    expect(screen.getByTestId("notification-structured-result").textContent).toContain("result-9c2f");
+    expect(screen.getByTestId("notification-message").textContent?.trim()).toBe(`payload-${recorded.case}-9c2f`);
+    if (recorded.case === "waiting-empty") {
+      expect(screen.queryByTestId("notification-structured-result")).toBeNull();
+      expect(notifications[0]?.update).toBe(true);
+    } else {
+      expect(screen.getByTestId("notification-structured-result").textContent).toContain("result-9c2f");
+    }
   }
   if (recorded.case === "done") {
     expect(recorded.generation).toBe(1);

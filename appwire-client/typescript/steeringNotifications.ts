@@ -311,8 +311,9 @@ function parseDelegateNotification(block: string): ParsedNotification | null {
 }
 
 // A delegate's mid-work update (agent/delegate_delivery.go's
-// delegateNotificationContent, kind="update"): the body is the delegate's
-// message with "<" escaped, decoded here once.
+// delegateNotificationContent, kind="update"): plain messages escape "<".
+// Captured results and waits instead carry packet JSON, even when the wait's
+// default output envelope is empty and no structured result was captured.
 function delegateUpdateNotification(
   block: string,
   name: string,
@@ -322,8 +323,9 @@ function delegateUpdateNotification(
   const packet = parseTerminalPacket(body);
   if (
     packet?.kind === "update" &&
-    (packet.structuredResultSource === "schema" || packet.structuredResultSource === "default_envelope") &&
-    packet.structuredResult !== undefined
+    (packet.waitingOnWork ||
+      ((packet.structuredResultSource === "schema" || packet.structuredResultSource === "default_envelope") &&
+        packet.structuredResult !== undefined))
   ) {
     return {
       ...delegatePacketNotification(block, name, delegateId, packet),
@@ -395,6 +397,8 @@ interface TerminalPacket {
   // default-envelope shape heuristic remains the fallback.
   structuredResultSource?: string;
   reportNotice?: string;
+  // The captured same-call wait tuple, not an assertion about result validity.
+  waitingOnWork: boolean;
 }
 
 // parseTerminalPacket reads the daemon's TerminalPacket JSON. json.Marshal
@@ -422,6 +426,12 @@ function parseTerminalPacket(body: string): TerminalPacket | null {
     structuredResultReason: text(parsed.structured_result_reason) || undefined,
     structuredResultSource: text(parsed.structured_result_source) || undefined,
     reportNotice: text(metadata.report_notice) || undefined,
+    waitingOnWork:
+      typeof parsed.message === "string" &&
+      text(metadata.call_id) !== "" &&
+      metadata.end_turn === true &&
+      metadata.disposition === "waiting_on_work" &&
+      text(metadata.waiting_on) !== "",
   };
 }
 
