@@ -1192,83 +1192,83 @@ func TestStableDelegateWatch_StopFencesAndDrainsBothReceiptClasses(t *testing.T)
 	})
 }
 
-func TestStableDelegateWatch_TerminalFramePrecedesEndNotice(t *testing.T) {
-	_ = requireStableDelegateWatchArgs(t)
-	jm := newStableWatchTestJobManager(t)
-	installWatchBelowValidation(t, jm, watchArgs{
-		Source: "dlg_source",
-		Target: runtimeMessageAliasCaller,
-		Events: []string{"communicate"},
-		Send:   &watchSendArgs{To: "dlg_receiver"},
-	})
-	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "terminal frame", EndTurn: true})
-	deliveries := jm.pendingWatchSendDeliveries(nil)
-	if len(deliveries) != 1 || !strings.Contains(deliveries[0].state.Frame, "terminal frame") {
-		t.Fatalf("terminal watch frame = %#v", deliveries)
-	}
-	stored, err := jm.store.LoadEvents()
-	if err != nil {
-		t.Fatalf("load watch events: %v", err)
-	}
-	if indexWatchEvent(stored, jobstore.EventWatchSendPending) < 0 {
-		t.Fatal("terminal frame was not durable before watch teardown")
-	}
+func TestStableDelegateWatch_TerminalFrameSurvivesRegistrationClear(t *testing.T) {
+	t.Parallel()
+	proveStableWatchRegistrationClear(t)
 }
 
+// Job-manager restore/end-policy component proof, not a full runtime restart.
 func TestStableDelegateWatch_RestartCancellationEmitsEndNotice(t *testing.T) {
-	_ = requireStableDelegateWatchArgs(t)
-	stateDir := t.TempDir()
-	jm, err := newJobManagerNoSync(stateDir, "source-session", func(jobNotification) {})
-	if err != nil {
-		t.Fatalf("new source job manager: %v", err)
-	}
-	result, err := jm.configureWatch(watchArgs{
-		Source:               "dlg_source",
-		Target:               runtimeMessageAliasCaller,
-		Events:               []string{"communicate"},
-		ReceiverSessionID:    "receiver-session",
-		ReceiverDelegateID:   "dlg_receiver",
-		StableReceiver:       true,
-		ReceiverSendInternal: true,
-		SourceDelegateID:     "dlg_source",
-		SourceGeneration:     1,
-	})
-	if err != nil {
-		t.Fatalf("configure stable watch: %v", err)
-	}
-	if err := jm.closeStoreOnly(); err != nil {
-		t.Fatalf("close source job manager: %v", err)
-	}
-	restarted, err := newJobManagerNoSync(stateDir, "source-session", func(jobNotification) {})
-	if err != nil {
-		t.Fatalf("restart source job manager: %v", err)
-	}
-	t.Cleanup(func() { _ = restarted.closeStoreOnly() })
-	controller, _ := newDelegateControllerTestHarness(t, 2, 1)
-	seedDelegateControllerRunning(t, controller, "dlg_source", "")
-	seedDelegateControllerRunning(t, controller, "dlg_receiver", "")
-	if _, err := controller.FinishGeneration(delegateLease{delegateID: "dlg_source", generation: 1}, delegateFinish{}); err != nil {
-		t.Fatalf("finish watched generation before restart notice: %v", err)
-	}
-	restarted.delegateController = controller
-	if err := restarted.noticeUnrestoredWatchEnds(); err != nil {
-		t.Fatalf("notice unrestored watch end: %v", err)
-	}
-	record, err := restarted.store.LoadWatchSends()
-	if err != nil {
-		t.Fatalf("load restart end notice: %v", err)
-	}
-	if len(record.Pending) != 1 {
-		t.Fatalf("restart end notices = %#v, want one", record.Pending)
-	}
-	for _, pending := range record.Pending {
-		if !pending.EndNotice || !strings.Contains(pending.Frame, "watch ended") || !strings.Contains(pending.Frame, "dlg_source") {
-			t.Fatalf("restart end notice for %s = %#v", result.WatchID, pending)
-		}
-		if !pending.StableReceiver || pending.ReceiverSessionID != "receiver-session" || pending.ReceiverDelegateID != "dlg_receiver" || pending.SourceDelegateID != "dlg_source" || pending.SourceDelegateGeneration != 1 {
-			t.Fatalf("restart end notice lost stable routing identity: %#v", pending)
+	t.Parallel()
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	watchID, generation := soleStableWatchRegistration(t, fixture.sourceJM, fixture.root, fixture.source)
+	for _, event := range loadJobStoreEvents(t, fixture.sourceJM) {
+		if event.WatchSend != nil {
+			t.Fatal("unfired registration already has watch-send evidence")
 		}
 	}
+	reopenSettledWatchManager(t, fixture)
+	requireRuntimeLostWatchClear(t, fixture.sourceJM, watchID, generation)
+	var state jobstore.WatchSendState
+	var firstEvents []jobstore.Event
+	var firstEntries []transcript.Entry
+	for pass := 0; pass < 2; pass++ {
+		if err := fixture.sourceJM.noticeUnrestoredWatchEnds(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM); err != nil {
+			t.Fatal(err)
+		}
+		state = soleProducedWatchState(t, fixture.sourceJM, watchID, generation)
+		requireStableWatchState(t, state, watchID, generation, fixture.root, fixture.source, true)
+		requireSettledComponentWatch(t, fixture, state)
+		currentEvents := loadJobStoreEvents(t, fixture.sourceJM)
+		currentEntries := readAttentionTranscriptEntries(t, fixture.rootTranscriptPath)
+		if pass == 0 {
+			firstEvents, firstEntries = currentEvents, currentEntries
+		} else if !reflect.DeepEqual(currentEvents, firstEvents) || !reflect.DeepEqual(currentEntries, firstEntries) {
+			t.Fatal("repeated restart notice/drain changed physical source or receiver records")
+		}
+	}
+	t.Logf("component manager restore: watch=%s generation=%s end_notice=true delivery=%s acceptance=1 acknowledgement=1, repeated notice/drain unchanged", watchID, generation, state.DeliveryID)
+}
+
+func TestStableDelegateWatch_RestartOmitsEndNoticeAfterTerminalFrame(t *testing.T) {
+	t.Parallel()
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	watchID, generation := soleStableWatchRegistration(t, fixture.sourceJM, fixture.root, fixture.source)
+	const payload = "settled-terminal-payload-98"
+	// Real event entry, journal, controller and transcript, not communicate tool
+	// execution. The provider-to-tool boundary is covered by the clear case above.
+	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: payload, EndTurn: true})
+	state := soleProducedWatchState(t, fixture.sourceJM, watchID, generation)
+	requireStableWatchState(t, state, watchID, generation, fixture.root, fixture.source, false)
+	requireTerminalWatchFrame(t, state.Frame, watchID, state.DeliveryID, payload)
+	requireSettledComponentWatch(t, fixture, state)
+	originalEntries := readAttentionTranscriptEntries(t, fixture.rootTranscriptPath)
+	originalPendingCount := countExactWatchSendEvents(loadJobStoreEvents(t, fixture.sourceJM), jobstore.EventWatchSendPending, state)
+	reopenSettledWatchManager(t, fixture)
+	for pass := 0; pass < 2; pass++ {
+		if err := fixture.sourceJM.noticeUnrestoredWatchEnds(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM); err != nil {
+			t.Fatal(err)
+		}
+		requireRuntimeLostWatchClear(t, fixture.sourceJM, watchID, generation)
+		requireSettledComponentWatch(t, fixture, state)
+		stored := loadJobStoreEvents(t, fixture.sourceJM)
+		for _, event := range stored {
+			if send := event.WatchSend; send != nil && send.Key.WatchID == watchID && send.Key.WatchGeneration == generation && send.EndNotice {
+				t.Fatal("spoken registration produced a redundant end notice")
+			}
+		}
+		got := soleProducedWatchState(t, fixture.sourceJM, watchID, generation)
+		if !reflect.DeepEqual(got, state) || countExactWatchSendEvents(stored, jobstore.EventWatchSendPending, state) != originalPendingCount || !reflect.DeepEqual(readAttentionTranscriptEntries(t, fixture.rootTranscriptPath), originalEntries) {
+			t.Fatal("manager restore changed original settled source or receiver evidence")
+		}
+	}
+	t.Logf("component manager restore: watch=%s generation=%s end_notices=0 original_delivery=%s acceptance=1 acknowledgement=1 unchanged", watchID, generation, state.DeliveryID)
 }
 
 func TestStableDelegateWatch_LegacyDelegateJobRowFailsClosed(t *testing.T) {
