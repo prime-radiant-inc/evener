@@ -1,6 +1,6 @@
 # Issue #4466: a staged skill activation rechecks availability on resume
 
-Status: revised after two independent PAR reviews, 2026-10-24. The issue's explicit acceptance criteria authorize this bounded behavior correction.
+Status: revised after two independent PAR reviews and again after the implementation PAR round, 2026-10-24. The issue's explicit acceptance criteria authorize this bounded behavior correction.
 
 ## Defect: retained content bypasses the activation gate
 
@@ -64,6 +64,8 @@ The invocation value the loop already builds for the reload path is built before
 
 The check reuses `skillAvailableToSession`; it does not change that predicate, duplicate its memory-tool logic, or add a second availability rule. The `prepareSkillDelivery` doc comment (`agent/session_skill_delivery.go:308-318`), which currently says every obligation whose complete content is present is left for the commit, is updated to state the availability recheck.
 
+Each failed obligation is finalized immediately after its durable notification is recorded, rather than after the whole obligation loop. A later obligation whose notification write fails, or a cancellation at the next iteration's admission check, therefore cannot leave an already-explained denial pending for a retry to deny and notify a second time. A failed metadata save still reconciles from the durable turn at restore through the existing `reconcileSkillDeliveryNotifications` path.
+
 ## Cases and preservation
 
 - First staged `gardening-memory` activation, resumed with `--disable-memory`: typed `policy_denied` failure, no inventory record, no activation event, no pending obligation. Before this change the same state records `delivered` and fires a success event.
@@ -79,7 +81,7 @@ The check reuses `skillAvailableToSession`; it does not change that predicate, d
 
 Red first, in `agent/session_skill_delivery_test.go`, using the real activation and restore paths rather than a hand-built lifecycle snapshot. Every restore passes `RestoreSessionConfig{StateDir: history, MemoryStateRoot: memoryRoot}`; `MemoryStateRoot` is never persisted (`agent/session_config.go:68`, `agent/session_init.go:906`), so both subtests must supply it explicitly. The disabled subtest adds `DisableMemory: true`; that is the only difference between the two restores.
 
-1. `TestSkillDelivery_RestoreRechecksAvailability` subtest `disabled-denies`: create a memory-capable session with `MaxToolRoundsPerInput: 1`, script one `use_skill` call for the bundled `gardening-memory`, and run `ProcessInput`. The tool round records the complete carrier and the obligation; the round cap stops the turn before the next dispatch with the expected tool-round budget-exhaustion error. Assert one pending obligation and no inventory record. Close, load the metadata, and restore with `MemoryStateRoot: memoryRoot, DisableMemory: true`. Run one dispatch.
+1. `TestSkillDelivery_RestoreRechecksAvailability` subtests `disabled-denies` and `revoked-save-tool-denies`: create a memory-capable session with `MaxToolRoundsPerInput: 1`, script one `use_skill` call for the bundled `gardening-memory`, and run `ProcessInput`. The tool round records the complete carrier and the obligation; the round cap stops the turn before the next dispatch with the expected tool-round budget-exhaustion error. Assert one pending obligation and no inventory record. Close, load the metadata, and restore with `MemoryStateRoot: memoryRoot`. The first subtest adds `DisableMemory: true`; the second restores memory-enabled and removes `memory_write` from the live registry, proving the recheck reads the session's current capability rather than one config field. Run one dispatch.
    - Assert no `EventSkillActivated`, no `gardening-memory` inventory entry, and no pending obligation.
    - Assert a recorded `failed` outcome for the staged invocation with `ErrorCode == "policy_denied"`.
    - Assert the resumed dispatch happened once and its projected request still carries exactly the one retained carrier envelope. The denial adds an explanation turn, not a second body.
@@ -87,10 +89,12 @@ Red first, in `agent/session_skill_delivery_test.go`, using the real activation 
    - Before the fix this subtest fails on the first assertion: the retained body is finalized as `delivered`, the inventory gains `gardening-memory`, and the event fires.
 2. `TestSkillDelivery_RestoreRechecksAvailability` subtest `capable-already-present`: first let the same session complete an identical `gardening-memory` activation (inventory record, no pending obligation), then lower `s.cfg.MaxToolRoundsPerInput` to 1 and stage a second identical `use_skill` call so its provisional `already_present` obligation stops before dispatch. Restore with `MemoryStateRoot: memoryRoot` and memory enabled.
    - Assert the plan for the retained carrier reports `already_present` for the staged invocation.
-   - Run one dispatch and assert the obligation clears, the prior inventory record (its invocation id) is unchanged, no `EventSkillActivated` fires, and the projected request carries exactly one carrier envelope.
+   - Run one dispatch and assert the obligation clears, the entire prior inventory record is unchanged, no `EventSkillActivated` fires, the lifecycle revision advances (the final admission committed), no failed outcome or denial exists for the staged invocation, and the projected request carries exactly one carrier envelope.
    - This subtest passes before the fix as well; it pins that the capable path does not regress or re-emit the body.
-3. Retain the exact failing output from subtest 1 before the implementation and the passing output after it. Run:
-   - `go test ./agent -run '^(TestSkillDelivery_RestoreRechecksAvailability|TestSkillDelivery_SaveRestore|TestSkillDelivery_RevalidateAfterFold|TestSkillDelivery_FailedReloadNotifiesNextDispatch|TestMemoryGardeningSkill|TestMemoryGardeningSkillGatedBySaveCapability)$' -count=1`
+3. `TestSkillDelivery_DenialFinalizedBeforeLoopContinues`: persist one unavailable gardening-memory obligation and one later obligation, then call `prepareSkillDelivery` with a context whose second admission check is cancelled. Assert the denied obligation is already finalized, only the later obligation remains pending, and a retry records exactly one `policy_denied` notification. This fails against a batched finalize after the loop.
+4. Retain the exact failing output from the negative cases before the implementation and the passing output after it. Run:
+   - `go test ./agent -run '^(TestSkillDelivery_RestoreRechecksAvailability|TestSkillDelivery_DenialFinalizedBeforeLoopContinues|TestSkillDelivery_SaveRestore|TestSkillDelivery_RevalidateAfterFold|TestSkillDelivery_FailedReloadNotifiesNextDispatch|TestMemoryGardeningSkill|TestMemoryGardeningSkillGatedBySaveCapability)$' -count=1`
    - `make build`
    Do not run the full suite locally; CI is the source of truth.
-4. Freeze and review this spec with two independent competing PAR reviewers. Review the immutable implementation diff with another two-reviewer PAR round, run simplify-code, commit, run branch RoboRev review, then push and open a PR. Fetch current `origin/main` and merge it before the final push if it moved. The parent session owns the CI wait and the merge; do not merge.
+5. `docs/skills.md` ("Complete delivery at dispatch") and the S18 row in `docs/product/subsystems.md` state the resume availability recheck and the capability-loss denial.
+6. Freeze and review this spec with two independent competing PAR reviewers. Review the immutable implementation diff with another two-reviewer PAR round, run simplify-code, commit, run branch RoboRev review, then push and open a PR. Fetch current `origin/main` and merge it before the final push if it moved. The parent session owns the CI wait and the merge; do not merge.

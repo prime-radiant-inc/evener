@@ -758,87 +758,100 @@ func TestSkillDelivery_FailedReloadNotifiesNextDispatch(t *testing.T) {
 func TestSkillDelivery_RestoreRechecksAvailability(t *testing.T) {
 	t.Parallel()
 
-	t.Run("disabled-denies", func(t *testing.T) {
-		t.Parallel()
-		memoryRoot, history := t.TempDir(), t.TempDir()
-		calls := 0
-		adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
-			calls++
-			if calls == 1 {
-				return toolCallResponse(useSkillCall("garden-1", "gardening-memory"))
+	for _, tc := range []struct {
+		name    string
+		disable bool
+		revoke  string
+	}{
+		{name: "disabled-denies", disable: true},
+		{name: "revoked-save-tool-denies", revoke: "memory_write"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			memoryRoot, history := t.TempDir(), t.TempDir()
+			calls := 0
+			adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+				calls++
+				if calls == 1 {
+					return toolCallResponse(useSkillCall("garden-1", "gardening-memory"))
+				}
+				return finalResponse("resumed")
+			}}
+			s := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
+				MaxSubagentDepth:      1,
+				StateDir:              history,
+				MemoryStateRoot:       memoryRoot,
+				MemoryProjectID:       "fixture-project",
+				MaxToolRoundsPerInput: 1,
+			}), withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
+			_, err := s.ProcessInput(context.Background(), "stage gardening activation", nil)
+			requireBudgetExhaustion(t, err, exhaustedBudgetToolRounds, 1, true)
+			obligations := lifecycleObligations(s)
+			if len(obligations) != 1 {
+				t.Fatalf("staged obligations=%+v, want one", obligations)
 			}
-			return finalResponse("resumed")
-		}}
-		s := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
-			MaxSubagentDepth:      1,
-			StateDir:              history,
-			MemoryStateRoot:       memoryRoot,
-			MemoryProjectID:       "fixture-project",
-			MaxToolRoundsPerInput: 1,
-		}), withProfile(newAnthropicProfile("claude-test")), withoutGitSnapshot())
-		_, err := s.ProcessInput(context.Background(), "stage gardening activation", nil)
-		requireBudgetExhaustion(t, err, exhaustedBudgetToolRounds, 1, true)
-		obligations := lifecycleObligations(s)
-		if len(obligations) != 1 {
-			t.Fatalf("staged obligations=%+v, want one", obligations)
-		}
-		staged := obligations[0]
-		if got := lifecycleInventory(s); len(got) != 0 {
-			t.Fatalf("staging recorded inventory: %+v", got)
-		}
-		_, retained := recordedSkillCarriers(t, s)
-		if len(retained) != 1 {
-			t.Fatalf("retained envelopes=%d, want one", len(retained))
-		}
-		saved, err := schema.LoadSessionMeta(history, s.ID())
-		if err != nil {
-			t.Fatal(err)
-		}
-		s.Close()
+			staged := obligations[0]
+			if got := lifecycleInventory(s); len(got) != 0 {
+				t.Fatalf("staging recorded inventory: %+v", got)
+			}
+			_, retained := recordedSkillCarriers(t, s)
+			if len(retained) != 1 {
+				t.Fatalf("retained envelopes=%d, want one", len(retained))
+			}
+			saved, err := schema.LoadSessionMeta(history, s.ID())
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.Close()
 
-		restored, err := RestoreSessionFromMetaWithConfig(s.Client(), s.Profile(), execenv.NewLocalExecutionEnvironment(t.TempDir()), saved, RestoreSessionConfig{
-			StateDir: history, MemoryStateRoot: memoryRoot, DisableMemory: true,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		evs, stop := captureEvents(restored)
-		before := len(adapter.Requests())
-		if _, err := restored.ProcessInput(context.Background(), "resume without save tools", nil); err != nil {
+			restored, err := RestoreSessionFromMetaWithConfig(s.Client(), s.Profile(), execenv.NewLocalExecutionEnvironment(t.TempDir()), saved, RestoreSessionConfig{
+				StateDir: history, MemoryStateRoot: memoryRoot, DisableMemory: tc.disable,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.revoke != "" {
+				restored.reg.Remove(tc.revoke)
+				refreshModelFacingCaches(restored)
+			}
+			evs, stop := captureEvents(restored)
+			before := len(adapter.Requests())
+			if _, err := restored.ProcessInput(context.Background(), "resume without save tools", nil); err != nil {
+				stop()
+				t.Fatal(err)
+			}
 			stop()
-			t.Fatal(err)
-		}
-		stop()
-		if got := len(adapter.Requests()); got != before+1 {
-			t.Fatalf("resumed dispatches=%d, want one", got-before)
-		}
-		if entry, ok := lifecycleInventory(restored)["gardening-memory"]; ok {
-			t.Fatalf("memory-disabled resume recorded activation: %+v", entry.Ordinary)
-		}
-		if names := skillActivatedEventNames(*evs); len(names) != 0 {
-			t.Fatalf("memory-disabled resume emitted activation events: %v", names)
-		}
-		if got := lifecycleObligations(restored); len(got) != 0 {
-			t.Fatalf("resume left obligations: %+v", got)
-		}
-		denied := false
-		for _, state := range skillTurnStates(restored) {
-			for _, outcome := range state.Outcomes {
-				if outcome.InvocationID == staged.InvocationID && outcome.Status == "failed" &&
-					outcome.ErrorCode == "policy_denied" && outcome.Identity == staged.Identity {
-					denied = true
+			if got := len(adapter.Requests()); got != before+1 {
+				t.Fatalf("resumed dispatches=%d, want one", got-before)
+			}
+			if entry, ok := lifecycleInventory(restored)["gardening-memory"]; ok {
+				t.Fatalf("%s resume recorded activation: %+v", tc.name, entry.Ordinary)
+			}
+			if names := skillActivatedEventNames(*evs); len(names) != 0 {
+				t.Fatalf("%s resume emitted activation events: %v", tc.name, names)
+			}
+			if got := lifecycleObligations(restored); len(got) != 0 {
+				t.Fatalf("resume left obligations: %+v", got)
+			}
+			denied := false
+			for _, state := range skillTurnStates(restored) {
+				for _, outcome := range state.Outcomes {
+					if outcome.InvocationID == staged.InvocationID && outcome.Status == "failed" &&
+						outcome.ErrorCode == "policy_denied" && outcome.Identity == staged.Identity {
+						denied = true
+					}
 				}
 			}
-		}
-		if !denied {
-			t.Fatalf("no typed policy_denied outcome for %s", staged.InvocationID)
-		}
-		last := adapter.Requests()[len(adapter.Requests())-1]
-		requireSingleEnvelope(t, last, "gardening-memory", retained[0].Doc.Instructions, retained[0].Doc.Source)
-		if !requestCarriesRecordedDenial(t, last, restored, staged.InvocationID) {
-			t.Fatal("the dispatch that finalized the denial did not carry its recorded notification")
-		}
-	})
+			if !denied {
+				t.Fatalf("no typed policy_denied outcome for %s", staged.InvocationID)
+			}
+			last := adapter.Requests()[len(adapter.Requests())-1]
+			requireSingleEnvelope(t, last, "gardening-memory", retained[0].Doc.Instructions, retained[0].Doc.Source)
+			if !requestCarriesRecordedDenial(t, last, restored, staged.InvocationID) {
+				t.Fatal("the dispatch that finalized the denial did not carry its recorded notification")
+			}
+		})
+	}
 
 	t.Run("capable-already-present", func(t *testing.T) {
 		t.Parallel()
@@ -870,6 +883,7 @@ func TestSkillDelivery_RestoreRechecksAvailability(t *testing.T) {
 		if first == nil || first.InvocationID == "" {
 			t.Fatalf("first activation not committed: %+v", first)
 		}
+		firstRecord := *first
 		// Stop the duplicate activation before its next dispatch, the staged
 		// state a restart restores.
 		s.cfg.MaxToolRoundsPerInput = 1
@@ -916,6 +930,9 @@ func TestSkillDelivery_RestoreRechecksAvailability(t *testing.T) {
 			restored.Close()
 			t.Fatalf("capable resume plan status=%q, want already_present", status)
 		}
+		restored.mu.Lock()
+		revisionBefore := restored.skillLifecycle.Revision
+		restored.mu.Unlock()
 		evs, stop := captureEvents(restored)
 		before := len(adapter.Requests())
 		if _, err := restored.ProcessInput(context.Background(), "resume capable", nil); err != nil {
@@ -930,15 +947,109 @@ func TestSkillDelivery_RestoreRechecksAvailability(t *testing.T) {
 			t.Fatalf("resume left obligations: %+v", got)
 		}
 		got := lifecycleInventory(restored)["gardening-memory"].Ordinary
-		if got == nil || got.InvocationID != first.InvocationID {
-			t.Fatalf("capable resume rewrote inventory: %+v, want %s", got, first.InvocationID)
+		if got == nil || *got != firstRecord {
+			t.Fatalf("capable resume rewrote inventory: %+v, want %+v", got, firstRecord)
 		}
 		if names := skillActivatedEventNames(*evs); len(names) != 0 {
 			t.Fatalf("capable resume re-emitted activation events: %v", names)
 		}
+		if denial := recordedDenialMessage(restored, staged.InvocationID); denial != nil {
+			t.Fatalf("capable resume recorded a denial: %q", denial.Text())
+		}
+		for _, state := range skillTurnStates(restored) {
+			for _, outcome := range state.Outcomes {
+				if outcome.InvocationID == staged.InvocationID && outcome.Status == "failed" {
+					t.Fatalf("capable resume recorded a failed outcome: %+v", outcome)
+				}
+			}
+		}
+		restored.mu.Lock()
+		revisionAfter := restored.skillLifecycle.Revision
+		restored.mu.Unlock()
+		if revisionAfter == revisionBefore {
+			t.Fatal("capable resume did not commit the retained delivery")
+		}
 		last := adapter.Requests()[len(adapter.Requests())-1]
 		requireSingleEnvelope(t, last, "gardening-memory", retained[0].Doc.Instructions, retained[0].Doc.Source)
 	})
+}
+
+// TestSkillDelivery_DenialFinalizedBeforeLoopContinues pins that a durable
+// denial finalizes its obligation immediately. A later obligation's cancelled
+// admission check must not leave the already-explained denial pending for a
+// retry to append the same notification again.
+func TestSkillDelivery_DenialFinalizedBeforeLoopContinues(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withConfig(SessionConfig{
+		StateDir:        t.TempDir(),
+		MemoryStateRoot: t.TempDir(),
+		MemoryProjectID: "fixture-project",
+	}), withoutGitSnapshot())
+	s.reg.Remove("memory_write")
+	refreshModelFacingCaches(s)
+	denied := schema.SkillDeliveryObligation{
+		InvocationID: "inv-denied",
+		ToolCallID:   "garden-1",
+		Identity: schema.SkillContentIdentity{
+			Name:   gardeningMemorySkillName,
+			Source: filepath.Join(t.TempDir(), "SKILL.md"),
+		},
+		Route: "model_tool",
+	}
+	later := schema.SkillDeliveryObligation{
+		InvocationID: "inv-later",
+		ToolCallID:   "later-1",
+		Identity: schema.SkillContentIdentity{
+			Name:   "opaque",
+			Source: filepath.Join(t.TempDir(), "SKILL.md"),
+		},
+		Route: "model_tool",
+	}
+	if err := s.persistSkillToolObligations(&schema.SkillTurnState{
+		Obligations: []schema.SkillDeliveryObligation{denied, later},
+	}); err != nil {
+		t.Fatalf("persist obligations: %v", err)
+	}
+	ctx := &cancelAfterFirstCheck{Context: context.Background()}
+	if _, _, err := s.prepareSkillDelivery(ctx, nil, nil, llm.Request{}); err != context.Canceled {
+		t.Fatalf("prepare error = %v, want context.Canceled", err)
+	}
+	pending := lifecycleObligations(s)
+	if len(pending) != 1 || pending[0].InvocationID != later.InvocationID {
+		t.Fatalf("pending after the cancelled loop = %+v, want only %s", pending, later.InvocationID)
+	}
+	// A retry must not append a second denial for the finalized obligation.
+	if _, _, err := s.prepareSkillDelivery(context.Background(), nil, nil, llm.Request{}); err != nil {
+		t.Fatalf("retry prepare: %v", err)
+	}
+	denials := 0
+	for _, state := range skillTurnStates(s) {
+		for _, outcome := range state.Outcomes {
+			if outcome.InvocationID == denied.InvocationID && outcome.Status == "failed" &&
+				outcome.ErrorCode == "policy_denied" {
+				denials++
+			}
+		}
+	}
+	if denials != 1 {
+		t.Fatalf("denial notifications for %s = %d, want one", denied.InvocationID, denials)
+	}
+}
+
+// cancelAfterFirstCheck reports cancellation from its second Err call, so one
+// delivery-loop iteration runs before the next iteration's admission check
+// aborts.
+type cancelAfterFirstCheck struct {
+	context.Context
+	checks int
+}
+
+func (c *cancelAfterFirstCheck) Err() error {
+	c.checks++
+	if c.checks > 1 {
+		return context.Canceled
+	}
+	return nil
 }
 
 // recordedSkillCarriers builds a request from the recorded history messages
@@ -962,11 +1073,11 @@ func recordedSkillCarriers(t *testing.T, s *Session) (llm.Request, []skillEnvelo
 	return req, envelopes
 }
 
-// requestCarriesRecordedDenial reports whether req carries the failed
-// policy_denied notification turn recorded in the session's live history.
-func requestCarriesRecordedDenial(t *testing.T, req llm.Request, s *Session, invocationID string) bool {
-	t.Helper()
+// recordedDenialMessage returns the failed policy_denied notification message
+// recorded in the session's live history for invocationID, or nil.
+func recordedDenialMessage(s *Session, invocationID string) *llm.Message {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	var want *llm.Message
 	for i := range s.history {
 		state := s.history[i].SkillState
@@ -980,7 +1091,16 @@ func requestCarriesRecordedDenial(t *testing.T, req llm.Request, s *Session, inv
 			}
 		}
 	}
-	s.mu.Unlock()
+	return want
+}
+
+// requestCarriesRecordedDenial reports whether req carries the failed
+// policy_denied notification turn recorded in the session's live history. The
+// comparison is runtime-to-runtime: it proves the newly recorded turn crossed
+// into the rebuilt dispatch request, not that any particular wording appears.
+func requestCarriesRecordedDenial(t *testing.T, req llm.Request, s *Session, invocationID string) bool {
+	t.Helper()
+	want := recordedDenialMessage(s, invocationID)
 	if want == nil {
 		t.Fatalf("no recorded policy_denied notification for %s", invocationID)
 	}

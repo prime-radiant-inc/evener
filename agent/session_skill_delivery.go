@@ -298,9 +298,9 @@ func skillDeliveryMessage(note, body string) llm.Message {
 }
 
 // finalizeSkillDeliveryFailure drops the obligation for an invocation whose
-// delivery failed permanently (reload failure, budget rejection). The failed
-// outcome is already recorded on its notification turn; the inventory keeps
-// any earlier successful record.
+// delivery failed permanently (a capability denial, a reload failure, a budget
+// rejection). The failed outcome is already recorded on its notification turn;
+// the inventory keeps any earlier successful record.
 func (s *Session) finalizeSkillDeliveryFailure(invocationIDs ...string) {
 	if len(invocationIDs) == 0 {
 		return
@@ -349,7 +349,6 @@ func (s *Session) prepareSkillDelivery(ctx context.Context, profile *provider.Pr
 	s.mu.Unlock()
 
 	commit := skillDeliveryCommit{}
-	var failed []string
 	for _, obligation := range obligations {
 		if err := ctx.Err(); err != nil {
 			return req, commit, err
@@ -375,7 +374,11 @@ func (s *Session) prepareSkillDelivery(ctx context.Context, profile *provider.Pr
 				skillDeliveryFailureOutcome(s.id, obligation, cause), obligation); err != nil {
 				return req, commit, err
 			}
-			failed = append(failed, obligation.InvocationID)
+			// Finalize now, not after the loop: a later obligation's failed
+			// notification write returns early, and this denial is already
+			// durable. Leaving it pending would append the same denial again on
+			// the next attempt.
+			s.finalizeSkillDeliveryFailure(obligation.InvocationID)
 			commit.appendedNotifications = true
 			continue
 		}
@@ -389,7 +392,7 @@ func (s *Session) prepareSkillDelivery(ctx context.Context, profile *provider.Pr
 				skillDeliveryFailureOutcome(s.id, obligation, err), obligation); err != nil {
 				return req, commit, err
 			}
-			failed = append(failed, obligation.InvocationID)
+			s.finalizeSkillDeliveryFailure(obligation.InvocationID)
 			commit.appendedNotifications = true
 			continue
 		}
@@ -441,9 +444,6 @@ func (s *Session) prepareSkillDelivery(ctx context.Context, profile *provider.Pr
 		s.skillLifecycle.Revision++
 		s.mu.Unlock()
 		commit.appendedNotifications = true
-	}
-	if len(failed) > 0 {
-		s.finalizeSkillDeliveryFailure(failed...)
 	}
 	if commit.appendedNotifications {
 		// Obligation identity corrections and failure finalizations must be
