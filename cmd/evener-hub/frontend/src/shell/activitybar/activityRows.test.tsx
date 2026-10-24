@@ -235,7 +235,7 @@ test("an agent row carries its runtime status in the row's title", () => {
     <AgentRow sub={activityDelegate({ status: "running", terminal: false, latestIntent: "Reading the board." })} />,
   );
   // JobRow's pattern: the name span's title carries what the meta line replaced.
-  expect(screen.getByTitle("running")).toBeTruthy();
+  expect(screen.getByTitle("inspect · running")).toBeTruthy();
 });
 
 test("a resumed running agent timestamps the current run, not its previous activity", () => {

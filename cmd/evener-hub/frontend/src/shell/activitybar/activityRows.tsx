@@ -116,6 +116,7 @@ export function AgentRow({ sub, onDrill, now }: { sub: SessionDelegate; onDrill?
   const successful = agentIsSuccessful(sub);
   const failed = sub.terminal ? isFailedDelegateOutcome(sub.outcome) : false;
   const status = agentStateText(sub);
+  const name = sub.name?.trim() || sub.description || sub.task || sub.delegateId;
   return (
     <ListRow
       variant="plain"
@@ -126,14 +127,12 @@ export function AgentRow({ sub, onDrill, now }: { sub: SessionDelegate; onDrill?
         </span>
       }
       label={
-        <>
+        <span title={`${name} · ${status}`}>
           <RowStatus wireStatus={sub.status} />
-          <span className={CLASS.rowTitle} title={status}>
-            {sub.name?.trim() || sub.description || sub.task || sub.delegateId}
-          </span>
-          <ActivityTime value={agentActivityTime(sub)} now={timeNow} />
-        </>
+          {name}
+        </span>
       }
+      chips={<ActivityTime value={agentActivityTime(sub)} now={timeNow} />}
       // The intent replaces the status word here; the label's title keeps the
       // word reachable, JobRow's pattern for a value the meta line hides.
       meta={
@@ -164,14 +163,12 @@ export function JobRow({ job, onOpen, now }: { job: JobActivityJob; onOpen?: () 
         </span>
       }
       label={
-        <>
+        <span className={description ? undefined : CLASS.rowMono} title={job.command}>
           <RowStatus wireStatus={job.status} />
-          <span className={`${CLASS.rowTitle} ${description ? "" : CLASS.rowMono}`} title={job.command}>
-            {description || job.command?.trim() || job.jobId}
-          </span>
-          <ActivityTime value={jobActivityTime(job)} now={now ?? Date.now()} />
-        </>
+          {description || job.command?.trim() || job.jobId}
+        </span>
       }
+      chips={<ActivityTime value={jobActivityTime(job)} now={now ?? Date.now()} />}
       meta={
         successful ? undefined : (
           <span data-activity-meta data-failed={failed || undefined} className={failed ? CLASS.rowFailed : undefined}>
@@ -198,7 +195,9 @@ export function WatchRow({ row, now }: { row: ActivityWatchRow; now: number }) {
             </span>
             <span className={CLASS.rowBody}>
               <span className={CLASS.rowTitle}>
-                <span className={CLASS.rowName}>{watchName(watch)}</span>
+                <span className={CLASS.rowName} title={watchName(watch)}>
+                  {watchName(watch)}
+                </span>
                 <ActivityTime value={watchActivityTime(watch)} now={now} />
               </span>
               <span className={CLASS.rowMeta}>{watchMeta(watch, now)}</span>

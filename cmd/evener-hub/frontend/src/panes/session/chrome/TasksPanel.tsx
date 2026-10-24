@@ -290,9 +290,9 @@ function TaskRowView({ task, sessionRef, settled = false, presentation = "panel"
   const descClass = task.status === "cancelled" ? CLASS.descStruck : settled ? CLASS.descDim : CLASS.description;
   const timing = presentation === "compact" ? taskActivityTime(task) : undefined;
   const summary = (
-    <span data-presentation={presentation}>
+    <>
       <TaskCheck touch={STATUS_TOUCH[task.status]} />
-      <span className={CLASS.summaryMain}>
+      <span className={CLASS.summaryMain} data-presentation={presentation}>
         <span className={CLASS.summaryLine}>
           {/* The glyph is aria-hidden by design; its status word rides
               visually-hidden beside the label, the same word the card's
@@ -317,7 +317,7 @@ function TaskRowView({ task, sessionRef, settled = false, presentation = "panel"
           </span>
         )}
       </span>
-    </span>
+    </>
   );
   return (
     // No className here: Disclosure's own .summary/.body already lay out

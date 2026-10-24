@@ -150,6 +150,8 @@
 }
 
 .rowName {
+  flex: 1;
+  min-width: 0;
   color: var(--ink-hi);
   overflow: hidden;
   text-overflow: ellipsis;
