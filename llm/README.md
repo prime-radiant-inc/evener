@@ -56,3 +56,27 @@ may not.
 
 Routing keys on the instance name, never on a model-string prefix or a
 base-URL guess — a gateway in front of the vendor makes URL sniffing wrong.
+
+## High-level streaming retries
+
+`StreamGenerate` commits a stream attempt after forwarding nonempty normalized
+text or reasoning deltas, nonempty tool-call arguments (on start, delta, or
+end), or a nonnil object delta. A later transient failure then produces a
+terminal stream error rather than retrying into the same event channel. Empty
+text, reasoning, and tool-argument deltas, and control/start events without
+those payloads, do not prevent retry. Provider-specific `PROVIDER_EVENT`/`Raw`
+passthrough is **not** classified as committed content, even when `Raw` contains
+content; such events can repeat on retry without a reset. See the
+[unresolved Raw replay diagnostic](../docs/formal/llm/README.md#raw-provider-passthrough-replay-unresolved).
+This is the high-level library path; callers using `RetryStream` directly can
+explicitly opt into retry-after-partial with a reset callback.
+
+## Completed streaming tool rounds
+
+After `StreamGenerate` completes, `StreamResult.Steps()` and `TotalUsage()`
+retain every completed tool round even if a later stream open fails, a later
+stream truncates, or the caller cancels. The tool results remain in their
+completed steps and their usage counts toward the total. `Response()` still
+returns the terminal error with no successful final response for an errored
+turn; an unfinished later response does not add a step or usage. Successful
+final completions and `StopWhen` retain their usual accounting.
