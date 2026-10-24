@@ -15,6 +15,7 @@ import { activityDelegate } from "../stores/sessionActivityTestUtils";
 import { chromeStore, resetChromeStoreForTests } from "./chromeStore";
 import { focusedSessionRef } from "./focusedSession";
 import { createNeedsYouController, type NeedsYouController } from "./needsYouActions";
+import { installNeedsYouPage, needsYouRow } from "./needsYouTestUtils";
 import { closePalette, openPalette, paletteStore } from "./palette/paletteController";
 import { conversationPaneLifetime } from "./paneLifetime";
 import * as routing from "./routing";
@@ -32,42 +33,12 @@ function whenNavigation(predicate: (state: ReturnType<typeof navigationStore.get
   });
 }
 
-function seedSectionPage(offset: number, refs: string[], patch: Partial<ResourceState<unknown>> = {}): void {
-  const key = { kind: "section", section: "needs_you", offset, limit: 50 } as const;
-  const resources = new Map(navigationStore.getState().resources);
-  resources.set(keyID(key), {
-    key,
-    data: {
-      generation_id: "g",
-      revision: 1,
-      sessions: refs.map((ref) => ({
-        ref,
-        host_id: "local",
-        session_id: ref,
-        title: ref,
-        project: "Proj",
-        state: "awaiting",
-        kind: "session",
-        live: true,
-        children: [],
-      })),
-      remaining: 0,
-      truncated: false,
-    },
-    loadedRevision: 1,
-    targetRevision: null,
-    forceToken: 0,
-    etag: `"${offset}"`,
-    loading: false,
-    stale: false,
-    error: null,
-    generationID: "g",
-    ...patch,
-  });
-  const visibleResourceKeys = new Set(navigationStore.getState().visibleResourceKeys);
-  visibleResourceKeys.add(keyID(key));
-  navigationStore.setState({ resources, visibleResourceKeys, mode: "v3" });
-}
+const seedSectionPage = (offset: number, refs: string[], patch: Partial<ResourceState<unknown>> = {}) =>
+  installNeedsYouPage(
+    offset,
+    refs.map((ref) => needsYouRow(ref)),
+    patch,
+  );
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -698,12 +669,7 @@ test("a refresh-state change alone reaches the controller's subscribers", () => 
   let calls = 0;
   controller.subscribe(() => calls++);
 
-  const flipKey = keyID({ kind: "section", section: "needs_you", offset: 150, limit: 50 });
-  const flipPage = navigationStore.getState().resources.get(flipKey);
-  if (!flipPage) throw new Error("seeded flip page missing");
-  const resources = new Map(navigationStore.getState().resources);
-  resources.set(flipKey, { ...flipPage, loading: false, error: new Error("refresh failed") });
-  navigationStore.setState({ resources });
+  seedSectionPage(150, ["local:flip"], { stale: true, loading: false, error: new Error("refresh failed") });
 
   expect(calls).toBe(1);
   expect(controller.getSnapshot().choices.find((choice) => choice.summary.ref === "local:flip")?.refreshState).toBe(

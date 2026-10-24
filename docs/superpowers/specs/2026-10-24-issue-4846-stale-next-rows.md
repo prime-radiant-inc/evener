@@ -21,6 +21,8 @@ Intended deliverables:
 - `cmd/evener-hub/frontend/src/panes/session/NextNeedsYou.test.tsx` and
   `cmd/evener-hub/frontend/src/shell/needsYouActions.test.ts` (red-first cases,
   controls, and the existing stale-refresh case's new state assertions);
+- `cmd/evener-hub/frontend/src/shell/needsYouTestUtils.ts` (the shared
+  test-only needs-you page fixture those suites use);
 - the S02 row of `docs/product/subsystems.md` and the "Floating Next-needs-you
   control" section of `docs/web-ui/README.md`;
 - this specification.

@@ -118,10 +118,13 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
     const choices = uniqueRows.map((summary): NeedsYouChoice => {
       const pageKey = rowPageKey(summary.ref, state);
       const page = pageKey ? state.resources.get(pageKey) : undefined;
+      let refreshState: NeedsYouChoice["refreshState"] = null;
+      if (page?.error) refreshState = "failed";
+      else if (page?.stale) refreshState = "refreshing";
       return {
         summary,
-        selectable: !!page && !page.error && !page.stale,
-        refreshState: page?.error ? "failed" : page?.stale ? "refreshing" : null,
+        selectable: !!page && refreshState === null,
+        refreshState,
       };
     });
     const remaining = selectSectionRemaining("needs_you", state);

@@ -49,8 +49,8 @@ function attentionReasonLabel(reason: string | undefined): string | undefined {
   return undefined;
 }
 
-function rowMeta(choice: NeedsYouChoice): string | undefined {
-  if (choice.selectable) return attentionReasonLabel(attentionReason(choice.summary));
+function rowMeta(choice: NeedsYouChoice, reason: string | undefined): string | undefined {
+  if (choice.selectable) return attentionReasonLabel(reason);
   if (choice.refreshState === "failed") return "Couldn't refresh";
   if (choice.refreshState === "refreshing") return "Refreshing";
   return undefined;
@@ -445,7 +445,7 @@ function OwnedNextNeedsYou({
                 data-reason={reason}
                 variant="plain"
                 label={choice.summary.title || choice.summary.ref}
-                meta={rowMeta(choice)}
+                meta={rowMeta(choice, reason)}
                 data-refresh-state={choice.refreshState ?? undefined}
                 aria-disabled={choice.selectable ? undefined : "true"}
                 onSelect={() => {

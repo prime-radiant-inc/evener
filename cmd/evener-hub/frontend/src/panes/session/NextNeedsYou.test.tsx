@@ -1,54 +1,24 @@
 // @vitest-environment jsdom
 import type { NavigationSessionSummary } from "@evener/appwire-client";
-import { keyID, type ResourceState } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { NeedsYouProvider } from "../../shell/NeedsYouProvider";
+import { installNeedsYouPage, needsYouRow, updateNeedsYouPage } from "../../shell/needsYouTestUtils";
 import { closePalette, openPalette } from "../../shell/palette/paletteController";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { NextNeedsYou } from "./NextNeedsYou";
 import "./index";
 
-const PAGE_KEY = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
-
-function row(ref: string, title = ref): NavigationSessionSummary {
-  return {
-    ref,
-    host_id: "local",
-    session_id: ref,
-    title,
-    project: "Proj",
-    state: "awaiting",
-    kind: "session",
-    live: true,
-    children: [],
-  };
-}
+const row = needsYouRow;
 
 function installRows(rows: NavigationSessionSummary[] = [row("local:a"), row("local:b")], manifestCount = rows.length) {
-  const resources = new Map(navigationStore.getState().resources);
-  resources.set(keyID(PAGE_KEY), {
-    key: PAGE_KEY,
-    data: { generation_id: "g", revision: 1, sessions: rows, remaining: 0, truncated: false },
-    loadedRevision: 1,
-    targetRevision: null,
-    forceToken: 0,
-    etag: '"test"',
-    loading: false,
-    stale: false,
-    error: null,
-    generationID: "g",
-  });
-  const visibleResourceKeys = new Set(navigationStore.getState().visibleResourceKeys);
-  visibleResourceKeys.add(keyID(PAGE_KEY));
+  installNeedsYouPage(0, rows);
   navigationStore.setState({
     mode: "v3",
-    resources,
-    visibleResourceKeys,
     manifest: {
       key: { kind: "manifest" },
       data: {
@@ -77,45 +47,6 @@ function installRows(rows: NavigationSessionSummary[] = [row("local:a"), row("lo
       generationID: "g",
     },
   });
-}
-
-function pageRecord(): { key: string; page: ResourceState<unknown> } {
-  const key = keyID(PAGE_KEY);
-  const page = navigationStore.getState().resources.get(key);
-  if (!page) throw new Error("seeded needs-you page missing");
-  return { key, page };
-}
-
-function setPage(patch: Partial<ResourceState<unknown>>): void {
-  const { key, page } = pageRecord();
-  const resources = new Map(navigationStore.getState().resources);
-  resources.set(key, { ...page, ...patch });
-  navigationStore.setState({ resources });
-}
-
-function installPage(
-  rows: NavigationSessionSummary[],
-  offset: number,
-  patch: Partial<ResourceState<unknown>> = {},
-): void {
-  const key = { kind: "section", section: "needs_you", offset, limit: 50 } as const;
-  const resources = new Map(navigationStore.getState().resources);
-  resources.set(keyID(key), {
-    key,
-    data: { generation_id: "g", revision: 1, sessions: rows, remaining: 0, truncated: false },
-    loadedRevision: 1,
-    targetRevision: null,
-    forceToken: 0,
-    etag: `"test-${offset}"`,
-    loading: false,
-    stale: false,
-    error: null,
-    generationID: "g",
-    ...patch,
-  });
-  const visibleResourceKeys = new Set(navigationStore.getState().visibleResourceKeys);
-  visibleResourceKeys.add(keyID(key));
-  navigationStore.setState({ resources, visibleResourceKeys });
 }
 
 function seedSource(): string {
@@ -417,12 +348,12 @@ test("a row whose page turns stale after render is refused and never navigates",
   expect(rowButton.getAttribute("data-ref")).toBe("local:b");
   expect(rowButton.getAttribute("aria-disabled")).toBeNull();
 
-  act(() => setPage({ stale: true, loading: true }));
+  act(() => updateNeedsYouPage(0, { stale: true, loading: true }));
 
   expect(rowButton.getAttribute("aria-disabled")).toBe("true");
   expect(rowButton.getAttribute("data-refresh-state")).toBe("refreshing");
 
-  act(() => setPage({ stale: true, loading: false, error: new Error("refresh failed") }));
+  act(() => updateNeedsYouPage(0, { stale: true, loading: false, error: new Error("refresh failed") }));
   expect(rowButton.getAttribute("aria-disabled")).toBe("true");
   expect(rowButton.getAttribute("data-refresh-state")).toBe("failed");
   fireEvent.click(rowButton);
@@ -435,7 +366,7 @@ test("a row whose page turns stale after render is refused and never navigates",
 test("opening a list with refused rows focuses the first available control", () => {
   installRows([row("local:a"), row("local:b"), row("local:c")]);
   seedSource();
-  setPage({ stale: true, error: new Error("refresh failed") });
+  updateNeedsYouPage(0, { stale: true, error: new Error("refresh failed") });
 
   render(controlTree());
   fireEvent.click(screen.getByTestId("next-needs-you-more"));
@@ -449,7 +380,7 @@ test("opening a list with refused rows focuses the first available control", () 
 test("opening a list with no available control focuses the list", () => {
   installRows([row("local:a"), row("local:b")]);
   seedSource();
-  act(() => setPage({ stale: true, loading: true }));
+  act(() => updateNeedsYouPage(0, { stale: true, loading: true }));
 
   render(controlTree());
   fireEvent.click(screen.getByTestId("next-needs-you-more"));
@@ -459,8 +390,8 @@ test("opening a list with no available control focuses the list", () => {
 
 test("a refused page does not refuse rows from another current page", () => {
   installRows([row("local:a"), row("local:b")]);
-  installPage([row("local:c")], 50);
-  setPage({ stale: true, error: new Error("refresh failed") });
+  installNeedsYouPage(50, [row("local:c")]);
+  updateNeedsYouPage(0, { stale: true, error: new Error("refresh failed") });
   seedSource();
   render(controlTree());
   fireEvent.click(screen.getByTestId("next-needs-you-more"));
@@ -498,11 +429,11 @@ test("a refused row recovers when its page becomes current again", () => {
   render(controlTree());
   fireEvent.click(screen.getByTestId("next-needs-you-more"));
 
-  act(() => setPage({ stale: true, loading: true }));
+  act(() => updateNeedsYouPage(0, { stale: true, loading: true }));
   const refused = screen.getByTestId("next-needs-you-row");
   expect(refused.getAttribute("aria-disabled")).toBe("true");
   expect(refused.getAttribute("data-refresh-state")).toBe("refreshing");
-  act(() => setPage({ stale: false, loading: false }));
+  act(() => updateNeedsYouPage(0, { stale: false, loading: false }));
 
   const rowButton = screen.getByTestId("next-needs-you-row");
   expect(rowButton.getAttribute("aria-disabled")).toBeNull();
