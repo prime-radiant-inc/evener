@@ -58,13 +58,12 @@ type NativeStorage = MutationOutboxStorage<MutationAttachmentRef> &
 		retarget(ref: string, to: { ref: string; wireRef: string; threadId?: string; instanceId?: string }): string[];
 		/** Identity-changing resumes whose draft handoff is still owed. */
 		readResumeIdentities(): ResumeIdentityEdge[];
-		removeResumeIdentity(from: ResumeIdentityEndpoint, to: ResumeIdentityEndpoint): void;
+		settleResumeIdentity(from: ResumeIdentityEndpoint, to: ResumeIdentityEndpoint): void;
 		redirectResumeIdentity(
 			from: ResumeIdentityEndpoint,
 			previousTo: ResumeIdentityEndpoint,
 			to: ResumeIdentityEndpoint,
 		): void;
-		removeResumeIdentitiesTo(to: ResumeIdentityEndpoint): void;
 		pruneUnlistedAccepted(
 			targetRef: string,
 			acceptedBefore: number,

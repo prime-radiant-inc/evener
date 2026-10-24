@@ -19,8 +19,8 @@ interface PendingHandoff {
 	/** Loaded edges between the source and the destination. A predecessor has
 	 * a higher rank and settles after its downstream edge. */
 	rank: number;
-	/** The intermediate destination whose handoff must settle first. */
-	dependsOn?: DraftDestination;
+	/** Intermediate destinations whose handoffs must settle first. */
+	dependsOn?: DraftDestination[];
 }
 
 /** One document per destination keeps pending work coherent across navigation. */
@@ -173,7 +173,7 @@ export class DraftLibrary {
 					const fromKey = destinationKey(candidate.from);
 					if (blocked.has(fromKey)) continue;
 					const blockedDependency =
-						candidate.dependsOn !== undefined && blocked.has(destinationKey(candidate.dependsOn));
+						candidate.dependsOn?.some((dependsOn) => blocked.has(destinationKey(dependsOn))) ?? false;
 					if (!blockedDependency && !blocked.has(destinationKey(candidate.to))) continue;
 					blocked.add(fromKey);
 					changed = true;
@@ -182,7 +182,10 @@ export class DraftLibrary {
 			const next = [...this.pending.entries()]
 				.filter(([candidate]) => !attempted.has(candidate))
 				.filter(([, edge]) => !blocked.has(destinationKey(edge.to)))
-				.filter(([, edge]) => edge.dependsOn === undefined || !blocked.has(destinationKey(edge.dependsOn)))
+				.filter(
+					([, edge]) =>
+						edge.dependsOn === undefined || !edge.dependsOn.some((dependsOn) => blocked.has(destinationKey(dependsOn))),
+				)
 				.sort((a, b) => a[1].rank - b[1].rank)[0];
 			if (next === undefined) return;
 			const [key, edge] = next;
@@ -204,7 +207,7 @@ export class DraftLibrary {
 			from,
 			to,
 			rank: existing?.rank ?? 0,
-			...(existing?.dependsOn === undefined ? {} : { dependsOn: existing.dependsOn }),
+			...(existing?.dependsOn === undefined ? {} : { dependsOn: [...existing.dependsOn] }),
 		});
 		try {
 			this.repository().writePendingHandoff?.(from, to);
@@ -224,15 +227,9 @@ export class DraftLibrary {
 			}
 		}
 		try {
-			this.resumeIdentities?.()?.removeResumeIdentity(from, to);
+			this.resumeIdentities?.()?.settleResumeIdentity(from, to);
 		} catch {
-			// A stale edge retries on the next launch; the transfer is durable.
-		}
-		try {
-			this.resumeIdentities?.()?.removeResumeIdentitiesTo(from);
-		} catch {
-			// Provenance edges are retired with their intermediate on a later
-			// settlement; leaving one only adds a dependency that is already met.
+			// The edges stay together; a later settlement retries them.
 		}
 	}
 
@@ -259,21 +256,22 @@ export class DraftLibrary {
 		// mappings on disk. Attempt the redirects first: a failure keeps the raw
 		// intermediate edge and suppresses the redirected mapping from that
 		// source, so the intermediate cannot settle until both stores accept it.
+		const adjacency = handoffAdjacency(raw);
 		const failedSources = new Set<string>();
 		for (const edge of raw) {
 			const followed = followHandoffs(edge.to, raw);
-			if (sameDestination(followed.to, edge.to)) continue;
+			if (sameDestination(followed, edge.to)) continue;
 			let draftsDurable = true;
 			try {
 				const storage = this.repository();
-				if (storage.redirectPendingHandoff) storage.redirectPendingHandoff(edge.from, edge.to, followed.to);
-				else if (storage.writePendingHandoff) storage.writePendingHandoff(edge.from, followed.to);
+				if (storage.redirectPendingHandoff) storage.redirectPendingHandoff(edge.from, edge.to, followed);
+				else if (storage.writePendingHandoff) storage.writePendingHandoff(edge.from, followed);
 			} catch {
 				draftsDurable = false;
 			}
 			let identitiesDurable = true;
 			try {
-				this.resumeIdentities?.()?.redirectResumeIdentity(edge.from, edge.to, followed.to);
+				this.resumeIdentities?.()?.redirectResumeIdentity(edge.from, edge.to, followed);
 			} catch {
 				identitiesDurable = false;
 			}
@@ -286,27 +284,27 @@ export class DraftLibrary {
 				// Keep only the predecessor that still needs its redirect; an
 				// already-redirected mapping from the same source must not settle
 				// ahead of the intermediate.
-				if (sameDestination(followed.to, edge.to)) continue;
+				if (sameDestination(followed, edge.to)) continue;
 				const key = this.handoffKey(edge.from, edge.to);
-				const rank = followed.depth + 1;
+				const rank = handoffRank(edge.from, followed, adjacency);
 				const existing = reconciled.get(key);
 				if (!existing || existing.rank < rank) reconciled.set(key, { from: edge.from, to: edge.to, rank });
 				continue;
 			}
-			if (sameDestination(edge.from, followed.to)) continue;
-			const key = this.handoffKey(edge.from, followed.to);
-			const rank = followed.depth + 1;
-			const dependsOn = followed.depth > 0 ? edge.to : undefined;
+			if (sameDestination(edge.from, followed)) continue;
+			const key = this.handoffKey(edge.from, followed);
+			const rank = handoffRank(edge.from, followed, adjacency);
+			const dependsOn = immediateDependencies(edge.from, followed, adjacency);
 			const existing = reconciled.get(key);
 			if (!existing || existing.rank < rank)
 				reconciled.set(key, {
 					from: edge.from,
-					to: followed.to,
+					to: followed,
 					rank,
-					...(dependsOn === undefined ? {} : { dependsOn }),
+					...(dependsOn.length ? { dependsOn } : {}),
 				});
-			else if (existing.rank === rank && existing.dependsOn === undefined && dependsOn !== undefined)
-				existing.dependsOn = dependsOn;
+			else if (existing.rank === rank && dependsOn.length)
+				existing.dependsOn = uniqueDestinations([...(existing.dependsOn ?? []), ...dependsOn]);
 		}
 		// Downstream first, so an intermediate's composition wins the shared
 		// destination and the predecessor falls under the occupied-destination
@@ -365,7 +363,7 @@ export class DraftLibrary {
 				from: edge.from,
 				to: settlingTo,
 				rank: edge.rank + 1,
-				dependsOn: settlingFrom,
+				dependsOn: [settlingFrom],
 			};
 			const existing = this.pending.get(this.handoffKey(edge.from, settlingTo));
 			if (existing && existing.rank > redirected.rank) redirected.rank = existing.rank;
@@ -423,17 +421,78 @@ function destinationKey(destination: DraftDestination): string {
 function followHandoffs(
 	destination: DraftDestination,
 	edges: readonly { from: DraftDestination; to: DraftDestination }[],
-): { to: DraftDestination; depth: number } {
+): DraftDestination {
 	const seen = new Set<string>();
 	let current = destination;
-	let depth = 0;
 	for (;;) {
 		const key = destinationKey(current);
-		if (seen.has(key)) return { to: current, depth };
+		if (seen.has(key)) return current;
 		seen.add(key);
 		const next = edges.find((edge) => sameDestination(edge.from, current));
-		if (next === undefined) return { to: current, depth };
+		if (next === undefined) return current;
 		current = next.to;
-		depth += 1;
 	}
+}
+
+function handoffAdjacency(
+	edges: readonly { from: DraftDestination; to: DraftDestination }[],
+): Map<string, DraftDestination[]> {
+	const adjacency = new Map<string, DraftDestination[]>();
+	for (const edge of edges) {
+		if (sameDestination(edge.from, edge.to)) continue;
+		const key = destinationKey(edge.from);
+		const next = adjacency.get(key) ?? [];
+		if (!next.some((destination) => sameDestination(destination, edge.to))) next.push(edge.to);
+		adjacency.set(key, next);
+	}
+	return adjacency;
+}
+
+/** Longest provenance path from a source to its terminal. A shortcut must not
+ * hide a longer chain that has to settle first. */
+function handoffRank(from: DraftDestination, to: DraftDestination, adjacency: Map<string, DraftDestination[]>): number {
+	const length = longestHandoffPath(from, to, adjacency, new Set<string>());
+	return Number.isFinite(length) ? length + 1 : 1;
+}
+
+function longestHandoffPath(
+	from: DraftDestination,
+	to: DraftDestination,
+	adjacency: Map<string, DraftDestination[]>,
+	visiting: Set<string>,
+): number {
+	if (sameDestination(from, to)) return 0;
+	const key = destinationKey(from);
+	if (visiting.has(key)) return Number.NEGATIVE_INFINITY;
+	visiting.add(key);
+	let best = Number.NEGATIVE_INFINITY;
+	for (const next of adjacency.get(key) ?? []) {
+		const length = 1 + longestHandoffPath(next, to, adjacency, visiting);
+		if (length > best) best = length;
+	}
+	visiting.delete(key);
+	return best;
+}
+
+/** The nodes a source must wait for directly: every immediate next node except
+ * the terminal itself. Their own pending edges carry the rest of the chain. */
+function immediateDependencies(
+	from: DraftDestination,
+	to: DraftDestination,
+	adjacency: Map<string, DraftDestination[]>,
+): DraftDestination[] {
+	return uniqueDestinations(
+		(adjacency.get(destinationKey(from)) ?? []).filter(
+			(next) => !sameDestination(next, to) && !sameDestination(next, from),
+		),
+	);
+}
+
+function uniqueDestinations(destinations: DraftDestination[]): DraftDestination[] {
+	const byKey = new Map<string, DraftDestination>();
+	for (const destination of destinations) {
+		const key = destinationKey(destination);
+		if (!byKey.has(key)) byKey.set(key, destination);
+	}
+	return [...byKey.values()];
 }
