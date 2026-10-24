@@ -9,6 +9,7 @@ import {
 	type ThreadModel,
 } from "@evener/appwire-client";
 import type { MobileTimelineItem } from "../projectedRows";
+import { sameModel } from "../subagents/subagentModel";
 import { localSessionId } from "../sessionDeletionResult";
 import { compactDuration } from "./format";
 
@@ -154,8 +155,14 @@ export function effortName(level: string): string {
  * row may lag until the fleet re-reads it; that only shows while the catalog
  * is away too. */
 function modelName(modelProvider: string, catalog: readonly ModelDescriptor[] | undefined, rowName?: string): string {
-	const match = catalog?.find((entry) => `${entry.provider}/${entry.model}` === modelProvider);
-	return match?.displayName || rowName || modelProvider.slice(modelProvider.indexOf("/") + 1) || "Model";
+	const model = modelProvider.slice(modelProvider.indexOf("/") + 1);
+	// The exact provider instance first. A gateway and its upstream can name
+	// the same model under different provider keys, and the display name
+	// belongs to the model, so the bare id still finds it (#2988).
+	const match =
+		catalog?.find((entry) => `${entry.provider}/${entry.model}` === modelProvider) ??
+		catalog?.find((entry) => sameModel(entry.model, modelProvider));
+	return match?.displayName || rowName || model || "Model";
 }
 
 /** The composer's chip: the model's name, then its effort when the model has
