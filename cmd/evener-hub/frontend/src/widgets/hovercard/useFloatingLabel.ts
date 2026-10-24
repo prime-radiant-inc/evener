@@ -83,11 +83,14 @@ export function useFloatingLabel({
     () => isHoverless() && (pointerActivityRef.current?.isPointerFocus(POINTER_CLICK_WINDOW_MS) ?? false),
     [],
   );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: ownerDocument is the deliberate rebinding trigger; the node is authoritative at attach time
   useEffect(() => {
-    // The tracked document, so a card that Dockview moves between windows
-    // tracks the pointers of the window it is in now (a hoverless tap there
-    // must not read as keyboard focus).
-    const handle = acquirePointerActivity(ownerDocument);
+    // The wrapper's actual document, not the tracked state: on the first
+    // commit the state is still the opener's (the ref attaches during commit),
+    // and a card mounted in a popout by a tap has to read that popout's
+    // tracker to know the focus came from the tap. Later moves rebind through
+    // the dependency below.
+    const handle = acquirePointerActivity(ownerDocumentOf(wrapperRef.current));
     pointerActivityRef.current = handle;
     return () => {
       pointerActivityRef.current = null;

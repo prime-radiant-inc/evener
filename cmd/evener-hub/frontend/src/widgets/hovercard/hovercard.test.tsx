@@ -1254,3 +1254,55 @@ test("a hoverless tap after adoption is still a tap, not keyboard focus", async 
     host.remove();
   }
 });
+
+// A card can mount in a popout in the same instant as the tap that focused its
+// row. Its mount-time focus check has to read that popout's pointer tracker,
+// not the opener's, or the tap reads as keyboard focus and the card opens.
+test("a card mounted in a popout by a tap does not open on that tap's focus", async () => {
+  vi.useFakeTimers();
+  installHoverlessMatchMedia();
+  const { frame, doc } = appendPopout();
+  const firstHost = document.createElement("div");
+  const secondHost = document.createElement("div");
+  doc.body.append(firstHost, secondHost);
+  const firstRoot = createRoot(firstHost);
+  const secondRoot = createRoot(secondHost);
+  try {
+    // One card already owns this document's pointer tracker.
+    act(() =>
+      firstRoot.render(
+        <HoverCard label={<div>first</div>} longPressEnabled>
+          <button type="button">First</button>
+        </HoverCard>,
+      ),
+    );
+    const outside = doc.createElement("div");
+    doc.body.append(outside);
+    fireEvent.pointerDown(outside, { pointerId: 9, pointerType: "touch", button: 0 });
+    fireEvent.pointerUp(outside, { pointerId: 9, pointerType: "touch", button: 0 });
+    const row = doc.createElement("div");
+    row.tabIndex = 0;
+    row.setAttribute("data-testid", "tap-row");
+    doc.body.append(row);
+    act(() => row.focus());
+
+    act(() =>
+      secondRoot.render(
+        <HoverCard
+          label={<div>second</div>}
+          focusTarget={() => doc.querySelector<HTMLElement>('[data-testid="tap-row"]')}
+          longPressEnabled
+        >
+          <button type="button">Second</button>
+        </HoverCard>,
+      ),
+    );
+    act(() => vi.advanceTimersByTime(SHOW_DELAY_MS));
+
+    expect(doc.querySelector('[role="tooltip"]')).toBeNull();
+  } finally {
+    act(() => firstRoot.unmount());
+    act(() => secondRoot.unmount());
+    frame.remove();
+  }
+});
