@@ -116,3 +116,55 @@ func managerProjectedTerminalItem(t *testing.T, turnID string) appwire.ThreadIte
 	t.Fatal("no projected terminal observation")
 	return appwire.ThreadItem{}
 }
+
+func TestManagerWatchPagedCompletionReplay(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(c *SessionConfig) { c.Manager = true })
+	jm := root.jobManager
+	const ref, instance, generation = "local:worker", "instance", "7@worker"
+	scope := appwire.SessionObservationMetadata{Ref: ref, InstanceID: instance, GenerationID: generation}
+	watch, err := jm.configureHubWatch(ref, instance, generation, "local:manager", nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deliver := func(u appwire.SessionWatchUpdate) {
+		t.Helper()
+		if err := jm.onHubObservation(watch.WatchID, u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deliver(appwire.SessionWatchUpdate{Metadata: scope, Snapshot: &appwire.ThreadReadResponse{BootGeneration: generation, Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: ref, InstanceID: instance, ActiveTurnID: "B"}, Turns: []appwire.Turn{{ID: "B"}}}}})
+	deliver(appwire.SessionWatchUpdate{Metadata: scope, Notification: &appwire.Notification{Method: appwire.NotifyEvenerThreadResync}})
+	old, winner, newer := managerProjectedTerminalItem(t, "A"), managerProjectedTerminalItem(t, "B"), managerProjectedTerminalItem(t, "C")
+	// Latest recovery window contains only C. Older pages produce ordinary
+	// recorded communicate evidence, not a manufactured latest-work snapshot.
+	deliver(appwire.SessionWatchUpdate{Metadata: scope, Snapshot: &appwire.ThreadReadResponse{BootGeneration: generation, Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: ref, InstanceID: instance, ActiveTurnID: "C"}, Turns: []appwire.Turn{{ID: "C", Items: []appwire.ThreadItem{newer}}}}}})
+	itemUpdate := func(item appwire.ThreadItem) appwire.SessionWatchUpdate {
+		m := *item.Observation
+		m.Ref, m.InstanceID, m.GenerationID, m.EntryID = ref, instance, generation, item.TranscriptKey
+		return appwire.SessionWatchUpdate{Event: "communicate", Metadata: m}
+	}
+	deliver(itemUpdate(old))
+	deliver(itemUpdate(newer))
+	if !managerWatchActive(jm, watch.WatchID) {
+		t.Fatal("A or C completed the B watch")
+	}
+	deliver(itemUpdate(winner))
+	if managerWatchActive(jm, watch.WatchID) {
+		t.Fatal("paged B evidence did not complete the watch")
+	}
+	deliver(itemUpdate(winner)) // Duplicate live history/updated after replay.
+	deliver(itemUpdate(newer))
+	completed, sends := 0, 0
+	for _, event := range loadJobStoreEvents(t, jm) {
+		if event.WatchID == watch.WatchID && event.Watch != nil && event.Watch.EndReason == "completed" {
+			completed++
+		}
+		if event.WatchSend != nil && event.WatchSend.Key.WatchID == watch.WatchID {
+			sends++
+		}
+	}
+	if completed != 1 || sends != 2 {
+		t.Fatalf("completed=%d sends=%d, want one completion and interruption plus terminal", completed, sends)
+	}
+}

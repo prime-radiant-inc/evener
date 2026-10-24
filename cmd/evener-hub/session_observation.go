@@ -64,6 +64,64 @@ func recordedObservationUpdates(items []appwire.ThreadItem, request appwire.Sess
 	return out
 }
 
+func observationPositionBefore(a, b appwire.ThreadItemPosition) bool {
+	return a.Entry < b.Entry || a.Entry == b.Entry && (a.Item < b.Item || a.Item == b.Item && a.Sub < b.Sub)
+}
+
+func oldestObservationPosition(turns []appwire.Turn) *appwire.ThreadItemPosition {
+	var oldest *appwire.ThreadItemPosition
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			if item.Position != nil && (oldest == nil || observationPositionBefore(*item.Position, *oldest)) {
+				p := *item.Position
+				oldest = &p
+			}
+		}
+	}
+	return oldest
+}
+
+func observationHistoryContinues(held, fresh appwire.ThreadReadResponse) bool {
+	return held.Snapshot == nil || fresh.Snapshot != nil && held.Snapshot.Incarnation == fresh.Snapshot.Incarnation && fresh.Snapshot.Length >= held.Snapshot.Length && held.Epoch == fresh.Epoch
+}
+
+// recoverObservationHistory walks only the gap back to the held window. The
+// public cursor fences the history incarnation and exclusive page boundary,
+// so concurrent appends cannot move the traversal forward. As in apphistory,
+// append-only growth is allowed, but a replacement/epoch/boot change is not.
+// Pages are consumed one at a time, never accumulated into an unbounded read.
+func recoverObservationHistory(ctx context.Context, client *appwire.Client, ref string, held, fresh appwire.ThreadReadResponse, emit func([]appwire.ThreadItem) bool) error {
+	if !observationHistoryContinues(held, fresh) {
+		return appwire.TranscriptItemCursorStale()
+	}
+	if fresh.Changes != nil && !emit(fresh.Changes.Items) {
+		return ctx.Err()
+	}
+	floor := oldestObservationPosition(held.Thread.Turns)
+	oldest := oldestObservationPosition(fresh.Thread.Turns)
+	cursor := fresh.OlderCursor
+	for cursor != "" && (floor == nil || oldest == nil || observationPositionBefore(*floor, *oldest)) {
+		page, err := client.ThreadTurnsList(ctx, appwire.ThreadTurnsListParams{Ref: ref, Cursor: cursor, ItemLimit: appwire.TranscriptItemPageLimit})
+		if err != nil {
+			return err
+		}
+		if fresh.Snapshot == nil || page.Snapshot == nil || fresh.Snapshot.Incarnation != page.Snapshot.Incarnation || page.Snapshot.Length < fresh.Snapshot.Length || page.BootGeneration != fresh.BootGeneration || page.Epoch != fresh.Epoch {
+			return appwire.TranscriptItemCursorStale()
+		}
+		next := oldestObservationPosition(page.Data)
+		if next == nil || oldest != nil && !observationPositionBefore(*next, *oldest) {
+			return appwire.TranscriptItemCursorStale()
+		}
+		for _, turn := range page.Data {
+			if !emit(turn.Items) {
+				return ctx.Err()
+			}
+		}
+		oldest, cursor = next, page.NextCursor
+	}
+	return nil
+}
+
 func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.SessionWatchRequest) (<-chan appwire.SessionWatchUpdate, error) {
 	view, err := b.State(ctx)
 	if err != nil {
@@ -145,7 +203,9 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 			}
 		}
 		type readResult struct {
-			response appwire.ThreadReadResponse
+			response *appwire.ThreadReadResponse
+			items    []appwire.ThreadItem
+			finished bool
 			err      error
 		}
 		// One in-flight read, not a second notification consumer. Keeping this
@@ -153,18 +213,33 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 		// when notifications precede the response on the wire.
 		readDone := make(chan readResult)
 		reading, readAgain := false, false
+		held, pending := read, read
 		refresh := func() {
 			if reading {
 				readAgain = true
 				return
 			}
 			reading = true
+			previous := held
 			go func() {
-				response, err := client.ThreadRead(watchCtx, params)
-				select {
-				case readDone <- readResult{response, err}:
-				case <-watchCtx.Done():
+				publish := func(result readResult) bool {
+					select {
+					case readDone <- result:
+						return true
+					case <-watchCtx.Done():
+						return false
+					}
 				}
+				recoveryParams := params
+				recoveryParams.HeldSnapshot = previous.Snapshot
+				recoveryParams.ItemLimit = appwire.TranscriptItemPageLimit
+				response, err := client.ThreadRead(watchCtx, recoveryParams)
+				if err == nil && publish(readResult{response: &response}) && response.Thread.Evener.Ref == initial.Metadata.Ref && response.Thread.Evener.InstanceID == initial.Metadata.InstanceID && response.BootGeneration == initial.Metadata.GenerationID && params.IncludeTurns {
+					err = recoverObservationHistory(watchCtx, client, ref.String(), previous, response, func(items []appwire.ThreadItem) bool {
+						return publish(readResult{items: items})
+					})
+				}
+				publish(readResult{finished: true, err: err})
 			}()
 		}
 		for {
@@ -172,21 +247,33 @@ func (b *boundSessionOperations) Watch(ctx context.Context, request appwire.Sess
 			case <-watchCtx.Done():
 				return
 			case result := <-readDone:
-				reading = false
 				if result.err != nil {
 					return
 				}
-				fresh := result.response
-				meta := appwire.SessionObservationMetadata{Ref: fresh.Thread.Evener.Ref, InstanceID: fresh.Thread.Evener.InstanceID, GenerationID: fresh.BootGeneration}
-				if !send(appwire.SessionWatchUpdate{Snapshot: &fresh, Metadata: meta}) {
-					return
+				if fresh := result.response; fresh != nil {
+					if !observationHistoryContinues(held, *fresh) {
+						return
+					}
+					meta := appwire.SessionObservationMetadata{Ref: fresh.Thread.Evener.Ref, InstanceID: fresh.Thread.Evener.InstanceID, GenerationID: fresh.BootGeneration}
+					if !send(appwire.SessionWatchUpdate{Snapshot: fresh, Metadata: meta}) {
+						return
+					}
+					if meta.Ref != initial.Metadata.Ref || meta.InstanceID != initial.Metadata.InstanceID || meta.GenerationID != initial.Metadata.GenerationID {
+						return // The runtime ends the old watch from this replacement cut.
+					}
+					pending = *fresh
 				}
-				if meta.Ref != initial.Metadata.Ref || meta.InstanceID != initial.Metadata.InstanceID || meta.GenerationID != initial.Metadata.GenerationID {
-					return // The runtime ends the old watch from this replacement cut.
+				for _, u := range recordedObservationUpdates(result.items, request, ref.String(), initial.Metadata.InstanceID, initial.Metadata.GenerationID) {
+					if !send(u) {
+						return
+					}
 				}
-				if readAgain {
-					readAgain = false
-					refresh()
+				if result.finished {
+					held, reading = pending, false
+					if readAgain {
+						readAgain = false
+						refresh()
+					}
 				}
 			case notification, open := <-notifications:
 				if !open {
