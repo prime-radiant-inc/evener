@@ -1274,6 +1274,36 @@ export class TranscriptRepository {
     return this.#localOlder?.sourceRevision === this.#sourceRevision ? this.#localOlder.before : undefined;
   }
 
+  /**
+   * True when every item the retained foreground interval requires is
+   * resident with a real body. The interval runs from the oldest bodied
+   * position this revision published — the floor only ever moves deeper, so
+   * identities above it that lost their bodies (a release reclaimed them,
+   * later updates repopulated only the tail) stay inside the requirement,
+   * while identities below it are older demand, not debt. A settled stall
+   * accepts only on this standard: the latest window alone cannot vouch for
+   * a deeper range.
+   */
+  holdsResidentForegroundRange(): boolean {
+    if (this.#disposed || this.#invalidated) return false;
+    const model = this.#model;
+    const start = this.#foregroundStart;
+    if (!model || !start) return false;
+    const required = (model.history?.turns ?? model.turns)
+      .flatMap((turn) => turn.items)
+      .filter((item) => item.position && comparePosition(item.position, start) >= 0);
+    if (required.length === 0) return false;
+    const displayed = new Map(
+      model.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
+    );
+    return required.every((item) => {
+      const body = displayed.get(item.transcriptKey ?? item.id);
+      return (
+        body !== undefined && (body.version ?? 0) >= (item.version ?? 0) && !encodeTranscriptItem(body).identityOnly
+      );
+    });
+  }
+
   attachReader(): TranscriptReader {
     let active = true;
     this.#readerCount++;
@@ -1475,9 +1505,15 @@ export class TranscriptRepository {
           if (!restored || !openingCurrent()) {
             return { model: latest ?? this.#model, status: "recovery-needed", boundary: this.#boundary };
           }
-          // A racing accepted model wins by item version; the stale query only fills absent slots.
+          // A racing accepted model wins by item version; the stale query only
+          // fills absent slots. Local older pages and accepted notifications
+          // also replace the model without advancing the read boundary, so
+          // merge whenever the repository's model moved past the opening's
+          // captured cut — a late restore must never discard them.
           latest =
-            this.#boundary > openingCutBoundary ? this.#mergeReaderModels(latest ?? current, restored) : restored;
+            this.#boundary > openingCutBoundary || this.#model !== current
+              ? this.#mergeReaderModels(latest ?? current, restored)
+              : restored;
           const retainedRangeComplete = checkRetainedRange(latest);
           const oldestReturned = boundedRows[0]?.position;
           const certifiedStart = window.coverage[0]?.start;

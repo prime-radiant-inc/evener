@@ -1015,7 +1015,7 @@ async function openEntryTranscript(ref: string): Promise<boolean> {
       // disposed the reader and reclaimed them, so an empty display must not
       // wait on storage that may never answer. The repository's own snapshot
       // is the truth here, not the possibly-pruned display.
-      if (stalled && restore && holdsCompleteForegroundWindow(repository.getSnapshot())) {
+      if (stalled && restore && repository.holdsResidentForegroundRange()) {
         // A stalled restore leaves the established view standing: the opening
         // settles so paging and placement resume, and the still-running
         // restore publishes through the repository subscription whenever
