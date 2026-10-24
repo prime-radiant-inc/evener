@@ -152,7 +152,8 @@ function stepEnabledIndex(items: MenuEntry[], from: number, delta: 1 | -1): numb
  * intended navigation, matching the task's "typeahead NOT required" YAGNI
  * call for the rest of this widget's scope). No typeahead.
  *
- * The popup itself renders through a portal to document.body, position:
+ * The popup itself renders through a portal to the body of the document the
+ * menu lives in (the opener's; a Dockview popout's when mounted there), position:
  * fixed off the trigger's own getBoundingClientRect() (see
  * computeMenuPosition above), instead of as a normal absolutely-positioned
  * child - a Menu nested anywhere with a clipping ancestor (a rail row's own

@@ -119,6 +119,41 @@ test("mounting under an already-focused external target opens the card", () => {
   expect(row.getAttribute("aria-describedby")).toBe(card.id);
 });
 
+// The same mount-time branch in a popout: the opener document's activeElement
+// is the iframe, so asking it could never find the row that already has focus
+// in the popout.
+test("mounting under an already-focused target inside a popout opens the card there", () => {
+  const { frame, doc } = appendPopout();
+  const rowTarget = () => doc.querySelector<HTMLElement>('[data-testid="popout-row"]');
+  function Fixture({ showCard }: { showCard: boolean }) {
+    return (
+      <div role="treeitem" tabIndex={0} data-testid="popout-row">
+        {showCard && (
+          <HoverCard label={<div>Project prime-radiant</div>} focusTarget={rowTarget}>
+            <button type="button">Row action</button>
+          </HoverCard>
+        )}
+      </div>
+    );
+  }
+  const view = render(createPortal(<Fixture showCard={false} />, doc.body));
+  try {
+    const row = rowTarget();
+    if (!row) throw new Error("popout row missing");
+    act(() => row.focus());
+    expect(doc.activeElement).toBe(row);
+
+    view.rerender(createPortal(<Fixture showCard />, doc.body));
+    const card = doc.querySelector('[role="tooltip"]');
+    expect(card).not.toBeNull();
+    expect(card?.parentElement).toBe(doc.body);
+    expect(row.getAttribute("aria-describedby")).toBe(card?.getAttribute("id"));
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
+});
+
 test("a hoverless tap activates the row and opens no card", () => {
   installHoverlessMatchMedia();
   const activate = vi.fn();

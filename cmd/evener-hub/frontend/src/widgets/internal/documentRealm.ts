@@ -12,12 +12,17 @@
  * from a global captured at import: a widget rendered through a portal into a
  * popout's body belongs to the popout from its first commit.
  */
-/** The document that owns `node`, or the module document for no node. */
+/** The document that owns `node`; the module document when there is no node.
+ * Pass an element, not a Document: a Document's own `ownerDocument` is null,
+ * so a Document argument falls back to the module document. */
 export function ownerDocumentOf(node: Node | null | undefined): Document {
   return node?.ownerDocument ?? document;
 }
 
-/** The window of the document that owns `node`, or the module window. */
+/** The window of the document that owns `node`, or the module window when the
+ * node has none or its document has no browsing context (`defaultView` null,
+ * as for a detached document). The fallback is deliberate: an unmounted
+ * widget's first render must still resolve to something usable. */
 export function ownerWindowOf(node: Node | null | undefined): Window {
   return ownerDocumentOf(node).defaultView ?? window;
 }

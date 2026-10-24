@@ -23,9 +23,10 @@ import { useFloatingLabel } from "./useFloatingLabel";
 // pre-measure placeholder, and the aria association, differing only in the
 // element and content they render.
 //
-// The bubble is portaled to document.body and positioned in viewport
-// coordinates (see computePosition.ts for the placement math). Two reasons,
-// both measured live rather than assumed:
+// The bubble is portaled to the body of the document its trigger lives in (the
+// opener's by default; a Dockview popout's when the card is mounted there) and
+// positioned in that window's viewport coordinates (see computePosition.ts for
+// the placement math). Two reasons, both measured live rather than assumed:
 //
 //   1. Collision. Centre-anchored with no shift, an edge-mounted bubble runs
 //      off the viewport. The rail's search button sits 28px from the top of a
