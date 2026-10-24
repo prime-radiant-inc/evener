@@ -374,7 +374,7 @@ func TestMemorySearchSkipsTheLegacyRootIndex(t *testing.T) {
 		t.Fatalf("search of the root index itself: %q", got)
 	}
 	// A confined scope searches one named page (#4137).
-	if got := search(map[string]any{"path": "p.md", "output_mode": "files_with_matches"}); got != "." {
+	if got := search(map[string]any{"path": "p.md", "output_mode": "files_with_matches"}); got != "p.md" {
 		t.Fatalf("search of one named page: %q", got)
 	}
 	// Naming the index still checks the pattern and the glob's braces.
