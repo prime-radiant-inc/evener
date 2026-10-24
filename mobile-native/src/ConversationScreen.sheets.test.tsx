@@ -503,6 +503,46 @@ it("keeps naming the model after a screen pushed over it closes, while the catal
 	await act(async () => tree.unmount());
 });
 
+// A later read can fail while a mounted screen keeps the name it already had:
+// the picker clears its stale choices, but the chip and the Session sheet
+// must not fall back to the raw id. The fleet has no row for this session
+// here, so the catalog name is the only name the screen has.
+it("keeps naming the model from the last successful read after a later read fails (#2988)", async () => {
+	let modelReads = 0;
+	const { tree } = mount(
+		{ ...thread, modelProvider: "lunaroute/deepseek-4.1-flash" },
+		{
+			"model/list": () => {
+				modelReads++;
+				if (modelReads === 1)
+					return { data: [{ provider: "lunaroute", model: "deepseek-4.1-flash", displayName: "DeepSeek 4.1 Flash" }] };
+				throw new Error("The hub couldn't list its models.");
+			},
+		},
+	);
+	await settle();
+	expect(sessionInfoHost().modelLabel).toBe("DeepSeek 4.1 Flash");
+	stack.state = { index: 1, routes: [session, { key: "reader", name: "Reader" }] };
+	act(() => tree.update(screen()));
+	await settle();
+	stack.state = { index: 0, routes: [session] };
+	act(() => tree.update(screen()));
+	await settle();
+	expect(modelReads).toBe(2);
+	// The picker still offers no choices after the failed read.
+	expect(sessionInfoHost().controls?.getSnapshot().catalog).toBeNull();
+	expect(sessionInfoHost().modelLabel).toBe("DeepSeek 4.1 Flash");
+	// The composer's chip is the same label.
+	const field = tree.root.findAll(
+		(node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Message",
+	)[0];
+	act(() => field?.props.onFocus());
+	act(() => keyboard.show());
+	expect(renderedText(tree)).toContain("DeepSeek 4.1 Flash");
+	expect(renderedText(tree)).not.toContain("deepseek-4.1-flash");
+	await act(async () => tree.unmount());
+});
+
 // The hub announces a refreshed model list on evener/auth/updated (#3539):
 // the screen reads the catalog again and the model's name follows it, with no
 // reopening.

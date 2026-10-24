@@ -6,12 +6,16 @@ import { useMemo } from "react";
 import { ConversationScreen, type Routes } from "../screens";
 
 export function SubagentScreen({ route, navigation }: NativeStackScreenProps<Routes, "Subagent">) {
-	const { hubId, ref, title, coordinator } = route.params;
+	const { hubId, ref, title, coordinator, runStartedAt } = route.params;
 	// The Session's own params; the route keeps its key, so the Session asks
 	// whether this screen is in front.
 	const session = useMemo(
-		() => ({ key: route.key, name: "Conversation" as const, params: { hubId, ref, title } }),
-		[route.key, hubId, ref, title],
+		() => ({
+			key: route.key,
+			name: "Conversation" as const,
+			params: { hubId, ref, title, ...(runStartedAt === undefined ? {} : { runStartedAt }) },
+		}),
+		[route.key, hubId, ref, title, runStartedAt],
 	);
 	return <ConversationScreen route={session} navigation={navigation as never} subagentOf={coordinator} />;
 }
