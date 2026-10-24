@@ -672,6 +672,17 @@ type pastThreadSkillCatalog struct {
 	Diagnostics []appwire.EvenerSkillDiagnostic
 }
 
+// pastThreadSkillAvailability projects the owning session's persisted
+// memory-save verdict onto skill advertisement. New metas persist the exact
+// verdict; an older meta still identifies a delegate or a --disable-memory
+// session through its own fields, and a missing verdict stays advertised for a
+// memory-capable root.
+func pastThreadSkillAvailability(meta schema.SessionMeta) skill.SessionAvailability {
+	return skill.SessionAvailability{
+		MemorySaveAvailable: !meta.MemorySaveUnavailable && !meta.IsSubagent && !meta.Config.DisableMemory,
+	}
+}
+
 func discoverPastThreadSkills(entry hubcore.PastEntry) pastThreadSkillCatalog {
 	home, _ := os.UserHomeDir()
 	sources, pluginDiagnostics := plugin.SkillSources(entry.Meta.Config.PluginDirs)
@@ -685,7 +696,7 @@ func discoverPastThreadSkills(entry hubcore.PastEntry) pastThreadSkillCatalog {
 		ExtraDirs:     entry.Meta.Config.SkillsDirs,
 		Plugins:       sources,
 	})
-	entries := catalog.UserEntries()
+	entries := catalog.UserEntriesForSession(pastThreadSkillAvailability(entry.Meta))
 	result := make([]appwire.EvenerSkillInfo, 0, len(entries))
 	for _, entry := range entries {
 		result = append(result, appwire.EvenerSkillInfo{

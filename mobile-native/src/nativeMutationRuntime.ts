@@ -22,10 +22,11 @@ import {
 	type SecureRandomSource,
 } from "@evener/appwire-client/state/mutation";
 import { READ_ITEM_LIMIT } from "../../mobile/src/services/conversation";
-import type {
-	ConversationMutationKind,
-	ConversationMutationRequest,
-	ConversationMutationSubmitter,
+import {
+	type ConversationMutationKind,
+	type ConversationMutationRequest,
+	type ConversationMutationSubmitter,
+	MutationNotSentError,
 } from "../../mobile/src/state/conversationMutation";
 import { MutationOutboxSQLite, type RecoveryResendCommit } from "./mutationOutboxStorage";
 import { isSqliteStorageFailure, type SqliteSync } from "./sqliteSync";
@@ -836,13 +837,18 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 				stopEpoch: await this.storage.readStopEpoch(intent.targetRef),
 			};
 			await this.start();
+			// The last local word before anything durable exists: a Retry whose
+			// view retired, whose binding moved, or whose canonical/pending facts
+			// changed refuses here with a non-storage error, so no row and no
+			// request are made. Ordinary Send/Queue carry no precondition.
+			if (request.precondition !== undefined && !request.precondition()) throw new MutationNotSentError();
 			const record = await this.#outbox.enqueueIntent(intent, undefined, barrier);
 			this.#rememberSubmitted(record.targetRef, record.clientMutationId, record.createdAt);
 			this.#notifyStorageChange([record.targetRef]);
 			return undefined;
 		} catch (error) {
 			if (!DIRECT_FALLBACK_METHODS.has(intent.method) || !isSqliteStorageFailure(error)) throw error;
-			return this.#sendDirectly(intent, error);
+			return this.#sendDirectly(request, intent, error);
 		}
 	}
 
@@ -855,12 +861,20 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 	// send carries none of the row's guarantees: no per-ref ordering against
 	// earlier undelivered rows, no Stop fence, and a human retry after a lost
 	// reply is a new mutation.
-	async #sendDirectly(intent: MutationIntent, storageError: unknown): Promise<undefined> {
+	async #sendDirectly(
+		request: NativeMutationRequest,
+		intent: MutationIntent,
+		storageError: unknown,
+	): Promise<undefined> {
+		// Storage failed after the first check; the local facts may have moved on
+		// while it did. Recheck before the plain request, which has no durable row
+		// to own a later refusal.
+		if (request.precondition !== undefined && !request.precondition()) throw new MutationNotSentError();
 		const client = this.#targets.get(intent.targetRef)?.client;
 		if (!client || client.state !== "ready") throw storageError;
-		const request = client.request as unknown as (method: string, params: Record<string, unknown>) => Promise<unknown>;
+		const call = client.request as unknown as (method: string, params: Record<string, unknown>) => Promise<unknown>;
 		const clientMutationId = this.#createMutationId();
-		const result = await request.call(client, intent.method, { ...intent.payload, clientMutationId });
+		const result = await call.call(client, intent.method, { ...intent.payload, clientMutationId });
 		// The send is this phone's, so a read that lists it as pending must
 		// not classify it as another client's.
 		this.#rememberSubmitted(intent.targetRef, clientMutationId, this.#now());
