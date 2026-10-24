@@ -1405,30 +1405,38 @@ func (s *Session) nextDrainResourceDeadline(start time.Time) time.Time {
 			next = t
 		}
 	}
+	rows := make(map[string]delegateSnapshot)
 	for _, visible := range stableDelegateRowsForSession(s, false) {
-		row := visible.snapshot
-		childID := row.descriptor.ChildSessionID
-		if !row.currentRunOpen || s.childDrainAbandoned(childID) || s.childFatalRunGated(childID) || delegateRowStopGated(row) || (!s.cfg.TurnEndsProcess && row.pendingStopSeq == 0) {
-			continue
-		}
-		if phase, ok := s.drainGraceChildForRow(childID, row); ok {
-			consider(phase.secondWindowStartedAt.Add(DrainStallTimeout).Add(time.Nanosecond))
-		} else {
-			since := row.pendingStopAt
-			if since.IsZero() {
-				since = start
-				if row.latestProductiveActivityAt.After(since) {
-					since = row.latestProductiveActivityAt
-				}
-			}
-			consider(since.Add(DrainStallTimeout))
+		if childID := visible.snapshot.descriptor.ChildSessionID; childID != "" {
+			rows[childID] = visible.snapshot
 		}
 	}
+	// Match markDrainAbandonedDelegates: only resident children can advance a
+	// grace window. A cold open row (for example, ownership-refused on restore)
+	// has no such deadline owner, so its expired first window must not re-arm.
 	for _, sub := range s.liveDirectSubagents() {
 		sub.mu.Lock()
 		child := sub.sess
 		sub.mu.Unlock()
-		if child != nil && !s.childStopGated(child.id) && !s.childFatalRunGated(child.id) && !s.childDrainAbandoned(child.id) {
+		if child == nil {
+			continue
+		}
+		row, tracked := rows[child.id]
+		if tracked && row.currentRunOpen && !s.childDrainAbandoned(child.id) && !s.childFatalRunGated(child.id) && !delegateRowStopGated(row) && (s.cfg.TurnEndsProcess || row.pendingStopSeq != 0) {
+			if phase, ok := s.drainGraceChildForRow(child.id, row); ok {
+				consider(phase.secondWindowStartedAt.Add(DrainStallTimeout).Add(time.Nanosecond))
+			} else {
+				since := row.pendingStopAt
+				if since.IsZero() {
+					since = start
+					if row.latestProductiveActivityAt.After(since) {
+						since = row.latestProductiveActivityAt
+					}
+				}
+				consider(since.Add(DrainStallTimeout))
+			}
+		}
+		if !s.childStopGated(child.id) && !s.childFatalRunGated(child.id) && !s.childDrainAbandoned(child.id) {
 			consider(child.nextDrainResourceDeadline(start))
 		}
 	}

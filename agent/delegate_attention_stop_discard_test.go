@@ -183,15 +183,10 @@ func testSubtreeStopCustodyObservedAfterRelease(t *testing.T) {
 	}
 }
 
-// Regression test for the live attention-wake leak observed in production: a
-// live controller (not a restore/bootstrap) with attention armed for a
-// delegate that is then deliberately stopped (subtree stop settling
-// stopped_by_parent) must discard the bound attention at settlement, exactly
-// the way bootstrap discards restored stop-bound attention. Before the fix,
-// an attention wake noted after the stop drain's final evidence collection
-// but before the stop-completion append survived the completed stop: the
-// in-memory wake ID leaked, hasPendingDelegateAttention stayed true forever,
-// and the attention drive retried the stop-gated delegate every cycle.
+// A newly admitted subtree Stop preserves bound attention even when its wake
+// arrives after the live drain's final evidence collection. Stop settlement
+// does not observe or discard the notification. Historical requests without
+// the preservation field retain their separate discard semantics.
 //
 // The race is modelled deterministically: the reconcile evidence is the
 // pre-arm snapshot (empty attention) while the controller already holds the
@@ -259,23 +254,23 @@ func TestDelegateAttention_LiveStopCompletionPreservesLateBoundWake(t *testing.T
 		t.Fatalf("settled stop aggregate = %#v", aggregate)
 	}
 	if got := len(attentionWakeIDsOf(c, delegateID)); got != 1 {
-		t.Fatalf("stop-gated delegate retained %d attention wake IDs", got)
+		t.Fatalf("stop-gated delegate retained %d attention wake IDs, want 1", got)
 	}
 	if !c.hasPendingDelegateAttention() {
-		t.Fatal("hasPendingDelegateAttention is true for a deliberately stopped delegate")
+		t.Fatal("preserved attention is no longer pending after Stop settlement")
 	}
 	fold, err := readDelegateAttentionFold(transcriptPath(c.stateDir, childSessionID), childSessionID)
 	if err != nil {
 		t.Fatalf("read stopped child attention fold: %v", err)
 	}
 	if got := fold.resolutions[attentionID]; got != "" {
-		t.Fatalf("stop-bound attention disposition = %q, want %q", got, delegateAttentionDiscarded)
+		t.Fatalf("stop-bound attention disposition = %q, want unresolved", got)
 	}
 }
 
 // Companion end-to-end check: when the bound attention is already visible to
-// the drain's evidence collection, the live stop drain discards it before
-// completing the stop.
+// the drain's evidence collection, the newly admitted live Stop still preserves
+// it unresolved through settlement, just like attention armed in the late gap.
 func TestDelegateAttention_LiveStopSettlementPreservesBoundAttention(t *testing.T) {
 	const (
 		delegateID     = "dlg_target"
@@ -324,17 +319,17 @@ func TestDelegateAttention_LiveStopSettlementPreservesBoundAttention(t *testing.
 	}
 
 	if got := len(attentionWakeIDsOf(c, delegateID)); got != 1 {
-		t.Fatalf("stop-gated delegate retained %d attention wake IDs", got)
+		t.Fatalf("stop-gated delegate retained %d attention wake IDs, want 1", got)
 	}
 	if !c.hasPendingDelegateAttention() {
-		t.Fatal("hasPendingDelegateAttention is true for a deliberately stopped delegate")
+		t.Fatal("preserved attention is no longer pending after Stop settlement")
 	}
 	fold, err := readDelegateAttentionFold(transcriptPath(c.stateDir, childSessionID), childSessionID)
 	if err != nil {
 		t.Fatalf("read stopped child attention fold: %v", err)
 	}
 	if got := fold.resolutions[attentionID]; got != "" {
-		t.Fatalf("live stop attention disposition = %q, want %q", got, delegateAttentionDiscarded)
+		t.Fatalf("live stop attention disposition = %q, want unresolved", got)
 	}
 }
 

@@ -1,9 +1,13 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
+	"os"
 	"regexp"
 	"strings"
 	"sync/atomic"
@@ -11,6 +15,10 @@ import (
 	"testing/synctest"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -266,7 +274,7 @@ func requireTerminalShellCompletionInRequest(t *testing.T, req llm.Request, jobI
 	blocks := regexp.MustCompile(`(?s)<job-notification\b[^>]*>.*?</job-notification>`)
 	for _, message := range req.Messages {
 		for _, block := range blocks.FindAllString(message.Text(), -1) {
-			if !strings.Contains(block, `job_id="`+jobID+`"`) {
+			if !strings.Contains(block, `job_id="`+jobID+`"`) || !strings.Contains(block, `job_type="shell"`) {
 				continue
 			}
 			header := strings.SplitN(block, ">", 2)[0]
@@ -486,6 +494,155 @@ func TestOneShotDrainReturnsAfterAFinalAnswerThatSawEveryCompletion(t *testing.T
 	}
 }
 
+// expiredDrainTimerClock observes real timer creation. Cancel only after two
+// expired timers so the broken drain's hot loop fails without hanging cleanup.
+type expiredDrainTimerClock struct {
+	*agenttest.FakeClock
+	expired atomic.Int32
+	cancel  context.CancelFunc
+}
+
+func (c *expiredDrainTimerClock) NewTimer(d time.Duration) clock.Timer {
+	if d <= 0 && c.expired.Add(1) == 2 {
+		c.cancel()
+	}
+	return c.FakeClock.NewTimer(d)
+}
+
+func TestDrainColdYieldedDelegateDoesNotArmUnownedGraceDeadline(t *testing.T) {
+	const prompt = "COLD-DRAIN-DEADLINE-731a"
+	adapter := newMessagingAdapter(prompt)
+	fifo, releaseOriginal := waitProducerFIFO(t)
+	defer releaseOriginal()
+	adapter.script("root",
+		func(llm.Request) llm.Response { return delegateToolResponse("cold-drain-child", prompt) },
+		func(llm.Request) llm.Response { return finalResponse("root-created-cold-child") },
+		func(llm.Request) llm.Response { return finalResponse("root-observed-yield-update") })
+	adapter.script(prompt, func(llm.Request) llm.Response {
+		args, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("read value < %q", fifo), "mode": "background"})
+		return toolCallResponse(llm.ToolCallData{ID: "cold-drain-shell", Name: "shell", Type: "function", Arguments: args})
+	}, func(req llm.Request) llm.Response {
+		return waitResponseFor("cold-drain-wait", regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages)))
+	}, func(llm.Request) llm.Response { return finalResponse("original-runtime-only") })
+	original := newMessagingRoot(t, adapter, func(cfg *SessionConfig) { cfg.TurnEndsProcess = true })
+	if _, err := original.ProcessInput(context.Background(), "create yielded child", nil); err != nil {
+		t.Fatal(err)
+	}
+	child := original.subagents.sessions()[0]
+	sub := original.getSub(child.ID())
+	adapter.waitForRequests(t, prompt, 2)
+	waitForCondition(t, 3*time.Second, "cold drain child yielded", func() bool {
+		sub.mu.Lock()
+		defer sub.mu.Unlock()
+		return !sub.running
+	})
+	if _, err := original.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	assertNotificationPending(t, original, []string{})
+	copyDir := copyWaitingState(t, original.stateDir)
+	meta, err := schema.LoadSessionMeta(copyDir, original.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Isolate the copied open generation from every original producer callback.
+	original.Close()
+	releaseOriginal()
+	beforeRequests := len(adapter.requestsFor(prompt))
+	clockStart := time.Now()
+
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		clk := &expiredDrainTimerClock{FakeClock: agenttest.NewFakeClockAt(clockStart), cancel: cancel}
+		var denied atomic.Int32
+		root, err := RestoreSessionFromMetaWithConfig(original.client, original.profile, execenv.NewLocalExecutionEnvironment(meta.EnvInfo.WorkingDir), meta, RestoreSessionConfig{
+			StateDir: copyDir, ForceRealIO: true, TurnEndsProcess: true, clock: clk,
+			AcquireSessionOwnership: func(id string) error {
+				if id == child.ID() {
+					denied.Add(1)
+					return fmt.Errorf("fixture child ownership unavailable")
+				}
+				return nil
+			},
+			testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, disableDelegateIdleRelease: true},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(root.Close)
+		wake, hint := newDrainWake()
+		root.SetNotifyFunc(hint)
+		before := delegateAggregateSnapshot(t, root.delegateController, child.owningDelegateID)
+		if !before.CurrentRunOpen || before.Generation != 1 || before.LatestOutcome != nil || root.subagentForChild(child.ID()) != nil || denied.Load() == 0 {
+			t.Fatalf("not a cold ownership-refused open generation: %+v, denied=%d", before, denied.Load())
+		}
+		journalPath := delegateResourceStorePath(copyDir, root.ID())
+		journalBefore, err := os.ReadFile(journalPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		jobID, releaseShell := startControlledBackgroundShell(t, root, "independent watched shell")
+		watch := root.reg.ExecuteCall(ctx, root.env, llm.ToolCallData{
+			ID: "independent-shell-watch", Name: "job_watch", Type: "function",
+			Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","source":%q,"output_match":"never-printed-731a"}`, jobID)),
+		})
+		if watch.IsError {
+			t.Fatalf("registered shell watch: %s", watch.Output)
+		}
+		adapter.script("root", func(req llm.Request) llm.Response {
+			requireTerminalShellCompletionInRequest(t, req, jobID, "command_exited_nonzero", "exit_nonzero", "143")
+			return finalResponse("independent-shell-observed")
+		})
+		rootRequests := len(adapter.requestsFor("root"))
+		done := make(chan struct{})
+		var result string
+		var drainErr error
+		go func() {
+			result, drainErr = root.DrainJobTree(ctx, wake)
+			close(done)
+		}()
+		synctest.Wait()
+		clk.Advance(2*DrainStallTimeout + time.Nanosecond)
+		synctest.Wait()
+		if got := clk.expired.Load(); got != 0 {
+			t.Fatalf("cold child armed repeated expired drain timers: %d, want 0", got)
+		}
+		select {
+		case <-done:
+			t.Fatalf("drain returned before independent shell completion: %q, %v", result, drainErr)
+		default:
+		}
+		if len(adapter.requestsFor("root")) != rootRequests {
+			t.Fatal("clock advancement created a phantom provider request")
+		}
+		releaseShell()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("shell completion did not wake and finish drain")
+		}
+		if drainErr != nil || result != "independent-shell-observed" || len(adapter.requestsFor("root")) != rootRequests+1 {
+			t.Fatalf("completion drain=%q, %v, requests=%d, want one useful observation", result, drainErr, len(adapter.requestsFor("root"))-rootRequests)
+		}
+		after := delegateAggregateSnapshot(t, root.delegateController, child.owningDelegateID)
+		if !after.CurrentRunOpen || after.Generation != before.Generation || after.LatestOutcome != nil || root.subagentForChild(child.ID()) != nil || root.childDrainAbandoned(child.ID()) || root.childDrainGracePending(child.ID()) || len(adapter.requestsFor(prompt)) != beforeRequests {
+			t.Fatalf("cold generation was driven or abandoned: before=%+v after=%+v", before, after)
+		}
+		journalAfter, err := os.ReadFile(journalPath)
+		if err != nil || !bytes.Equal(journalBefore, journalAfter) {
+			t.Fatalf("cold generation controller journal changed during drain: %v", err)
+		}
+		record := loadShellRecord(t, root.jobManager, jobID)
+		requireNotificationState(t, root.jobManager, jobID, jobstore.NotifyDelivered)
+		requireOwnedDrainAttentionObservedOnce(t, root, stableShellAttentionID(jobID, record.TerminalGen))
+		if clk.expired.Load() != 0 {
+			t.Fatal("completion rearmed an expired cold-child deadline")
+		}
+	})
+}
+
 func TestEphemeralNotificationDrainShell(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
@@ -573,6 +730,12 @@ func TestEphemeralNotificationDrainShell(t *testing.T) {
 }
 
 func TestEphemeralNotificationFailureCompactionAndDuplicate(t *testing.T) {
+	// This test is not parallel: capture the deliberately failed provider's
+	// daemon warning as well as its session event, rather than leaking stderr.
+	var logged bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
 	base := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("initial") },
 		func(req llm.Request) llm.Response {
@@ -595,8 +758,26 @@ func TestEphemeralNotificationFailureCompactionAndDuplicate(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err == nil {
-		t.Fatal("provider failure unexpectedly succeeded")
+	_, failed := s.ProcessInputKind(context.Background(), "", nil, EntryNotification)
+	var providerErr llm.Error
+	if !errors.As(failed, &providerErr) || providerErr.StatusCode() != 401 || llm.Kind(failed) != llm.KindAuthentication {
+		t.Fatalf("expected typed authentication failure, got %v", failed)
+	}
+	warnings := collectStallWarnings(s)
+	if len(warnings) != 1 {
+		t.Fatalf("expected one paused warning event, got %+v", warnings)
+	}
+	warning, ok := warnings[0].Data.(events.WarningData)
+	if !ok || warning.Code != events.WarningCodeAttentionPaused || warning.Source != "evener" || warning.Hint != "HTTP 401 (authentication)" {
+		t.Fatalf("expected structured authentication pause warning, got %#v", warnings[0].Data)
+	}
+	var logRecord struct {
+		Level   string `json:"level"`
+		Session string `json:"session"`
+		Failure string `json:"failure"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(logged.Bytes()), &logRecord); err != nil || logRecord.Level != "WARN" || logRecord.Session != s.ID() || logRecord.Failure != "HTTP 401 (authentication)" {
+		t.Fatalf("expected one structured authentication log, got %q, %v", logged.String(), err)
 	}
 	s.attentionMu.Lock()
 	fold, err := s.delegateAttentionFoldLocked()
@@ -643,6 +824,9 @@ func TestEphemeralNotificationFailureCompactionAndDuplicate(t *testing.T) {
 	s.attentionMu.Unlock()
 	if calls != 3 || len(base.Requests()) != 2 || err != nil || len(fold.order) != 1 || len(fold.observed) != 1 || fold.resolutions[n.ID] != delegateAttentionConsumed || len(fold.pendingIDs()) != 0 {
 		t.Fatalf("retry/duplicate observation: calls=%d successful=%d fold=%#v err=%v", calls, len(base.Requests()), fold, err)
+	}
+	if more := collectStallWarnings(s); len(more) != 0 {
+		t.Fatalf("unexpected warning after recovery: %+v", more)
 	}
 }
 
