@@ -86,6 +86,14 @@ var delegationPromptToolNames = []string{
 	"shell",
 }
 
+// delegateReportWholeMaxChars is the delivery budget for a delegate_send reply.
+// It applies to the complete formatted reply; a larger reply keeps the
+// registry's TruncTail cut and, when retention succeeds, its retained-artifact
+// reference. See
+// docs/superpowers/specs/2026-10-24-issue-4088-delegate-report-truncation.md
+// for the measurement and the per-reply and earlier-results scope.
+const delegateReportWholeMaxChars = 50_000
+
 type stableDelegateCreateResult struct {
 	DelegateID     string                      `json:"delegate_id"`
 	ChildSessionID string                      `json:"child_session_id"`
@@ -123,7 +131,7 @@ func registerStableDelegateTool(reg *tool.Registry, s *Session) error {
 	reg.Remove("delegate_send")
 	return reg.Register(tool.RegisteredTool{
 		Definition: tool.DefDelegateSendNamed(s.resultToolName()),
-		Limit:      schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
+		Limit:      schema.ToolOutputLimit{MaxChars: delegateReportWholeMaxChars, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			return stableDelegateSendTool(ctx, s, args, jobToolResultMaxChars(reg, "delegate_send"))
