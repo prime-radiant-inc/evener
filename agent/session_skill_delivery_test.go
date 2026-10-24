@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1014,7 +1015,7 @@ func TestSkillDelivery_DenialFinalizedBeforeLoopContinues(t *testing.T) {
 		t.Fatalf("persist obligations: %v", err)
 	}
 	ctx := &cancelAtCheck{Context: context.Background(), remaining: 1}
-	if _, _, err := s.prepareSkillDelivery(ctx, nil, nil, llm.Request{}); err != context.Canceled {
+	if _, _, err := s.prepareSkillDelivery(ctx, nil, nil, llm.Request{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("prepare error = %v, want context.Canceled", err)
 	}
 	pending := lifecycleObligations(s)
