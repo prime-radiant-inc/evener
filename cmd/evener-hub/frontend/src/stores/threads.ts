@@ -687,7 +687,6 @@ export function productionEntryTranscriptForTests(ref: string) {
     repository: route?.repository,
     reader: route?.reader,
     lastLocalOpenStatus: route?.lastLocalOpenStatus,
-    lastLocalOpenUsable: route?.lastLocalOpenUsable,
   };
 }
 
@@ -917,8 +916,7 @@ function publishEntryTranscriptModel(ref: string): void {
 
 // The complete-requested-window standard a local open tolerates without a
 // cache certificate: every foreground item the model expects is present with
-// at least its version and a real body. A completed opening result and a
-// remount over a still-held view apply the same test.
+// at least its version and a real body.
 function holdsCompleteForegroundWindow(model: ThreadModel | undefined): boolean {
   const displayed = new Map(
     model?.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
@@ -961,10 +959,9 @@ async function openEntryTranscript(ref: string): Promise<boolean> {
     // load the race can only lose — the expiry disposes this reader, the
     // background reclaim then drops the resident bodies, and the source
     // recovery replaces the loaded range with a latest window (#4939). The
-    // unraced restore keeps the ordinary opening hold and result handling; an
-    // unestablished route still pays the raced opening.
+    // unraced restore keeps the ordinary opening hold and result handling.
     const result =
-      fixture.lastLocalOpenUsable === true && repository.holdsEstablishedView()
+      fixture.lastLocalOpenUsable && repository.holdsEstablishedView()
         ? await reader.openLocal(200)
         : await Promise.race([
             reader.openLocal(200),
@@ -993,21 +990,17 @@ async function openEntryTranscript(ref: string): Promise<boolean> {
       fixture.localBefore = result.before;
       publishEntryTranscriptModel(ref);
     }
-    // A previously loaded range can exceed the initial 200-body promotion.
-    // Keep its usable partial display, but do not certify it via a smaller tail.
-    if (result.retainedRangeComplete === false) {
-      fixture.lastLocalOpenUsable = false;
-      return false;
-    }
-    if (result.status !== "recovery-needed") {
-      fixture.lastLocalOpenUsable = true;
-      return true;
-    }
-    // Cache proof can be unavailable while the live model already carries the
-    // complete requested window. Recover missing bodies, not merely a missing
-    // certificate, which would replace usable paged history with a latest read.
-    fixture.lastLocalOpenUsable = holdsCompleteForegroundWindow(result.model);
-    return fixture.lastLocalOpenUsable;
+    // A previously loaded range can exceed the initial 200-body promotion: keep
+    // its usable partial display, but do not certify it via a smaller tail.
+    // Cache proof can also be unavailable while the live model already carries
+    // the complete requested window. Recover missing bodies, not merely a
+    // missing certificate, which would replace usable paged history with a
+    // latest read.
+    const usable =
+      result.retainedRangeComplete !== false &&
+      (result.status !== "recovery-needed" || holdsCompleteForegroundWindow(result.model));
+    fixture.lastLocalOpenUsable = usable;
+    return usable;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     settleEntryTranscriptLocalOpening(ref, openingToken);
