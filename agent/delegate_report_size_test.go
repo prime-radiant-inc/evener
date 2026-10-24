@@ -79,7 +79,7 @@ func runLargeDelegateReportDelivery(t *testing.T, report string) (*Session, stri
 			// hang reaches it.
 			select {
 			case <-firstReportDeferred:
-			case <-time.After(10 * time.Second):
+			case <-time.After(10 * time.Second): // TRIPWIRE: the scripted in-process child reports in milliseconds; only a genuine hang reaches this.
 			}
 		}
 	})
