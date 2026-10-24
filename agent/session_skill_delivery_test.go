@@ -810,6 +810,7 @@ func TestSkillDelivery_RestoreRechecksAvailability(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			t.Cleanup(restored.Close)
 			if tc.revoke != "" {
 				restored.reg.Remove(tc.revoke)
 				refreshModelFacingCaches(restored)
@@ -910,19 +911,17 @@ func TestSkillDelivery_RestoreRechecksAvailability(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(restored.Close)
 		carriers := recordedSkillEnvelopes(t, restored)
 		if len(carriers) != 1 {
-			restored.Close()
 			t.Fatalf("restored carrier envelopes=%d, want one", len(carriers))
 		}
 		_, _, _, planReq, _, _, err := restored.prepareModelRequestWithError(context.Background(), 0, &events.RoundTimings{})
 		if err != nil {
-			restored.Close()
 			t.Fatalf("prepare a capable dispatch: %v", err)
 		}
 		commit, err := restored.planSkillDeliveryCommit(planReq)
 		if err != nil {
-			restored.Close()
 			t.Fatalf("plan retained delivery: %v", err)
 		}
 		status := ""
@@ -932,7 +931,6 @@ func TestSkillDelivery_RestoreRechecksAvailability(t *testing.T) {
 			}
 		}
 		if status != "already_present" {
-			restored.Close()
 			t.Fatalf("capable resume plan status=%q, want already_present", status)
 		}
 		restored.mu.Lock()
