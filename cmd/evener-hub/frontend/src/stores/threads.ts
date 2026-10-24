@@ -687,6 +687,7 @@ export function productionEntryTranscriptForTests(ref: string) {
     repository: route?.repository,
     reader: route?.reader,
     lastLocalOpenStatus: route?.lastLocalOpenStatus,
+    lastLocalOpenUsable: route?.lastLocalOpenUsable,
   };
 }
 
@@ -842,6 +843,16 @@ function isEntryTranscriptBackgroundOnly(ref: string): boolean {
 // old opening settling cannot clear a newer hold.
 let entryTranscriptOpeningSequence = 0;
 
+// The unraced restore of an established view is bounded only by a genuine
+// storage stall, not by load: CI already showed load pushing the 250ms lookup
+// deadline around, which is exactly the race this restore must not lose.
+let sessionCacheStalledOpenMs = 5000;
+
+/** @internal Lets tests shorten the stall bound without waiting real seconds. */
+export function setSessionCacheStalledOpenForTests(ms: number): void {
+  sessionCacheStalledOpenMs = ms;
+}
+
 /** True while the entry fixture's reader is still restoring `ref` from disk. */
 export function isEntryTranscriptLocalOpening(ref: string): boolean {
   return threadsStore.getState().localOpenings.has(ref);
@@ -959,10 +970,27 @@ async function openEntryTranscript(ref: string): Promise<boolean> {
     // load the race can only lose — the expiry disposes this reader, the
     // background reclaim then drops the resident bodies, and the source
     // recovery replaces the loaded range with a latest window (#4939). The
-    // unraced restore keeps the ordinary opening hold and result handling.
+    // unraced restore keeps the ordinary opening hold and result handling,
+    // and only a genuinely stalled storage read settles the opening early.
+    // Only the opening that still owns the route may record its verdict: a
+    // superseded one (its pane released, its repository replaced, or a newer
+    // open already begun) must not overwrite what a newer open established.
+    const openingOwned = () =>
+      entryTranscriptRoute(ref) === fixture &&
+      fixture.repository === repository &&
+      threadsStore.getState().localOpenings.get(ref) === openingToken;
+    let stalled = false;
     const result =
       fixture.lastLocalOpenUsable && repository.holdsEstablishedView()
-        ? await reader.openLocal(200)
+        ? await Promise.race([
+            reader.openLocal(200),
+            new Promise<undefined>((resolve) => {
+              timer = setTimeout(() => {
+                stalled = true;
+                resolve(undefined);
+              }, sessionCacheStalledOpenMs);
+            }),
+          ])
         : await Promise.race([
             reader.openLocal(200),
             new Promise<undefined>((resolve) => {
@@ -974,8 +1002,13 @@ async function openEntryTranscript(ref: string): Promise<boolean> {
             }),
           ]);
     if (!result) {
+      // A stalled restore leaves the established view standing: the opening
+      // settles so paging and placement resume, and the still-running restore
+      // publishes the range through the repository subscription whenever
+      // storage answers.
+      if (stalled) return true;
       fixture.lastLocalOpenStatus = "recovery-needed";
-      fixture.lastLocalOpenUsable = false;
+      if (openingOwned()) fixture.lastLocalOpenUsable = false;
       return false;
     }
     fixture.lastLocalOpenStatus = result.status;
@@ -999,7 +1032,7 @@ async function openEntryTranscript(ref: string): Promise<boolean> {
     const usable =
       result.retainedRangeComplete !== false &&
       (result.status !== "recovery-needed" || holdsCompleteForegroundWindow(result.model));
-    fixture.lastLocalOpenUsable = usable;
+    if (openingOwned()) fixture.lastLocalOpenUsable = usable;
     return usable;
   } finally {
     if (timer !== undefined) clearTimeout(timer);

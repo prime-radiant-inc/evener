@@ -40,6 +40,7 @@ import {
   resetThreadsStoreForTests,
   setCacheChannelFactoryForTests,
   setProductionEntryCacheForTests,
+  setSessionCacheStalledOpenForTests,
   settleBackgroundTranscriptsForTests,
   settleEntryTranscriptForTests,
   subscribeCacheWrites,
@@ -1394,6 +1395,7 @@ it("a second foreground claim preserves its established reader without another l
     await released.promise;
     return original(...args);
   });
+  setSessionCacheStalledOpenForTests(250);
   try {
     await threadsStore.getState().ensureThread("local:a");
     expect(lookup).not.toHaveBeenCalled();
@@ -1405,6 +1407,7 @@ it("a second foreground claim preserves its established reader without another l
         .map((item) => item.text),
     ).toEqual(["recorded"]);
   } finally {
+    setSessionCacheStalledOpenForTests(5000);
     released.resolve();
     await Promise.all(lookup.mock.results.map((result) => result.value));
     threadsStore.getState().releaseThread("local:a");
@@ -1559,6 +1562,98 @@ it("a pane remount keeps its loaded range without a source read while local cert
     await background.release();
   }
 });
+
+it("a stalled local restore settles its opening without discarding the loaded range", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const client = connect(response("local:a", [turn("older-item", 1), turn("recorded", 2)]));
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  const loaded = () => {
+    const model = threadsStore.getState().threads.get("local:a");
+    const items = [...(model?.history?.turns ?? []), ...(model?.turns ?? [])].flatMap((turn) => turn.items ?? []);
+    return [...new Set(items.map((item) => item.text))];
+  };
+  expect(loaded()).toEqual(["older-item", "recorded"]);
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  threadsStore.getState().releaseThread("local:a");
+  const readsBefore = client.calls.filter((call) => call.method === "thread/read").length;
+  const released = deferred<void>();
+  const original = storage.getLatestWindow.bind(storage);
+  const lookup = vi.spyOn(storage, "getLatestWindow").mockImplementation(async (...args) => {
+    await released.promise;
+    return original(...args);
+  });
+  try {
+    // A storage read that never answers must not hold the opening forever:
+    // the opening settles so paging and placement resume on the held view,
+    // no source read fires, and the late restore still publishes the range.
+    const reopened = threadsStore.getState().ensureThread("local:a");
+    await reopened;
+    expect(threadsStore.getState().localOpenings.has("local:a")).toBe(false);
+    expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBefore);
+    expect(productionEntryTranscriptForTests("local:a").lastLocalOpenUsable).toBe(true);
+    released.resolve();
+    await vi.waitFor(() => expect(loaded()).toEqual(["older-item", "recorded"]));
+  } finally {
+    released.resolve();
+    await Promise.all(lookup.mock.results.map((result) => result.value));
+    threadsStore.getState().releaseThread("local:a");
+    await background.release();
+  }
+}, 15000);
+
+it("a superseded opening cannot overwrite the established marker of a newer open", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const client = connect(response("local:a", [turn("older-item", 1), turn("recorded", 2)]));
+  // The first two wire reads (the cold hydration, then the newer pane's own
+  // recovery) pass; the superseded pane's later recovery read stays held so
+  // its chain cannot re-establish the marker before the assertion reads it.
+  const wireReleased = deferred<void>();
+  const fullRead = () => response("local:a", [turn("older-item", 1), turn("recorded", 2)]);
+  let wireReads = 0;
+  client.on("thread/read", (params) => {
+    wireReads += 1;
+    const read = { ...fullRead(), requestGeneration: params.requestGeneration };
+    return wireReads > 2 ? wireReleased.promise.then(() => read) : read;
+  });
+  // The first local open's cache read never answers inside its own deadline;
+  // the newer open's cache read passes.
+  const cacheReleased = deferred<void>();
+  const original = storage.getLatestWindow.bind(storage);
+  let cacheReads = 0;
+  const lookup = vi.spyOn(storage, "getLatestWindow").mockImplementation(async (...args) => {
+    cacheReads += 1;
+    if (cacheReads === 1) await cacheReleased.promise;
+    return original(...args);
+  });
+  const opened = threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  threadsStore.getState().releaseThread("local:a");
+  const reopenedB = threadsStore.getState().ensureThread("local:a");
+  await reopenedB;
+  expect(productionEntryTranscriptForTests("local:a").lastLocalOpenUsable).toBe(true);
+  // Let the first opening's deadline fire after the newer open established.
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  expect(productionEntryTranscriptForTests("local:a").lastLocalOpenUsable).toBe(true);
+  expect(
+    threadsStore
+      .getState()
+      .threads.get("local:a")
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text),
+  ).toEqual(["older-item", "recorded"]);
+  cacheReleased.resolve();
+  wireReleased.resolve();
+  await opened;
+  await Promise.all(lookup.mock.results.map((result) => result.value));
+  threadsStore.getState().releaseThread("local:a");
+  await background.release();
+}, 15000);
 
 it("ordinary headerless v3 entries display from cached identity without inventing a source instance", async () => {
   const storage = cache();
