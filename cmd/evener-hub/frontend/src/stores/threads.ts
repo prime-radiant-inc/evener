@@ -4073,12 +4073,6 @@ function markInputSubmission(ref: string): () => void {
   return () => endSharedSubmission(ref);
 }
 
-// A repeated press in the same task can reach continueTurn before the durable
-// enqueue it just made is visible in the pending projection. The two owners
-// remain the only eligibility authority; this only stops a second concurrent
-// submission for a ref whose first one has not finished committing.
-const retryActivationsInFlight = new Set<string>();
-
 function composerMutationIntent(
   ref: string,
   route: ComposerMutationRoute,
@@ -7748,20 +7742,19 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // turn or missing error submits nothing.
     const currentTurn = model.turns.find((turn) => turn.id === expectedTurnId);
     if (currentTurn === undefined || !isTurnError(currentTurn.error)) return;
-    if (ownPendingTurnInputNow(ref) || retryActivationsInFlight.has(ref)) return;
+    if (ownPendingTurnInputNow(ref)) return;
     // An ordinary Send/press marks the composer's shared submission guard
     // before its durable row is visible in the projection. Retry must join that
-    // guard, not only its own set, or a press in that window would admit a
-    // continuation that dispatches after the new message.
+    // guard, not only its own read, or a press in that window would admit a
+    // continuation that dispatches after the new message. The same guard
+    // refuses a second Retry press while this one's enqueue is in flight.
     if (!beginSharedSubmission(ref)) return;
-    retryActivationsInFlight.add(ref);
     try {
       await sendMutationIntent({
         ...composerMutationIntent(ref, "send", TURN_CONTINUATION_TEXT),
         preserveComposer: true,
       });
     } finally {
-      retryActivationsInFlight.delete(ref);
       endSharedSubmission(ref);
     }
   },
@@ -8745,7 +8738,6 @@ export function resetThreadsStoreForTests(): void {
     mutationRuntime = null;
   }
   mutationStorageForTests = null;
-  retryActivationsInFlight.clear();
   createMutationBroadcastChannelForTests = () => {
     const channel = new EventTarget();
     return Object.assign(channel, {
