@@ -246,11 +246,10 @@ func TestElicitNoteDoesNotRepeatARouteTheCheapCallerAlreadyRan(t *testing.T) {
 	}
 }
 
-// TestBuildSummarizePrompt_RendersUserAndSteering covers the user-input and
-// steering branches plus truncation in buildSummarizePrompt (gremlins flagged
-// fork_summarize.go:57 and :77, and truncate at :102).
+// A permission after the old 500-byte prefix must reach the fork whole;
+// daemon steering remains system context, not the human partner's message.
 func TestBuildSummarizePrompt_RendersUserAndSteering(t *testing.T) {
-	longText := strings.Repeat("x", 600)
+	longText := strings.Repeat("x", 600) + " Do not delete SOURCE_738."
 	turns := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User(longText)},
 		{Kind: schema.TurnSteering, Message: llm.User("be careful with deletes")},
@@ -262,12 +261,8 @@ func TestBuildSummarizePrompt_RendersUserAndSteering(t *testing.T) {
 	if !strings.Contains(out, "System: be careful with deletes") {
 		t.Error("prompt missing the steering System: line")
 	}
-	if !strings.Contains(out, "...") {
-		t.Error("long user text was not truncated")
-	}
-	// The 600-char body must be truncated to the 500-char limit + ellipsis.
-	if strings.Contains(out, longText) {
-		t.Error("untruncated 600-char body leaked into the prompt")
+	if !strings.Contains(out, "User: "+longText+"\n") {
+		t.Error("the user's full source message did not reach the fork")
 	}
 }
 

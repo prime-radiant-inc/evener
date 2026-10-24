@@ -122,9 +122,13 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	}
 
 	// Layer 3 (replaced): Session-log checkpoint.
+	var checkpointed []schema.Turn
 	if p >= s.cm.CheckpointThreshold || (tripwire && assumptionStillGoverns(tripwireProf, prof)) {
 		turnsBefore := len(*history)
 		before := s.cm.estimateTokensFor(prof, *history)
+		if cutoff := foldCutoff(*history, s.cm.PreserveRecentTurns); cutoff >= 0 {
+			checkpointed = (*history)[:cutoff:cutoff]
+		}
 		*history = s.sessionLogCheckpointWithMeta(*history, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx))
 		after := s.cm.estimateTokensFor(prof, *history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
@@ -145,7 +149,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	if p >= s.cm.SummarizeThreshold && s.cm.client != nil {
 		turnsBefore := len(*history)
 		before := s.cm.estimateTokensFor(prof, *history)
-		result, err := s.cm.summarizeWithLLM(ctx, *history, s.cm.PreserveRecentTurns)
+		result, err := s.cm.summarizeStrategyFold(ctx, *history, s.cm.PreserveRecentTurns, checkpointed)
 		if err != nil {
 			emitFn(events.EventWarning, summarizerFailureWarning(err))
 		} else {
@@ -198,30 +202,36 @@ func (s *SessionLogStrategy) sessionLogCheckpointWithMeta(history []schema.Turn,
 		return history
 	}
 
-	// Extract original prompt from old history (same logic as checkpoint()).
+	resultToolName := "communicate"
+	if s.cm != nil {
+		resultToolName = s.cm.resultToolName()
+	}
+	data := collectStrategyCheckpointData(history, cutoff, resultToolName)
+	// The short original-prompt label is only a navigation hint. Its complete
+	// source message rides separately in the attributed conversation carry.
 	originalPrompt := extractOriginalPrompt(history[:cutoff])
+	if originalPrompt == "" {
+		for _, entry := range data.conversation {
+			if entry.Role == "user" {
+				originalPrompt = entry.Text
+				break
+			}
+		}
+	}
 	if len(originalPrompt) > 500 {
 		originalPrompt = originalPrompt[:500] + "..."
 	}
 
 	var b strings.Builder
-	b.WriteString("[CONTEXT CHECKPOINT - SESSION LOG]\n")
 	fmt.Fprintf(&b, "Original prompt: %s\n", originalPrompt)
 	if s.session != nil {
 		fmt.Fprintf(&b, "This session's id is %s.%s\n", s.session.ID(), s.transcriptRecoverySentence(meta))
 	}
-	b.WriteString("\n")
-
-	b.WriteString("Session log:\n")
 	logStr := s.log.String()
-	if logStr != "" {
-		b.WriteString(logStr)
-	} else {
-		b.WriteString("(no entries)")
-	}
-	b.WriteString("\n[END CHECKPOINT]\n")
-
-	checkpointTurn := schema.NewTurn(schema.TurnCheckpoint, llm.User(b.String()))
+	carry, _ := partnerConversationMarkdown(data.conversation, meta.hasTranscript(), 0)
+	earlier := sessionLogEarlierContext(data.earlierSummaries, logStr)
+	text := renderSessionLogCheckpoint(b.String(), logStr, carry, earlier, meta)
+	checkpointTurn := schema.NewTurn(schema.TurnCheckpoint, llm.User(text))
 	result := make([]schema.Turn, 0, 1+preserveRecent)
 	result = append(result, checkpointTurn)
 	result = append(result, history[cutoff:]...)

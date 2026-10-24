@@ -28,6 +28,9 @@ func forkSummarize(ctx context.Context, cheap *cheapmodel.Caller, profile *provi
 	if err != nil {
 		return sessionlog.SessionLogEntry{}, fmt.Errorf("fork summarize: %w", err)
 	}
+	if err := checkNotCutOff(resp); err != nil {
+		return sessionlog.SessionLogEntry{}, fmt.Errorf("fork summarize: %w", err)
+	}
 
 	text := strings.TrimSpace(resp.Text())
 	// Strip markdown code fences if the model wraps JSON in them.
@@ -47,40 +50,10 @@ func forkSummarize(ctx context.Context, cheap *cheapmodel.Caller, profile *provi
 func buildSummarizePrompt(turns []schema.Turn) string {
 	var b strings.Builder
 	b.WriteString("Summarize the most recent action in this coding agent session.\n\n")
+	b.WriteString(partnerAuthorityRule + "\n\n")
+	b.WriteString("Put any required authority quotations in the summary field. Exact quotations take precedence over the sentence limit.\n\n")
 	b.WriteString("Recent conversation:\n")
-
-	for _, t := range turns {
-		switch t.Kind {
-		case schema.TurnUserInput:
-			b.WriteString("User: ")
-			b.WriteString(truncate(t.Message.Text(), 500))
-			b.WriteString("\n")
-		case schema.TurnAssistant:
-			b.WriteString("Assistant: ")
-			b.WriteString(truncate(t.Message.Text(), 500))
-			b.WriteString("\n")
-			for _, p := range t.Message.Content {
-				if p.Kind == llm.ContentToolCall && p.ToolCall != nil {
-					fmt.Fprintf(&b, "  [tool_call: %s(%s)]\n", p.ToolCall.Name, truncate(string(p.ToolCall.Arguments), 200))
-				}
-			}
-		case schema.TurnTool, schema.TurnToolResults:
-			for _, p := range t.Message.Content {
-				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
-					content := fmt.Sprint(p.ToolResult.Content)
-					errTag := ""
-					if p.ToolResult.IsError {
-						errTag = " ERROR"
-					}
-					fmt.Fprintf(&b, "Tool(%s)%s: %s\n", p.ToolResult.Name, errTag, truncate(content, 300))
-				}
-			}
-		case schema.TurnSteering:
-			b.WriteString("System: ")
-			b.WriteString(truncate(t.Message.Text(), 200))
-			b.WriteString("\n")
-		}
-	}
+	b.WriteString(buildStrategyHistoryDigest(turns, "communicate"))
 
 	b.WriteString(`
 Produce a JSON object with these fields:

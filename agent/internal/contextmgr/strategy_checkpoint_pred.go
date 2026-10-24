@@ -3,7 +3,6 @@ package contextmgr
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
@@ -18,7 +17,8 @@ import (
 // predicts what information the agent will need going forward and generates a
 // targeted checkpoint preserving exactly that.
 //
-// Layers 1, 2, and 4 are identical to CompactStrategy.
+// Layers 1 and 2 match CompactStrategy. Layer 4 uses its summary prompt with
+// the opt-in strategies' faithful source digest.
 type CheckpointPredStrategy struct {
 	cm *Manager
 }
@@ -117,18 +117,19 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 	}
 
 	// Layer 3: Predictive checkpoint (replaces deterministic checkpoint).
-	// checkpointed is what a deterministic fallback checkpoint folded this
-	// pass, which the summary completing that fold reads the partner's
-	// messages from (summarizeFold). A predictive checkpoint carries them
-	// whole itself, so it needs none.
+	// A checkpoint's carry can middle-trim messages. A summary completing this
+	// fold must still read the original sources, whichever checkpoint succeeds.
 	var checkpointed []schema.Turn
 	if p >= s.cm.CheckpointThreshold || (tripwire && assumptionStillGoverns(tripwireProf, prof)) {
 		turnsBefore := len(*history)
 		before := s.cm.estimateTokensFor(prof, *history)
+		if cutoff := foldCutoff(*history, s.cm.PreserveRecentTurns); cutoff >= 0 {
+			checkpointed = (*history)[:cutoff:cutoff]
+		}
 		result, err := s.predictiveCheckpoint(ctx, *history, s.cm.PreserveRecentTurns)
 		if err != nil {
 			// Fall back to deterministic checkpoint on error.
-			*history, checkpointed = checkpointFold(*history, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx), s.cm.resultToolName())
+			*history, checkpointed = strategyCheckpointFold(*history, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx), s.cm.resultToolName())
 			// The fallback already worked, so this is an informational
 			// context notice, coded for clients to show only at their most
 			// detailed level, with a neutral title and hint so the
@@ -159,11 +160,11 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 		p, prof = pressure()
 	}
 
-	// Layer 4: LLM summarization fallback (same as compact).
+	// Layer 4: the existing summary prompt with faithful strategy source records.
 	if p >= s.cm.SummarizeThreshold && s.cm.client != nil {
 		turnsBefore := len(*history)
 		before := s.cm.estimateTokensFor(prof, *history)
-		result, err := s.cm.summarizeFold(ctx, *history, s.cm.PreserveRecentTurns, "", checkpointed)
+		result, err := s.cm.summarizeStrategyFold(ctx, *history, s.cm.PreserveRecentTurns, checkpointed)
 		if err != nil {
 			emitFn(events.EventWarning, summarizerFailureWarning(err))
 		} else {
@@ -204,35 +205,11 @@ func (s *CheckpointPredStrategy) predictiveCheckpoint(ctx context.Context, histo
 		return history, nil
 	}
 
-	// Build a condensed view of old history for the prediction model.
-	const maxHistoryChars = 30_000
-	var b strings.Builder
-	for i := range cutoff {
-		t := history[i]
-		switch t.Kind {
-		case schema.TurnUserInput:
-			b.WriteString("User: ")
-			b.WriteString(truncate(t.Message.Text(), 300))
-			b.WriteString("\n")
-		case schema.TurnAssistant:
-			b.WriteString("Assistant: ")
-			b.WriteString(truncate(t.Message.Text(), 300))
-			b.WriteString("\n")
-		case schema.TurnTool, schema.TurnToolResults:
-			for _, p := range t.Message.Content {
-				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
-					content := fmt.Sprint(p.ToolResult.Content)
-					fmt.Fprintf(&b, "Tool(%s): %s\n", p.ToolResult.Name, truncate(content, 200))
-				}
-			}
-		}
-		if b.Len() > maxHistoryChars {
-			b.WriteString("\n[... truncated ...]\n")
-			break
-		}
-	}
+	digest := buildStrategyHistoryDigest(history[:cutoff], s.cm.resultToolName())
 
 	prompt := fmt.Sprintf(`You are about to lose access to this conversation history due to context limits. Predict what information the agent will need to continue its work successfully.
+
+%s
 
 The agent's conversation so far:
 %s
@@ -244,7 +221,7 @@ Generate a checkpoint preserving:
 4. Current state and what remains to be done
 5. Any errors encountered and how they were resolved
 
-Write ONLY the checkpoint content. Be specific and concise (under 500 words). Focus on information the agent CANNOT re-derive from the codebase.`, b.String())
+Write ONLY the checkpoint content. Be specific and concise (under 500 words). Exact authority quotations take precedence over the word limit. Focus on information the agent CANNOT re-derive from the codebase.`, partnerAuthorityRule, digest)
 
 	req := llm.Request{
 		Messages: []llm.Message{llm.User(prompt)},
@@ -254,17 +231,15 @@ Write ONLY the checkpoint content. Be specific and concise (under 500 words). Fo
 	if err != nil {
 		return nil, err
 	}
+	if err := checkNotCutOff(resp); err != nil {
+		return nil, err
+	}
 
-	// The prediction is model-written, so the human partner's messages ride
-	// beside it verbatim (partnerMessagesMarkdown), after the prediction
-	// (renderCompactionModelText). The prediction's input sees them only cut
-	// short, so none is left to it: this carry has no ceiling.
-	// Earlier compaction turns never reach the prediction's input either, so
-	// a hold an earlier summary quoted can be lost here; checkpoint-pred is an
-	// opt-in strategy and that gap is tracked with the others in #4181.
-	_, carry, _ := s.cm.partnerCarry(ctx, history, cutoff, 0)
-	checkpointText := "[CONTEXT CHECKPOINT - PREDICTIVE]\n" + s.cm.metaFor(ctx).compactionPointer("checkpoint") +
-		renderCompactionModelText("## Predicted Context", resp.Text()) + carry + "[END CHECKPOINT]"
+	// Keep earlier quoted context independently of what the prediction writes.
+	// Its own text is fenced and cannot create a conversation carry section.
+	data := collectStrategyCheckpointData(history, cutoff, s.cm.resultToolName())
+	carry, _ := partnerConversationMarkdown(data.conversation, s.cm.metaFor(ctx).hasTranscript(), 0)
+	checkpointText := renderStrategyCheckpoint(predictiveCheckpointStart, "## Predicted Context", resp.Text(), carry, data.earlierSummaries, s.cm.metaFor(ctx))
 	checkpointTurn := schema.NewTurn(schema.TurnCheckpoint, llm.User(checkpointText))
 
 	result := make([]schema.Turn, 0, 1+preserveRecent)
