@@ -370,6 +370,17 @@ func skillInvocationAllowed(route string, controls skill.InvocationControls, aut
 	}
 }
 
+// unavailableSkillActivationError is the typed denial for a skill this session
+// cannot follow. Fresh activation and resumed delivery share it so the code and
+// message cannot drift between the two paths.
+func unavailableSkillActivationError(invocation skillInvocation, canonicalName string) error {
+	return &skillActivationError{
+		Invocation: invocation,
+		Code:       "policy_denied",
+		Err:        fmt.Errorf("skill %q needs the memory save tools this session does not have", canonicalName),
+	}
+}
+
 // prepareSkillActivations reads complete sources and checks current controls.
 // It neither changes inventory/obligations nor persists or publishes success.
 // Final admission and obligation satisfaction are separate transactions.
@@ -406,7 +417,7 @@ func (s *Session) prepareSkillActivations(ctx context.Context, invocations []ski
 		// A skill this session cannot follow is refused before its source is
 		// read, on every route, whatever the source controls say.
 		if !s.skillAvailableToSession(descriptor.CatalogName) {
-			return nil, &skillActivationError{Invocation: invocation, Code: "policy_denied", Err: fmt.Errorf("skill %q needs the memory save tools this session does not have", descriptor.CatalogName)}
+			return nil, unavailableSkillActivationError(invocation, descriptor.CatalogName)
 		}
 		loaded, diagnostics, err := loadSkillInvocationSource(invocation, descriptor)
 		if err != nil {

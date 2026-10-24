@@ -568,7 +568,7 @@ export type {
   SessionActivityReadState,
   SessionActivitySnapshot,
 } from "./sessionActivityStore";
-export { SessionActivityStore } from "./sessionActivityStore";
+export { isValidActivityTimestamp, SessionActivityStore } from "./sessionActivityStore";
 export { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 export type { SettingsHubGeneration } from "./settingsHubGeneration";
 export { createSettingsHubGeneration } from "./settingsHubGeneration";
@@ -833,7 +833,7 @@ export {
 } from "./transcriptSteps";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
-export { TURN_CONTINUATION_TEXT } from "./turnContinuation";
+export { isLatestRetryTurn, latestTurnId, TURN_CONTINUATION_TEXT } from "./turnContinuation";
 export type * from "./types.gen";
 export {
   HOST_REQUEST_METHODS,

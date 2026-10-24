@@ -1482,7 +1482,10 @@ test("a failed turn's Retry action submits continuation in the real Session tree
   // The diagnostic end-cap renders either way; the recovery button renders
   // ONLY once the session ref threads through to TurnFailureEndCap.
   expect(await screen.findByTestId("turn-failure")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await flushPendingTurnsProjectionForTests();
+  const retry = screen.getByRole<HTMLButtonElement>("button", { name: "Retry" });
+  await waitFor(() => expect(retry.disabled).toBe(false));
+  fireEvent.click(retry);
   await waitFor(() => expect(inputs).toHaveLength(1));
   expect(inputs).toMatchInlineSnapshot(`
     [

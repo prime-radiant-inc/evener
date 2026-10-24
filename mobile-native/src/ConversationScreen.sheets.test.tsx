@@ -33,6 +33,7 @@ import {
 } from "./renderNative.testkit";
 import { hasTestID, markers, withTestID } from "./markerTestUtils";
 import { ConversationScreen } from "./screens";
+import { NativeConversationSessionsProvider } from "./session/NativeConversationSessionsProvider";
 import { findBar, findMatches, findShows } from "./findBarTestUtils";
 import { forgetHistoryForHub } from "./session/historyMemory";
 import { detailLevels, forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
@@ -185,6 +186,14 @@ vi.mock("./NativePreferencesProvider", () => ({
 
 type ConversationScreenProps = ComponentProps<typeof ConversationScreen>;
 
+function SessionScreen(props: ConversationScreenProps) {
+	return (
+		<NativeConversationSessionsProvider>
+			<ConversationScreen {...props} />
+		</NativeConversationSessionsProvider>
+	);
+}
+
 const ref = "local:thread-1";
 const session = { key: `conversation-${ref}`, name: "Conversation" };
 
@@ -271,7 +280,7 @@ function sessionClient(read: Thread, answers: Answers) {
 }
 
 const screen = () => (
-	<ConversationScreen route={route} navigation={navigation as unknown as ConversationScreenProps["navigation"]} />
+	<SessionScreen route={route} navigation={navigation as unknown as ConversationScreenProps["navigation"]} />
 );
 
 function mount(read: Thread = thread, answers: Answers = {}, connection: Record<string, unknown> = {}) {
@@ -415,7 +424,7 @@ it("keeps its session subscribed while its own sheet covers it", async () => {
 	await act(async () => tree.unmount());
 });
 
-it("follows no session while a screen is pushed over it", async () => {
+it("keeps observing a pushed-over session while its actions stay unfocused", async () => {
 	stack.focused = false;
 	stack.state = {
 		index: 1,
@@ -424,7 +433,9 @@ it("follows no session while a screen is pushed over it", async () => {
 	const { tree, requests } = mount();
 	await settle();
 
-	expect(requests.filter((request) => request.method === "thread/read")).toEqual([]);
+	// Focus is per-view action permission, not canonical data ownership: the
+	// shared entry keeps its one live subscription for the mounted view.
+	expect(subscribedReads(requests).length).toBeGreaterThan(0);
 	await act(async () => tree.unmount());
 });
 
@@ -1758,7 +1769,7 @@ function boardJourney(answers: Answers) {
 		stack.state = state;
 		const current = state.routes[state.index];
 		return current?.name === "Conversation" ? (
-			<ConversationScreen
+			<SessionScreen
 				key={current.key}
 				route={current as ConversationScreenProps["route"]}
 				navigation={navigation as unknown as ConversationScreenProps["navigation"]}
