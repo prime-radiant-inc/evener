@@ -131,7 +131,22 @@ test("no live service", () => {
   });
 });
 
-test("precedence: not latest, failed, pending, not ready, no service", () => {
+test("no live service wins over pending input and an unread projection", () => {
+  // Native's old !canSend answer hid the action outright, before asking the
+  // pending owner. Keeping that answer is why service readiness precedes both
+  // pending denials.
+  expect(
+    retryEligibility(
+      input({
+        serviceReady: false,
+        pendingMutations: [entry()],
+        pendingMutationsReady: false,
+      }),
+    ),
+  ).toEqual({ allowed: false, reason: "no-live-service" });
+});
+
+test("precedence: not latest, failed, no service, pending, not ready", () => {
   // Each case sets every later fact to a denial too; the earlier reason wins.
   const allDenied = {
     clickedTurnId: "older",
@@ -143,7 +158,7 @@ test("precedence: not latest, failed, pending, not ready, no service", () => {
   expect(retryEligibility(input(allDenied)).reason).toBe("not-latest-turn");
   expect(retryEligibility(input({ ...allDenied, clickedTurnId: "latest" })).reason).toBe("clicked-turn-not-failed");
   expect(retryEligibility(input({ ...allDenied, clickedTurnId: "latest", clickedTurnFailed: true })).reason).toBe(
-    "pending-input-owned",
+    "no-live-service",
   );
   expect(
     retryEligibility(
@@ -151,19 +166,19 @@ test("precedence: not latest, failed, pending, not ready, no service", () => {
         ...allDenied,
         clickedTurnId: "latest",
         clickedTurnFailed: true,
-        pendingMutations: [],
+        serviceReady: true,
       }),
     ).reason,
-  ).toBe("pending-not-ready");
+  ).toBe("pending-input-owned");
   expect(
     retryEligibility(
       input({
         ...allDenied,
         clickedTurnId: "latest",
         clickedTurnFailed: true,
+        serviceReady: true,
         pendingMutations: [],
-        pendingMutationsReady: true,
       }),
     ).reason,
-  ).toBe("no-live-service");
+  ).toBe("pending-not-ready");
 });

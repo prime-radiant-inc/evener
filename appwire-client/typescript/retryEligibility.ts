@@ -49,7 +49,10 @@ export type RetryEligibility =
   | { readonly allowed: false; readonly reason: RetryEligibilityDenialReason };
 
 /** The one Retry decision. Precedence is part of the contract: the first
- * failing fact names the answer, in this order. */
+ * failing fact names the answer, in this order. A missing live service comes
+ * before the pending answers because a client whose Send cannot act hides the
+ * action outright; readiness and own input only decide whether an available
+ * action is disabled. */
 export function retryEligibility(input: RetryEligibilityInput): RetryEligibility {
   if (!isLatestRetryTurn(input.thread, input.clickedTurnId)) {
     return { allowed: false, reason: "not-latest-turn" };
@@ -57,14 +60,14 @@ export function retryEligibility(input: RetryEligibilityInput): RetryEligibility
   if (!input.clickedTurnFailed) {
     return { allowed: false, reason: "clicked-turn-not-failed" };
   }
+  if (!input.serviceReady) {
+    return { allowed: false, reason: "no-live-service" };
+  }
   if (ownPendingTurnInput(input.pendingMutations)) {
     return { allowed: false, reason: "pending-input-owned" };
   }
   if (!input.pendingMutationsReady) {
     return { allowed: false, reason: "pending-not-ready" };
-  }
-  if (!input.serviceReady) {
-    return { allowed: false, reason: "no-live-service" };
   }
   return { allowed: true, reason: "allowed" };
 }
