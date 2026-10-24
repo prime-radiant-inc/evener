@@ -1,6 +1,8 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { StrictMode, useRef } from "react";
+import { createPortal } from "react-dom";
 import { afterEach, expect, test, vi } from "vitest";
+import { appendPopout } from "../internal/popoutTestUtils";
 import { POINTER_CLICK_WINDOW_MS, SHOW_DELAY_MS, useFloatingLabel } from "./useFloatingLabel";
 
 afterEach(() => {
@@ -161,6 +163,28 @@ test("viewport resize dismisses a visible label", () => {
 
   act(() => window.dispatchEvent(new Event("resize")));
   expect(screen.queryByTestId("observed-label")).toBeNull();
+});
+
+// A hovercard in a Dockview popout lives in another window. The label's
+// dismissal pair has to listen there: the opener's window never scrolls or
+// resizes when that popout does.
+test("a label mounted in a popout document dismisses on that window's scroll", () => {
+  vi.useFakeTimers();
+  const { frame, doc, win } = appendPopout();
+  const view = render(createPortal(<Harness />, doc.body));
+  try {
+    const trigger = doc.querySelector("button");
+    if (!trigger) throw new Error("popout trigger missing");
+    fireEvent.mouseEnter(trigger);
+    advance(SHOW_DELAY_MS);
+    expect(doc.querySelector('[data-testid="observed-label"]')).not.toBeNull();
+
+    act(() => win.dispatchEvent(new win.Event("scroll")));
+    expect(doc.querySelector('[data-testid="observed-label"]')).toBeNull();
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
 });
 
 test("unmount clears a pending show timer", () => {

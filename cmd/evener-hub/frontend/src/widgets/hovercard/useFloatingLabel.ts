@@ -7,6 +7,8 @@ import {
   useRef,
   useState,
 } from "react";
+import { ownerDocumentOf } from "../internal/documentRealm";
+import { watchViewport } from "../internal/viewportWatch";
 import { acquirePointerActivity, type PointerActivityHandle } from "./pointerActivity";
 
 export const SHOW_DELAY_MS = 300;
@@ -122,12 +124,9 @@ export function useFloatingLabel({
       setPending(false);
       setVisible(false);
     }
-    window.addEventListener("scroll", dismiss, true);
-    window.addEventListener("resize", dismiss);
-    return () => {
-      window.removeEventListener("scroll", dismiss, true);
-      window.removeEventListener("resize", dismiss);
-    };
+    // The wrapper's own window: a Dockview popout scrolls and resizes its own
+    // window, and the opener's never sees either.
+    return watchViewport(wrapperRef.current, dismiss);
   }, [pending, visible]);
 
   const show = useCallback(() => {
@@ -175,7 +174,9 @@ export function useFloatingLabel({
     };
     target.addEventListener("focusin", handleFocus);
     target.addEventListener("focusout", handleBlur);
-    if (target.contains(document.activeElement)) handleFocus();
+    // The target's own document: in a popout the opener's activeElement is the
+    // iframe, never the row that already has focus there.
+    if (target.contains(ownerDocumentOf(target).activeElement)) handleFocus();
     return () => {
       target.removeEventListener("focusin", handleFocus);
       target.removeEventListener("focusout", handleBlur);

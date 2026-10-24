@@ -1,5 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useRef } from "react";
+import { ownerDocumentOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
+import { watchViewport } from "../internal/viewportWatch";
 import type { SideAnchor } from "./computePosition";
 import { describeChild, FloatingBubblePortal, useFloatingBubble } from "./floatingBubble";
 import styles from "./hovercard.module.css";
@@ -54,6 +56,7 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, side
     triggerProps,
     setBubbleRef,
     bubbleStyle,
+    bubbleContainer,
     bubbleID,
     describedBy,
     showImmediately,
@@ -113,14 +116,12 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, side
   // pair exists only for as long as the gesture does: an idle trigger owns none,
   // so the count does not grow with the number of mounted cards. The
   // pending/visible floating-label dismissal is the shared hook's own pair.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: wrapperRef is the hook's stable ref; its live .current is read when the gesture arms
   const armGestureListeners = useCallback(() => {
     if (gestureListenersRef.current !== null) return;
-    window.addEventListener("scroll", abortPress, true);
-    window.addEventListener("resize", abortPress);
-    gestureListenersRef.current = () => {
-      window.removeEventListener("scroll", abortPress, true);
-      window.removeEventListener("resize", abortPress);
-    };
+    // The trigger's own window: a Dockview popout resizes and scrolls its own
+    // window, and the opener's never sees either.
+    gestureListenersRef.current = watchViewport(wrapperRef.current, abortPress);
   }, [abortPress]);
 
   // Turning long-press mode off mid-gesture clears the press and its listeners.
@@ -130,13 +131,14 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, side
 
   useEffect(() => {
     if (!longPressEnabled || !visible || !isHoverless()) return;
+    const ownerDocument = ownerDocumentOf(wrapperRef.current);
     const handleOutsidePointer = (event: PointerEvent) => {
       if (wrapperRef.current?.contains(event.target as Node | null)) return;
       swallowClickRef.current = false;
       dismiss();
     };
-    document.addEventListener("pointerdown", handleOutsidePointer, true);
-    return () => document.removeEventListener("pointerdown", handleOutsidePointer, true);
+    ownerDocument.addEventListener("pointerdown", handleOutsidePointer, true);
+    return () => ownerDocument.removeEventListener("pointerdown", handleOutsidePointer, true);
   }, [dismiss, longPressEnabled, visible, wrapperRef]);
 
   useEffect(() => {
@@ -231,6 +233,7 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, side
         className={CLASS.bubble}
         style={bubbleStyle}
         setRef={setBubbleRef}
+        container={bubbleContainer}
         longPressEnabled={longPressEnabled}
       >
         {label}

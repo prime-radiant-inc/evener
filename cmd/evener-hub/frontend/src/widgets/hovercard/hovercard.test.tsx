@@ -1,7 +1,9 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { createPortal } from "react-dom";
 import { afterEach, expect, test, vi } from "vitest";
 import { HoverCard as FromBarrel } from "..";
+import { appendPopout } from "../internal/popoutTestUtils";
 import { HoverCard, LONG_PRESS_MS } from ".";
 import { installHoverlessMatchMedia } from "./hovercardTestUtils";
 import { POINTER_CLICK_WINDOW_MS } from "./useFloatingLabel";
@@ -116,6 +118,41 @@ test("mounting under an already-focused external target opens the card", () => {
   view.rerender(<Fixture showCard />);
   const card = screen.getByRole("tooltip");
   expect(row.getAttribute("aria-describedby")).toBe(card.id);
+});
+
+// The same mount-time branch in a popout: the opener document's activeElement
+// is the iframe, so asking it could never find the row that already has focus
+// in the popout.
+test("mounting under an already-focused target inside a popout opens the card there", () => {
+  const { frame, doc } = appendPopout();
+  const rowTarget = () => doc.querySelector<HTMLElement>('[data-testid="popout-row"]');
+  function Fixture({ showCard }: { showCard: boolean }) {
+    return (
+      <div role="treeitem" tabIndex={0} data-testid="popout-row">
+        {showCard && (
+          <HoverCard label={<div>Project prime-radiant</div>} focusTarget={rowTarget}>
+            <button type="button">Row action</button>
+          </HoverCard>
+        )}
+      </div>
+    );
+  }
+  const view = render(createPortal(<Fixture showCard={false} />, doc.body));
+  try {
+    const row = rowTarget();
+    if (!row) throw new Error("popout row missing");
+    act(() => row.focus());
+    expect(doc.activeElement).toBe(row);
+
+    view.rerender(createPortal(<Fixture showCard />, doc.body));
+    const card = doc.querySelector('[role="tooltip"]');
+    expect(card).not.toBeNull();
+    expect(card?.parentElement).toBe(doc.body);
+    expect(row.getAttribute("aria-describedby")).toBe(card?.getAttribute("id"));
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
 });
 
 test("a hoverless tap activates the row and opens no card", () => {
@@ -1031,5 +1068,109 @@ test("unmounting during the press disposes the pending gesture listeners", () =>
     expect(screen.queryByRole("tooltip")).toBeNull();
   } finally {
     tally.restore();
+  }
+});
+
+// --- popout realm (Dockview) ---------------------------------------------
+// A Dockview popout is a separate Window with its own Document and its own
+// constructors. jsdom's only real second realm is an iframe (a document from
+// createHTMLDocument shares the opener's constructors and cannot catch a realm
+// defect), so these cases render the card through a portal into the iframe's
+// body: every element's ownerDocument is the popout document.
+
+test("a long-press card in a popout document portals its bubble there and dismisses on a pointerdown in that document", () => {
+  vi.useFakeTimers();
+  installHoverlessMatchMedia();
+  const { frame, doc } = appendPopout();
+  const view = render(
+    createPortal(
+      <HoverCard label={<div>Project prime-radiant</div>} longPressEnabled>
+        <button type="button">Fix flaky test</button>
+      </HoverCard>,
+      doc.body,
+    ),
+  );
+  try {
+    const trigger = doc.querySelector("button")!;
+    fireEvent.pointerDown(trigger, { button: 0, clientX: 10, clientY: 10 });
+    act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+
+    const bubble = doc.querySelector('[role="tooltip"]');
+    expect(bubble).not.toBeNull();
+    expect(bubble?.parentElement).toBe(doc.body);
+    expect(document.body.contains(bubble)).toBe(false);
+
+    fireEvent.pointerDown(doc.body);
+
+    expect(doc.querySelector('[role="tooltip"]')).toBeNull();
+  } finally {
+    view.unmount();
+    frame.remove();
+  }
+});
+
+test("places a popout card from the popout window's own viewport, not the opener's", () => {
+  vi.useFakeTimers();
+  const { frame, doc, win } = appendPopout();
+  const CARD_WIDTH = 240;
+  const CARD_HEIGHT = 96;
+  // Deliberately different from the opener's 1024x768. 600x150 makes both
+  // axes observable: 600 - 240 - 8 = 352 left, and a trigger at top 50 has
+  // no room either side of it in a 150px-tall viewport, so the card clamps
+  // to the 8px edge margin (the opener's 768px height would place it below
+  // at 78px instead).
+  const POPOUT_WIDTH = 600;
+  const POPOUT_HEIGHT = 150;
+  Object.defineProperty(win, "innerWidth", { configurable: true, value: POPOUT_WIDTH });
+  Object.defineProperty(win, "innerHeight", { configurable: true, value: POPOUT_HEIGHT });
+
+  const htmlProto = win.HTMLElement.prototype;
+  const originalOffsetWidth = Object.getOwnPropertyDescriptor(htmlProto, "offsetWidth");
+  const originalOffsetHeight = Object.getOwnPropertyDescriptor(htmlProto, "offsetHeight");
+  const isBubble = (el: Element) => el.getAttribute("role") === "tooltip";
+  Object.defineProperty(htmlProto, "offsetWidth", {
+    configurable: true,
+    get(this: HTMLElement) {
+      return isBubble(this) ? CARD_WIDTH : 0;
+    },
+  });
+  Object.defineProperty(htmlProto, "offsetHeight", {
+    configurable: true,
+    get(this: HTMLElement) {
+      return isBubble(this) ? CARD_HEIGHT : 0;
+    },
+  });
+
+  const view = render(
+    createPortal(
+      <HoverCard label={<div>Project prime-radiant</div>}>
+        <button type="button">Fix flaky test</button>
+      </HoverCard>,
+      doc.body,
+    ),
+  );
+  try {
+    const trigger = doc.querySelector("button")!;
+    // The wrapper span is what the card measures as its anchor; jsdom lays
+    // nothing out, so supply the rect.
+    (trigger.parentElement as HTMLElement).getBoundingClientRect = () => new DOMRect(950, 50, 40, 20);
+
+    fireEvent.focus(trigger);
+    act(() => vi.advanceTimersByTime(300));
+
+    // Fall back to the opener's document so the pre-fix run reports the math
+    // defect (the placement computed from the wrong viewport) rather than
+    // just the missing portal.
+    const bubble = (doc.querySelector('[role="tooltip"]') ??
+      document.querySelector('[role="tooltip"]')) as HTMLElement | null;
+    expect(bubble).not.toBeNull();
+    expect(bubble?.style.left).toBe(`${POPOUT_WIDTH - CARD_WIDTH - 8}px`);
+    expect(bubble?.style.top).toBe("8px");
+    expect(bubble?.parentElement).toBe(doc.body);
+  } finally {
+    restoreOwnProperty(htmlProto, "offsetWidth", originalOffsetWidth);
+    restoreOwnProperty(htmlProto, "offsetHeight", originalOffsetHeight);
+    view.unmount();
+    frame.remove();
   }
 });
