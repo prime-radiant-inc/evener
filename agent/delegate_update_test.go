@@ -1545,29 +1545,90 @@ func TestDelegateUpdateSurvivesRestart(t *testing.T) {
 	})
 }
 
+// Replace only this cold fixture's provider. Descriptor restore, executor
+// admission and the dedicated session namer keep their real existing paths.
+func newCommonWakeFixture(t *testing.T, steps ...updateStep) (coldStableDelegateFixture, *messagingAdapter) {
+	t.Helper()
+	fixture := newColdStableDelegateFixture(t, "")
+	a := finiteUpdateAdapter(t)
+	a.rootID = fixture.meta.ID
+	a.sessions[fixture.childID] = "common-wake"
+	a.finiteScript("common-wake", steps...)
+	fixture.client.Register(a)
+	return fixture, a
+}
+
+func TestDelegateUpdateCommonWakeFiniteProvider(t *testing.T) {
+	t.Parallel()
+	fixture, a := newCommonWakeFixture(t)
+	req := llm.Request{Provider: "openai", Model: "gpt-5.2", SessionID: fixture.childID, Messages: []llm.Message{llm.User("common-wake-boundary")}}
+	var unexpected []string
+	a.onUnexpected = func(detail string) { unexpected = append(unexpected, detail) }
+	for _, canceled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("canceled=%t", canceled), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if canceled {
+				cancel()
+			}
+			response, err := fixture.client.Complete(ctx, req)
+			if !errors.Is(err, context.Canceled) || len(response.Message.Content) != 0 || response.ID != "" {
+				t.Fatalf("finite common-wake boundary returned err=%v response_id=%q text=%q, want cancellation without successful response", err, response.ID, response.Message.Text())
+			}
+		})
+	}
+	t.Run("cancel-blocked-response", func(t *testing.T) {
+		entered, gate := make(chan struct{}), make(chan struct{})
+		defer close(gate)
+		a.finiteScript("common-wake", func(ctx context.Context, req llm.Request) (llm.Response, error) {
+			close(entered)
+			return updateGate(gate, updateReply(finalResponse("must not succeed")))(ctx, req)
+		})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		type result struct {
+			response llm.Response
+			err      error
+		}
+		done := make(chan result, 1)
+		go func() {
+			response, err := fixture.client.Complete(ctx, req)
+			done <- result{response: response, err: err}
+		}()
+		awaitSignal(t, entered, "common-wake provider cancellation gate")
+		cancel()
+		// TRIPWIRE: cancellation must release the provider without opening gate.
+		select {
+		case got := <-done:
+			if !errors.Is(got.err, context.Canceled) || got.response.ID != "" || len(got.response.Message.Content) != 0 {
+				t.Fatalf("canceled gated response=%+v err=%v", got.response, got.err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("common-wake provider ignored cancellation")
+		}
+	})
+	if len(unexpected) != 2 || len(a.requestsFor("common-wake")) != 3 || len(a.answered["common-wake"]) != 0 {
+		t.Fatalf("exhaustion diagnostics=%v requests=%d successful responses=%d", unexpected, len(a.requestsFor("common-wake")), len(a.answered["common-wake"]))
+	}
+}
+
 // The addressed delegate's common wake path runs one leased provider request
 // for accepted input. Duplicate wakes cannot run another request, and an empty
 // wake after its successful response has no work to admit.
 func TestDelegateUpdateCommonWakeObservesOnce(t *testing.T) {
 	t.Parallel()
-	fixture := newColdStableDelegateFixture(t, "")
 	entered, gate := make(chan struct{}), make(chan struct{})
 	release := sync.OnceFunc(func() { close(gate) })
 	defer release()
-	warm, observed := finalResponse("warm result"), finalResponse("observed update")
-	warm.ID, observed.ID = "common-wake-warm", "common-wake-observed"
-	fixture.adapter.steps = []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return warm },
-		func(req llm.Request) llm.Response {
-			if req.SessionID != fixture.childID || !requestContainsText(req, "ADMISSION_UPDATE: which table?") {
-				t.Error("addressed request did not present accepted update")
-			}
+	fixture, a := newCommonWakeFixture(t,
+		updateReply(finalResponse("warm result")),
+		func(ctx context.Context, req llm.Request) (llm.Response, error) {
 			close(entered)
-			<-gate
-			return observed
+			return updateGate(gate, updateReply(finalResponse("observed update")))(ctx, req)
 		},
-	}
+	)
 	root := restoreSupervisionRoot(t, fixture, nil)
+	traceUpdateFixture(t, root, a)
 	sub := warmStableDelegateUnservedRoot(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	updateID := delegateAttentionID(delegatestore.UpdateDeliveryID(fixture.delegateID, 1))
@@ -1588,8 +1649,6 @@ func TestDelegateUpdateCommonWakeObservesOnce(t *testing.T) {
 	if !slices.Equal(fold.pendingIDs(), []string{updateID}) || len(fold.resolutions) != 0 {
 		t.Fatalf("in-flight request granted observation: %+v", fold)
 	}
-	// fakeAdapter holds its request mutex while the scripted response is
-	// blocked. Count the completed requests only after releasing that response.
 	release()
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	assertDelegateTestObservation(t, sub.sess, nil, updateID)
@@ -1598,10 +1657,19 @@ func TestDelegateUpdateCommonWakeObservesOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(fixture.adapter.Requests()) != 2 {
-		t.Fatalf("empty wake started model request: %d", len(fixture.adapter.Requests()))
-	}
-	assertUpdateResponseRecords(t, "common-wake", sub.sess, fixture.adapter.Requests(), []llm.Response{warm, observed}, nil, []string{"ADMISSION_UPDATE: which table?"})
+	// Wakes call admission synchronously, but accepted runs execute in goroutines.
+	// Join their completed generations, recovery and callback opportunities before
+	// sampling the finite provider. No quiet delay or shutdown hides a late call.
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	waitForCondition(t, 30*time.Second, "common-wake execution and recovery released", func() bool {
+		state := sub.sess.notificationExecutionState()
+		sub.sess.attentionMu.Lock()
+		callbacksDone := sub.sess.attentionCallbacks == 0
+		sub.sess.attentionMu.Unlock()
+		return !state.running && !state.recovering && callbacksDone
+	})
+	root.sendersWG.Wait()
+	assertUpdateRequests(t, a, "common-wake", sub.sess, nil, []string{"ADMISSION_UPDATE: which table?"})
 }
 
 // awaitRootReport waits until the root's transcript holds attention for a
