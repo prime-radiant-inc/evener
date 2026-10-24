@@ -6,9 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
@@ -118,11 +116,7 @@ func FuzzSessionLifecycleNotificationFaultCoverage(f *testing.F) {
 	f.Fuzz(func(t *testing.T, seed byte) {
 		_ = seed
 		loadSession := sltcNewSession(t, false, false)
-		store, err := jobstore.OpenNoSync(filepath.Join(t.TempDir(), "jobs.jsonl"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		loadSession.jobManager = &jobManager{store: store}
+		store := loadSession.jobManager.store
 		if got, retry, injected := loadSession.filterDeliverableJobNotifications([]jobNotification{{JobID: "absent"}}); len(got) != 0 || len(retry) != 0 || len(injected) != 0 {
 			t.Fatalf("absent record filtering = (%d,%d,%d)", len(got), len(retry), len(injected))
 		}
@@ -135,16 +129,14 @@ func FuzzSessionLifecycleNotificationFaultCoverage(f *testing.F) {
 		if got, retry, injected := loadSession.filterDeliverableJobNotifications([]jobNotification{{Kind: jobNotificationKindWatch, Status: jobNotificationEventWatch}}); len(got) != 1 || len(retry) != 0 || len(injected) != 0 {
 			t.Fatalf("watch-only filtering = (%d,%d,%d)", len(got), len(retry), len(injected))
 		}
-		loadSession.jobManager = nil
-
 		markSession := sltcNewSession(t, false, false)
-		jm := &jobManager{
-			appendEvent: func(jobstore.Event) error { return errors.New("append failed") },
-			forward:     func(jobstore.Event) error { return errors.New("forward failed") },
-			parentJobID: "parent",
-			now:         func() time.Time { return time.Unix(1, 0) },
-		}
-		markSession.jobManager = jm
+		// Event emission and cleanup also use this manager. Keep its constructor's
+		// real store/teardown wiring and fault only the intended append boundary.
+		jm := markSession.jobManager
+		originalAppend := jm.appendEvent
+		jm.appendEvent = func(jobstore.Event) error { return errors.New("append failed") }
+		jm.forward = func(jobstore.Event) error { return errors.New("forward failed") }
+		jm.parentJobID = "parent"
 		if failed := markSession.markJobNotificationsDelivered([]deliverableJobNotification{{notification: jobNotification{JobID: "nonterminal"}}}); len(failed) != 0 {
 			t.Fatalf("nonterminal mark returned %d retries", len(failed))
 		}
@@ -152,12 +144,12 @@ func FuzzSessionLifecycleNotificationFaultCoverage(f *testing.F) {
 		if len(failed) != 1 {
 			t.Fatalf("append failure count = %d, want 1", len(failed))
 		}
-		jm.appendEvent = func(jobstore.Event) error { return nil }
+		jm.appendEvent = originalAppend
 		failed = markSession.markJobNotificationsDelivered([]deliverableJobNotification{{notification: jobNotification{JobID: "job"}, terminalGen: "gen"}})
 		if len(failed) != 0 {
 			t.Fatalf("forward-only failure returned %d retries", len(failed))
 		}
-		markSession.jobManager = nil
+		jm.forward = nil
 
 		appendSession := sltcNewSession(t, false, false)
 		appendSession.enqueueJobNotification(jobNotification{Kind: jobNotificationKindWatch, JobID: "watch", Status: jobNotificationEventWatch})

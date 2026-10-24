@@ -233,11 +233,11 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			close(stop)
 		case 20:
 			// The send twin of case 5. The attach scan's send rail counts its
-			// fire at the match and its delivery only when the frame settles,
-			// which nothing here drains, so the breaker has to latch at the
-			// match or the watch matches without bound.
-			key := watchKey{Target: "job_x", SendTo: "dlg_x"}
-			cfg, err := newWatchConfig(watchArgs{Target: "job_x", OutputMatch: "hit", Send: &watchSendArgs{To: "dlg_x"}}, jm.now(), "")
+			// fire after source persistence, independently of receiver custody.
+			// This manager has no receiver, so settlement cannot spend the match.
+			// Register the same owner-scoped key watchSendSnapshot produces.
+			key := watchKey{VisibleSessionID: jm.sessionID, Target: "job_x", SendTo: runtimeMessageAliasCaller}
+			cfg, err := newWatchConfig(watchArgs{Target: "job_x", OutputMatch: "hit", Send: &watchSendArgs{To: runtimeMessageAliasCaller}}, jm.now(), "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -245,10 +245,13 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			jm.watches[key] = cfg
 			cleared := 0
 			jm.enqueue = func(n jobNotification) {
-				if n.Reason != watchBudgetClearedMessage("job_x") {
+				if n.callbackConfig != cfg {
 					return
 				}
 				cleared++
+				if n.Kind != jobNotificationKindWatch || n.OriginWatchID != cfg.watchID || n.JobID != "" {
+					t.Errorf("budget callback has the wrong watch identity: %+v", n)
+				}
 				// The auto-clear does durable I/O and re-takes jm.mu, so it must
 				// be scheduled after the observation releases it (spec §3).
 				if !jm.mu.TryLock() {
@@ -262,6 +265,25 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			}
 			if !cfg.budgetTripped {
 				t.Fatal("attach-scan send at the budget did not latch the breaker")
+			}
+			produced := producerSourceEvents(t, jm, jobstore.EventWatchSendPending)
+			settled := producerSourceEvents(t, jm, jobstore.EventWatchSendDelivered)
+			if cfg.conditionFires != watchDeliveryBudget || len(produced) != 2 || len(settled) != 0 {
+				t.Fatalf("attach-scan source matches=%d produced=%d settled=%d, want %d/2/0", cfg.conditionFires, len(produced), len(settled), watchDeliveryBudget)
+			}
+			match, notice := produced[0].WatchSend, produced[1].WatchSend
+			if match.CallbackFrame || match.UpdateSeq != 1 || !notice.CallbackFrame || notice.UpdateSeq != 2 || notice.CoalescedCount != 1 {
+				t.Fatalf("budget teardown must produce one match then one coalesced final notice: match=%+v notice=%+v", match, notice)
+			}
+			if match.Key.WatchID != cfg.watchID || match.Key.WatchGeneration != cfg.generation || match.Key.WatchTarget != "job_x" || match.TriggerIdentity != "job_x" || notice.Key != match.Key || notice.TriggerIdentity != "job_x" {
+				t.Fatalf("match and final notice must identify the same watched job and configuration: match=%+v notice=%+v", match, notice)
+			}
+			ended := producerSourceEvents(t, jm, jobstore.EventWatchCleared)
+			if len(ended) != 1 || ended[0].WatchID != cfg.watchID || ended[0].Watch == nil || ended[0].Watch.Generation != cfg.generation || ended[0].Watch.EndReason != "budget_exhausted" || ended[0].Seq <= produced[0].Seq || ended[0].Seq >= produced[1].Seq {
+				t.Fatalf("final notice must follow its same-watch durable budget teardown, after the match: %+v", ended)
+			}
+			if !jm.terminalFlush[cfg] || len(cfg.pending) != 1 || cfg.pending[notice.Key] == nil || cfg.pending[notice.Key].DeliveryID != notice.DeliveryID {
+				t.Fatal("budget teardown lost its coalesced unaccepted source debt")
 			}
 			if cleared != 1 {
 				t.Fatalf("budget-cleared notifications = %d, want exactly 1", cleared)

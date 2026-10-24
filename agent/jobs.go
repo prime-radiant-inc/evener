@@ -225,6 +225,11 @@ type jobManager struct {
 	// process-only settlement batch. Other drains must wait for that batch before
 	// visiting current cursors so one source acknowledgement is charged once.
 	stableWatchSettlementRetrying bool
+	// Transport retry is only a paced hint to replay the source journal. It owns
+	// neither receiver custody nor model execution, and stops with this manager.
+	watchTransportRetry       notificationRetry
+	watchTransportRetryTimer  clock.Timer
+	watchTransportRetryClosed bool
 }
 
 // defaultCloseGrace is the graceful-shutdown window closeRuntimeState gives a
@@ -856,6 +861,16 @@ waitLoop:
 func (jm *jobManager) closeStoreOnly() error {
 	if jm == nil || jm.store == nil {
 		return nil
+	}
+	jm.mu.Lock()
+	jm.watchTransportRetryClosed = true
+	jm.watchTransportRetry.generation++
+	jm.watchTransportRetry.active = false
+	timer := jm.watchTransportRetryTimer
+	jm.watchTransportRetryTimer = nil
+	jm.mu.Unlock()
+	if timer != nil {
+		timer.Stop()
 	}
 	if err := jm.store.Close(); err != nil {
 		return fmt.Errorf("close store: %w", err)
