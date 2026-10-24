@@ -8,9 +8,18 @@
 
 import type { ThreadModel } from "@evener/appwire-client";
 import { threadsStore } from "../../stores/threads";
-import { workspaceStore } from "../workspace";
+import { presentedPanes, workspaceStore } from "../workspace";
 
 export type OnPage = "home" | "session" | "settings" | "spawn" | "other";
+
+// The shell's one needs-you owner as a palette command can see it. The
+// CommandPalette supplies this from useNeedsYou(); calling next() closes the
+// palette and defers to the controller exactly as Mod+J and the palette's
+// needs-you rows do, so a command can never grow a second row-selection,
+// paging, validity or cancellation rule.
+export interface PaletteNeedsYouAction {
+  next(): void;
+}
 
 export interface PaletteContext {
   // The focused session's ref, or null when no session pane is focused. A
@@ -57,7 +66,8 @@ function onPageForType(type: string): OnPage {
 
 export function buildPaletteContext(): PaletteContext {
   const ws = workspaceStore.getState();
-  const focused = ws.panes.find((p) => p.id === ws.focusedPaneId);
+  const panes = presentedPanes(ws.panes);
+  const focused = panes.find((p) => p.id === ws.focusedPaneId);
   if (!focused) return { sessionRef: null, sessionPaneId: null, onPage: "other" };
   const onPage = onPageForType(focused.type);
   const sessionRef = onPage === "session" ? refFromParams(focused.params) : null;
@@ -65,7 +75,7 @@ export function buildPaletteContext(): PaletteContext {
     focused.type === "session" || focused.type === "sessionZoom"
       ? focused.id
       : sessionRef !== null
-        ? (ws.panes.find((p) => p.type === "session" && refFromParams(p.params) === sessionRef)?.id ?? null)
+        ? (panes.find((p) => p.type === "session" && refFromParams(p.params) === sessionRef)?.id ?? null)
         : null;
   return {
     onPage,

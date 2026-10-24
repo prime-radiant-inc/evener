@@ -6,6 +6,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { waitFor } from "@testing-library/react";
 import type { DockviewApi } from "dockview-core";
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { captureAttentionPlacement, presentAttentionTarget } from "../../shell/attentionPlacement";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import {
   consumePaneFocus,
@@ -244,6 +245,45 @@ test("Return never requests focus for an identical replacement origin", () => {
   expect(consumePaneFocus(replacement.id)).toBe(false);
   expect(conversationPaneLifetime(replacement)).toBe(replacementLifetime);
   expect(replacementLifetime.alive).toBe(true);
+});
+
+test("cascade entry ignores a stale parked source and leaves its existing inspector unchanged", () => {
+  const source = pane(workspaceStore.getState().openPane("session", { ref: "root" }));
+  const inspectorId = enterAgentCascade(rootChild(), source.id);
+  const inspector = pane(inspectorId);
+  workspaceStore.getState().focusPane(source.id);
+  const entry = captureAttentionPlacement();
+  if (!entry) throw new Error("missing source placement");
+  presentAttentionTarget("away");
+
+  const entered = enterAgentCascade(rootChild(), source.id);
+
+  expect(entered).not.toBe(inspectorId);
+  expect(pane(source.id)).toBe(source);
+  expect(source.slot).toBe("parked");
+  expect(pane(inspectorId)).toBe(inspector);
+  expect((pane(entered).params as SessionZoomParams).inspection).toEqual({ origin: null });
+  expect(workspaceStore.getState().panes).toContain(entry.pane);
+});
+
+test("inspection Return closes normally without requesting focus for a parked origin", () => {
+  const source = pane(workspaceStore.getState().openPane("session", { ref: "root" }));
+  const lifetime = conversationPaneLifetime(source);
+  const inspectorId = enterAgentCascade(rootChild(), source.id);
+  workspaceStore.getState().focusPane(source.id);
+  const entry = captureAttentionPlacement();
+  if (!entry) throw new Error("missing source placement");
+  presentAttentionTarget("away");
+
+  returnFromAgentCascade(inspectorId);
+
+  expect(workspaceStore.getState().panes.some((record) => record.id === inspectorId)).toBe(false);
+  expect(workspaceStore.getState().panes).toContain(source);
+  expect(source.slot).toBe("parked");
+  expect(conversationPaneLifetime(source)).toBe(lifetime);
+  expect(lifetime.alive).toBe(true);
+  expect(consumePaneFocus(source.id)).toBe(false);
+  expect(workspaceStore.getState().panes).toContain(entry.pane);
 });
 
 test("a replacement origin gets a fresh inspector instead of claiming the retired one", () => {
