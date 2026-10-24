@@ -172,12 +172,9 @@ func jdrExercisePendingAndRender(t *testing.T, s *Session) {
 func jdrExerciseGuardsAndFailures(t *testing.T, s *Session) {
 	t.Helper()
 	var nilSession *Session
-	nilSession.renderUnreachableChildPendings(nil)
 	_ = nilSession.childResumable("x")
 	_ = nilSession.childStopGated("x")
 	_ = nilSession.retryRestoredPendingWatchSends(context.Background())
-	s.driveChildIfNotStopGated(nil)
-	s.driveChildIfNotStopGated(&subagent{})
 
 	closed, err := newJobManager(t.TempDir(), testChildSessionID, func(jobNotification) {})
 	if err != nil {
@@ -189,7 +186,6 @@ func jdrExerciseGuardsAndFailures(t *testing.T, s *Session) {
 		t.Fatal(err)
 	}
 	cs := &Session{id: testChildSessionID, jobManager: closed}
-	cs.renderUnreachableChildPendings(nil)
 	_ = cs.childResumable("child")
 	_ = cs.childStopGated("child")
 
@@ -202,27 +198,12 @@ func jdrExerciseGuardsAndFailures(t *testing.T, s *Session) {
 	_ = s.childStopGated("")
 	_ = s.drainPendingWatchSends(context.Background())
 
-	appendForwardedChildTerminalPending(t, s.jobManager, "job_live_tail", "child-live")
-	appendForwardedChildTerminalPending(t, s.jobManager, "job_gone_tail", "child-gone")
-	appendForwardedChildCallerWatchSendPending(t, s.jobManager, "child-live", "job_live_watch_tail")
-	appendForwardedChildCallerWatchSendPending(t, s.jobManager, "child-gone", "job_gone_watch_tail")
-	appendForwardedChildCallerWatchSendPending(t, s.jobManager, s.id, "job_same_session_watch_tail")
-	appendForwardedChildCallerWatchSendPending(t, s.jobManager, "child-drop-error", "job_drop_error_watch_tail")
-	failAppendN(s.jobManager, jobstore.EventWatchSendDropped, 1)
-	s.renderUnreachableChildPendings(map[string]bool{"child-live": true})
-	// Retry after the injected durable drop failure so the same pending is also
-	// exercised through successful tombstoning and escalation.
-	s.renderUnreachableChildPendings(map[string]bool{"child-live": true})
-
 	now := s.jobManager.now()
 	seedStableToolDelegate(t, s, "dlg_resumable_tail", "", now.Add(-2*time.Second), now.Add(-time.Second))
 	resumableChildID := "child-dlg_resumable_tail"
 	if !s.childResumable(resumableChildID) {
 		t.Fatal("retained child fixture is not resumable")
 	}
-	appendForwardedChildTerminalPending(t, s.jobManager, "job_resumable_tail", resumableChildID)
-	appendForwardedChildCallerWatchSendPending(t, s.jobManager, resumableChildID, "job_resumable_watch_tail")
-	s.renderUnreachableChildPendings(nil)
 
 	descriptor := stableToolDescriptor(s, "dlg_stop_gate_tail", "")
 	lease := delegateLease{delegateID: "dlg_stop_gate_tail", generation: 1}
@@ -243,59 +224,7 @@ func jdrExerciseGuardsAndFailures(t *testing.T, s *Session) {
 	if !s.childStopGated(child.id) {
 		t.Fatal("synthetic stopped delegate did not close the child drive gate")
 	}
-	s.driveChildIfNotStopGated(stopped)
 	s.subagents = newSubagentManager(nil, 0)
 	s.subagents.track(stopped)
 	s.delegateController.recheckNotificationReceivers()
-}
-
-func appendForwardedChildTerminalPending(t *testing.T, jm *jobManager, jobID, childSessionID string) {
-	t.Helper()
-	now := jm.now()
-	if err := jm.appendEvent(jobstore.Event{
-		Kind:             jobstore.EventJobStarted,
-		TS:               now,
-		JobID:            jobID,
-		Type:             jobstore.JobShell,
-		OwnerSessionID:   childSessionID,
-		VisibleToSession: jm.sessionID,
-		StartedAt:        &now,
-		Command:          "true",
-		Description:      "forwarded child shell",
-	}); err != nil {
-		t.Fatalf("append forwarded start %q: %v", jobID, err)
-	}
-	if err := jm.appendEvent(jobstore.Event{
-		Kind:        jobstore.EventJobFinished,
-		TS:          now,
-		JobID:       jobID,
-		Status:      jobstore.StatusCompleted,
-		Reason:      "completed",
-		EndedAt:     &now,
-		TerminalGen: "gen-" + jobID,
-	}); err != nil {
-		t.Fatalf("append forwarded finish %q: %v", jobID, err)
-	}
-	if err := jm.appendEvent(jobstore.Event{
-		Kind:        jobstore.EventJobNotificationPending,
-		TS:          now,
-		JobID:       jobID,
-		TerminalGen: "gen-" + jobID,
-	}); err != nil {
-		t.Fatalf("append forwarded pending %q: %v", jobID, err)
-	}
-}
-
-func appendForwardedChildCallerWatchSendPending(t *testing.T, jm *jobManager, childSessionID, watchedJobID string) jobstore.WatchSendState {
-	t.Helper()
-	var state jobstore.WatchSendState
-	for _, event := range restoredWatchSendPendingEvents(childSessionID, watchedJobID, runtimeMessageAliasCaller, jm.now()) {
-		if event.WatchSend != nil {
-			state = *event.WatchSend
-		}
-		if err := jm.appendEvent(event); err != nil {
-			t.Fatalf("append forwarded caller watch-send pending %q: %v", watchedJobID, err)
-		}
-	}
-	return state
 }

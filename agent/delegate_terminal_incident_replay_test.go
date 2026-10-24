@@ -48,6 +48,16 @@ type incidentFrame struct {
 var incidentFramePattern = regexp.MustCompile(`(?s)<(job-notification|delegate-notification)\s+([^>]*)>(.*?)</(?:job-notification|delegate-notification)>`)
 var incidentAttrPattern = regexp.MustCompile(`([a-z_]+)="([^"]*)"`)
 
+func TestIncidentFrameBodyDecodesOnlyNotificationEntities(t *testing.T) {
+	t.Parallel()
+	frames := incidentFrames(llm.Request{Messages: []llm.Message{llm.User(
+		`<delegate-notification delegate_id="dlg_entity" kind="report">&lt;|&amp;|&amp;lt;|&gt;|&quot;|&#65;|&#x41;</delegate-notification>`,
+	)}})
+	if len(frames) != 1 || frames[0].body != `<|&|&lt;|&gt;|&quot;|&#65;|&#x41;` {
+		t.Fatalf("incident frames = %+v", frames)
+	}
+}
+
 // Notification frames are user-role text, not tool results or assistant
 // tool arguments. Delegate delivery does not set the Machinery flag.
 func incidentFrames(req llm.Request) []incidentFrame {
@@ -61,7 +71,10 @@ func incidentFrames(req llm.Request) []incidentFrame {
 				continue
 			}
 			for _, match := range incidentFramePattern.FindAllStringSubmatch(part.Text, -1) {
-				frame := incidentFrame{tag: match[1], body: html.UnescapeString(match[3]), attrs: map[string]string{}}
+				// This oracle is independent of the production codec. Body entities
+				// are restricted and decoded once, unlike HTML attributes below.
+				body := strings.NewReplacer("&lt;", "<", "&amp;", "&").Replace(match[3])
+				frame := incidentFrame{tag: match[1], body: body, attrs: map[string]string{}}
 				for _, attr := range incidentAttrPattern.FindAllStringSubmatch(match[2], -1) {
 					frame.attrs[attr[1]] = html.UnescapeString(attr[2])
 				}

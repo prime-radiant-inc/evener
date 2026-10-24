@@ -678,13 +678,6 @@ func (s *Session) earlierInlineResults(plan delegateDeliveryPlan) ([]delegateInl
 
 func delegateAttentionID(deliveryID string) string { return "delegate:" + deliveryID }
 
-// isDelegateUpdateAttentionID reports whether attentionID names a delegate
-// update's delivery rather than a generation's report.
-func isDelegateUpdateAttentionID(attentionID string) bool {
-	deliveryID, ok := strings.CutPrefix(attentionID, delegateAttentionID(""))
-	return ok && delegatestore.IsUpdateDeliveryID(deliveryID)
-}
-
 // completeDelegateDeliveryCommits validates one persisted carrier's identities.
 // Canonical receiver custody already acknowledged transport, so neither storing
 // this projection nor abandoning it changes source delivery or observation.

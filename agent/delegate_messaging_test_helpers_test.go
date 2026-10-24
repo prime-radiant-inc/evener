@@ -23,13 +23,16 @@ import (
 // on a channel the test controls: steps run outside the adapter's lock. An
 // unscripted request is answered with a plain final report.
 type messagingAdapter struct {
-	mu       sync.Mutex
-	rootID   string
-	markers  []string
-	scripts  map[string][]func(llm.Request) llm.Response
-	sessions map[string]string
-	requests map[string][]llm.Request
-	arrived  chan struct{}
+	mu           sync.Mutex
+	rootID       string
+	markers      []string
+	scripts      map[string][]func(llm.Request) llm.Response
+	sessions     map[string]string
+	requests     map[string][]llm.Request
+	arrived      chan struct{}
+	finite       map[string][]func(context.Context, llm.Request) (llm.Response, error)
+	answered     map[string][]llm.Response
+	onUnexpected func(string)
 }
 
 func newMessagingAdapter(markers ...string) *messagingAdapter {
@@ -61,7 +64,7 @@ func (a *messagingAdapter) requestsFor(key string) []llm.Request {
 	return slices.Clone(a.requests[key])
 }
 
-// waitForRequests waits until key's script has answered at least n requests.
+// waitForRequests waits until key's script has received at least n requests.
 func (a *messagingAdapter) waitForRequests(t *testing.T, key string, n int) []llm.Request {
 	t.Helper()
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
@@ -99,10 +102,28 @@ func (a *messagingAdapter) keyLocked(req llm.Request) string {
 	return ""
 }
 
-func (a *messagingAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+// finiteScript opts this adapter into bounded scripts. Exhaustion cancels the
+// provider call instead of manufacturing another successful done response.
+func (a *messagingAdapter) finiteScript(key string, steps ...func(context.Context, llm.Request) (llm.Response, error)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.finite == nil {
+		a.finite = make(map[string][]func(context.Context, llm.Request) (llm.Response, error))
+		a.answered = make(map[string][]llm.Response)
+	}
+	a.finite[key] = append(a.finite[key], steps...)
+}
+
+func (a *messagingAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	a.mu.Lock()
 	key := a.keyLocked(req)
 	a.requests[key] = append(a.requests[key], req)
+	n := len(a.requests[key])
+	finite := a.finite != nil
+	var finiteStep func(context.Context, llm.Request) (llm.Response, error)
+	if steps := a.finite[key]; len(steps) > 0 {
+		finiteStep, a.finite[key] = steps[0], steps[1:]
+	}
 	var step func(llm.Request) llm.Response
 	if steps := a.scripts[key]; len(steps) > 0 {
 		step, a.scripts[key] = steps[0], steps[1:]
@@ -111,6 +132,24 @@ func (a *messagingAdapter) Complete(_ context.Context, req llm.Request) (llm.Res
 	select {
 	case a.arrived <- struct{}{}:
 	default:
+	}
+	if finite {
+		if finiteStep == nil {
+			if a.onUnexpected != nil {
+				a.onUnexpected(fmt.Sprintf("unexpected provider request session=%s script=%s request=%d", req.SessionID, key, n))
+			}
+			return llm.Response{}, context.Canceled
+		}
+		response, err := finiteStep(ctx, req)
+		if err != nil {
+			return llm.Response{}, err
+		}
+		response.ID = fmt.Sprintf("fixture-%s-%s-%d", req.SessionID, key, n)
+		response.Provider, response.Model = a.Name(), req.Model
+		a.mu.Lock()
+		a.answered[key] = append(a.answered[key], response)
+		a.mu.Unlock()
+		return response, nil
 	}
 	response := finalResponse("done")
 	if step != nil {

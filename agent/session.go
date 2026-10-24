@@ -437,7 +437,6 @@ type Session struct {
 	lastTurnEndedAt               time.Time // when the last turn ended (stamped by endTurnLocked); seeded from SessionMeta on restore, mapped out via Meta(). Guarded by mu, like workMillis.
 	lastMessage                   string    // the opening of the last agent message the session wrote (S1d, noteAgentMessageLocked); seeded from SessionMeta on restore, mapped out via Meta(). Guarded by mu.
 	retirementReason              string    // why this session retired (idle, manual, archive); guarded by mu
-	carriedDelegateReport         bool      // the current notification turn presents a delegate report; guarded by mu
 	turnHistoryBaseline           int       // history index of the first turn belonging to the in-flight turn (captured at round 0, adjusted for mid-turn compaction). Turns at or after it are exempt from N4 replay-provenance filtering (fallback rounds keep today's replay semantics). Guarded by mu.
 	history                       []schema.Turn
 	historyRevision               int           // bumped by every publishFoldedHistory publish and every other non-append history mutation (orphaned-tool-result repair, attention-turn replace/remove — see bumpHistoryRevisionLocked), never by an ordinary append. Lets a fold snapshot detect whether a competing publish OR mutation already happened since it started, distinct from the ordinary concurrent appends publishFoldedHistory's merge-back already tolerates. Guarded by mu.

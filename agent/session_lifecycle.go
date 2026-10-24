@@ -978,31 +978,16 @@ const (
 
 // routeNoToolCalls lets notification acknowledgements finish idle. After a
 // terminal communicate, notification silence must not resurrect the run (#329).
-func routeNoToolCalls(kind EntryKind, noContent bool, afterTerminalCommunicate bool, carriedDelegateReport bool) noCallsRoute {
+func routeNoToolCalls(kind EntryKind, noContent bool, afterTerminalCommunicate bool) noCallsRoute {
 	if kind == EntryNotification {
 		if afterTerminalCommunicate {
 			return finishIdle
-		}
-		if carriedDelegateReport {
-			return runNoToolCalls
 		}
 		if !noContent {
 			return finishIdle
 		}
 	}
 	return runNoToolCalls
-}
-
-func (s *Session) carriedDelegateReportSnapshot() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.carriedDelegateReport
-}
-
-// delegateReportAcknowledgementExhausted reports that a notification turn
-// carrying a delegate report already spent its one steering round.
-func delegateReportAcknowledgementExhausted(kind EntryKind, carriedDelegateReport bool, tracker retryTracker) bool {
-	return kind == EntryNotification && carriedDelegateReport && tracker.consecutiveBareText > 0
 }
 
 // drainInputs is the snapshot the drain loop feeds selectDrainNextAction after a
@@ -2084,7 +2069,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	s.restMu.Unlock()
 	s.turnStartedAt = s.sclock().Now()
 	s.comm = communicateResult{}
-	s.carriedDelegateReport = false
 	// A claimed answering steering carrier has already crossed its durable
 	// admission boundary before this carrier turn runs, so preserve its
 	// established entry-clear behavior. Ordinary user input clears only after
@@ -2482,12 +2466,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 					}
 				}
 			}
-			carriedDelegateReport := s.carriedDelegateReportSnapshot()
-			if delegateReportAcknowledgementExhausted(kind, carriedDelegateReport, tracker) {
-				s.finishProcessingAtBoundary(ctx, SessionIdle)
-				return "", progressed, nil
-			}
-			route := routeNoToolCalls(kind, noContent, s.hasAcceptedTerminalCommunicate(), carriedDelegateReport)
+			route := routeNoToolCalls(kind, noContent, s.hasAcceptedTerminalCommunicate())
 			if route == finishIdle {
 				s.finishProcessingAtBoundary(ctx, SessionIdle)
 				return "", progressed, nil
@@ -2982,10 +2961,6 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	}
 	hasSteering := s.hasPendingSteering()
 	hasRootAttention := s.hasPendingNotifications()
-	carriedDelegateReport := hasRootAttention && s.pendingDelegateReport()
-	s.mu.Lock()
-	s.carriedDelegateReport = carriedDelegateReport
-	s.mu.Unlock()
 	// A delegate parked in its finalization drain is woken for its own
 	// notifications, including child reports. The content is already in its
 	// transcript, so the turn's model request carries it. Only

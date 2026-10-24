@@ -48,7 +48,7 @@ func TestRouteNoToolCalls(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := routeNoToolCalls(tt.kind, tt.noContent, tt.afterTerminal, false); got != tt.want {
+			if got := routeNoToolCalls(tt.kind, tt.noContent, tt.afterTerminal); got != tt.want {
 				t.Fatalf("routeNoToolCalls() = %v, want %v", got, tt.want)
 			}
 		})
@@ -3512,21 +3512,23 @@ func stableSupervisionRefusal(sub *subagent) string {
 // has consumed the pending id but not yet committed, and the controller's open
 // run — without waiting on any lock, refusing when a source is busy. It mirrors
 // what the predicate read through the Session helpers
-// (hasPendingDelegateAttentionArmRetry, pendingDelegateAttentionIDs ->
+// (notificationExecutionState, pendingDelegateAttentionIDs ->
 // delegateAttentionFoldLocked) and through delegateTreeController.reservedAttentionID,
 // which take these locks blocking and so could hold the predicate past its bound.
 func stableSupervisionAttentionRefusal(sess *Session) string {
-	// The arm-retry ids and the pending-attention fold are both read under
-	// attentionMu (which also guards the fold cursor); reading them together
-	// under one TryLock is a snapshot at least as strong as the two separate
-	// blocking reads it replaces, so it can never read quiesced where they
-	// would have refused.
+	// Notification retry state belongs to Session.mu, not attentionMu. Release
+	// it before taking attentionMu, which guards the pending-attention fold,
+	// so this bounded probe introduces no nested lock acquisition.
+	if !sess.mu.TryLock() {
+		return "session lock busy"
+	}
+	retrying := sess.notificationSchedule.retry.active
+	sess.mu.Unlock()
+	if retrying {
+		return "attention arm retry pending"
+	}
 	if !sess.attentionMu.TryLock() {
 		return "attention lock busy"
-	}
-	if sess.notificationSchedule.retry.active {
-		sess.attentionMu.Unlock()
-		return "attention arm retry pending"
 	}
 	pending, busy, err := stableSupervisionPendingAttentionLocked(sess)
 	sess.attentionMu.Unlock()
@@ -3558,6 +3560,34 @@ func stableSupervisionAttentionRefusal(sess *Session) string {
 		return fmt.Sprintf("controller runOpen=%t finalizing=%t", runOpen, finalizing)
 	}
 	return ""
+}
+
+func TestStableSupervisionAttentionRefusalTracksNotificationRetry(t *testing.T) {
+	t.Parallel()
+	sess := &Session{}
+	if got := stableSupervisionAttentionRefusal(sess); got != "" {
+		t.Fatalf("idle session refused quiescence: %q", got)
+	}
+	sess.mu.Lock()
+	sess.notificationSchedule.retry.active = true
+	sess.mu.Unlock()
+	if got := stableSupervisionAttentionRefusal(sess); got == "" {
+		t.Fatal("active notification retry read as quiescent")
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	sess.notificationSchedule.retry.active = false
+	result := make(chan string, 1)
+	go func() { result <- stableSupervisionAttentionRefusal(sess) }()
+	// TRIPWIRE: an in-memory TryLock probe must return without waiting.
+	select {
+	case got := <-result:
+		if got == "" {
+			t.Fatal("busy session lock read as quiescent")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("supervision probe blocked behind the session lock")
+	}
 }
 
 // stableSupervisionPendingAttentionLocked lists sess's durable pending attention

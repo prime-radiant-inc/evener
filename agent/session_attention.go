@@ -832,16 +832,6 @@ func (s *Session) hasPendingNotifications() bool {
 	return err != nil || pending
 }
 
-func (s *Session) pendingDelegateReport() bool {
-	ids, _ := s.pendingNotificationIDs()
-	for _, id := range ids {
-		if strings.HasPrefix(id, delegateAttentionID("")) && !isDelegateUpdateAttentionID(id) {
-			return true
-		}
-	}
-	return false
-}
-
 func (s *Session) notificationsRunnable() bool {
 	state := s.notificationExecutionState()
 	return !state.held && !state.recovering && s.hasPendingNotifications()

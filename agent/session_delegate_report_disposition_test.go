@@ -8,10 +8,12 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/llm"
 )
 
-// A valid waiting_on_work call follows the polling wait path, rather than the
-// ordinary finalization drain. A child's report must wake that path too.
+// A valid waiting_on_work call yields a durable checkpoint rather than entering
+// the ordinary finalization drain. A child's report must resume that wait too.
 func TestNotificationReportWakesPollingParent(t *testing.T) {
 	t.Parallel()
 	notificationReportWakesParent(t, true)
@@ -39,27 +41,6 @@ func rootDispositionRegistry(t *testing.T, validate func(context.Context, string
 		t.Fatalf("register communicate: %v", err)
 	}
 	return reg, &delivered
-}
-
-func TestDelegateReportBareTextGetsOneSteeringRound(t *testing.T) {
-	if got := routeNoToolCalls(EntryNotification, false, false, true); got != runNoToolCalls {
-		t.Fatalf("delegate report route = %v, want runNoToolCalls for one steering round", got)
-	}
-	if got := routeNoToolCalls(EntryNotification, false, false, false); got != finishIdle {
-		t.Fatalf("ordinary notification route = %v, want finishIdle", got)
-	}
-}
-
-func TestDelegateReportAcknowledgementSpendsOneRound(t *testing.T) {
-	if delegateReportAcknowledgementExhausted(EntryNotification, true, retryTracker{}) {
-		t.Fatal("the first bare-text acknowledgement was treated as spent")
-	}
-	if !delegateReportAcknowledgementExhausted(EntryNotification, true, retryTracker{consecutiveBareText: 1}) {
-		t.Fatal("the second bare-text acknowledgement was not treated as spent")
-	}
-	if delegateReportAcknowledgementExhausted(EntryUserInput, true, retryTracker{consecutiveBareText: 1}) {
-		t.Fatal("a user-input turn was treated as a report acknowledgement")
-	}
 }
 
 func TestDelegateReportExplicitDoneSettles(t *testing.T) {
@@ -110,20 +91,58 @@ func TestDelegateReportNeedsResponseKeepsExistingQuestion(t *testing.T) {
 	}
 }
 
-func TestDelegateReportCreatesNoAttentionEntry(t *testing.T) {
-	for _, tc := range []struct {
-		id     string
-		report bool
-	}{
-		{"delegate:dlg_target/delivery/1", true},
-		{"delegate:dlg_target/update/1", false},
-		{"watch:job-1", false},
+// Labels are payload semantics, not a reason to demand a second model round.
+// Exercise the real request, synced response and raw consumption records rather
+// than route helpers. An unfinished task is neither input nor a live producer.
+func TestNotificationLabelsShareIdleDisposition(t *testing.T) {
+	t.Parallel()
+	for _, id := range []string{
+		"delegate:dlg_target/delivery/1",
+		"delegate:dlg_target/update/1",
+		"watch:label-731a",
+		"system:label-731a",
 	} {
-		t.Run(tc.id, func(t *testing.T) {
-			s := observationSession(t, &skillContinuationAdapter{}, false)
-			observationEnqueue(t, s, tc.id, "notification payload")
-			if got := s.pendingDelegateReport(); got != tc.report {
-				t.Fatalf("pendingDelegateReport = %t, want %t", got, tc.report)
+		t.Run(id, func(t *testing.T) {
+			a := &skillContinuationAdapter{}
+			s := observationSession(t, a, false)
+			if _, err := s.getOrCreateTaskStore().Append([]task.TaskInput{{Description: "stale-task-731a"}}); err != nil {
+				t.Fatal(err)
+			}
+			const body = "label-payload-731a"
+			observationEnqueue(t, s, id, body)
+			a.steps = []func(llm.Request) (llm.Response, error){func(req llm.Request) (llm.Response, error) {
+				observationRequest(t, req, []string{body}, nil)
+				return llm.Response{Message: llm.Assistant("label-answer-731a")}, nil
+			}}
+			if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+				t.Fatal(err)
+			}
+			if got := len(a.Requests()); got != 1 {
+				t.Fatalf("provider requests = %d, want one independent of payload label", got)
+			}
+			observationReceipts(t, s, [][]string{{id}})
+			accepted, consumed := 0, 0
+			for _, entry := range notificationRawEntries(t, s.TranscriptPath()) {
+				if entry.Turn.AttentionID == id {
+					accepted++
+				}
+				if r := entry.Turn.AttentionResolution; r != nil && r.AttentionID == id && r.Disposition == string(delegateAttentionConsumed) {
+					consumed++
+				}
+			}
+			if accepted != 1 || consumed != 1 {
+				t.Fatalf("acceptances=%d consumed=%d, want one each", accepted, consumed)
+			}
+			assertNotificationPending(t, s, []string{})
+			if s.State() != SessionIdle || s.sessionWorkPending() {
+				t.Fatalf("state=%v pending=%t with only stale task", s.State(), s.sessionWorkPending())
+			}
+			// A second empty wake must not turn the stale task into model work.
+			if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+				t.Fatal(err)
+			}
+			if len(a.Requests()) != 1 || len(s.getOrCreateTaskStore().View()) != 1 {
+				t.Fatalf("empty wake requests=%d tasks=%d", len(a.Requests()), len(s.getOrCreateTaskStore().View()))
 			}
 		})
 	}

@@ -111,6 +111,25 @@ publishes its message, joins the tool batch, syncs a checkpoint, then releases
 model execution capacity without settling its generation. Children, shell jobs,
 watches, callbacks and the original lease remain owned by that generation.
 Unfinished task-list rows alone do not force another turn.
+Report, update, watch and system labels do not earn an extra acknowledgement
+round. After the successful response covers the pending messages, a session
+with no actual work may become idle, even with unfinished task-list rows.
+
+### Rollout and downgrade boundary
+
+Current readers retain historical notification and Stop semantics. That does
+not make older binaries safe readers of newly written state. Copied-state
+checks against `9852924f0e1a06771ed1b985145a07eafefd1e4d` show that its transcript
+reader rejects successful-response receipts and its delegate store rejects
+preserving Stop requests. Its watch fold ignores `RestartSeq`, collapsing
+distinct callback and restart obligations, and its restore reconciliation
+settles a safely yielded generation as `runtime_lost`.
+
+Do not downgrade a state directory after these records have been written.
+Before rollback, stop new admissions and retain a reader that understands all
+written records. Reverting code or deleting records is not a safe rollback.
+Keep a pre-upgrade copy for isolated verification, never restore it over newer
+work. Integration review, CI and approved deployment field checks remain gates.
 
 ### Durable wait yield and recovery
 
