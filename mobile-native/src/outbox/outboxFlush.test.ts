@@ -1,6 +1,8 @@
 import type { ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, expect, it, vi } from "vitest";
+import { DraftLibrary } from "../draftLibrary";
+import { DraftRepository } from "../draftRepository";
 import { reconnectDelay } from "../hubConnection";
 import { NativeMutationRuntime, type NativeMutationRequest } from "../nativeMutationRuntime";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "../sqliteSync.testkit";
@@ -800,4 +802,51 @@ it("resumes a fenced session for a send that was never attempted", async () => {
 	await vi.waitFor(() => expect(methods(client)).toContain("thread/resume"));
 	flush.dispose();
 	await outbox.stop();
+});
+
+it("carries the edited draft to the identity a background resume resolves to", async () => {
+	const outbox = runtime();
+	const openedDrafts = openSqliteSyncDouble();
+	try {
+		const repository = new DraftRepository(openedDrafts.port);
+		const library = new DraftLibrary(() => repository);
+		const from = { hubId: "hub-1", sessionRef: "ref-1" };
+		const to = { hubId: "hub-1", sessionRef: "ref-2" };
+		repository.write(from, {
+			draft: "",
+			unconfirmed: null,
+			composer: { recoveryIds: ["source-a"] },
+		});
+		library.open(from).edit("edited recovered");
+		await outbox.submit(message());
+
+		const client = new FakeClient("ready");
+		let fenced = true;
+		client.on("thread/read", () => (fenced ? fencedRead("ref-1") : read("ref-2")));
+		client.on("thread/resume", () => {
+			fenced = false;
+			return read("ref-2");
+		});
+		client.on("turn/start", applied);
+		const flush = new OutboxFlush(
+			() => outbox,
+			(hubId, fromRef, toRef) => library.handoff({ hubId, sessionRef: fromRef }, { hubId, sessionRef: toRef }),
+		);
+		flush.bind("hub-1", client);
+		try {
+			await vi.waitFor(() => expect(methods(client)).toContain("thread/resume"));
+			await vi.waitFor(() =>
+				expect(repository.read(to)).toMatchObject({
+					draft: "edited recovered",
+					composer: { recoveryIds: ["source-a"] },
+				}),
+			);
+			expect(repository.read(from)).toEqual({ draft: "", unconfirmed: null });
+		} finally {
+			flush.dispose();
+			await outbox.stop();
+		}
+	} finally {
+		openedDrafts.database.close();
+	}
 });

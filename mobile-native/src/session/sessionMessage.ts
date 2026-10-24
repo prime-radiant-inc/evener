@@ -15,6 +15,7 @@ import {
 import { reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
 import { type ConversationClientLike, READ_ITEM_LIMIT } from "../../../mobile/src/services/conversation";
 import { type NativeMutationRuntime, nativeMutationTargetKey } from "../nativeMutationRuntime";
+import type { ResumeDraftHandoff } from "../resumeDraftHandoff";
 import { type SendAction, sendAction } from "./sendAction";
 
 export interface SessionState {
@@ -191,6 +192,9 @@ export async function submitSessionMessage(
 	kind: SessionMessageKind,
 	text: string,
 	resumeFirst = false,
+	/** Carries the session's edited draft to the identity a resume resolved to.
+	 * The session's own screen won't run while this screen is on top. */
+	handoffDraft?: ResumeDraftHandoff,
 ): Promise<void> {
 	await runtime.submit({
 		kind,
@@ -214,6 +218,11 @@ export async function submitSessionMessage(
 		await runtime
 			.settleTarget(target.hubId, target.ref, client, {
 				mayResumeFenced: async () => true,
+				...(handoffDraft === undefined
+					? {}
+					: {
+							onResolvedIdentity: (resolved: string) => handoffDraft(target.hubId, target.ref, resolved),
+						}),
 			})
 			.catch(() => undefined);
 		return;

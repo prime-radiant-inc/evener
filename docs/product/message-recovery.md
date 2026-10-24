@@ -112,8 +112,18 @@ the replacement screen opens: its text, image bytes, skill and command
 selections, recovery source IDs, and any pending submission's capture token and
 settlement markers move together, and recovery resend receipts move with their
 sources. An already-open resumed draft adopts the transferred record
-immediately. The retired ref keeps no draft or recovery ownership. A resumed
-destination that already holds work is left untouched.
+immediately. Every resume path takes this handoff, including the background
+outbox flush and a message sent from a screen above the session. The retired
+ref keeps no draft or recovery ownership. A resumed destination that already
+holds work is left untouched.
+
+A destination write that fails after the mutation rows moved leaves a durable
+pending mapping on the drafts database. A restarted app retries that handoff
+before reconciling the resumed screen and does not restore the source's original
+recovery text while the transfer is still owed. A refused handoff still moves a
+completed built-in command's completion markers to the destination, so
+reconciliation discards those moved rows instead of appending and re-running
+the command on a later Send.
 
 Browser and native outboxes share one receipt-settlement rule from the AppWire
 package (`retainsAcceptedCopy`, `settlementRetiresRecovery`): a `pending` receipt
