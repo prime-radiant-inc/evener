@@ -130,7 +130,9 @@ drafts database that cannot write at all still leaves a handoff to reconstruct
 after restart. If an intermediate identity resolves again before its
 predecessor's handoff retries, the pending predecessor is redirected to the
 newest ref and its old persisted mapping is replaced, so a restart cannot
-replay the retired intermediate. The destination stays pending until the whole
+replay the retired intermediate. If one store rejects that redirect, the
+intermediate edge stays pending and a restart canonicalizes the loaded graph
+through it before any transfer. The destination stays pending until the whole
 chain settles. A restarted app retries that handoff before reconciling the
 resumed screen and does not restore the source's original recovery text while
 the transfer is still owed. A refused handoff still moves a completed built-in
