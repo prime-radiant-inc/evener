@@ -40,6 +40,7 @@ import {
 	type AskBatch,
 	type AskQuestionRef,
 	buildComposerInput,
+	delegateTiming,
 	errorText,
 	formatQuoteBlock,
 	latestTurnId,
@@ -98,7 +99,7 @@ import {
 } from "./questionAnswers";
 import { BarFrame } from "./design/BarFrame";
 import { navBarGlassOptions, reservedUnderGlass, useSystemGlass } from "./design/systemGlass";
-import { listContentMinHeight, underBar, useBarHeight } from "./design/underBar";
+import { FLOAT_GAP, listContentMinHeight, underBar, useBarHeight } from "./design/underBar";
 import { ApprovalDock } from "./session/ApprovalDock";
 import { shrinkingScroller } from "./session/dockCard";
 import { answerWithText } from "./session/askDockCopy";
@@ -283,6 +284,10 @@ export type Routes = {
 		title: string;
 		openedBy?: "next";
 		slideFrom?: "left" | "right";
+		/** A subagent's run start, carried from the row that opened it, so its
+		 * screen times the run as that row does before the coordinator's tree
+		 * reports the delegate (#2988). */
+		runStartedAt?: string;
 	};
 	TasksSheet: { hubId: string; ref: string; threadId: string; hasTasks: boolean };
 	NotesSheet: { hubId: string; ref: string; focusEditor?: boolean };
@@ -322,7 +327,7 @@ export type Routes = {
 	/** Ask a subagent's coordinator to stop it (spec 9, ruling 10). */
 	StopSubagentSheet: { hubId: string; coordinator: Coordinator; ref: string };
 	/** A subagent's own session, over its coordinator's (ruling 30). */
-	Subagent: { hubId: string; ref: string; title: string; coordinator: Coordinator };
+	Subagent: { hubId: string; ref: string; title: string; coordinator: Coordinator; runStartedAt?: string };
 	/** A shell job's detail, over its coordinator's Jobs list. */
 	ShellJob: { hubId: string; jobId: string; ownerRef: string; title: string; coordinator: Coordinator };
 	/** The session's documents as they were when the sheet opened (ruling 26). */
@@ -802,6 +807,11 @@ function ConversationScreenView({
 	// the model keeps its name across a screen pushed over this one and a
 	// rebinding, while the catalog reads again (audit N6).
 	const knownCatalog = useRef<ModelListResponse | null>(null);
+	// The last catalog whose read succeeded, kept for naming only: a later
+	// failed read clears the picker's catalog so it offers no stale choices,
+	// but the chip and the Session sheet must keep the model's name rather
+	// than fall back to its raw id (#2988).
+	const namedCatalog = useRef<ModelListResponse | null>(null);
 	const controls = useMemo(() => {
 		if (!service || !connected || !focused) return null;
 		const refreshSession = async () => {
@@ -972,12 +982,36 @@ function ConversationScreenView({
 	// winding down times its turn instead.
 	const [subagentRow, setSubagentRow] = useState<SubagentRow | null>(null);
 	const [coordinatorThread, setCoordinatorThread] = useState<string | null>(null);
+	// The run start the row that opened this screen carried, so its time agrees
+	// with that row until the panel reads the coordinator's tree (#2988).
+	const routeRunStartedAt = subagentOf === undefined ? undefined : route.params.runStartedAt;
 	const runMs = useCallback(
-		(now: number) => (subagentRow?.state === "running" ? timeInState(subagentRow, now) : null),
-		[subagentRow],
+		(now: number) => {
+			if (subagentRow !== null) {
+				if (subagentRow.state !== "running") return null;
+				const ms = timeInState(subagentRow, now);
+				if (ms !== null) return ms;
+				// A running row with neither run start nor snapshot duration
+				// cannot time itself; keep the opener's fact rather than the
+				// turn's.
+			}
+			if (routeRunStartedAt === undefined) return null;
+			return delegateTiming({ runStartedAt: routeRunStartedAt, terminal: false }, now).durationMs ?? null;
+		},
+		[subagentRow, routeRunStartedAt],
 	);
-	// The room the transcript keeps at its end for what floats over it.
-	const transcriptEnd = transcriptEndRoomAt(useTextScale());
+	// The room the transcript keeps at its end for what floats over it: the
+	// fixed floor, or the tallest stack this screen has stood (with its 10pt
+	// lift) if that is more. It only grows while the screen is mounted, so
+	// controls coming and going never move the list back (#2988).
+	const [floatingHeight, setFloatingHeight] = useState(0);
+	const noteFloatingHeight = useCallback((height: number) => {
+		setFloatingHeight((current) => Math.max(current, height));
+	}, []);
+	const transcriptEnd = Math.max(
+		transcriptEndRoomAt(useTextScale()),
+		floatingHeight > 0 ? floatingHeight + FLOAT_GAP : 0,
+	);
 	// How tall the bottom bar stands over the transcript's end, null until it
 	// lays out: the transcript runs under its glass (design/underBar).
 	const bottomBar = useBarHeight();
@@ -1361,10 +1395,16 @@ function ConversationScreenView({
 	// A subagent row opens the subagent's own session, under its coordinator,
 	// on the coordinator's thread as this screen's panel last read it.
 	const openSubagent = useCallback(
-		(ref: string, title: string) => {
+		(ref: string, title: string, runStartedAt?: string) => {
 			if (!coordinator) return;
 			const current = subagentOf && coordinatorThread ? { ...coordinator, threadId: coordinatorThread } : coordinator;
-			navigation.push("Subagent", { hubId: route.params.hubId, ref, title, coordinator: current });
+			navigation.push("Subagent", {
+				hubId: route.params.hubId,
+				ref,
+				title,
+				coordinator: current,
+				...(runStartedAt === undefined ? {} : { runStartedAt }),
+			});
 		},
 		[navigation, route.params.hubId, coordinator, subagentOf, coordinatorThread],
 	);
@@ -2273,7 +2313,7 @@ function ConversationScreenView({
 	const host = useMemo(() => sessionHosts(fleet.sources, hubName, connected), [fleet.sources, hubName, connected]);
 	// The Board row names the model too (S17), for while the catalog is away.
 	const modelLabel = conversation
-		? modelChipLabel(conversation, controlsState?.catalog?.data, fleetRow?.model_name)
+		? modelChipLabel(conversation, (controlsState?.catalog ?? namedCatalog.current)?.data, fleetRow?.model_name)
 		: "";
 	const sessionInfoHost = useMemo<SessionInfoHost | undefined>(
 		() =>
@@ -2345,6 +2385,7 @@ function ConversationScreenView({
 	const catalog = controlsState?.catalog ?? null;
 	useEffect(() => {
 		if (controls) knownCatalog.current = catalog;
+		if (catalog) namedCatalog.current = catalog;
 	}, [controls, catalog]);
 	// What takes the composer's place when the session can't take a message
 	// yet (ruling 20). A recovery-fenced session keeps the composer: Send is
@@ -3809,6 +3850,7 @@ function ConversationScreenView({
 							pill={newCount > 0 ? <NewContentPill count={newCount} onPress={jumpToLive} /> : null}
 							barHeight={barHeight}
 							composerFocus={composerFocus}
+							onHeight={noteFloatingHeight}
 						/>
 					</View>
 					{/* The bottom bar (spec 8.1): the tray or a dock and the composer,

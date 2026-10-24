@@ -52,7 +52,12 @@ function delegate(over: Partial<EvenerDelegateInfo> & { delegateId: string }): E
 // The subagents the session knows: dlg_2's frame carries no name, so its
 // title can only come from here, and every tap target comes from here.
 const DELEGATES = [
-	delegate({ delegateId: "dlg_1", description: "Fix race in tree settle", transcriptRef: "local:child1" }),
+	delegate({
+		delegateId: "dlg_1",
+		description: "Fix race in tree settle",
+		transcriptRef: "local:child1",
+		runStartedAt: new Date(T0).toISOString(),
+	}),
 	delegate({ delegateId: "dlg_2", description: "Split the retry loop", transcriptRef: "local:child2" }),
 	delegate({ delegateId: "dlg_3", description: "Check drain ordering", transcriptRef: "local:child3" }),
 ];
@@ -177,7 +182,9 @@ describe("delegate and job notifications", () => {
 		expect(detail(tree)).toContain("Done: the settle pass now waits for the drain.");
 		expect(tree.root.findAllByType("SymbolView" as never)[0]?.props.name).toBe("diamond");
 		press(tree);
-		expect(openSubagent).toHaveBeenCalledWith("local:child1", "Fix race in tree settle");
+		// A notification card opens the subagent with the run start its
+		// resolved delegate carries (#2988).
+		expect(openSubagent).toHaveBeenCalledWith("local:child1", "Fix race in tree settle", new Date(T0).toISOString());
 	});
 
 	it("names an unnamed subagent from the session's subagents and shows its failure in red", () => {

@@ -192,7 +192,13 @@ describe("a subagent row", () => {
 		expect(subagentStates(tree)).toEqual(["running"]);
 		expect(stateText(tree)).toMatch(/\d/);
 		act(() => tree.root.findAll((node) => node.props.accessibilityRole === "button")[0]?.props.onPress());
-		expect(openSubagent).toHaveBeenCalledWith(RECEIPT.transcript_ref, "Fix race in tree settle");
+		// The row carries its run's start to the screen it opens, so the two
+		// time the run from one fact (#2988).
+		expect(openSubagent).toHaveBeenCalledWith(
+			RECEIPT.transcript_ref,
+			"Fix race in tree settle",
+			new Date(T0).toISOString(),
+		);
 	});
 
 	it.each(LEVELS)("reads a failed subagent as failed at %s, though its call succeeded", (level) => {

@@ -2,8 +2,10 @@
 // composer or the dock: a toast, then Next at the trailing edge, then
 // "↓ 3 new". They share one column so none can cover another, and each is
 // left out while it has nothing to show, so what does show keeps its 10pt.
-// The transcript keeps a fixed room at its end for them (transcriptEndRoom),
-// never their live height, so their coming and going never moves the list.
+// The stack reports the height it stands so the transcript can keep its
+// newest message clear of all of it (#2988). The screen lets that room only
+// grow while it is mounted, so controls coming and going never move the list
+// back; the first, taller stack lifts a follower's end once.
 import type { ReactNode } from "react";
 import { View } from "react-native";
 import type { Palette } from "../design/tokens";
@@ -44,6 +46,7 @@ export function FloatingStack({
 	pill,
 	barHeight = 0,
 	composerFocus,
+	onHeight,
 }: {
 	toast: ReactNode;
 	next: ReactNode;
@@ -54,12 +57,16 @@ export function FloatingStack({
 	/** How tall the bar under the transcript's end stands; the stack floats
 	 * FLOAT_GAP above it. */
 	barHeight?: number;
+	/** How tall the stack stands: the transcript keeps its end that far clear
+	 * plus its 10pt lift. */
+	onHeight?(height: number): void;
 }) {
 	const typing = useComposerTyping(composerFocus);
 	return (
 		<View
 			pointerEvents="box-none"
 			style={{ position: "absolute", left: 0, right: 0, bottom: barHeight + FLOAT_GAP, gap: 8 }}
+			onLayout={(event) => onHeight?.(event.nativeEvent.layout.height)}
 		>
 			{toast ? (
 				<View pointerEvents="box-none" style={{ alignItems: "center" }}>

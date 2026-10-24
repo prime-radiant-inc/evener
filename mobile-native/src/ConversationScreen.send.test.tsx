@@ -2203,6 +2203,37 @@ describe("following the live end (spec 8.2)", () => {
 		act(() => list(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
 		expect(flatListCalls.some((call) => call.method === "scrollToEnd")).toBe(false);
 	});
+
+	it("keeps the newest message clear of all three floating controls, and never shrinks the room back (#2988)", async () => {
+		// Stop can put the Stopped toast, Next and "↓ 1 new" on screen at once.
+		// Three 44pt rows and their 8pt gaps stand 148pt tall over the 10pt
+		// lift, while the end kept only 60pt.
+		const next = fleetSession("local:fail", {
+			title: "Fix retry loop",
+			state: "errored",
+			updated_at: new Date().toISOString(),
+		});
+		fleet.needsYou = [next];
+		const served = working("ref-follow-stack");
+		const { tree, hub } = await mount(served);
+		await drag(tree, 100);
+		stream(hub, served, "s-stack");
+		expect(pill(tree)).toBeDefined();
+		expect(pressable(tree, "Next, Fix retry loop")).toBeDefined();
+		await press(tree, "Stop");
+		expect(toasts(tree)).toEqual(["stop:stopped"]);
+		const bottom = () => list(tree).props.contentContainerStyle.paddingBottom;
+		expect(bottom()).toBe(60);
+		const stack = tree.root.findByType(FloatingStack);
+		const root = stack.findAll((node) => String(node.type) === "View")[0];
+		act(() => root?.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 148 } } }));
+		expect(bottom()).toBe(158);
+		// The toast's four seconds pass: the room stays where it was, so the
+		// list never moves back under a reader.
+		act(() => tree.root.findByType(Toast).props.dismiss());
+		expect(tree.root.findAllByType(Toast)).toHaveLength(0);
+		expect(bottom()).toBe(158);
+	});
 });
 
 // A ghost can show before the first read lands (ghosts() lists this phone's
@@ -6080,6 +6111,24 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		};
 	}
 
+	/** The coordinator's tree with no delegate row in it, as a read that has
+	 * not landed or a tree that doesn't list this ref yet. */
+	function emptyTree() {
+		return {
+			revision: 1,
+			root: {
+				kind: "session",
+				sessionId: COORDINATOR.threadId,
+				ref: COORDINATOR.ref,
+				label: COORDINATOR.title,
+				aggregate: "working",
+				counts: { active: 1, failed: 0, completed: 0, complete: true },
+				branch: {},
+				entries: [],
+			},
+		};
+	}
+
 	/** The coordinator's thread, as the phone reads it without following it.
 	 * `id` models a coordinator that restarted under a new thread. */
 	function coordinator(stopSubagent: boolean, id = COORDINATOR.threadId) {
@@ -6106,7 +6155,12 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 
 	async function mountSubagent(
 		served: Thread,
-		{ stopSubagent = false, jobs = subagentTree(), coordinatorId = COORDINATOR.threadId } = {},
+		{
+			stopSubagent = false,
+			jobs = subagentTree(),
+			coordinatorId = COORDINATOR.threadId,
+			runStartedAt,
+		}: { stopSubagent?: boolean; jobs?: unknown; coordinatorId?: string; runStartedAt?: string } = {},
 	) {
 		coordinatorHub.tree = jobs;
 		otherThreads.set(COORDINATOR.ref, coordinator(stopSubagent, coordinatorId));
@@ -6120,7 +6174,13 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		const route = {
 			key: "subagent-local:fix",
 			name: "Subagent",
-			params: { hubId: "hub-1", ref: "local:fix", title: "Fix race in tree settle", coordinator: COORDINATOR },
+			params: {
+				hubId: "hub-1",
+				ref: "local:fix",
+				title: "Fix race in tree settle",
+				coordinator: COORDINATOR,
+				...(runStartedAt === undefined ? {} : { runStartedAt }),
+			},
 		};
 		navigationState.state = {
 			index: 2,
@@ -6170,6 +6230,41 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		// Session info times it the same way.
 		const runMs = sessionInfoHosts.get(sheetKey("hub-1", "local:fix"))?.runMs(Date.now()) ?? null;
 		expect(runMs === null ? "" : compactDuration(runMs)).toBe("4m");
+	});
+
+	it("times its run from the row that opened it until the coordinator's tree reports one (#2988)", async () => {
+		// The tree read has no row for this subagent yet, so the screen has only
+		// the run start the Agents list or transcript row opened it with. Its
+		// own turn started two minutes ago; the run started four.
+		vi.mocked(navigation.setOptions).mockClear();
+		const served = subagent(true);
+		(served as unknown as { evener: Record<string, unknown> }).evener.activeTurnStartedAt = new Date(
+			Date.now() - 2 * 60_000,
+		).toISOString();
+		await mountSubagent(served, { jobs: emptyTree(), runStartedAt: RUNNING_SINCE });
+		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
+		const options = calls.map(([options]) => options).findLast((options) => options.headerTitle);
+		if (typeof options?.headerTitle !== "function") throw new Error("no headerTitle");
+		const title = render(<>{options.headerTitle({ children: "Fix race in tree settle" })}</>);
+		expect(renderedText(title)).toContain("Working · 4m");
+		expect(renderedText(title)).not.toContain("Working · 2m");
+	});
+
+	it("keeps the opener's run start when the tree's running row has no timing (#2988)", async () => {
+		// A running row with neither runStartedAt nor runningForMs cannot time
+		// itself; the screen must keep the opener's fact rather than the turn's.
+		vi.mocked(navigation.setOptions).mockClear();
+		const served = subagent(true);
+		(served as unknown as { evener: Record<string, unknown> }).evener.activeTurnStartedAt = new Date(
+			Date.now() - 2 * 60_000,
+		).toISOString();
+		await mountSubagent(served, { jobs: subagentTree({ runStartedAt: undefined }), runStartedAt: RUNNING_SINCE });
+		const calls = vi.mocked(navigation.setOptions).mock.calls as [NativeStackNavigationOptions][];
+		const options = calls.map(([options]) => options).findLast((options) => options.headerTitle);
+		if (typeof options?.headerTitle !== "function") throw new Error("no headerTitle");
+		const title = render(<>{options.headerTitle({ children: "Fix race in tree settle" })}</>);
+		expect(renderedText(title)).toContain("Working · 4m");
+		expect(renderedText(title)).not.toContain("Working · 2m");
 	});
 
 	it("times a still-working subagent by its turn once its row has ended", async () => {
