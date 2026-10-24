@@ -354,6 +354,9 @@ func (s *Session) checkpointCompletedWait(ctx context.Context) error {
 		}
 		checkpoint.DelegateID, checkpoint.Generation = actor.lease.delegateID, actor.lease.generation
 	}
+	if s.stateDir == "" {
+		return nil // Lifetime-local waits have no cold-restart checkpoint promise.
+	}
 	return s.persistWaitCheckpointDurably(checkpoint)
 }
 

@@ -122,14 +122,26 @@ func (s *Session) receiverWatchIDs() []string {
 		if holder == nil || holder.jobManager == nil {
 			continue
 		}
+		matchesReceiver := func(cfg *watchConfig) bool {
+			if cfg == nil {
+				return false
+			}
+			if cfg.receiverSessionID == "" && cfg.receiverDelegateID == "" {
+				// Self watches omit explicit routing keys. Only their owning
+				// manager supplies that implicit identity, never a foreign holder.
+				return holder.jobManager.sessionID == s.id
+			}
+			return watchConfigMatchesReceiver(cfg, s.id, s.owningDelegateID) ||
+				watchConfigMatchesReceiver(cfg, s.id, "")
+		}
 		holder.jobManager.mu.Lock()
 		for _, cfg := range holder.jobManager.watches {
-			if watchConfigMatchesReceiver(cfg, s.id, s.owningDelegateID) {
+			if matchesReceiver(cfg) {
 				ids = append(ids, watchConfigID(cfg))
 			}
 		}
 		for cfg, flushing := range holder.jobManager.terminalFlush {
-			if flushing && watchConfigMatchesReceiver(cfg, s.id, s.owningDelegateID) {
+			if flushing && matchesReceiver(cfg) {
 				ids = append(ids, watchConfigID(cfg))
 			}
 		}
@@ -139,7 +151,7 @@ func (s *Session) receiverWatchIDs() []string {
 			}
 		}
 		for _, retry := range holder.jobManager.stableWatchSettlementRetries {
-			if retry.cfg != nil && watchConfigMatchesReceiver(retry.cfg, s.id, s.owningDelegateID) {
+			if matchesReceiver(retry.cfg) {
 				ids = append(ids, retry.state.DeliveryID)
 			}
 		}

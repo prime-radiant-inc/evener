@@ -3275,8 +3275,10 @@ func (s *Session) notificationSourceAccepted(sourceID string) (bool, error) {
 	}
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
-	if err := s.attachedTranscript().EstablishDurability(); err != nil {
-		return false, err
+	if s.stateDir != "" {
+		if err := s.attachedTranscript().EstablishDurability(); err != nil {
+			return false, err
+		}
 	}
 	fold, err := s.delegateAttentionFoldLocked()
 	if err != nil {

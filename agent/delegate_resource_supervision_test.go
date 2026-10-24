@@ -2744,9 +2744,9 @@ func TestDelegateResourceSupervision_QuietAttentionAppendFailureRetriesSameIdent
 	if err := owner.runDelegateQuietWatchdogTick(nestedLease, nestedClock.Now()); !errors.Is(err, injected) {
 		t.Fatalf("nested quiet arm error = %v, want %v", err, injected)
 	}
-	owner.attentionMu.Lock()
+	owner.mu.Lock()
 	retrying := owner.notificationSchedule.retry.active
-	owner.attentionMu.Unlock()
+	owner.mu.Unlock()
 	controller.mu.Lock()
 	quietNotified := controller.live["dlg_nested"].quietNotified
 	controller.mu.Unlock()
@@ -2763,9 +2763,9 @@ func TestDelegateResourceSupervision_QuietAttentionAppendFailureRetriesSameIdent
 	controller.mu.Lock()
 	ownerAttention := controller.durable["dlg_owner"].NeedsAttention
 	controller.mu.Unlock()
-	owner.attentionMu.Lock()
+	owner.mu.Lock()
 	retrying = owner.notificationSchedule.retry.active
-	owner.attentionMu.Unlock()
+	owner.mu.Unlock()
 	if !ownerAttention || retrying {
 		t.Fatalf("nested quiet arm retry = attention:%t retrying:%t, want true/false", ownerAttention, retrying)
 	}
@@ -3678,11 +3678,11 @@ func stableSupervisionState(root *Session, sub *subagent) string {
 	} else {
 		b.WriteString("controller_lock_busy ")
 	}
-	if root.attentionMu.TryLock() {
+	if root.mu.TryLock() {
 		fmt.Fprintf(&b, "rootRetry{active=%v delay=%v} ", root.notificationSchedule.retry.active, root.notificationSchedule.retry.delay)
-		root.attentionMu.Unlock()
+		root.mu.Unlock()
 	} else {
-		b.WriteString("attention_lock_busy ")
+		b.WriteString("session_lock_busy ")
 	}
 	fatalRun := "subagent_lock_busy"
 	if sub.mu.TryLock() {

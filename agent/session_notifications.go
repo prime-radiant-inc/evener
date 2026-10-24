@@ -462,8 +462,13 @@ func (c *delegateTreeController) requestSessionWake(sessionID string) error {
 		plan := c.escalationPlanLocked(id, c.durable[id], c.delegateAttentionWakeIDsLocked(id))
 		c.mu.Unlock()
 		err := root.escalateOneUnreachableDelegateAttention(plan, readExistingDelegateAttentionFold)
-		if err != nil && !(paused && parkedEscalationStandsDown(err)) {
-			c.scheduleSessionWakeRetry(sessionID)
+		if err != nil {
+			root.warnDelegateAttentionFailed(delegateAttentionEscalateLabel, id, err)
+			if !(paused && parkedEscalationStandsDown(err)) {
+				c.scheduleSessionWakeRetry(sessionID)
+			}
+		} else {
+			root.delegateAttentionWarningResolved(delegateAttentionEscalateLabel, id)
 		}
 		return err
 	}

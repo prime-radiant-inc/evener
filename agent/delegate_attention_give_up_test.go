@@ -1,18 +1,17 @@
 package agent
 
 import (
-	"bytes"
+	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/llm"
 )
 
 // A start or restore that fails for a transient reason (the target was busy,
@@ -313,12 +312,16 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 		fenced.closeParent(t)
 		return fenced
 	}
-	// stableRetry reads the root's stable attention retry: the delay it will
-	// wait next and whether it is armed.
+	// Cold receiver retries belong to the exact delegate under controller.mu.
+	// delay is the next delay, already advanced when the current timer is armed.
 	stableRetry := func(fenced fencedGrandchildAttention) (time.Duration, bool) {
-		fenced.root.attentionMu.Lock()
-		defer fenced.root.attentionMu.Unlock()
-		return fenced.root.notificationSchedule.retry.delay, fenced.root.notificationSchedule.retry.active
+		c := fenced.root.delegateController
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if state := c.attention[fenced.grandchildDelegateID]; state != nil {
+			return state.retry.delay, state.retry.active
+		}
+		return 0, false
 	}
 	// makeGrandchildTranscriptUnreadable sets the grandchild transcript aside
 	// and puts a directory in its place, which stats fine and fails the read.
@@ -361,31 +364,39 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 		}
 	})
 
-	// Not parallel: it swaps the default slog handler to capture the
-	// escalation's warning, which names the missing transcript.
 	t.Run("transcript gone: stays parked and owed, and the retry stands down", func(t *testing.T) {
-		var logged bytes.Buffer
-		previous := slog.Default()
-		slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
-		t.Cleanup(func() { slog.SetDefault(previous) })
 		fenced := parkedUnderClosedParent(t)
+		captured := captureSessionEvents(fenced.root)
 		if err := os.Remove(transcriptPath(fenced.fixture.stateDir, fenced.grandchildSessionID)); err != nil {
-			t.Fatalf("remove grandchild transcript: %v", err)
+			t.Fatal(err)
 		}
-
-		fenced.root.delegateController.recheckNotificationReceivers()
-
+		for range 2 {
+			err := fenced.root.delegateController.requestSessionWake(fenced.grandchildSessionID)
+			if !errors.Is(err, errDelegateAttentionSourceMissing) || !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("missing escalation source error = %v", err)
+			}
+		}
 		if owed, parked := fenced.owedAndParked(); !owed || !parked {
-			t.Fatalf("after a failed strict escalation: owed=%t parked=%t, want the attention kept and parked", owed, parked)
+			t.Fatalf("after missing escalation source: owed=%t parked=%t", owed, parked)
 		}
-		// The delegate already said it is undeliverable; its failed
-		// escalation must not re-arm the retry, or the drive re-runs it
-		// every backoff tick forever.
-		if _, retryArmed := stableRetry(fenced); retryArmed {
-			t.Fatal("a parked delegate's failed escalation armed the stable attention retry")
+		if _, active := stableRetry(fenced); active {
+			t.Fatal("permanently missing parked source armed a retry")
 		}
-		if got := logged.String(); !strings.Contains(got, "delegate attention failed") || !strings.Contains(got, "no such file or directory") {
-			t.Fatalf("daemon log = %q, want the escalation's failure naming the missing transcript", got)
+		fenced.root.delegateAttentionWarnMu.Lock()
+		_, warned := fenced.root.delegateAttentionWarned[delegateAttentionWarning{action: delegateAttentionEscalateLabel, delegateID: fenced.grandchildDelegateID}]
+		fenced.root.delegateAttentionWarnMu.Unlock()
+		if !warned {
+			t.Error("missing source did not record its exact warning episode")
+		}
+		fenced.root.Close()
+		warnings := 0
+		for _, warning := range warningEvents(<-captured) {
+			if warning.Code == events.WarningCodeDelegateAttentionRestore {
+				warnings++
+			}
+		}
+		if warnings != 1 {
+			t.Fatalf("warnings in one failure episode = %d want1", warnings)
 		}
 	})
 
@@ -405,8 +416,8 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 		}
 		clk.Advance(jobNotificationRetryInitialDelay)
 		clk.Drain()
-		if delay, _ := stableRetry(fenced); delay != 2*jobNotificationRetryInitialDelay {
-			t.Fatalf("retry delay after one failed pass = %v, want it backed off to %v", delay, 2*jobNotificationRetryInitialDelay)
+		if delay, _ := stableRetry(fenced); delay != 4*jobNotificationRetryInitialDelay {
+			t.Fatalf("retry delay after one failed pass = %v, want it backed off to %v", delay, 4*jobNotificationRetryInitialDelay)
 		}
 	})
 
@@ -421,8 +432,8 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 		fenced.root.delegateController.recheckNotificationReceivers()
 		clk.Advance(jobNotificationRetryInitialDelay)
 		clk.Drain()
-		if backedOff, _ := stableRetry(fenced); backedOff != 2*jobNotificationRetryInitialDelay {
-			t.Fatalf("this test is not in the state it means to be: retry delay after one failed pass = %v, want %v", backedOff, 2*jobNotificationRetryInitialDelay)
+		if backedOff, _ := stableRetry(fenced); backedOff != 4*jobNotificationRetryInitialDelay {
+			t.Fatalf("this test is not in the state it means to be: retry delay after one failed pass = %v, want %v", backedOff, 4*jobNotificationRetryInitialDelay)
 		}
 		restoreTranscript()
 
@@ -431,8 +442,18 @@ func TestAParkedDelegateIsEscalatedStrictlyWhenItsAncestorCloses(t *testing.T) {
 		if owed, parked := fenced.owedAndParked(); owed || parked {
 			t.Fatalf("after escalation: owed=%t parked=%t, want neither", owed, parked)
 		}
-		if delay, _ := stableRetry(fenced); delay != jobNotificationRetryInitialDelay {
-			t.Fatalf("retry delay after the escalation succeeded = %v, want it reset to %v", delay, jobNotificationRetryInitialDelay)
+		if delay, active := stableRetry(fenced); delay != 0 || active {
+			t.Fatalf("settled receiver retained retry: next=%v active=%v", delay, active)
+		}
+		fenced.root.delegateAttentionWarnMu.Lock()
+		_, warned := fenced.root.delegateAttentionWarned[delegateAttentionWarning{action: delegateAttentionEscalateLabel, delegateID: fenced.grandchildDelegateID}]
+		fenced.root.delegateAttentionWarnMu.Unlock()
+		if warned {
+			t.Error("recovery retained the warning episode")
+		}
+		fenced.root.delegateController.scheduleSessionWakeRetry(fenced.grandchildSessionID)
+		if delay, active := stableRetry(fenced); !active || delay != 2*jobNotificationRetryInitialDelay {
+			t.Fatalf("new episode did not restart at initial armed delay: next=%v active=%v", delay, active)
 		}
 	})
 }
@@ -514,39 +535,68 @@ func TestOnlyAMissingTranscriptStandsAParkedEscalationDown(t *testing.T) {
 func TestABackoffResetHoldsAcrossAnArmedRetry(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClock()
-	root, controller := quietHubTestSession(t, clk)
-	seedDelegateControllerIdle(t, controller, "dlg_pending", "")
-	if !controller.noteDelegateAttention("dlg_pending", "delegate:dlg_pending") {
-		t.Fatal("note attention")
+	root := newSession(t, withoutGitSnapshot(), withClock(clk), withConfig(SessionConfig{StateDir: t.TempDir()}), withSteps(
+		func(llm.Request) llm.Response { return finalResponse("initialized-85") },
+		func(llm.Request) llm.Response { return finalResponse("recovered-85") },
+	))
+	if _, err := root.ProcessInput(context.Background(), "initialize", nil); err != nil {
+		t.Fatal(err)
 	}
-	if !controller.hasPendingDelegateAttention() {
-		t.Fatal("this test is not in the state it means to be: no attention is pending")
+	observationEnqueue(t, root, "armed-reset-85", "armed-reset-payload-85")
+	path := transcriptPath(root.stateDir, root.ID())
+	if err := os.Rename(path, path+".aside"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
 	}
 	const staleDelay = 2 * time.Second
-	root.attentionMu.Lock()
-	root.notificationSchedule.retry.delay = staleDelay
-	root.attentionMu.Unlock()
-	root.scheduleNotificationRetry()
-	root.attentionMu.Lock()
-	armedGeneration := root.notificationSchedule.retry.generation
-	root.attentionMu.Unlock()
-
 	root.mu.Lock()
-	root.notificationSchedule.retry.delay = jobNotificationRetryInitialDelay
+	root.notificationSchedule.retry.delay = staleDelay
 	root.mu.Unlock()
-
-	root.attentionMu.Lock()
+	root.scheduleNotificationRetry()
+	root.mu.Lock()
+	armedGeneration := root.notificationSchedule.retry.generation
+	root.notificationSchedule.retry.delay = jobNotificationRetryInitialDelay
 	active, generation := root.notificationSchedule.retry.active, root.notificationSchedule.retry.generation
-	root.attentionMu.Unlock()
+	root.mu.Unlock()
 	if !active || generation != armedGeneration {
-		t.Fatalf("after the reset: active=%t generation=%d, want the armed retry kept (active, generation %d)", active, generation, armedGeneration)
+		t.Fatalf("reset lost armed retry: active=%v generation=%d want=%d", active, generation, armedGeneration)
 	}
-	clk.Advance(staleDelay)
+	clk.Advance(staleDelay - time.Nanosecond)
 	clk.Drain()
-	root.attentionMu.Lock()
+	root.mu.Lock()
+	active = root.notificationSchedule.retry.active
+	generation = root.notificationSchedule.retry.generation
+	root.mu.Unlock()
+	if !active || generation != armedGeneration {
+		t.Fatal("reset changed the already armed deadline")
+	}
+	clk.Advance(time.Nanosecond)
+	clk.Drain()
+	root.mu.Lock()
 	delay := root.notificationSchedule.retry.delay
-	root.attentionMu.Unlock()
-	if delay != 2*jobNotificationRetryInitialDelay {
-		t.Fatalf("retry delay after the armed retry fired = %v, want %v backed off from the reset delay", delay, 2*jobNotificationRetryInitialDelay)
+	active = root.notificationSchedule.retry.active
+	generation = root.notificationSchedule.retry.generation
+	root.mu.Unlock()
+	if !active || generation != armedGeneration+1 || delay != 2*jobNotificationRetryInitialDelay {
+		t.Fatalf("next failed pass did not back off from reset: active=%v generation=%d next=%v", active, generation, delay)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path+".aside", path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	assertNotificationPending(t, root, []string{})
+	root.mu.Lock()
+	active = root.notificationSchedule.retry.active
+	delay = root.notificationSchedule.retry.delay
+	root.mu.Unlock()
+	if active || delay != jobNotificationRetryInitialDelay {
+		t.Fatalf("recovery retry active=%v next=%v", active, delay)
 	}
 }
