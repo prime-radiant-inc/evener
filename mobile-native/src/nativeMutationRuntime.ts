@@ -841,17 +841,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 			// view retired, whose binding moved, or whose canonical/pending facts
 			// changed refuses here with a non-storage error, so no row and no
 			// request are made. Ordinary Send/Queue carry no precondition.
-			if (request.precondition !== undefined) {
-				const accepted = request.precondition();
-				console.log(
-					`RETRY_DIAG_PRECONDITION_SITE ${JSON.stringify({
-						site: "enqueue",
-						accepted,
-						method: intent.method,
-					})}`,
-				);
-				if (!accepted) throw new MutationNotSentError();
-			}
+			if (request.precondition !== undefined && !request.precondition()) throw new MutationNotSentError();
 			const record = await this.#outbox.enqueueIntent(intent, undefined, barrier);
 			this.#rememberSubmitted(record.targetRef, record.clientMutationId, record.createdAt);
 			this.#notifyStorageChange([record.targetRef]);
@@ -879,17 +869,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		// Storage failed after the first check; the local facts may have moved on
 		// while it did. Recheck before the plain request, which has no durable row
 		// to own a later refusal.
-		if (request.precondition !== undefined) {
-			const accepted = request.precondition();
-			console.log(
-				`RETRY_DIAG_PRECONDITION_SITE ${JSON.stringify({
-					site: "direct-fallback",
-					accepted,
-					method: intent.method,
-				})}`,
-			);
-			if (!accepted) throw new MutationNotSentError();
-		}
+		if (request.precondition !== undefined && !request.precondition()) throw new MutationNotSentError();
 		const client = this.#targets.get(intent.targetRef)?.client;
 		if (!client || client.state !== "ready") throw storageError;
 		const call = client.request as unknown as (method: string, params: Record<string, unknown>) => Promise<unknown>;

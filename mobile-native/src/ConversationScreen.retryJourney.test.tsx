@@ -187,43 +187,21 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 			if (!entry) throw new Error("the shared conversation entry was not attached");
 			return entry;
 		};
-		const outbox = async (hubId: string) => {
-			const runtime = getNativeMutationRuntime();
-			return runtime.storage.listOutbox(nativeMutationTargetKey(hubId, scenario.ref));
+		// The unresolved submission may already have moved from the outbox to the
+		// accepted optimistic projection while its response is held. Both are the
+		// same durable identity; assert that identity rather than an unheld outbox
+		// row that a fast hub can settle before the first observation.
+		const durableRows = async (hubId: string) => {
+			const rows = await getNativeMutationRuntime().read(nativeMutationTargetKey(hubId, scenario.ref));
+			return [...rows.outbox, ...rows.optimistic];
 		};
 		const waitFor = async (check: () => Promise<void> | void, timeout = 10000) => {
 			await act(async () => {
 				await vi.waitFor(check, { timeout });
 			});
 		};
-		// TEMP CI DIAGNOSTIC: removed after the browser-guard run.
-		const retryDiagFacts = (tree: ReactTestRenderer, hubId: string, turnId: string) => {
-			const active = activeEntry(hubId);
-			const state = active.store.getState();
-			const button = retryButtonForTurn(tree, turnId);
-			return {
-				turnId,
-				actionFound: button !== undefined,
-				actionDisabled: button?.props.disabled ?? null,
-				entryServiceNull: active.service === null,
-				latestReadState: state.latestReadState,
-				pendingMutationsReady: state.pendingMutationsReady,
-				canonicalTurnId: state.canonicalSession()?.turns.at(-1)?.id ?? null,
-				attachmentCount: active.attachmentCount,
-			};
-		};
-		const logPress = (tree: ReactTestRenderer, hubId: string, turnId: string) =>
-			console.log(`RETRY_DIAG_PRESS ${JSON.stringify(retryDiagFacts(tree, hubId, turnId))}`);
-		const waitOutbox = async (tree: ReactTestRenderer, hubId: string, count: number, turnId?: string) => {
-			try {
-				await waitFor(async () => expect(await outbox(hubId)).toHaveLength(count));
-			} catch (error) {
-				if (turnId !== undefined) {
-					console.log(`RETRY_DIAG_NO_ROW ${JSON.stringify(retryDiagFacts(tree, hubId, turnId))}`);
-				}
-				throw error;
-			}
-		};
+		const waitDurable = (hubId: string, count: number) =>
+			waitFor(async () => expect(await durableRows(hubId)).toHaveLength(count));
 		const openProvider = async () => {
 			await untilRendered(() => expect(connection?.loading).toBe(false));
 			await act(async () => {
@@ -411,14 +389,14 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 				wire.holdResponses("thread/read");
 				wire.holdNotifications("history/updated", "overlay/upserted", "overlay/delta", "overlay/reset", "overlay/end");
 				await waitRetryReady(failed);
-				logPress(tree, hubId, failed);
 				await pressButton(retryButtonForTurn(tree, failed)!);
-				await waitOutbox(tree, hubId, 1, failed);
-				const [row] = await outbox(hubId);
+				await waitFor(() => expect(wire.requests).toHaveLength(1));
+				const heldIdentity = wire.requests[0]?.params.clientMutationId;
+				await waitDurable(hubId, 1);
+				const [row] = await durableRows(hubId);
 				expect(row?.payload.input).toEqual([{ type: "text", text: "continue" }]);
-				expect(wire.requests).toHaveLength(1);
-				await waitFor(() => expect(wire.requests[0]?.params.input).toEqual([{ type: "text", text: "continue" }]));
-				expect(wire.requests[0]?.params.clientMutationId).toBe(row?.clientMutationId);
+				expect(wire.requests[0]?.params.input).toEqual([{ type: "text", text: "continue" }]);
+				expect(row?.clientMutationId).toBe(heldIdentity);
 				expectDraftIntact(document);
 				// While the acceptance reply is held, both views report the shared
 				// unresolved own submission; repeated and background presses add
@@ -433,7 +411,7 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 				expectInactive();
 				await act(async () => stale());
 				expect(wire.requests).toHaveLength(1);
-				await waitOutbox(tree, hubId, 1);
+				await waitDurable(hubId, 1);
 				milestone(fixture.milestonePath, "retry-held", { clientMutationId: row?.clientMutationId });
 				wire.releaseResponses("turn/start");
 				wire.releaseResponses("thread/read");
@@ -511,15 +489,13 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 				const document = await stageDraft(hubId);
 				wire.holdResponses("turn/start");
 				await waitRetryReady(newerFailure);
-				logPress(tree, hubId, newerFailure);
 				await pressButton(retryButtonForTurn(tree, newerFailure)!);
-				await waitOutbox(tree, hubId, 1, newerFailure);
-				const [row] = await outbox(hubId);
-				expect(row?.payload.input).toEqual([{ type: "text", text: "continue" }]);
 				await waitFor(() => expect(wire.requests).toHaveLength(3));
-				expect(row?.clientMutationId).toBe(wire.requests[2]?.params.clientMutationId);
+				const heldIdentity = wire.requests[2]?.params.clientMutationId;
+				expect(heldIdentity).toEqual(expect.any(String));
+				expect(wire.requests[2]?.params.input).toEqual([{ type: "text", text: "continue" }]);
 				expectDraftIntact(document);
-				milestone(fixture.milestonePath, "newest-retry", { clientMutationId: row?.clientMutationId });
+				milestone(fixture.milestonePath, "newest-retry", { clientMutationId: heldIdentity });
 				wire.releaseResponses("turn/start");
 				await untilRendered(() =>
 					expect(tree.root.findAllByType("EnrichedMarkdownText" as never).map((node) => node.props.markdown)).toContain(
@@ -543,21 +519,21 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 				wire.armed = true;
 				wire.holdResponses("thread/read");
 				await waitRetryReady(failed);
-				logPress(tree, hubId, failed);
 				await pressButton(retryButtonForTurn(tree, failed)!);
 				await untilRendered(() => expect(wire.dropped).toBe(1));
-				await waitOutbox(tree, hubId, 1, failed);
-				const [row] = await outbox(hubId);
-				expect(row?.payload.input).toEqual([{ type: "text", text: "continue" }]);
 				await waitFor(() => expect(wire.requests).toHaveLength(1));
-				expect(row?.clientMutationId).toBe(wire.requests[0]?.params.clientMutationId);
+				const heldIdentity = wire.requests[0]?.params.clientMutationId;
+				await waitDurable(hubId, 1);
+				const [row] = await durableRows(hubId);
+				expect(row?.payload.input).toEqual([{ type: "text", text: "continue" }]);
+				expect(row?.clientMutationId).toBe(heldIdentity);
 				// Neither a fresh provider nor reconnect is allowed to certify
 				// loaded-empty while these real durable rows remain unresolved.
 				const remounted = await remount();
 				expect(remounted.store.getState().canonicalSession()).toBeNull();
 				expectInactive();
 				await act(async () => stale());
-				const beforeRelease = await outbox(hubId);
+				const beforeRelease = await durableRows(hubId);
 				expect(beforeRelease).toHaveLength(1);
 				expect(beforeRelease[0]?.clientMutationId).toBe(row?.clientMutationId);
 				expectDraftIntact(document);
@@ -593,7 +569,6 @@ it.skipIf(!process.env.EVENER_RETRY_JOURNEY)(
 			wire.mode = scenario.mode;
 			wire.armed = true;
 			await waitRetryReady(failed);
-			logPress(tree, hubId, failed);
 			await pressButton(retryButtonForTurn(tree, failed)!);
 			await untilRendered(() => expect(wire.requests.length).toBeGreaterThanOrEqual(1));
 			expect(wire.requests[0]?.params.input).toEqual([{ type: "text", text: "continue" }]);
