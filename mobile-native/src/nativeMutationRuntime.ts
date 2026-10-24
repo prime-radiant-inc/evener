@@ -59,6 +59,11 @@ type NativeStorage = MutationOutboxStorage<MutationAttachmentRef> &
 		/** Identity-changing resumes whose draft handoff is still owed. */
 		readResumeIdentities(): ResumeIdentityEdge[];
 		removeResumeIdentity(from: ResumeIdentityEndpoint, to: ResumeIdentityEndpoint): void;
+		redirectResumeIdentity(
+			from: ResumeIdentityEndpoint,
+			previousTo: ResumeIdentityEndpoint,
+			to: ResumeIdentityEndpoint,
+		): void;
 		pruneUnlistedAccepted(
 			targetRef: string,
 			acceptedBefore: number,

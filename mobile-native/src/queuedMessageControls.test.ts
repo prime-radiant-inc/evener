@@ -371,6 +371,73 @@ test("a draft-database write failure leaves a durable handoff the restart retrie
 	expect(f.repository.read(destination)).toEqual({ draft: "", unconfirmed: null });
 });
 
+test("a chained resume redirects a pending predecessor and keeps the destination pending", async () => {
+	const f = fixture();
+	// A completed built-in marker and an edited composition both live at A.
+	const completed = await f.enqueue();
+	f.document.edit("current");
+	await editQueuedMessageIntoDraft(f.runtime, key, completed, f.document);
+	await f.document.submitBuiltinCommand(async () => true);
+	const captured = await f.enqueue();
+	await editQueuedMessageIntoDraft(f.runtime, key, captured, f.document);
+	f.document.edit("edited recovered");
+	// A waiting message moves with the recovery rows on each retarget.
+	await f.enqueue();
+	expect(f.repository.read(destination)).toMatchObject({
+		draft: "edited recovered",
+		composer: { recoveryIds: [captured] },
+		completedCommandRecoveryIds: [completed],
+	});
+
+	const bRef = "session-b";
+	const cRef = "session-c";
+	const bDestination = { hubId: destination.hubId, sessionRef: bRef };
+	const cDestination = { hubId: destination.hubId, sessionRef: cRef };
+	const bKey = nativeMutationTargetKey(destination.hubId, bRef);
+	const cKey = nativeMutationTargetKey(destination.hubId, cRef);
+	expect(
+		f.runtime.storage.retarget(key, {
+			ref: bKey,
+			wireRef: bRef,
+			threadId: "thread-b",
+			instanceId: "instance-b",
+		}),
+	).toHaveLength(1);
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+
+	// A->B is pending because every drafts write is refused.
+	f.drafts.exec("PRAGMA query_only = ON");
+	expect(library.handoff(destination, bDestination)).toBe(false);
+	f.drafts.exec("PRAGMA query_only = OFF");
+
+	// B resolves to C before A->B retries. B holds no composition of its own.
+	expect(
+		f.runtime.storage.retarget(bKey, {
+			ref: cKey,
+			wireRef: cRef,
+			threadId: "thread-c",
+			instanceId: "instance-c",
+		}),
+	).toHaveLength(1);
+	expect(library.handoff(bDestination, cDestination)).toBe(true);
+	expect(library.hasPendingHandoff(cDestination)).toBe(true);
+
+	library.retryPendingHandoffs();
+	expect(f.repository.read(cDestination)).toMatchObject({
+		draft: "edited recovered",
+		composer: { recoveryIds: [captured] },
+		completedCommandRecoveryIds: [completed],
+	});
+	expect(f.repository.read(bDestination)).toEqual({ draft: "", unconfirmed: null });
+	expect(f.repository.read(destination)).toEqual({ draft: "", unconfirmed: null });
+	expect(library.hasPendingHandoff(cDestination)).toBe(false);
+	expect(f.runtime.storage.readResumeIdentities()).toEqual([]);
+});
+
 test("multiple-source completion preserves newer draft, image, and older cleanup markers", async () => {
 	const f = fixture();
 	const first = await richSource(f);

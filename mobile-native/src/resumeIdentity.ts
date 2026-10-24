@@ -16,4 +16,11 @@ export interface ResumeIdentityEdge {
 export interface ResumeIdentityLedger {
 	readResumeIdentities(): readonly ResumeIdentityEdge[];
 	removeResumeIdentity(from: ResumeIdentityEndpoint, to: ResumeIdentityEndpoint): void;
+	/** Redirect a still-pending source from an intermediate ref to the ref the
+	 * intermediate resume resolved to. */
+	redirectResumeIdentity(
+		from: ResumeIdentityEndpoint,
+		previousTo: ResumeIdentityEndpoint,
+		to: ResumeIdentityEndpoint,
+	): void;
 }

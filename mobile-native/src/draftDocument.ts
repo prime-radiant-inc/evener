@@ -157,6 +157,10 @@ export class DraftDocument {
 	// submission already in flight outlives its screen, and its completion must
 	// clear the capture at the destination that now owns the record.
 	private successor: DraftDocument | undefined;
+	// The identity a resume resolved to. Unlike `successor`, this is published
+	// even when the handoff is refused: the mounted screen must follow the
+	// resumed ref while both this draft and the destination's stay in place.
+	private resolvedDestination: DraftDestination | undefined;
 
 	imagePreviews(images: DraftImage[] = this.snapshot.record.images ?? []): InputAttachment[] {
 		return images.map((image) => {
@@ -189,9 +193,12 @@ export class DraftDocument {
 	/** The identity this document was retired into by an identity-changing
 	 * resume, or undefined while it still owns its own destination. */
 	get resolvedRef(): string | undefined {
-		let successor = this.successor;
-		while (successor?.successor) successor = successor.successor;
-		return successor?.destination.sessionRef;
+		if (this.successor) {
+			let successor = this.successor;
+			while (successor.successor) successor = successor.successor;
+			return successor.destination.sessionRef;
+		}
+		return this.resolvedDestination?.sessionRef;
 	}
 
 	getSnapshot = (): DraftSnapshot => this.snapshot;
@@ -292,11 +299,25 @@ export class DraftDocument {
 	retireInto(successor: DraftDocument): void {
 		if (successor === this) return;
 		this.successor = successor;
+		this.resolvedDestination = successor.destination;
 		this.retired = true;
 		this.unsavedImages.clear();
 		// A mounted screen holds this document. Notify it so it can follow the
 		// resolved identity instead of keeping a document whose edits and sends
 		// now refuse work.
+		this.update({});
+	}
+
+	/** Publish the ref a resume resolved to without retiring this draft. A
+	 * refused handoff keeps this composition where it is and the destination's
+	 * composition untouched, while the mounted screen still follows the ref. */
+	resolveIdentity(destination: DraftDestination): void {
+		if (
+			this.resolvedDestination?.hubId === destination.hubId &&
+			this.resolvedDestination.sessionRef === destination.sessionRef
+		)
+			return;
+		this.resolvedDestination = destination;
 		this.update({});
 	}
 

@@ -12,7 +12,7 @@ import { useConnection } from "../ConnectionProvider";
 import { getNativeMutationRuntime } from "../nativeMutationRuntime";
 import { handoffNativeResumeDraft } from "../nativeDrafts";
 import type { Routes } from "../screens";
-import { returnToSession } from "../session/returnToSession";
+import { returnToSessionFromSheet } from "../session/returnToSession";
 import type { SendAction } from "../session/sendAction";
 import { SendButton } from "../session/SendButton";
 import { readSendAction, type SessionTarget, submitSessionMessage } from "../session/sessionMessage";
@@ -98,7 +98,7 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 		memory.clearComments(key);
 		// The resume may have moved the session; return to the identity it
 		// resolved to, not the retired ref whose draft and rows no longer exist.
-		sheet.finish(() => returnToSession(navigation, { hubId, ref: resolvedRef, title: sessionTitle }));
+		returnToSessionFromSheet(sheet, navigation, { hubId, ref: resolvedRef, title: sessionTitle });
 	};
 
 	const why = !online
