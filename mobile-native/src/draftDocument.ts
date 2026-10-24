@@ -303,6 +303,22 @@ export class DraftDocument {
 			return false;
 		}
 	}
+	/** Keep a completed built-in command's sources out of automatic restore and
+	 * replay after their rows moved to this destination, even when this
+	 * composition refuses the draft itself. Reconciliation discards them and
+	 * clears the marker once cleanup succeeds. */
+	adoptCompletedCommandRecovery(ids: readonly string[]): boolean {
+		if (this.forgotten || this.retired || !ids.length) return true;
+		const current = this.snapshot.record;
+		const completed = [...new Set([...(current.completedCommandRecoveryIds ?? []), ...ids])];
+		if (completed.length === (current.completedCommandRecoveryIds?.length ?? 0)) return true;
+		try {
+			this.persist({ ...current, completedCommandRecoveryIds: completed }, true);
+			return true;
+		} catch {
+			return false;
+		}
+	}
 	edit(text: string) {
 		if (!this.snapshot.loaded || this.retired) return;
 		const record = this.snapshot.record;

@@ -325,4 +325,58 @@ describe("drafts across navigation", () => {
 		expect(source.getSnapshot().loaded).toBe(false);
 		expect(repository.read(from)).toEqual({ draft: "", unconfirmed: null });
 	});
+
+	it("recovers a pending handoff from disk after an app restart before restoring sources", () => {
+		const { library, repository, db } = setup();
+		const from = { hubId: "one", sessionRef: "old" };
+		const to = { hubId: "one", sessionRef: "resumed" };
+		repository.write(from, {
+			draft: "",
+			unconfirmed: null,
+			composer: { recoveryIds: ["source-a"] },
+		});
+		library.open(from).edit("edited recovered");
+		// The destination write fails while the mutation rows have already moved:
+		// the pending mapping must outlive this process on the drafts database.
+		db.exec(
+			"CREATE TRIGGER reject_destination BEFORE INSERT ON drafts WHEN NEW.session_ref = 'resumed' BEGIN SELECT RAISE(ABORT, 'write rejected'); END",
+		);
+		expect(library.handoff(from, to)).toBe(false);
+		expect(repository.read(from).draft).toBe("edited recovered");
+		db.exec("DROP TRIGGER reject_destination");
+
+		// A restart builds a new library. The resumed screen opens before any
+		// retry, and the pending mapping keeps it from restoring the source's
+		// original recovery text.
+		const restarted = new DraftLibrary(() => repository);
+		expect(restarted.hasPendingHandoff(to)).toBe(true);
+		expect(restarted.open(to).getSnapshot().record.draft).toBe("");
+
+		restarted.retryPendingHandoffs();
+		expect(restarted.hasPendingHandoff(to)).toBe(false);
+		expect(repository.read(to)).toMatchObject({
+			draft: "edited recovered",
+			composer: { recoveryIds: ["source-a"] },
+		});
+		expect(repository.read(from)).toEqual({ draft: "", unconfirmed: null });
+	});
+
+	it("preserves completed command markers at an occupied resumed destination", () => {
+		const { library, repository } = setup();
+		const from = { hubId: "one", sessionRef: "old" };
+		const to = { hubId: "one", sessionRef: "resumed" };
+		repository.write(from, {
+			draft: "",
+			unconfirmed: null,
+			composer: { recoveryIds: ["done"] },
+			completedCommandRecoveryIds: ["done"],
+		});
+		repository.write(to, { draft: "existing destination work", unconfirmed: null });
+		const destination = library.open(to);
+
+		expect(library.handoff(from, to)).toBe(false);
+		expect(destination.getSnapshot().record.draft).toBe("existing destination work");
+		expect(destination.getSnapshot().record.completedCommandRecoveryIds).toEqual(["done"]);
+		expect(repository.read(to).completedCommandRecoveryIds).toEqual(["done"]);
+	});
 });

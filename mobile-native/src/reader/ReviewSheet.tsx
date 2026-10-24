@@ -10,6 +10,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { useConnection } from "../ConnectionProvider";
 import { getNativeMutationRuntime } from "../nativeMutationRuntime";
+import { handoffNativeResumeDraft } from "../nativeDrafts";
 import type { Routes } from "../screens";
 import { returnToSession } from "../session/returnToSession";
 import type { SendAction } from "../session/sendAction";
@@ -86,6 +87,7 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 				now.action === "queue" ? "queue" : "send",
 				reviewMessage(reviewDocumentName({ path, root, readTarget }), verdict, comments, note),
 				now.action === "resume",
+				handoffNativeResumeDraft,
 			);
 		} catch (error) {
 			setFailure(error instanceof Error ? error.message : String(error));

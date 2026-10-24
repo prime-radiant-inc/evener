@@ -19,6 +19,7 @@
 // registration go.
 import type { AppwireClientLike } from "@evener/appwire-client";
 import { reconnectDelay } from "../hubConnection";
+import type { ResumeDraftHandoff } from "../resumeDraftHandoff";
 
 export type SettleResult = "open" | "reconciled" | "blocked" | "resumed" | "retry" | "stale" | "unregistered";
 
@@ -41,7 +42,7 @@ export interface FlushRuntime {
 		hubId: string,
 		targetRef: string,
 		client: AppwireClientLike,
-		options?: { mayResumeFenced?: () => Promise<boolean> },
+		options?: { mayResumeFenced?: () => Promise<boolean>; onResolvedIdentity?: (ref: string) => void },
 	): Promise<SettleResult>;
 	subscribeStorage(listener: (targetRefs: readonly string[]) => void): () => void;
 }
@@ -86,7 +87,12 @@ export class OutboxFlush {
 
 	/** `runtime` is read at the first ready connection: a message kept from an
 	 * earlier launch can only be found in the mutations database. */
-	constructor(private readonly runtime: () => FlushRuntime) {}
+	constructor(
+		private readonly runtime: () => FlushRuntime,
+		/** The draft handoff every identity-changing resume takes, because a
+		 * background resume moves the rows with no screen to follow them. */
+		private readonly handoff?: ResumeDraftHandoff,
+	) {}
 
 	/** The active hub and its client while it is ready, else nulls. A new
 	 * client flushes, and watches for work no screen will send; losing it lets
@@ -205,7 +211,7 @@ export class OutboxFlush {
 					// The runtime asks the predicate only when it sees a fence, so a
 					// healthy settle pays no extra storage read.
 					const answer = await runtime.settleTarget(hubId, ref, client, {
-						mayResumeFenced: () => this.messageWaiting(runtime, key),
+						...this.resumeOptions(hubId, ref, () => this.messageWaiting(runtime, key)),
 					});
 					// The screen is not reading here, and a resume writes nothing, so
 					// this path owns the follow-up for a settle that resumed but could
@@ -246,7 +252,7 @@ export class OutboxFlush {
 				// Asked only when the runtime sees a fence. A failed read answers
 				// "no", which leaves the row where a fence always left it and keeps
 				// the retry cadence this path has always had.
-				mayResumeFenced: () => this.messageWaiting(runtime, key),
+				...this.resumeOptions(hubId, ref, () => this.messageWaiting(runtime, key)),
 			});
 			settled = answer === "reconciled" || answer === "open";
 			// A settle that resumed but could not finish (a stale read after the
@@ -379,6 +385,15 @@ export class OutboxFlush {
 		return records.some(
 			(record) => record.state === "submitting" && record.method !== "turn/interrupt" && record.attempted === false,
 		);
+	}
+
+	private resumeOptions(hubId: string, ref: string, mayResumeFenced: () => Promise<boolean>) {
+		return {
+			mayResumeFenced,
+			...(this.handoff === undefined
+				? {}
+				: { onResolvedIdentity: (resolved: string) => this.handoff?.(hubId, ref, resolved) }),
+		};
 	}
 
 	/** Lets go of this claim, and only this one: a late continuation of an

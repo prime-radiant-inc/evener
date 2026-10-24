@@ -76,6 +76,8 @@ import { projectNativeMutationRecovery, RecoveryFailure, useRecoveryPanel } from
 import { useNativePreferences } from "./NativePreferencesProvider";
 import { drafts } from "./nativeDrafts";
 import { useComposerDraft } from "./session/useComposerDraft";
+import { handoffResumeDraft } from "./resumeDraftHandoff";
+import { nativeImagePicker } from "./nativeImagePicker";
 import { NATIVE_MUTATION_HOST_UNAVAILABLE } from "./nativeMutationHost";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import { readerPositions } from "./nativeReaderPosition";
@@ -2506,10 +2508,7 @@ function ConversationScreenView({
 						// The draft and its recovery ownership follow the same identity:
 						// a replacement screen that loaded the resumed ref must show the
 						// edited composition, not the retired ref's stranded copy.
-						drafts.handoff(
-							{ hubId: route.params.hubId, sessionRef: ref },
-							{ hubId: route.params.hubId, sessionRef: resolved },
-						);
+						handoffResumeDraft(drafts, route.params.hubId, ref, resolved);
 						navigation.replace("Conversation", {
 							hubId: route.params.hubId,
 							ref: resolved,
@@ -2882,6 +2881,12 @@ function ConversationScreenView({
 		const targetKey = recovery.targetKey;
 		void (async () => {
 			const runtime = getNativeMutationRuntime();
+			// A handoff whose transfer failed after the mutation rows moved is
+			// durable. Retry it before reconciling and leave automatic restore
+			// alone until it resolves: the resumed screen must adopt the edited
+			// composition, not append the source's original recovery text.
+			drafts.retryPendingHandoffs();
+			if (drafts.hasPendingHandoff({ hubId: route.params.hubId, sessionRef: route.params.ref })) return;
 			await reconcileEditedResends(runtime, targetKey, document);
 			const retained = await runtime.read(targetKey);
 			const deliberatelyReleased = new Set(draft.record.releasedRecoveryIds ?? []);
@@ -2912,6 +2917,8 @@ function ConversationScreenView({
 		imageSelection,
 		localThread,
 		localInstance,
+		route.params.hubId,
+		route.params.ref,
 	]);
 	// A recreated offline screen has no live conversation store binding. Its
 	// scoped durable records still use the shared native client-owned projection.
