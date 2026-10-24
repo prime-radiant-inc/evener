@@ -567,6 +567,15 @@ function ConversationScreenView({
 		[route.params.hubId, route.params.ref],
 	);
 	const draft = useSyncExternalStore(document.subscribe, document.getSnapshot);
+	// An identity-changing resume can retire this document from outside the
+	// screen (the background flush) as well as from the screen's own Send. A
+	// mounted screen follows the resolved identity; otherwise its memoized
+	// document is retired and every edit and send silently refuses work.
+	const resolvedRef = document.resolvedRef;
+	useEffect(() => {
+		if (resolvedRef === undefined || resolvedRef === route.params.ref) return;
+		navigation.setParams({ ref: resolvedRef });
+	}, [navigation, resolvedRef, route.params.ref]);
 	// A handoff can fail its storage write while the resume itself already moved
 	// the rows. Retry it as the replacement screen mounts and whenever the draft
 	// becomes writable again; the source composition stays under the old ref

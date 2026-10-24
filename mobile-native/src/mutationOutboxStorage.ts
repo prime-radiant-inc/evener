@@ -40,6 +40,7 @@ import {
 	retainsAcceptedCopy,
 	settlementRetiresRecovery,
 } from "@evener/appwire-client/state/mutation";
+import type { ResumeIdentityEdge, ResumeIdentityEndpoint } from "./resumeIdentity";
 import { type SqliteSync, type SqliteSyncRunResult, withSavepoint } from "./sqliteSync";
 
 // This app's SecureRandomSource: expo-crypto's synchronous randomUUID and
@@ -82,6 +83,19 @@ export const TABLES = {
 	optimistic: "mutation_optimistic",
 	recovery: "mutation_recovery",
 } as const;
+
+/** A composite target key's hub and ref, or null for a key of another shape
+ * (a unit test may retarget bare refs). */
+function targetEndpoint(key: string): ResumeIdentityEndpoint | null {
+	try {
+		const value: unknown = JSON.parse(key);
+		if (Array.isArray(value) && value.length === 2 && typeof value[0] === "string" && typeof value[1] === "string")
+			return { hubId: value[0], sessionRef: value[1] };
+	} catch {
+		// Not a composite key: no identity edge to record.
+	}
+	return null;
+}
 
 const COLUMNS = [
 	"client_mutation_id",
@@ -212,6 +226,13 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		this.db.execSync(
 			`CREATE TABLE IF NOT EXISTS mutation_sequence (target_ref TEXT PRIMARY KEY, last_sequence INTEGER NOT NULL,
 			 stop_epoch INTEGER NOT NULL DEFAULT 0, recovery_resends TEXT NOT NULL DEFAULT '[]')`,
+		);
+		this.db.execSync(
+			`CREATE TABLE IF NOT EXISTS resume_identity_edges (
+			 from_hub_id TEXT NOT NULL, from_ref TEXT NOT NULL,
+			 to_hub_id TEXT NOT NULL, to_ref TEXT NOT NULL,
+			 created_at INTEGER NOT NULL,
+			 PRIMARY KEY (from_hub_id, from_ref, to_hub_id, to_ref))`,
 		);
 		// Each additive column below is the whole migration for databases from
 		// before it existed: ALTER TABLE has no IF NOT EXISTS, so
@@ -624,6 +645,23 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			);
 			if (rows.length === 0) return [];
 			const ids = rows.map((row) => row.client_mutation_id);
+			// The draft handoff obligation rides this same savepoint: the rows
+			// move here, so a drafts database that cannot record the pending
+			// mapping still leaves a durable edge to reconstruct after a restart.
+			const fromEdge = targetEndpoint(ref);
+			const toEdge = targetEndpoint(to.ref);
+			if (fromEdge && toEdge)
+				this.db.runSync(
+					`INSERT INTO resume_identity_edges
+					 (from_hub_id, from_ref, to_hub_id, to_ref, created_at)
+					 VALUES (?, ?, ?, ?, ?)
+					 ON CONFLICT (from_hub_id, from_ref, to_hub_id, to_ref) DO UPDATE SET created_at = excluded.created_at`,
+					fromEdge.hubId,
+					fromEdge.sessionRef,
+					toEdge.hubId,
+					toEdge.sessionRef,
+					this.#now(),
+				);
 			// A recovery resend's receipt is the draft owner's proof that its
 			// captured sources were consumed. Its source rows move below, so the
 			// receipt must move with them in this same savepoint: a receipt left
@@ -731,6 +769,36 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			}
 			return ids;
 		});
+	}
+
+	/** The identity-changing resumes whose draft handoff has not been settled
+	 * yet, oldest first. A draft library uses these when the drafts database
+	 * could not persist its own pending mapping. */
+	readResumeIdentities(): ResumeIdentityEdge[] {
+		const rows = this.db.getAllSync<{
+			from_hub_id: string;
+			from_ref: string;
+			to_hub_id: string;
+			to_ref: string;
+		}>(
+			`SELECT from_hub_id, from_ref, to_hub_id, to_ref FROM resume_identity_edges
+			 ORDER BY created_at, rowid`,
+		);
+		return rows.map((row) => ({
+			from: { hubId: row.from_hub_id, sessionRef: row.from_ref },
+			to: { hubId: row.to_hub_id, sessionRef: row.to_ref },
+		}));
+	}
+
+	removeResumeIdentity(from: ResumeIdentityEndpoint, to: ResumeIdentityEndpoint): void {
+		this.db.runSync(
+			`DELETE FROM resume_identity_edges
+			 WHERE from_hub_id = ? AND from_ref = ? AND to_hub_id = ? AND to_ref = ?`,
+			from.hubId,
+			from.sessionRef,
+			to.hubId,
+			to.sessionRef,
+		);
 	}
 
 	async listTargetRefs(): Promise<string[]> {
