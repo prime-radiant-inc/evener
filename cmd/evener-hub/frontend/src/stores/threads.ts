@@ -1,4 +1,4 @@
-import { type ComposerMention, isLatestRetryTurn, isTurnError, TURN_CONTINUATION_TEXT } from "@evener/appwire-client";
+import { type ComposerMention, isTurnError, retryEligibility, TURN_CONTINUATION_TEXT } from "@evener/appwire-client";
 // threads.ts tracks the ThreadModel for every ref currently open in a pane,
 // refcounted across panes sharing the same ref, and routes live wire
 // notifications into the reducer for whichever tracked model(s) they target.
@@ -64,6 +64,7 @@ import {
   canEditQueuedMessage,
   canRemoveQueuedMessage,
   notificationMutationIdentities,
+  type PendingTurnEntry,
 } from "@evener/appwire-client/state/mutation";
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { useStore } from "zustand";
@@ -4261,11 +4262,12 @@ interface ResumeOnlyProjection {
   // turn/start queued behind one starves at the target's FIFO, so a ref holding
   // one is not foldable.
   hasQueuedNonSend(ref: string): boolean;
-  // Retry's second owner, read at activation: whether this client has any
-  // unresolved send or queue entry for `ref`. The pending-turns projection
-  // already holds that answer, and threads.ts cannot import it back without a
-  // cycle, so it registers the read here beside the fence's own.
-  ownPendingTurnInput(ref: string): boolean;
+  // Retry's pending-owner input, read at activation: the reconciled entries
+  // for `ref`. The shared eligibility decision applies ownPendingTurnInput,
+  // and threads.ts cannot import the pending-turns store back without a cycle,
+  // so it registers the read here beside the fence's own. Readiness is the
+  // threads store's own reactive `pendingProjectionLoadedRefs` copy.
+  pendingTurnEntries(ref: string): readonly PendingTurnEntry[];
   // The same per-session submission guard ordinary Send/press uses
   // (submittingRefs through pendingTurnsStore). Retry begins and ends one
   // submission through it, so an ordinary send whose durable enqueue is still
@@ -4318,14 +4320,23 @@ export function hasQueuedNonSend(ref: string): boolean {
   );
 }
 
-// The live outbox owner's answer for Retry, read at activation rather than
-// trusted from the render that disabled (or enabled) the button. A ref whose
-// durable pending read has not resolved is UNKNOWN, not empty: activation
-// fails closed, exactly as the rendered action stays disabled. No installed
-// projection is likewise unknown.
-function ownPendingTurnInputNow(ref: string): boolean {
-  if (!threadsStore.getState().pendingProjectionLoadedRefs.has(ref)) return true;
-  return resumeOnlyProjection?.ownPendingTurnInput(ref) ?? true;
+// The pending owner's inputs for Retry's shared decision, read at activation
+// rather than trusted from the render that disabled (or enabled) the button.
+// A ref whose durable pending read has not resolved is UNKNOWN, not empty:
+// activation fails closed through the gate's not-ready reason, exactly as the
+// rendered action stays disabled. No installed projection is likewise unknown
+// (and has no entries to offer).
+function retryPendingInputNow(ref: string): {
+  pendingMutations: readonly PendingTurnEntry[] | null;
+  pendingMutationsReady: boolean;
+} {
+  const projection = resumeOnlyProjection;
+  return {
+    pendingMutations: projection?.pendingTurnEntries(ref) ?? null,
+    // No installed projection is unknown, not empty, exactly as before the
+    // shared decision.
+    pendingMutationsReady: projection !== null && threadsStore.getState().pendingProjectionLoadedRefs.has(ref),
+  };
 }
 
 // Retry's share of the composer's per-session submission guard. The pending
@@ -7728,21 +7739,31 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async continueTurn(ref, expectedTurnId) {
-    // Both owners are rechecked here, synchronously, at activation: the
-    // render's captured button state is not authority. A failure that is no
-    // longer the canonical latest turn submits nothing, and neither does one
-    // whose client already has unresolved send/queue input.
+    // The one shared decision is re-read here, synchronously, at activation:
+    // the render's captured button state is not authority. The canonical
+    // latest turn, the clicked turn's current failure, the pending owner and
+    // its readiness all enter the same gate the end-cap renders.
     const model = threadsStore.getState().threads.get(ref);
-    if (!model || !isLatestRetryTurn(model, expectedTurnId)) return;
+    if (!model) return;
     // Identity alone is not a failure. An authoritative refresh can keep the
     // same latest turn id and drop its error (or replace the turn), so the
     // activation resolves the current turn by that id and requires it to still
-    // carry the failure the captured action belonged to. The shared wire
-    // predicate is the same one the end-cap uses to show the action; a missing
-    // turn or missing error submits nothing.
+    // carry the failure the captured action belonged to.
     const currentTurn = model.turns.find((turn) => turn.id === expectedTurnId);
-    if (currentTurn === undefined || !isTurnError(currentTurn.error)) return;
-    if (ownPendingTurnInputNow(ref)) return;
+    const pending = retryPendingInputNow(ref);
+    const decision = retryEligibility({
+      clickedTurnId: expectedTurnId,
+      thread: model,
+      clickedTurnFailed: currentTurn !== undefined && isTurnError(currentTurn.error),
+      pendingMutations: pending.pendingMutations,
+      pendingMutationsReady: pending.pendingMutationsReady,
+      // Browser Retry is durably routed: the enqueue funnel owns the live
+      // client requirement and surfaces its refusal to the press. Moving that
+      // check into eligibility would turn a reported failure into a silent
+      // no-op, so the browser offers the action and the funnel answers.
+      serviceReady: true,
+    });
+    if (!decision.allowed) return;
     // An ordinary Send/press marks the composer's shared submission guard
     // before its durable row is visible in the projection. Retry must join that
     // guard, not only its own read, or a press in that window would admit a
