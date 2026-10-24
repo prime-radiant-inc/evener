@@ -959,6 +959,162 @@ test("a longer chain with a shortcut settles C before A at the occupied terminal
 	expect(f.runtime.storage.readResumeIdentities()).toEqual([]);
 });
 
+test("a recovered ledger upgrades an existing pending edge's chain order", async () => {
+	const f = fixture();
+	const hub = destination.hubId;
+	const a = { hubId: hub, sessionRef: "session-a" };
+	const b = { hubId: hub, sessionRef: "session-b" };
+	const c = { hubId: hub, sessionRef: "session-c" };
+	f.repository.write(a, {
+		draft: "A draft",
+		unconfirmed: null,
+		composer: { recoveryIds: ["captured-a"] },
+		completedCommandRecoveryIds: ["completed-a"],
+	});
+	f.repository.write(b, {
+		draft: "B draft",
+		unconfirmed: null,
+		composer: { recoveryIds: ["captured-b"] },
+		completedCommandRecoveryIds: ["completed-b"],
+	});
+	// First load sees only the drafts mapping A->C; the ledger read fails.
+	f.drafts
+		.prepare(
+			"INSERT INTO pending_draft_handoffs (from_hub_id, from_session_ref, to_hub_id, to_session_ref) VALUES (?, ?, ?, ?)",
+		)
+		.run(hub, a.sessionRef, hub, c.sessionRef);
+	const seedEdge = (from: DraftDestination, to: DraftDestination) =>
+		f.mutations
+			.prepare(
+				"INSERT INTO resume_identity_edges (from_hub_id, from_ref, to_hub_id, to_ref, created_at) VALUES (?, ?, ?, ?, ?)",
+			)
+			.run(hub, from.sessionRef, hub, to.sessionRef, Date.now());
+	seedEdge(a, b);
+	seedEdge(b, c);
+
+	let ledgerFails = true;
+	const ledger = {
+		readResumeIdentities: () => {
+			if (ledgerFails) throw new Error("ledger unavailable");
+			return f.runtime.storage.readResumeIdentities();
+		},
+		redirectResumeIdentity: (from: DraftDestination, previousTo: DraftDestination, to: DraftDestination) =>
+			f.runtime.storage.redirectResumeIdentity(from, previousTo, to),
+		settleResumeIdentity: (from: DraftDestination, to: DraftDestination) =>
+			f.runtime.storage.settleResumeIdentity(from, to),
+	};
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => ledger,
+	);
+	expect(library.hasPendingHandoff(c)).toBe(true);
+	ledgerFails = false;
+	library.retryPendingHandoffs();
+	expect(f.repository.read(c)).toMatchObject({
+		draft: "B draft",
+		composer: { recoveryIds: ["captured-b"] },
+		completedCommandRecoveryIds: expect.arrayContaining(["completed-b"]),
+	});
+	expect(f.repository.read(a)).toMatchObject({ draft: "A draft" });
+	expect(f.repository.read(b)).toEqual({ draft: "", unconfirmed: null });
+	expect(library.hasPendingHandoff(c)).toBe(false);
+});
+
+test("failed cleanup keeps a stale mapping redirectable by a later resume", async () => {
+	const f = fixture();
+	const completedA = await f.enqueue();
+	f.document.edit("current");
+	await editQueuedMessageIntoDraft(f.runtime, key, completedA, f.document);
+	await f.document.submitBuiltinCommand(async () => true);
+	const capturedA = await f.enqueue();
+	await editQueuedMessageIntoDraft(f.runtime, key, capturedA, f.document);
+	f.document.edit("A draft");
+	await f.enqueue();
+
+	const bRef = "session-b";
+	const cRef = "session-c";
+	const bDestination = { hubId: destination.hubId, sessionRef: bRef };
+	const cDestination = { hubId: destination.hubId, sessionRef: cRef };
+	const bKey = nativeMutationTargetKey(destination.hubId, bRef);
+	const cKey = nativeMutationTargetKey(destination.hubId, cRef);
+	expect(
+		f.runtime.storage.retarget(key, {
+			ref: bKey,
+			wireRef: bRef,
+			threadId: "thread-b",
+			instanceId: "instance-b",
+		}),
+	).toHaveLength(1);
+	const library = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	f.drafts.exec(
+		"CREATE TRIGGER reject_b_draft BEFORE INSERT ON drafts WHEN NEW.session_ref = 'session-b' BEGIN SELECT RAISE(ABORT, 'write rejected'); END",
+	);
+	expect(library.handoff(destination, bDestination)).toBe(false);
+	f.drafts.exec("DROP TRIGGER reject_b_draft");
+	f.repository.write(bDestination, {
+		draft: "B draft",
+		unconfirmed: null,
+		composer: { recoveryIds: ["captured-b"] },
+		completedCommandRecoveryIds: ["completed-b"],
+	});
+	// A fresh library must read B's composition rather than the empty document
+	// cached during the failed handoff.
+	const resumed = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+
+	// A->B is refused, but deleting its drafts mapping fails.
+	f.drafts.exec(
+		"CREATE TRIGGER reject_pending_b_delete BEFORE DELETE ON pending_draft_handoffs WHEN OLD.to_session_ref = 'session-b' BEGIN SELECT RAISE(ABORT, 'cleanup failed'); END",
+	);
+	resumed.retryPendingHandoffs();
+	expect(f.repository.read(destination).draft).toBe("A draft");
+	expect(f.repository.read(bDestination).draft).toBe("B draft");
+
+	// B->C cannot settle while that stale A->B mapping cannot be redirected.
+	expect(
+		f.runtime.storage.retarget(bKey, {
+			ref: cKey,
+			wireRef: cRef,
+			threadId: "thread-c",
+			instanceId: "instance-c",
+		}),
+	).toHaveLength(1);
+	expect(resumed.handoff(bDestination, cDestination)).toBe(false);
+	expect(resumed.hasPendingHandoff(cDestination)).toBe(true);
+
+	// Cleanup recovers: the stale mapping is redirected, then B reaches C.
+	f.drafts.exec("DROP TRIGGER reject_pending_b_delete");
+	expect(resumed.handoff(bDestination, cDestination)).toBe(true);
+	resumed.retryPendingHandoffs();
+	expect(f.repository.read(cDestination)).toMatchObject({
+		draft: "B draft",
+		composer: { recoveryIds: ["captured-b"] },
+		completedCommandRecoveryIds: expect.arrayContaining(["completed-b"]),
+	});
+	expect(f.repository.read(destination)).toMatchObject({ draft: "A draft" });
+
+	await f.reopen();
+	const recovered = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	recovered.retryPendingHandoffs();
+	expect(f.repository.read(bDestination)).toEqual({ draft: "", unconfirmed: null });
+	expect(f.repository.read(destination)).toMatchObject({ draft: "A draft" });
+	expect(f.repository.read(cDestination)).toMatchObject({ draft: "B draft" });
+	expect(recovered.hasPendingHandoff(cDestination)).toBe(false);
+	expect(f.runtime.storage.readResumeIdentities()).toEqual([]);
+});
+
 test("a loading redirect failure keeps the intermediate edge across two restarts", async () => {
 	const f = fixture();
 	const completedA = await f.enqueue();

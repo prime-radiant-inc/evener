@@ -33,6 +33,10 @@ export class DraftLibrary {
 	 * database on first use. A restart finds the handoff a failed transfer left
 	 * behind before the resumed screen restores the source's recovery text. */
 	private pendingLoaded = false;
+	/** Handoffs whose transfer settled but whose durable cleanup failed. They
+	 * are not retried as transfers; a later resume still redirects their stale
+	 * mapping away from a retired ref. */
+	private stale = new Map<string, { from: DraftDestination; to: DraftDestination }>();
 	/** Documents retired by a handoff, kept per hub so hub removal still
 	 * invalidates a source the live document map no longer holds. */
 	private retired = new Map<string, Set<DraftDocument>>();
@@ -156,6 +160,7 @@ export class DraftLibrary {
 	 * work in the meantime owns it, so its pending retry is dropped. */
 	retryPendingHandoffs(): void {
 		this.loadPendingHandoffs();
+		this.retryStaleCleanup();
 		// Downstream first: a chain's intermediate must settle before its
 		// predecessor, or the predecessor's older draft occupies the destination
 		// and the intermediate's composition is refused. A deferred downstream
@@ -218,18 +223,41 @@ export class DraftLibrary {
 	}
 
 	private clearPending(from: DraftDestination, to: DraftDestination): void {
-		this.pending.delete(this.handoffKey(from, to));
+		const key = this.handoffKey(from, to);
+		this.pending.delete(key);
+		let cleanupFailed = false;
 		if (!this.pendingTo(to)) {
 			try {
 				this.repository().removePendingHandoff?.(to);
 			} catch {
-				// A stale mapping retries on the next launch and refuses again.
+				cleanupFailed = true;
 			}
 		}
 		try {
 			this.resumeIdentities?.()?.settleResumeIdentity(from, to);
 		} catch {
-			// The edges stay together; a later settlement retries them.
+			cleanupFailed = true;
+		}
+		if (cleanupFailed) this.stale.set(key, { from, to });
+		else this.stale.delete(key);
+	}
+
+	private retryStaleCleanup(): void {
+		for (const [key, edge] of [...this.stale]) {
+			let cleaned = true;
+			if (!this.pendingTo(edge.to)) {
+				try {
+					this.repository().removePendingHandoff?.(edge.to);
+				} catch {
+					cleaned = false;
+				}
+			}
+			try {
+				this.resumeIdentities?.()?.settleResumeIdentity(edge.from, edge.to);
+			} catch {
+				cleaned = false;
+			}
+			if (cleaned) this.stale.delete(key);
 		}
 	}
 
@@ -311,7 +339,21 @@ export class DraftLibrary {
 		// rule instead of the other way round.
 		for (const edge of [...reconciled.values()].sort((a, b) => a.rank - b.rank)) {
 			const key = this.handoffKey(edge.from, edge.to);
-			if (!this.pending.has(key)) this.pending.set(key, edge);
+			const existing = this.pending.get(key);
+			if (!existing) {
+				this.pending.set(key, edge);
+				continue;
+			}
+			// A load with a temporarily unreadable ledger can have added this
+			// entry without its chain. A later load must upgrade its rank and
+			// dependencies, not leave the stale order in place.
+			const dependsOn = uniqueDestinations([...(existing.dependsOn ?? []), ...(edge.dependsOn ?? [])]);
+			this.pending.set(key, {
+				from: existing.from,
+				to: existing.to,
+				rank: Math.max(existing.rank, edge.rank),
+				...(dependsOn.length ? { dependsOn } : {}),
+			});
 		}
 		if (loaded) this.pendingLoaded = true;
 	}
@@ -369,6 +411,37 @@ export class DraftLibrary {
 			if (existing && existing.rank > redirected.rank) redirected.rank = existing.rank;
 			this.pending.set(this.handoffKey(edge.from, settlingTo), redirected);
 		}
+		for (const [key, edge] of [...this.stale]) {
+			if (!sameDestination(edge.to, settlingFrom)) continue;
+			let draftsDurable = true;
+			try {
+				const storage = this.repository();
+				if (storage.redirectPendingHandoff) storage.redirectPendingHandoff(edge.from, settlingFrom, settlingTo);
+				else if (storage.writePendingHandoff) storage.writePendingHandoff(edge.from, settlingTo);
+			} catch {
+				draftsDurable = false;
+			}
+			let identitiesDurable = true;
+			try {
+				this.resumeIdentities?.()?.redirectResumeIdentity(edge.from, settlingFrom, settlingTo);
+			} catch {
+				identitiesDurable = false;
+			}
+			if (!draftsDurable || !identitiesDurable) {
+				durable = false;
+				continue;
+			}
+			this.stale.delete(key);
+			const redirectedKey = this.handoffKey(edge.from, settlingTo);
+			const existing = this.pending.get(redirectedKey);
+			const redirected: PendingHandoff = {
+				from: edge.from,
+				to: settlingTo,
+				rank: Math.max(2, existing?.rank ?? 0),
+				dependsOn: uniqueDestinations([...(existing?.dependsOn ?? []), settlingFrom]),
+			};
+			this.pending.set(redirectedKey, redirected);
+		}
 		return durable;
 	}
 
@@ -400,6 +473,8 @@ export class DraftLibrary {
 		} finally {
 			for (const [key, { from, to }] of this.pending)
 				if (from.hubId === hubId || to.hubId === hubId) this.pending.delete(key);
+			for (const [key, { from, to }] of this.stale)
+				if (from.hubId === hubId || to.hubId === hubId) this.stale.delete(key);
 			for (const document of this.retired.get(hubId) ?? []) document.forget();
 			this.retired.delete(hubId);
 			for (const document of this.hubs.get(hubId)?.values() ?? []) document.forget();
