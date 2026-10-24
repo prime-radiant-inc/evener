@@ -3663,15 +3663,51 @@ test("a losing cross-tab recovered send does not issue a second request", async 
     { [recovered.clientMutationId]: recoveryCompositionRevision(currentRecovery!) },
   );
   expect(peerResend).toBeDefined();
+  expect(await otherTab.getOutbox(peerResend!.clientMutationId)).toBeDefined();
 
   await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
 
-  await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBeNull());
+  // The local composition is preserved under a fresh recovery owner rather
+  // than dropped into a draft that cannot carry the image bytes.
+  await waitFor(() => {
+    expect(source.getSnapshot().activeRecoveryId).not.toBeNull();
+    expect(source.getSnapshot().activeRecoveryId).not.toBe(recovered.clientMutationId);
+  });
+  const preservedId = source.getSnapshot().activeRecoveryId;
+  expect(preservedId).not.toBe(recovered.clientMutationId);
+  expect(await storage.getRecovery(preservedId ?? "")).toMatchObject({
+    composerText: "edit me [image 1]",
+    recoveryKind: "rejected",
+  });
+  // The fresh owner is a recovery row, not an outbox mutation replaying the
+  // peer's already-accepted send.
+  expect(await storage.getOutbox(preservedId ?? "")).toBeUndefined();
   expect(editor.textContent).toBe("edit me [image 1]");
-  expect(readDraft("ref_a")).toBe("edit me [image 1]");
+  expect(readDraft("ref_a") ?? "").toBe("");
   expect(screen.getByRole("button", { name: "Remove proof.png" })).toBeTruthy();
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
   expect(toastKinds()).toEqual(["info"]);
+
+  // A second Send composes a new request from the preserved owner instead of
+  // replaying the peer's consumed mutation.
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  // Only the peer's already-accepted mutation reaches the wire; the local
+  // composition becomes a new outbox row of its own.
+  const starts = fake.calls.filter((call) => call.method === "turn/start");
+  expect(starts.map((call) => (call.params as { clientMutationId?: string }).clientMutationId)).toEqual([
+    peerResend?.clientMutationId,
+  ]);
+  const composed = (await storage.listOutbox("ref_a")).find(
+    (record) => record.clientMutationId !== peerResend?.clientMutationId,
+  );
+  expect(composed?.clientMutationId).not.toBe(recovered.clientMutationId);
+  expect(composed?.payload.input).toEqual([
+    { type: "text", text: "edit me (attached image 1: proof.png)" },
+    { type: "image", mediaType: "image/png", data: "AQID", name: "proof.png" },
+  ]);
+  expect(await storage.listRecovery("ref_a")).toHaveLength(0);
   otherTab.close();
 });
 
