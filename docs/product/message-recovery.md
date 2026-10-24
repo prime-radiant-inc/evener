@@ -61,6 +61,40 @@ both in the write transaction. Another tab's Remove, Retry, dispatch admission
 or Stop can win, in which case the losing action refreshes without activating a
 stale edit. Matching thread/session identity is required even offline.
 
+When another pane consumes or advances the recovery a browser pane owns, the
+refused save preserves the complete local composition as a fresh recovery row
+before retiring the stale lease. The new row carries the local text, skill and
+command selections, payload input and attachment bytes, and the peer's row is
+left untouched. If the stale row still holds the identical composition, no
+duplicate row is created. The pane then owns the fresh row, so later edits
+update it, Send consumes it, and a reload restores the local composition
+including its images.
+
+### Browser seat and selection ownership
+
+A browser conversation seat owns its recovery selection. The seat is per tab
+and per conversation, uses the tab's existing client identity, and is stored
+beside the composer drafts under per-tab keys rather than in shared layout
+geometry. Another tab can therefore never read or overwrite this tab's seat.
+Independent panes on one conversation hold distinct seats and so keep
+independent selections; a `sessionZoom` cascade pane uses the same tab-scoped
+seat for its columns, with one selection entry per column ref. A mobile route
+reconstruction and a desktop layout restore both hand the same seat back.
+
+Restoring a composer prefers the recovery row its seat last selected, falling
+back to the oldest restorable rejected row. This keeps a pane's preserved local
+work selected after reload even when an older rejected peer row exists.
+
+Disposal captures the newest complete composition before the attachment store
+clears. A refused recovery write that returns after disposal preserves that
+composition under a fresh recovery owner and records the fresh owner as the
+seat's selection. A resume or retarget carries the selection to the resumed
+ref; when the recovery row moved and another pane consumed it, the outbox's
+retarget record still names the destination. Preservation refreshes both the
+captured ref and the row's actual target ref, so an already-mounted resumed
+view learns about the preserved row. A destination that already holds a newer
+selection keeps it.
+
 Sending recovery consumes its durable source and creates one fresh outbox
 identity atomically. It never falls back to an ordinary enqueue when the source
 is missing. The Send press captures its Stop barrier before asynchronous draft

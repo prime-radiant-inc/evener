@@ -2,7 +2,9 @@ import { bindFilePath, parseFileReference } from "@evener/appwire-client/docCont
 import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { composerSelectionScope, readRecoverySelection, writeRecoverySelection } from "../panes/session/composer/draft";
 import { parseZoomParams } from "../panes/zoom/intent";
+import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { currentAttentionEntryToken, openAttentionSession } from "./attentionHistory";
 import {
   captureAttentionPlacement,
@@ -12,6 +14,7 @@ import {
 } from "./attentionPlacement";
 import { conversationPaneLifetime } from "./paneLifetime";
 import { type PaneDescriptor, type PaneProps, type PaneTypeId, registerPaneForTests } from "./paneRegistry";
+import { openNestedSessionWithOwner } from "./sessionPlacement";
 import {
   cancelPaneFocus,
   consumePaneFocus,
@@ -673,7 +676,13 @@ describe("replacePrimary", () => {
     const sessionId = workspace.replacePrimary("session", { ref: "local:session-b" });
 
     expect(workspaceStore.getState().panes).toEqual([
-      { id: sessionId, type: "session", params: { ref: "local:session-b" }, slot: "main" },
+      {
+        id: sessionId,
+        type: "session",
+        params: { ref: "local:session-b" },
+        slot: "main",
+        composerSeatId: expect.any(String),
+      },
     ]);
     expect(workspaceStore.getState().focusedPaneId).toBe(sessionId);
   });
@@ -689,7 +698,13 @@ describe("replacePrimary", () => {
 
     expect(repeatedId).toBe(mainId);
     expect(workspaceStore.getState().panes).toEqual([
-      { id: mainId, type: "session", params: { ref: "local:session-a" }, slot: "main" },
+      {
+        id: mainId,
+        type: "session",
+        params: { ref: "local:session-a" },
+        slot: "main",
+        composerSeatId: expect.any(String),
+      },
       { id: secondaryId, type: "doc", params: { ref: "secondary" }, slot: "secondary" },
     ]);
   });
@@ -1417,4 +1432,81 @@ describe("currentSessionRef", () => {
     });
     expect(currentSessionRef(workspaceStore.getState())).toBe("local:a");
   });
+});
+
+// A second pane on the same conversation is a distinct reader with its own
+// selection scope, and a retarget (drill/return) keeps the pane's own seat.
+test("independent panes on one conversation never share a recovery seat", () => {
+  installLocalStorage(new MemoryStorage());
+  const workspace = workspaceStore.getState();
+  const mainId = workspace.replacePrimary("session", { ref: "local:shared" });
+  const otherId = workspace.openPane("doc", { ref: "doc" });
+  const other = workspaceStore.getState().panes.find((pane) => pane.id === otherId);
+  if (!other) throw new Error("missing doc pane");
+  expect(workspace.retypePane(other, "session", { ref: "local:shared" })).toBe(true);
+
+  const sessions = workspaceStore
+    .getState()
+    .panes.filter((pane) => pane.type === "session" && (pane.params as { ref?: unknown }).ref === "local:shared");
+  expect(sessions.map((pane) => pane.id).sort()).toEqual([mainId, otherId].sort());
+  const seats = sessions.map((pane) => pane.composerSeatId);
+  expect(seats.every((seat) => typeof seat === "string" && seat !== "")).toBe(true);
+  expect(new Set(seats).size).toBe(2);
+
+  // Retarget the secondary into a cascade: the pane keeps its own seat, so the
+  // two live panes still hold distinct scopes.
+  const secondary = sessions.find((pane) => pane.id === otherId);
+  if (!secondary) throw new Error("missing secondary session pane");
+  const keptSeat = secondary.composerSeatId;
+  expect(
+    workspace.retypePane(secondary, "sessionZoom", {
+      ref: "local:shared",
+      source: { type: "session", params: { ref: "local:shared" } },
+      edges: [],
+    }),
+  ).toBe(true);
+  expect(workspaceStore.getState().panes.find((pane) => pane.id === otherId)?.composerSeatId).toBe(keptSeat);
+  const liveSeats = workspaceStore
+    .getState()
+    .panes.filter((pane) => pane.type === "session" || pane.type === "sessionZoom")
+    .map((pane) => pane.composerSeatId);
+  expect(new Set(liveSeats).size).toBe(liveSeats.length);
+});
+
+test("a child opened beside a retained cascade gets its own recovery seat", () => {
+  installLocalStorage(new MemoryStorage());
+  const workspace = workspaceStore.getState();
+  const ownerRef = "local:owner";
+  const childRef = "local:child";
+  const ownerId = workspace.openPane("session", { ref: ownerRef });
+  const owner = workspaceStore.getState().panes.find((pane) => pane.id === ownerId);
+  if (!owner) throw new Error("missing owner pane");
+  expect(
+    workspace.retypePane(owner, "sessionZoom", {
+      ref: childRef,
+      source: { type: "session", params: { ref: ownerRef } },
+      edges: [],
+    }),
+  ).toBe(true);
+  const cascade = workspaceStore.getState().panes.find((pane) => pane.id === ownerId);
+  if (!cascade?.composerSeatId) throw new Error("retained cascade lacks its seat");
+  writeRecoverySelection(childRef, composerSelectionScope(cascade.composerSeatId), "preserved-child");
+
+  openNestedSessionWithOwner(childRef, ownerRef);
+
+  const child = workspaceStore
+    .getState()
+    .panes.find(
+      (pane) => pane.id !== ownerId && pane.type === "session" && (pane.params as { ref?: unknown }).ref === childRef,
+    );
+  if (!child?.composerSeatId) throw new Error("nested child lacks its seat");
+  expect(child.composerSeatId).not.toBe(cascade.composerSeatId);
+  // The child receives a copy of the selection without moving the cascade's.
+  expect(readRecoverySelection(childRef, composerSelectionScope(child.composerSeatId))).toBe("preserved-child");
+  expect(readRecoverySelection(childRef, composerSelectionScope(cascade.composerSeatId))).toBe("preserved-child");
+  const liveSeats = workspaceStore
+    .getState()
+    .panes.filter((pane) => pane.type === "session" || pane.type === "sessionZoom")
+    .map((pane) => pane.composerSeatId ?? pane.id);
+  expect(new Set(liveSeats).size).toBe(liveSeats.length);
 });
