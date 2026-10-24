@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { ownerWindowOf } from "../internal/documentRealm";
 import { acquirePointerActivity, type PointerActivityHandle } from "./pointerActivity";
 
 export const SHOW_DELAY_MS = 300;
@@ -122,11 +123,14 @@ export function useFloatingLabel({
       setPending(false);
       setVisible(false);
     }
-    window.addEventListener("scroll", dismiss, true);
-    window.addEventListener("resize", dismiss);
+    // The wrapper's own window: a Dockview popout scrolls and resizes its own
+    // window, and the opener's never sees either.
+    const ownerWindow = ownerWindowOf(wrapperRef.current);
+    ownerWindow.addEventListener("scroll", dismiss, true);
+    ownerWindow.addEventListener("resize", dismiss);
     return () => {
-      window.removeEventListener("scroll", dismiss, true);
-      window.removeEventListener("resize", dismiss);
+      ownerWindow.removeEventListener("scroll", dismiss, true);
+      ownerWindow.removeEventListener("resize", dismiss);
     };
   }, [pending, visible]);
 
