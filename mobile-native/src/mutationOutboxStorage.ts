@@ -801,6 +801,35 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		);
 	}
 
+	redirectResumeIdentity(
+		from: ResumeIdentityEndpoint,
+		previousTo: ResumeIdentityEndpoint,
+		to: ResumeIdentityEndpoint,
+	): void {
+		this.transaction("resume_identity_redirect", () => {
+			// Insert the redirected edge before deleting the old one so a crash
+			// between the writes leaves a retryable edge, never neither.
+			this.db.runSync(
+				`INSERT OR IGNORE INTO resume_identity_edges
+				 (from_hub_id, from_ref, to_hub_id, to_ref, created_at)
+				 VALUES (?, ?, ?, ?, ?)`,
+				from.hubId,
+				from.sessionRef,
+				to.hubId,
+				to.sessionRef,
+				this.#now(),
+			);
+			this.db.runSync(
+				`DELETE FROM resume_identity_edges
+				 WHERE from_hub_id = ? AND from_ref = ? AND to_hub_id = ? AND to_ref = ?`,
+				from.hubId,
+				from.sessionRef,
+				previousTo.hubId,
+				previousTo.sessionRef,
+			);
+		});
+	}
+
 	async listTargetRefs(): Promise<string[]> {
 		// UNION (not UNION ALL) already removes duplicates, so a DISTINCT under
 		// each arm would only repeat what the merge already guarantees. The

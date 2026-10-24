@@ -118,18 +118,23 @@ ref keeps no draft or recovery ownership. A resumed destination that already
 holds work is left untouched. A mounted conversation whose draft is retired
 follows the resolved ref instead of keeping a document that refuses edits and
 sends, and returning from a review sheet after a resume opens the resolved
-session.
+session. A refused handoff publishes the resolved ref without retiring the
+source, so the mounted screen follows while both compositions stay in place. A
+sheet returning to a session that isn't already under it dismisses itself
+before navigating.
 
 A destination write that fails after the mutation rows moved leaves a durable
 pending mapping on the drafts database. The mutations database also records the
 source-to-destination edge in the same savepoint that moves the rows, so a
 drafts database that cannot write at all still leaves a handoff to reconstruct
-after restart. A restarted app retries that handoff before reconciling the
-resumed screen and does not restore the source's original recovery text while
-the transfer is still owed. A refused handoff still moves a completed built-in
-command's completion markers to the destination, so reconciliation discards
-those moved rows instead of appending and re-running the command on a later
-Send.
+after restart. If an intermediate identity resolves again before its
+predecessor's handoff retries, the pending predecessor is redirected to the
+newest ref and the destination stays pending until the whole chain settles. A
+restarted app retries that handoff before reconciling the resumed screen and
+does not restore the source's original recovery text while the transfer is
+still owed. A refused handoff still moves a completed built-in command's
+completion markers to the destination, so reconciliation discards those moved
+rows instead of appending and re-running the command on a later Send.
 
 Browser and native outboxes share one receipt-settlement rule from the AppWire
 package (`retainsAcceptedCopy`, `settlementRetiresRecovery`): a `pending` receipt
