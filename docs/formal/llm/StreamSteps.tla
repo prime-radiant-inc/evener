@@ -1,6 +1,6 @@
 ----------------------------- MODULE StreamSteps -----------------------------
 EXTENDS Naturals, Sequences
-CONSTANT MaxRounds
+CONSTANT MaxRounds, PublicationRule
 VARIABLE s
 vars == <<s>>
 
@@ -58,10 +58,17 @@ StopWhen ==
 Continue == /\ s.phase = "boundary"
             /\ s' = [s EXCEPT !.phase = "call", !.settled = FALSE]
 
-(* Top-of-loop cancellation, lines 165-172, or terminal stepErr, 296-302:
-   source writes res.err only, leaving the public accounting unchanged. *)
+(* Top-of-loop cancellation, lines 173-180, or terminal stepErr, 311-318:
+   pre-fix writes res.err only. Fixed mode publishes completed local steps and
+   usage before done closes, stream_generate.go:164-171, but never a final response. *)
 Fail(kind) == /\ s.phase = "call"
-              /\ s' = [s EXCEPT !.phase = "done", !.terminal = kind]
+              /\ s' = [s EXCEPT !.phase = "done", !.terminal = kind,
+                                  !.publicResults = IF PublicationRule = "fixed"
+                                                   THEN s.localResults ELSE @,
+                                  !.publicSteps = IF PublicationRule = "fixed"
+                                                 THEN s.localSteps ELSE @,
+                                  !.publicUsage = IF PublicationRule = "fixed"
+                                                 THEN s.localUsage ELSE @]
 Done == /\ s.phase = "done" /\ UNCHANGED vars
 Next == (\E c,p \in BOOLEAN, r \in {"stop", "tool_calls", "pause_turn"},
             u \in 0..2 : Settle(c,p,r,u))

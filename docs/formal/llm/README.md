@@ -1,18 +1,19 @@
 # Bounded LLM-core audit
 
-TLC found two families; SC-1 is now a **confirmed Go bug and fixed**:
+TLC found two families; both are now **confirmed Go bugs and fixed**:
 
 - **SC-1:** `StreamGenerate` retried after publishing reasoning or tool-argument
   payloads without resetting the consumer. A public-boundary regression failed
   before the change and passed afterward.
-- **SS-1:** a later terminal error may leave completed tool results and usage out
-  of `StreamResult.Steps()` and `TotalUsage()`.
+- **SS-1:** a later terminal error left completed tool results and usage out
+  of `StreamResult.Steps()` and `TotalUsage()`. A public-boundary regression
+  failed before completed-round publication and passed afterward.
 
-The initial audit's ten configurations completed without violations. Four found those
+The initial audit had ten configurations without violations. Four found those
 candidates. A fifth counterexample concerns a deliberately stronger cancellation
 hypothesis, not the approved observed-cancellation contract. SC-1 was subsequently
-reproduced and fixed; SS-1 remains a candidate. No live provider request or broad
-test suite was used for SC-1.
+reproduced and fixed; SS-1 has now also been reproduced and fixed. No live provider
+request or broad local test suite was used for either fix.
 
 Source baseline: `0e8e648c19de07b6a72830032d991631a3d4e8b0`.
 Contract: [approved design](../../superpowers/specs/2026-10-24-llm-tlc-audit-design.md).
@@ -95,6 +96,7 @@ complete graph. Depth is TLC's reported depth, including the initial state.
 | `StreamStepsUsage` | same bounds | 12 | 348 / 239 | 5 | SS-1, usage |
 | `StreamStepsSafety` | same bounds | 0 | 1810 / 822 | 9 | Round limit, settled execution, success accounting, termination |
 | `StreamStepsZero` | 0 tool rounds, usage 0..2 | 0 | 226 / 150 | 3 | Both retention properties, execution safety, termination |
+| `StreamStepsFixed` | fixed publication, 2 tool rounds, usage 0..2 | 0 | 1810 / 822 | 9 | Both retention properties, execution safety, success accounting, termination |
 | `RetryBudget` | Stream, retries 1, policy wall 3 | 0 | 356 / 223 | 20 | Owning budget, observed cancellation, termination |
 | `RetryBudgetStreamOwned` | Stream, retries 1, policy wall 3, owned 5 minus reserve 1 | 0 | 650 / 407 | 26 | Same, owned budget overrides policy |
 | `RetryBudgetStreamCounted` | Stream, retries 1, wall disabled | 0 | 202 / 127 | 11 | Same, rate limits attempt-counted |
@@ -103,19 +105,19 @@ complete graph. Depth is TLC's reported depth, including the initial state.
 | `RetryBudgetGenericCounted` | Generic, retries 1, wall disabled | 0 | 257 / 167 | 11 | Same, rate limits attempt-counted |
 | `RetryBudgetCancelledEntry` | Generic, retries 1, policy wall 3 | 12 | 9 / 9 | 3 | RB-D1, stronger diagnostic only |
 
-Each passing row also checks `TypeOK`. Temporal checks completed for both
+Each passing row also checks `TypeOK`. Temporal checks completed for all three
 `StreamSteps` passing rows and all six retry-contract rows. Deadlock checking
 remains enabled; terminal states have explicit self-loops. The first development
 run of `StreamCommit` used `-XX:+UseSerialGC`, found the same 91/71 counterexample,
 and printed TLC's recommendation for ParallelGC. The table records the subsequent
-ParallelGC runs. All 15 final runs were sequential and finished in under a second
-each according to TLC's rounded duration output.
+ParallelGC runs. The 15 initial final runs were sequential and finished in under
+a second each according to TLC's rounded duration output.
 
 Self-review corrected one initial overapproximation: active-tool availability
 must stay fixed across rounds (`llm/generate.go:205-227`), not be selected anew by
 each response. All configurations were rerun after that correction. The same
 candidate traces remain; the historical rows retain those corrected counts.
-The `StreamCommitFixed` row is the later SC-1 source-fix check.
+`StreamCommitFixed` and `StreamStepsFixed` are the later source-fix checks.
 
 ## StreamCommit: publication versus retry commitment
 
@@ -270,17 +272,19 @@ flowchart LR
   Boundary -->|Yes| Copy[Copy locals to StreamResult]
   Boundary -->|No| Next[Next model call]
   Next -->|Success| Settle
-  Next -->|Terminal error or cancellation| Error[Set error only, public accounting unchanged]
+  Next -->|Terminal error or cancellation| Error[Set error, publish completed steps and usage]
   Decide -->|No| Final[Append final response step, copy locals]
 ```
 
-Completed tool results are modeled as ordered round IDs and usage as one additive
-nonnegative scalar. `publicResults` projects the `ToolResults` inside published
+The diagram shows the fixed behavior. The historical model instead keeps public
+accounting unchanged at the error edge. Completed tool results are modeled as
+ordered round IDs and usage as one additive nonnegative scalar. `publicResults`
+projects the `ToolResults` inside published
 `Steps`, not a separate API. Retention is checked only at terminal settlement,
 not while the goroutine is still running. No partial failed-step usage is owed
 by the invariant; it concerns already completed steps.
 
-| Action / predicate | Source correspondence at baseline |
+| Action / predicate | Source correspondence at baseline unless marked fixed |
 |---|---|
 | `Settle` | `llm/stream_generate.go:294-318`, successful retry settlement and complete response |
 | `CanExecute` | `:320-334`, calls, tool_calls/pause_turn finish, active/passive handlers, round budget |
@@ -288,20 +292,23 @@ by the invariant; it concerns already completed steps.
 | `Final` | `:336-363`, append final completion, copy usage and steps |
 | `StopWhen`, `Continue` | `:405-419`, custom stop copy or next iteration |
 | `Fail("error")`, `Fail("cancelled")` | `:296-302`, terminal step error; `:165-172`, top-of-loop cancellation |
+| fixed terminal publication | `llm/stream_generate.go:164-171`, goroutine exit copies completed steps and usage under `res.mu` before closing `done`; leaves `res.final` unset |
 | `public*` observation | `:85-99,116-129`, Response waits for done, then read TotalUsage and Steps |
 
 `StreamStepsSafety.cfg` checks `RoundLimit`, `OnlySettledExecution`,
-`SuccessAccounting`, and `Terminates`. The zero-round configuration also checks
-both retention hypotheses. Active-tool availability is chosen at initialization
+`SuccessAccounting`, and `Terminates`. The zero-round and fixed configurations
+also check both retention hypotheses. Active-tool availability is chosen at initialization
 and remains fixed. Each response can have no calls, passive calls, or a
 non-executable finish reason. One executed tool result per round suffices to
 expose loss; parallel tool ordering and repair are excluded.
 `executeToolCalls` returns results (`llm/generate.go:455-498`), including tool
 errors (`:402-445`), rather than a separate error that skips local accounting.
 Weak fairness of `Next`, finite responses/tools, and finite MaxRounds underlie
-the liveness check. A callback panic or a hung tool is not represented.
+the liveness check. It assumes the caller drains `Events()` or closes the stream,
+and that `StopWhen` returns; otherwise event delivery or the callback can block
+progress. A callback panic or a hung tool is not represented.
 
-### SS-1 shortest traces
+### SS-1 shortest historical traces
 
 Both retention invariants fail in **4 transitions / 5 states**:
 
@@ -314,12 +321,12 @@ Both retention invariants fail in **4 transitions / 5 states**:
 | 5 Fail("error") | Same completed locals, terminal | Empty, 0, 0 |
 
 TLC chose `u=0` for the result-retention trace and `u=1` for the independent usage
-trace. A real reproduction can use a valid response with one tool call and usage
-10/20/30, an executable tool returning a value, then a permanent error at the
-next stream open. Drain Events, await Response's error, then check Steps and
-TotalUsage against the **first scripted response and tool output**, not against
-copied implementation logic. Also test caller cancellation after the tool has
-returned, success, StopWhen, zero rounds, and limit exhaustion in later tasks.
+trace. The regression uses one settled tool response with usage 10/20/30 and an
+executable `lookup` returning `resolved-17`. After a second permanent open error,
+a truncated stream, or cancellation coordinated on the second open, `Events()`
+is drained and `Response()` returns a terminal error without a successful final
+response. The first request's completed tool result remains in `Steps()` and its
+usage in `TotalUsage()`; the second request carries that result in its history.
 
 **Input validation:** successful multi-step execution and additive usage are
 already exercised by `stream_generate_test.go:256-394,1341-1476`. StopWhen is
@@ -327,9 +334,31 @@ exercised at `:1478-1591`, passive calls at `:396-472`, and non-tool finish reas
 at `:1167-1276`. A second open returning a typed permanent provider error is an
 allowed `ProviderAdapter.Stream` outcome and avoids inventing an internal seam.
 The retention contract comes from the approved hypothesis and the unconditional
-Steps/TotalUsage descriptions. Existing tests cover successful accounting, not
-this terminal-error combination. Source correspondence is credible, but no
-Go behavior has been reproduced in this task.
+Steps/TotalUsage descriptions. Existing tests cover successful accounting; the
+new default-suite regression covers completed accounting after terminal failure.
+
+### SS-1 Go reproduction and fixed-mode check, 2026-10-24
+
+`go test ./llm -run '^TestStreamGenerate_PreservesCompletedStepsOnFailure$' -count=1 -v`
+exited **1** at reviewed HEAD `8192d297805fede3ed454eaec9b9d36a6a6533ae`:
+all three failure cases executed the handler exactly once and reached the
+second provider request, but `Steps()` was empty and `TotalUsage()` was zero.
+After the source edit the same command exited **0** with all three cases passing.
+Only the provider is scripted; `Client`, `StreamGenerate`, retry, event forwarding,
+and the tool handler are real. The second open's cancellation case waits for its
+entry after `STEP_FINISH` and cancels without sleeping.
+
+The historical `StreamSteps` and `StreamStepsUsage` configurations explicitly
+select `PublicationRule = "pre-fix"`, retaining their exit **12** counterexamples
+at 270/199 and 348/239 states. `StreamStepsSafety` and `StreamStepsZero` also
+select pre-fix and retain exit **0** at 1810/822 and 226/150 states. The new
+`StreamStepsFixed.cfg` selects `"fixed"`: the terminal error/cancellation edge
+copies completed locals to public accounting, but never synthesizes a final
+response. With two rounds, usage 0..2 per response, one worker and 512 MiB,
+it exited **0** after 1810 generated / 822 distinct states, depth 9, checking
+both retention invariants, execution safety, success accounting and termination.
+The model reduces each tool result to a round ID and usage to one scalar; passing
+this finite abstraction cannot prove the Go implementation or live provider paths.
 
 ## Rejected shortcuts and exclusions
 

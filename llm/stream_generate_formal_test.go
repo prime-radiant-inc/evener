@@ -130,3 +130,221 @@ func formalScriptedEvents(events []StreamEvent) func(context.Context, Request) (
 		return st, nil
 	}
 }
+
+// A failed later model call cannot undo a completed tool round or turn its
+// unsuccessful response into a successful final response.
+func TestStreamGenerate_PreservesCompletedStepsOnFailure(t *testing.T) {
+	for _, failure := range []string{"permanent open", "truncated stream", "cancelled second open"} {
+		t.Run(failure, func(t *testing.T) {
+			call := ToolCallData{ID: "call_17", Name: "lookup", Type: "function", Arguments: []byte(`{"key":17}`)}
+			usage := Usage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30}
+			first := Response{
+				Provider: "openai", Model: "m",
+				Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}},
+				Finish:  FinishReason{Reason: FinishReasonToolCalls}, Usage: usage,
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			enteredSecondOpen := make(chan struct{})
+			permanent := ErrorFromHTTPStatus("openai", 401, "refused", nil, nil)
+			second := func(ctx context.Context, req Request) (Stream, error) {
+				switch failure {
+				case "permanent open":
+					return nil, permanent
+				case "truncated stream":
+					return formalScriptedEvents([]StreamEvent{{Type: StreamEventStreamStart}})(ctx, req)
+				default:
+					close(enteredSecondOpen)
+					<-ctx.Done()
+					return nil, ctx.Err()
+				}
+			}
+			a := &scriptedStreamAdapter{name: "openai", scripts: []func(context.Context, Request) (Stream, error){
+				formalScriptedEvents([]StreamEvent{
+					{Type: StreamEventStreamStart},
+					{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{ID: call.ID, Name: call.Name, Type: call.Type}},
+					{Type: StreamEventToolCallEnd, ToolCall: &call},
+					{Type: StreamEventFinish, FinishReason: &first.Finish, Response: &first, Usage: &usage},
+				}),
+				second,
+			}}
+			client := NewClient()
+			client.Register(a)
+			prompt := "prompt"
+			rounds := 1
+			executions := 0
+			result, err := StreamGenerate(ctx, GenerateOptions{
+				Client: client, Model: "m", Provider: "openai", Prompt: &prompt,
+				MaxToolRounds: &rounds, RetryPolicy: &RetryPolicy{MaxRetries: 0},
+				Tools: []Tool{{
+					Definition: ToolDefinition{Name: "lookup", Parameters: map[string]any{"type": "object", "properties": map[string]any{"key": map[string]any{"type": "integer"}}}},
+					Execute: func(_ context.Context, args any) (any, error) {
+						executions++
+						return "resolved-17", nil
+					},
+				}},
+			})
+			if err != nil {
+				t.Fatalf("StreamGenerate: %v", err)
+			}
+			defer result.Close() //nolint:errcheck
+
+			var stepFinishes, finishes int
+			var terminalErrors []error
+			for ev := range result.Events() {
+				switch ev.Type {
+				case StreamEventStepFinish:
+					stepFinishes++
+					if failure == "cancelled second open" {
+						<-enteredSecondOpen
+						cancel()
+					}
+				case StreamEventFinish:
+					finishes++
+				case StreamEventError:
+					terminalErrors = append(terminalErrors, ev.Err)
+				}
+			}
+			response, responseErr := result.Response()
+			if response != nil || responseErr == nil {
+				t.Errorf("Response() = (%+v, %v), want nil and terminal error", response, responseErr)
+			}
+			if stepFinishes != 1 || finishes != 0 || len(terminalErrors) != 1 {
+				t.Errorf("STEP_FINISH=%d, FINISH=%d, ERROR=%d, want 1, 0, 1", stepFinishes, finishes, len(terminalErrors))
+			}
+			if len(terminalErrors) == 1 && !errors.Is(terminalErrors[0], responseErr) {
+				t.Errorf("ERROR event = %v, Response error = %v", terminalErrors[0], responseErr)
+			}
+			switch failure {
+			case "permanent open":
+				var providerErr Error
+				if !errors.As(responseErr, &providerErr) || providerErr.StatusCode() != 401 || providerErr.Retryable() {
+					t.Errorf("Response error = %v, want permanent 401", responseErr)
+				}
+			case "truncated stream":
+				var streamErr *StreamError
+				if !errors.As(responseErr, &streamErr) {
+					t.Errorf("Response error = %v, want StreamError", responseErr)
+				}
+			default:
+				if !errors.Is(responseErr, context.Canceled) {
+					t.Errorf("Response error = %v, want cancellation", responseErr)
+				}
+			}
+			if executions != 1 {
+				t.Errorf("tool executions = %d, want 1", executions)
+			}
+			reqs := a.Requests()
+			if len(reqs) != 2 {
+				t.Fatalf("provider requests = %d, want 2", len(reqs))
+			}
+			for i, req := range reqs {
+				if len(req.Tools) != 1 || req.Tools[0].Name != "lookup" {
+					t.Errorf("request %d tools = %+v, want lookup", i, req.Tools)
+				}
+			}
+			var forwarded bool
+			for _, msg := range reqs[1].Messages {
+				for _, part := range msg.Content {
+					if part.Kind == ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == "call_17" && part.ToolResult.Content == "resolved-17" {
+						forwarded = true
+					}
+				}
+			}
+			if !forwarded {
+				t.Error("second request lost completed lookup result")
+			}
+			steps := result.Steps()
+			if len(steps) != 1 {
+				t.Errorf("Steps() = %+v, want one completed tool step", steps)
+			} else {
+				if len(steps[0].ToolCalls) != 1 || steps[0].ToolCalls[0].ID != "call_17" {
+					t.Errorf("completed step calls = %+v, want call_17", steps[0].ToolCalls)
+				}
+				if len(steps[0].ToolResults) != 1 || steps[0].ToolResults[0].ToolCallID != "call_17" || steps[0].ToolResults[0].Name != "lookup" || steps[0].ToolResults[0].Content != "resolved-17" || steps[0].ToolResults[0].IsError {
+					t.Errorf("completed step results = %+v, want successful lookup call_17", steps[0].ToolResults)
+				}
+				if steps[0].Usage.InputTokens != 10 || steps[0].Usage.OutputTokens != 20 || steps[0].Usage.TotalTokens != 30 {
+					t.Errorf("completed step usage = %+v, want 10/20/30", steps[0].Usage)
+				}
+			}
+			got := result.TotalUsage()
+			if got.InputTokens != 10 || got.OutputTokens != 20 || got.TotalTokens != 30 {
+				t.Errorf("TotalUsage() = %+v, want 10/20/30", got)
+			}
+		})
+	}
+}
+
+func TestStreamGenerate_CompletedAccountingAtToolRoundLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		maxRounds  int
+		requests   int
+		executions int
+		wantUsage  Usage
+	}{
+		{"zero rounds", 0, 1, 0, Usage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30}},
+		{"exhausted after one round", 1, 2, 1, Usage{InputTokens: 20, OutputTokens: 40, TotalTokens: 60}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			makeResponse := func(id string) []StreamEvent {
+				call := ToolCallData{ID: id, Name: "lookup", Type: "function", Arguments: []byte(`{}`)}
+				resp := Response{
+					Provider: "openai", Model: "m",
+					Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}},
+					Finish:  FinishReason{Reason: FinishReasonToolCalls},
+					Usage:   Usage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30},
+				}
+				return []StreamEvent{{Type: StreamEventFinish, Response: &resp, FinishReason: &resp.Finish}}
+			}
+			a := &scriptedStreamAdapter{name: "openai", scripts: []func(context.Context, Request) (Stream, error){
+				formalScriptedEvents(makeResponse("call_1")),
+				formalScriptedEvents(makeResponse("call_2")),
+			}}
+			client := NewClient()
+			client.Register(a)
+			prompt := "prompt"
+			executions := 0
+			result, err := StreamGenerate(context.Background(), GenerateOptions{
+				Client: client, Model: "m", Provider: "openai", Prompt: &prompt,
+				MaxToolRounds: &tc.maxRounds,
+				Tools: []Tool{{Definition: ToolDefinition{Name: "lookup", Parameters: map[string]any{"type": "object"}},
+					Execute: func(context.Context, any) (any, error) { executions++; return "ok", nil }}},
+			})
+			if err != nil {
+				t.Fatalf("StreamGenerate: %v", err)
+			}
+			defer result.Close() //nolint:errcheck
+			for range result.Events() {
+			}
+			response, responseErr := result.Response()
+			if responseErr != nil || response == nil || response.Finish.Reason != FinishReasonToolCalls {
+				t.Errorf("Response() = (%+v, %v), want bounded tool-call completion", response, responseErr)
+			}
+			if got := len(a.Requests()); got != tc.requests || executions != tc.executions {
+				t.Errorf("requests=%d, tool executions=%d, want %d, %d", got, executions, tc.requests, tc.executions)
+			}
+			steps := result.Steps()
+			if len(steps) != tc.requests {
+				t.Fatalf("Steps() = %+v, want %d", steps, tc.requests)
+			}
+			for i, step := range steps {
+				if len(step.ToolCalls) != 1 || step.ToolCalls[0].ID != []string{"call_1", "call_2"}[i] {
+					t.Errorf("step %d calls = %+v", i, step.ToolCalls)
+				}
+				wantResults := 0
+				if i == 0 && tc.executions == 1 {
+					wantResults = 1
+				}
+				if len(step.ToolResults) != wantResults {
+					t.Errorf("step %d results = %+v, want %d", i, step.ToolResults, wantResults)
+				}
+			}
+			got := result.TotalUsage()
+			if got.InputTokens != tc.wantUsage.InputTokens || got.OutputTokens != tc.wantUsage.OutputTokens || got.TotalTokens != tc.wantUsage.TotalTokens {
+				t.Errorf("TotalUsage() = %+v, want %+v", got, tc.wantUsage)
+			}
+		})
+	}
+}

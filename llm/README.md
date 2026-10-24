@@ -67,3 +67,13 @@ instead of replaying content into the same event channel. Empty deltas and
 control/start events without content do not prevent retry. This is the
 high-level library path; callers using `RetryStream` directly can explicitly
 opt into retry-after-partial with a reset callback.
+
+## Completed streaming tool rounds
+
+After `StreamGenerate` completes, `StreamResult.Steps()` and `TotalUsage()`
+retain every completed tool round even if a later stream open fails, a later
+stream truncates, or the caller cancels. The tool results remain in their
+completed steps and their usage counts toward the total. `Response()` still
+returns the terminal error with no successful final response for an errored
+turn; an unfinished later response does not add a step or usage. Successful
+final completions and `StopWhen` retain their usual accounting.

@@ -161,6 +161,14 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 		toolRoundsUsed := 0
 		var steps []StepResult
 		totalUsage := Usage{Raw: map[string]any{}}
+		// Completed rounds survive a later error or cancellation. Publish the
+		// locals before done closes; only a successful final step sets res.final.
+		defer func() {
+			res.mu.Lock()
+			res.steps = steps
+			res.totalUsage = totalUsage
+			res.mu.Unlock()
+		}()
 
 		for {
 			if sctx.Err() != nil {
