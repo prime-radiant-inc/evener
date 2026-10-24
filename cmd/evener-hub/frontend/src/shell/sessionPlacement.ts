@@ -23,7 +23,10 @@ export function openSessionByRef(ref: string): void {
     workspace.focusPane(existing.id);
   }
   const url = paneToURL("session", { ref });
-  if (url) navigate(url);
+  // The rail, scope crumbs and every session link land here: a press that
+  // names a reader already in the address bar still has to leave an attention
+  // entry's own placement behind.
+  if (url) navigate(url, { ordinary: true });
 }
 
 // A legacy cascade retains its original route role: opening the session a cascade

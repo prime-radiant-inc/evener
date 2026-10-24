@@ -48,7 +48,8 @@ import { useNeedsYou } from "../NeedsYouProvider";
 import type { NeedsYouController, NeedsYouSnapshot } from "../needsYouActions";
 import { openInNewTab } from "../openInNewTab";
 import { displayState } from "../rail/railNodes";
-import { navigate, observeRouteHistory } from "../routing";
+import { observeRouteHistory } from "../routing";
+import { openSessionByRef } from "../sessionPlacement";
 import { cadenceStateFor } from "../sessionStatus";
 import { workspaceStore } from "../workspace";
 import { isBlocked } from "./blocked";
@@ -665,7 +666,7 @@ function PaletteBody({
       // which carries the per-client mutation identity, and a shared identity
       // would let both tabs claim each other's durable sends.
       if (newTab) openInNewTab(url);
-      else navigate(url);
+      else openSessionByRef(item.row.result.ref);
     }
   }
 

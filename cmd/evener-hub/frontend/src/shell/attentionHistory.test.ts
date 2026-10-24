@@ -12,6 +12,7 @@ import {
 import { conversationPaneLifetime } from "./paneLifetime";
 import { type PaneDescriptor, type PaneProps, registerPaneForTests } from "./paneRegistry";
 import { navigate, openSessionRoute } from "./routing";
+import { openSessionByRef } from "./sessionPlacement";
 import { type OpenPaneRecord, presentedPanes, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 function fixtureDescriptor<P>(
@@ -351,6 +352,31 @@ test("an ordinary activation at an attention-owned URL leaves the binding", asyn
   expect(routeEvents).toHaveBeenCalledTimes(1);
   expect(location.pathname).toBe("/s/local%3Aa");
   expect(a).toBeDefined();
+});
+
+// The rail, scope crumbs and session links all follow a ref rather than a URL,
+// so they reach the same-URL case through their own seam.
+test("following a session ref at an attention-owned URL leaves the binding", async () => {
+  history.replaceState({}, "", "/s/local%3Aa");
+  const a = workspaceStore.getState().openPane("session", { ref: "local:a" });
+  const x = workspaceStore.getState().openPane("session", { ref: "local:x" }, { slot: "secondary" });
+  workspaceStore.getState().focusPane(x);
+  openAttentionSession("local:target");
+  const popped = expectPop();
+  history.back();
+  await popped;
+  expect(currentAttentionEntryToken()).not.toBeNull();
+  expect(restoreCurrentAttentionEntry()).toBe(true);
+  expect(location.pathname).toBe("/s/local%3Aa");
+
+  workspaceStore.getState().focusPane(a);
+  const routeEvents = vi.fn();
+  window.addEventListener("popstate", routeEvents, { once: true });
+  openSessionByRef("local:a");
+
+  expect(currentAttentionEntryToken()).toBeNull();
+  expect(routeEvents).toHaveBeenCalledTimes(1);
+  expect(location.pathname).toBe("/s/local%3Aa");
 });
 
 test("ordinary app navigation from Back prunes the Forward target but preserves presented panes", async () => {
