@@ -1,17 +1,17 @@
 // The failed-turn diagnostic offers continuation without consuming the composer.
 //
-// Retry has exactly two owners. The canonical latest turn belongs to
-// threadsStore (the shared isLatestRetryTurn predicate), and the unresolved own
-// submission belongs to the durable outbox projection (ownPendingTurnInput).
-// This component projects those two reads; it never captures them as authority.
-// continueTurn rechecks both at activation.
+// Retry has one shared decision. The canonical latest turn belongs to
+// threadsStore, and the pending view belongs to the durable outbox projection;
+// this component feeds both into retryEligibility and renders its answer. It
+// never captures them as authority: continueTurn calls the same decision on
+// live state at activation.
 import type { TurnError } from "@evener/appwire-client";
-import { isLatestRetryTurn, sessionActionError } from "@evener/appwire-client";
+import { isTurnError, retryEligibility, sessionActionError } from "@evener/appwire-client";
 import { useState } from "react";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Button, Chip, Disclosure, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { useRetryPendingState } from "../composer/queue/pendingTurnsStore";
+import { useRetryPendingProjection } from "../composer/queue/pendingTurnsStore";
 import { classifyTurnError } from "./turnFailure";
 import styles from "./turnfailure.module.css";
 
@@ -39,11 +39,31 @@ export function TurnFailureEndCap({
   const model = useThreadsStore((state) => (sessionRef === undefined ? undefined : state.threads.get(sessionRef)));
   // Always called: hooks cannot depend on whether the caller passed a ref.
   // An empty ref simply has no projected entries.
-  const pending = useRetryPendingState(sessionRef ?? "");
-  const isLatest = model !== undefined && isLatestRetryTurn(model, turnId);
-  // An unloaded durable read is unknown, not empty: Retry stays inactive until
-  // the outbox owner answers for this ref.
-  const retryBlocked = !pending.loaded || pending.unresolved;
+  const pending = useRetryPendingProjection(sessionRef ?? "");
+  // The one shared eligibility decision, rendered as-is. The end-cap mounts
+  // only for a turn whose projected error is a real TurnError (TurnBlock's
+  // asTurnError), so the displayed failure is the clicked-turn fact; the
+  // activation rechecks the canonical turn through the same input.
+  const decision =
+    model === undefined
+      ? null
+      : retryEligibility({
+          clickedTurnId: turnId,
+          thread: model,
+          clickedTurnFailed: isTurnError(error),
+          pendingMutations: pending.entries,
+          pendingMutationsReady: pending.loaded,
+          // Browser Retry is durably routed: the enqueue funnel owns the live
+          // client requirement and reports its refusal to the press. Moving
+          // that check into eligibility would turn a reported failure into a
+          // silent no-op.
+          serviceReady: true,
+        });
+  // Not-latest and not-failed hide the action; the pending and service
+  // answers keep it visible but disabled.
+  const offersRetry =
+    decision !== null && decision.reason !== "not-latest-turn" && decision.reason !== "clicked-turn-not-failed";
+  const retryBlocked = decision === null || !decision.allowed;
 
   async function retry() {
     if (sessionRef === undefined) return;
@@ -64,7 +84,7 @@ export function TurnFailureEndCap({
             <div className={CLASS.hintText}>{info.hint}</div>
           </Disclosure>
         )}
-        {sessionRef !== undefined && isLatest && (
+        {sessionRef !== undefined && offersRetry && (
           <Button variant="primary" size="sm" disabled={retryBlocked} onClick={() => void retry()}>
             {info.recoveryLabel}
           </Button>
