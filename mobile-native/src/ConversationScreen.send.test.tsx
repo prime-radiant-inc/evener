@@ -9,9 +9,10 @@ import { activityChangedNotification } from "@evener/appwire-client/testing/noti
 // ConversationScreen.recovery.test.tsx.
 import type { ComponentProps } from "react";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type AnyNotification,
+	type AppwireClientLike,
 	makeTranscriptDisplayConfig,
 	type SessionDelegatesResponse,
 	type Thread,
@@ -300,8 +301,13 @@ beforeEach(({ onTestFinished }) => {
 		}
 	});
 });
-afterEach(() => {
+afterEach(async () => {
 	unmountMountedTrees();
+	// The runtime is memoized for the whole file and arms a 2000ms MutationOutbox
+	// discovery interval. Left running, a later case's mount re-registers a
+	// target and the interval re-sends an earlier case's lost row through it
+	// (#4901). Stop it with the trees that started it.
+	await getNativeMutationRuntime().stop();
 	displayPrefs.hubId = null;
 	displayPrefs.config = null;
 	catalogHub.fails = false;
@@ -318,6 +324,9 @@ afterEach(() => {
 	fleet.sources = undefined;
 	fleet.revision = undefined;
 	vi.unstubAllGlobals();
+});
+afterAll(() => {
+	for (const database of nativePlatform.sqliteDatabases) database.close();
 });
 
 function hubClient(
@@ -6959,4 +6968,97 @@ it("clears the lost send's outbox row with one Discard on the draft ghost", asyn
 	await vi.waitFor(async () => expect(await runtime.storage.listOutbox(key)).toEqual([]));
 	await settle();
 	expect(ghostStates(tree)).toEqual([]);
+});
+
+// #4901: the runtime is memoized for the whole file and arms a 2000ms
+// MutationOutbox discovery interval. Stopping it between cases is what keeps a
+// lost admission row from being re-sent under a later case's client. These two
+// cases exercise the file's own teardown rather than a hand-written one, so
+// deleting the afterEach stop above fails the second case.
+describe("the mutation runtime's discovery interval across cases (issue #4901)", () => {
+	const ref = "ref-retry-discovery-isolation";
+	const target = nativeMutationTargetKey("hub-1", ref);
+
+	// The runtime already exists from earlier cases, started on real timers.
+	// Stop it, then fake only the interval so the next start is test-owned;
+	// settle() and the screen's deferred work keep running on real timers.
+	beforeAll(async () => {
+		await getNativeMutationRuntime().stop();
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+	});
+	afterAll(() => {
+		vi.useRealTimers();
+	});
+
+	it("leaves a lost turn/start admission as one request with one clientMutationId", async () => {
+		const served = thread(ref, "idle");
+		(served as unknown as { turns: unknown[] }).turns = [
+			{
+				id: "turn_1",
+				status: "failed",
+				itemsView: "default",
+				error: { message: "go test exited 1" },
+				items: [
+					{ id: "u-1", turnId: "turn_1", type: "userMessage", status: "completed", text: "my original question" },
+				],
+			},
+		];
+		const { tree, hub } = await mount(served);
+		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+		const request = client.request;
+		client.request = async (method, params) => {
+			const answer = await request(method, params);
+			if (method === "turn/start") throw new Error("connection lost after admission");
+			return answer;
+		};
+		await press(tree, "Retry");
+		const turnStarts = hub.requests.filter((entry) => entry.method === "turn/start");
+		expect(turnStarts).toHaveLength(1);
+		expect(new Set(turnStarts.map((entry) => entry.params.clientMutationId)).size).toBe(1);
+		const rows = await getNativeMutationRuntime().storage.listOutbox(target);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]?.clientMutationId).toBe(turnStarts[0]?.params.clientMutationId);
+	});
+
+	it("does not re-send a durable turn/start after the file's teardown", async () => {
+		// The case above ran, and its teardown must have stopped the runtime:
+		// no discovery interval survives into this case.
+		const leakedIntervals = vi.getTimerCount();
+		const runtime = getNativeMutationRuntime();
+		// Running this case alone starts with no lost admission, so seed the
+		// same durable shape the case above leaves instead of passing vacuously.
+		if ((await runtime.storage.listOutbox(target)).length === 0) {
+			const { clientMutationId } = await runtime.storage.enqueueIntent({
+				targetRef: target,
+				method: "turn/start",
+				payload: { ref, input: [{ type: "text", text: "continue" }] },
+				attachments: [],
+				optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "continue" }] },
+			});
+			await runtime.storage.markAttempted(clientMutationId);
+		}
+		const rows = await runtime.storage.listOutbox(target);
+		expect(rows).toHaveLength(1);
+		const clientMutationId = rows[0]?.clientMutationId;
+		expect(clientMutationId).toBeTruthy();
+
+		// A later case's client: if the interval leaked, its scan dispatches the
+		// earlier row through this client. The authoritative snapshot keeps the
+		// submitting row in place instead of parking it blockedUnknown.
+		const later = hubClient(thread(ref, "idle"));
+		const laterClient = later.client as unknown as AppwireClientLike;
+		const unregister = runtime.registerTarget("hub-1", ref, laterClient);
+		const lease = runtime.beginAuthoritativeRead("hub-1", ref, laterClient);
+		if (!lease) throw new Error("no authoritative read lease");
+		const authoritative = thread(ref, "idle");
+		(authoritative as unknown as { evener: Record<string, unknown> }).evener.mutationStateAuthoritative = true;
+		await runtime.reconcileAuthoritativeRead(lease, { thread: authoritative });
+		await settle();
+		await advanceFakeTimers(2_000);
+		await settle();
+		unregister();
+
+		expect({ requests: later.mutations(), leakedIntervals }).toEqual({ requests: [], leakedIntervals: 0 });
+		expect((await runtime.storage.listOutbox(target)).map((row) => row.clientMutationId)).toEqual([clientMutationId]);
+	});
 });
