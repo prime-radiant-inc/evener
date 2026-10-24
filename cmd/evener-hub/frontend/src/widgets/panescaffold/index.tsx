@@ -98,7 +98,10 @@ export function PaneScaffold({
     if (paneId === undefined) return;
     chromeStore.getState().setPaneDocumentFor(paneId, paneRef.current?.ownerDocument ?? null);
   });
-  useEffect(() => {
+  // Layout cleanup, not passive: a replacement under the same pane id runs
+  // this teardown too, and a passive one would land after the replacement's
+  // own publication and erase it.
+  useLayoutEffect(() => {
     if (paneId === undefined) return;
     return () => chromeStore.getState().setPaneDocumentFor(paneId, null);
   }, [paneId]);
