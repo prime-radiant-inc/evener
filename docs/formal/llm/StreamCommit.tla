@@ -5,10 +5,12 @@ VARIABLE s
 vars == <<s>>
 
 (* StreamGenerate's public Events channel, not the agent's separate call path.
-   Each content event has one nonempty payload. Starts/control carry none.
+   Each content event has one nonempty payload. Start models payload-free starts;
+   a tool start with arguments is represented by Delta.
    Tool delta payload is ToolCall.Arguments, NEVER StreamEvent.Delta.
    RetryAfterPartial=false, OnReset=nil, one ordinary retryable failure class.
-   Mapping: stream_generate.go:214-292, stream_retry.go:129-170. *)
+   Mapping: baseline stream_generate.go:214-292, fixed :222-307;
+   stream_retry.go:129-170. *)
 Init == s = [attempt |-> 1, phase |-> "consume", events |-> <<>>,
              started |-> {}, published |-> {}, partial |-> FALSE,
              replayRisk |-> FALSE]
@@ -21,9 +23,12 @@ Start(kind) ==
 
 (* A Delta represents one forwarded nonempty payload. For tools it may be
    carried by TOOL_CALL_START, TOOL_CALL_DELTA, or TOOL_CALL_END; an empty
-   start belongs to Start. Empty text and provider controls belong to Control.
-   In pre-fix source only text set PartialOutput. Fixed source gates text,
-   reasoning, tool arguments, and object payloads at stream_generate.go:257-271.
+   start belongs to Start. Provider controls belong to Control in both modes;
+   empty text belongs to Control only in fixed mode. Historical Go set
+   PartialOutput for every TEXT_DELTA,
+   including empty ones; the pre-fix model omits empty text events and models
+   only nonempty text. Fixed source gates nonempty text, reasoning, tool
+   arguments, and object payloads at stream_generate.go:265-276.
    Forwarding and classification are atomic with respect to retry admission. *)
 Delta(kind) ==
     /\ s.phase = "consume" /\ Len(s.events) < MaxEvents
@@ -33,13 +38,16 @@ Delta(kind) ==
                       !.partial = @ \/ CommitRule = "fixed" \/ kind = "text"]
 
 (* STREAM_START and opaque provider controls are deliberately not content.
+   Fixed-mode Control also abstracts empty TEXT_DELTA. Historical empty text
+   is omitted, not classified as Control: old Go marked it partial.
    The model makes no claim that duplicate control events are a bug. *)
 Control ==
     /\ s.phase = "consume" /\ Len(s.events) < MaxEvents
     /\ s' = [s EXCEPT !.events = Append(@, <<"control", "event">>)]
 
 (* A stream may close early at any event count, or finish successfully.
-   FINISH is buffered, not exposed as partial content, lines 241-244, 266-271. *)
+   FINISH is buffered, not exposed as partial content (baseline :241-244,
+   :266-271; fixed :249-252, :281-286). *)
 Finish == /\ s.phase = "consume"
           /\ s' = [s EXCEPT !.phase = "done"]
 Truncate == /\ s.phase = "consume"

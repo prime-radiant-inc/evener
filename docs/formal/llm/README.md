@@ -9,11 +9,11 @@ TLC found two families; both are now **confirmed Go bugs and fixed**:
   of `StreamResult.Steps()` and `TotalUsage()`. A public-boundary regression
   failed before completed-round publication and passed afterward.
 
-The initial audit had ten configurations without violations. Four found those
-candidates. A fifth counterexample concerns a deliberately stronger cancellation
-hypothesis, not the approved observed-cancellation contract. SC-1 was subsequently
-reproduced and fixed; SS-1 has now also been reproduced and fixed. No live provider
-request or broad local test suite was used for either fix.
+Of the 17 documented configurations, 12 finish without violations. Four retain
+historical counterexamples for SC-1/SS-1; a fifth concerns a deliberately
+stronger cancellation hypothesis, not the approved observed-cancellation
+contract. Both bugs were separately reproduced in Go before their fixes. No
+live provider request or broad local test suite was used for either fix.
 
 Source baseline: `0e8e648c19de07b6a72830032d991631a3d4e8b0`.
 Contract: [approved design](../../superpowers/specs/2026-10-24-llm-tlc-audit-design.md).
@@ -110,8 +110,10 @@ Each passing row also checks `TypeOK`. Temporal checks completed for all three
 remains enabled; terminal states have explicit self-loops. The first development
 run of `StreamCommit` used `-XX:+UseSerialGC`, found the same 91/71 counterexample,
 and printed TLC's recommendation for ParallelGC. The table records the subsequent
-ParallelGC runs. The 15 initial final runs were sequential and finished in under
-a second each according to TLC's rounded duration output.
+ParallelGC runs. The first 15 configurations were initially run sequentially
+and finished in under a second each according to TLC's rounded duration output.
+The full 17-configuration matrix was rerun after both fixed configurations
+were added.
 
 Self-review corrected one initial overapproximation: active-tool availability
 must stay fixed across rounds (`llm/generate.go:205-227`), not be selected anew by
@@ -138,12 +140,12 @@ was a replay *risk*; the later Go test established the observable second attempt
 
 | Action / field | Source correspondence (baseline unless marked fixed) |
 |---|---|
-| `Start`, `Delta`, `Control` | `llm/stream_generate.go:223-262`, accumulator processes then events are forwarded |
-| historical `partial` | source baseline `llm/stream_generate.go:259-261`, only `TEXT_DELTA` set `hasPartialOutput` |
-| fixed `partial` | `llm/stream_generate.go:257-272`, nonempty typed text, reasoning, tool arguments at start/delta/end, or object payload set `hasPartialOutput` |
-| `Finish` | `llm/stream_generate.go:241-244,305-308`, FINISH buffered, then settled |
-| `Truncate` | `llm/stream_generate.go:266-271`, no FINISH becomes retryable `StreamError` |
-| `Retry`, `Stop` | `llm/stream_generate.go:284-292`, `llm/stream_retry.go:129-170` |
+| `Start`, `Delta`, `Control` | baseline `llm/stream_generate.go:223-262`; fixed `:231-277`, accumulator processes before forwarding. `Delta` abstracts only nonempty content, including tool arguments on start/end |
+| historical `partial` | baseline `llm/stream_generate.go:259-261`: **every** `TEXT_DELTA`, even empty, set `hasPartialOutput`; the pre-fix model omits empty text events rather than treating them as `Control` |
+| fixed `partial` | fixed `llm/stream_generate.go:265-276`: nonempty typed text, reasoning, tool arguments at start/delta/end, or nonnil object payload set `hasPartialOutput`; empty text is `Control` only in this mode |
+| `Finish` | baseline `llm/stream_generate.go:241-244,305-308`; fixed `:249-252,320-330`, FINISH buffered, then settled |
+| `Truncate` | baseline `llm/stream_generate.go:266-271`; fixed `:279-286`, no FINISH becomes retryable `StreamError` |
+| `Retry`, `Stop` | baseline `llm/stream_generate.go:284-292`; fixed `:299-317`; `llm/stream_retry.go:129-170` |
 | `published`, `replayRisk` | observer history of delivered nonempty deltas and subsequent attempt entry, not implementation state |
 
 ### SC-1 shortest traces
@@ -173,7 +175,8 @@ streams (`llm/client.go:384-402`); its pump forwards these fields unchanged
 A protocol stream may additionally emit STREAM_START; the trace abstracts that
 prefix away. The two-event bound counts the modeled start and delta, not the
 closing channel or retry decision. A provider's terminal ERROR instead of raw
-closure follows `stream_generate.go:245-254` to the same retry gate.
+closure follows baseline `stream_generate.go:245-254` (fixed `:253-262`) to the
+same retry gate.
 
 **Contract strength:** the approved design treats published content as committed;
 `stream_retry.go:56-64` documents that default retry cannot re-stream already
@@ -205,10 +208,15 @@ for `StreamCommit` (91/71 states) and `StreamCommitTool` (33/27 states), and exi
 **0** for `StreamCommitText` (70/42), `StreamCommitSafety` (420/252), and
 `StreamCommitFixed` (313/186). The fixed setting represents only the content
 classification passed to `RetryStream`, not an independent proof of Go behavior.
-`Start` and `Control` represent no-payload start and empty/control events;
-`Delta` represents nonempty payload on the content-bearing event, including
-tool arguments in START or END. It does not model their exact field bytes or
-the accumulator. The Go regression, not this bounded model, confirms the fix.
+`Start` represents no-payload starts. In **fixed mode**, `Control` includes
+empty text deltas and no-payload controls; `Delta` represents nonempty payload
+on the content-bearing event, including tool arguments in START or END. The
+**historical mode omits empty text deltas**: historical Go marked every text
+delta as partial, including an empty one, so classifying it as `Control` would
+misrepresent its retry decision. Historical counterexamples concern nonempty
+reasoning and tool arguments and are unaffected. Neither mode models exact
+field bytes or the accumulator. The Go regression, not the bounded model,
+confirms the fixed empty-text retry and the tool-start/end and object cases.
 No production agent-session `StreamGenerate` caller was found; the demonstrated
 impact is limited to public `llm` library consumers.
 
@@ -370,16 +378,25 @@ this finite abstraction cannot prove the Go implementation or live provider path
 - Reasoning in `StreamEvent.Delta`, tool arguments only in `Delta`, or a nil
   ToolCall are not substituted for actual emitted payloads. The candidate traces
   use the documented fields and a nonempty tool call ID.
-- Control/start events alone do not establish committed content. Object deltas,
-  tool-end-only payloads, empty text deltas, more than two events per attempt,
-  explicit reset-enabled RetryStream callers, fail-fast streak/cap rules,
-  backoff numeric overflow, time moving backwards, real clock/deadline epoch
-  interactions, and concurrent result-reader aliasing are not checked.
+- No-payload control/start events alone do not establish committed content.
+  The fixed StreamCommit model checks nonnil object payloads and abstracts
+  nonempty tool arguments on START/DELTA/END as `Delta`; the Go regression
+  checks object deltas, arguments specifically on START and END, and empty
+  text/control-only recovery. The historical model excludes empty text, which
+  old Go incorrectly marked partial. Model checks do not inspect exact payload
+  bytes, empty-text behavior, or the event position of tool arguments.
+- More than two modeled events per attempt, explicit reset-enabled RetryStream
+  callers, fail-fast streak/cap rules, backoff numeric overflow, time moving
+  backwards, real clock/deadline epoch interactions, and concurrent
+  result-reader aliasing are not checked.
+- The SS-1 regression checks a completed first round with nonzero usage, but
+  does not give a truncated second stream its own nonzero partial usage; the
+  model tracks only settled response usage. No unfinished-step usage is owed.
 - Tool-call IDs/arguments, token vectors/maps, provider wire parsers, transcript
   persistence, fallback, crash recovery, and the agent session are abstractions
   or outside scope. No inference about live providers follows from these checks.
 - The models encode source transitions, while named invariants encode audit
   hypotheses. A passing bounded model is not an unbounded proof. A failing
-  model is not a confirmed production bug. Later tasks must reproduce credible
-  traces through real Client/StreamGenerate/RetryStream and reject artifacts
-  before changing Go code.
+  model alone is not a confirmed production bug: SC-1 and SS-1 were separately
+  reproduced through real Client/StreamGenerate/RetryStream before their fixes.
+  RB-D1 remains a diagnostic of a stronger, unconfirmed contract.
