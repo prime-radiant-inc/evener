@@ -21,7 +21,11 @@ import { VirtualList, type VirtualListHandle } from "../widgets";
 import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscriptOptions";
 import { connectionStore } from "./connection";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
-import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import {
+  MUTATION_OUTBOX_DATABASE_NAME,
+  MUTATION_OUTBOX_DATABASE_VERSION,
+  MutationOutboxIndexedDB,
+} from "./mutationOutboxIndexedDB";
 import { settleProjectionWorkForTests } from "./projectionWork";
 import {
   entryHistoryKey,
@@ -2446,7 +2450,7 @@ it("ordinary browser routes reads notifications paging reopen reconnect and fina
   expect(await lease.release()).toEqual({ kind: "saved" });
   expect(threadsStore.getState().threads.has(ref)).toBe(false);
   expect(await factory.databases()).toEqual([
-    { name: "evener-mutation-outbox", version: 4 },
+    { name: MUTATION_OUTBOX_DATABASE_NAME, version: MUTATION_OUTBOX_DATABASE_VERSION },
     { name: SESSION_CACHE_DATABASE_NAME, version: SESSION_CACHE_DATABASE_VERSION },
   ]);
 });

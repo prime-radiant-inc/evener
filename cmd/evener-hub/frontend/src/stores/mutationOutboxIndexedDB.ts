@@ -93,22 +93,21 @@ export interface MutationOutboxIndexedDBOptions {
   onOpenDiagnostic?: (diagnostic: MutationOutboxOpenDiagnostic) => void;
 }
 
-const DATABASE_NAME = "evener-mutation-outbox";
-// Version 4 is a compatibility fence, not a schema migration: the upgrade
-// handler below is unchanged and purely additive. The deployed version-3 code
-// shares attempt evidence through the `attempted` flag alone, so its dispatch
-// never counts unresolved attempts and a refusal rollback in this build could
-// erase evidence the older tab's concurrent attempt still needs - this build
-// must not share a database with it. A version-3 open against this database
-// fails with VersionError, and the old tab fails closed (storage-unavailable
-// errors) instead of silently erasing attempt evidence: the safe
-// mixed-version state is a reload, never a silent share
+// The schema identity every test and fixture asserts against.
+export const MUTATION_OUTBOX_DATABASE_NAME = "evener-mutation-outbox";
+const DATABASE_NAME = MUTATION_OUTBOX_DATABASE_NAME;
+// Each schema version is also a compatibility fence, not only a migration.
+// Version 4 made attempt evidence countable, so a version-3 tab could not
+// share rows whose attempts it cannot count. Version 5 adds the
+// retarget-destination store: a recovery row moved by a resume must keep
+// naming its destination after another tab consumes the row, and that fact
+// has to be shared rather than held in one tab's memory. An older tab's open
+// against either version fails with VersionError and closes fail-safe
+// (storage-unavailable errors) rather than silently sharing the database: the
+// safe mixed-version state is a reload, never a silent share
 // (docs/design/stop-cancellation-outbox.md §8).
-//
-// Version 5 adds the retarget-destination store: a recovery row moved by a
-// resume must keep naming its destination after another tab consumes the row,
-// and that fact has to be shared rather than held in one tab's memory.
 const DATABASE_VERSION = 5;
+export const MUTATION_OUTBOX_DATABASE_VERSION = DATABASE_VERSION;
 const OUTBOX_STORE = "outbox";
 const OPTIMISTIC_STORE = "optimistic";
 const RECOVERY_STORE = "recovery";
