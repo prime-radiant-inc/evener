@@ -114,15 +114,10 @@ func lastToolResultText(messages []llm.Message) string {
 	return ""
 }
 
-// A delegate's earlier generation can finish while its parent is mid-turn,
-// after the parent's last delivery flush: the parent holds that result for its
-// next round. When the parent's very next tool call is a delegate_send with a
-// positive wait to the same delegate, the new generation's result queues behind
-// the held one, which waits on the parent's tool round, which waits on the new
-// generation's result (#3906). The send answers as soon as the new generation
-// finishes, with both results in order, and the held result is consumed by
-// that reply rather than delivered again as a notification.
-func TestDelegateSendWaitAnswersWhileAnEarlierResultIsDeferred(t *testing.T) {
+// An earlier generation takes canonical custody during its parent's turn.
+// A positive wait for the next generation must progress and project both
+// unobserved results in order, once each, without a receiver-queue dependency.
+func TestDelegateSendWaitAnswersWithEarlierCanonicalResult(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	client := llm.NewClient()
@@ -130,23 +125,22 @@ func TestDelegateSendWaitAnswersWhileAnEarlierResultIsDeferred(t *testing.T) {
 	client.Register(adapter)
 
 	var sess *Session
-	firstDeferred := make(chan struct{})
-	var releaseOnce, deferredOnce sync.Once
+	firstAccepted := make(chan struct{})
+	var releaseOnce, acceptedOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(adapter.releaseFirstGeneration) }) }
 	t.Cleanup(release)
 	cfg := SessionConfig{StateDir: t.TempDir()}
 	cfg.testOnly.delegateDeliveryClassified = func(s *Session, deferred bool) {
-		if s == sess && deferred {
-			deferredOnce.Do(func() { close(firstDeferred) })
+		if s == sess && !deferred {
+			acceptedOnce.Do(func() { close(firstAccepted) })
 		}
 	}
-	// The send is past the parent's last flush here: finish the first
-	// generation now and let the send go on only once the parent has deferred
-	// that result, which is the interleaving CI hit by chance (#3906).
+	// Finish the first generation after the send starts but before its positive
+	// wait, reproducing the interleaving that formerly depended on a held head.
 	cfg.testOnly.delegateSendBeforePositiveWaitAdmission = func() {
 		release()
 		select {
-		case <-firstDeferred:
+		case <-firstAccepted:
 		// TRIPWIRE: a hang guard only; the released child finishes within
 		// milliseconds.
 		case <-time.After(30 * time.Second):
@@ -170,9 +164,9 @@ func TestDelegateSendWaitAnswersWhileAnEarlierResultIsDeferred(t *testing.T) {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	select {
-	case <-firstDeferred:
+	case <-firstAccepted:
 	default:
-		t.Fatal("the first generation's result was not deferred behind the parent's turn; the test did not force the interleaving")
+		t.Fatal("the first generation did not enter direct acceptance during the parent's turn")
 	}
 	adapter.mu.Lock()
 	sendResult := adapter.sendResult

@@ -316,6 +316,9 @@ type SessionConfig struct {
 // deterministic. Never set by app callers; never persisted (json:"-" on the
 // parent field).
 type testConfig struct {
+	// These observe drain ownership boundaries without providing work or clocks.
+	jobTreeDrainEntered  func()
+	jobTreeDrainReturned func()
 	// memoryBeforeIO observes the native scope boundary without providing data.
 	memoryBeforeIO func(scope, operation string) error
 	// memoryRealBudget gives the memory boundary its production read budget
@@ -353,6 +356,10 @@ type testConfig struct {
 	// test cannot produce one without closing the session, which closes the
 	// claim path too. Nil in production.
 	failTurnBeforeRecording func() error
+	// notificationExecutionRelease observes either side of the common input
+	// release lock, before readiness dispatch. Both calls are outside s.mu.
+	// Tests block one side to place a concurrent append at this exact boundary.
+	notificationExecutionRelease func(released bool)
 	// clientMutationStartAnnounced observes a start that has claimed and
 	// announced, immediately before the turn runs -- the window a close lands in,
 	// where the post-run give-back decides whether the claim goes back. Nil in
@@ -422,7 +429,7 @@ type testConfig struct {
 	// delegateAttentionOpenWriter replaces only transcript resume for attention
 	// repair. Nil preserves the production transcript opener.
 	delegateAttentionOpenWriter delegateAttentionWriterOpener
-	// rootAttentionRetryCallback observes a root attention retry callback that
+	// notificationRetryCallback observes a root attention retry callback that
 	// has passed scheduleRootAttentionRetryLocked's early returns: it took
 	// ownership (beginAttentionCallback succeeded), its generation is still
 	// current, and the rail is not parked. It fires whether or not that callback
@@ -430,7 +437,7 @@ type testConfig struct {
 	// lease, not by the notify -- so a test that pauses here holds exactly the
 	// live retry, and a stale or parked timer never reaches it. A notify hook
 	// cannot identify the caller. Nil in production.
-	rootAttentionRetryCallback func()
+	notificationRetryCallback func()
 	// delegateRuntimeReclaimClose replaces only the external Session close
 	// boundary used by admission-triggered stable-runtime reclamation.
 	delegateRuntimeReclaimClose func(*Session)

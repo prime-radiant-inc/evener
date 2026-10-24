@@ -33,6 +33,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -333,6 +334,10 @@ func (c *delegateTreeController) reduceBeginFinalizationIntent(intent finishInte
 		runErrorKnown: intent.runErrorKnown,
 		runErr:        intent.runErr,
 	}
+	claim.batchReady = readyClosedChannel()
+	if live.binding.evidence != nil && live.binding.evidence.batch != nil {
+		claim.batchReady = live.binding.evidence.batch.done
+	}
 	c.settlementClaims[claim.token] = claim
 	if c.stopTracksFinalizationLocked(lease) {
 		c.stop.settlementClaims[claim.token] = struct{}{}
@@ -551,7 +556,29 @@ func (c *delegateTreeController) reduceGenerationFinishIntent(intent finishInten
 		finish = settled.meta
 		outcome, disposition, reason = settled.outcome, settled.disposition, settled.reason
 		deliveryID = delegateDeliveryID(lease.delegateID, lease.generation)
-		finished := delegateRunFinishedEvent(lease, outcome, disposition, reason, endedAt, deliveryID, nil)
+		var packet *delegatestore.TerminalPacket
+		if aggregate.PreparedTerminal.Kind == delegatestore.PacketReported && outcome != delegatestore.OutcomeCompleted {
+			captured := cloneDelegateTerminalPacket(*aggregate.PreparedTerminal)
+			captured.Kind = delegatestore.PacketTerminalError
+			fields := map[string]json.RawMessage{}
+			_ = json.Unmarshal(captured.Metadata, &fields)
+			if fields == nil {
+				fields = map[string]json.RawMessage{}
+			}
+			if finish.packet != nil {
+				actual := map[string]json.RawMessage{}
+				_ = json.Unmarshal(finish.packet.Metadata, &actual)
+				for key, value := range actual {
+					fields[key] = value
+				}
+			}
+			fields["outcome"], _ = json.Marshal(outcome)
+			fields["reason"], _ = json.Marshal(reason)
+			fields["error"], _ = json.Marshal(finish.errorText)
+			captured.Metadata, _ = json.Marshal(fields)
+			packet = &captured
+		}
+		finished := delegateRunFinishedEvent(lease, outcome, disposition, reason, endedAt, deliveryID, packet)
 		events = []delegatestore.Event{finished}
 
 	case delegatestore.PhaseStopping:
@@ -680,8 +707,8 @@ type settledFinishDecision struct {
 }
 
 // settledGenerationFinish normalizes a settled generation's prepared terminal.
-// A non-missing terminal-error prepared packet is overridden by an incoming
-// finish with a non-completed outcome; an exhausted prepared finish carries
+// A non-missing prepared report keeps its captured payload, but an incoming
+// non-completed outcome wins. An exhausted prepared finish carries
 // its exhaustion fields through. The zero delegateFinish reproduces the
 // runtime-lost recovery path, whose run loop produced no finish of its own.
 func settledGenerationFinish(prepared delegatestore.TerminalPacket, incoming delegateFinish) settledFinishDecision {
@@ -693,7 +720,7 @@ func settledGenerationFinish(prepared delegatestore.TerminalPacket, incoming del
 		disposition: preparedFinish.disposition,
 		reason:      preparedFinish.reason,
 	}
-	if prepared.Kind == delegatestore.PacketTerminalError && !delegateIsMissingTerminalPacket(prepared) &&
+	if !delegateIsMissingTerminalPacket(prepared) &&
 		incoming.outcome != "" && incoming.outcome != delegatestore.OutcomeCompleted {
 		decision.outcome = incoming.outcome
 		decision.disposition = delegatestore.DispositionTerminalError

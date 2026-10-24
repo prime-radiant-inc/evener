@@ -56,6 +56,8 @@ type jobResult struct {
 	RunningInBackground   bool     `json:"running_in_background"`
 	TimedOut              bool     `json:"timed_out"`
 	Action                string   `json:"action"`
+	Readiness             string   `json:"readiness"`
+	ReportSummary         string   `json:"report_summary"`
 	ResumedFromJobID      string   `json:"resumed_from_job_id"`
 	TranscriptRef         string   `json:"transcript_ref"`
 	Output                string   `json:"output"`

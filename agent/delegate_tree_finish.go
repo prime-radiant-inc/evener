@@ -46,6 +46,7 @@ type delegateSettlementClaim struct {
 	lease         delegateLease
 	mode          delegateSettlementMode
 	ready         <-chan struct{}
+	batchReady    <-chan struct{}
 	runErrorKnown bool
 	runErr        error
 }
@@ -102,6 +103,17 @@ func (c *delegateTreeController) CompleteSettlement(claim *delegateSettlementCla
 		cancel()
 	}
 	return plans, err
+}
+
+// ReleaseSettlementClaim drops a claim whose terminal candidate was refused
+// before publication, leaving the generation open for the next report.
+func (c *delegateTreeController) ReleaseSettlementClaim(claim *delegateSettlementClaim) {
+	if c == nil || claim == nil {
+		return
+	}
+	c.mu.Lock()
+	c.releaseSettlementClaimLocked(claim.token)
+	c.mu.Unlock()
 }
 
 func (c *delegateTreeController) AttentionResolutionsForFinalization(claim *delegateSettlementClaim) (delegateMutationPlans, error) {
@@ -189,6 +201,13 @@ func (c *delegateTreeController) finalizationReadyLocked(claim *delegateSettleme
 	case <-claim.ready:
 	default:
 		return errDelegateTargetBusy
+	}
+	if claim.batchReady != nil {
+		select {
+		case <-claim.batchReady:
+		default:
+			return errDelegateTargetBusy
+		}
 	}
 	live := c.live[claim.lease.delegateID]
 	if live == nil || live.binding == nil || live.binding.lease != claim.lease {
@@ -305,11 +324,7 @@ func (c *delegateTreeController) releaseFinalizationLocked(live *delegateLiveSta
 	}
 	close(finalizing.released)
 	live.finalizing = nil
-	if state := c.attention[finalizing.delegateID]; state != nil && len(state.wakeIDs) != 0 {
-		if root := c.rootRuntime; root != nil {
-			go root.notify()
-		}
-	}
+	go c.recheckNotificationReceivers()
 }
 
 // finalizingLocked is delegateID's finished generation still finalizing on

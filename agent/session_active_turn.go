@@ -108,6 +108,9 @@ func (s *Session) mintRunningTurnID() (string, turnNameRefusal) {
 	}
 	// The store took a write, so the next failure is news again.
 	s.clearStoreUnhealthyWarning()
+	if turnID != "" {
+		s.clearRunningTurnReleaseRetry()
+	}
 	return turnID, refusal
 }
 
@@ -159,6 +162,10 @@ func (s *Session) clearStoreUnhealthyWarning() {
 // a full core.
 func (s *Session) scheduleRunningTurnNameRetry(ceiling time.Duration) {
 	s.turnNameRetryMu.Lock()
+	s.mu.Lock()
+	s.notificationSchedule.nameBlocked = true
+	s.notificationSchedule.version++
+	s.mu.Unlock()
 	if s.turnNameRetry.active {
 		s.turnNameRetryMu.Unlock()
 		return
@@ -179,19 +186,27 @@ func (s *Session) scheduleRunningTurnNameRetry(ceiling time.Duration) {
 		}
 		s.turnNameRetry.active = false
 		s.turnNameRetry.delay = min(delay*2, ceiling)
+		s.mu.Lock()
+		s.notificationSchedule.nameBlocked = false
+		s.notificationSchedule.version++
+		s.mu.Unlock()
 		s.turnNameRetryMu.Unlock()
 		s.notify()
 	})
 }
 
 // resetRunningTurnNameRetry drops the backoff and cancels any armed retry once
-// a wake has been named. Bumping the generation is what stops an already-armed
+// an input is admitted. Bumping the generation stops an already-armed
 // timer firing a wake nothing is waiting for.
 func (s *Session) resetRunningTurnNameRetry() {
 	s.turnNameRetryMu.Lock()
 	s.turnNameRetry.generation++
 	s.turnNameRetry.active = false
 	s.turnNameRetry.delay = jobNotificationRetryInitialDelay
+	s.mu.Lock()
+	s.notificationSchedule.nameBlocked = false
+	s.notificationSchedule.version++
+	s.mu.Unlock()
 	s.turnNameRetryMu.Unlock()
 }
 
@@ -288,8 +303,9 @@ func (s *Session) releaseRunningTurnID(turnID string) turnNameReleaseResult {
 	return turnNameReleased
 }
 
-// scheduleRunningTurnReleaseRetry arms ONE paced re-attempt of a release write
-// the store refused, or -- once the budget is spent -- says so and stops.
+// scheduleRunningTurnReleaseRetry arms one re-attempt of a release write the
+// store refused. Exhausting the fast budget warns once and transfers the exact
+// release obligation to common paced recovery, without reopening execution.
 //
 // It re-attempts the WRITE, which is what separates it from
 // scheduleRunningTurnNameRetry. Mint runs on every wake, so re-waking the serve
@@ -297,29 +313,24 @@ func (s *Session) releaseRunningTurnID(turnID string) turnNameReleaseResult {
 // that held the name, and nothing re-enters it. A wake would find the name
 // still held and stand down again.
 //
-// The delay doubles to the ceiling job notifications use, and the budget is
-// finite. Unlike the stand-down's re-wake, which can poll a broken mount
-// forever because each poll costs only a wake, this loop is holding a name no
-// later turn can take, so it has to end in an answer.
+// The delay doubles to the ceiling job notifications use. Recovery retains the
+// execution fence until storage accepts a write, even after this budget ends.
 func (s *Session) scheduleRunningTurnReleaseRetry(turnID string) {
 	s.releaseRetryMu.Lock()
 	if s.runningTurnReleaseRetry.attempts >= runningTurnReleaseRetryLimit {
 		s.releaseRetryMu.Unlock()
-		// Reset the budget so a later episode -- the slot cleared by the
-		// interrupt path, then a new turn's release hits a failing store -- gets
-		// its full retry count rather than inheriting this one's exhaustion. The
-		// name this episode stranded is still held; the reset is for whatever
-		// fails next, not for this name.
-		s.clearRunningTurnReleaseRetry()
-		// Loud, not diagnostic: the name is still held, and nothing in this
-		// process clears it. forgetRunningTurnNoOneOwns drops an ActiveTurnID no
-		// pending execution claims at daemon load, so that is the event the
-		// warning names, not a "session restart".
-		s.emit(events.EventWarning, events.WarningData{
-			Message: fmt.Sprintf(
-				"running turn %s could not be released after %d attempts; this session refuses every later turn until the daemon restarts (the stale turn name is cleared at daemon load)",
-				turnID, runningTurnReleaseRetryLimit),
-		})
+		s.mu.Lock()
+		first := s.notificationSchedule.releaseTurnID != turnID
+		s.notificationSchedule.releaseTurnID = turnID
+		s.mu.Unlock()
+		// The bounded fast retry hands its obligation to the common paced
+		// recovery callback. The exact name remains fenced until a write lands.
+		s.scheduleNotificationRetry()
+		if first {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
+				"running turn %s could not be released after %d attempts; paced storage recovery continues without a daemon restart",
+				turnID, runningTurnReleaseRetryLimit)})
+		}
 		return
 	}
 	delay := s.runningTurnReleaseRetry.delay
@@ -362,4 +373,7 @@ func (s *Session) clearRunningTurnReleaseRetry() {
 		generation: s.runningTurnReleaseRetry.generation + 1,
 	}
 	s.releaseRetryMu.Unlock()
+	s.mu.Lock()
+	s.notificationSchedule.releaseTurnID = ""
+	s.mu.Unlock()
 }

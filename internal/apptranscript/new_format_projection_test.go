@@ -241,6 +241,7 @@ func TestNewFormatStatusEntriesAndFoldCopiesProjectNothing(t *testing.T) {
 	foldCopy.OriginalOrdinal = &ordinal
 	for name, entry := range map[string]schema.Turn{
 		"completion": {Format: schema.TurnFormatIdentity, TurnID: "t_1", Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{}},
+		"wait":       {Format: schema.TurnFormatIdentity, TurnID: "t_1", Kind: schema.TurnWaitCheckpoint, WaitCheckpoint: &schema.WaitCheckpointInfo{SessionID: "private-session", ExecutionTurnID: "t_1", CommunicateCallID: "private-call"}},
 		"reopen":     {Format: schema.TurnFormatIdentity, TurnID: "t_1", Kind: schema.TurnReopen},
 		"fold copy":  foldCopy,
 	} {

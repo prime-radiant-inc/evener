@@ -173,10 +173,7 @@ func FuzzSessionLifecycleNotificationFaultCoverage(f *testing.F) {
 		if proceed := loopSession.acceptNotificationInput(loopCtx, ""); !proceed {
 			t.Fatal("injected watch notification did not proceed")
 		}
-		settleCtx := context.WithValue(context.Background(), sessionLifecycleFaultsKey{}, map[string]error{"settle_watch": errors.New("settle failed")})
-		appendSession.settleDeliveredWatchNotification(settleCtx, deliverableJobNotification{watchJM: &jobManager{}})
-		settleJM := &jobManager{appendEvent: func(jobstore.Event) error { return nil }, now: func() time.Time { return time.Unix(2, 0) }}
-		appendSession.settleDeliveredWatchNotification(context.Background(), deliverableJobNotification{watchJM: settleJM})
+
 	})
 }
 
@@ -374,16 +371,9 @@ func FuzzSessionLifecyclePureTailCoverage(f *testing.F) {
 			}
 		}
 
-		if durableJobNotificationAlreadyInjected(`<job-notification event="watch" job_id="x"></job-notification>`, `job_id="x"`) {
-			t.Fatal("watch notification was treated as durable injection")
-		}
-		if durableJobNotificationAlreadyInjected(`<job-notification status="watch" job_id="x">`, `job_id="x"`) {
-			t.Fatal("unterminated watch notification was treated as durable injection")
-		}
-
 		s := &Session{}
-		if s.jobNotificationAlreadyInjected("") {
-			t.Fatal("empty job id was treated as injected")
+		if accepted, err := s.notificationSourceAccepted(""); accepted || err != nil {
+			t.Fatalf("empty source id accepted=%t, err=%v", accepted, err)
 		}
 		survivors, retry, injected := s.filterDeliverableJobNotifications([]jobNotification{{JobID: "missing"}})
 		if len(survivors) != 0 || len(retry) != 1 || len(injected) != 0 {

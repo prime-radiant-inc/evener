@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -82,9 +83,9 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 
 	deps := stoolCommunicateDeps()
 	committed := false
-	deps.setCommunicateTerminal = func(context.Context, string, string, string, any, string) bool {
+	deps.setCommunicateTerminal = func(context.Context, schema.CommunicateInfo, string, string, any) (bool, error) {
 		committed = true
-		return true
+		return true, nil
 	}
 	reg := tool.NewRegistry()
 	_ = registerCommunicateTool(reg, deps)
@@ -124,10 +125,11 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 		}
 	}
 	deps.prependSteering = func(entries []steeringMessage) { deferred = append(deferred, entries...) }
-	deps.setCommunicateTerminal = func(_ context.Context, message, reply, output string, raw any, _ string) bool {
+	deps.setCommunicateTerminal = func(_ context.Context, info schema.CommunicateInfo, reply, output string, raw any) (bool, error) {
+		message := info.Message
 		resultMessage, resultReply, resultOutput = message, reply, output
 		structured = raw
-		return true
+		return true, nil
 	}
 
 	args := map[string]any{
@@ -219,7 +221,7 @@ func stoolCommunicateDeps() *toolDeps {
 		drainSteering:          func() []steeringMessage { return nil },
 		prependSteering:        func([]steeringMessage) {},
 		resultToolName:         func() string { return "communicate" },
-		setCommunicateTerminal: func(context.Context, string, string, string, any, string) bool { return true },
+		setCommunicateTerminal: func(context.Context, schema.CommunicateInfo, string, string, any) (bool, error) { return true, nil },
 	}
 }
 

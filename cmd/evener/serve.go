@@ -973,7 +973,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// client that disconnects mid-teardown must not be able to wedge the process
 	// in "retiring". Exit is unconditional once Commit returns — a teardown
 	// failure is reported, never fatal to terminating the process.
-	consumeRetirementClaim := func(reqCtx context.Context, claim *agent.RetirementClaim) error {
+	consumeRetirementClaim := func(reqCtx context.Context, claim *agent.RetirementClaim, reason string) error {
 		root := getSession()
 		retirementObserve("claim_consumed", root.ID())
 		// Every failure before Commit must abort the claim, or it wedges in
@@ -1009,6 +1009,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return failBeforeCommit(fmt.Errorf("retirement commit: %w", err))
 		}
 		retirementObserve("committed", root.ID())
+		if err := root.RecordRetirementReason(reason); err != nil {
+			serveLogf(os.Stderr, root.ID(), "retirement reason write failed: %v", err)
+		}
 		// Post-commit teardown is daemon-owned, not request-owned. The ctx used
 		// here is the daemon's lifetime context (the incoming request context is
 		// reqCtx): a committed retirement already closed admission forever, so
@@ -1101,7 +1104,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			_ = retirement.Abort(claim, "prepare_failed")
 			return appwire.DaemonRetireResponse{}, err
 		}
-		if err := consumeRetirementClaim(ctx, claim); err != nil {
+		if err := consumeRetirementClaim(ctx, claim, "manual"); err != nil {
 			// A post-commit teardown failure means the retirement already
 			// succeeded — admission is closed for good and the process exits —
 			// so it is reported as accepted. The failure is logged (serveLogf)
@@ -1960,7 +1963,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		retirementLoopDone = make(chan struct{})
 		go func() {
 			defer close(retirementLoopDone)
-			_ = retirement.Run(ctx, consumeRetirementClaim, func(attempt agent.RetirementAttempt) {
+			_ = retirement.Run(ctx, func(ctx context.Context, claim *agent.RetirementClaim) error {
+				return consumeRetirementClaim(ctx, claim, "idle")
+			}, func(attempt agent.RetirementAttempt) {
 				serveLogf(os.Stderr, getSession().ID(), "%s", retirementAttemptSummary(attempt))
 			})
 		}()

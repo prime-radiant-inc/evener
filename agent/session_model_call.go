@@ -173,7 +173,7 @@ func effectiveReasoningEffort(cfg, override string, escalated bool) string {
 // cut from. That list is the round's, not the request's: the retry after a
 // rejected anchor rebuilds from it, and nothing on the wire ever carries it.
 func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request, fullHistory []llm.Message, reasoningEffort string, err error) {
-	if err := s.flushPendingDelegateDeliveries(); err != nil {
+	if err := s.replayDelegateDeliveries(); err != nil {
 		return nil, "", nil, llm.Request{}, nil, "", err
 	}
 	// A skill-bearing steering message whose admission never reached durable
@@ -515,6 +515,26 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// inside is the single gate, whichever path built the history; staging
 	// follows the skill rebuilds because credit belongs to what the request
 	// actually carries.
+	if req.HistoryMode == llm.HistoryModeResponsesDelta {
+		pending, pendingErr := s.pendingNotificationIDs()
+		if pendingErr != nil {
+			return profile, sys, history, req, fullHistory, reasoningEffort, pendingErr
+		}
+		if len(pending) != 0 {
+			// Unknown server-side prefix coverage must not run a successful
+			// delta over and over while these notifications remain pending.
+			req.Messages = fullHistory
+			req.PreviousResponseID = ""
+			req.ConversationID = ""
+			req.Continuation = nil
+			req.HistoryMode = llm.HistoryModeFullHistory
+			fullHistory = nil
+			req = responsesContinuationFullHistoryWithInputEstimate(resolvedTargetOf(profile), req)
+			if req, _, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
+				return profile, sys, history, req, fullHistory, reasoningEffort, err
+			}
+		}
+	}
 	s.stagePresentedAttentionCoverage(ctx, presentedTurns)
 	return profile, sys, history, req, fullHistory, reasoningEffort, nil
 }
@@ -1028,7 +1048,7 @@ func effectiveRecordedInputTokens(usage llm.Usage, fullHistoryEstimate int, hasS
 // /delta/end, skipping start/delta when the assistant already streamed) and appends
 // the assistant turn to history unless the response was empty without phase metadata.
 // It runs under withResponseSideEffects and returns its abort error.
-func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, modelResp sessionModelResponse, txt string, skipHistory bool, finalAttempt ModelAttemptMetadata) error {
+func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, modelResp sessionModelResponse, txt string, skipHistory bool, finalAttempt ModelAttemptMetadata, settled llm.Request) error {
 	var persistErr error
 	if err := s.withResponseSideEffects(ctx, func() {
 		if !modelResp.StreamedAssistant {
@@ -1036,11 +1056,13 @@ func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, 
 				Model: resp.Model,
 			})
 		}
-		if !skipHistory {
-			persistErr = s.appendAssistantTurn(resp, finalAttempt)
+		observed := s.stagedNotificationObservationIDs(settled)
+		if !skipHistory || len(observed) != 0 {
+			persistErr = s.appendAssistantTurn(resp, finalAttempt, observed...)
 			if persistErr != nil {
 				return
 			}
+			s.promoteStagedAttentionCoverage(settled)
 		}
 		if !modelResp.StreamedAssistant && strings.TrimSpace(txt) != "" {
 			s.emit(events.EventAssistantTextDelta, events.AssistantTextDeltaData{Delta: txt})
@@ -1738,6 +1760,13 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 // outgoing request while staying untouched in the stored transcript.
 func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message {
 	history := make([]llm.Message, 0, len(historyTurns))
+	inline := inlineNotificationPresentations(historyTurns)
+	canonical := make(map[string]bool)
+	for _, turn := range historyTurns {
+		if turn.AttentionID != "" {
+			canonical[turn.AttentionID] = true
+		}
+	}
 	pendingToolCalls := map[string]struct{}{}
 	var deferredSteering []llm.Message
 
@@ -1774,6 +1803,9 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 		inFlight := scope.active() && i >= scope.InFlightFrom
 		switch t.Kind {
 		case schema.TurnSteering:
+			if _, presentedInline := inline[t.AttentionID]; presentedInline {
+				continue
+			}
 			if len(pendingToolCalls) > 0 {
 				deferredSteering = append(deferredSteering, t.Message)
 			} else {
@@ -1790,6 +1822,15 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			// Expand aggregated tool results into individual messages.
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
+					for _, binding := range t.DelegateDeliveryCommits {
+						id := delegateAttentionID(binding.DeliveryID)
+						if _, presented := inline[id]; !presented && canonical[id] && binding.ToolCallID == p.ToolResult.ToolCallID {
+							// History reduction changed this carrier. Its ordinary
+							// canonical body is authoritative, not a partial result.
+							p.ToolResult = delegateInlineStatusResult(p.ToolResult)
+							break
+						}
+					}
 					history = append(history, llm.Message{
 						Role:       llm.RoleTool,
 						ToolCallID: p.ToolResult.ToolCallID,

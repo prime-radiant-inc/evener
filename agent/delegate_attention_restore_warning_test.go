@@ -169,9 +169,9 @@ func TestFailedEscalationOfFencedAttentionWarnsOncePerEpisode(t *testing.T) {
 	}
 	eventsDone := captureSessionEvents(root)
 
-	root.drivePendingStableDelegateAttention()
-	root.drivePendingStableDelegateAttention()
-	root.drivePendingStableDelegateAttention()
+	root.delegateController.recheckNotificationReceivers()
+	root.delegateController.recheckNotificationReceivers()
+	root.delegateController.recheckNotificationReceivers()
 	root.Close()
 
 	messages := delegateAttentionWarningMessages(t, <-eventsDone)

@@ -194,7 +194,7 @@ describe("current transcript checkpoints", () => {
     expect(resumed.turns).toHaveLength(1);
     expect(resumed.turns[0]?.status).toBe("completed");
     expect(resumed.turns[0]?.items.map((item) => item.text)).toEqual([
-      '<delegate-notification delegate_id="dlg_1" name="Fix race in tree settle" kind="report">{"kind":"reported","message":"Done: the settle pass now waits for the drain.\\n\\nTests: go test ./agent/... passes.","metadata":{"outcome":"completed","name":"Fix race in tree settle","task":"Find and fix the race between tree settle and the drain.","description":"Fix race in tree settle","agent_type":"general-purpose","run_started_at":"2026-09-28T20:00:00Z","run_ended_at":"2026-09-28T20:02:00Z"}}</delegate-notification>',
+      '<delegate-notification delegate_id="dlg_1" name="Fix race in tree settle" kind="report">{"kind":"reported","message":"Done: the settle pass now waits for the drain.\\n\\nTests: go test ./agent/... passes.","metadata":{"agent_type":"general-purpose","description":"Fix race in tree settle","name":"Fix race in tree settle","outcome":"completed","report_notice":"Generation final (done). Task list unavailable. Resume this delegate if the work is unfinished; a later supervision attention may start a new generation.","run_ended_at":"2026-09-28T20:02:00Z","run_started_at":"2026-09-28T20:00:00Z","task":"Find and fix the race between tree settle and the drain."}}</delegate-notification>',
       "alpha",
     ]);
   });

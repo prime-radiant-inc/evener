@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -290,7 +291,8 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 			continue
 		}
 		covered := c.stopCoversLocked(id)
-		if len(shell.runningJobIDs) == 0 && (!covered || len(shell.pendingNotification) == 0) {
+		suppress := covered && !(c.stop.preserveNotifications && c.durable[id].Resumable)
+		if len(shell.runningJobIDs) == 0 && (!suppress || len(shell.pendingNotification) == 0) {
 			continue
 		}
 		plans.shellRepairs = append(plans.shellRepairs, delegateShellRepairPlan{
@@ -298,7 +300,7 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 			storePath:           filepath.Join(jobsDir(c.stateDir, c.durable[id].Descriptor.ChildSessionID), "jobs.jsonl"),
 			runningJobIDs:       append([]string(nil), shell.runningJobIDs...),
 			pendingNotification: append([]shellNotificationIdentity(nil), shell.pendingNotification...),
-			suppressOwnerNotify: covered,
+			suppressOwnerNotify: suppress,
 		})
 	}
 	if c.stop == nil {
@@ -314,6 +316,9 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
+		if stop.preserveNotifications && c.durable[id].Resumable {
+			continue
+		}
 		attention := append([]string(nil), evidence.attention[id]...)
 		// A wake noted after the evidence snapshot was taken is bound to this
 		// stop member exactly the same way: its transcript open is already
@@ -796,6 +801,16 @@ func (c *delegateTreeController) reconcileRuntimeLostFromEvidenceLocked() (deleg
 			remaining = append(remaining, lease)
 			continue
 		}
+		if aggregate.Phase == delegatestore.PhaseRunning && aggregate.PendingStopSeq == 0 {
+			waiting, err := c.readSafeDelegateWaitLocked(aggregate)
+			if err != nil {
+				return delegateMutationPlans{}, fmt.Errorf("delegate %s wait evidence: %w", lease.delegateID, err)
+			}
+			if waiting {
+				remaining = append(remaining, lease)
+				continue // The journal still owns this open generation, no outcome.
+			}
+		}
 		endedAt := c.now()
 		var events []delegatestore.Event
 		switch aggregate.Phase {
@@ -842,6 +857,66 @@ func (c *delegateTreeController) reconcileRuntimeLostFromEvidenceLocked() (deleg
 	}
 	c.reconcileOrder = remaining
 	return plans, nil
+}
+
+// readSafeDelegateWaitLocked runs only for a cold open generation. Holding the
+// controller lock excludes runtime installation and new cold writer claims;
+// existing custody writers defer reconciliation until their Close has settled.
+// Read before opening a writer: writer recovery may trim an incomplete tail,
+// which must not turn unreadable evidence into an older safe checkpoint.
+func (c *delegateTreeController) readSafeDelegateWaitLocked(run *delegatestore.Aggregate) (bool, error) {
+	if !run.CurrentRunOpen || run.Phase != delegatestore.PhaseRunning || run.PendingStopSeq != 0 {
+		return false, nil
+	}
+	if live := c.live[run.DelegateID]; live != nil && (live.runtime != nil || live.binding != nil) {
+		return false, errDelegateTargetBusy
+	}
+	if c.hasDeliveryWorkForOwnerLocked(run.DelegateID) || c.attentionRestoreHolds[run.DelegateID] != 0 || c.hasSettlementClaimLocked(delegateLease{delegateID: run.DelegateID, generation: run.Generation}) || c.stopCoversLocked(run.DelegateID) {
+		return false, errDelegateTargetBusy
+	}
+	for _, reservation := range c.reservations {
+		if reservation != nil && reservation.delegateID == run.DelegateID {
+			return false, errDelegateTargetBusy
+		}
+	}
+	path := transcriptPath(c.stateDir, run.Descriptor.ChildSessionID)
+	checkpoint, err := readWaitCheckpoint(path, run.Descriptor.ChildSessionID)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if checkpoint == nil || checkpoint.DelegateID != run.DelegateID || checkpoint.Generation != run.Generation || checkpoint.ResumedByTurnID != "" {
+		return false, nil
+	}
+	_, sessionID, err := delegateTranscriptPathFromRef(c.stateDir, run.Descriptor.TranscriptRef)
+	if err != nil {
+		return false, err
+	}
+	if sessionID != run.Descriptor.ChildSessionID {
+		return false, errors.New("wait checkpoint descriptor session identity does not match")
+	}
+	data, err := readTranscriptFull(path, "")
+	if err != nil {
+		return false, err
+	}
+	if !safeWaitBoundary(*checkpoint, data.Entries) {
+		return false, nil
+	}
+	open := c.attentionOpen
+	if open == nil {
+		open = transcript.OpenWriterForSession
+	}
+	writer, _, err := open(path, run.Descriptor.ChildSessionID)
+	if err != nil {
+		return false, err
+	}
+	// Readable retained-unsynced bytes are not yet authority. Settle them through
+	// the existing owned writer, without appending a duplicate checkpoint.
+	err = writer.EstablishDurability()
+	err = errors.Join(err, writer.Close())
+	return err == nil, err
 }
 
 func delegateOpenRunOrder(events []delegatestore.Event, state delegatestore.State) []delegateLease {
@@ -897,23 +972,24 @@ func (c *delegateTreeController) restorePendingStop(events []delegatestore.Event
 	}
 	previousLifecycle, outcome := classifyDelegateStopAdmission(stateAtAdmission, targetID, members)
 	c.stop = &delegateStopState{
-		requestSeq:        requestSeq,
-		targetID:          targetID,
-		previousLifecycle: previousLifecycle,
-		outcome:           outcome,
-		members:           members,
-		active:            make(map[delegateLease]struct{}),
-		starts:            make(map[uint64]struct{}),
-		work:              make(map[delegateWorkToken]string),
-		deliveries:        make(map[delegateDeliveryToken]struct{}),
-		quietClaims:       make(map[uint64]struct{}),
-		steeringClaims:    make(map[uint64]struct{}),
-		modelClaims:       make(map[uint64]struct{}),
-		settlementClaims:  make(map[uint64]struct{}),
-		watchEnqueues:     make(map[uint64]struct{}),
-		watchDeliveries:   make(map[uint64]struct{}),
-		done:              make(chan struct{}),
-		progress:          make(chan struct{}, 1),
+		requestSeq:            requestSeq,
+		targetID:              targetID,
+		preserveNotifications: c.durable[targetID].PendingStopPreservesNotifications,
+		previousLifecycle:     previousLifecycle,
+		outcome:               outcome,
+		members:               members,
+		active:                make(map[delegateLease]struct{}),
+		starts:                make(map[uint64]struct{}),
+		work:                  make(map[delegateWorkToken]string),
+		deliveries:            make(map[delegateDeliveryToken]struct{}),
+		quietClaims:           make(map[uint64]struct{}),
+		steeringClaims:        make(map[uint64]struct{}),
+		modelClaims:           make(map[uint64]struct{}),
+		settlementClaims:      make(map[uint64]struct{}),
+		watchEnqueues:         make(map[uint64]struct{}),
+		watchDeliveries:       make(map[uint64]struct{}),
+		done:                  make(chan struct{}),
+		progress:              make(chan struct{}, 1),
 	}
 	return nil
 }

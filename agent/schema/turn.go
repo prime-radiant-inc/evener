@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/llm"
 )
 
@@ -84,6 +85,9 @@ const (
 	// TurnReopen marks a turn that recovery reclaimed and runs again under
 	// the same TurnID: the turn is open again until its next completion.
 	TurnReopen TurnKind = "TURN_REOPEN"
+	// TurnWaitCheckpoint records an activation's yield or its later resumption.
+	// It is private transcript evidence, not conversation or model history.
+	TurnWaitCheckpoint TurnKind = "WAIT_CHECKPOINT"
 	// TurnCommunicate records a communicate message at the moment it is
 	// delivered — the detail rides Turn.Communicate.
 	TurnCommunicate TurnKind = "COMMUNICATE"
@@ -112,7 +116,7 @@ func (k TurnKind) PublicTranscript() bool {
 // they exist for the history projection alone.
 func (k TurnKind) TranscriptOnly() bool {
 	switch k {
-	case TurnCompletion, TurnReopen, TurnCommunicate, TurnNotice:
+	case TurnCompletion, TurnReopen, TurnWaitCheckpoint, TurnCommunicate, TurnNotice:
 		return true
 	default:
 		return false
@@ -153,6 +157,19 @@ type TurnCompletionInfo struct {
 	DurationMS  int64                `json:"duration_ms"`
 }
 
+// WaitCheckpointInfo identifies one yielded activation. A later record with
+// the same identity and a nonempty ResumedByTurnID claims its resumption.
+// Generation is evidence to check against the delegate journal, not a ledger.
+type WaitCheckpointInfo struct {
+	SessionID         string `json:"session_id"`
+	DelegateID        string `json:"delegate_id,omitempty"`
+	Generation        uint64 `json:"generation,omitempty"`
+	ExecutionTurnID   string `json:"execution_turn_id"`
+	CommunicateCallID string `json:"communicate_call_id"`
+	WaitingOn         string `json:"waiting_on,omitempty"`
+	ResumedByTurnID   string `json:"resumed_by_turn_id,omitempty"`
+}
+
 // CommunicateInfo is the persisted form of one delivered communicate message.
 // It mirrors events.CommunicateData deliberately rather than reusing it: this
 // shape is persisted transcript data and must stay stable on its own.
@@ -161,9 +178,15 @@ type CommunicateInfo struct {
 	EndTurn bool   `json:"end_turn"`
 	Message string `json:"message"`
 	// EndReason is why a root session's call ended its turn (one of
-	// tool.CommunicateEndReasons); empty on a call that kept the turn going
-	// and wherever end_reason is not offered (delegates, headless roots).
+	// tool.CommunicateEndReasons, or a delegate's disposition); empty on a
+	// call that kept the turn going and on a headless root, which is offered
+	// no end_reason.
 	EndReason string `json:"end_reason,omitempty"`
+	// Blocker is what a delegate's blocked report waits on.
+	Blocker string `json:"blocker,omitempty"`
+	// WaitingOn is the job, watch, or child delegate that will wake a
+	// delegate whose report carries waiting_on_work.
+	WaitingOn string `json:"waiting_on,omitempty"`
 }
 
 // NoticeKind names a presentational notice.
@@ -440,6 +463,12 @@ type Turn struct {
 	ModelSwitch *ModelSwitchInfo `json:"model_switch,omitempty"`
 	// Notice carries a presentational notice on TurnNotice entries.
 	Notice *NoticeInfo `json:"notice,omitempty"`
+	// NotificationProvenance is private causal metadata of accepted attention.
+	// The first accepted record owns it, including on idempotent delivery retries.
+	NotificationProvenance *provenance.Causal `json:"notification_provenance,omitempty"`
+	// ObservedNotificationIDs is private evidence of the exact request answered
+	// by this durably recorded assistant response, not an execution launch claim.
+	ObservedNotificationIDs []string `json:"observed_notification_ids,omitempty"`
 	// OriginalOrdinal is set on a copy a compaction fold re-appends after its
 	// markers: the entry ordinal of the entry it copies. Copies are model
 	// history for resume, and are neither projected nor announced.
@@ -486,6 +515,8 @@ type Turn struct {
 	// Usage carries the token-usage stats reported by the provider; set only on
 	// assistant turns.
 	Usage llm.Usage `json:"usage"`
+	// WaitCheckpoint is private yield/resumption evidence on TurnWaitCheckpoint.
+	WaitCheckpoint *WaitCheckpointInfo `json:"wait_checkpoint,omitempty"`
 }
 
 // NewTurn creates a Turn with the current UTC time.

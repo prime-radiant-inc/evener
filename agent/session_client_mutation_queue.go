@@ -179,7 +179,7 @@ func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.T
 	// callback, so it releases no QueueHeld, and a Stop that landed after the
 	// original must keep the rail parked.
 	if lookup.Disposition != clientMutationDispositionReplayed {
-		s.unparkRootDelegateAttention()
+		s.requestNotificationWake()
 	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		// A retry of a queue that was accepted but never run -- the process died
@@ -947,7 +947,7 @@ func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (ap
 	}
 	// Only a FRESH application unparks (see the queue accept's note).
 	if lookup.Disposition != clientMutationDispositionReplayed {
-		s.unparkRootDelegateAttention()
+		s.requestNotificationWake()
 	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		var replayed appwire.TurnDrainAsSteerResponse
@@ -1077,7 +1077,7 @@ func (s *Session) clientMutationPromote(params appwire.TurnPromoteQueuedAsSteerP
 	}
 	// Only a FRESH application unparks (see the queue accept's note).
 	if lookup.Disposition != clientMutationDispositionReplayed {
-		s.unparkRootDelegateAttention()
+		s.requestNotificationWake()
 	}
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		var replayed appwire.TurnPromoteQueuedAsSteerResponse

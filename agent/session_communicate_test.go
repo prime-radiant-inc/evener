@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -57,6 +58,11 @@ func communicateCallArgs(id string, args map[string]any) llm.ToolCallData {
 	normalized["output"] = output
 	if reason, ok := args["end_reason"]; ok {
 		normalized["end_reason"] = reason
+	}
+	for _, key := range []string{"blocker", "waiting_on"} {
+		if value, ok := args[key]; ok {
+			normalized[key] = value
+		}
 	}
 
 	raw, _ := json.Marshal(normalized)
@@ -492,9 +498,9 @@ func TestCommunicateCapturesRawStructuredOutput(t *testing.T) {
 		resultToolName: func() string {
 			return "communicate"
 		},
-		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any, _ string) bool {
+		setCommunicateTerminal: func(_ context.Context, _ schema.CommunicateInfo, _, _ string, raw any) (bool, error) {
 			captured = raw
-			return true
+			return true, nil
 		},
 	}
 	reg := tool.NewRegistry()
@@ -539,9 +545,9 @@ func TestCommunicateCapturesEmptyRawStructuredOutputForCustomSchema(t *testing.T
 		resultToolName: func() string {
 			return "communicate"
 		},
-		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any, _ string) bool {
+		setCommunicateTerminal: func(_ context.Context, _ schema.CommunicateInfo, _, _ string, raw any) (bool, error) {
 			captured = raw
-			return true
+			return true, nil
 		},
 	}
 	reg := tool.NewRegistry()

@@ -798,9 +798,6 @@ func TestDelegateResourceRuntime_CallerNestedPersistsAtNextModelBoundary(t *test
 	if err := receiver.executeDelegateMutationPlans(plans); err != nil {
 		t.Fatalf("queue caller delivery: %v", err)
 	}
-	if err := receiver.flushPendingDelegateDeliveries(); err != nil {
-		t.Fatalf("flush at model boundary: %v", err)
-	}
 	snapshot := receiver.delegateModelHistorySnapshot()
 	if len(snapshot) != 1 || snapshot[0].AttentionID != delegateAttentionID(plans.deliveries[0].deliveryID) {
 		t.Fatalf("next model-boundary history = %#v", snapshot)
@@ -1845,9 +1842,9 @@ func TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent(t *testin
 		drainSteering:      func() []steeringMessage { return nil },
 		prependSteering:    func([]steeringMessage) {},
 		resultToolName:     func() string { return "communicate" },
-		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any, _ string) bool {
+		setCommunicateTerminal: func(_ context.Context, _ schema.CommunicateInfo, _, _ string, raw any) (bool, error) {
 			captured = raw
-			return true
+			return true, nil
 		},
 	}
 	reg := toolpkg.NewRegistry()

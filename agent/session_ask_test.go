@@ -854,13 +854,13 @@ func TestAskUser_ReplyDrainsRootDelegateAttentionRefusedAtEntryGate(t *testing.T
 	if appended, err := sess.appendDelegateNotificationDurably(firstAttentionID, firstContent); err != nil || !appended {
 		t.Fatalf("append root attention = appended:%t err:%v", appended, err)
 	}
-	if err := sess.armDelegateAttention(firstAttentionID); err != nil {
+	if err := sess.requestNotificationWake(); err != nil {
 		t.Fatalf("arm root attention: %v", err)
 	}
 	select {
 	case <-wakes:
+		t.Fatal("pending question dispatched a background executor wake")
 	default:
-		t.Fatal("root attention emitted no initial wake")
 	}
 
 	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
@@ -869,7 +869,7 @@ func TestAskUser_ReplyDrainsRootDelegateAttentionRefusedAtEntryGate(t *testing.T
 	if got := len(f.Requests()); got != 1 {
 		t.Fatalf("requests after refused wake = %d, want 1", got)
 	}
-	if !sess.hasPendingRootDelegateAttention() {
+	if !sess.hasPendingNotifications() {
 		t.Fatal("refused wake discarded pending root delegate attention")
 	}
 
@@ -893,7 +893,7 @@ func TestAskUser_ReplyDrainsRootDelegateAttentionRefusedAtEntryGate(t *testing.T
 	if got := fold.resolutions[firstAttentionID]; got != delegateAttentionConsumed {
 		t.Errorf("root attention disposition = %q, want %q", got, delegateAttentionConsumed)
 	}
-	if sess.hasPendingRootDelegateAttention() {
+	if sess.hasPendingNotifications() {
 		t.Error("root delegate attention remains pending after the reply drain")
 	}
 
@@ -904,7 +904,7 @@ func TestAskUser_ReplyDrainsRootDelegateAttentionRefusedAtEntryGate(t *testing.T
 	if appended, err := sess.appendDelegateNotificationDurably(secondAttentionID, secondContent); err != nil || !appended {
 		t.Fatalf("append later root attention = appended:%t err:%v", appended, err)
 	}
-	if err := sess.armDelegateAttention(secondAttentionID); err != nil {
+	if err := sess.requestNotificationWake(); err != nil {
 		t.Fatalf("arm later root attention: %v", err)
 	}
 	select {

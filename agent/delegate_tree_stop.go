@@ -12,25 +12,26 @@ import (
 )
 
 type delegateStopState struct {
-	requestSeq        uint64
-	targetID          string
-	previousLifecycle delegateLifecycle
-	outcome           string
-	members           map[string]struct{}
-	active            map[delegateLease]struct{}
-	starts            map[uint64]struct{}
-	work              map[delegateWorkToken]string
-	deliveries        map[delegateDeliveryToken]struct{}
-	quietClaims       map[uint64]struct{}
-	steeringClaims    map[uint64]struct{}
-	modelClaims       map[uint64]struct{}
-	settlementClaims  map[uint64]struct{}
-	watchEnqueues     map[uint64]struct{}
-	watchDeliveries   map[uint64]struct{}
-	waiters           []*delegateInlineWaiter
-	done              chan struct{}
-	progress          chan struct{}
-	driver            *delegateStopDriver
+	requestSeq            uint64
+	targetID              string
+	preserveNotifications bool
+	previousLifecycle     delegateLifecycle
+	outcome               string
+	members               map[string]struct{}
+	active                map[delegateLease]struct{}
+	starts                map[uint64]struct{}
+	work                  map[delegateWorkToken]string
+	deliveries            map[delegateDeliveryToken]struct{}
+	quietClaims           map[uint64]struct{}
+	steeringClaims        map[uint64]struct{}
+	modelClaims           map[uint64]struct{}
+	settlementClaims      map[uint64]struct{}
+	watchEnqueues         map[uint64]struct{}
+	watchDeliveries       map[uint64]struct{}
+	waiters               []*delegateInlineWaiter
+	done                  chan struct{}
+	progress              chan struct{}
+	driver                *delegateStopDriver
 }
 
 type delegateStopDriver struct {
@@ -248,30 +249,32 @@ func (c *delegateTreeController) stopSubtreeLocked(actor delegateActor, targetID
 		// been pending, and the request sequence is an ordering, not a clock.
 		TS: c.now(),
 		SubtreeStopRequested: &delegatestore.SubtreeStopRequested{
-			TargetDelegateID: targetID,
+			TargetDelegateID:      targetID,
+			PreserveNotifications: true,
 		},
 	})
 	if err != nil {
 		return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, err
 	}
 	stop := &delegateStopState{
-		requestSeq:        appended[0].Seq,
-		targetID:          targetID,
-		previousLifecycle: previousLifecycle,
-		outcome:           outcome,
-		members:           members,
-		active:            make(map[delegateLease]struct{}),
-		starts:            make(map[uint64]struct{}),
-		work:              make(map[delegateWorkToken]string),
-		deliveries:        make(map[delegateDeliveryToken]struct{}),
-		quietClaims:       make(map[uint64]struct{}),
-		steeringClaims:    make(map[uint64]struct{}),
-		modelClaims:       make(map[uint64]struct{}),
-		settlementClaims:  make(map[uint64]struct{}),
-		watchEnqueues:     make(map[uint64]struct{}),
-		watchDeliveries:   make(map[uint64]struct{}),
-		done:              make(chan struct{}),
-		progress:          make(chan struct{}, 1),
+		requestSeq:            appended[0].Seq,
+		targetID:              targetID,
+		preserveNotifications: true,
+		previousLifecycle:     previousLifecycle,
+		outcome:               outcome,
+		members:               members,
+		active:                make(map[delegateLease]struct{}),
+		starts:                make(map[uint64]struct{}),
+		work:                  make(map[delegateWorkToken]string),
+		deliveries:            make(map[delegateDeliveryToken]struct{}),
+		quietClaims:           make(map[uint64]struct{}),
+		steeringClaims:        make(map[uint64]struct{}),
+		modelClaims:           make(map[uint64]struct{}),
+		settlementClaims:      make(map[uint64]struct{}),
+		watchEnqueues:         make(map[uint64]struct{}),
+		watchDeliveries:       make(map[uint64]struct{}),
+		done:                  make(chan struct{}),
+		progress:              make(chan struct{}, 1),
 	}
 	plan := delegateCancelPlan{requestSeq: stop.requestSeq, targetID: targetID}
 	memberIDs := c.memberIDsLeafFirstLocked(members)

@@ -480,7 +480,7 @@ func awaitTreeQuiesced(t *testing.T, root *Session) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // TRIPWIRE: DrainJobTree returns on its real completion signal (no job notification, delegate attention, delivery or running child left); this ceiling sits orders of magnitude above the scripted in-process drain and only fires on a genuinely wedged tree.
 	defer cancel()
-	if _, err := root.DrainJobTree(ctx); err != nil {
+	if _, err := root.DrainJobTree(ctx, drainWakeForTest(root)); err != nil {
 		t.Fatalf("settle delegate tree before retirement: %v", err)
 	}
 }
@@ -934,7 +934,7 @@ func TestRetirementTreeSettleDrainsPendingRootAttention(t *testing.T) {
 	// root's emitters stay unjoined so nothing drains the root attention.
 	joinRetirementTreeEmitters(sub.sess)
 	deadline := time.Now().Add(10 * time.Second)
-	for !root.hasPendingRootDelegateAttention() {
+	for !root.hasPendingNotifications() {
 		if time.Now().After(deadline) {
 			t.Fatal("fixture: the delegate completion armed no pending root attention to drain")
 		}
@@ -948,7 +948,7 @@ func TestRetirementTreeSettleDrainsPendingRootAttention(t *testing.T) {
 	// The production readiness path drains the tree, after which retirement is
 	// claimable.
 	awaitTreeQuiesced(t, root)
-	if root.hasPendingRootDelegateAttention() {
+	if root.hasPendingNotifications() {
 		t.Fatal("tree settle left the root delegate attention pending")
 	}
 	claim, state, err := c.TryClaim(true)

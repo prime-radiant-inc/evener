@@ -33,23 +33,239 @@ symbols so readers can locate the implementation after line numbers change.
 
 Stable attention drives revalidate transcript-owned pending IDs after claiming
 the retained child for a start (`Session.driveStableDelegateAttention`). A delayed
-drive cannot reserve an ID an intervening generation already consumed and
-finished. A start already accepted into the transcript retains its exact
-reservation and generation across a failed delegate-journal commit; retry does
-not create a second marker or generation. Parents continue to drive the child's
-attention, and fresh owner work remains admissible after the attention settles.
+drive cannot reserve an ID an intervening generation already observed and
+finished. An admitted start retains its exact reservation and generation across
+a failed delegate-journal commit. A launch claim is not observation and writes
+no consumed marker. The exact child schedules its own leased execution without
+a parent-model turn, and fresh owner work remains admissible after it settles.
+
+Roots and delegates share receiver-scoped notification readiness
+(`agent/session_notifications.go`). Durable append publishes readiness after
+writer locks are released. Root callbacks use the existing server wake channel
+and serve loop. Delegate callbacks use the existing restore and leased start
+admission, not a parallel executor. Cold writers, restore and execution retain
+their existing exclusion and lifecycle fences.
+
+With nonempty `StateDir`, the transcript is canonical and its attention cursor
+is only a derived cache. Configured persistence with a missing, closed or failed
+writer cannot fall back to memory. With intentionally empty `StateDir`, after
+transcript initialization, the same fold is canonical for that Session's
+lifetime: acceptance, successful-response observation and resolution use the
+same admission path without claiming a disk record. Pending notifications
+survive in-process compaction, not restart. Custody still differs from model
+observation, and a failed provider response leaves the notification pending.
+
+The durable path is:
+
+```mermaid
+flowchart LR
+  S[Producer outbox] --> C[Synced receiver custody]
+  C --> R[Common receiver readiness]
+  R --> A[Existing root or leased delegate admission]
+  A --> M[Provider request]
+  M --> O[Synced successful response, exact observation IDs]
+```
+
+Custody settles source transport, not model observation. Question, approval and
+explicit Stop holds remain execution gates. Registration, hold/capacity release
+and executor release recheck durable work, including a lost wake edge. Permanent
+provider failures defer that receiver, not healthy siblings. Exhausted fast
+`ActiveTurnID` release retries retain the exact release obligation in common
+paced recovery, so repaired storage can resume admission without user input or
+a daemon restart. These callbacks do not reopen a Stop or bypass an executor.
+
+### Terminal drain and Stop custody
+
+The one-shot host and each retained delegate install one lifetime notification
+callback before execution. `DrainJobTree` and `DrainJobTreeKeepingReport` receive
+that owner's coalesced wake channel, never replace the callback, and recheck the
+edge before declaring quiescence. The channel is only a hint. Canonical receiver
+custody and common execution admission still decide whether a model turn is owed.
+Resource-only completion wakes rescan ownership without inventing model input.
+
+On completed one-shot quiescence, the job manager fences new watch callbacks,
+joins entered callbacks through source persistence, then retires registrations.
+Already-produced messages remain durable and run when eligible. The callback
+gate reopens on every exit so later input can create useful watches. Daemon
+drains retain their watches. Yielded waits bypass terminal cleanup and retain
+their producers. Detached processes remain outside managed cleanup.
+Notification delivery has no drain polling ticker or idle backoff. Resource
+deadlines, stall bounds and scoped recovery retain their own timers.
+
+New subtree Stop requests persist `preserve_notifications=true`. Cancellation
+still ends covered work, but reconciliation, Stop completion and shell repair
+retain resumable receivers' source obligations and accepted notifications.
+Only successful-response coverage records observation. The recorded request's
+policy survives restart, and completion clears the pending policy after applying
+it. Historical requests with a missing or false field retain their historical
+discard fold. No inbox append releases a user Stop, question, approval or subtree
+fence, and permanently closed destinations retain canonical closure handling.
+
+Child reports and updates wake a parent delegate waiting on work. The parent's
+next model request presents the pending notification without waiting for another
+child's update or completion. A delegate cannot claim `done` while a child is
+live, including a reserved child start. That sender check shares the child-start
+admission lock. It is not a task-list, shell-job, watch or attention inventory
+gate, and does not restrict root completion. A valid `waiting_on_work` call
+publishes its message, joins the tool batch, syncs a checkpoint, then releases
+model execution capacity without settling its generation. Children, shell jobs,
+watches, callbacks and the original lease remain owned by that generation.
+Unfinished task-list rows alone do not force another turn.
+Report, update, watch and system labels do not earn an extra acknowledgement
+round. After the successful response covers the pending messages, a session
+with no actual work may become idle, even with unfinished task-list rows.
+
+### Rollout and downgrade boundary
+
+Current readers retain historical notification and Stop semantics. That does
+not make older binaries safe readers of newly written state. Copied-state
+checks against `9852924f0e1a06771ed1b985145a07eafefd1e4d` show that its transcript
+reader rejects successful-response receipts and its delegate store rejects
+preserving Stop requests. Its watch fold ignores `RestartSeq`, collapsing
+distinct callback and restart obligations, and its restore reconciliation
+settles a safely yielded generation as `runtime_lost`.
+
+Do not downgrade a state directory after these records have been written.
+Before rollback, stop new admissions and retain a reader that understands all
+written records. Reverting code or deleting records is not a safe rollback.
+Keep a pre-upgrade copy for isolated verification, never restore it over newer
+work. Integration review, CI and approved deployment field checks remain gates.
+
+### Durable wait yield and recovery
+
+`agent/session_wait.go` defines private `WAIT_CHECKPOINT` yield/resumption
+records. They never enter model history or public/UI content. Raw forensic
+readers retain them without adding numbered public turns or execution spans.
+The latest nonduplicate checkpoint is evidence, not execution authority.
+
+Before generic `runtime_lost`, cold recovery checks the session, descriptor,
+delegate and journal generation, the same accepted `communicate` call, all tool
+results, a checkpoint sealing the completed batch and absence of later contradicting
+execution, question or approval state. Stop and existing writer, restore,
+reservation and finalization fences still own admission. The existing owned
+writer's `EstablishDurability` barrier must succeed, readable bytes alone do not
+prove a safe yield. Read/durability errors leave retryable uncertainty without
+truncating the evidence or fabricating an outcome. Missing or inconsistent safe
+boundary evidence retains ordinary interrupted-runtime reconciliation.
+
+```mermaid
+flowchart LR
+  R[Cold open generation] --> V[Validate checkpoint and execution, establish durability]
+  V --> W[Keep PhaseRunning and CurrentRunOpen, same generation]
+  W --> C[Existing addressed custody and source replay]
+  C --> T[Attach existing lease, reacquire execution capacity]
+  T --> S[Sync resumption claim under lease admission]
+  S --> M[New execution turn, same generation]
+```
+
+Recovery first leaves the generation cold, unbound and on the existing
+reconciliation order. It writes no terminal outcome and starts no replacement
+generation. The addressed dispatcher attaches that same lease through existing
+writer/restore fences, then uses the existing single executor. A cold waiting
+ancestor may be attached to restore a descendant without running its own model.
+Existing shell/watch repair and delegate FIFO outboxes retain their
+transport obligations until synced receiver custody. Independently proven cold
+waits can accept notifications through the existing cold writer admission, but
+acceptance neither consumes them nor resumes execution. A missing/nonrestorable
+named producer yields one addressed `wait-interrupted:<session>:<execution>:<call>`
+notification, not a false completion. Source-read failure does not mean absence.
+Root checkpoints may omit delegate, generation and named target.
+
+Any incoming notification or admitted user input may resume a wait, not just
+the named producer. The target validates admission, never filters messages.
+An already settled named target is an ordinary refusal carrying its actual
+terminal state, with no publication, checkpoint or synthetic wake. Completion
+after validation remains owed through ordinary durable delivery.
+
+The resumption claim is synced before new model/tool activity while holding
+the original lease admission lock. Stop either wins before that claim or cancels
+the admitted execution of that exact generation. Retained-unsynced records use
+the existing durability barrier, never a blind reappend. A checkpoint can repair
+a missing activation-completion marker as completed; a crash after a resumption
+claim instead uses ordinary interrupted-execution recovery.
+
+Direct user Stop also restores a cold yielded runtime on its original lease,
+without borrowing execution capacity or entering the model. Attachment installs
+the existing yielded cancellation tail before publishing resident ownership.
+The restore callback gate and drive guard exclude execution until cancellation
+admission, then release on success or failure. This ends only that run, not its
+descendants or owed messages. Retained pending input can legitimately start a
+successor after cancellation, exactly as for a resident run. No input means no
+Stop-created successor. Unreadable live-wait proof is an error that can be retried,
+while a genuinely idle cold delegate still answers `notRunning`.
+
+There is no wait-target polling loop, ticker or fabricated continuation prompt.
+Ordinary non-checkpoint idle dispatch retains successor-generation semantics.
+A pre-checkpoint
+reader cannot safely restore a yielded generation, downgrade requires retaining
+the checkpoint-aware reader, not a legacy compatibility route.
+
+Only notifications not already presented by a successful request whose response
+synced owe a drain turn. The private `observed_notification_ids` field on that
+assistant response records the exact successful attempt's coverage, including
+retries and full-history fallback. Pending notifications force full history when
+a Responses delta cannot prove coverage. Compaction preserves unobserved bodies.
+If the derived consumed-marker write fails, the drain or a reopened session
+repairs the marker without another provider request. A second marker failure
+leaves index repair for the generation's end without failing the parent or
+stopping healthy siblings (`Session.ackNotifications`, `Session.drainJobTreeWith`,
+`Session.repairNotificationReceipts`, `agent/session_jobtree_drain.go`).
+
+Reports take synced receiver custody during model calls and tool execution,
+without waiting in a second receiver queue. Writer serialization and request
+construction keep tool calls paired with their results. An inline waiter is a
+subscriber to that canonical delivery ID: the selected request presents its
+persisted tool result when it carries the ID, otherwise the ordinary notification.
+Timeout, cancellation and failed tool-result storage leave ordinary delivery
+usable. Source acknowledgment follows receiver custody, not waiter resolution;
+only a synced successful response records model observation
+(`deliverDelegatePacket`, `expandHistory`).
 
 ## Delegate report preservation
 
-A successfully reported generation's terminal packet `message` is the accepted
+Accepted updates, readiness and valid waits publish immediately through the
+existing update outbox, even while the parent executes tools. The publication
+captures the same call's message, disposition, blocker, wait target and structured
+output. Retrying its call ID in the same generation reuses its delivery identity,
+including after source acknowledgment. Unknown inventory remains unknown, but
+does not erase a valid message.
+
+Every notification is a message into its addressed session. Update, readiness
+and report are payload labels, not wake policies. Acceptance establishes receiver
+custody; successful-response observation and generation settlement are separate
+facts. Status, list, activity and doctor reads project metadata without consuming
+delivery. The real producer corpus in `TestNotificationReportProjection` checks
+update, readiness, wait, done, blocked and interruption through the receiver and
+AppWire projection, including reads that leave pending notifications unchanged.
+
+```mermaid
+flowchart LR
+  C[Accepted communicate] --> U[Update, readiness or wait]
+  U --> O[Existing source outbox]
+  C --> T[Done or blocked]
+  T --> P[TerminalPrepared, recovery evidence only]
+  P --> F[RunFinished, actual outcome]
+  F --> O
+  O --> R[Synced receiver custody]
+```
+
+Done and blocked capture durable `TerminalPrepared` evidence without publishing
+completion. Only `RunFinished` queues the generation's one terminal delivery.
+Finalization waits for both admitted quiet-attention persistence and the admitted
+tool batch, including synced tool-result storage. A settlement claim rejects new
+batches but still lets its same open, exact-generation batch publish updates.
+Closing that batch removes the permission, and restart cannot recover it.
+
+A reported generation's terminal packet `message` is the accepted
 terminal `communicate.message`, with communicate's existing trimming and
 `output.message` fallback. Its structured result remains separate, including a
 different summary, data, artifacts, or a custom-schema value. Both come from the
 same accepted capture under the session lock
 (`delegateTerminalRunInputs.captureCommunicateReport`, `agent/subagents.go`).
-Competing terminal calls cannot replace that capture. Failed, cancelled,
-exhausted, and unreported runs retain their diagnostic result semantics, and
-root-session return values and `CommunicateOutput` keep their structured-output
+Competing terminal calls cannot replace that capture. A later failure, cancellation
+or exhaustion changes the actual outcome and diagnostics, not the accepted
+message or structured value. Unreported runs retain diagnostic result semantics.
+Root-session return values and `CommunicateOutput` keep their structured-output
 semantics.
 
 Settlement persists an immutable terminal packet. Owner notifications and
@@ -58,9 +274,23 @@ both prepared-before-settlement and settled-but-undelivered windows. Recovery
 does not ask the child to report again or allocate a new generation or delivery
 identity (`delegateTreeController.Reconcile`, `agent/delegate_tree_restore.go`,
 and `deliverDelegatePacket`, `agent/delegate_delivery.go`). Existing receipts,
-storage limits, and preview bounds still apply. This contract neither changes
-notification timing nor reconstructs detailed reports absent from historical
-packets.
+storage limits, and preview bounds still apply. Recovery does not reconstruct
+detailed reports absent from historical packets.
+
+The terminal packet holds one immutable, generation-scoped typed report summary.
+Notification rendering and inline or earlier `delegate_send` results render that
+same capture, including completed, current and incomplete tasks and unknown
+inventory. Current and incomplete may name the same task. Readiness uses one
+typed internal update projection while preserving unrelated packet metadata and
+structured-result provenance. Public `report_summary` and wire `report_notice`
+remain presentation fields, not new delivery identities.
+
+Activity reads never assign an earlier generation's outcome, reason, error or
+end time to a newer open generation. The earlier immutable packet remains in
+its own history. Cumulative usage and worktree metadata are not run outcomes.
+Both clients parse the recorded producers through the shared adapter; captured
+structured output stays distinct from message prose, including on terminal
+errors with explicit valid provenance. Plain JSON-looking updates stay prose.
 
 ## Effective capability policy
 

@@ -13,7 +13,6 @@ import (
 	clockpkg "primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
-	"primeradiant.com/evener/agent/provenance"
 )
 
 // TestCovWatchConfigHasPendingMatchingKey covers watchConfigHasPendingMatchingKey
@@ -661,102 +660,6 @@ func TestCovHasPendingWatchSends(t *testing.T) {
 	onSessionEventKD(jm, events.EventCommunicate, nil)
 	if !jm.hasPendingWatchSends() {
 		t.Fatal("watch with pending should return true")
-	}
-}
-
-// TestCovWatchSendTokenNotification covers watchSendTokenNotification
-// (job_watch.go lines 375-389).
-func TestCovWatchSendTokenNotification(t *testing.T) {
-	t.Parallel()
-	state := jobstore.WatchSendState{
-		Key: jobstore.WatchSendKey{
-			ResolvedWatchedIdentity: "job_watched",
-		},
-		UpdateSeq:     3,
-		DeliveryID:    "delivery_42",
-		TriggerReason: "output_match: ready",
-		Provenance:    &provenance.Causal{ChainTruncated: true},
-	}
-	notif := watchSendTokenNotification("child_session_1", state)
-	if notif.Kind != jobNotificationKindWatch {
-		t.Fatalf("kind = %v, want watch", notif.Kind)
-	}
-	if notif.JobID != "job_watched" {
-		t.Fatalf("jobID = %q, want job_watched", notif.JobID)
-	}
-	if notif.Status != jobNotificationEventWatch {
-		t.Fatalf("status = %q, want %q", notif.Status, jobNotificationEventWatch)
-	}
-	if notif.Reason != "output_match: ready" {
-		t.Fatalf("reason = %q", notif.Reason)
-	}
-	if notif.WatchSend == nil {
-		t.Fatal("WatchSend token should be set")
-	}
-	if notif.WatchSend.ChildSessionID != "child_session_1" {
-		t.Fatalf("childSessionID = %q, want child_session_1", notif.WatchSend.ChildSessionID)
-	}
-	if notif.WatchSend.UpdateSeq != 3 {
-		t.Fatalf("updateSeq = %d, want 3", notif.WatchSend.UpdateSeq)
-	}
-	if notif.WatchSend.DeliveryID != "delivery_42" {
-		t.Fatalf("deliveryID = %q, want delivery_42", notif.WatchSend.DeliveryID)
-	}
-}
-
-// TestCovJobManagerForToken covers jobManagerForToken (job_watch.go lines 392-406).
-func TestCovJobManagerForToken(t *testing.T) {
-	t.Parallel()
-	jm := newTestJM(t)
-	s := &Session{jobManager: jm}
-
-	// nil token — returns nil.
-	if s.jobManagerForToken(nil) != nil {
-		t.Fatal("nil token should return nil")
-	}
-
-	// Token with empty ChildSessionID — returns the session's own jm.
-	tok := &watchSendToken{ChildSessionID: ""}
-	if s.jobManagerForToken(tok) != jm {
-		t.Fatal("empty child session should return session's own jm")
-	}
-
-	// Token with non-existent child session — returns nil.
-	tok.ChildSessionID = "nonexistent"
-	if s.jobManagerForToken(tok) != nil {
-		t.Fatal("non-existent child should return nil")
-	}
-
-	// nil subagents — returns nil.
-	s2 := &Session{}
-	tok2 := &watchSendToken{ChildSessionID: "child_1"}
-	if s2.jobManagerForToken(tok2) != nil {
-		t.Fatal("nil subagents should return nil")
-	}
-}
-
-// TestCovResolveWatchSendToken covers resolveWatchSendToken
-// (job_watch.go lines 410-426).
-func TestCovResolveWatchSendToken(t *testing.T) {
-	t.Parallel()
-	jm := newTestJM(t)
-	s := &Session{jobManager: jm}
-
-	// nil token — returns ok=false.
-	_, _, _, ok := s.resolveWatchSendToken(nil)
-	if ok {
-		t.Fatal("nil token should return ok=false")
-	}
-
-	// Token for non-existent config — returns ok=false.
-	tok := &watchSendToken{
-		ChildSessionID: "",
-		Key:            jobstore.WatchSendKey{WatchTarget: "job_none"},
-		UpdateSeq:      1,
-	}
-	_, _, _, ok = s.resolveWatchSendToken(tok)
-	if ok {
-		t.Fatal("non-existent config should return ok=false")
 	}
 }
 

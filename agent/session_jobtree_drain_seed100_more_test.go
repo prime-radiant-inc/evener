@@ -53,13 +53,13 @@ func seed100JobtreeDrainMore(t *testing.T) {
 	if err := closed.jobManager.store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if result, err := closed.drainJobTree(context.Background(), make(chan time.Time)); result != "" || err == nil {
+	if result, err := closed.drainJobTree(context.Background(), drainWakeForTest(closed), make(chan time.Time)); result != "" || err == nil {
 		t.Fatalf("closed-store drain = %q, %v; want empty, error", result, err)
 	}
 
 	want := errors.New("seed100 drain fault")
 	faulted := newSession(t)
-	if result, err := faulted.drainJobTreeWith(context.Background(), make(chan time.Time), func(context.Context) error {
+	if result, err := faulted.drainJobTreeWith(context.Background(), drainWakeForTest(faulted), make(chan time.Time), func(context.Context) error {
 		return want
 	}, func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
 		t.Fatal("processed after kick failure")
@@ -69,7 +69,7 @@ func seed100JobtreeDrainMore(t *testing.T) {
 	}
 
 	faulted.enqueueJobNotification(jobNotification{Kind: jobNotificationKindWatch, Status: jobNotificationEventWatch})
-	if result, err := faulted.drainJobTreeWith(context.Background(), make(chan time.Time), func(context.Context) error {
+	if result, err := faulted.drainJobTreeWith(context.Background(), drainWakeForTest(faulted), make(chan time.Time), func(context.Context) error {
 		return nil
 	}, func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
 		return "", want

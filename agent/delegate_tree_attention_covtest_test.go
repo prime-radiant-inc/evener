@@ -41,14 +41,15 @@ func TestDelegateAttentionProjectionEligible(t *testing.T) {
 	}
 }
 
-// TestNextIdleDelegateAttention_NoPending covers the path where there are
-// no pending attention IDs.
-func TestNextIdleDelegateAttention_NoPending(t *testing.T) {
+// An empty production recheck neither admits a generation nor spends fairness.
+func TestNotificationRecheck_NoPending(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_idle", "")
-	_, _, pending := c.nextIdleDelegateAttention()
-	if pending {
-		t.Fatal("expected pending=false with no attention")
+	c.recheckNotificationReceivers()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.durable["dlg_idle"].Generation != 0 || c.attentionDriveSeq != 0 {
+		t.Fatal("empty recheck admitted a generation or spent fairness")
 	}
 }
 
@@ -65,7 +66,7 @@ func TestHasPendingDelegateAttention_NoPending(t *testing.T) {
 // TestRetryDelegateAttentionLater covers the no-op retry path.
 func TestRetryDelegateAttentionLater(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	c.retryDelegateAttentionLater()
+	c.recheckNotificationReceivers()
 	// Should not panic.
 }
 

@@ -612,7 +612,7 @@ func TestFilteredWakeInsideTheNeedsResponseInputStillRestsAwaiting(t *testing.T)
 	t.Parallel()
 	var sess *Session
 	sess, fake := newQuietPeriodSession(t, func(llm.Request) llm.Response {
-		sess.enqueueJobNotification(jobNotification{WatchSend: &watchSendToken{ChildSessionID: "gone"}})
+		sess.enqueueJobNotification(jobNotification{Kind: jobNotificationKindWatch, WatchID: "gone", Status: jobNotificationEventWatch})
 		return endReasonResponse("which?", "needs_response")
 	})
 	evs, mu, done := collectEvents(sess)

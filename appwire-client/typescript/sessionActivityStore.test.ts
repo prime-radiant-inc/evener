@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import reportProducers from "../../agent/testdata/notificationwire/reports.json";
 import { WireError } from "./errors";
 import { MAX_INTENT_CODE_POINTS } from "./sessionActivity";
 import { projectSessionActivity } from "./sessionActivityPresentation";
@@ -4428,3 +4429,76 @@ test("a count-moving delegate change still refreshes the summary", async () => {
   );
   expect(callsTo(client, "evener/thread/delegates/list")).toBe(beforeDelegates);
 });
+
+test.each(["session", "subtree"] as const)(
+  "real report generations survive later-page refresh and reconnect in %s scope",
+  async (scope) => {
+    const recorded = reportProducers.find((row) => row.case === "done");
+    if (!recorded?.activity || !recorded.nextActivity) throw new Error("missing actual generation records");
+    const client = activityClient();
+    let current: typeof recorded.activity | typeof recorded.nextActivity = recorded.activity;
+    client.on("evener/thread/delegates/list", ({ cursor, scope: requested }) => {
+      const row =
+        cursor === "third"
+          ? { ...current, ownerRef: activityRef, rootRef: activityRef }
+          : delegateFixture(cursor === "second" ? "second" : "first");
+      return {
+        context: activityContext(),
+        scope: requested ?? scope,
+        delegates: [row],
+        page: {
+          complete: cursor === "third",
+          issues: [],
+          ...(cursor !== "third" ? { nextCursor: cursor ? "third" : "second" } : {}),
+        },
+      };
+    });
+    const transcript = acquireThreadSubscription(client, activityRef);
+    await transcript.ensure();
+    const store = owner(client, scope);
+    const leave = store.observe("delegates");
+    await activityState(store, () => store.getSnapshot().delegates.hasMore && !store.getSnapshot().delegates.loading);
+    await store.loadMore("delegates");
+    await store.loadMore("delegates");
+    const later = () => store.getSnapshot().delegates.rows.find((row) => row.delegateId === "dlg_projection");
+    expect(later()).toMatchObject({ runGeneration: 1, reportPreview: "payload-done-9c2f", terminal: true });
+    const seen: (number | undefined)[] = [];
+    const stop = store.subscribe(() => {
+      seen.push(later()?.runGeneration);
+    });
+    current = recorded.nextActivity;
+    const refreshed = store.refresh("delegates");
+    expect(later()?.runGeneration).toBe(1);
+    await vi.advanceTimersByTimeAsync(200);
+    await refreshed;
+    expect(later()).toMatchObject({ runGeneration: 2, terminal: false, status: "running" });
+    expect(later()?.outcome).toBeUndefined();
+    expect(later()?.reportPreview).toBeUndefined();
+    client.emitStateChange("reconnecting");
+    expect(later()?.runGeneration).toBe(2);
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(200);
+    await activityState(store, () => !store.getSnapshot().delegates.loading && store.getSnapshot().delegates.complete);
+    expect(store.getSnapshot().delegates.rows.map((row) => row.delegateId)).toEqual([
+      "first",
+      "second",
+      "dlg_projection",
+    ]);
+    expect(later()?.runGeneration).toBe(2);
+    expect(later()?.outcome).toBeUndefined();
+    expect(seen).toContain(2);
+    expect(seen).not.toContain(undefined);
+    expect(
+      client.calls
+        .filter((call) => call.method === "evener/thread/delegates/list")
+        .every((call) => (call.params as { scope: string }).scope === scope),
+    ).toBe(true);
+    stop();
+    leave();
+    store.dispose();
+    expect(callsTo(client, "thread/unsubscribe")).toBe(0);
+    transcript.release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(callsTo(client, "thread/unsubscribe")).toBe(1);
+  },
+);

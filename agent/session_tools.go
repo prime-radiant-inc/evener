@@ -170,9 +170,14 @@ func stableDelegateSendTool(ctx context.Context, s *Session, args map[string]any
 			}
 			return nil, errors.New("delegate result cannot be committed outside a tool round")
 		}
-		for _, commit := range commits {
-			s.queueDelegateDeliveryCommit(callID, commit)
+		earlier := outcome.result.Earlier[:0]
+		for i, commit := range outcome.earlierCommits {
+			if s.queueDelegateDeliveryCommit(callID, commit) {
+				earlier = append(earlier, outcome.result.Earlier[i])
+			}
 		}
+		outcome.result.Earlier = earlier
+		s.queueDelegateDeliveryCommit(callID, outcome.commit)
 	}
 	return marshalDelegateSendResult(outcome.result, maxChars)
 }
@@ -1141,6 +1146,16 @@ func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []
 				IsError:    true,
 			}
 		}
+		if call.Name == "delegate_send" && !res.IsError {
+			s.delegateDeliveryMu.Lock()
+			hasInlinePayload := len(s.delegateDeliveryCommits[call.ID]) != 0
+			s.delegateDeliveryMu.Unlock()
+			if hasInlinePayload {
+				// This abandoned batch persists no inline identities. Preserve its
+				// valid result pair, leaving the payload to canonical delivery.
+				res.Output = delegateInlineStatusResult(&llm.ToolResultData{Content: res.Output}).Content.(string)
+			}
+		}
 		parts = append(parts, llm.ContentPart{
 			Kind: llm.ContentToolResult,
 			ToolResult: &llm.ToolResultData{
@@ -1219,18 +1234,14 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 		if persistErr != nil {
 			return
 		}
-		persistErr = s.flushPendingDelegateDeliveries()
-		if persistErr != nil {
-			return
-		}
 		// Persist the completed tool round so resumed sessions always include
 		// tool_result turns for any prior assistant tool calls.
 		s.maybeAutoSave()
 		s.announceReadableToolResultImages(results)
 	}); abortErr != nil {
-		// The tool round will not persist, so release any inline delivery receipts
-		// it acquired before cancellation and leave their durable heads replayable.
-		abortDelegateToolCallDeliveryCommits(s.takeDelegateDeliveryCommits(calls))
+		// Keep projection identities available while omitting abandoned payloads,
+		// then release them. Neither step grants custody or model observation.
+		defer func() { abortDelegateToolCallDeliveryCommits(s.takeDelegateDeliveryCommits(calls)) }()
 		if ctx.Err() != nil && !s.isClosingOrClosed() {
 			s.appendCanceledToolResults(calls, results, abortErr)
 		}
@@ -1239,9 +1250,9 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 	return persistErr
 }
 
-func (s *Session) queueDelegateDeliveryCommit(callID string, commit *delegateToolResultCommit) {
+func (s *Session) queueDelegateDeliveryCommit(callID string, commit *delegateToolResultCommit) bool {
 	if s == nil || callID == "" || commit == nil {
-		return
+		return false
 	}
 	s.delegateDeliveryMu.Lock()
 	s.mu.Lock()
@@ -1250,13 +1261,24 @@ func (s *Session) queueDelegateDeliveryCommit(callID string, commit *delegateToo
 	if closing {
 		s.delegateDeliveryMu.Unlock()
 		_, _ = commit.Complete(false)
-		return
+		return false
+	}
+	// Only one result in the current tool batch carries each identity. This
+	// projection binding neither consumes the canonical record nor observes it.
+	for _, pending := range s.delegateDeliveryCommits {
+		for _, attached := range pending {
+			if attached.deliveryID == commit.deliveryID && attached.controller == commit.controller {
+				s.delegateDeliveryMu.Unlock()
+				return false
+			}
+		}
 	}
 	if s.delegateDeliveryCommits == nil {
 		s.delegateDeliveryCommits = make(map[string][]*delegateToolResultCommit)
 	}
 	s.delegateDeliveryCommits[callID] = append(s.delegateDeliveryCommits[callID], commit)
 	s.delegateDeliveryMu.Unlock()
+	return true
 }
 
 func (s *Session) abortDelegateDeliveryCommits() {
@@ -1329,14 +1351,60 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 	persistedTurn := liveTurn
 	persistedTurn.Message = persisted
 	persistedTurn.SkillState = skillState.Clone()
+	// Only the final bounded output can establish a presentation binding.
+	// A clipped result becomes status-only, with ordinary canonical delivery
+	// still responsible for every packet in that result.
+	presentedCalls := make(map[string]bool)
+	liveContentCloned := false
+	for i, part := range liveTurn.Message.Content {
+		if part.ToolResult == nil {
+			continue
+		}
+		for _, binding := range commits {
+			if part.ToolResult.ToolCallID != binding.toolCallID {
+				continue
+			}
+			if delegateInlineBodyPresented(part.ToolResult) {
+				presentedCalls[binding.toolCallID] = true
+			} else {
+				if !liveContentCloned {
+					liveTurn.Message.Content = slices.Clone(liveTurn.Message.Content)
+					liveContentCloned = true
+				}
+				liveTurn.Message.Content[i].ToolResult = delegateInlineStatusResult(part.ToolResult)
+			}
+			break
+		}
+	}
+	persistedContentCloned := false
+	for i, part := range persistedTurn.Message.Content {
+		if part.ToolResult == nil {
+			continue
+		}
+		for _, binding := range commits {
+			if part.ToolResult.ToolCallID != binding.toolCallID {
+				continue
+			}
+			if !presentedCalls[binding.toolCallID] || !delegateInlineBodyPresented(part.ToolResult) {
+				delete(presentedCalls, binding.toolCallID)
+				if !persistedContentCloned {
+					persistedTurn.Message.Content = slices.Clone(persistedTurn.Message.Content)
+					persistedContentCloned = true
+				}
+				persistedTurn.Message.Content[i].ToolResult = delegateInlineStatusResult(part.ToolResult)
+			}
+			break
+		}
+	}
 	for _, binding := range commits {
-		if binding.commit != nil {
+		if binding.commit != nil && presentedCalls[binding.toolCallID] {
 			persistedTurn.DelegateDeliveryCommits = append(persistedTurn.DelegateDeliveryCommits, schema.DelegateDeliveryCommit{
 				ToolCallID: binding.toolCallID,
 				DeliveryID: binding.commit.deliveryID,
 			})
 		}
 	}
+	liveTurn.DelegateDeliveryCommits = append([]schema.DelegateDeliveryCommit(nil), persistedTurn.DelegateDeliveryCommits...)
 	if err := s.appendTurnAfterTranscriptWrite(
 		persistedTurn,
 		func() error { return s.writeTranscriptSyncedLocked(persistedTurn) },
@@ -1369,7 +1437,7 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 		}
 	}
 	if requeue {
-		s.requeueReplayableDelegateDeliveries(nil)
+		s.scheduleDelegateDeliveryRetry()
 	}
 	return errors.Join(completionErrs...)
 }
@@ -1652,6 +1720,8 @@ func (s *Session) rebuildToolDefsCache() {
 			defs[i] = tool.WithoutIntentParameter(defs[i])
 			if s.hasHumanPartnerToAsk() {
 				defs[i] = tool.WithCommunicateEndReason(defs[i])
+			} else if s.reportsToParent() {
+				defs[i] = tool.WithDelegateCommunicateEndReason(defs[i])
 			}
 			if s.reportsToParent() {
 				defs[i] = tool.WithCommunicateDelegateUpdates(defs[i])

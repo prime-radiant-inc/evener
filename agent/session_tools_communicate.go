@@ -10,14 +10,22 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/tool/repair"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
 func callIDFromContext(ctx context.Context) string {
 	callID, _ := ctx.Value(ctxToolCallID).(string)
 	return callID
+}
+
+func communicateStringArg(args map[string]any, name string) string {
+	value, _ := args[name].(string)
+	return strings.TrimSpace(value)
 }
 
 // registerCommunicateTool registers the session's result tool under its
@@ -77,6 +85,8 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 	}
 	if deps.offersEndReason {
 		resultToolDef = tool.WithCommunicateEndReason(resultToolDef)
+	} else if deps.delegate {
+		resultToolDef = tool.WithDelegateCommunicateEndReason(resultToolDef)
 	}
 	_ = reg.Register(tool.RegisteredTool{
 		Definition: resultToolDef,
@@ -96,10 +106,46 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 			}
 			// The registry's schema has already held end_reason to its enum.
 			endReason := ""
-			if endTurn && deps.offersEndReason {
+			blocker := ""
+			waitingOn := ""
+			if endTurn && (deps.offersEndReason || deps.delegate) {
 				endReason, _ = args["end_reason"].(string)
 				if endReason == "" {
 					endReason = tool.CommunicateEndReasonDone
+				}
+				if deps.delegate {
+					blocker = communicateStringArg(args, "blocker")
+					waitingOn = communicateStringArg(args, "waiting_on")
+					switch endReason {
+					case tool.CommunicateEndReasonDone:
+					case tool.CommunicateEndReasonBlocked:
+						if blocker == "" {
+							return nil, appwire.InvalidParams("communicate end_reason blocked requires blocker")
+						}
+					case tool.CommunicateEndReasonWaitingOnWork:
+						if waitingOn == "" {
+							return nil, appwire.InvalidParams("communicate end_reason waiting_on_work requires waiting_on")
+						}
+					default:
+						return nil, appwire.InvalidParams(fmt.Sprintf("communicate end_reason %q is not available to a delegate", endReason))
+					}
+					if endReason == tool.CommunicateEndReasonDone {
+						if _, ok := args["output"]; !ok {
+							return nil, appwire.InvalidParams("communicate end_reason done requires output")
+						}
+					}
+				} else if endReason == tool.CommunicateEndReasonWaitingOnWork {
+					waitingOn = communicateStringArg(args, "waiting_on")
+				}
+			}
+
+			if endReason == tool.CommunicateEndReasonWaitingOnWork && waitingOn != "" && deps.validateWaitTarget != nil {
+				if err := deps.validateWaitTarget(ctx, waitingOn); err != nil {
+					var stale *staleWaitTargetError
+					if errors.As(err, &stale) {
+						return map[string]any{"accepted": false, "end_turn": false, "reason": "stale_wait_target", "target": stale.target, "target_state": stale.state}, nil
+					}
+					return nil, appwire.InvalidParams("communicate end_reason waiting_on_work requires a live waker: " + err.Error())
 				}
 			}
 
@@ -127,26 +173,46 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 				return nil, err
 			}
 
-			if err := deps.deliverCommunicate(events.CommunicateData{
-				CallID:    callIDFromContext(ctx),
-				EndTurn:   endTurn,
-				Message:   message,
-				EndReason: endReason,
-			}); err != nil {
-				// The transcript refused the entry (a poisoned or closed
-				// writer, or a served session failing closed): nothing
-				// announced it, so the model must not be told it succeeded --
-				// a captured terminal message it believes delivered would
-				// otherwise never reach a client or history.
+			info := schema.CommunicateInfo{CallID: callIDFromContext(ctx), EndTurn: endTurn, Message: message, EndReason: endReason, Blocker: blocker, WaitingOn: waitingOn}
+			var capturedOutput any
+			if explicitStructuredOutput {
+				capturedOutput = rawOutput
+				if capturedOutput == nil && outputPresent {
+					capturedOutput = json.RawMessage(`null`)
+				}
+			}
+			accepted := !endTurn
+			if endTurn {
+				var err error
+				accepted, err = deps.setCommunicateTerminal(ctx, info, resultText, structuredText, capturedOutput)
+				if err != nil {
+					return nil, err
+				}
+			} else if err := deps.deliverCommunicate(events.CommunicateData{CallID: info.CallID, EndTurn: info.EndTurn, Message: info.Message, EndReason: info.EndReason, Blocker: info.Blocker, WaitingOn: info.WaitingOn}); err != nil {
 				return nil, err
 			}
-
-			// A delegate's end_turn=false message is an update for its parent.
-			// The message is already in this transcript, so delivery never
-			// fails the call; the result says where the update stands.
+			// Waits publish the accepted same-call payload now, without claiming
+			// the generation has finished. Done and blocked publish at RunFinished.
 			var update *delegateUpdateDelivery
-			if !endTurn && deps.postDelegateUpdate != nil {
-				update = deps.postDelegateUpdate(ctx, message)
+			if accepted && (!endTurn || endReason == tool.CommunicateEndReasonWaitingOnWork) && deps.postDelegateUpdate != nil {
+				readiness := ""
+				if deps.delegate {
+					readiness, _ = args["readiness"].(string)
+				}
+				packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketUpdate}
+				packet.Message, _ = json.Marshal(message)
+				packet.Metadata, _ = json.Marshal(delegatestore.UpdateMetadata{
+					CallID: info.CallID, EndTurn: info.EndTurn, Disposition: info.EndReason,
+					Blocker: info.Blocker, WaitingOn: info.WaitingOn,
+				})
+				if capturedOutput != nil {
+					packet.StructuredResult, _ = json.Marshal(capturedOutput)
+					packet.StructuredResultSource = delegatestore.StructuredResultSourceDefaultEnvelope
+					if usesCustomOutputSchema {
+						packet.StructuredResultSource = delegatestore.StructuredResultSourceSchema
+					}
+				}
+				update = deps.postDelegateUpdate(ctx, info, packet, readiness)
 			}
 
 			inbox := []string{}
@@ -173,25 +239,6 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 				deps.prependSteering(deferred)
 			}
 
-			// end_turn=false calls never reach the terminal capture, so they stay
-			// accepted; end_turn=true calls are accepted iff they won the capture.
-			accepted := !endTurn
-			if endTurn {
-				// Atomic terminal capture (issue #570): the call's message,
-				// canonical output, and raw structured value (when it carries
-				// one) are handed to the setter together, so a later competing
-				// terminal call can never pair its structured value with this
-				// call's message — and a losing call reports accepted:false.
-				var capturedOutput any
-				if explicitStructuredOutput {
-					capturedOutput = rawOutput
-					if capturedOutput == nil && outputPresent {
-						capturedOutput = json.RawMessage(`null`)
-					}
-				}
-				accepted = deps.setCommunicateTerminal(ctx, message, resultText, structuredText, capturedOutput, endReason)
-			}
-
 			resp := map[string]any{
 				"accepted": accepted,
 				"end_turn": endTurn,
@@ -201,6 +248,9 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) error {
 				resp["delivery"] = update.Status
 				if update.Reason != "" {
 					resp["reason"] = update.Reason
+				}
+				if update.Readiness != "" {
+					resp["readiness"] = update.Readiness
 				}
 			}
 			if endTurn && deps.runningJobIDs != nil {
@@ -231,8 +281,9 @@ type communicateEndState struct {
 // delegateUpdateDelivery is where a delegate's update stands when its
 // communicate(end_turn=false) call returns: the result's delivery and reason.
 type delegateUpdateDelivery struct {
-	Status string
-	Reason string
+	Status    string
+	Reason    string
+	Readiness string
 }
 
 const (
@@ -251,13 +302,13 @@ const (
 // to its parent as an update. It returns nil for a root, whose end_turn=false
 // message is a checkpoint for its human partner and goes nowhere else.
 //
-// An update carries the message and nothing else, the way a report does: it
-// travels the delegate delivery path, which has never carried a watch's causal
-// provenance. A feedback loop between an observer and the parent it watches is
+// An update carries its accepted tuple and structured output through the same
+// delivery path as a report, without importing a watch's causal provenance.
+// A feedback loop between an observer and the parent it watches is
 // bounded the same way for updates as for reports: the update is a communicate
 // event, which the watch on the sender counts toward watchDeliveryBudget, and
 // the watch auto-clears at the budget (TestWatchDeliveryCounterAndBudget).
-func (s *Session) postDelegateUpdate(ctx context.Context, message string) *delegateUpdateDelivery {
+func (s *Session) postDelegateUpdate(ctx context.Context, info schema.CommunicateInfo, packet delegatestore.TerminalPacket, readiness string) *delegateUpdateDelivery {
 	if !s.reportsToParent() {
 		return nil
 	}
@@ -268,7 +319,7 @@ func (s *Session) postDelegateUpdate(ctx context.Context, message string) *deleg
 	if err != nil {
 		return notDeliveredUpdate(err)
 	}
-	deliveryID, plans, err := s.delegateController.PostUpdate(actor, message)
+	deliveryID, plans, err := s.delegateController.PostUpdate(actor, info, packet, readiness)
 	if err != nil {
 		return notDeliveredUpdate(err)
 	}
@@ -281,9 +332,9 @@ func (s *Session) postDelegateUpdate(ctx context.Context, message string) *deleg
 	// A missing aggregate reads as not pending: it cannot occur while the run
 	// that just posted is open.
 	if s.delegateController.deliveryPending(s.owningDelegateID, deliveryID) {
-		return &delegateUpdateDelivery{Status: delegateUpdateQueued}
+		return &delegateUpdateDelivery{Status: delegateUpdateQueued, Readiness: readiness}
 	}
-	return &delegateUpdateDelivery{Status: delegateUpdateDelivered}
+	return &delegateUpdateDelivery{Status: delegateUpdateDelivered, Readiness: readiness}
 }
 
 // notDeliveredUpdate says, for the delegate's model, why its update was

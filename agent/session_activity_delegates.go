@@ -224,7 +224,9 @@ func captureSessionActivityDelegate(rootID string, state delegatestore.State, ag
 	status := projectStableDelegateStatus(now, snapshot)
 	d := aggregate.Descriptor
 	row := appwire.SessionDelegate{Name: truncateActivityText(d.Name, activityMaxLabelRunes), DelegateID: aggregate.DelegateID, RunGeneration: aggregate.Generation, ProjectionRevision: aggregate.ProjectionRevision, OwnerRef: encodeRef("", sessionActivityDelegateOwner(state, aggregate)), RootRef: encodeRef("", rootID), ChildRef: encodeRef("", d.ChildSessionID), ParentDelegateID: d.ParentDelegateID, Description: truncateActivityText(d.Description, activityMaxDelegateProseRunes), Task: truncateActivityText(d.Task, activityMaxDelegateProseRunes), Type: "delegate", Lifecycle: string(snapshot.lifecycle), Phase: string(aggregate.Phase), Status: string(snapshot.lifecycle), Resumable: aggregate.Resumable, NotResumableReason: truncateActivityText(aggregate.NotResumableReason, activityMaxDelegateProseRunes), Model: truncateActivityText(d.ResolvedModel, activityMaxLabelRunes), ReasoningEffort: d.Config.ReasoningEffort, RunStartedAt: status.RunStartedAt, LatestActivityAt: status.LatestActivityAt, LatestIntent: appwire.Excerpt(aggregate.LatestIntent, appwire.MaxIntentRunes)}
-	if outcome := aggregate.LatestOutcome; outcome != nil {
+	// LatestOutcome remains the immutable prior settlement while a new run is
+	// open. Its ending must not be attributed to the current run generation.
+	if outcome := aggregate.LatestOutcome; !aggregate.CurrentRunOpen && outcome != nil {
 		row.Reason = truncateActivityText(outcome.Reason, activityMaxDelegateProseRunes)
 		row.Error = truncateActivityText(outcome.Error, activityMaxDelegateProseRunes)
 		row.Outcome = string(outcome.Status)

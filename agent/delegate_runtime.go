@@ -282,12 +282,12 @@ func (s *Session) runDelegateQuietWatchdogTick(lease delegateLease, now time.Tim
 // append attempt and arms the wake. The append is durable even when completion
 // then finds the claim stale, so the wake is armed in that case too: a wake that
 // is never armed leaves the durable attention pending with nothing to deliver
-// it. armDelegateAttention is idempotent and no-ops when the attention is no
-// longer pending, so an identity retired by a covering stop is not resurrected.
+// it. Common readiness rechecks durable membership and Stop holds, so an
+// identity retired by a covering stop is not resurrected.
 func (s *Session) completeQuietWatchdogClaim(claim *delegateQuietAttentionClaim, appendErr error) error {
 	completionErr := s.delegateController.CompleteQuietAttention(claim, appendErr == nil)
 	if appendErr == nil {
-		completionErr = errors.Join(completionErr, s.armDelegateAttention(claim.attentionID))
+		completionErr = errors.Join(completionErr, s.requestNotificationWake())
 	}
 	return errors.Join(appendErr, completionErr)
 }
@@ -498,7 +498,7 @@ func (s *Session) delegateQuietWatchNext(ctx context.Context, lease delegateLeas
 // serveDelegateQuietWatchHub is the hub's single goroutine: each shared tick
 // fans out to every registered lease whose stop channel is still open. Each
 // lease's tick runs on its own goroutine so one lease blocked on durable
-// transcript I/O (or armDelegateAttention's reservation path) cannot stall
+// transcript I/O or execution admission cannot stall
 // the remaining leases or delay hub shutdown: the loop never waits on tick
 // work and keeps selecting on hub.done.
 func (s *Session) serveDelegateQuietWatchHub(hub *delegateQuietWatchHub) {
@@ -748,7 +748,7 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 			return true
 		}
 	}
-	if len(ids) == 0 {
+	if len(ids) == 0 && !s.delegateController.generationOwesSteering(sub.sess.owningDelegateID) {
 		// The transcript holds no unresolved attention, but the controller may
 		// still owe a wake whose resolution outran its run (a durable accept
 		// followed by a declined commit). Reconcile the projection so the last
@@ -763,26 +763,14 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	if observer := s.cfg.testOnly.delegateAttentionBeforeDriveClaim; observer != nil {
 		observer(sub)
 	}
-	// Claim the child for the WHOLE start, not just for this check. Everything
-	// between here and launchAcceptedDelegateAttention is durable work
-	// (ReserveAttention, acceptDelegateAttention's transcript append,
-	// CommitStart, the delegate update emit), and the run goroutine only sets
-	// running at the far end of it. Without the claim a wake-edge drive landing
-	// in that gap reads an idle child: the reservation is already consumed and
-	// the attention is no longer pending, so driveStableDelegateAttention itself
-	// declines, and driveChildIfNotStopGated falls through to
-	// driveSubagentNotificationTurn, which starts a second, UNLEASED turn on the
-	// session this generation is about to run. The two turns then share one
-	// drain ladder and the unleased one can pop the run's follow-up, leaving the
-	// generation to settle attention-only instead of report-required. The claim
-	// is the drive flag every other guard already reads, and it is handed over
-	// under the same sub.mu hold that sets running.
+	// Hold the child through reservation, acceptance, commit and launch. Common
+	// wake callbacks can overlap that durable work, but must not admit another
+	// executor before the run takes ownership under the same sub.mu hold.
 	sub.mu.Lock()
 	// childCommittedSendStart is consulted here, at the decision point, so every
 	// path into the attention drive is gated at the depth the decision is made
 	// rather than relying on each caller to remember (#940).
-	// drivePendingStableDelegateAttention reaches this primitive directly with no
-	// caller-side gate.
+	// The exact receiver's callback reaches this primitive directly.
 	// startBlockedLocked is the shared drive-guard predicate delegate_send reads
 	// through takeSendDriveGuard, so the two busy lists cannot drift. The
 	// attention-only extras are layered on top.
@@ -795,6 +783,7 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 	}
 	sub.mu.Unlock()
 	if blocked {
+		sub.sess.deferNotificationAdmission()
 		return true
 	}
 	launched := false
@@ -808,7 +797,7 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		// The re-drive re-drives again only if a drive is refused on its own
 		// guard, so one that keeps losing stops (#3723).
 		if releaseDriveGuard(sub) {
-			s.redriveLiveChild(sub.sess.id)
+			s.delegateController.requestSessionWake(sub.sess.id)
 		}
 	}()
 	s.mu.Lock()
@@ -829,7 +818,7 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 			s.emit(events.EventWarning, warningDataFromError("inspect delegate attention", err))
 			return true
 		}
-		if len(pending) == 0 {
+		if len(pending) == 0 && !s.delegateController.generationOwesSteering(sub.sess.owningDelegateID) {
 			if err := s.delegateController.clearResolvedDelegateAttention(sub.sess.owningDelegateID); err != nil {
 				s.emit(events.EventWarning, warningDataFromError("clear resolved delegate attention", err))
 			}
@@ -837,25 +826,36 @@ func (s *Session) driveStableDelegateAttention(sub *subagent) bool {
 		}
 		ids = pending
 	}
+	if handled, resumed := s.resumeYieldedDelegate(sub); handled {
+		launched = resumed
+		return true
+	}
+	if len(ids) == 0 {
+		return false // Steering belongs to its open generation, not a successor.
+	}
 	reservation, err := s.delegateController.ReserveAttention(sub.sess, ids[0])
 	if err != nil {
 		if !errors.Is(err, errDelegateTargetBusy) && !errors.Is(err, errTreeAtCapacity) {
 			s.emit(events.EventWarning, warningDataFromError("reserve delegate attention", err))
 		}
-		s.delegateController.retryDelegateAttentionLater()
+		sub.sess.deferNotificationAdmission()
 		return true
 	}
 	if err := sub.sess.acceptDelegateAttention(reservation); err != nil {
 		s.emit(events.EventWarning, warningDataFromError("accept delegate attention", err))
-		s.delegateController.retryDelegateAttentionLater()
+		sub.sess.scheduleNotificationRetry()
 		return true
 	}
 	started, err := s.delegateController.CommitStart(reservation)
 	if err != nil {
 		s.emit(events.EventWarning, warningDataFromError("commit delegate attention", err))
-		s.delegateController.retryDelegateAttentionLater()
+		sub.sess.scheduleNotificationRetry()
 		return true
 	}
+	s.delegateController.mu.Lock()
+	s.delegateController.attentionDriveSeq++
+	s.delegateController.attentionStateLocked(sub.sess.owningDelegateID).driveTurn = s.delegateController.attentionDriveSeq
+	s.delegateController.mu.Unlock()
 	if observer := s.cfg.testOnly.delegateAttentionStartCommitted; observer != nil {
 		observer(sub)
 	}
@@ -883,7 +883,7 @@ func (s *Session) launchAcceptedDelegateAttention(sub *subagent, started delegat
 	}
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
-	runCtx, runCancel := context.WithCancel(started.ctx)
+	runCtx, runCancel := context.WithTimeout(started.ctx, driveTurnTimeout)
 	runCtx = context.WithValue(runCtx, delegateRunLeaseContextKey{}, started.lease)
 	runCtx = context.WithValue(runCtx, delegateAttentionRunContextKey{}, struct{}{})
 	sub.mu.Lock()
@@ -919,8 +919,14 @@ func (s *Session) restoreColdDelegateAttentionRuntime(delegateID string, gates .
 	}
 	defer s.delegateController.endLaneRestore(delegateID)
 	started, parentID, err := s.delegateController.idleDelegateRestoreCommit(delegateID)
+	mode := delegateRuntimeAttachIdle
 	if err != nil {
-		return nil, nil, err
+		started, parentID, err = s.delegateController.beginWaitingRuntimeRestore(delegateID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("claim waiting runtime: %w", err)
+		}
+		mode = delegateRuntimeAttachWaiting
+		defer s.delegateController.abandonWaitingRuntimeRestore(started.lease)
 	}
 	if observer := s.delegateRestoreAfterCommit; observer != nil {
 		observer(delegateID)
@@ -930,7 +936,10 @@ func (s *Session) restoreColdDelegateAttentionRuntime(delegateID string, gates .
 		return nil, nil, err
 	}
 
-	sub, err := s.reconstructDelegateAttentionRuntime(owner, started, delegateRuntimeAttachIdle, gates...)
+	sub, err := s.reconstructDelegateAttentionRuntime(owner, started, mode, gates...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("attach restored runtime: %w", err)
+	}
 	return owner, sub, err
 }
 
@@ -939,14 +948,16 @@ type delegateRuntimeAttachMode uint8
 const (
 	delegateRuntimeAttachIdle delegateRuntimeAttachMode = iota
 	delegateRuntimeAttachStarted
+	delegateRuntimeAttachWaiting
 )
 
 type owedBootstrapRestore struct {
-	mu       sync.Mutex
-	held     bool
-	pending  map[*Session]func()
-	done     map[*subagent]bool
-	restored []owedBootstrapRuntime
+	mu         sync.Mutex
+	held       bool
+	holdDrives bool // the caller owns restored drive guards until Stop/input admission
+	pending    map[*Session]func()
+	done       map[*subagent]bool
+	restored   []owedBootstrapRuntime
 }
 type owedBootstrapRuntime struct {
 	deferredOwedDelegateAttentionStart
@@ -979,10 +990,18 @@ func (g *owedBootstrapRestore) open() {
 	g.mu.Lock()
 	g.held = false
 	pending := g.pending
+	restored := g.restored
 	g.pending = nil
 	g.restored = nil
 	g.done = nil
 	g.mu.Unlock()
+	if g.holdDrives {
+		for _, runtime := range restored {
+			if releaseDriveGuard(runtime.sub) {
+				runtime.owner.delegateController.requestSessionWake(runtime.sub.id)
+			}
+		}
+	}
 	for _, drive := range pending {
 		drive()
 	}
@@ -998,6 +1017,21 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 		err = errors.New("delegate attention runtime is unavailable")
 		finishRestore(nil, err)
 		return nil, err
+	}
+	// Before attachment the not-ready lease excludes callbacks installed by
+	// restoreIdleForSend. Carry that exclusion across attachment with the same
+	// drive guard used by send/attention, until the caller admits Stop or input.
+	guarded, gateOwnsGuard := restored && len(gates) != 0 && gates[0].holdDrives, false
+	guardedSub := sub
+	if guarded {
+		sub.mu.Lock()
+		sub.driving = true
+		sub.mu.Unlock()
+		defer func() {
+			if !gateOwnsGuard {
+				releaseDriveGuard(guardedSub)
+			}
+		}()
 	}
 	var installation *delegateIdleRuntimeInstallation
 	if mode == delegateRuntimeAttachIdle {
@@ -1017,6 +1051,8 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 			return installation.attach(selected.sess)
 		case delegateRuntimeAttachStarted:
 			return s.delegateController.AttachRuntime(started.lease, selected.sess)
+		case delegateRuntimeAttachWaiting:
+			return s.delegateController.attachWaitingRuntime(started.lease, selected)
 		default:
 			return errDelegateTargetBusy
 		}
@@ -1047,6 +1083,7 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 			finishRestore(nil, err)
 			return nil, err
 		}
+		gateOwnsGuard = guarded
 	} else if restored {
 		if err := sub.sess.runDeferredRestoreSideEffects(); err != nil {
 			sub.sess.emit(events.EventWarning, warningDataFromError("restored delegate side effects incomplete", err))
@@ -1231,28 +1268,6 @@ func parkedEscalationStandsDown(err error) bool {
 
 // escalateUnreachableDelegateAttention transfers permanently fenced wakes to
 // the root, preserving identity/content and idempotent crash replay.
-func (s *Session) escalateUnreachableDelegateAttention() bool {
-	progressed, failed := false, false
-	for _, plan := range s.delegateController.permanentlyFencedDelegateAttention() {
-		readFold := readDelegateAttentionFold
-		if plan.parked {
-			readFold = readExistingDelegateAttentionFold
-		}
-		if err := s.escalateOneUnreachableDelegateAttention(plan, readFold); err != nil {
-			s.warnDelegateAttentionFailed(delegateAttentionEscalateLabel, plan.delegateID, err)
-			failed = failed || !plan.parked || !parkedEscalationStandsDown(err)
-			continue
-		}
-		s.delegateAttentionWarningResolved(delegateAttentionEscalateLabel, plan.delegateID)
-		progressed = true
-	}
-	if failed {
-		s.scheduleStableDelegateAttentionRetry()
-	} else if progressed {
-		s.resetStableDelegateAttentionRetryDelay()
-	}
-	return progressed
-}
 
 // escalateOneUnreachableDelegateAttention transfers plan's attention to the
 // root, reading the source transcript's fold with readFold.
@@ -1279,7 +1294,7 @@ func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAtt
 		if _, err := s.appendDelegateAttentionMessageDurably(attentionID, message); err != nil {
 			return err
 		}
-		if err := s.armDelegateAttention(attentionID); err != nil {
+		if err := s.requestNotificationWake(); err != nil {
 			return err
 		}
 		if err := s.delegateController.resolveDelegateAttentionDurably(plan.runtime, plan.transcriptRef, []string{attentionID}, delegateAttentionDiscarded, 0); err != nil {
@@ -1414,43 +1429,6 @@ func (s *Session) giveUpDelegateAttention(delegateID string, restoreErr error) {
 	data.Code = events.WarningCodeDelegateAttentionUndeliverable
 	data.DelegateID = delegateID
 	s.emit(events.EventWarning, data)
-}
-
-func (s *Session) drivePendingStableDelegateAttention() bool {
-	if s == nil || s.delegateController == nil || !s.isRootDelegateAttentionReceiver() {
-		return false
-	}
-	s.forgetSettledDelegateAttentionWarnings()
-	escalated := s.escalateUnreachableDelegateAttention()
-	delegateID, _, pending := s.delegateController.selectDelegateAttentionWake()
-	if !pending {
-		return escalated
-	}
-	// The selection already took this pass's hold under the controller lock,
-	// closing the selection-to-hold gap a release claim could slip through.
-	// The defer releases it on every pass exit — reservation committed or
-	// drive declined — so it can never pin the runtime warm, and overlapping
-	// passes each keep their own reference.
-	defer s.delegateController.releaseAttentionRestoreHold(delegateID)
-	owner, sub, err := s.restoreColdDelegateAttentionRuntime(delegateID)
-	if err != nil {
-		s.warnDelegateAttentionFailed(delegateAttentionRestoreLabel, delegateID, err)
-		s.countDelegateAttentionRestoreFailure(delegateID, err)
-		s.scheduleStableDelegateAttentionRetry()
-		return true
-	}
-	s.delegateController.delegateAttentionRestored(delegateID)
-	s.delegateAttentionWarningResolved(delegateAttentionRestoreLabel, delegateID)
-	if hook := s.cfg.testOnly.afterDelegateAttentionRestore; hook != nil {
-		hook(delegateID, sub)
-	}
-	owner.driveStableDelegateAttention(sub)
-	if s.delegateController.hasPendingDelegateAttention() {
-		s.scheduleStableDelegateAttentionRetry()
-	} else {
-		s.resetStableDelegateAttentionRetry()
-	}
-	return true
 }
 
 func (c *delegateTreeController) stableDelegateOwnerRuntime(lease delegateLease) *Session {
@@ -1633,8 +1611,33 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		}
 	}
 	if maxWaitMS == 0 {
+		// Actual parent input may restore an open wait without a notification ID.
+		// Keep the existing restore gate/drive guard until steering is admitted.
+		c := s.delegateController
+		c.mu.Lock()
+		authorizeErr := c.authorizeMutationLocked(actor, delegateID)
+		run, live := c.durable[delegateID], c.live[delegateID]
+		coldWait := authorizeErr == nil && run != nil && run.CurrentRunOpen && run.Phase == delegatestore.PhaseRunning && (live == nil || live.runtime == nil && live.binding == nil)
+		c.mu.Unlock()
+		if authorizeErr != nil {
+			return failed(authorizeErr)
+		}
+		if coldWait {
+			_, finish, restoreErr := s.restoreWaitingDelegateGuarded(delegateID)
+			defer func() {
+				if err := finish(); err != nil {
+					s.emit(events.EventWarning, warningDataFromError("restored delegate side effects incomplete", err))
+				}
+			}()
+			if restoreErr != nil {
+				return failed(restoreErr)
+			}
+		}
 		if plans, steerErr := s.delegateController.Steer(ctx, actor, delegateID, message); steerErr == nil {
 			_ = s.executeDelegateMutationPlans(plans)
+			if childID, ok := c.childSessionIDFor(delegateID); ok {
+				c.requestSessionWake(childID)
+			}
 			name := ""
 			for _, update := range plans.updates {
 				for _, row := range update.rows {
@@ -1685,24 +1688,10 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	defer func() {
 		if committedClaimHeld {
 			s.releaseChildCommittedSendStart(committedChildID)
-			// The claim refused every drive for the claimed child that landed
-			// while it was held -- a child notification arriving mid-window runs
-			// the child's notify, driveChildIfNotStopGated, which returns early on
-			// the claim, and driveStableDelegateAttention refuses the stable
-			// attention the same way -- so that wake is DROPPED. The run about to
-			// launch would have drained the child's queue, but this exit did not
-			// hand a run over (the claim is still held here), so re-drive the
-			// claimed child's queued notifications, watch sends and armed stable
-			// attention or the dropped wake can sit undriven forever. The re-drive
-			// is scoped to committedChildID because the claim only gated that
-			// child, so only that child can hold a wake it swallowed. The hand-off
-			// path clears committedClaimHeld before this defer runs, so it never
-			// re-drives: the handed-over run drains the queue itself, and
-			// re-driving there would launch the second turn this claim prevents.
-			// This runs from the deferred rollback after every failure exit
-			// (aborted reservation, failed commit, failed restore, blocked
-			// hand-off, start-input failure), and send holds no lock here.
-			s.redriveLiveChild(committedChildID)
+			// Rollback released the exact child without handing an executor over.
+			// Recheck its common readiness outside all send locks. Successful
+			// handoff clears committedClaimHeld and leaves recovery to the run.
+			s.delegateController.requestSessionWake(committedChildID)
 		}
 	}()
 	if observer := s.cfg.testOnly.delegateSendStartClaimed; observer != nil {
@@ -1785,12 +1774,8 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	// consumed the reservation, but sub.running stays false through the restored
 	// side effects and the start-input mutation plans (BeginStartInput,
 	// preseedInput, CompleteStartInput); the run goroutine only sets running at
-	// the far end of it. A wake-edge drive landing in that gap reads an idle
-	// child, and driveChildIfNotStopGated falls through to
-	// driveSubagentNotificationTurn, which launches a second, UNLEASED
-	// EntryNotification turn on the session this generation is about to run. The
-	// two turns then share one drain ladder and popFollowUp (a destructive pop
-	// with no owner check) lets the unleased turn steal the run's follow-up.
+	// the far end of it. An overlapping wake must not admit another executor
+	// into that committed-start gap or consume this run's follow-up.
 	// sub.driving is the flag every other guard already reads as "a turn is in
 	// flight on this idle child"; it is handed to the run under the same sub.mu
 	// hold that sets running.
@@ -1902,6 +1887,13 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		}
 	}
 	resolution := s.delegateController.waitForDelegateInline(waitCtx, waiter)
+	if resolution.readiness != "" {
+		result.Readiness = resolution.readiness
+		result.Action = "ready"
+		result.Status = jobstore.StatusRunning
+		result.RunningInBackground = false
+		return stableDelegateSendOutcome{result: result}
+	}
 	if resolution.fallback || resolution.packet == nil || resolution.commit == nil {
 		result.TimedOut = true
 		return stableDelegateSendOutcome{result: result}
@@ -1973,6 +1965,9 @@ func populateStableDelegateSendResult(result *sendMessageResult, packet delegate
 				Ahead:   metadata.Worktree.Ahead,
 				Dirty:   metadata.Worktree.Dirty,
 			}
+		}
+		if metadata.Report != nil {
+			result.ReportSummary = metadata.Report
 		}
 	}
 }
@@ -2338,7 +2333,8 @@ func (s *Session) delegateActor(ctx context.Context) (delegateActor, error) {
 		if s.owningDelegateID == "" || lease.delegateID != s.owningDelegateID {
 			return delegateActor{}, errDelegateStaleLease
 		}
-		return delegateActor{lease: &lease}, nil
+		batch, _ := ctx.Value(delegateToolBatchContextKey{}).(*delegateToolBatch)
+		return delegateActor{lease: &lease, batch: batch}, nil
 	}
 	if s.owningDelegateID != "" {
 		return delegateActor{}, errDelegateStaleLease
@@ -2910,7 +2906,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		endedAt:          &now,
 		stableDescriptor: &stableDescriptor,
 	}
-	child.SetNotifyFunc(func() { s.driveChildIfNotStopGated(sub) })
+	s.installDelegateNotify(sub)
 	return sub, true, nil
 }
 
@@ -3256,6 +3252,10 @@ func (s *Session) bootstrapDelegateResources() error {
 		_ = store.Close()
 		return fmt.Errorf("open delegate controller: %w", err)
 	}
+	if err := validateWaitCheckpointsForBootstrap(controller); err != nil {
+		_ = store.Close()
+		return fmt.Errorf("validate wait checkpoints: %w", err)
+	}
 	if err := repairStableWatchDeliveriesForBootstrap(controller); err != nil {
 		_ = store.Close()
 		return fmt.Errorf("repair stable watch deliveries: %w", err)
@@ -3295,7 +3295,17 @@ func (s *Session) bootstrapDelegateResources() error {
 	s.delegateRootSessionID = s.id
 	s.ownsDelegateController = true
 	controller.emitUpdate = s.emitStableDelegateUpdate
-	s.pendingDelegateDeliveries = append(s.pendingDelegateDeliveries, pendingDeliveries...)
+	// Bootstrap has no attached resident writer yet. Return unadmitted claims
+	// to their source journals, then replay directly once attachTranscript
+	// establishes the resident writer. No receiver inbox owns these plans.
+	controller.mu.Lock()
+	for _, plan := range pendingDeliveries {
+		if claim := controller.deliveryClaims[plan.deliveryID]; claim != nil && claim.token == plan.claim {
+			delete(controller.deliveryClaims, plan.deliveryID)
+			controller.evidenceVersion++
+		}
+	}
+	controller.mu.Unlock()
 	return nil
 }
 
@@ -3379,6 +3389,24 @@ func (c *delegateTreeController) runtimeForDelegateOwnerLocked(row delegateSnaps
 	return nil
 }
 
+// Watch replay must still precede source repair, which may supersede a pending
+// watch frame. Validate open wait evidence first, before replay can open a cold
+// writer and trim an uncertain tail. Reconcile independently rechecks it later.
+func validateWaitCheckpointsForBootstrap(c *delegateTreeController) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, lease := range c.reconcileOrder {
+		run := c.durable[lease.delegateID]
+		if run == nil || !run.CurrentRunOpen || run.Generation != lease.generation || run.Phase != delegatestore.PhaseRunning || run.PendingStopSeq != 0 {
+			continue
+		}
+		if _, err := c.readSafeDelegateWaitLocked(run); err != nil {
+			return fmt.Errorf("delegate %s wait evidence: %w", lease.delegateID, err)
+		}
+	}
+	return nil
+}
+
 func reconcileDelegateResourcesForBootstrap(controller *delegateTreeController) ([]delegateDeliveryPlan, error) {
 	var deliveries []delegateDeliveryPlan
 	// Each Reconcile hands back a retirement-mutation lease, and bootstrap
@@ -3419,12 +3447,109 @@ func reconcileDelegateResourcesForBootstrap(controller *delegateTreeController) 
 		stopPending := controller.stop != nil
 		controller.mu.Unlock()
 		if !stopPending {
-			return deliveries, nil
+			return deliveries, repairWaitCheckpointWakersForBootstrap(controller)
 		}
 		if len(plans.updates) == 0 && len(plans.deliveries) == 0 && len(plans.shellRepairs) == 0 && len(plans.attention) == 0 {
 			return nil, errors.New("restored delegate stop made no reconciliation progress")
 		}
 	}
+}
+
+// A missing producer is not runtime loss of the waiting delegate. Keep its
+// generation open and deliver one honest interruption through existing custody.
+// Existing source repair/replay still owns shell, watch and child outboxes.
+func repairWaitCheckpointWakersForBootstrap(c *delegateTreeController) error {
+	c.mu.Lock()
+	var checkpoints []schema.WaitCheckpointInfo
+	for _, lease := range c.reconcileOrder {
+		run := c.durable[lease.delegateID]
+		live := c.live[lease.delegateID]
+		if run == nil || !run.CurrentRunOpen || run.Generation != lease.generation || run.Phase != delegatestore.PhaseRunning || run.PendingStopSeq != 0 || live != nil && (live.runtime != nil || live.binding != nil) {
+			continue
+		}
+		checkpoint, err := readWaitCheckpoint(transcriptPath(c.stateDir, run.Descriptor.ChildSessionID), run.Descriptor.ChildSessionID)
+		if err != nil {
+			c.mu.Unlock()
+			return err
+		}
+		if checkpoint != nil && checkpoint.WaitingOn != "" {
+			checkpoints = append(checkpoints, *checkpoint)
+		}
+	}
+	c.mu.Unlock()
+	for _, checkpoint := range checkpoints {
+		fold, err := readExistingDelegateAttentionFold(transcriptPath(c.stateDir, checkpoint.SessionID), checkpoint.SessionID)
+		if err != nil {
+			return err
+		}
+		if len(fold.pendingIDs()) != 0 {
+			continue // Already accepted addressed input is itself a durable waker.
+		}
+		available, err := waitCheckpointSourceAvailable(c, checkpoint)
+		if err != nil {
+			return err // Failed evidence is retryable, not a missing producer.
+		}
+		if available {
+			continue
+		}
+		if err := c.enqueueNotification(checkpoint.SessionID, notification{
+			ID:      "wait-interrupted:" + checkpoint.SessionID + ":" + checkpoint.ExecutionTurnID + ":" + checkpoint.CommunicateCallID,
+			Message: llm.UserMachinery("The wait for " + checkpoint.WaitingOn + " was interrupted by restart, its producer is absent or cannot be restored. Reassess the work, no completion is implied."),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func waitCheckpointSourceAvailable(c *delegateTreeController, checkpoint schema.WaitCheckpointInfo) (bool, error) {
+	kind, id := splitWaitTarget(checkpoint.WaitingOn)
+	if kind == "" || kind == "child" {
+		c.mu.Lock()
+		_, descendant := c.delegateSubtreeIDsLocked(checkpoint.DelegateID)[id]
+		child := c.durable[id]
+		available := descendant && child != nil && (child.CurrentRunOpen || len(child.PendingDeliveries) != 0)
+		c.mu.Unlock()
+		if available {
+			return true, nil
+		}
+	}
+	if kind == "" || kind == "job" || kind == "watch" {
+		for _, path := range c.stableWatchBootstrapSnapshot().storePaths {
+			journal, offset, err := jobstore.ScanEventsFrom(context.Background(), path, 0, jobstore.ScanLimits{})
+			if err != nil {
+				return false, fmt.Errorf("wait source journal %s: %w", path, err)
+			}
+			if kind == "" || kind == "job" {
+				for _, job := range jobstore.Fold(journal) {
+					if job.JobID == id && job.OwnerSessionID == checkpoint.SessionID && (!job.Status.IsTerminal() || job.NotifyState == jobstore.NotifyPending) {
+						return true, nil
+					}
+				}
+			}
+			if kind == "" || kind == "watch" {
+				for _, send := range jobstore.FoldWatchSends(journal).Pending {
+					if send != nil && send.Key.WatchID == id && send.StableReceiver && send.ReceiverSessionID == checkpoint.SessionID {
+						return true, nil
+					}
+				}
+			}
+			// A tolerant forensic prefix can prove a retained source, but cannot
+			// prove absence while an undecoded final record may contain it.
+			info, err := os.Stat(path)
+			if os.IsNotExist(err) && offset == 0 {
+				continue
+			}
+			if err != nil {
+				return false, fmt.Errorf("wait source journal %s: %w", path, err)
+			}
+			if offset != info.Size() {
+				return false, fmt.Errorf("wait source journal %s: incomplete scan at byte %d of %d", path, offset, info.Size())
+			}
+		}
+	}
+	// Process-local input queues and watch callbacks do not survive restart.
+	return false, nil
 }
 
 func missingDelegateRestoreInputs(
