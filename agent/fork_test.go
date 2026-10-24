@@ -193,6 +193,92 @@ func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
 	}
 }
 
+// A fork child is written as a root, so it must keep a restricted root parent's
+// persisted memory-save verdict but must not inherit a delegate parent's
+// save-tool removal: the child registers the save tools on launch.
+func TestForkSessionPreservesMemorySaveUnavailable(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		unavailable bool
+		delegate    bool
+		want        bool
+	}{
+		{"restricted-root", true, false, true},
+		{"delegate-parent", true, true, false},
+		{"capable-root", false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			stateDir, parentID := buildParentSession(t)
+			parentMeta, err := schema.LoadSessionMeta(stateDir, parentID)
+			if err != nil {
+				t.Fatalf("LoadSessionMeta(parent): %v", err)
+			}
+			parentMeta.MemorySaveUnavailable = tc.unavailable
+			parentMeta.IsSubagent = tc.delegate
+			if err := schema.SaveSessionMeta(stateDir, parentMeta); err != nil {
+				t.Fatalf("SaveSessionMeta(parent): %v", err)
+			}
+			childID, _, err := ForkSessionAtUserTurn(stateDir, parentID, 3, "")
+			if err != nil {
+				t.Fatalf("ForkSessionAtUserTurn: %v", err)
+			}
+			childMeta, err := schema.LoadSessionMeta(stateDir, childID)
+			if err != nil {
+				t.Fatalf("LoadSessionMeta(child): %v", err)
+			}
+			if childMeta.MemorySaveUnavailable != tc.want {
+				t.Fatalf("child MemorySaveUnavailable = %t, want %t", childMeta.MemorySaveUnavailable, tc.want)
+			}
+		})
+	}
+}
+
+// An aside can carry a different config from its parent. Its child meta must
+// take an explicit memory disable from that config, keep a restricted root
+// parent's verdict, and still not inherit a delegate parent's save-tool removal.
+func TestAsideSessionPreservesMemorySaveUnavailable(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name               string
+		parentUnavailable  bool
+		parentDelegate     bool
+		childDisableMemory bool
+		want               bool
+	}{
+		{"capable-parent-disabled-aside", false, false, true, true},
+		{"restricted-parent-capable-aside", true, false, false, true},
+		{"delegate-parent-capable-aside", true, true, false, false},
+		{"capable-parent-capable-aside", false, false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			stateDir, parentID := buildParentSession(t)
+			parentMeta, err := schema.LoadSessionMeta(stateDir, parentID)
+			if err != nil {
+				t.Fatalf("LoadSessionMeta(parent): %v", err)
+			}
+			parentMeta.MemorySaveUnavailable = tc.parentUnavailable
+			parentMeta.IsSubagent = tc.parentDelegate
+			if err := schema.SaveSessionMeta(stateDir, parentMeta); err != nil {
+				t.Fatalf("SaveSessionMeta(parent): %v", err)
+			}
+			childID, err := AsideSessionWithConfig(stateDir, parentID, schema.ConfigSnapshot{DisableMemory: tc.childDisableMemory})
+			if err != nil {
+				t.Fatalf("AsideSessionWithConfig: %v", err)
+			}
+			childMeta, err := schema.LoadSessionMeta(stateDir, childID)
+			if err != nil {
+				t.Fatalf("LoadSessionMeta(child): %v", err)
+			}
+			if childMeta.MemorySaveUnavailable != tc.want {
+				t.Fatalf("child MemorySaveUnavailable = %t, want %t", childMeta.MemorySaveUnavailable, tc.want)
+			}
+		})
+	}
+}
+
 func TestForkAndAsidePreserveCheapModel(t *testing.T) {
 	t.Parallel()
 	operations := []struct {

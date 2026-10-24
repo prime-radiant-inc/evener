@@ -8,6 +8,8 @@ import { reconnectDelay } from "../hubConnection";
 
 export function useReadRetry({
 	status,
+	readFailed,
+	readFailedNow,
 	active,
 	resetKey,
 	readStatus,
@@ -15,6 +17,11 @@ export function useReadRetry({
 }: {
 	/** The conversation's status, as the screen last rendered it. */
 	status: ConversationStatus;
+	/** Whether the store's latest read failed even though readable rows remain.
+	 * A rehydrate failure keeps `status: 'open'`; the actor must still retry. */
+	readFailed?: boolean;
+	/** The store's read-failure fact right now, which may be ahead of the render. */
+	readFailedNow?: () => boolean;
 	/** Connected, with a service, and in front: reads may run. */
 	active: boolean;
 	/** The session this count belongs to; a new one starts from zero. */
@@ -29,6 +36,11 @@ export function useReadRetry({
 	// counts only for the session it was made for.
 	const generation = useRef(0);
 	const inFlight = useRef(false);
+	const failed = readFailed ?? status === "error";
+	// Read through a ref so the timer effect keeps its one arm per step; a
+	// caller's fresh callback identity must not re-arm the backoff.
+	const failedNow = useRef<() => boolean>(() => false);
+	failedNow.current = () => readFailedNow?.() ?? readStatus() === "error";
 	useEffect(() => {
 		generation.current += 1;
 		inFlight.current = false;
@@ -44,15 +56,14 @@ export function useReadRetry({
 	// that each retry counts its own outcome: a retry can go from "error" to
 	// "error" without the screen rendering the "opening" between, or reject.
 	useEffect(() => {
-		if (status === "error") setFailures((count) => (count === 0 ? 1 : count));
+		if (failed) setFailures((count) => (count === 0 ? 1 : count));
 		else if (status === "open") setFailures(0);
-	}, [status]);
-	const erroring = status === "error";
+	}, [failed, status]);
 	useEffect(() => {
-		if (failures === 0 || !active || !erroring) return;
+		if (failures === 0 || !active || !failed) return;
 		const retry = setTimeout(
 			() => {
-				if (inFlight.current || readStatus() !== "error") return;
+				if (inFlight.current || !failedNow.current()) return;
 				inFlight.current = true;
 				const attempt = generation.current;
 				const settle = () => {
@@ -62,13 +73,13 @@ export function useReadRetry({
 					// newer read took over ("opening") doesn't: if that read fails too,
 					// the status turns back to "error" and the retry re-arms at the
 					// same step.
-					if (readStatus() === "error") setFailures((count) => count + 1);
+					if (failedNow.current()) setFailures((count) => count + 1);
 				};
 				resume().then(settle, settle);
 			},
 			reconnectDelay(failures - 1),
 		);
 		return () => clearTimeout(retry);
-	}, [failures, active, erroring, readStatus, resume]);
+	}, [failures, active, failed, readStatus, readFailedNow, resume]);
 	return failures;
 }

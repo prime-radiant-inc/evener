@@ -11,7 +11,7 @@ import {
 import * as Crypto from "expo-crypto";
 import type { InputAttachment } from "@evener/appwire-client";
 import type { MutationRecoveryRecord } from "@evener/appwire-client/state/mutation";
-import type { ConversationMutationContext } from "../../mobile/src/state/conversationMutation";
+import { type ConversationMutationContext, MutationNotSentError } from "../../mobile/src/state/conversationMutation";
 import type { DraftImage, DraftImageData } from "./draftImages";
 import { restoreUnconfirmedDraft } from "./draftRecovery";
 import type {
@@ -510,7 +510,7 @@ export class DraftDocument {
 		operation: (text: string, images: InputAttachment[], context: ConversationMutationContext) => Promise<boolean>,
 		reissued?: InputAttachment[],
 		builtinCommand = false,
-	) {
+	): Promise<boolean | "not-sent" | undefined> {
 		const { record, loaded, submitting, error } = this.snapshot;
 		const images = preserveDraft ? [] : (record.images ?? []);
 		const outbound = reissued ?? images;
@@ -578,41 +578,61 @@ export class DraftDocument {
 				...(metadata?.recoveryIds?.length ? { recoverySourceIds: [...metadata.recoveryIds] } : {}),
 				draftCaptureToken,
 			};
-			if (await operation(text, inputImages, context)) {
-				if (builtinCommand) {
-					const current = this.snapshot.record;
-					if (
-						current.unconfirmed === text &&
-						current.unconfirmedCaptureToken === draftCaptureToken &&
-						(!metadata?.recoveryIds?.length ||
-							sameSources(current.unconfirmedComposer?.recoveryIds, metadata.recoveryIds))
-					) {
-						const ids = metadata?.recoveryIds ?? [];
-						this.completeSubmission(
-							{
-								...current,
-								unconfirmed: null,
-								unconfirmedImages: undefined,
-								unconfirmedComposer: undefined,
-								unconfirmedCaptureToken: undefined,
-								completedCommandRecoveryIds: [...new Set([...(current.completedCommandRecoveryIds ?? []), ...ids])],
-								releasedRecoveryIds: releasedIds(current).filter((id) => !ids.includes(id)),
-							},
-							draftCaptureToken,
-						);
-					}
-				} else if (!metadata?.recoveryIds?.length && this.snapshot.record.unconfirmedCaptureToken === draftCaptureToken)
+			if (!(await operation(text, inputImages, context))) return false;
+			if (builtinCommand) {
+				const current = this.snapshot.record;
+				if (
+					current.unconfirmed === text &&
+					current.unconfirmedCaptureToken === draftCaptureToken &&
+					(!metadata?.recoveryIds?.length ||
+						sameSources(current.unconfirmedComposer?.recoveryIds, metadata.recoveryIds))
+				) {
+					const ids = metadata?.recoveryIds ?? [];
 					this.completeSubmission(
 						{
-							...this.snapshot.record,
+							...current,
 							unconfirmed: null,
 							unconfirmedImages: undefined,
 							unconfirmedComposer: undefined,
 							unconfirmedCaptureToken: undefined,
+							completedCommandRecoveryIds: [...new Set([...(current.completedCommandRecoveryIds ?? []), ...ids])],
+							releasedRecoveryIds: releasedIds(current).filter((id) => !ids.includes(id)),
 						},
 						draftCaptureToken,
 					);
-			}
+				}
+			} else if (!metadata?.recoveryIds?.length && this.snapshot.record.unconfirmedCaptureToken === draftCaptureToken)
+				this.completeSubmission(
+					{
+						...this.snapshot.record,
+						unconfirmed: null,
+						unconfirmedImages: undefined,
+						unconfirmedComposer: undefined,
+						unconfirmedCaptureToken: undefined,
+					},
+					draftCaptureToken,
+				);
+			return true;
+		} catch (error) {
+			// A proven local refusal made no durable row and no request. Clear only
+			// this operation's uncertainty marker; the live draft, selections and
+			// images stay, and no unconfirmed ghost is left behind. Ordinary throws
+			// keep their existing uncertain recovery. Route through the handoff
+			// chain so a submission that outlived a retirement clears the capture
+			// where the record now lives.
+			if (!(error instanceof MutationNotSentError)) throw error;
+			if (this.snapshot.record.unconfirmedCaptureToken === draftCaptureToken)
+				this.completeSubmission(
+					{
+						...this.snapshot.record,
+						unconfirmed: null,
+						unconfirmedImages: undefined,
+						unconfirmedComposer: undefined,
+						unconfirmedCaptureToken: undefined,
+					},
+					draftCaptureToken,
+				);
+			return "not-sent";
 		} finally {
 			this.update({ submitting: false });
 		}

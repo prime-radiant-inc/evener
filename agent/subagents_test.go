@@ -23,15 +23,7 @@ import (
 // Close is registered via t.Cleanup.
 func newTestSession(t *testing.T) *Session {
 	t.Helper()
-	return newSession(t, withConfig(SessionConfig{
-		MaxSubagentDepth: 1,
-		testOnly: testConfig{
-			skipGitSnapshot:     true,
-			minimalSystemPrompt: true,
-			noSyncJobStore:      true,
-			sandboxProber:       bwrapCapableProber(t.TempDir()),
-		},
-	}))
+	return newSession(t, withConfig(minimalTestSessionConfig(t)))
 }
 
 func TestSubagentInheritsSelectedPluginDirs(t *testing.T) {

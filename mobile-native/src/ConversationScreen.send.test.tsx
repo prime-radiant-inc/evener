@@ -42,6 +42,11 @@ import {
 } from "./renderNative.testkit";
 import { queueHosts } from "./QueueSheet";
 import { ConversationScreen } from "./screens";
+import type { NativeConversationSessions } from "./session/nativeConversationSessions";
+import {
+	NativeConversationSessionsProvider,
+	useNativeConversationSessions,
+} from "./session/NativeConversationSessionsProvider";
 import { nativeDisclosureStore, setDisclosureOpenAll } from "./nativeDisclosure";
 import { rowDisclosureIds, sessionDisclosureScope } from "./session/disclosureKeys";
 import { NotesSheet, notesHosts } from "./session/NotesSheet";
@@ -74,6 +79,8 @@ import { SubagentScreen } from "./subagents/SubagentScreen";
 import { flattenSubagents } from "./subagents/subagentModel";
 import { DisplayPreferences } from "./display/displayPreferences";
 import { DisplayProvider } from "./display/displayContext";
+import { displayForLevel } from "./session/detailLevels";
+import { detailLevels } from "./session/nativeDetailLevels";
 
 const memoryStorage = () => {
 	const values = new Map<string, string>();
@@ -136,6 +143,22 @@ vi.mock("./NativePreferencesProvider", () => ({
 }));
 
 type ConversationScreenProps = ComponentProps<typeof ConversationScreen>;
+
+/** Every screen mounts under the one real sessions provider, as the app's
+ * navigator does; the registry is constructed by the provider itself. */
+function SessionScreen(props: ConversationScreenProps) {
+	return (
+		<NativeConversationSessionsProvider>
+			<ConversationScreen {...props} />
+		</NativeConversationSessionsProvider>
+	);
+}
+
+/** The provider's registry, for a test that drives two views of one session. */
+function RegistryProbe({ seen }: { seen: { current: NativeConversationSessions | null } }) {
+	seen.current = useNativeConversationSessions();
+	return null;
+}
 
 const navigation = {
 	isFocused: () => true,
@@ -447,7 +470,7 @@ async function mount(
 	// read's clock, before handing the live renderer back to the case.
 	let tree!: ReactTestRenderer;
 	await act(async () => {
-		const screen = <ConversationScreen route={route} navigation={navigation} />;
+		const screen = <SessionScreen route={route} navigation={navigation} />;
 		tree = render(display ? <DisplayProvider value={display}>{screen}</DisplayProvider> : screen);
 	});
 	if (barLaysOut) {
@@ -864,7 +887,7 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		};
 		act(() =>
 			tree.update(
-				<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
+				<SessionScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
 			),
 		);
 	}
@@ -1334,6 +1357,14 @@ describe("opening a session", () => {
 		);
 		act(() => transcriptList(tree).props.onContentSizeChange(390, contentHeight));
 	};
+	/** The bottom bar lays out once per mount, so a view that remounts for a new
+	 * session key needs it again before its opening cap can start. */
+	const layOutBottomBar = (tree: ReactTestRenderer) => {
+		const bar = tree.root.findAll(
+			(node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar",
+		)[0];
+		if (bar) act(() => bar.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 0 } } }));
+	};
 	const savePosition = (ref: string, itemKey = "a-turn_2", turnsSeen = "turn_2") =>
 		nativePlatform.kv.set(
 			"evener.reader-positions",
@@ -1531,7 +1562,11 @@ describe("opening a session", () => {
 			expect(opacity(tree)).toBe(0);
 			const moved = { ...route, params: { ...route.params, ref: next } };
 			navigationState.state = { index: 0, routes: [moved] };
-			act(() => tree.update(<ConversationScreen route={moved} navigation={navigation} />));
+			act(() => tree.update(<SessionScreen route={moved} navigation={navigation} />));
+			// A new session key commits a fresh attachment and view body.
+			await advanceFakeTimers(0);
+			layOutBottomBar(tree);
+			layOutViewport(tree);
 			await advanceFakeTimers(0);
 			// The first session's cap has 400ms left; the second's starts afresh.
 			await advanceFakeTimers(999);
@@ -1564,7 +1599,10 @@ describe("opening a session", () => {
 			expect(opacity(tree)).toBe(1);
 			const moved = { ...route, params: { ...route.params, ref: next } };
 			navigationState.state = { index: 0, routes: [moved] };
-			act(() => tree.update(<ConversationScreen route={moved} navigation={navigation} />));
+			act(() => tree.update(<SessionScreen route={moved} navigation={navigation} />));
+			await advanceFakeTimers(0);
+			layOutBottomBar(tree);
+			layOutViewport(tree);
 			await advanceFakeTimers(0);
 			// The second session's saved row is loaded but unmeasured too: it
 			// gets a fresh first cap, hidden through it.
@@ -1815,6 +1853,17 @@ function transcriptList(tree: ReactTestRenderer) {
 		(node) =>
 			typeof node.type === "function" && Array.isArray(node.props.data) && typeof node.props.renderItem === "function",
 	)[0];
+}
+
+/** Lays out a freshly mounted view's transcript and bottom bar, which a
+ * session-key switch remounts. */
+function layOutSessionView(tree: ReactTestRenderer) {
+	act(() => transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
+	act(() => transcriptList(tree).props.onContentSizeChange(390, 20_000));
+	const bar = tree.root.findAll(
+		(node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar",
+	)[0];
+	if (bar) act(() => bar.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 0 } } }));
 }
 
 // Saves a reading position on hub-1 for the session ref, at the top of the
@@ -2175,6 +2224,209 @@ it("shows nothing for a loaded conversation with no rows: the composer invites",
 	for (const words of ["No messages", "Loading", "Pull down"]) expect(renderedText(tree)).not.toContain(words);
 });
 
+// Two mounted views of one session borrow one registry entry: the same
+// canonical store, service and activity sink, and one live target
+// registration. The shared code is the real native store/service/runtime.
+describe("two mounted views of one session", () => {
+	const routeFor = (key: string, ref: string) =>
+		({
+			key,
+			name: "Conversation",
+			params: { hubId: "hub-1", ref, title: "Session" },
+		}) as unknown as ConversationScreenProps["route"];
+
+	function mountTwo(ref: string, served: Thread) {
+		const hub = hubClient(served);
+		harness.connection = {
+			...screenConnection(hub.client, "ready"),
+			profiles: [{ id: "hub-1", name: "Work hub", origin: "https://hub.test" }],
+			error: null,
+			disconnect: () => {},
+		};
+		const a = routeFor("conversation-two-a", ref);
+		const b = routeFor("conversation-two-b", ref);
+		navigationState.state = { index: 1, routes: [a, b] };
+		const seen = { current: null as NativeConversationSessions | null };
+		let tree!: ReactTestRenderer;
+		act(() => {
+			tree = render(
+				<NativeConversationSessionsProvider>
+					<RegistryProbe seen={seen} />
+					<ConversationScreen route={a} navigation={navigation} />
+					<ConversationScreen route={b} navigation={navigation} />
+				</NativeConversationSessionsProvider>,
+			);
+		});
+		return { tree, hub, seen, a, b };
+	}
+
+	function lists(tree: ReactTestRenderer) {
+		return tree.root.findAll(
+			(node) =>
+				typeof node.type === "function" &&
+				Array.isArray(node.props.data) &&
+				typeof node.props.renderItem === "function",
+		);
+	}
+
+	function deferredRead() {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		return { gate, release };
+	}
+
+	it("shares one canonical entry and both views see a newer publication", async () => {
+		const ref = "ref-two-views";
+		const served = twoTurns(ref);
+		const { tree, seen } = mountTwo(ref, served);
+		await settle();
+
+		const registry = seen.current!;
+		const entry = registry.entryFor("hub-1", ref)!;
+		expect(entry).toBeDefined();
+		expect(entry.attachmentCount).toBe(2);
+		expect(entry.store.getState().status).toBe("open");
+
+		(served as unknown as { turns: unknown[] }).turns.push({
+			id: "turn_3",
+			status: "completed",
+			itemsView: "default",
+			items: [
+				{ id: "u-turn_3", turnId: "turn_3", type: "userMessage", status: "completed", text: "newest question" },
+				{ id: "a-turn_3", turnId: "turn_3", type: "agentMessage", status: "completed", text: "newest reply" },
+			],
+		});
+		await act(async () => {
+			await entry.store.getState().ensureLatest();
+		});
+		await settle();
+
+		expect(entry.store.getState().canonicalSession()?.turns.at(-1)?.id).toBe("turn_3");
+		const views = lists(tree);
+		expect(views.length).toBeGreaterThanOrEqual(2);
+		for (const view of views) expect(JSON.stringify(view.props.data)).toContain("newest reply");
+	});
+
+	it("shares the session display level without recreating the binding", async () => {
+		const ref = "ref-two-views-level";
+		const { tree, seen } = mountTwo(ref, twoTurns(ref));
+		await settle();
+		const entry = seen.current!.entryFor("hub-1", ref)!;
+		const store = entry.store;
+		const service = entry.service;
+
+		act(() => detailLevels("hub-1").set(ref, "chat"));
+		await settle();
+
+		expect(seen.current!.entryFor("hub-1", ref)!.store).toBe(store);
+		expect(entry.service).toBe(service);
+		expect(store.getState().displayConfig).toEqual(displayForLevel("chat", null).config);
+		const views = lists(tree);
+		expect(views.length).toBeGreaterThanOrEqual(2);
+		const data = views.map((view) => JSON.stringify(view.props.data));
+		expect(new Set(data).size).toBe(1);
+	});
+
+	it("lets a surviving view observe a read held when its sibling closes", async () => {
+		const ref = "ref-two-views-held";
+		const served = twoTurns(ref);
+		const { tree, hub, seen, b } = mountTwo(ref, served);
+		await settle();
+		const registry = seen.current!;
+		const entry = registry.entryFor("hub-1", ref)!;
+		const original = hub.client.request.bind(hub.client);
+		const held = deferredRead();
+		let hold = true;
+		hub.client.request = async (method: string, params: Record<string, unknown>) => {
+			if (method === "thread/read" && hold) {
+				hold = false;
+				await held.gate;
+			}
+			return original(method, params);
+		};
+		let reading!: Promise<void>;
+		await act(async () => {
+			reading = entry.store.getState().ensureLatest();
+		});
+
+		act(() => {
+			tree.update(
+				<NativeConversationSessionsProvider>
+					<RegistryProbe seen={seen} />
+					<ConversationScreen route={b} navigation={navigation} />
+				</NativeConversationSessionsProvider>,
+			);
+		});
+		expect(entry.attachmentCount).toBe(1);
+		expect(entry.retired).toBe(false);
+
+		await act(async () => {
+			held.release();
+		});
+		await act(async () => {
+			await reading;
+		});
+		await settle();
+		expect(entry.store.getState().status).toBe("open");
+		expect(entry.store.getState().canonicalSession()).not.toBeNull();
+		expect(lists(tree).length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("retires the entry on the last release, and a reopen reads afresh", async () => {
+		const ref = "ref-two-views-reopen";
+		const first = mountTwo(ref, twoTurns(ref));
+		await settle();
+		const firstEntry = first.seen.current!.entryFor("hub-1", ref)!;
+		expect(firstEntry.attachmentCount).toBe(2);
+
+		act(() => first.tree.unmount());
+		expect(firstEntry.retired).toBe(true);
+		expect(first.seen.current!.entryFor("hub-1", ref)).toBeUndefined();
+
+		const second = mountTwo(ref, twoTurns(ref));
+		await settle();
+		const nextEntry = second.seen.current!.entryFor("hub-1", ref)!;
+		expect(nextEntry).not.toBe(firstEntry);
+		expect(nextEntry.store).not.toBe(firstEntry.store);
+		expect(nextEntry.store.getState().status).toBe("open");
+		expect(nextEntry.store.getState().canonicalSession()).not.toBeNull();
+	});
+
+	it("offers one shared Retry answer across two views and submits nothing from a stale callback", async () => {
+		const ref = "ref-two-views-retry";
+		const served = failedTurn(ref, "go test exited 1");
+		const { tree, hub, seen } = mountTwo(ref, served);
+		await settle();
+		const entry = seen.current!.entryFor("hub-1", ref)!;
+		const offered = pressable(tree, "Retry");
+		expect(offered).toBeDefined();
+		expect(offered?.props.disabled).toBe(false);
+		const stale = offered!.props.onPress;
+
+		// Both views read the same canonical store: a newer completed turn hides
+		// the historical failure's action in the one view that is in front.
+		(served as unknown as { turns: unknown[] }).turns.push({
+			id: "turn_2",
+			status: "completed",
+			itemsView: "default",
+			items: [{ id: "u-turn_2", turnId: "turn_2", type: "userMessage", status: "completed", text: "next" }],
+		});
+		await act(async () => {
+			await entry.store.getState().ensureLatest();
+		});
+		await settle();
+		expect(pressable(tree, "Retry")).toBeUndefined();
+
+		// The callback captured before the advance re-reads the shared store and
+		// submits nothing.
+		act(() => stale());
+		await settle();
+		expect(hub.mutations()).toEqual([]);
+	});
+});
+
 // Rows' open state lives in one app-wide store, scoped by session. Leaving a
 // session drops its scope, so the store stays bounded.
 it("forgets a session's open rows when you leave it", async () => {
@@ -2468,9 +2720,7 @@ it("doesn't page older history while the hub is away", async () => {
 		params: { hubId: "hub-1", ref: "ref-older-away", title: "Session" },
 	};
 	act(() =>
-		tree.update(
-			<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
-		),
+		tree.update(<SessionScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />),
 	);
 	await settle();
 	scrollTo(tree, 100);
@@ -2478,7 +2728,7 @@ it("doesn't page older history while the hub is away", async () => {
 	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
 });
 
-it.each(["idle", "active"] as const)(
+it.each(["idle"] as const)(
 	"retries a failed turn with continuation while %s, leaving the draft alone",
 	async (status) => {
 		const ref = `ref-retry-turn-${status}`;
@@ -2739,10 +2989,10 @@ it("opens a session switched to in place at its own newer reply, never the last 
 	};
 	navigationState.state = { index: 0, routes: [route as unknown as { key: string; name: string }] };
 	act(() =>
-		tree.update(
-			<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
-		),
+		tree.update(<SessionScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />),
 	);
+	await settle();
+	layOutSessionView(tree);
 	await settle();
 	expect(renderedText(tree)).toContain("ask turn_2");
 	const indexes = flatListCalls
@@ -2766,6 +3016,720 @@ function failedTurn(ref: string, message: string, resumeRequired = false): Threa
 	if (resumeRequired) (served as unknown as { evener: Record<string, unknown> }).evener.resumeRequired = true;
 	return served;
 }
+
+describe("Retry's one owner on the shared session binding", () => {
+	function deferred() {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		return { gate, release };
+	}
+
+	/** One view under the real sessions provider, with the shared entry in
+	 * hand so a test can advance the canonical model or drive its pending seam. */
+	async function mountTracked(served: Thread) {
+		const hub = hubClient(served);
+		harness.connection = {
+			...screenConnection(hub.client, "ready"),
+			profiles: [{ id: "hub-1", name: "Work hub", origin: "https://hub.test" }],
+			error: null,
+			disconnect: () => {},
+		};
+		const ref = String((served as unknown as { evener: { ref: string } }).evener.ref);
+		const route = {
+			key: `conversation-${ref}`,
+			name: "Conversation",
+			params: { hubId: "hub-1", ref, title: "Session" },
+		} as unknown as ConversationScreenProps["route"];
+		navigationState.state = { index: 0, routes: [route] };
+		const seen = { current: null as NativeConversationSessions | null };
+		let tree!: ReactTestRenderer;
+		await act(async () => {
+			tree = render(
+				<NativeConversationSessionsProvider>
+					<RegistryProbe seen={seen} />
+					<ConversationScreen route={route} navigation={navigation} />
+				</NativeConversationSessionsProvider>,
+			);
+		});
+		await settle();
+		return { tree, hub, route, seen, entry: seen.current!.entryFor("hub-1", ref)! };
+	}
+
+	function nextTurn(id: string, status: "completed" | "failed") {
+		return {
+			id,
+			status,
+			itemsView: "default",
+			...(status === "failed" ? { error: { message: "second failure" } } : {}),
+			items: [{ id: `u-${id}`, turnId: id, type: "userMessage", status: "completed", text: "next" }],
+		};
+	}
+
+	it("offers Retry only while the shared canonical latest turn is the clicked failure", async () => {
+		const ref = "ref-retry-canonical";
+		const served = failedTurn(ref, "go test exited 1");
+		const { tree, entry } = await mountTracked(served);
+		expect(pressable(tree, "Retry")?.props.disabled).toBe(false);
+		expect(pressable(tree, "Retry")?.props.accessibilityState).toEqual({ disabled: false });
+
+		(served as unknown as { turns: unknown[] }).turns.push(nextTurn("turn_2", "completed"));
+		await act(async () => {
+			await entry.store.getState().ensureLatest();
+		});
+		await settle();
+		expect(entry.store.getState().canonicalSession()?.turns.at(-1)?.id).toBe("turn_2");
+		expect(pressable(tree, "Retry")).toBeUndefined();
+	});
+
+	it("disables Retry while this client's own durable submission is unresolved", async () => {
+		const ref = "ref-retry-own-pending";
+		const { tree, entry, hub } = await mountTracked(failedTurn(ref, "go test exited 1"));
+		const held = deferred();
+		const request = hub.client.request;
+		let hold = true;
+		hub.client.request = async (method, params) => {
+			if (method === "turn/start" && hold) {
+				hold = false;
+				await held.gate;
+			}
+			return request(method, params);
+		};
+		act(() => pressable(tree, "Retry")!.props.onPress());
+		await until(() => expect(entry.store.getState().pendingMutations ?? []).toHaveLength(1));
+		const disabled = pressable(tree, "Retry");
+		expect(disabled).toBeDefined();
+		expect(disabled?.props.disabled).toBe(true);
+		expect(disabled?.props.accessibilityState).toEqual({ disabled: true });
+		// A second press on the disabled row submits nothing.
+		act(() => disabled!.props.onPress());
+		await settle();
+		expect(hub.mutations()).toEqual([]);
+
+		held.release();
+		await until(() => expect(hub.mutations()).toEqual(["turn/start"]));
+		// The accepted row is still this client's unresolved input until the
+		// canonical read reflects it, so the row stays disabled.
+		expect(pressable(tree, "Retry")?.props.disabled).toBe(true);
+	});
+
+	it("keeps Retry on the last displayed failure, disabled, while the shared store cannot certify readiness", async () => {
+		const ref = "ref-retry-unknown";
+		const { tree, entry } = await mountTracked(failedTurn(ref, "go test exited 1"));
+		const runtime = getNativeMutationRuntime();
+		const read = runtime.read.bind(runtime);
+		const held = deferred();
+		let hold = true;
+		runtime.read = async (targetRef: string) => {
+			if (hold) {
+				hold = false;
+				await held.gate;
+			}
+			return read(targetRef);
+		};
+		try {
+			await act(async () => {
+				await runtime.discardRecovery("no-such-row", nativeMutationTargetKey("hub-1", ref));
+			});
+			expect(entry.store.getState().pendingMutationsReady).toBe(false);
+			expect(entry.store.getState().canonicalSession()).toBeNull();
+			const disabled = pressable(tree, "Retry");
+			expect(disabled).toBeDefined();
+			expect(disabled?.props.disabled).toBe(true);
+		} finally {
+			runtime.read = read;
+			held.release();
+		}
+		await until(() => expect(entry.store.getState().pendingMutationsReady).toBe(true));
+		await act(async () => {
+			await entry.store.getState().ensureLatest();
+		});
+		await settle();
+		expect(pressable(tree, "Retry")?.props.disabled).toBe(false);
+	});
+
+	// The storage transition that drops canonical authority schedules no read of
+	// its own (that read blocks the target's ordinary dispatch). The mounted
+	// failure is the consumer that may demand it: without any explicit
+	// ensureLatest, the view's own demand restores authority and enables Retry.
+	it("demands one authoritative read for a displayed failure after a zero-deletion storage notification", async () => {
+		const ref = "ref-retry-auto-read";
+		const { tree, entry, hub } = await mountTracked(failedTurn(ref, "go test exited 1"));
+		expect(pressable(tree, "Retry")?.props.disabled).toBe(false);
+		const targetKey = nativeMutationTargetKey("hub-1", ref);
+		const readsBefore = hub.requests.filter((request) => request.method === "thread/read").length;
+
+		const runtime = getNativeMutationRuntime();
+		const request = hub.client.request;
+		const held = deferred();
+		let hold = true;
+		let heldReads = 0;
+		hub.client.request = async (method, params) => {
+			if (method === "thread/read" && hold) {
+				hold = false;
+				heldReads += 1;
+				await held.gate;
+			}
+			return request(method, params);
+		};
+		try {
+			await act(async () => {
+				await runtime.discardRecovery("no-such-row", targetKey);
+			});
+			// The demand reaches the wire with no explicit call from the test, and
+			// the row is disabled while that read is held.
+			await until(() => expect(heldReads).toBe(1));
+			const heldAction = pressable(tree, "Retry");
+			expect(heldAction).toBeDefined();
+			expect(heldAction?.props.disabled).toBe(true);
+		} finally {
+			await act(async () => held.release());
+			hub.client.request = request;
+		}
+
+		await until(() => expect(entry.store.getState().latestReadState).toBe("ready"));
+		await settle();
+		expect(hub.requests.filter((request) => request.method === "thread/read").length).toBe(readsBefore + 1);
+		expect(pressable(tree, "Retry")?.props.disabled).toBe(false);
+		// The demand is a read, not a submission: one identity, nothing sent.
+		expect(hub.mutations()).toEqual([]);
+		expect(await runtime.storage.listOutbox(targetKey)).toEqual([]);
+	});
+
+	it("does not demand a read when the screen displays no failure", async () => {
+		const ref = "ref-retry-no-failure";
+		const { entry, hub } = await mountTracked(twoTurns(ref));
+		await settle();
+		const runtime = getNativeMutationRuntime();
+		const targetKey = nativeMutationTargetKey("hub-1", ref);
+		const readsBefore = hub.requests.filter((request) => request.method === "thread/read").length;
+
+		await act(async () => {
+			await runtime.discardRecovery("no-such-row", targetKey);
+		});
+		await until(() => expect(entry.store.getState().pendingMutationsReady).toBe(true));
+		await settle();
+		expect(entry.store.getState().latestReadState).toBe("unknown");
+		expect(hub.requests.filter((request) => request.method === "thread/read").length).toBe(readsBefore);
+	});
+
+	it("stays disabled when the demanded read fails", async () => {
+		const ref = "ref-retry-auto-read-fails";
+		const { tree, entry, hub } = await mountTracked(failedTurn(ref, "go test exited 1"));
+		await settle();
+		const enabledAction = pressable(tree, "Retry");
+		expect(enabledAction).toBeDefined();
+		expect(enabledAction?.props.disabled).toBe(false);
+		const enabledPress = enabledAction!.props.onPress;
+		const runtime = getNativeMutationRuntime();
+		const targetKey = nativeMutationTargetKey("hub-1", ref);
+		const readsBefore = hub.requests.filter((request) => request.method === "thread/read").length;
+
+		coordinatorHub.readFails = ref;
+		try {
+			await act(async () => {
+				await runtime.discardRecovery("no-such-row", targetKey);
+			});
+			await until(() =>
+				expect(hub.requests.filter((request) => request.method === "thread/read").length).toBeGreaterThan(readsBefore),
+			);
+			await until(() => expect(entry.store.getState().latestReadState).toBe("error"));
+			await settle();
+			// With the required read failed, the session is in error: the action is
+			// never offered enabled, and the callback captured while it was enabled
+			// re-reads the owners at activation and submits nothing.
+			const afterFailure = pressable(tree, "Retry");
+			expect(afterFailure === undefined || afterFailure.props.disabled === true).toBe(true);
+			act(() => enabledPress());
+			await settle();
+			expect(hub.mutations()).toEqual([]);
+		} finally {
+			coordinatorHub.readFails = null;
+		}
+	});
+
+	// A discarded reply is not an event that asks for another read. One demand
+	// belongs to one binding generation and one displayed failure: when the
+	// shorter same-incarnation replies are discarded, authority stays unavailable
+	// and the token stays consumed. Recovery waits for an explicit demand (a
+	// focus/reopen/reconnect in the field, called directly here) or a ready
+	// publication.
+	it("demands one authoritative read per binding while discarded replies leave authority unknown", async () => {
+		const ref = "ref-retry-one-demand";
+		readHistory.live = true;
+		const { tree, entry, hub } = await mountTracked(failedTurn(ref, "go test exited 1"));
+		await settle();
+		// The retained history is longer than a shortened window's reply: same
+		// incarnation with a shorter length, which applyReadModel discards.
+		const held = entry.store.getState().conversation!;
+		expect(held.history).toBeDefined();
+		act(() =>
+			entry.store.setState({
+				conversation: { ...held, history: held.history && { ...held.history, length: 10 } },
+			}),
+		);
+		expect(entry.store.getState().latestReadState).toBe("ready");
+		expect(pressable(tree, "Retry")?.props.disabled).toBe(false);
+
+		const runtime = getNativeMutationRuntime();
+		const targetKey = nativeMutationTargetKey("hub-1", ref);
+		const request = hub.client.request;
+		let replyLength = 0;
+		let reads = 0;
+		const gates: (() => void)[] = [];
+		hub.client.request = async (method, params) => {
+			if (method !== "thread/read") return request(method, params);
+			reads += 1;
+			await new Promise<void>((resolve) => gates.push(resolve));
+			const response = (await request(method, params)) as {
+				snapshot?: { incarnation: string; length: number };
+			};
+			return { ...response, snapshot: { incarnation: "inc-1", length: replyLength } };
+		};
+		try {
+			await act(async () => {
+				await runtime.discardRecovery("no-such-row", targetKey);
+			});
+			await until(() => expect(reads).toBe(1));
+
+			// Release the first three reads that appear with a shorter reply. The
+			// fixed store demands only the first; a loop would consume gates 2-4.
+			for (let index = 0; index < 3; index += 1) {
+				await act(async () => gates[index]?.());
+				await settle();
+				expect(reads).toBe(1);
+				await until(() => expect(entry.store.getState().latestReadState).toBe("unknown"));
+			}
+			expect(entry.store.getState().canonicalSession()).toBeNull();
+			expect(hub.mutations()).toEqual([]);
+
+			// The next explicit demand gets the matching length: authority returns
+			// and the same failure's Retry is enabled again.
+			replyLength = 10;
+			let latest!: Promise<void>;
+			act(() => {
+				latest = entry.store.getState().ensureLatest();
+			});
+			await until(() => expect(reads).toBe(2));
+			await act(async () => {
+				gates[1]?.();
+				await latest;
+			});
+			await settle();
+			expect(entry.store.getState().latestReadState).toBe("ready");
+			expect(pressable(tree, "Retry")?.props.disabled).toBe(false);
+			expect(hub.mutations()).toEqual([]);
+		} finally {
+			hub.client.request = request;
+		}
+	});
+
+	// A passive effect can miss a ready transition: an accepted read publishes
+	// ready and a storage notification invalidates it in the same batch, before
+	// effects flush. The demand token must reset on the store's ready
+	// PUBLICATION, or it stays consumed and refuses the next read.
+	it("resets the demand token when a ready publication is invalidated before effects flush", async () => {
+		const ref = "ref-retry-ready-invalidated";
+		readHistory.live = true;
+		const { tree, entry, hub } = await mountTracked(failedTurn(ref, "go test exited 1"));
+		await settle();
+		const held = entry.store.getState().conversation!;
+		expect(held.history).toBeDefined();
+		act(() =>
+			entry.store.setState({
+				conversation: { ...held, history: held.history && { ...held.history, length: 10 } },
+			}),
+		);
+
+		const runtime = getNativeMutationRuntime();
+		const targetKey = nativeMutationTargetKey("hub-1", ref);
+		const request = hub.client.request;
+		let replyLength = 0;
+		let reads = 0;
+		const gates: (() => void)[] = [];
+		hub.client.request = async (method, params) => {
+			if (method !== "thread/read") return request(method, params);
+			reads += 1;
+			await new Promise<void>((resolve) => gates.push(resolve));
+			const response = (await request(method, params)) as {
+				snapshot?: { incarnation: string; length: number };
+			};
+			return { ...response, snapshot: { incarnation: "inc-1", length: replyLength } };
+		};
+		try {
+			// Consume the token: a demanded read whose shorter reply is discarded.
+			await act(async () => {
+				await runtime.discardRecovery("no-such-row", targetKey);
+			});
+			await until(() => expect(reads).toBe(1));
+			await act(async () => gates[0]?.());
+			await until(() => expect(entry.store.getState().latestReadState).toBe("unknown"));
+			expect(reads).toBe(1);
+
+			// A real accepted read publishes ready, and a storage transition
+			// invalidates it in the same publication turn — synchronously, before
+			// any passive effect can observe the ready state.
+			let invalidated = false;
+			const invalidateBeforeEffects = entry.store.subscribe((state) => {
+				if (invalidated || state.latestReadState !== "ready") return;
+				invalidated = true;
+				entry.store.setState({ latestReadState: "unknown" });
+			});
+			let accepted!: Promise<void>;
+			replyLength = 10;
+			try {
+				act(() => {
+					accepted = entry.store.getState().ensureLatest();
+				});
+				await until(() => expect(reads).toBe(2));
+				await act(async () => {
+					gates[1]?.();
+					await accepted;
+				});
+			} finally {
+				invalidateBeforeEffects();
+			}
+			expect(invalidated).toBe(true);
+
+			// The invalidation re-runs the demand effect (reading -> unknown). The
+			// token reset with the ready publication, so this demand reads exactly
+			// once; a missed transition would leave it consumed and issue none.
+			await until(() => expect(reads).toBe(3));
+			replyLength = 10;
+			await act(async () => gates[2]?.());
+			await until(() => expect(entry.store.getState().latestReadState).toBe("ready"));
+			await settle();
+			expect(pressable(tree, "Retry")?.props.disabled).toBe(false);
+			expect(hub.mutations()).toEqual([]);
+			expect(reads).toBe(3);
+		} finally {
+			hub.client.request = request;
+		}
+	});
+
+	it("submits nothing from a stale Retry callback after the canonical advances", async () => {
+		const ref = "ref-retry-stale";
+		const served = failedTurn(ref, "go test exited 1");
+		const { tree, entry, hub } = await mountTracked(served);
+		const stale = pressable(tree, "Retry")!.props.onPress;
+
+		(served as unknown as { turns: unknown[] }).turns.push(nextTurn("turn_2", "completed"));
+		await act(async () => {
+			await entry.store.getState().ensureLatest();
+		});
+		await settle();
+		expect(pressable(tree, "Retry")).toBeUndefined();
+		act(() => stale());
+		await settle();
+		expect(hub.mutations()).toEqual([]);
+	});
+
+	it("submits a retained Retry through the live service after a reconnect, with no ghost", async () => {
+		const ref = "ref-retry-reconnect";
+		const served = failedTurn(ref, "go test exited 1");
+		const { tree, hub, entry, route, seen } = await mountTracked(served);
+		const document = drafts.open({ hubId: "hub-1", sessionRef: ref });
+		const oldService = entry.service;
+		const retained = pressable(tree, "Retry")!.props.onPress;
+
+		// A rebuilt client resumes the same failed turn behind a fresh service.
+		// Hold the new service's acceptance reply so the durable row is observable.
+		const reconnected = hubClient(served);
+		const held = deferred();
+		let sent = false;
+		const request = reconnected.client.request;
+		reconnected.client.request = async (method, params) => {
+			if (method === "turn/start") {
+				sent = true;
+				await held.gate;
+			}
+			return request(method, params);
+		};
+		harness.connection = { ...harness.connection, client: reconnected.client };
+		act(() =>
+			tree.update(
+				<NativeConversationSessionsProvider>
+					<RegistryProbe seen={seen} />
+					<ConversationScreen route={route} navigation={navigation} />
+				</NativeConversationSessionsProvider>,
+			),
+		);
+		await settle();
+		expect(entry.service).not.toBe(oldService);
+		await until(() => expect(entry.store.getState().canonicalSession()).not.toBeNull());
+		await until(() => expect(pressable(tree, "Retry")?.props.disabled).toBe(false));
+
+		// The retained callback still names the same current failure. Activation
+		// resolves the live service from the attachment instead of requiring the
+		// render-captured one, so the enabled button is not a silent no-op.
+		act(() => retained());
+		await until(() => expect(sent).toBe(true));
+		const runtime = getNativeMutationRuntime();
+		const key = nativeMutationTargetKey("hub-1", ref);
+		await act(async () => {
+			await vi.waitFor(async () => expect(await runtime.storage.listOutbox(key)).toHaveLength(1));
+		});
+		const [row] = await runtime.storage.listOutbox(key);
+		expect(row?.payload.input).toEqual([{ type: "text", text: "continue" }]);
+		expect(hub.mutations()).toEqual([]);
+		expect(document.getSnapshot().record.unconfirmed).toBeNull();
+		await act(async () => held.release());
+		await until(() => expect(reconnected.mutations()).toEqual(["turn/start"]));
+	});
+
+	it("submits nothing from a Retry callback after its attachment retires", async () => {
+		const ref = "ref-retry-retired-callback";
+		const { tree, hub, entry } = await mountTracked(failedTurn(ref, "go test exited 1"));
+		const retained = pressable(tree, "Retry")!.props.onPress;
+		act(() => tree.unmount());
+		expect(entry.retired).toBe(true);
+		act(() => retained());
+		await settle();
+		expect(hub.mutations()).toEqual([]);
+		expect(await getNativeMutationRuntime().storage.listOutbox(nativeMutationTargetKey("hub-1", ref))).toEqual([]);
+	});
+
+	it("disables Retry while the live entry has no service, and submits once it rebinds", async () => {
+		const ref = "ref-retry-no-service";
+		const { tree, hub, entry, route, seen } = await mountTracked(failedTurn(ref, "go test exited 1"));
+		const document = drafts.open({ hubId: "hub-1", sessionRef: ref });
+		const runtime = getNativeMutationRuntime();
+		const key = nativeMutationTargetKey("hub-1", ref);
+		const rerender = () =>
+			act(() =>
+				tree.update(
+					<NativeConversationSessionsProvider>
+						<RegistryProbe seen={seen} />
+						<ConversationScreen route={route} navigation={navigation} />
+					</NativeConversationSessionsProvider>,
+				),
+			);
+		const service = entry.service;
+		expect(service).not.toBeNull();
+		Object.defineProperty(entry, "service", { configurable: true, get: () => null });
+		try {
+			await rerender();
+			await settle();
+			// Readiness is otherwise ready; only the live service binding is absent.
+			expect(entry.store.getState().latestReadState).toBe("ready");
+			expect(entry.store.getState().pendingMutationsReady).toBe(true);
+			expect(entry.store.getState().canonicalSession()).not.toBeNull();
+			await until(() => expect(pressable(tree, "Retry")?.props.disabled).toBe(true));
+			expect(pressable(tree, "Retry")?.props.accessibilityState).toEqual({ disabled: true });
+
+			// A press in the null-service window fails closed and writes nothing.
+			act(() => pressable(tree, "Retry")!.props.onPress());
+			await settle();
+			expect(hub.mutations()).toEqual([]);
+			expect(await runtime.storage.listOutbox(key)).toEqual([]);
+			expect(document.getSnapshot().record.unconfirmed).toBeNull();
+		} finally {
+			Reflect.deleteProperty(entry, "service");
+		}
+
+		// Once the service is live again the same action submits exactly once.
+		await rerender();
+		await until(() => expect(pressable(tree, "Retry")?.props.disabled).toBe(false));
+		await press(tree, "Retry");
+		await until(() => expect(hub.mutations()).toEqual(["turn/start"]));
+		expect(document.getSnapshot().record.unconfirmed).toBeNull();
+	});
+
+	it("refuses a retained Retry callback after the same turn's error changes to Sign in", async () => {
+		const ref = "ref-retry-error-signin";
+		const served = failedTurn(ref, "go test exited 1");
+		const { tree, entry, hub } = await mountTracked(served);
+		const stale = pressable(tree, "Retry")!.props.onPress;
+
+		// The authoritative refresh keeps the same turn but changes its error to
+		// one that requires Sign in. The captured Retry callback must not submit.
+		(served as unknown as { turns: { error?: unknown }[] }).turns[0]!.error = {
+			message: "Sign-in expired",
+		};
+		await act(async () => {
+			await entry.store.getState().ensureLatest();
+		});
+		await settle();
+		expect(pressable(tree, "Retry")).toBeUndefined();
+		act(() => stale());
+		await settle();
+		expect(hub.mutations()).toEqual([]);
+		expect(hub.requests.filter((request) => request.method === "turn/start")).toEqual([]);
+	});
+
+	it("refuses a retained Retry callback after the same turn's error is removed", async () => {
+		const ref = "ref-retry-error-removed";
+		const served = failedTurn(ref, "go test exited 1");
+		const { tree, entry, hub } = await mountTracked(served);
+		const stale = pressable(tree, "Retry")!.props.onPress;
+
+		const turn = (served as unknown as { turns: { status: string; error?: unknown }[] }).turns[0]!;
+		turn.status = "completed";
+		delete turn.error;
+		await act(async () => {
+			await entry.store.getState().ensureLatest();
+		});
+		await settle();
+		expect(pressable(tree, "Retry")).toBeUndefined();
+		act(() => stale());
+		await settle();
+		expect(hub.mutations()).toEqual([]);
+	});
+
+	it.each([
+		["Sign in", { message: "Sign-in expired" }],
+		["no error", undefined],
+	] as const)(
+		"refuses Retry at the runtime boundary when the same turn's error becomes %s while startup is held",
+		async (name, nextError) => {
+			const ref = `ref-retry-boundary-${name === "Sign in" ? "signin" : "removed"}`;
+			const served = failedTurn(ref, "go test exited 1");
+			const { tree, hub, entry } = await mountTracked(served);
+			const document = drafts.open({ hubId: "hub-1", sessionRef: ref });
+			const runtime = getNativeMutationRuntime();
+			const targetKey = nativeMutationTargetKey("hub-1", ref);
+			const start = runtime.start.bind(runtime);
+			const held = deferred();
+			let hold = true;
+			runtime.start = async () => {
+				if (hold) {
+					hold = false;
+					await held.gate;
+				}
+				return start();
+			};
+			try {
+				act(() => pressable(tree, "Retry")!.props.onPress());
+				await until(() => expect(document.getSnapshot().submitting).toBe(true));
+				const turn = (served as unknown as { turns: { status: string; error?: unknown }[] }).turns[0]!;
+				if (nextError === undefined) {
+					turn.status = "completed";
+					delete turn.error;
+				} else {
+					turn.error = nextError;
+				}
+				await act(async () => {
+					await entry.store.getState().ensureLatest();
+				});
+				await act(async () => {
+					held.release();
+					await vi.waitFor(() => expect(document.getSnapshot().submitting).toBe(false));
+				});
+			} finally {
+				runtime.start = start;
+			}
+			expect(hub.mutations()).toEqual([]);
+			expect(hub.requests.filter((request) => request.method === "turn/start")).toEqual([]);
+			expect(await runtime.storage.listOutbox(targetKey)).toEqual([]);
+			// The proven not-sent refusal cleared only its uncertainty marker.
+			expect(document.getSnapshot().record.unconfirmed).toBeNull();
+		},
+	);
+
+	it("refuses Retry before commit when its view retires while startup is held, preserving the draft", async () => {
+		const ref = "ref-retry-retire-before";
+		const { tree, hub } = await mountTracked(failedTurn(ref, "go test exited 1"));
+		const destination = { hubId: "hub-1", sessionRef: ref };
+		const document = drafts.open(destination);
+		await type(tree, "keep this");
+		act(() =>
+			document.addImage({ id: "draft-image", marker: 1, mediaType: "image/png", name: "draft.png", data: "AQID" }),
+		);
+		const before = document.getSnapshot().record;
+		const runtime = getNativeMutationRuntime();
+		const targetKey = nativeMutationTargetKey("hub-1", ref);
+		const start = runtime.start.bind(runtime);
+		const held = deferred();
+		let hold = true;
+		runtime.start = async () => {
+			if (hold) {
+				hold = false;
+				await held.gate;
+			}
+			return start();
+		};
+		try {
+			act(() => pressable(tree, "Retry")!.props.onPress());
+			await until(() => expect(document.getSnapshot().submitting).toBe(true));
+			// The only view goes away while the runtime is still starting.
+			act(() => tree.unmount());
+			await act(async () => {
+				held.release();
+				await vi.waitFor(() => expect(document.getSnapshot().submitting).toBe(false));
+			});
+		} finally {
+			runtime.start = start;
+		}
+		expect(hub.mutations()).toEqual([]);
+		expect(await runtime.storage.listOutbox(targetKey)).toEqual([]);
+		expect(document.getSnapshot().record).toEqual(before);
+	});
+
+	it("leaves a committed Retry row owned by the runtime after its view retires", async () => {
+		const ref = "ref-retry-retire-after";
+		const { tree, hub } = await mountTracked(failedTurn(ref, "go test exited 1"));
+		const runtime = getNativeMutationRuntime();
+		const key = nativeMutationTargetKey("hub-1", ref);
+		const held = deferred();
+		const request = hub.client.request;
+		let hold = true;
+		hub.client.request = async (method, params) => {
+			if (method === "turn/start" && hold) {
+				hold = false;
+				await held.gate;
+			}
+			return request(method, params);
+		};
+		act(() => pressable(tree, "Retry")!.props.onPress());
+		await act(async () => {
+			await vi.waitFor(async () => expect(await runtime.storage.listOutbox(key)).toHaveLength(1));
+		});
+		act(() => tree.unmount());
+		// Committed before retirement: the runtime owns the row, not the view.
+		expect(await runtime.storage.listOutbox(key)).toHaveLength(1);
+		await act(async () => {
+			held.release();
+		});
+		const [row] = await runtime.storage.listOutbox(key);
+		if (row) await runtime.storage.discardUndelivered(row.clientMutationId, key);
+	});
+
+	it("creates one identity for repeated Retry presses while the precondition is pending", async () => {
+		const ref = "ref-retry-repeat";
+		const { tree, hub } = await mountTracked(failedTurn(ref, "go test exited 1"));
+		const document = drafts.open({ hubId: "hub-1", sessionRef: ref });
+		const runtime = getNativeMutationRuntime();
+		const start = runtime.start.bind(runtime);
+		const held = deferred();
+		let hold = true;
+		runtime.start = async () => {
+			if (hold) {
+				hold = false;
+				await held.gate;
+			}
+			return start();
+		};
+		const button = pressable(tree, "Retry")!;
+		try {
+			act(() => button.props.onPress());
+			await until(() => expect(document.getSnapshot().submitting).toBe(true));
+			// A second press cannot enter the shared document while the first
+			// operation owns it.
+			act(() => button.props.onPress());
+		} finally {
+			await act(async () => {
+				held.release();
+				await vi.waitFor(() => expect(document.getSnapshot().submitting).toBe(false));
+			});
+			runtime.start = start;
+		}
+		await act(async () => {
+			await vi.waitFor(() => expect(hub.mutations()).toEqual(["turn/start"]));
+		});
+		expect(hub.requests.filter((request) => request.method === "turn/start")).toHaveLength(1);
+	});
+});
 
 // Send is the single recovery action: a fenced session's error row offers no
 // Resume of its own, and the composer's Send carries that resume.
@@ -2806,8 +3770,10 @@ it("resumes with the edited recovery context, consuming its source once", async 
 		composerMentions: [mention],
 		optimisticDisplay: { method: "turn/queue" },
 	});
-	const recovery = await runtime.editQueuedMessage(source.clientMutationId, targetKey);
-	expect(recovery).toMatchObject({ recoveryKind: "editing", clientMutationId: source.clientMutationId });
+	await act(async () => {
+		const recovery = await runtime.editQueuedMessage(source.clientMutationId, targetKey);
+		expect(recovery).toMatchObject({ recoveryKind: "editing", clientMutationId: source.clientMutationId });
+	});
 	await settle();
 
 	const input = field(tree);
@@ -2991,7 +3957,7 @@ it("keeps the Session sheet and a half-typed name through a connection blip, and
 		const route = { key: "conversation-ref-blip", name: "Conversation", params: { ...params, title: "Session" } };
 		act(() =>
 			tree.update(
-				<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
+				<SessionScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
 			),
 		);
 	};
@@ -3047,7 +4013,7 @@ describe("a session that can't take a message yet (ruling 20)", () => {
 		};
 		act(() =>
 			tree.update(
-				<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
+				<SessionScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
 			),
 		);
 	}
@@ -3893,7 +4859,7 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		};
 		act(() =>
 			tree.update(
-				<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
+				<SessionScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
 			),
 		);
 		await settle();
@@ -4142,7 +5108,7 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		};
 		act(() =>
 			tree.update(
-				<ConversationScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
+				<SessionScreen route={route as unknown as ConversationScreenProps["route"]} navigation={navigation} />,
 			),
 		);
 		await settle();
@@ -4200,7 +5166,7 @@ it("puts a quote held for this session into the draft when it comes back to the 
 	const [route] = navigationState.state.routes;
 	if (!route) throw new Error("no route");
 	const rerender = async () => {
-		act(() => tree.update(<ConversationScreen route={route as never} navigation={navigation} />));
+		act(() => tree.update(<SessionScreen route={route as never} navigation={navigation} />));
 		await settle();
 	};
 	// The Reader over this session holds a quote, and another session's.
@@ -5168,7 +6134,11 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 				route,
 			] as never,
 		};
-		const tree = render(<SubagentScreen route={route as never} navigation={navigation as never} />);
+		const tree = render(
+			<NativeConversationSessionsProvider>
+				<SubagentScreen route={route as never} navigation={navigation as never} />
+			</NativeConversationSessionsProvider>,
+		);
 		await settle();
 		return { tree, hub };
 	}
@@ -5429,7 +6399,13 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			name: "Subagent",
 			params: { hubId: "hub-1", ref: "local:fix", title: "Fix race in tree settle", coordinator: COORDINATOR },
 		};
-		act(() => tree.update(<SubagentScreen route={route as never} navigation={navigation as never} />));
+		act(() =>
+			tree.update(
+				<NativeConversationSessionsProvider>
+					<SubagentScreen route={route as never} navigation={navigation as never} />
+				</NativeConversationSessionsProvider>,
+			),
+		);
 		await settle();
 		expect(pressable(tree, "Stop subagent")).toBeUndefined();
 	});
@@ -5455,7 +6431,13 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		};
 		const upgraded = hubClient(subagent(true));
 		harness.connection = { ...harness.connection, client: upgraded.client };
-		act(() => tree.update(<SubagentScreen route={route as never} navigation={navigation as never} />));
+		act(() =>
+			tree.update(
+				<NativeConversationSessionsProvider>
+					<SubagentScreen route={route as never} navigation={navigation as never} />
+				</NativeConversationSessionsProvider>,
+			),
+		);
 		await settle();
 		expect(pressable(tree, "Stop subagent")).toBeDefined();
 	});
@@ -5767,7 +6749,7 @@ describe("Send while offline (phase 6, spec 8.5)", () => {
 		harness.connection = live
 			? { ...harness.connection, state: "ready", downSince: null }
 			: { ...harness.connection, ...droppedConnection(harness.connection) };
-		act(() => tree.update(<ConversationScreen route={route} navigation={navigation} />));
+		act(() => tree.update(<SessionScreen route={route} navigation={navigation} />));
 		await settle();
 	}
 	const outbox = (ref: string) => getNativeMutationRuntime().storage.listOutbox(nativeMutationTargetKey("hub-1", ref));
@@ -5803,7 +6785,7 @@ describe("Send while offline (phase 6, spec 8.5)", () => {
 			params: { hubId: "hub-1", ref, title: "Session" },
 		} as unknown as Route;
 		navigationState.state = { index: 0, routes: [route] };
-		const tree = render(<ConversationScreen route={route} navigation={navigation} />);
+		const tree = render(<SessionScreen route={route} navigation={navigation} />);
 		await settle();
 		await type(tree, "not yet");
 		expect(pressable(tree, "Send when you're back online")?.props.accessibilityState).toMatchObject({

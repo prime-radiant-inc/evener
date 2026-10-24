@@ -1,9 +1,11 @@
+import type { InputItem } from "@evener/appwire-client";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { conversationPaneLifetime } from "../../../shell/paneLifetime";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
+import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests } from "../../../stores/threads";
 import { getToasts, pushToast, resetToastStoreForTests } from "../../../widgets/toast/store";
@@ -186,6 +188,124 @@ test("an autosave finishing after goal replacement cannot restore the retired le
     expect(readComposerDraft("root").text).toBe("goal draft typed");
   } finally {
     source.dispose();
+  }
+});
+
+// A peer that advanced the recovery no longer owns the local images; the
+// refusal must leave a durable fresh owner so a reload can restore them.
+test("a stale recovery refusal preserves image-bearing work under a fresh owner", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const originalText = "keep this [image 1]";
+  const input: InputItem[] = [
+    { type: "text", text: originalText },
+    { type: "image", mediaType: "image/png", data: "AQID", name: "recovered.png" },
+  ];
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    threadId: "thread-a",
+    method: "turn/queue",
+    attachments: [
+      {
+        presentationId: "recovered-presentation",
+        marker: 1,
+        name: "recovered.png",
+        mediaType: "image/png",
+        blob: new Blob([Uint8Array.of(1, 2, 3)], { type: "image/png" }),
+      },
+    ],
+    composerText: originalText,
+    payload: { ref: "root", input },
+    optimisticDisplay: { method: "turn/queue", input },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "editing");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+
+  const source = createTestComposerSource("root");
+  const peer = new MutationOutboxIndexedDB();
+  let reloaded: ReturnType<typeof createTestComposerSource> | undefined;
+  try {
+    await source.activateRecovery(recovery);
+    const localText = "keep this [image 1] /cleanup local";
+    const skillOffset = localText.indexOf("/cleanup");
+    source.editText(localText);
+    source.editSkillNames(["cleanup"]);
+    source.updateSelectionMeta({
+      text: localText,
+      skillNames: ["cleanup"],
+      mentions: [{ kind: "skill", name: "cleanup", offset: skillOffset }],
+    });
+    const localAttachments = [{ marker: 1, name: "recovered.png", mediaType: "image/png", data: "AQID" }];
+
+    // Another tab replaces the composition this pane activated.
+    const peerRecovery = await peer.getRecovery(original.clientMutationId);
+    if (!peerRecovery) throw new Error("missing peer recovery fixture");
+    const peerText = "newer composition in another tab";
+    const newer = await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: peerText }],
+      undefined,
+      peerText,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        [original.clientMutationId]:
+          (peerRecovery as MutationRecoveryRecord & { compositionRevision?: number }).compositionRevision ?? 0,
+      },
+    );
+    expect(newer).toBeDefined();
+
+    const saved = await source.queueRecoveryPersistence(original.clientMutationId, localText, localAttachments, [
+      "cleanup",
+    ]);
+    expect(saved).toBe(false);
+
+    const preserved = (await storage.listRecovery("root")).find(
+      (record) => record.clientMutationId !== original.clientMutationId,
+    );
+    expect(preserved).toBeDefined();
+    expect(preserved).toMatchObject({
+      targetRef: "root",
+      threadId: "thread-a",
+      method: "turn/queue",
+      composerText: localText,
+      payload: {
+        input: [
+          { type: "text", text: localText },
+          { type: "image", mediaType: "image/png", data: "AQID", name: "recovered.png" },
+          { type: "skill", name: "cleanup" },
+        ],
+      },
+    });
+    expect(preserved?.attachments).toEqual([
+      expect.objectContaining({ marker: 1, name: "recovered.png", mediaType: "image/png" }),
+    ]);
+    // The peer's newer composition is untouched.
+    expect(await storage.getRecovery(original.clientMutationId)).toMatchObject({
+      composerText: peerText,
+      payload: { input: [{ type: "text", text: peerText }] },
+    });
+
+    // Reload: a fresh source restores the preserved images from the fresh owner.
+    await Promise.resolve();
+    await source.flushRecoveryWrites();
+    source.dispose();
+    reloaded = createTestComposerSource("root");
+    const reloadedRow = preserved ? await storage.getRecovery(preserved.clientMutationId) : undefined;
+    if (!reloadedRow) throw new Error("missing preserved recovery fixture");
+    await expect(reloaded.activateRecovery(reloadedRow)).resolves.toBe(true);
+    expect(reloaded.getSnapshot()).toMatchObject({ text: localText, skillNames: ["cleanup"] });
+    expect(reloaded.attachments.getState().items).toEqual([
+      expect.objectContaining({ marker: 1, name: "recovered.png", mediaType: "image/png", data: "AQID" }),
+    ]);
+  } finally {
+    source.dispose();
+    reloaded?.dispose();
+    peer.close();
+    storage.close();
   }
 });
 
