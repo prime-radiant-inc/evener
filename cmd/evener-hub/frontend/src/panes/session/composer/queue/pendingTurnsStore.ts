@@ -81,14 +81,6 @@ const pendingTurnsStore = createPendingTurnsStore<MutationAttachment>({
   identity: { isOwnMutationRecord },
 });
 
-// Retry's activation-time read of the outbox owner: the same projected entries
-// a render holds, read from the stores as they are now. continueTurn rechecks
-// this synchronously before submitting (through the projection seam below), so
-// a row that appeared after the render still blocks the press.
-export function ownPendingTurnInputFor(ref: string): boolean {
-  return ownPendingTurnInput(pendingTurnsStore.pendingTurnEntries(ref));
-}
-
 installQueuedMutationProjection({
   subscribe: pendingTurnsStore.subscribe,
   getOutbox: () => pendingTurnsStore.getState().outbox,
