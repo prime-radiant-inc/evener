@@ -222,8 +222,7 @@ func TestStreamGenerate_PreservesCompletedStepsOnFailure(t *testing.T) {
 					t.Errorf("Response error = %v, want permanent 401", responseErr)
 				}
 			case "truncated stream":
-				var streamErr *StreamError
-				if !errors.As(responseErr, &streamErr) {
+				if _, ok := errors.AsType[*StreamError](responseErr); !ok {
 					t.Errorf("Response error = %v, want StreamError", responseErr)
 				}
 			default:
