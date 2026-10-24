@@ -32,23 +32,37 @@ func TestNotificationReplayFailureDoesNotAbortHealthyExecution(t *testing.T) {
 			return transcript.OpenWriterForSession(path, sessionID)
 		}
 	})
+	eventsDone := captureSessionEvents(root)
+	t.Cleanup(func() {
+		root.Close()
+		warnings := warningEvents(<-eventsDone)
+		if len(warnings) != 1 || warnings[0].Message != "replay delegate deliveries: injected transcript write failure" {
+			t.Errorf("warnings = %+v, want only the injected receiver replay transport failure", warnings)
+		}
+	})
 	c := root.delegateController
 	ownerID := "dlg_unavailable_owner"
 	owner := stableToolDescriptor(root, ownerID, "")
 	owner.ChildSessionID = identifier.MustNewSessionID()
 	owner.TranscriptRef = "local:" + owner.ChildSessionID
 	coldPath = transcriptPath(root.stateDir, owner.ChildSessionID)
-	w, err := transcript.NewWriter(coldPath, transcript.Header{SessionID: owner.ChildSessionID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatal(err)
-	}
 	source := delegateControllerCreatedEvent("dlg_unavailable_source", ownerID)
 	source.Created.Descriptor.OwnerSessionID = owner.ChildSessionID
+	source.Created.Descriptor.ChildSessionID = identifier.MustNewSessionID()
+	source.Created.Descriptor.TranscriptRef = "local:" + source.Created.Descriptor.ChildSessionID
+	for _, descriptor := range []delegatestore.Descriptor{owner, source.Created.Descriptor} {
+		w, err := transcript.NewWriter(transcriptPath(root.stateDir, descriptor.ChildSessionID), transcript.Header{
+			SessionID: descriptor.ChildSessionID, ParentSessionID: descriptor.OwnerSessionID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
 	c.mu.Lock()
-	_, err = c.appendLocked(
+	_, err := c.appendLocked(
 		delegatestore.Event{Kind: delegatestore.EventDelegateCreated, DelegateID: ownerID, Created: &delegatestore.DelegateCreated{Descriptor: owner}},
 		source,
 	)
@@ -56,6 +70,17 @@ func TestNotificationReplayFailureDoesNotAbortHealthyExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Owner-input admission keeps the receiver cold and unobserved. It must
+	// exclude execution restoration without blocking canonical transport.
+	reservation, err := c.ReserveStart(rootDelegateActor(root.ID()), ownerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := c.AbortStart(reservation); err != nil {
+			t.Errorf("release receiver input admission: %v", err)
+		}
+	})
 	seedDelegateControllerDelivery(t, c, source.DelegateID)
 	if err := root.replayDelegateDeliveries(); !errors.Is(err, errInjectedTranscriptWrite) {
 		t.Fatalf("unavailable receiver transport = %v", err)
@@ -69,6 +94,9 @@ func TestNotificationReplayFailureDoesNotAbortHealthyExecution(t *testing.T) {
 	if got := len(adapter.requestsFor("root")); got != 1 {
 		t.Fatalf("healthy provider requests = %d, want 1", got)
 	}
+	if got := pendingDeliveryIDs(c, source.DelegateID); len(got) != 1 {
+		t.Fatalf("healthy execution changed unavailable receiver's source debt: %v", got)
+	}
 	unavailable.Store(false)
 	clock.Advance(jobNotificationRetryMaxDelay)
 	clock.Drain()
@@ -81,6 +109,9 @@ func TestNotificationReplayFailureDoesNotAbortHealthyExecution(t *testing.T) {
 	}
 	if len(fold.order) != 1 || fold.order[0] != "delegate:dlg_unavailable_source/delivery/1" || len(fold.pendingIDs()) != 1 {
 		t.Fatalf("recovered receiver custody = order:%v pending:%v", fold.order, fold.pendingIDs())
+	}
+	if len(fold.observed) != 0 {
+		t.Fatalf("recovered receiver was observed without execution: %v", fold.observed)
 	}
 }
 
