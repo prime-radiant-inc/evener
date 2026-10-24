@@ -5,11 +5,17 @@ package agent
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/llm"
 )
+
+func TestJobTreeDrainSeed100More(t *testing.T) {
+	seed100JobtreeDrainMore(t)
+}
 
 func seed100JobtreeDrainMore(t *testing.T) {
 	t.Helper()
@@ -77,7 +83,12 @@ func seed100JobtreeDrainMore(t *testing.T) {
 		t.Fatalf("process-fault drain = %q, %v; want empty, fault", result, err)
 	}
 
-	kickRoot := newSession(t)
+	kickRoot := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1}), withSteps(func(req llm.Request) llm.Response {
+		if !requestContainsText(req, "dlg_seed100_stop_gate") {
+			t.Error("root request omitted its owed Stop result")
+		}
+		return finalResponse("stop-result-observed-59")
+	}))
 	if err := kickRoot.kickDriveTreeWith(context.Background(), func(*Session, context.Context) error { return want }); !errors.Is(err, want) {
 		t.Fatalf("root kick fault = %v", err)
 	}
@@ -101,7 +112,7 @@ func seed100JobtreeDrainMore(t *testing.T) {
 	lease := delegateLease{delegateID: "dlg_seed100_stop_gate", generation: 1}
 	packet := delegateStoppedTerminalPacket()
 	kickRoot.delegateController.mu.Lock()
-	_, err := kickRoot.delegateController.appendLocked(
+	appended, err := kickRoot.delegateController.appendLocked(
 		delegatestore.Event{Kind: delegatestore.EventDelegateCreated, DelegateID: lease.delegateID, Created: &delegatestore.DelegateCreated{Descriptor: descriptor}},
 		delegateControllerRunStartedEvent(lease.delegateID, lease.generation, delegatestore.TriggerInitial, started),
 		delegatestore.Event{Kind: delegatestore.EventDelegateSubtreeStopRequested, DelegateID: lease.delegateID, SubtreeStopRequested: &delegatestore.SubtreeStopRequested{TargetDelegateID: lease.delegateID}},
@@ -119,7 +130,41 @@ func seed100JobtreeDrainMore(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("stop-gated kick: %v", err)
 	}
-	kickChild.enqueueJobNotification(jobNotification{JobID: "seed100-gated-attention"})
+	if err := kickChild.enqueueNotification(notification{ID: "seed100-gated-attention", Message: llm.User("gated-payload-59")}); err != nil {
+		t.Fatal(err)
+	}
+	if outstanding, err := kickRoot.treeHasOutstandingWork(); err != nil || !outstanding {
+		t.Fatalf("owed Stop result outstanding = %v, %v; want true, nil before source custody", outstanding, err)
+	}
+	// Complete the durable Stop before transporting its result. The child's
+	// latest stopped outcome still fences execution and preserves its message.
+	kickRoot.delegateController.mu.Lock()
+	_, err = kickRoot.delegateController.appendLocked(delegatestore.Event{
+		Kind: delegatestore.EventDelegateSubtreeStopCompleted, DelegateID: lease.delegateID,
+		SubtreeStopCompleted: &delegatestore.SubtreeStopCompleted{RequestSeq: appended[2].Seq},
+	})
+	kickRoot.delegateController.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := kickRoot.replayDelegateDeliveries(); err != nil {
+		t.Fatal(err)
+	}
+	if ids := pendingDeliveryIDs(kickRoot.delegateController, lease.delegateID); len(ids) != 0 {
+		t.Fatalf("Stop result source not acknowledged after custody: %v", ids)
+	}
+	id := delegateAttentionID(delegateDeliveryID(lease.delegateID, lease.generation))
+	assertAttentionResponseReceipts(t, kickRoot, id, 0)
+	if outstanding, err := kickRoot.treeHasOutstandingWork(); err != nil || !outstanding {
+		t.Fatalf("unobserved root Stop result outstanding = %v, %v; want true, nil", outstanding, err)
+	}
+	if _, err := kickRoot.ProcessInput(context.Background(), "observe-stop-59", nil); err != nil {
+		t.Fatal(err)
+	}
+	assertAttentionResponseReceipts(t, kickRoot, id, 1)
+	if pending, err := kickChild.pendingNotificationIDs(); err != nil || !slices.Equal(pending, []string{"seed100-gated-attention"}) {
+		t.Fatalf("stop-gated child message was not preserved: %v, %v", pending, err)
+	}
 	if outstanding, err := kickRoot.treeHasOutstandingWork(); err != nil || outstanding {
 		t.Fatalf("stop-gated tree outstanding = %v, %v; want false, nil", outstanding, err)
 	}

@@ -491,10 +491,10 @@ func TestRunDrainContinuesWhenNotificationTurnStartsAnotherShell(t *testing.T) {
 func chainedShellDrainScenario(t *testing.T, tweak func(*runConfig)) *scriptedProvider {
 	// Shell A is gated so it cannot reach terminal completion until the drain
 	// starts; otherwise its notification can beat the tool-result model round
-	// and be folded into that request. Shell B needs no gate: it is launched
-	// from A's notification turn, and a notification turn owns its current
-	// batch (no post-tool yield), so B's completion always waits for the next
-	// drain wake.
+	// and be folded into that request. Shell B has its own gate: completion
+	// accepted after its tool round is safe may enter that round's next request,
+	// even when A's notification started the turn. Hold it until that request
+	// arrives so this scenario still exercises a later drain wake.
 	//
 	// Releasing A is not enough: the drain must also not START until A has
 	// finalized. A drain that begins while A is still running finds a sole
@@ -508,13 +508,20 @@ func chainedShellDrainScenario(t *testing.T, tweak func(*runConfig)) *scriptedPr
 	// after the gate opens is deliberate and longer than the recheck
 	// interval: without the barrier it makes the tick win every time, so the
 	// scenario fails outright rather than once in a thousand runs.
-	gate := filepath.Join(t.TempDir(), "release-shell-a")
+	gates := t.TempDir()
+	gate := filepath.Join(gates, "release-shell-a")
+	gateB := filepath.Join(gates, "release-shell-b")
 	shellACommand := "while [ ! -f " + gate + " ]; do sleep 0.02; done; sleep 0.5; printf shell-a"
+	shellBCommand := "while [ ! -f " + gateB + " ]; do sleep 0.02; done; printf shell-b"
+	var session *agent.Session
 	releaseOnDrainStart(t, func() {
 		if err := os.WriteFile(gate, []byte("go\n"), 0o600); err != nil {
 			t.Errorf("release shell A: %v", err)
 		}
-	}, func(sess *agent.Session) { awaitDurableJobCompletion(t, sess) })
+	}, func(sess *agent.Session) {
+		session = sess
+		awaitDurableJobCompletion(t, sess)
+	})
 	jobIDPattern := regexp.MustCompile(`job_id="([^"]+)"`)
 	adapter := &scriptedProvider{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
@@ -533,12 +540,16 @@ func chainedShellDrainScenario(t *testing.T, tweak func(*runConfig)) *scriptedPr
 			if got := strings.Count(requestDeliveredText(req), "<job-notification"); got != 1 {
 				t.Fatalf("shell A notification request count = %d, want 1", got)
 			}
-			return scriptedToolCalls(scriptedShellCall("shell_b", "printf shell-b", "background"))
+			return scriptedToolCalls(scriptedShellCall("shell_b", shellBCommand, "background"))
 		},
 		func(req llm.Request) llm.Response {
 			if got := strings.Count(requestDeliveredText(req), "<job-notification"); got != 1 {
-				t.Fatalf("shell B tool-result request notification count = %d, want only A's notification", got)
+				t.Fatalf("shell B tool-result request notification count = %d, ids = %v, want only A's notification", got, jobIDPattern.FindAllStringSubmatch(requestDeliveredText(req), -1))
 			}
+			if err := os.WriteFile(gateB, []byte("go\n"), 0o600); err != nil {
+				t.Fatalf("release shell B: %v", err)
+			}
+			awaitDurableJobCompletion(t, session)
 			return scriptedCommunicate("waiting for B")
 		},
 		func(req llm.Request) llm.Response {
@@ -549,6 +560,25 @@ func chainedShellDrainScenario(t *testing.T, tweak func(*runConfig)) *scriptedPr
 			matches := jobIDPattern.FindAllStringSubmatch(text, -1)
 			if len(matches) != 2 || matches[0][1] == matches[1][1] {
 				t.Fatalf("notification job ids = %v, want two distinct ids", matches)
+			}
+			for i, callID := range []string{"shell_a", "shell_b"} {
+				calls, results := 0, 0
+				for _, message := range req.Messages {
+					for _, part := range message.Content {
+						if call := part.ToolCall; call != nil && call.ID == callID && call.Name == "shell" {
+							calls++
+						}
+						if result := part.ToolResult; result != nil && result.ToolCallID == callID && result.Name == "shell" && !result.IsError {
+							results++
+							if !strings.Contains(fmt.Sprint(result.Content), matches[i][1]) {
+								t.Errorf("%s tool result does not match its notification job ID %s", callID, matches[i][1])
+							}
+						}
+					}
+				}
+				if calls != 1 || results != 1 {
+					t.Errorf("%s request pairs = calls:%d results:%d, want one successful pair", callID, calls, results)
+				}
 			}
 			return scriptedCommunicate("all shell work complete")
 		},

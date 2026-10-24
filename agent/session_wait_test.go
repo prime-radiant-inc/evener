@@ -31,11 +31,14 @@ func TestWaitCheckpointRecovery(t *testing.T) {
 	for _, tc := range []struct {
 		name                                              string
 		inflight, omitCheckpoint, refused, omitCompletion bool
+		resultTool, restoredResultTool                    string
 		change                                            func(*schema.WaitCheckpointInfo)
 		after                                             string
 		waiting, uncertain                                bool
 	}{
 		{name: "safe completed batch", waiting: true},
+		{name: "renamed result tool", resultTool: "respond", waiting: true},
+		{name: "renamed result tool with changed recovery identity", resultTool: "respond", restoredResultTool: "other_result"},
 		{name: "completed progress then wait", after: "progress", waiting: true},
 		{name: "unfinished progress then wait", after: "progress unfinished"},
 		{name: "wait result without paired call", after: "omit call"},
@@ -75,6 +78,13 @@ func TestWaitCheckpointRecovery(t *testing.T) {
 			created := delegateControllerCreatedEvent("dlg_wait", "")
 			created.Created.Descriptor.ChildSessionID = childID
 			created.Created.Descriptor.TranscriptRef = "local:" + childID
+			created.Created.Descriptor.Config.ResultToolName = tc.resultTool
+			if tc.restoredResultTool != "" {
+				created.Created.Descriptor.Config.ResultToolName = tc.restoredResultTool
+			}
+			if name := created.Created.Descriptor.Config.ResultToolName; name != "" {
+				created.Created.Descriptor.ToolNameCeiling = append(created.Created.Descriptor.ToolNameCeiling, name)
+			}
 			c.mu.Lock()
 			_, err := c.appendLocked(created, delegateControllerRunStartedEvent("dlg_wait", 1, delegatestore.TriggerInitial, time.Unix(10, 0)))
 			c.mu.Unlock()
@@ -88,6 +98,7 @@ func TestWaitCheckpointRecovery(t *testing.T) {
 			}
 			w.BeginExecution("execution-1", false)
 			s := &Session{id: childID, stateDir: c.stateDir, profile: NewOpenAIProfile("gpt-5.2"), restoredMetaIsSubagent: true}
+			s.cfg.ResultToolName = tc.resultTool
 			s.attachTranscript(w)
 			// The real wait validator needs a live waker at tool admission. These
 			// tests remove it before reopening and separately seed durable sources.
@@ -106,6 +117,7 @@ func TestWaitCheckpointRecovery(t *testing.T) {
 			var results []tool.ExecResult
 			communicate := func(call llm.ToolCallData, endTurn, refused bool) {
 				t.Helper()
+				call.Name = s.resultToolName()
 				if tc.after != "omit call" {
 					calls = append(calls, call)
 					record(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}, transcript.PlaceSession)
@@ -206,10 +218,10 @@ func TestWaitCheckpointRecovery(t *testing.T) {
 					messages = append(messages, *info)
 				}
 				for _, part := range entry.Turn.Message.Content {
-					if part.ToolCall != nil && part.ToolCall.Name == "communicate" {
+					if part.ToolCall != nil && part.ToolCall.Name == s.resultToolName() {
 						diskCalls = append(diskCalls, *part.ToolCall)
 					}
-					if part.ToolResult != nil && part.ToolResult.Name == "communicate" {
+					if part.ToolResult != nil && part.ToolResult.Name == s.resultToolName() {
 						diskResults = append(diskResults, *part.ToolResult)
 					}
 				}
@@ -741,8 +753,7 @@ func TestWaitCheckpointProtocol(t *testing.T) {
 			t.Fatalf("read accepted wrong payload session: %+v, %v", got, err)
 		}
 		_, err := readWaitCheckpoint(path, "session-other")
-		var mismatch *transcript.SessionIDMismatchError
-		if !errors.As(err, &mismatch) {
+		if _, ok := errors.AsType[*transcript.SessionIDMismatchError](err); !ok {
 			t.Fatalf("header mismatch error = %v", err)
 		}
 	})

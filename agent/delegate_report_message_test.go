@@ -122,22 +122,15 @@ func TestDelegateReportMessageSurvivesDeliveryRecovery(t *testing.T) {
 			if err := owner.Close(); err != nil {
 				t.Fatal(err)
 			}
-			wantEntries := 1
-			if inline {
-				wantEntries = 0
-			}
-			if len(entries) != wantEntries {
-				t.Fatalf("owner transcript entries = %d, want %d", len(entries), wantEntries)
+			if len(entries) != 1 {
+				t.Fatalf("owner transcript entries = %d, want one canonical custody record", len(entries))
 			}
 			fold, err := readDelegateAttentionFold(ownerPath, "root-session")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if inline {
-				if len(fold.content) != 0 {
-					t.Fatalf("inline delivery also notified owner: %#v", fold.content)
-				}
-				return
+			if pending := fold.pendingIDs(); len(pending) != 1 || pending[0] != delegateAttentionID("dlg_target/delivery/1") || len(fold.observed) != 0 {
+				t.Fatalf("custody or inline publication granted observation without a model response: pending:%v observed:%v", pending, fold.observed)
 			}
 			if len(fold.content) != 1 {
 				t.Fatalf("owner report count = %d", len(fold.content))
@@ -261,7 +254,7 @@ func TestDelegateReportMessageNonReportOutcomes(t *testing.T) {
 			sess := newCompetingCommunicateSession(t, nil)
 			execCommunicateCall(t, sess, "report", communicateArgsFor(nil, "Earlier human report", communicateDefaultEnvelope("Earlier summary", nil)))
 			for _, finish := range []delegateFinish{stableDelegateFinish(sess, "Run diagnostic", tc.err), (&subagent{sess: sess}).stableDelegateFinish("Run diagnostic", tc.err)} {
-				assertDelegateReportMessage(t, finish, "Run diagnostic", nil)
+				assertDelegateReportMessage(t, finish, "Earlier human report", communicateDefaultEnvelope("Earlier summary", nil))
 				if finish.outcome != tc.outcome {
 					t.Fatalf("outcome = %s, want %s", finish.outcome, tc.outcome)
 				}

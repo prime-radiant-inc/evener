@@ -1153,11 +1153,6 @@ func (s *Session) restorePendingNotifications(entries []transcript.Entry) error 
 	if !s.isRootDelegateAttentionReceiver() {
 		return nil
 	}
-	// A synced response needs index repair, never another provider request.
-	if err := s.ackNotifications(nil); err != nil {
-		return err
-	}
-	s.attentionMu.Lock()
 	s.mu.Lock()
 	ready := s.transcriptReady
 	writer := s.transcript
@@ -1165,9 +1160,14 @@ func (s *Session) restorePendingNotifications(entries []transcript.Entry) error 
 	stateDir := s.stateDir
 	s.mu.Unlock()
 	if !ready || writer == nil || sessionID == "" || stateDir == "" {
-		s.attentionMu.Unlock()
 		return nil
 	}
+	// A failed configured writer stays unavailable. Do not inspect or repair
+	// its transcript until writer ownership is established.
+	if err := s.ackNotifications(nil); err != nil {
+		return err
+	}
+	s.attentionMu.Lock()
 	var fold delegateAttentionFold
 	var err error
 	if entries != nil {

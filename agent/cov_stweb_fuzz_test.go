@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
@@ -21,8 +22,8 @@ import (
 // FuzzStoolCommunicationDispatch drives communicate through the real registry
 // executor and through its handler boundary. The handler cases deliberately
 // cover inputs rejected before registry validation as well as successful
-// terminal and non-terminal deliveries. All dependencies are in-memory
-// recorders; no provider, filesystem, process, or network boundary is used.
+// terminal and non-terminal deliveries. Terminal publication also runs through
+// generation finish and canonical receiver custody, without a network/provider.
 func FuzzStoolCommunicationDispatch(f *testing.F) {
 	for _, seed := range [][]byte{
 		nil,
@@ -49,6 +50,7 @@ type stoolCommunicateTrace struct {
 	Structured     string
 	Events         int
 	Deferred       int
+	Publications   int
 }
 
 func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
@@ -151,8 +153,43 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 	if terminal.IsError || terminal.Err != nil || resultMessage != "done "+token || resultReply != resultOutput {
 		t.Fatalf("terminal communicate result=%#v message=%q reply=%q output=%q", terminal, resultMessage, resultReply, resultOutput)
 	}
-	if structured == nil || emitted != 1 || len(deferred) != 1 || len(deferred[0].Images) != 1 {
+	if structured == nil || emitted != 0 || len(deferred) != 1 || len(deferred[0].Images) != 1 {
 		t.Fatalf("terminal side effects: structured=%#v events=%d deferred=%#v", structured, emitted, deferred)
+	}
+	// A terminal handler records evidence, not a premature parent delivery.
+	// The real finish path must publish the exact accepted report once.
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	receiver := attachDeliveryTestReceiver(t, c)
+	seedDelegateControllerIdle(t, c, "dlg_stool_terminal", "")
+	lease, _ := startDelegateDeliveryGeneration(t, c, "dlg_stool_terminal", false)
+	sender := newCompetingCommunicateSession(t, nil)
+	execCommunicateCall(t, sender, "stool-terminal", args)
+	reply, accepted := sender.communicatedReply()
+	if !accepted {
+		t.Fatal("terminal call did not record accepted run evidence")
+	}
+	plans, err := c.FinishGeneration(lease, stableDelegateFinish(sender, reply, nil))
+	if err != nil || len(plans.deliveries) != 1 {
+		t.Fatalf("terminal publication plans = %+v, %v", plans, err)
+	}
+	packet := c.durable[lease.delegateID].LatestPacket
+	if packet == nil || packet.Kind != delegatestore.PacketReported {
+		t.Fatalf("terminal publication packet = %+v", packet)
+	}
+	assertDelegateReportMessage(t, delegateFinish{packet: packet}, "done "+token, args["output"])
+	if err := receiver.executeDelegateMutationPlans(plans); err != nil {
+		t.Fatal(err)
+	}
+	if err := receiver.replayDelegateDeliveries(); err != nil {
+		t.Fatal(err)
+	}
+	fold, err := readDelegateAttentionFold(receiver.TranscriptPath(), receiver.ID())
+	if err != nil || len(fold.order) != 1 || len(fold.pendingIDs()) != 1 || len(fold.observed) != 0 || len(c.durable[lease.delegateID].PendingDeliveries) != 0 {
+		t.Fatalf("terminal publication custody = %+v, %v", fold, err)
+	}
+	// Nonterminal delivery still happens at the handler's own dispatch seam.
+	if _, err := handler(context.Background(), nil, map[string]any{"message": token, "end_turn": false}); err != nil || emitted != 1 {
+		t.Fatalf("nonterminal dispatch count = %d, err:%v", emitted, err)
 	}
 	var response struct {
 		Inbox []string `json:"inbox"`
@@ -210,6 +247,7 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 		Structured:     resultOutput,
 		Events:         emitted,
 		Deferred:       len(deferred),
+		Publications:   len(fold.order),
 	}
 }
 
