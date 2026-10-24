@@ -1784,17 +1784,7 @@ test("a settled needs-you page completes the queue despite a larger manifest cou
       return wireSnapshot(
         params,
         {
-          sessions: ["local:a", "local:b"].map((ref) => ({
-            ref,
-            host_id: "local",
-            session_id: ref,
-            title: ref,
-            project: "Proj",
-            state: "awaiting",
-            kind: "session",
-            live: true,
-            children: [],
-          })),
+          sessions: ["local:a", "local:b"].map((ref) => ({ ref })),
           remaining: 0,
         },
         '"settled-page"',

@@ -109,22 +109,28 @@ export type NeedsYouControllerOptions = {
  * Both the snapshot's `canLoadMore` and `runNext`'s one demand ask this, so a
  * settled queue cannot keep offering an action that spends a read.
  */
-function needsYouCanDemand(state: ReturnType<typeof navigationStore.getState>): boolean {
-  const pages = [...state.resources.values()].filter(
+function needsYouPages(state: ReturnType<typeof navigationStore.getState>) {
+  return [...state.resources.values()].filter(
     (resource) => resource.key.kind === "section" && resource.key.section === "needs_you",
   );
+}
+
+function needsYouCanDemand(
+  state: ReturnType<typeof navigationStore.getState>,
+  pages: ReturnType<typeof needsYouPages>,
+  remaining: number,
+  rowCount: number,
+): boolean {
   const failed = pages.some((page) => !!page.error);
   const retryingPopulatedPage = pages.some(
     (page) => page.loading && ((page.data as { sessions?: unknown[] } | null)?.sessions?.length ?? 0) > 0,
   );
   const settled = pages.some((page) => !page.loading && !page.error && !page.stale);
-  const remaining = selectSectionRemaining("needs_you", state);
-  const uniqueRows = new Set(selectNeedsYouRows(state).map((row) => row.ref));
   return (
     retryingPopulatedPage ||
     failed ||
     remaining > 0 ||
-    (!settled && (!state.manifest?.data || selectNeedsYouCount(state) > uniqueRows.size))
+    (!settled && (!state.manifest?.data || selectNeedsYouCount(state) > rowCount))
   );
 }
 
@@ -151,13 +157,10 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
     const refs = needsYouRefs(uniqueRows);
     let nextRef = nextNeedsYouRef(refs, focusedSessionRef());
     if (remaining > 0 && focusedSessionRef() === refs.at(-1)) nextRef = null;
-    const failed = [...state.resources.values()].some(
-      (resource) => resource.key.kind === "section" && resource.key.section === "needs_you" && !!resource.error,
-    );
-    const loading = [...state.resources.values()].some(
-      (resource) => resource.key.kind === "section" && resource.key.section === "needs_you" && resource.loading,
-    );
-    const canLoadMore = needsYouCanDemand(state);
+    const pages = needsYouPages(state);
+    const failed = pages.some((page) => !!page.error);
+    const loading = pages.some((page) => page.loading);
+    const canLoadMore = needsYouCanDemand(state, pages, remaining, uniqueRows.length);
     const canLoadInitialPage = !hasReadManifest && state.mode === "v3" && state.manifest?.loading === true;
     return Object.freeze({
       choices: Object.freeze(choices.map((choice) => Object.freeze(choice))),
@@ -399,7 +402,11 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
         return !!page && !page.error && !page.stale;
       })
     ) {
-      if (state.mode === "unknown" || state.mode === "error" || needsYouCanDemand(state)) {
+      if (
+        state.mode === "unknown" ||
+        state.mode === "error" ||
+        needsYouCanDemand(state, needsYouPages(state), remaining, rows.length)
+      ) {
         await demand(serial);
         state = navigationStore.getState();
         if (disposed || serial !== actionSerial) return;
