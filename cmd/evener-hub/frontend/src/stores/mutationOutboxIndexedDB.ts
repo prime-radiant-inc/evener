@@ -1111,18 +1111,17 @@ export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAtt
         retargetStore.get(base.clientMutationId),
       );
       let retargeted = rowDestination?.kind === "ref" ? undefined : rowDestination;
-      if (retargeted === undefined) {
-        // Follow the ref chain so repeated resumes resolve to the latest
-        // identity even when no recovery row survived any hop.
-        const seen = new Set<string>();
-        let currentRef = base.targetRef;
-        while (!seen.has(currentRef)) {
-          seen.add(currentRef);
-          const hop = await requestResult<RecoveryRetargetDestination | undefined>(retargetStore.get(currentRef));
-          if (hop?.kind !== "ref") break;
-          retargeted = hop;
-          currentRef = hop.targetRef;
-        }
+      // Continue from the row's own destination when one exists, so a later
+      // ref forwarding (B -> C) still advances a row-recorded destination (B).
+      // With no row record, follow the chain from the base ref.
+      const seen = new Set<string>();
+      let currentRef = retargeted?.targetRef ?? base.targetRef;
+      while (!seen.has(currentRef)) {
+        seen.add(currentRef);
+        const hop = await requestResult<RecoveryRetargetDestination | undefined>(retargetStore.get(currentRef));
+        if (hop?.kind !== "ref") break;
+        retargeted = hop;
+        currentRef = hop.targetRef;
       }
       const shape: MutationRecoveryRecord =
         stale ??

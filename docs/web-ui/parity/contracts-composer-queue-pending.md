@@ -87,7 +87,12 @@ except where a line says so itself.
   already-mounted resumed view is refreshed for it even when the row that moved
   was consumed by another tab, because the retarget destination is persisted
   atomically with the move. Ref forwarding persists even when no recovery row
-  survives, and follows repeated resumes to the latest identity.
+  survives, follows repeated resumes to the latest identity, and continues
+  past a row's own recorded destination.
+- A mounted replacement composer that still owns the stale lease and has no
+  newer edits adopts the preserved composition when preservation finishes, so
+  it shows and submits the local work without a reload. Newer replacement
+  edits are not overwritten.
 - A pane disposed while a refused recovery write awaits storage preserves the
   newest complete composition captured at disposal: text, selections, payload
   input and settled attachment bytes. The fresh row becomes the seat's

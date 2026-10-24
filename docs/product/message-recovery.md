@@ -98,10 +98,13 @@ ref; when the recovery row moved and another pane consumed it, the outbox's
 shared retarget record still names the destination, including when the
 retargeting adapter is another tab. Ref forwarding is recorded even when no
 recovery row survives the move, and follows repeated resumes to the latest
-identity. Preservation refreshes both the captured ref and the row's actual
-target ref, so an already-mounted resumed view learns about the preserved row.
-A destination that already holds a newer selection keeps it, including when
-preservation adopts its fresh row after a replacement composer has chosen.
+identity, including a forwarding hop after the row's own recorded destination.
+Preservation refreshes both the captured ref and the row's actual target ref,
+so an already-mounted resumed view learns about the preserved row. A mounted
+replacement composer that still owns the stale lease and has no newer edits
+adopts the preserved composition immediately, so it shows and submits the
+local work without a reload. A destination that already holds a newer
+selection keeps it, and newer replacement edits are never overwritten.
 
 Sending recovery consumes its durable source and creates one fresh outbox
 identity atomically. It never falls back to an ordinary enqueue when the source
