@@ -65,32 +65,8 @@ func (jm *jobManager) configureHubWatch(ref, instance, generation, caller string
 		jm.mu.Unlock()
 		return watchResult{}, errors.New("invalid_request: too many live watches")
 	}
-	detachedCfgs, detached := jm.detachedWatchSendTerminalSnapshotsLocked(key, jobstore.EventWatchSendDropped, "watch replaced", jm.now())
-	equal := existing != nil && existing.configHash == cfg.configHash
-	if equal && len(detachedCfgs) == 0 {
-		result := watchResultFromConfig(existing, false)
-		jm.mu.Unlock()
-		return result, nil
-	}
-	var targets []watchConfigTerminalSnapshot
-	if existing != nil && !equal {
-		targets = append(targets, watchConfigTerminalSnapshot{
-			key: key, cfg: existing,
-			terminal:  watchSendTerminalSnapshotsLocked(existing, jobstore.EventWatchSendDropped, "watch replaced", jm.now()),
-			endReason: "replaced",
-		})
-	}
-	markWatchConfigSnapshotsRejectingLocked(targets)
-	markWatchConfigsRejectingLocked(detachedCfgs)
-	dropped := append(terminalSnapshots(targets), detached...)
-	if equal {
-		err = jm.appendWatchTeardownBatch(detached, nil)
-	} else {
-		err = jm.appendWatchReplacementBatch(cfg, targets, dropped)
-	}
+	equal, detachedCfgs, dropped, err := jm.persistWatchReplacementLocked(key, cfg)
 	if err != nil {
-		rollbackWatchConfigSnapshotsRejectingLocked(jm, targets)
-		rollbackWatchConfigsRejectingLocked(jm, detachedCfgs)
 		jm.mu.Unlock()
 		return watchResult{}, err
 	}

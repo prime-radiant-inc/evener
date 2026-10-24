@@ -898,43 +898,18 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 		jm.mu.Unlock()
 		return watchResult{}, fmt.Errorf("invalid_request: too many watches (%d live); clear one first", maxLiveWatches)
 	}
-	detachedCfgs, detached := jm.detachedWatchSendTerminalSnapshotsLocked(key, jobstore.EventWatchSendDropped, "watch replaced", jm.now())
 	if existing != nil {
-		equal := existing.configHash == cfg.configHash
-		if equal && len(detachedCfgs) == 0 {
-			result := watchResultFromConfig(existing, false)
+		equal, detachedCfgs, dropped, err := jm.persistWatchReplacementLocked(key, cfg)
+		if err != nil {
 			jm.mu.Unlock()
-			return result, nil
+			return watchResult{}, err
 		}
-		var targets []watchConfigTerminalSnapshot
-		if !equal {
-			targets = append(targets, watchConfigTerminalSnapshot{
-				key:       key,
-				cfg:       existing,
-				terminal:  watchSendTerminalSnapshotsLocked(existing, jobstore.EventWatchSendDropped, "watch replaced", jm.now()),
-				endReason: "replaced",
-			})
-		}
-		markWatchConfigSnapshotsRejectingLocked(targets)
-		markWatchConfigsRejectingLocked(detachedCfgs)
-		dropped := append(terminalSnapshots(targets), detached...)
 		if equal {
-			if err := jm.appendWatchTeardownBatch(detached, nil); err != nil {
-				rollbackWatchConfigsRejectingLocked(jm, detachedCfgs)
-				jm.mu.Unlock()
-				return watchResult{}, err
-			}
 			result := watchResultFromConfig(existing, false)
 			jm.mu.Unlock()
 			jm.removeWatchSendTerminalSnapshots(dropped)
 			jm.forgetDetachedWatchSendConfigsIfEmpty(detachedCfgs)
 			return result, nil
-		}
-		if err := jm.appendWatchReplacementBatch(cfg, targets, dropped); err != nil {
-			rollbackWatchConfigSnapshotsRejectingLocked(jm, targets)
-			rollbackWatchConfigsRejectingLocked(jm, detachedCfgs)
-			jm.mu.Unlock()
-			return watchResult{}, err
 		}
 		jm.recordWatchEndedLocked(key, existing, "replaced")
 		closeWatchConfig(existing)
@@ -950,6 +925,7 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 		return result, nil
 	}
 
+	detachedCfgs, detached := jm.detachedWatchSendTerminalSnapshotsLocked(key, jobstore.EventWatchSendDropped, "watch replaced", jm.now())
 	if len(detachedCfgs) != 0 {
 		markWatchConfigsRejectingLocked(detachedCfgs)
 		jm.mu.Unlock()
@@ -986,6 +962,40 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 	jm.startProgressTimer(key, cfg, stop)
 	result.Fired = jm.completeAttachScan(cfg, key.Target, scanData, scan, prepErr)
 	return result, nil
+}
+
+// persistWatchReplacementLocked is the shared ordinary/hub replacement
+// transaction. The caller holds jm.mu, installs the chosen config only after
+// success, and removes returned dropped sends after unlocking. Ordinary timer
+// and attach-scan hooks stay with their caller.
+func (jm *jobManager) persistWatchReplacementLocked(key watchKey, cfg *watchConfig) (equal bool, detachedCfgs []*watchConfig, dropped []watchSendTerminalSnapshot, err error) {
+	existing := jm.watches[key]
+	detachedCfgs, detached := jm.detachedWatchSendTerminalSnapshotsLocked(key, jobstore.EventWatchSendDropped, "watch replaced", jm.now())
+	equal = existing != nil && existing.configHash == cfg.configHash
+	if equal && len(detachedCfgs) == 0 {
+		return equal, nil, nil, nil
+	}
+	var targets []watchConfigTerminalSnapshot
+	if existing != nil && !equal {
+		targets = append(targets, watchConfigTerminalSnapshot{
+			key: key, cfg: existing,
+			terminal:  watchSendTerminalSnapshotsLocked(existing, jobstore.EventWatchSendDropped, "watch replaced", jm.now()),
+			endReason: "replaced",
+		})
+	}
+	markWatchConfigSnapshotsRejectingLocked(targets)
+	markWatchConfigsRejectingLocked(detachedCfgs)
+	dropped = append(terminalSnapshots(targets), detached...)
+	if equal {
+		err = jm.appendWatchTeardownBatch(detached, nil)
+	} else {
+		err = jm.appendWatchReplacementBatch(cfg, targets, dropped)
+	}
+	if err != nil {
+		rollbackWatchConfigSnapshotsRejectingLocked(jm, targets)
+		rollbackWatchConfigsRejectingLocked(jm, detachedCfgs)
+	}
+	return equal, detachedCfgs, dropped, err
 }
 
 func watchArgsHasCondition(a watchArgs) bool {
