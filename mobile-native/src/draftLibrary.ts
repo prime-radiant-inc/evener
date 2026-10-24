@@ -1,5 +1,6 @@
 import { DraftDocument } from "./draftDocument";
 import type { DraftDestination, DraftRepository } from "./draftRepository";
+import type { ResumeIdentityLedger } from "./resumeIdentity";
 
 export type DraftStorage = Pick<
 	DraftRepository,
@@ -24,6 +25,10 @@ export class DraftLibrary {
 		private repository: () => DraftStorage,
 		private createImageId: () => string = () =>
 			`reissue-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+		/** The mutations database's record of identity-changing resumes. It is
+		 * written in the retarget savepoint, so it can reconstruct a handoff
+		 * the drafts database refused to record. */
+		private resumeIdentities?: () => ResumeIdentityLedger,
 	) {}
 
 	open(destination: DraftDestination): DraftDocument {
@@ -88,7 +93,7 @@ export class DraftLibrary {
 			existing.releasedRecoveryIds?.length
 		) {
 			// Existing destination work is a permanent refusal, never a retry.
-			if (this.releaseRefusedSources(source, destination)) this.clearPending(to);
+			if (this.releaseRefusedSources(source, destination)) this.clearPending(from, to);
 			else this.deferHandoff(from, to);
 			return false;
 		}
@@ -109,7 +114,7 @@ export class DraftLibrary {
 			this.deferHandoff(from, to);
 			return false;
 		}
-		this.clearPending(to);
+		this.clearPending(from, to);
 		destination.adopt(snapshot.record);
 		if (destination !== source) {
 			source.retireInto(destination);
@@ -142,31 +147,45 @@ export class DraftLibrary {
 		}
 	}
 
-	private clearPending(to: DraftDestination): void {
+	private clearPending(from: DraftDestination, to: DraftDestination): void {
 		this.pending.delete(this.handoffKey(to));
 		try {
 			this.repository().removePendingHandoff?.(to);
 		} catch {
 			// A stale mapping retries on the next launch and refuses again.
 		}
+		try {
+			this.resumeIdentities?.()?.removeResumeIdentity(from, to);
+		} catch {
+			// A stale edge retries on the next launch; the transfer is durable.
+		}
 	}
 
 	private loadPendingHandoffs(): void {
 		if (this.pendingLoaded) return;
+		let loaded = true;
 		try {
 			const storage = this.repository();
-			if (storage.readPendingHandoffs === undefined || storage.writePendingHandoff === undefined) {
-				this.pendingLoaded = true;
-				return;
+			if (storage.readPendingHandoffs !== undefined && storage.writePendingHandoff !== undefined) {
+				for (const { from, to } of storage.readPendingHandoffs()) {
+					const key = this.handoffKey(to);
+					if (!this.pending.has(key)) this.pending.set(key, { from, to });
+				}
 			}
-			for (const { from, to } of storage.readPendingHandoffs()) {
+		} catch {
+			// Storage is failing; the next open or retry looks again.
+			loaded = false;
+		}
+		try {
+			for (const { from, to } of this.resumeIdentities?.()?.readResumeIdentities() ?? []) {
 				const key = this.handoffKey(to);
 				if (!this.pending.has(key)) this.pending.set(key, { from, to });
 			}
-			this.pendingLoaded = true;
 		} catch {
-			// Storage is failing; the next open or retry looks again.
+			// The mutations database is failing too; a later open looks again.
+			loaded = false;
 		}
+		if (loaded) this.pendingLoaded = true;
 	}
 
 	private releaseRefusedSources(source: DraftDocument, destination: DraftDocument): boolean {

@@ -318,6 +318,59 @@ test("an occupied resumed destination discards a completed built-in command inst
 	expect(resumed.getSnapshot().record.completedCommandRecoveryIds).toBeUndefined();
 });
 
+test("a draft-database write failure leaves a durable handoff the restart retries", async () => {
+	const f = fixture();
+	const captured = await f.enqueue();
+	f.document.edit("current");
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, captured, f.document)).toBe("restored");
+	f.document.edit("edited recovered");
+	// A resume needs a waiting message; the retarget below moves it with the
+	// recovery row and records the identity edge in the mutations database.
+	await f.enqueue();
+
+	const resumedRef = "session-resumed";
+	const resumedKey = nativeMutationTargetKey(destination.hubId, resumedRef);
+	const resumedDestination = { hubId: destination.hubId, sessionRef: resumedRef };
+	expect(
+		f.runtime.storage.retarget(key, {
+			ref: resumedKey,
+			wireRef: resumedRef,
+			threadId: "thread-2",
+			instanceId: "instance-2",
+		}),
+	).toHaveLength(1);
+
+	// Every write to the drafts database fails, including the pending mapping
+	// the transfer would otherwise record there.
+	f.drafts.exec("PRAGMA query_only = ON");
+	const beforeRestart = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	expect(beforeRestart.handoff(destination, resumedDestination)).toBe(false);
+	expect(f.repository.read(destination).draft).toBe("edited recovered");
+
+	// A restart: the drafts database is writable again but never held the
+	// mapping. The mutations database's resume edge still names the handoff.
+	await f.reopen();
+	const restarted = new DraftLibrary(
+		() => f.repository,
+		undefined,
+		() => f.runtime.storage,
+	);
+	expect(restarted.hasPendingHandoff(resumedDestination)).toBe(true);
+	expect(restarted.open(resumedDestination).getSnapshot().record.draft).toBe("");
+	restarted.retryPendingHandoffs();
+	expect(restarted.hasPendingHandoff(resumedDestination)).toBe(false);
+	expect(f.runtime.storage.readResumeIdentities()).toEqual([]);
+	expect(f.repository.read(resumedDestination)).toMatchObject({
+		draft: "edited recovered",
+		composer: { recoveryIds: [captured] },
+	});
+	expect(f.repository.read(destination)).toEqual({ draft: "", unconfirmed: null });
+});
+
 test("multiple-source completion preserves newer draft, image, and older cleanup markers", async () => {
 	const f = fixture();
 	const first = await richSource(f);

@@ -232,7 +232,9 @@ describe("submitting a message to a session", () => {
 				throw new Error("offline");
 			},
 		};
-		await expect(submitSessionMessage(runtime, new FakeClient("ready"), target, "send", "hi")).resolves.toBeUndefined();
+		await expect(submitSessionMessage(runtime, new FakeClient("ready"), target, "send", "hi")).resolves.toBe(
+			"local:coord",
+		);
 	});
 
 	it("releases nothing when the admission itself fails", async () => {

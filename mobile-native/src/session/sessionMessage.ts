@@ -195,7 +195,7 @@ export async function submitSessionMessage(
 	/** Carries the session's edited draft to the identity a resume resolved to.
 	 * The session's own screen won't run while this screen is on top. */
 	handoffDraft?: ResumeDraftHandoff,
-): Promise<void> {
+): Promise<string> {
 	await runtime.submit({
 		kind,
 		hubId: target.hubId,
@@ -204,7 +204,7 @@ export async function submitSessionMessage(
 		instanceId: target.instanceId,
 		input: [{ type: "text", text }],
 	});
-	if (!client) return;
+	if (!client) return target.ref;
 	if (resumeFirst) {
 		// The message is already durably admitted, so a failed resume is not a
 		// failed send: throwing here would report one to a caller whose retry
@@ -215,17 +215,20 @@ export async function submitSessionMessage(
 		// that is the one path that also retargets the parked row when the resume
 		// hands back a different identity. Calling resumeThread here would leave
 		// this message addressing the identity the daemon just retired.
+		// A resume can resolve to a different identity. The caller returns to
+		// that session, or it would leave the retired one open.
+		let resolvedRef = target.ref;
 		await runtime
 			.settleTarget(target.hubId, target.ref, client, {
 				mayResumeFenced: async () => true,
-				...(handoffDraft === undefined
-					? {}
-					: {
-							onResolvedIdentity: (resolved: string) => handoffDraft(target.hubId, target.ref, resolved),
-						}),
+				onResolvedIdentity: (resolved: string) => {
+					resolvedRef = resolved;
+					handoffDraft?.(target.hubId, target.ref, resolved);
+				},
 			})
 			.catch(() => undefined);
-		return;
+		return resolvedRef;
 	}
 	await runtime.settleTarget(target.hubId, target.ref, client).catch(() => "blocked" as const);
+	return target.ref;
 }

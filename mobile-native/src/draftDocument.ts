@@ -186,6 +186,14 @@ export class DraftDocument {
 		return JSON.stringify([this.destination.hubId, this.destination.sessionRef]);
 	}
 
+	/** The identity this document was retired into by an identity-changing
+	 * resume, or undefined while it still owns its own destination. */
+	get resolvedRef(): string | undefined {
+		let successor = this.successor;
+		while (successor?.successor) successor = successor.successor;
+		return successor?.destination.sessionRef;
+	}
+
 	getSnapshot = (): DraftSnapshot => this.snapshot;
 	subscribe = (listener: () => void) => {
 		this.listeners.add(listener);
@@ -286,6 +294,10 @@ export class DraftDocument {
 		this.successor = successor;
 		this.retired = true;
 		this.unsavedImages.clear();
+		// A mounted screen holds this document. Notify it so it can follow the
+		// resolved identity instead of keeping a document whose edits and sends
+		// now refuse work.
+		this.update({});
 	}
 
 	/** Keep recovered sources out of automatic restore while leaving them
