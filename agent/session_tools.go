@@ -794,7 +794,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 			argsJSON = string(canonical)
 		}
 	}
-	prep := prepareToolCall(call, s.reg.Get(call.Name), visibleNames, requestedVisible, s.resultToolName(), finishReason)
+	prep := prepareToolCall(call, s.shellToolForDiagnostics(s.reg.Get(call.Name)), visibleNames, requestedVisible, s.resultToolName(), finishReason)
 	call = prep.Call
 	prevalidated := true
 	if len(prep.Changes) > 0 {
@@ -1516,6 +1516,16 @@ func (s *Session) delegateAgentTypeNames() []string {
 	return names
 }
 
+// sessionShellDefinition is the shell schema for this session's live
+// environment: mode "detached" is advertised only when the environment reports
+// it can disown a process (issue #4422). Both the advertised cache and the
+// prompt's profile-definition comparison use it, so they cannot disagree.
+// Callers run at construction time or hold s.mu, as rebuildToolDefsCache and
+// the prompt render do; it reads s.env directly and must not call currentEnv.
+func (s *Session) sessionShellDefinition() llm.ToolDefinition {
+	return tool.DefShellWithDetach(detachSupportedBy(s.env))
+}
+
 // wireToolDef renders a canonical tool definition in its provider-visible wire
 // form: it renames the tool to the provider-specific name (nameMap is
 // canonical→provider) and adds the shared "intent" parameter to work tools.
@@ -1549,10 +1559,13 @@ func (s *Session) profileWireToolDefs() []llm.ToolDefinition {
 	nameMap := s.profile.ToolNameMap()
 	defs := s.profile.ToolDefinitions()
 	for i := range defs {
-		if defs[i].Name == "delegate" {
+		switch defs[i].Name {
+		case "delegate":
 			sandboxSchema := s.delegateSandboxSchemaForEnv(s.env)
 			sandboxSchema.ModelDescription = s.delegateModelDescription
 			defs[i] = tool.DefDelegateWithResultTool(s.delegateAgentTypeNames(), sandboxSchema, s.resultToolName())
+		case "shell":
+			defs[i] = s.sessionShellDefinition()
 		}
 		defs[i] = wireToolDef(defs[i], nameMap, s.resultToolName())
 	}
@@ -1585,9 +1598,13 @@ func (s *Session) rebuildToolDefsCache() {
 					}
 				}
 			}
-			// Registration builds descriptions that name the session's result
-			// tool; the profile's copy names the default.
-			td.Description = s.reg.Get(td.Name).Definition.Description
+			if td.Name == "shell" {
+				td = s.sessionShellDefinition()
+			} else {
+				// Registration builds descriptions that name the session's result
+				// tool; the profile's copy names the default.
+				td.Description = s.reg.Get(td.Name).Definition.Description
+			}
 			wire := td
 			if mapped, ok := nameMap[td.Name]; ok {
 				wire.Name = mapped
@@ -1611,6 +1628,12 @@ func (s *Session) rebuildToolDefsCache() {
 	for _, td := range s.reg.Definitions() {
 		if included[td.Name] {
 			continue
+		}
+		if td.Name == "shell" {
+			// A profile that omits shell still gets the environment-aware
+			// schema here rather than the registry's fully capable copy
+			// (issue #4422).
+			td = s.sessionShellDefinition()
 		}
 		defs = append(defs, normalizeRegistryToolDefinition(td))
 	}

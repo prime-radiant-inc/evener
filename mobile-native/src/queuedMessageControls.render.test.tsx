@@ -11,6 +11,7 @@ import { launchImageLibraryAsync } from "expo-image-picker";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { Storage } from "expo-sqlite/kv-store";
 import { ConversationScreen } from "./screens";
+import { NativeConversationSessionsProvider } from "./session/NativeConversationSessionsProvider";
 import { drafts, nativeDrafts } from "./nativeDrafts";
 import {
 	NativeMutationRuntime,
@@ -214,6 +215,13 @@ vi.mock("./NativePreferencesProvider", () => ({
 	useNativePreferences: () => ({ hubId: null, model: null, snapshot: null, config: null, connected: false }),
 }));
 type Props = ComponentProps<typeof ConversationScreen>;
+function SessionScreen(props: Props) {
+	return (
+		<NativeConversationSessionsProvider>
+			<ConversationScreen {...props} />
+		</NativeConversationSessionsProvider>
+	);
+}
 const navigation = {
 	isFocused: () => true,
 	getState: () => navigationState.state,
@@ -328,7 +336,7 @@ async function mount(
 	navigationState.state = { index: 0, routes: [route] };
 	let tree!: ReactTestRenderer;
 	await act(async () => {
-		tree = render(<ConversationScreen route={route} navigation={navigation} />);
+		tree = render(<SessionScreen route={route} navigation={navigation} />);
 	});
 	await settle();
 	const document = drafts.open({ hubId: "hub-1", sessionRef: ref });
@@ -338,7 +346,7 @@ async function mount(
 		act(() => client.emitStateChange("reconnecting"));
 		harness.connection = { ...harness.connection, state: "reconnecting" };
 		await act(async () => {
-			tree.update(<ConversationScreen route={route} navigation={navigation} />);
+			tree.update(<SessionScreen route={route} navigation={navigation} />);
 		});
 	}
 	async function recreateOffline() {
@@ -346,7 +354,7 @@ async function mount(
 		harness.reopenKV();
 		for (const reopen of sqlite.reopen) reopen();
 		await act(async () => {
-			tree = render(<ConversationScreen route={route} navigation={navigation} />);
+			tree = render(<SessionScreen route={route} navigation={navigation} />);
 		});
 		await settle();
 		return tree;
@@ -489,7 +497,7 @@ async function enqueueRecoveredSelection(
 async function reconnect(f: Awaited<ReturnType<typeof mount>>) {
 	act(() => f.client.emitStateChange("ready"));
 	harness.connection = { ...harness.connection, state: "ready" };
-	await act(async () => f.tree.update(<ConversationScreen route={f.route} navigation={navigation} />));
+	await act(async () => f.tree.update(<SessionScreen route={f.route} navigation={navigation} />));
 	await settle();
 }
 
@@ -1065,7 +1073,7 @@ async function prepareRecoveredCompact() {
 	await act(async () => input.props.onChangeText("/compact"));
 	act(() => f.client.emitStateChange("ready"));
 	harness.connection = { ...harness.connection, state: "ready" };
-	await act(async () => f.tree.update(<ConversationScreen route={f.route} navigation={navigation} />));
+	await act(async () => f.tree.update(<SessionScreen route={f.route} navigation={navigation} />));
 	await settle();
 	return { f, source };
 }
@@ -1322,7 +1330,7 @@ it.each(["offline", "online", "command"])(
 		if (mode !== "offline") {
 			act(() => f.client.emitStateChange("ready"));
 			harness.connection = { ...harness.connection, state: "ready" };
-			await act(async () => f.tree.update(<ConversationScreen route={f.route} navigation={navigation} />));
+			await act(async () => f.tree.update(<SessionScreen route={f.route} navigation={navigation} />));
 			await settle();
 		}
 		const send = pressable(
