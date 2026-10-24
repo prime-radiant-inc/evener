@@ -1937,7 +1937,9 @@ try {
   const beforeSidebar = frames.length;
   await driver.click(sourceAgents);
   const branchRow = await reveal(fixture.branch, '[data-testid="activity-sidebar"]');
-  const paging = sent(beforeSidebar).filter(f => f.method === 'evener/thread/delegates/list' && f.params.ref === fixture.rootRef && f.params.cursor);
+  const directPageRequests = () => sent(beforeSidebar).filter(f => f.method === 'evener/thread/delegates/list' && f.params.ref === fixture.rootRef && f.params.cursor);
+  await waitFrames(() => directPageRequests().length > 0 && directPageRequests().every(answered), "the observed root collection advances the real direct-page cursor");
+  const paging = directPageRequests();
   assert.ok(paging.length > 0 && paging.every(answered), "the observed root collection advances the real direct-page cursor");
   await read(`document.querySelector(${q(branchRow)}).focus()`);
   await wait(`document.activeElement === document.querySelector(${q(branchRow)})`, "real sidebar row owns keyboard focus");
