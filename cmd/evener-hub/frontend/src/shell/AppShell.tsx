@@ -930,6 +930,10 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
   const routePlacementPathnameRef = useRef<string | null>(null);
   const placedPathnameRef = useRef<string | null>(null);
   const restoredAttentionTokenRef = useRef<string | null>(null);
+  // Restoration writes only a ref, and the workspace restore may publish no
+  // state change at all (a cached location, an already focused reader). This
+  // render epoch makes the completion visible to the host's `routeDeferred`.
+  const [, setAttentionRestoreEpoch] = useState(0);
   const deferredDocumentRef = useRef<OpenPaneRecord | null>(null);
   const initialPathnameRef = useRef(pathname);
   if (!dockHostHasMountedRef.current && openedForPathnameRef.current !== pathname) {
@@ -974,7 +978,12 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
     // placement before the route branch decides what to place. A stale
     // location read must not rebuild a retained secondary as main either.
     const attentionToken = currentAttentionEntryToken();
-    if (attentionToken === null) restoredAttentionTokenRef.current = null;
+    if (attentionToken === null) {
+      if (restoredAttentionTokenRef.current !== null) {
+        restoredAttentionTokenRef.current = null;
+        setAttentionRestoreEpoch((epoch) => epoch + 1);
+      }
+    }
     if (attentionToken !== null && restoredAttentionTokenRef.current === attentionToken) {
       pendingSessionRef.current = null;
       placedPathnameRef.current = pathname;
@@ -986,6 +995,7 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
       restoreCurrentAttentionEntry()
     ) {
       restoredAttentionTokenRef.current = attentionToken;
+      setAttentionRestoreEpoch((epoch) => epoch + 1);
       pendingSessionRef.current = null;
       placedPathnameRef.current = pathname;
       return;

@@ -2248,10 +2248,10 @@ test("mobile mount at a welcome-route attention entry restores it before StackHo
 
 // routeDeferred is computed during render from a ref the restoration effect
 // writes, so a restore that changes nothing observable leaves no render behind
-// it. This is the case the review asked for: the phone remounts on an entry it
-// already holds the exact reader for, and a later focus-only move to another
-// existing pane still has to publish that pane's URL.
-test("a focus-only child opening after an already-restored attention entry publishes its URL", async () => {
+// it. This is the case the review asked for: the phone remounts on an attention
+// entry it already holds the exact reader for, and a later focus-only move to
+// another existing pane still has to publish that pane's URL.
+test("a focus-only move after an already-restored attention entry publishes the new pane's URL", async () => {
   const setMobile = installSwitchableViewport();
   setMobile(true);
   window.history.replaceState({}, "", "/s/local%3Aorigin");
@@ -2259,29 +2259,37 @@ test("a focus-only child opening after an already-restored attention entry publi
   const firstMount = render(<AppShell client={navClient()} />);
   await screen.findByText(/loading transcript/i);
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:origin" }));
-  const origin = workspaceStore.getState().mainPane();
-  if (!origin) throw new Error("missing initial routed reader");
   act(() => openAttentionSession("local:destination"));
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:destination" }));
-  const back = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
-  await act(async () => {
-    window.history.back();
-    await back;
+  // Still on the attention entry, with an existing secondary built before the
+  // remount so focusing it later leaves the pane array alone.
+  expect(currentAttentionEntryToken()).not.toBeNull();
+  const entryURL = window.location.pathname;
+  const entryState = window.history.state;
+  const destination = workspaceStore.getState().mainPane();
+  if (!destination) throw new Error("missing attention target");
+  let child = "";
+  act(() => {
+    child = workspaceStore.getState().openPane("session", { ref: "local:child" }, { slot: "secondary" });
   });
-  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(origin.id));
+  act(() => workspaceStore.getState().focusPane(destination.id));
+  // Opening the secondary focused it, which published its URL. Remount on the
+  // attention entry itself, as the phone does when the tab is recreated.
+  window.history.replaceState(entryState, "", entryURL);
   firstMount.unmount();
 
   // The live store already holds this entry's reader, focused and placed: the
   // restoration is a no-op, so nothing about it forces a render.
-  expect(workspaceStore.getState().focusedPaneId).toBe(origin.id);
+  expect(workspaceStore.getState().focusedPaneId).toBe(destination.id);
   render(<AppShell client={navClient()} />);
-  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(origin.id));
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(destination.id));
+  expect(window.location.pathname).not.toBe("/s/local%3Achild");
 
   act(() => {
-    const child = workspaceStore.getState().openPane("session", { ref: "local:child" }, { slot: "secondary" });
     workspaceStore.getState().focusPane(child);
   });
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Achild"));
+  await act(async () => {});
 });
 
 // Closing the attention target is the reader saying no to that conversation.

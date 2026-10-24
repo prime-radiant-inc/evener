@@ -266,11 +266,24 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
   };
   // A reader adopted into a popout reports a new document; start watching it and
   // treat a modal already open there as the modal transition it is.
+  // The observed set is the opener plus the FOCUSED reader's document, no more:
+  // a dialog in an unfocused popout must not keep attention navigation blocked
+  // in the window the reader is actually looking at. MutationObserver can only
+  // drop every target at once, so a changed set re-observes from scratch.
   const syncModalDocuments = () => {
-    const before = observedDocuments.size;
-    observeModalDocument(typeof document === "undefined" ? null : document);
-    observeModalDocument(focusedPaneDocument());
-    if (observedDocuments.size === before) return;
+    const wanted = new Set<Document>();
+    if (typeof document !== "undefined") wanted.add(document);
+    const focused = focusedPaneDocument();
+    if (focused?.documentElement) wanted.add(focused);
+    const unchanged = wanted.size === observedDocuments.size && [...wanted].every((doc) => observedDocuments.has(doc));
+    if (unchanged) return;
+    // MutationObserver can only drop every target at once. A first sync has
+    // nothing to drop, so it must not spend the observer's one disconnect:
+    // disposal is the only release the accounting tests see.
+    const wasWatching = observedDocuments.size > 0;
+    observedDocuments.clear();
+    if (wasWatching) modalObserver.disconnect();
+    for (const doc of wanted) observeModalDocument(doc);
     const next = anyModalOpen();
     if (next === modalOpen) return;
     modalOpen = next;

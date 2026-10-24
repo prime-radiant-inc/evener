@@ -12,7 +12,7 @@ import "../panes/transcript";
 import "../panes/zoom";
 import { enterAgentCascade, popAgentCascade, reconcileCascadeBinding } from "../panes/zoom/actions";
 import { activityDelegate } from "../stores/sessionActivityTestUtils";
-import { chromeStore } from "./chromeStore";
+import { chromeStore, resetChromeStoreForTests } from "./chromeStore";
 import { focusedSessionRef } from "./focusedSession";
 import { createNeedsYouController, type NeedsYouController } from "./needsYouActions";
 import { closePalette, openPalette, paletteStore } from "./palette/paletteController";
@@ -88,6 +88,7 @@ afterEach(() => {
   closePalette();
   resetNavigationStoreForTests();
   resetWorkspaceStoreForTests();
+  resetChromeStoreForTests();
   window.history.replaceState({}, "", "/");
 });
 
@@ -1872,5 +1873,47 @@ test("focusing an already-published popout watches its modals", async () => {
   await pending;
   expect(window.location.pathname).toBe(before.path);
   expect(window.history.length).toBe(before.history);
+  controller.dispose();
+});
+
+// A dialog in a popout the reader has left must not keep attention navigation
+// blocked in the window they came back to.
+test("a modal in an unfocused popout stops blocking after focus returns", async () => {
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params) => {
+    if (params.resource === "manifest") {
+      return wireSnapshot(
+        params,
+        manifest({
+          generation_id: "unfocused-modal",
+          sections: { live: { count: 0 }, needs_you: { count: 1 }, pin_sections: { count: 0 } },
+        }),
+        '"manifest"',
+        1,
+        "unfocused-modal",
+      );
+    }
+    if (params.resource === "section") {
+      return wireSnapshot(params, { sessions: [{ ref: "local:a" }], remaining: 0 }, '"page"', 1, "unfocused-modal");
+    }
+    throw new Error(`unexpected resource ${params.resource}`);
+  });
+  navigationStore.init(client, capability("unfocused-modal"));
+  const a = workspaceStore.getState().openPane("session", { ref: "ref_a" });
+  const b = workspaceStore.getState().openPane("session", { ref: "ref_b" }, { slot: "secondary" });
+  workspaceStore.getState().focusPane(b);
+
+  const controller = createNeedsYouController();
+  const popout = document.implementation.createHTMLDocument("popout");
+  const dialog = popout.createElement("div");
+  dialog.setAttribute("aria-modal", "true");
+  popout.body.appendChild(dialog);
+  chromeStore.getState().setPaneDocumentFor(b, popout);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(controller.getSnapshot().blocked).toBe(true);
+
+  workspaceStore.getState().focusPane(a);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(controller.getSnapshot().blocked).toBe(false);
   controller.dispose();
 });
