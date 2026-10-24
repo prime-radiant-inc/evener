@@ -78,6 +78,13 @@ describe("an error's one action (spec 8.2, ruling 26)", () => {
 			null,
 		],
 		["no retry while Send can't act", failure("go test exited 1"), state(), false, null],
+		[
+			"no retry while Send can't act even with pending input",
+			failure("go test exited 1"),
+			state({ pendingMutations: [entry()], pendingMutationsReady: false }),
+			false,
+			null,
+		],
 		["no retry for a warning's row", { ...failure("rate limited"), id: "warn-item-1" }, state(), true, null],
 		[
 			"the last displayed failure stays, disabled, while canonical authority is unknown",

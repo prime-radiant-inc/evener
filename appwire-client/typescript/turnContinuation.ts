@@ -8,7 +8,7 @@ export const TURN_CONTINUATION_TEXT = "continue";
 // last-visible-history heuristic. `thread.turns` is the display structure the
 // reducer derives from history plus overlay, so an older page being the last
 // loaded row cannot make a historical failure look like the tail.
-type RetryTurnThread = Pick<ThreadModel, "turns" | "runningTurnId" | "history" | "status">;
+export type RetryTurnThread = Pick<ThreadModel, "turns" | "runningTurnId" | "history" | "status">;
 
 /** The conversation's canonical last display turn, by identity only. */
 export function latestTurnId(model: { turns: readonly { id: string }[] } | undefined): string | undefined {

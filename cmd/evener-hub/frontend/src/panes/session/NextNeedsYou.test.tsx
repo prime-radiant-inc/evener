@@ -1,54 +1,24 @@
 // @vitest-environment jsdom
 import type { NavigationSessionSummary } from "@evener/appwire-client";
-import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { NeedsYouProvider } from "../../shell/NeedsYouProvider";
+import { installNeedsYouPage, needsYouRow, updateNeedsYouPage } from "../../shell/needsYouTestUtils";
 import { closePalette, openPalette } from "../../shell/palette/paletteController";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { NextNeedsYou } from "./NextNeedsYou";
 import "./index";
 
-const PAGE_KEY = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
-
-function row(ref: string, title = ref): NavigationSessionSummary {
-  return {
-    ref,
-    host_id: "local",
-    session_id: ref,
-    title,
-    project: "Proj",
-    state: "awaiting",
-    kind: "session",
-    live: true,
-    children: [],
-  };
-}
+const row = needsYouRow;
 
 function installRows(rows: NavigationSessionSummary[] = [row("local:a"), row("local:b")], manifestCount = rows.length) {
-  const resources = new Map(navigationStore.getState().resources);
-  resources.set(keyID(PAGE_KEY), {
-    key: PAGE_KEY,
-    data: { generation_id: "g", revision: 1, sessions: rows, remaining: 0, truncated: false },
-    loadedRevision: 1,
-    targetRevision: null,
-    forceToken: 0,
-    etag: '"test"',
-    loading: false,
-    stale: false,
-    error: null,
-    generationID: "g",
-  });
-  const visibleResourceKeys = new Set(navigationStore.getState().visibleResourceKeys);
-  visibleResourceKeys.add(keyID(PAGE_KEY));
+  installNeedsYouPage(0, rows);
   navigationStore.setState({
     mode: "v3",
-    resources,
-    visibleResourceKeys,
     manifest: {
       key: { kind: "manifest" },
       data: {
@@ -369,25 +339,108 @@ test("outer scroll dismisses the list while its own scrolling does not", () => {
   expect(screen.queryByTestId("next-needs-you-list")).toBeNull();
 });
 
-test("a stale list selection does not navigate", () => {
+test("a row whose page turns stale after render is refused and never navigates", () => {
   installRows([row("local:a"), row("local:b")]);
   const origin = seedSource();
   render(controlTree());
   fireEvent.click(screen.getByTestId("next-needs-you-more"));
   const rowButton = screen.getByTestId("next-needs-you-row");
   expect(rowButton.getAttribute("data-ref")).toBe("local:b");
+  expect(rowButton.getAttribute("aria-disabled")).toBeNull();
 
-  act(() => {
-    const resources = new Map(navigationStore.getState().resources);
-    const page = resources.get(keyID(PAGE_KEY));
-    if (!page) throw new Error("seeded needs-you page missing");
-    resources.set(keyID(PAGE_KEY), { ...page, stale: true });
-    navigationStore.setState({ resources });
-  });
+  act(() => updateNeedsYouPage(0, { stale: true, loading: true }));
+
+  expect(rowButton.getAttribute("aria-disabled")).toBe("true");
+  expect(rowButton.getAttribute("data-refresh-state")).toBe("refreshing");
+
+  act(() => updateNeedsYouPage(0, { stale: true, loading: false, error: new Error("refresh failed") }));
+  expect(rowButton.getAttribute("aria-disabled")).toBe("true");
+  expect(rowButton.getAttribute("data-refresh-state")).toBe("failed");
   fireEvent.click(rowButton);
 
   expect(window.location.pathname).toBe("/s/local%3Aa");
   expect(workspaceStore.getState().focusedPaneId).toBe(origin);
+  expect(screen.getByTestId("next-needs-you-list")).toBeTruthy();
+});
+
+test("opening a list with refused rows focuses the first available control", () => {
+  installRows([row("local:a"), row("local:b"), row("local:c")]);
+  seedSource();
+  updateNeedsYouPage(0, { stale: true, error: new Error("refresh failed") });
+
+  render(controlTree());
+  fireEvent.click(screen.getByTestId("next-needs-you-more"));
+
+  expect(document.activeElement).toBe(screen.getByTestId("next-needs-you-load-more"));
+  for (const refused of screen.getAllByTestId("next-needs-you-row")) {
+    expect(refused.getAttribute("data-refresh-state")).toBe("failed");
+  }
+});
+
+test("opening a list with no available control focuses the list", () => {
+  installRows([row("local:a"), row("local:b")]);
+  seedSource();
+  act(() => updateNeedsYouPage(0, { stale: true, loading: true }));
+
+  render(controlTree());
+  fireEvent.click(screen.getByTestId("next-needs-you-more"));
+
+  expect(document.activeElement).toBe(screen.getByLabelText("Needs you sessions"));
+});
+
+test("a refused page does not refuse rows from another current page", () => {
+  installRows([row("local:a"), row("local:b")]);
+  installNeedsYouPage(50, [row("local:c")]);
+  updateNeedsYouPage(0, { stale: true, error: new Error("refresh failed") });
+  seedSource();
+  render(controlTree());
+  fireEvent.click(screen.getByTestId("next-needs-you-more"));
+
+  const rows = screen.getAllByTestId("next-needs-you-row");
+  const refused = rows.find((item) => item.getAttribute("data-ref") === "local:b");
+  const current = rows.find((item) => item.getAttribute("data-ref") === "local:c");
+  if (!refused || !current) throw new Error("expected the refused and current rows");
+  expect(refused.getAttribute("aria-disabled")).toBe("true");
+  expect(refused.getAttribute("data-refresh-state")).toBe("failed");
+  expect(current.getAttribute("aria-disabled")).toBeNull();
+  expect(current.getAttribute("data-refresh-state")).toBeNull();
+  expect(document.activeElement).toBe(current);
+
+  fireEvent.click(current);
+  expect(window.location.pathname).toBe("/s/local%3Ac");
+});
+
+test("a selectable row closes the list and navigates", () => {
+  installRows([row("local:a"), row("local:b")]);
+  const origin = seedSource();
+  render(controlTree());
+  fireEvent.click(screen.getByTestId("next-needs-you-more"));
+
+  fireEvent.click(screen.getByTestId("next-needs-you-row"));
+
+  expect(window.location.pathname).toBe("/s/local%3Ab");
+  expect(workspaceStore.getState().focusedPaneId).not.toBe(origin);
+  expect(screen.queryByTestId("next-needs-you-list")).toBeNull();
+});
+
+test("a refused row recovers when its page becomes current again", () => {
+  installRows([row("local:a"), row("local:b")]);
+  const origin = seedSource();
+  render(controlTree());
+  fireEvent.click(screen.getByTestId("next-needs-you-more"));
+
+  act(() => updateNeedsYouPage(0, { stale: true, loading: true }));
+  const refused = screen.getByTestId("next-needs-you-row");
+  expect(refused.getAttribute("aria-disabled")).toBe("true");
+  expect(refused.getAttribute("data-refresh-state")).toBe("refreshing");
+  act(() => updateNeedsYouPage(0, { stale: false, loading: false }));
+
+  const rowButton = screen.getByTestId("next-needs-you-row");
+  expect(rowButton.getAttribute("aria-disabled")).toBeNull();
+  fireEvent.click(rowButton);
+
+  expect(window.location.pathname).toBe("/s/local%3Ab");
+  expect(workspaceStore.getState().focusedPaneId).not.toBe(origin);
 });
 
 test("hidden and shared blocking suppression hide the control and clear automatically", async () => {

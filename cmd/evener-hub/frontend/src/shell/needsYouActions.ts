@@ -18,7 +18,11 @@ import { needsYouRefs, nextNeedsYouRef } from "./rail/needsYouCycle";
 import { observeRouteHistory } from "./routing";
 import { workspaceStore } from "./workspace";
 
-export type NeedsYouChoice = { summary: NavigationSessionSummary; selectable: boolean };
+export type NeedsYouChoice = {
+  summary: NavigationSessionSummary;
+  selectable: boolean;
+  refreshState: "refreshing" | "failed" | null;
+};
 export type NeedsYouSnapshot = {
   choices: readonly NeedsYouChoice[];
   nextRef: string | null;
@@ -111,10 +115,17 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
     const state = navigationStore.getState();
     const rows = selectNeedsYouRows(state);
     const uniqueRows = [...new Map(rows.map((row) => [row.ref, row])).values()];
-    const choices = uniqueRows.map((summary) => {
+    const choices = uniqueRows.map((summary): NeedsYouChoice => {
       const pageKey = rowPageKey(summary.ref, state);
       const page = pageKey ? state.resources.get(pageKey) : undefined;
-      return { summary, selectable: !!page && !page.error && !page.stale };
+      let refreshState: NeedsYouChoice["refreshState"] = null;
+      if (page?.error) refreshState = "failed";
+      else if (page?.stale) refreshState = "refreshing";
+      return {
+        summary,
+        selectable: !!page && refreshState === null,
+        refreshState,
+      };
     });
     const remaining = selectSectionRemaining("needs_you", state);
     const hasManifest = !!state.manifest?.data;
@@ -161,7 +172,11 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
       next.choices.length === snapshot.choices.length &&
       next.choices.every((choice, index) => {
         const prior = snapshot.choices[index];
-        return prior?.summary === choice.summary && prior.selectable === choice.selectable;
+        return (
+          prior?.summary === choice.summary &&
+          prior.selectable === choice.selectable &&
+          prior.refreshState === choice.refreshState
+        );
       }) &&
       next.nextRef === snapshot.nextRef &&
       next.canLoadMore === snapshot.canLoadMore &&

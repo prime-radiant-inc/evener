@@ -106,6 +106,7 @@
     "builtinInvocation.ts",
     "transcriptDisplayConfig.ts",
     "transcriptProjector.ts",
+    "retryEligibility.ts",
     "turnContinuation.ts",
     "warningText.ts",
     "warnings.ts",
