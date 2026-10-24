@@ -1,7 +1,6 @@
 import { ActivityPageBoundary } from "./ActivityPageBoundary";
 // The Watches tab observes the shared session watch collection and admits
-// continuation pages at its visible boundary. Cadence and delivery labels use
-// the visible sidebar's shared clock, so rows and expanded details agree.
+// continuation pages at its visible boundary.
 
 import { buildWatchRows } from "@evener/appwire-client";
 import { useSessionActivity } from "../../stores/sessionActivity";
@@ -34,7 +33,7 @@ export function WatchesTab({ scope, now }: ActivityTabBodyProps) {
   return (
     <div className={CLASS.stack}>
       {watchRows.map((row) => (
-        <WatchRow key={row.id} row={row} now={now ?? Date.now()} />
+        <WatchRow key={row.id} row={row} now={now} />
       ))}
       <ActivityPageBoundary
         resource="watches"

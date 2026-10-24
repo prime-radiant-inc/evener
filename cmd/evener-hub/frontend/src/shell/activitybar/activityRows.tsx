@@ -22,12 +22,13 @@ import {
 import { useEffect, useState } from "react";
 import { ActivityWatchDetail } from "../../panes/session/chrome/ActivityRowDetail";
 import { jobStatusDotState } from "../../panes/session/chrome/activityFormat";
+import { ActivityTime } from "../../panes/session/chrome/activityTime";
 import { Disclosure, ListRow, SubagentDot, ToolIcon, type ToolIconTone } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { WatchGlyph } from "../rail/RailRow";
 
 import styles from "./activitybar.module.css";
-import { ActivityTime, agentActivityTime, jobActivityTime, watchActivityTime } from "./activityTime";
+import { agentActivityTime, jobActivityTime, watchActivityTime } from "./activityTime";
 
 const CLASS = {
   rowContent: requireClass(styles.rowContent, "activitybar.module.css", "rowContent"),
@@ -110,9 +111,8 @@ function useDotFlip(sub: SessionDelegate): number {
   return Date.now();
 }
 
-export function AgentRow({ sub, onDrill, now }: { sub: SessionDelegate; onDrill?: () => void; now?: number }) {
+export function AgentRow({ sub, onDrill, now }: { sub: SessionDelegate; onDrill?: () => void; now: number }) {
   const dotNow = useDotFlip(sub);
-  const timeNow = now ?? Date.now();
   const successful = agentIsSuccessful(sub);
   const failed = sub.terminal ? isFailedDelegateOutcome(sub.outcome) : false;
   const status = agentStateText(sub);
@@ -132,7 +132,7 @@ export function AgentRow({ sub, onDrill, now }: { sub: SessionDelegate; onDrill?
           {name}
         </span>
       }
-      chips={<ActivityTime value={agentActivityTime(sub)} now={timeNow} />}
+      chips={<ActivityTime value={agentActivityTime(sub)} now={now} />}
       // The intent replaces the status word here; the label's title keeps the
       // word reachable, JobRow's pattern for a value the meta line hides.
       meta={
@@ -148,7 +148,7 @@ export function AgentRow({ sub, onDrill, now }: { sub: SessionDelegate; onDrill?
   );
 }
 
-export function JobRow({ job, onOpen, now }: { job: JobActivityJob; onOpen?: () => void; now?: number }) {
+export function JobRow({ job, onOpen, now }: { job: JobActivityJob; onOpen?: () => void; now: number }) {
   const description = job.description?.trim();
   const status = jobStatusDisplay(job.status, job.reason);
   const successful = job.terminal && job.status === "completed" && !jobIsFailed(job);
@@ -168,7 +168,7 @@ export function JobRow({ job, onOpen, now }: { job: JobActivityJob; onOpen?: () 
           {description || job.command?.trim() || job.jobId}
         </span>
       }
-      chips={<ActivityTime value={jobActivityTime(job)} now={now ?? Date.now()} />}
+      chips={<ActivityTime value={jobActivityTime(job)} now={now} />}
       meta={
         successful ? undefined : (
           <span data-activity-meta data-failed={failed || undefined} className={failed ? CLASS.rowFailed : undefined}>

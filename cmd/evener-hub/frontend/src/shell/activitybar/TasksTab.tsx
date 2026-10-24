@@ -3,6 +3,7 @@
 // subscription (stores/useThreadModel.ts). Counts live in the tab label;
 // the body starts with the task groups.
 
+import { TaskActivityTime } from "../../panes/session/chrome/activityTime";
 import { TasksPanelBody, taskDisclosureId } from "../../panes/session/chrome/TasksPanel";
 import { useTasksPanelStore } from "../../stores/tasksPanel";
 import { useThreadModel } from "../../stores/useThreadModel";
@@ -29,7 +30,12 @@ export function TasksTab({ scope, now }: ActivityTabBodyProps) {
   }
   return (
     <div className={CLASS.stack}>
-      <TasksPanelBody sessionRef={ref} model={model} showSummary={false} presentation="compact" now={now} />
+      <TasksPanelBody
+        sessionRef={ref}
+        model={model}
+        showSummary={false}
+        renderTime={(task) => <TaskActivityTime task={task} now={now} />}
+      />
     </div>
   );
 }

@@ -419,8 +419,9 @@ test("the standalone task body does not opt into the sidebar's compact presentat
   fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
   render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
   const row = (await screen.findByText("Extend transcript API")).closest("[data-testid='task-row']");
-  expect(row?.querySelector("[data-presentation]")?.getAttribute("data-presentation")).toBe("panel");
   expect(row?.querySelector("[data-testid='task-row-time']")?.tagName).not.toBe("TIME");
+  expect(row?.querySelector("[data-testid='task-row-time']")).toBeTruthy();
+  expect(row?.querySelector("[data-activity-time]")).toBeNull();
 });
 
 test("the settled group defaults to collapsed and remembers being opened per session", async () => {

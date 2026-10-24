@@ -1247,22 +1247,22 @@ async function measureActivityRowPadding(send, viewport) {
         padding: [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft],
         nestedPadding: nested ? [nested.paddingTop, nested.paddingRight, nested.paddingBottom, nested.paddingLeft] : null,
         width: box.width, height: box.height,
-        time: time ? {
+        time: {
           dateTime: time.dateTime,
           meaning: time.dataset.meaning,
-          top: timeBox?.top,
-          bottom: timeBox?.bottom,
-          left: timeBox?.left,
-          right: timeBox?.right,
-          titleTop: titleBox?.top,
-          titleBottom: titleBox?.bottom,
+          top: timeBox.top,
+          bottom: timeBox.bottom,
+          left: timeBox.left,
+          right: timeBox.right,
+          titleTop: titleBox.top,
+          titleBottom: titleBox.bottom,
           titleClipLeft: titleClipBox.left,
           titleClipRight: titleClipBox.right,
           titleClipWidth: titleClipBox.width,
           titleFullWidth: titleBox.width,
           rowLeft: box.left,
           rowRight: box.right,
-        } : null };
+        } };
     })`,
     );
     const failures = [];
@@ -1277,17 +1277,14 @@ async function measureActivityRowPadding(send, viewport) {
       }
       if (row.nestedPadding && row.nestedPadding.some((padding) => padding !== "0px"))
         failures.push(`watch nested row adds padding: ${JSON.stringify(row.nestedPadding)}`);
-      if (!row.time) failures.push(`${row.kind} row is missing its activity timestamp: ${JSON.stringify(row)}`);
-      if (row.time) {
-        const { time } = row;
-        const centerDelta = Math.abs((time.top + time.bottom) / 2 - (time.titleTop + time.titleBottom) / 2);
-        if (centerDelta > 2.5) failures.push(`${row.kind} timestamp is not on the title line: ${JSON.stringify(row)}`);
-        if (time.left < time.titleClipRight - 0.5 || time.left < time.rowLeft || time.right > time.rowRight)
-          failures.push(`${row.kind} timestamp overlaps its title or escapes the row: ${JSON.stringify(row)}`);
-        if (time.titleClipWidth < 24 || time.titleClipWidth <= time.right - time.left)
-          failures.push(`${row.kind} timestamp leaves too little visible title: ${JSON.stringify(row)}`);
-        if (time.titleFullWidth < 12) failures.push(`${row.kind} title has no readable text: ${JSON.stringify(row)}`);
-      }
+      const { time } = row;
+      const centerDelta = Math.abs((time.top + time.bottom) / 2 - (time.titleTop + time.titleBottom) / 2);
+      if (centerDelta > 2.5) failures.push(`${row.kind} timestamp is not on the title line: ${JSON.stringify(row)}`);
+      if (time.left < time.titleClipRight - 0.5 || time.left < time.rowLeft || time.right > time.rowRight)
+        failures.push(`${row.kind} timestamp overlaps its title or escapes the row: ${JSON.stringify(row)}`);
+      if (time.titleClipWidth < 24 || time.titleClipWidth <= time.right - time.left)
+        failures.push(`${row.kind} timestamp leaves too little visible title: ${JSON.stringify(row)}`);
+      if (time.titleFullWidth < 12) failures.push(`${row.kind} title has no readable text: ${JSON.stringify(row)}`);
       if (viewport.mobile && !row.kind.endsWith("passive") && (row.width < 44 || row.height < 44))
         failures.push(`${row.kind} touch target below 44px: ${JSON.stringify(row)}`);
     }

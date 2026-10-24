@@ -568,7 +568,7 @@ export type {
   SessionActivityReadState,
   SessionActivitySnapshot,
 } from "./sessionActivityStore";
-export { SessionActivityStore } from "./sessionActivityStore";
+export { isValidActivityTimestamp, SessionActivityStore } from "./sessionActivityStore";
 export { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 export type { SettingsHubGeneration } from "./settingsHubGeneration";
 export { createSettingsHubGeneration } from "./settingsHubGeneration";

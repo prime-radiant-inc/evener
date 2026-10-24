@@ -30,7 +30,7 @@ const dot = (view: RenderResult) => {
 
 test("a fresh running delegate shows the alive dot", () => {
   const view = render(
-    <AgentRow sub={activityDelegate({ latestActivityAt: new Date(Date.now() - 5_000).toISOString() })} />,
+    <AgentRow now={NOW} sub={activityDelegate({ latestActivityAt: new Date(Date.now() - 5_000).toISOString() })} />,
   );
   const fresh = dot(view);
   expect(fresh.getAttribute("data-state")).toBe("fresh");
@@ -48,6 +48,7 @@ test("a running delegate's dot dims at the quiet threshold", () => {
   const now = Date.now();
   const view = render(
     <AgentRow
+      now={NOW}
       sub={activityDelegate({
         runStartedAt: new Date(now).toISOString(),
         latestActivityAt: new Date(now).toISOString(),
@@ -68,7 +69,9 @@ test("a running delegate's dot dims at the quiet threshold", () => {
 test("a running delegate's dot still flips when the daemon's clock runs ahead", () => {
   vi.useFakeTimers();
   const now = Date.now();
-  const view = render(<AgentRow sub={activityDelegate({ latestActivityAt: new Date(now + 30_000).toISOString() })} />);
+  const view = render(
+    <AgentRow now={NOW} sub={activityDelegate({ latestActivityAt: new Date(now + 30_000).toISOString() })} />,
+  );
   expect(dot(view).getAttribute("data-state")).toBe("fresh");
   act(() => {
     vi.advanceTimersByTime(20_001);
@@ -93,7 +96,9 @@ test("a delegate that crosses the threshold between its render and its effect st
     .spyOn(Date, "now")
     .mockReturnValueOnce(anchor + 19_999)
     .mockReturnValue(anchor + 20_001);
-  const view = render(<AgentRow sub={activityDelegate({ latestActivityAt: new Date(anchor).toISOString() })} />);
+  const view = render(
+    <AgentRow now={NOW} sub={activityDelegate({ latestActivityAt: new Date(anchor).toISOString() })} />,
+  );
   expect(dot(view).getAttribute("data-state")).toBe("quiet");
   nowSpy.mockRestore();
 });
@@ -101,6 +106,7 @@ test("a delegate that crosses the threshold between its render and its effect st
 test("a delegate awaiting input keeps the attention dot", () => {
   const view = render(
     <AgentRow
+      now={NOW}
       sub={activityDelegate({ terminal: false, phase: "awaiting_input", latestActivityAt: new Date().toISOString() })}
     />,
   );
@@ -112,7 +118,10 @@ test("a delegate awaiting input keeps the attention dot", () => {
 
 test("a failed delegate shows the danger dot", () => {
   const view = render(
-    <AgentRow sub={activityDelegate({ terminal: true, outcome: "failed", status: "failed", error: "read error" })} />,
+    <AgentRow
+      now={NOW}
+      sub={activityDelegate({ terminal: true, outcome: "failed", status: "failed", error: "read error" })}
+    />,
   );
   const failed = dot(view);
   expect(failed.getAttribute("data-state")).toBe("failed");
@@ -122,19 +131,27 @@ test("a failed delegate shows the danger dot", () => {
 });
 
 test("a settled delegate shows no dot at all", () => {
-  const view = render(<AgentRow sub={activityDelegate({ terminal: true, outcome: "completed" })} />);
+  const view = render(<AgentRow now={NOW} sub={activityDelegate({ terminal: true, outcome: "completed" })} />);
   expect(view.container.querySelector("[data-state]")).toBeNull();
   expect(screen.queryByRole("img")).toBeNull();
 });
 
 test("stable delegate row uses authoritative phase and lifecycle without fabricated rollup counts", () => {
-  render(<AgentRow sub={activityDelegate({ lifecycle: "idle", phase: "waiting", status: "idle", terminal: false })} />);
+  render(
+    <AgentRow
+      now={NOW}
+      sub={activityDelegate({ lifecycle: "idle", phase: "waiting", status: "idle", terminal: false })}
+    />,
+  );
   expect(screen.getByText("inspect")).toBeTruthy();
   expect(screen.queryByText(/agents|jobs/)).toBeNull();
 });
 test("ended delegate preserves the supplied failed outcome", () => {
   const view = render(
-    <AgentRow sub={activityDelegate({ terminal: true, outcome: "failed", status: "failed", error: "read error" })} />,
+    <AgentRow
+      now={NOW}
+      sub={activityDelegate({ terminal: true, outcome: "failed", status: "failed", error: "read error" })}
+    />,
   );
   const row = screen.getByRole("img", { name: "Failed" }).closest("[aria-description]");
   expect(row?.getAttribute("aria-description")).toBe("failed");
@@ -151,7 +168,7 @@ test.each([
   { status: "failed", reason: "runtime_timeout", outcome: "failure", compact: false },
   { status: "running", outcome: undefined, compact: false },
 ])("terminal $status jobs retain their outcome with a quiet glyph", ({ status, reason, outcome, compact }) => {
-  const view = render(<JobRow job={activityJob({ status, reason, outcome, terminal: true })} />);
+  const view = render(<JobRow now={NOW} job={activityJob({ status, reason, outcome, terminal: true })} />);
   const row = view.container.querySelector("[aria-description]");
   expect(row?.getAttribute("aria-description")?.length).toBeGreaterThan(0);
   expect(view.container.querySelector("[data-activity-status]")?.getAttribute("data-status")).toBe(status);
@@ -160,42 +177,49 @@ test.each([
 });
 
 test.each(["awaiting_input", "awaiting_approval"])("live $phase delegates keep attention", (phase) => {
-  render(<AgentRow sub={activityDelegate({ terminal: false, phase })} />);
+  render(<AgentRow now={NOW} sub={activityDelegate({ terminal: false, phase })} />);
   expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
 });
 
 test("live shell work keeps its alive glyph", () => {
-  const view = render(<JobRow job={activityJob({ terminal: false, status: "running" })} />);
+  const view = render(<JobRow now={NOW} job={activityJob({ terminal: false, status: "running" })} />);
   expect(view.container.querySelector("svg")?.getAttribute("data-tone")).toBe("alive");
 });
 
 test("job rows identify the work by its description while retaining the exact command", () => {
   const command = "while ! test -e release-monitor; do sleep 2; done";
-  const view = render(<JobRow job={activityJob({ description: "Release monitor", command })} />);
+  const view = render(<JobRow now={NOW} job={activityJob({ description: "Release monitor", command })} />);
   expect(screen.getByText("Release monitor").getAttribute("title")).toBe(command);
-  view.rerender(<JobRow job={activityJob({ description: "", command })} />);
+  view.rerender(<JobRow now={NOW} job={activityJob({ description: "", command })} />);
   expect(screen.getByText(command)).toBeTruthy();
-  view.rerender(<JobRow job={activityJob({ description: "", command: "", jobId: "job-no-label" })} />);
+  view.rerender(<JobRow now={NOW} job={activityJob({ description: "", command: "", jobId: "job-no-label" })} />);
   expect(screen.getByText("job-no-label")).toBeTruthy();
 });
 
 test("delegate row prefers compact name while unnamed rows retain their prompt fallback", () => {
   const { rerender } = render(
     <AgentRow
+      now={NOW}
       sub={{ ...activityDelegate({ description: "Inspect the complete cache ownership" }), name: "inspect-cache" }}
     />,
   );
   expect(screen.getByText("inspect-cache")).toBeTruthy();
   expect(screen.queryByText("Inspect the complete cache ownership")).toBeNull();
   rerender(
-    <AgentRow sub={{ ...activityDelegate({ description: "Inspect the complete cache ownership" }), name: " " }} />,
+    <AgentRow
+      now={NOW}
+      sub={{ ...activityDelegate({ description: "Inspect the complete cache ownership" }), name: " " }}
+    />,
   );
   expect(screen.getByText("Inspect the complete cache ownership")).toBeTruthy();
 });
 
 test("a working agent row shows its latest intent in the meta line", () => {
   render(
-    <AgentRow sub={activityDelegate({ status: "running", terminal: false, latestIntent: "Reading the board." })} />,
+    <AgentRow
+      now={NOW}
+      sub={activityDelegate({ status: "running", terminal: false, latestIntent: "Reading the board." })}
+    />,
   );
   expect(screen.getByText("Reading the board.")).toBeTruthy();
   expect(document.querySelector("[data-activity-meta]")?.textContent).not.toBe("running");
@@ -203,7 +227,10 @@ test("a working agent row shows its latest intent in the meta line", () => {
 
 test("a live agent waiting in idle keeps its current status visible", () => {
   const view = render(
-    <AgentRow sub={activityDelegate({ terminal: false, lifecycle: "running", phase: "idle", status: "idle" })} />,
+    <AgentRow
+      now={NOW}
+      sub={activityDelegate({ terminal: false, lifecycle: "running", phase: "idle", status: "idle" })}
+    />,
   );
   expect(view.container.querySelector("[data-activity-meta]")?.textContent).toBe("idle");
 });
@@ -212,7 +239,10 @@ test.each(["cancelled", "stopped", "exhausted", "unknown"])(
   "a terminal agent retains its non-success outcome meta: %s",
   (outcome) => {
     const view = render(
-      <AgentRow sub={activityDelegate({ terminal: true, status: "idle", outcome, latestIntent: "Stale intent." })} />,
+      <AgentRow
+        now={NOW}
+        sub={activityDelegate({ terminal: true, status: "idle", outcome, latestIntent: "Stale intent." })}
+      />,
     );
     const meta = view.container.querySelector("[data-activity-meta]");
     expect(meta?.textContent).toBe(outcome);
@@ -223,6 +253,7 @@ test.each(["cancelled", "stopped", "exhausted", "unknown"])(
 test("a terminal agent row keeps its status accessible over a stale intent", () => {
   const view = render(
     <AgentRow
+      now={NOW}
       sub={activityDelegate({ terminal: true, outcome: "completed", status: "completed", latestIntent: "Stale line." })}
     />,
   );
@@ -232,7 +263,10 @@ test("a terminal agent row keeps its status accessible over a stale intent", () 
 
 test("an agent row carries its runtime status in the row's title", () => {
   render(
-    <AgentRow sub={activityDelegate({ status: "running", terminal: false, latestIntent: "Reading the board." })} />,
+    <AgentRow
+      now={NOW}
+      sub={activityDelegate({ status: "running", terminal: false, latestIntent: "Reading the board." })}
+    />,
   );
   // JobRow's pattern: the name span's title carries what the meta line replaced.
   expect(screen.getByTitle("inspect · running")).toBeTruthy();
@@ -285,6 +319,7 @@ test("a running job uses latest output and advances when the supplied clock adva
   const lastOutputAt = "2026-10-04T23:50:00Z";
   const view = render(<JobRow now={NOW} job={activityJob({ startedAt, lastOutputAt })} />);
   expect(timestamp(view).dateTime).toBe(lastOutputAt);
+  expect(timestamp(view).dataset.meaning).toBe("output");
   expect(timestamp(view).textContent).toBe("10m ago");
   view.rerender(<JobRow now={NOW + 60_000} job={activityJob({ startedAt, lastOutputAt })} />);
   expect(timestamp(view).dateTime).toBe(lastOutputAt);
@@ -322,4 +357,40 @@ test("an armed watch without retained delivery times keeps its creation-time mea
   const view = render(<WatchRow row={row} now={NOW} />);
   expect(timestamp(view).dateTime).toBe(createdAt);
   expect(timestamp(view).dataset.meaning).toBe("armed");
+});
+
+test.each(["0", "2026-02-30T00:00:00Z"])("invalid primary time %s uses the specified fallback", (invalid) => {
+  const fallback = "2026-10-04T23:40:00Z";
+  const job = render(<JobRow now={NOW} job={activityJob({ startedAt: fallback, lastOutputAt: invalid })} />);
+  expect(timestamp(job).dateTime).toBe(fallback);
+  expect(timestamp(job).dataset.meaning).toBe("started");
+  job.unmount();
+
+  const agent = render(
+    <AgentRow now={NOW} sub={activityDelegate({ runStartedAt: fallback, latestActivityAt: invalid })} />,
+  );
+  expect(timestamp(agent).dateTime).toBe(fallback);
+  expect(timestamp(agent).dataset.meaning).toBe("started");
+  agent.unmount();
+
+  const watch = buildWatchRows([activityWatch({ createdAt: fallback, deliveryTimes: [invalid] })])[0];
+  if (!watch) throw new Error("watch fixture missing");
+  const delivered = render(<WatchRow row={watch} now={NOW} />);
+  expect(timestamp(delivered).dateTime).toBe(fallback);
+});
+
+test("an invalid settled time stays absent", () => {
+  const agent = render(
+    <AgentRow now={NOW} sub={activityDelegate({ terminal: true, runEndedAt: "2026-02-30T00:00:00Z" })} />,
+  );
+  expect(agent.container.querySelector("time")).toBeNull();
+  const job = render(<JobRow now={NOW} job={activityJob({ terminal: true, endedAt: "2026-02-30T00:00:00Z" })} />);
+  expect(job.container.querySelector("time")).toBeNull();
+});
+
+test("a fractional timestamp with a timezone offset retains its original wire value", () => {
+  const at = "2026-10-04T23:50:00.123456789-05:30";
+  const view = render(<AgentRow now={NOW} sub={activityDelegate({ latestActivityAt: at })} />);
+  expect(timestamp(view).dateTime).toBe(at);
+  expect(timestamp(view).dataset.meaning).toBe("activity");
 });

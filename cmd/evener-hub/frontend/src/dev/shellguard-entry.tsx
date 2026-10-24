@@ -26,6 +26,7 @@ import {
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
 import { createRoot } from "react-dom/client";
+import { TaskActivityTime } from "../panes/session/chrome/activityTime";
 import { TasksPanelBody } from "../panes/session/chrome/TasksPanel";
 import { RepoLocation } from "../panes/session/composer/RepoLocation";
 import activityStyles from "../shell/activitybar/activitybar.module.css";
@@ -922,8 +923,7 @@ target.activityRowFixture = (open) => {
         <TasksPanelBody
           sessionRef={ROW_PADDING_REF}
           model={hydrateThread(activityThread(ROW_PADDING_REF), ROW_PADDING_REF, 0)}
-          presentation="compact"
-          now={ROW_TIME_NOW}
+          renderTime={(task) => <TaskActivityTime task={task} now={ROW_TIME_NOW} />}
         />
       </div>
     </div>,

@@ -79,8 +79,7 @@ import {
   type TaskRow,
   taskAggregateLabel,
 } from "@evener/appwire-client";
-import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
-import { ActivityTime, taskActivityTime } from "../../../shell/activitybar/activityTime";
+import { forwardRef, type ReactNode, useEffect, useImperativeHandle, useState } from "react";
 import { tasksPanelStore, useTasksPanelStore } from "../../../stores/tasksPanel";
 import {
   Button,
@@ -280,19 +279,24 @@ interface TaskRowViewProps {
   task: TaskRow;
   sessionRef: string;
   settled?: boolean;
-  presentation?: "panel" | "compact";
-  now?: number;
+  renderTime?: (task: TaskRow) => ReactNode;
 }
 
-function TaskRowView({ task, sessionRef, settled = false, presentation = "panel", now }: TaskRowViewProps) {
+function TaskRowView({ task, sessionRef, settled = false, renderTime }: TaskRowViewProps) {
   const notes = task.notes ?? [];
   const latest = !settled && notes.length > 0 ? notes[notes.length - 1] : null;
   const descClass = task.status === "cancelled" ? CLASS.descStruck : settled ? CLASS.descDim : CLASS.description;
-  const timing = presentation === "compact" ? taskActivityTime(task) : undefined;
+  const time = renderTime ? (
+    renderTime(task)
+  ) : task.updatedAt ? (
+    <span className={CLASS.time} data-testid="task-row-time" title={absoluteTime(task.updatedAt)}>
+      {relativeTime(task.updatedAt)}
+    </span>
+  ) : null;
   const summary = (
     <>
       <TaskCheck touch={STATUS_TOUCH[task.status]} />
-      <span className={CLASS.summaryMain} data-presentation={presentation}>
+      <span className={CLASS.summaryMain}>
         <span className={CLASS.summaryLine}>
           {/* The glyph is aria-hidden by design; its status word rides
               visually-hidden beside the label, the same word the card's
@@ -301,13 +305,7 @@ function TaskRowView({ task, sessionRef, settled = false, presentation = "panel"
           <span className={descClass} data-struck={task.status === "cancelled" ? "true" : undefined}>
             {task.description}
           </span>
-          {timing ? (
-            <ActivityTime value={timing} now={now ?? Date.now()} />
-          ) : task.updatedAt ? (
-            <span className={CLASS.time} data-testid="task-row-time" title={absoluteTime(task.updatedAt)}>
-              {relativeTime(task.updatedAt)}
-            </span>
-          ) : null}
+          {time}
         </span>
         {latest && (
           <span className={CLASS.latest} data-testid="task-latest">
@@ -336,15 +334,13 @@ function LiveGroup({
   status,
   tasks,
   sessionRef,
-  presentation,
-  now,
+  renderTime,
 }: {
   label: string;
   status: string;
   tasks: TaskRow[];
   sessionRef: string;
-  presentation?: "panel" | "compact";
-  now?: number;
+  renderTime?: (task: TaskRow) => ReactNode;
 }) {
   if (tasks.length === 0) return null;
   return (
@@ -354,7 +350,7 @@ function LiveGroup({
       </h4>
       <ul className={CLASS.list}>
         {tasks.map((row) => (
-          <TaskRowView key={row.id} task={row} sessionRef={sessionRef} presentation={presentation} now={now} />
+          <TaskRowView key={row.id} task={row} sessionRef={sessionRef} renderTime={renderTime} />
         ))}
       </ul>
     </section>
@@ -364,13 +360,11 @@ function LiveGroup({
 function TaskListGroups({
   rows,
   sessionRef,
-  presentation,
-  now,
+  renderTime,
 }: {
   rows: TaskRow[];
   sessionRef: string;
-  presentation?: "panel" | "compact";
-  now?: number;
+  renderTime?: (task: TaskRow) => ReactNode;
 }) {
   const groups = groupTasks(rows);
   const completed = groups.settled.filter((task) => task.status === "done").length;
@@ -391,14 +385,7 @@ function TaskListGroups({
         >
           <ul className={CLASS.list}>
             {groups.settled.map((row) => (
-              <TaskRowView
-                key={row.id}
-                task={row}
-                sessionRef={sessionRef}
-                settled
-                presentation={presentation}
-                now={now}
-              />
+              <TaskRowView key={row.id} task={row} sessionRef={sessionRef} settled renderTime={renderTime} />
             ))}
           </ul>
         </Disclosure>
@@ -408,17 +395,9 @@ function TaskListGroups({
         status="in_progress"
         tasks={groups.inProgress}
         sessionRef={sessionRef}
-        presentation={presentation}
-        now={now}
+        renderTime={renderTime}
       />
-      <LiveGroup
-        label="Remaining"
-        status="open"
-        tasks={groups.open}
-        sessionRef={sessionRef}
-        presentation={presentation}
-        now={now}
-      />
+      <LiveGroup label="Remaining" status="open" tasks={groups.open} sessionRef={sessionRef} renderTime={renderTime} />
     </>
   );
 }
@@ -427,18 +406,11 @@ export interface TasksPanelBodyProps {
   sessionRef: string;
   model: ThreadModel;
   showSummary?: boolean;
-  presentation?: "panel" | "compact";
-  now?: number;
+  renderTime?: (task: TaskRow) => ReactNode;
 }
 
 /** Shared task-list body for the activity viewer, mobile Sheet and desktop pane. */
-export function TasksPanelBody({
-  sessionRef,
-  model,
-  showSummary = true,
-  presentation = "panel",
-  now,
-}: TasksPanelBodyProps) {
+export function TasksPanelBody({ sessionRef, model, showSummary = true, renderTime }: TasksPanelBodyProps) {
   const toasts = useToasts();
   const entry = useTasksPanelStore((state) => state.entries.get(sessionRef)) ?? EMPTY_TASKS_PANEL_ENTRY;
   // Bumped by Try again. The only fetch trigger a reader controls: the other
@@ -549,7 +521,7 @@ export function TasksPanelBody({
         {rows.length === 0 ? (
           <EmptyState title="No tasks yet" hint="The agent's task list is empty for this session." reason="empty" />
         ) : (
-          <TaskListGroups rows={rows} sessionRef={sessionRef} presentation={presentation} now={now} />
+          <TaskListGroups rows={rows} sessionRef={sessionRef} renderTime={renderTime} />
         )}
       </>
     );

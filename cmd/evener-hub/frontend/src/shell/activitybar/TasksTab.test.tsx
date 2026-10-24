@@ -340,4 +340,19 @@ describe("TasksTab", () => {
     act(() => vi.advanceTimersByTime(30_000));
     expect(times.get("2")?.textContent).toBe("11m ago");
   });
+
+  test.each(["0", "2026-02-30T00:00:00Z"])(
+    "invalid task completion time %s falls back to its update",
+    async (invalid) => {
+      const updatedAt = "2026-10-04T23:50:00Z";
+      connectTasks(() => [{ ...TASKS[0], updated_at: updatedAt, completed_at: invalid }], { total: 1, done: 1 });
+      openTasks({ total: 1, done: 1 });
+      setDisclosureOpen(`${REF}\0settled-group`, true);
+      renderSidebar();
+      await screen.findByText("Completed work");
+      const time = screen.getByTestId("task-row").querySelector("time");
+      expect(time?.dateTime).toBe(updatedAt);
+      expect(time?.dataset.meaning).toBe("updated");
+    },
+  );
 });
