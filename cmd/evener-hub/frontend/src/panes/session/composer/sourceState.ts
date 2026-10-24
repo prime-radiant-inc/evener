@@ -25,6 +25,7 @@ import {
   readRecoverySelection,
   writeComposerDraft,
   writeRecoverySelection,
+  writeRefComposerSeat,
 } from "./draft";
 import {
   discardRecoveryPendingTurn,
@@ -99,6 +100,9 @@ export interface ComposerSourceState {
   readonly alive: boolean;
   /** Reload-stable tab/pane scope for the selected recovery owner. */
   readonly recoverySelectionOwnerId: string;
+  /** The ref an active recovery send must target. It follows a preserved row
+   * whose destination was retargeted by another tab. */
+  readonly recoveryTargetRef: string;
   readonly attachments: AttachmentStore;
   readonly editor: TextEditor;
   readonly continuity: {
@@ -181,8 +185,14 @@ const defaultCompositionOwners = new Map<string, string>();
 // must update that composer's active recovery, not only localStorage.
 const liveComposerSources = new Map<string, Set<ComposerSourceState>>();
 
-function destinationHasNewerEdits(scope: string, targetRef: string, staleId: string): boolean {
+function destinationHasNewerEdits(
+  scope: string,
+  targetRef: string,
+  staleId: string,
+  except?: ComposerSourceState,
+): boolean {
   for (const source of liveComposerSources.get(scope) ?? []) {
+    if (source === except) continue;
     if (source.ownsStaleRecoveryWithNewerEdits(targetRef, staleId)) return true;
   }
   return false;
@@ -274,6 +284,7 @@ export function createComposerSourceState(
   // the composer without counting as edits, so adoption can tell them apart.
   let userEditEpoch = 0;
   let selectionUserEditEpoch = 0;
+  let recoveryTargetRef = ref;
   let cleanupRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let cleanupRetryAttempt = 0;
   let cleanupRetryVersion = 0;
@@ -388,6 +399,15 @@ export function createComposerSourceState(
       : null;
     recoveryBaseRecord = record;
     selectionUserEditEpoch = userEditEpoch;
+    if (record !== null && record.targetRef !== ref) {
+      // Another tab retargeted this recovery. Reconcile this seat with the
+      // destination before activating it, so a Send uses the preserved target
+      // and a mobile reload can find the seat under that ref.
+      recoveryTargetRef = record.targetRef;
+      if (selectionOwnerId !== undefined) writeRefComposerSeat(record.targetRef, selectionOwnerId);
+    } else {
+      recoveryTargetRef = ref;
+    }
     const targetRef = record?.targetRef ?? ref;
     // Adopting a preserved row may happen after a replacement composer has
     // selected a newer row under the destination. Only replace the lease's own
@@ -415,7 +435,7 @@ export function createComposerSourceState(
     if (current !== undefined && current !== staleId) return false;
     // A destination composer editing the same recovery row owns newer work.
     // Keep its selection so a reload restores that work, not this older row.
-    if (destinationHasNewerEdits(recoverySelectionOwnerId, targetRef, staleId)) return false;
+    if (destinationHasNewerEdits(recoverySelectionOwnerId, targetRef, staleId, source)) return false;
     writeRecoverySelection(targetRef, recoverySelectionOwnerId, preserved.clientMutationId);
     // The stale row's ref no longer holds this composition; a composer that
     // restores there would look for a row that moved.
@@ -614,7 +634,7 @@ export function createComposerSourceState(
                 : await preserveStaleRecovery(clientMutationId, localDraftRevisionId, refusalComposition);
             const destinationOwnsNewer =
               preserved !== undefined &&
-              destinationHasNewerEdits(recoverySelectionOwnerId, preserved.targetRef, clientMutationId);
+              destinationHasNewerEdits(recoverySelectionOwnerId, preserved.targetRef, clientMutationId, source);
             if (preserved && rememberPreservedSelection(preserved, clientMutationId)) {
               notifyPreservedSelection(preserved.targetRef, clientMutationId, preserved);
             }
@@ -969,6 +989,9 @@ export function createComposerSourceState(
       return !disposed;
     },
     recoverySelectionOwnerId,
+    get recoveryTargetRef() {
+      return recoveryTargetRef;
+    },
     attachments,
     editor,
     continuity,

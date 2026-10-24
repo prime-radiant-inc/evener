@@ -995,7 +995,8 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
       releaseRecoveryInFlight?.();
       releaseRecoveryInFlight = null;
     };
-    const recoveryBarrier = submittedRecoveryId === null ? undefined : captureRecoveryStopBarrier(ref);
+    const recoveryTargetRef = source.recoveryTargetRef;
+    const recoveryBarrier = submittedRecoveryId === null ? undefined : captureRecoveryStopBarrier(recoveryTargetRef);
     let recoveryResendRefused = false;
     let recoveryAlreadySent = false;
     const recoveryWriteRefusal = new Error("Recovery persistence was refused");
@@ -1052,7 +1053,7 @@ export function Composer({ ref, paneId, focused, mountAutofocus = true, source, 
               }
               const outcome = await resendRecoveryPendingTurn(
                 submittedRecoveryId,
-                ref,
+                recoveryTargetRef,
                 kind,
                 submittedText,
                 payload,

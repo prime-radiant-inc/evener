@@ -96,7 +96,12 @@ except where a line says so itself.
   it shows and submits the local work without a reload. Newer replacement
   edits are not overwritten: its selection and autosaved work stay in place
   for reload. Adoption clears only the exact incorporated draft revision, so a
-  newer ordinary draft from another pane or tab survives.
+  newer ordinary draft from another pane or tab survives. The preserving
+  composer is excluded from its own newer-edit check, so a same-ref conflict
+  still remembers the fresh row.
+- When another tab retargets recovery during preservation, the adopted row's
+  resumed ref is reconciled with the originating seat: the ref mapping moves
+  with the seat and a Send targets the preserved ref, not the superseded one.
 - A pane disposed while a refused recovery write awaits storage preserves the
   newest complete composition captured at disposal: text, selections, payload
   input and settled attachment bytes. The fresh row becomes the seat's

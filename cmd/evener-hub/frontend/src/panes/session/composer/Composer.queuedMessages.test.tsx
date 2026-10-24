@@ -346,7 +346,10 @@ test("image encoding survives a literal-marker recovery merge while storage is p
       snapshot.commandNames,
       snapshot.mentions,
     );
-    mount(fake, source);
+    await act(async () => {
+      mount(fake, source);
+      await flushPendingTurnsProjectionForTests();
+    });
     expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false);
 
     const deliveredInputs: InputItem[][] = [];
@@ -995,6 +998,235 @@ test("a delayed preservation updates an already-mounted replacement composer", a
     await flushPendingTurnsProjectionForTests();
     oldSource.dispose();
     replacement.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
+// A same-ref conflict: the preserving composer is the only live destination,
+// and its edits since activation must not make preservation skip its own fresh
+// row. Reload must restore the local work, not the peer's composition.
+test("a same-ref conflict preserves the local work across reload", async () => {
+  // The held preservation publishes its projection between assertions; expect
+  // only React's act warnings for those updates.
+  const actWarnings = vi.spyOn(console, "error").mockImplementation(() => {});
+  class HeldPreservationStorage extends MutationOutboxIndexedDB {
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+
+    override async preserveRecoveryComposition(
+      ...args: Parameters<MutationOutboxIndexedDB["preserveRecoveryComposition"]>
+    ): ReturnType<MutationOutboxIndexedDB["preserveRecoveryComposition"]> {
+      this.reached.resolve();
+      await this.release.promise;
+      return super.preserveRecoveryComposition(...args);
+    }
+  }
+  const storage = new HeldPreservationStorage();
+  const { fake } = await setup(false, storage);
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const source = createTestComposerSource("root", undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  let reloaded: ReturnType<typeof createTestComposerSource> | undefined;
+  try {
+    await act(async () => {
+      mount(fake, source);
+      await flushPendingTurnsProjectionForTests();
+    });
+    await waitFor(() => expect(source.getSnapshot().freshRecoveryRef).toBe("root"));
+    await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId));
+    const peerRecovery = await peer.getRecovery(original.clientMutationId);
+    if (!peerRecovery) throw new Error("missing peer recovery fixture");
+    await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: "peer composition" }],
+      [],
+      "peer composition",
+      [],
+      [],
+      undefined,
+      undefined,
+      { [original.clientMutationId]: recoveryCompositionRevision(peerRecovery) },
+    );
+
+    const localText = "local preserved work";
+    await act(async () => {
+      source.editText(localText);
+    });
+    await storage.reached.promise;
+    await act(async () => {
+      storage.release.resolve();
+      await source.flushRecoveryWrites();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await flushPendingTurnsProjectionForTests();
+    });
+    await waitFor(async () => {
+      expect(
+        (await storage.listRecovery("root")).find((record) => record.clientMutationId !== original.clientMutationId),
+      ).toBeDefined();
+    });
+    const preserved = (await storage.listRecovery("root")).find(
+      (record) => record.clientMutationId !== original.clientMutationId,
+    );
+    await waitFor(() =>
+      expect(readRecoverySelection("root", source.recoverySelectionOwnerId)).toBe(preserved?.clientMutationId),
+    );
+    await waitFor(() =>
+      expect((screen.getByRole("textbox", { name: "Message" }) as HTMLElement).textContent).toBe(localText),
+    );
+
+    act(() => cleanup());
+    source.dispose();
+    reloaded = createTestComposerSource("root", undefined, "pane-a");
+    await act(async () => {
+      mount(fake, reloaded);
+      await flushPendingTurnsProjectionForTests();
+    });
+    await waitFor(() => expect(reloaded?.getSnapshot().freshRecoveryRef).toBe("root"));
+    await waitFor(() =>
+      expect((screen.getByRole("textbox", { name: "Message" }) as HTMLElement).textContent).toBe(localText),
+    );
+  } finally {
+    storage.release.resolve();
+    act(() => cleanup());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(actWarnings.mock.calls.every(([message]) => String(message).includes("not wrapped in act"))).toBe(true);
+    actWarnings.mockRestore();
+    source.dispose();
+    reloaded?.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
+// Another tab retargets the recovery while this composer is preserving. The
+// adopted row belongs to the resumed ref; Send from this still-mounted composer
+// must target it rather than the superseded ref.
+test("a peer retarget lets the original composer send the preserved row", async () => {
+  // A held preservation makes the projection publish outside act between the
+  // retarget and its release. Expect only those act warnings.
+  const actWarnings = vi.spyOn(console, "error").mockImplementation(() => {});
+  class HeldPreservationStorage extends MutationOutboxIndexedDB {
+    readonly reached = deferred<void>();
+    readonly release = deferred<void>();
+
+    override async preserveRecoveryComposition(
+      ...args: Parameters<MutationOutboxIndexedDB["preserveRecoveryComposition"]>
+    ): ReturnType<MutationOutboxIndexedDB["preserveRecoveryComposition"]> {
+      this.reached.resolve();
+      await this.release.promise;
+      return super.preserveRecoveryComposition(...args);
+    }
+  }
+  const storage = new HeldPreservationStorage();
+  const { fake } = await setup(false, storage);
+  const resumed = "local:peer-retarget";
+  fake.on("thread/read", ({ ref }) => ({
+    thread: { ...thread, evener: { ...thread.evener, ref: ref ?? "root" } },
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc", length: 0 },
+  }));
+  await threadsStore.getState().ensureThread(resumed);
+  const delivered: Array<Record<string, unknown>> = [];
+  fake.on("turn/start", (params) => {
+    delivered.push(params as unknown as Record<string, unknown>);
+    return {
+      turn: { id: "retarget-send", status: "inProgress", itemsView: "full", items: [] },
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread-a",
+        projectionState: "reflected",
+      },
+    };
+  });
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input: [{ type: "text", text: "old composition" }] },
+    attachments: [],
+    composerText: "old composition",
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old composition" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const source = createTestComposerSource("root", undefined, "pane-a");
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    await act(async () => {
+      mount(fake, source);
+      await flushPendingTurnsProjectionForTests();
+    });
+    await waitFor(() => expect(source.getSnapshot().freshRecoveryRef).toBe("root"));
+    await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId));
+    const peerRecovery = await peer.getRecovery(original.clientMutationId);
+    if (!peerRecovery) throw new Error("missing peer recovery fixture");
+    await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: "peer composition" }],
+      [],
+      "peer composition",
+      [],
+      [],
+      undefined,
+      undefined,
+      { [original.clientMutationId]: recoveryCompositionRevision(peerRecovery) },
+    );
+    await act(async () => {
+      source.editText("local preserved work");
+    });
+    await storage.reached.promise;
+    await act(async () => {
+      await peer.retargetOutbox("root", resumed, { threadId: "thread-new", instanceId: "instance-new" });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+    await act(async () => {
+      storage.release.resolve();
+      await source.flushRecoveryWrites();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await flushPendingTurnsProjectionForTests();
+    });
+    await waitFor(async () => {
+      expect(
+        (await storage.listRecovery(resumed)).find((record) => record.clientMutationId !== original.clientMutationId),
+      ).toBeDefined();
+    });
+    const preserved = (await storage.listRecovery(resumed)).find(
+      (record) => record.clientMutationId !== original.clientMutationId,
+    );
+    await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(preserved?.clientMutationId));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+      await source.flushRecoveryWrites();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await flushPendingTurnsProjectionForTests();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await flushPendingTurnsProjectionForTests();
+    });
+    await waitFor(() => expect(delivered).toHaveLength(1));
+    expect(delivered[0]).toMatchObject({ ref: resumed });
+  } finally {
+    storage.release.resolve();
+    act(() => cleanup());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(actWarnings.mock.calls.every(([message]) => String(message).includes("not wrapped in act"))).toBe(true);
+    actWarnings.mockRestore();
+    source.dispose();
     peer.close();
     storage.close();
   }
