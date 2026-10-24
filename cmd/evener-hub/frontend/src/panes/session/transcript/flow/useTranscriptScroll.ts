@@ -1982,6 +1982,13 @@ export function useTranscriptScroll({
         readerGestureRef.current = { beforeOffset: m.scrollTop, admitted: true };
       }
       lastScrollGeometryRef.current = m;
+      // A reader's own movement replaces any index target the virtualizer is
+      // still reconciling. A mount's or a restore's scrollToIndex lands a frame
+      // or two later (react-virtual reconciles in an animation frame), and
+      // re-applying it would throw away the position the reader just took.
+      if (m.scrollTop !== previous.scrollTop && !isAtBottom(m)) {
+        listRef.current?.scrollToOffset?.(m.scrollTop);
+      }
       if (!gestured && wasAtBottomRef.current && contentGrewBelowViewport(previous, m)) {
         el.scrollTop = Math.max(0, m.scrollHeight - m.clientHeight);
         return;
