@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
@@ -121,7 +122,7 @@ func TestNotificationProducers(t *testing.T) {
 				testProducerCustodyThenClosed(t)
 				return
 			}
-			s, _ := notificationReceiverForTest(t, nil)
+			s := newMessagingRoot(t, newMessagingAdapter(), nil)
 			c := s.delegateController
 			const delegateID = "dlg_late"
 			const receiverID = "child-dlg_late"
@@ -136,12 +137,7 @@ func TestNotificationProducers(t *testing.T) {
 			if err := writer.Close(); err != nil {
 				t.Fatal(err)
 			}
-			jm, err := newJobManager(s.stateDir, s.ID(), s.enqueueJobNotificationAndNotify)
-			if err != nil {
-				t.Fatal(err)
-			}
-			s.jobManager, jm.retirementOwner, jm.delegateController = jm, s, c
-			t.Cleanup(func() { jm.close() })
+			jm := s.jobManager
 			if strings.HasPrefix(boundary, "closed before custody") {
 				closeDelegateControllerResumability(t, c, delegateID, "permanent test closure")
 			}
@@ -826,6 +822,82 @@ func reopenProducerSource(t *testing.T, jm *jobManager) {
 		t.Fatal(err)
 	}
 	jm.store, jm.appendEvent, jm.appendEvents = reopened, reopened.Append, reopened.AppendBatch
+}
+
+func testNotificationWatchRestartCut(t *testing.T, cut string) {
+	a := newMessagingAdapter()
+	clock := agenttest.NewFakeClock()
+	a.script("root", func(llm.Request) llm.Response {
+		return toolCallResponse(llm.ToolCallData{ID: "restart-timer-11", Name: "job_watch", Type: "function",
+			Arguments: json.RawMessage(`{"operation":"create","source":"self","after_seconds":60,"note":"timer-c03a71b9"}`)})
+	}, func(llm.Request) llm.Response { return finalResponse("timer-installed-11") })
+	root := newMessagingRoot(t, a, func(cfg *SessionConfig) { cfg.clock = clock })
+	if _, err := root.ProcessInput(context.Background(), "timer-start-11", nil); err != nil {
+		t.Fatal(err)
+	}
+	clock.BlockUntil(1)
+	clock.Advance(time.Minute)
+	waitForCondition(t, 3*time.Second, "one-shot produced, ended and accepted", func() bool {
+		return len(producerSourceEvents(t, root.jobManager, jobstore.EventWatchCleared)) == 1 && len(producerSourceEvents(t, root.jobManager, jobstore.EventWatchSendDelivered)) == 1
+	})
+	produced := producerSourceEvents(t, root.jobManager, jobstore.EventWatchSendPending)
+	if len(produced) != 1 || produced[0].WatchSend == nil {
+		t.Fatalf("real timer source=%+v", produced)
+	}
+	state := *produced[0].WatchSend
+	id := fmt.Sprintf("watch:%s:%d", state.DeliveryID, state.UpdateSeq)
+	copied := copyWaitingState(t, root.stateDir)
+	sourcePath := filepath.Join(jobsDir(copied, root.ID()), "jobs.jsonl")
+	if cut == "watch production before durable end" {
+		truncateRestartJobSource(t, sourcePath, func(e jobstore.Event) bool { return e.Kind == jobstore.EventWatchCleared })
+	} else {
+		truncateRestartJobSource(t, sourcePath, func(e jobstore.Event) bool { return e.Kind == jobstore.EventWatchSendDelivered })
+	}
+	truncateRestartTranscript(t, transcriptPath(copied, root.ID()), func(turn schema.Turn) bool { return turn.AttentionID == id })
+	root.Close()
+	a.script("root", func(req llm.Request) llm.Response {
+		if !incidentRequestHas(req, "timer-c03a71b9") || !incidentRequestHas(req, state.Key.WatchID) {
+			t.Error("designated restored request omitted timer source/body")
+		}
+		return finalResponse("timer-observed-11")
+	})
+	before := len(a.requestsFor("root"))
+	restored := restoreWaitingCopy(t, root, copied)
+	wake, hint := newDrainWake()
+	restored.SetNotifyFunc(hint)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := restored.DrainJobTree(ctx, wake); err != nil {
+		t.Fatal(err)
+	}
+	if len(a.requestsFor("root")) != before+1 {
+		t.Fatal("timer source replay did not produce exactly one useful request")
+	}
+	incidentNotificationFacts(t, copied, root.ID(), id)
+	producedAfter := producerSourceEvents(t, restored.jobManager, jobstore.EventWatchSendPending)
+	acks := producerSourceEvents(t, restored.jobManager, jobstore.EventWatchSendDelivered)
+	want := 1
+	if cut == "watch production before durable end" {
+		want++
+	} // distinct runtime_lost end notice
+	if len(producedAfter) != want || len(acks) != want {
+		t.Fatalf("produced=%d custody=%d want%d", len(producedAfter), len(acks), want)
+	}
+	for _, p := range producedAfter {
+		matches := 0
+		for _, ack := range acks {
+			if ack.WatchSend.DeliveryID == p.WatchSend.DeliveryID && ack.WatchSend.UpdateSeq == p.WatchSend.UpdateSeq {
+				matches++
+			}
+		}
+		if matches != 1 {
+			t.Fatalf("source=%s:%d custody=%d", p.WatchSend.DeliveryID, p.WatchSend.UpdateSeq, matches)
+		}
+		incidentNotificationFacts(t, copied, root.ID(), fmt.Sprintf("watch:%s:%d", p.WatchSend.DeliveryID, p.WatchSend.UpdateSeq))
+	}
+	if ended := producerSourceEvents(t, restored.jobManager, jobstore.EventWatchCleared); len(ended) != 1 {
+		t.Fatalf("durable watch ends=%d", len(ended))
+	}
 }
 
 func TestCallbackOnlySettledChainTripsRunawayFuse(t *testing.T) {

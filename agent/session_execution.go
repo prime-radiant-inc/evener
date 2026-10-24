@@ -292,6 +292,29 @@ func descendantRecordedHook(fn func(sessionID string, rec transcript.Record), se
 // anything.
 func (s *Session) closeCrashedExecutions(entries []transcript.Entry) bool {
 	executions := transcript.ExecutionTurns(entries)
+	checkpoint, checkpointErr := readWaitCheckpoint(transcriptPath(s.stateDir, s.id), s.id)
+	if checkpointErr == nil && checkpoint != nil && checkpoint.ResumedByTurnID != "" {
+		claimed := checkpoint.ResumedByTurnID
+		if _, recorded := executions[claimed]; !recorded {
+			// A notification can claim a wait and enter the provider before an
+			// execution-span message is recorded. The validated private claim
+			// still admits that activation, without making it a public span.
+			open := true
+			for _, entry := range entries {
+				turn := entry.Turn
+				if turn.TurnID != claimed || turn.Format == 0 || turn.OriginalOrdinal != nil {
+					continue
+				}
+				switch turn.Kind {
+				case schema.TurnCompletion:
+					open = false
+				case schema.TurnReopen:
+					open = true
+				}
+			}
+			executions[claimed] = open
+		}
+	}
 	pending := s.turnsPendingWork()
 	s.mu.Lock()
 	for turnID, open := range executions {
@@ -307,7 +330,6 @@ func (s *Session) closeCrashedExecutions(entries []transcript.Entry) bool {
 	recorded := false
 	for _, turnID := range closeCrashedExecutionTargets(executions, pending) {
 		status := schema.TurnInterrupted
-		checkpoint, checkpointErr := readWaitCheckpoint(transcriptPath(s.stateDir, s.id), s.id)
 		if checkpointErr == nil && checkpoint != nil && checkpoint.ExecutionTurnID == turnID && safeWaitBoundary(*checkpoint, entries) {
 			status = schema.TurnCompleted
 		}

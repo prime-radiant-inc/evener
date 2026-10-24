@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/llm"
@@ -455,6 +458,115 @@ func TestNotificationAtExecutorRelease(t *testing.T) {
 	assertNotificationPending(t, s, []string{})
 	if got := len(a.Requests()); got != 3 {
 		t.Fatalf("requests across both release sides = %d, want 3", got)
+	}
+}
+
+// Storage remains broken after every fast release retry. The only stimulus
+// after repair is the already-armed recovery timer, not another user message.
+func TestNotificationReleaseStorageRecovery(t *testing.T) {
+	t.Parallel()
+	a := newMessagingAdapter()
+	clock := agenttest.NewFakeClock()
+	fifoA, releaseA := waitProducerFIFO(t)
+	defer releaseA()
+	fifoB, releaseB := waitProducerFIFO(t)
+	defer releaseB()
+	a.script("root", func(llm.Request) llm.Response { return incidentShellResponse("release-shell-a", fifoA) },
+		func(llm.Request) llm.Response { return incidentShellResponse("release-shell-b", fifoB) },
+		func(llm.Request) llm.Response { return finalResponse("release-initial-11") })
+	root := newMessagingRoot(t, a, func(cfg *SessionConfig) { cfg.clock = clock })
+	root.ConsumeEventsLossless(func(events.SessionEvent) {}, func() {})
+	wake, hint := newDrainWake()
+	root.SetNotifyFunc(hint)
+	if _, err := root.ProcessInput(context.Background(), "release-start-11", nil); err != nil {
+		t.Fatal(err)
+	}
+	started := producerSourceEvents(t, root.jobManager, jobstore.EventJobStarted)
+	if len(started) != 2 {
+		t.Fatalf("shell sources=%d", len(started))
+	}
+	releaseA()
+	waitForCondition(t, 3*time.Second, "first shell custody", func() bool { return producerRecordCount(t, root) == 1 })
+	<-wake
+	path := clientMutationFilePath(root.stateDir, root.ID())
+	backup := path + ".release-test-backup"
+	blocked := false
+	repair := func() {
+		if !blocked {
+			return
+		}
+		if err := os.Remove(path); err != nil {
+			t.Error(err)
+			return
+		}
+		if err := os.Rename(backup, path); err != nil {
+			t.Error(err)
+			return
+		}
+		blocked = false
+	}
+	defer repair()
+	a.script("root", func(req llm.Request) llm.Response {
+		if !incidentRequestHas(req, started[0].JobID) {
+			t.Error("first designated request source mismatch")
+		}
+		releaseB()
+		waitForCondition(t, 3*time.Second, "late shell custody", func() bool { return producerRecordCount(t, root) == 2 })
+		if err := os.Rename(path, backup); err != nil {
+			t.Error(err)
+			return finalResponse("filesystem-fixture-failed")
+		}
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Error(err)
+			return finalResponse("filesystem-fixture-failed")
+		}
+		blocked = true
+		return finalResponse("release-first-observed-11")
+	}, func(req llm.Request) llm.Response {
+		if !incidentRequestHas(req, started[1].JobID) {
+			t.Error("recovery request omitted late shell")
+		}
+		return finalResponse("release-second-observed-11")
+	})
+	baseline := clock.BlockedCount()
+	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	for range runningTurnReleaseRetryLimit {
+		clock.BlockUntil(baseline + 1)
+		clock.Advance(jobNotificationRetryMaxDelay)
+	}
+	clock.BlockUntil(baseline + 1)
+	root.mu.Lock()
+	retained := root.notificationSchedule.releaseTurnID
+	root.mu.Unlock()
+	if retained == "" || root.clientMutations.snapshot().ActiveTurnID != retained {
+		t.Fatal("exhausted retries lost exact release obligation")
+	}
+	if len(a.requestsFor("root")) != 4 {
+		t.Fatal("storage failure ran another model request")
+	}
+	// The lifetime channel also carries resource rescans. Discard the late
+	// shell's earlier hint before awaiting the paced recovery's new hint.
+	select {
+	case <-wake:
+	default:
+	}
+	repair()
+	clock.Advance(jobNotificationRetryMaxDelay)
+	select {
+	case <-wake:
+	case <-time.After(3 * time.Second):
+		t.Fatal("storage repair did not wake retained work")
+	}
+	if _, err := root.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatal(err)
+	}
+	if len(a.requestsFor("root")) != 5 || root.clientMutations.snapshot().ActiveTurnID != "" {
+		t.Fatalf("repaired storage requests=%d active=%q retained=%q", len(a.requestsFor("root")), root.clientMutations.snapshot().ActiveTurnID, retained)
+	}
+	for _, source := range producerSourceEvents(t, root.jobManager, jobstore.EventJobFinished) {
+		incidentNotificationFacts(t, root.stateDir, root.ID(), "shell:"+source.JobID+":"+source.TerminalGen)
 	}
 }
 

@@ -605,9 +605,13 @@ func TestMissingWaitProducerNotifiesOnce(t *testing.T) {
 	release := sync.OnceFunc(func() { close(gate) })
 	defer release()
 	adapter.script("COLD-WAIT-37", func(req llm.Request) llm.Response { entered <- req; <-gate; return finalResponse("cold-result-37") })
+	root.Close()
 	restored := restoreWaitingCopy(t, root, copyDir)
 	select {
-	case <-entered:
+	case req := <-entered:
+		if req.SessionID != owner.ID() || !incidentRequestHas(req, "was interrupted by restart, its producer is absent or cannot be restored") {
+			t.Fatal("cold receiver request omitted its interruption or used another session")
+		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("cold wait did not resume")
 	}
@@ -643,10 +647,68 @@ func TestMissingWaitProducerNotifiesOnce(t *testing.T) {
 	for _, entry := range data.Entries {
 		if strings.HasPrefix(entry.Turn.AttentionID, "wait-interrupted:") {
 			interruptions++
+			incidentNotificationFacts(t, copyDir, owner.ID(), entry.Turn.AttentionID)
 		}
 	}
 	if interruptions != 1 {
 		t.Fatalf("interruption records=%d want1", interruptions)
+	}
+}
+
+func TestNotificationBatchCapacityRelease(t *testing.T) {
+	a := newMessagingAdapter("REAL-CAP-WAIT-11", "REAL-CAP-BUSY-11")
+	fifo, releaseShell := waitProducerFIFO(t)
+	defer releaseShell()
+	gate := make(chan struct{})
+	releaseBusy := sync.OnceFunc(func() { close(gate) })
+	defer releaseBusy()
+	a.script("root", func(llm.Request) llm.Response { return delegateToolResponse("real-cap-owner-11", "REAL-CAP-WAIT-11") }, func(llm.Request) llm.Response { return finalResponse("real-cap-root-11") })
+	var jobID string
+	resumed := make(chan struct{}, 1)
+	a.script("REAL-CAP-WAIT-11", func(llm.Request) llm.Response { return incidentShellResponse("real-cap-shell-11", fifo) }, func(req llm.Request) llm.Response {
+		jobID = regexp.MustCompile(`job_[A-Za-z0-9_]{10,}`).FindString(lastToolResultText(req.Messages))
+		return waitResponseFor("real-cap-wait-11", jobID)
+	}, func(req llm.Request) llm.Response {
+		if !incidentRequestHas(req, jobID) {
+			t.Error("capacity successor omitted the completed source")
+		}
+		resumed <- struct{}{}
+		return finalResponse("real-cap-observed-11")
+	})
+	a.script("REAL-CAP-BUSY-11", func(llm.Request) llm.Response { <-gate; return finalResponse("real-cap-busy-result-11") })
+	root := newMessagingRoot(t, a, func(cfg *SessionConfig) {
+		cfg.MaxConcurrentDelegateTurns = 1
+		cfg.clock = agenttest.NewFakeClock() // Capacity release, not a timer, must wake the receiver.
+	})
+	if _, err := root.ProcessInput(context.Background(), "real-cap-start-11", nil); err != nil {
+		t.Fatal(err)
+	}
+	owner := root.subagents.sessions()[0]
+	incidentYielded(t, root, owner.ID())
+	a.script("root", func(llm.Request) llm.Response { return delegateToolResponse("real-cap-busy-11", "REAL-CAP-BUSY-11") }, func(llm.Request) llm.Response { return finalResponse("real-cap-busy-root-11") })
+	if _, err := root.ProcessInput(context.Background(), "real-cap-busy-start-11", nil); err != nil {
+		t.Fatal(err)
+	}
+	a.waitForRequests(t, "REAL-CAP-BUSY-11", 1)
+	releaseShell()
+	waitForCondition(t, 3*time.Second, "real shell custody while capacity full", func() bool {
+		return len(producerSourceEvents(t, owner.jobManager, jobstore.EventJobNotificationDelivered)) == 1
+	})
+	finished := producerSourceEvents(t, owner.jobManager, jobstore.EventJobFinished)
+	if len(finished) != 1 {
+		t.Fatalf("terminal shell facts=%+v", finished)
+	}
+	id := stableShellAttentionID(jobID, finished[0].TerminalGen)
+	incidentPendingFacts(t, root.stateDir, owner.ID(), id)
+	if len(a.requestsFor("REAL-CAP-WAIT-11")) != 2 {
+		t.Fatal("full batch capacity admitted a receiver")
+	}
+	releaseBusy()
+	awaitSignal(t, resumed, "real capacity release notification")
+	incidentYielded(t, root, owner.ID())
+	incidentNotificationFacts(t, root.stateDir, owner.ID(), id)
+	if len(a.requestsFor("REAL-CAP-WAIT-11")) != 3 {
+		t.Fatal("capacity release ran more than one successor")
 	}
 }
 

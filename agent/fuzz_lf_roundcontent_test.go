@@ -77,19 +77,17 @@ func FuzzLfClassifyRoundContent(f *testing.F) {
 }
 
 func FuzzLfRouteNoToolCalls(f *testing.F) {
-	f.Add(uint8(0), true, false, false)  // EntryUserInput, empty => runNoToolCalls
-	f.Add(uint8(3), false, false, true)  // EntryDelegateAttention, non-empty => runNoToolCalls
-	f.Add(uint8(3), false, false, false) // EntryDelegateAttention, non-empty, report-required => runNoToolCalls
-	f.Add(uint8(3), true, false, true)   // EntryDelegateAttention, empty, eligible => runNoToolCalls
-	f.Add(uint8(2), false, false, false) // EntryNotification, non-empty => finishIdle
-	f.Add(uint8(2), true, false, false)  // EntryNotification, empty => runNoToolCalls
-	f.Add(uint8(2), true, true, false)   // EntryNotification, empty, post-terminal => finishIdle (issue #329)
-	f.Add(uint8(0), true, true, false)   // EntryUserInput, empty, post-terminal => runNoToolCalls
-	f.Add(uint8(1), false, false, false) // EntryContinuation, non-empty => runNoToolCalls
+	f.Add(uint8(0), true, false)  // EntryUserInput, empty => runNoToolCalls
+	f.Add(uint8(3), false, false) // EntryDelegateAttention, non-empty => runNoToolCalls
+	f.Add(uint8(3), true, false)  // EntryDelegateAttention, empty => runNoToolCalls
+	f.Add(uint8(2), false, false) // EntryNotification, non-empty => finishIdle
+	f.Add(uint8(2), true, false)  // EntryNotification, empty => runNoToolCalls
+	f.Add(uint8(2), true, true)   // EntryNotification, empty, post-terminal => finishIdle (issue #329)
+	f.Add(uint8(0), true, true)   // EntryUserInput, empty, post-terminal => runNoToolCalls
+	f.Add(uint8(1), false, false) // EntryContinuation, non-empty => runNoToolCalls
 
-	f.Fuzz(func(t *testing.T, kindSel uint8, noContent bool, afterTerminal bool, allowDelegateNoAction bool) {
+	f.Fuzz(func(t *testing.T, kindSel uint8, noContent bool, afterTerminal bool) {
 		kind := lf_entryKinds[int(kindSel)%len(lf_entryKinds)]
-		_ = allowDelegateNoAction // retained in the fuzz wire shape for existing corpus entries
 
 		route := routeNoToolCalls(kind, noContent, afterTerminal, false)
 
@@ -112,7 +110,7 @@ func FuzzLfRouteNoToolCalls(f *testing.F) {
 			want = finishIdle
 		}
 		if route != want {
-			t.Fatalf("route=%v want=%v (kind=%v noContent=%v afterTerminal=%v allowDelegateNoAction=%v)", route, want, kind, noContent, afterTerminal, allowDelegateNoAction)
+			t.Fatalf("route=%v want=%v (kind=%v noContent=%v afterTerminal=%v)", route, want, kind, noContent, afterTerminal)
 		}
 		// Outside a finished run, an empty round never finishes idle (it must
 		// reach the empty-retry path).

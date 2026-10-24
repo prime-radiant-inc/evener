@@ -93,6 +93,20 @@ func FuzzRootWatchTreeProgram(f *testing.F) {
 	})
 }
 
+// Keep the deterministic Task11 crash cuts in the lifecycle seed lane, with
+// actual timer production, source journal and receiver transcript reopening.
+func FuzzRootWatchNotificationRestartCuts(f *testing.F) {
+	f.Add(false)
+	f.Add(true)
+	f.Fuzz(func(t *testing.T, beforeEnd bool) {
+		cut := "watch durable end before custody"
+		if beforeEnd {
+			cut = "watch production before durable end"
+		}
+		testNotificationWatchRestartCut(t, cut)
+	})
+}
+
 func rwlpRunManagerProgram(t *testing.T, r *rwlpReader) {
 	t.Helper()
 	jm := newTestJM(t)
@@ -605,9 +619,6 @@ func rwlpAssertWatchLedger(t *testing.T, jm *jobManager, notifications []jobNoti
 			t.Fatalf("watch send %q was durably delivered twice", id)
 		}
 		delivered[id] = true
-	}
-	for _, n := range notifications {
-
 	}
 }
 
