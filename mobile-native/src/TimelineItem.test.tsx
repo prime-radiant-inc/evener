@@ -910,7 +910,8 @@ describe("a subagent", () => {
 		);
 		expect(renderedText(tree)).toContain("running · 1m");
 		tree.root.findAll((node) => node.props.accessibilityRole === "button")[0].props.onPress();
-		expect(openSubagent).toHaveBeenCalledWith("local:child-1", "Audit the store");
+		// The row hands its run start through, even when the fixture has none.
+		expect(openSubagent).toHaveBeenCalledWith("local:child-1", "Audit the store", undefined);
 	});
 });
 
