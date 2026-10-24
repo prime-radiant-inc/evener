@@ -1934,10 +1934,11 @@ try {
   // reached through its own pane's footer: the shared sidebar scoped to the
   // source. The paging delegate rows there still keyboard-truncate the
   // inspector's selected branch.
-  const beforeSidebar = frames.length;
   await driver.click(sourceAgents);
   const branchRow = await reveal(fixture.branch, '[data-testid="activity-sidebar"]');
-  const directPageRequests = () => sent(beforeSidebar).filter(f => f.method === 'evener/thread/delegates/list' && f.params.ref === fixture.rootRef && f.params.cursor);
+  // A retained page may complete before the sidebar opens, so the observed
+  // direct history includes it. Any request still in flight gets its reply.
+  const directPageRequests = () => sent(0).filter(f => f.method === 'evener/thread/delegates/list' && f.params.ref === fixture.rootRef && f.params.cursor);
   await waitFrames(() => directPageRequests().length > 0 && directPageRequests().every(answered), "the observed root collection advances the real direct-page cursor");
   const paging = directPageRequests();
   assert.ok(paging.length > 0 && paging.every(answered), "the observed root collection advances the real direct-page cursor");
