@@ -1814,6 +1814,73 @@ test("a modal in the focused reader's own document blocks a pending next", async
   controller.dispose();
 });
 
+// A Dockview popout is a separate window with its own constructors, so an
+// opener-realm `instanceof Element` rejects every node the popout creates.
+// An iframe is the only jsdom document with a distinct realm;
+// `createHTMLDocument` shares the opener's constructors and cannot catch this.
+test("a transient modal in a real popout window cancels a pending next", async () => {
+  const client = new FakeClient("ready");
+  let releasePage!: () => void;
+  let entered!: () => void;
+  const pageEntered = new Promise<void>((resolve) => (entered = resolve));
+  client.on("evener/navigation/read", (params) => {
+    if (params.resource === "manifest") {
+      return wireSnapshot(
+        params,
+        manifest({
+          generation_id: "popout-realm",
+          sections: { live: { count: 0 }, needs_you: { count: 1 }, pin_sections: { count: 0 } },
+        }),
+        '"manifest"',
+        1,
+        "popout-realm",
+      );
+    }
+    if (params.resource === "section") {
+      entered();
+      return new Promise((resolve) => {
+        releasePage = () =>
+          resolve(
+            wireSnapshot(params, { sessions: [{ ref: "local:target" }], remaining: 0 }, '"page"', 1, "popout-realm"),
+          );
+      });
+    }
+    throw new Error(`unexpected resource ${params.resource}`);
+  });
+  navigationStore.init(client, capability("popout-realm"));
+  const a = workspaceStore.getState().openPane("session", { ref: "local:a" });
+  workspaceStore.getState().focusPane(a);
+  const frame = document.createElement("iframe");
+  document.body.appendChild(frame);
+  const popout = frame.contentDocument;
+  if (!popout) throw new Error("missing popout document");
+  chromeStore.getState().setPaneDocumentFor(a, popout);
+  const controller = createNeedsYouController();
+  const before = { path: window.location.pathname, history: window.history.length };
+  try {
+    const pending = controller.next();
+    await pageEntered;
+    const countBefore = controller.getSnapshot().modalOpenCount;
+
+    // Opened and closed before the observer's callback runs: only the records
+    // prove the interaction happened.
+    const dialog = popout.createElement("div");
+    dialog.setAttribute("aria-modal", "true");
+    popout.body.appendChild(dialog);
+    dialog.remove();
+    await Promise.resolve();
+    expect(controller.getSnapshot().modalOpenCount).toBe(countBefore + 1);
+
+    releasePage();
+    await pending;
+    expect(window.location.pathname).toBe(before.path);
+    expect(window.history.length).toBe(before.history);
+  } finally {
+    controller.dispose();
+    frame.remove();
+  }
+});
+
 // A popout can publish its document while another pane is focused, and focusing
 // it later writes nothing new to chromeStore. The modal watch has to follow the
 // focus itself, or a dialog opened there cannot cancel a pending Next.

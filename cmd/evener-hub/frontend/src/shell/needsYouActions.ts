@@ -192,8 +192,12 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
     routeSerial += 1;
     cancel();
   };
+  // A popout is a separate window with its own constructors, so an
+  // opener-realm `instanceof Element` rejects every node it creates. The node
+  // type is the same number in every realm.
   const containsModal = (node: Node): boolean =>
-    node instanceof Element && (node.matches('[aria-modal="true"]') || !!node.querySelector('[aria-modal="true"]'));
+    node.nodeType === 1 &&
+    ((node as Element).matches('[aria-modal="true"]') || !!(node as Element).querySelector('[aria-modal="true"]'));
   // MutationObserver reports an attribute record's old value but not its new
   // one, so a single record cannot prove which way aria-modal went. A record
   // whose old value was not "true" opened a modal when the element now reads
